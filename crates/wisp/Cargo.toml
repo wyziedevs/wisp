@@ -1,0 +1,16 @@
+[package]
+name = "wisp"
+description = "A fast, fun web framework for Rust: file-based routes, .wisp templates, form actions, one binary."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+httparse.workspace = true
+tokio.workspace = true
+wisp-macros.workspace = true
+
+[lints]
+workspace = true

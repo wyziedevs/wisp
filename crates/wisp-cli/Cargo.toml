@@ -1,0 +1,18 @@
+[package]
+name = "wisp-cli"
+description = "The wisp command: new, dev, build."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "wisp"
+path = "src/main.rs"
+
+[dependencies]
+wisp-build.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,9 @@
+[package]
+name = "wisp-load"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Closed-loop HTTP/1.1 load generator for comparing Wisp with other stacks"
+
+[lints]
+workspace = true
