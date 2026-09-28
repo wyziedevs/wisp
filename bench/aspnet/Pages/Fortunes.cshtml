@@ -1,0 +1,13 @@
+@page "/fortunes"
+@{ var fortunes = Fortune.Load(); }
+<!DOCTYPE html>
+<html>
+<head><title>Fortunes</title></head>
+<body><table>
+<tr><th>id</th><th>message</th></tr>
+@foreach (var f in fortunes)
+{
+<tr><td>@f.Id</td><td>@f.Message</td></tr>
+}
+</table></body>
+</html>

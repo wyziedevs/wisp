@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html>
+<head><title>Fortunes</title></head>
+<body><table>
+<tr><th>id</th><th>message</th></tr>
+@foreach (var f in Fortunes)
+{
+<tr><td>@f.Id</td><td>@f.Message</td></tr>
+}
+</table></body>
+</html>
+
+@code {
+    [Parameter] public List<Fortune> Fortunes { get; set; } = default!;
+}

@@ -1,0 +1,12 @@
+<wisp:head><title>{status}</title></wisp:head>
+
+<div class="text-column error">
+  <img class="vanish" src="/favicon.svg" alt="" width="72" height="72">
+  <h1>{status}</h1>
+  {#if status == 404}
+    <p>This page has vanished into thin air.</p>
+  {:else}
+    <p>{message}</p>
+  {/if}
+  <p><a class="button" href="/">Back to the home page</a></p>
+</div>
