@@ -39,19 +39,14 @@ pub struct Data {
     pub count: i64,
 }
 
-pub async fn load(cx: &mut Cx) -> Result<Data> {
-    Ok(Data { count: count(cx) })
+pub fn load(cx: &mut Cx) -> Data {
+    Data { count: cx.cookie_or("count", 0) }
 }
 
 #[action]
-pub async fn increment(cx: &mut Cx) -> Result<()> {
-    let next = count(cx) + 1;
-    cx.set_cookie("count", &next.to_string());
-    Ok(())
-}
-
-fn count(cx: &Cx) -> i64 {
-    cx.cookie("count").and_then(|c| c.parse().ok()).unwrap_or(0)
+pub fn increment(cx: &mut Cx) {
+    let count: i64 = cx.cookie_or("count", 0);
+    cx.set_cookie("count", count + 1);
 }
 ```
 
@@ -60,9 +55,11 @@ fn count(cx: &Cx) -> i64 {
 <h1>Clicked {data.count} times</h1>
 
 <form method="post" action="?/increment">
-  <button>Click me</button>
+  <button disabled={data.count >= 10}>Click me</button>
 </form>
 ```
+
+Page functions can also be `async`, and can return a `Result` so `?` works inside them.
 
 ## Routes
 

@@ -22,6 +22,8 @@ pub enum Node {
     Text(usize),
     /// `{expr}`, HTML-escaped. `quote` wraps it in `"…"` (from `attr={expr}`).
     Expr { code: Code, quote: bool },
+    /// `disabled={cond}`: ` disabled` when `cond` is true, nothing otherwise.
+    Bool { name: String, code: Code },
     /// `{@html expr}`, not escaped.
     Html(Code),
     /// `{@const name = expr}`.
@@ -452,6 +454,14 @@ impl Parser<'_> {
         if quote {
             self.last = b'a';
         }
+        if self.ctx != Ctx::Text && BOOLEAN_ATTRS.contains(&self.attr.as_str()) {
+            // On or off. A value, even "false", would turn it on.
+            if !quote || t.is_empty() || t.starts_with('@') {
+                return Err(self.err(open, format!("`{0}` is on or off: write {0}={{condition}}", self.attr)));
+            }
+            self.unwrite_attr_name(open)?;
+            return self.push_node(open, Node::Bool { name: self.attr.clone(), code: code(t) });
+        }
 
         if let Some(rest) = t.strip_prefix('@') {
             let (kw, arg) = split_word(rest);
@@ -476,6 +486,19 @@ impl Parser<'_> {
             return Err(self.err(open, "empty {}".into()));
         }
         self.push_node(open, Node::Expr { code: code(t), quote })
+    }
+
+    /// Takes ` name=` back off the end of the text: a boolean attribute's name
+    /// is printed by its node, and only when its condition holds.
+    fn unwrite_attr_name(&mut self, open: usize) -> Result<(), Error> {
+        let t = self.text.strip_suffix('=').unwrap_or(&self.text).trim_end();
+        let at = t.len().checked_sub(self.attr.len()).filter(|&n| t.as_bytes()[n..].eq_ignore_ascii_case(self.attr.as_bytes()));
+        let Some(at) = at else {
+            return Err(self.err(open, format!("write {}={{condition}} in one piece", self.attr)));
+        };
+        let keep = t[..at].trim_end().len();
+        self.text.truncate(keep);
+        Ok(())
     }
 
     /// A block tag alone on its line (Mustache calls it standalone) leaves no
@@ -509,6 +532,13 @@ impl Parser<'_> {
         Error { line, col, msg }
     }
 }
+
+/// HTML's boolean attributes: present means on, whatever the value.
+const BOOLEAN_ATTRS: [&str; 25] = [
+    "allowfullscreen", "async", "autofocus", "autoplay", "checked", "controls", "default", "defer", "disabled",
+    "formnovalidate", "hidden", "inert", "ismap", "itemscope", "loop", "multiple", "muted", "nomodule",
+    "novalidate", "open", "playsinline", "readonly", "required", "reversed", "selected",
+];
 
 fn is_ws(c: u8) -> bool {
     matches!(c, b' ' | b'\t' | b'\n' | b'\r' | b'\x0c')
@@ -667,6 +697,12 @@ fn shape(nodes: &[Node], out: &mut Vec<u8>) {
             Node::Text(_) => out.push(b'T'),
             Node::Expr { code: c, quote } => {
                 out.extend_from_slice(if *quote { b"Eq" } else { b"E" });
+                code(out, c);
+            }
+            Node::Bool { name, code: c } => {
+                out.push(b'B');
+                out.extend_from_slice(name.as_bytes());
+                out.push(0);
                 code(out, c);
             }
             Node::Html(c) => {
@@ -863,6 +899,20 @@ mod tests {
     fn conditional_attribute_inside_tag() {
         let t = parse("<input {#if on}checked{/if}>").unwrap();
         assert_alternates(&t.nodes);
+    }
+
+    #[test]
+    fn boolean_attributes() {
+        let t = parse("<button class=\"k\"
+  DISABLED ={!ok} name=k>").unwrap();
+        assert_alternates(&t.nodes);
+        assert_eq!(text(&t, &t.nodes[0]), "<button class=\"k\"");
+        assert!(matches!(&t.nodes[1], Node::Bool { name, code } if name == "disabled" && code.src == "!ok"));
+        assert_eq!(text(&t, &t.nodes[2]), " name=k>");
+        assert!(parse("<input checked=\"{on}\">").unwrap_err().msg.contains("on or off"));
+        assert!(parse("<details open={@html x}>").is_err());
+        // Anything else is a value, as before.
+        assert!(matches!(&parse("<a aria-hidden={h}>").unwrap().nodes[1], Node::Expr { quote: true, .. }));
     }
 
     #[test]

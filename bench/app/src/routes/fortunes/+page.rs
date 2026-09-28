@@ -1,6 +1,5 @@
 //! TechEmpower's "fortunes", minus the database: copy the rows, add one,
 //! sort by message, render with escaping. `bench/aspnet` does the same.
-use wisp::prelude::*;
 
 pub struct Fortune {
     pub id: u32,
@@ -26,10 +25,10 @@ const ROWS: [(u32, &str); 12] = [
     (12, "フレームワークのベンチマーク"),
 ];
 
-pub async fn load(_cx: &mut Cx) -> Result<Data> {
+pub fn load() -> Data {
     let mut fortunes = Vec::with_capacity(ROWS.len() + 1);
     fortunes.extend(ROWS.iter().map(|&(id, message)| Fortune { id, message }));
     fortunes.push(Fortune { id: 0, message: "Additional fortune added at request time." });
     fortunes.sort_unstable_by(|a, b| a.message.cmp(b.message));
-    Ok(Data { fortunes })
+    Data { fortunes }
 }

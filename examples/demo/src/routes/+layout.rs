@@ -1,5 +1,7 @@
 use wisp::prelude::*;
 
+const NAV: [(&str, &str); 3] = [("/", "Home"), ("/about", "About"), ("/wisple", "Wisple")];
+
 pub struct Link {
     pub href: &'static str,
     pub label: &'static str,
@@ -10,18 +12,9 @@ pub struct Data {
     pub nav: [Link; 3],
 }
 
-const NAV: [(&str, &str); 3] = [("/", "Home"), ("/about", "About"), ("/wisple", "Wisple")];
-
-/// The header's links, with the one this page lives under marked current.
-pub async fn load(cx: &mut Cx) -> Result<Data> {
-    let path = cx.path();
-    let nav = NAV.map(|(href, label)| Link {
-        href,
-        label,
-        current: match href {
-            "/" => path == "/",
-            _ => path.strip_prefix(href).is_some_and(|rest| rest.is_empty() || rest.starts_with('/')),
-        },
-    });
-    Ok(Data { nav })
+/// The header's links, with the one for this part of the site marked
+/// current: `/wisple/how-to-play` is part of Wisple.
+pub fn load(cx: &mut Cx) -> Data {
+    let section = cx.path().split('/').nth(1).unwrap_or("");
+    Data { nav: NAV.map(|(href, label)| Link { href, label, current: &href[1..] == section }) }
 }

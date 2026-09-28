@@ -8,7 +8,7 @@
 <form class="wisple" id="wisple" method="post" action="?/enter">
   <a class="how-to-play" href="/wisple/how-to-play">How to play</a>
 
-  <div class="grid{if data.won { " won" } else { "" }}">
+  <div class="grid{#if data.won} won{/if}">
     {#each data.rows as row, r}
       <h2 class="visually-hidden">Row {r + 1}</h2>
       <div class="row {row.class}">
@@ -45,10 +45,10 @@
         {#each data.keys as row, r}
           <div class="row">
             {#if r == 2}
-              <button class="wide enter" data-key="enter"{#if !data.full} disabled{/if}>Enter</button>
+              <button class="wide enter" data-key="enter" disabled={!data.full}>Enter</button>
             {/if}
             {#each row as key}
-              <button class={key.mark.class()} formaction="?/update" name="key" value={key.letter} aria-label="{key.letter} {key.mark.label()}"{#if data.full} disabled{/if}>{key.letter}</button>
+              <button class={key.mark.class()} formaction="?/update" name="key" value={key.letter} aria-label="{key.letter} {key.mark.label()}" disabled={data.full}>{key.letter}</button>
             {/each}
             {#if r == 2}
               <button class="wide" formaction="?/update" name="key" value="backspace" aria-label="Backspace">
