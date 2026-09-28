@@ -17,7 +17,7 @@
     </svg>
   </div>
 
-  <h1><span class="hello">Welcome</span> to your new<br>Wisp app</h1>
+  <h1><span class="hello">Welcome</span> to Your New<br>Wisp App</h1>
 
   <p class="hint">try editing <code>src/routes/+page.wisp</code></p>
 
