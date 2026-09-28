@@ -1,5 +1,1 @@
-wisp::app!();
-
-fn main() {
-    wisp::run::<App>();
-}
+wisp::main!();

@@ -53,7 +53,7 @@ bench/             load generator + ASP.NET Core baseline
 my-app/
   Cargo.toml          deps: wisp; build-deps: wisp-build
   build.rs            fn main() { wisp_build::run() }
-  src/main.rs         wisp::app!(); fn main() { wisp::run::<App>() }
+  src/main.rs         wisp::main!();
   src/app.html        document shell with %wisp.head% and %wisp.body%
   src/app.css         optional; Tailwind if it contains @import "tailwindcss"
   src/routes/...      pages
@@ -95,7 +95,7 @@ pub async fn load(cx: &mut Cx) -> Result<Data> {
 
 #[action]
 pub async fn like(cx: &mut Cx) -> Result<()> {
-    let id: i64 = cx.form().required("id")?.parse()?;
+    let id: i64 = cx.form().parse("id")?;
     db::like(id).await?;
     Ok(())
 }
@@ -104,11 +104,19 @@ pub async fn like(cx: &mut Cx) -> Result<()> {
 - `load` is found by name, actions by the `#[action]` marker. Nothing else in the
   file is reachable from HTTP. This is deliberate: a helper `pub async fn` must
   never become an endpoint by accident.
-- `load` returns `Result<Data>`; `Data` must be a public type in `+page.rs`
-  (defined or re-exported) with public fields, because the template reads it.
+- Signatures are as short as the function allows. `load`, actions and
+  `+server.rs` endpoints may be `fn` or `async fn`; take `cx: &mut Cx`,
+  `cx: &Cx` or nothing; and return their value (`Data`, `()`, `Response`)
+  either plain or in a `Result`. The build reads which from the signature and
+  generates the matching call; rustc checks the types. A counter is
+  `pub fn load(cx: &mut Cx) -> Data` and `#[action] pub fn increment(cx: &mut Cx)`.
+- `Data` must be a public type in `+page.rs` (defined or re-exported) with
+  public fields, because the template reads it.
 - Errors: `?` on any `std::error::Error` gives a 500 (details only in dev).
-  `error(404, "…")` and `redirect(303, "/…")` construct control-flow errors.
-  `Option::or_404()` is the common shortcut.
+  `error(404, "…")` and `redirect("/…")` (303) construct control-flow errors;
+  `Error::redirect(status, "/…")` takes another status. `Option::or_404()` is
+  the common shortcut. `cx.form().parse("id")` reads a field as any `FromStr`
+  type, and a missing or unparsable field is a 400 that says why.
 
 ### Templates
 
@@ -142,6 +150,7 @@ pub async fn like(cx: &mut Cx) -> Result<()> {
 |--------------------------------|----------------------------------------------------|
 | `{expr}`                       | escaped `Display` of `expr`                        |
 | `attr={expr}`                  | `attr="…"`, quotes added, value escaped            |
+| `disabled={cond}`              | ` disabled` if `cond`, else nothing (all HTML boolean attributes) |
 | `{@html expr}`                 | unescaped `Display` (you promise it is safe)       |
 | `{@const x = expr}`            | `let x = expr;`                                    |
 | `{#if c}…{:else if c}…{:else}…{/if}` | `if`/`else`; `if let` works as in Rust        |
@@ -156,6 +165,11 @@ CSS and JS braces need no escaping. Comments are stripped. Whitespace runs that
 contain a newline collapse to one newline, except in `<pre>`/`<textarea>`. A
 block tag (`{#…}`, `{:…}`, `{/…}`, `{@const}`) alone on its line leaves no line
 behind, so loops don't print blank lines between items.
+
+Boolean attributes (`disabled`, `checked`, `selected`, `hidden`, `open`,
+`required`, ...) are on when present, whatever their value, so
+`disabled="false"` would disable. For them `name={cond}` takes a `bool` and
+prints the bare name or nothing, and a hole in a quoted value is an error.
 
 Escaping covers `& < > " '`, which is safe in text and in quoted attributes.
 Unquoted `attr={…}` is always quoted by the compiler. There is no way to put an
@@ -180,8 +194,9 @@ Components (`<Card title={x}>…</Card>` from `src/lib/*.wisp` with
    before the morph, so the new page decides its final state.
 
 State that belongs to one visitor goes in a cookie: `cx.set_cookie(name, value)`
-sets it site-wide for 400 days, `HttpOnly`, `SameSite=Lax` (an empty value
-deletes it), and `cx.cookie(name)` reads it back within the same request, so
+sets it site-wide for 400 days, `HttpOnly`, `SameSite=Lax` (the value is any
+`Display`; an empty one deletes it), and `cx.cookie(name)` reads it back within
+the same request (`cx.cookie_or(name, default)` parses it as any `FromStr`), so
 the `load` that runs after an action sees what the action stored. Values are
 not signed; anything a visitor must not forge waits for signed state.
 
@@ -209,6 +224,9 @@ what is interactive. Text on a violet fill is dark, which reads at 4.6:1.
 
 ## Runtime
 
+- `wisp::main!()` is `wisp::app!()` plus a `main` that calls
+  `wisp::run::<App>()`; an app that sets things up first writes that `main`
+  itself.
 - `wisp::run::<App>()` serves on `$HOST:$PORT` (default 3000), thread per
   core: one single-threaded tokio runtime per CPU (`$WISP_THREADS`), each with
   its own I/O driver, and the main thread accepting connections and handing
@@ -253,7 +271,8 @@ monomorphized with the app. There are no handler trait objects anywhere.
 1. Walks `src/routes`, builds the route table, sorts by priority, rejects conflicts.
 2. Parses every `.wisp` file into a node list. Errors are `file:line:col: msg`.
 3. Scans `+page.rs`/`+layout.rs`/`+server.rs` with a tiny Rust lexer for `fn load`,
-   `#[action] … fn name` and HTTP-method functions.
+   `#[action] … fn name` and HTTP-method functions, and reads from each
+   signature whether it is async, takes `cx` and returns a `Result`.
 4. Writes `$OUT_DIR/wisp.rs`: `#[path]` modules for the user's files (so
    rust-analyzer sees them as normal modules), one render function per template,
    the router `match`, `handle`, and asset tables.

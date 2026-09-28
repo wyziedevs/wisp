@@ -2,8 +2,10 @@
 //!
 //! The build step needs to know whether `+page.rs` defines `load`, which
 //! functions carry `#[action]`, and which HTTP methods `+server.rs` defines.
-//! Types and signatures are left to rustc: if a function has the wrong
-//! signature, the generated call site fails to compile with a normal error.
+//! Of a signature it reads only what shapes the call: `async` or not, `cx`
+//! or no parameters, `Result` or a plain value. Types are left to rustc: if a
+//! function has the wrong signature, the generated call site fails to compile
+//! with a normal error.
 
 use crate::template::{raw_str_start, skip_char, skip_raw_str, skip_str};
 
@@ -11,6 +13,12 @@ use crate::template::{raw_str_start, skip_char, skip_raw_str, skip_str};
 pub struct FnItem {
     pub name: String,
     pub action: bool,
+    /// `async fn`: the call is awaited.
+    pub is_async: bool,
+    /// Has parameters, so it is passed `cx`.
+    pub takes_cx: bool,
+    /// Returns a `Result`, so the call ends in `?`.
+    pub fallible: bool,
 }
 
 /// Top-level `fn` items in source order. Nested functions, functions inside
@@ -19,7 +27,9 @@ pub fn top_level_fns(src: &str) -> Vec<FnItem> {
     let b = src.as_bytes();
     let mut fns = Vec::new();
     let mut depth = 0u32;
-    let mut action = false; // saw #[action] since the last item ended
+    // Seen since the last item ended.
+    let mut action = false;
+    let mut is_async = false;
     let mut i = 0;
     while i < b.len() {
         let c = b[i];
@@ -50,27 +60,32 @@ pub fn top_level_fns(src: &str) -> Vec<FnItem> {
             b'}' => {
                 depth = depth.saturating_sub(1);
                 if depth == 0 {
-                    action = false;
+                    (action, is_async) = (false, false);
                 }
             }
-            b';' if depth == 0 => action = false,
+            b';' if depth == 0 => (action, is_async) = (false, false),
             _ if c.is_ascii_alphabetic() || c == b'_' => {
                 let start = i;
                 while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
                     i += 1;
                 }
-                if depth == 0 && &src[start..i] == "fn" {
-                    while i < b.len() && b[i].is_ascii_whitespace() {
-                        i += 1;
+                match &src[start..i] {
+                    "async" if depth == 0 => is_async = true,
+                    "fn" if depth == 0 => {
+                        while i < b.len() && b[i].is_ascii_whitespace() {
+                            i += 1;
+                        }
+                        let name_start = i;
+                        while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                            i += 1;
+                        }
+                        if i > name_start {
+                            let (takes_cx, fallible) = signature(src, i);
+                            fns.push(FnItem { name: src[name_start..i].to_string(), action, is_async, takes_cx, fallible });
+                        }
+                        (action, is_async) = (false, false);
                     }
-                    let name_start = i;
-                    while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
-                        i += 1;
-                    }
-                    if i > name_start {
-                        fns.push(FnItem { name: src[name_start..i].to_string(), action });
-                    }
-                    action = false;
+                    _ => {}
                 }
                 continue; // `i` already points past the identifier.
             }
@@ -79,6 +94,43 @@ pub fn top_level_fns(src: &str) -> Vec<FnItem> {
         i += 1;
     }
     fns
+}
+
+/// Reads a signature from just past the function's name up to its body:
+/// whether it has parameters, and whether its return type is a `Result`
+/// (`Result<T>`, `wisp::Result<T>`, `io::Result<T>`, ...).
+fn signature(src: &str, mut i: usize) -> (bool, bool) {
+    let b = src.as_bytes();
+    let mut depth = 0i32; // (), [] and <>
+    let mut params = None;
+    let mut ret = None;
+    while i < b.len() {
+        match b[i] {
+            b'-' if b.get(i + 1) == Some(&b'>') => {
+                if depth == 0 && ret.is_none() {
+                    ret = Some(i + 2);
+                }
+                i += 1;
+            }
+            b'(' => {
+                if depth == 0 && params.is_none() {
+                    params = Some(src[i + 1..].trim_start().as_bytes().first() != Some(&b')'));
+                }
+                depth += 1;
+            }
+            b'[' | b'<' => depth += 1,
+            b')' | b']' | b'>' => depth -= 1,
+            b'{' | b';' if depth == 0 => break,
+            b'\'' => i = skip_char(b, i),
+            _ => {}
+        }
+        i += 1;
+    }
+    let fallible = ret.is_some_and(|r| {
+        let path = src[r..i].trim_start().split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == ':')).next();
+        path.and_then(|p| p.rsplit("::").next()) == Some("Result")
+    });
+    (params.unwrap_or(false), fallible)
 }
 
 fn skip_block_comment(b: &[u8], mut i: usize) -> usize {
@@ -161,6 +213,33 @@ mod tests {
                 ("like".into(), true),
                 ("delete_all".into(), true),
                 ("helper".into(), false)
+            ]
+        );
+    }
+
+    #[test]
+    fn signatures() {
+        let src = r#"
+            pub async fn load(cx: &mut Cx) -> Result<Data> { Ok(Data) }
+            pub fn plain() -> Data { Data }
+            pub fn nothing(cx: &Cx) {}
+            pub async fn generic<'a, F: Fn(u8) -> Result<()>>(cx: &'a mut Cx, f: F) -> wisp::Result<()> {}
+            pub fn io( ) -> std::io::Result<Data> where Data: Sized {}
+            fn later() -> Data;
+            const X: fn() -> Result<()> = f;
+            async fn after_const() {}
+        "#;
+        let sigs: Vec<_> = top_level_fns(src).into_iter().map(|f| (f.name, f.is_async, f.takes_cx, f.fallible)).collect();
+        assert_eq!(
+            sigs,
+            [
+                ("load".into(), true, true, true),
+                ("plain".into(), false, false, false),
+                ("nothing".into(), false, true, false),
+                ("generic".into(), true, true, true),
+                ("io".into(), false, false, true),
+                ("later".into(), false, false, false),
+                ("after_const".into(), true, false, false),
             ]
         );
     }

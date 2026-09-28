@@ -197,6 +197,12 @@ impl Cx {
         })
     }
 
+    /// A cookie parsed as any `FromStr` type, or `default` when it is missing
+    /// or does not parse: `let count: i64 = cx.cookie_or("count", 0);`
+    pub fn cookie_or<T: std::str::FromStr>(&self, name: &str, default: T) -> T {
+        self.cookie(name).and_then(|v| v.parse().ok()).unwrap_or(default)
+    }
+
     pub fn peer(&self) -> SocketAddr {
         self.peer
     }
@@ -216,17 +222,19 @@ impl Cx {
     }
 
     /// Sets a cookie for the whole site, kept for 400 days (the most browsers
-    /// allow) and hidden from page scripts. An empty value deletes it.
+    /// allow) and hidden from page scripts. The value is anything printable,
+    /// such as a number or a string; an empty one deletes the cookie.
     ///
     /// Panics on a character a cookie cannot hold (space, `"`, `,`, `;`,
     /// `\`, control or non-ASCII); encode such values first.
-    pub fn set_cookie(&mut self, name: &str, value: &str) {
+    pub fn set_cookie(&mut self, name: &str, value: impl std::fmt::Display) {
+        let value = value.to_string();
         let token = |s: &str, bad: &[u8]| s.bytes().all(|b| b.is_ascii_graphic() && !bad.contains(&b));
         assert!(!name.is_empty() && token(name, b"()<>@,;:\\\"/[]?={}"), "invalid cookie name {name:?}");
-        assert!(token(value, b"\",;\\"), "invalid cookie value {value:?}");
+        assert!(token(&value, b"\",;\\"), "invalid cookie value {value:?}");
         let age = if value.is_empty() { 0 } else { 400 * 24 * 60 * 60 };
         self.set_header("set-cookie", format!("{name}={value}; Path=/; Max-Age={age}; HttpOnly; SameSite=Lax"));
-        self.set_cookies.push((name.to_owned(), value.to_owned()));
+        self.set_cookies.push((name.to_owned(), value));
     }
 
     /// The action a form posted to: `?/name` → `name`, otherwise `default`.
@@ -259,6 +267,12 @@ impl<'a> Form<'a> {
     /// Like `get`, but a missing field is a 400 error.
     pub fn required(&self, name: &str) -> Result<Cow<'a, str>> {
         self.get(name).ok_or_else(|| Error::new(400, format!("missing form field `{name}`")))
+    }
+
+    /// A field parsed as any `FromStr` type. Missing or unparsable is a 400
+    /// error that says why: `let id: i64 = cx.form().parse("id")?;`
+    pub fn parse<T: std::str::FromStr<Err: std::fmt::Display>>(&self, name: &str) -> Result<T> {
+        self.required(name)?.parse().map_err(|e| Error::new(400, format!("form field `{name}`: {e}")))
     }
 
     /// Every value of a repeated field, like checkboxes with the same name.
@@ -341,6 +355,10 @@ mod tests {
         assert!(f.get("nope").is_none());
         assert_eq!(f.all("tag").collect::<Vec<_>>(), ["a", "b"]);
         assert_eq!(f.required("nope").unwrap_err().status(), 400);
+        let f = Form { body: b"id=7&bad=x" };
+        assert_eq!(f.parse::<i64>("id").unwrap(), 7);
+        assert_eq!(f.parse::<i64>("bad").unwrap_err().message(), "form field `bad`: invalid digit found in string");
+        assert_eq!(f.parse::<i64>("nope").unwrap_err().status(), 400);
     }
 
     /// Builds a Cx the way the server does: bytes in the buffer, spans into it.
@@ -384,10 +402,12 @@ mod tests {
     #[test]
     fn cookies() {
         let mut cx = cx_for("GET / HTTP/1.1\r\nCookie: count=1; theme=dark\r\n\r\n");
-        cx.set_cookie("count", "2");
+        assert_eq!(cx.cookie_or("count", 0), 1);
+        cx.set_cookie("count", 2);
         cx.set_cookie("theme", "");
         assert_eq!(cx.cookie("count"), Some("2"));
         assert_eq!(cx.cookie("theme"), None);
+        assert_eq!(cx.cookie_or("theme", 7), 7);
         assert_eq!(cx.out_headers[0].1, "count=2; Path=/; Max-Age=34560000; HttpOnly; SameSite=Lax");
         assert!(cx.out_headers[1].1.starts_with("theme=; Path=/; Max-Age=0;"));
         cx.reset();

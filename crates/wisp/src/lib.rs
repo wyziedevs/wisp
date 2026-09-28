@@ -1,8 +1,8 @@
 //! Wisp: a fast, fun web framework for Rust. File-based routes, `.wisp`
 //! templates, form actions, one binary. See `docs/design.md` for the whole picture.
 //!
-//! An app is `wisp::app!()` plus `wisp::run::<App>()`; everything else is
-//! generated from `src/routes` by `wisp-build`.
+//! An app's `main.rs` is `wisp::main!();`; everything else is generated
+//! from `src/routes` by `wisp-build`.
 
 mod cx;
 mod dev;
@@ -23,7 +23,21 @@ pub mod prelude {
     pub use crate::{Cx, Error, OrStatus, Response, Result, action, error, redirect};
 }
 
-/// Includes the code `wisp-build` generated and brings `App` into scope.
+/// The whole `main.rs` of an app that needs nothing before it starts:
+/// [`app!`] plus a `main` that calls [`run`].
+#[macro_export]
+macro_rules! main {
+    () => {
+        $crate::app!();
+
+        fn main() {
+            $crate::run::<App>();
+        }
+    };
+}
+
+/// Includes the code `wisp-build` generated and brings `App` into scope,
+/// for a `main` of your own: `wisp::app!(); fn main() { setup(); wisp::run::<App>(); }`
 #[macro_export]
 macro_rules! app {
     () => {
@@ -166,6 +180,15 @@ impl Error {
         Error { status, message: message.into(), header: None, source: None }
     }
 
+    /// A redirect with a status other than [`redirect`]'s 303, such as 308
+    /// for a page that moved for good. Panics on CR/LF in `location`.
+    pub fn redirect(status: u16, location: impl Into<String>) -> Error {
+        let location = location.into();
+        assert!((300..=308).contains(&status), "redirect status must be 3xx, got {status}");
+        assert!(cx::valid_header("location", &location), "invalid redirect location {location:?}");
+        Error { status, message: Cow::Borrowed(""), header: Some(("location", location)), source: None }
+    }
+
     pub fn status(&self) -> u16 {
         self.status
     }
@@ -180,13 +203,11 @@ pub fn error(status: u16, message: impl Into<Cow<'static, str>>) -> Error {
     Error::new(status, message)
 }
 
-/// `return Err(redirect(303, "/login"))`. Use 303 after a form post.
-/// Panics on CR/LF in `location`.
-pub fn redirect(status: u16, location: impl Into<String>) -> Error {
-    let location = location.into();
-    assert!((300..=308).contains(&status), "redirect status must be 3xx, got {status}");
-    assert!(cx::valid_header("location", &location), "invalid redirect location {location:?}");
-    Error { status, message: Cow::Borrowed(""), header: Some(("location", location)), source: None }
+/// `return Err(redirect("/login"))`: 303 See Other, which sends the browser
+/// to `location` with a GET, whether it came with a form post or a link.
+/// [`Error::redirect`] takes other statuses. Panics on CR/LF in `location`.
+pub fn redirect(location: impl Into<String>) -> Error {
+    Error::redirect(303, location)
 }
 
 impl<E: std::error::Error + Send + Sync + 'static> From<E> for Error {

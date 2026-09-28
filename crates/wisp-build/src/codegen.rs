@@ -74,7 +74,8 @@ pub fn generate(input: &Input) -> Result<String, String> {
         templates.push(Tpl { id: tpl_paths.len() - 1, module: format!("tpl_layout_{i}"), rel: rel(&file), kind: Kind::Layout, user, t });
         layout_fns.push(fns);
     }
-    let layout_has_load = |i: usize| layout_fns[i].iter().any(|f| f.name == "load");
+    let layout_load = |i: usize| layout_fns[i].iter().find(|f| f.name == "load");
+    let layout_has_load = |i: usize| layout_load(i).is_some();
 
     // Error pages.
     for (i, e) in tree.errors.iter().enumerate() {
@@ -89,7 +90,7 @@ pub fn generate(input: &Input) -> Result<String, String> {
     struct RouteInfo {
         page_tpl: Option<usize>,
         page_fns: Vec<FnItem>,
-        server_fns: Vec<String>,
+        server_fns: Vec<FnItem>,
     }
     let mut infos = Vec::new();
     for (i, r) in tree.routes.iter().enumerate() {
@@ -113,12 +114,12 @@ pub fn generate(input: &Input) -> Result<String, String> {
         if r.server {
             let file = r.dir.join("+server.rs");
             let fns = rust_scan::top_level_fns(&read(&file)?);
-            info.server_fns = fns.into_iter().map(|f| f.name).filter(|n| METHODS.iter().any(|(m, _, _)| m == n)).collect();
+            info.server_fns = fns.into_iter().filter(|f| METHODS.iter().any(|(m, _, _)| *m == f.name)).collect();
             if info.server_fns.is_empty() {
                 return Err(format!("{}: defines none of get, post, put, patch, delete", rel(&file)));
             }
             let has_actions = info.page_fns.iter().any(|f| f.action);
-            for m in &info.server_fns {
+            for m in info.server_fns.iter().map(|f| f.name.as_str()) {
                 if r.page && (m == "get" || (m == "post" && has_actions)) {
                     return Err(format!("{}: `{m}` conflicts with the page in the same directory", rel(&file)));
                 }
@@ -167,15 +168,15 @@ pub fn generate(input: &Input) -> Result<String, String> {
         g.line(0, "#[allow(unused_variables)]");
         g.line(0, &format!("async fn serve_page_{i}(cx: &mut ::wisp::Cx, __o: &mut ::wisp::Out) -> ::wisp::Result<()> {{"));
         for &l in &r.layouts {
-            if layout_has_load(l) {
-                g.line(1, &format!("let d{l} = layout_{l}::load(cx).await?;"));
+            if let Some(load) = layout_load(l) {
+                g.line(1, &format!("let d{l} = {};", call(&format!("layout_{l}"), load)));
             }
         }
-        let page_load = page.user.as_ref().is_some_and(|u| u.1);
-        if page_load {
-            g.line(1, &format!("let d = page_{i}::load(cx).await?;"));
+        let page_load = infos[i].page_fns.iter().find(|f| f.name == "load");
+        if let Some(load) = page_load {
+            g.line(1, &format!("let d = {};", call(&format!("page_{i}"), load)));
         }
-        let inner = format!("{}::render(__o{})", page.module, if page_load { ", &d" } else { "" });
+        let inner = format!("{}::render(__o{})", page.module, if page_load.is_some() { ", &d" } else { "" });
         g.line(1, &format!("{};", wrap_layouts(&r.layouts, &layout_has_load, inner)));
         g.line(1, "Ok(())");
         g.line(0, "}");
@@ -187,8 +188,8 @@ pub fn generate(input: &Input) -> Result<String, String> {
         g.line(0, "#[allow(unused_variables)]");
         g.line(0, &format!("async fn serve_error_{i}(cx: &mut ::wisp::Cx, __o: &mut ::wisp::Out, status: u16, message: &str) -> ::wisp::Result<()> {{"));
         for &l in &e.layouts {
-            if layout_has_load(l) {
-                g.line(1, &format!("let d{l} = layout_{l}::load(cx).await?;"));
+            if let Some(load) = layout_load(l) {
+                g.line(1, &format!("let d{l} = {};", call(&format!("layout_{l}"), load)));
             }
         }
         let inner = format!("tpl_error_{i}::render(__o, status, message)");
@@ -318,8 +319,10 @@ pub fn generate(input: &Input) -> Result<String, String> {
                 g.line(3, &format!("({i}, Post) => {{"));
                 g.line(4, "::wisp::rt::check_origin(cx)?;");
                 g.line(4, "match cx.action() {");
+                // `let ()` makes an action that returns something other than
+                // `()` or `Result<()>` a compile error rather than a dropped value.
                 for a in &actions {
-                    g.line(5, &format!("{} => {{ page_{i}::{}(cx).await?; }}", lit(&a.name), a.name));
+                    g.line(5, &format!("{} => {{ let () = {}; }}", lit(&a.name), call(&format!("page_{i}"), a)));
                 }
                 g.line(5, "other => return Err(::wisp::rt::no_action(other)),");
                 g.line(4, "}");
@@ -328,9 +331,9 @@ pub fn generate(input: &Input) -> Result<String, String> {
                 allow.push("POST");
             }
         }
-        for m in &info.server_fns {
-            let (_, variants, allowed) = METHODS.iter().find(|(n, _, _)| n == m).unwrap();
-            g.line(3, &format!("({i}, {variants}) => {{ let r = server_{i}::{m}(cx).await?; ::wisp::rt::respond(__o, r); Ok(()) }}"));
+        for f in &info.server_fns {
+            let (_, variants, allowed) = METHODS.iter().find(|(n, _, _)| *n == f.name).unwrap();
+            g.line(3, &format!("({i}, {variants}) => {{ ::wisp::rt::respond(__o, {}); Ok(()) }}", call(&format!("server_{i}"), f)));
             allow.push(allowed);
         }
         g.line(3, &format!("({i}, _) => Err(::wisp::rt::method_not_allowed({})),", lit(&allow.join(", "))));
@@ -372,6 +375,15 @@ const METHODS: [(&str, &str, &str); 5] = [
     ("patch", "Patch", "PATCH"),
     ("delete", "Delete", "DELETE"),
 ];
+
+/// `module::name(cx)` the way its signature asks: without `cx` if it takes
+/// no parameters, awaited if it is async, and with `?` if it returns a Result.
+fn call(module: &str, f: &FnItem) -> String {
+    let arg = if f.takes_cx { "cx" } else { "" };
+    let wait = if f.is_async { ".await" } else { "" };
+    let try_ = if f.fallible { "?" } else { "" };
+    format!("{module}::{}({arg}){wait}{try_}", f.name)
+}
 
 fn opt(x: Option<usize>) -> String {
     x.map_or("None".into(), |i| format!("Some({i})"))
@@ -557,6 +569,9 @@ impl Gen {
                 } else {
                     self.code_line(ind, &call, code, cx);
                 }
+            }
+            Node::Bool { name, code } => {
+                self.code_line(ind, &format!("if ({}) {{ {buf}.push_str({}); }}", code.src, lit(&format!(" {name}"))), code, cx);
             }
             Node::Html(code) => self.code_line(ind, &format!("::wisp::rt::html(&mut {buf}, &({}));", code.src), code, cx),
             Node::Const(code) => self.code_line(ind, &format!("let {};", code.src), code, cx),

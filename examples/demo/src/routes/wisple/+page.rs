@@ -4,7 +4,9 @@
 //! post. With JavaScript, the page types letters itself and only posts a
 //! finished guess.
 
+use std::fmt;
 use std::hash::{BuildHasher, RandomState};
+use std::str::FromStr;
 use wisp::prelude::*;
 
 const TRIES: usize = 6;
@@ -17,7 +19,8 @@ static WORDS: &str = include_str!("words.txt");
 
 pub struct Data {
     pub rows: [Row; TRIES],
-    pub keys: [Vec<Key>; 3],
+    /// The on-screen keyboard, each key marked with the best it has scored.
+    pub keys: [Vec<Tile>; 3],
     /// The row being typed, sent back with the next guess.
     pub guess: String,
     /// The row is full, so Enter is on and the letters are off.
@@ -34,12 +37,8 @@ pub struct Row {
     pub class: &'static str,
 }
 
+/// A letter on the board or the keyboard.
 pub struct Tile {
-    pub letter: &'static str,
-    pub mark: Mark,
-}
-
-pub struct Key {
     pub letter: &'static str,
     pub mark: Mark,
 }
@@ -75,48 +74,42 @@ impl Mark {
     }
 }
 
-pub async fn load(cx: &mut Cx) -> Result<Data> {
-    Ok(Game::read(cx).data())
+pub fn load(cx: &mut Cx) -> Data {
+    Game::read(cx).data()
 }
 
 /// Without JavaScript, every key on the page's keyboard posts here.
 #[action]
-pub async fn update(cx: &mut Cx) -> Result<()> {
+pub fn update(cx: &mut Cx) -> Result<()> {
     let mut game = Game::read(cx);
-    let key = cx.form().required("key")?;
-    match key.as_bytes() {
+    match cx.form().required("key")?.as_bytes() {
         b"backspace" => {
             game.current.pop();
         }
         &[c] if c.is_ascii_lowercase() && game.current.len() < LEN => game.current.push(c as char),
         _ => {}
     }
-    game.save(cx);
+    cx.set_cookie("wisple", game);
     Ok(())
 }
 
 /// A finished guess. It comes from the form, where the page's script typed
 /// it; without JavaScript, `update` put the same letters there.
 #[action]
-pub async fn enter(cx: &mut Cx) -> Result<()> {
+pub fn enter(cx: &mut Cx) -> Result<()> {
+    let Guess(guess) = cx.form().parse("guess")?;
     let mut game = Game::read(cx);
-    let guess = cx.form().required("guess")?.to_ascii_lowercase();
-    let guess: [u8; LEN] = guess.as_bytes().try_into().map_err(|_| error(400, "a guess has five letters"))?;
-    if !guess.iter().all(u8::is_ascii_lowercase) {
-        return Err(error(400, "a guess is letters only"));
-    }
     if !game.over() {
-        game.guesses.push(guess);
+        game.guesses.push_str(&guess);
         game.current.clear();
-        game.save(cx);
+        cx.set_cookie("wisple", game);
     }
     Ok(())
 }
 
 #[action]
-pub async fn restart(cx: &mut Cx) -> Result<()> {
-    Game::new().save(cx);
-    Ok(())
+pub fn restart(cx: &mut Cx) {
+    cx.set_cookie("wisple", Game::new());
 }
 
 // ---- the game ----------------------------------------------------------------
@@ -124,7 +117,9 @@ pub async fn restart(cx: &mut Cx) -> Result<()> {
 struct Game {
     /// Index into `WORDS`.
     answer: usize,
-    guesses: Vec<[u8; LEN]>,
+    /// Every guess so far, run together: `cranesloth` is two.
+    guesses: String,
+    /// The row being typed.
     current: String,
 }
 
@@ -135,79 +130,51 @@ fn words() -> impl Iterator<Item = &'static str> {
 impl Game {
     fn new() -> Game {
         let answer = RandomState::new().hash_one(0) as usize % words().count();
-        Game { answer, guesses: Vec::new(), current: String::new() }
+        Game { answer, guesses: String::new(), current: String::new() }
     }
 
     /// The visitor's game, or a new one if they have none (or sent us
     /// something that isn't one).
-    fn read(cx: &mut Cx) -> Game {
-        match cx.cookie("wisple").and_then(Game::parse) {
-            Some(game) => game,
-            None => {
-                let game = Game::new();
-                game.save(cx);
-                game
-            }
-        }
-    }
-
-    /// The cookie is `answer-guesses-current`, like `42-cranesloth-pi`.
-    fn parse(s: &str) -> Option<Game> {
-        let mut parts = s.split('-');
-        let answer: usize = parts.next()?.parse().ok()?;
-        let (guesses, current) = (parts.next()?.as_bytes(), parts.next()?);
-        let letters = |s: &[u8]| s.iter().all(u8::is_ascii_lowercase);
-        let valid = answer < words().count()
-            && guesses.len() % LEN == 0
-            && guesses.len() <= LEN * TRIES
-            && letters(guesses)
-            && current.len() <= LEN
-            && letters(current.as_bytes())
-            && parts.next().is_none();
-        valid.then(|| Game {
-            answer,
-            guesses: guesses.chunks_exact(LEN).map(|g| g.try_into().unwrap()).collect(),
-            current: current.to_string(),
-        })
-    }
-
-    fn save(&self, cx: &mut Cx) {
-        let guesses: Vec<u8> = self.guesses.concat();
-        let guesses = std::str::from_utf8(&guesses).expect("guesses are ASCII");
-        cx.set_cookie("wisple", &format!("{}-{guesses}-{}", self.answer, self.current));
+    fn read(cx: &Cx) -> Game {
+        cx.cookie_or("wisple", Game::new())
     }
 
     fn word(&self) -> &'static str {
         words().nth(self.answer).expect("answer is checked against WORDS")
     }
 
+    fn guesses(&self) -> &[[u8; LEN]] {
+        self.guesses.as_bytes().as_chunks().0
+    }
+
     fn won(&self) -> bool {
-        self.guesses.last().is_some_and(|g| g == self.word().as_bytes())
+        self.guesses().last().is_some_and(|g| g == self.word().as_bytes())
     }
 
     fn over(&self) -> bool {
-        self.won() || self.guesses.len() == TRIES
+        self.won() || self.guesses().len() == TRIES
     }
 
     fn data(&self) -> Data {
-        let answer: [u8; LEN] = self.word().as_bytes().try_into().expect("answers have five letters");
+        let answer: &[u8; LEN] = self.word().as_bytes().try_into().expect("answers have five letters");
+        let guesses = self.guesses();
         let (won, over) = (self.won(), self.over());
         let mut best = [Mark::Unknown; 26];
         let rows = std::array::from_fn(|r| {
-            if let Some(guess) = self.guesses.get(r) {
-                let marks = score(guess, &answer);
+            if let Some(guess) = guesses.get(r) {
+                let marks = score(guess, answer);
                 for (&c, &m) in guess.iter().zip(&marks) {
                     best[index(c)] = best[index(c)].max(m);
                 }
                 // Fresh until the next row gets its first letter: that is
                 // when the page flips the tiles over.
-                let fresh = r + 1 == self.guesses.len() && self.current.is_empty();
+                let fresh = r + 1 == guesses.len() && self.current.is_empty();
                 Row {
                     tiles: std::array::from_fn(|i| Tile { letter: letter(guess[i]), mark: marks[i] }),
                     class: if fresh { "fresh" } else { "" },
                 }
             } else {
-                let current = r == self.guesses.len() && !over;
+                let current = r == guesses.len() && !over;
                 let typed = if current { self.current.as_bytes() } else { b"" };
                 Row {
                     tiles: std::array::from_fn(|i| Tile { letter: typed.get(i).map_or("", |&c| letter(c)), mark: Mark::Unknown }),
@@ -215,7 +182,7 @@ impl Game {
                 }
             }
         });
-        let keys = KEYBOARD.map(|row| row.bytes().map(|c| Key { letter: letter(c), mark: best[index(c)] }).collect());
+        let keys = KEYBOARD.map(|row| row.bytes().map(|c| Tile { letter: letter(c), mark: best[index(c)] }).collect());
         Data {
             rows,
             keys,
@@ -224,7 +191,50 @@ impl Game {
             won,
             over,
             answer: if over { self.word() } else { "" },
-            tries: self.guesses.len(),
+            tries: guesses.len(),
+        }
+    }
+}
+
+/// How the game is kept in its cookie: `answer-guesses-current`, like
+/// `42-cranesloth-pi`. Writing the cookie uses `Display`, reading it `FromStr`.
+impl fmt::Display for Game {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}-{}-{}", self.answer, self.guesses, self.current)
+    }
+}
+
+impl FromStr for Game {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Game, ()> {
+        let mut parts = s.split('-');
+        let (Some(answer), Some(guesses), Some(current), None) = (parts.next(), parts.next(), parts.next(), parts.next()) else {
+            return Err(());
+        };
+        let Ok(answer) = answer.parse() else { return Err(()) };
+        let letters = |s: &str| s.bytes().all(|c| c.is_ascii_lowercase());
+        let valid = answer < words().count()
+            && guesses.len() % LEN == 0
+            && guesses.len() <= LEN * TRIES
+            && letters(guesses)
+            && current.len() <= LEN
+            && letters(current);
+        if valid { Ok(Game { answer, guesses: guesses.into(), current: current.into() }) } else { Err(()) }
+    }
+}
+
+/// A guess from the form: five letters, in either case.
+struct Guess(String);
+
+impl FromStr for Guess {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Guess, &'static str> {
+        if s.len() == LEN && s.bytes().all(|c| c.is_ascii_alphabetic()) {
+            Ok(Guess(s.to_ascii_lowercase()))
+        } else {
+            Err("a guess is five letters")
         }
     }
 }
@@ -281,10 +291,18 @@ mod tests {
 
     #[test]
     fn cookie_round_trips_and_rejects_junk() {
-        let g = Game::parse("3-cranesloth-pi").unwrap();
-        assert_eq!((g.answer, g.guesses.len(), g.current.as_str()), (3, 2, "pi"));
+        let g: Game = "3-cranesloth-pi".parse().unwrap();
+        assert_eq!((g.answer, g.guesses(), g.current.as_str()), (3, &[*b"crane", *b"sloth"][..], "pi"));
+        assert_eq!(g.to_string(), "3-cranesloth-pi");
         for junk in ["", "3", "3-cran-", "3-CRANE-", "99999-crane-", "3-crane-toolong", "3--pi-x"] {
-            assert!(Game::parse(junk).is_none(), "{junk}");
+            assert!(junk.parse::<Game>().is_err(), "{junk}");
         }
+    }
+
+    #[test]
+    fn guesses_are_five_letters() {
+        assert_eq!("CRane".parse::<Guess>().map(|g| g.0), Ok("crane".into()));
+        assert!("cran".parse::<Guess>().is_err());
+        assert!("cr4ne".parse::<Guess>().is_err());
     }
 }
