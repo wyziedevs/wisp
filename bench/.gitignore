@@ -1,3 +1,14 @@
+# Build output, dependencies and lockfiles of the comparison servers: only
+# their sources are tracked.
 /aspnet/bin/
 /aspnet/obj/
 /aspnet/out/
+/rust/target/
+/rust/Cargo.lock
+/go/out/
+/go/go.sum
+node_modules/
+package-lock.json
+/node/sveltekit/build/
+/node/sveltekit/.svelte-kit/
+/node/nextjs/.next/

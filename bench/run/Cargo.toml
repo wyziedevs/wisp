@@ -1,0 +1,21 @@
+[package]
+name = "bench-run"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Builds and measures every server in bench/, on Linux or Windows"
+
+[dependencies]
+wisp-load = { path = "../load" }
+
+# Pinning processes to CPUs and reading their CPU time and memory. The
+# runner is the only user; nothing here reaches an app.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_System_ProcessStatus"] }
+
+# The one exception to the workspace's `forbid`: sys.rs calls the OS.
+[lints.rust]
+unsafe_code = "deny"
