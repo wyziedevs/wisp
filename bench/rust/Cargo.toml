@@ -1,0 +1,24 @@
+# Actix Web and Axum, the Rust side of bench/. A workspace of its own so
+# their dependencies stay out of Wisp's Cargo.lock.
+[package]
+name = "bench-rust"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "bench-rust"
+path = "main.rs"
+
+[dependencies]
+actix-web = "4"
+askama = "0.16"
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "net"] }
+
+[workspace]
+
+# Same release profile as the Wisp workspace.
+[profile.release]
+codegen-units = 1
+lto = "fat"
