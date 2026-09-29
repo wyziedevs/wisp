@@ -10,13 +10,10 @@ publish = false
 [dependencies]
 wisp.workspace = true
 
-# The edge build (`wisp build --target cloudflare`): no sockets or threads.
-# `tokio::spawn` and `tokio::time` compile there, but panic (a 500) with no
-# runtime to run on.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The app itself uses `wisp::spawn` and `wisp::sleep`, which work in the edge
+# build too (`wisp build --target cloudflare`); only the tests use tokio.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tokio.workspace = true
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-tokio = { version = "1.53", default-features = false, features = ["sync", "rt", "time"] }
 
 [build-dependencies]
 wisp-build.workspace = true
