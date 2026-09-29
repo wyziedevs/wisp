@@ -4,9 +4,7 @@
 //! post. With JavaScript, the page types letters itself and only posts a
 //! finished guess.
 
-use std::fmt;
 use std::hash::{BuildHasher, RandomState};
-use std::str::FromStr;
 use wisp::prelude::*;
 
 const TRIES: usize = 6;
@@ -97,7 +95,10 @@ pub fn update(cx: &mut Cx) -> Result<()> {
 /// it; without JavaScript, `update` put the same letters there.
 #[action]
 pub fn enter(cx: &mut Cx) -> Result<()> {
-    let Guess(guess) = cx.form().parse("guess")?;
+    let guess = cx.form().required("guess")?.to_ascii_lowercase();
+    if guess.len() != LEN || !letters(&guess) {
+        return Err(error(400, "A guess is five letters."));
+    }
     let mut game = Game::read(cx);
     if !game.over() {
         game.guesses.push_str(&guess);
@@ -114,6 +115,8 @@ pub fn restart(cx: &mut Cx) {
 
 // ---- the game ----------------------------------------------------------------
 
+/// A visitor's game, kept in their `wisple` cookie as `42|cranesloth|pi`.
+#[derive(Cookie)]
 struct Game {
     /// Index into `WORDS`.
     answer: usize,
@@ -136,7 +139,18 @@ impl Game {
     /// The visitor's game, or a new one if they have none (or sent us
     /// something that isn't one).
     fn read(cx: &Cx) -> Game {
-        cx.cookie_or("wisple", Game::new())
+        let game: Game = cx.cookie_or("wisple", Game::new());
+        if game.valid() { game } else { Game::new() }
+    }
+
+    /// The cookie comes from the browser, so it is checked like any input.
+    fn valid(&self) -> bool {
+        self.answer < words().count()
+            && self.guesses.len().is_multiple_of(LEN)
+            && self.guesses.len() <= LEN * TRIES
+            && letters(&self.guesses)
+            && self.current.len() <= LEN
+            && letters(&self.current)
     }
 
     fn word(&self) -> &'static str {
@@ -196,49 +210,6 @@ impl Game {
     }
 }
 
-/// How the game is kept in its cookie: `answer-guesses-current`, like
-/// `42-cranesloth-pi`. Writing the cookie uses `Display`, reading it `FromStr`.
-impl fmt::Display for Game {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}-{}-{}", self.answer, self.guesses, self.current)
-    }
-}
-
-impl FromStr for Game {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Game, ()> {
-        let mut parts = s.split('-');
-        let (Some(answer), Some(guesses), Some(current), None) = (parts.next(), parts.next(), parts.next(), parts.next()) else {
-            return Err(());
-        };
-        let Ok(answer) = answer.parse() else { return Err(()) };
-        let letters = |s: &str| s.bytes().all(|c| c.is_ascii_lowercase());
-        let valid = answer < words().count()
-            && guesses.len() % LEN == 0
-            && guesses.len() <= LEN * TRIES
-            && letters(guesses)
-            && current.len() <= LEN
-            && letters(current);
-        if valid { Ok(Game { answer, guesses: guesses.into(), current: current.into() }) } else { Err(()) }
-    }
-}
-
-/// A guess from the form: five letters, in either case.
-struct Guess(String);
-
-impl FromStr for Guess {
-    type Err = &'static str;
-
-    fn from_str(s: &str) -> Result<Guess, &'static str> {
-        if s.len() == LEN && s.bytes().all(|c| c.is_ascii_alphabetic()) {
-            Ok(Guess(s.to_ascii_lowercase()))
-        } else {
-            Err("a guess is five letters")
-        }
-    }
-}
-
 /// Wordle's rule: exact letters first. Then each other letter of the guess
 /// is close while the answer still has an unclaimed copy of it, so guessing
 /// "geese" for "those" marks one `e` close, not three.
@@ -260,6 +231,10 @@ fn score(guess: &[u8; LEN], answer: &[u8; LEN]) -> [Mark; LEN] {
         }
     }
     marks
+}
+
+fn letters(s: &str) -> bool {
+    s.bytes().all(|c| c.is_ascii_lowercase())
 }
 
 fn index(c: u8) -> usize {
@@ -291,18 +266,11 @@ mod tests {
 
     #[test]
     fn cookie_round_trips_and_rejects_junk() {
-        let g: Game = "3-cranesloth-pi".parse().unwrap();
+        let g: Game = "3|cranesloth|pi".parse().unwrap();
         assert_eq!((g.answer, g.guesses(), g.current.as_str()), (3, &[*b"crane", *b"sloth"][..], "pi"));
-        assert_eq!(g.to_string(), "3-cranesloth-pi");
-        for junk in ["", "3", "3-cran-", "3-CRANE-", "99999-crane-", "3-crane-toolong", "3--pi-x"] {
-            assert!(junk.parse::<Game>().is_err(), "{junk}");
+        assert_eq!(g.to_string(), "3|cranesloth|pi");
+        for junk in ["", "3", "3|cran|", "3|CRANE|", "99999|crane|", "3|crane|toolong", "3|||pi"] {
+            assert!(!junk.parse::<Game>().is_ok_and(|g| g.valid()), "{junk}");
         }
-    }
-
-    #[test]
-    fn guesses_are_five_letters() {
-        assert_eq!("CRane".parse::<Guess>().map(|g| g.0), Ok("crane".into()));
-        assert!("cran".parse::<Guess>().is_err());
-        assert!("cr4ne".parse::<Guess>().is_err());
     }
 }

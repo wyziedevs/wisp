@@ -1,0 +1,17 @@
+# Wisp inside axum: axum answers `/api/*`, Wisp every other request. A
+# workspace of its own, so axum never reaches Wisp's default build.
+[package]
+name = "wisp-axum-example"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+wisp = { path = "../../crates/wisp", features = ["tower"] }
+axum = "0.8"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
+
+[build-dependencies]
+wisp-build = { path = "../../crates/wisp-build" }

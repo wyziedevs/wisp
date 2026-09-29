@@ -8,5 +8,5 @@
   {:else}
     <p>{message}</p>
   {/if}
-  <p><a class="button" href="/">Back to the home page</a></p>
+  <p><a class="button" href="/">Back to the Home Page</a></p>
 </div>
