@@ -210,7 +210,7 @@ pub fn generate(input: &Input) -> Result<String, String> {
             .to_string_lossy()
             .replace('\\', "/")
     };
-    let read = |p: &Path| fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()));
+    let read = |p: &Path| crate::read_source(p).map_err(|e| format!("{}: {e}", p.display()));
     // A page, layout or error page: everything but a component.
     let parse = |p: &Path| -> Result<Template, String> {
         let t = template::parse(&read(p)?).map_err(|e| format!("{}:{e}", rel(p)))?;
@@ -722,9 +722,30 @@ pub fn generate(input: &Input) -> Result<String, String> {
     }
     for m in hooks.iter().chain(&user_mods) {
         g.line(0, &format!("pub mod {} {{", m.name));
-        g.line(1, "#[allow(unused_imports)]");
-        g.line(1, "use ::wisp::prelude::*;");
-        g.line(1, &format!("include!({});", lit(&m.file.to_string_lossy())));
+        // The file's own `//!` docs and `#![…]` attributes come first, which
+        // is only possible with the file written into the module; a file
+        // without any is included, so that errors point at it.
+        let src = crate::read_source(&m.file).map_err(|e| format!("{}: {e}", rel(&m.file)))?;
+        let top = rust_scan::inner_end(&src);
+        if top > 0 {
+            g.out.push_str(&src[..top]);
+            g.out.push('\n');
+        }
+        // Not twice: a file that imports the prelude itself would be told
+        // that one of the two is unused.
+        let squeezed: String = src.split_whitespace().collect();
+        if !squeezed.contains("usewisp::prelude::*;")
+            && !squeezed.contains("use::wisp::prelude::*;")
+        {
+            g.line(1, "#[allow(unused_imports)]");
+            g.line(1, "use ::wisp::prelude::*;");
+        }
+        if top > 0 {
+            g.out.push_str(&src[top..]);
+            g.out.push('\n');
+        } else {
+            g.line(1, &format!("include!({});", lit(&m.file.to_string_lossy())));
+        }
         g.line(1, "#[doc(hidden)]");
         g.line(1, "#[allow(unused_variables, clippy::all)]");
         g.line(1, "pub mod __call {");
@@ -1264,7 +1285,7 @@ fn hooks(root: &Path) -> Result<Option<UserMod>, String> {
     // A `mod hooks;` of the app's own would compile the file a second time,
     // with statics of its own.
     let main = root.join("src").join("main.rs");
-    if let Ok(src) = fs::read_to_string(&main) {
+    if let Ok(src) = crate::read_source(&main) {
         for (n, line) in src.lines().enumerate() {
             let t = line.trim_start().trim_start_matches("pub ").trim_start();
             if t.starts_with("mod hooks;") || t.starts_with("mod hooks ") {
@@ -1279,7 +1300,7 @@ fn hooks(root: &Path) -> Result<Option<UserMod>, String> {
     if !file.exists() {
         return Ok(None);
     }
-    let src = fs::read_to_string(&file).map_err(|e| format!("src/hooks.rs: {e}"))?;
+    let src = crate::read_source(&file).map_err(|e| format!("src/hooks.rs: {e}"))?;
     let items = rust_scan::scan(&src).map_err(|e| format!("src/hooks.rs:{e}"))?;
     items
         .check_inner()
@@ -3641,8 +3662,11 @@ mod tests {
         assert!(
             err("before-input", "fn before(cx: &mut Cx, id: u8) {}").contains("takes only `cx`")
         );
+        let inner = "//! Hooks.\n#![allow(dead_code)]\nfn init() {}";
+        let code = app("inner-hooks", &[page, hooks(inner)]).unwrap();
         assert!(
-            err("inner", "//! Hooks.\nfn init() {}").starts_with("src/hooks.rs:1: Wisp includes")
+            code.contains("//! Hooks.\n#![allow(dead_code)]\n    #[allow(unused_imports)]\n    use ::wisp::prelude::*;"),
+            "{code}"
         );
         assert!(
             err("returns", "pub fn before(cx: &mut Cx) -> u8 { 1 }")
@@ -3750,14 +3774,30 @@ mod tests {
             err.starts_with("src/routes/+page.rs:2: `a` takes `(x, y): (u8, u8)`"),
             "{err}"
         );
-        let docs = [
-            ("src/routes/+page.wisp", "x"),
-            ("src/routes/+page.rs", "//! A page."),
-        ];
+        let page = |rs: &'static str| [("src/routes/+page.wisp", "x"), ("src/routes/+page.rs", rs)];
+        // `//!` docs and `#![…]` first (CRLF read as LF), then what Wisp adds.
+        let top = "//! A page.\r\n#![allow(dead_code)]\r\nuse std::fmt;";
+        let code = app("inner", &page(top)).unwrap();
         assert!(
-            app("inner", &docs)
+            code.contains("//! A page.\n#![allow(dead_code)]\n    #[allow(unused_imports)]"),
+            "{code}"
+        );
+        assert!(code.contains("use std::fmt;"), "{code}");
+        // The prelude is not imported twice, and CRLF and a BOM are read as LF.
+        let long = "\u{feff}use wisp::prelude::*;\r\nfn helper() {}";
+        let files = [
+            ("src/routes/+page.wisp", "a\r\nb"),
+            ("src/routes/+page.rs", long),
+        ];
+        let code = app("dup-prelude", &files).unwrap();
+        assert_eq!(code.matches("use ::wisp::prelude::*;").count(), 0, "{code}");
+        assert!(!code.contains('\r') && code.contains("\"a\\nb\""), "{code}");
+        // An `Err(error(..))` from before `error()` returned the `Result`.
+        let old = "\n#[action] fn a() -> Result<()> { Err(error(400, \"no\")) }";
+        assert!(
+            app("old-error", &page(old))
                 .unwrap_err()
-                .starts_with("src/routes/+page.rs:1: Wisp includes")
+                .starts_with("src/routes/+page.rs:2: `error()` returns the `Result`")
         );
     }
 

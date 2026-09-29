@@ -150,9 +150,10 @@ async fn like(id: i64) -> Result<()> {
   module of its own with `wisp::prelude` in scope (`Cx`, `Response`,
   `Result`, `error`, `redirect`, `#[action]`, the derives, ...), and its
   template is compiled inside that module, so it reads private types and
-  fields. `pub` still works, and rustc reports an old `use wisp::prelude::*`
-  as unused. The one thing such a file cannot have is a
-  `//!` doc or a `#![…]` attribute at its top (a build error says so).
+  fields. `pub` still works, and so do `use` lines (an explicit
+  `use wisp::prelude::*` replaces the one Wisp adds), and `//!` docs and
+  `#![…]` attributes at the top of the file. Files with CRLF line endings
+  or a byte order mark build the same as any other.
 - `load` is found by name, actions by the `#[action]` marker. Nothing else in the
   file is reachable from HTTP. This is deliberate: a helper function must
   never become an endpoint by accident.
@@ -183,7 +184,11 @@ async fn like(id: i64) -> Result<()> {
   `return error(404, "…")` stops with that status and message, and
   `return redirect("/…")` with a 303; both are `Err`s, so they end a
   function that returns a `Result`. `Error::new(status, "…")` is the error
-  itself, and `Error::redirect(status, "/…")` takes another status.
+  itself, and `Error::redirect(status, "/…")` takes another status. Before
+  `error()` returned the `Result`, code wrote `Err(error(..))`: that is now
+  a `Result` inside an `Err`, so the build stops with the line and says to
+  write `return error(..)` (or `Error::new` where an `Error` is wanted, as
+  in `ok_or` and `map_err`).
   `Option::or_404()` is the common shortcut.
 - An action returns nothing (or `Result<()>`), and then the page renders. It
   may instead return a `Response` (a CSV export, a file), sent in place of
@@ -506,6 +511,9 @@ fn before(cx: &mut Cx) -> Result<()> {
 - `cx.set(value)` hands a value along the rest of one request, and
   `cx.get::<T>()` reads it: `before` finds the user once, every page reads it.
   `cx.take::<T>()` moves it out, so it need not be `Clone`.
+- `cx.bearer()` is the token of an `Authorization: Bearer` header, `cx.host()`
+  the `Host`, and `cx.delete_cookie(name)` removes a cookie.
+  `Response::redirect(url)` is a 303 as a `Response`.
 - `cx.flash("Saved")` leaves a message for the next page the visitor sees
   (after a `redirect`, say), whose `load` reads it once with `cx.flashed()`.
 - `src/hooks.rs` is `crate::hooks`, so routes can use its `pub` types. Like
@@ -524,7 +532,10 @@ for server-sent events, uncached and unbuffered by proxies, and
 `Sender::event` writes one event whatever lines it has; a page listens with
 `listen(url, …)` or `new EventSource(url)`. A send fails once the client
 has gone, so `?` on it stops the closure. When the server stops, open
-streams end properly.
+streams end properly. To write the body from somewhere else,
+`Response::channel(content_type)` and `Response::event_channel()` return
+the response and its `Sender` (what `stream` and `events` returned before
+they took a closure).
 
 ```rust
 // src/routes/clock/+server.rs
