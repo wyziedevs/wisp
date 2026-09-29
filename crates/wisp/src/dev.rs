@@ -5,12 +5,13 @@
 //! so this code is type-checked in every build; release builds optimize it
 //! away (generated release code never calls `chunk`).
 
-use crate::cx::Method;
 use crate::App;
+use crate::cx::Method;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 /// True once any template has been swapped; keeps `chunk` to one atomic
 /// load until the first hot swap.
@@ -26,7 +27,11 @@ pub fn chunk(t: usize, i: usize, compiled: &'static str) -> &'static str {
         return compiled;
     }
     let swapped = SWAPPED.read().unwrap_or_else(|e| e.into_inner());
-    swapped.iter().find(|(id, _)| *id == t).and_then(|(_, c)| c.get(i).copied()).unwrap_or(compiled)
+    swapped
+        .iter()
+        .find(|(id, _)| *id == t)
+        .and_then(|(_, c)| c.get(i).copied())
+        .unwrap_or(compiled)
 }
 
 /// Port of `wisp dev`'s event stream, if this process was started by it.
@@ -37,8 +42,29 @@ pub(crate) fn events_port() -> Option<u16> {
     std::env::var("WISP_DEV_EVENTS").ok()?.parse().ok()
 }
 
+/// Under `wisp dev`, ends the process when `wisp dev` goes, however it
+/// went: it holds our stdin, which reads as closed once it is gone. So a
+/// killed `wisp dev` never leaves an app behind on its port.
+pub(crate) fn exit_with_parent() {
+    if events_port().is_none() {
+        return;
+    }
+    let _ = std::thread::Builder::new()
+        .name("wisp-dev-parent".into())
+        .spawn(|| {
+            let mut buf = [0u8; 64];
+            while matches!(std::io::Read::read(&mut std::io::stdin(), &mut buf), Ok(n) if n > 0) {}
+            std::process::exit(0);
+        });
+}
+
 /// `/_wisp/dev/*`. Only loopback peers are answered.
-pub(crate) fn endpoint<A: App>(method: Method, path: &str, body: &[u8], peer: SocketAddr) -> (u16, &'static str) {
+pub(crate) fn endpoint<A: App>(
+    method: Method,
+    path: &str,
+    body: &[u8],
+    peer: SocketAddr,
+) -> (u16, &'static str) {
     if !peer.ip().is_loopback() {
         return (404, "Not Found");
     }
@@ -63,7 +89,10 @@ fn swap<A: App>(body: &[u8]) -> Result<(), &'static str> {
     let path = line(&mut rest)?;
     let shape = u64::from_str_radix(line(&mut rest)?, 16).map_err(|_| "bad shape")?;
     let count: usize = line(&mut rest)?.parse().map_err(|_| "bad count")?;
-    let id = A::TEMPLATES.iter().position(|(p, _)| *p == path).ok_or("unknown template")?;
+    let id = A::TEMPLATES
+        .iter()
+        .position(|(p, _)| *p == path)
+        .ok_or("unknown template")?;
     if A::TEMPLATES[id].1 != shape {
         return Err("template shape changed; rebuild needed");
     }
@@ -87,17 +116,86 @@ fn swap<A: App>(body: &[u8]) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// One request in the dev log, lined up under `wisp dev`'s own lines: the
+/// request, its status, the time it took, for a 5xx what went wrong, and
+/// whether a handler blocked its thread. The status is yellow for a 4xx and
+/// red for a 5xx, with the number beside it, so color is never the only sign.
+pub(crate) fn log_request(
+    method: &str,
+    path: &str,
+    status: u16,
+    took: Duration,
+    failure: Option<&str>,
+    blocked: Option<Duration>,
+) {
+    let paint = |code: &str, s: &str| {
+        if color() {
+            format!("\x1b[{code}m{s}\x1b[0m")
+        } else {
+            s.to_string()
+        }
+    };
+    let tint = match status {
+        500.. => "31",
+        400.. => "33",
+        _ => "2",
+    };
+    let ms = format!("{:.1}ms", took.as_secs_f64() * 1000.0);
+    let mut line = format!(
+        "    {method} {path}  {}  {}",
+        paint(tint, &status.to_string()),
+        paint("2", &ms)
+    );
+    if let Some(f) = failure {
+        line.push_str("\n      ");
+        line.push_str(&paint("31", f));
+    }
+    if let Some(b) = blocked {
+        // Its thread serves other connections too; they all waited.
+        let note = format!(
+            "! blocked its thread for {} ms, and every request on that thread waited. \
+             Await instead of blocking: tokio::time::sleep, an async client, or \
+             tokio::task::spawn_blocking for slow work.",
+            b.as_millis()
+        );
+        line.push_str("\n      ");
+        line.push_str(&paint("33", &note));
+    }
+    crate::http::log(format_args!("{line}"));
+}
+
+/// ANSI color on the dev log, by the same test the CLI uses: a terminal that
+/// is known to take it. The old Windows console only does once a program
+/// switches it on, which takes `unsafe`.
+fn color() -> bool {
+    static COLOR: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *COLOR.get_or_init(|| {
+        use std::io::IsTerminal;
+        let var = |k| std::env::var_os(k).is_some();
+        let vt = !cfg!(windows) || var("WT_SESSION") || var("TERM_PROGRAM") || var("TERM");
+        vt && !var("NO_COLOR") && std::io::stderr().is_terminal()
+    })
+}
+
 /// A file for `path` from the project directory: `/_app/app.css` is the
 /// built CSS (or `src/app.css`), anything else comes from `static/`.
 pub(crate) fn read_file(root: &str, path: &str) -> Option<(Vec<u8>, String)> {
     let root = Path::new(root);
     let file = if path == "/_app/app.css" {
         let built = root.join(".wisp").join("app.css");
-        if built.is_file() { built } else { root.join("src").join("app.css") }
+        if built.is_file() {
+            built
+        } else {
+            root.join("src").join("app.css")
+        }
     } else {
-        root.join("static").join(crate::http::safe_relative_path(path)?)
+        root.join("static")
+            .join(crate::http::safe_relative_path(path)?)
     };
     let bytes = std::fs::read(&file).ok()?; // also fails for directories
-    let ext = file.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    let ext = file
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
     Some((bytes, ext))
 }

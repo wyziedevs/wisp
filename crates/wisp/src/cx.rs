@@ -5,9 +5,13 @@
 //! and, once warm, nothing is allocated. Owning the buffer (rather than
 //! borrowing it) keeps `Cx` free of lifetimes: handlers take `&mut Cx`.
 
-use crate::{Error, Result};
+use crate::form::{Form, pairs};
+use crate::sign;
+use std::any::{Any, TypeId};
 use std::borrow::Cow;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
+use std::str::FromStr;
+use std::time::Duration;
 
 pub const MAX_PARAMS: usize = 8;
 
@@ -67,7 +71,10 @@ impl Span {
         }
         let start = part.as_ptr() as usize - buf.as_ptr() as usize;
         debug_assert!(start + part.len() <= buf.len(), "span outside buffer");
-        Span { start: start as u32, len: part.len() as u32 }
+        Span {
+            start: start as u32,
+            len: part.len() as u32,
+        }
     }
 
     pub fn range(self) -> std::ops::Range<usize> {
@@ -83,6 +90,8 @@ pub struct Cx {
     pub(crate) query: Span,
     pub(crate) body: Span,
     pub(crate) headers: Vec<(Span, Span)>,
+    /// HTTP/1.1 rather than 1.0, which cannot take a chunked response.
+    pub(crate) http11: bool,
     peer: SocketAddr,
     names: &'static [&'static str],
     params: [Span; MAX_PARAMS],
@@ -90,9 +99,14 @@ pub struct Cx {
     decoded: [Option<String>; MAX_PARAMS],
     pub(crate) status: u16,
     pub(crate) out_headers: Vec<(Cow<'static, str>, String)>,
+    /// How many of `out_headers` the `before` hook set. Those stay on an
+    /// error page; a handler's are dropped with the page it did not finish.
+    pub(crate) kept_headers: usize,
     /// Cookies set by this request, which `cookie` reads before the request's
     /// own: a page's `load` sees what its action just stored.
     set_cookies: Vec<(String, String)>,
+    /// Values handed along the request with `set`, one per type.
+    locals: Vec<(TypeId, Box<dyn Any + Send + Sync>)>,
 }
 
 impl Cx {
@@ -104,13 +118,16 @@ impl Cx {
             query: Span::default(),
             body: Span::default(),
             headers: Vec::with_capacity(16),
+            http11: true,
             peer,
             names: &[],
             params: [Span::default(); MAX_PARAMS],
             decoded: [const { None }; MAX_PARAMS],
             status: 200,
             out_headers: Vec::new(),
+            kept_headers: 0,
             set_cookies: Vec::new(),
+            locals: Vec::new(),
         }
     }
 
@@ -120,7 +137,9 @@ impl Cx {
         self.decoded.iter_mut().for_each(|d| *d = None);
         self.status = 200;
         self.out_headers.clear();
+        self.kept_headers = 0;
         self.set_cookies.clear();
+        self.locals.clear();
     }
 
     pub(crate) fn set_params(&mut self, names: &'static [&'static str], spans: [Span; MAX_PARAMS]) {
@@ -156,32 +175,58 @@ impl Cx {
     /// not bad input.
     pub fn param(&self, name: &str) -> &str {
         match self.names.iter().position(|n| *n == name) {
-            Some(i) => self.decoded[i].as_deref().unwrap_or_else(|| self.str(self.params[i])),
+            Some(i) => self.decoded[i]
+                .as_deref()
+                .unwrap_or_else(|| self.str(self.params[i])),
             None => panic!("route has no parameter `{name}` (it has {:?})", self.names),
         }
     }
 
     /// First query parameter named `name`, decoded.
     pub fn query(&self, name: &str) -> Option<Cow<'_, str>> {
-        pairs(&self.buf[self.query.range()]).find(|(k, _)| k == name).map(|(_, v)| v)
+        pairs(&self.buf[self.query.range()])
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v)
     }
 
-    /// The urlencoded request body. Empty for any other content type.
+    /// A query parameter parsed as any `FromStr` type, or `default` when it
+    /// is missing or does not parse: `let page: u32 = cx.query_or("page", 1);`
+    pub fn query_or<T: FromStr>(&self, name: &str, default: T) -> T {
+        self.query(name)
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default)
+    }
+
+    /// The form the request carries, urlencoded or multipart (which is how
+    /// forms send files: [`Form::file`]). Empty for any other body.
     pub fn form(&self) -> Form<'_> {
-        let urlencoded = self.header("content-type").is_some_and(|ct| {
-            ct.as_bytes().get(..33).is_some_and(|p| p.eq_ignore_ascii_case(b"application/x-www-form-urlencoded"))
-        });
-        Form { body: if urlencoded { self.body() } else { &[] } }
+        Form::new(self.header("content-type"), self.body())
     }
 
+    /// The request body as sent, whatever its type: JSON for
+    /// `serde_json::from_slice(cx.body())`, say.
     pub fn body(&self) -> &[u8] {
         &self.buf[self.body.range()]
     }
 
     /// Request header by case-insensitive name. Non-UTF-8 values are `None`.
     pub fn header(&self, name: &str) -> Option<&str> {
-        let (_, v) = self.headers.iter().find(|(n, _)| self.buf[n.range()].eq_ignore_ascii_case(name.as_bytes()))?;
+        let (_, v) = self
+            .headers
+            .iter()
+            .find(|(n, _)| self.buf[n.range()].eq_ignore_ascii_case(name.as_bytes()))?;
         std::str::from_utf8(&self.buf[v.range()]).ok()
+    }
+
+    /// Every request header as `(name, value)`, in the order sent. Values
+    /// that are not UTF-8 are left out.
+    pub fn headers(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.headers.iter().filter_map(|(n, v)| {
+            Some((
+                std::str::from_utf8(&self.buf[n.range()]).ok()?,
+                std::str::from_utf8(&self.buf[v.range()]).ok()?,
+            ))
+        })
     }
 
     /// A cookie's value: the one this request set with `set_cookie`, else
@@ -198,13 +243,46 @@ impl Cx {
     }
 
     /// A cookie parsed as any `FromStr` type, or `default` when it is missing
-    /// or does not parse: `let count: i64 = cx.cookie_or("count", 0);`
-    pub fn cookie_or<T: std::str::FromStr>(&self, name: &str, default: T) -> T {
-        self.cookie(name).and_then(|v| v.parse().ok()).unwrap_or(default)
+    /// or does not parse: `let count: i64 = cx.cookie_or("count", 0);`. A
+    /// struct with `#[derive(Cookie)]` reads back the same way.
+    pub fn cookie_or<T: FromStr>(&self, name: &str, default: T) -> T {
+        self.cookie(name)
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default)
     }
 
+    /// A cookie set with [`Cx::set_signed_cookie`], if its signature holds.
+    /// A visitor can read it but cannot make one up or change it, so it can
+    /// say who is signed in. Anything else of that name is `None`.
+    pub fn signed_cookie(&self, name: &str) -> Option<&str> {
+        let (value, mac) = self.cookie(name)?.rsplit_once('.')?;
+        sign::verify_cookie(name, value, mac).then_some(value)
+    }
+
+    /// [`Cx::signed_cookie`] parsed as any `FromStr` type, or `default`.
+    pub fn signed_cookie_or<T: FromStr>(&self, name: &str, default: T) -> T {
+        self.signed_cookie(name)
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default)
+    }
+
+    /// The TCP peer: the client, or the proxy in front of the app.
     pub fn peer(&self) -> SocketAddr {
         self.peer
+    }
+
+    /// The client's IP address. Behind a proxy, set `WISP_CLIENT_IP_HEADER`
+    /// to the header it puts the address in (`x-forwarded-for`, whose last
+    /// entry the proxy added, or `x-real-ip`, `cf-connecting-ip`...). Without
+    /// it, or when that header holds no address, this is the peer's address:
+    /// a header any client can send is never trusted by default.
+    pub fn client_ip(&self) -> IpAddr {
+        let from_proxy = crate::settings()
+            .client_ip_header
+            .as_deref()
+            .and_then(|h| self.header(h))
+            .and_then(|v| v.rsplit(',').next()?.trim().parse().ok());
+        from_proxy.unwrap_or(self.peer.ip())
     }
 
     /// Status for a rendered page. Endpoints set it on their `Response`.
@@ -217,24 +295,131 @@ impl Cx {
     /// injection; building a header from unchecked input is a bug.
     pub fn set_header(&mut self, name: impl Into<Cow<'static, str>>, value: impl Into<String>) {
         let (name, value) = (name.into(), value.into());
-        assert!(valid_header(&name, &value), "invalid header {name:?}: {value:?}");
+        assert!(
+            valid_header(&name, &value),
+            "invalid header {name:?}: {value:?}"
+        );
         self.out_headers.push((name, value));
+    }
+
+    /// Keeps `value` for the rest of this request, for any handler to read
+    /// with [`Cx::get`]: `before` in `src/hooks.rs` finds the signed-in user
+    /// once, and every page reads it. One value per type; a second replaces
+    /// the first.
+    pub fn set<T: Any + Send + Sync>(&mut self, value: T) {
+        let id = TypeId::of::<T>();
+        self.locals.retain(|(t, _)| *t != id);
+        self.locals.push((id, Box::new(value)));
+    }
+
+    /// The value of type `T` this request was given with [`Cx::set`].
+    pub fn get<T: Any>(&self) -> Option<&T> {
+        let id = TypeId::of::<T>();
+        self.locals.iter().find(|(t, _)| *t == id)?.1.downcast_ref()
     }
 
     /// Sets a cookie for the whole site, kept for 400 days (the most browsers
     /// allow) and hidden from page scripts. The value is anything printable,
     /// such as a number or a string; an empty one deletes the cookie.
+    /// [`Cx::set_cookie_with`] takes other options.
     ///
     /// Panics on a character a cookie cannot hold (space, `"`, `,`, `;`,
     /// `\`, control or non-ASCII); encode such values first.
     pub fn set_cookie(&mut self, name: &str, value: impl std::fmt::Display) {
+        self.set_cookie_with(name, value, CookieOptions::default());
+    }
+
+    /// Sets a cookie a visitor cannot forge or change, read back with
+    /// [`Cx::signed_cookie`]: a user id that says who is signed in, say. It
+    /// is signed with `WISP_SECRET` (dev builds keep one in `.wisp/secret`).
+    /// The value is still readable by the visitor; keep secrets out of it.
+    pub fn set_signed_cookie(&mut self, name: &str, value: impl std::fmt::Display) {
+        self.set_cookie_with(
+            name,
+            value,
+            CookieOptions {
+                signed: true,
+                ..CookieOptions::default()
+            },
+        );
+    }
+
+    /// Sets a cookie with options other than [`Cx::set_cookie`]'s:
+    /// `cx.set_cookie_with("session", id, CookieOptions { max_age: None, ..CookieOptions::default() })`
+    /// for one that ends when the browser closes.
+    ///
+    /// It gets `Secure` when the request came over HTTPS through a proxy
+    /// (`x-forwarded-proto`) or `ORIGIN` is an `https://` address, and
+    /// always with `SameSite=None`, which browsers require.
+    pub fn set_cookie_with(
+        &mut self,
+        name: &str,
+        value: impl std::fmt::Display,
+        options: CookieOptions,
+    ) {
         let value = value.to_string();
-        let token = |s: &str, bad: &[u8]| s.bytes().all(|b| b.is_ascii_graphic() && !bad.contains(&b));
-        assert!(!name.is_empty() && token(name, b"()<>@,;:\\\"/[]?={}"), "invalid cookie name {name:?}");
+        let token =
+            |s: &str, bad: &[u8]| s.bytes().all(|b| b.is_ascii_graphic() && !bad.contains(&b));
+        assert!(
+            !name.is_empty() && token(name, b"()<>@,;:\\\"/[]?={}"),
+            "invalid cookie name {name:?}"
+        );
         assert!(token(&value, b"\",;\\"), "invalid cookie value {value:?}");
-        let age = if value.is_empty() { 0 } else { 400 * 24 * 60 * 60 };
-        self.set_header("set-cookie", format!("{name}={value}; Path=/; Max-Age={age}; HttpOnly; SameSite=Lax"));
-        self.set_cookies.push((name.to_owned(), value));
+        assert!(
+            options.path.starts_with('/') && token(options.path, b";"),
+            "invalid cookie path {:?}",
+            options.path
+        );
+        assert!(
+            options
+                .domain
+                .is_none_or(|d| !d.is_empty() && token(d, b";")),
+            "invalid cookie domain {:?}",
+            options.domain
+        );
+
+        let stored = if options.signed && !value.is_empty() {
+            format!("{value}.{}", sign::cookie_mac(name, &value))
+        } else {
+            value
+        };
+        let mut header = format!("{name}={stored}; Path={}", options.path);
+        if let Some(domain) = options.domain {
+            header.push_str("; Domain=");
+            header.push_str(domain);
+        }
+        match options.max_age {
+            _ if stored.is_empty() => header.push_str("; Max-Age=0"),
+            Some(age) => header.push_str(&format!("; Max-Age={}", age.as_secs())),
+            None => {}
+        }
+        if !options.script_readable {
+            header.push_str("; HttpOnly");
+        }
+        if options.same_site == SameSite::None || self.is_https() {
+            header.push_str("; Secure");
+        }
+        header.push_str(match options.same_site {
+            SameSite::Lax => "; SameSite=Lax",
+            SameSite::Strict => "; SameSite=Strict",
+            SameSite::None => "; SameSite=None",
+        });
+        self.set_header("set-cookie", header);
+        self.set_cookies.push((name.to_owned(), stored));
+    }
+
+    /// Whether the visitor's browser reached the site over HTTPS, as far as
+    /// the app can tell: TLS ends at the proxy in front of it.
+    fn is_https(&self) -> bool {
+        let forwarded = self
+            .header("x-forwarded-proto")
+            .and_then(|p| p.split(',').next())
+            .is_some_and(|p| p.trim().eq_ignore_ascii_case("https"));
+        forwarded
+            || crate::settings()
+                .origin
+                .as_deref()
+                .is_some_and(|o| o.starts_with("https://"))
     }
 
     /// The action a form posted to: `?/name` → `name`, otherwise `default`.
@@ -253,50 +438,51 @@ pub(crate) fn valid_header(name: &str, value: &str) -> bool {
         && !value.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0)
 }
 
-/// A urlencoded form body. `Copy`, borrows the request, decodes on lookup.
-#[derive(Clone, Copy)]
-pub struct Form<'a> {
-    body: &'a [u8],
+/// How a cookie is kept, for [`Cx::set_cookie_with`]. The default is what
+/// [`Cx::set_cookie`] does: the whole site, 400 days, hidden from scripts,
+/// `SameSite=Lax`, unsigned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CookieOptions {
+    /// How long the browser keeps it. `None` keeps it until the browser
+    /// closes.
+    pub max_age: Option<Duration>,
+    /// Lets the page's scripts read it (`document.cookie`). Off by default,
+    /// so a script injected into a page cannot steal it.
+    pub script_readable: bool,
+    pub same_site: SameSite,
+    /// The paths it is sent to, `/` and everything below by default.
+    pub path: &'static str,
+    /// Sends it to subdomains too: `Some("example.com")` covers
+    /// `app.example.com`. `None`, the default, keeps it to this host.
+    pub domain: Option<&'static str>,
+    /// Signed with the app's secret; read it with [`Cx::signed_cookie`].
+    pub signed: bool,
 }
 
-impl<'a> Form<'a> {
-    pub fn get(&self, name: &str) -> Option<Cow<'a, str>> {
-        pairs(self.body).find(|(k, _)| k == name).map(|(_, v)| v)
-    }
-
-    /// Like `get`, but a missing field is a 400 error.
-    pub fn required(&self, name: &str) -> Result<Cow<'a, str>> {
-        self.get(name).ok_or_else(|| Error::new(400, format!("missing form field `{name}`")))
-    }
-
-    /// A field parsed as any `FromStr` type. Missing or unparsable is a 400
-    /// error that says why: `let id: i64 = cx.form().parse("id")?;`
-    pub fn parse<T: std::str::FromStr<Err: std::fmt::Display>>(&self, name: &str) -> Result<T> {
-        self.required(name)?.parse().map_err(|e| Error::new(400, format!("form field `{name}`: {e}")))
-    }
-
-    /// Every value of a repeated field, like checkboxes with the same name.
-    pub fn all<'n>(&self, name: &'n str) -> impl Iterator<Item = Cow<'a, str>> + 'n
-    where
-        'a: 'n,
-    {
-        pairs(self.body).filter(move |(k, _)| k == name).map(|(_, v)| v)
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (Cow<'a, str>, Cow<'a, str>)> {
-        pairs(self.body)
+impl Default for CookieOptions {
+    fn default() -> CookieOptions {
+        CookieOptions {
+            max_age: Some(Duration::from_secs(400 * 24 * 60 * 60)),
+            script_readable: false,
+            same_site: SameSite::Lax,
+            path: "/",
+            domain: None,
+            signed: false,
+        }
     }
 }
 
-/// `a=1&b=x%20y` → decoded pairs. `+` is a space, as in HTML forms.
-fn pairs(s: &[u8]) -> impl Iterator<Item = (Cow<'_, str>, Cow<'_, str>)> {
-    s.split(|&b| b == b'&').filter(|kv| !kv.is_empty()).map(|kv| {
-        let (k, v) = match kv.iter().position(|&b| b == b'=') {
-            Some(i) => (&kv[..i], &kv[i + 1..]),
-            None => (kv, &[][..]),
-        };
-        (decode(k, true), decode(v, true))
-    })
+/// Which requests from other sites carry the cookie.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SameSite {
+    /// Links from other sites carry it; their forms and scripts do not.
+    Lax,
+    /// Only requests from this site carry it, so a visitor who follows a
+    /// link here from elsewhere looks signed out on that first page.
+    Strict,
+    /// Every request carries it, embeds on other sites included. Implies
+    /// `Secure`: browsers only keep such cookies from HTTPS sites.
+    None,
 }
 
 /// Percent-decodes `s`, borrowing when nothing needs decoding. Invalid
@@ -317,7 +503,10 @@ pub(crate) fn decode(s: &[u8], plus_is_space: bool) -> Cow<'_, str> {
     while i < s.len() {
         match s[i] {
             b'+' if plus_is_space => out.push(b' '),
-            b'%' => match (s.get(i + 1).copied().and_then(hex), s.get(i + 2).copied().and_then(hex)) {
+            b'%' => match (
+                s.get(i + 1).copied().and_then(hex),
+                s.get(i + 2).copied().and_then(hex),
+            ) {
                 (Some(h), Some(l)) => {
                     out.push(h << 4 | l);
                     i += 2;
@@ -330,6 +519,99 @@ pub(crate) fn decode(s: &[u8], plus_is_space: bool) -> Cow<'_, str> {
     }
     Cow::Owned(String::from_utf8_lossy(&out).into_owned())
 }
+
+// ---- values kept in cookies: #[derive(Cookie)] -------------------------------
+
+/// Writes the fields of a `#[derive(Cookie)]` type: `|` between fields, and
+/// in a field `%XX` for `|`, `%` and whatever a cookie cannot hold.
+#[doc(hidden)]
+pub struct CookieWriter<'a, 'f> {
+    f: &'a mut std::fmt::Formatter<'f>,
+    first: bool,
+}
+
+impl<'a, 'f> CookieWriter<'a, 'f> {
+    pub fn new(f: &'a mut std::fmt::Formatter<'f>) -> Self {
+        CookieWriter { f, first: true }
+    }
+
+    pub fn field<T: std::fmt::Display + ?Sized>(&mut self, value: &T) -> std::fmt::Result {
+        use std::fmt::Write;
+        if !self.first {
+            self.f.write_char('|')?;
+        }
+        self.first = false;
+        write!(Escaped(self.f), "{value}")
+    }
+}
+
+struct Escaped<'a, 'f>(&'a mut std::fmt::Formatter<'f>);
+
+impl std::fmt::Write for Escaped<'_, '_> {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        let b = s.as_bytes();
+        let mut done = 0;
+        for (i, &c) in b.iter().enumerate() {
+            if c.is_ascii_graphic() && !matches!(c, b'"' | b',' | b';' | b'\\' | b'|' | b'%') {
+                continue;
+            }
+            // Everything since the last escape is ASCII, so this is valid UTF-8.
+            self.0
+                .write_str(std::str::from_utf8(&b[done..i]).expect("ASCII"))?;
+            write!(self.0, "%{c:02X}")?;
+            done = i + 1;
+        }
+        self.0
+            .write_str(std::str::from_utf8(&b[done..]).expect("ASCII"))
+    }
+}
+
+/// Reads back what `CookieWriter` wrote, one field at a time.
+#[doc(hidden)]
+pub struct CookieReader<'a> {
+    rest: Option<&'a str>,
+}
+
+impl<'a> CookieReader<'a> {
+    pub fn new(s: &'a str) -> Self {
+        CookieReader { rest: Some(s) }
+    }
+
+    pub fn text(&mut self) -> Result<Cow<'a, str>, BadCookie> {
+        let s = self.rest.ok_or(BadCookie)?;
+        let (field, rest) = match s.split_once('|') {
+            Some((field, rest)) => (field, Some(rest)),
+            None => (s, None),
+        };
+        self.rest = rest;
+        Ok(decode(field.as_bytes(), false))
+    }
+
+    pub fn field<T: std::str::FromStr>(&mut self) -> Result<T, BadCookie> {
+        self.text()?.parse().map_err(|_| BadCookie)
+    }
+
+    /// Every field was read: a cookie with more is not one of these.
+    pub fn end(&self) -> Result<(), BadCookie> {
+        if self.rest.is_none() {
+            Ok(())
+        } else {
+            Err(BadCookie)
+        }
+    }
+}
+
+/// A cookie that is not a value of the type it was read as.
+#[derive(Debug, PartialEq)]
+pub struct BadCookie;
+
+impl std::fmt::Display for BadCookie {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("not a cookie of this type")
+    }
+}
+
+impl std::error::Error for BadCookie {}
 
 #[cfg(test)]
 mod tests {
@@ -344,21 +626,6 @@ mod tests {
         assert_eq!(decode(b"%zz%4", true), "%zz%4");
         assert_eq!(decode(b"%C3%BC", true), "ü");
         assert_eq!(decode(b"%FF", true), "\u{FFFD}");
-    }
-
-    #[test]
-    fn forms() {
-        let f = Form { body: b"title=Hello+world&tag=a&tag=b&empty=&flag" };
-        assert_eq!(f.get("title").unwrap(), "Hello world");
-        assert_eq!(f.get("empty").unwrap(), "");
-        assert_eq!(f.get("flag").unwrap(), "");
-        assert!(f.get("nope").is_none());
-        assert_eq!(f.all("tag").collect::<Vec<_>>(), ["a", "b"]);
-        assert_eq!(f.required("nope").unwrap_err().status(), 400);
-        let f = Form { body: b"id=7&bad=x" };
-        assert_eq!(f.parse::<i64>("id").unwrap(), 7);
-        assert_eq!(f.parse::<i64>("bad").unwrap_err().message(), "form field `bad`: invalid digit found in string");
-        assert_eq!(f.parse::<i64>("nope").unwrap_err().status(), 400);
     }
 
     /// Builds a Cx the way the server does: bytes in the buffer, spans into it.
@@ -397,6 +664,76 @@ mod tests {
         assert_eq!(cx.form().get("id").unwrap(), "7");
         assert_eq!(cx.action(), "like");
         assert_eq!(cx.query("x").unwrap(), "1");
+        assert_eq!(cx.query_or("x", 0), 1);
+        assert_eq!(cx.query_or("nope", 5), 5);
+        assert_eq!(
+            cx.headers().map(|(n, _)| n).collect::<Vec<_>>(),
+            ["Cookie", "Content-Type"]
+        );
+        assert_eq!(cx.client_ip(), cx.peer().ip());
+    }
+
+    #[test]
+    fn values_handed_along_a_request() {
+        #[derive(Debug, PartialEq)]
+        struct User(u32);
+        let mut cx = cx_for("GET / HTTP/1.1\r\n\r\n");
+        assert_eq!(cx.get::<User>(), None);
+        cx.set(User(1));
+        cx.set(User(2));
+        cx.set("text");
+        assert_eq!(cx.get::<User>(), Some(&User(2)));
+        assert_eq!(cx.get::<&str>(), Some(&"text"));
+        cx.reset();
+        assert_eq!(cx.get::<User>(), None);
+    }
+
+    #[test]
+    fn signed_cookies() {
+        let mut cx = cx_for("GET / HTTP/1.1\r\nCookie: forged=7.AAAA; plain=7\r\n\r\n");
+        cx.set_signed_cookie("user", 42);
+        assert_eq!(cx.signed_cookie("user"), Some("42"));
+        assert_eq!(cx.signed_cookie_or("user", 0), 42);
+        let (stored, mac) = cx.cookie("user").unwrap().split_once('.').unwrap();
+        assert_eq!((stored, mac.len()), ("42", 43));
+        assert_eq!(cx.signed_cookie("forged"), None);
+        assert_eq!(cx.signed_cookie("plain"), None);
+
+        // The same value under another name, or another value, fails.
+        let copied = format!("GET / HTTP/1.1\r\nCookie: admin=42.{mac}; user=43.{mac}\r\n\r\n");
+        let cx = cx_for(&copied);
+        assert_eq!(
+            (cx.signed_cookie("admin"), cx.signed_cookie("user")),
+            (None, None)
+        );
+    }
+
+    #[test]
+    fn cookie_options() {
+        let mut cx = cx_for("GET / HTTP/1.1\r\nX-Forwarded-Proto: https\r\n\r\n");
+        let session = CookieOptions {
+            max_age: None,
+            script_readable: true,
+            same_site: SameSite::Strict,
+            ..CookieOptions::default()
+        };
+        cx.set_cookie_with("theme", "dark", session);
+        assert_eq!(
+            cx.out_headers[0].1,
+            "theme=dark; Path=/; Secure; SameSite=Strict"
+        );
+        let scoped = CookieOptions {
+            path: "/admin",
+            domain: Some("example.com"),
+            same_site: SameSite::None,
+            ..CookieOptions::default()
+        };
+        let mut cx = cx_for("GET / HTTP/1.1\r\n\r\n");
+        cx.set_cookie_with("a", 1, scoped);
+        assert_eq!(
+            cx.out_headers[0].1,
+            "a=1; Path=/admin; Domain=example.com; Max-Age=34560000; HttpOnly; Secure; SameSite=None"
+        );
     }
 
     #[test]
@@ -408,10 +745,40 @@ mod tests {
         assert_eq!(cx.cookie("count"), Some("2"));
         assert_eq!(cx.cookie("theme"), None);
         assert_eq!(cx.cookie_or("theme", 7), 7);
-        assert_eq!(cx.out_headers[0].1, "count=2; Path=/; Max-Age=34560000; HttpOnly; SameSite=Lax");
-        assert!(cx.out_headers[1].1.starts_with("theme=; Path=/; Max-Age=0;"));
+        assert_eq!(
+            cx.out_headers[0].1,
+            "count=2; Path=/; Max-Age=34560000; HttpOnly; SameSite=Lax"
+        );
+        assert!(
+            cx.out_headers[1]
+                .1
+                .starts_with("theme=; Path=/; Max-Age=0;")
+        );
         cx.reset();
         assert_eq!(cx.cookie("count"), Some("1"));
+    }
+
+    #[test]
+    fn cookie_fields_round_trip() {
+        struct Two<'a>(&'a str, u32);
+        impl std::fmt::Display for Two<'_> {
+            fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                let mut w = CookieWriter::new(f);
+                w.field(self.0)?;
+                w.field(&self.1)
+            }
+        }
+        let text = Two("a|b 100% ü;", 7).to_string();
+        assert_eq!(text, "a%7Cb%20100%25%20%C3%BC%3B|7");
+        let mut r = CookieReader::new(&text);
+        assert_eq!(r.text().unwrap(), "a|b 100% ü;");
+        assert_eq!(r.field::<u32>(), Ok(7));
+        assert_eq!(r.end(), Ok(()));
+        assert_eq!(r.field::<u32>(), Err(BadCookie));
+        assert_eq!(CookieReader::new("x").field::<u32>(), Err(BadCookie));
+        let mut r = CookieReader::new("1|2|3");
+        assert_eq!((r.field::<u8>(), r.field::<u8>()), (Ok(1), Ok(2)));
+        assert_eq!(r.end(), Err(BadCookie));
     }
 
     #[test]

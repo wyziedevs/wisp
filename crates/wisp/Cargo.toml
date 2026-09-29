@@ -9,8 +9,27 @@ repository.workspace = true
 
 [dependencies]
 httparse.workspace = true
-tokio.workspace = true
 wisp-macros.workspace = true
+# The `tower` feature: `wisp::tower`, for axum, hyper, tower middleware and
+# AWS Lambda. Off by default.
+bytes = { version = "1", optional = true }
+http = { version = "1", optional = true }
+http-body = { version = "1", optional = true }
+tower-service = { version = "0.3", optional = true }
 
-[lints]
-workspace = true
+# The edge build (`wisp build --target cloudflare` and the like) runs in a
+# JavaScript host's WebAssembly: no sockets, files, signals or threads.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio.workspace = true
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tokio = { version = "1.53", default-features = false, features = ["sync"] }
+
+[features]
+tower = ["dep:bytes", "dep:http", "dep:http-body", "dep:tower-service"]
+
+# The workspace's `forbid(unsafe_code)`, loosened to `deny` for one module:
+# the edge build's exports and imports (`src/edge.rs`, wasm32 only), which
+# Rust spells `unsafe`. `lib.rs` still forbids it in every native build.
+[lints.rust]
+unsafe_code = "deny"
+
