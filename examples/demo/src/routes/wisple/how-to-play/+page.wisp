@@ -1,7 +1,7 @@
-<wisp:head>
+<head>
   <title>How to play Wisple</title>
   <meta name="description" content="How to play Wisple">
-</wisp:head>
+</head>
 
 <div class="text-column">
   <h1>How to play Wisple</h1>

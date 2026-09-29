@@ -1,3 +1,21 @@
+---
+use std::time::Duration;
+
+static ITEMS: Shared<Vec<String>> = Shared::new(Vec::new());
+
+#[action]
+async fn add(text: String) {
+    wisp::sleep(Duration::from_millis(300)).await;
+    ITEMS.lock().push(text);
+}
+
+#[action]
+fn answer() -> Response {
+    Response::json("{\"n\":42}")
+}
+
+let items = ITEMS.lock().clone();
+---
 <form method="post" action="?/add" use:enhance="submit">
   <input name="text" bind:value="text">
   <button id="send">Send</button>

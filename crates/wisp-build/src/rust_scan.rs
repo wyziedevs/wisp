@@ -27,6 +27,9 @@ pub struct FnItem {
     pub returns: String,
     /// The line the name is on, from 1.
     pub line: usize,
+    /// An action whose body uses `cx` without taking it: `#[action]` adds
+    /// `cx: &mut Cx` as its first parameter, and the call passes it.
+    pub implicit_cx: bool,
 }
 
 /// A top-level `struct`, `enum`, `union` or `type`.
@@ -162,7 +165,11 @@ impl FnItem {
     pub fn returns_kind(&self) -> Returns {
         let mut t = self.returns.trim();
         if self.fallible {
-            t = first_arg(t).unwrap_or("?");
+            // `Result` alone is `Result<()>`.
+            t = match t.contains('<') {
+                true => first_arg(t).unwrap_or("?"),
+                false => "",
+            };
         }
         if t.is_empty() || t == "()" {
             Returns::Nothing
@@ -342,8 +349,13 @@ pub fn scan(src: &str) -> Result<Items, String> {
                         if name.is_empty() {
                             // `fn(u8) -> u8` as a type, say.
                         } else if word == "fn" {
-                            let (params, fallible, returns) = signature(src, i);
+                            let (params, fallible, returns, body) = signature(src, i);
                             let line = line(name_start);
+                            let takes_cx = params.iter().any(|(p, t)| p == "cx" || is_cx(t));
+                            let implicit_cx = action
+                                && !takes_cx
+                                && b.get(body) == Some(&b'{')
+                                && uses_ident(&b[body..block_end(b, body)], b"cx");
                             items.fns.push(FnItem {
                                 name,
                                 action,
@@ -353,6 +365,7 @@ pub fn scan(src: &str) -> Result<Items, String> {
                                 fallible,
                                 returns,
                                 line,
+                                implicit_cx,
                             });
                             (action, is_async, public) = (false, false, false);
                         } else {
@@ -469,8 +482,9 @@ fn param(p: &str) -> (String, String) {
 
 /// Reads a signature from just past the function's name up to its body:
 /// its parameters, whether its return type is a `Result` (`Result<T>`,
-/// `wisp::Result<T>`, `io::Result<T>`, ...), and that type.
-fn signature(src: &str, mut i: usize) -> (Vec<(String, String)>, bool, String) {
+/// `wisp::Result<T>`, `io::Result<T>`, ...), that type, and where the body's
+/// `{` (or the `;` of a function without one) is.
+fn signature(src: &str, mut i: usize) -> (Vec<(String, String)>, bool, String, usize) {
     let b = src.as_bytes();
     let mut depth = 0i32; // (), [] and <>
     // Where the parameter list starts, until it has been read.
@@ -524,7 +538,278 @@ fn signature(src: &str, mut i: usize) -> (Vec<(String, String)>, bool, String) {
         .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == ':'))
         .next();
     let fallible = path.and_then(|p| p.rsplit("::").next()) == Some("Result");
-    (params, fallible, returns.to_string())
+    (params, fallible, returns.to_string(), i)
+}
+
+/// The index just past the `}` closing the `{` at `open` (the end of `b` if
+/// it is not closed), skipping literals and comments.
+fn block_end(b: &[u8], open: usize) -> usize {
+    let mut depth = 0u32;
+    let mut i = open;
+    while i < b.len() {
+        match b[i] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return i + 1;
+                }
+            }
+            _ => i = skip_literal(b, i),
+        }
+        i += 1;
+    }
+    b.len()
+}
+
+/// If a literal or comment starts at `i`, the index of its last byte;
+/// otherwise `i`.
+fn skip_literal(b: &[u8], i: usize) -> usize {
+    match b[i] {
+        b'"' => skip_str(b, i),
+        b'\'' => skip_char(b, i),
+        b'r' if raw_str_start(b, i).is_some() => skip_raw_str(b, i),
+        b'/' if b.get(i + 1) == Some(&b'/') => {
+            let mut j = i;
+            while j + 1 < b.len() && b[j + 1] != b'\n' {
+                j += 1;
+            }
+            j
+        }
+        b'/' if b.get(i + 1) == Some(&b'*') => skip_block_comment(b, i),
+        _ => i,
+    }
+}
+
+/// Whether the identifier `name` appears in `b` as code (not in a literal,
+/// a comment, or as part of a longer name or a path after `.`/`::`).
+fn uses_ident(b: &[u8], name: &[u8]) -> bool {
+    let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    let mut i = 0;
+    while i < b.len() {
+        let j = skip_literal(b, i);
+        if j != i {
+            i = j + 1;
+            continue;
+        }
+        if ident(b[i]) {
+            let start = i;
+            while i < b.len() && ident(b[i]) {
+                i += 1;
+            }
+            let after_dot = start > 0 && b[start - 1] == b'.';
+            if &b[start..i] == name && !after_dot && !b[..start].ends_with(b"::") {
+                return true;
+            }
+            continue;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// A page's `---` block split in two: its items (`fn`, `struct`, `use`,
+/// `static`, `impl`...), which go in the page's module, and its statements,
+/// which run for each request before the template renders and whose names
+/// it reads. Each comes back as long as `code`, the other part blanked but
+/// its newlines kept, so every line stays on its line in the file. An item
+/// takes the docs, comments and attributes just before it.
+pub fn split_items(code: &str) -> (String, String) {
+    let b = code.as_bytes();
+    let mut items: Vec<(usize, usize)> = Vec::new();
+    let (mut i, mut depth, mut boundary) = (0, 0i32, true);
+    while i < b.len() {
+        if boundary && depth == 0 {
+            boundary = false;
+            // Where the next piece starts, comments included.
+            while i < b.len() && b[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            if let Some(end) = item_at(b, i) {
+                items.push((i, end));
+                i = end;
+                boundary = true;
+                continue;
+            }
+        }
+        if i >= b.len() {
+            break;
+        }
+        match b[i] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' => depth -= 1,
+            b'}' => {
+                depth -= 1;
+                boundary = depth == 0;
+            }
+            b';' if depth == 0 => boundary = true,
+            _ => i = skip_literal(b, i),
+        }
+        i += 1;
+    }
+    let keep = |inside: bool| -> String {
+        code.char_indices()
+            .map(|(k, c)| {
+                let in_item = items.iter().any(|&(s, e)| k >= s && k < e);
+                if c == '\n' || in_item == inside {
+                    c
+                } else {
+                    ' '
+                }
+            })
+            .collect()
+    };
+    (keep(true), keep(false))
+}
+
+/// The names the top-level `let`s of `stmts` bind: `let (a, mut b) = …`
+/// binds `a` and `b`.
+pub fn let_names(stmts: &str) -> Vec<String> {
+    let b = stmts.as_bytes();
+    let mut out: Vec<String> = Vec::new();
+    let (mut i, mut depth) = (0, 0i32);
+    while i < b.len() {
+        match b[i] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            c if depth == 0 && (c.is_ascii_alphabetic() || c == b'_') => {
+                let end = ident_end(b, i);
+                let before = i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_');
+                if before && &b[i..end] == b"let" {
+                    // The pattern: up to its type, its `=` or its `;`.
+                    let mut j = end;
+                    let mut d = 0i32;
+                    while j < b.len() {
+                        match b[j] {
+                            b'(' | b'[' | b'{' => d += 1,
+                            b')' | b']' | b'}' => d -= 1,
+                            b':' if d == 0 && b.get(j + 1) != Some(&b':') && b[j - 1] != b':' => {
+                                break;
+                            }
+                            b'=' | b';' if d == 0 => break,
+                            _ => {}
+                        }
+                        j += 1;
+                    }
+                    let pat = &stmts[end..j];
+                    let pb = pat.as_bytes();
+                    let mut k = 0;
+                    while k < pb.len() {
+                        if pb[k].is_ascii_lowercase() || pb[k] == b'_' {
+                            let e = ident_end(pb, k);
+                            let word = &pat[k..e];
+                            let next = pat[e..].trim_start();
+                            let path = next.starts_with("::") || pat[..k].ends_with("::");
+                            let call = next.starts_with('(') || next.starts_with('{');
+                            if !matches!(word, "mut" | "ref" | "_")
+                                && !path
+                                && !call
+                                && !out.iter().any(|n| n == word)
+                            {
+                                out.push(word.to_string());
+                            }
+                            k = e;
+                        } else if pb[k].is_ascii_alphanumeric() {
+                            k = ident_end(pb, k);
+                        } else {
+                            k += 1;
+                        }
+                    }
+                    i = j;
+                    continue;
+                }
+                i = end;
+                continue;
+            }
+            _ => i = skip_literal(b, i),
+        }
+        i += 1;
+    }
+    out
+}
+
+/// If an item starts at `i` (after any comments, attributes and `pub`),
+/// the index just past its end.
+fn item_at(b: &[u8], mut i: usize) -> Option<usize> {
+    let word = |at: usize| {
+        let at = skip_space(b, at);
+        (at, &b[at..ident_end(b, at)])
+    };
+    loop {
+        i = skip_space(b, i);
+        if b[i..].starts_with(b"#[") {
+            i = matching_bracket(b, i + 1)? + 1;
+        } else {
+            break;
+        }
+    }
+    let (at, mut w) = word(i);
+    let mut next = at + w.len();
+    if w == b"pub" {
+        next = skip_space(b, next);
+        if b.get(next) == Some(&b'(') {
+            next = b[next..].iter().position(|&c| c == b')')? + next + 1;
+        }
+        (next, w) = word(next);
+        next += w.len();
+    }
+    let semi = match w {
+        b"const" if b.get(skip_space(b, next)) == Some(&b'{') => return None,
+        b"use" | b"static" | b"type" | b"const" => true,
+        b"fn" | b"struct" | b"enum" | b"union" | b"trait" | b"impl" | b"mod" => false,
+        b"async" | b"unsafe" | b"extern" => {
+            let (_, w2) = word(next);
+            if !matches!(w2, b"fn" | b"impl" | b"trait" | b"crate" | b"unsafe") {
+                return None;
+            }
+            w2 == b"crate"
+        }
+        b"macro_rules" if b.get(next) == Some(&b'!') => false,
+        _ => return None,
+    };
+    // Up to its `;`, or (for one with a body) the `}` that closes it.
+    let mut depth = 0i32;
+    let mut j = next;
+    while j < b.len() {
+        match b[j] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' => depth -= 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 && !semi {
+                    return Some(j + 1);
+                }
+            }
+            b';' if depth == 0 => return Some(j + 1),
+            _ => j = skip_literal(b, j),
+        }
+        j += 1;
+    }
+    Some(b.len())
+}
+
+/// Per line of `code`: whether it ends in code, where a `// …` comment can
+/// be added, rather than inside a string or a block comment.
+pub fn line_ends_in_code(code: &str) -> Vec<bool> {
+    let b = code.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'\n' {
+            out.push(true);
+            i += 1;
+            continue;
+        }
+        let j = skip_literal(b, i);
+        if j != i && !b[i..].starts_with(b"//") {
+            // Lines the literal or comment runs past end inside it.
+            let open = b[i..j.min(b.len())].iter().filter(|&&c| c == b'\n').count();
+            out.extend(std::iter::repeat_n(false, open));
+        }
+        i = j + 1;
+    }
+    out.push(true);
+    out
 }
 
 /// `s` with its comments blanked out.
@@ -1012,6 +1297,57 @@ fn a() {}"
         assert_eq!(check("fn a() { Err(Error::new(404, \"x\")) }"), Ok(()));
         assert_eq!(check("fn a() { Err(redirect_to(1)) }"), Ok(()));
         assert_eq!(check("fn error(s: u8) {} fn a() { Err(error(4)) }"), Ok(()));
+    }
+
+    #[test]
+    fn blocks_split_into_items_and_statements() {
+        let code = "\n/// Kept in memory.\nstatic N: Shared<u8> = Shared::new(0);\n\
+                    let n = *N.lock();\n#[action]\nfn add(by: u8) {\n    *N.lock() += by;\n}\n\
+                    if n > 3 { return redirect(\"/\"); } else { let _ = 1; }\nuse std::fmt;\n\
+                    let s = S { a: 1 };\npub(crate) async fn f() -> u8 { 1 }\nconst C: [u8; 2] = [1, 2];\n\
+                    const { () };\nimpl A { fn g() {} }\nlet t = \"fn x() {}\";\n";
+        let (items, stmts) = split_items(code);
+        assert_eq!(items.len(), code.len());
+        assert_eq!(items.lines().count(), code.lines().count());
+        let words = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert_eq!(
+            words(&items),
+            "/// Kept in memory. static N: Shared<u8> = Shared::new(0); #[action] fn add(by: u8) { *N.lock() += by; } \
+             use std::fmt; pub(crate) async fn f() -> u8 { 1 } const C: [u8; 2] = [1, 2]; impl A { fn g() {} }"
+        );
+        assert_eq!(
+            words(&stmts),
+            "let n = *N.lock(); if n > 3 { return redirect(\"/\"); } else { let _ = 1; } let s = S { a: 1 }; \
+             const { () }; let t = \"fn x() {}\";"
+        );
+        let found = scan(&items).unwrap();
+        let add = found.function("add").unwrap();
+        assert!(add.action && add.line == 6, "{add:?}");
+    }
+
+    #[test]
+    fn actions_may_use_cx_without_taking_it() {
+        let fns = top_level_fns(
+            "#[action] fn a() { cx.flash(\"x\"); }\n#[action] fn b(c: &mut Cx) { cx.x(); }\n\
+             #[action] fn c() { let s = \"cx\"; x.cx; wisp::cx(); }\nfn d() { cx.x(); }\n#[action] fn e() { f(S { a: cx }) }",
+        );
+        let implicit: Vec<bool> = fns.iter().map(|f| f.implicit_cx).collect();
+        assert_eq!(implicit, [true, false, false, false, true]);
+    }
+
+    #[test]
+    fn line_ends() {
+        let code = "let a = \"one\ntwo\";\nlet b = 1; // c\n/* x\ny */ let r = r#\"\n\"#;";
+        assert_eq!(
+            line_ends_in_code(code),
+            [false, true, true, false, false, true]
+        );
+    }
+
+    #[test]
+    fn plain_result_is_nothing() {
+        let f = &top_level_fns("fn a() -> Result { Ok(()) }")[0];
+        assert!(f.fallible && f.returns_kind() == Returns::Nothing);
     }
 
     #[test]

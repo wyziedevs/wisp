@@ -4,9 +4,10 @@
 //! it from a JSON request body.
 //!
 //! No `syn`, no `quote`: this crate compiles instantly. `#[action]` returns
-//! its input unchanged (`wisp-build` finds it in the source and generates
-//! the route); the derives read just enough of a type to know its name and
-//! its fields' names.
+//! its input as it is (`wisp-build` finds it in the source and generates
+//! the route), but for adding `cx` to one that uses it without taking it;
+//! the derives read just enough of a type to know its name and its fields'
+//! names.
 
 use proc_macro::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream, TokenTree};
 
@@ -18,7 +19,72 @@ pub fn action(attr: TokenStream, item: TokenStream) -> TokenStream {
         out.extend(item);
         return out;
     }
-    item
+    implicit_cx(item)
+}
+
+/// An action whose body uses `cx` but does not take it gets it: `cx: &mut
+/// Cx` as its first parameter (`wisp-build` sees the same and passes it).
+fn implicit_cx(item: TokenStream) -> TokenStream {
+    let mut tokens: Vec<TokenTree> = item.into_iter().collect();
+    let Some(f) = tokens
+        .iter()
+        .position(|t| matches!(t, TokenTree::Ident(i) if i.to_string() == "fn"))
+    else {
+        return tokens.into_iter().collect();
+    };
+    let params = tokens[f..]
+        .iter()
+        .position(|t| matches!(t, TokenTree::Group(g) if g.delimiter() == Delimiter::Parenthesis));
+    let body = tokens
+        .iter()
+        .rposition(|t| matches!(t, TokenTree::Group(g) if g.delimiter() == Delimiter::Brace));
+    let (Some(p), Some(b)) = (params.map(|p| p + f), body) else {
+        return tokens.into_iter().collect();
+    };
+    let (TokenTree::Group(pg), TokenTree::Group(bg)) = (&tokens[p], &tokens[b]) else {
+        return tokens.into_iter().collect();
+    };
+    if names(&pg.stream(), &["cx", "Cx"]) || !names(&bg.stream(), &["cx"]) {
+        return tokens.into_iter().collect();
+    }
+    let span = pg.span();
+    let mut stream: Vec<TokenTree> = "#[allow(unused_variables)] cx: &mut ::wisp::Cx"
+        .parse::<TokenStream>()
+        .expect("valid tokens")
+        .into_iter()
+        .collect();
+    let rest: Vec<TokenTree> = pg.stream().into_iter().collect();
+    if !rest.is_empty() {
+        stream.push(Punct::new(',', Spacing::Alone).into());
+        stream.extend(rest);
+    }
+    let mut group = Group::new(Delimiter::Parenthesis, stream.into_iter().collect());
+    group.set_span(span);
+    tokens[p] = group.into();
+    tokens.into_iter().collect()
+}
+
+/// Whether one of `idents` is in `s` as a name of its own, not a field or
+/// a path's later segment (`a.cx`, `x::cx`).
+fn names(s: &TokenStream, idents: &[&str]) -> bool {
+    // The last two punctuation characters just before, if any.
+    let mut before = [' ', ' '];
+    for t in s.clone() {
+        let own = before[1] != '.' && before != [':', ':'];
+        match &t {
+            TokenTree::Ident(i) if own && idents.contains(&i.to_string().as_str()) => {
+                return true;
+            }
+            TokenTree::Group(g) if names(&g.stream(), idents) => return true,
+            _ => {}
+        }
+        let c = match &t {
+            TokenTree::Punct(p) => p.as_char(),
+            _ => ' ',
+        };
+        before = [before[1], c];
+    }
+    false
 }
 
 /// Implements `Display` and `FromStr` for a struct whose fields do, or for

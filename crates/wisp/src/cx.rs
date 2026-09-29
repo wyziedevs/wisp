@@ -107,6 +107,8 @@ pub struct Cx {
     set_cookies: Vec<(String, String)>,
     /// Values handed along the request with `set`, one per type.
     locals: Vec<(TypeId, Box<dyn Any + Send + Sync>)>,
+    /// A JSON body, parsed once for the handler parameters read from it.
+    json: std::sync::OnceLock<Option<crate::Value>>,
 }
 
 impl Cx {
@@ -128,6 +130,7 @@ impl Cx {
             kept_headers: 0,
             set_cookies: Vec::new(),
             locals: Vec::new(),
+            json: std::sync::OnceLock::new(),
         }
     }
 
@@ -140,6 +143,14 @@ impl Cx {
         self.kept_headers = 0;
         self.set_cookies.clear();
         self.locals.clear();
+        self.json.take();
+    }
+
+    /// The body parsed as JSON, once per request; `None` if it is not JSON.
+    pub(crate) fn json_body(&self) -> Option<&crate::Value> {
+        self.json
+            .get_or_init(|| crate::json::parse(std::str::from_utf8(self.body()).ok()?).ok())
+            .as_ref()
     }
 
     pub(crate) fn set_params(&mut self, names: &'static [&'static str], spans: [Span; MAX_PARAMS]) {
@@ -1055,6 +1066,70 @@ mod tests {
         let mut r = CookieReader::new("1|2|3");
         assert_eq!((r.field::<u8>(), r.field::<u8>()), (Ok(1), Ok(2)));
         assert_eq!(r.end(), Err(BadCookie));
+    }
+
+    #[test]
+    fn cookies_from_anyone_and_back() {
+        use crate::fuzz::{Rng, mutate};
+        let mut rng = Rng::new(20);
+        for _ in 0..3000 {
+            // Whatever a browser, or anyone, sends as `Cookie`.
+            let mut header = rng.upto(60, b"ab=; \"\t,%|\x80");
+            mutate(&mut rng, &mut header);
+            let header = String::from_utf8_lossy(&header).replace(['\r', '\n'], "");
+            let cx = cx_for(&format!("GET / HTTP/1.1\r\nCookie: {header}\r\n\r\n"));
+            for name in ["a", "b", "", "wisp-flash"] {
+                let _ = (
+                    cx.cookie(name),
+                    cx.signed_cookie(name),
+                    cx.cookie_or(name, 0u8),
+                );
+            }
+            let _ = CookieReader::new(&header).text();
+            let _ = base64(&header);
+
+            // Any text survives a flash, and any two fields a cookie type.
+            let text = rng.text(30);
+            let mut cx = cx_for("POST / HTTP/1.1\r\n\r\n");
+            cx.flash(&text);
+            let flashed = (!text.is_empty()).then_some(text.as_str());
+            assert_eq!(cx.flashed().as_deref(), flashed, "an empty one is none");
+            struct Two(String, i64);
+            impl std::fmt::Display for Two {
+                fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                    let mut w = CookieWriter::new(f);
+                    w.field(&self.0)?;
+                    w.field(&self.1)
+                }
+            }
+            let n = rng.next() as i64;
+            cx.set_signed_cookie("two", Two(text.clone(), n));
+            let mut r = CookieReader::new(cx.signed_cookie("two").unwrap());
+            assert_eq!(
+                (r.text().unwrap(), r.field::<i64>()),
+                (text.as_str().into(), Ok(n))
+            );
+            assert_eq!(r.end(), Ok(()));
+        }
+    }
+
+    #[test]
+    fn queries_and_params_decode_anything() {
+        use crate::fuzz::Rng;
+        let mut rng = Rng::new(21);
+        for _ in 0..3000 {
+            let raw = rng.upto(40, b"a=&%+2Fe9\xc3\xa9\xff");
+            let decoded = decode(&raw, true);
+            assert!(decoded.len() <= raw.len() * 3, "U+FFFD is 3 bytes at most");
+            let text = String::from_utf8_lossy(&raw).replace([' ', '\r', '\n', '#'], "");
+            let cx = cx_for(&format!("GET /p/{text}?{text} HTTP/1.1\r\n\r\n"));
+            let _ = (
+                cx.query("a"),
+                cx.query_or("e", 0),
+                cx.query_all("a").count(),
+            );
+            let _ = cx.action();
+        }
     }
 
     #[test]

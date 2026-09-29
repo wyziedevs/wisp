@@ -77,7 +77,7 @@ fn load(cx: &mut Cx) -> Data {
 
 /// Without JavaScript, every key on the page's keyboard posts here.
 #[action]
-fn update(cx: &mut Cx, key: String) {
+fn update(key: String) {
     let mut game = Game::read(cx);
     match key.as_bytes() {
         b"backspace" => {
@@ -92,7 +92,7 @@ fn update(cx: &mut Cx, key: String) {
 /// A finished guess. It comes from the form, where the page's script typed
 /// it; without JavaScript, `update` put the same letters there.
 #[action]
-fn enter(cx: &mut Cx, guess: String) -> Result<()> {
+fn enter(guess: String) -> Result {
     let guess = guess.to_ascii_lowercase();
     if guess.len() != LEN || !letters(&guess) {
         return error(400, "A guess is five letters.");
@@ -107,7 +107,7 @@ fn enter(cx: &mut Cx, guess: String) -> Result<()> {
 }
 
 #[action]
-fn restart(cx: &mut Cx) {
+fn restart() {
     cx.set_cookie("wisple", Game::new());
 }
 

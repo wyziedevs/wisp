@@ -10,6 +10,10 @@ pub mod rust_scan;
 mod shell;
 pub mod template;
 
+/// JavaScript without comments and needless whitespace: the browser
+/// runtime as release builds serve it (`wisp`'s build.rs).
+pub use js::minify as minify_js;
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -65,8 +69,66 @@ pub fn hot_chunks(root: &Path, rel: &str) -> Result<(Vec<String>, u64), String> 
         let parts = shell::split(&src).map_err(|e| format!("{rel}: {e}"))?;
         return Ok((parts.to_vec(), shell::SHAPE));
     }
-    let t = template::parse(&src).map_err(|e| format!("{rel}:{e}"))?;
+    let (t, _) = parse_wisp(&src).map_err(|e| format!("{rel}:{e}"))?;
     Ok((t.chunks, t.shape))
+}
+
+/// A `.wisp` file parsed: its template, and the Rust of its `---` block if
+/// it has one, as long as the file (the markup blanked, so every line of
+/// Rust is on its line in the file). The block's text is part of the shape:
+/// changing it means compiling again. Errors are `line:col: msg`.
+pub fn parse_wisp(src: &str) -> Result<(template::Template, Option<String>), String> {
+    let (rust, markup) = split_front(src)?;
+    let mut t = template::parse(&markup).map_err(|e| e.to_string())?;
+    if let Some(r) = &rust {
+        t.shape ^= fnv1a(r.as_bytes()).rotate_left(1);
+    }
+    Ok((t, rust))
+}
+
+/// Splits off the `---` block of Rust a page or layout may start with:
+///
+/// ```text
+/// ---
+/// let post = posts::find(&slug).or_404()?;
+/// ---
+/// <h1>{post.title}</h1>
+/// ```
+///
+/// Both halves keep the file's lines: the Rust with the markup blanked, the
+/// markup with the block's lines left empty.
+fn split_front(src: &str) -> Result<(Option<String>, String), String> {
+    let lines: Vec<&str> = src.split('\n').collect();
+    let Some(open) = lines.iter().position(|l| !l.trim().is_empty()) else {
+        return Ok((None, src.to_string()));
+    };
+    if lines[open].trim() != "---" {
+        return Ok((None, src.to_string()));
+    }
+    let Some(close) = lines[open + 1..].iter().position(|l| l.trim() == "---") else {
+        return Err(format!(
+            "{}:1: this `---` starts a block of Rust, which needs a `---` line after it",
+            open + 1
+        ));
+    };
+    let close = open + 1 + close;
+    let pick = |rust: bool| -> String {
+        let kept: Vec<&str> = lines
+            .iter()
+            .enumerate()
+            .map(|(k, l)| {
+                let inside = k > open && k < close;
+                let markup = k > close;
+                if (rust && inside) || (!rust && markup) {
+                    *l
+                } else {
+                    ""
+                }
+            })
+            .collect();
+        kept.join("\n")
+    };
+    Ok((Some(pick(true)), pick(false)))
 }
 
 /// Checks the whole project the way `run` does, without writing anything.

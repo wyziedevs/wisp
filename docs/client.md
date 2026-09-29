@@ -23,8 +23,10 @@ adds behavior.
 A bare `<script>` (no attributes) is the file's client script. It works in
 pages, layouts and components, and runs once for each place the file is shown.
 
-- Top-level `let`s are the state. Assign to one, or change an object or
-  array in it (`todos.push(t)`, `todo.done = true`), and the page updates.
+- Top-level `let`s are the state. Assign to one, or change an object,
+  array, `Map` or `Set` in it (`todos.push(t)`, `todo.done = true`,
+  `seen.add(id)`), and the page updates. A `let` set to a string, number
+  or boolean and never assigned again is a plain constant: it costs nothing.
 - `let total = $derived(price * qty)` is a value worked out from others.
 - At most one script per file.
 - `import` lines at the top are moved to the module's head, so
@@ -57,16 +59,25 @@ Clicking one item writes one class and one number, nothing else.
 
 | Rune | Meaning |
 |---|---|
-| `let x = $state(v)` | State, deep: objects and arrays track each key. A plain `let x = v` is the same. |
+| `let x = $state(v)` | State, deep: objects, arrays, maps and sets track each key. A plain `let x = v` is the same. |
 | `$state.raw(v)` | State that changes only when assigned. |
 | `$state.snapshot(x)` | A plain copy, for `structuredClone` or a library. |
 | `$derived(expr)`, `$derived.by(fn)` | Worked out when read after an input changed. Assigning to it is a build error. |
 | `$effect(fn)` | Runs after the DOM is drawn, and again when what it read changes. It may return a cleanup. |
 | `$effect.pre(fn)` | The same, before the DOM is drawn. |
-| `let { a, b = 1 } = $props()` | In a component: the props it reads, with browser defaults. They must be in `{@props}`. |
+| `let { a, b = 1, c: d, ...rest } = $props()` | In a component: its props, with browser defaults (for a prop not given, or `null`); `c: d` reads prop `c` as `d`, `...rest` holds the others. Without `{@props}` this is all a component needs (see [Client components](#client-components)). |
 | `$bindable(default)` | A prop a parent may `bind:`. Once a component uses `$props()`, only these can be bound. |
 | `$inspect(a, b)` | Logs them as they change. Gone in release builds. |
 | `$cart` | For a store `cart`: `cart.value`, tracked. `$cart = x` sets it. |
+
+A class's `$state` fields make its instances state too:
+
+```js
+class Todo {
+  done = $state(false)
+  label = $derived(this.done ? 'done' : 'open')
+}
+```
 
 `untrack(fn)` reads without tracking. A rune in the wrong place (in markup,
 inside a block, misspelled) is a build error at its line.
@@ -76,14 +87,23 @@ inside a block, misspelled) is a build error at its line.
 | Syntax | Meaning |
 |---|---|
 | `on:click="count++"` | Event handler. A bare name (`on:click="press"`) is called with the event. |
-| `bind:value="q"` / `bind:checked="done"` | Two-way binding. |
+| `bind:value="q"` / `bind:checked="done"` | Two-way binding. `bind:value` alone binds `value`. |
+| `bind:group="size"` | Radios (a value) and checkboxes (an array) with one `name`. |
+| `bind:files`, `bind:open`, `bind:innerHTML`, `bind:currentTime`, `bind:paused`, … | Any property; the element's own event keeps it current. |
+| `bind:clientWidth="w"` | Sizes (`clientWidth/Height`, `offsetWidth/Height`, `contentRect`), from a ResizeObserver. |
 | `bind:this="el"` | Puts the element in `el`. |
 | `:hidden="!open"` | Live attribute. `false`, `null`, `undefined` remove it. |
 | `:text="name"` | Live text. |
-| `class:open="isOpen"` | Toggle a class. |
-| `style:--x="x"` | Set a style property. |
-| `transition:fade` | Animate in and out: `fade`, `slide`, `scale`, `fly`. Takes options: `transition:fly="{ y: 20 }"`. |
-| `use:tip="'Hello'"` | Call `tip(el, 'Hello')`. It may return a cleanup function, or `{ update, destroy }`. |
+| `class:open="isOpen"` | Toggle a class. `class:open` alone reads `open`. |
+| `style:--x="x"` | Set a style property. `style:color` alone reads `color`. |
+| `class={:['card', { on }]}` | Names from strings, arrays and the keys of objects whose value holds. |
+| `style={:{ color, fontSize: '2em' }}` | Properties from an object. |
+| `{:...attrs}` | Every key of an object an attribute (an `on…` function a listener). |
+| `transition:fade` | Animate in and out: `fade`, `slide`, `scale`, `fly`, `blur`. Takes options: `transition:fly="{ y: 20 }"`. |
+| `in:fly` / `out:fade` | Only in, or only out. |
+| `transition:spin` | Your function: `spin(el, options, { direction })` returns `{ duration, delay, easing, css: (t, u) => '…' }` or `{ tick(t, u) }`. |
+| `use:tip="'Hello'"` | Call `tip(el, 'Hello')`, and its `update` when the value changes. It may return a cleanup function, or `{ update, destroy }`. |
+| `use:portal="'#modal'"` | Move the element there (bare: to `<body>`). |
 | `animate:flip` | Animate moves in a keyed `{:#each}`. |
 
 ```html
@@ -182,9 +202,45 @@ colon.
 </ul>
 ```
 
-`(item.id)` is the key. Without it, items are matched by position. There is
-also the `<template each="item, i in list">` and `<template if="cond">`
-form.
+`(item.id)` is the key. Without it, items are matched by position.
+`{:#each list}` alone draws its content once per item, and `{:#each 3 as
+i}` counts. There is also the `<template each="item, i in list">` and
+`<template if="cond">` form.
+
+```html
+{:#key user.id}<Profile id={:user.id} />{:/key}      <!-- drawn afresh when it changes -->
+
+{:#await results}
+  <p>Loading…</p>
+{:then list}
+  <p>{:list.length} found</p>
+{:catch error}
+  <p>{:error.message}</p>
+{:/await}
+{:#await p then v}…{:/await}                        <!-- no pending branch -->
+
+{:#try}
+  <Chart data={:points} />                          <!-- an error drawing it… -->
+{:catch error}
+  <p>Chart failed: {:error.message}</p>             <!-- …shows this instead -->
+{:/try}
+```
+
+The server paints a key block, an await block's pending branch and a try
+block's body, as it does the others.
+
+### Special elements
+
+```html
+<wisp:window on:keydown.escape="open = false" bind:innerWidth="w" />
+<wisp:document on:visibilitychange="save()" bind:visibilityState="seen" />
+<wisp:body on:click="menu = false" />
+<wisp:element this={:level > 1 ? 'h3' : 'h2'} class="title">{:text}</wisp:element>
+```
+
+`<wisp:window>`, `<wisp:document>` and `<wisp:body>` take directives for
+that target, and close themselves. `<wisp:element>` takes its tag from
+`this`; the server writes it when it knows it.
 
 ### Snippets in the browser
 
@@ -246,7 +302,10 @@ A component inside a client block, or given a `{:…}` value, a `bind:` or an
 - A component may render itself, as a tree view does, inside an `{:#if}` or
   `{:#each}` that ends; with nothing around it, it is a build error. Nesting
   stops at 64 levels in the browser (and the server paints 32).
-- `setContext(key, value)` and `getContext(key)` share values with descendants.
+- `setContext(key, value)` and `getContext(key)` share values with
+  descendants. `const [getUser, setUser] = context()` (in a script or a
+  lib module) makes a pair with a key of its own; both work as a script
+  starts.
 
 ```html
 <!-- src/components/Tree.wisp -->
@@ -258,6 +317,25 @@ A component inside a client block, or given a `{:…}` value, a `bind:` or an
 
 The Rust type of a prop only matters where Rust renders the component; a
 component only the browser draws can use any `Json` type, such as `&str`.
+
+A component whose props are browser values needs no `{@props}` at all:
+`$props()` says what it takes. Each is optional, and any `Json` value; the
+server paints a literal default.
+
+```html
+<!-- src/components/Pill.wisp -->
+<span class={:['pill', tone]} {:...rest}>{:text}</span>
+
+<script>
+  let { label: text, tone = 'plain', ...rest } = $props()
+</script>
+```
+
+```html
+<Pill label="new" tone="warm" title="Just in" />      <!-- title goes to rest -->
+```
+
+Such props cannot be used in Rust (`{…}`); declare `{@props}` for that.
 
 ## State helpers
 
@@ -318,7 +396,15 @@ wait longer: its module is not even downloaded until its moment comes.
 <Badge client:none />                           <!-- never: no module, no values sent -->
 ```
 
-`client:load`, the default, starts with the page. The server paints every
+`client:load`, the default, starts with the page. On an element with
+browser code, the same waits for the element and what is inside it; its
+module is already in, only the work waits:
+
+```html
+<section client:visible>{:#each rows as row}…{:/each}</section>
+```
+
+ The server paints every
 island in full, so until it wakes it reads and works as HTML (links and
 forms too). A click that wakes an island is held and replayed once it is
 ready. What renders inside an island waits with it.
@@ -328,8 +414,18 @@ visitor sees or touches. Islands get no `modulepreload`, and a page whose
 code is all islands does not load the runtime (`live.js`, about 9 KB) until
 the first one wakes. `wisp.js` does the waking.
 
-`client:*` goes on a component the server renders that has browser code;
-anywhere else it is a build error.
+On a component, `client:*` needs the component to have browser code.
+
+## Speed
+
+The runtime is two files: `live.js` (about 9 KB compressed), and
+`/_app/c/extra.js` (transitions, await and try blocks, components the
+browser draws, `bind:group` and the like), which only the modules that use
+them import. A keyed list is kept in place with the fewest moves; events
+bubble to one listener; a list's template is prepared once and cloned.
+On the js-framework-benchmark operations (`/a2/bench` in the test app, and
+`src/lib/bench.js` to time it) it runs at about 1.3x the time of
+hand-written DOM code, where Svelte 5 and Solid run at about 1.1x.
 
 ## Morphs keep state
 
@@ -430,8 +526,11 @@ the console with the `.wisp` file and line.
   [First paint](#first-paint)); live attributes (`:class`, `class="a {:b}"`)
   keep their static text until the browser starts.
 - Editing a client script rebuilds; editing markup still hot-swaps.
-- Deep state tracks plain objects and arrays. A `Map`, `Set`, `Date` or
-  class instance is not tracked inside: assign it again (`m = m`) to redraw.
+- Deep state tracks plain objects, arrays, maps and sets, and classes with
+  `$state` fields. A `Date` or another class's instance is not tracked
+  inside: assign it again (`d = d`) to redraw.
+- A key is read when the list changes: changing an item's key in place
+  does not move it.
 
 ## Less Rust boilerplate
 

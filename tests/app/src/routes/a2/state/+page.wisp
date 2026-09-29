@@ -1,3 +1,15 @@
+---
+use std::sync::atomic::{AtomicU32, Ordering};
+
+static COUNT: AtomicU32 = AtomicU32::new(0);
+
+#[action]
+fn bump() {
+    COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+let count = COUNT.load(Ordering::Relaxed);
+---
 <p id="server">{count}</p>
 <p id="seen">{:data.count}</p>
 <p id="client">{:clicks}</p>

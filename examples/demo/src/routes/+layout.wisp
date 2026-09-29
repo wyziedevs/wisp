@@ -1,3 +1,9 @@
+---
+const NAV: [(&str, &str); 3] = [("/", "Home"), ("/about", "About"), ("/wisple", "Wisple")];
+
+// The part of the site this page is in: `/wisple/how-to-play` is Wisple.
+let section = cx.path().split('/').nth(1).unwrap_or("");
+---
 <!-- Wraps every page. Comments like this one never reach the browser. -->
 <div class="app">
   <header class="site-header">
@@ -10,8 +16,8 @@
     <nav aria-label="Site">
       <svg viewBox="0 0 32 48" aria-hidden="true"><path d="M0,0 L16,32 C24,48 24,48 32,48 L32,0 Z"/><path class="edge" d="M0,0 L16,32 C24,47.5 24,47.5 32,47.5 H33"/></svg>
       <ul>
-        {#each nav as link}
-          <li><a href={link.href} aria-current={link.current.then_some("page")}>{link.label}</a></li>
+        {#each NAV as (href, label)}
+          <li><a {href} aria-current={(href[1..] == *section).then_some("page")}>{label}</a></li>
         {/each}
       </ul>
       <svg viewBox="0 0 32 48" aria-hidden="true"><path d="M0,0 L0,48 C8,48 8,48 16,32 L32,0 Z"/><path class="edge" d="M-1,47.5 H0 C8,47.5 8,47.5 16,32 L32,0"/></svg>

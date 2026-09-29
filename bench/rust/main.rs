@@ -1,4 +1,4 @@
-//! Actix Web and Axum serving the same /fortunes and /plaintext as
+//! Actix Web and Axum serving the same /fortunes, /plaintext and /json as
 //! bench/app, rendering with Askama (templates compiled to Rust, like Wisp).
 //!
 //!   bench-rust actix|axum      PORT sets the port, THREADS the worker count
@@ -52,6 +52,14 @@ fn fortunes() -> String {
     Fortunes { fortunes }.render().expect("render")
 }
 
+/// TechEmpower's "json": serialized per request, with serde.
+#[derive(serde::Serialize)]
+struct Message {
+    message: &'static str,
+}
+
+const MESSAGE: Message = Message { message: "Hello, World!" };
+
 fn main() -> std::io::Result<()> {
     let env = |k: &str| std::env::var(k).unwrap_or_default();
     let port: u16 = env("PORT").parse().unwrap_or(3000);
@@ -74,6 +82,7 @@ fn actix(port: u16, threads: usize) -> std::io::Result<()> {
         App::new()
             .route("/plaintext", web::get().to(|| async { "Hello, World!" }))
             .route("/fortunes", web::get().to(|| async { HttpResponse::Ok().content_type("text/html; charset=utf-8").body(fortunes()) }))
+            .route("/json", web::get().to(|| async { web::Json(MESSAGE) }))
     });
     actix_web::rt::System::new().block_on(server.workers(threads).bind(("127.0.0.1", port))?.run())
 }
@@ -82,7 +91,7 @@ fn actix(port: u16, threads: usize) -> std::io::Result<()> {
 /// work-stealing runtime shared by all threads.
 fn axum(port: u16, threads: usize) -> std::io::Result<()> {
     use axum::{Router, response::Html, routing::get};
-    let app = Router::new().route("/plaintext", get(|| async { "Hello, World!" })).route("/fortunes", get(|| async { Html(fortunes()) }));
+    let app = Router::new().route("/plaintext", get(|| async { "Hello, World!" })).route("/fortunes", get(|| async { Html(fortunes()) })).route("/json", get(|| async { axum::Json(MESSAGE) }));
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(threads).enable_all().build()?;
     rt.block_on(async {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;

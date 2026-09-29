@@ -667,7 +667,7 @@ fn client_parity() {
         "{holes}"
     );
     assert!(
-        holes.contains("</template><!--[--><li data-w=\"9\"><template data-w=\"10\"></template>0<!---->: <template data-w=\"11\"></template>one<!----></li>")
+        holes.contains("</template><!--[--><li data-w=\"9\" data-id=\"1\"><template data-w=\"10\"></template>0<!---->: <template data-w=\"11\"></template>one<!----></li>")
             && holes.contains("<!--[--><p id=\"named\">Named <template data-w=\"15\"></template>Ann<!----></p>")
             && !holes.contains("<!--[--><p id=\"closed\">"),
         "{holes}"
@@ -688,8 +688,9 @@ fn client_parity() {
     );
     let js = body(&s.request("GET", &module_url(&holes, 0), "", b"")).to_string();
     for want in [
-        "[\"hole\", () => (title.v)]",
-        "[\"attr\", \"class\", () => (`card ${(mood.v) ?? ''}`)]",
+        // Never written: constants, not signals.
+        "[\"hole\", () => (title)]",
+        "[\"attr\", \"class\", () => (`card ${(mood) ?? ''}`)]",
         "[\"attr\", \"aria-expanded\", () => (open.v)]",
         "[\"each\", () => (items.v), [\"item\", \"i\"], ({ item, i }) => (item.id)]",
         "[\"animate\", \"flip\", null]",
@@ -776,6 +777,57 @@ fn client_parity() {
     let err = s.request("GET", "/a2/holes", "x-wisp-error: 1\r\n", b"");
     assert_eq!(status(&err), 500);
     assert!(err.contains("<h1 id=\"err\">Error 500</h1>"), "{err}");
+}
+
+#[test]
+fn blocks_elements_and_props() {
+    let s = start();
+    let page = s.request("GET", "/a2/more", "", b"");
+    // The first paint: {:#key}, an {:#await}'s pending branch, a {:#try}'s
+    // body, <wisp:element>'s tag, `class={:[…]}`, `style={:{…}}`, a
+    // spread, and a component whose props only `$props()` names (renamed,
+    // and the rest).
+    for want in [
+        "<!--[--><p id=\"keyed\">v<template data-w=\"6\"></template>1<!----></p><!--]-->",
+        "<!--[--><p id=\"wait\">Loading</p>",
+        "<!--[--><p id=\"tried\">",
+        "<h2 id=\"dyn\" data-w=\"0.36\">dynamic</h2>",
+        "<span  data-w=\"1.0\" title=\"tip\" class=\"pill warm\"><template data-w=\"1.1\"></template>served<!----></span>",
+        "data-x=\"1\" title=\"spread\" style=\"color:red;font-weight:700\">styled</p>",
+        // <wisp:window /> is a template whose directives go on the window.
+        "<template  data-w=\"0.0\"></template>",
+    ] {
+        assert!(page.contains(want), "{want} in {page}");
+    }
+    // The runtime's less used half comes with the modules that use it.
+    let extra = page
+        .split("<link rel=\"modulepreload\" href=\"")
+        .find_map(|p| p.strip_prefix("/_app/c/extra.js"))
+        .map(|p| format!("/_app/c/extra.js{}", &p[..p.find('"').unwrap()]))
+        .expect("extra.js preloaded");
+    let js = s.request("GET", &extra, "", b"");
+    assert!(
+        status(&js) == 200
+            && body(&js).contains("X.await")
+            && body(&js).contains("from \"/_app/live.js?v="),
+        "{js}"
+    );
+    let module = body(&s.request("GET", &module_url(&page, 0), "", b"")).to_string();
+    for want in [
+        "import \"/_app/c/extra.js?v=",
+        "[\"at\", \"window\"], [\"bind\", \"innerWidth\"",
+        "[\"key\", () => (version.v)]",
+        "[\"await\", () => (slow.v)]",
+        "[\"try\"]",
+        "[\"transition\", \"fade\", null, 1], [\"transition\", () => spin, null, 2]",
+        "[\"wait\", \"x\"]",
+        "[\"spread\", () => (attrs.v)]",
+        "[\"tag\", () => (tag.v)]",
+    ] {
+        assert!(module.contains(want), "{want} in {module}");
+    }
+    // A page with none of it does not load it.
+    assert!(!s.request("GET", "/a2/state", "", b"").contains("extra.js"));
 }
 
 #[test]
@@ -952,6 +1004,35 @@ fn inputs_by_name() {
         body(&s.request("GET", "/inputs/7", "", b"")),
         "{\"id\":7,\"q\":null,\"n\":[],\"on\":false,\"names\":[\"ada\"]}"
     );
+}
+
+/// A page whose Rust is its `---` block: statements as the load, an action
+/// that returns `invalid`, `cx` and a module of the app's own in markup.
+#[test]
+fn page_blocks() {
+    let s = start();
+    let page = s.request("GET", "/signup", "", b"");
+    assert!(
+        status(&page) == 200
+            && page.contains("<title>Sign up</title>")
+            && page.contains("<p id=\"price\">300 at /signup</p>")
+            && !page.contains("problem"),
+        "{page}"
+    );
+    // A problem shows the page again, as a 422, with what was typed.
+    let bad = s.request("POST", "/signup", FORM, b"email=ada");
+    assert!(
+        status(&bad) == 422
+            && bad.contains("value=\"ada\"")
+            && bad.contains("<p class=\"problem\">needs an @</p>"),
+        "{bad}"
+    );
+    assert_eq!(
+        status(&s.request("POST", "/signup", FORM, b"email=a@b")),
+        303
+    );
+    // Route parameters are locals, with no Rust at all.
+    assert!(body(&s.request("GET", "/post/hi", "", b"")).contains("<h1>Post hi</h1>"));
 }
 
 #[test]

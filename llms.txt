@@ -1,0 +1,20 @@
+# Wisp
+
+> A fast, fun web framework for Rust: file routes, `.wisp` templates compiled to Rust, form actions that work without JavaScript, optional browser reactivity, one binary. Built so apps take as few tokens as possible to write.
+
+A page is one file: `src/routes/blog/[slug]/+page.wisp` holds a `---` block of Rust (statements are the load, `#[action]` functions handle form posts) and then the markup, which reads the block's names. `+server.rs` files are JSON endpoints. Read AGENTS.md first: it is the complete, compact reference.
+
+## Docs
+
+- [AGENTS.md](AGENTS.md): every syntax form, API and gotcha on one page
+- [README](README.md): overview and quick start
+- [Design](docs/design.md): routes, page logic, templates, components, forms, cookies, hooks, runtime, build
+- [Client code](docs/client.md): scripts, runes, directives, client blocks, components, stores, router, islands
+- [APIs](docs/api.md): endpoints, JSON input and validation, errors, CORS, auth, rate limits, channels, jobs, OpenAPI
+- [Deploy](docs/deploy.md): binary, static, Docker, Cloudflare, Deno, Vercel, Netlify, Node
+- [Embedding and tests](docs/embed.md): in-process tests, tower, axum, Lambda
+
+## Optional
+
+- [Token counts](docs/tokens.md): the same apps in Wisp and other frameworks
+- [Examples](examples/): demo app, JSON API, Wisp inside axum

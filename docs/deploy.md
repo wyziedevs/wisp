@@ -37,11 +37,13 @@ Every page that takes no parameters is rendered and written as
 
 A route with `[params]` says which pages to write:
 
-```rust
-// src/routes/blog/[slug]/+page.rs
+```html
+<!-- src/routes/blog/[slug]/+page.wisp (or its +page.rs) -->
+---
 fn entries() -> Vec<&'static str> {
     vec!["hello", "second-post"]
 }
+---
 ```
 
 `entries` returns a `String` (or `&str`) per parameter, or a tuple of them

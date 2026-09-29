@@ -513,6 +513,7 @@ dependencies = [
  "httparse",
  "tokio",
  "tower-service",
+ "wisp-build",
  "wisp-macros",
 ]
 

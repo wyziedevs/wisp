@@ -1,4 +1,4 @@
-use crate::notes::{self, Note};
+use notes::Note;
 
 /// A note to add, as JSON: `{"title": "Buy tea", "tags": ["home"]}`.
 #[derive(FromJson)]

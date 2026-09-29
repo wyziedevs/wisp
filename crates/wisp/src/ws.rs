@@ -793,4 +793,89 @@ mod tests {
             PROTOCOL_ERROR
         );
     }
+
+    /// What an event says, to compare.
+    fn seen(e: &Event) -> (u8, Vec<u8>) {
+        match e {
+            Event::Message(Message::Text(t)) => (TEXT, t.as_bytes().to_vec()),
+            Event::Message(Message::Binary(b)) => (BINARY, b.clone()),
+            Event::Ping(p) => (PING, p.clone()),
+            Event::Close(p) => (CLOSE, p.clone()),
+            Event::Fail(code) => (0, code.to_be_bytes().to_vec()),
+        }
+    }
+
+    #[test]
+    fn frames_in_any_pieces_read_the_same() {
+        use crate::fuzz::{Rng, mutate};
+        let limit = 300;
+        let mut rng = Rng::new(40);
+        for _ in 0..2000 {
+            // Messages, some in fragments with pings between, then a close.
+            let mut wire = Vec::new();
+            let mut want = Vec::new();
+            for _ in 0..rng.below(5) {
+                let text = rng.one_in(2);
+                let data = if text {
+                    rng.text(100).into_bytes()
+                } else {
+                    let n = rng.pick(&[0, 1, 125, 126, 200, limit]);
+                    rng.bytes(n, b"")
+                };
+                let pieces = 1 + rng.below(3);
+                let mut at = 0;
+                for k in 0..pieces {
+                    let end = if k + 1 == pieces {
+                        data.len()
+                    } else {
+                        at + rng.below(data.len() - at + 1)
+                    };
+                    let op = if k == 0 {
+                        if text { TEXT } else { BINARY }
+                    } else {
+                        CONTINUATION
+                    };
+                    wire.extend(client(k + 1 == pieces, op, &data[at..end]));
+                    at = end;
+                    if k + 1 == pieces {
+                        want.push((if text { TEXT } else { BINARY }, data.clone()));
+                    }
+                    if rng.one_in(3) {
+                        wire.extend(client(true, PING, b"p"));
+                        want.push((PING, b"p".to_vec()));
+                    }
+                }
+            }
+            wire.extend(client(true, CLOSE, &NORMAL.to_be_bytes()));
+            want.push((CLOSE, NORMAL.to_be_bytes().to_vec()));
+
+            let mut i = inbox(Vec::new(), limit);
+            let mut got = Vec::new();
+            let mut left = &wire[..];
+            while !left.is_empty() {
+                let n = (1 + rng.below(40)).min(left.len());
+                i.buf.extend_from_slice(&left[..n]);
+                left = &left[n..];
+                while let Some(e) = i.next() {
+                    got.push(seen(&e));
+                }
+            }
+            assert_eq!(got, want);
+
+            // Broken: never a panic, never more held than a message allows.
+            let mut broken = wire.clone();
+            mutate(&mut rng, &mut broken);
+            let mut i = inbox(Vec::new(), limit);
+            'feed: for piece in broken.chunks(1 + rng.below(64)) {
+                i.buf.extend_from_slice(piece);
+                while let Some(e) = i.next() {
+                    if let Event::Fail(_) | Event::Close(_) = e {
+                        break 'feed; // the connection ends here
+                    }
+                }
+                let partial = i.partial.as_ref().map_or(0, |p| p.1.len());
+                assert!(partial <= limit && i.buf.len() - i.at <= limit + 14 + 64);
+            }
+        }
+    }
 }

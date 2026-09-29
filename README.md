@@ -8,7 +8,9 @@
 
 ---
 
-Wisp builds web apps from files: a folder is a URL, a `.wisp` template is its markup, and a `+page.rs` beside it holds the Rust that loads data and handles forms. The whole app, styles and static files included, compiles into one small binary.
+Wisp builds web apps from files: a folder is a URL, and its `+page.wisp` is the page, markup after a short block of the Rust that loads data and handles forms. The whole app, styles and static files included, compiles into one small binary.
+
+- **Few tokens.** Apps are short to write, for people and for AI: pages take fewer tokens in Wisp than in SvelteKit, Next.js, Nuxt, Axum, FastAPI or Rails ([docs/tokens.md](docs/tokens.md)). [AGENTS.md](AGENTS.md) is the whole reference on one page.
 
 - **Fast to build.** Markup edits appear in the browser in under 100 ms, without a recompile.
 - **Fast to run.** Templates compile to plain Rust, with no virtual DOM and no runtime template engine.
@@ -32,25 +34,17 @@ wisp dev
 
 ## A page
 
-```rust
-// src/routes/+page.rs
-struct Data {
-    count: i64,
-}
-
-fn load(cx: &mut Cx) -> Data {
-    Data { count: cx.cookie_or("count", 0) }
-}
+```html
+<!-- src/routes/+page.wisp -->
+---
+let count: i64 = cx.cookie_or("count", 0);
 
 #[action]
-fn add(cx: &mut Cx, by: i64) {
+fn add(by: i64) {
     let count: i64 = cx.cookie_or("count", 0);
     cx.set_cookie("count", count + by);
 }
-```
-
-```html
-<!-- src/routes/+page.wisp -->
+---
 <h1>Clicked {count} times</h1>
 
 <form method="post" action="?/add">
@@ -58,7 +52,9 @@ fn add(cx: &mut Cx, by: i64) {
 </form>
 ```
 
-No `use` lines and no `pub`: Wisp brings in what route files need. A parameter other than `cx` is read from the request by its name (a route parameter, a form field, or the query), so `by` above is the button's value. Page functions can also be `async`, and can return a `Result` so `?` works inside them; `return error(404, "No such post")` and `return redirect("/login")` stop one early (they return the `Result` themselves, so not `Err(error(..))`; the build says so if you write it). Docs, `#![…]` attributes, `use` lines and `pub` are all still fine.
+Between the `---` lines is Rust. Its statements run for each request, and the markup reads their names (`count`); `cx` is the request. Its functions are the page's own: an `#[action]` handles a form post (it gets `cx` when it uses it), and each parameter is read from the request by its name (a route parameter, a form field, or the query), so `by` above is the button's value. No `use` lines and no `pub`. Statements can `.await`, use `?`, and stop early with `return error(404, "No such post")` or `return redirect("/login")`. A route parameter is already a local: `[slug]/+page.wisp` can just say `<h1>{slug}</h1>`.
+
+A form that does not pass: `return invalid("email", "is missing its @")` from an action shows the page again, where `cx.problem("email")` is the message and `cx.input("email")` what was typed. The Rust can also live in a `+page.rs` beside the page, with a `load` that returns a `Data` struct.
 
 ## Reactivity
 
@@ -90,8 +86,8 @@ Less boilerplate on the server side too:
 
 | File           | Purpose                                     |
 | -------------- | ------------------------------------------- |
-| `+page.wisp`   | The page's markup                           |
-| `+page.rs`     | `load` for its data, `#[action]` for forms  |
+| `+page.wisp`   | The page: a `---` block of Rust, then markup |
+| `+page.rs`     | Optional instead of the block: `load`, `#[action]`s |
 | `+page.js`     | Optional `load` that runs in the browser    |
 | `+layout.wisp` | Wraps this page and every page below it     |
 | `+error.wisp`  | Shown when something below it fails         |
@@ -105,6 +101,7 @@ Beside the routes:
 | ---------------------------- | ---------------------------------------------------------------- |
 | `src/components/Card.wisp`   | A component, used as `<Card title={x}>…</Card>`, with typed props |
 | `src/hooks.rs`               | `init` runs once at start; `before` runs before every request    |
+| `src/db.rs`                  | Any module of your own, no `mod` line: routes call `db::find(id)` |
 
 Pages can also stream (server-sent events), take uploads, answer with a file, set signed cookies a visitor cannot forge, and share values like a database pool through `wisp::provide`. [docs/design.md](docs/design.md) shows how.
 
@@ -176,7 +173,9 @@ On a server-rendered HTML benchmark on Linux, Wisp serves 13% more requests than
 
 ## Documentation
 
+- [AGENTS.md](AGENTS.md): everything on one page, for coding agents (and people in a hurry).
 - [docs/design.md](docs/design.md): the template language, routing, actions, the runtime and the dev server.
+- [docs/tokens.md](docs/tokens.md): what the same apps cost in tokens here and in other frameworks.
 - [docs/client.md](docs/client.md): scripts, directives, components, stores, the router.
 - [docs/api.md](docs/api.md): JSON APIs, validation, CORS, auth, rate limits, channels, jobs, OpenAPI.
 - [docs/embed.md](docs/embed.md): testing, `wisp::handle`, axum, hyper, Lambda.

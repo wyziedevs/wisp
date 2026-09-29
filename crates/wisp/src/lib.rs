@@ -16,6 +16,8 @@ mod dev;
 pub mod edge;
 mod export;
 mod form;
+#[cfg(test)]
+mod fuzz;
 mod html;
 mod http;
 mod input;
@@ -51,17 +53,37 @@ use std::net::{Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::str::FromStr;
 use std::sync::{OnceLock, RwLock};
 
-pub type Result<T, E = Error> = std::result::Result<T, E>;
+/// `Result` alone is `Result<()>`: `fn delete(id: u64) -> Result`.
+pub type Result<T = (), E = Error> = std::result::Result<T, E>;
 
-/// What every `+page.rs`, `+layout.rs`, `+server.rs` and `src/hooks.rs`
-/// sees without a `use` line. Other Rust files can `use wisp::prelude::*`.
+/// What every route file, `---` block, `src/hooks.rs` and module of the
+/// app's own sees without a `use` line. Other Rust files can
+/// `use wisp::prelude::*`.
 pub mod prelude {
     #[cfg(not(target_arch = "wasm32"))]
     pub use crate::RateLimit;
     pub use crate::{
         Cookie, CookieOptions, Cx, Error, FromJson, Json, Method, OrStatus, Response, Result,
-        SameSite, Value, action, error, invalid, redirect,
+        SameSite, Shared, Value, action, error, invalid, redirect,
     };
+}
+
+/// A value every request shares, such as a list kept in memory:
+/// `static TODOS: Shared<Vec<String>> = Shared::new(Vec::new());`, then
+/// `TODOS.lock().push(text)`. A `Mutex` whose `lock` needs no `unwrap`: a
+/// handler that panicked while holding it leaves the value as it was.
+pub struct Shared<T>(std::sync::Mutex<T>);
+
+impl<T> Shared<T> {
+    pub const fn new(value: T) -> Shared<T> {
+        Shared(std::sync::Mutex::new(value))
+    }
+
+    /// The value, until the guard is dropped. Do not hold it across an
+    /// `.await`: other requests on the thread would wait.
+    pub fn lock(&self) -> std::sync::MutexGuard<'_, T> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
 }
 
 /// Sizes for `BODY_LIMIT`: `const BODY_LIMIT: usize = 20 * wisp::MB;`
@@ -83,7 +105,8 @@ macro_rules! main {
 
 /// Includes the code `wisp-build` generated and brings `App` into scope,
 /// for a `main` of your own: `wisp::app!(); fn main() { setup(); wisp::run::<App>(); }`.
-/// `src/hooks.rs` is `crate::hooks`, so routes can use what it defines.
+/// `src/hooks.rs` is `crate::hooks`, so routes can use what it defines, and
+/// each `src/NAME.rs` this file does not declare is `crate::NAME`.
 #[macro_export]
 macro_rules! app {
     () => {
@@ -91,6 +114,8 @@ macro_rules! app {
         mod __wisp {
             include!(concat!(env!("OUT_DIR"), "/wisp.rs"));
         }
+        #[allow(unused_imports)]
+        use __wisp::__mods::*;
         use __wisp::App;
         #[allow(unused_imports)]
         use __wisp::hooks;
@@ -165,6 +190,7 @@ pub fn provide<T: Send + Sync + 'static>(value: T) {
     let mut all = STATE.write().unwrap_or_else(|e| e.into_inner());
     all.retain(|(t, _)| *t != TypeId::of::<T>());
     all.push((TypeId::of::<T>(), value));
+    STATE_VERSION.fetch_add(1, std::sync::atomic::Ordering::Release);
 }
 
 /// The `T` given to [`provide`]: `wisp::state::<Db>().query(...)`.
@@ -172,11 +198,19 @@ pub fn provide<T: Send + Sync + 'static>(value: T) {
 /// Panics, naming the type, if none was: that is a missing line at startup,
 /// found by the first request that needs it.
 pub fn state<T: Send + Sync + 'static>() -> &'static T {
-    let all = STATE.read().unwrap_or_else(|e| e.into_inner());
-    let found = all
-        .iter()
-        .find(|(t, _)| *t == TypeId::of::<T>())
-        .and_then(|(_, v)| v.downcast_ref::<T>());
+    // Each thread reads its own copy of `STATE`, taken again only after a
+    // `provide`: a lock here would be written by every thread on every
+    // request, and its cache line passed from core to core.
+    let version = STATE_VERSION.load(std::sync::atomic::Ordering::Acquire);
+    let found = STATE_COPY.with_borrow_mut(|(seen, copy)| {
+        if *seen != version {
+            copy.clone_from(&STATE.read().unwrap_or_else(|e| e.into_inner()));
+            *seen = version;
+        }
+        copy.iter()
+            .find(|(t, _)| *t == TypeId::of::<T>())
+            .and_then(|(_, v)| v.downcast_ref::<T>())
+    });
     match found {
         Some(v) => v,
         None => panic!(
@@ -289,7 +323,17 @@ pub fn secure_eq(a: impl AsRef<[u8]>, b: impl AsRef<[u8]>) -> bool {
 }
 
 /// Values given to [`provide`], leaked: they live as long as the process.
-static STATE: RwLock<Vec<(TypeId, &'static (dyn Any + Send + Sync))>> = RwLock::new(Vec::new());
+static STATE: RwLock<Vec<Provided>> = RwLock::new(Vec::new());
+type Provided = (TypeId, &'static (dyn Any + Send + Sync));
+/// How many times [`provide`] has run: a thread whose copy of `STATE` is
+/// older takes it again.
+static STATE_VERSION: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+thread_local! {
+    /// This thread's copy of `STATE`, and the version it is.
+    static STATE_COPY: std::cell::RefCell<(usize, Vec<Provided>)> =
+        const { std::cell::RefCell::new((0, Vec::new())) };
+}
 
 /// `$HOST:$PORT`, with the defaults described in [`run`]. `HOST` is an IP
 /// address or a name such as `localhost`.
@@ -984,13 +1028,14 @@ pub mod rt {
     pub use crate::dev::chunk;
     /// A handler's parameters, read by name (see `input.rs`).
     pub mod input {
-        pub use crate::input::{all, body, flag, optional, required};
+        pub use crate::input::{all, body, failed, flag, optional, required};
     }
     pub use crate::html::{
         Always, Attr, Direct, Formatted, Maybe, Text, escape, guard_url, raw as html, text,
     };
     pub use crate::live::{
-        Js, js_of, js_text, json, live, live_end, live_how, live_route, same_version,
+        Js, js_attr, js_attrs, js_of, js_text, json, live, live_end, live_how, live_route,
+        same_version, tag_name,
     };
     use crate::{Cx, Error, Out, Response};
 
@@ -1132,4 +1177,18 @@ pub mod rt {
     const FAILED_ICON: &str = "<svg viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" aria-hidden=\"true\">\
 <circle cx=\"8\" cy=\"8\" r=\"6.25\"/><path d=\"M8 4.75v3.75\" stroke-linecap=\"round\"/>\
 <circle cx=\"8\" cy=\"11\" r=\".75\" fill=\"currentColor\" stroke=\"none\"/></svg>";
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn provided_values_reach_every_thread() {
+        struct Answer(u32);
+        super::provide(Answer(1));
+        assert_eq!(super::state::<Answer>().0, 1);
+        super::provide(Answer(2));
+        assert_eq!(super::state::<Answer>().0, 2, "a copy made before is stale");
+        let other = std::thread::spawn(|| super::state::<Answer>().0);
+        assert_eq!(other.join().unwrap(), 2);
+    }
 }
