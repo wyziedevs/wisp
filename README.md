@@ -12,9 +12,10 @@ Wisp builds web apps from files: a folder is a URL, a `.wisp` template is its ma
 
 - **Fast to build.** Markup edits appear in the browser in under 100 ms, without a recompile.
 - **Fast to run.** Templates compile to plain Rust, with no virtual DOM and no runtime template engine.
-- **Works without JavaScript.** Forms are real forms. A 4 KB script makes them update the page in place.
+- **Works without JavaScript.** Forms are real forms, file uploads included. A 7 KB script makes them update the page in place.
 - **Type checked.** Every expression in a template is checked by the Rust compiler.
-- **One file to deploy.** Copy the binary to a server and run it.
+- **Reactive when you want it.** Add a `<script>` and a few directives, no build step.
+- **Deploy anywhere.** One binary, a Docker image, static files, or the edge.
 
 ## Quick start
 
@@ -61,17 +62,52 @@ pub fn increment(cx: &mut Cx) {
 
 Page functions can also be `async`, and can return a `Result` so `?` works inside them.
 
+## Reactivity
+
+Braces `{…}` are Rust and run on the server. A quoted value on a directive, and `{:…}`, are JavaScript and run in the browser.
+
+```html
+<button on:click="count++" class:hot="count > 5">Clicked {:count} times</button>
+<input bind:value="name">
+<p>Hello {:name}</p>
+
+<script>
+  let count = 0
+  let name = data.name          // server values arrive as data.*
+</script>
+```
+
+Turn JavaScript off and the server's HTML still works. Lists and conditions (`{:#each}`, `{:#if}`), client components, stores, a client router, `use:enhance` and `+page.js` are in [docs/client.md](docs/client.md).
+
+Less boilerplate on the server side too:
+
+```html
+<p>{count} items</p>                       <!-- a field of Data -->
+<div class="grid" class:won={data.won}>
+<a {href}>Home</a>
+```
+
 ## Routes
 
 | File           | Purpose                                     |
 | -------------- | ------------------------------------------- |
 | `+page.wisp`   | The page's markup                           |
 | `+page.rs`     | `load` for its data, `#[action]` for forms  |
+| `+page.js`     | Optional `load` that runs in the browser    |
 | `+layout.wisp` | Wraps this page and every page below it     |
 | `+error.wisp`  | Shown when something below it fails         |
 | `+server.rs`   | Plain HTTP endpoints: `get`, `post`, ...    |
 
 Folders named `[slug]` are parameters, `[...rest]` match the rest of the path, and `(group)` folders organize routes without changing the URL.
+
+Beside the routes:
+
+| File                         | Purpose                                                          |
+| ---------------------------- | ---------------------------------------------------------------- |
+| `src/components/Card.wisp`   | A component, used as `<Card title={x}>…</Card>`, with typed props |
+| `src/hooks.rs`               | `init` runs once at start; `before` runs before every request    |
+
+Pages can also stream (server-sent events), take uploads, answer with a file, set signed cookies a visitor cannot forge, and share values like a database pool through `wisp::provide`. [docs/design.md](docs/design.md) shows how.
 
 ## Commands
 
@@ -80,15 +116,52 @@ Folders named `[slug]` are parameters, `[...rest]` match the rest of the path, a
 | `wisp new`   | Create an app                                        |
 | `wisp dev`   | Run it with hot reload                               |
 | `wisp build` | Build one release binary with everything inside      |
+| `wisp build --static` | Write the site as static files              |
+| `wisp build --docker` | Write a Dockerfile                          |
+| `wisp build --target <host>` | Build for Cloudflare, Deno, Vercel, Netlify or Node |
 | `wisp check` | Check routes and templates without compiling         |
+
+## Deploy
+
+```sh
+wisp build                        # one binary
+wisp build --static               # dist/, for GitHub Pages, S3 ...
+wisp build --docker               # Fly.io, Railway, Render, Cloud Run ...
+wisp build --target cloudflare    # or deno, vercel, netlify, node
+```
+
+| Host | How |
+|---|---|
+| VPS, any server | binary |
+| Fly.io, Railway, Render, Cloud Run, Azure Container Apps | `--docker` |
+| GitHub Pages, GitLab Pages | `--static` |
+| Cloudflare, Deno Deploy, Vercel, Netlify | `--target` |
+| AWS Amplify, Firebase, Azure Static Web Apps, Stormkit, Zeabur | `--target node` |
+| AWS Lambda | `tower` feature |
+
+Commands per host, and what the edge can't do, are in [docs/deploy.md](docs/deploy.md).
+
+## Testing and other Rust code
+
+Test an app in process, with no port:
+
+```rust
+let mut app = wisp::test::client::<App>();
+assert!(app.get("/").text().contains("Welcome"));
+```
+
+With the `tower` feature Wisp is a `tower::Service`, so it runs inside axum, behind tower layers, or on Lambda. See [docs/embed.md](docs/embed.md).
 
 ## Performance
 
-On a server-rendered HTML benchmark, Wisp serves 2.2× the requests of ASP.NET Core Razor Pages, using 6 MB of memory instead of about 100 MB. See [bench](bench/README.md) for the method and full results.
+On a server-rendered HTML benchmark on Linux, Wisp serves 13% more requests than Actix Web, 27% more than Axum and 4.4× Fiber, in 3 MB of memory, with no `unsafe` code. See [bench](bench/README.md) for the method and full results.
 
 ## Documentation
 
-[docs/design.md](docs/design.md) covers the template language, routing, actions, the runtime and the dev server.
+- [docs/design.md](docs/design.md): the template language, routing, actions, the runtime and the dev server.
+- [docs/client.md](docs/client.md): scripts, directives, components, stores, the router.
+- [docs/embed.md](docs/embed.md): testing, `wisp::handle`, axum, hyper, Lambda.
+- [docs/deploy.md](docs/deploy.md): static, Docker and every host.
 
 ## License
 
