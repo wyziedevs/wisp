@@ -22,11 +22,18 @@ impl Drop for Server {
 }
 
 fn start() -> Server {
+    start_with(&[])
+}
+
+/// With these environment settings on top of the usual ones.
+fn start_with(env: &[(&str, &str)]) -> Server {
     let mut child = Command::new(env!("CARGO_BIN_EXE_wisp-test-app"))
         .env("PORT", "0")
         .env("HOST", "127.0.0.1")
         .env("WISP_THREADS", "2")
         .env("WISP_SECRET", "0123456789abcdef0123456789abcdef")
+        .env("WISP_WS_IDLE", "2")
+        .envs(env.iter().copied())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -324,6 +331,147 @@ fn server_sent_events() {
     assert!(old.ends_with("data: tick 2\ndata: line two\n\n"), "{old}");
 }
 
+/// A frame as a browser sends it: masked.
+fn ws_frame(fin: bool, op: u8, payload: &[u8]) -> Vec<u8> {
+    let mask = [1, 2, 3, 4];
+    let mut w = vec![if fin { 0x80 | op } else { op }];
+    if payload.len() < 126 {
+        w.push(0x80 | payload.len() as u8);
+    } else {
+        w.push(0x80 | 126);
+        w.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    }
+    w.extend_from_slice(&mask);
+    w.extend(payload.iter().enumerate().map(|(i, b)| b ^ mask[i & 3]));
+    w
+}
+
+/// The next frame from the server, which never masks: `(byte 0, payload)`.
+fn ws_read(s: &mut TcpStream) -> (u8, Vec<u8>) {
+    let mut head = [0u8; 2];
+    s.read_exact(&mut head).unwrap();
+    assert_eq!(head[1] & 0x80, 0, "server frames are not masked");
+    let len = match head[1] {
+        126 => {
+            let mut n = [0u8; 2];
+            s.read_exact(&mut n).unwrap();
+            u16::from_be_bytes(n) as usize
+        }
+        n => n as usize,
+    };
+    let mut payload = vec![0; len];
+    s.read_exact(&mut payload).unwrap();
+    (head[0], payload)
+}
+
+const UPGRADE: &str = "upgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-version: 13\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\n";
+
+#[test]
+fn websocket_idle() {
+    let s = start();
+    let mut c = TcpStream::connect(("127.0.0.1", s.port)).unwrap();
+    c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    c.write_all(format!("GET /ws HTTP/1.1\r\nhost: x\r\n{UPGRADE}\r\n").as_bytes())
+        .unwrap();
+    let mut head = Vec::new();
+    while !head.ends_with(b"\r\n\r\n") {
+        let mut b = [0u8];
+        c.read_exact(&mut b).unwrap();
+        head.push(b[0]);
+    }
+    // Quiet for half of WISP_WS_IDLE: pinged. The pong counts as traffic.
+    let t = std::time::Instant::now();
+    assert_eq!(ws_read(&mut c), (0x89, Vec::new()));
+    c.write_all(&ws_frame(true, 10, b"")).unwrap();
+    assert_eq!(ws_read(&mut c), (0x89, Vec::new()));
+    // Then silent for all of it: closed with 1001.
+    assert_eq!(ws_read(&mut c), (0x88, 1001u16.to_be_bytes().to_vec()));
+    let waited = t.elapsed().as_secs_f64();
+    assert!((2.5..3.8).contains(&waited), "{waited}"); // ping at 1, pong, ping at 2, close at 3
+}
+
+#[test]
+fn websocket_echo() {
+    let s = start();
+    let mut c = TcpStream::connect(("127.0.0.1", s.port)).unwrap();
+    c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    // The first message rides in the same packet as the handshake.
+    let mut hello = format!(
+        "GET /ws HTTP/1.1\r\nhost: 127.0.0.1:{}\r\norigin: http://127.0.0.1:{}\r\n{UPGRADE}\r\n",
+        s.port, s.port
+    )
+    .into_bytes();
+    hello.extend(ws_frame(true, 1, b"first"));
+    c.write_all(&hello).unwrap();
+    let mut head = Vec::new();
+    while !head.ends_with(b"\r\n\r\n") {
+        let mut b = [0u8];
+        c.read_exact(&mut b).unwrap();
+        head.push(b[0]);
+    }
+    let head = String::from_utf8(head).unwrap();
+    assert_eq!(status(&head), 101, "{head}");
+    assert_eq!(
+        header(&head, "sec-websocket-accept"),
+        Some("s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")
+    );
+    assert_eq!(header(&head, "upgrade"), Some("websocket"));
+    assert_eq!(header(&head, "x-app"), Some("test"), "hooks still run");
+    assert_eq!(ws_read(&mut c), (0x81, b"first".to_vec()));
+
+    // A fragmented text message with a ping between its parts, then binary.
+    let mut more = ws_frame(false, 1, b"frag");
+    more.extend(ws_frame(true, 9, b"are you there"));
+    more.extend(ws_frame(true, 0, b"mented"));
+    more.extend(ws_frame(true, 2, &[0xab; 300]));
+    c.write_all(&more).unwrap();
+    assert_eq!(ws_read(&mut c), (0x8a, b"are you there".to_vec()));
+    assert_eq!(ws_read(&mut c), (0x81, b"fragmented".to_vec()));
+    assert_eq!(ws_read(&mut c), (0x82, vec![0xab; 300]));
+
+    // A close is echoed, and the connection ends.
+    c.write_all(&ws_frame(true, 8, &1000u16.to_be_bytes()))
+        .unwrap();
+    assert_eq!(ws_read(&mut c), (0x88, 1000u16.to_be_bytes().to_vec()));
+    let mut rest = Vec::new();
+    assert_eq!(c.read_to_end(&mut rest).map(|_| rest.len()).unwrap_or(0), 0);
+
+    // An unmasked frame breaks the protocol: closed with 1002.
+    let mut c = TcpStream::connect(("127.0.0.1", s.port)).unwrap();
+    c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut raw = format!("GET /ws HTTP/1.1\r\nhost: x\r\n{UPGRADE}\r\n").into_bytes();
+    raw.extend([0x81, 0x02, b'h', b'i']);
+    c.write_all(&raw).unwrap();
+    let mut got = Vec::new();
+    let _ = c.read_to_end(&mut got);
+    assert!(got.ends_with(&[0x88, 0x02, 0x03, 0xea]), "{got:?}");
+
+    // Refused: another site's page (as a cross-site form post would be), a
+    // plain request, another version.
+    let other = s.request(
+        "GET",
+        "/ws",
+        &format!("origin: https://evil.example\r\n{UPGRADE}"),
+        b"",
+    );
+    assert_eq!(status(&other), 403, "{other}");
+    let plain = s.request("GET", "/ws", "", b"");
+    assert_eq!(
+        (status(&plain), header(&plain, "upgrade")),
+        (426, Some("websocket"))
+    );
+    let old = s.request(
+        "GET",
+        "/ws",
+        &UPGRADE.replace("version: 13", "version: 8"),
+        b"",
+    );
+    assert_eq!(
+        (status(&old), header(&old, "sec-websocket-version")),
+        (426, Some("13"))
+    );
+}
+
 #[test]
 fn files_from_a_directory() {
     let s = start();
@@ -505,11 +653,18 @@ fn client_parity() {
     let v = env!("CARGO_PKG_VERSION");
 
     // `{:expr}`: an anchor, what the server knows of it (a server value's
-    // path), and an end. A live attribute keeps its static text. Client
-    // blocks are templates whose elements bind per copy.
+    // path, or a script variable set to a literal), and an end. A live
+    // attribute keeps its static text. Client blocks are templates whose
+    // elements bind per copy, and the copies the server could work out.
     let holes = s.request("GET", "/a2/holes", "", b"");
     assert!(
-        holes.contains("<h1 id=\"title\"><template data-w=\"0.0\"></template><!----></h1>"),
+        holes.contains("<h1 id=\"title\"><template data-w=\"0.0\"></template>Holes<!----></h1>"),
+        "{holes}"
+    );
+    assert!(
+        holes.contains("</template><!--[--><li data-w=\"9\"><template data-w=\"10\"></template>0<!---->: <template data-w=\"11\"></template>one<!----></li>")
+            && holes.contains("<!--[--><p id=\"named\">Named <template data-w=\"15\"></template>Ann<!----></p>")
+            && !holes.contains("<!--[--><p id=\"closed\">"),
         "{holes}"
     );
     assert!(
@@ -610,6 +765,70 @@ fn client_parity() {
 }
 
 #[test]
+fn first_paint() {
+    let s = start();
+    let page = s.request("GET", "/a2/paint", "", b"");
+    let has = |want: &str| assert!(page.contains(want), "{want} in {page}");
+    // Script variables set from `data`, a keyed each with a nested if, an
+    // each's {:else}, and Rust loop values: painted after their templates.
+    has("<template data-w=\"0.0\"></template>Paint &lt;me&gt;<!---->");
+    has(
+        "<!--[--><li class=\"todo\" data-w=\"2\"><template data-w=\"3\"></template>0<!---->. <template data-w=\"4\"></template>one<!---->",
+    );
+    has("</template><!--[--> <b class=\"tick\">done</b><!--]--></li>");
+    has("<!--[--><li id=\"empty-else\">empty</li><!--]-->");
+    // The if's template in the each's template and in both copies, and
+    // the one copy of it whose todo is done.
+    assert_eq!(page.matches("<b class=\"tick\">").count(), 4, "{page}");
+    assert_eq!(
+        page.matches("<span class=\"rdone\">one</span>").count(),
+        2,
+        "{page}"
+    );
+    assert_eq!(
+        page.matches("<span class=\"rdone\">two</span>").count(),
+        1,
+        "{page}"
+    );
+    // A component that renders itself, painted to the end of its data.
+    let names: Vec<&str> = page
+        .split("<li class=\"node\"><template data-w=\"0\"></template>")
+        .skip(1)
+        .map(|s| &s[..s.find('<').unwrap()])
+        .collect();
+    assert_eq!(names, ["root", "a", "a1", "b"]);
+    // A component with its props and slot.
+    has("<span class=\"label\"><template data-w=\"0\"></template>one<!----></span>");
+    has(
+        "<template data-wslot></template><!--[--><i class=\"slot\"><template data-w=\"13\"></template>1<!----></i><!--]-->",
+    );
+    // `data` in an arrow's or a function's parameters is not the page's:
+    // only the fields the page reads are sent.
+    assert!(!page.contains("secret"), "{page}");
+
+    // The recursive component's module needs no import of itself.
+    let js = body(&s.request("GET", &module_url(&page, 0), "", b"")).to_string();
+    let tree = js
+        .lines()
+        .filter_map(|l| l.strip_prefix("import \"")?.strip_suffix("\";"))
+        .find(|u| body(&s.request("GET", u, "", b"")).contains("Tree.wisp"))
+        .expect("the tree's module")
+        .to_string();
+    let src = body(&s.request("GET", &tree, "", b"")).to_string();
+    assert!(
+        !src.contains(&tree[..tree.find('?').unwrap()]) && src.contains("[\"comp\", "),
+        "{src}"
+    );
+
+    // A `+page.js` load gets the route and its parameters.
+    let params = s.request("GET", "/a2/params/one", "", b"");
+    assert!(
+        params.contains("]],\"r\":\"/a2/params/[slug]\",\"p\":{\"slug\":\"one\"}}</script>"),
+        "{params}"
+    );
+}
+
+#[test]
 fn template_shorthands() {
     let s = start();
     let page = s.request("GET", "/sugar", "", b"");
@@ -627,4 +846,97 @@ fn template_shorthands() {
     let api = s.request("GET", "/sugar/api", "", b"");
     assert_eq!(header(&api, "content-type"), Some("application/json"));
     assert_eq!(body(&api), "[[\"a\\u003cb\",1],[\"c\",null]]");
+}
+
+#[test]
+fn param_matchers() {
+    let s = start();
+    let m = |path: &str| {
+        let r = s.request("GET", path, "", b"");
+        match body(&r).split_once("<p id=\"m\">") {
+            Some((_, rest)) => rest.split("</p>").next().unwrap().to_string(),
+            None => status(&r).to_string(),
+        }
+    };
+    // A matched param goes before an unmatched one; a segment a matcher
+    // refuses goes on to the next route. Matchers see the decoded segment.
+    assert_eq!(m("/match/12"), "int 12");
+    assert_eq!(m("/match/ab"), "word ab");
+    assert_eq!(m("/match/%61b"), "word ab");
+    assert_eq!(m("/match/Zz"), "slug Zz");
+    // `int` takes only what fits a u64, so its `parse().unwrap()` holds.
+    assert_eq!(
+        m("/match/99999999999999999999"),
+        "slug 99999999999999999999"
+    );
+    assert_eq!(m("/match/opt"), "opt");
+    assert_eq!(m("/match/opt/5"), "opt");
+    assert_eq!(m("/match/opt/x"), "404");
+}
+
+#[test]
+fn snippets() {
+    let s = start();
+    let page = s.request("GET", "/snippets", "", b"");
+    let html = body(&page);
+    // Rendered in the page, with a snippet rendering another.
+    let rows = "<tr><td>0</td><td>pen</td><td>2</td></tr><tr><td>1</td><td>ink</td><td>5</td></tr>";
+    assert!(
+        html.contains(&format!("<table id=\"own\">{rows}</table>")),
+        "{html}"
+    );
+    // Given to a component, by name and as a child next to its children.
+    assert!(
+        html.contains(&format!("<table class=\"t\">{rows}</table>")),
+        "{html}"
+    );
+    assert!(
+        html.contains(
+            "<table class=\"t\"><tr><td>0:pen</td></tr><tr><td>1:ink</td></tr>
+
+<caption>kids</caption>
+</table>"
+        ),
+        "{html}"
+    );
+    // `{:@render}`: drawn by the browser, and first by the server when it
+    // knows the arguments.
+    let chips = html.split("<p id=\"chips\">").nth(1).unwrap();
+    let chips = chips.split("</p>").next().unwrap();
+    assert_eq!(chips.matches("<b class=\"chip\">").count(), 5, "{chips}");
+    assert!(
+        chips.contains("<b class=\"chip\"><template data-w=\"3\"></template>x<!----></b>"),
+        "{chips}"
+    );
+    assert!(chips.contains(">y<!----></b>"), "{chips}");
+}
+
+#[test]
+fn connection_cap() {
+    let s = start_with(&[("WISP_MAX_CONNS", "2")]);
+    let open = || {
+        let c = TcpStream::connect(("127.0.0.1", s.port)).unwrap();
+        c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        c
+    };
+    // Two idle connections fill it (one of them a WebSocket), so a third
+    // is answered 503 and closed without being read.
+    let a = open();
+    let mut ws = open();
+    write!(ws, "GET /ws HTTP/1.1\r\nhost: x\r\n{UPGRADE}\r\n").unwrap();
+    let mut head = [0u8; 12];
+    ws.read_exact(&mut head).unwrap();
+    assert_eq!(&head, b"HTTP/1.1 101");
+    let mut got = String::new();
+    let _ = open().read_to_string(&mut got);
+    assert_eq!(status(&got), 503, "{got}");
+    // A slot comes back when a connection closes.
+    drop(a);
+    for _ in 0..50 {
+        if status(&s.request("GET", "/", "", b"")) == 200 {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!("no slot came back");
 }

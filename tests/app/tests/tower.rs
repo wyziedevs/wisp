@@ -82,6 +82,16 @@ fn serves_pages_forms_and_limits() {
                 .await
                 .ends_with("data: tick 2\ndata: line two\n\n")
         );
+
+        // Upgrades need Wisp's own server.
+        let ws = http::Request::get("/ws")
+            .header("upgrade", "websocket")
+            .header("connection", "upgrade")
+            .header("sec-websocket-version", "13")
+            .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+            .body(Body::full(""))
+            .unwrap();
+        assert_eq!(svc.call(ws).await.unwrap().status(), 501);
     });
 }
 

@@ -16,7 +16,7 @@ pub fn load() -> Data {
 #[action]
 pub async fn add(cx: &mut Cx) -> Result<()> {
     let text = cx.form().required("text")?.into_owned();
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    wisp::sleep(std::time::Duration::from_millis(300)).await;
     ITEMS.lock().unwrap().push(text);
     Ok(())
 }
