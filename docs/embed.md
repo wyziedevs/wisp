@@ -65,9 +65,7 @@ socket and the connection closes when it returns:
 
 ```rust
 // src/routes/ws/+server.rs
-use wisp::prelude::*;
-
-pub fn get() -> Response {
+fn get() -> Response {
     Response::websocket(|ws| async move {
         while let Some(msg) = ws.recv().await {
             ws.send(msg).await?;          // a String is text, a Vec<u8> binary
@@ -183,7 +181,7 @@ Send some paths to an axum `Router` from `before`, or from a catch-all
 
 ```rust
 // src/hooks.rs
-pub async fn before(cx: &mut Cx) -> Result<Option<Response>> {
+async fn before(cx: &mut Cx) -> Result<Option<Response>> {
     if cx.path().starts_with("/api") {
         let mut api = api_router();                      // an axum::Router
         return Ok(Some(wisp::tower::call(&mut api, cx).await?));

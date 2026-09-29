@@ -39,7 +39,7 @@ A route with `[params]` says which pages to write:
 
 ```rust
 // src/routes/blog/[slug]/+page.rs
-pub fn entries() -> Vec<&'static str> {
+fn entries() -> Vec<&'static str> {
     vec!["hello", "second-post"]
 }
 ```

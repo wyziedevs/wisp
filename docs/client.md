@@ -24,7 +24,9 @@ A bare `<script>` (no attributes) is the file's client script. It works in
 pages, layouts and components, and runs once for each place the file is shown.
 
 - Top-level `let`s are the state. Assign to one and the page updates.
-- At most one per file.
+- `let total = $derived(price * qty)` is a value worked out from others:
+  it is set again before every redraw, so anything that reads it is current.
+- At most one script per file.
 - `import` lines at the top are moved to the module's head, so
   `import confetti from 'https://esm.sh/canvas-confetti'` works.
 - Errors point at the real `.wisp` file and line.
@@ -96,7 +98,7 @@ own types, derive it:
 
 ```rust
 #[derive(Json)]
-pub struct Item { pub name: String, pub price: u32 }
+struct Item { name: String, price: u32 }
 ```
 
 A value that can't be sent is a compile error that names `wisp::Json`. A
@@ -224,10 +226,11 @@ component only the browser draws can use any `Json` type, such as `&str`.
 Available inside any client script. No imports.
 
 ```js
-const double = derived(() => count * 2)            // {:double.value}
+let double = $derived(count * 2)                   // {:double}, kept current
 
+watch(() => data.id, (id) => { load(id) })         // when data.id changes
 effect(() => { document.title = `(${count})` })    // after every redraw
-effect(() => { load(id) }, () => [id])             // only when id changes
+effect(() => { load(id) }, () => [id])             // at the start, and when id changes
                                                    // (return a function to clean up)
 onMount(() => { ready = true })                    // may return a cleanup
 onDestroy(() => socket.close())
@@ -251,7 +254,7 @@ import { store, persisted, derived } from 'wisp'
 
 export const cart = store([])
 export const theme = persisted('theme', 'light')    // saved in localStorage
-export const count = derived(() => cart.value.length)
+export const count = derived(() => cart.value.length)  // a store's derived value
 ```
 
 ```html
@@ -379,8 +382,8 @@ Small additions to server templates, in the same spirit.
 ```
 
 ```rust
-pub fn get() -> Response {
-    Response::json_of(&Stats { hits: 3 })  // uses #[derive(Json)], no serde
+fn get() -> Stats {                        // a +server.rs endpoint:
+    Stats { hits: 3 }                      // sent as JSON, #[derive(Json)], no serde
 }
 ```
 

@@ -1,10 +1,8 @@
-use wisp::prelude::*;
-
-pub struct Data {
-    pub n: u64,
+struct Data {
+    n: u64,
 }
 
-/// The matcher let only digits through.
-pub fn load(cx: &mut Cx) -> Data {
-    Data { n: cx.param("n").parse().unwrap() }
+/// The matcher lets only digits through, so `n` is always a `u64`.
+fn load(n: u64) -> Data {
+    Data { n }
 }

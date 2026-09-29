@@ -9,13 +9,14 @@
      posted. Without it, each key is its own form post, which works too. -->
 <script>
   let guess = data.guess
+  let full = $derived(guess.length === 5)
   let pressed = ''
   let form, grid, enter
   const POP = [{ scale: 1.12 }, { scale: 1 }]
   const SHAKE = { translate: ['0', '-6px', '6px', '-4px', '4px', '0'] }
 
   // The server has a new row: start a fresh guess.
-  effect(() => { guess = data.guess }, () => [data.tries])
+  watch(() => data.tries, () => (guess = data.guess))
 
   function type(key) {
     if (data.over) return
@@ -37,7 +38,10 @@
     }
   }
 
-  const pop = (tile) => ({ update: (letter) => letter && tile.animate(POP, 150) })
+  // A tile pops when a letter lands in it.
+  function pop(tile) {
+    return { update: (letter) => letter && tile.animate(POP, 150) }
+  }
 </script>
 
 <form class="wisple" method="post" action="?/enter" bind:this="form" on:keydown.window="press">
@@ -83,12 +87,12 @@
         {#each keys as row, r}
           <div class="row">
             {#if r == 2}
-              <button class="wide enter" disabled={!full} :disabled="guess.length < 5" bind:this="enter">Enter</button>
+              <button class="wide enter" disabled={!full} :disabled="!full" bind:this="enter">Enter</button>
             {/if}
             {#each row as key}
               <button class={key.mark.class()} formaction="?/update" name="key" value={key.letter}
                       aria-label="{key.letter} {key.mark.label()}" disabled={full}
-                      :disabled="guess.length === 5" class:pressed="pressed === key.letter"
+                      :disabled="full" class:pressed="pressed === key.letter"
                       on:click.prevent="type(key.letter)">{key.letter}</button>
             {/each}
             {#if r == 2}

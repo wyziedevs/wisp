@@ -174,18 +174,33 @@ impl Cx {
     /// Panics if the route has no such parameter: that is a typo in code,
     /// not bad input.
     pub fn param(&self, name: &str) -> &str {
-        match self.names.iter().position(|n| *n == name) {
-            Some(i) => self.decoded[i]
-                .as_deref()
-                .unwrap_or_else(|| self.str(self.params[i])),
+        match self.route_param(name) {
+            Some(v) => v,
             None => panic!("route has no parameter `{name}` (it has {:?})", self.names),
         }
+    }
+
+    /// The route parameter `name`, if the route has one.
+    pub(crate) fn route_param(&self, name: &str) -> Option<&str> {
+        let i = self.names.iter().position(|n| *n == name)?;
+        Some(
+            self.decoded[i]
+                .as_deref()
+                .unwrap_or_else(|| self.str(self.params[i])),
+        )
     }
 
     /// First query parameter named `name`, decoded.
     pub fn query(&self, name: &str) -> Option<Cow<'_, str>> {
         pairs(&self.buf[self.query.range()])
             .find(|(k, _)| k == name)
+            .map(|(_, v)| v)
+    }
+
+    /// Every query parameter named `name`, decoded, in order.
+    pub(crate) fn query_all<'a>(&'a self, name: &'a str) -> impl Iterator<Item = Cow<'a, str>> {
+        pairs(&self.buf[self.query.range()])
+            .filter(move |(k, _)| k == name)
             .map(|(_, v)| v)
     }
 
@@ -318,6 +333,44 @@ impl Cx {
         self.locals.iter().find(|(t, _)| *t == id)?.1.downcast_ref()
     }
 
+    /// Takes the value of type `T` this request was given with [`Cx::set`]
+    /// out of it, so it need not be `Clone`.
+    pub fn take<T: Any>(&mut self) -> Option<T> {
+        let id = TypeId::of::<T>();
+        let at = self.locals.iter().position(|(t, _)| *t == id)?;
+        let (_, value) = self.locals.swap_remove(at);
+        value.downcast().ok().map(|v| *v)
+    }
+
+    /// A form that did not pass: the page renders with `status` (422, say),
+    /// and its `load`, which runs next, reads `problem` with [`Cx::get`]:
+    /// `cx.fail(422, Problem("Choose a photo"))`.
+    pub fn fail<T: Any + Send + Sync>(&mut self, status: u16, problem: T) {
+        self.set_status(status);
+        self.set(problem);
+    }
+
+    /// A message for the next page this visitor sees, which reads it with
+    /// [`Cx::flashed`]: `cx.flash("Saved"); redirect("/")`. It waits in a
+    /// cookie until then, or until the browser closes.
+    pub fn flash(&mut self, message: &str) {
+        let options = CookieOptions {
+            max_age: None,
+            ..CookieOptions::default()
+        };
+        self.set_cookie_with(FLASH, Escape(message), options);
+    }
+
+    /// The message [`Cx::flash`] left, once: reading it deletes it.
+    pub fn flashed(&mut self) -> Option<String> {
+        let message = CookieReader::new(self.cookie(FLASH)?)
+            .text()
+            .ok()?
+            .into_owned();
+        self.set_cookie(FLASH, "");
+        Some(message)
+    }
+
     /// Sets a cookie for the whole site, kept for 400 days (the most browsers
     /// allow) and hidden from page scripts. The value is anything printable,
     /// such as a number or a string; an empty one deletes the cookie.
@@ -429,6 +482,37 @@ impl Cx {
             Some(rest) => rest.split('&').next().unwrap_or(""),
             None => "default",
         }
+    }
+}
+
+#[cfg(test)]
+impl Cx {
+    /// Builds a Cx the way the server does: bytes in the buffer, spans into
+    /// it. Each of `params` is a name and its text, found in the path.
+    pub(crate) fn for_test(raw: &str, params: &[(&'static str, &str)]) -> Cx {
+        let mut cx = Cx::new("127.0.0.1:1".parse().unwrap());
+        cx.buf.extend_from_slice(raw.as_bytes());
+        let (head, body) = raw.split_once("\r\n\r\n").unwrap();
+        let mut lines = head.split("\r\n");
+        let target = lines.next().unwrap().split(' ').nth(1).unwrap();
+        let at = |s: &str| Span::of(raw.as_bytes(), s.as_bytes());
+        let (path, query) = target.split_once('?').unwrap_or((target, ""));
+        cx.method = Method::parse(head.split(' ').next().unwrap());
+        cx.path = at(path);
+        cx.query = at(query);
+        cx.body = at(body);
+        for l in lines {
+            let (n, v) = l.split_once(": ").unwrap();
+            cx.headers.push((at(n), at(v)));
+        }
+        let mut spans = [Span::default(); MAX_PARAMS];
+        for (span, (_, value)) in spans.iter_mut().zip(params) {
+            let start = path.find(value).expect("a parameter's text is in the path");
+            *span = at(&path[start..start + value.len()]);
+        }
+        let names: Vec<&'static str> = params.iter().map(|(n, _)| *n).collect();
+        cx.set_params(names.leak(), spans);
+        cx
     }
 }
 
@@ -545,6 +629,18 @@ impl<'a, 'f> CookieWriter<'a, 'f> {
     }
 }
 
+/// The cookie [`Cx::flash`] keeps its message in.
+const FLASH: &str = "wisp-flash";
+
+/// Text written for a cookie, escaped as a `#[derive(Cookie)]` field is.
+struct Escape<'a>(&'a str);
+
+impl std::fmt::Display for Escape<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        CookieWriter::new(f).field(self.0)
+    }
+}
+
 struct Escaped<'a, 'f>(&'a mut std::fmt::Formatter<'f>);
 
 impl std::fmt::Write for Escaped<'_, '_> {
@@ -628,23 +724,41 @@ mod tests {
         assert_eq!(decode(b"%FF", true), "\u{FFFD}");
     }
 
-    /// Builds a Cx the way the server does: bytes in the buffer, spans into it.
+    #[test]
+    fn a_failed_form() {
+        struct Problem(&'static str);
+        let mut cx = cx_for("POST / HTTP/1.1\r\n\r\n");
+        cx.fail(422, Problem("Choose a photo"));
+        assert_eq!(
+            (cx.status, cx.get::<Problem>().map(|p| p.0)),
+            (422, Some("Choose a photo"))
+        );
+        assert_eq!(cx.take::<Problem>().map(|p| p.0), Some("Choose a photo"));
+        assert!(cx.get::<Problem>().is_none() && cx.take::<Problem>().is_none());
+    }
+
+    #[test]
+    fn flash_messages_are_read_once() {
+        let mut cx = cx_for("POST / HTTP/1.1\r\n\r\n");
+        cx.flash("Saved; 100% | done");
+        assert_eq!(
+            cx.out_headers[0].1,
+            "wisp-flash=Saved%3B%20100%25%20%7C%20done; Path=/; HttpOnly; SameSite=Lax"
+        );
+        assert_eq!(cx.flashed().as_deref(), Some("Saved; 100% | done"));
+        assert_eq!(cx.flashed(), None);
+        let mut next = cx_for("GET / HTTP/1.1\r\nCookie: wisp-flash=Hi%20there\r\n\r\n");
+        assert_eq!(next.flashed().as_deref(), Some("Hi there"));
+        assert!(
+            next.out_headers[0]
+                .1
+                .starts_with("wisp-flash=; Path=/; Max-Age=0;")
+        );
+        assert_eq!(cx_for("GET / HTTP/1.1\r\n\r\n").flashed(), None);
+    }
+
     fn cx_for(raw: &str) -> Cx {
-        let mut cx = Cx::new("127.0.0.1:1".parse().unwrap());
-        cx.buf.extend_from_slice(raw.as_bytes());
-        let (head, body) = raw.split_once("\r\n\r\n").unwrap();
-        let mut lines = head.split("\r\n");
-        let target = lines.next().unwrap().split(' ').nth(1).unwrap();
-        let at = |s: &str| Span::of(raw.as_bytes(), s.as_bytes());
-        let (path, query) = target.split_once('?').unwrap_or((target, ""));
-        cx.path = at(path);
-        cx.query = at(query);
-        cx.body = at(body);
-        for l in lines {
-            let (n, v) = l.split_once(": ").unwrap();
-            cx.headers.push((at(n), at(v)));
-        }
-        cx
+        Cx::for_test(raw, &[])
     }
 
     #[test]

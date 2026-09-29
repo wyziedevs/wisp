@@ -701,6 +701,55 @@ pub fn imports(src: &str) -> Vec<(usize, usize)> {
     out
 }
 
+/// `src` with each `let name = $derived(expression)` (or `const`) at its top
+/// level rewritten for live.js, as `let name = __wisp_d(() => (expression),
+/// (__v) => name = __v)`, which works `name` out again before every redraw.
+/// Line breaks stay where they were. Any other `$derived` is an error, with
+/// its offset.
+pub fn derived(src: &str) -> Result<String, (usize, String)> {
+    let t = tokens(src);
+    let mut out = String::with_capacity(src.len());
+    let mut at = 0;
+    let mut k = 0;
+    while k < t.len() {
+        if t[k].member || !t[k].is(src, Kind::Ident, "$derived") {
+            k += 1;
+            continue;
+        }
+        let declared = k >= 3
+            && t[k - 3].depth == 0
+            && matches!(t[k - 3].text(src), "let" | "const")
+            && t[k - 2].kind == Kind::Ident
+            && t[k - 1].is(src, Kind::Punct, "=");
+        let open = k + 1;
+        let end = close(&t, open);
+        if !declared || !t.get(open).is_some_and(|n| n.is(src, Kind::Punct, "(")) {
+            return Err((
+                t[k].start,
+                "`$derived` declares a value at the top of the script: `let name = $derived(expression)`".into(),
+            ));
+        }
+        if end >= t.len() || end == open + 1 {
+            return Err((
+                t[k].start,
+                "`$derived(…)` takes the expression the value is worked out from".into(),
+            ));
+        }
+        let (keyword, name) = (t[k - 3], t[k - 2].text(src));
+        out.push_str(&src[at..keyword.start]);
+        // `const` too: the value is set again on every redraw.
+        out.push_str("let");
+        out.push_str(&src[keyword.end..t[k].start]);
+        out.push_str("__wisp_d(() => (");
+        out.push_str(&src[t[open].end..t[end].start]);
+        out.push_str(&format!("), (__v) => {name} = __v)"));
+        at = t[end].end;
+        k = end + 1;
+    }
+    out.push_str(&src[at..]);
+    Ok(out)
+}
+
 /// `src` with each range replaced by spaces, its line breaks kept, so the
 /// rest keeps its line numbers.
 pub fn blank(src: &str, ranges: &[(usize, usize)]) -> String {
@@ -799,6 +848,30 @@ mod tests {
 
     fn roots(src: &str) -> Vec<String> {
         chains(src).into_iter().map(|(p, _)| p.join(".")).collect()
+    }
+
+    #[test]
+    fn derived_values() {
+        let src = "let n = 0\nconst double = $derived(n * 2)\nlet ready = $derived(\n  guess.length === 5\n)\nx.$derived(1)";
+        let out = derived(src).unwrap();
+        assert_eq!(
+            out,
+            "let n = 0\nlet double = __wisp_d(() => (n * 2), (__v) => double = __v)\n\
+             let ready = __wisp_d(() => (\n  guess.length === 5\n), (__v) => ready = __v)\nx.$derived(1)"
+        );
+        assert_eq!(out.lines().count(), src.lines().count());
+        for bad in [
+            "f($derived(1))",
+            "let x = $derived",
+            "let x = $derived()",
+            "{ let y = $derived(1) }",
+        ] {
+            let (off, msg) = derived(bad).unwrap_err();
+            assert!(
+                bad[off..].starts_with("$derived") && msg.contains("$derived"),
+                "{bad}: {msg}"
+            );
+        }
     }
 
     #[test]

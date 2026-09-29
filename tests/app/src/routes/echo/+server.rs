@@ -1,8 +1,6 @@
-use wisp::prelude::*;
-
-pub const BODY_LIMIT: usize = 64 * wisp::KB;
+const BODY_LIMIT: usize = 64 * wisp::KB;
 
 /// The body's length and text, to check how it arrived.
-pub fn post(cx: &mut Cx) -> Response {
+fn post(cx: &mut Cx) -> Response {
     Response::text(format!("{}:{}", cx.body().len(), String::from_utf8_lossy(cx.body())))
 }
