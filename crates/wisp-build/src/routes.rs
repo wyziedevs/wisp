@@ -26,6 +26,8 @@ pub struct Route {
     pub segs: Vec<Seg>,
     pub page: bool,
     pub page_rs: bool,
+    /// A `+page.js` whose `load` runs in the browser.
+    pub page_js: bool,
     pub server: bool,
     /// Indices into `Tree::layouts`, outermost first.
     pub layouts: Vec<usize>,
@@ -83,7 +85,10 @@ impl Route {
         let mut out: Vec<Vec<&Seg>> = vec![Vec::new()];
         for seg in &self.segs {
             if let Seg::Optional(_) = seg {
-                let with: Vec<_> = out.iter().map(|v| v.iter().copied().chain([seg]).collect()).collect();
+                let with: Vec<_> = out
+                    .iter()
+                    .map(|v| v.iter().copied().chain([seg]).collect())
+                    .collect();
                 out.extend(with);
             } else {
                 out.iter_mut().for_each(|v| v.push(seg));
@@ -94,20 +99,42 @@ impl Route {
 }
 
 pub const MAX_PARAMS: usize = 8;
+/// The deepest path the server routes (`MAX_SEGS` in wisp's http.rs).
+const MAX_SEGS: usize = 32;
 
 pub fn scan(routes_dir: &Path) -> Result<Tree, String> {
     let mut tree = Tree::default();
     if routes_dir.is_dir() {
-        walk(routes_dir, &mut Vec::new(), &mut Vec::new(), None, &mut tree)?;
+        walk(
+            routes_dir,
+            routes_dir,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            None,
+            &mut tree,
+        )?;
     }
+    let show = |p: &Path| show(routes_dir, p);
 
     for r in &tree.routes {
         let params = r.params();
         if params.len() > MAX_PARAMS {
-            return Err(format!("{}: more than {MAX_PARAMS} parameters", r.pattern()));
+            return Err(format!(
+                "{}: more than {MAX_PARAMS} parameters",
+                r.pattern()
+            ));
+        }
+        if r.segs.len() > MAX_SEGS {
+            return Err(format!(
+                "{}: deeper than {MAX_SEGS} segments, which no request reaches",
+                show(&r.dir)
+            ));
         }
         if r.segs.iter().filter(|s| matches!(s, Seg::Rest(_))).count() > 1 {
-            return Err(format!("{}: at most one [...rest] segment per route", r.pattern()));
+            return Err(format!(
+                "{}: at most one [...rest] segment per route",
+                r.pattern()
+            ));
         }
         for (i, p) in params.iter().enumerate() {
             if params[..i].contains(p) {
@@ -118,7 +145,12 @@ pub fn scan(routes_dir: &Path) -> Result<Tree, String> {
 
     // Route order only makes ids and generated code deterministic; matching
     // order comes from `arms`.
-    tree.routes.sort_by(|a, b| priority(&a.segs.iter().collect::<Vec<_>>(), &b.segs.iter().collect::<Vec<_>>()));
+    tree.routes.sort_by(|a, b| {
+        priority(
+            &a.segs.iter().collect::<Vec<_>>(),
+            &b.segs.iter().collect::<Vec<_>>(),
+        )
+    });
 
     // Two routes that can match the exact same URLs are ambiguous.
     let mut seen: Vec<(Vec<String>, usize)> = Vec::new();
@@ -137,9 +169,9 @@ pub fn scan(routes_dir: &Path) -> Result<Tree, String> {
                     return Err(format!(
                         "routes {} ({}) and {} ({}) match the same URLs",
                         tree.routes[other].pattern(),
-                        tree.routes[other].dir.display(),
+                        show(&tree.routes[other].dir),
                         r.pattern(),
-                        r.dir.display()
+                        show(&r.dir)
                     ));
                 }
                 Some(_) => {}
@@ -165,16 +197,61 @@ impl Tree {
     }
 }
 
-fn walk(dir: &Path, segs: &mut Vec<Seg>, layouts: &mut Vec<usize>, error: Option<usize>, tree: &mut Tree) -> Result<(), String> {
+/// `src/routes/...`, for messages.
+fn show(routes_dir: &Path, p: &Path) -> String {
+    let rel = p
+        .strip_prefix(routes_dir)
+        .unwrap_or(p)
+        .to_string_lossy()
+        .replace('\\', "/");
+    if rel.is_empty() {
+        "src/routes".into()
+    } else {
+        format!("src/routes/{rel}")
+    }
+}
+
+/// A file an editor keeps beside the one being edited: a swap file, a
+/// backup, a lock. Never part of the app.
+pub fn editor_temp(name: &str) -> bool {
+    name.starts_with(['.', '#'])
+        || name.ends_with('~')
+        || [".swp", ".swx", ".tmp", ".bak", ".orig"]
+            .iter()
+            .any(|e| name.ends_with(e))
+        || name.contains("___jb_")
+        || name == "4913"
+}
+
+fn walk(
+    root: &Path,
+    dir: &Path,
+    segs: &mut Vec<Seg>,
+    layouts: &mut Vec<usize>,
+    error: Option<usize>,
+    tree: &mut Tree,
+) -> Result<(), String> {
+    let show = |p: &Path| show(root, p);
     let mut files = Vec::new();
     let mut dirs = Vec::new();
-    for e in fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
-        let e = e.map_err(|e| format!("{}: {e}", dir.display()))?;
+    for e in fs::read_dir(dir).map_err(|e| format!("{}: {e}", show(dir)))? {
+        let e = e.map_err(|e| format!("{}: {e}", show(dir)))?;
         let name = e.file_name().to_string_lossy().into_owned();
+        if editor_temp(&name) {
+            continue;
+        }
         if e.file_type().map_err(|e| e.to_string())?.is_dir() {
             dirs.push(name);
         } else if name.starts_with('+') {
             files.push(name);
+        } else if name.ends_with(".wisp")
+            || matches!(name.as_str(), "page.rs" | "layout.rs" | "server.rs")
+        {
+            // Only `+` files are routes; this one would be ignored.
+            return Err(format!(
+                "{}: route files start with `+`; did you mean `+{name}`?",
+                show(&dir.join(&name))
+            ));
         }
     }
     files.sort();
@@ -182,26 +259,56 @@ fn walk(dir: &Path, segs: &mut Vec<Seg>, layouts: &mut Vec<usize>, error: Option
 
     let has = |f: &str| files.iter().any(|x| x == f);
     for f in &files {
-        const KNOWN: [&str; 6] = ["+page.wisp", "+page.rs", "+layout.wisp", "+layout.rs", "+error.wisp", "+server.rs"];
+        const KNOWN: [&str; 7] = [
+            "+page.wisp",
+            "+page.rs",
+            "+page.js",
+            "+layout.wisp",
+            "+layout.rs",
+            "+error.wisp",
+            "+server.rs",
+        ];
         if !KNOWN.contains(&f.as_str()) {
-            return Err(format!("{}: unknown route file (expected one of {})", dir.join(f).display(), KNOWN.join(", ")));
+            return Err(format!(
+                "{}: unknown route file (expected one of {})",
+                show(&dir.join(f)),
+                KNOWN.join(", ")
+            ));
         }
     }
     if has("+page.rs") && !has("+page.wisp") {
-        return Err(format!("{}: +page.rs needs a +page.wisp next to it", dir.display()));
+        return Err(format!(
+            "{}: +page.rs needs a +page.wisp next to it",
+            show(dir)
+        ));
+    }
+    if has("+page.js") && !has("+page.wisp") {
+        return Err(format!(
+            "{}: +page.js needs a +page.wisp next to it",
+            show(dir)
+        ));
     }
     if has("+layout.rs") && !has("+layout.wisp") {
-        return Err(format!("{}: +layout.rs needs a +layout.wisp next to it", dir.display()));
+        return Err(format!(
+            "{}: +layout.rs needs a +layout.wisp next to it",
+            show(dir)
+        ));
     }
 
     let depth = layouts.len();
     if has("+layout.wisp") {
-        tree.layouts.push(Layout { dir: dir.to_path_buf(), has_rs: has("+layout.rs") });
+        tree.layouts.push(Layout {
+            dir: dir.to_path_buf(),
+            has_rs: has("+layout.rs"),
+        });
         layouts.push(tree.layouts.len() - 1);
     }
     let mut error = error;
     if has("+error.wisp") {
-        tree.errors.push(ErrorPage { dir: dir.to_path_buf(), layouts: layouts.clone() });
+        tree.errors.push(ErrorPage {
+            dir: dir.to_path_buf(),
+            layouts: layouts.clone(),
+        });
         error = Some(tree.errors.len() - 1);
     }
     if has("+page.wisp") || has("+server.rs") {
@@ -210,6 +317,7 @@ fn walk(dir: &Path, segs: &mut Vec<Seg>, layouts: &mut Vec<usize>, error: Option
             segs: segs.clone(),
             page: has("+page.wisp"),
             page_rs: has("+page.rs"),
+            page_js: has("+page.js"),
             server: has("+server.rs"),
             layouts: layouts.clone(),
             error,
@@ -217,12 +325,18 @@ fn walk(dir: &Path, segs: &mut Vec<Seg>, layouts: &mut Vec<usize>, error: Option
     }
 
     for d in dirs {
-        let seg = parse_segment(&d).map_err(|e| format!("{}: {e}", dir.join(&d).display()))?;
+        let seg = parse_segment(&d).map_err(|e| format!("{}: {e}", show(&dir.join(&d))))?;
+        if segs.is_empty() && matches!(&seg, Some(Seg::Static(s)) if s == "_app" || s == "_wisp") {
+            return Err(format!(
+                "{}: /{d} is reserved for Wisp's own files; choose another name",
+                show(&dir.join(&d))
+            ));
+        }
         let pushed = seg.is_some();
         if let Some(s) = seg {
             segs.push(s);
         }
-        walk(&dir.join(&d), segs, layouts, error, tree)?;
+        walk(root, &dir.join(&d), segs, layouts, error, tree)?;
         if pushed {
             segs.pop();
         }
@@ -245,7 +359,12 @@ fn parse_segment(name: &str) -> Result<Option<Seg>, String> {
         }
         Ok(s.to_string())
     };
-    if name.starts_with('(') && name.ends_with(')') {
+    if let Some(inner) = name.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
+        if inner.is_empty() || inner.contains(['(', ')']) {
+            return Err(format!(
+                "`{name}` is not a group: a group is one name in parentheses, like `(marketing)`"
+            ));
+        }
         return Ok(None);
     }
     if let Some(inner) = name.strip_prefix("[[").and_then(|s| s.strip_suffix("]]")) {
@@ -348,7 +467,11 @@ mod tests {
         assert!(t.routes[2].server && !t.routes[2].page);
 
         // `/hello` must reach the optional-lang route before `/[slug]` grabs it.
-        let arms: Vec<_> = t.arms().iter().map(|(_, id)| t.routes[*id].pattern()).collect();
+        let arms: Vec<_> = t
+            .arms()
+            .iter()
+            .map(|(_, id)| t.routes[*id].pattern())
+            .collect();
         let hello = arms.iter().position(|p| p == "/[[lang]]/hello").unwrap();
         let slug = arms.iter().position(|p| p == "/[slug]").unwrap();
         assert!(hello < slug, "{arms:?}");
@@ -371,7 +494,39 @@ mod tests {
         let root = tmp("optional");
         touch(&root, "+page.wisp");
         touch(&root, "[[lang]]/+page.wisp");
-        assert!(scan(&root).unwrap_err().contains("match the same URLs"));
+        let err = scan(&root).unwrap_err();
+        assert!(
+            err.contains("match the same URLs") && err.contains("(src/routes)"),
+            "{err}"
+        );
+        fs::remove_dir_all(&root).unwrap();
+
+        for (file, want) in [
+            ("blog/page.wisp", "did you mean `+page.wisp`"),
+            ("blog/server.rs", "did you mean `+server.rs`"),
+            ("_app/+page.wisp", "reserved"),
+            ("(g)/_wisp/+page.wisp", "reserved"),
+            ("(a)b(c)/+page.wisp", "not a group"),
+        ] {
+            let root = tmp("mistake");
+            touch(&root, file);
+            let err = scan(&root).unwrap_err();
+            assert!(err.contains(want), "{file}: {err}");
+            fs::remove_dir_all(&root).unwrap();
+        }
+
+        // Editors' files beside the real ones are not route files.
+        let root = tmp("editor");
+        for f in [
+            "+page.wisp",
+            "+page.wisp~",
+            ".+page.wisp.swp",
+            "#+page.wisp#",
+            "4913",
+        ] {
+            touch(&root, f);
+        }
+        assert_eq!(scan(&root).unwrap().routes.len(), 1);
         fs::remove_dir_all(&root).unwrap();
     }
 }
