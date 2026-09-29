@@ -1,0 +1,220 @@
+/*
+ * The build error dialog and the waiting line, drawn by wisp-dev.js in dev
+ * builds only. Built on ui.css's tokens and buttons, which load first.
+ */
+
+/* ---- The dialog -------------------------------------------------------------
+   Rises 16px into place as it fades in; leaves by fading where it is. The
+   rise is layout (top), never a transform, so the text stays crisp. */
+
+.wisp-dialog {
+  position: fixed;
+  top: 4rem;
+  box-sizing: border-box;
+  width: min(56rem, 100vw - 2rem);
+  max-width: none;
+  max-height: calc(100vh - 8rem);
+  margin: 0 auto;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--wisp-line);
+  border-radius: 0.5rem;
+  background: var(--wisp-panel);
+  box-shadow: var(--wisp-overlay);
+  color: var(--wisp-ink);
+  font: 400 0.875rem/1.25rem var(--wisp-sans);
+  opacity: 0;
+  transition:
+    opacity 200ms var(--wisp-exit),
+    display 200ms allow-discrete,
+    overlay 200ms allow-discrete;
+}
+
+.wisp-dialog[open] {
+  display: flex;
+  flex-direction: column;
+  opacity: 1;
+  transition:
+    opacity 450ms var(--wisp-enter),
+    top 450ms var(--wisp-enter),
+    display 450ms allow-discrete,
+    overlay 450ms allow-discrete;
+}
+
+@starting-style {
+  .wisp-dialog[open] {
+    top: calc(4rem + 16px);
+    opacity: 0;
+  }
+}
+
+/* The backdrop inherits nothing, so its colors are written out. */
+.wisp-dialog::backdrop {
+  background: rgb(0 0 0 / 0);
+  transition:
+    background-color 200ms cubic-bezier(0.33, 1, 0.68, 1),
+    display 200ms allow-discrete,
+    overlay 200ms allow-discrete;
+}
+
+.wisp-dialog[open]::backdrop {
+  background: rgb(0 0 0 / 0.32);
+  transition-duration: 450ms;
+  transition-timing-function: cubic-bezier(0.05, 0.7, 0.1, 1);
+}
+
+@media (prefers-color-scheme: dark) {
+  .wisp-dialog[open]::backdrop {
+    background: rgb(0 0 0 / 0.5);
+  }
+}
+
+@starting-style {
+  .wisp-dialog[open]::backdrop {
+    background: rgb(0 0 0 / 0);
+  }
+}
+
+/* On a phone the dialog is the whole screen. */
+@media (max-width: 40rem) {
+  .wisp-dialog {
+    top: 0;
+    width: 100vw;
+    height: 100vh;
+    max-height: none;
+    border: 0;
+    border-radius: 0;
+  }
+
+  @starting-style {
+    .wisp-dialog[open] {
+      top: 16px;
+    }
+  }
+}
+
+.wisp-dialog-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 0.75rem 0.75rem 1rem;
+  border-bottom: 1px solid var(--wisp-line);
+}
+
+.wisp-dialog-head > svg {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  color: var(--wisp-danger);
+}
+
+.wisp-dialog-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.wisp-dialog h2 {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.25rem;
+}
+
+.wisp-dialog-title p {
+  margin: 0;
+  color: var(--wisp-slate);
+  font-size: 0.75rem;
+  line-height: 1rem;
+  overflow-wrap: anywhere;
+}
+
+/* A code block: a strip naming what it holds and a control that copies it,
+   in mono on the inset fill behind one hairline. */
+.wisp-code {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  margin: 1rem;
+  overflow: hidden;
+  border: 1px solid var(--wisp-line);
+  border-radius: 0.5rem;
+  background: var(--wisp-inset);
+}
+
+.wisp-code-strip {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.25rem 0.25rem 0.25rem 0.75rem;
+  border-bottom: 1px solid var(--wisp-line);
+  color: var(--wisp-ash);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.025em;
+  line-height: 1rem;
+  text-transform: uppercase;
+}
+
+.wisp-code-strip .wisp-button.wisp-ghost:hover {
+  background-color: var(--wisp-inset-hover);
+}
+
+.wisp-code pre {
+  flex: 1;
+  margin: 0;
+  padding: 0.75rem;
+  overflow: auto;
+  color: var(--wisp-ink);
+  font: 400 0.75rem/1.25rem var(--wisp-mono);
+  tab-size: 4;
+}
+
+/* ---- The waiting line -------------------------------------------------------
+   Two pixels of accent across the top while a rebuild runs, shown only once
+   it has taken 200ms. Inside the dialog when one is open. */
+
+.wisp-wait {
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 2147483647;
+  height: 2px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--wisp-accent) 24%, transparent);
+  pointer-events: none;
+}
+
+.wisp-dialog .wisp-wait {
+  position: absolute;
+}
+
+.wisp-wait::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 30%;
+  background: var(--wisp-accent);
+  animation: wisp-wait 1400ms cubic-bezier(0.65, 0, 0.35, 1) infinite;
+}
+
+@keyframes wisp-wait {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(340%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wisp-dialog,
+  .wisp-dialog::backdrop {
+    transition-duration: 1ms !important;
+  }
+
+  .wisp-wait::before {
+    display: none;
+  }
+}
