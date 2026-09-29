@@ -2,13 +2,14 @@
 //! is left out.
 
 mod common;
+#[path = "../../../tests/shared/temp.rs"]
+mod temp;
 
 use common::Lab;
-use std::path::PathBuf;
+use temp::Temp;
 
-fn export() -> (PathBuf, std::io::Result<()>) {
-    let dir = std::env::temp_dir().join(format!("wisp-lab-export-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+fn export() -> (Temp, std::io::Result<()>) {
+    let dir = Temp::new("export");
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -47,18 +48,16 @@ fn every_page_is_written_where_a_static_host_serves_it() {
     ] {
         assert!(!dir.join(gone).exists(), "{gone} should not be written");
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn a_folder_that_cannot_be_written_is_an_error() {
-    let file = std::env::temp_dir().join(format!("wisp-lab-not-a-folder-{}", std::process::id()));
-    std::fs::write(&file, "x").unwrap();
+    let file = Temp::new("not-a-folder");
+    std::fs::write(&*file, "x").unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
     let done = runtime.block_on(wisp::export::<Lab>(&file));
     assert!(done.is_err());
-    let _ = std::fs::remove_file(&file);
 }

@@ -83,39 +83,47 @@ pub fn build_for(root: &Path, release: bool, quiet: bool, target: Option<&str>) 
         first: None,
     };
     term::each_line(child.stdout.take().expect("stdout is piped"), |line| {
-        if line.contains("\"reason\":\"compiler-message\"") {
-            // Children carry "rendered":null; the diagnostic's own text is the
-            // only string-valued "rendered".
-            let Some(text) = json_string_after(line, "\"rendered\":\"") else {
-                return;
-            };
-            let text = tidy(&text);
-            let plain = strip_ansi(&text);
-            let retold = from_template(&plain, root);
-            match &retold {
-                Some(t) if term::color() => eprint!("{}", colorize(t)),
-                Some(t) => eprint!("{t}"),
-                None if term::color() => eprint!("{text}"),
-                None => eprint!("{plain}"),
-            }
-            if line.contains("\"level\":\"error\"") {
-                let plain = retold.unwrap_or(plain);
-                b.count += 1;
-                if b.first.is_none() {
-                    b.first = location(&plain);
+        let Some(msg) = Json::parse(line) else {
+            return;
+        };
+        match msg.str("reason") {
+            Some("compiler-message") => {
+                let Some(diag) = msg.get("message") else {
+                    return;
+                };
+                let Some(text) = diag.str("rendered") else {
+                    return;
+                };
+                let text = tidy(text);
+                let plain = strip_ansi(&text);
+                let retold = from_template(diag, &plain, root);
+                match &retold {
+                    Some(t) if term::color() => eprint!("{}", colorize(t)),
+                    Some(t) => eprint!("{t}"),
+                    None if term::color() => eprint!("{text}"),
+                    None => eprint!("{plain}"),
                 }
-                b.errors.push_str(&plain);
+                if diag.str("level") == Some("error") {
+                    let plain = retold.unwrap_or(plain);
+                    b.count += 1;
+                    if b.first.is_none() {
+                        b.first = location(&plain);
+                    }
+                    b.errors.push_str(&plain);
+                }
             }
-        } else if line.contains("\"reason\":\"compiler-artifact\"")
-            && line.contains("\"kind\":[\"bin\"]")
-        {
-            let Some(exe) = json_string_after(line, "\"executable\":\"").map(PathBuf::from) else {
-                return;
-            };
-            let named = exe.file_stem().and_then(|s| s.to_str()) == package.as_deref();
-            if named || b.exe.is_none() {
-                b.exe = Some(exe);
+            Some("compiler-artifact") => {
+                let kinds = msg.get("target").and_then(|t| t.get("kind"));
+                let bin = kinds.is_some_and(|k| k.items().any(|k| k.as_str() == Some("bin")));
+                let Some(exe) = msg.str("executable").filter(|_| bin).map(PathBuf::from) else {
+                    return;
+                };
+                let named = exe.file_stem().and_then(|s| s.to_str()) == package.as_deref();
+                if named || b.exe.is_none() {
+                    b.exe = Some(exe);
+                }
             }
+            _ => {}
         }
     });
     b.ok = child.wait().is_ok_and(|s| s.success());
@@ -245,70 +253,63 @@ fn strip_generated_modules(s: &str) -> String {
     out
 }
 
-/// A diagnostic whose primary span is in the generated `wisp.rs`, on a line
-/// that came from a template, retold against the template: its path and
-/// line, its own text with the same part underlined, and the notes. `None`
-/// for anything else.
-fn from_template(diag: &str, root: &Path) -> Option<String> {
-    let lines: Vec<&str> = diag.lines().collect();
-    let arrow = lines
-        .iter()
-        .position(|l| l.trim_start().starts_with("--> "))?;
-    let (_, at) = lines[arrow].rsplit_once("wisp.rs:")?;
-    let generated: usize = at.split(':').next()?.parse().ok()?;
-
-    // `55 |         (&::wisp::rt::Text(&(...))).put(...); // src/routes/boom/+page.wisp:1`
-    let numbered = format!("{generated} |");
-    let code_at = lines
-        .iter()
-        .position(|l| l.trim_start().starts_with(&numbered))?;
-    let code_line = lines[code_at];
-    let bar = code_line.find(" |")? + 2;
-    let code = &code_line[bar..];
+/// A diagnostic (cargo's JSON `message`) whose primary span is in the
+/// generated `wisp.rs`, on a line that came from a template (it ends with
+/// `// src/routes/+page.wisp:2`), retold against the template: its path and
+/// line, its own text with the same part underlined, and the notes. `plain`
+/// is its rendered text, for the heading. `None` for anything else.
+fn from_template(diag: &Json, plain: &str, root: &Path) -> Option<String> {
+    let span = diag
+        .get("spans")?
+        .items()
+        .find(|s| s.get("is_primary") == Some(&Json::Bool(true)))?;
+    if !span.str("file_name")?.ends_with("wisp.rs") {
+        return None;
+    }
+    let first = span.get("text")?.items().next()?;
+    let code = first.str("text")?;
     let (_, origin) = code.rsplit_once("// ")?;
     let (template, line) = origin.trim().rsplit_once(':')?;
     if !template.ends_with(".wisp") {
         return None;
     }
     let line: usize = line.parse().ok()?;
-    let source = std::fs::read_to_string(root.join(template)).ok()?;
+    let source = wisp_build::read_source(&root.join(template)).ok()?;
     let text = source.lines().nth(line.checked_sub(1)?)?.trim_end();
 
-    // The carets under the code, and the label after them.
-    let under = lines.get(code_at + 1).copied().unwrap_or("");
-    let caret = under.find('^');
-    let marked = caret.and_then(|c| {
-        let n = under[c..].bytes().take_while(|&b| b == b'^').count();
-        let label = under[c + n..].trim();
-        let underlined = code.get(c.checked_sub(bar)?..c - bar + n)?;
-        Some((underlined, label))
-    });
-    let column = marked.and_then(|(u, _)| text.find(u));
+    // What is underlined (columns count characters, from 1), and its label.
+    let (from, to) = (first.num("highlight_start")?, first.num("highlight_end")?);
+    let underlined: String = code.chars().skip(from - 1).take(to - from).collect();
+    let label = span.str("label").unwrap_or("");
+    let column = (!underlined.is_empty())
+        .then(|| text.find(&underlined))
+        .flatten();
 
     let num = line.to_string();
     let pad = " ".repeat(num.len());
-    let mut out = lines[..arrow].join("\n");
+    let mut out = plain.lines().next()?.to_string();
     out.push('\n');
     match column {
         Some(c) => out.push_str(&format!("{pad}--> {template}:{line}:{}\n", c + 1)),
         None => out.push_str(&format!("{pad}--> {template}:{line}\n")),
     }
     out.push_str(&format!("{pad} |\n{num} | {text}\n"));
-    match (marked, column) {
-        (Some((u, label)), Some(c)) => out.push_str(&format!(
+    match column {
+        Some(c) => out.push_str(&format!(
             "{pad} | {}{} {label}\n",
-            " ".repeat(c),
-            "^".repeat(u.len())
+            " ".repeat(text[..c].chars().count()),
+            "^".repeat(underlined.chars().count())
         )),
-        (Some((_, label)), None) if !label.is_empty() => {
-            out.push_str(&format!("{pad} = {label}\n"))
-        }
-        _ => {}
+        None if !label.is_empty() => out.push_str(&format!("{pad} = {label}\n")),
+        None => {}
     }
-    let notes: Vec<&str> = lines[code_at + 1..]
-        .iter()
-        .map(|l| l.trim_start())
-        .filter(|t| t.starts_with("= "))
+    // The notes and help that stand alone, as rustc writes them under the code.
+    let notes: Vec<String> = diag
+        .get("children")
+        .into_iter()
+        .flat_map(Json::items)
+        .filter(|c| c.get("spans").is_none_or(|s| s.items().next().is_none()))
+        .filter_map(|c| Some(format!("= {}: {}", c.str("level")?, c.str("message")?)))
         .collect();
     if !notes.is_empty() {
         out.push_str(&format!("{pad} |\n"));
@@ -368,38 +369,157 @@ fn location(diag: &str) -> Option<(String, usize)> {
     }
 }
 
-/// The JSON string that starts right after the last occurrence of `marker`
-/// (which ends with the opening quote), unescaped.
-fn json_string_after(line: &str, marker: &str) -> Option<String> {
-    let start = line.rfind(marker)? + marker.len();
-    let mut out = String::new();
-    let mut chars = line[start..].chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '"' => return Some(out),
-            '\\' => match chars.next()? {
-                'n' => out.push('\n'),
-                't' => out.push('\t'),
-                'r' => out.push('\r'),
-                'b' => out.push('\u{8}'),
-                'f' => out.push('\u{c}'),
-                'u' => {
-                    let hex: String = chars.by_ref().take(4).collect();
-                    let mut code = u32::from_str_radix(&hex, 16).ok()?;
-                    if (0xd800..0xdc00).contains(&code) {
-                        // Surrogate pair: \uD83D\uDE00.
-                        let low: String = chars.by_ref().skip(2).take(4).collect();
-                        let low = u32::from_str_radix(&low, 16).ok()?;
-                        code = 0x10000 + ((code - 0xd800) << 10) + (low - 0xdc00);
+/// A JSON value: a line of cargo's `--message-format=json` output, read
+/// whole. Numbers are kept as their text.
+#[derive(Debug, PartialEq)]
+enum Json {
+    Null,
+    Bool(bool),
+    Num(String),
+    Str(String),
+    Arr(Vec<Json>),
+    Obj(Vec<(String, Json)>),
+}
+
+impl Json {
+    /// `s` if it is one JSON value (and nothing after it).
+    fn parse(s: &str) -> Option<Json> {
+        let mut chars = s.trim().chars().peekable();
+        let v = Json::value(&mut chars)?;
+        chars.next().is_none().then_some(v)
+    }
+
+    fn value(c: &mut std::iter::Peekable<std::str::Chars>) -> Option<Json> {
+        let skip = |c: &mut std::iter::Peekable<std::str::Chars>| {
+            while c.next_if(|x| x.is_ascii_whitespace()).is_some() {}
+        };
+        skip(c);
+        let v = match *c.peek()? {
+            '{' => {
+                c.next();
+                let mut m = Vec::new();
+                skip(c);
+                if c.next_if_eq(&'}').is_none() {
+                    loop {
+                        skip(c);
+                        let Json::Str(k) = Json::value(c)? else {
+                            return None;
+                        };
+                        skip(c);
+                        c.next_if_eq(&':')?;
+                        m.push((k, Json::value(c)?));
+                        skip(c);
+                        match c.next()? {
+                            ',' => {}
+                            '}' => break,
+                            _ => return None,
+                        }
                     }
-                    out.push(char::from_u32(code).unwrap_or('\u{fffd}'));
                 }
-                other => out.push(other), // \" \\ \/
-            },
-            c => out.push(c),
+                Json::Obj(m)
+            }
+            '[' => {
+                c.next();
+                let mut a = Vec::new();
+                skip(c);
+                if c.next_if_eq(&']').is_none() {
+                    loop {
+                        a.push(Json::value(c)?);
+                        skip(c);
+                        match c.next()? {
+                            ',' => {}
+                            ']' => break,
+                            _ => return None,
+                        }
+                    }
+                }
+                Json::Arr(a)
+            }
+            '"' => {
+                c.next();
+                Json::Str(Json::string(c)?)
+            }
+            _ => {
+                let word: String =
+                    std::iter::from_fn(|| c.next_if(|x| !",]} \t\r\n".contains(*x))).collect();
+                match word.as_str() {
+                    "null" => Json::Null,
+                    "true" => Json::Bool(true),
+                    "false" => Json::Bool(false),
+                    n if n.parse::<f64>().is_ok() => Json::Num(word),
+                    _ => return None,
+                }
+            }
+        };
+        skip(c);
+        Some(v)
+    }
+
+    /// The rest of a string whose opening quote has been read, unescaped.
+    fn string(c: &mut std::iter::Peekable<std::str::Chars>) -> Option<String> {
+        let mut out = String::new();
+        let hex = |c: &mut std::iter::Peekable<std::str::Chars>| {
+            let h: String = c.by_ref().take(4).collect();
+            u32::from_str_radix(&h, 16).ok()
+        };
+        loop {
+            match c.next()? {
+                '"' => return Some(out),
+                '\\' => match c.next()? {
+                    'n' => out.push('\n'),
+                    't' => out.push('\t'),
+                    'r' => out.push('\r'),
+                    'b' => out.push('\u{8}'),
+                    'f' => out.push('\u{c}'),
+                    'u' => {
+                        let mut code = hex(c)?;
+                        if (0xd800..0xdc00).contains(&code) {
+                            // A surrogate pair: \uD83D\uDE00.
+                            c.next_if_eq(&'\\')?;
+                            c.next_if_eq(&'u')?;
+                            code = 0x10000 + ((code - 0xd800) << 10) + (hex(c)? - 0xdc00);
+                        }
+                        out.push(char::from_u32(code).unwrap_or('\u{fffd}'));
+                    }
+                    other => out.push(other), // \" \\ \/
+                },
+                ch => out.push(ch),
+            }
         }
     }
-    None
+
+    fn get(&self, key: &str) -> Option<&Json> {
+        match self {
+            Json::Obj(m) => m.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v),
+            _ => None,
+        }
+    }
+
+    fn as_str(&self) -> Option<&str> {
+        match self {
+            Json::Str(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    fn str(&self, key: &str) -> Option<&str> {
+        self.get(key)?.as_str()
+    }
+
+    fn num(&self, key: &str) -> Option<usize> {
+        match self.get(key)? {
+            Json::Num(n) => n.parse().ok(),
+            _ => None,
+        }
+    }
+
+    /// The items of an array; nothing for anything else.
+    fn items(&self) -> std::slice::Iter<'_, Json> {
+        match self {
+            Json::Arr(a) => a.iter(),
+            _ => [].iter(),
+        }
+    }
 }
 
 pub fn strip_ansi(s: &str) -> String {
@@ -426,14 +546,19 @@ mod tests {
 
     #[test]
     fn reads_cargo_json() {
-        let line = r#"{"reason":"compiler-artifact","target":{"kind":["bin"]},"executable":"C:\\app\\target\\debug\\demo.exe","fresh":false}"#;
-        assert_eq!(
-            json_string_after(line, "\"executable\":\"").unwrap(),
-            r"C:\app\target\debug\demo.exe"
-        );
+        let line = r#"{"reason":"compiler-artifact","target":{"kind":["bin"]},"executable":"C:\\app\\target\\debug\\demo.exe","fresh":false,"n":-1.5e3}"#;
+        let v = Json::parse(line).unwrap();
+        assert_eq!(v.str("executable"), Some(r"C:\app\target\debug\demo.exe"));
+        let kind = v.get("target").and_then(|t| t.get("kind")).unwrap();
+        assert_eq!(kind.items().next(), Some(&Json::Str("bin".into())));
+        assert_eq!(v.get("fresh"), Some(&Json::Bool(false)));
         let msg = r#"{"message":{"children":[{"rendered":null}],"level":"error","rendered":"error: \u001b[1mbad\u001b[0m \"x\" \ud83d\ude00\n"}}"#;
-        let r = json_string_after(msg, "\"rendered\":\"").unwrap();
-        assert_eq!(strip_ansi(&r), "error: bad \"x\" 😀\n");
+        let diag = Json::parse(msg).unwrap();
+        let r = diag.get("message").and_then(|m| m.str("rendered")).unwrap();
+        assert_eq!(strip_ansi(r), "error: bad \"x\" 😀\n");
+        for bad in ["", "{", "[1,]", "{\"a\" 1}", "tru", "\"x", "{} x"] {
+            assert_eq!(Json::parse(bad), None, "{bad}");
+        }
     }
 
     #[test]
@@ -475,14 +600,17 @@ mod tests {
             "<h1>Hi</h1>\n<p>{data.count}</p>\n",
         )
         .unwrap();
-        let diag = "error[E0609]: no field `count` on type `&Data`\n  \
-                    --> target/debug/build/app-1/out/wisp.rs:55:35\n   \
-                    |\n\
-                    55 |         (&::wisp::rt::Text(&(data.count))).put(&mut __o.body); // src/routes/+page.wisp:2\n   \
-                    |                                   ^^^^^ unknown field\n   \
-                    |\n   \
-                    = note: available field is: `n`\n\n";
-        let told = from_template(diag, &root).unwrap();
+        let plain = "error[E0609]: no field `count` on type `&Data`\n  \
+                     --> target/debug/build/app-1/out/wisp.rs:55:35\n";
+        let diag = Json::parse(
+            r#"{"children":[{"children":[],"level":"note","message":"available field is: `n`","rendered":null,"spans":[]}],
+                "level":"error","message":"no field `count` on type `&Data`","rendered":"…",
+                "spans":[{"file_name":"target/debug/build/app-1/out/wisp.rs","is_primary":true,"label":"unknown field",
+                  "line_start":55,"column_start":35,"column_end":40,
+                  "text":[{"highlight_end":40,"highlight_start":35,"text":"        (&::wisp::rt::Text(&(data.count))).put(&mut __o.body); // src/routes/+page.wisp:2"}]}]}"#,
+        )
+        .unwrap();
+        let told = from_template(&diag, plain, &root).unwrap();
         assert_eq!(
             told,
             "error[E0609]: no field `count` on type `&Data`\n \

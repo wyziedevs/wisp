@@ -13,7 +13,7 @@
 //! needs, and leaves the server out.
 #![cfg_attr(target_arch = "wasm32", allow(dead_code, unused_imports))]
 
-use crate::cx::{Cx, Method, Span, decode, valid_header};
+use crate::cx::{Cx, Method, Span, decode, hex_digit, valid_header};
 use crate::idem::Start;
 use crate::{App, Error, Out, dev, rt};
 use std::borrow::Cow;
@@ -27,7 +27,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::task::Poll;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 #[cfg(not(target_arch = "wasm32"))]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[cfg(not(target_arch = "wasm32"))]
@@ -452,7 +452,7 @@ fn started(addr: SocketAddr) {
 pub(crate) fn setup<A: App>() {
     install_panic_hook();
     let _ = crate::sign::ROOT.set(A::ROOT);
-    if cfg!(debug_assertions) {
+    if crate::settings().dev {
         dev::listed(A::ROOT, "/"); // lists `static/` now, not in the first request
     }
     HEAD_TAGS.get_or_init(|| {
@@ -510,12 +510,55 @@ enum Parsed {
     Invalid(u16),
 }
 
+/// What a connection works in: its `Cx` (and read buffer), write buffer,
+/// page and reply, all reused across its requests.
+struct Buffers {
+    cx: Cx,
+    wbuf: Vec<u8>,
+    out: Out,
+    reply: Reply,
+}
+
+/// How many `Buffers` a thread keeps for its next connections.
+const POOLED: usize = 32;
+
+thread_local! {
+    /// Buffers of connections that closed, for the next ones on this thread:
+    /// a new connection allocates nothing.
+    static POOL: std::cell::RefCell<Vec<Buffers>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 #[cfg(not(target_arch = "wasm32"))]
-async fn connection<A: App>(mut stream: TcpStream, peer: SocketAddr) {
-    let mut cx = Cx::new(peer);
-    let mut wbuf: Vec<u8> = Vec::with_capacity(16 * 1024);
-    let mut out = Out::default();
-    let mut reply = Reply::default();
+async fn connection<A: App>(stream: TcpStream, peer: SocketAddr) {
+    let mut b = POOL.with_borrow_mut(Vec::pop).unwrap_or_else(|| Buffers {
+        cx: Cx::new(peer),
+        wbuf: Vec::with_capacity(16 * 1024),
+        out: Out::default(),
+        reply: Reply::default(),
+    });
+    b.cx.peer = peer;
+    requests::<A>(stream, &mut b).await;
+    b.cx.buf.clear();
+    b.cx.reset();
+    b.wbuf.clear();
+    b.out.clear();
+    b.reply = Reply::default();
+    POOL.with_borrow_mut(|p| {
+        if p.len() < POOLED {
+            p.push(b);
+        }
+    });
+}
+
+/// Answers the requests of one connection, until it closes.
+#[cfg(not(target_arch = "wasm32"))]
+async fn requests<A: App>(mut stream: TcpStream, b: &mut Buffers) {
+    let Buffers {
+        cx,
+        wbuf,
+        out,
+        reply,
+    } = b;
     let mut busy = Busy(false);
     let mut head_since: Option<u64> = None;
     let mut body_since: Option<u64> = None;
@@ -528,16 +571,16 @@ async fn connection<A: App>(mut stream: TcpStream, peer: SocketAddr) {
         let mut in_body = false;
         let mut close = false;
         while used < cx.buf.len() {
-            match parse::<A>(&mut cx, used) {
+            match parse::<A>(cx, used) {
                 Parsed::Request { len, keep_alive } => {
                     let keep_alive = keep_alive && !STOPPING.load(Ordering::Relaxed);
-                    decide::<A>(&mut cx, &mut out, &mut reply).await;
+                    decide::<A>(cx, out, reply).await;
                     // Only as a 101: a hook may have answered otherwise.
                     let upgrade = reply.take_websocket().filter(|_| reply.status == 101);
                     let streamed = serialize::<A>(
-                        &mut wbuf,
-                        &mut reply,
-                        &out,
+                        wbuf,
+                        reply,
+                        out,
                         cx.http11,
                         keep_alive || upgrade.is_some(),
                         cx.method == Method::Head,
@@ -546,7 +589,7 @@ async fn connection<A: App>(mut stream: TcpStream, peer: SocketAddr) {
                     // Answers to many small pipelined requests go out in
                     // pieces, so a buffer of them cannot make a huge one.
                     if streamed.is_none() && upgrade.is_none() && wbuf.len() >= KEEP_CAPACITY {
-                        if write(&mut stream, &wbuf).await.is_err() {
+                        if write(&mut stream, wbuf).await.is_err() {
                             return;
                         }
                         wbuf.clear();
@@ -554,7 +597,7 @@ async fn connection<A: App>(mut stream: TcpStream, peer: SocketAddr) {
                     if let Some(upgrade) = upgrade {
                         // The rest of the connection is the WebSocket's,
                         // with what the client sent after its handshake.
-                        if write(&mut stream, &wbuf).await.is_ok() {
+                        if write(&mut stream, wbuf).await.is_ok() {
                             let early = cx.buf[used..].to_vec();
                             let limit = body_limit::<A>(cx.path());
                             crate::ws::serve(stream, early, limit, upgrade, cx.path()).await;
@@ -569,11 +612,11 @@ async fn connection<A: App>(mut stream: TcpStream, peer: SocketAddr) {
                         // it comes. Bytes the client sends meanwhile (a request
                         // after this one) wait in `early`.
                         let mut early = Vec::new();
-                        if write(&mut stream, &wbuf).await.is_err() {
+                        if write(&mut stream, wbuf).await.is_err() {
                             return;
                         }
                         wbuf.clear();
-                        if pump(&mut stream, s.body, s.chunked, &mut wbuf, &mut early)
+                        if pump(&mut stream, s.body, s.chunked, wbuf, &mut early)
                             .await
                             .is_err()
                         {
@@ -605,7 +648,7 @@ async fn connection<A: App>(mut stream: TcpStream, peer: SocketAddr) {
                 }
                 Parsed::Invalid(status) => {
                     reply.set_plain(status, reason(status));
-                    serialize::<A>(&mut wbuf, &mut reply, &out, true, false, false);
+                    serialize::<A>(wbuf, reply, out, true, false, false);
                     close = true;
                     break;
                 }
@@ -613,7 +656,7 @@ async fn connection<A: App>(mut stream: TcpStream, peer: SocketAddr) {
         }
 
         if !wbuf.is_empty() {
-            if write(&mut stream, &wbuf).await.is_err() {
+            if write(&mut stream, wbuf).await.is_err() {
                 return;
             }
             wbuf.clear();
@@ -631,7 +674,7 @@ async fn connection<A: App>(mut stream: TcpStream, peer: SocketAddr) {
             cx.buf.shrink_to(8 * 1024);
         }
         if out.body.capacity() > KEEP_CAPACITY {
-            out = Out::default();
+            *out = Out::default();
         }
         // Room for the rest of the body, but at most 1 MB ahead of what came:
         // a large `content-length` alone is not a reason to allocate.
@@ -850,7 +893,7 @@ fn chunks(b: &[u8], limit: usize) -> Chunks {
         {
             return Chunks::Invalid;
         }
-        let Ok(size) = usize::try_from(hex(&b[i..i + digits])) else {
+        let Ok(size) = usize::try_from(parse_hex(&b[i..i + digits])) else {
             return Chunks::TooLarge;
         };
         i = end + 2;
@@ -893,7 +936,7 @@ fn unchunk(b: &mut [u8]) {
     let (mut i, mut w) = (0, 0);
     loop {
         let digits = b[i..].iter().take_while(|c| c.is_ascii_hexdigit()).count();
-        let size = hex(&b[i..i + digits]) as usize;
+        let size = parse_hex(&b[i..i + digits]) as usize;
         i += b[i..].windows(2).position(|p| p == b"\r\n").unwrap_or(0) + 2;
         if size == 0 {
             return;
@@ -905,10 +948,10 @@ fn unchunk(b: &mut [u8]) {
 }
 
 /// At most 16 hex digits, so it fits.
-fn hex(digits: &[u8]) -> u64 {
-    digits.iter().fold(0, |n, &c| {
-        n << 4 | (c as char).to_digit(16).unwrap_or(0) as u64
-    })
+fn parse_hex(digits: &[u8]) -> u64 {
+    digits
+        .iter()
+        .fold(0, |n, &c| n << 4 | u64::from(hex_digit(c).unwrap_or(0)))
 }
 
 /// A response, decided but not yet written: what every host sends, the
@@ -971,9 +1014,9 @@ impl Reply {
         );
     }
 
-    fn add(&mut self, headers: &mut Vec<(Cow<'static, str>, String)>) {
+    fn add(&mut self, headers: Vec<(Cow<'static, str>, String)>) {
         self.headers
-            .extend(headers.drain(..).map(|(n, v)| (n, Cow::Owned(v))));
+            .extend(headers.into_iter().map(|(n, v)| (n, Cow::Owned(v))));
     }
 
     /// The upgrade of a [`Response::websocket`], taken out of the body.
@@ -1063,27 +1106,26 @@ pub async fn handle<A: App>(req: Request) -> Reply {
     }
 }
 
-/// [`decide`] for a request of its own, with the page rendered.
+/// [`decide`] for a request of its own, with the page rendered and the
+/// framing as [`serialize`] has it on the wire.
 pub(crate) async fn answer<A: App>(mut cx: Cx) -> Reply {
     setup::<A>();
-    let mut out = Out::default();
-    let mut reply = Reply::default();
+    let (mut out, mut reply) = (Out::default(), Reply::default());
     decide::<A>(&mut cx, &mut out, &mut reply).await;
-    if let Body::WebSocket(_) = reply.body {
-        reply.set_plain(501, "WebSockets need Wisp's own server");
+    match reply.body {
+        Body::WebSocket(_) => reply.set_plain(501, "WebSockets need Wisp's own server"),
+        Body::Page => reply.body = Body::Bytes(page::<A>(&mut out).concat().into_bytes()),
+        _ => {}
     }
-    if let Body::Page = reply.body {
-        let live = out.live.tail();
-        reply.body = Body::Bytes(page::<A>(&out, &live).concat().into_bytes());
-    }
-    // HEAD gets the headers of a GET and no body; 204 and 304 have none.
+    let head = cx.method == Method::Head;
     let bodiless = bodiless(reply.status);
-    if cx.method == Method::Head || bodiless {
-        let len = match &reply.body {
-            Body::Bytes(b) => Some(b.len()),
-            Body::Static(b) => Some(b.len()),
-            Body::Page | Body::Stream(_) | Body::WebSocket(_) => None,
-        };
+    // A header that would split the response is left out, as on the wire.
+    reply
+        .headers
+        .retain(|(n, v)| valid_header(n, v) && !framing(n, head));
+    // HEAD gets the headers of a GET and no body; 204 and 304 have none.
+    if head || bodiless {
+        let len = (!matches!(reply.body, Body::Stream(_))).then(|| reply.bytes().len());
         reply.body = Body::Static(b"");
         if let Some(len) = len.filter(|_| reply.header("content-length").is_none() && !bodiless) {
             reply
@@ -1091,15 +1133,6 @@ pub(crate) async fn answer<A: App>(mut cx: Cx) -> Reply {
                 .push((Cow::Borrowed("content-length"), Cow::Owned(len.to_string())));
         }
     }
-    // As `serialize` does on the wire: a header that would split the
-    // response is left out, and the framing is the host's (only an answer
-    // to HEAD may give its length).
-    let head = cx.method == Method::Head;
-    reply.headers.retain(|(n, v)| {
-        valid_header(n, v)
-            && !n.eq_ignore_ascii_case("transfer-encoding")
-            && (head || !n.eq_ignore_ascii_case("content-length"))
-    });
     reply
 }
 
@@ -1163,13 +1196,13 @@ async fn decide<A: App>(cx: &mut Cx, out: &mut Out, reply: &mut Reply) {
         cx.request_id();
     }
     match crate::idem::start(cx) {
-        None => decide_inner::<A>(cx, out, reply).await,
-        Some(Start::Fresh(key)) => {
+        Start::Skip => decide_inner::<A>(cx, out, reply).await,
+        Start::Fresh(key) => {
             decide_inner::<A>(cx, out, reply).await;
             crate::idem::finish(key, reply);
         }
-        Some(Start::Replay(r)) => *reply = r,
-        Some(Start::Refused(e)) => {
+        Start::Replay(r) => *reply = r,
+        Start::Refused(e) => {
             let body = e.json(e.message(), false).into_bytes();
             reply.set(e.status, "application/json", Body::Bytes(body));
         }
@@ -1181,45 +1214,17 @@ async fn decide<A: App>(cx: &mut Cx, out: &mut Out, reply: &mut Reply) {
     }
 }
 
-/// Static files, routing, hooks, redirects, error pages. Writes nothing;
-/// see [`serialize`].
+/// Wisp's own files, the app's, routing, hooks, redirects, error pages.
+/// Writes nothing; see [`serialize`].
 async fn decide_inner<A: App>(cx: &mut Cx, out: &mut Out, reply: &mut Reply) {
-    // Only dev builds log request timing. `then` skips the clock read
-    // itself when `cfg!` is false, so a release build has no cost here.
-    let started =
-        cfg!(all(debug_assertions, not(target_arch = "wasm32"))).then(std::time::Instant::now);
+    let started = timed().then(Instant::now);
     let method = cx.method;
 
     let path = cx.path();
     if !path.starts_with('/') {
         return reply.set_plain(400, "Bad Request");
     }
-    if matches!(
-        path,
-        "/_wisp/openapi.json" | "/_wisp/docs" | "/_wisp/client.ts"
-    ) && matches!(method, Method::Get | Method::Head)
-        && crate::settings().api_docs
-        && !A::openapi().is_empty()
-    {
-        return match path {
-            "/_wisp/docs" => reply.set(200, "text/html; charset=utf-8", Body::Static(api_docs())),
-            "/_wisp/client.ts" => reply.set(
-                200,
-                "text/plain; charset=utf-8",
-                Body::Static(A::client_ts().as_bytes()),
-            ),
-            _ => reply.set(
-                200,
-                "application/json",
-                Body::Static(A::openapi().as_bytes()),
-            ),
-        };
-    }
-    if cfg!(debug_assertions) && path.starts_with("/_wisp/") {
-        let (status, msg) = dev::endpoint::<A>(method, path, cx.body(), cx.peer());
-        return reply.set_plain(status, msg);
-    }
-    if matches!(method, Method::Get | Method::Head) && file::<A>(cx, path, reply) {
+    if internal::<A>(cx, path, reply) {
         return;
     }
     if path.len() > 1 && path.ends_with('/') {
@@ -1242,14 +1247,17 @@ async fn decide_inner<A: App>(cx: &mut Cx, out: &mut Out, reply: &mut Reply) {
     // Route, then turn the matched parameters into spans so `cx` can be
     // handed out mutably.
     let mut segs = [""; MAX_SEGS];
-    let route = split(path, &mut segs)
-        .and_then(|n| A::route(path, &segs[..n]))
-        .map(|(id, raw)| (id, raw.map(|s| Span::of(&cx.buf, s.as_bytes()))));
+    let route = split(path, &mut segs).and_then(|n| A::route(path, &segs[..n]));
+    if matches!(method, Method::Get | Method::Head) && file::<A>(cx, path, route.is_some(), reply) {
+        return;
+    }
+    let route = route.map(|(id, raw)| (id, raw.map(|s| Span::of(&cx.buf, s.as_bytes()))));
     out.clear();
     if let Some((id, params)) = route {
         cx.set_params(A::PARAMS[id], params);
     }
-    let mut result = catch(A::handle(route.map(|(id, _)| id), cx, out)).await;
+    let route = route.map(|(id, _)| id);
+    let mut result = catch(A::handle(route, cx, out)).await;
     if result.is_ok()
         && let Some(res) = out.response.as_mut().filter(|r| r.upgrade.is_some())
     {
@@ -1260,103 +1268,43 @@ async fn decide_inner<A: App>(cx: &mut Cx, out: &mut Out, reply: &mut Reply) {
     }
 
     // What went wrong in a 5xx, for the log. The page may say less.
-    let mut failure = None;
-    match result {
-        Ok(()) => match out.response.take() {
-            Some(mut res) => {
-                reply.status = res.status;
-                reply.headers.clear();
-                if !res.content_type.is_empty() {
-                    reply
-                        .headers
-                        .push((Cow::Borrowed("content-type"), res.content_type));
+    let failure = match result {
+        Ok(()) => {
+            match out.response.take() {
+                Some(mut res) => {
+                    reply.status = res.status;
+                    reply.headers.clear();
+                    if !res.content_type.is_empty() {
+                        reply
+                            .headers
+                            .push((Cow::Borrowed("content-type"), res.content_type));
+                    }
+                    reply.add(res.headers);
+                    reply.body = match (res.upgrade.take(), res.stream.take()) {
+                        (Some(upgrade), _) => Body::WebSocket(upgrade),
+                        (None, Some(body)) => Body::Stream(body),
+                        (None, None) => Body::Bytes(res.body),
+                    };
                 }
-                reply.add(&mut res.headers);
-                reply.body = match (res.upgrade.take(), res.stream.take()) {
-                    (Some(upgrade), _) => Body::WebSocket(upgrade),
-                    (None, Some(body)) => Body::Stream(body),
-                    (None, None) => Body::Bytes(res.body),
-                };
+                None => reply.set(cx.status, "text/html; charset=utf-8", Body::Page),
             }
-            None => reply.set(cx.status, "text/html; charset=utf-8", Body::Page),
-        },
+            None
+        }
         Err(e) if e.status < 400 => {
-            // Redirect. Headers set before it (a login cookie) still apply.
-            // wisp.js gets it as `x-wisp-location` and goes there itself:
-            // fetch would follow it with the post's own headers, and to
-            // another site (a payment page) not at all.
-            let js = cx.header("x-wisp").is_some();
-            reply.set_plain(if js { 200 } else { e.status }, "");
-            if let Some((name, value)) = e.header.map(|h| *h) {
-                reply.headers.push((
-                    Cow::Borrowed(if js && name == "location" {
-                        "x-wisp-location"
-                    } else {
-                        name
-                    }),
-                    Cow::Owned(value),
-                ));
-            }
+            redirect_reply(cx, e, reply);
+            None
         }
-        Err(mut e) => {
-            if e.status >= 500 {
-                failure = Some(e.detail());
-            }
-            // 5xx details can leak internals; only dev builds show them. An
-            // error that says no more than its status's name gets a sentence
-            // about the status instead.
-            let message = if (e.status >= 500 && !cfg!(debug_assertions))
-                || e.message.is_empty()
-                || e.message.eq_ignore_ascii_case(reason(e.status))
-            {
-                sentence(e.status)
-            } else {
-                e.message()
-            };
-            out.clear();
-            // The headers of the page that failed go with it; the `before`
-            // hook's stay.
-            cx.out_headers.truncate(cx.kept_headers);
-            if wants_json(cx) {
-                let problem = crate::settings().problem_json
-                    || cx
-                        .header("accept")
-                        .is_some_and(|a| a.contains("application/problem+json"));
-                let body = e.json(message, problem).into_bytes();
-                let kind = match problem {
-                    true => "application/problem+json",
-                    false => "application/json",
-                };
-                reply.set(e.status, kind, Body::Bytes(body));
-            } else {
-                let rendered = catch(A::error(
-                    route.map(|(id, _)| id),
-                    cx,
-                    out,
-                    e.status,
-                    message,
-                ))
-                .await;
-                if rendered.is_err() || out.response.is_some() {
-                    out.clear();
-                    rt::default_error(cx, out, e.status, message);
-                }
-                reply.set(e.status, "text/html; charset=utf-8", Body::Page);
-            }
-            if let Some((name, value)) = e.header.take().map(|h| *h) {
-                reply.headers.push((Cow::Borrowed(name), Cow::Owned(value)));
-            }
-        }
-    }
-    reply.add(&mut cx.out_headers);
+        Err(e) => render_error::<A>(route, cx, out, reply, e).await,
+    };
+    reply.headers.append(&mut cx.out_headers);
 
-    if cfg!(debug_assertions) {
+    if let Some(started) = started {
         let blocked = Some(BLOCKED.replace(Duration::ZERO)).filter(|&b| b >= BLOCKING);
         dev::log_request(
             method.as_str(),
             cx.path(),
             reply.status,
-            started.unwrap().elapsed(),
+            started.elapsed(),
             failure.as_deref(),
             blocked,
             cx.id(),
@@ -1372,17 +1320,96 @@ async fn decide_inner<A: App>(cx: &mut Cx, out: &mut Out, reply: &mut Reply) {
     }
 }
 
+/// A redirect. Headers set before it (a login cookie) still apply.
+/// wisp.js gets it as `x-wisp-location` and goes there itself: fetch would
+/// follow it with the post's own headers, and to another site (a payment
+/// page) not at all.
+fn redirect_reply(cx: &Cx, e: Error, reply: &mut Reply) {
+    let js = cx.header("x-wisp").is_some();
+    reply.set_plain(if js { 200 } else { e.status }, "");
+    if let Some((name, value)) = e.header.map(|h| *h) {
+        let name = if js && name == "location" {
+            "x-wisp-location"
+        } else {
+            name
+        };
+        reply.headers.push((Cow::Borrowed(name), Cow::Owned(value)));
+    }
+}
+
+/// The page for a 4xx or 5xx: the nearest `+error.wisp`, or JSON for a
+/// client that wants that. Returns what went wrong in a 5xx, for the log.
+async fn render_error<A: App>(
+    route: Option<usize>,
+    cx: &mut Cx,
+    out: &mut Out,
+    reply: &mut Reply,
+    mut e: Error,
+) -> Option<String> {
+    let failure = (e.status >= 500).then(|| e.detail());
+    // 5xx details can leak internals; only dev shows them. An error that
+    // says no more than its status's name gets a sentence about the status
+    // instead.
+    let message = if (e.status >= 500 && !crate::settings().dev)
+        || e.message.is_empty()
+        || e.message.eq_ignore_ascii_case(reason(e.status))
+    {
+        sentence(e.status)
+    } else {
+        e.message()
+    };
+    out.clear();
+    // The headers of the page that failed go with it; the `before` hook's
+    // stay.
+    cx.out_headers.truncate(cx.kept_headers);
+    if wants_json(cx) {
+        let problem = crate::settings().problem_json
+            || cx
+                .header("accept")
+                .is_some_and(|a| a.contains("application/problem+json"));
+        let body = e.json(message, problem).into_bytes();
+        let kind = match problem {
+            true => "application/problem+json",
+            false => "application/json",
+        };
+        reply.set(e.status, kind, Body::Bytes(body));
+    } else {
+        let rendered = catch(A::error(route, cx, out, e.status, message)).await;
+        if rendered.is_err() || out.response.is_some() {
+            out.clear();
+            rt::default_error(cx, out, e.status, message);
+        }
+        reply.set(e.status, "text/html; charset=utf-8", Body::Page);
+    }
+    if let Some((name, value)) = e.header.take().map(|h| *h) {
+        reply.headers.push((Cow::Borrowed(name), Cow::Owned(value)));
+    }
+    failure
+}
+
 /// Whether an error goes back as JSON rather than an error page: a request
 /// under `/api`, one that sent JSON, one that asks for JSON and not HTML,
 /// or one to a `+server.rs` endpoint from anything but a browser page.
 fn wants_json(cx: &Cx) -> bool {
     let path = cx.path();
-    let accept = cx.header("accept").unwrap_or("");
     path == "/api"
         || path.starts_with("/api/")
         || crate::input::is_json(cx)
-        || (accept.contains("json") && !accept.contains("text/html"))
-        || (cx.api && !accept.contains("text/html"))
+        || crate::input::asks_json(cx)
+        || (cx.api && !cx.header("accept").is_some_and(|a| a.contains("text/html")))
+}
+
+/// Whether `name` is framing, which the host writes itself: an app's own
+/// `content-length` or `transfer-encoding` (copied from another server's
+/// response, say) would contradict it, and the client would read the next
+/// response wrong. Only an answer to HEAD, which has no body to count, may
+/// give its length.
+fn framing(name: &str, head: bool) -> bool {
+    match name.len() {
+        14 => !head && name.eq_ignore_ascii_case("content-length"),
+        17 => name.eq_ignore_ascii_case("transfer-encoding"),
+        _ => false,
+    }
 }
 
 /// A status whose response has no body, and no `content-length` (RFC 9110
@@ -1407,7 +1434,7 @@ struct Streamed {
 fn serialize<A: App>(
     w: &mut Vec<u8>,
     reply: &mut Reply,
-    out: &Out,
+    out: &mut Out,
     http11: bool,
     keep_alive: bool,
     head_only: bool,
@@ -1417,24 +1444,13 @@ fn serialize<A: App>(
     // HTTP/1.0 has no chunks: a streamed body ends with the connection.
     let chunked = stream && http11;
     let keep_alive = keep_alive && (!stream || chunked || head_only);
-    // Browser code, if the page has any, ends the body.
-    let live = if let Body::Page = reply.body {
-        out.live.tail()
-    } else {
-        String::new()
-    };
-    let parts = page::<A>(out, &live);
-    let len = match &reply.body {
-        Body::Bytes(b) => b.len(),
-        Body::Static(b) => b.len(),
-        Body::Page => parts.iter().map(|p| p.len()).sum(),
-        Body::Stream(_) | Body::WebSocket(_) => 0,
+    let parts = matches!(reply.body, Body::Page).then(|| page::<A>(out));
+    let len = match &parts {
+        Some(parts) => parts.iter().map(|p| p.len()).sum(),
+        None => reply.bytes().len(),
     };
 
-    // The framing is the server's: an app's own `content-length` or
-    // `transfer-encoding` (copied from another server's response, say) would
-    // contradict it, and the client would read the next response wrong. Only
-    // an answer to HEAD, which has no body to count, may give its length.
+    // See `framing`.
     let own_length = head_only && reply.header("content-length").is_some();
     status_line(w, reply.status);
     if chunked {
@@ -1452,12 +1468,7 @@ fn serialize<A: App>(
         w.extend_from_slice(b"connection: keep-alive\r\n");
     }
     for (name, value) in &reply.headers {
-        let framing = match name.len() {
-            14 => !own_length && name.eq_ignore_ascii_case("content-length"),
-            17 => name.eq_ignore_ascii_case("transfer-encoding"),
-            _ => false,
-        };
-        if !framing {
+        if !framing(name, head_only) {
             header(w, name, value);
         }
     }
@@ -1474,7 +1485,7 @@ fn serialize<A: App>(
         Body::WebSocket(_) => {} // taken out before; a 101 has no body
         Body::Page => {
             w.reserve(len);
-            for part in parts {
+            for part in parts.into_iter().flatten() {
                 w.extend_from_slice(part.as_bytes());
             }
         }
@@ -1490,11 +1501,13 @@ fn serialize<A: App>(
 }
 
 /// The parts of a page, in order: the shell around the tags for
-/// `%wisp.head%`, the page's head and body, and its browser code.
-fn page<'a, A: App>(out: &'a Out, live: &'a str) -> [&'a str; 7] {
+/// `%wisp.head%`, the page's head, and its body, which its browser code
+/// ends. Once a page.
+fn page<A: App>(out: &mut Out) -> [&str; 6] {
+    out.live.tail(&mut out.body);
     let [s0, s1, s2] = A::shell();
     let tags = HEAD_TAGS.get().map_or("", String::as_str);
-    [s0, tags, &out.head, s1, &out.body, live, s2]
+    [s0, tags, &out.head, s1, &out.body, s2]
 }
 
 thread_local! {
@@ -1547,12 +1560,18 @@ fn short_path(file: &str) -> String {
     }
 }
 
+/// Whether handlers are timed, for the dev log: in dev, but not in the
+/// edge build, which has no clock to read.
+fn timed() -> bool {
+    crate::settings().dev && cfg!(not(target_arch = "wasm32"))
+}
+
 /// Runs a handler future, turning a panic into a 500 so one bad request
 /// cannot take the connection (or anything else) down with it.
 pub(crate) async fn catch<F: Future<Output = crate::Result<()>>>(f: F) -> crate::Result<()> {
     let mut f = std::pin::pin!(f);
     std::future::poll_fn(move |cx| {
-        let began = cfg!(all(debug_assertions, not(target_arch = "wasm32"))).then(Instant::now);
+        let began = timed().then(Instant::now);
         IN_HANDLER.set(true);
         let polled = catch_unwind(AssertUnwindSafe(|| f.as_mut().poll(cx)));
         IN_HANDLER.set(false);
@@ -1591,73 +1610,57 @@ fn split<'a>(path: &'a str, segs: &mut [&'a str; MAX_SEGS]) -> Option<usize> {
     Some(n)
 }
 
-/// Whether a route matches `path`.
-fn routed<A: App>(path: &str) -> bool {
-    let mut segs = [""; MAX_SEGS];
-    split(path, &mut segs)
-        .and_then(|n| A::route(path, &segs[..n]))
-        .is_some()
+/// Wisp's own addresses: the browser runtime, the API docs and, in dev,
+/// the dev tools. `false` for any other path.
+fn internal<A: App>(cx: &Cx, path: &str, reply: &mut Reply) -> bool {
+    if !path.starts_with("/_") {
+        return false;
+    }
+    let s = crate::settings();
+    let get = matches!(cx.method, Method::Get | Method::Head);
+    let dev = get && s.dev;
+    let docs = get && s.api_docs && !A::openapi().is_empty();
+    let (body, ext, etag): (&'static [u8], _, _) = match path {
+        "/_app/wisp.js" if get => (CLIENT_JS, "js", Some(CLIENT_JS_ETAG)),
+        "/_app/live.js" if get => (LIVE_JS, "js", Some(CLIENT_JS_ETAG)),
+        "/_app/wisp-dev.js" if dev => (DEV_JS, "js", None),
+        "/_app/wisp-ui.css" if dev => (UI_CSS.as_bytes(), "css", None),
+        "/_app/wisp-dialog.css" if dev => (DIALOG_CSS, "css", None),
+        "/_wisp/openapi.json" if docs => (A::openapi().as_bytes(), "json", None),
+        "/_wisp/client.ts" if docs => (A::client_ts().as_bytes(), "txt", None),
+        "/_wisp/docs" if docs => (api_docs(), "html", None),
+        _ if s.dev && path.starts_with("/_wisp/") => {
+            let (status, msg) = dev::endpoint::<A>(cx.method, path, cx.body(), cx.peer());
+            reply.set_plain(status, msg);
+            return true;
+        }
+        _ => return false,
+    };
+    send_file(reply, cx, Body::Static(body), ext, etag);
+    true
 }
 
-/// Static files: the client script, then embedded assets (release) or
-/// files on disk (dev). Returns false if the path is not a file.
-fn file<A: App>(cx: &Cx, path: &str, reply: &mut Reply) -> bool {
-    // Looked up only once a file matched: most requests are for pages.
-    let versioned = || cx.query_string().split('&').any(|kv| kv.starts_with("v="));
-    let inm = || cx.header("if-none-match");
-    if path == "/_app/wisp.js" {
-        send_file(
-            reply,
-            Body::Static(CLIENT_JS),
-            "js",
-            Some(CLIENT_JS_ETAG),
-            versioned(),
-            inm(),
-        );
-        return true;
-    }
-    if path == "/_app/live.js" {
-        send_file(
-            reply,
-            Body::Static(LIVE_JS),
-            "js",
-            Some(CLIENT_JS_ETAG),
-            versioned(),
-            inm(),
-        );
-        return true;
-    }
-    // Templates' browser modules, compiled in: dev builds too, since a
-    // change to one is a rebuild anyway.
+/// The app's files: templates' browser modules, then its assets, embedded
+/// or, in dev, read from `static/`. `routed`: a route matches the path.
+/// `false` if the path is not a file.
+fn file<A: App>(cx: &Cx, path: &str, routed: bool, reply: &mut Reply) -> bool {
+    // Compiled in, in dev too: a change to one is a rebuild anyway.
     if path.starts_with("/_app/c/")
         && let Some(m) = A::client_module(path)
     {
         send_file(
             reply,
+            cx,
             Body::Static(m.source.as_bytes()),
             "js",
             Some(m.etag),
-            versioned(),
-            inm(),
         );
         return true;
     }
-    if cfg!(debug_assertions) {
-        let dev_file = match path {
-            "/_app/wisp-dev.js" => Some((DEV_JS, "js")),
-            "/_app/wisp-ui.css" => Some((UI_CSS.as_bytes(), "css")),
-            "/_app/wisp-dialog.css" => Some((DIALOG_CSS, "css")),
-            _ => None,
-        };
-        if let Some((body, ext)) = dev_file {
-            send_file(reply, Body::Static(body), ext, None, false, inm());
-            return true;
-        }
-    }
-    if cfg!(debug_assertions) {
+    if crate::settings().dev {
         // A page's path goes to the disk only if `static/` had a file there.
         if path != "/_app/app.css"
-            && routed::<A>(path)
+            && routed
             && !dev::listed(A::ROOT, &decode(path.as_bytes(), false))
         {
             return false;
@@ -1665,37 +1668,27 @@ fn file<A: App>(cx: &Cx, path: &str, reply: &mut Reply) -> bool {
         let Some((bytes, ext)) = dev::read_file(A::ROOT, path) else {
             return false;
         };
-        send_file(reply, Body::Bytes(bytes), &ext, None, false, inm());
+        send_file(reply, cx, Body::Bytes(bytes), &ext, None);
         return true;
     }
     let Some(a) = A::asset(path) else {
         return false;
     };
-    send_file(
-        reply,
-        Body::Static(a.body),
-        a.ext,
-        Some(a.etag),
-        versioned(),
-        inm(),
-    );
+    send_file(reply, cx, Body::Static(a.body), a.ext, Some(a.etag));
     true
 }
 
-fn send_file(
-    reply: &mut Reply,
-    body: Body,
-    ext: &str,
-    etag: Option<&'static str>,
-    versioned: bool,
-    if_none_match: Option<&str>,
-) {
+/// A file, cached by its `etag` (forever when the address is versioned
+/// with `?v=`), or never without one.
+fn send_file(reply: &mut Reply, cx: &Cx, body: Body, ext: &str, etag: Option<&'static str>) {
     let cache = match etag {
         None => "no-store",
-        Some(_) if versioned => "public, max-age=31536000, immutable",
+        Some(_) if cx.query_string().split('&').any(|kv| kv.starts_with("v=")) => {
+            "public, max-age=31536000, immutable"
+        }
         Some(_) => "public, max-age=0, must-revalidate",
     };
-    if etag.is_some() && if_none_match == etag {
+    if etag.is_some() && cx.header("if-none-match") == etag {
         reply.set(304, "", Body::Static(b""));
         reply.headers.clear(); // a 304 describes the file it did not send
     } else {
@@ -1713,7 +1706,8 @@ fn send_file(
 
 /// Sends a streamed body as it is made, until its sender is dropped or the
 /// server stops (both end it properly), or the client goes (an error).
-/// Anything the client sends meanwhile is kept in `early`, up to a limit.
+/// Chunks made meanwhile go out in one write. Anything the client sends
+/// meanwhile is kept in `early`, up to a limit.
 #[cfg(not(target_arch = "wasm32"))]
 async fn pump(
     stream: &mut TcpStream,
@@ -1727,12 +1721,24 @@ async fn pump(
         Stop,
         Gone,
     }
+    // An empty chunk would read as the end: it is left out.
+    let put = |w: &mut Vec<u8>, chunk: &[u8]| {
+        if chunked && !chunk.is_empty() {
+            push_hex(w, chunk.len() as u64);
+            w.extend_from_slice(b"\r\n");
+            w.extend_from_slice(chunk);
+            w.extend_from_slice(b"\r\n");
+        } else {
+            w.extend_from_slice(chunk);
+        }
+    };
+    let mut stop = std::pin::pin!(stopped());
     loop {
         let next = first(
             async { Next::Chunk(body.recv().await) },
             first(
                 async {
-                    stopped().await;
+                    stop.as_mut().await;
                     Next::Stop
                 },
                 async {
@@ -1750,23 +1756,31 @@ async fn pump(
         )
         .await;
         w.clear();
-        match next {
-            Next::Chunk(Some(chunk)) if chunk.is_empty() => continue, // would read as the end
-            Next::Chunk(Some(chunk)) if chunked => {
-                w.extend_from_slice(format!("{:x}\r\n", chunk.len()).as_bytes());
-                w.extend_from_slice(&chunk);
-                w.extend_from_slice(b"\r\n");
+        let mut end = match next {
+            Next::Chunk(Some(chunk)) => {
+                put(w, &chunk);
+                false
             }
-            Next::Chunk(Some(chunk)) => w.extend_from_slice(&chunk),
-            Next::Chunk(None) | Next::Stop => {
-                if chunked {
-                    write(stream, b"0\r\n\r\n").await?;
-                }
-                return Ok(());
-            }
+            Next::Chunk(None) | Next::Stop => true,
             Next::Gone => return Err(io::ErrorKind::ConnectionAborted.into()),
+        };
+        while !end && w.len() < KEEP_CAPACITY {
+            match body.try_recv() {
+                Ok(chunk) => put(w, &chunk),
+                Err(mpsc::error::TryRecvError::Empty) => break,
+                Err(mpsc::error::TryRecvError::Disconnected) => end = true,
+            }
         }
-        write(stream, w).await?;
+        if end && chunked {
+            w.extend_from_slice(b"0\r\n\r\n");
+        }
+        if !w.is_empty() {
+            write(stream, w).await?;
+            w.clear();
+        }
+        if end {
+            return Ok(());
+        }
     }
 }
 
@@ -1789,6 +1803,14 @@ fn header(w: &mut Vec<u8>, name: &str, value: &str) {
     w.extend_from_slice(b": ");
     w.extend_from_slice(value.as_bytes());
     w.extend_from_slice(b"\r\n");
+}
+
+/// `n` in lowercase hex, as few digits as it takes.
+fn push_hex(w: &mut Vec<u8>, n: u64) {
+    let digits = (16 - n.leading_zeros() as usize / 4).max(1);
+    for k in (0..digits).rev() {
+        w.push(b"0123456789abcdef"[(n >> (4 * k) & 15) as usize]);
+    }
 }
 
 fn push_decimal(w: &mut Vec<u8>, mut n: u64) {
@@ -1832,12 +1854,6 @@ pub(crate) fn seconds() -> u64 {
     SECONDS.load(Ordering::Relaxed)
 }
 
-fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-}
-
 /// When `seconds()` was 0.
 static START: OnceLock<Instant> = OnceLock::new();
 
@@ -1851,14 +1867,14 @@ fn instant(deadline: u64) -> tokio::time::Instant {
 fn start_clock() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        NOW.store(unix_now(), Ordering::Relaxed);
+        NOW.store(crate::unix_now(), Ordering::Relaxed);
         let start = *START.get_or_init(Instant::now);
         std::thread::Builder::new()
             .name("wisp-clock".into())
             .spawn(move || {
                 loop {
                     std::thread::sleep(Duration::from_secs(1));
-                    NOW.store(unix_now(), Ordering::Relaxed);
+                    NOW.store(crate::unix_now(), Ordering::Relaxed);
                     SECONDS.store(start.elapsed().as_secs(), Ordering::Relaxed);
                 }
             })
@@ -1894,30 +1910,19 @@ fn http_date(secs: u64) -> [u8; 29] {
         b"Jan", b"Feb", b"Mar", b"Apr", b"May", b"Jun", b"Jul", b"Aug", b"Sep", b"Oct", b"Nov",
         b"Dec",
     ];
-    let days = secs / 86_400;
-    let rem = secs % 86_400;
-    // Howard Hinnant's civil_from_days.
-    let z = days as i64 + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + (month <= 2) as i64;
+    let (days, rem) = (secs / 86_400, secs % 86_400);
+    let (year, month, day) = crate::civil(days);
 
     let two = |n: u64| [b'0' + (n / 10) as u8, b'0' + (n % 10) as u8];
     let mut out = [0u8; 29];
     out[..3].copy_from_slice(DAYS[(days % 7) as usize]);
     out[3..5].copy_from_slice(b", ");
-    out[5..7].copy_from_slice(&two(day as u64));
+    out[5..7].copy_from_slice(&two(day));
     out[7] = b' ';
     out[8..11].copy_from_slice(MONTHS[month as usize - 1]);
     out[11] = b' ';
-    let y = year as u64;
-    out[12..14].copy_from_slice(&two(y / 100 % 100));
-    out[14..16].copy_from_slice(&two(y % 100));
+    out[12..14].copy_from_slice(&two(year / 100 % 100));
+    out[14..16].copy_from_slice(&two(year % 100));
     out[16] = b' ';
     out[17..19].copy_from_slice(&two(rem / 3600));
     out[19] = b':';
@@ -2057,6 +2062,12 @@ mod tests {
     #[test]
     fn decimals() {
         let mut v = Vec::new();
+        for n in [0, 9, 0x10, 0xabc, u64::MAX] {
+            push_hex(&mut v, n);
+            v.push(b' ');
+        }
+        assert_eq!(v, b"0 9 10 abc ffffffffffffffff ");
+        v.clear();
         push_decimal(&mut v, 0);
         v.push(b' ');
         push_decimal(&mut v, 18_446_744_073_709_551_615);
@@ -2293,7 +2304,7 @@ mod tests {
                     check_parsed(&cx, 0, len);
                     rt.block_on(decide::<Fuzz>(&mut cx, &mut out, &mut reply));
                     w.clear();
-                    serialize::<Fuzz>(&mut w, &mut reply, &out, cx.http11, true, false);
+                    serialize::<Fuzz>(&mut w, &mut reply, &mut out, cx.http11, true, false);
                     assert!(w.starts_with(b"HTTP/1.1 "));
                 }
                 Parsed::Partial { need, .. } => assert!(need <= MAX_HEAD + MAX_BODY),
@@ -2381,7 +2392,7 @@ mod tests {
         for (n, v) in [("content-length", "99"), ("Transfer-Encoding", "chunked")] {
             reply.headers.push((Cow::Borrowed(n), Cow::Borrowed(v)));
         }
-        serialize::<Fuzz>(&mut w, &mut reply, &out, false, true, false);
+        serialize::<Fuzz>(&mut w, &mut reply, &mut out, false, true, false);
         let text = String::from_utf8(w).unwrap().to_ascii_lowercase();
         assert!(text.contains("content-length: 2\r\n") && text.contains("connection: keep-alive"));
         assert!(!text.contains("99") && !text.contains("chunked"), "{text}");

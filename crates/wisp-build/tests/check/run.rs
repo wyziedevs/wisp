@@ -123,10 +123,11 @@ fn a_release_build_bakes_in_the_static_files() {
     assert!(run.status.success(), "{}", text(&run.stderr));
     let code = fs::read_to_string(out.root().join("wisp.rs")).unwrap();
     for want in [
-        // The CSS, then the files of `static`, sorted, by their URLs.
-        "\"/_app/app.css\" => Some(&ASSET_0),",
-        "\"/img/a%20b.SVG\" => Some(&ASSET_1),",
-        "\"/robots.txt\" => Some(&ASSET_2),",
+        // The CSS, then the files of `static`, sorted, by their URLs, in a
+        // table sorted to be searched.
+        "static BY_PATH: [(&str, &::wisp::Asset); 3] = [(\"/_app/app.css\", &ASSET_0), \
+         (\"/img/a%20b.SVG\", &ASSET_1), (\"/robots.txt\", &ASSET_2)];",
+        "BY_PATH.binary_search_by(",
         "ext: \"svg\"",
         "ext: \"txt\"",
         "ext: \"css\"",

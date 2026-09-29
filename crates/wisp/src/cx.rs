@@ -92,19 +92,22 @@ pub struct Cx {
     pub(crate) headers: Vec<(Span, Span)>,
     /// HTTP/1.1 rather than 1.0, which cannot take a chunked response.
     pub(crate) http11: bool,
-    peer: SocketAddr,
+    pub(crate) peer: SocketAddr,
     names: &'static [&'static str],
     params: [Span; MAX_PARAMS],
     /// Percent-decoded copies, only for params that needed decoding.
     decoded: [Option<String>; MAX_PARAMS],
     pub(crate) status: u16,
-    pub(crate) out_headers: Vec<(Cow<'static, str>, String)>,
+    /// The response's headers, `set-cookie` among them: `cookie` reads what
+    /// this request set before what it sent, so a page's `load` sees what
+    /// its action just stored.
+    pub(crate) out_headers: Vec<(Cow<'static, str>, Cow<'static, str>)>,
     /// How many of `out_headers` the `before` hook set. Those stay on an
     /// error page; a handler's are dropped with the page it did not finish.
     pub(crate) kept_headers: usize,
-    /// Cookies set by this request, which `cookie` reads before the request's
-    /// own: a page's `load` sees what its action just stored.
-    set_cookies: Vec<(String, String)>,
+    /// Signed cookies whose signature held, as (name, cookie as read): each
+    /// is checked once a request.
+    verified: std::sync::Mutex<Vec<(String, String)>>,
     /// Values handed along the request with `set`, one per type.
     locals: Vec<(TypeId, Box<dyn Any + Send + Sync>)>,
     /// A JSON body, parsed once for the handler parameters read from it.
@@ -132,7 +135,7 @@ impl Cx {
             status: 200,
             out_headers: Vec::new(),
             kept_headers: 0,
-            set_cookies: Vec::new(),
+            verified: std::sync::Mutex::new(Vec::new()),
             locals: Vec::new(),
             json: std::sync::OnceLock::new(),
             id: std::sync::OnceLock::new(),
@@ -147,7 +150,10 @@ impl Cx {
         self.status = 200;
         self.out_headers.clear();
         self.kept_headers = 0;
-        self.set_cookies.clear();
+        self.verified
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
         self.locals.clear();
         self.json.take();
         self.id.take();
@@ -238,9 +244,7 @@ impl Cx {
     /// A query parameter parsed as any `FromStr` type, or `default` when it
     /// is missing or does not parse: `let page: u32 = cx.query_or("page", 1);`
     pub fn query_or<T: FromStr>(&self, name: &str, default: T) -> T {
-        self.query(name)
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(default)
+        parsed_or(self.query(name).as_deref(), default)
     }
 
     /// The form the request carries, urlencoded or multipart (which is how
@@ -267,9 +271,20 @@ impl Cx {
     /// A header parsed as any `FromStr` type, or `default` when it is
     /// missing or does not parse: `let v: u32 = cx.header_or("x-api-version", 1);`
     pub fn header_or<T: FromStr>(&self, name: &str, default: T) -> T {
-        self.header(name)
-            .and_then(|v| v.trim().parse().ok())
-            .unwrap_or(default)
+        parsed_or(self.header(name).map(str::trim), default)
+    }
+
+    /// The body's media type, its `content-type` without parameters:
+    /// `application/json`. Empty when it has none.
+    pub(crate) fn mime(&self) -> &str {
+        let t = self.header("content-type").unwrap_or("");
+        t.split(';').next().unwrap_or("").trim()
+    }
+
+    /// The first value of a header each proxy adds to, such as
+    /// `x-forwarded-proto`: what the proxy nearest the client saw.
+    pub(crate) fn forwarded(&self, name: &str) -> Option<&str> {
+        self.header(name)?.split(',').next().map(str::trim)
     }
 
     /// An id for this request: the client's `x-request-id` when it sent a
@@ -309,13 +324,11 @@ impl Cx {
     /// token in the environment variable `var` (compared in constant
     /// time), a 401: `cx.need_bearer("API_KEY")?`. Unset is never matched.
     pub fn need_bearer(&self, var: &str) -> crate::Result {
-        match (self.bearer(), crate::env(var)) {
-            (Some(t), Some(k)) if !k.is_empty() && crate::secure_eq(t, &k) => Ok(()),
-            _ => {
-                Err(crate::Error::new(401, "Unauthorized")
-                    .with_header("www-authenticate", "Bearer"))
-            }
+        let sent = self.bearer().unwrap_or("");
+        if sign::secret(var, |k| crate::secure_eq(sent, &k.bytes)) == Some(true) {
+            return Ok(());
         }
+        Err(crate::Error::new(401, "Unauthorized").with_header("www-authenticate", "Bearer"))
     }
 
     /// Whether the request may change something: any method but GET, HEAD
@@ -333,7 +346,11 @@ impl Cx {
         if !scheme.eq_ignore_ascii_case("basic") {
             return None;
         }
-        let text = String::from_utf8(base64(encoded.trim())?).ok()?;
+        let encoded = encoded.trim();
+        let mut raw = vec![0; encoded.len() * 3 / 4];
+        let len = sign::unbase64(encoded, &mut raw)?;
+        raw.truncate(len);
+        let text = String::from_utf8(raw).ok()?;
         let (name, password) = text.split_once(':')?;
         Some((name.to_string(), password.to_string()))
     }
@@ -355,20 +372,24 @@ impl Cx {
     /// A request from a site not allowed gets no CORS headers, so its
     /// browser does not hand it the answer.
     pub fn cors(&mut self, origins: &str) -> Option<Response> {
-        let origin = self.header("origin")?.to_string();
-        self.set_header("vary", "origin");
-        let any = origins.trim() == "*";
-        let listed = origins
-            .split([',', ' '])
-            .any(|o| !o.is_empty() && o.trim_end_matches('/').eq_ignore_ascii_case(&origin));
-        if !any && !listed {
-            return None;
-        }
-        if any {
-            self.set_header("access-control-allow-origin", "*");
+        let origin = self.header("origin")?;
+        let listed =
+            |o: &str| !o.is_empty() && o.trim_end_matches('/').eq_ignore_ascii_case(origin);
+        let allow = if origins.trim() == "*" {
+            None
+        } else if origins.split([',', ' ']).any(listed) {
+            Some(origin.to_string())
         } else {
-            self.set_header("access-control-allow-origin", origin);
-            self.set_header("access-control-allow-credentials", "true");
+            self.put("vary", Cow::Borrowed("origin"));
+            return None;
+        };
+        self.put("vary", Cow::Borrowed("origin"));
+        match allow {
+            None => self.put("access-control-allow-origin", Cow::Borrowed("*")),
+            Some(origin) => {
+                self.put("access-control-allow-origin", Cow::Owned(origin));
+                self.put("access-control-allow-credentials", Cow::Borrowed("true"));
+            }
         }
         let method = self.header("access-control-request-method")?;
         if self.method != Method::Options {
@@ -397,8 +418,13 @@ impl Cx {
     /// A cookie's value: the one this request set with `set_cookie`, else
     /// the one the browser sent. A deleted cookie is `None`.
     pub fn cookie(&self, name: &str) -> Option<&str> {
-        if let Some((_, value)) = self.set_cookies.iter().rev().find(|(n, _)| n == name) {
-            return (!value.is_empty()).then_some(value.as_str());
+        let set = self.out_headers.iter().rev().find_map(|(n, v)| {
+            let (k, rest) = v.split_once('=')?;
+            (k == name && n.eq_ignore_ascii_case("set-cookie"))
+                .then(|| rest.split(';').next().unwrap_or(""))
+        });
+        if let Some(value) = set {
+            return (!value.is_empty()).then_some(value);
         }
         let all = self.header("cookie")?;
         all.split(';').find_map(|kv| {
@@ -411,24 +437,28 @@ impl Cx {
     /// or does not parse: `let count: i64 = cx.cookie_or("count", 0);`. A
     /// struct with `#[derive(Cookie)]` reads back the same way.
     pub fn cookie_or<T: FromStr>(&self, name: &str, default: T) -> T {
-        self.cookie(name)
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(default)
+        parsed_or(self.cookie(name), default)
     }
 
     /// A cookie set with [`Cx::set_signed_cookie`], if its signature holds.
     /// A visitor can read it but cannot make one up or change it, so it can
     /// say who is signed in. Anything else of that name is `None`.
     pub fn signed_cookie(&self, name: &str) -> Option<&str> {
-        let (value, mac) = self.cookie(name)?.rsplit_once('.')?;
-        sign::verify_cookie(name, value, mac).then_some(value)
+        let raw = self.cookie(name)?;
+        let (value, mac) = raw.rsplit_once('.')?;
+        let mut verified = self.verified.lock().unwrap_or_else(|e| e.into_inner());
+        if !verified.iter().any(|(n, r)| n == name && r == raw) {
+            if !sign::verify_cookie(name, value, mac) {
+                return None;
+            }
+            verified.push((name.to_owned(), raw.to_owned()));
+        }
+        Some(value)
     }
 
     /// [`Cx::signed_cookie`] parsed as any `FromStr` type, or `default`.
     pub fn signed_cookie_or<T: FromStr>(&self, name: &str, default: T) -> T {
-        self.signed_cookie(name)
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(default)
+        parsed_or(self.signed_cookie(name), default)
     }
 
     /// The TCP peer: the client, or the proxy in front of the app.
@@ -464,7 +494,12 @@ impl Cx {
             valid_header(&name, &value),
             "invalid header {name:?}: {value:?}"
         );
-        self.out_headers.push((name, value));
+        self.out_headers.push((name, Cow::Owned(value)));
+    }
+
+    /// Adds a response header whose value is known to be one.
+    fn put(&mut self, name: &'static str, value: Cow<'static, str>) {
+        self.out_headers.push((Cow::Borrowed(name), value));
     }
 
     /// Keeps `value` for the rest of this request, for any handler to read
@@ -565,14 +600,13 @@ impl Cx {
         value: impl std::fmt::Display,
         options: CookieOptions,
     ) {
-        let value = value.to_string();
+        use std::fmt::Write;
         let token =
             |s: &str, bad: &[u8]| s.bytes().all(|b| b.is_ascii_graphic() && !bad.contains(&b));
         assert!(
             !name.is_empty() && token(name, b"()<>@,;:\\\"/[]?={}"),
             "invalid cookie name {name:?}"
         );
-        assert!(token(&value, b"\",;\\"), "invalid cookie value {value:?}");
         assert!(
             options.path.starts_with('/') && token(options.path, b";"),
             "invalid cookie path {:?}",
@@ -585,20 +619,26 @@ impl Cx {
             "invalid cookie domain {:?}",
             options.domain
         );
-
-        let stored = if options.signed && !value.is_empty() {
-            format!("{value}.{}", sign::cookie_mac(name, &value))
-        } else {
-            value
-        };
-        let mut header = format!("{name}={stored}; Path={}", options.path);
+        let mut header = String::with_capacity(96);
+        let _ = write!(header, "{name}={value}");
+        let value = &header[name.len() + 1..];
+        assert!(token(value, b"\",;\\"), "invalid cookie value {value:?}");
+        let deleted = value.is_empty();
+        if options.signed && !deleted {
+            let mac = sign::cookie_mac(name, value);
+            header.push('.');
+            sign::base64(&mut header, &mac, true);
+        }
+        let _ = write!(header, "; Path={}", options.path);
         if let Some(domain) = options.domain {
             header.push_str("; Domain=");
             header.push_str(domain);
         }
         match options.max_age {
-            _ if stored.is_empty() => header.push_str("; Max-Age=0"),
-            Some(age) => header.push_str(&format!("; Max-Age={}", age.as_secs())),
+            _ if deleted => header.push_str("; Max-Age=0"),
+            Some(age) => {
+                let _ = write!(header, "; Max-Age={}", age.as_secs());
+            }
             None => {}
         }
         if !options.script_readable {
@@ -612,17 +652,16 @@ impl Cx {
             SameSite::Strict => "; SameSite=Strict",
             SameSite::None => "; SameSite=None",
         });
-        self.set_header("set-cookie", header);
-        self.set_cookies.push((name.to_owned(), stored));
+        // Every part was checked above: no need to check the whole again.
+        self.put("set-cookie", Cow::Owned(header));
     }
 
     /// Whether the visitor's browser reached the site over HTTPS, as far as
     /// the app can tell: TLS ends at the proxy in front of it.
     fn is_https(&self) -> bool {
         let forwarded = self
-            .header("x-forwarded-proto")
-            .and_then(|p| p.split(',').next())
-            .is_some_and(|p| p.trim().eq_ignore_ascii_case("https"));
+            .forwarded("x-forwarded-proto")
+            .is_some_and(|p| p.eq_ignore_ascii_case("https"));
         forwarded
             || crate::settings()
                 .origin
@@ -671,28 +710,9 @@ impl Cx {
     }
 }
 
-/// Standard base64 (RFC 4648), padded or not; `None` for anything else.
-fn base64(s: &str) -> Option<Vec<u8>> {
-    let s = s.trim_end_matches('=');
-    let mut out = Vec::with_capacity(s.len() * 3 / 4);
-    let (mut bits, mut n) = (0u32, 0);
-    for b in s.bytes() {
-        let v = match b {
-            b'A'..=b'Z' => b - b'A',
-            b'a'..=b'z' => b - b'a' + 26,
-            b'0'..=b'9' => b - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            _ => return None,
-        };
-        bits = bits << 6 | v as u32;
-        n += 6;
-        if n >= 8 {
-            n -= 8;
-            out.push((bits >> n) as u8);
-        }
-    }
-    (n < 6).then_some(out)
+/// `v` parsed as a `T`, or `default` when it is missing or does not parse.
+fn parsed_or<T: FromStr>(v: Option<&str>, default: T) -> T {
+    v.and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
 /// A fresh request id: 8 random hex digits per process, then a counter, so
@@ -703,7 +723,7 @@ fn new_id() -> String {
     static COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let seed = *SEED.get_or_init(|| u32::from_le_bytes(crate::sign::random()));
     let n = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    format!("{seed:08x}{n:08x}")
+    crate::hex(&(u64::from(seed) << 32 | u64::from(n)).to_be_bytes())
 }
 
 pub(crate) fn valid_header(name: &str, value: &str) -> bool {
@@ -766,20 +786,14 @@ pub fn decode(s: &[u8], plus_is_space: bool) -> Cow<'_, str> {
     if !needs {
         return String::from_utf8_lossy(s);
     }
-    let hex = |b: u8| match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    };
     let mut out = Vec::with_capacity(s.len());
     let mut i = 0;
     while i < s.len() {
         match s[i] {
             b'+' if plus_is_space => out.push(b' '),
             b'%' => match (
-                s.get(i + 1).copied().and_then(hex),
-                s.get(i + 2).copied().and_then(hex),
+                s.get(i + 1).copied().and_then(hex_digit),
+                s.get(i + 2).copied().and_then(hex_digit),
             ) {
                 (Some(h), Some(l)) => {
                     out.push(h << 4 | l);
@@ -792,6 +806,41 @@ pub fn decode(s: &[u8], plus_is_space: bool) -> Cow<'_, str> {
         i += 1;
     }
     Cow::Owned(String::from_utf8_lossy(&out).into_owned())
+}
+
+/// Percent-encodes `s` into `out`: each byte `keep` refuses as `%XX`.
+/// `keep` takes ASCII only.
+pub(crate) fn encode(
+    out: &mut impl std::fmt::Write,
+    s: &str,
+    keep: fn(u8) -> bool,
+) -> std::fmt::Result {
+    const DIGITS: &[u8; 16] = b"0123456789ABCDEF";
+    let b = s.as_bytes();
+    let mut done = 0;
+    for (i, &c) in b.iter().enumerate() {
+        if keep(c) {
+            continue;
+        }
+        // Everything since the last escape was kept, so is ASCII.
+        out.write_str(std::str::from_utf8(&b[done..i]).unwrap_or(""))?;
+        for d in [b'%', DIGITS[(c >> 4) as usize], DIGITS[(c & 15) as usize]] {
+            out.write_char(d as char)?;
+        }
+        done = i + 1;
+    }
+    out.write_str(std::str::from_utf8(&b[done..]).unwrap_or(""))
+}
+
+/// What a URL carries as itself (RFC 3986's unreserved characters); the
+/// rest [`encode`] escapes.
+pub(crate) fn unreserved(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~')
+}
+
+/// The value of a hex digit, either case.
+pub(crate) fn hex_digit(b: u8) -> Option<u8> {
+    (b as char).to_digit(16).map(|d| d as u8)
 }
 
 // ---- values kept in cookies: #[derive(Cookie)] -------------------------------
@@ -835,20 +884,9 @@ struct Escaped<'a, 'f>(&'a mut std::fmt::Formatter<'f>);
 
 impl std::fmt::Write for Escaped<'_, '_> {
     fn write_str(&mut self, s: &str) -> std::fmt::Result {
-        let b = s.as_bytes();
-        let mut done = 0;
-        for (i, &c) in b.iter().enumerate() {
-            if c.is_ascii_graphic() && !matches!(c, b'"' | b',' | b';' | b'\\' | b'|' | b'%') {
-                continue;
-            }
-            // Everything since the last escape is ASCII, so this is valid UTF-8.
-            self.0
-                .write_str(std::str::from_utf8(&b[done..i]).expect("ASCII"))?;
-            write!(self.0, "%{c:02X}")?;
-            done = i + 1;
-        }
-        self.0
-            .write_str(std::str::from_utf8(&b[done..]).expect("ASCII"))
+        encode(self.0, s, |c| {
+            c.is_ascii_graphic() && !matches!(c, b'"' | b',' | b';' | b'\\' | b'|' | b'%')
+        })
     }
 }
 
@@ -918,8 +956,11 @@ mod tests {
     fn basic_auth_and_cors() {
         let cx = cx_for("GET / HTTP/1.1\r\nAuthorization: Basic YWRhOmx1diA6eA==\r\n\r\n");
         assert_eq!(cx.basic_auth(), Some(("ada".into(), "luv :x".into())));
-        assert_eq!(base64("YQ"), Some(b"a".to_vec()));
-        assert_eq!(base64("Y*=="), None);
+        let mut out = [0; 4];
+        assert_eq!(sign::unbase64("YQ", &mut out), Some(1));
+        assert_eq!(out[0], b'a');
+        assert_eq!(sign::unbase64("Y*==", &mut out), None);
+        assert_eq!(sign::unbase64("YWJjZA", &mut out[..3]), None, "too long");
         assert_eq!(
             cx_for("GET / HTTP/1.1\r\nAuthorization: Bearer x\r\n\r\n").basic_auth(),
             None
@@ -1184,7 +1225,7 @@ mod tests {
                 );
             }
             let _ = CookieReader::new(&header).text();
-            let _ = base64(&header);
+            let _ = sign::unbase64(&header, &mut [0; 64]);
 
             // Any text survives a flash, and any two fields a cookie type.
             let text = rng.text(30);

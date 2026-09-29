@@ -6,33 +6,52 @@
 //! published test vectors (FIPS 180-4, RFC 4231), checked below. Nothing is
 //! encrypted: a signed cookie's value is readable, only not forgeable.
 
+use crate::cx::hex_digit;
+use std::cell::RefCell;
 use std::path::Path;
 use std::sync::OnceLock;
 
-/// The signature of cookie `name` holding `value`: base64url, no padding.
-pub(crate) fn cookie_mac(name: &str, value: &str) -> String {
-    base64url(&key().sign(&[name.as_bytes(), b"=", value.as_bytes()]))
+/// The signature of cookie `name` holding `value`.
+pub(crate) fn cookie_mac(name: &str, value: &str) -> [u8; 32] {
+    key().sign(&[name.as_bytes(), b"=", value.as_bytes()])
 }
 
 /// Whether `mac` is the signature of cookie `name` holding `value`, in time
 /// that does not depend on where they differ.
 pub(crate) fn verify_cookie(name: &str, value: &str, mac: &str) -> bool {
-    crate::secure_eq(cookie_mac(name, value), mac)
+    same_mac(mac, &cookie_mac(name, value))
+}
+
+/// Whether `sent`, in hex or base64 (either alphabet, padded or not), is
+/// `mac`, in time that does not depend on where they differ.
+fn same_mac(sent: &str, mac: &[u8; 32]) -> bool {
+    let mut got = [0u8; 32];
+    let hex = sent.len() == 64
+        && sent.as_bytes().chunks(2).zip(&mut got).all(|(p, g)| {
+            match (hex_digit(p[0]), hex_digit(p[1])) {
+                (Some(h), Some(l)) => {
+                    *g = h << 4 | l;
+                    true
+                }
+                _ => false,
+            }
+        });
+    (hex || unbase64(sent, &mut got) == Some(32)) && crate::secure_eq(got, mac)
 }
 
 /// The project directory, for the dev secret. Set when the server starts.
 pub(crate) static ROOT: OnceLock<&'static str> = OnceLock::new();
 
-/// `WISP_SECRET`; in dev builds without it, a secret kept in the project's
-/// `.wisp/secret`, so signed cookies survive restarts. A release build
-/// without one cannot sign: the panic is the request's 500, with the reason.
+/// `WISP_SECRET`; in dev without it, a secret kept in the project's
+/// `.wisp/secret`, so signed cookies survive restarts. Otherwise there is
+/// none to sign with: the panic is the request's 500, with the reason.
 fn key() -> &'static Hmac {
     static KEY: OnceLock<Hmac> = OnceLock::new();
     KEY.get_or_init(|| {
         if let Some(secret) = &crate::settings().secret {
             return Hmac::new(secret.as_bytes());
         }
-        if cfg!(debug_assertions) {
+        if crate::settings().dev {
             return Hmac::new(&dev_key());
         }
         panic!(
@@ -53,7 +72,7 @@ fn dev_key() -> Vec<u8> {
         keep_private(&file);
         return text.trim().as_bytes().to_vec();
     }
-    let secret: String = random::<32>().iter().map(|b| format!("{b:02x}")).collect();
+    let secret = hex(&random::<32>());
     let saved = std::fs::create_dir_all(file.parent().unwrap_or(Path::new(".")))
         .and_then(|()| save_private(&file, &secret));
     if let Err(e) = saved {
@@ -85,6 +104,35 @@ fn keep_private(file: &Path) {
     let _ = file;
 }
 
+/// A secret from the environment, such as an API key, and the HMAC it keys.
+pub(crate) struct Secret {
+    pub(crate) bytes: Box<[u8]>,
+    hmac: Hmac,
+}
+
+/// `f` of the secret in the environment variable `var`; `None` when it is
+/// unset or empty. Read once a thread: the environment stays as it was when
+/// the app started.
+pub(crate) fn secret<R>(var: &str, f: impl FnOnce(&Secret) -> R) -> Option<R> {
+    thread_local! {
+        static SECRETS: RefCell<Vec<(Box<str>, Option<Secret>)>> = const { RefCell::new(Vec::new()) };
+    }
+    SECRETS.with_borrow_mut(|all| {
+        let at = match all.iter().position(|(n, _)| **n == *var) {
+            Some(at) => at,
+            None => {
+                let s = crate::env(var).filter(|s| !s.is_empty()).map(|s| Secret {
+                    hmac: Hmac::new(s.as_bytes()),
+                    bytes: s.into_bytes().into(),
+                });
+                all.push((var.into(), s));
+                all.len() - 1
+            }
+        };
+        all[at].1.as_ref().map(f)
+    })
+}
+
 /// `N` bytes from the host's `crypto.getRandomValues`.
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn random<const N: usize>() -> [u8; N] {
@@ -112,19 +160,51 @@ pub(crate) fn random<const N: usize>() -> [u8; N] {
     out
 }
 
-fn base64url(bytes: &[u8]) -> String {
-    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+/// `bytes` as base64 onto `out`: URL-safe and unpadded when `url`, else
+/// standard and padded.
+pub(crate) fn base64(out: &mut String, bytes: &[u8], url: bool) {
+    let abc: &[u8; 64] = if url {
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    } else {
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    };
     for group in bytes.chunks(3) {
         let n = group
             .iter()
             .enumerate()
             .fold(0u32, |n, (i, &b)| n | (b as u32) << (16 - 8 * i));
-        for k in 0..group.len() + 1 {
-            out.push(ABC[(n >> (18 - 6 * k) & 63) as usize] as char);
+        for k in 0..4 {
+            if k <= group.len() {
+                out.push(abc[(n >> (18 - 6 * k) & 63) as usize] as char);
+            } else if !url {
+                out.push('=');
+            }
         }
     }
-    out
+}
+
+/// Base64, standard or URL-safe, padded or not, decoded into `out`: how
+/// many bytes, or `None` for anything else or more than fits.
+pub(crate) fn unbase64(s: &str, out: &mut [u8]) -> Option<usize> {
+    let (mut bits, mut n, mut len) = (0u32, 0, 0);
+    for b in s.trim_end_matches('=').bytes() {
+        let v = match b {
+            b'A'..=b'Z' => b - b'A',
+            b'a'..=b'z' => b - b'a' + 26,
+            b'0'..=b'9' => b - b'0' + 52,
+            b'+' | b'-' => 62,
+            b'/' | b'_' => 63,
+            _ => return None,
+        };
+        bits = bits << 6 | v as u32;
+        n += 6;
+        if n >= 8 {
+            n -= 8;
+            *out.get_mut(len)? = (bits >> n) as u8;
+            len += 1;
+        }
+    }
+    (n < 6).then_some(len)
 }
 
 /// HMAC-SHA256 of `message` under `key`, for checking a webhook's
@@ -135,7 +215,13 @@ pub fn hmac_sha256(key: impl AsRef<[u8]>, message: impl AsRef<[u8]>) -> [u8; 32]
 
 /// Bytes as lowercase hex.
 pub fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        s.push(DIGITS[(b >> 4) as usize] as char);
+        s.push(DIGITS[(b & 15) as usize] as char);
+    }
+    s
 }
 
 impl crate::Cx {
@@ -148,47 +234,32 @@ impl crate::Cx {
     /// time and the body, and is refused more than five minutes after `t`.
     /// Compared in constant time; an unset variable matches nothing.
     pub fn need_signature(&self, var: &str, header: &str) -> crate::Result {
-        let refused =
-            || crate::Error::new(401, "The signature does not match").with_code("bad_signature");
-        let (Some(secret), Some(sent)) = (crate::env(var), self.header(header)) else {
-            return Err(refused());
-        };
-        if secret.is_empty() {
-            return Err(refused());
-        }
-        let key = Hmac::new(secret.as_bytes());
+        let sent = self.header(header).unwrap_or("");
         let stripe = sent.split(',').find_map(|p| p.trim().strip_prefix("t="));
-        let (mac, sigs): ([u8; 32], Vec<&str>) = match stripe {
+        let ok = secret(var, |k| match stripe {
             Some(t) => {
                 let fresh = t
                     .parse::<u64>()
                     .is_ok_and(|t| crate::unix_now().abs_diff(t) <= 300);
-                if !fresh {
-                    return Err(refused());
-                }
-                let sigs = sent
-                    .split(',')
-                    .filter_map(|p| p.trim().strip_prefix("v1="))
-                    .collect();
-                (key.sign(&[t.as_bytes(), b".", self.body()]), sigs)
+                let mac = k.hmac.sign(&[t.as_bytes(), b".", self.body()]);
+                fresh
+                    && sent
+                        .split(',')
+                        .filter_map(|p| p.trim().strip_prefix("v1="))
+                        .any(|s| same_mac(s, &mac))
             }
             None => {
                 let s = sent.trim();
-                (
-                    key.sign(&[self.body()]),
-                    vec![s.strip_prefix("sha256=").unwrap_or(s)],
+                same_mac(
+                    s.strip_prefix("sha256=").unwrap_or(s),
+                    &k.hmac.sign(&[self.body()]),
                 )
             }
-        };
-        let hex = hex(&mac);
-        let url = base64url(&mac);
-        let standard: String = url.replace('-', "+").replace('_', "/") + "=";
-        let ok = sigs.iter().any(|s| {
-            crate::secure_eq(s.to_ascii_lowercase(), &hex)
-                || crate::secure_eq(s, &standard)
-                || crate::secure_eq(s, &url)
         });
-        if ok { Ok(()) } else { Err(refused()) }
+        if ok == Some(true) {
+            return Ok(());
+        }
+        Err(crate::Error::new(401, "The signature does not match").with_code("bad_signature"))
     }
 }
 
@@ -238,13 +309,53 @@ fn sha256(parts: &[&[u8]]) -> [u8; 32] {
     h.finish()
 }
 
+/// The input of SHA-1 and SHA-256, in the 64-byte blocks they compress,
+/// and the padding that ends it (FIPS 180-4 §5.1.1).
+#[derive(Clone)]
+pub(crate) struct Blocks {
+    block: [u8; 64],
+    filled: usize,
+    total: u64,
+}
+
+impl Blocks {
+    pub(crate) const fn new() -> Blocks {
+        Blocks {
+            block: [0; 64],
+            filled: 0,
+            total: 0,
+        }
+    }
+
+    pub(crate) fn update(&mut self, mut data: &[u8], compress: &mut impl FnMut(&[u8; 64])) {
+        self.total += data.len() as u64;
+        while !data.is_empty() {
+            let n = data.len().min(64 - self.filled);
+            self.block[self.filled..self.filled + n].copy_from_slice(&data[..n]);
+            self.filled += n;
+            data = &data[n..];
+            if self.filled == 64 {
+                compress(&self.block);
+                self.filled = 0;
+            }
+        }
+    }
+
+    /// Pads the input, which ends it.
+    pub(crate) fn finish(mut self, compress: &mut impl FnMut(&[u8; 64])) {
+        let bits = self.total * 8;
+        self.update(&[0x80], compress);
+        let zeros = (120 - self.filled) % 64;
+        self.update(&[0; 64][..zeros], compress);
+        self.update(&bits.to_be_bytes(), compress);
+    }
+}
+
 /// SHA-256, FIPS 180-4.
 #[derive(Clone)]
 struct Sha256 {
     state: [u32; 8],
-    block: [u8; 64],
-    filled: usize,
-    total: u64,
+    blocks: Blocks,
 }
 
 const K: [u32; 64] = [
@@ -266,79 +377,62 @@ impl Sha256 {
         ];
         Sha256 {
             state,
-            block: [0; 64],
-            filled: 0,
-            total: 0,
+            blocks: Blocks::new(),
         }
     }
 
-    fn update(&mut self, mut data: &[u8]) {
-        self.total += data.len() as u64;
-        while !data.is_empty() {
-            let n = data.len().min(64 - self.filled);
-            self.block[self.filled..self.filled + n].copy_from_slice(&data[..n]);
-            self.filled += n;
-            data = &data[n..];
-            if self.filled == 64 {
-                self.compress();
-                self.filled = 0;
-            }
-        }
+    fn update(&mut self, data: &[u8]) {
+        let state = &mut self.state;
+        self.blocks.update(data, &mut |b| compress(state, b));
     }
 
     fn finish(mut self) -> [u8; 32] {
-        let bits = self.total * 8;
-        self.update(&[0x80]);
-        let zeros = (120 - self.filled) % 64;
-        self.update(&[0; 64][..zeros]);
-        self.update(&bits.to_be_bytes());
+        let state = &mut self.state;
+        self.blocks.finish(&mut |b| compress(state, b));
         let mut out = [0u8; 32];
         for (o, s) in out.chunks_mut(4).zip(self.state) {
             o.copy_from_slice(&s.to_be_bytes());
         }
         out
     }
+}
 
-    fn compress(&mut self) {
-        let mut w = [0u32; 64];
-        for (i, word) in self.block.chunks(4).enumerate() {
-            w[i] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
-        }
-        for i in 16..64 {
-            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
-            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
-            w[i] = w[i - 16]
-                .wrapping_add(s0)
-                .wrapping_add(w[i - 7])
-                .wrapping_add(s1);
-        }
-        let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = self.state;
-        for i in 0..64 {
-            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
-            let ch = (e & f) ^ (!e & g);
-            let t1 = h
-                .wrapping_add(s1)
-                .wrapping_add(ch)
-                .wrapping_add(K[i])
-                .wrapping_add(w[i]);
-            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
-            let maj = (a & b) ^ (a & c) ^ (b & c);
-            let t2 = s0.wrapping_add(maj);
-            (h, g, f, e, d, c, b, a) = (g, f, e, d.wrapping_add(t1), c, b, a, t1.wrapping_add(t2));
-        }
-        for (s, v) in self.state.iter_mut().zip([a, b, c, d, e, f, g, h]) {
-            *s = s.wrapping_add(v);
-        }
+/// SHA-256's compression of one block into `state`.
+fn compress(state: &mut [u32; 8], block: &[u8; 64]) {
+    let mut w = [0u32; 64];
+    for (i, word) in block.chunks(4).enumerate() {
+        w[i] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
+    }
+    for i in 16..64 {
+        let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+        let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+        w[i] = w[i - 16]
+            .wrapping_add(s0)
+            .wrapping_add(w[i - 7])
+            .wrapping_add(s1);
+    }
+    let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = *state;
+    for i in 0..64 {
+        let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+        let ch = (e & f) ^ (!e & g);
+        let t1 = h
+            .wrapping_add(s1)
+            .wrapping_add(ch)
+            .wrapping_add(K[i])
+            .wrapping_add(w[i]);
+        let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+        let maj = (a & b) ^ (a & c) ^ (b & c);
+        let t2 = s0.wrapping_add(maj);
+        (h, g, f, e, d, c, b, a) = (g, f, e, d.wrapping_add(t1), c, b, a, t1.wrapping_add(t2));
+    }
+    for (s, v) in state.iter_mut().zip([a, b, c, d, e, f, g, h]) {
+        *s = s.wrapping_add(v);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn hex(b: &[u8]) -> String {
-        b.iter().map(|b| format!("{b:02x}")).collect()
-    }
 
     #[test]
     fn sha256_vectors() {
@@ -385,15 +479,33 @@ mod tests {
         );
     }
 
+    fn b64(bytes: &[u8], url: bool) -> String {
+        let mut s = String::new();
+        base64(&mut s, bytes, url);
+        s
+    }
+
     #[test]
-    fn base64url_encoding() {
-        assert_eq!(base64url(b""), "");
-        assert_eq!(base64url(b"f"), "Zg");
-        assert_eq!(base64url(b"fo"), "Zm8");
-        assert_eq!(base64url(b"foo"), "Zm9v");
-        assert_eq!(base64url(b"foob"), "Zm9vYg");
-        assert_eq!(base64url(&[0xfb, 0xff]), "-_8");
-        assert_eq!(base64url(&[0; 32]).len(), 43);
+    fn base64_both_ways() {
+        for (bytes, url, std) in [
+            (&b""[..], "", ""),
+            (b"f", "Zg", "Zg=="),
+            (b"fo", "Zm8", "Zm8="),
+            (b"foo", "Zm9v", "Zm9v"),
+            (b"foob", "Zm9vYg", "Zm9vYg=="),
+            (&[0xfb, 0xff], "-_8", "+/8="),
+        ] {
+            assert_eq!(
+                (b64(bytes, true), b64(bytes, false)),
+                (url.into(), std.into())
+            );
+            for text in [url, std] {
+                let mut out = [0; 8];
+                let n = unbase64(text, &mut out).unwrap();
+                assert_eq!(&out[..n], bytes);
+            }
+        }
+        assert_eq!(b64(&[0; 32], true).len(), 43);
     }
 
     #[test]
@@ -424,8 +536,10 @@ mod tests {
                 .is_err()
         );
         assert!(cx("x-other", &github).need_signature(var, "x-sig").is_err());
-        let b64 = base64url(&mac).replace('-', "+").replace('_', "/") + "=";
-        assert!(cx("x-sig", &b64).need_signature(var, "x-sig").is_ok());
+        for url in [false, true] {
+            let b64 = b64(&mac, url);
+            assert!(cx("x-sig", &b64).need_signature(var, "x-sig").is_ok());
+        }
         let t = crate::unix_now();
         let v1 = hex(&hmac_sha256(secret, format!("{t}.{body}")));
         let stripe = format!("t={t},v1=00,v1={v1}");

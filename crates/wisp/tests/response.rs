@@ -34,17 +34,3 @@ fn errors_and_redirects_return_early() {
     );
     assert_eq!(guess("crane").unwrap_err().status(), 303);
 }
-
-#[test]
-fn redirects_and_channels() {
-    let r = Response::redirect("/next");
-    assert_eq!(r.status, 303);
-    assert_eq!(r.headers, [("location".into(), "/next".to_string())]);
-    // The channel forms stay for a body written from elsewhere.
-    let (res, tx) = Response::channel("text/csv");
-    assert_eq!((res.status, &*res.content_type), (200, "text/csv"));
-    assert!(!tx.is_closed());
-    let (events, _tx) = Response::event_channel();
-    assert_eq!(&*events.content_type, "text/event-stream");
-    assert_eq!(events.headers.len(), 2);
-}

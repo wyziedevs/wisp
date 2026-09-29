@@ -35,7 +35,7 @@
 const defs = new Map(); // module id -> { fn, html, load }
 const done = new Set(); // module urls imported
 const seen = new WeakSet(); // elements bound before: a restart does not animate them in
-const recs = new WeakMap(); // element -> its binding record { inst, key, sc, el }
+const recs = new WeakMap(); // element -> its binding record { inst, w, wl, sc, el }
 const RAW = Symbol(); // proxy[RAW]: the object itself, tracking any change in it
 const NONE = {};
 let live = []; // the instances running, in render order
@@ -209,10 +209,12 @@ function exec(n) {
 }
 
 function fail(n, e) {
-  const b = n.sc?.b;
-  if (b) b(e);
-  else if (failed.get(n) !== String(e)) console.error(e), failed.set(n, String(e));
+  const sc = n.sc;
+  if (sc?.b || failed.get(n) !== String(e)) report(sc, e), failed.set(n, String(e));
 }
+
+// An error goes to the {:#try} block its scope is in, else to the console.
+const report = (sc, e) => (sc?.b ? sc.b(e) : console.error(e));
 
 function dispose(n) {
   n.dead = 1;
@@ -484,6 +486,14 @@ function batch(sc, f) {
   if (!n.ws.length) n.dead = 1;
 }
 
+// Listens on `at` for the event types (names split by spaces) until sc ends.
+function on(sc, at, types, f, o) {
+  for (const t of types.split(' ')) {
+    at.addEventListener(t, f, o);
+    sc.stops.push(() => at.removeEventListener(t, f, o));
+  }
+}
+
 // A scope owns cleanups (its nodes among them): one per instance, element
 // and copy. `b` is the {:#try} block it is in; `c` says it is in a copy,
 // whose nodes a morph does not touch.
@@ -501,7 +511,9 @@ function end(sc) {
 function start() {
   const my = ++gen;
   const json = document.getElementById('wisp-live');
-  const { m = {}, i = [], r = null, p = {} } = json ? JSON.parse(json.textContent) : {};
+  // Parsed by wisp.js already, if it is there; ours to change now.
+  const { m = {}, i = [], r = null, p = {} } = json ? json.__j || JSON.parse(json.textContent) : {};
+  if (json) json.__j = null;
   route = { id: r, params: p };
   const at = {};
   const list = i.map(([I, id, P, ...x]) => {
@@ -526,33 +538,37 @@ function need(list, m) {
 
 function boot(list, my) {
   epoch++;
+  // The attributes are read here, once (`__d` and `__l` are data-w and data-wl).
   const els = {};
   for (const el of document.querySelectorAll('[data-w]')) {
-    const [i, g] = el.dataset.w.split('.');
-    if (g != null) (els[i] ||= []).push(el);
+    const w = (el.__d = el.getAttribute('data-w'));
+    el.__l = el.getAttribute('data-wl');
+    const dot = w.indexOf('.');
+    if (dot > 0) (els[w.slice(0, dot)] ||= []).push(el);
   }
   // waiting: instance -> what starts once it has (its +page.js loaded, or
   // it hydrated), so that getContext finds what its script sets.
-  Object.assign(cur, { els, my, byI: {}, waiting: {}, kept: new Set(), old: live });
+  const old = new Map(live.map((o) => [o.I, o])); // the last start's, by place
+  Object.assign(cur, { els, my, byI: {}, waiting: {}, kept: new Set(), old, reset: document.querySelector('[data-wisp-reset]') });
   live = [];
   list.forEach(begin);
-  for (const o of cur.old) if (!cur.kept.has(o)) destroy(o);
+  for (const o of old.values()) if (!cur.kept.has(o)) destroy(o);
   loaded = true;
   for (const n of all) mark(n, 2);
 }
 
 function begin(rec) {
   const { I, id, P, blob, how } = rec;
-  const { els, byI, waiting, kept, old, my } = cur;
+  const { els, byI, waiting, kept, old, my, reset } = cur;
   const def = defs.get(id);
   const mine = els[I] || [];
   if (waiting[P]) return waiting[P].push(rec);
   // Kept: the instance whose element this is, or failing that (its
   // elements were all replaced) the one at the same place in the list.
   let inst = null;
-  if (def && !mine.some((el) => el.closest('[data-wisp-reset]'))) {
-    const ok = (o) => o && o.def === def && !kept.has(o) && old.includes(o) && !o.sc.dead;
-    inst = mine.map((el) => recs.get(el)?.inst).find(ok) || old.find((o) => o.I === I && ok(o));
+  if (def && !(reset && mine.some((el) => el.closest('[data-wisp-reset]')))) {
+    const ok = (o) => o && o.def === def && !kept.has(o) && old.get(o.I) === o && !o.sc.dead;
+    inst = mine.map((el) => recs.get(el)?.inst).find(ok) || (ok(old.get(I)) ? old.get(I) : null);
   }
   if (!inst && how && !woken.has(I)) {
     waiting[I] = [];
@@ -665,17 +681,17 @@ function destroy(inst) {
 function bindAll(inst, elements) {
   const keep = new Set();
   for (const el of elements) {
-    const key = el.dataset.w + ' ' + (el.dataset.wl || '');
+    const { __d: w, __l: wl } = el;
     let r = recs.get(el);
-    if (!(r && r.inst === inst && r.key === key && inst.recs.has(r))) {
+    if (!(r && r.inst === inst && r.w === w && r.wl === wl && inst.recs.has(r))) {
       if (r) stopRec(r);
-      r = { inst, key, sc: scope(), el };
+      r = { inst, w, wl, sc: scope(), el };
       recs.set(el, r);
       inst.recs.add(r);
       const quiet = !loaded || seen.has(el);
-      const go = () => setup(r.sc, inst, el, +el.dataset.w.split('.')[1], JSON.parse(el.dataset.wl || '{}'), quiet);
-      const w = waits(el);
-      w ? w.then(() => r.sc.dead || go()) : go();
+      const go = () => setup(r.sc, inst, el, +w.slice(w.indexOf('.') + 1), wl ? JSON.parse(wl) : {}, quiet);
+      const wt = waits(el);
+      wt ? wt.then(() => r.sc.dead || go()) : go();
       seen.add(el);
     }
     keep.add(r);
@@ -727,10 +743,6 @@ const shared = {
 function helpers(inst) {
   const sc = inst.sc;
   const wrap = (f) => (...a) => sc.dead || f(...a);
-  const signal = () => {
-    if (!inst.ac) (inst.ac = new AbortController()), sc.stops.push(() => inst.ac.abort());
-    return inst.ac.signal;
-  };
   // $effect: after the DOM is drawn (pre: before), and again when what it
   // read changes. What it returns runs before that and at the end. One made
   // inside another ends with that run of it.
@@ -784,7 +796,7 @@ function helpers(inst) {
       sc.stops.push(() => clearInterval(id));
       return id;
     },
-    addEventListener: (type, f, options) => addEventListener(type, wrap(f), { ...options, signal: signal() }),
+    addEventListener: (type, f, options) => on(sc, window, type, wrap(f), options),
     listen(url, f) {
       const es = new EventSource(url);
       es.onmessage = (e) => wrap(f)(e.data, e);
@@ -819,8 +831,7 @@ function setup(sc, inst, el, g, L, quiet) {
     try {
       binding(sc, inst, el, L, quiet, bs[k]);
     } catch (e) {
-      if (sc.b) sc.b(e);
-      else console.error(e);
+      report(sc, e);
     }
   }
   if (!quiet) X.enter?.(sc, el);
@@ -909,7 +920,10 @@ function adopt(c, sc, inst, L) {
   walk(c.first.nextSibling, c.last, els);
   const [o, f] = [X.outs, X.flips];
   batch(sc, () => {
-    for (const el of els) bindEl(el, sc, inst, L, true, el.dataset.w, el.dataset.wl && JSON.parse(el.dataset.wl));
+    for (const el of els) {
+      const wl = el.getAttribute('data-wl');
+      bindEl(el, sc, inst, L, true, el.getAttribute('data-w'), wl && JSON.parse(wl));
+    }
   });
   return Object.assign(c, { t: X.outs != o, f: X.flips != f });
 }
@@ -1057,7 +1071,6 @@ function binding(sc, inst, el, L, quiet, bnd) {
         // Without modifiers, no function of its own: the root calls c(L, e).
         if (b == 8192) return void el.__on.push([a, c, sc, L]);
       }
-      const at = b & 64 ? window : b & 384 ? document : el;
       let timer, spent;
       const h = (e) => {
         if (b & 8 && e.target !== el) return;
@@ -1074,9 +1087,7 @@ function binding(sc, inst, el, L, quiet, bnd) {
         timer = setTimeout(() => sc.dead || c(L, e), ms);
       };
       if (root) return void el.__on.push([a, h, sc]);
-      const o = { capture: !!(b & 16), passive: !!(b & 32) };
-      at.addEventListener(a, h, o);
-      return void sc.stops.push(() => at.removeEventListener(a, h, o));
+      return on(sc, b & 64 ? window : b & 384 ? document : el, a, h, { capture: !!(b & 16), passive: !!(b & 32) });
     }
     case 'bind':
       return a == 'this' ? c(L, el) : a == 'value' || a == 'checked' ? bind(sc, el, L, a, b, c) : X.bind(sc, el, L, a, b, c);
@@ -1130,16 +1141,15 @@ function binding(sc, inst, el, L, quiet, bnd) {
 // variable, both ways. What the user typed before this ran wins, then the
 // script's value, then what the page shows.
 function bind(sc, el, L, a, get, set) {
-  const on = (at, type, f) => (at.addEventListener(type, f), sc.stops.push(() => at.removeEventListener(type, f)));
   const multi = el.multiple && el.localName == 'select';
   const read = () =>
     a == 'checked' ? el.checked : multi ? [...el.selectedOptions].map((o) => o.value) : /^(number|range)$/.test(el.type) && el.value !== '' ? +el.value : el.value;
   const typed = a == 'checked' ? el.checked !== el.defaultChecked : 'defaultValue' in el && el.value !== el.defaultValue;
   if (typed || get(L) == null) set(L, read());
-  on(el, a == 'checked' || el.localName == 'select' ? 'change' : 'input', () => set(L, read()));
+  on(sc, el, a == 'checked' || el.localName == 'select' ? 'change' : 'input', () => set(L, read()));
   // A form reset (wisp.js resets a form its post succeeded with) moves
   // the field to its new default; the variable follows it.
-  if (el.form) on(el.form, 'reset', () => queueMicrotask(() => set(L, read())));
+  if (el.form) on(sc, el.form, 'reset', () => queueMicrotask(() => set(L, read())));
   // Compared with the element, not the last value: a handler may change
   // the target before the input's own batch.
   node(sc, () => {
@@ -1171,20 +1181,38 @@ function clones(sc, inst, tpl, L, quiet, kind, get, names, keyOf) {
   const P = Object.create(L);
   names.forEach((n, k) => n && Object.defineProperty(P, n, { get() { return this[S][k].v; } }));
   const tmp = Object.create(L); // a key's locals
+  const fresh = (key, item, i) => {
+    const cl = Object.create(P);
+    return { key, L: cl, $: (cl[S] = [new Sig(item), names[1] && new Sig(i)]), sc: scope(sc, 1), i: -1, first: null, last: null, frag: null, t: false, f: false };
+  };
+  const draw = (q) => (c) => copy(tpl, c.sc, inst, c.L, q, c);
   node(sc, () => {
     const v = get(L);
     // A state array is read whole, as one signal, not item by item.
-    const raw = v?.[RAW];
-    const items = kind == 'if' ? (v ? [0] : []) : kind == 'key' ? [v] : typeof v == 'number' ? Array.from({ length: v }, (_, i) => i) : raw ? raw.slice() : [...(v ?? [])];
-    if (raw) for (let i = 0; i < items.length; i++) items[i] = proxy(items[i]);
+    const raw = kind == 'each' && v?.[RAW];
+    const items = Array.isArray(raw) ? raw.map(proxy) : kind == 'if' ? (v ? [0] : []) : kind == 'key' ? [v] : typeof v == 'number' ? Array.from({ length: v }, (_, i) => i) : [...(v ?? [])];
     // Keys are tracked: an item whose key changes in place moves.
     const keys = kind == 'key' ? items : keyOf ? items.map((item, i) => (names[0] && (tmp[names[0]] = item), names[1] && (tmp[names[1]] = i), keyOf(tmp))) : null;
     untrack(() => {
+      const m = list.length;
       // The server's copies: the first draw takes them over in order; after
       // a morph that kept this block, the new page's go.
       const pre = [];
-      if (!first) drop(list.at(-1)?.last || tpl);
-      else for (let c, at = tpl; (c = painted(at)); at = c.last) pre.push(c);
+      if (first) for (let c, at = tpl; (c = painted(at)); at = c.last) pre.push(c);
+      else {
+        drop(list.at(-1)?.last || tpl);
+        // The same keys in the same order, and perhaps more after them: none
+        // moves, the values are set, and the new ones go in at the end.
+        let k = 0;
+        while (!X.flips && k < m && k < items.length && (keys ? keys[k] : k) === list[k].key) k++;
+        if (k == m) {
+          for (k = 0; k < m; k++) list[k].$[0].v = items[k];
+          const add = items.slice(m).map((item, i) => fresh(keys ? keys[m + i] : m + i, item, m + i));
+          if (add.length) order(tpl.parentNode, (list.at(-1)?.last || tpl).nextSibling, add, draw(false));
+          list = list.concat(add);
+          return;
+        }
+      }
       for (const c of pre.splice(items.length)) range(c).forEach((n) => n.remove());
       // Where the block ends, found before any copy leaves.
       const tail = (list.at(-1)?.last || pre.at(-1)?.last || tpl).nextSibling;
@@ -1199,10 +1227,9 @@ function clones(sc, inst, tpl, L, quiet, kind, get, names, keyOf) {
           if (c.$[1]) c.$[1].v = i;
           return c;
         }
-        const cl = Object.create(P);
-        const n = { key, L: cl, $: (cl[S] = [new Sig(item), names[1] && new Sig(i)]), sc: scope(sc, 1), i: -1, first: null, last: null, frag: null, t: false, f: false };
+        const n = fresh(key, item, i);
         // A painted copy is taken over where it is.
-        if (pre[i]) Object.assign(n, adopt(pre[i], n.sc, inst, cl), { i });
+        if (pre[i]) Object.assign(n, adopt(pre[i], n.sc, inst, n.L), { i });
         return n;
       });
       // Leaving: all at once when nothing plays out.
@@ -1213,7 +1240,7 @@ function clones(sc, inst, tpl, L, quiet, kind, get, names, keyOf) {
       else quick.forEach((c) => range(c).forEach((n) => n.remove()));
       for (const c of gone) if (c.t) X.leave(sc, c);
       const flip = list.some((c) => c.f) && X.flip(list, old);
-      order(tpl.parentNode, tail, next, (c) => copy(tpl, c.sc, inst, c.L, quiet && first, c));
+      order(tpl.parentNode, tail, next, draw(quiet && first));
       list = next;
       first = false;
       if (flip) flip();
@@ -1291,7 +1318,7 @@ function lis(a) {
 // animate:flip, so a copy knows whether it has any; `waiting` the elements
 // whose client:* has not come.
 const X = {
-  ...{ Sig, node, watch, scope, end, untrack, clones, binding, range, cls, css, track, proxy, same, proxied, shared, sub },
+  ...{ Sig, node, watch, scope, end, untrack, clones, binding, range, cls, css, track, proxy, same, proxied, shared, sub, on, report },
   ...{ defs, instance, script, adopt, painted, place, drop, RAW, metas, sigOf, keysOf, verOf, changed, bump },
   outs: 0,
   flips: 0,

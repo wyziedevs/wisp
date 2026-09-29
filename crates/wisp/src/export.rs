@@ -193,14 +193,7 @@ fn url(segs: &[String]) -> String {
     let mut s = String::new();
     for seg in segs {
         s.push('/');
-        for &b in seg.as_bytes() {
-            match b {
-                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                    s.push(b as char)
-                }
-                _ => s.push_str(&format!("%{b:02X}")),
-            }
-        }
+        let _ = crate::cx::encode(&mut s, seg, crate::cx::unreserved);
     }
     s
 }

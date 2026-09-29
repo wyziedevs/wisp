@@ -7,42 +7,155 @@
 //! try it at `/_wisp/docs`. The same data makes a TypeScript client, one
 //! module with a typed method per endpoint.
 
+use crate::json_str as q;
 use crate::routes::{Route, Seg};
+use crate::rules::{self, Key};
 use crate::rust_scan::{self, FnItem, Returns, TypeItem};
+use crate::ty::{self, Scalar, inner, last_segment, option_inner, squeeze, unref};
 
-/// One `+server.rs`: its route and what the file defines.
+/// One operation, as the document and the client describe it: a function
+/// of a `+server.rs`, or one its `#[derive(Rest)]` type answers.
+#[derive(Clone)]
+pub struct Op {
+    /// `get`, `post`, `put`, `patch` or `delete`.
+    pub method: &'static str,
+    /// What it reads from the request, by name: (name, type).
+    pub inputs: Vec<(String, String)>,
+    /// What it returns, through a `Result`.
+    pub value: String,
+    /// It returns a `Result`: it may fail with any error.
+    pub fallible: bool,
+}
+
+impl Op {
+    /// The operation `f` is, answering `method`.
+    pub fn of(method: &'static str, f: &FnItem) -> Op {
+        let inputs = f.inputs().unwrap_or_default();
+        Op {
+            method,
+            inputs: inputs
+                .into_iter()
+                .map(|(n, t)| (n.to_string(), t.to_string()))
+                .collect(),
+            value: f.value_type().to_string(),
+            fallible: f.fallible,
+        }
+    }
+
+    fn returns(&self) -> Returns {
+        rust_scan::returns_kind(&self.value)
+    }
+
+    /// `T` of an `Option<T>` it returns (not `Option<Response>`).
+    fn optional(&self) -> Option<String> {
+        match self.returns() {
+            Returns::Other => option_inner(&self.value).map(squeeze),
+            _ => None,
+        }
+    }
+}
+
+/// One `+server.rs`: its route, its operations, and the types it can
+/// describe.
 pub struct Endpoint<'a> {
     pub route: &'a Route,
-    pub fns: &'a [FnItem],
+    pub ops: &'a [Op],
     pub types: &'a [TypeItem],
 }
 
+/// A JSON value, built whole and written once.
+enum J {
+    Obj(Vec<(String, J)>),
+    Arr(Vec<J>),
+    Str(String),
+    Num(String),
+    Bool(bool),
+    /// JSON text as it is.
+    Raw(&'static str),
+}
+
+impl J {
+    fn obj<const N: usize>(pairs: [(&str, J); N]) -> J {
+        J::Obj(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+    }
+
+    fn str(s: &str) -> J {
+        J::Str(s.to_string())
+    }
+
+    fn of(ty: &str) -> J {
+        J::obj([("type", J::str(ty))])
+    }
+
+    /// Sets `key` of an object, in place if it has it.
+    fn set(&mut self, key: &str, value: J) {
+        let J::Obj(m) = self else { return };
+        match m.iter_mut().find(|(k, _)| k == key) {
+            Some((_, v)) => *v = value,
+            None => m.push((key.to_string(), value)),
+        }
+    }
+
+    fn write(&self, out: &mut String) {
+        match self {
+            J::Obj(m) => {
+                out.push('{');
+                for (k, (key, v)) in m.iter().enumerate() {
+                    if k > 0 {
+                        out.push(',');
+                    }
+                    out.push_str(&q(key));
+                    out.push(':');
+                    v.write(out);
+                }
+                out.push('}');
+            }
+            J::Arr(a) => {
+                out.push('[');
+                for (k, v) in a.iter().enumerate() {
+                    if k > 0 {
+                        out.push(',');
+                    }
+                    v.write(out);
+                }
+                out.push(']');
+            }
+            J::Str(s) => out.push_str(&q(s)),
+            J::Num(n) => out.push_str(n),
+            J::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+            J::Raw(s) => out.push_str(s),
+        }
+    }
+}
+
+/// The error body every endpoint's failures have.
+const ERROR: &str = r#"{"type":"object","required":["status","code","error"],"properties":{"status":{"type":"integer"},"code":{"type":"string"},"error":{"type":"string"},"errors":{"type":"object","additionalProperties":{"type":"string"},"description":"What is wrong, by field (a 422)"}}}"#;
+
 /// The whole document, as JSON.
 pub fn spec(title: &str, version: &str, endpoints: &[Endpoint]) -> String {
-    let mut schemas: Vec<(String, String)> = Vec::new();
+    let mut schemas: Vec<(String, J)> = Vec::new();
     let mut paths = Vec::new();
     for e in endpoints {
-        let mut ops = Vec::new();
-        for f in e.fns {
-            ops.push(format!("{}:{}", q(&f.name), operation(e, f, &mut schemas)));
-        }
-        paths.push(format!("{}:{{{}}}", q(&path(e.route)), ops.join(",")));
+        let ops = e
+            .ops
+            .iter()
+            .map(|op| (op.method.to_string(), operation(e, op, &mut schemas)))
+            .collect();
+        paths.push((path(e.route), J::Obj(ops)));
     }
-    schemas.push((
-        "Error".into(),
-        r#"{"type":"object","required":["status","code","error"],"properties":{"status":{"type":"integer"},"code":{"type":"string"},"error":{"type":"string"},"errors":{"type":"object","additionalProperties":{"type":"string"},"description":"What is wrong, by field (a 422)"}}}"#.into(),
-    ));
-    let schemas: Vec<String> = schemas
-        .iter()
-        .map(|(n, s)| format!("{}:{s}", q(n)))
-        .collect();
-    format!(
-        "{{\"openapi\":\"3.1.0\",\"info\":{{\"title\":{},\"version\":{}}},\"paths\":{{{}}},\"components\":{{\"schemas\":{{{}}}}}}}",
-        q(title),
-        q(version),
-        paths.join(","),
-        schemas.join(",")
-    )
+    schemas.push(("Error".into(), J::Raw(ERROR)));
+    let doc = J::obj([
+        ("openapi", J::str("3.1.0")),
+        (
+            "info",
+            J::obj([("title", J::str(title)), ("version", J::str(version))]),
+        ),
+        ("paths", J::Obj(paths)),
+        ("components", J::obj([("schemas", J::Obj(schemas))])),
+    ]);
+    let mut out = String::new();
+    doc.write(&mut out);
+    out
 }
 
 /// `/notes/[id]` as OpenAPI writes it: `/notes/{id}`.
@@ -59,110 +172,135 @@ fn path(r: &Route) -> String {
         .collect()
 }
 
-fn operation(e: &Endpoint, f: &FnItem, schemas: &mut Vec<(String, String)>) -> String {
+/// The names of the route's parameters, in order.
+fn route_params(r: &Route) -> impl Iterator<Item = &str> {
+    r.segs.iter().filter_map(|s| match s {
+        Seg::Static(_) => None,
+        Seg::Param(n, _) | Seg::Optional(n, _) | Seg::Rest(n) => Some(n.as_str()),
+    })
+}
+
+fn operation(e: &Endpoint, op: &Op, schemas: &mut Vec<(String, J)>) -> J {
     let mut params = Vec::new();
+    let mut in_path: Vec<&str> = Vec::new();
     let mut fields = Vec::new();
     let mut required = Vec::new();
     let mut body = None;
-    for (name, ty) in f.inputs().unwrap_or_default() {
-        let t: String = ty.chars().filter(|c| !c.is_whitespace()).collect();
-        let optional = optional(&t);
-        let schema = schema(&t, e.types, schemas);
-        match place(e, f, name, &t) {
+    let param = |name: &str, place: &str, required: bool, schema: J| {
+        J::obj([
+            ("name", J::str(name)),
+            ("in", J::str(place)),
+            ("required", J::Bool(required)),
+            ("schema", schema),
+        ])
+    };
+    for (name, t) in &op.inputs {
+        let optional = may_omit(t);
+        let schema = schema(t, e.types, schemas);
+        match place(e, op, name, t) {
             Place::Body => body = Some(schema),
-            Place::Path => params.push(format!(
-                "{{\"name\":{},\"in\":\"path\",\"required\":true,\"schema\":{schema}}}",
-                q(name)
-            )),
+            Place::Path => {
+                in_path.push(name);
+                params.push(param(name, "path", true, schema));
+            }
             Place::Field => {
-                fields.push(format!("{}:{schema}", q(name)));
+                fields.push((name.clone(), schema));
                 if !optional {
-                    required.push(q(name));
+                    required.push(J::str(name));
                 }
             }
-            Place::Query => params.push(format!(
-                "{{\"name\":{},\"in\":\"query\",\"required\":{},\"schema\":{schema}}}",
-                q(name),
-                !optional
-            )),
+            Place::Query => params.push(param(name, "query", !optional, schema)),
         }
     }
     // Path parameters the function does not take are still in the path.
-    for s in &e.route.segs {
-        if let Seg::Param(n, _) | Seg::Optional(n, _) | Seg::Rest(n) = s
-            && !params
-                .iter()
-                .any(|p| p.starts_with(&format!("{{\"name\":{},\"in\":\"path\"", q(n))))
-        {
-            params.push(format!(
-                "{{\"name\":{},\"in\":\"path\",\"required\":true,\"schema\":{{\"type\":\"string\"}}}}",
-                q(n)
-            ));
+    for n in route_params(e.route) {
+        if !in_path.contains(&n) {
+            params.push(param(n, "path", true, J::of("string")));
         }
     }
-    let mut out = format!("{{\"operationId\":{}", q(&operation_id(e, f)));
+    let mut out = J::obj([("operationId", J::str(&operation_id(e, op)))]);
     if !params.is_empty() {
-        out.push_str(&format!(",\"parameters\":[{}]", params.join(",")));
+        out.set("parameters", J::Arr(params));
     }
+    let content = |schema: J| J::obj([("schema", schema)]);
     let request = match body {
-        Some(schema) => Some(format!("{{\"application/json\":{{\"schema\":{schema}}}}}")),
+        Some(schema) => Some(J::obj([("application/json", content(schema))])),
         None if !fields.is_empty() => {
-            let schema = format!(
-                "{{\"type\":\"object\",\"required\":[{}],\"properties\":{{{}}}}}",
-                required.join(","),
-                fields.join(",")
-            );
-            Some(format!(
-                "{{\"application/json\":{{\"schema\":{schema}}},\"application/x-www-form-urlencoded\":{{\"schema\":{schema}}}}}"
-            ))
+            let schema = || {
+                J::obj([
+                    ("type", J::str("object")),
+                    ("required", J::Arr(required.iter().map(clone).collect())),
+                    (
+                        "properties",
+                        J::Obj(fields.iter().map(|(n, s)| (n.clone(), clone(s))).collect()),
+                    ),
+                ])
+            };
+            Some(J::obj([
+                ("application/json", content(schema())),
+                ("application/x-www-form-urlencoded", content(schema())),
+            ]))
         }
         None => None,
     };
     let validated = request.is_some();
     if let Some(content) = request {
-        out.push_str(&format!(
-            ",\"requestBody\":{{\"required\":true,\"content\":{content}}}"
-        ));
+        out.set(
+            "requestBody",
+            J::obj([("required", J::Bool(true)), ("content", content)]),
+        );
     }
-    let returns = if f.fallible {
-        first_arg(f.returns.trim()).unwrap_or("")
-    } else {
-        f.returns.trim()
+    let said = |what: &str| J::obj([("description", J::str(what))]);
+    let json = |what: &str, schema: J| {
+        J::obj([
+            ("description", J::str(what)),
+            ("content", J::obj([("application/json", content(schema))])),
+        ])
     };
-    let mut responses = vec![match f.returns_kind() {
-        Returns::Nothing => "\"204\":{\"description\":\"Done\"}".to_string(),
-        Returns::Response => "\"200\":{\"description\":\"A response\"}".into(),
-        Returns::MaybeResponse => {
-            "\"200\":{\"description\":\"A response\"},\"404\":{\"description\":\"Not found\"}"
-                .into()
-        }
-        Returns::Other => match f.optional_value() {
-            Some("()") => {
-                "\"204\":{\"description\":\"Done\"},\"404\":{\"description\":\"Not found\"}".into()
-            }
-            Some(t) => format!(
-                "\"200\":{{\"description\":\"OK\",\"content\":{{\"application/json\":{{\"schema\":{}}}}}}},\"404\":{{\"description\":\"Not found\"}}",
-                schema(&t.replace(char::is_whitespace, ""), e.types, schemas)
-            ),
-            None => format!(
-                "\"200\":{{\"description\":\"OK\",\"content\":{{\"application/json\":{{\"schema\":{}}}}}}}",
-                schema(&returns.replace(char::is_whitespace, ""), e.types, schemas)
-            ),
+    let mut responses: Vec<(String, J)> = match op.returns() {
+        Returns::Nothing => vec![("204".into(), said("Done"))],
+        Returns::Response => vec![("200".into(), said("A response"))],
+        Returns::MaybeResponse => vec![
+            ("200".into(), said("A response")),
+            ("404".into(), said("Not found")),
+        ],
+        Returns::Other => match op.optional().as_deref() {
+            Some("()") => vec![
+                ("204".into(), said("Done")),
+                ("404".into(), said("Not found")),
+            ],
+            Some(t) => vec![
+                ("200".into(), json("OK", schema(t, e.types, schemas))),
+                ("404".into(), said("Not found")),
+            ],
+            None => vec![(
+                "200".into(),
+                json("OK", schema(&squeeze(&op.value), e.types, schemas)),
+            )],
         },
-    }];
-    let error = |status: &str, what: &str| {
-        format!(
-            "\"{status}\":{{\"description\":\"{what}\",\"content\":{{\"application/json\":{{\"schema\":{{\"$ref\":\"#/components/schemas/Error\"}}}}}}}}"
-        )
     };
+    let error = || J::obj([("$ref", J::str("#/components/schemas/Error"))]);
     if validated {
-        responses.push(error("422", "The input did not pass"));
+        responses.push(("422".into(), json("The input did not pass", error())));
     }
-    if f.fallible {
-        responses.push(error("default", "An error"));
+    if op.fallible {
+        responses.push(("default".into(), json("An error", error())));
     }
-    out.push_str(&format!(",\"responses\":{{{}}}}}", responses.join(",")));
+    out.set("responses", J::Obj(responses));
     out
+}
+
+/// A copy of `j` (the document is built once; this is for the two
+/// content types a form body is sent as).
+fn clone(j: &J) -> J {
+    match j {
+        J::Obj(m) => J::Obj(m.iter().map(|(k, v)| (k.clone(), clone(v))).collect()),
+        J::Arr(a) => J::Arr(a.iter().map(clone).collect()),
+        J::Str(s) => J::Str(s.clone()),
+        J::Num(n) => J::Num(n.clone()),
+        J::Bool(b) => J::Bool(*b),
+        J::Raw(s) => J::Raw(s),
+    }
 }
 
 /// Where an input of a `+server.rs` function travels.
@@ -177,31 +315,27 @@ enum Place {
     Query,
 }
 
-fn place(e: &Endpoint, f: &FnItem, name: &str, t: &str) -> Place {
-    let text = |t: &str| rust_scan::last_segment(t) == "String" || t.contains("str");
-    let in_path =
-        e.route.segs.iter().any(
-            |s| matches!(s, Seg::Param(n, _) | Seg::Optional(n, _) | Seg::Rest(n) if n == name),
-        );
-    if name == "body" && !text(t) && !inner(t).is_some_and(text) {
+fn place(e: &Endpoint, op: &Op, name: &str, t: &str) -> Place {
+    if name == "body" && !ty::is_maybe_text(t) {
         Place::Body
-    } else if in_path {
+    } else if route_params(e.route).any(|n| n == name) {
         Place::Path
-    } else if matches!(f.name.as_str(), "post" | "put" | "patch") {
+    } else if matches!(op.method, "post" | "put" | "patch") {
         Place::Field
     } else {
         Place::Query
     }
 }
 
-/// Whether an input (`t` has no whitespace) may be left out.
-fn optional(t: &str) -> bool {
-    matches!(rust_scan::last_segment(t), "Option" | "Vec") || t == "bool"
+/// Whether a request may leave the input (of type `t`) out: `None`, an
+/// empty list and `false` are read for it.
+fn may_omit(t: &str) -> bool {
+    matches!(last_segment(t), "Option" | "Vec") || ty::scalar(t) == Scalar::Bool
 }
 
 /// `get_api_notes_id`: the method and the route.
-fn operation_id(e: &Endpoint, f: &FnItem) -> String {
-    format!("{}{}", f.name, id(e.route))
+fn operation_id(e: &Endpoint, op: &Op) -> String {
+    format!("{}{}", op.method, id(e.route))
 }
 
 /// `/notes/[id]` as an identifier's tail: `_notes_id`.
@@ -214,69 +348,66 @@ fn id(r: &Route) -> String {
         .replace("__", "_")
 }
 
-/// `t` without a leading reference. Whitespace is gone, so `&'static str`
-/// is `&'staticstr`.
-fn unref(t: &str) -> &str {
-    match t.strip_prefix('&') {
-        Some(r) => r.trim_start_matches("'static").trim_start_matches("mut"),
-        None => t,
-    }
-}
-
-/// The JSON Schema of the Rust type `t` (no whitespace). Types defined in
-/// the file are added to `schemas` and referred to.
-fn schema(t: &str, types: &[TypeItem], schemas: &mut Vec<(String, String)>) -> String {
-    let t = unref(t);
-    let last = rust_scan::last_segment(t);
+/// The JSON Schema of the Rust type `t`. Types defined in the file are
+/// added to `schemas` and referred to.
+fn schema(t: &str, types: &[TypeItem], schemas: &mut Vec<(String, J)>) -> J {
+    let t = squeeze(t);
+    let t = unref(&t);
     let arg = || inner(t).unwrap_or("");
-    match last {
-        "Option" | "Box" | "Arc" | "Rc" => schema(arg(), types, schemas),
-        "Vec" | "VecDeque" | "BTreeSet" | "HashSet" => {
-            format!(
-                "{{\"type\":\"array\",\"items\":{}}}",
-                schema(arg(), types, schemas)
-            )
+    let array = |items: J| J::obj([("type", J::str("array")), ("items", items)]);
+    match ty::scalar(t) {
+        Scalar::Text | Scalar::Char => return J::of("string"),
+        Scalar::Bool => return J::of("boolean"),
+        Scalar::Unsigned => {
+            return J::obj([("type", J::str("integer")), ("minimum", J::Num("0".into()))]);
         }
+        Scalar::Signed => return J::of("integer"),
+        Scalar::Float => return J::of("number"),
+        Scalar::Unit => return J::of("null"),
+        Scalar::Other => {}
+    }
+    match last_segment(t) {
+        "Option" | "Box" | "Arc" | "Rc" => schema(arg(), types, schemas),
+        "Vec" | "VecDeque" | "BTreeSet" | "HashSet" => array(schema(arg(), types, schemas)),
         "BTreeMap" | "HashMap" => {
             let value = arg().split_once(',').map_or("", |(_, v)| v);
-            format!(
-                "{{\"type\":\"object\",\"additionalProperties\":{}}}",
-                schema(value, types, schemas)
-            )
+            J::obj([
+                ("type", J::str("object")),
+                ("additionalProperties", schema(value, types, schemas)),
+            ])
         }
-        "String" | "str" | "char" | "Cow" => "{\"type\":\"string\"}".into(),
-        "bool" => "{\"type\":\"boolean\"}".into(),
-        "u8" | "u16" | "u32" | "u64" | "u128" | "usize" => {
-            "{\"type\":\"integer\",\"minimum\":0}".into()
-        }
-        "i8" | "i16" | "i32" | "i64" | "i128" | "isize" => "{\"type\":\"integer\"}".into(),
-        "f32" | "f64" => "{\"type\":\"number\"}".into(),
         // Wisp's row: the fields of `T`, `id` first.
-        "Row" if inner(t).is_some() => format!(
-            "{{\"allOf\":[{{\"type\":\"object\",\"required\":[\"id\"],\"properties\":{{\"id\":{{\"type\":\"integer\",\"minimum\":0}}}}}},{}]}}",
-            schema(arg(), types, schemas)
-        ),
-        "Value" => "{}".into(),
-        "()" => "{\"type\":\"null\"}".into(),
+        "Row" if inner(t).is_some() => {
+            let id = J::obj([
+                ("type", J::str("object")),
+                ("required", J::Arr(vec![J::str("id")])),
+                (
+                    "properties",
+                    J::obj([(
+                        "id",
+                        J::obj([("type", J::str("integer")), ("minimum", J::Num("0".into()))]),
+                    )]),
+                ),
+            ]);
+            J::obj([("allOf", J::Arr(vec![id, schema(arg(), types, schemas)]))])
+        }
+        "Value" => J::Obj(Vec::new()),
         _ if t.starts_with('[') => {
             let item = t[1..].split([';', ']']).next().unwrap_or("");
-            format!(
-                "{{\"type\":\"array\",\"items\":{}}}",
-                schema(item, types, schemas)
-            )
+            array(schema(item, types, schemas))
         }
-        _ if t.starts_with('(') => "{\"type\":\"array\"}".into(),
+        _ if t.starts_with('(') => J::of("array"),
         name => match types.iter().find(|ty| ty.name == name && !t.contains('<')) {
             Some(ty) => {
                 if !schemas.iter().any(|(n, _)| n == name) {
                     // Placed first, so a type that contains itself refers back.
-                    schemas.push((name.to_string(), "{}".into()));
+                    schemas.push((name.to_string(), J::Obj(Vec::new())));
                     let at = schemas.len() - 1;
                     schemas[at].1 = object(ty, types, schemas);
                 }
-                format!("{{\"$ref\":\"#/components/schemas/{name}\"}}")
+                J::obj([("$ref", J::Str(format!("#/components/schemas/{name}")))])
             }
-            None => format!("{{\"description\":{}}}", q(t)),
+            None => J::obj([("description", J::str(t))]),
         },
     }
 }
@@ -284,85 +415,60 @@ fn schema(t: &str, types: &[TypeItem], schemas: &mut Vec<(String, String)>) -> S
 /// `schema` with the limits of a field's `#[validate(…)]`: `min`, `max`,
 /// `min_len`, `max_len`, `len` (a range) and `email`. A limit that is not a
 /// plain number (a constant, say) is left out, not guessed.
-fn constrain(mut schema: String, rules: &str, ty: &str) -> String {
-    let (min_len, max_len) = if ty.contains("Vec<") {
-        ("minItems", "maxItems")
-    } else {
-        ("minLength", "maxLength")
+fn constrain(schema: &mut J, rules: &str, t: &str) {
+    let (min_len, max_len) = match last_segment(t) {
+        "Vec" => ("minItems", "maxItems"),
+        _ => ("minLength", "maxLength"),
     };
     let mut add = |key: &str, n: &str| {
-        if n.parse::<f64>().is_err() {
-            return;
+        if n.parse::<f64>().is_ok() {
+            schema.set(key, J::Num(n.to_string()));
         }
-        // Unsigned integers already say `minimum`: the rule replaces it.
-        if key == "minimum" {
-            schema = schema.replace(",\"minimum\":0", "");
-        }
-        schema.pop();
-        schema.push_str(&format!(",\"{key}\":{n}}}"));
     };
     let mut email = false;
-    for rule in rules.split(',').map(str::trim) {
-        let (key, x) = rule
-            .split_once('=')
-            .map_or((rule, ""), |(k, x)| (k.trim(), x.trim()));
-        match key {
-            "min" => add("minimum", x),
-            "max" => add("maximum", x),
-            "min_len" => add(min_len, x),
-            "max_len" => add(max_len, x),
-            "len" => {
-                let x: String = x.chars().filter(|c| !c.is_whitespace()).collect();
-                let Some((lo, hi)) = x.split_once("..") else {
-                    continue;
-                };
-                add(min_len, lo);
-                match hi.strip_prefix('=') {
-                    Some(hi) => add(max_len, hi),
-                    // `..10` stops short of 10.
-                    None => add(
-                        max_len,
-                        &hi.parse::<u64>()
-                            .map_or(String::new(), |h| h.saturating_sub(1).to_string()),
-                    ),
-                }
+    for r in rules::parse(rules).unwrap_or_default() {
+        match r.key {
+            Key::Min => add("minimum", r.value),
+            Key::Max => add("maximum", r.value),
+            Key::MinLen => add(min_len, r.value),
+            Key::MaxLen => add(max_len, r.value),
+            Key::Len => {
+                let (lo, hi) = r.len_bounds();
+                add(min_len, &lo.map_or(String::new(), |n| n.to_string()));
+                add(max_len, &hi.map_or(String::new(), |n| n.to_string()));
             }
-            "email" => email = true,
-            _ => {}
+            Key::Email => email = true,
         }
     }
     if email {
-        schema.pop();
-        schema.push_str(",\"format\":\"email\"}");
+        schema.set("format", J::str("email"));
     }
-    schema
 }
 
 /// A struct defined in the file, field by field. One with no named fields
 /// (an enum, a tuple struct) is only named.
-fn object(ty: &TypeItem, types: &[TypeItem], schemas: &mut Vec<(String, String)>) -> String {
+fn object(ty: &TypeItem, types: &[TypeItem], schemas: &mut Vec<(String, J)>) -> J {
     if ty.fields.is_empty() {
-        return format!("{{\"title\":{}}}", q(&ty.name));
+        return J::obj([("title", J::str(&ty.name))]);
     }
     let mut props = Vec::new();
     let mut required = Vec::new();
-    for (name, fty) in &ty.fields {
-        let t: String = fty.chars().filter(|c| !c.is_whitespace()).collect();
+    for (name, t) in &ty.fields {
         let name = name.strip_prefix("r#").unwrap_or(name);
-        let mut schema = schema(&t, types, schemas);
+        let mut schema = schema(t, types, schemas);
         if let Some((_, rules)) = ty.rules.iter().find(|(f, _)| f == name) {
-            schema = constrain(schema, rules, &t);
+            constrain(&mut schema, rules, t);
         }
-        props.push(format!("{}:{schema}", q(name)));
-        if !may_leave_out(ty, name, &t) {
-            required.push(q(name));
+        props.push((name.to_string(), schema));
+        if !may_leave_out(ty, name, t) {
+            required.push(J::str(name));
         }
     }
-    format!(
-        "{{\"type\":\"object\",\"required\":[{}],\"properties\":{{{}}}}}",
-        required.join(","),
-        props.join(",")
-    )
+    J::obj([
+        ("type", J::str("object")),
+        ("required", J::Arr(required)),
+        ("properties", J::Obj(props)),
+    ])
 }
 
 /// A TypeScript client for the same endpoints: one self-contained module
@@ -374,8 +480,8 @@ pub fn typescript(endpoints: &[Endpoint]) -> String {
     let mut decls: Vec<(String, String)> = Vec::new();
     let mut methods = String::new();
     for e in endpoints {
-        for f in e.fns {
-            methods.push_str(&method(e, f, &mut decls));
+        for op in e.ops {
+            methods.push_str(&method(e, op, &mut decls));
         }
     }
     let mut out =
@@ -463,7 +569,7 @@ const TS_TAKEN: [&str; 24] = [
 ];
 
 /// One entry of the object `client` returns.
-fn method(e: &Endpoint, f: &FnItem, decls: &mut Vec<(String, String)>) -> String {
+fn method(e: &Endpoint, op: &Op, decls: &mut Vec<(String, String)>) -> String {
     let mut args = Vec::new();
     let mut path = String::new();
     let mut dynamic = false;
@@ -493,28 +599,27 @@ fn method(e: &Endpoint, f: &FnItem, decls: &mut Vec<(String, String)>) -> String
     let mut query = Vec::new();
     let mut body = None;
     let mut query_required = false;
-    for (name, ty) in f.inputs().unwrap_or_default() {
-        let t: String = ty.chars().filter(|c| !c.is_whitespace()).collect();
-        match place(e, f, name, &t) {
+    for (name, t) in &op.inputs {
+        match place(e, op, name, t) {
             Place::Body => {
-                let t = input(&t, e.types, decls);
+                let t = input(t, e.types, decls);
                 // A PATCH sends only what changes.
-                body = Some(match f.name.as_str() {
+                body = Some(match op.method {
                     "patch" if t.ends_with("Input") => format!("Partial<{t}>"),
                     _ => t,
                 });
             }
             Place::Path => {}
-            Place::Field => fields.push(member(name, &t, optional(&t), e.types, decls)),
+            Place::Field => fields.push(member(name, t, may_omit(t), e.types, decls)),
             Place::Query => {
-                query_required |= !optional(&t);
-                query.push(member(name, &t, optional(&t), e.types, decls));
+                query_required |= !may_omit(t);
+                query.push(member(name, t, may_omit(t), e.types, decls));
             }
         }
     }
     let body =
         body.or_else(|| (!fields.is_empty()).then(|| format!("{{ {} }}", fields.join("; "))));
-    let mut call = vec![q(&f.name.to_uppercase()), path];
+    let mut call = vec![q(&op.method.to_uppercase()), path];
     if body.is_some() || !query.is_empty() {
         call.push(
             if query.is_empty() {
@@ -533,22 +638,18 @@ fn method(e: &Endpoint, f: &FnItem, decls: &mut Vec<(String, String)>) -> String
         let mark = if query_required { "" } else { "?" };
         args.push(format!("query{mark}: {{ {} }}", query.join("; ")));
     }
-    let returns = match f.returns_kind() {
+    let returns = match op.returns() {
         Returns::Nothing => "void".to_string(),
         Returns::Response | Returns::MaybeResponse => "unknown".into(),
-        Returns::Other => match f.optional_value() {
+        Returns::Other => match op.optional().as_deref() {
             Some("()") => "void".into(),
-            Some(t) => ts(&t.replace(char::is_whitespace, ""), e.types, decls),
-            None => ts(
-                &f.value_type().replace(char::is_whitespace, ""),
-                e.types,
-                decls,
-            ),
+            Some(t) => ts(t, e.types, decls),
+            None => ts(&op.value, e.types, decls),
         },
     };
     format!(
         "    {}: async ({}) => call<{returns}>({}),\n",
-        camel(&operation_id(e, f)),
+        camel(&operation_id(e, op)),
         args.join(", "),
         call.join(", ")
     )
@@ -580,11 +681,11 @@ fn member(
     format!("{name}{mark}: {}", ts(t, types, decls))
 }
 
-/// The TypeScript type of the Rust type `t` (no whitespace). Types defined
-/// in the file are declared in `decls` and referred to; any other type is
-/// `unknown`.
+/// The TypeScript type of the Rust type `t`. Types defined in the file are
+/// declared in `decls` and referred to; any other type is `unknown`.
 fn ts(t: &str, types: &[TypeItem], decls: &mut Vec<(String, String)>) -> String {
-    let t = unref(t);
+    let t = squeeze(t);
+    let t = unref(&t);
     let arg = || inner(t).unwrap_or("");
     let array = |item: String| {
         if item.contains(" | ") || item.contains(" & ") {
@@ -593,7 +694,14 @@ fn ts(t: &str, types: &[TypeItem], decls: &mut Vec<(String, String)>) -> String 
             format!("{item}[]")
         }
     };
-    match rust_scan::last_segment(t) {
+    match ty::scalar(t) {
+        Scalar::Text | Scalar::Char => return "string".into(),
+        Scalar::Bool => return "boolean".into(),
+        Scalar::Unsigned | Scalar::Signed | Scalar::Float => return "number".into(),
+        Scalar::Unit => return "null".into(),
+        Scalar::Other => {}
+    }
+    match last_segment(t) {
         "Box" | "Arc" | "Rc" => ts(arg(), types, decls),
         "Option" => format!("{} | null", ts(arg(), types, decls)),
         "Row" if inner(t).is_some() => format!("{{ id: number }} & {}", ts(arg(), types, decls)),
@@ -602,11 +710,6 @@ fn ts(t: &str, types: &[TypeItem], decls: &mut Vec<(String, String)>) -> String 
             let value = arg().split_once(',').map_or("", |(_, v)| v);
             format!("Record<string, {}>", ts(value, types, decls))
         }
-        "String" | "str" | "char" | "Cow" => "string".into(),
-        "bool" => "boolean".into(),
-        "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64" | "i128"
-        | "isize" | "f32" | "f64" => "number".into(),
-        "()" => "null".into(),
         _ if t.starts_with('[') => {
             let item = t[1..].split([';', ']']).next().unwrap_or("");
             array(ts(item, types, decls))
@@ -617,7 +720,7 @@ fn ts(t: &str, types: &[TypeItem], decls: &mut Vec<(String, String)>) -> String 
                     // Placed first, so a type that contains itself refers back.
                     decls.push((name.to_string(), String::new()));
                     let at = decls.len() - 1;
-                    decls[at].1 = declare(ty, types, decls);
+                    decls[at].1 = declare(ty, types, decls, None);
                 }
                 name.to_string()
             }
@@ -626,31 +729,36 @@ fn ts(t: &str, types: &[TypeItem], decls: &mut Vec<(String, String)>) -> String 
     }
 }
 
-/// A struct defined in the file as an `interface`. One with no named fields
-/// (an enum, a tuple struct) is `unknown`.
-fn declare(ty: &TypeItem, types: &[TypeItem], decls: &mut Vec<(String, String)>) -> String {
+/// A struct defined in the file as an `interface` (named `name`, or its
+/// own), whose members are optional as `optional` says: by default, its
+/// `Option`s. One with no named fields (an enum, a tuple struct) is
+/// `unknown`.
+fn declare(
+    ty: &TypeItem,
+    types: &[TypeItem],
+    decls: &mut Vec<(String, String)>,
+    input: Option<&str>,
+) -> String {
     if ty.fields.is_empty() {
         return format!("export type {} = unknown;\n", ty.name);
     }
-    let mut out = format!("export interface {} {{\n", ty.name);
-    for (name, fty) in &ty.fields {
-        let t: String = fty.chars().filter(|c| !c.is_whitespace()).collect();
-        let optional = rust_scan::last_segment(&t) == "Option";
-        out.push_str(&format!(
-            "  {};\n",
-            member(name, &t, optional, types, decls)
-        ));
+    let mut out = format!("export interface {} {{\n", input.unwrap_or(&ty.name));
+    for (name, t) in &ty.fields {
+        let optional = match input {
+            Some(_) => may_leave_out(ty, name, t),
+            None => last_segment(t) == "Option",
+        };
+        out.push_str(&format!("  {};\n", member(name, t, optional, types, decls)));
     }
     out.push_str("}\n");
     out
 }
 
-/// Whether a request may leave out field `name` (of type `t`, no
-/// whitespace) of `ty`: `None`, an empty list and `false` are read for it,
-/// and a `#[derive(Rest)]` type's `created_at` and `updated_at` are Wisp's.
+/// Whether a request may leave out field `name` (of type `t`) of `ty`:
+/// `None`, an empty list and `false` are read for it, and a
+/// `#[derive(Rest)]` type's `created_at` and `updated_at` are Wisp's.
 fn may_leave_out(ty: &TypeItem, name: &str, t: &str) -> bool {
-    matches!(rust_scan::last_segment(t), "Option" | "Vec")
-        || t == "bool"
+    may_omit(t)
         || (ty.derives.iter().any(|d| d == "Rest") && matches!(name, "created_at" | "updated_at"))
 }
 
@@ -658,14 +766,14 @@ fn may_leave_out(ty: &TypeItem, name: &str, t: &str) -> bool {
 /// leave out (other than `Option`s, optional already) is `NoteInput`:
 /// `Note` with those optional.
 fn input(t: &str, types: &[TypeItem], decls: &mut Vec<(String, String)>) -> String {
-    let name = rust_scan::last_segment(unref(t));
+    let name = last_segment(unref(t));
     let Some(ty) = types.iter().find(|ty| {
         ty.name == name
             && !t.contains('<')
-            && ty.fields.iter().any(|(f, fty)| {
-                let t: String = fty.chars().filter(|c| !c.is_whitespace()).collect();
-                may_leave_out(ty, f, &t) && rust_scan::last_segment(&t) != "Option"
-            })
+            && ty
+                .fields
+                .iter()
+                .any(|(f, t)| may_leave_out(ty, f, t) && last_segment(t) != "Option")
     }) else {
         return ts(t, types, decls);
     };
@@ -673,62 +781,29 @@ fn input(t: &str, types: &[TypeItem], decls: &mut Vec<(String, String)>) -> Stri
     if !decls.iter().any(|(n, _)| *n == input) {
         decls.push((input.clone(), String::new()));
         let at = decls.len() - 1;
-        let mut out = format!("export interface {input} {{\n");
-        for (field, fty) in &ty.fields {
-            let t: String = fty.chars().filter(|c| !c.is_whitespace()).collect();
-            let optional = may_leave_out(ty, field, &t);
-            out.push_str(&format!(
-                "  {};\n",
-                member(field, &t, optional, types, decls)
-            ));
-        }
-        out.push_str("}\n");
-        decls[at].1 = out;
+        decls[at].1 = declare(ty, types, decls, Some(&input));
     }
     input
-}
-
-/// What is inside the first `<...>` of `t`.
-fn inner(t: &str) -> Option<&str> {
-    let open = t.find('<')?;
-    t[open + 1..].strip_suffix('>')
-}
-
-/// `Result<Vec<Note>, E>` → `Vec<Note>`.
-fn first_arg(t: &str) -> Option<&str> {
-    let inner = inner(t)?;
-    let mut depth = 0;
-    for (i, c) in inner.char_indices() {
-        match c {
-            '<' | '(' | '[' => depth += 1,
-            '>' | ')' | ']' => depth -= 1,
-            ',' if depth == 0 => return Some(inner[..i].trim()),
-            _ => {}
-        }
-    }
-    Some(inner.trim())
-}
-
-/// A JSON string.
-fn q(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    fn ops(items: &rust_scan::Items) -> Vec<Op> {
+        let method = |n: &str| {
+            ["get", "post", "put", "patch", "delete"]
+                .into_iter()
+                .find(|m| *m == n)
+                .expect("a method")
+        };
+        items
+            .fns
+            .iter()
+            .map(|f| Op::of(method(&f.name), f))
+            .collect()
+    }
 
     #[test]
     fn describes_endpoints() {
@@ -757,7 +832,7 @@ mod tests {
             "0.1.0",
             &[Endpoint {
                 route: &route,
-                fns: &items.fns,
+                ops: &ops(&items),
                 types: &items.types,
             }],
         );
@@ -801,11 +876,17 @@ mod tests {
         }
     }
 
+    fn text(j: &J) -> String {
+        let mut out = String::new();
+        j.write(&mut out);
+        out
+    }
+
     #[test]
     fn a_row_is_its_type_with_an_id() {
         let items = rust_scan::scan("struct Note { title: String }").unwrap();
         let mut schemas = Vec::new();
-        let got = schema("Row<Note>", &items.types, &mut schemas);
+        let got = text(&schema("Row<Note>", &items.types, &mut schemas));
         assert_eq!(
             got,
             "{\"allOf\":[{\"type\":\"object\",\"required\":[\"id\"],\"properties\":{\"id\":{\"type\":\"integer\",\"minimum\":0}}},{\"$ref\":\"#/components/schemas/Note\"}]}"
@@ -829,7 +910,7 @@ mod tests {
         let route = notes_route();
         let ts = typescript(&[Endpoint {
             route: &route,
-            fns: &items.fns,
+            ops: &ops(&items),
             types: &items.types,
         }]);
         let path = "`/api/notes/${encodeURIComponent(id)}`";
@@ -872,7 +953,7 @@ mod tests {
         .unwrap();
         let ts = typescript(&[Endpoint {
             route: &route,
-            fns: &items.fns,
+            ops: &ops(&items),
             types: &items.types,
         }]);
         for want in [
@@ -892,7 +973,7 @@ mod tests {
         route.segs.truncate(2);
         let ts = typescript(&[Endpoint {
             route: &route,
-            fns: &items.fns,
+            ops: &ops(&items),
             types: &items.types,
         }]);
         assert!(
@@ -919,20 +1000,16 @@ fn post(body: New) {}",
         )
         .unwrap();
         let mut schemas = Vec::new();
-        let got = schema("New", &items.types, &mut schemas);
+        let got = text(&schema("New", &items.types, &mut schemas));
         assert_eq!(got, "{\"$ref\":\"#/components/schemas/New\"}");
+        let new = text(&schemas[0].1);
         for want in [
             "\"to\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":100,\"format\":\"email\"}",
             "\"n\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":10}",
             "\"tags\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"maxItems\":4}",
             "\"x\":{\"type\":\"string\"}",
         ] {
-            assert!(
-                schemas[0].1.contains(want),
-                "{want}
-{}",
-                schemas[0].1
-            );
+            assert!(new.contains(want), "{want}\n{new}");
         }
     }
 }

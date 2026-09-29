@@ -283,7 +283,7 @@ async fn lab(cx: &mut Cx, out: &mut Out) -> Result<()> {
             "retry" => Err(Error::new(429, "slow down").with_header("retry-after", "5")),
             "moved" => Err(Error::redirect(308, "/new")),
             "or404" => None::<u8>.or_404().map(|_| ()),
-            "or400" => "x".parse::<u8>().or_400().map(|_| ()),
+            "or400" => "x".parse::<u8>().or_status(400).map(|_| ()),
             "io" => Err(std::io::Error::other("disk on fire").into()),
             "panic" => panic!("boom"),
             _ => text(out, "no error"),
@@ -296,7 +296,7 @@ async fn lab(cx: &mut Cx, out: &mut Out) -> Result<()> {
         "/resp" => match arg(cx, "k").as_str() {
             "html" => send(out, Response::html("<p>x</p>")),
             "download" => send(out, Response::download(&arg(cx, "n"), "a,b\n")),
-            "redirect" => send(out, Response::redirect("/there")),
+            "redirect" => redirect("/there"),
             "empty" => send(out, Response::empty(204).with_header("x-a", "1")),
             "status" => send(out, Response::text("teapot").with_status(418)),
             _ => text(out, "plain"),

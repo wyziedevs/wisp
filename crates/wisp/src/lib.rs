@@ -27,6 +27,8 @@ pub mod json;
 mod limit;
 mod live;
 mod rest;
+#[doc(hidden)]
+pub mod rt_traits;
 mod sign;
 mod store;
 mod table;
@@ -131,7 +133,7 @@ macro_rules! app {
 }
 
 /// Serves the app on `$HOST:$PORT`. Defaults to port 3000 on 127.0.0.1 in
-/// debug builds and 0.0.0.0 in release builds.
+/// dev (see `WISP_DEV`) and 0.0.0.0 otherwise.
 ///
 /// Runs one worker thread per CPU (`$WISP_THREADS` sets the count) and
 /// spreads connections across them. Handlers can use tokio normally. Each
@@ -240,8 +242,8 @@ pub fn env(key: &str) -> Option<String> {
     return edge::env(key);
 }
 
-/// Runs `task` in the background: the body of a [`Response::stream`], work
-/// that outlives its request. On the built-in server it is `tokio::spawn`,
+/// Runs `task` in the background: work that outlives its request. On the
+/// built-in server it is `tokio::spawn`,
 /// on the thread of the request that spawned it (so call it from a request
 /// or `init`). In the edge build the host runs it; Cloudflare and Netlify
 /// keep the instance alive until its timers and fetches are done.
@@ -342,6 +344,19 @@ pub(crate) fn unix_now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// The date `days` after 1970-01-01, as (year, month, day): Howard
+/// Hinnant's `civil_from_days`.
+pub(crate) fn civil(days: u64) -> (u64, u64, u64) {
+    let z = days + 719_468;
+    let (era, doe) = (z / 146_097, z % 146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    (yoe + era * 400 + u64::from(month <= 2), month, day)
+}
+
 /// Values given to [`provide`], leaked: they live as long as the process.
 static STATE: RwLock<Vec<Provided>> = RwLock::new(Vec::new());
 type Provided = (TypeId, &'static (dyn Any + Send + Sync));
@@ -361,7 +376,7 @@ thread_local! {
 pub fn address() -> SocketAddr {
     let port: u16 = setting("PORT", "a port number from 0 to 65535").unwrap_or(3000);
     let Some(host) = setting::<String>("HOST", "an address") else {
-        let ip = if cfg!(debug_assertions) {
+        let ip = if settings().dev {
             Ipv4Addr::LOCALHOST
         } else {
             Ipv4Addr::UNSPECIFIED
@@ -406,6 +421,10 @@ fn fail(message: &str) -> ! {
 /// Settings read from the environment, once. `run` and `serve` read them
 /// before serving, so a bad one stops the server at start.
 pub(crate) struct Settings {
+    /// `WISP_DEV`: dev mode (`on` in debug builds, `off` in release ones):
+    /// 5xx details on error pages, files read from `static/` on each
+    /// request, the dev log and tools, a dev secret for signed cookies.
+    pub dev: bool,
     /// `WISP_BODY_LIMIT`: the largest request body a route takes unless it
     /// sets its own `BODY_LIMIT`.
     pub body_limit: usize,
@@ -426,7 +445,7 @@ pub(crate) struct Settings {
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // no sockets there
     pub max_conns: usize,
     /// `WISP_API_DOCS`: serve `/_wisp/openapi.json` and `/_wisp/docs`
-    /// (`on` in dev builds, `off` in release ones).
+    /// (`on` in dev, `off` otherwise).
     pub api_docs: bool,
     /// `WISP_REQUEST_ID`: give every request an id, not only those that ask
     /// for one with `cx.request_id()` (`off`).
@@ -473,10 +492,11 @@ pub(crate) fn settings() -> &'static Settings {
             Some(0) => usize::MAX,
             n => n.unwrap_or(10_000),
         };
-        let api_docs = switch("WISP_API_DOCS", cfg!(debug_assertions));
+        let dev = switch("WISP_DEV", cfg!(debug_assertions));
+        let api_docs = switch("WISP_API_DOCS", dev);
         let request_id = switch("WISP_REQUEST_ID", false);
         let problem_json = switch("WISP_PROBLEM_JSON", false);
-        Settings { body_limit, origin, client_ip_header, secret, ws_idle, max_conns, api_docs, request_id, problem_json }
+        Settings { dev, body_limit, origin, client_ip_header, secret, ws_idle, max_conns, api_docs, request_id, problem_json }
     })
 }
 
@@ -658,20 +678,13 @@ impl Response {
         Response::stream("application/x-ndjson", body)
     }
 
-    /// [`Response::stream`] for a body written from elsewhere: the response
-    /// and the [`Sender`] that writes it, which ends when it is dropped.
-    /// This is what `Response::stream` was before it took a closure.
-    pub fn channel(content_type: impl Into<Cow<'static, str>>) -> (Response, Sender) {
+    /// A streamed response, and the [`Sender`] that writes its body until
+    /// it is dropped.
+    pub(crate) fn channel(content_type: impl Into<Cow<'static, str>>) -> (Response, Sender) {
         let (tx, rx) = tokio::sync::mpsc::channel(16);
         let mut res = Response::new(content_type, Vec::new());
         res.stream = Some(rx);
         (res, Sender(tx))
-    }
-
-    /// Sends the browser to `location` with a GET (303): the answer of an
-    /// endpoint that does not return a `Result`. Panics on CR/LF in it.
-    pub fn redirect(location: impl Into<String>) -> Response {
-        Response::empty(303).with_header("location", location)
     }
 
     /// No body, only a status (and the headers added to it):
@@ -746,39 +759,26 @@ impl Response {
 
     /// Server-sent events, which a page receives with `listen(url, …)` or
     /// `new EventSource(url)`: a stream that no proxy or browser caches or
-    /// holds back. `send` sends each one with [`Sender::event`]:
+    /// holds back. `body` sends them, each with [`Sender::event`], in a task
+    /// of its own:
     ///
     /// ```ignore
-    /// Response::events(|events| async move {
+    /// Response::events(|out| async move {
     ///     loop {
-    ///         events.event(&now()).await?; // stops once the client has left
+    ///         out.event(&now()).await?; // stops once the client has left
     ///         wisp::sleep(Duration::from_secs(1)).await;
     ///     }
     /// })
     /// ```
-    pub fn events<F, Fut>(send: F) -> Response
+    pub fn events<F, Fut>(body: F) -> Response
     where
         F: FnOnce(Sender) -> Fut,
         Fut: Future<Output = Result<(), Gone>> + Send + 'static,
     {
-        let (res, tx) = Response::event_channel();
-        let task = send(tx);
-        spawn(async move {
-            let _ = task.await;
-        });
-        res
-    }
-
-    /// [`Response::events`] with the [`Sender`] handed back, as it was
-    /// before `events` took a closure.
-    pub fn event_channel() -> (Response, Sender) {
-        let (res, tx) = Response::channel("text/event-stream");
         // `x-accel-buffering` stops nginx from holding events back.
-        (
-            res.with_header("cache-control", "no-store")
-                .with_header("x-accel-buffering", "no"),
-            tx,
-        )
+        Response::stream("text/event-stream", body)
+            .with_header("cache-control", "no-store")
+            .with_header("x-accel-buffering", "no")
     }
 
     pub fn text(body: impl Into<String>) -> Response {
@@ -796,10 +796,7 @@ impl Response {
 
     /// `value` as JSON, with `#[derive(Json)]` or one of the built-in impls.
     pub fn json_of(value: &(impl Json + ?Sized)) -> Response {
-        // Room for a small object, which would otherwise grow three times.
-        let mut body = String::with_capacity(64);
-        value.json(&mut body);
-        Response::json(body)
+        Response::json(to_json(value))
     }
 
     /// `value` as JSON with 201 Created, the answer to a POST that made
@@ -901,9 +898,14 @@ impl Error {
             (400..=599).contains(&status),
             "error status must be 4xx or 5xx, got {status}"
         );
+        Error::raw(status, message.into())
+    }
+
+    /// An error of any status, a redirect's too: [`Error::new`] checks it.
+    fn raw(status: u16, message: Cow<'static, str>) -> Error {
         Error {
             status,
-            message: message.into(),
+            message,
             header: None,
             source: None,
             fields: Vec::new(),
@@ -1036,23 +1038,11 @@ impl Error {
     /// for a page that moved for good: `return Err(Error::redirect(308, "/new"))`.
     /// Panics on CR/LF in `location`.
     pub fn redirect(status: u16, location: impl Into<String>) -> Error {
-        let location = location.into();
         assert!(
             (300..=308).contains(&status),
             "redirect status must be 3xx, got {status}"
         );
-        assert!(
-            cx::valid_header("location", &location),
-            "invalid redirect location {location:?}"
-        );
-        Error {
-            status,
-            message: Cow::Borrowed(""),
-            header: Some(Box::new(("location", location))),
-            source: None,
-            fields: Vec::new(),
-            code: None,
-        }
+        Error::raw(status, Cow::Borrowed("")).with_header("location", location)
     }
 
     pub fn status(&self) -> u16 {
@@ -1096,13 +1086,10 @@ pub fn redirect<T>(location: impl Into<String>) -> Result<T> {
 
 impl<E: std::error::Error + Send + Sync + 'static> From<E> for Error {
     fn from(e: E) -> Error {
+        let message = Cow::Owned(e.to_string());
         Error {
-            status: 500,
-            message: Cow::Owned(e.to_string()),
-            header: None,
             source: Some(Box::new(e)),
-            fields: Vec::new(),
-            code: None,
+            ..Error::raw(500, message)
         }
     }
 }
@@ -1129,13 +1116,6 @@ pub trait OrStatus<T> {
         Self: Sized,
     {
         self.or_status(404)
-    }
-
-    fn or_400(self) -> Result<T>
-    where
-        Self: Sized,
-    {
-        self.or_status(400)
     }
 }
 
@@ -1189,25 +1169,13 @@ pub mod rt {
 
     /// Seconds since 1970 as `2026-09-29T12:00:00Z`.
     pub(crate) fn rfc3339(s: u64) -> String {
-        {
-            let (days, rem) = (s / 86_400, s % 86_400);
-            // Civil from days (Howard Hinnant's algorithm).
-            let z = days as i64 + 719_468;
-            let era = z.div_euclid(146_097);
-            let doe = z - era * 146_097;
-            let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-            let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-            let mp = (5 * doy + 2) / 153;
-            let day = doy - (153 * mp + 2) / 5 + 1;
-            let month = if mp < 10 { mp + 3 } else { mp - 9 };
-            let year = yoe + era * 400 + i64::from(month <= 2);
-            format!(
-                "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
-                rem / 3600,
-                rem / 60 % 60,
-                rem % 60
-            )
-        }
+        let ((year, month, day), rem) = (crate::civil(s / 86_400), s % 86_400);
+        format!(
+            "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+            rem / 3600,
+            rem / 60 % 60,
+            rem % 60
+        )
     }
 
     impl<T: Stamp> Stamp for Option<T> {
@@ -1235,9 +1203,10 @@ pub mod rt {
     pub use crate::html::{
         Always, Attr, Direct, Formatted, Maybe, Text, escape, guard_url, raw as html, text,
     };
+    pub use crate::json::to_json as js_of;
     pub use crate::live::{
-        Js, js_attr, js_attrs, js_of, js_text, json, live, live_end, live_how, live_route,
-        same_version, tag_name,
+        Js, js_attr, js_attrs, js_text, json, live, live_end, live_how, live_route, same_version,
+        tag_name,
     };
     use crate::{Cx, Error, Out, Response};
 
@@ -1291,11 +1260,7 @@ pub mod rt {
             }
         } else {
             let origin_host = origin.split_once("://").map_or(origin, |(_, h)| h);
-            let forwarded = cx
-                .header("x-forwarded-host")
-                .and_then(|h| h.split(',').next())
-                .map(str::trim);
-            if [cx.header("host"), forwarded]
+            if [cx.header("host"), cx.forwarded("x-forwarded-host")]
                 .into_iter()
                 .flatten()
                 .any(|h| origin_host.eq_ignore_ascii_case(h))
@@ -1325,14 +1290,7 @@ pub mod rt {
     }
 
     pub fn method_not_allowed(allow: &'static str) -> Error {
-        Error {
-            status: 405,
-            message: "Method Not Allowed".into(),
-            header: Some(Box::new(("allow", allow.into()))),
-            source: None,
-            fields: Vec::new(),
-            code: None,
-        }
+        Error::new(405, "Method Not Allowed").with_header("allow", allow)
     }
 
     /// Used when no `+error.wisp` applies, or when rendering one failed. It

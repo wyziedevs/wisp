@@ -6,9 +6,11 @@ mod codegen;
 mod js;
 mod openapi;
 pub mod routes;
+mod rules;
 pub mod rust_scan;
 mod shell;
 pub mod template;
+mod ty;
 
 /// JavaScript without comments and needless whitespace, its names
 /// shortened: the browser runtime as release builds serve it (`wisp`'s
@@ -59,6 +61,30 @@ pub fn read_source(path: &Path) -> std::io::Result<String> {
     } else {
         text.to_string()
     })
+}
+
+/// Whether the app's CSS (`src/app.css`) is Tailwind's input, which the
+/// CLI builds into `.wisp/app.css`.
+pub fn uses_tailwind(css: &str) -> bool {
+    css.contains("@import \"tailwindcss\"") || css.contains("@import 'tailwindcss'")
+}
+
+/// A JSON (and JavaScript) string literal.
+pub(crate) fn json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            c if c < ' ' => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// For `wisp dev`: the static chunks and shape of the template at `rel`

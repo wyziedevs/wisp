@@ -441,32 +441,34 @@ fn from_json_with(item: TokenStream, stamped: &[&str]) -> Result<TokenStream, Er
                 let mut checks = String::new();
                 for (rule, value, span) in &field.rules {
                     let call = match (rule.as_str(), value) {
-                        ("min" | "max", Some(v)) => format!("{rule}(__x, ({v}) as f64)"),
-                        ("min_len" | "max_len", Some(v)) => format!("{rule}(__x, {v})"),
-                        ("len", Some(v)) => {
-                            let (lo, hi) = len_range(v).map_err(|m| (m, *span))?;
-                            let lo = lo.map(|lo| {
-                                format!(
-                                    "__p.check({key}, ::wisp::json::check::min_len(__x, {lo}));"
-                                )
-                            });
-                            let hi = hi.map(|hi| {
-                                format!(
-                                    "__p.check({key}, ::wisp::json::check::max_len(__x, {hi}));"
-                                )
-                            });
-                            checks.extend(lo);
-                            checks.extend(hi);
-                            continue;
+                        ("min" | "max", Some(v)) => {
+                            format!("::wisp::json::check::{rule}(__x, ({v}) as f64)")
                         }
-                        ("email", None) => "email(__x)".into(),
+                        ("min_len" | "max_len", Some(v)) => {
+                            format!("::wisp::json::check::{rule}(__x, {v})")
+                        }
+                        // A range of any form: its bounds are the runtime's to read.
+                        ("len", Some(v)) => {
+                            let x: String = v.split_whitespace().collect();
+                            if !x.contains("..") {
+                                let msg =
+                                    format!("`len = {x}` needs a range, such as `len = 1..=100`");
+                                return Err((msg, *span));
+                            }
+                            if x.trim_matches(['.', '=']).is_empty() {
+                                let msg = "`len = ..` needs a bound, such as `len = 1..=100`";
+                                return Err((msg.into(), *span));
+                            }
+                            format!("::wisp::rt_traits::len(__x, {v})")
+                        }
+                        ("email", None) => "::wisp::json::check::email(__x)".into(),
                         ("email", Some(_)) => return Err(("`email` takes no value".into(), *span)),
                         (_, None) => {
                             return Err((format!("`{rule}` needs a value: `{rule} = 1`"), *span));
                         }
                         _ => unreachable!("rules are checked as they are read"),
                     };
-                    checks.push_str(&format!("__p.check({key}, ::wisp::json::check::{call});"));
+                    checks.push_str(&format!("__p.check({key}, {call});"));
                 }
                 if !checks.is_empty() {
                     body.extend(at(
@@ -528,27 +530,6 @@ fn from_json_with(item: TokenStream, stamped: &[&str]) -> Result<TokenStream, Er
         }}"
     ));
     Ok(fill(template, &body, &TokenStream::new()))
-}
-
-/// `1..=100` → (Some("1"), Some("100")), `..10` → (None, Some("10 - 1")):
-/// the bounds of `len = …` (written the same as in `wisp-build`, which
-/// reads it on actions' parameters).
-fn len_range(x: &str) -> Result<(Option<String>, Option<String>), String> {
-    let x: String = x.chars().filter(|c| !c.is_whitespace()).collect();
-    let Some((lo, hi)) = x.split_once("..") else {
-        return Err(format!(
-            "`len = {x}` needs a range, such as `len = 1..=100`"
-        ));
-    };
-    let lo = (!lo.is_empty()).then(|| lo.to_string());
-    let hi = match hi.strip_prefix('=') {
-        Some(h) => (!h.is_empty()).then(|| h.to_string()),
-        None => (!hi.is_empty()).then(|| format!("{hi} - 1")),
-    };
-    if lo.is_none() && hi.is_none() {
-        return Err("`len = ..` needs a bound, such as `len = 1..=100`".into());
-    }
-    Ok((lo, hi))
 }
 
 /// Makes a struct a JSON resource: `Json`, `FromJson` (with its fields'

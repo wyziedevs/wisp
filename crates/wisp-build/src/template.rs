@@ -13,6 +13,7 @@
 //! and a `Node::Live` marks where the element's `data-w` goes. Their
 //! JavaScript is part of the shape, since it is compiled into the binary.
 
+use crate::ty::{is_ident, is_word};
 use crate::{fnv1a, js};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2427,49 +2428,7 @@ impl Parser<'_> {
 
         // Blocks may appear anywhere, even inside tags (conditional attributes).
         if let Some(rest) = t.strip_prefix('#') {
-            let (kw, arg) = split_word(rest);
-            if arg.is_empty() {
-                return Err(self.err(open, format!("{{#{kw}}} needs an expression")));
-            }
-            if kw == "snippet" {
-                return self.snippet_open(open, arg);
-            }
-            let frame = match kw {
-                "if" => Frame::If {
-                    pos: open,
-                    branches: vec![(code(arg), Vec::new())],
-                    otherwise: None,
-                },
-                "each" => {
-                    let (iter, pat, index) = split_each(arg).ok_or_else(|| {
-                        self.err(
-                            open,
-                            "expected {#each <expr> as <pattern>[, <index>]}".into(),
-                        )
-                    })?;
-                    Frame::Each {
-                        pos: open,
-                        iter: code(iter),
-                        pat: pat.into(),
-                        index: index.map(Into::into),
-                        body: Vec::new(),
-                        otherwise: None,
-                    }
-                }
-                "match" => Frame::Match {
-                    pos: open,
-                    scrutinee: code(arg),
-                    arms: Vec::new(),
-                },
-                _ => return Err(self.err(open, format!("unknown block {{#{kw}}}"))),
-            };
-            if matches!(self.ctx, Ctx::Quoted(_)) {
-                self.in_value(open)?;
-            }
-            self.begin(open)?;
-            self.open(frame);
-            self.skip_standalone(open);
-            return Ok(());
+            return self.block_open(open, rest);
         }
         if let Some(rest) = t.strip_prefix(':').filter(|_| !t.starts_with("::")) {
             // The browser's: `{:#if}`, `{:/if}`, and `{:expr}`. `else` and
@@ -2629,92 +2588,13 @@ impl Parser<'_> {
             return Ok(());
         }
         if let Some(rest) = t.strip_prefix('/') {
-            let kw = rest.trim();
-            let open_kind = match self.frames.last() {
-                Some(Frame::If { .. }) => "if",
-                Some(Frame::Each { .. }) => "each",
-                Some(Frame::Match { .. }) => "match",
-                Some(Frame::Snippet { .. }) => "snippet",
-                Some(Frame::Client { kind, .. }) if *kind != "comp" => block_of(kind),
-                _ => "",
-            };
-            if kw != open_kind {
-                return Err(self.unexpected_close(open, &format!("{{/{kw}}}")));
-            }
-            if matches!(self.frames.last(), Some(Frame::Client { .. })) {
-                if matches!(kw, "await" | "try") {
-                    self.client_close(open)?;
-                }
-                self.client_close(open)?;
-                self.skip_standalone(open);
-                return Ok(());
-            }
-            let node = match self.end(open)? {
-                Frame::If {
-                    branches,
-                    otherwise,
-                    ..
-                } => Node::If {
-                    branches,
-                    otherwise,
-                },
-                Frame::Each {
-                    iter,
-                    pat,
-                    index,
-                    body,
-                    otherwise,
-                    ..
-                } => Node::Each {
-                    iter,
-                    pat,
-                    index,
-                    body,
-                    otherwise,
-                },
-                Frame::Match {
-                    pos,
-                    scrutinee,
-                    arms,
-                } => {
-                    if arms.is_empty() {
-                        return Err(self.err(pos, "{#match} needs at least one {:case}".into()));
-                    }
-                    Node::Match { scrutinee, arms }
-                }
-                Frame::Snippet {
-                    pos,
-                    name,
-                    params,
-                    start,
-                    body,
-                } => {
-                    self.snippets.push(Snip {
-                        name: name.clone(),
-                        params: params.clone(),
-                        body: start..open,
-                        depth: self.frames.len(),
-                    });
-                    Node::Snippet {
-                        name,
-                        params,
-                        body,
-                        line: self.line_of(pos),
-                    }
-                }
-                Frame::Head { .. } | Frame::Component { .. } | Frame::Client { .. } => {
-                    unreachable!("kw matched the open block")
-                }
-            };
-            self.list().push(node);
-            self.skip_standalone(open);
-            return Ok(());
+            return self.block_close(open, rest.trim());
         }
 
         // Output holes: where they may appear depends on the HTML context.
         if self.ctx == Ctx::Tag && self.last != b'=' {
             // `{href}` is `href={href}`.
-            if !t.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_') || t.is_empty() {
+            if !t.bytes().all(is_word) || t.is_empty() {
                 return Err(self.err(
                     open,
                     "inside a tag, expressions must be attribute values: name={expr}, or {name} for name={name}".into(),
@@ -2763,59 +2643,7 @@ impl Parser<'_> {
         }
 
         if let Some(rest) = t.strip_prefix('@') {
-            let (kw, arg) = split_word(rest);
-            if kw == "props" {
-                if self.ctx != Ctx::Text || !self.frames.is_empty() {
-                    return Err(self.err(
-                        open,
-                        "{@props …} goes at the top of a component, outside any tag or block"
-                            .into(),
-                    ));
-                }
-                if self.props.is_some() {
-                    return Err(self.err(
-                        open,
-                        "a component declares its props once, in one {@props …}".into(),
-                    ));
-                }
-                let decls = parse_props(arg).map_err(|m| self.err(open, m))?;
-                self.props = Some((decls, line));
-                self.skip_standalone(open);
-                return Ok(());
-            }
-            let node = match kw {
-                "html" if self.ctx != Ctx::Text => {
-                    return Err(self.err(open, "{@html} is not allowed inside tags".into()));
-                }
-                "html" if !arg.is_empty() => Node::Html(code(arg)),
-                "const" if arg.contains('=') && !unquoted => Node::Const(code(arg)),
-                "render" if arg.replace(' ', "") == "children()" && self.ctx == Ctx::Text => {
-                    self.uses_children = true;
-                    Node::Render
-                }
-                "render" if self.ctx == Ctx::Text => {
-                    let (name, args) = self.call(open, arg, "{@render name(arg, …)}")?;
-                    let local = match self.snippets.iter().rev().find(|s| s.name == name) {
-                        Some(s) => {
-                            self.check_args(open, &name, s.params.len(), &args)?;
-                            true
-                        }
-                        None => false,
-                    };
-                    Node::RenderSnippet {
-                        name,
-                        args: code(&args),
-                        local,
-                    }
-                }
-                _ => return Err(self.err(open, format!("unknown or malformed {{@{kw} …}}"))),
-            };
-            let silent = matches!(node, Node::Const(_));
-            self.push_node(open, node)?;
-            if silent {
-                self.skip_standalone(open);
-            }
-            return Ok(());
+            return self.at_tag(open, rest, unquoted);
         }
         if t.is_empty() {
             return Err(self.err(open, "empty {}".into()));
@@ -2851,6 +2679,202 @@ impl Parser<'_> {
             self.end_value(open)?;
             self.write_classes()?;
             self.text.push('"');
+        }
+        Ok(())
+    }
+
+    /// Rust from the hole at `open`, on its line.
+    fn code_at(&self, open: usize, s: &str) -> Code {
+        Code {
+            src: s.trim().to_string(),
+            line: self.line_of(open),
+        }
+    }
+
+    /// `{#if …}`, `{#each …}`, `{#match …}`, `{#snippet …}`: `rest` is what
+    /// follows the `#`.
+    fn block_open(&mut self, open: usize, rest: &str) -> Result<(), Error> {
+        let (kw, arg) = split_word(rest);
+        if arg.is_empty() {
+            return Err(self.err(open, format!("{{#{kw}}} needs an expression")));
+        }
+        if kw == "snippet" {
+            return self.snippet_open(open, arg);
+        }
+        let frame = match kw {
+            "if" => Frame::If {
+                pos: open,
+                branches: vec![(self.code_at(open, arg), Vec::new())],
+                otherwise: None,
+            },
+            "each" => {
+                let (iter, pat, index) = split_each(arg).ok_or_else(|| {
+                    self.err(
+                        open,
+                        "expected {#each <expr> as <pattern>[, <index>]}".into(),
+                    )
+                })?;
+                Frame::Each {
+                    pos: open,
+                    iter: self.code_at(open, iter),
+                    pat: pat.into(),
+                    index: index.map(Into::into),
+                    body: Vec::new(),
+                    otherwise: None,
+                }
+            }
+            "match" => Frame::Match {
+                pos: open,
+                scrutinee: self.code_at(open, arg),
+                arms: Vec::new(),
+            },
+            _ => return Err(self.err(open, format!("unknown block {{#{kw}}}"))),
+        };
+        if matches!(self.ctx, Ctx::Quoted(_)) {
+            self.in_value(open)?;
+        }
+        self.begin(open)?;
+        self.open(frame);
+        self.skip_standalone(open);
+        Ok(())
+    }
+
+    /// `{/if}` and the like, server blocks' and client blocks' alike.
+    fn block_close(&mut self, open: usize, kw: &str) -> Result<(), Error> {
+        let open_kind = match self.frames.last() {
+            Some(Frame::If { .. }) => "if",
+            Some(Frame::Each { .. }) => "each",
+            Some(Frame::Match { .. }) => "match",
+            Some(Frame::Snippet { .. }) => "snippet",
+            Some(Frame::Client { kind, .. }) if *kind != "comp" => block_of(kind),
+            _ => "",
+        };
+        if kw != open_kind {
+            return Err(self.unexpected_close(open, &format!("{{/{kw}}}")));
+        }
+        if matches!(self.frames.last(), Some(Frame::Client { .. })) {
+            if matches!(kw, "await" | "try") {
+                self.client_close(open)?;
+            }
+            self.client_close(open)?;
+            self.skip_standalone(open);
+            return Ok(());
+        }
+        let node = match self.end(open)? {
+            Frame::If {
+                branches,
+                otherwise,
+                ..
+            } => Node::If {
+                branches,
+                otherwise,
+            },
+            Frame::Each {
+                iter,
+                pat,
+                index,
+                body,
+                otherwise,
+                ..
+            } => Node::Each {
+                iter,
+                pat,
+                index,
+                body,
+                otherwise,
+            },
+            Frame::Match {
+                pos,
+                scrutinee,
+                arms,
+            } => {
+                if arms.is_empty() {
+                    return Err(self.err(pos, "{#match} needs at least one {:case}".into()));
+                }
+                Node::Match { scrutinee, arms }
+            }
+            Frame::Snippet {
+                pos,
+                name,
+                params,
+                start,
+                body,
+            } => {
+                self.snippets.push(Snip {
+                    name: name.clone(),
+                    params: params.clone(),
+                    body: start..open,
+                    depth: self.frames.len(),
+                });
+                Node::Snippet {
+                    name,
+                    params,
+                    body,
+                    line: self.line_of(pos),
+                }
+            }
+            Frame::Head { .. } | Frame::Component { .. } | Frame::Client { .. } => {
+                unreachable!("kw matched the open block")
+            }
+        };
+        self.list().push(node);
+        self.skip_standalone(open);
+        Ok(())
+    }
+
+    /// `{@props …}`, `{@html …}`, `{@const …}`, `{@render …}`: `rest` is
+    /// what follows the `@`; `unquoted`, it is an attribute's whole value.
+    fn at_tag(&mut self, open: usize, rest: &str, unquoted: bool) -> Result<(), Error> {
+        let (kw, arg) = split_word(rest);
+        if kw == "props" {
+            if self.ctx != Ctx::Text || !self.frames.is_empty() {
+                return Err(self.err(
+                    open,
+                    "{@props …} goes at the top of a component, outside any tag or block".into(),
+                ));
+            }
+            if self.props.is_some() {
+                return Err(self.err(
+                    open,
+                    "a component declares its props once, in one {@props …}".into(),
+                ));
+            }
+            let decls = parse_props(arg).map_err(|m| self.err(open, m))?;
+            self.props = Some((decls, self.line_of(open)));
+            self.skip_standalone(open);
+            return Ok(());
+        }
+        let node = match kw {
+            "html" if self.ctx != Ctx::Text => {
+                return Err(self.err(open, "{@html} is not allowed inside tags".into()));
+            }
+            "html" if !arg.is_empty() => Node::Html(self.code_at(open, arg)),
+            "const" if arg.contains('=') && !unquoted => Node::Const(self.code_at(open, arg)),
+            "render" if arg.replace(' ', "") == "children()" && self.ctx == Ctx::Text => {
+                self.uses_children = true;
+                Node::Render
+            }
+            "render" if self.ctx == Ctx::Text => {
+                let (name, args) = self.call(open, arg, "{@render name(arg, …)}")?;
+                let local = match self.snippets.iter().rev().find(|s| s.name == name) {
+                    Some(s) => {
+                        self.check_args(open, &name, s.params.len(), &args)?;
+                        true
+                    }
+                    None => false,
+                };
+                Node::RenderSnippet {
+                    name,
+                    args: self.code_at(open, &args),
+                    local,
+                }
+            }
+            _ => return Err(self.err(open, format!("unknown or malformed {{@{kw} …}}"))),
+        };
+        let silent = matches!(node, Node::Const(_));
+        self.push_node(open, node)?;
+        if silent {
+            self.skip_standalone(open);
         }
         Ok(())
     }
@@ -3249,11 +3273,7 @@ fn split_each(arg: &str) -> Option<(&str, &str, Option<&str>)> {
         Some(c) => (rest[..c].trim(), Some(rest[c + 1..].trim())),
         None => (rest, None),
     };
-    let ident_ok = |s: &str| {
-        s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
-            && s.bytes().next().is_some_and(|c| !c.is_ascii_digit())
-    };
-    if iter.is_empty() || pat.is_empty() || index.is_some_and(|i| !ident_ok(i)) {
+    if iter.is_empty() || pat.is_empty() || index.is_some_and(|i| !is_ident(i)) {
         return None;
     }
     Some((iter, pat, index))
@@ -3315,14 +3335,7 @@ pub fn is_component_name(name: &str) -> bool {
     let b = name.as_bytes();
     b.first().is_some_and(u8::is_ascii_uppercase)
         && b.iter().any(u8::is_ascii_lowercase)
-        && b.iter().all(|&c| c.is_ascii_alphanumeric() || c == b'_')
-}
-
-fn is_ident(s: &str) -> bool {
-    s.bytes()
-        .next()
-        .is_some_and(|c| c.is_ascii_alphabetic() || c == b'_')
-        && s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
+        && b.iter().all(|&c| is_word(c))
 }
 
 /// A pattern without its type: `item: &Item` → `item`.
@@ -3519,9 +3532,8 @@ pub(crate) fn skip_char(b: &[u8], i: usize) -> usize {
 
 /// If `b[i]` starts a raw string (`r"`, `r#"`, `br"`), returns the hash count.
 pub(crate) fn raw_str_start(b: &[u8], i: usize) -> Option<usize> {
-    let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
     let prefix_ok =
-        i == 0 || !ident(b[i - 1]) || (b[i - 1] == b'b' && (i == 1 || !ident(b[i - 2])));
+        i == 0 || !is_word(b[i - 1]) || (b[i - 1] == b'b' && (i == 1 || !is_word(b[i - 2])));
     if b[i] != b'r' || !prefix_ok {
         return None;
     }

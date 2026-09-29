@@ -5,7 +5,7 @@
 //! module (`/_app/c/ID.js`). Each time it renders, it is an *instance*: its
 //! elements are marked `data-w="I.G"`, and the page ends with the list of
 //! instances, the server values each one's code reads, and the runtime
-//! (`client/live.js`) that starts them. See `write_page` in `http.rs`.
+//! (`client/live.js`) that starts them. See `page` in `http.rs`.
 
 use crate::Out;
 use std::borrow::Cow;
@@ -96,12 +96,12 @@ impl Live {
     /// instances and the modules they need, the modules that start with the
     /// page preloaded, and the runtime that starts them, if any does (an
     /// island's wake-up is in wisp.js, which loads the runtime itself).
-    /// Empty otherwise.
-    pub(crate) fn tail(&self) -> String {
+    /// Written onto `s`; nothing otherwise.
+    pub(crate) fn tail(&self, s: &mut String) {
         if self.instances.is_empty() {
-            return String::new();
+            return;
         }
-        let mut s = String::with_capacity(self.instances.len() + 200 * self.modules.len() + 200);
+        s.reserve(self.instances.len() + 200 * self.modules.len() + 200);
         s.push_str("<script type=\"application/json\" id=\"wisp-live\">{\"m\":{");
         for (k, (m, _)) in self.modules.iter().enumerate() {
             let comma = if k > 0 { "," } else { "" };
@@ -122,15 +122,13 @@ impl Live {
         if !extra.is_empty() {
             let _ = write!(s, "<link rel=\"modulepreload\" href=\"{extra}\">");
         }
-        if !self.modules.iter().any(|m| m.1) {
-            return s;
+        if self.modules.iter().any(|m| m.1) {
+            s.push_str(concat!(
+                "<script type=\"module\" src=\"/_app/live.js?v=",
+                env!("CARGO_PKG_VERSION"),
+                "\"></script>"
+            ));
         }
-        s.push_str(concat!(
-            "<script type=\"module\" src=\"/_app/live.js?v=",
-            env!("CARGO_PKG_VERSION"),
-            "\"></script>"
-        ));
-        s
     }
 }
 
@@ -209,18 +207,11 @@ pub fn json<T: Json + ?Sized>(out: &mut String, value: &T) {
     value.json(out);
 }
 
-/// `value`'s JSON, for `Js`.
-pub fn js_of<T: Json + ?Sized>(value: &T) -> String {
-    let mut s = String::new();
-    value.json(&mut s);
-    s
-}
-
 /// `value` as browser code would show it in `{:value}`, HTML-escaped: a
 /// string as itself, `null` as nothing, anything else as its JSON. The
 /// server's first paint of a hole whose value it knows.
 pub fn js_text<T: Json + ?Sized>(out: &mut String, value: &T) {
-    Js(&js_of(value)).text(out);
+    Js(&crate::to_json(value)).text(out);
 }
 
 /// `{label}` and `title={label}` in Rust, for a prop only a component's
@@ -258,7 +249,7 @@ impl<'a> Js<'a> {
     }
 
     /// The keys and values of an object (nothing for anything else).
-    pub fn entries(self) -> impl Iterator<Item = (String, Js<'a>)> {
+    pub fn entries(self) -> impl Iterator<Item = (Cow<'a, str>, Js<'a>)> {
         let (s, b) = (self.0, self.0.as_bytes());
         let mut i = if b.first() == Some(&b'{') { 1 } else { b.len() };
         std::iter::from_fn(move || {
@@ -382,7 +373,7 @@ pub fn js_attrs(out: &mut String, v: Js<'_>) {
         let (k, x) = (i.next()?, i.next()?);
         let mut name = String::new();
         k.raw(&mut name);
-        Some((name, x))
+        Some((Cow::Owned(name), x))
     });
     for (k, x) in v.entries().chain(pairs) {
         let ok = !k.starts_with("on")
@@ -474,12 +465,15 @@ fn value_end(b: &[u8], mut i: usize) -> usize {
     b.len()
 }
 
-/// A JSON string's text, its escapes undone.
-fn unescape(json: &str) -> String {
+/// A JSON string's text, its escapes undone: itself when it has none.
+fn unescape(json: &str) -> Cow<'_, str> {
     let inner = json
         .strip_prefix('"')
         .and_then(|s| s.strip_suffix('"'))
         .unwrap_or(json);
+    if !inner.contains('\\') {
+        return Cow::Borrowed(inner);
+    }
     let mut s = String::with_capacity(inner.len());
     let mut chars = inner.chars();
     let mut high = None; // the first half of a surrogate pair
@@ -510,7 +504,7 @@ fn unescape(json: &str) -> String {
             None => {}
         }
     }
-    s
+    Cow::Owned(s)
 }
 
 /// Whether `build`, the version of wisp-build that generated an app's code,
@@ -748,10 +742,11 @@ impl<K: AsRef<str>, V: Json, S: BuildHasher> Json for HashMap<K, V, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::to_json;
 
-    fn to_json<T: Json + ?Sized>(v: &T) -> String {
+    fn tail_of(out: &Out) -> String {
         let mut s = String::new();
-        v.json(&mut s);
+        out.live.tail(&mut s);
         s
     }
 
@@ -841,7 +836,7 @@ mod tests {
             preload: "",
         };
         let mut out = Out::default();
-        assert_eq!(out.live.tail(), "");
+        assert_eq!(tail_of(&out), "");
         // B renders inside the first A; the second A comes after both.
         for (m, blob, ends) in [(&A, "{}]", 0), (&B, "{\"x\":1}]", 2), (&A, "{}]", 1)] {
             let (_, b) = live(&mut out, m);
@@ -850,7 +845,7 @@ mod tests {
                 live_end(&mut out);
             }
         }
-        let tail = out.live.tail();
+        let tail = tail_of(&out);
         assert!(
             tail.starts_with(
                 "<script type=\"application/json\" id=\"wisp-live\">{\"m\":{\"t1\":\"/_app/c/t1.js?v=1\",\"t2\":\"/_app/c/t2.js?v=2\"},\
@@ -864,7 +859,7 @@ mod tests {
             "\"></script>"
         )));
         out.live.clear();
-        assert_eq!(out.live.tail(), "");
+        assert_eq!(tail_of(&out), "");
 
         // An island and what renders inside it wait, and nothing loads the
         // runtime or preloads their module; `client:none` sends nothing.
@@ -882,7 +877,7 @@ mod tests {
                 live_end(&mut out);
             }
         }
-        let tail = out.live.tail();
+        let tail = tail_of(&out);
         assert!(
             tail.contains("\"i\":[[0,\"t1\",-1,\"v\",{}],[1,\"t2\",0,{}]]}</script>")
                 && !tail.contains("secret")

@@ -30,7 +30,13 @@ impl Project {
 
 impl Drop for Project {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        // On Windows a file still in use (by a scan, say) holds its folder.
+        for _ in 0..40 {
+            if fs::remove_dir_all(&self.0).is_ok() || !self.0.exists() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
     }
 }
 

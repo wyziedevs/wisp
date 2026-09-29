@@ -2,23 +2,12 @@
 //! `WISP_*`, `ORIGIN`), on the test app's binary: each one that is not valid
 //! stops the server with a message, and each one that is takes effect.
 
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpStream;
-use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+mod common;
+
+use common::{Server, Temp, command, start};
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
-
-const SECRET: &str = "0123456789abcdef0123456789abcdef";
-
-fn command(env: &[(&str, &str)]) -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_wisp-test-app"));
-    cmd.env("PORT", "0")
-        .env("HOST", "127.0.0.1")
-        .env("WISP_THREADS", "1")
-        .env("WISP_SECRET", SECRET)
-        .envs(env.iter().copied());
-    cmd
-}
 
 /// Waits for `child` to exit, or fails after a few seconds.
 fn exits(child: &mut Child) -> std::process::ExitStatus {
@@ -38,17 +27,16 @@ fn exits(child: &mut Child) -> std::process::ExitStatus {
 fn stops(env: &[(&str, &str)]) -> (Option<i32>, String) {
     static RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let n = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let file = |what: &str| temp(&format!("{what}-{n}"));
+    let file = |what: &str| Temp::new(&format!("{what}-{n}"));
     let (out, err) = (file("out"), file("err"));
     let mut child = command(env)
-        .stdout(std::fs::File::create(&out).unwrap())
-        .stderr(std::fs::File::create(&err).unwrap())
+        .stdout(std::fs::File::create(&*out).unwrap())
+        .stderr(std::fs::File::create(&*err).unwrap())
         .spawn()
         .unwrap();
     let status = exits(&mut child);
-    let mut said = std::fs::read_to_string(&err).unwrap();
-    said.push_str(&std::fs::read_to_string(&out).unwrap());
-    let _ = (std::fs::remove_file(&out), std::fs::remove_file(&err));
+    let mut said = std::fs::read_to_string(&*err).unwrap();
+    said.push_str(&std::fs::read_to_string(&*out).unwrap());
     (status.code(), said)
 }
 
@@ -124,38 +112,6 @@ fn a_port_in_use_says_what_to_do() {
     assert!(out.contains("set PORT to use another"), "{out}");
 }
 
-/// The server, stopped when dropped.
-struct Server {
-    child: Child,
-    port: u16,
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-fn start(env: &[(&str, &str)]) -> Server {
-    let mut child = command(env)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let mut line = String::new();
-    BufReader::new(child.stdout.take().unwrap())
-        .read_line(&mut line)
-        .unwrap();
-    let port = line
-        .trim()
-        .rsplit(':')
-        .next()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or_else(|| panic!("no port in {line:?}"));
-    Server { child, port }
-}
-
 /// One request's answer: status, headers and body.
 struct Answer {
     status: u16,
@@ -173,15 +129,25 @@ impl Answer {
     }
 }
 
+impl Answer {
+    fn of(got: &str) -> Answer {
+        let (head, body) = got.split_once("\r\n\r\n").unwrap_or((got, ""));
+        Answer {
+            status: common::status(got),
+            head: head.to_string(),
+            body: body.to_string(),
+        }
+    }
+}
+
+/// Requests with their headers as pairs, answered as an `Answer`.
 impl Server {
     fn ask(&self, method: &str, target: &str, headers: &[(&str, &str)], body: &[u8]) -> Answer {
-        self.send(method, target, headers, body.len(), body)
+        self.ask_declaring(method, target, headers, body.len(), body)
     }
 
-    /// A request that says its body is `declared` long, and sends `body`, all in one write.
-    /// A body too large for the route is only announced: a client that is told no does not
-    /// send it, and a server that closes with unread bytes resets the connection.
-    fn send(
+    /// Says the body is `declared` long, whatever `body` is (see `request_declaring`).
+    fn ask_declaring(
         &self,
         method: &str,
         target: &str,
@@ -189,28 +155,11 @@ impl Server {
         declared: usize,
         body: &[u8],
     ) -> Answer {
-        let mut raw = format!(
-            "{method} {target} HTTP/1.1\r\nhost: 127.0.0.1:{}\r\nconnection: close\r\ncontent-length: {declared}\r\n",
-            self.port
-        );
-        for (name, value) in headers {
-            raw.push_str(&format!("{name}: {value}\r\n"));
-        }
-        raw.push_str("\r\n");
-        let mut raw = raw.into_bytes();
-        raw.extend_from_slice(body);
-        let mut s = TcpStream::connect(("127.0.0.1", self.port)).unwrap();
-        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        s.write_all(&raw).unwrap();
-        let mut got = Vec::new();
-        let _ = s.read_to_end(&mut got);
-        let got = String::from_utf8_lossy(&got).into_owned();
-        let (head, body) = got.split_once("\r\n\r\n").unwrap_or((&got, ""));
-        Answer {
-            status: head.get(9..12).and_then(|s| s.parse().ok()).unwrap_or(0),
-            head: head.to_string(),
-            body: body.to_string(),
-        }
+        let headers: String = headers
+            .iter()
+            .map(|(n, v)| format!("{n}: {v}\r\n"))
+            .collect();
+        Answer::of(&self.request_declaring(method, target, &headers, declared, body))
     }
 
     fn get(&self, target: &str, headers: &[(&str, &str)]) -> Answer {
@@ -228,7 +177,7 @@ fn the_body_limit_is_the_operators() {
     // Refused by its announced length alone, before a byte of it is sent.
     let refused = |server: &Server, len: usize| {
         server
-            .send("POST", "/login", &[FORM], form(len).len(), b"")
+            .ask_declaring("POST", "/login", &[FORM], form(len).len(), b"")
             .status
     };
     let default = start(&[]);
@@ -248,7 +197,10 @@ fn the_body_limit_is_the_operators() {
         small.ask("POST", "/echo", &[], &vec![b'x'; 60_000]).status,
         200
     );
-    assert_eq!(big.send("POST", "/echo", &[], 70_000, b"").status, 413);
+    assert_eq!(
+        big.ask_declaring("POST", "/echo", &[], 70_000, b"").status,
+        413
+    );
 }
 
 #[test]
@@ -414,15 +366,9 @@ fn under_wisp_dev_the_app_leaves_with_its_parent() {
     assert_eq!(exits(&mut child).code(), Some(0));
 }
 
-fn temp(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("wisp-settings-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    dir
-}
-
 #[test]
 fn export_mode_writes_the_site_instead_of_serving_it() {
-    let dir = temp("export");
+    let dir = Temp::new("export");
     let (code, out) = stops(&[("WISP_EXPORT", dir.to_str().unwrap())]);
     assert_eq!(code, Some(0), "{out}");
     assert!(out.contains("wrote index.html"), "{out}");
@@ -434,15 +380,13 @@ fn export_mode_writes_the_site_instead_of_serving_it() {
     assert!(home.contains("<h1>hello from init</h1>"), "{home}");
     assert!(dir.join("_app/wisp.js").is_file());
     assert!(!dir.join("echo").exists());
-    let _ = std::fs::remove_dir_all(&dir);
 
     // Somewhere that cannot be written to: a failure that names it, not a panic.
-    let file = temp("not-a-folder");
-    std::fs::write(&file, "x").unwrap();
+    let file = Temp::new("not-a-folder");
+    std::fs::write(&*file, "x").unwrap();
     let (code, out) = stops(&[("WISP_EXPORT", file.to_str().unwrap())]);
     assert_eq!(code, Some(1), "{out}");
     assert!(out.contains("wisp:"), "{out}");
-    let _ = std::fs::remove_file(&file);
 }
 
 #[test]
@@ -476,7 +420,7 @@ fn a_session_lasts_as_long_as_the_secret_does() {
 
 #[test]
 fn rows_outlive_a_killed_server_and_a_write_it_died_in() {
-    let dir = temp("data");
+    let dir = Temp::new("data");
     let data = dir.to_str().unwrap();
     let auth = ("authorization", "Bearer wisp-test-app");
     let json = ("content-type", "application/json");
@@ -509,8 +453,6 @@ fn rows_outlive_a_killed_server_and_a_write_it_died_in() {
     let third = start(&[("WISP_DATA", data)]);
     let list = third.get("/notes", &[]).body;
     assert!(list.contains("Tea") && list.contains("Milk"), "{list}");
-    drop(third);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

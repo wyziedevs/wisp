@@ -3,32 +3,17 @@
 #![cfg(feature = "tower")]
 
 mod common;
+#[path = "../../../tests/shared/tower.rs"]
+mod shared;
 
 use common::Lab;
-use std::future::poll_fn;
-use std::pin::{Pin, pin};
+use shared::{run, text};
+use std::pin::Pin;
 use std::task::{Context, Poll};
 use wisp::tower::http::{self, Request, Response};
 use wisp::tower::http_body::{Body as _, Frame, SizeHint};
 use wisp::tower::tower_service::Service as _;
 use wisp::tower::{Body, Bytes};
-
-fn run<T>(f: impl Future<Output = T>) -> T {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(f)
-}
-
-async fn text(body: Body) -> String {
-    let mut body = pin!(body);
-    let mut all = Vec::new();
-    while let Some(frame) = poll_fn(|cx| body.as_mut().poll_frame(cx)).await {
-        all.extend_from_slice(&frame.unwrap().into_data().unwrap());
-    }
-    String::from_utf8(all).unwrap()
-}
 
 /// A request body in the frames it is given, and how it ends.
 struct Frames {

@@ -1,9 +1,9 @@
 //! Dev-build support: hot-swapped template text, files read from disk, and
 //! the loopback-only endpoint `wisp dev` talks to.
 //!
-//! Callers gate everything with `cfg!(debug_assertions)` rather than `#[cfg]`
-//! so this code is type-checked in every build; release builds optimize it
-//! away (generated release code never calls `chunk`).
+//! Callers gate everything on `settings().dev` (see `WISP_DEV`), so a
+//! release build can be run in dev mode too. Generated release code never
+//! calls `chunk`.
 
 use crate::App;
 use crate::cx::Method;
@@ -37,7 +37,7 @@ pub fn chunk(t: usize, i: usize, compiled: &'static str) -> &'static str {
 
 /// Port of `wisp dev`'s event stream, if this process was started by it.
 pub(crate) fn events_port() -> Option<u16> {
-    if !cfg!(debug_assertions) {
+    if !crate::settings().dev {
         return None;
     }
     std::env::var("WISP_DEV_EVENTS").ok()?.parse().ok()

@@ -658,7 +658,6 @@ fn nothing_splits_a_response() {
         let _ = wisp::Response::text("x").with_header("x", "a\r\nb");
     });
     assert!(builders.is_err());
-    assert!(std::panic::catch_unwind(|| wisp::Response::redirect("/a\nb")).is_err());
     assert!(std::panic::catch_unwind(|| wisp::Error::redirect(303, "/a\r\nb")).is_err());
     assert!(
         std::panic::catch_unwind(|| wisp::Error::new(400, "x").with_header("x", "a\nb")).is_err()
@@ -1233,7 +1232,7 @@ fn errors_are_plain_data() {
     assert_eq!(Some(1).or_404().unwrap(), 1);
     assert_eq!(None::<u8>.or_status(410).unwrap_err().status(), 410);
     assert_eq!(None::<u8>.or_status(410).unwrap_err().message(), "Gone");
-    assert_eq!("x".parse::<u8>().or_400().unwrap_err().status(), 400);
+    assert_eq!("x".parse::<u8>().or_status(400).unwrap_err().status(), 400);
 }
 
 #[test]

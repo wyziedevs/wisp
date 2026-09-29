@@ -1,29 +1,14 @@
 //! The test app as a tower service, as axum, hyper or Lambda would call it.
 #![cfg(feature = "tower")]
 
-use std::future::poll_fn;
-use std::pin::pin;
+#[path = "../../../tests/shared/tower.rs"]
+mod shared;
+
+use shared::{run, text};
 use wisp::tower::http_body::Body as _;
 use wisp::tower::tower_service::Service as _;
 use wisp::tower::{Body, http};
 use wisp_test_app::Site;
-
-fn run<T>(f: impl Future<Output = T>) -> T {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(f)
-}
-
-async fn text(body: Body) -> String {
-    let mut body = pin!(body);
-    let mut all = Vec::new();
-    while let Some(frame) = poll_fn(|cx| body.as_mut().poll_frame(cx)).await {
-        all.extend_from_slice(&frame.unwrap().into_data().unwrap());
-    }
-    String::from_utf8(all).unwrap()
-}
 
 #[test]
 fn serves_pages_forms_and_limits() {
