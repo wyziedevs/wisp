@@ -140,7 +140,7 @@ pub(crate) fn log_request(
         400.. => "33",
         _ => "2",
     };
-    let ms = format!("{:.1}ms", took.as_secs_f64() * 1000.0);
+    let ms = format!("{:.3}ms", took.as_secs_f64() * 1000.0);
     let mut line = format!(
         "    {method} {path}  {}  {}",
         paint(tint, &status.to_string()),
