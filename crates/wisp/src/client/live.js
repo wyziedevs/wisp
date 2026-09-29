@@ -15,6 +15,10 @@
 // survive it: its state stays, and it receives the new server values. An
 // element with data-wisp-reset, or inside one, starts its instances afresh.
 // Nodes made here are marked __w, so the morph in wisp.js leaves them.
+//
+// Where the server knew a block's or a component's values it painted the
+// copies itself, after the anchor, each between <!--[--> and <!--]-->: the
+// first draw takes those nodes over instead of making new ones.
 
 const defs = new Map(); // module id -> { fn, html, load }
 const urls = new Map(); // module id -> the url it was loaded from
@@ -31,6 +35,7 @@ const FLAGS = 'prevent stop once self capture passive window document outside de
 const KEYS = { space: ' ', up: 'arrowup', down: 'arrowdown', left: 'arrowleft', right: 'arrowright' };
 const NONE = {};
 let live = []; // the instances the server rendered, in render order
+let route = { id: null, params: {} }; // the page's, for a +page.js load
 let mounts = []; // [instance, onMount callback] waiting for their first redraw
 let queued = null; // the pending redraw
 let loaded = false; // nothing animates in on the page's first load
@@ -225,7 +230,8 @@ function scope() {
 function start() {
   const my = ++gen;
   const json = document.getElementById('wisp-live');
-  const { m = {}, i = [] } = json ? JSON.parse(json.textContent) : {};
+  const { m = {}, i = [], r = null, p = {} } = json ? JSON.parse(json.textContent) : {};
+  route = { id: r, params: p };
   const need = Object.entries(m).filter(([id, url]) => urls.get(id) !== url);
   if (!need.length) return boot(i, my); // no await: restart before the next paint
   Promise.all(
@@ -299,8 +305,9 @@ function boot(list, my) {
 function loadThen(def, blob, my, f) {
   if (!def.load) return fire(f, blob);
   const url = new URL(location.href);
+  const { id, params } = route;
   Promise.resolve()
-    .then(() => def.load({ data: blob.data, url, fetch }))
+    .then(() => def.load({ data: blob.data, url, params, route: { id }, fetch }))
     .then((data) => my === gen && fire(f, { ...blob, data }), boundary);
 }
 
@@ -446,13 +453,59 @@ function setup(sc, inst, el, g, L, quiet) {
   }
 }
 
-// The directive elements of a fragment made here: a clone, or a component.
+// An element of a copy (made here or painted by the server): bound to its
+// group, with the Rust loop values it carries; or a component's slot,
+// where what the page gave it goes.
+function bindEl(el, sc, inst, L, quiet) {
+  const w = el.dataset.w;
+  if (w) return setup(sc, inst, el, +w, el.dataset.wl ? Object.assign(Object.create(L), JSON.parse(el.dataset.wl)) : L, quiet);
+  const s = el.hasAttribute('data-wslot') && inst.slot;
+  if (s) adopt(painted(el), sc, s.inst, s.L) || place(el, s.tpl, sc, s.inst, s.L, quiet);
+}
+
 function bindFrag(frag, sc, inst, L, quiet) {
-  for (const el of frag.querySelectorAll('[data-w]')) setup(sc, inst, el, +el.dataset.w, L, quiet);
-  for (const el of frag.querySelectorAll('template[data-wslot]')) {
-    const s = inst.slot;
-    if (s) place(el, s.tpl, sc, s.inst, s.L, quiet);
+  for (const el of frag.querySelectorAll('[data-w], template[data-wslot]')) bindEl(el, sc, inst, L, quiet);
+}
+
+// The server's copy right after `at`: its nodes from <!--[--> to the
+// matching <!--]-->, or null.
+function painted(at) {
+  let n = at.nextSibling;
+  if (!n || mark(n) < 1) return null;
+  const first = n;
+  for (let d = 0; n && (d += mark(n)); ) n = n.nextSibling;
+  return { first, last: n };
+}
+
+// 1 at a painted copy's start, -1 at its end.
+const mark = (n) => (n.nodeType == 8 ? (n.data == '[') - (n.data == ']') : 0);
+
+// Takes a painted copy over: its nodes become ours, and its elements bind.
+function adopt(c, sc, inst, L) {
+  if (!c) return c;
+  for (const n of range(c)) n.__w = 1;
+  // Found first, then bound: binding puts nodes in (components, copies).
+  const els = [];
+  walk(c.first.nextSibling, c.last, els);
+  for (const el of els) bindEl(el, sc, inst, L, true);
+  return c;
+}
+
+// The elements from n to last and inside them, in order, but not those in
+// copies painted inside (their own block takes those over).
+function walk(n, last, out) {
+  for (let d = 0; n && n !== last; n = n.nextSibling) {
+    if (!d && n.nodeType == 1) {
+      out.push(n);
+      walk(n.firstChild, null, out);
+    }
+    d += mark(n);
   }
+}
+
+// Removes the server's copies after `at`: a kept block's, after a morph.
+function drop(at) {
+  for (let c; (c = painted(at)); ) range(c).forEach((n) => n.remove());
 }
 
 // A copy of tpl's content after `at`, bound to inst: its nodes, from the
@@ -604,6 +657,12 @@ function clones(sc, inst, tpl, L, quiet, kind, get, names, keyOf) {
   sc.stops.push(() => list.forEach((c) => (run(c.sc.stops), range(c).forEach((n) => n.remove()))));
   return () => {
     const items = kind == 'if' ? (get(L) ? [0] : []) : [...(get(L) ?? [])];
+    // The server's copies: the first draw takes them over in order; after
+    // a morph that kept this block, the new page's go.
+    const pre = [];
+    if (!first) drop(list.at(-1)?.last || tpl);
+    else for (let c, at = tpl; (c = painted(at)); at = c.last) pre.push(c);
+    for (const c of pre.slice(items.length)) range(c).forEach((n) => n.remove());
     const old = new Map(list.map((c) => [c.key, c]));
     // animate:flip: where each element was, to slide it from there.
     const rects = new Map();
@@ -614,7 +673,7 @@ function clones(sc, inst, tpl, L, quiet, kind, get, names, keyOf) {
       if (names[1]) cl[names[1]] = i;
       const key = keyOf ? keyOf(cl) : i;
       const c = old.get(key);
-      if (!c) return { key, L: cl, sc: scope() };
+      if (!c) return { key, L: cl, sc: scope(), pre: pre[i] };
       old.delete(key);
       if (names[0]) c.L[names[0]] = item;
       if (names[1]) c.L[names[1]] = i;
@@ -623,7 +682,7 @@ function clones(sc, inst, tpl, L, quiet, kind, get, names, keyOf) {
     for (const c of old.values()) remove(sc, c);
     let at = tpl;
     for (const c of next) {
-      if (!c.first) Object.assign(c, place(at, tpl, c.sc, inst, c.L, quiet && first));
+      if (!c.first) Object.assign(c, adopt(c.pre, c.sc, inst, c.L) || place(at, tpl, c.sc, inst, c.L, quiet && first));
       else if (at.nextSibling !== c.first) at.after(...range(c));
       run(c.sc.draws);
       at = c.last;
@@ -656,7 +715,11 @@ function remove(sc, c) {
 // redraw; a `bind:` prop the component changed comes back out.
 function mount(sc, parent, anchor, L, quiet, id, props, binds, events) {
   const def = defs.get(id);
-  const child = { def, id, sc: scope(), recs: new Set(), ctx: new Map(), el: anchor, parent, g: [], events: {} };
+  // A component rendering itself (a tree) ends with its data; this stops
+  // one that would not.
+  const depth = (parent.depth || 0) + 1;
+  if (depth > 64) return void console.error(`component ${id} nests more than 64 deep`);
+  const child = { def, id, sc: scope(), recs: new Set(), ctx: new Map(), el: anchor, parent, g: [], events: {}, depth };
   child.slot = { tpl: anchor, inst: parent, L };
   for (const [name, f] of events) child.events[name] = (v) => fire(f, L, v);
   let last = props(L);
@@ -667,9 +730,10 @@ function mount(sc, parent, anchor, L, quiet, id, props, binds, events) {
     console.error(e);
   }
   def.tpl ||= Object.assign(document.createElement('template'), { innerHTML: def.html || '' });
-  const where = place(anchor, def.tpl, child.sc, child, {}, quiet);
+  const where = adopt(painted(anchor), child.sc, child, {}) || place(anchor, def.tpl, child.sc, child, {}, quiet);
   sc.stops.push(() => (run(child.sc.stops), range(where).forEach((n) => n.remove())));
   return () => {
+    drop(where.last);
     if (child.p) {
       const now = child.p();
       for (const [name, , set] of binds) {

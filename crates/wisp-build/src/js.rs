@@ -315,14 +315,178 @@ fn regex_allowed(src: &str, before: &[Token]) -> bool {
     }
 }
 
+/// The token closing the bracket at `k` (closers sit at their opener's
+/// depth), or the end.
+fn close(t: &[Token], k: usize) -> usize {
+    (k + 1..t.len())
+        .find(|&j| t[j].depth <= t[k].depth)
+        .unwrap_or(t.len())
+}
+
+/// The names a binding pattern at `k` binds (a name, or `{…}`, `[…]` or a
+/// parameter list `(…)`), as token indexes, and the index after it.
+/// Default values and object keys are not names.
+fn pattern(src: &str, t: &[Token], k: usize, out: &mut Vec<usize>) -> usize {
+    let Some(tok) = t.get(k) else { return k };
+    if tok.kind == Kind::Ident {
+        if !is_reserved(tok.text(src)) {
+            out.push(k);
+        }
+        return k + 1;
+    }
+    if !matches!(tok.text(src), "{" | "[" | "(") || tok.kind != Kind::Punct {
+        return k;
+    }
+    let end = close(t, k);
+    let mut j = k + 1;
+    while j < end {
+        let n = t[j];
+        if n.is(src, Kind::Punct, "=") {
+            // A default: skip to the next item at this level.
+            let d = n.depth;
+            while j < end && !(t[j].depth == d && t[j].is(src, Kind::Punct, ",")) {
+                j += 1;
+            }
+            continue;
+        }
+        if n.kind == Kind::Ident && !n.member && !n.key && !is_reserved(n.text(src)) {
+            out.push(j);
+        }
+        j += 1;
+    }
+    end + 1
+}
+
+/// Per token: a name bound inside `src` rather than read from outside it:
+/// a function's (or arrow's, or `catch`'s) parameter within that function,
+/// or a `let`, `const`, `var`, `class` or `function` inside a block, within
+/// that block. Top-level names are `declarations`'.
+fn bound(src: &str, t: &[Token]) -> Vec<bool> {
+    // (name token indexes, first and last token they are visible in)
+    let mut scopes: Vec<(Vec<usize>, usize, usize)> = Vec::new();
+    let is = |j: usize, s: &str| {
+        t.get(j)
+            .is_some_and(|n| n.kind == Kind::Punct && n.text(src) == s)
+    };
+    // Where the block around token `k` ends.
+    let block_end = |k: usize| {
+        (k + 1..t.len())
+            .find(|&j| t[j].depth < t[k].depth)
+            .unwrap_or(t.len())
+    };
+    // A parameter list at `p` and the `{…}` body after it.
+    let function = |p: usize, scopes: &mut Vec<(Vec<usize>, usize, usize)>| {
+        let mut names = Vec::new();
+        let body = pattern(src, t, p, &mut names);
+        if is(body, "{") {
+            scopes.push((names, p, close(t, body)));
+        }
+    };
+    for k in 0..t.len() {
+        let tok = t[k];
+        if tok.kind == Kind::Punct && tok.text(src) == "=>" {
+            // `x =>` or `(x, { y }) =>`; the body is a block or runs to the
+            // end of the expression.
+            let mut names = Vec::new();
+            let start = match k.checked_sub(1).map(|p| t[p]) {
+                Some(p) if p.kind == Kind::Ident => k - 1,
+                Some(p) if p.is(src, Kind::Punct, ")") => (0..k - 1)
+                    .rev()
+                    .find(|&j| t[j].depth == p.depth)
+                    .unwrap_or(0),
+                _ => continue,
+            };
+            pattern(src, t, start, &mut names);
+            let end = if is(k + 1, "{") {
+                close(t, k + 1)
+            } else {
+                (k + 1..t.len())
+                    .find(|&j| {
+                        t[j].depth < tok.depth
+                            || (t[j].depth == tok.depth && matches!(t[j].text(src), "," | ";"))
+                    })
+                    .unwrap_or(t.len())
+            };
+            scopes.push((names, start, end));
+            continue;
+        }
+        if tok.kind != Kind::Ident || tok.member {
+            continue;
+        }
+        let word = tok.text(src);
+        match word {
+            "function" => {
+                let mut j = k + 1 + is(k + 1, "*") as usize;
+                if t.get(j).is_some_and(|n| n.kind == Kind::Ident) {
+                    if tok.depth > 0 {
+                        scopes.push((vec![j], k, block_end(k)));
+                    }
+                    j += 1;
+                }
+                function(j, &mut scopes);
+            }
+            "catch" => function(k + 1, &mut scopes),
+            "class" if tok.depth > 0 && t.get(k + 1).is_some_and(|n| n.kind == Kind::Ident) => {
+                scopes.push((vec![k + 1], k, block_end(k)));
+            }
+            "let" | "const" | "var" if tok.depth > 0 => {
+                let mut names = Vec::new();
+                let mut j = pattern(src, t, k + 1, &mut names);
+                // More declarators after commas; an initializer is skipped.
+                loop {
+                    while j < t.len()
+                        && t[j].depth >= tok.depth
+                        && !(t[j].depth == tok.depth && matches!(t[j].text(src), "," | ";"))
+                    {
+                        j += 1;
+                    }
+                    if !is(j, ",") || t[j].depth != tok.depth {
+                        break;
+                    }
+                    j = pattern(src, t, j + 1, &mut names);
+                }
+                // `for (let x of xs) …`: the loop's body sees it too.
+                let mut end = block_end(k);
+                if tok.inner == b'(' && end < t.len() {
+                    end = if is(end + 1, "{") {
+                        close(t, end + 1)
+                    } else {
+                        block_end(end + 1)
+                    };
+                }
+                scopes.push((names, k, end));
+            }
+            // `name(a, b) { … }`: a method, whose name is no variable.
+            _ if !is_reserved(word) && is(k + 1, "(") && is(close(t, k + 1) + 1, "{") => {
+                scopes.push((vec![k], k, k));
+                function(k + 1, &mut scopes)
+            }
+            _ => {}
+        }
+    }
+    let mut out = vec![false; t.len()];
+    for (names, from, to) in scopes {
+        for n in names {
+            let name = t[n].text(src);
+            for j in from..to.min(t.len() - 1) + 1 {
+                if t[j].kind == Kind::Ident && !t[j].member && !t[j].key && t[j].text(src) == name {
+                    out[j] = true;
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The variables `src` reads, each with the properties read from it:
 /// `data.user.name` is `["data", "user", "name"]`. A chain stops before a
 /// call or an index (`key.mark.class()` is `["key", "mark"]`), and at `?.`.
-/// Each comes with the offset where it starts. Properties, object keys and
-/// reserved words are not variables; names declared inside functions are
-/// not told apart from outer ones.
+/// Each comes with the offset where it starts. Properties, object keys,
+/// reserved words and names `src` binds itself (parameters, and
+/// declarations inside blocks) are not variables read.
 pub fn chains(src: &str) -> Vec<(Vec<String>, usize)> {
     let t = tokens(src);
+    let own = bound(src, &t);
     let mut out = Vec::new();
     let mut k = 0;
     while k < t.len() {
@@ -331,6 +495,11 @@ pub fn chains(src: &str) -> Vec<(Vec<String>, usize)> {
         if tok.kind != Kind::Ident
             || tok.member
             || tok.key
+            || own[k]
+            || (word == "of"
+                && tok.inner == b'('
+                && k > 0
+                && (t[k - 1].kind == Kind::Ident || matches!(t[k - 1].text(src), "]" | "}")))
             || word.starts_with('#')
             || is_reserved(word)
         {
@@ -384,11 +553,20 @@ pub fn declarations(src: &str) -> Vec<(String, usize)> {
         }
         match tok.text(src) {
             "let" | "const" | "var" => {
-                let Some(name) = ident(k + 1) else {
+                let mut names = Vec::new();
+                let add = |names: &[usize], out: &mut Vec<(String, usize)>| {
+                    out.extend(
+                        names
+                            .iter()
+                            .map(|&n| (t[n].text(src).to_string(), t[n].start)),
+                    );
+                };
+                pattern(src, &t, k + 1, &mut names);
+                if names.is_empty() {
                     k += 1;
                     continue;
-                };
-                out.push((name.text(src).to_string(), name.start));
+                }
+                add(&names, &mut out);
                 // More after top-level commas, until the statement ends: at a
                 // `;`, or at a line break after something that ends a value.
                 let mut j = k + 2;
@@ -416,10 +594,10 @@ pub fn declarations(src: &str) -> Vec<(String, usize)> {
                         {
                             break;
                         }
-                        if text == ","
-                            && let Some(next) = ident(j + 1)
-                        {
-                            out.push((next.text(src).to_string(), next.start));
+                        if text == "," {
+                            names.clear();
+                            pattern(src, &t, j + 1, &mut names);
+                            add(&names, &mut out);
                         }
                     }
                     j += 1;
@@ -440,6 +618,34 @@ pub fn declarations(src: &str) -> Vec<(String, usize)> {
         }
     }
     out
+}
+
+/// What the top-level `let`, `const` or `var` that declares `name` first
+/// sets it to: `0` for `let n = 0`. `None` when it is not set there.
+pub fn initializer<'a>(src: &'a str, name: &str) -> Option<&'a str> {
+    let t = tokens(src);
+    let k = (1..t.len()).find(|&k| {
+        t[k].depth == 0
+            && t[k].is(src, Kind::Ident, name)
+            && matches!(t[k - 1].text(src), "let" | "const" | "var")
+    })?;
+    if !t.get(k + 1)?.is(src, Kind::Punct, "=") {
+        return None;
+    }
+    let start = k + 2;
+    // To a top-level `,` or `;`, or a line that starts another statement.
+    let end = (start + 1..t.len())
+        .find(|&j| {
+            let prev = t[j - 1];
+            t[j].depth == 0
+                && (matches!(t[j].text(src), "," | ";")
+                    || (t[j].newline
+                        && t[j].kind != Kind::Punct
+                        && prev.depth == 0
+                        && (prev.kind != Kind::Punct || matches!(prev.text(src), ")" | "]" | "}"))))
+        })
+        .unwrap_or(t.len());
+    (start < end).then(|| &src[t[start].start..t[end - 1].end])
 }
 
 /// The top-level `import … from '…'` and `import '…'` statements of a
@@ -648,6 +854,42 @@ mod tests {
     }
 
     #[test]
+    fn names_bound_inside_are_not_read() {
+        assert_eq!(
+            roots("function f({ data }) { return data.a } data.b"),
+            ["data.b"]
+        );
+        assert_eq!(
+            roots("xs.map((data, i) => data.x + i).concat(data.y)"),
+            ["xs", "data.y"]
+        );
+        assert_eq!(roots("xs.map(data => data.x, data.z)"), ["xs", "data.z"]);
+        assert_eq!(roots("f(({ a: data = d }) => { data.q })"), ["f", "d"]);
+        assert_eq!(roots("try {} catch ({ data }) { data.x }"), [] as [&str; 0]);
+        assert_eq!(
+            roots("{ let data = 1, [e] = g; data.x + e } data.y"),
+            ["g", "data.y"]
+        );
+        assert_eq!(roots("({ go(data) { return data } }).go(data)"), ["data"]);
+        assert_eq!(roots("for (const data of list) f(data)"), ["list", "f"]);
+        assert_eq!(roots("if (data.ok) { data.x }"), ["data.ok", "data.x"]);
+        assert_eq!(
+            roots("() => { function data() {} data() }; data.w"),
+            ["data.w"]
+        );
+    }
+
+    #[test]
+    fn initializers() {
+        let src = "let a = 1, b = [1,\n 2]\nconst c = data.x\nfoo()\nlet d";
+        assert_eq!(initializer(src, "a"), Some("1"));
+        assert_eq!(initializer(src, "c"), Some("data.x"));
+        assert_eq!(initializer(src, "d"), None);
+        assert_eq!(initializer(src, "b"), None); // not first in its statement
+        assert_eq!(initializer("let s = 'x';", "s"), Some("'x'"));
+    }
+
+    #[test]
     fn keys_are_not_variables() {
         assert_eq!(
             roots("({ a: b, c, d: e ? f : g })"),
@@ -660,9 +902,12 @@ mod tests {
 
     #[test]
     fn top_level_declarations() {
-        let src = "let a = 1, b = f(x, y)\nconst c = { d: 1 }\nfunction e() { let inner }\nclass F {}\nasync function* g() {}\nvar h\nfoo, bar\nif (x) { let no }\nconst k = function named() {}";
+        let src = "let a = 1, b = f(x, y)\nconst c = { d: 1 }\nfunction e() { let inner }\nclass F {}\nasync function* g() {}\nvar h\nfoo, bar\nif (x) { let no }\nconst k = function named() {}\nconst { l, m: n = o, ...p } = q, [r] = s";
         let names: Vec<String> = declarations(src).into_iter().map(|(n, _)| n).collect();
-        assert_eq!(names, ["a", "b", "c", "e", "F", "g", "h", "k"]);
+        assert_eq!(
+            names,
+            ["a", "b", "c", "e", "F", "g", "h", "k", "l", "n", "p", "r"]
+        );
     }
 
     #[test]

@@ -487,7 +487,7 @@ pub enum SameSite {
 
 /// Percent-decodes `s`, borrowing when nothing needs decoding. Invalid
 /// escapes are kept literally; invalid UTF-8 becomes U+FFFD.
-pub(crate) fn decode(s: &[u8], plus_is_space: bool) -> Cow<'_, str> {
+pub fn decode(s: &[u8], plus_is_space: bool) -> Cow<'_, str> {
     let needs = s.iter().any(|&b| b == b'%' || (plus_is_space && b == b'+'));
     if !needs {
         return String::from_utf8_lossy(s);
