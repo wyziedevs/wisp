@@ -54,6 +54,60 @@ fn login_sets_a_cookie() {
 - `next_chunk(&mut reply)` reads a streamed reply one chunk at a time.
 - `cookie(name)` is a cookie the client holds.
 
+In process there is no connection to upgrade, so a `Response::websocket`
+answers 501; test WebSockets against the running server (the test app's
+`tests/http.rs` does it with a `TcpStream`).
+
+## WebSockets
+
+A `+server.rs` upgrades with `Response::websocket`. The handler gets the
+socket and the connection closes when it returns:
+
+```rust
+// src/routes/ws/+server.rs
+use wisp::prelude::*;
+
+pub fn get() -> Response {
+    Response::websocket(|ws| async move {
+        while let Some(msg) = ws.recv().await {
+            ws.send(msg).await?;          // a String is text, a Vec<u8> binary
+        }
+        Ok(())
+    })
+}
+```
+
+- `ws.recv()` is the next `wisp::Message` (`Text` or `Binary`; `msg.text()`
+  and `msg.bytes()` read either), or `None` once the client closed or went,
+  or the server is stopping. Pings are answered and fragments put together
+  for you.
+- `ws.send(msg)` fails once the connection is closed: stop then. `recv` and
+  `send` can run at once (`tokio::select!`, or `wisp::spawn` a sender with
+  `ws.clone()`, the same socket).
+- While `recv` waits, a client quiet for 30 seconds is pinged, and one
+  quiet for 60 is closed (1001), so dead connections do not pile up.
+  `WISP_WS_IDLE` sets the 60 (in seconds; `0` never closes). A handler that
+  only sends is not timed: a client that stops reading fails its `send`.
+- A message is at most the route's `BODY_LIMIT` (1 MB by default); a larger
+  one closes the connection with code 1009.
+- The request goes through `before` first, so its cookies and hooks apply.
+  A page on another site is refused (403) as a cross-site form post is: the
+  `Origin` must name the host, or `ORIGIN` when set. A request that is not
+  an upgrade gets 426.
+- Only the built-in server upgrades. The `tower` feature, the edge targets
+  and `wisp::test::client` answer 501.
+
+In the page, the browser's own `WebSocket` is all it takes:
+
+```html
+<script>
+  const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+  ws.onmessage = (e) => console.log('got', e.data);
+  ws.onopen = () => ws.send('hello');
+  ws.onclose = () => setTimeout(() => location.reload(), 1000); // or reconnect
+</script>
+```
+
 ## The `tower` feature
 
 Turn it on and Wisp is a `tower::Service`. The default build is unchanged

@@ -98,7 +98,7 @@ Less boilerplate on the server side too:
 | `+error.wisp`  | Shown when something below it fails         |
 | `+server.rs`   | Plain HTTP endpoints: `get`, `post`, ...    |
 
-Folders named `[slug]` are parameters, `[...rest]` match the rest of the path, and `(group)` folders organize routes without changing the URL.
+Folders named `[slug]` are parameters, `[[lang]]` optional ones, `[...rest]` match the rest of the path, and `(group)` folders organize routes without changing the URL. `[id=int]` only matches digits (that fit a `u64`); `[slug=word]` uses your own matcher in `src/params/word.rs`.
 
 Beside the routes:
 
