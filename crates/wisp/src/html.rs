@@ -10,8 +10,8 @@ pub fn escape(out: &mut String, s: &str) {
     // compiles to a few vector compares, and a chunk with nothing to escape
     // (the usual case) is skipped without looking at its bytes one by one:
     // 3.5x the speed of a byte loop on plain text.
-    let mut chunks = bytes.chunks_exact(16);
-    for (n, chunk) in (&mut chunks).enumerate() {
+    let (chunks, rest) = bytes.as_chunks::<16>();
+    for (n, chunk) in chunks.iter().enumerate() {
         let mut hit = 0u8;
         for &b in chunk {
             hit |= special(b) as u8;
@@ -20,13 +20,7 @@ pub fn escape(out: &mut String, s: &str) {
             escape_bytes(out, s, &mut done, n * 16, n * 16 + 16);
         }
     }
-    escape_bytes(
-        out,
-        s,
-        &mut done,
-        bytes.len() - chunks.remainder().len(),
-        bytes.len(),
-    );
+    escape_bytes(out, s, &mut done, bytes.len() - rest.len(), bytes.len());
     out.push_str(&s[done..]);
 }
 
