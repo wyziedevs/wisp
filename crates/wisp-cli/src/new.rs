@@ -297,7 +297,7 @@ fn write(root: &Path, crate_name: &str, template: Template, tailwind: bool) -> R
     };
     let common = [
         ("Cargo.toml", cargo_toml.as_str()),
-        (".gitignore", "/target\n/.wisp\n"),
+        (".gitignore", "/target\n/.wisp\n/data\n"),
         ("build.rs", BUILD_RS),
     ];
     // An API has its own main.rs, and no pages to wrap or style.
@@ -404,27 +404,22 @@ macro_rules! api {
     };
 }
 
-const API: [(&str, &str); 10] = [
+const API: [(&str, &str); 8] = [
     api!("src/main.rs"),
     api!("src/hooks.rs"),
-    api!("src/notes.rs"),
     api!("src/tests.rs"),
     api!("src/routes/+server.rs"),
     api!("src/routes/healthz/+server.rs"),
     api!("src/routes/api/notes/+server.rs"),
-    api!("src/routes/api/notes/[id=int]/+server.rs"),
     api!("src/routes/api/events/+server.rs"),
     api!("src/routes/api/chat/+server.rs"),
 ];
 
 const MINIMAL: [(&str, &str); 3] = [
-    (
-        "src/routes/+layout.wisp",
-        "<main>\n  {@render children()}\n</main>\n",
-    ),
+    ("src/routes/+layout.wisp", "<main>\n  <slot />\n</main>\n"),
     (
         "src/routes/+page.wisp",
-        r#"<head><title>Home</title></head>
+        r#"<title>Home</title>
 
 <h1>Welcome to Wisp</h1>
 <p>Edit <code>src/routes/+page.wisp</code> and save to see it change.</p>
@@ -432,7 +427,7 @@ const MINIMAL: [(&str, &str); 3] = [
     ),
     (
         "src/routes/+error.wisp",
-        r#"<head><title>{status}</title></head>
+        r#"<title>{status}</title>
 
 <h1>{status}</h1>
 <p>{message}</p>
@@ -522,11 +517,9 @@ edition = "2024"
 [build-dependencies]
 {wisp-build}
 
-# Fast rebuilds: your crate stays unoptimized, dependencies are optimized once.
+# Dev builds near release speed, and rebuilds as fast as unoptimized ones.
 [profile.dev]
 debug = "line-tables-only"
-
-[profile.dev.package."*"]
 opt-level = 1
 
 [profile.release]

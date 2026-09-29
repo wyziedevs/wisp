@@ -14,6 +14,7 @@
 #![cfg_attr(target_arch = "wasm32", allow(dead_code, unused_imports))]
 
 use crate::cx::{Cx, Method, Span, decode, valid_header};
+use crate::idem::Start;
 use crate::{App, Error, Out, dev, rt};
 use std::borrow::Cow;
 use std::cell::Cell;
@@ -24,7 +25,7 @@ use std::net::SocketAddr;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::task::Poll;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[cfg(not(target_arch = "wasm32"))]
@@ -92,9 +93,9 @@ static HEAD_TAGS: OnceLock<String> = OnceLock::new();
 
 /// Thread per core: `threads` workers, each a single-threaded tokio runtime
 /// with its own I/O driver and timers, and this thread accepting connections
-/// and handing them out in turn. A connection stays on one thread for its
-/// whole life, so the request path never wakes another thread or shares a
-/// driver. (A multi-threaded tokio runtime funnels every socket event
+/// and handing each to the worker with the fewest. A connection stays on one
+/// thread for its whole life, so the request path never wakes another thread
+/// or shares a driver. (A multi-threaded tokio runtime funnels every socket event
 /// through one driver; it measured at under half the throughput with cores
 /// left idle.)
 ///
@@ -129,6 +130,8 @@ pub(crate) fn run<A: App>(addr: SocketAddr, threads: usize) -> io::Result<()> {
         started(listener.local_addr()?);
         let mut signal = std::pin::pin!(stop_signal());
         let max = crate::settings().max_conns;
+        let open: std::sync::Arc<[AtomicUsize]> =
+            workers.iter().map(|_| AtomicUsize::new(0)).collect();
         let mut next = 0;
         while let Some(accepted) = first(async { Some(listener.accept().await) }, async {
             signal.as_mut().await;
@@ -147,13 +150,23 @@ pub(crate) fn run<A: App>(addr: SocketAddr, threads: usize) -> io::Result<()> {
                     let Ok(stream) = stream.into_std() else {
                         continue;
                     };
-                    workers[next].spawn(async move {
+                    // The worker with the fewest open connections, looking
+                    // from `next` so that ties take turns: plain turns drift
+                    // apart as connections close unevenly, leaving one core
+                    // idle while another queues.
+                    let w = (0..workers.len())
+                        .map(|k| (next + k) % workers.len())
+                        .min_by_key(|&i| open[i].load(Ordering::Relaxed))
+                        .unwrap_or(0);
+                    next = (w + 1) % workers.len();
+                    open[w].fetch_add(1, Ordering::Relaxed);
+                    let held = Held(open.clone(), w);
+                    workers[w].spawn(async move {
                         if let Ok(stream) = TcpStream::from_std(stream) {
                             connection::<A>(stream, peer).await;
                         }
-                        drop(slot);
+                        drop((slot, held));
                     });
-                    next = (next + 1) % workers.len();
                 }
                 Err(e) => {
                     if accept_failed(&e) {
@@ -313,6 +326,17 @@ impl Drop for Slot {
     }
 }
 
+/// A connection counted against its worker in [`run`], until it drops.
+#[cfg(not(target_arch = "wasm32"))]
+struct Held(std::sync::Arc<[AtomicUsize]>, usize);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for Held {
+    fn drop(&mut self) {
+        self.0[self.1].fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 /// Binds, with what to do about the usual failures.
 fn bind(addr: SocketAddr) -> io::Result<std::net::TcpListener> {
     std::net::TcpListener::bind(addr).map_err(|e| {
@@ -428,6 +452,9 @@ fn started(addr: SocketAddr) {
 pub(crate) fn setup<A: App>() {
     install_panic_hook();
     let _ = crate::sign::ROOT.set(A::ROOT);
+    if cfg!(debug_assertions) {
+        dev::listed(A::ROOT, "/"); // lists `static/` now, not in the first request
+    }
     HEAD_TAGS.get_or_init(|| {
         let mut s = String::new();
         if let Some(v) = A::CSS {
@@ -1129,9 +1156,34 @@ impl Cx {
     }
 }
 
-/// Decides the response to the request in `cx`: static files, routing,
-/// hooks, redirects, error pages. Writes nothing; see [`serialize`].
+/// Decides the response to the request in `cx`, and gives it `x-request-id`
+/// when the request has an id (`WISP_REQUEST_ID=on`, or `cx.request_id()`).
 async fn decide<A: App>(cx: &mut Cx, out: &mut Out, reply: &mut Reply) {
+    if crate::settings().request_id {
+        cx.request_id();
+    }
+    match crate::idem::start(cx) {
+        None => decide_inner::<A>(cx, out, reply).await,
+        Some(Start::Fresh(key)) => {
+            decide_inner::<A>(cx, out, reply).await;
+            crate::idem::finish(key, reply);
+        }
+        Some(Start::Replay(r)) => *reply = r,
+        Some(Start::Refused(e)) => {
+            let body = e.json(e.message(), false).into_bytes();
+            reply.set(e.status, "application/json", Body::Bytes(body));
+        }
+    }
+    if let Some(id) = cx.id() {
+        reply
+            .headers
+            .push((Cow::Borrowed("x-request-id"), Cow::Owned(id.to_string())));
+    }
+}
+
+/// Static files, routing, hooks, redirects, error pages. Writes nothing;
+/// see [`serialize`].
+async fn decide_inner<A: App>(cx: &mut Cx, out: &mut Out, reply: &mut Reply) {
     // Only dev builds log request timing. `then` skips the clock read
     // itself when `cfg!` is false, so a release build has no cost here.
     let started =
@@ -1142,13 +1194,20 @@ async fn decide<A: App>(cx: &mut Cx, out: &mut Out, reply: &mut Reply) {
     if !path.starts_with('/') {
         return reply.set_plain(400, "Bad Request");
     }
-    if matches!(path, "/_wisp/openapi.json" | "/_wisp/docs")
-        && matches!(method, Method::Get | Method::Head)
+    if matches!(
+        path,
+        "/_wisp/openapi.json" | "/_wisp/docs" | "/_wisp/client.ts"
+    ) && matches!(method, Method::Get | Method::Head)
         && crate::settings().api_docs
         && !A::openapi().is_empty()
     {
         return match path {
             "/_wisp/docs" => reply.set(200, "text/html; charset=utf-8", Body::Static(api_docs())),
+            "/_wisp/client.ts" => reply.set(
+                200,
+                "text/plain; charset=utf-8",
+                Body::Static(A::client_ts().as_bytes()),
+            ),
             _ => reply.set(
                 200,
                 "application/json",
@@ -1228,7 +1287,7 @@ async fn decide<A: App>(cx: &mut Cx, out: &mut Out, reply: &mut Reply) {
             // another site (a payment page) not at all.
             let js = cx.header("x-wisp").is_some();
             reply.set_plain(if js { 200 } else { e.status }, "");
-            if let Some((name, value)) = e.header {
+            if let Some((name, value)) = e.header.map(|h| *h) {
                 reply.headers.push((
                     Cow::Borrowed(if js && name == "location" {
                         "x-wisp-location"
@@ -1259,8 +1318,16 @@ async fn decide<A: App>(cx: &mut Cx, out: &mut Out, reply: &mut Reply) {
             // hook's stay.
             cx.out_headers.truncate(cx.kept_headers);
             if wants_json(cx) {
-                let body = e.json(message).into_bytes();
-                reply.set(e.status, "application/json", Body::Bytes(body));
+                let problem = crate::settings().problem_json
+                    || cx
+                        .header("accept")
+                        .is_some_and(|a| a.contains("application/problem+json"));
+                let body = e.json(message, problem).into_bytes();
+                let kind = match problem {
+                    true => "application/problem+json",
+                    false => "application/json",
+                };
+                reply.set(e.status, kind, Body::Bytes(body));
             } else {
                 let rendered = catch(A::error(
                     route.map(|(id, _)| id),
@@ -1276,7 +1343,7 @@ async fn decide<A: App>(cx: &mut Cx, out: &mut Out, reply: &mut Reply) {
                 }
                 reply.set(e.status, "text/html; charset=utf-8", Body::Page);
             }
-            if let Some((name, value)) = e.header.take() {
+            if let Some((name, value)) = e.header.take().map(|h| *h) {
                 reply.headers.push((Cow::Borrowed(name), Cow::Owned(value)));
             }
         }
@@ -1292,10 +1359,12 @@ async fn decide<A: App>(cx: &mut Cx, out: &mut Out, reply: &mut Reply) {
             started.unwrap().elapsed(),
             failure.as_deref(),
             blocked,
+            cx.id(),
         );
     } else if let Some(f) = failure {
+        let id = cx.id().map_or(String::new(), |id| format!(" [{id}]"));
         log(format_args!(
-            "wisp: {} {} {}: {f}",
+            "wisp: {} {} {}{id}: {f}",
             reply.status,
             method.as_str(),
             cx.path()
@@ -1304,7 +1373,8 @@ async fn decide<A: App>(cx: &mut Cx, out: &mut Out, reply: &mut Reply) {
 }
 
 /// Whether an error goes back as JSON rather than an error page: a request
-/// under `/api`, one that sent JSON, or one that asks for JSON and not HTML.
+/// under `/api`, one that sent JSON, one that asks for JSON and not HTML,
+/// or one to a `+server.rs` endpoint from anything but a browser page.
 fn wants_json(cx: &Cx) -> bool {
     let path = cx.path();
     let accept = cx.header("accept").unwrap_or("");
@@ -1312,6 +1382,7 @@ fn wants_json(cx: &Cx) -> bool {
         || path.starts_with("/api/")
         || crate::input::is_json(cx)
         || (accept.contains("json") && !accept.contains("text/html"))
+        || (cx.api && !accept.contains("text/html"))
 }
 
 /// A status whose response has no body, and no `content-length` (RFC 9110
@@ -1520,6 +1591,14 @@ fn split<'a>(path: &'a str, segs: &mut [&'a str; MAX_SEGS]) -> Option<usize> {
     Some(n)
 }
 
+/// Whether a route matches `path`.
+fn routed<A: App>(path: &str) -> bool {
+    let mut segs = [""; MAX_SEGS];
+    split(path, &mut segs)
+        .and_then(|n| A::route(path, &segs[..n]))
+        .is_some()
+}
+
 /// Static files: the client script, then embedded assets (release) or
 /// files on disk (dev). Returns false if the path is not a file.
 fn file<A: App>(cx: &Cx, path: &str, reply: &mut Reply) -> bool {
@@ -1576,6 +1655,13 @@ fn file<A: App>(cx: &Cx, path: &str, reply: &mut Reply) -> bool {
         }
     }
     if cfg!(debug_assertions) {
+        // A page's path goes to the disk only if `static/` had a file there.
+        if path != "/_app/app.css"
+            && routed::<A>(path)
+            && !dev::listed(A::ROOT, &decode(path.as_bytes(), false))
+        {
+            return false;
+        }
         let Some((bytes, ext)) = dev::read_file(A::ROOT, path) else {
             return false;
         };
@@ -2299,6 +2385,26 @@ mod tests {
         let text = String::from_utf8(w).unwrap().to_ascii_lowercase();
         assert!(text.contains("content-length: 2\r\n") && text.contains("connection: keep-alive"));
         assert!(!text.contains("99") && !text.contains("chunked"), "{text}");
+    }
+
+    #[test]
+    fn a_request_id_is_echoed_when_asked_for() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let sent = |path: &str, id: &str| {
+            let mut req = Request::new("GET", path);
+            if !id.is_empty() {
+                req.header("x-request-id", id);
+            }
+            rt.block_on(handle::<Fuzz>(req))
+        };
+        assert_eq!(sent("/p/id", "abc-1").header("x-request-id"), Some("abc-1"));
+        assert_eq!(
+            sent("/p/id", "").header("x-request-id").map(str::len),
+            Some(16)
+        );
+        assert_eq!(sent("/p/other", "abc-1").header("x-request-id"), None);
     }
 
     #[test]

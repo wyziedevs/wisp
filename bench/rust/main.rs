@@ -1,7 +1,10 @@
-//! Actix Web and Axum serving the same /fortunes, /plaintext and /json as
-//! bench/app, rendering with Askama (templates compiled to Rust, like Wisp).
+//! The Rust servers bench/ measures against Wisp, serving the same
+//! /fortunes, /plaintext and /json as bench/app, all rendering with Askama
+//! (templates compiled to Rust, like Wisp) and serializing with serde:
+//! Actix Web and Axum, the popular ones, and may-minihttp, xitca-web, ntex
+//! and bare hyper, TechEmpower's top tier.
 //!
-//!   bench-rust actix|axum      PORT sets the port, THREADS the worker count
+//!   bench-rust actix|axum|may|xitca|ntex|hyper    PORT sets the port, THREADS the worker count
 
 use askama::Template;
 
@@ -67,8 +70,12 @@ fn main() -> std::io::Result<()> {
     match std::env::args().nth(1).as_deref() {
         Some("actix") => actix(port, threads),
         Some("axum") => axum(port, threads),
+        Some("may") => may(port, threads),
+        Some("xitca") => xitca(port, threads),
+        Some("ntex") => ntex(port, threads),
+        Some("hyper") => hyper(port, threads),
         _ => {
-            eprintln!("usage: bench-rust actix|axum");
+            eprintln!("usage: bench-rust actix|axum|may|xitca|ntex|hyper");
             std::process::exit(2);
         }
     }
@@ -97,4 +104,126 @@ fn axum(port: u16, threads: usize) -> std::io::Result<()> {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
         axum::serve(listener, app).await
     })
+}
+
+/// may-minihttp: stackful coroutines on `THREADS` scheduler threads and a
+/// hand-rolled HTTP/1 codec, matched on the path as its TechEmpower entry does.
+fn may(port: u16, threads: usize) -> std::io::Result<()> {
+    use may_minihttp::{HttpService, HttpServiceFactory, Request, Response};
+
+    struct Service;
+    impl HttpService for Service {
+        fn call(&mut self, req: Request, res: &mut Response) -> std::io::Result<()> {
+            match req.path() {
+                "/plaintext" => res.header("Content-Type: text/plain; charset=utf-8").body("Hello, World!"),
+                "/fortunes" => res.header("Content-Type: text/html; charset=utf-8").body_vec(fortunes().into_bytes()),
+                "/json" => res.header("Content-Type: application/json").body_vec(serde_json::to_vec(&MESSAGE)?),
+                _ => {
+                    res.status_code(404, "Not Found");
+                }
+            }
+            Ok(())
+        }
+    }
+    struct Factory;
+    impl HttpServiceFactory for Factory {
+        type Service = Service;
+        fn new_service(&self, _: usize) -> Service {
+            Service
+        }
+    }
+    may::config().set_workers(threads);
+    Factory.start(("127.0.0.1", port))?.join().map_err(|_| std::io::Error::other("may-minihttp stopped"))
+}
+
+/// xitca-web: a thread-per-core server, `THREADS` workers.
+fn xitca(port: u16, threads: usize) -> std::io::Result<()> {
+    use xitca_web::{App, handler::handler_service, handler::html::Html, handler::json::Json, route::get};
+    App::new()
+        .at("/plaintext", get(handler_service(async || "Hello, World!")))
+        .at("/fortunes", get(handler_service(async || Html(fortunes()))))
+        .at("/json", get(handler_service(async || Json(MESSAGE))))
+        .serve()
+        .worker_threads(threads)
+        .bind(("127.0.0.1", port))?
+        .run()
+        .wait()
+}
+
+/// ntex on its own runtime (neon: epoll on Linux), `THREADS` workers.
+#[ntex::main]
+async fn ntex(port: u16, threads: usize) -> std::io::Result<()> {
+    use ntex::web::{self, App, HttpResponse};
+    web::HttpServer::new(async || {
+        App::new()
+            .route("/plaintext", web::get().to(async || "Hello, World!"))
+            .route("/fortunes", web::get().to(async || HttpResponse::Ok().content_type("text/html; charset=utf-8").body(fortunes())))
+            .route("/json", web::get().to(async || HttpResponse::Ok().json(&MESSAGE)))
+    })
+    .workers(threads)
+    .bind(("127.0.0.1", port))?
+    .run()
+    .await
+}
+
+/// Bare hyper, no framework: a single-threaded tokio runtime per thread,
+/// each accepting on a socket of its own (SO_REUSEPORT) where the OS has
+/// it, as hyper's TechEmpower entry does, and a match on the path.
+fn hyper(port: u16, threads: usize) -> std::io::Result<()> {
+    use http_body_util::Full;
+    use hyper::body::{Bytes, Incoming};
+    use hyper::{Request, Response, StatusCode, header, server::conn::http1, service::service_fn};
+
+    async fn handle(req: Request<Incoming>) -> Result<Response<Full<Bytes>>, std::convert::Infallible> {
+        let (kind, body): (&str, Bytes) = match req.uri().path() {
+            "/plaintext" => ("text/plain; charset=utf-8", Bytes::from_static(b"Hello, World!")),
+            "/fortunes" => ("text/html; charset=utf-8", fortunes().into()),
+            "/json" => ("application/json", serde_json::to_vec(&MESSAGE).expect("json").into()),
+            _ => {
+                let mut res = Response::new(Full::default());
+                *res.status_mut() = StatusCode::NOT_FOUND;
+                return Ok(res);
+            }
+        };
+        let mut res = Response::new(Full::new(body));
+        res.headers_mut().insert(header::CONTENT_TYPE, header::HeaderValue::from_static(kind));
+        Ok(res)
+    }
+
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    #[cfg(not(unix))]
+    let shared = std::net::TcpListener::bind(addr)?;
+    let mut workers = Vec::with_capacity(threads);
+    for _ in 0..threads {
+        #[cfg(unix)]
+        let listener = {
+            let s = tokio::net::TcpSocket::new_v4()?;
+            s.set_reuseport(true)?;
+            s.bind(addr)?;
+            s
+        };
+        #[cfg(not(unix))]
+        let listener = shared.try_clone()?;
+        workers.push(std::thread::spawn(move || -> std::io::Result<()> {
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+            rt.block_on(async move {
+                #[cfg(unix)]
+                let listener = listener.listen(1024)?;
+                #[cfg(not(unix))]
+                let listener = {
+                    listener.set_nonblocking(true)?;
+                    tokio::net::TcpListener::from_std(listener)?
+                };
+                loop {
+                    let Ok((stream, _)) = listener.accept().await else { continue };
+                    let _ = stream.set_nodelay(true);
+                    tokio::spawn(http1::Builder::new().serve_connection(hyper_util::rt::TokioIo::new(stream), service_fn(handle)));
+                }
+            })
+        }));
+    }
+    for w in workers {
+        w.join().map_err(|_| std::io::Error::other("hyper worker panicked"))??;
+    }
+    Ok(())
 }

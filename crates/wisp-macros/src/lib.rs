@@ -1,7 +1,8 @@
 //! `#[action]` marks a `+page.rs` function as a form action,
 //! `#[derive(Cookie)]` lets a type be kept in a cookie, `#[derive(Json)]`
-//! lets browser code and API clients read it, and `#[derive(FromJson)]` reads
-//! it from a JSON request body.
+//! lets browser code and API clients read it, `#[derive(FromJson)]` reads
+//! it from a JSON request body, and `#[derive(Rest)]` does both and keeps
+//! it in a table a `+server.rs` serves.
 //!
 //! No `syn`, no `quote`: this crate compiles instantly. `#[action]` returns
 //! its input as it is (`wisp-build` finds it in the source and generates
@@ -22,8 +23,30 @@ pub fn action(attr: TokenStream, item: TokenStream) -> TokenStream {
     implicit_cx(item)
 }
 
+/// A parameter list without its `#[validate(...)]` attributes, which
+/// `wisp-build` reads to check the input before the call.
+fn without_rules(params: TokenStream) -> Vec<TokenTree> {
+    let tokens: Vec<TokenTree> = params.into_iter().collect();
+    let mut out = Vec::with_capacity(tokens.len());
+    let mut i = 0;
+    while i < tokens.len() {
+        if let (TokenTree::Punct(p), Some(TokenTree::Group(g))) = (&tokens[i], tokens.get(i + 1))
+            && p.as_char() == '#'
+            && g.delimiter() == Delimiter::Bracket
+            && matches!(g.stream().into_iter().next(), Some(TokenTree::Ident(id)) if id.to_string() == "validate")
+        {
+            i += 2;
+            continue;
+        }
+        out.push(tokens[i].clone());
+        i += 1;
+    }
+    out
+}
+
 /// An action whose body uses `cx` but does not take it gets it: `cx: &mut
 /// Cx` as its first parameter (`wisp-build` sees the same and passes it).
+/// Its parameters' `#[validate(...)]` rules leave.
 fn implicit_cx(item: TokenStream) -> TokenStream {
     let mut tokens: Vec<TokenTree> = item.into_iter().collect();
     let Some(f) = tokens
@@ -44,20 +67,20 @@ fn implicit_cx(item: TokenStream) -> TokenStream {
     let (TokenTree::Group(pg), TokenTree::Group(bg)) = (&tokens[p], &tokens[b]) else {
         return tokens.into_iter().collect();
     };
-    if names(&pg.stream(), &["cx", "Cx"]) || !names(&bg.stream(), &["cx"]) {
-        return tokens.into_iter().collect();
-    }
     let span = pg.span();
-    let mut stream: Vec<TokenTree> = "#[allow(unused_variables)] cx: &mut ::wisp::Cx"
-        .parse::<TokenStream>()
-        .expect("valid tokens")
-        .into_iter()
-        .collect();
-    let rest: Vec<TokenTree> = pg.stream().into_iter().collect();
-    if !rest.is_empty() {
-        stream.push(Punct::new(',', Spacing::Alone).into());
-        stream.extend(rest);
+    let rest = without_rules(pg.stream());
+    let mut stream: Vec<TokenTree> = Vec::new();
+    if !names(&pg.stream(), &["cx", "Cx"]) && names(&bg.stream(), &["cx"]) {
+        stream.extend(
+            "#[allow(unused_variables)] cx: &mut ::wisp::Cx"
+                .parse::<TokenStream>()
+                .expect("valid tokens"),
+        );
+        if !rest.is_empty() {
+            stream.push(Punct::new(',', Spacing::Alone).into());
+        }
     }
+    stream.extend(rest);
     let mut group = Group::new(Delimiter::Parenthesis, stream.into_iter().collect());
     group.set_span(span);
     tokens[p] = group.into();
@@ -115,13 +138,13 @@ pub fn derive_json(item: TokenStream) -> TokenStream {
 
 /// Implements `wisp::FromJson`, so an endpoint can take the type as its JSON
 /// body (`fn post(body: Note)`): a struct is read from an object of its
-/// fields (an `Option` field may be left out or `null`; other fields are
-/// ignored), a tuple struct with one field as that field, and an enum
-/// without fields from its variant's name.
+/// fields (an `Option` field may be left out or `null`, a `bool` one is
+/// `false` then; other fields are ignored), a tuple struct with one field
+/// as that field, and an enum without fields from its variant's name.
 ///
 /// `#[validate(...)]` on a field checks it once read: `min = 0`, `max = 10`
-/// (numbers), `min_len = 1`, `max_len = 200` (characters of a string, items
-/// of a list), `email`. Every problem is reported, by field, in one 422.
+/// (numbers), `len = 1..=200` or `min_len = 1`, `max_len = 200` (characters
+/// of a string, items of a list), `email`. Every problem is reported, by field, in one 422.
 #[proc_macro_derive(FromJson, attributes(validate))]
 pub fn derive_from_json(item: TokenStream) -> TokenStream {
     match from_json(item) {
@@ -390,6 +413,12 @@ fn json(item: TokenStream) -> Result<TokenStream, Error> {
 }
 
 fn from_json(item: TokenStream) -> Result<TokenStream, Error> {
+    from_json_with(item, &[])
+}
+
+/// `FromJson`, with the fields named in `stamped` set to now when they are
+/// left out (`#[derive(Rest)]`'s `created_at` and `updated_at`).
+fn from_json_with(item: TokenStream, stamped: &[&str]) -> Result<TokenStream, Error> {
     let (name, shape) = read_type(item.clone(), "FromJson")?;
     let bare = |id: &str| id.strip_prefix("r#").unwrap_or(id).to_string();
     let body = match &shape {
@@ -399,13 +428,14 @@ fn from_json(item: TokenStream) -> Result<TokenStream, Error> {
             for (k, field) in named_fields(&item)?.iter().enumerate() {
                 let id = field.name.to_string();
                 let key = format!("{:?}", bare(&id));
+                let read = match stamped.contains(&id.as_str()) {
+                    true => format!("::wisp::rt::stamped(__p, __m, {key})"),
+                    false => format!("__p.field(__m, {key})"),
+                };
                 // Placed at the field, so a type that is not `FromJson` is
                 // the one the compiler points at.
                 body.extend(at(
-                    &format!(
-                        "let __f{k}: ::std::option::Option<{}> = __p.field(__m, {key});",
-                        field.ty
-                    ),
+                    &format!("let __f{k}: ::std::option::Option<{}> = {read};", field.ty),
                     field.name.span(),
                 ));
                 let mut checks = String::new();
@@ -413,6 +443,22 @@ fn from_json(item: TokenStream) -> Result<TokenStream, Error> {
                     let call = match (rule.as_str(), value) {
                         ("min" | "max", Some(v)) => format!("{rule}(__x, ({v}) as f64)"),
                         ("min_len" | "max_len", Some(v)) => format!("{rule}(__x, {v})"),
+                        ("len", Some(v)) => {
+                            let (lo, hi) = len_range(v).map_err(|m| (m, *span))?;
+                            let lo = lo.map(|lo| {
+                                format!(
+                                    "__p.check({key}, ::wisp::json::check::min_len(__x, {lo}));"
+                                )
+                            });
+                            let hi = hi.map(|hi| {
+                                format!(
+                                    "__p.check({key}, ::wisp::json::check::max_len(__x, {hi}));"
+                                )
+                            });
+                            checks.extend(lo);
+                            checks.extend(hi);
+                            continue;
+                        }
                         ("email", None) => "email(__x)".into(),
                         ("email", Some(_)) => return Err(("`email` takes no value".into(), *span)),
                         (_, None) => {
@@ -484,6 +530,195 @@ fn from_json(item: TokenStream) -> Result<TokenStream, Error> {
     Ok(fill(template, &body, &TokenStream::new()))
 }
 
+/// `1..=100` → (Some("1"), Some("100")), `..10` → (None, Some("10 - 1")):
+/// the bounds of `len = …` (written the same as in `wisp-build`, which
+/// reads it on actions' parameters).
+fn len_range(x: &str) -> Result<(Option<String>, Option<String>), String> {
+    let x: String = x.chars().filter(|c| !c.is_whitespace()).collect();
+    let Some((lo, hi)) = x.split_once("..") else {
+        return Err(format!(
+            "`len = {x}` needs a range, such as `len = 1..=100`"
+        ));
+    };
+    let lo = (!lo.is_empty()).then(|| lo.to_string());
+    let hi = match hi.strip_prefix('=') {
+        Some(h) => (!h.is_empty()).then(|| h.to_string()),
+        None => (!hi.is_empty()).then(|| format!("{hi} - 1")),
+    };
+    if lo.is_none() && hi.is_none() {
+        return Err("`len = ..` needs a bound, such as `len = 1..=100`".into());
+    }
+    Ok((lo, hi))
+}
+
+/// Makes a struct a JSON resource: `Json`, `FromJson` (with its fields'
+/// `#[validate(...)]`), and a saved `wisp::Table` of its own,
+/// `Note::table()`, whose rows survive restarts. In a `+server.rs`, Wisp
+/// serves it: GET and POST at the route, GET, PUT, PATCH and DELETE at its
+/// `/[id]`, for each method the file does not write itself.
+///
+/// `#[rest(...)]`: `write = "API_KEY"` (writes need `Authorization: Bearer
+/// $API_KEY`), `key = "…"` (every request does), `admin = "…"` (DELETE
+/// does), `table = "notes"` (its name in the store; the type's, lowercased,
+/// by default), `ids = "random"` (ids no one can count through), `memory`
+/// (kept in memory only). Fields named `created_at` and `updated_at` are
+/// set by Wisp: a number of seconds, or RFC 3339 text in a `String`.
+#[proc_macro_derive(Rest, attributes(validate, rest))]
+pub fn derive_rest(item: TokenStream) -> TokenStream {
+    match rest(item) {
+        Ok(code) => code,
+        Err((msg, span)) => error(&msg, span),
+    }
+}
+
+/// What `#[rest(...)]` takes, for its errors.
+const REST_TAKES: &str = "#[rest] takes key = \"ENV_VAR\", write = \"ENV_VAR\", admin = \"ENV_VAR\", \
+                          table = \"name\", ids = \"random\" and memory";
+
+/// Fields Wisp sets on a `#[derive(Rest)]` row: when it was made, and last
+/// changed.
+const STAMPED: [&str; 2] = ["created_at", "updated_at"];
+
+fn rest(item: TokenStream) -> Result<TokenStream, Error> {
+    let (name, shape) = read_type(item.clone(), "Rest")?;
+    if !matches!(shape, Shape::Named(_)) {
+        return Err((
+            "#[derive(Rest)] works on a struct with named fields: a row is a JSON object".into(),
+            name.span(),
+        ));
+    }
+    let none = || "None".to_string();
+    let (mut key, mut write, mut admin) = (none(), none(), none());
+    let mut table = format!("Some({:?})", name.to_string().to_lowercase());
+    let mut random = false;
+    let tokens: Vec<TokenTree> = item.clone().into_iter().collect();
+    for pair in tokens.windows(2) {
+        let [TokenTree::Punct(hash), TokenTree::Group(attr)] = pair else {
+            continue;
+        };
+        let inner: Vec<TokenTree> = attr.stream().into_iter().collect();
+        let [TokenTree::Ident(id), TokenTree::Group(args)] = inner.as_slice() else {
+            continue;
+        };
+        if hash.as_char() != '#' || id.to_string() != "rest" {
+            continue;
+        }
+        for setting in items(args.stream()) {
+            match setting.as_slice() {
+                [TokenTree::Ident(k)] if k.to_string() == "memory" => table = none(),
+                [
+                    TokenTree::Ident(k),
+                    TokenTree::Punct(eq),
+                    TokenTree::Literal(v),
+                ] if eq.as_char() == '=' && v.to_string().starts_with('"') => {
+                    let value = format!("Some({v})");
+                    match k.to_string().as_str() {
+                        "key" => key = value,
+                        "write" => write = value,
+                        "admin" => admin = value,
+                        "table" => table = value,
+                        "ids" if v.to_string() == "\"random\"" => random = true,
+                        _ => return Err((REST_TAKES.into(), k.span())),
+                    }
+                }
+                other => {
+                    return Err((
+                        REST_TAKES.into(),
+                        other.first().map_or(id.span(), TokenTree::span),
+                    ));
+                }
+            }
+        }
+    }
+    let fields = named_fields(&item)?;
+    let bare = |id: &str| id.strip_prefix("r#").unwrap_or(id).to_string();
+    let kinds: String = fields
+        .iter()
+        .map(|f| {
+            format!(
+                "({:?}, ::wisp::rt::rest::Kind::{}),",
+                bare(&f.name.to_string()),
+                kind(&f.ty)
+            )
+        })
+        .collect();
+    let arms: String = fields
+        .iter()
+        .map(|f| {
+            format!(
+                "{:?} => ::wisp::Json::json(&self.{}, out),",
+                bare(&f.name.to_string()),
+                f.name
+            )
+        })
+        .collect();
+    let stamps: String = fields
+        .iter()
+        .filter(|f| STAMPED.contains(&f.name.to_string().as_str()))
+        .map(|f| {
+            let (n, ty) = (&f.name, &f.ty);
+            let now = format!("<{ty} as ::wisp::rt::Stamp>::now()");
+            match n.to_string().as_str() {
+                "created_at" => format!(
+                    "self.{n} = match old {{ ::std::option::Option::Some(o) => ::std::clone::Clone::clone(&o.{n}), ::std::option::Option::None => {now} }};"
+                ),
+                _ => format!("self.{n} = {now};"),
+            }
+        })
+        .collect();
+    let stamp = match stamps.is_empty() {
+        true => String::new(),
+        false => format!("fn stamp(&mut self, old: ::std::option::Option<&Self>) {{ {stamps} }}"),
+    };
+    let mut out = json(item.clone())?;
+    out.extend(from_json_with(item, &STAMPED)?);
+    out.extend(parse(&format!(
+        "impl {name} {{
+            /// Its rows, which a `+server.rs` serves, kept in the app's store.
+            pub fn table() -> &'static ::wisp::Table<{name}> {{
+                static TABLE: ::wisp::Table<{name}> = ::wisp::Table::rest(::std::option::Option::{table}, {random});
+                &TABLE
+            }}
+        }}
+        impl ::wisp::Resource for {name} {{
+            const KEY: ::std::option::Option<&'static str> = ::std::option::Option::{key};
+            const WRITE: ::std::option::Option<&'static str> = ::std::option::Option::{write};
+            const ADMIN: ::std::option::Option<&'static str> = ::std::option::Option::{admin};
+            const FIELDS: &'static [(&'static str, ::wisp::rt::rest::Kind)] = &[{kinds}];
+            fn table() -> &'static ::wisp::Table<{name}> {{
+                {name}::table()
+            }}
+            fn field(&self, name: &str, out: &mut ::std::string::String) -> bool {{
+                match name {{
+                    {arms}
+                    _ => return false,
+                }}
+                true
+            }}
+            {stamp}
+        }}"
+    )));
+    Ok(out)
+}
+
+/// What JSON a field of type `ty` holds, as a `Kind` variant.
+fn kind(ty: &str) -> &'static str {
+    let t: String = ty.chars().filter(|c| !c.is_whitespace()).collect();
+    let t = t
+        .strip_prefix("Option<")
+        .and_then(|r| r.strip_suffix('>'))
+        .unwrap_or(&t);
+    let last = t.rsplit("::").next().unwrap_or(t);
+    match last {
+        "String" | "str" | "&str" | "&'staticstr" | "char" => "Text",
+        _ if last.starts_with("Cow<") => "Text",
+        "bool" => "Bool",
+        "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64" | "i128"
+        | "isize" | "f32" | "f64" => "Number",
+        _ => "Other",
+    }
+}
+
 /// A named field, for `FromJson`: its name, its type as text, and its
 /// `#[validate(...)]` rules (name, value as text, where it is).
 struct Field {
@@ -518,12 +753,12 @@ fn named_fields(item: &TokenStream) -> Result<Vec<Field>, Error> {
                             rule[0].span(),
                         ));
                     };
-                    let known = ["min", "max", "min_len", "max_len", "email"];
+                    let known = ["min", "max", "len", "min_len", "max_len", "email"];
                     let rule_text = rule_name.to_string();
                     if !known.contains(&rule_text.as_str()) {
                         return Err((
                             format!(
-                                "#[validate] has no `{rule_text}`: it takes min, max, min_len, max_len and email"
+                                "#[validate] has no `{rule_text}`: it takes len, min, max, min_len, max_len and email"
                             ),
                             rule_name.span(),
                         ));

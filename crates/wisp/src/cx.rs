@@ -109,6 +109,10 @@ pub struct Cx {
     locals: Vec<(TypeId, Box<dyn Any + Send + Sync>)>,
     /// A JSON body, parsed once for the handler parameters read from it.
     json: std::sync::OnceLock<Option<crate::Value>>,
+    /// The request id, once one is asked for (see [`Cx::request_id`]).
+    id: std::sync::OnceLock<String>,
+    /// Routed to a `+server.rs` endpoint, whose errors are JSON.
+    pub(crate) api: bool,
 }
 
 impl Cx {
@@ -131,6 +135,8 @@ impl Cx {
             set_cookies: Vec::new(),
             locals: Vec::new(),
             json: std::sync::OnceLock::new(),
+            id: std::sync::OnceLock::new(),
+            api: false,
         }
     }
 
@@ -144,6 +150,8 @@ impl Cx {
         self.set_cookies.clear();
         self.locals.clear();
         self.json.take();
+        self.id.take();
+        self.api = false;
     }
 
     /// The body parsed as JSON, once per request; `None` if it is not JSON.
@@ -208,6 +216,18 @@ impl Cx {
             .map(|(_, v)| v)
     }
 
+    /// Every query parameter, decoded, in order.
+    pub(crate) fn query_pairs(&self) -> impl Iterator<Item = (Cow<'_, str>, Cow<'_, str>)> {
+        pairs(&self.buf[self.query.range()])
+    }
+
+    /// The route's parameters, decoded, as (name, value).
+    pub(crate) fn params(&self) -> impl Iterator<Item = (&'static str, &str)> {
+        self.names
+            .iter()
+            .map(|&n| (n, self.route_param(n).unwrap_or("")))
+    }
+
     /// Every query parameter named `name`, decoded, in order.
     pub(crate) fn query_all<'a>(&'a self, name: &'a str) -> impl Iterator<Item = Cow<'a, str>> {
         pairs(&self.buf[self.query.range()])
@@ -244,6 +264,34 @@ impl Cx {
         std::str::from_utf8(&self.buf[v.range()]).ok()
     }
 
+    /// A header parsed as any `FromStr` type, or `default` when it is
+    /// missing or does not parse: `let v: u32 = cx.header_or("x-api-version", 1);`
+    pub fn header_or<T: FromStr>(&self, name: &str, default: T) -> T {
+        self.header(name)
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(default)
+    }
+
+    /// An id for this request: the client's `x-request-id` when it sent a
+    /// sane one (1 to 128 visible ASCII characters), else a new one. A
+    /// request that asks is answered with it as `x-request-id`, so a log line
+    /// here and a bug report there name the same request. `WISP_REQUEST_ID=on`
+    /// gives every request one, and puts it in the dev log. Nothing is made
+    /// or sent for requests that never ask.
+    pub fn request_id(&self) -> &str {
+        self.id.get_or_init(|| match self.header("x-request-id") {
+            Some(v) if (1..=128).contains(&v.len()) && v.bytes().all(|b| b.is_ascii_graphic()) => {
+                v.to_string()
+            }
+            _ => new_id(),
+        })
+    }
+
+    /// The id, if the request has asked for one.
+    pub(crate) fn id(&self) -> Option<&str> {
+        self.id.get().map(String::as_str)
+    }
+
     /// The `Host` header: `example.com` or `localhost:3000`.
     pub fn host(&self) -> Option<&str> {
         self.header("host")
@@ -255,6 +303,25 @@ impl Cx {
         let (scheme, token) = v.split_once(' ')?;
         let token = token.trim();
         (scheme.eq_ignore_ascii_case("bearer") && !token.is_empty()).then_some(token)
+    }
+
+    /// Unless the request has `Authorization: Bearer <token>` with the
+    /// token in the environment variable `var` (compared in constant
+    /// time), a 401: `cx.need_bearer("API_KEY")?`. Unset is never matched.
+    pub fn need_bearer(&self, var: &str) -> crate::Result {
+        match (self.bearer(), crate::env(var)) {
+            (Some(t), Some(k)) if !k.is_empty() && crate::secure_eq(t, &k) => Ok(()),
+            _ => {
+                Err(crate::Error::new(401, "Unauthorized")
+                    .with_header("www-authenticate", "Bearer"))
+            }
+        }
+    }
+
+    /// Whether the request may change something: any method but GET, HEAD
+    /// and OPTIONS. `if cx.writes() { cx.need_bearer("API_KEY")?; }`
+    pub fn writes(&self) -> bool {
+        !matches!(self.method, Method::Get | Method::Head | Method::Options)
     }
 
     /// The user name and password of an `Authorization: Basic` header, as
@@ -628,6 +695,17 @@ fn base64(s: &str) -> Option<Vec<u8>> {
     (n < 6).then_some(out)
 }
 
+/// A fresh request id: 8 random hex digits per process, then a counter, so
+/// two are never alike within a process and, but for a 1 in 4 billion
+/// chance, across processes either.
+fn new_id() -> String {
+    static SEED: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    static COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let seed = *SEED.get_or_init(|| u32::from_le_bytes(crate::sign::random()));
+    let n = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{seed:08x}{n:08x}")
+}
+
 pub(crate) fn valid_header(name: &str, value: &str) -> bool {
     !name.is_empty()
         && name.bytes().all(|b| b.is_ascii_graphic() && b != b':')
@@ -928,6 +1006,26 @@ mod tests {
         assert_eq!(basic.bearer(), None);
         cx.delete_cookie("a");
         assert_eq!(cx.cookie("a"), None);
+    }
+
+    #[test]
+    fn request_ids() {
+        let cx = cx_for("GET / HTTP/1.1\r\nX-Request-Id: abc-123\r\n\r\n");
+        assert_eq!(cx.id(), None);
+        assert_eq!(cx.request_id(), "abc-123");
+        assert_eq!(cx.id(), Some("abc-123"));
+        let none = cx_for("GET / HTTP/1.1\r\n\r\n");
+        let made = none.request_id();
+        assert_eq!(made.len(), 16);
+        assert_eq!(none.request_id(), made);
+        assert_ne!(cx_for("GET / HTTP/1.1\r\n\r\n").request_id(), made);
+        let long = format!(
+            "GET / HTTP/1.1\r\nX-Request-Id: {}\r\n\r\n",
+            "a".repeat(129)
+        );
+        assert_eq!(cx_for(&long).request_id().len(), 16);
+        let bad = cx_for("GET / HTTP/1.1\r\nX-Request-Id: a b\r\n\r\n");
+        assert_ne!(bad.request_id(), "a b");
     }
 
     fn cx_for(raw: &str) -> Cx {

@@ -4,17 +4,20 @@
 //! the CPU cores with the load generator on the other half, so the two never
 //! compete for a core. Prints throughput, latency, CPU time per request,
 //! response size, peak memory and time to first response, then a Markdown
-//! table of it all.
+//! table of it all, fastest first on each path, with Wisp's rank.
 //!
 //!   cargo run -r -p bench-run -- [-c 64] [-d 10] [-w 5] [--rounds 1]
-//!       [--only wisp,actix] [--paths fortunes] [--no-build] [--csv FILE]
-//!       [--extra NAME=COMMAND]...
+//!       [--group fast|popular|all] [--only wisp,actix] [--paths fortunes]
+//!       [--no-build] [--csv FILE] [--extra NAME=COMMAND]...
 //!
-//! `--only` and `--paths` pick servers and paths by case-insensitive
-//! substring. `--extra NAME=COMMAND` adds a server of your own, measured on
-//! `/plaintext` only; it gets `PORT` and `THREADS` like the others. `--rounds` runs every server that many times, taking turns,
-//! and reports the mean. `--csv` appends every run to a file. A server whose
-//! toolchain is not installed is skipped with a note.
+//! `--group` picks the ten fastest frameworks (TechEmpower's top tier), the
+//! ten most popular, or both (the default); Wisp is in each. `--only` and
+//! `--paths` narrow that by case-insensitive substring. `--extra
+//! NAME=COMMAND` adds a server of your own, measured on `/plaintext` only;
+//! it gets `PORT` and `THREADS` like the others. `--rounds` runs every
+//! server that many times, taking turns, and reports the mean. `--csv`
+//! appends every run to a file. A server whose toolchain is not installed
+//! is skipped with a note.
 
 mod sys;
 
@@ -32,9 +35,20 @@ enum Bin {
     Go,
     AspNet,
     Node,
+    Bun,
+    Java,
     /// `--extra`: `args[0]` is the program.
     Other,
 }
+
+/// `--group fast`: TechEmpower's top tier, one or two per language.
+const FAST: u8 = 1;
+/// `--group popular`: the most used framework of each kind.
+const POPULAR: u8 = 2;
+/// Runs on Linux only: its Windows I/O is broken (may-minihttp answers a
+/// kept-alive connection's first request again), or its processes share
+/// the port with SO_REUSEPORT, which Windows lacks.
+const LINUX: u8 = 4;
 
 struct Server {
     name: &'static str,
@@ -43,83 +57,119 @@ struct Server {
     /// The variable that sets the server's thread or process count.
     threads: &'static str,
     env: &'static [(&'static str, &'static str)],
-    /// Paths it serves besides `/plaintext` and `/fortunes`.
+    /// Paths it serves besides `/plaintext`, `/fortunes` and `/json`.
     extra: &'static [&'static str],
+    tags: u8,
+}
+
+const fn server(
+    name: &'static str,
+    bin: Bin,
+    args: &'static [&'static str],
+    threads: &'static str,
+    tags: u8,
+) -> Server {
+    Server {
+        name,
+        bin,
+        args,
+        threads,
+        env: &[],
+        extra: &[],
+        tags,
+    }
 }
 
 const SERVERS: &[Server] = &[
     Server {
-        name: "Wisp",
-        bin: Bin::Wisp,
-        args: &[],
-        threads: "WISP_THREADS",
         env: &[("HOST", "127.0.0.1")],
-        extra: &["/json"],
+        // A `#[derive(Rest)]` row, beside `/json`'s hand-written one.
+        extra: &["/messages/1"],
+        ..server("Wisp", Bin::Wisp, &[], "WISP_THREADS", FAST | POPULAR)
     },
+    // Popular, then fast; each list is the top ten.
     Server {
-        name: "ASP.NET Core",
-        bin: Bin::AspNet,
-        args: &[],
-        threads: "",
-        env: &[],
         extra: &["/fortunes-blazor"],
+        ..server("ASP.NET Core", Bin::AspNet, &[], "", POPULAR)
     },
+    server(
+        "Actix Web",
+        Bin::Rust,
+        &["actix"],
+        "THREADS",
+        FAST | POPULAR,
+    ),
+    server("Axum", Bin::Rust, &["axum"], "THREADS", POPULAR),
+    server("Go net/http", Bin::Go, &["nethttp"], "GOMAXPROCS", POPULAR),
+    server("Gin", Bin::Go, &["gin"], "GOMAXPROCS", POPULAR),
+    server("Fiber", Bin::Go, &["fiber"], "GOMAXPROCS", POPULAR),
+    server(
+        "Express",
+        Bin::Node,
+        &["cluster.mjs", "express/server.mjs"],
+        "WORKERS",
+        POPULAR,
+    ),
+    server(
+        "Fastify",
+        Bin::Node,
+        &["cluster.mjs", "fastify/server.mjs"],
+        "WORKERS",
+        POPULAR,
+    ),
     Server {
-        name: "Actix Web",
-        bin: Bin::Rust,
-        args: &["actix"],
-        threads: "THREADS",
-        env: &[],
-        extra: &["/json"],
-    },
-    Server {
-        name: "Axum",
-        bin: Bin::Rust,
-        args: &["axum"],
-        threads: "THREADS",
-        env: &[],
-        extra: &["/json"],
-    },
-    Server {
-        name: "Go net/http",
-        bin: Bin::Go,
-        args: &["nethttp"],
-        threads: "GOMAXPROCS",
-        env: &[],
-        extra: &[],
-    },
-    Server {
-        name: "Fiber",
-        bin: Bin::Go,
-        args: &["fiber"],
-        threads: "GOMAXPROCS",
-        env: &[],
-        extra: &[],
-    },
-    Server {
-        name: "Fastify",
-        bin: Bin::Node,
-        args: &["cluster.mjs", "fastify/server.mjs"],
-        threads: "WORKERS",
-        env: &[],
-        extra: &[],
-    },
-    Server {
-        name: "SvelteKit",
-        bin: Bin::Node,
-        args: &["cluster.mjs", "sveltekit/build/index.js"],
-        threads: "WORKERS",
         env: &[("HOST", "127.0.0.1")],
-        extra: &[],
+        ..server(
+            "SvelteKit",
+            Bin::Node,
+            &["cluster.mjs", "sveltekit/build/index.js"],
+            "WORKERS",
+            POPULAR,
+        )
     },
     Server {
-        name: "Next.js",
-        bin: Bin::Node,
-        args: &["cluster.mjs", "nextjs/.next/standalone/nextjs/server.js"],
-        threads: "WORKERS",
         env: &[("HOSTNAME", "127.0.0.1")],
-        extra: &[],
+        ..server(
+            "Next.js",
+            Bin::Node,
+            &["cluster.mjs", "nextjs/.next/standalone/nextjs/server.js"],
+            "WORKERS",
+            POPULAR,
+        )
     },
+    server("may-minihttp", Bin::Rust, &["may"], "THREADS", FAST | LINUX),
+    server("xitca-web", Bin::Rust, &["xitca"], "THREADS", FAST),
+    server("ntex", Bin::Rust, &["ntex"], "THREADS", FAST),
+    server("hyper", Bin::Rust, &["hyper"], "THREADS", FAST),
+    server("fasthttp", Bin::Go, &["fasthttp"], "GOMAXPROCS", FAST),
+    server(
+        "Vert.x",
+        Bin::Java,
+        &["-XX:+UseParallelGC", "-jar", "target/bench.jar"],
+        "THREADS",
+        FAST,
+    ),
+    server(
+        "uWebSockets.js",
+        Bin::Node,
+        &["cluster.mjs", "uws/server.mjs"],
+        "WORKERS",
+        FAST | LINUX,
+    ),
+    server(
+        "Bun",
+        Bin::Bun,
+        &["bun-cluster.js", "bun/server.js"],
+        "WORKERS",
+        FAST | LINUX,
+    ),
+    server(
+        "Elysia",
+        Bin::Bun,
+        &["bun-cluster.js", "elysia/server.js"],
+        "WORKERS",
+        FAST | LINUX,
+    ),
 ];
 
 struct Options {
@@ -127,6 +177,7 @@ struct Options {
     duration: Duration,
     warmup: Duration,
     rounds: usize,
+    group: u8,
     only: Vec<String>,
     paths: Vec<String>,
     build: bool,
@@ -160,22 +211,36 @@ fn main() {
 
     let mut servers: Vec<&Server> = SERVERS
         .iter()
-        .filter(|s| picked(&opt.only, s.name))
+        .filter(|s| s.tags & opt.group != 0 && picked(&opt.only, s.name))
         .collect();
     servers.retain(|s| {
-        let tool = toolchain(s.bin);
-        let found = installed(tool);
-        if !found {
-            println!("skipping {}: `{tool}` is not installed", s.name);
+        let ok = cfg!(target_os = "linux") || s.tags & LINUX == 0;
+        if !ok {
+            println!("skipping {}: runs on Linux only", s.name);
         }
-        found
+        ok
     });
+    servers.retain(|s| {
+        let missing: Vec<&str> = toolchain(s.bin)
+            .iter()
+            .copied()
+            .filter(|t| !installed(t))
+            .collect();
+        if !missing.is_empty() {
+            println!(
+                "skipping {}: `{}` is not installed",
+                s.name,
+                missing.join("`, `")
+            );
+        }
+        missing.is_empty()
+    });
+    if opt.build {
+        build(&repo, &bench, &mut servers);
+    }
     servers.extend(&opt.extra);
     if servers.is_empty() {
         die("no servers to run");
-    }
-    if opt.build {
-        build(&repo, &bench, &servers);
     }
 
     let (server_cpus, load_cpus) = sys::split_cpus();
@@ -198,7 +263,7 @@ fn main() {
             let all: &[&str] = if s.bin == Bin::Other {
                 &["/plaintext"]
             } else {
-                &["/plaintext", "/fortunes"]
+                &["/plaintext", "/fortunes", "/json"]
             };
             let paths: Vec<&'static str> = all
                 .iter()
@@ -211,7 +276,13 @@ fn main() {
             }
             let port = 3401 + i as u16;
             let addr: SocketAddr = ([127, 0, 0, 1], port).into();
-            let mut child = start(s, &repo, &bench, port, &threads, &server_cpus);
+            let mut child = match start(s, &repo, &bench, port, &threads, &server_cpus) {
+                Ok(child) => child,
+                Err(e) => {
+                    println!("{}: {e}", s.name);
+                    continue;
+                }
+            };
             match measure(s, &mut child, addr, &paths, &opt, server_cpus.len()) {
                 Ok(new) => rows.extend(new),
                 Err(e) => println!("{}: {e}", s.name),
@@ -236,6 +307,7 @@ fn options() -> Options {
         duration: Duration::from_secs(10),
         warmup: Duration::from_secs(5),
         rounds: 1,
+        group: FAST | POPULAR,
         only: Vec::new(),
         paths: Vec::new(),
         build: true,
@@ -262,6 +334,14 @@ fn options() -> Options {
             "-d" => opt.duration = Duration::from_secs(number(value()).max(1)),
             "-w" => opt.warmup = Duration::from_secs(number(value())),
             "--rounds" => opt.rounds = number(value()).max(1) as usize,
+            "--group" => {
+                opt.group = match value().as_str() {
+                    "fast" => FAST,
+                    "popular" => POPULAR,
+                    "all" => FAST | POPULAR,
+                    other => die(&format!("--group: fast, popular or all, not {other}")),
+                }
+            }
             "--only" => opt.only = list(value()),
             "--paths" => opt.paths = list(value()),
             "--no-build" => opt.build = false,
@@ -286,11 +366,12 @@ fn options() -> Options {
                     threads: "THREADS",
                     env: &[],
                     extra: &[],
+                    tags: FAST | POPULAR,
                 });
             }
             "-h" | "--help" => {
                 println!(
-                    "usage: bench-run [-c 64] [-d 10] [-w 5] [--rounds 1] [--only wisp,actix] [--paths fortunes] [--no-build] [--csv FILE] [--extra NAME=COMMAND]..."
+                    "usage: bench-run [-c 64] [-d 10] [-w 5] [--rounds 1] [--group fast|popular|all] [--only wisp,actix] [--paths fortunes] [--no-build] [--csv FILE] [--extra NAME=COMMAND]..."
                 );
                 std::process::exit(0);
             }
@@ -306,22 +387,31 @@ fn picked(list: &[String], name: &str) -> bool {
     list.is_empty() || list.iter().any(|want| name.contains(want.as_str()))
 }
 
-fn toolchain(bin: Bin) -> &'static str {
+/// The commands a server needs to build and run.
+fn toolchain(bin: Bin) -> &'static [&'static str] {
     match bin {
-        Bin::Wisp | Bin::Rust => "cargo",
-        Bin::Go => "go",
-        Bin::AspNet => "dotnet",
-        Bin::Node => "node",
-        Bin::Other => "",
+        Bin::Wisp | Bin::Rust => &["cargo"],
+        Bin::Go => &["go"],
+        Bin::AspNet => &["dotnet"],
+        Bin::Node => &["node", "npm"],
+        Bin::Bun => &["bun"],
+        Bin::Java => &["java", "mvn"],
+        Bin::Other => &[],
+    }
+}
+
+/// `tool` as `Command` finds it: npm and mvn are batch files on Windows.
+fn program(tool: &str) -> String {
+    if cfg!(windows) && matches!(tool, "npm" | "mvn") {
+        format!("{tool}.cmd")
+    } else {
+        tool.to_string()
     }
 }
 
 fn installed(tool: &str) -> bool {
-    if tool.is_empty() {
-        return true;
-    }
     let arg = if tool == "go" { "version" } else { "--version" };
-    Command::new(tool)
+    Command::new(program(tool))
         .arg(arg)
         .output()
         .is_ok_and(|o| o.status.success())
@@ -338,62 +428,101 @@ fn exe(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
 }
 
-fn build(repo: &Path, bench: &Path, servers: &[&Server]) {
-    let has = |bin: Bin| servers.iter().any(|s| s.bin == bin);
-    let has_node = |app: &str| {
-        servers
-            .iter()
-            .any(|s| s.args.get(1).is_some_and(|a| a.starts_with(app)))
-    };
-    let npm = if cfg!(windows) { "npm.cmd" } else { "npm" };
-    if has(Bin::Wisp) {
-        run(Command::new("cargo")
-            .args(["build", "--release", "-q", "-p", "wisp-bench"])
-            .current_dir(repo));
-    }
-    if has(Bin::Rust) {
-        run(Command::new("cargo")
-            .args(["build", "--release", "-q"])
-            .current_dir(bench.join("rust")));
-    }
-    if has(Bin::AspNet) {
-        run(Command::new("dotnet")
-            .args([
-                "publish", "-c", "Release", "-o", "out", "--nologo", "-v", "q",
-            ])
-            .current_dir(bench.join("aspnet")));
-    }
-    if has(Bin::Go) {
-        run(Command::new("go")
-            .args([
-                "build",
-                "-mod=mod",
-                "-o",
-                &format!("out/{}", exe("bench-go")),
-                ".",
-            ])
-            .current_dir(bench.join("go")));
-    }
-    for app in ["fastify", "sveltekit", "nextjs"] {
-        if !has_node(app) {
-            continue;
-        }
-        let dir = bench.join("node").join(app);
-        if !dir.join("node_modules").exists() {
-            run(Command::new(npm)
-                .args(["install", "--no-audit", "--no-fund", "--loglevel=error"])
-                .current_dir(&dir));
-        }
-        if app != "fastify" {
-            run(Command::new(npm)
-                .args(["run", "build", "--silent"])
-                .env("NEXT_TELEMETRY_DISABLED", "1")
-                .current_dir(&dir));
-        }
+/// What builds a server: servers sharing a binary or a directory share it.
+fn unit(s: &Server) -> &'static str {
+    match s.bin {
+        Bin::Wisp => "wisp",
+        Bin::Rust => "rust",
+        Bin::Go => "go",
+        Bin::AspNet => "aspnet",
+        Bin::Java => "java",
+        // The app's directory: `cluster.mjs fastify/server.mjs` is fastify.
+        Bin::Node | Bin::Bun => s.args[1].split('/').next().unwrap_or(""),
+        Bin::Other => "",
     }
 }
 
-fn run(cmd: &mut Command) {
+/// Builds every server in `servers`, then drops those whose build failed.
+fn build(repo: &Path, bench: &Path, servers: &mut Vec<&Server>) {
+    let mut units: Vec<&str> = Vec::new();
+    for s in servers.iter() {
+        if !units.contains(&unit(s)) {
+            units.push(unit(s));
+        }
+    }
+    let mut failed: Vec<&str> = Vec::new();
+    for u in units {
+        let node = bench.join("node").join(u);
+        let ok = match u {
+            "wisp" => run(Command::new("cargo")
+                .args(["build", "--release", "-q", "-p", "wisp-bench"])
+                .current_dir(repo)),
+            "rust" => run(Command::new("cargo")
+                .args(["build", "--release", "-q"])
+                .current_dir(bench.join("rust"))),
+            "aspnet" => run(Command::new("dotnet")
+                .args([
+                    "publish", "-c", "Release", "-o", "out", "--nologo", "-v", "q",
+                ])
+                .current_dir(bench.join("aspnet"))),
+            "go" => run(Command::new("go")
+                .args([
+                    "build",
+                    "-mod=mod",
+                    "-o",
+                    &format!("out/{}", exe("bench-go")),
+                    ".",
+                ])
+                .current_dir(bench.join("go"))),
+            "java" => run(Command::new(program("mvn"))
+                .args(["-q", "-B", "package"])
+                .current_dir(bench.join("java"))),
+            // Bun.serve needs nothing; bun install is quick when all is there.
+            "bun" => true,
+            "elysia" => run(Command::new("bun")
+                .args(["install", "--silent"])
+                .current_dir(&node)),
+            _ => {
+                let npm = |args: &[&str]| {
+                    run(Command::new(program("npm"))
+                        .args(args)
+                        .env("NEXT_TELEMETRY_DISABLED", "1")
+                        .current_dir(&node))
+                };
+                let built = matches!(u, "sveltekit" | "nextjs");
+                (installed_since(&node)
+                    || npm(&["install", "--no-audit", "--no-fund", "--loglevel=error"]))
+                    && (!built || npm(&["run", "build", "--silent"]))
+            }
+        };
+        if !ok {
+            failed.push(u);
+        }
+    }
+    servers.retain(|s| {
+        let ok = !failed.contains(&unit(s));
+        if !ok {
+            println!("skipping {}: its build failed", s.name);
+        }
+        ok
+    });
+}
+
+/// Whether `dir` has an npm install newer than its package.json. npm
+/// writes `.package-lock.json` last, so a half-done install is redone.
+fn installed_since(dir: &Path) -> bool {
+    let time = |p: PathBuf| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    match (
+        time(dir.join("node_modules/.package-lock.json")),
+        time(dir.join("package.json")),
+    ) {
+        (Some(installed), Some(changed)) => installed >= changed,
+        _ => false,
+    }
+}
+
+/// Runs a build step, echoing it; false if it failed.
+fn run(cmd: &mut Command) -> bool {
     println!(
         "› {} {}",
         cmd.get_program().to_string_lossy(),
@@ -403,13 +532,26 @@ fn run(cmd: &mut Command) {
             .join(" ")
     );
     match cmd.status() {
-        Ok(s) if s.success() => {}
-        Ok(s) => die(&format!("build failed ({s})")),
-        Err(e) => die(&format!("could not run the build: {e}")),
+        Ok(s) if s.success() => true,
+        Ok(s) => {
+            println!("  build failed ({s})");
+            false
+        }
+        Err(e) => {
+            println!("  could not run the build: {e}");
+            false
+        }
     }
 }
 
-fn start(s: &Server, repo: &Path, bench: &Path, port: u16, threads: &str, cpus: &[usize]) -> Child {
+fn start(
+    s: &Server,
+    repo: &Path,
+    bench: &Path,
+    port: u16,
+    threads: &str,
+    cpus: &[usize],
+) -> Result<Child, String> {
     let (program, dir) = match s.bin {
         Bin::Wisp => (
             release_dir(repo).join(exe("wisp-bench")),
@@ -425,6 +567,8 @@ fn start(s: &Server, repo: &Path, bench: &Path, port: u16, threads: &str, cpus: 
             bench.join("aspnet/out"),
         ),
         Bin::Node => (PathBuf::from("node"), bench.join("node")),
+        Bin::Bun => (PathBuf::from("bun"), bench.join("node")),
+        Bin::Java => (PathBuf::from("java"), bench.join("java")),
         Bin::Other => (PathBuf::from(s.args[0]), repo.to_path_buf()),
     };
     let args = if s.bin == Bin::Other {
@@ -441,13 +585,8 @@ fn start(s: &Server, repo: &Path, bench: &Path, port: u16, threads: &str, cpus: 
         cmd.env(s.threads, threads);
     }
     cmd.envs(s.env.iter().copied());
-    sys::spawn_pinned(&mut cmd, cpus).unwrap_or_else(|e| {
-        die(&format!(
-            "{}: cannot start {}: {e}",
-            s.name,
-            program.display()
-        ))
-    })
+    sys::spawn_pinned(&mut cmd, cpus)
+        .map_err(|e| format!("cannot start {}: {e}", program.display()))
 }
 
 /// Waits for the server, checks what it sends, then loads each path.
@@ -601,7 +740,8 @@ fn write_csv(file: &Path, rows: &[Row]) {
         .unwrap_or_else(|e| die(&format!("{}: {e}", file.display())));
 }
 
-/// The mean of every round per server and path, as a Markdown table.
+/// The mean of every round per server and path, as a Markdown table,
+/// fastest first on each path, then where Wisp ranks on each.
 fn print_table(rows: &[Row], connections: usize) {
     let mut order: Vec<(&str, &str)> = Vec::new();
     let mut groups: HashMap<(&str, &str), Vec<&Row>> = HashMap::new();
@@ -613,9 +753,24 @@ fn print_table(rows: &[Row], connections: usize) {
         groups.entry(key).or_default().push(r);
     }
     let rounds = groups.values().map(Vec::len).max().unwrap_or(1);
+    let rps = |key: &(&str, &str)| {
+        let g = &groups[key];
+        g.iter().map(|r| r.rps).sum::<f64>() / g.len() as f64
+    };
+    // Paths in the order they ran; on each, the fastest first.
+    let mut paths: Vec<&str> = Vec::new();
+    for key in &order {
+        if !paths.contains(&key.1) {
+            paths.push(key.1);
+        }
+    }
+    let at = |path: &str| paths.iter().position(|p| *p == path);
+    order.sort_by(|a, b| at(a.1).cmp(&at(b.1)).then(rps(b).total_cmp(&rps(a))));
+
     let mut table = vec![vec![
-        "Server".to_string(),
-        "Path".into(),
+        "Path".to_string(),
+        "#".into(),
+        "Server".into(),
         "req/s".into(),
         "p50".into(),
         "p99".into(),
@@ -629,12 +784,23 @@ fn print_table(rows: &[Row], connections: usize) {
     if rounds > 1 {
         table[0].push("CPU min..max".into());
     }
-    for key in order {
-        let g = &groups[&key];
+    let mut rank = 0;
+    for (i, key) in order.iter().enumerate() {
+        rank = if i > 0 && order[i - 1].1 == key.1 {
+            rank + 1
+        } else {
+            1
+        };
+        let g = &groups[key];
         let mean = |f: fn(&Row) -> f64| g.iter().map(|r| f(r)).sum::<f64>() / g.len() as f64;
         let mut line = vec![
-            key.0.to_string(),
             key.1.to_string(),
+            rank.to_string(),
+            if key.0 == "Wisp" {
+                "**Wisp**".to_string()
+            } else {
+                key.0.to_string()
+            },
             thousands(mean(|r| r.rps) as u64),
             wisp_load::ms(mean(|r| r.p50 as f64) as u64),
             wisp_load::ms(mean(|r| r.p99 as f64) as u64),
@@ -654,6 +820,7 @@ fn print_table(rows: &[Row], connections: usize) {
     }
 
     // Text columns left, numbers right.
+    let left = |c: usize| c == 0 || c == 2;
     let width: Vec<usize> = (0..table[0].len())
         .map(|c| {
             table
@@ -668,7 +835,7 @@ fn print_table(rows: &[Row], connections: usize) {
             .iter()
             .enumerate()
             .map(|(c, cell)| {
-                if c < 2 {
+                if left(c) {
                     format!("{cell:<w$}", w = width[c])
                 } else {
                     format!("{cell:>w$}", w = width[c])
@@ -681,7 +848,7 @@ fn print_table(rows: &[Row], connections: usize) {
                 .iter()
                 .enumerate()
                 .map(|(c, &w)| {
-                    if c < 2 {
+                    if left(c) {
                         "-".repeat(w + 2)
                     } else {
                         format!("{}:", "-".repeat(w + 1))
@@ -692,9 +859,53 @@ fn print_table(rows: &[Row], connections: usize) {
         }
     }
     println!(
-        "\n{connections} connections, mean of {rounds} round{}.",
+        "\n{connections} connections, mean of {rounds} round{}.\n",
         if rounds == 1 { "" } else { "s" }
     );
+
+    for path in &paths {
+        let ranked: Vec<(&str, f64)> = order
+            .iter()
+            .filter(|k| k.1 == *path)
+            .map(|k| (k.0, rps(k)))
+            .collect();
+        let n = ranked.len();
+        let (best, best_rps) = ranked[0];
+        let best_text = thousands(best_rps as u64);
+        match ranked.iter().position(|r| r.0 == "Wisp") {
+            // One server's own path, like ASP.NET's /fortunes-blazor.
+            None if n == 1 => {}
+            None => println!(
+                "rank {path}: Wisp not measured; fastest of {n} is {best} ({best_text} req/s)"
+            ),
+            Some(0) if n == 1 => println!("rank {path}: Wisp alone, {best_text} req/s"),
+            Some(0) => {
+                let (next, next_rps) = ranked[1];
+                println!(
+                    "rank {path}: Wisp 1st of {n}, {best_text} req/s, {:.0}% ahead of {next} ({} req/s)",
+                    (best_rps / next_rps - 1.0) * 100.0,
+                    thousands(next_rps as u64)
+                );
+            }
+            Some(i) => println!(
+                "rank {path}: Wisp {} of {n}, {} req/s, {:.0}% of {best} ({best_text} req/s)",
+                ordinal(i + 1),
+                thousands(ranked[i].1 as u64),
+                ranked[i].1 / best_rps * 100.0
+            ),
+        }
+    }
+}
+
+fn ordinal(n: usize) -> String {
+    let suffix = match (n % 10, n % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{n}{suffix}")
 }
 
 fn thousands(n: u64) -> String {

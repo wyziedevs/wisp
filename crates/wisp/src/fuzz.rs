@@ -149,6 +149,9 @@ impl App for Fuzz {
                 Ok(())
             }
             (Some(_), _) => {
+                if cx.route_param("x") == Some("id") {
+                    cx.request_id();
+                }
                 let n = cx.form().iter().count();
                 out.body.push_str(&n.to_string());
                 Ok(())

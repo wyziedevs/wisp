@@ -111,11 +111,11 @@ Directory names are URL segments. Files that start with `+` are route files.
 |----------------|-------------------------------------------------------------------|
 | `+page.wisp`   | The page at this path: markup, after an optional `---` block of Rust. |
 | `+page.rs`     | Optional, instead of the block: `load` and `#[action]` functions. |
-| `+layout.wisp` | Wraps this page and every page below it. `{@render children()}`.  |
+| `+layout.wisp` | Wraps this page and every page below it. `<slot />` or `{@render children()}`. |
 | `+layout.rs`   | Optional, instead of a block: `load` for the layout.              |
 | `+error.wisp`  | Rendered for errors below this directory. Gets `status`, `message` (a sentence about the status when the error says no more than its name). |
 | `+page.js`     | Optional. `load({ data, url, params, route, fetch })` in the browser. |
-| `+server.rs`   | `get`/`post`/`put`/`patch`/`delete` endpoints.                    |
+| `+server.rs`   | `get`/`post`/`put`/`patch`/`delete` endpoints; one that takes an `id` the path has not serves `/[id]` below, and `list` is then the folder's GET. A `#[derive(Rest)]` type in it is served whole ([api.md](api.md)). |
 
 Segment syntax: `blog` (static), `[slug]` (param), `[[lang]]` (optional),
 `[...rest]` (rest, may be empty), `(group)` (not part of the URL).
@@ -317,7 +317,7 @@ async fn load(slug: String) -> Result<Data> {
 
 | Syntax                         | Compiles to                                        |
 |--------------------------------|----------------------------------------------------|
-| `{expr}`                       | escaped `Display` of `expr`                        |
+| `{expr}`                       | escaped `Display` of `expr`; an `Option` writes its value, or nothing for `None` |
 | `attr={expr}`                  | `attr="…"`, quotes added, value escaped            |
 | `disabled={cond}`              | ` disabled` if `cond`, else nothing (all HTML boolean attributes) |
 | `{@html expr}`                 | unescaped `Display` (you promise it is safe)       |
@@ -325,10 +325,11 @@ async fn load(slug: String) -> Result<Data> {
 | `{#if c}…{:else if c}…{:else}…{/if}` | `if`/`else`; `if let` works as in Rust        |
 | `{#each e as pat[, i]}…{:else}…{/each}` | `for`; a plain place like `data.posts` is borrowed |
 | `{#match e}{:case pat}…{/match}` | `match`; a plain place is borrowed               |
-| `{@render children()}`         | layout slot                                        |
+| `{@render children()}` or `<slot />` | layout or component slot                   |
 | `{#snippet row(item, i)}…{/snippet}` | markup to render later, in this file or a component |
 | `{@render row(x, 0)}`          | renders a snippet                                  |
 | `<head>…</head>` or `<wisp:head>…</wisp:head>` | appended to the document head |
+| `<title>…</title>` at the top level | the same as in `<head>` (not an `<svg>`'s) |
 | `{cx.path()}`                  | `cx`, the request (`&Cx`), in pages, layouts, error pages |
 
 Expressions are Rust, passed to `rustc` verbatim, so type errors are real type
@@ -455,8 +456,24 @@ A snippet is markup a file renders more than once, or gives to a component:
 
 ### Actions and `wisp.js`
 
-`<form method="post" action="?/like">` posts to the `like` action; a form with no
-`action` posts to the action named `default`. Flow:
+`<form action="?/like">` posts to the `like` action: an `action` that starts
+with `?/` adds `method="post"` when the form does not say. A form with no
+`action` (and `method="post"`) posts to the action named `default`. A
+`<button action="?/remove&id={todo.id}">` that is not in a form becomes a
+form of its own, `<form method="post"><button formaction="…">`: the
+one-button forms a list's delete and toggle buttons are, which work without
+JavaScript. Query parameters in an action's URL are read like form fields,
+so `id` above is the action's `id: u64`.
+
+An action checks its input on its parameters, as a `FromJson` field does:
+`#[action] fn add(#[validate(len = 1..=100)] text: String)` (and `min`,
+`max`, `min_len`, `max_len`, `email`). A value that does not pass, or
+`return invalid("text", "…")`, shows the page again as a 422. There
+`{cx.problem("text")}` is the message (and nothing while there is none),
+and every text `<input name="…">` of the form without a `value` of its own
+shows what was sent (`wisp::rt::kept`); passwords, files, checkboxes,
+radios and hidden inputs are left alone, and so are the inputs of a
+component, which has no request. Flow:
 
 1. Same-origin check: if `Origin` is present it must match `Host` (403 otherwise).
 2. The action runs. `redirect("/…")` → 303. Other errors → error page. For
@@ -580,6 +597,15 @@ fn before(cx: &mut Cx) -> Result<()> {
   in memory that every request shares: `TODOS.lock().push(todo)`. A
   `Mutex` without the `unwrap` (a panic while it was held leaves the value
   as it was); do not hold the guard across an `.await`.
+- `static TODOS: Table<Todo> = Table::new();` keeps rows under ids it
+  gives: `TODOS.add(todo)` returns the id, `get(id)`, `all()` and
+  `find(|t| …)` return copies as `Row { id, value }` (which reads as its
+  value: `{todo}`, `todo.title`, `todo.id`), `update(id, |t| t.done = true)`
+  and `remove(id)` change it. `Table::saved("todos")` also keeps them in
+  the app's store (log files in `WISP_DATA`, or any database through
+  `wisp::Store`), so they are there after a restart. A `#[derive(Rest)]`
+  type has a saved one of its own, `Note::table()`, which a `+server.rs`
+  serves (see [api.md](api.md)).
 - `cx.set(value)` hands a value along the rest of one request, and
   `cx.get::<T>()` reads it: `before` finds the user once, every page reads it.
   `cx.take::<T>()` moves it out, so it need not be `Clone`.

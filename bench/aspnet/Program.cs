@@ -16,9 +16,12 @@ builder.Services.Configure<WebEncoderOptions>(o => o.TextEncoderSettings = new T
 
 var app = builder.Build();
 app.MapGet("/plaintext", () => "Hello, World!");
+app.MapGet("/json", () => new Message("Hello, World!"));
 app.MapRazorPages(); // /fortunes
 app.MapGet("/fortunes-blazor", () => new RazorComponentResult<FortunesPage>(new { Fortunes = Fortune.Load() }));
 app.Run();
+
+public sealed record Message(string message);
 
 public sealed record Fortune(int Id, string Message)
 {

@@ -18,8 +18,7 @@ fn before(cx: &mut Cx) -> Result<Option<Response>> {
     if let Some(preflight) = cx.cors("*") {
         return Ok(Some(preflight));
     }
-    let reads = matches!(cx.method, Method::Get | Method::Head | Method::Options);
-    if !reads && cx.path().starts_with("/api/") {
+    if cx.writes() && cx.path().starts_with("/api/") {
         WRITES.check(cx.client_ip())?;
         let key = &wisp::state::<Config>().api_key;
         if !cx.bearer().is_some_and(|token| wisp::secure_eq(token, key)) {

@@ -1,18 +1,22 @@
-// net/http and Fiber serving the same /fortunes and /plaintext as
-// bench/app, both rendering with html/template (Fiber's html view engine
-// is a wrapper around it).
+// net/http, Gin, Fiber and bare fasthttp serving the same /fortunes,
+// /plaintext and /json as bench/app, all rendering with html/template
+// (Gin's and Fiber's html renderers wrap it) and serializing with
+// encoding/json.
 //
-//	bench-go nethttp|fiber      PORT sets the port, GOMAXPROCS the threads
+//	bench-go nethttp|gin|fiber|fasthttp      PORT sets the port, GOMAXPROCS the threads
 package main
 
 import (
+	"encoding/json"
 	"html/template"
 	"net/http"
 	"os"
 	"slices"
 	"strings"
 
+	"github.com/gin-gonic/gin"
 	"github.com/gofiber/fiber/v3"
+	"github.com/valyala/fasthttp"
 )
 
 type Fortune struct {
@@ -47,6 +51,10 @@ var page = template.Must(template.New("fortunes").Parse(`<!DOCTYPE html>
 </html>
 `))
 
+type Message struct {
+	Message string `json:"message"`
+}
+
 func load() []Fortune {
 	list := make([]Fortune, 0, len(rows)+1)
 	list = append(list, rows[:]...)
@@ -67,7 +75,26 @@ func main() {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			page.Execute(w, load())
 		})
+		http.HandleFunc("GET /json", func(w http.ResponseWriter, r *http.Request) {
+			body, _ := json.Marshal(Message{"Hello, World!"})
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(body)
+		})
 		panic(http.ListenAndServe(addr, nil))
+	case "gin":
+		gin.SetMode(gin.ReleaseMode)
+		app := gin.New() // gin.Default() adds a request logger
+		app.GET("/plaintext", func(c *gin.Context) {
+			c.String(http.StatusOK, "Hello, World!")
+		})
+		app.GET("/fortunes", func(c *gin.Context) {
+			c.Header("Content-Type", "text/html; charset=utf-8")
+			page.Execute(c.Writer, load())
+		})
+		app.GET("/json", func(c *gin.Context) {
+			c.JSON(http.StatusOK, Message{"Hello, World!"})
+		})
+		panic(app.Run(addr))
 	case "fiber":
 		app := fiber.New()
 		app.Get("/plaintext", func(c fiber.Ctx) error {
@@ -77,6 +104,27 @@ func main() {
 			c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
 			return page.Execute(c.Response().BodyWriter(), load())
 		})
+		app.Get("/json", func(c fiber.Ctx) error {
+			return c.JSON(Message{"Hello, World!"})
+		})
 		panic(app.Listen(addr, fiber.ListenConfig{DisableStartupMessage: true}))
+	case "fasthttp":
+		// No router: a switch on the path, as its TechEmpower entry does.
+		panic(fasthttp.ListenAndServe(addr, func(c *fasthttp.RequestCtx) {
+			switch string(c.Path()) {
+			case "/plaintext":
+				c.SetContentType("text/plain; charset=utf-8")
+				c.SetBodyString("Hello, World!")
+			case "/fortunes":
+				c.SetContentType("text/html; charset=utf-8")
+				page.Execute(c, load())
+			case "/json":
+				body, _ := json.Marshal(Message{"Hello, World!"})
+				c.SetContentType("application/json")
+				c.SetBody(body)
+			default:
+				c.Error("Not Found", fasthttp.StatusNotFound)
+			}
+		}))
 	}
 }

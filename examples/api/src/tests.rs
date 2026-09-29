@@ -26,7 +26,7 @@ fn notes() {
         ("Buy tea", &["home".to_string()][..], false)
     );
 
-    let found: Vec<Note> = app.get("/api/notes?q=TEA").json();
+    let found: Vec<Note> = app.get("/api/notes?title.has=TEA").json();
     assert!(found.iter().any(|n| n.id == note.id));
 
     let url = format!("/api/notes/{}", note.id);
@@ -111,7 +111,7 @@ fn other_sites_and_tools() {
     let note = spec
         .get("components")
         .and_then(|c| c.get("schemas"))
-        .and_then(|s| s.get("NewNote"));
+        .and_then(|s| s.get("Note"));
     assert!(note.is_some(), "{}", wisp::to_json(&spec));
     assert!(
         spec.get("paths")
@@ -119,6 +119,12 @@ fn other_sites_and_tools() {
             .is_some()
     );
     assert!(app.get("/_wisp/docs").text().contains("<title>API</title>"));
+    let ts = app.get("/_wisp/client.ts");
+    assert!(
+        ts.text().contains("export function client("),
+        "{}",
+        ts.text()
+    );
 }
 
 #[test]

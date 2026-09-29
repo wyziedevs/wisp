@@ -120,6 +120,16 @@ impl Direct for Text<'_, char> {
     }
 }
 
+/// `{cx.problem("email")}`: the value when there is one, else nothing.
+impl<T: Display> Direct for Text<'_, Option<T>> {
+    #[inline]
+    fn put(&self, out: &mut String) {
+        if let Some(v) = self.0 {
+            text(out, v);
+        }
+    }
+}
+
 /// `&str`, `&String`, `&u32`...: whatever the referent writes.
 impl<T: ?Sized> Direct for Text<'_, &T>
 where

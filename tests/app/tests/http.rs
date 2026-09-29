@@ -33,6 +33,7 @@ fn start_with(env: &[(&str, &str)]) -> Server {
         .env("WISP_THREADS", "2")
         .env("WISP_SECRET", "0123456789abcdef0123456789abcdef")
         .env("WISP_WS_IDLE", "2")
+        .env("WISP_DATA", "off")
         .envs(env.iter().copied())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -97,6 +98,29 @@ fn body(response: &str) -> &str {
 }
 
 const FORM: &str = "content-type: application/x-www-form-urlencoded\r\n";
+
+#[test]
+fn saved_tables_survive_a_crash() {
+    let dir = std::env::temp_dir().join(format!("wisp-data-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let data = dir.to_str().unwrap();
+    let auth = "authorization: Bearer wisp-test-app\r\ncontent-type: application/json\r\n";
+    {
+        let s = start_with(&[("WISP_DATA", data), ("WISP_FSYNC", "always")]);
+        let made = s.request("POST", "/notes", auth, br#"{"title":"Kept"}"#);
+        assert_eq!(status(&made), 201, "{made}");
+        s.request("POST", "/notes", auth, br#"{"title":"Gone"}"#);
+        assert_eq!(status(&s.request("DELETE", "/notes/2", auth, b"")), 204);
+    } // killed, as a crash would be
+    let s = start_with(&[("WISP_DATA", data)]);
+    let list = s.request("GET", "/notes", "", b"");
+    assert_eq!(body(&list), r#"[{"id":1,"title":"Kept","done":false}]"#);
+    let next = s.request("POST", "/notes", auth, br#"{"title":"Next"}"#);
+    assert!(body(&next).starts_with(r#"{"id":3,"#), "ids go on: {next}");
+    assert!(dir.join("note.log").exists());
+    drop(s);
+    let _ = std::fs::remove_dir_all(&dir);
+}
 
 #[test]
 fn hooks_and_state() {
@@ -588,7 +612,7 @@ fn browser_code() {
         "{js}"
     );
     assert!(
-        js.contains("[\"on\", \"click\", [\"prevent\"], ({ item }, event) => (pick(item.name))]"),
+        js.contains("[\"on\", \"click\", 8193, ({ item }, event) => (pick(item.name))]"),
         "{js}"
     );
     assert!(
@@ -828,6 +852,27 @@ fn blocks_elements_and_props() {
     }
     // A page with none of it does not load it.
     assert!(!s.request("GET", "/a2/state", "", b"").contains("extra.js"));
+}
+
+#[test]
+fn spreads_resets_and_rust_reads_of_props() {
+    let s = start();
+    let page = s.request("GET", "/a2/props", "", b"");
+    // A prop only `$props()` names shows in Rust as in the browser.
+    assert!(
+        page.contains("<b class=\"chip\" data-label=\"rust\">rust: <template data-w=\"1.0\"></template>1<!----></b>"),
+        "{page}"
+    );
+    let module = body(&s.request("GET", &module_url(&page, 0), "", b"")).to_string();
+    for want in [
+        // Spread props, where they stand among the others.
+        "({ p }) => ({ ...(p), \"on\": (p.label === picked) })",
+        "() => ({ ...(one.v), \"title\": \"after\" })",
+        // `reset` in a try's `{:catch}`.
+        "({ reset }, event) => { broken.v = false; reset() }",
+    ] {
+        assert!(module.contains(want), "{want} in {module}");
+    }
 }
 
 #[test]

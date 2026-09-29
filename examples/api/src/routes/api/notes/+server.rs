@@ -1,21 +1,23 @@
-use notes::Note;
+//! `/api/notes` and `/api/notes/[id]`: a whole JSON API from the type, saved
+//! in `WISP_DATA` so it survives restarts. Try `/api/notes?done=false`,
+//! `?title.has=tea`, `?sort=-created_at&limit=20`. Writes need the API key
+//! (src/hooks.rs).
 
-/// A note to add, as JSON: `{"title": "Buy tea", "tags": ["home"]}`.
-#[derive(FromJson)]
-struct NewNote {
-    #[validate(min_len = 1, max_len = 200)]
+#[derive(Rest)]
+struct Note {
+    #[validate(len = 1..=200)]
     title: String,
     #[validate(max_len = 10)]
-    tags: Option<Vec<String>>,
+    tags: Vec<String>,
+    done: bool,
+    created_at: String,
 }
 
-/// Every note, or those whose title has `q` in it: `/api/notes?q=tea`.
-fn get(q: Option<String>) -> Vec<Note> {
-    notes::list(q.as_deref())
+/// Tells whoever listens (`/api/events`) that a note was added or changed.
+fn after_create(note: &Row<Note>) {
+    wisp::channel("notes").send(wisp::to_json(note));
 }
 
-fn post(body: NewNote) -> Response {
-    let note = notes::add(body.title, body.tags.unwrap_or_default());
-    wisp::channel("notes").send(wisp::to_json(&note));
-    Response::created(&note)
+fn after_update(note: &Row<Note>) {
+    wisp::channel("notes").send(wisp::to_json(note));
 }

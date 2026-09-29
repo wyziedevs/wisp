@@ -82,6 +82,7 @@ export function wisp(module, env = {}) {
     const imports = {
       wisp: {
         random: (p, n) => void crypto.getRandomValues(mem().subarray(p, p + n)),
+        now: () => Date.now() / 1000,
         log: (p, n) => console.error(dec.decode(copy(p, n))),
         reply: (id, p, n) => {
           const done = x.pending.get(id);

@@ -21,11 +21,17 @@ pub struct Client<A> {
     cookies: Vec<(String, String)>,
     /// `authorization`, from [`Client::bearer`].
     auth: Option<String>,
+    /// Headers for the next request only, from [`Client::header`].
+    next: Vec<(String, String)>,
     app: PhantomData<fn() -> A>,
 }
 
 /// A client for `A`, once [`crate::prepare`] has run. Panics if `init` fails.
+///
+/// Durable tables stay in memory in tests (each test process starts
+/// empty), unless `init` gives a store of its own with `wisp::store`.
 pub fn client<A: App>() -> Client<A> {
+    crate::store::memory();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -37,6 +43,7 @@ pub fn client<A: App>() -> Client<A> {
         runtime,
         cookies: Vec::new(),
         auth: None,
+        next: Vec::new(),
         app: PhantomData,
     }
 }
@@ -79,7 +86,8 @@ impl<A: App> Client<A> {
         self.send(Request::new("DELETE", target))
     }
 
-    fn send_json(&mut self, method: &str, target: &str, json: &str) -> Reply {
+    /// A request of any method with a JSON body.
+    pub fn send_json(&mut self, method: &str, target: &str, json: &str) -> Reply {
         let mut req = Request::new(method, target);
         req.header("content-type", "application/json");
         req.body = json.as_bytes().to_vec();
@@ -91,8 +99,17 @@ impl<A: App> Client<A> {
         self.auth = Some(format!("Bearer {token}"));
     }
 
+    /// Sends a header with the next request only:
+    /// `app.header("if-match", &etag); app.put_json(..)`.
+    pub fn header(&mut self, name: &str, value: &str) {
+        self.next.push((name.into(), value.into()));
+    }
+
     /// Any request, with the client's cookies (and bearer token) added.
     pub fn send(&mut self, mut req: Request) -> Reply {
+        for (n, v) in std::mem::take(&mut self.next) {
+            req.header(&n, &v);
+        }
         if let Some(auth) = &self.auth
             && !req
                 .headers

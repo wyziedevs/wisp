@@ -16,6 +16,16 @@ askama = "0.16"
 axum = "0.8"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net"] }
+# The TechEmpower top tier, pinned.
+bytes = "1"
+http-body-util = "=0.1.5"
+hyper = { version = "=1.11.1", features = ["server", "http1"] }
+hyper-util = { version = "=0.1.21", features = ["tokio"] }
+may = "=0.3.51"
+may_minihttp = "=0.1.11"
+ntex = { version = "=3.12.3", features = ["neon"] }
+serde_json = "1"
+xitca-web = { version = "=0.8.3", features = ["json"] }
 
 [workspace]
 

@@ -31,7 +31,7 @@ let section = cx.path().split('/').nth(1).unwrap_or("");
   </header>
 
   <main>
-    {@render children()}
+    <slot />
   </main>
 
   <footer>

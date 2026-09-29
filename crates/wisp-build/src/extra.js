@@ -3,13 +3,14 @@
 // that does not pays nothing for it: transitions and animate:flip,
 // {:#await} and {:#try}, <wisp:element>, {:...spread}, client:* on an
 // element, bind: on anything but value and checked, components drawn in
-// the browser, use:enhance, $state.snapshot, and Maps and Sets as state.
+// the browser, use:enhance, $state.snapshot, persisted stores, and Maps
+// and Sets as state.
 // It adds its kinds of binding and helpers to live.js's `__wisp`, which
 // calls them.
-import { __wisp as X, page } from 'wisp';
+import { __wisp as X, page, store } from 'wisp';
 
 const { Sig, node, watch, scope, end, untrack, clones, binding, range, cls, css, track, proxy, same, proxied } = X;
-const { defs, instance, script, adopt, painted, place, drop, RAW } = X;
+const { defs, instance, script, adopt, painted, place, drop, RAW, metas, sigOf, keysOf, verOf, changed, bump } = X;
 const trans = new WeakMap(); // element -> { i, o }: its in and out transitions, [kind, options]
 const anims = new WeakMap(); // element -> its running animation
 const reduce = matchMedia('(prefers-reduced-motion: reduce)');
@@ -147,12 +148,15 @@ X.await = (sc, inst, el, L, quiet, [, a]) => {
 };
 
 // {:#try}: one copy, whose `__tr` is { f: 1, e } once what it draws failed.
-// An error while the failure shows goes to the block around.
+// An error while the failure shows goes to the block around; `reset()`,
+// in `{:catch}`, draws the body again.
 X.try = (sc, inst, el, L, quiet) => {
   const st = new Sig({});
   const inner = scope(sc);
   inner.b = (e) => (!st.x.f ? (st.v = { f: 1, e }) : sc.b ? sc.b(e) : console.error(e));
-  clones(inner, inst, el, L, quiet, 'each', () => [st.v], ['__tr']);
+  const R = Object.create(L);
+  R.reset = () => (st.v = {});
+  clones(inner, inst, el, R, quiet, 'each', () => [st.v], ['__tr']);
 };
 
 // <wisp:element this={:tag}>: when the tag changes, a new element takes the
@@ -282,6 +286,7 @@ X.comp = (sc, parent, anchor, L, quiet, [, id, props, binds, events]) => {
   if (depth > 64) return void console.error(`component ${id} nests more than 64 deep`);
   const child = instance(def, id, anchor, parent, depth);
   child.sc.b = sc.b;
+  child.sc.c = 1; // all it draws is a copy
   child.slot = { tpl: anchor, inst: parent, L };
   for (const [name, f] of events) child.events[name] = (v) => untrack(() => f(L, v));
   const where = untrack(() => {
@@ -307,6 +312,36 @@ X.comp = (sc, parent, anchor, L, quiet, [, id, props, binds, events]) => {
       const v = child.P?.[name]?.v;
       untrack(() => Object.is(v, get(L)) || set(L, v));
     });
+};
+
+// persisted(key, initial): a store kept in localStorage under `key`, and in
+// step across tabs. It is saved whenever it changes, in place too. One per
+// key: a script that asks again (each time it starts) gets the same.
+const saved = new Map();
+X.persisted = (key, initial) => {
+  if (saved.has(key)) return saved.get(key);
+  const load = (j) => {
+    try {
+      return j == null ? initial : JSON.parse(j);
+    } catch {
+      return initial;
+    }
+  };
+  let json = null;
+  try {
+    json = localStorage.getItem(key);
+  } catch {}
+  const s = store(load(json));
+  X.sub(() => JSON.stringify(s.value), (j) => {
+    if (j === json) return;
+    json = j;
+    try {
+      localStorage.setItem(key, j);
+    } catch {}
+  });
+  addEventListener('storage', (e) => e.key === key && (s.value = load((json = e.newValue))));
+  saved.set(key, s);
+  return s;
 };
 
 // $state.snapshot: a plain copy, for structuredClone, a library or a log.
@@ -341,23 +376,24 @@ X.shared.enhance = (form, f) => {
 // A Map or a Set in state: get and has track their key, size and
 // iteration the keys, anything else any change; set, add, delete and
 // clear tell what read them.
-X.coll = ({ sig, keys, ver, sigs, bump, changed }, self) => ({
+X.coll = {
   get(t, k) {
-    if (k === RAW) return track(ver), t;
-    if (k == 'size') return track(keys), t.size;
+    const m = metas.get(t);
+    if (k === RAW) return track(verOf(m)), t;
+    if (k == 'size') return track(keysOf(m)), t.size;
     const f = t[k];
     if (typeof f != 'function') return f;
-    if (k == 'get' || k == 'has') return (key) => (track(sig(key)), k == 'has' ? t.has(key) : proxy(t.get(key)));
+    if (k == 'get' || k == 'has') return (key) => (track(sigOf(m, key)), k == 'has' ? t.has(key) : proxy(t.get(key)));
     if (k == 'set' || k == 'add')
       return (key, v) => {
         const had = t.has(key);
         const old = t.get?.(key);
         f.call(t, key, v);
-        if (!had || !same(old, v)) changed(key, !had);
-        return self();
+        if (!had || !same(old, v)) changed(m, key, !had);
+        return m.p;
       };
-    if (k == 'delete') return (key) => t.delete(key) && (changed(key, 1), true);
-    if (k == 'clear') return () => t.size && (t.clear(), sigs.forEach(bump), changed(null, 1));
-    return (...a) => (track(ver), f.apply(t, a));
+    if (k == 'delete') return (key) => t.delete(key) && (changed(m, key, 1), true);
+    if (k == 'clear') return () => t.size && (t.clear(), m.s?.forEach(bump), changed(m, null, 1));
+    return (...a) => (track(verOf(m)), f.apply(t, a));
   },
-});
+};

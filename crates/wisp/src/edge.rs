@@ -23,7 +23,7 @@
 //!   request's id, or `u32::MAX` for `init`.
 //! - `wisp_poll()`: after a trap, polls the tasks woken meanwhile.
 //!
-//! Imports (module `wisp`): `random(ptr, len)`, `log(ptr, len)`, `reply(id, ptr, len)` (the reply to
+//! Imports (module `wisp`): `random(ptr, len)`, `now() -> f64` (seconds since 1970), `log(ptr, len)`, `reply(id, ptr, len)` (the reply to
 //! request `id`, as `wisp_fetched` has it; a first line `200 stream` means the
 //! body follows as `chunk(id, ptr, len)` calls, the last one empty; a chunk
 //! returns 0 when the client is behind, and none follows until `wisp_pull`),
@@ -63,6 +63,13 @@ unsafe extern "C" {
     #[link_name = "chunk"]
     safe fn send_chunk(id: u32, ptr: *const u8, len: usize) -> u32;
     safe fn timer(id: u32, ms: u32);
+    /// Seconds since 1970, the host's clock (`std`'s has none here).
+    safe fn now() -> f64;
+}
+
+/// Whole seconds since 1970.
+pub(crate) fn unix_seconds() -> u64 {
+    now() as u64
 }
 
 type Task = Pin<Box<dyn Future<Output = ()>>>;

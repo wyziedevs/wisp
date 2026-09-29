@@ -55,7 +55,11 @@ together are drawn together, in a microtask.
 </script>
 ```
 
-Clicking one item writes one class and one number, nothing else.
+Clicking one item writes one class and one number, nothing else. And
+`x === e` in markup, for a state variable `x`, runs again only where the
+answer changes: with `class:on="selected === row.id"`, a new `selected`
+redraws two rows, not the list. An item's key is tracked too: change it in
+place and the item moves.
 
 | Rune | Meaning |
 |---|---|
@@ -223,6 +227,7 @@ i}` counts. There is also the `<template each="item, i in list">` and
   <Chart data={:points} />                          <!-- an error drawing it… -->
 {:catch error}
   <p>Chart failed: {:error.message}</p>             <!-- …shows this instead -->
+  <button on:click="reset()">Retry</button>         <!-- draws the chart again -->
 {:/try}
 ```
 
@@ -295,6 +300,8 @@ A component inside a client block, or given a `{:…}` value, a `bind:` or an
 ```
 
 - Props are browser values. A `{…}` Rust prop there is an error.
+- `{:...props}` gives each key of an object as a prop, where it stands:
+  `<Item {:...item} label="x" />` (`label` wins).
 - `bind:count` writes back to the parent.
 - `emit('bump', x)` fires the parent's `on:bump`; the handler sees `x` as `event`.
 - A component drawn in the browser can only use text, directives, `{:…}`,
@@ -335,7 +342,9 @@ server paints a literal default.
 <Pill label="new" tone="warm" title="Just in" />      <!-- title goes to rest -->
 ```
 
-Such props cannot be used in Rust (`{…}`); declare `{@props}` for that.
+Where Rust renders it, such a prop shows as the browser would show it
+(`{label}`, `title={label}`); to work with it in Rust (`{#if}`, a method),
+declare it in `{@props}` with its type.
 
 ## State helpers
 
@@ -420,11 +429,12 @@ On a component, `client:*` needs the component to have browser code.
 
 The runtime is two files: `live.js` (about 9 KB compressed), and
 `/_app/c/extra.js` (transitions, await and try blocks, components the
-browser draws, `bind:group` and the like), which only the modules that use
-them import. A keyed list is kept in place with the fewest moves; events
-bubble to one listener; a list's template is prepared once and cloned.
-On the js-framework-benchmark operations (`/a2/bench` in the test app, and
-`src/lib/bench.js` to time it) it runs at about 1.3x the time of
+browser draws, `bind:group`, persisted stores and the like), which only
+the modules that use them import. A keyed list is kept in place with the
+fewest moves; events bubble to one listener; a list's template is prepared
+once and cloned, and each copy's bindings run as one node. On the
+js-framework-benchmark operations (`/a2/bench` in the test app, and
+`src/lib/bench.js` to time it) it runs at about 1.2x the time of
 hand-written DOM code, where Svelte 5 and Solid run at about 1.1x.
 
 ## Morphs keep state
@@ -529,8 +539,6 @@ the console with the `.wisp` file and line.
 - Deep state tracks plain objects, arrays, maps and sets, and classes with
   `$state` fields. A `Date` or another class's instance is not tracked
   inside: assign it again (`d = d`) to redraw.
-- A key is read when the list changes: changing an item's key in place
-  does not move it.
 
 ## Less Rust boilerplate
 

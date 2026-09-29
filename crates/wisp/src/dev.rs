@@ -7,10 +7,11 @@
 
 use crate::App;
 use crate::cx::Method;
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
 
 /// True once any template has been swapped; keeps `chunk` to one atomic
@@ -118,7 +119,7 @@ fn swap<A: App>(body: &[u8]) -> Result<(), &'static str> {
 
 /// One request in the dev log, lined up under `wisp dev`'s own lines: the
 /// request, its status, the time it took, for a 5xx what went wrong, and
-/// whether a handler blocked its thread. The status is yellow for a 4xx and
+/// whether a handler blocked its thread, and the request's id if it has one. The status is yellow for a 4xx and
 /// red for a 5xx, with the number beside it, so color is never the only sign.
 pub(crate) fn log_request(
     method: &str,
@@ -127,6 +128,7 @@ pub(crate) fn log_request(
     took: Duration,
     failure: Option<&str>,
     blocked: Option<Duration>,
+    id: Option<&str>,
 ) {
     let paint = |code: &str, s: &str| {
         if color() {
@@ -146,6 +148,10 @@ pub(crate) fn log_request(
         paint(tint, &status.to_string()),
         paint("2", &ms)
     );
+    if let Some(id) = id {
+        line.push_str("  ");
+        line.push_str(&paint("2", id));
+    }
     if let Some(f) = failure {
         line.push_str("\n      ");
         line.push_str(&paint("31", f));
@@ -198,4 +204,43 @@ pub(crate) fn read_file(root: &str, path: &str) -> Option<(Vec<u8>, String)> {
         .map(|e| e.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default();
     Some((bytes, ext))
+}
+
+/// Whether `static/` had a file at `path` (a decoded URL path) when first
+/// asked. A page's request checks this instead of the disk: a failed open
+/// was most of a small page's time in dev (tens of µs on Windows). A file
+/// added later is still found at any path that is not a page's.
+pub(crate) fn listed(root: &str, path: &str) -> bool {
+    static FILES: OnceLock<HashSet<String>> = OnceLock::new();
+    FILES
+        .get_or_init(|| {
+            let mut files = HashSet::new();
+            list(
+                &Path::new(root).join("static"),
+                &mut String::new(),
+                0,
+                &mut files,
+            );
+            files
+        })
+        .contains(path)
+}
+
+fn list(dir: &Path, url: &mut String, depth: usize, files: &mut HashSet<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let len = url.len();
+        url.push('/');
+        url.push_str(&entry.file_name().to_string_lossy());
+        let path = entry.path();
+        if !path.is_dir() {
+            files.insert(url.clone());
+        } else if depth < 32 {
+            // Bounded: a symlink loop would recurse forever.
+            list(&path, url, depth + 1, files);
+        }
+        url.truncate(len);
+    }
 }

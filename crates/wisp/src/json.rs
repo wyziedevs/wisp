@@ -482,8 +482,13 @@ pub fn from_json<T: FromJson>(body: &[u8]) -> crate::Result<T> {
         return T::missing().ok_or_else(|| Error::new(400, "Expected a JSON body"));
     }
     let value = parse(text).map_err(|e| Error::new(400, format!("Invalid JSON: {e}")))?;
+    from_value(&value)
+}
+
+/// Reads a parsed value into a `T`, with [`from_json`]'s 422.
+pub(crate) fn from_value<T: FromJson>(value: &Value) -> crate::Result<T> {
     let mut problems = Problems::default();
-    match T::from_json(&value, &mut problems) {
+    match T::from_json(value, &mut problems) {
         Some(v) if problems.is_empty() => Ok(v),
         _ => Err(Error::invalid_fields(problems.list)),
     }
@@ -522,6 +527,11 @@ impl FromJson for bool {
             Value::Bool(b) => Some(*b),
             other => expected(p, "true or false", other),
         }
+    }
+
+    /// Left out is `false`, as an unticked checkbox is in a form.
+    fn missing() -> Option<bool> {
+        Some(false)
     }
 }
 
@@ -611,6 +621,11 @@ impl<T: FromJson> FromJson for Vec<T> {
             }
         }
         ok.then_some(out)
+    }
+
+    /// Left out is empty, as a form's repeated field sent no times is.
+    fn missing() -> Option<Vec<T>> {
+        Some(Vec::new())
     }
 }
 

@@ -1,7 +1,7 @@
 //! Release builds serve the browser runtime (`src/client/wisp.js`,
-//! `live.js`) minified: no comments, and only the whitespace JavaScript
-//! needs (see `wisp_build::minify_js`). Dev builds serve the files as
-//! written, for debugging.
+//! `live.js`) minified: no comments, only the whitespace JavaScript needs,
+//! and short names (see `wisp_build::minify_js`). Dev builds serve the
+//! files as written, for debugging.
 
 use std::path::Path;
 

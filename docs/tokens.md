@@ -24,7 +24,10 @@ Counted: every file a developer (or an agent) writes by hand, beyond what
 the framework's generator gives, plus each file's path (writing a file means
 naming it, so two files cost more than one). Manifests (`Cargo.toml`,
 `package.json`, `Gemfile`) are left out everywhere; for Rails the generator
-commands are counted, since the agent must write them.
+commands are counted, since the agent must write them, and the lines it
+adds or changes in generated files. Rails' api is `rails g scaffold` in an
+`--api` app, which writes the controller; the same api written by hand is
+the last row.
 
 There is no tokenizer offline, so the count is an estimate of a BPE code
 tokenizer (cl100k-like): a newline with its indentation is 1 token; spaces
@@ -46,23 +49,54 @@ Estimated tokens (files):
 
 | Framework | counter | todo | api | blog | total |
 |---|---:|---:|---:|---:|---:|
-| **Wisp** | **44** (1) | **307** (1) | 606 (4) | **302** (4) | 1259 |
+| **Wisp** | **44** (1) | **191** (1) | **59** (1) | **292** (4) | **586** |
+| Wisp, previous version | 44 (1) | 307 (1) | 606 (4) | 302 (4) | 1259 |
 | Wisp, before blocks | 44 (1) | 385 (2) | 670 (5) | 381 (6) | 1480 |
 | SvelteKit | 49 (1) | 373 (2) | 622 (4) | 389 (5) | 1433 |
 | Next.js | 77 (1) | 501 (4) | 722 (4) | 461 (4) | 1761 |
 | Nuxt | 49 (1) | 473 (5) | 572 (7) | 332 (5) | 1426 |
 | Axum | 248 (1) | 641 (1) | 1056 (1) | 462 (1) | 2407 |
 | FastAPI | 123 (1) | 408 (2) | 494 (1) | 446 (4) | 1471 |
-| Rails | 132 (3) | 340 (5) | **357** (4) | 357 (7) | **1186** |
+| Rails | 132 (3) | 340 (5) | 132 (4) | 357 (7) | 961 |
+| Rails, api by hand | 132 (3) | 340 (5) | 357 (4) | 357 (7) | 1186 |
 
-Wisp is the shortest for pages (counter, todo, blog) and 15% shorter than it
-was. It trails on the JSON API: Rails' Active Record writes the storage,
-validation and JSON for it, and FastAPI's pydantic models merge a partial
-update in one line; Wisp spells both out.
+Wisp is the shortest on every app, and in all 39% shorter than the next
+(Rails with its scaffold) and 54% shorter than it was. The api is a type:
+Rails' scaffold is the only other that comes close, with a generator
+command, a model, a route and a controller to edit. Characters / 4 ranks
+them the same way (Wisp 346, Rails 726, SvelteKit 959).
+
+The apps are not equal in what they do, and the difference favors Wisp's
+api. Its 59 tokens keep the notes across restarts and crashes (a log file
+per table in `WISP_DATA`); of the others only Rails does (SQLite, through
+Active Record), and the rest keep them in memory, as the task allows. The
+same 59 tokens also answer filters by field, sorting, cursor pages, field
+selection, ETags with 304 and 412, bulk creates and idempotent retries,
+which no other version here has. Asked of the others, those would cost
+them more tokens; in Wisp they cost none. What a real API adds in Wisp is
+counted in the usual way: a `created_at: String` field is 6 tokens, a hook
+such as `fn before_create(note: &mut Note) -> Result { Ok(()) }` 22 with
+its body, and keeping every table in SQLite instead of log files is a
+`wisp::Store` of 373 (docs/api.md), written once per app.
 
 ## What changed to get here
 
-Where Wisp cost more, the framework changed, not the apps:
+Where Wisp cost more, the framework changed, not the apps. This version:
+
+| Was | Now | Saves |
+|---|---|---|
+| a store, a model, two `+server.rs` with five handlers, an auth hook | `#[derive(Rest)]` on the struct, `#[rest(write = "API_KEY")]`, saved across restarts | 547 of the api's 606 |
+| `[id=int]/+server.rs` beside `+server.rs` | a handler that takes `id` serves `/[id]`; `list` is the folder's GET | a file, its path, its imports |
+| `if text.trim().is_empty() \|\| text.len() > 100 { return invalid(..) }` | `#[validate(len = 1..=100)] text: String` on the action | the check and its message |
+| `<form method="post" action="?/add">` | `<form action="?/add">` | 5 per form |
+| `value={cx.input("text")}` | nothing: an action form's inputs keep what was sent | 12 per input |
+| `{#if let Some(e) = cx.problem("text")}<p>{e}</p>{/if}` | `{cx.problem("text")}`: an `Option` shows nothing for `None` | 21 |
+| `<form …><button name="id" value={t.id}>x</button></form>` | `<button action="?/remove&id={t.id}">x</button>` | 11 |
+| `Shared<Vec<String>>`, indexes | `Table<String>`: ids, `add`, `all`, `remove` | 8, and stable ids |
+| `<head><title>…</title></head>` | `<title>…</title>` | 6 |
+| `{@render children()}` | `<slot />` | 4 |
+
+Before that:
 
 | Was | Now | Saves |
 |---|---|---|
@@ -76,39 +110,45 @@ Where Wisp cost more, the framework changed, not the apps:
 | `mod notes;` in `main.rs`, `use crate::notes::…` | `src/notes.rs` is a module; routes say `notes::` | a file edit and `crate::` |
 | `<wisp:head>` | `<head>` | 4 per page |
 
-Every old form still works.
+Every old form still works, but for one: a `+server.rs` handler that took
+an `id` from the query, in a folder with no `[id]`, now answers at `/[id]`.
 
 ## The Wisp versions
+
+```rust
+// api: src/routes/api/notes/+server.rs
+#[derive(Rest)]
+#[rest(write = "API_KEY")]
+struct Note {
+    #[validate(len = 1..=200)]
+    title: String,
+    done: bool,
+}
+```
 
 ```html
 <!-- todo: src/routes/+page.wisp -->
 ---
-static TODOS: Shared<Vec<String>> = Shared::new(Vec::new());
+static TODOS: Table<String> = Table::new();
 
 #[action]
-fn add(text: String) -> Result {
-    if text.trim().is_empty() || text.len() > 100 {
-        return invalid("text", "Write 1 to 100 characters");
-    }
-    TODOS.lock().push(text);
-    Ok(())
+fn add(#[validate(len = 1..=100)] text: String) {
+    TODOS.add(text);
 }
 
 #[action]
-fn remove(i: usize) {
-    TODOS.lock().remove(i);
+fn remove(id: u64) {
+    TODOS.remove(id);
 }
 ---
-<form method="post" action="?/add">
-  <input name="text" value={cx.input("text")}>
+<form action="?/add">
+  <input name="text">
   <button>Add</button>
-  {#if let Some(e) = cx.problem("text")}<p>{e}</p>{/if}
+  {cx.problem("text")}
 </form>
 <ul>
-  {#each TODOS.lock().iter() as todo, i}
-    <li>{todo}
-      <form method="post" action="?/remove"><button name="i" value={i}>x</button></form>
-    </li>
+  {#each TODOS.all() as todo}
+    <li>{todo} <button action="?/remove&id={todo.id}">x</button></li>
   {/each}
 </ul>
 ```
@@ -118,7 +158,7 @@ fn remove(i: usize) {
 ---
 let post = posts::POSTS.iter().find(|p| p.slug == slug).or_404()?;
 ---
-<head><title>{post.title}</title></head>
+<title>{post.title}</title>
 <h1>{post.title}</h1>
 <p>{post.body}</p>
 ```
