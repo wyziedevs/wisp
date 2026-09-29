@@ -185,10 +185,8 @@ where
             .map_err(|s| crate::Error::new(502, reason(s)))?;
         Response::new(content_type.to_string(), body)
     } else {
-        let (tx, rx) = mpsc::channel(16);
+        let (res, tx) = Response::channel(content_type.to_string());
         tokio::spawn(forward(body, tx));
-        let mut res = Response::new(content_type.to_string(), Vec::new());
-        res.stream = Some(rx);
         res
     };
     res.status = parts.status.as_u16();
@@ -210,7 +208,7 @@ where
 }
 
 /// A body's chunks, sent on until it ends, fails, or nobody is listening.
-async fn forward<B: http_body::Body>(body: B, tx: mpsc::Sender<Vec<u8>>) {
+async fn forward<B: http_body::Body>(body: B, tx: crate::Sender) {
     use bytes::Buf;
     let mut body = std::pin::pin!(body);
     while let Some(Ok(frame)) = poll_fn(|cx| body.as_mut().poll_frame(cx)).await {

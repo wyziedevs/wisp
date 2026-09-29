@@ -11,24 +11,25 @@
 
 use crate::json::FromJson;
 use crate::store::{self, Store};
-use crate::{Json, Result};
+use crate::{Json, Result, Shared};
 use std::collections::BTreeMap;
 use std::fmt;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 /// Rows under ids from 1 up (or random ones), kept in order of their ids.
-/// A lock whose holder panicked leaves the rows as they were.
+/// Reads share the lock; a change has it alone. A lock whose holder
+/// panicked leaves the rows as they were.
 pub struct Table<T> {
-    rows: Mutex<Rows<T>>,
-    /// The name a saved table has in the store; `None` keeps it in memory.
-    name: Option<&'static str>,
-    codec: Option<Codec<T>>,
+    rows: RwLock<Rows<T>>,
+    /// Where a saved table keeps its rows; `None` keeps them in memory.
+    saved: Option<Saved<T>>,
     /// Ids are random numbers under 2^53, not counted up.
     random: bool,
 }
 
-/// How a saved table's rows become JSON and back.
-struct Codec<T> {
+/// A saved table's name in the store, and how its rows become JSON and back.
+struct Saved<T> {
+    name: &'static str,
     write: fn(&T, &mut String),
     read: fn(&[u8]) -> Result<T>,
 }
@@ -36,10 +37,17 @@ struct Codec<T> {
 pub(crate) struct Rows<T> {
     pub(crate) last: u64,
     pub(crate) map: BTreeMap<u64, T>,
-    /// Read from the store (or found to have none).
-    loaded: bool,
-    /// Where changes are saved, once loaded.
-    store: Option<&'static dyn Store>,
+    state: State,
+}
+
+#[derive(Clone, Copy)]
+enum State {
+    /// A saved table whose rows are not read from the store yet.
+    Unread,
+    /// Kept in memory only.
+    Memory,
+    /// Read from the store, which keeps each change.
+    Stored(&'static dyn Store),
 }
 
 /// A row and its id. It reads as its value (`row.title`, `{row}`), and as
@@ -78,7 +86,7 @@ impl<T: FromJson> FromJson for Row<T> {
                 return None;
             }
         };
-        // `{"id":1,"value":…}`, for a value that is not an object.
+        // `{"id":1,"value":â€¦}`, for a value that is not an object.
         let value = match v.get("value") {
             Some(x) if matches!(v, crate::Value::Object(m) if m.len() == 2) => p.read("value", x),
             _ => T::from_json(v, p),
@@ -87,8 +95,26 @@ impl<T: FromJson> FromJson for Row<T> {
     }
 }
 
-/// `{"id":1,…the value's members}`; a value that is not an object is
-/// `{"id":1,"value":…}`.
+/// [`row_json`] of a value already written as `json`.
+pub(crate) fn splice(out: &mut String, id: u64, json: &str) {
+    out.push_str("{\"id\":");
+    id.json(out);
+    match json.strip_prefix('{') {
+        Some(rest) if rest.starts_with('}') => out.push('}'),
+        Some(rest) => {
+            out.push(',');
+            out.push_str(rest);
+        }
+        None => {
+            out.push_str(",\"value\":");
+            out.push_str(json);
+            out.push('}');
+        }
+    }
+}
+
+/// `{"id":1,â€¦the value's members}`; a value that is not an object is
+/// `{"id":1,"value":â€¦}`.
 pub(crate) fn row_json<T: Json + ?Sized>(out: &mut String, id: u64, value: &T) {
     out.push_str("{\"id\":");
     id.json(out);
@@ -107,21 +133,27 @@ pub(crate) fn row_json<T: Json + ?Sized>(out: &mut String, id: u64, value: &T) {
 
 /// Names of the saved tables loaded so far, with the table each belongs to:
 /// two tables under one name would write over each other's rows.
-static NAMES: Mutex<Vec<(&'static str, usize)>> = Mutex::new(Vec::new());
+static NAMES: Shared<Vec<(&'static str, usize)>> = Shared::new(Vec::new());
 
 impl<T> Table<T> {
     /// A table kept in memory: its rows are gone when the server stops.
     pub const fn new() -> Table<T> {
+        Table::make(None, false)
+    }
+
+    const fn make(saved: Option<Saved<T>>, random: bool) -> Table<T> {
+        let state = match saved {
+            Some(_) => State::Unread,
+            None => State::Memory,
+        };
         Table {
-            rows: Mutex::new(Rows {
+            rows: RwLock::new(Rows {
                 last: 0,
                 map: BTreeMap::new(),
-                loaded: false,
-                store: None,
+                state,
             }),
-            name: None,
-            codec: None,
-            random: false,
+            saved,
+            random,
         }
     }
 
@@ -142,67 +174,87 @@ impl<T> Table<T> {
     where
         T: Json + FromJson,
     {
-        let mut t = Table::new();
-        t.name = name;
-        t.codec = Some(Codec {
-            write: <T as Json>::json,
-            read: crate::json::from_json::<T>,
-        });
-        t.random = random;
-        t
+        let saved = match name {
+            Some(name) => Some(Saved {
+                name,
+                write: <T as Json>::json,
+                read: crate::json::from_json::<T>,
+            }),
+            None => None,
+        };
+        Table::make(saved, random)
     }
 
-    /// The rows, locked, read from the store the first time.
-    pub(crate) fn rows(&self) -> MutexGuard<'_, Rows<T>> {
-        let mut rows = self.rows.lock().unwrap_or_else(|e| e.into_inner());
-        if !rows.loaded {
-            if let Some(store) = store::current() {
-                self.load(&mut rows, store);
+    /// The rows, locked for reading, read from the store the first time.
+    pub(crate) fn read(&self) -> RwLockReadGuard<'_, Rows<T>> {
+        loop {
+            let rows = self.rows.read().unwrap_or_else(|e| e.into_inner());
+            if !matches!(rows.state, State::Unread) {
+                return rows;
             }
-            rows.loaded = true;
+            drop(rows);
+            drop(self.write());
+        }
+    }
+
+    /// The rows, locked for a change, read from the store the first time.
+    pub(crate) fn write(&self) -> RwLockWriteGuard<'_, Rows<T>> {
+        let mut rows = self.rows.write().unwrap_or_else(|e| e.into_inner());
+        if matches!(rows.state, State::Unread) {
+            self.load(&mut rows, store::current());
         }
         rows
     }
 
+    /// Reads a saved table's rows from the store now, rather than on first
+    /// use: at startup, after `init` has set the store. A store that fails
+    /// then stops the server before it answers anything.
+    #[doc(hidden)]
+    pub fn ready(&self) {
+        drop(self.write());
+    }
+
     /// Reads a saved table's rows from `store`, which keeps its changes
-    /// from then on.
-    fn load(&self, rows: &mut Rows<T>, store: &'static dyn Store) {
-        if let (Some(name), Some(codec)) = (self.name, &self.codec) {
-            {
-                let mut names = NAMES.lock().unwrap_or_else(|e| e.into_inner());
-                let me = self as *const Table<T> as usize;
-                match names.iter().find(|(n, _)| *n == name) {
-                    Some((_, t)) if *t != me => panic!(
-                        "two tables are named `{name}`, and would save over each other: \
-                         name one with #[rest(table = \"...\")] or Table::saved(\"...\")"
-                    ),
-                    Some(_) => {}
-                    None => names.push((name, me)),
-                }
-            }
-            let saved = store
-                .load(name)
-                .unwrap_or_else(|e| panic!("could not read table `{name}`: {}", e.detail()));
-            for (id, json) in saved {
-                if id == 0 {
-                    // The last id given, kept when the row that had it was
-                    // removed, so ids are not given twice.
-                    rows.last = rows.last.max(json.parse().unwrap_or(0));
-                    continue;
-                }
-                let value = (codec.read)(json.as_bytes()).unwrap_or_else(|e| {
-                    panic!(
-                        "table `{name}`: row {id} is not a {} any more ({}). A field added \
-                         since it was saved must be an `Option` (or a `bool`), so old rows read.",
-                        std::any::type_name::<T>(),
-                        e.message()
-                    )
-                });
-                rows.last = rows.last.max(id);
-                rows.map.insert(id, value);
-            }
-            rows.store = Some(store);
+    /// from then on; without one, the table is kept in memory.
+    fn load(&self, rows: &mut Rows<T>, store: Option<&'static dyn Store>) {
+        let (Some(saved), Some(store)) = (&self.saved, store) else {
+            rows.state = State::Memory;
+            return;
+        };
+        let name = saved.name;
+        let me = self as *const Table<T> as usize;
+        let mut names = NAMES.lock();
+        match names.iter().find(|(n, _)| *n == name) {
+            Some((_, t)) if *t != me => panic!(
+                "two tables are named `{name}`, and would save over each other: \
+                 name one with #[rest(table = \"...\")] or Table::saved(\"...\")"
+            ),
+            Some(_) => {}
+            None => names.push((name, me)),
         }
+        drop(names);
+        let kept = store
+            .load(name)
+            .unwrap_or_else(|e| panic!("could not read table `{name}`: {}", e.detail()));
+        for (id, json) in kept {
+            if id == 0 {
+                // The last id given, kept when the row that had it was
+                // removed, so ids are not given twice.
+                rows.last = rows.last.max(json.parse().unwrap_or(0));
+                continue;
+            }
+            let value = (saved.read)(json.as_bytes()).unwrap_or_else(|e| {
+                panic!(
+                    "table `{name}`: row {id} is not a {} any more ({}). A field added \
+                     since it was saved must be an `Option` (or a `bool`), so old rows read.",
+                    std::any::type_name::<T>(),
+                    e.message()
+                )
+            });
+            rows.last = rows.last.max(id);
+            rows.map.insert(id, value);
+        }
+        rows.state = State::Stored(store);
     }
 
     /// A new row's id.
@@ -220,37 +272,40 @@ impl<T> Table<T> {
     }
 
     /// The JSON a saved table keeps for `value`; empty for one in memory.
-    pub(crate) fn encode(&self, rows: &Rows<T>, value: &T) -> String {
+    fn encode(&self, rows: &Rows<T>, value: &T) -> String {
         let mut json = String::new();
-        if let (Some(_), Some(codec)) = (rows.store, &self.codec) {
-            (codec.write)(value, &mut json);
+        if let (State::Stored(_), Some(saved)) = (rows.state, &self.saved) {
+            (saved.write)(value, &mut json);
         }
         json
     }
 
-    /// Saves row `id` of a saved table: `json` from [`Table::encode`], or
-    /// `None` when it is removed. A store that fails panics, which is the
+    /// Saves row `id` of a saved table: `json` is its value's JSON, `None`
+    /// when it is removed. A store that fails panics, which is the
     /// request's 500. What is in memory may then be ahead of the store, so
     /// it is read again on next use.
-    pub(crate) fn write(&self, rows: &mut Rows<T>, id: u64, json: Option<&str>) {
-        let (Some(store), Some(name)) = (rows.store, self.name) else {
+    pub(crate) fn save(&self, rows: &mut Rows<T>, id: u64, json: Option<&str>) {
+        let (State::Stored(store), Some(saved)) = (rows.state, &self.saved) else {
             return;
         };
-        if let Err(e) = store.save(name, id, json) {
+        if let Err(e) = store.save(saved.name, id, json) {
             rows.map.clear();
             rows.last = 0;
-            rows.loaded = false;
-            rows.store = None;
-            panic!("could not save row {id} of table `{name}`: {}", e.detail());
+            rows.state = State::Unread;
+            panic!(
+                "could not save row {id} of table `{}`: {}",
+                saved.name,
+                e.detail()
+            );
         }
     }
 
     /// Keeps `value` under a new id, which it returns.
     pub fn add(&self, value: T) -> u64 {
-        let mut rows = self.rows();
+        let mut rows = self.write();
         let id = self.next_id(&mut rows);
         let json = self.encode(&rows, &value);
-        self.write(&mut rows, id, Some(&json));
+        self.save(&mut rows, id, Some(&json));
         rows.map.insert(id, value);
         id
     }
@@ -262,42 +317,57 @@ impl<T> Table<T> {
         if !rows.map.contains_key(&id) {
             return None;
         }
-        self.write(rows, id, None);
+        self.save(rows, id, None);
         if id == rows.last && !self.random {
-            self.write(rows, 0, Some(&id.to_string()));
+            self.save(rows, 0, Some(&id.to_string()));
         }
         rows.map.remove(&id)
     }
 
     /// Takes the row out; `None` when there is none.
     pub fn remove(&self, id: u64) -> Option<T> {
-        self.delete(&mut self.rows(), id)
+        self.delete(&mut self.write(), id)
     }
 
     /// Changes the row in place: `NOTES.update(id, |n| n.done = true)`.
     /// `None` when there is none.
     pub fn update<R>(&self, id: u64, f: impl FnOnce(&mut T) -> R) -> Option<R> {
-        let mut rows = self.rows();
+        let mut rows = self.write();
         let r = f(rows.map.get_mut(&id)?);
         let json = self.encode(&rows, &rows.map[&id]);
-        self.write(&mut rows, id, Some(&json));
+        self.save(&mut rows, id, Some(&json));
         Some(r)
     }
 
+    /// Reads the row where it is, without a copy: `NOTES.with(id, |n|
+    /// n.title.len())`. `f` runs with the table locked, so it must not
+    /// change the table.
+    pub fn with<R>(&self, id: u64, f: impl FnOnce(&T) -> R) -> Option<R> {
+        self.read().map.get(&id).map(f)
+    }
+
+    /// Calls `f` with each row's id and value, in order of their ids,
+    /// without copies. `f` runs with the table locked, so it must not
+    /// change the table.
+    pub fn each(&self, mut f: impl FnMut(u64, &T)) {
+        for (&id, v) in &self.read().map {
+            f(id, v);
+        }
+    }
+
     pub fn len(&self) -> usize {
-        self.rows().map.len()
+        self.read().map.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.rows().map.is_empty()
+        self.read().map.is_empty()
     }
 }
 
 impl<T: Clone> Table<T> {
     /// A copy of the row.
     pub fn get(&self, id: u64) -> Option<Row<T>> {
-        let rows = self.rows();
-        let value = rows.map.get(&id)?.clone();
+        let value = self.with(id, T::clone)?;
         Some(Row { id, value })
     }
 
@@ -309,7 +379,7 @@ impl<T: Clone> Table<T> {
 
     /// A copy of the first row for which `f` is true.
     pub fn find(&self, f: impl Fn(&T) -> bool) -> Option<Row<T>> {
-        let rows = self.rows();
+        let rows = self.read();
         let (&id, v) = rows.map.iter().find(|(_, v)| f(v))?;
         Some(Row {
             id,
@@ -319,7 +389,7 @@ impl<T: Clone> Table<T> {
 
     /// A copy of every row for which `f` is true: `NOTES.filter(|n| !n.done)`.
     pub fn filter(&self, f: impl Fn(&T) -> bool) -> Vec<Row<T>> {
-        let rows = self.rows();
+        let rows = self.read();
         rows.map
             .iter()
             .filter(|(_, v)| f(v))
@@ -342,6 +412,7 @@ mod tests {
     use super::*;
     use crate::Value;
     use crate::json;
+    use std::sync::Mutex;
 
     struct Note {
         title: String,
@@ -374,6 +445,9 @@ mod tests {
         );
         assert_eq!(t.find(|s| s == "b").map(|r| r.id), Some(2));
         assert_eq!(t.filter(|s| s.ends_with('!')).len(), 1);
+        let mut ids = Vec::new();
+        t.each(|id, _| ids.push(id));
+        assert_eq!(ids, [2, 3]);
         let back: Vec<Row<String>> = json::from_json(json::to_json(&all).as_bytes()).unwrap();
         assert_eq!(back, all);
         let mut out = String::new();
@@ -389,6 +463,12 @@ mod tests {
         out.clear();
         row_json(&mut out, 4, &Value::Object(Vec::new()));
         assert_eq!(out, r#"{"id":4}"#);
+        for json in [r#"{"title":"x"}"#, "{}", "\"b\"", "[1]"] {
+            let (mut a, mut b) = (String::new(), String::new());
+            row_json(&mut a, 5, &json::parse(json).unwrap());
+            splice(&mut b, 5, json);
+            assert_eq!(a, b);
+        }
     }
 
     /// A store in memory, as a database of the app's own would be.
@@ -425,10 +505,7 @@ mod tests {
         store::memory();
         let mem: &'static Mem = Box::leak(Box::new(Mem(Mutex::new(Vec::new()))));
         let t: Table<String> = Table::saved("saved_tables_come_back");
-        let mut rows = t.rows.lock().unwrap();
-        t.load(&mut rows, mem);
-        rows.loaded = true;
-        drop(rows);
+        t.load(&mut t.rows.write().unwrap(), Some(mem));
         let a = t.add("a".into());
         t.add("b".into());
         t.update(a, |s| s.push('!'));
@@ -437,21 +514,19 @@ mod tests {
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| t.add("fail".into())));
         assert!(failed.is_err());
         assert!(
-            !t.rows.lock().unwrap_or_else(|e| e.into_inner()).loaded,
+            matches!(
+                t.rows.read().unwrap_or_else(|e| e.into_inner()).state,
+                State::Unread
+            ),
             "read again, as the store has it"
         );
 
         // Read again, as after a restart (the name is the same table's).
         let again: &'static Table<String> =
             Box::leak(Box::new(Table::saved("saved_tables_come_back")));
-        {
-            let mut names = NAMES.lock().unwrap();
-            names.retain(|(n, _)| *n != "saved_tables_come_back");
-        }
-        let mut rows = again.rows.lock().unwrap();
-        again.load(&mut rows, mem);
-        rows.loaded = true;
-        drop(rows);
+        NAMES.lock().retain(|(n, _)| *n != "saved_tables_come_back");
+        again.load(&mut again.rows.write().unwrap(), Some(mem));
+        assert_eq!(again.with(1, String::len), Some(2));
         assert_eq!(
             again.all(),
             [Row {
@@ -462,7 +537,7 @@ mod tests {
         assert_eq!(again.add("c".into()), 3, "ids go on from the last given");
         let other: Table<String> = Table::saved("saved_tables_come_back");
         let twice = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            other.load(&mut other.rows.lock().unwrap(), mem)
+            other.load(&mut other.rows.write().unwrap(), Some(mem))
         }));
         assert!(twice.is_err(), "two tables of one name");
 

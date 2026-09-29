@@ -611,7 +611,6 @@ fn before(cx: &mut Cx) -> Result<()> {
   `cx.take::<T>()` moves it out, so it need not be `Clone`.
 - `cx.bearer()` is the token of an `Authorization: Bearer` header, `cx.host()`
   the `Host`, and `cx.delete_cookie(name)` removes a cookie.
-  `Response::redirect(url)` is a 303 as a `Response`.
 - `cx.flash("Saved")` leaves a message for the next page the visitor sees
   (after a `redirect`, say), whose `load` reads it once with `cx.flashed()`.
 - `src/hooks.rs` is `crate::hooks`, so routes can use its `pub` types. Like
@@ -630,10 +629,7 @@ for server-sent events, uncached and unbuffered by proxies, and
 `Sender::event` writes one event whatever lines it has; a page listens with
 `listen(url, …)` or `new EventSource(url)`. A send fails once the client
 has gone, so `?` on it stops the closure. When the server stops, open
-streams end properly. To write the body from somewhere else,
-`Response::channel(content_type)` and `Response::event_channel()` return
-the response and its `Sender` (what `stream` and `events` returned before
-they took a closure).
+streams end properly.
 
 ```rust
 // src/routes/clock/+server.rs
@@ -710,7 +706,8 @@ and `.wisp-*` classes, so they never touch an app's own CSS.
 
   | Setting                 | What it does                                                       |
   |-------------------------|--------------------------------------------------------------------|
-  | `PORT`, `HOST`          | Where to listen: 3000, on 127.0.0.1 in debug builds and 0.0.0.0 in release |
+  | `PORT`, `HOST`          | Where to listen: 3000, on 127.0.0.1 in dev and 0.0.0.0 otherwise   |
+  | `WISP_DEV`              | Dev mode: `on` in debug builds, `off` in release (5xx details, `static/` from disk, dev log) |
   | `WISP_THREADS`          | Worker threads, one per CPU by default                             |
   | `WISP_BODY_LIMIT`       | The largest request body (`1048576`, `512KB`, `10MB`); 1 MB by default |
   | `WISP_SECRET`           | Signs cookies; at least 32 characters                              |

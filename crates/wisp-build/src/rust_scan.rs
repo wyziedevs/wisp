@@ -10,6 +10,8 @@
 //! something the template cannot read. Other types are left to rustc.
 
 use crate::template::{raw_str_start, skip_char, skip_raw_str, skip_str};
+pub use crate::ty::last_segment;
+use crate::ty::{first_arg, is_ident, is_word, option_inner};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FnItem {
@@ -55,6 +57,8 @@ pub struct ConstItem {
     /// The type as written.
     pub ty: String,
     pub line: usize,
+    /// A `static`, not a `const`: one value for the whole program.
+    pub is_static: bool,
 }
 
 /// What a function hands back, as far as the generated call cares.
@@ -97,6 +101,23 @@ impl Items {
         self.consts.iter().find(|c| c.name == name)
     }
 
+    /// The tables the file keeps, which load when the app starts: each
+    /// `static` of type `Table<…>` and each `#[derive(Rest)]` type's own.
+    /// As paths from a module inside the file's (`super::TODOS`).
+    pub fn tables(&self) -> Vec<String> {
+        let statics = self
+            .consts
+            .iter()
+            .filter(|c| c.is_static && last_segment(&c.ty) == "Table")
+            .map(|c| format!("super::{}", c.name));
+        let rest = self
+            .types
+            .iter()
+            .filter(|t| t.derives.iter().any(|d| d == "Rest"))
+            .map(|t| format!("super::{}::table()", t.name));
+        statics.chain(rest).collect()
+    }
+
     /// Why the file cannot be a route file (or `src/hooks.rs`), if it
     /// cannot: its `load` must return the `Data` the template reads.
     pub fn check(&self) -> Result<(), String> {
@@ -106,7 +127,7 @@ impl Items {
         };
         if !load
             .returns
-            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .split(|c: char| !(c.is_ascii() && is_word(c as u8)))
             .any(|w| w == "Data")
         {
             let returns = if load.returns.is_empty() {
@@ -155,10 +176,7 @@ impl FnItem {
                 continue;
             }
             let name = pat.strip_prefix("mut ").unwrap_or(pat).trim();
-            let plain = name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
-                && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-                && name != "_";
-            if !plain {
+            if !is_ident(name) || name == "_" {
                 return Err(format!(
                     "{}: `{}` takes `{pat}: {ty}`; each parameter but `cx` is read from the request by its name, so it needs one, like `id: u64`",
                     self.line, self.name
@@ -183,70 +201,37 @@ impl FnItem {
     /// `T` of an `Option<T>` it returns (other than `Option<Response>`):
     /// `None` is a 404, `Some(())` a 204.
     pub fn optional_value(&self) -> Option<&str> {
-        let t = self.value_type();
         match self.returns_kind() {
-            Returns::Other if last_segment(t) == "Option" => first_arg(t),
+            Returns::Other => option_inner(self.value_type()),
             _ => None,
         }
     }
 
     /// What it returns, looking through a `Result`.
     pub fn returns_kind(&self) -> Returns {
-        let t = self.value_type();
-        if t.is_empty() || t == "()" {
-            Returns::Nothing
-        } else if last_segment(t) == "Response" && !t.contains('<') {
-            Returns::Response
-        } else if last_segment(t) == "Option"
-            && first_arg(t).is_some_and(|a| last_segment(a) == "Response" && !a.contains('<'))
-        {
-            Returns::MaybeResponse
-        } else {
-            Returns::Other
-        }
+        returns_kind(self.value_type())
+    }
+}
+
+/// What a function whose value (through a `Result`) is of type `t` returns.
+pub fn returns_kind(t: &str) -> Returns {
+    let response = |t: &str| last_segment(t) == "Response" && !t.contains('<');
+    let t = t.trim();
+    if t.is_empty() || t == "()" {
+        Returns::Nothing
+    } else if response(t) {
+        Returns::Response
+    } else if option_inner(t).is_some_and(response) {
+        Returns::MaybeResponse
+    } else {
+        Returns::Other
     }
 }
 
 /// A `Cx` parameter's type: `&mut Cx`, `&Cx`, `&'a mut wisp::Cx`.
 pub fn is_cx(ty: &str) -> bool {
-    let t = ty.trim().strip_prefix('&').unwrap_or(ty).trim_start();
-    let t = match t.strip_prefix('\'') {
-        Some(rest) => rest.trim_start_matches(|c: char| c.is_ascii_alphanumeric() || c == '_'),
-        None => t,
-    };
-    let t = t
-        .trim_start()
-        .strip_prefix("mut ")
-        .unwrap_or(t.trim_start());
+    let t = crate::ty::unref(ty);
     last_segment(t) == "Cx" && !t.contains('<')
-}
-
-/// `Result<Option<Response>, E>` → `Option<Response>`.
-fn first_arg(t: &str) -> Option<&str> {
-    let open = t.find('<')?;
-    let inner = t[open + 1..].strip_suffix('>')?;
-    let mut depth = 0;
-    for (i, c) in inner.char_indices() {
-        match c {
-            '<' | '(' | '[' => depth += 1,
-            '>' | ')' | ']' => depth -= 1,
-            ',' if depth == 0 => return Some(inner[..i].trim()),
-            _ => {}
-        }
-    }
-    Some(inner.trim())
-}
-
-/// `wisp::Response` → `Response`, `Option<T>` → `Option`.
-pub fn last_segment(t: &str) -> &str {
-    t.split('<')
-        .next()
-        .unwrap_or("")
-        .trim()
-        .rsplit("::")
-        .next()
-        .unwrap_or("")
-        .trim()
 }
 
 /// Top-level `fn` and type items in source order. Nested functions,
@@ -340,9 +325,7 @@ pub fn scan(src: &str) -> Result<Items, String> {
             }
             _ if c.is_ascii_alphabetic() || c == b'_' => {
                 let start = i;
-                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
-                    i += 1;
-                }
+                i = ident_end(b, i);
                 match &src[start..i] {
                     word @ ("error" | "redirect") if old_call(b, start, i) => {
                         let name = if word == "error" { "error" } else { "redirect" };
@@ -370,6 +353,7 @@ pub fn scan(src: &str) -> Result<Items, String> {
                                 name: name.to_string(),
                                 ty,
                                 line: line(at),
+                                is_static: word == "static",
                             });
                         }
                     }
@@ -378,9 +362,7 @@ pub fn scan(src: &str) -> Result<Items, String> {
                             i += 1;
                         }
                         let name_start = i;
-                        while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
-                            i += 1;
-                        }
+                        i = ident_end(b, i);
                         let name = src[name_start..i].to_string();
                         if name.is_empty() {
                             // `fn(u8) -> u8` as a type, say.
@@ -675,7 +657,6 @@ fn skip_literal(b: &[u8], i: usize) -> usize {
 /// Whether the identifier `name` appears in `b` as code (not in a literal,
 /// a comment, or as part of a longer name or a path after `.`/`::`).
 fn uses_ident(b: &[u8], name: &[u8]) -> bool {
-    let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
     let mut i = 0;
     while i < b.len() {
         let j = skip_literal(b, i);
@@ -683,11 +664,9 @@ fn uses_ident(b: &[u8], name: &[u8]) -> bool {
             i = j + 1;
             continue;
         }
-        if ident(b[i]) {
+        if is_word(b[i]) {
             let start = i;
-            while i < b.len() && ident(b[i]) {
-                i += 1;
-            }
+            i = ident_end(b, i);
             let after_dot = start > 0 && b[start - 1] == b'.';
             if &b[start..i] == name && !after_dot && !b[..start].ends_with(b"::") {
                 return true;
@@ -765,7 +744,7 @@ pub fn let_names(stmts: &str) -> Vec<String> {
             b')' | b']' | b'}' => depth -= 1,
             c if depth == 0 && (c.is_ascii_alphabetic() || c == b'_') => {
                 let end = ident_end(b, i);
-                let before = i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_');
+                let before = i == 0 || !is_word(b[i - 1]);
                 if before && &b[i..end] == b"let" {
                     // The pattern: up to its type, its `=` or its `;`.
                     let mut j = end;
@@ -942,8 +921,8 @@ fn skip_space(b: &[u8], mut i: usize) -> usize {
 }
 
 /// The end of the identifier starting at `i` (`i` itself if there is none).
-fn ident_end(b: &[u8], mut i: usize) -> usize {
-    while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+pub(crate) fn ident_end(b: &[u8], mut i: usize) -> usize {
+    while i < b.len() && is_word(b[i]) {
         i += 1;
     }
     i

@@ -3,7 +3,6 @@
 //! Nothing is parsed up front: a lookup walks the body, borrowing from it.
 
 use crate::cx::decode;
-use crate::{Error, Result};
 use std::borrow::Cow;
 
 /// A form body. `Copy`, borrows the request, decodes on lookup.
@@ -65,20 +64,6 @@ impl<'a> Form<'a> {
 
     pub fn get(&self, name: &str) -> Option<Cow<'a, str>> {
         self.iter().find(|(k, _)| k == name).map(|(_, v)| v)
-    }
-
-    /// Like `get`, but a missing field is a 400 error.
-    pub fn required(&self, name: &str) -> Result<Cow<'a, str>> {
-        self.get(name)
-            .ok_or_else(|| Error::new(400, format!("missing form field `{name}`")))
-    }
-
-    /// A field parsed as any `FromStr` type. Missing or unparsable is a 400
-    /// error that says why: `let id: i64 = cx.form().parse("id")?;`
-    pub fn parse<T: std::str::FromStr<Err: std::fmt::Display>>(&self, name: &str) -> Result<T> {
-        self.required(name)?
-            .parse()
-            .map_err(|e| Error::new(400, format!("form field `{name}`: {e}")))
     }
 
     /// Every value of a repeated field, like checkboxes with the same name.
@@ -357,18 +342,12 @@ mod tests {
         assert_eq!(f.get("flag").unwrap(), "");
         assert!(f.get("nope").is_none());
         assert_eq!(f.all("tag").collect::<Vec<_>>(), ["a", "b"]);
-        assert_eq!(f.required("nope").unwrap_err().status(), 400);
         assert!(f.file("title").is_none());
         let f = Form::new(
             Some("application/x-www-form-urlencoded; charset=UTF-8"),
             b"id=7&bad=x",
         );
-        assert_eq!(f.parse::<i64>("id").unwrap(), 7);
-        assert_eq!(
-            f.parse::<i64>("bad").unwrap_err().message(),
-            "form field `bad`: invalid digit found in string"
-        );
-        assert_eq!(f.parse::<i64>("nope").unwrap_err().status(), 400);
+        assert_eq!(f.get("id").unwrap(), "7");
         assert!(Form::new(Some("text/plain"), b"a=1").get("a").is_none());
         assert!(Form::new(None, b"a=1").get("a").is_none());
     }

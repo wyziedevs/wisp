@@ -6,29 +6,21 @@
 //! workspace's tests (`scratchpad/linux-test.sh`) is where it counts.
 #![cfg(target_os = "linux")]
 
+mod common;
+
+use common::{Server, connect, spawn};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
-const SECRET: &str = "0123456789abcdef0123456789abcdef";
-
-/// The server, killed when dropped.
-struct Server {
-    child: Child,
-    port: u16,
+fn start() -> Server {
+    common::start(&[])
 }
 
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-/// The app's binary with `env`, and a limit on its open files when given
-/// one (`ulimit -n`, which the shell sets and `exec` keeps).
-fn command(port: &str, env: &[(&str, &str)], files: Option<u32>) -> Command {
+/// The app on `port`, with a limit on its open files when given one
+/// (`ulimit -n`, which the shell sets and `exec` keeps).
+fn start_at(port: &str, files: Option<u32>) -> Server {
     let exe = env!("CARGO_BIN_EXE_wisp-test-app");
     let mut cmd = match files {
         None => Command::new(exe),
@@ -38,41 +30,8 @@ fn command(port: &str, env: &[(&str, &str)], files: Option<u32>) -> Command {
             sh
         }
     };
-    cmd.env("PORT", port)
-        .env("HOST", "127.0.0.1")
-        .env("WISP_THREADS", "2")
-        .env("WISP_SECRET", SECRET)
-        .envs(env.iter().copied());
-    cmd
-}
-
-fn start_with(port: &str, env: &[(&str, &str)], files: Option<u32>) -> Server {
-    let mut child = command(port, env, files)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("start the test app");
-    let mut line = String::new();
-    BufReader::new(child.stdout.take().unwrap())
-        .read_line(&mut line)
-        .unwrap();
-    let port = line
-        .trim()
-        .rsplit(':')
-        .next()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or_else(|| panic!("no port in {line:?}"));
-    Server { child, port }
-}
-
-fn start() -> Server {
-    start_with("0", &[], None)
-}
-
-fn connect(port: u16) -> TcpStream {
-    let c = TcpStream::connect(("127.0.0.1", port)).unwrap();
-    c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    c
+    common::configure(&mut cmd, &[("PORT", port)]);
+    spawn(cmd)
 }
 
 /// A signal to the server, sent as an operator or systemd would.
@@ -285,7 +244,7 @@ fn a_restart_takes_the_port_back_at_once() {
         .local_addr()
         .unwrap()
         .port();
-    let first = start_with(&free.to_string(), &[], None);
+    let first = start_at(&free.to_string(), None);
     assert_eq!(first.port, free);
     for _ in 0..20 {
         let mut c = connect(free);
@@ -296,7 +255,7 @@ fn a_restart_takes_the_port_back_at_once() {
         assert!(all.starts_with(b"HTTP/1.1 200"));
     }
     drop(first);
-    let second = start_with(&free.to_string(), &[], None);
+    let second = start_at(&free.to_string(), None);
     let mut c = BufReader::new(connect(second.port));
     c.get_mut().write_all(GET).unwrap();
     assert!(read_answer(&mut c).0.starts_with("HTTP/1.1 200"));
@@ -376,7 +335,7 @@ fn every_way_a_connection_can_end_gives_its_descriptor_back() {
 #[test]
 fn running_out_of_descriptors_pauses_accepting_and_no_more() {
     // A process that may open 48 files: the listener, the runtimes and about thirty connections.
-    let s = start_with("0", &[], Some(48));
+    let s = start_at("0", Some(48));
     let mut conns: Vec<TcpStream> = (0..70).map(|_| connect(s.port)).collect();
     // One that was accepted is served, however many are waiting behind it.
     conns[0].write_all(GET).unwrap();
@@ -449,7 +408,7 @@ fn a_privileged_port_is_refused_with_what_to_do() {
     if root || start_of_unprivileged <= 80 {
         return;
     }
-    let out = command("80", &[], None)
+    let out = common::command(&[("PORT", "80")])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()

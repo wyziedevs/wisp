@@ -448,23 +448,8 @@ fn server_shape(file: &Path, segs: &[Seg]) -> (bool, Option<Option<String>>) {
     }
     let int = members.iter().all(|f| {
         f.inputs().is_ok_and(|ins| {
-            ins.iter().any(|(n, t)| {
-                *n == "id"
-                    && matches!(
-                        t.trim(),
-                        "u8" | "u16"
-                            | "u32"
-                            | "u64"
-                            | "u128"
-                            | "usize"
-                            | "i8"
-                            | "i16"
-                            | "i32"
-                            | "i64"
-                            | "i128"
-                            | "isize"
-                    )
-            })
+            ins.iter()
+                .any(|(n, t)| *n == "id" && crate::ty::is_integer(t))
         })
     });
     (collection, Some(int.then(|| "int".to_string())))
@@ -473,10 +458,7 @@ fn server_shape(file: &Path, segs: &[Seg]) -> (bool, Option<Option<String>>) {
 /// `None` for `(group)` directories, which do not appear in the URL.
 fn parse_segment(name: &str) -> Result<Option<Seg>, String> {
     let ident = |s: &str| -> Result<String, String> {
-        let ok = !s.is_empty()
-            && s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
-            && !s.as_bytes()[0].is_ascii_digit();
-        if !ok {
+        if !crate::ty::is_ident(s) {
             return Err(format!("`{s}` is not a valid parameter name"));
         }
         Ok(s.to_string())

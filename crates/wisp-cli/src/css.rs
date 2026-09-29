@@ -51,8 +51,8 @@ pub enum Css {
 }
 
 pub fn detect(root: &Path) -> Css {
-    let src = fs::read_to_string(root.join("src").join("app.css")).unwrap_or_default();
-    if src.contains("@import \"tailwindcss\"") || src.contains("@import 'tailwindcss'") {
+    let src = wisp_build::read_source(&root.join("src").join("app.css")).unwrap_or_default();
+    if wisp_build::uses_tailwind(&src) {
         Css::Tailwind
     } else {
         Css::Plain

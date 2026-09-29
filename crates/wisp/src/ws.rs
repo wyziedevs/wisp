@@ -112,31 +112,17 @@ pub(crate) fn handshake(cx: &Cx) -> Result<String> {
                 && v.split(',').any(|t| t.trim().eq_ignore_ascii_case(token))
         })
     };
-    let refuse = |status: u16, message: &'static str, header: (&'static str, &str)| Error {
-        status,
-        message: Cow::Borrowed(message),
-        header: Some(Box::new((header.0, header.1.to_string()))),
-        source: None,
-        fields: Vec::new(),
-        code: None,
-    };
     if cx.method != Method::Get
         || !cx.http11
         || !has("upgrade", "websocket")
         || !has("connection", "upgrade")
     {
-        return Err(refuse(
-            426,
-            "This address takes WebSocket connections",
-            ("upgrade", "websocket"),
-        ));
+        return Err(Error::new(426, "This address takes WebSocket connections")
+            .with_header("upgrade", "websocket"));
     }
     if cx.header("sec-websocket-version").map(str::trim) != Some("13") {
-        return Err(refuse(
-            426,
-            "Only WebSocket version 13 is supported",
-            ("sec-websocket-version", "13"),
-        ));
+        return Err(Error::new(426, "Only WebSocket version 13 is supported")
+            .with_header("sec-websocket-version", "13"));
     }
     let key = cx.header("sec-websocket-key").map(str::trim).unwrap_or("");
     if key.len() != 24 {
@@ -151,26 +137,8 @@ fn accept(key: &str) -> String {
     let mut h = Sha1::new();
     h.update(key.as_bytes());
     h.update(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
-    base64(&h.finish())
-}
-
-/// Standard base64 with padding.
-fn base64(bytes: &[u8]) -> String {
-    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for c in bytes.chunks(3) {
-        let n = c
-            .iter()
-            .enumerate()
-            .fold(0u32, |n, (i, &b)| n | (b as u32) << (16 - 8 * i));
-        for i in 0..4 {
-            out.push(if i <= c.len() {
-                ABC[(n >> (18 - 6 * i) & 63) as usize] as char
-            } else {
-                '='
-            });
-        }
-    }
+    let mut out = String::with_capacity(28);
+    crate::sign::base64(&mut out, &h.finish(), false);
     out
 }
 
@@ -178,76 +146,60 @@ fn base64(bytes: &[u8]) -> String {
 /// protects nothing.
 struct Sha1 {
     state: [u32; 5],
-    block: [u8; 64],
-    filled: usize,
-    total: u64,
+    blocks: crate::sign::Blocks,
 }
 
 impl Sha1 {
     fn new() -> Sha1 {
         Sha1 {
             state: [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0],
-            block: [0; 64],
-            filled: 0,
-            total: 0,
+            blocks: crate::sign::Blocks::new(),
         }
     }
 
-    fn update(&mut self, mut data: &[u8]) {
-        self.total += data.len() as u64;
-        while !data.is_empty() {
-            let n = data.len().min(64 - self.filled);
-            self.block[self.filled..self.filled + n].copy_from_slice(&data[..n]);
-            self.filled += n;
-            data = &data[n..];
-            if self.filled == 64 {
-                self.compress();
-                self.filled = 0;
-            }
-        }
+    fn update(&mut self, data: &[u8]) {
+        let state = &mut self.state;
+        self.blocks.update(data, &mut |b| compress(state, b));
     }
 
     fn finish(mut self) -> [u8; 20] {
-        let bits = self.total * 8;
-        self.update(&[0x80]);
-        while self.filled != 56 {
-            self.update(&[0]);
-        }
-        self.update(&bits.to_be_bytes());
+        let state = &mut self.state;
+        self.blocks.finish(&mut |b| compress(state, b));
         let mut out = [0u8; 20];
         for (o, s) in out.chunks_mut(4).zip(self.state) {
             o.copy_from_slice(&s.to_be_bytes());
         }
         out
     }
+}
 
-    fn compress(&mut self) {
-        let mut w = [0u32; 80];
-        for (i, word) in self.block.chunks(4).enumerate() {
-            w[i] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
-        }
-        for i in 16..80 {
-            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
-        }
-        let [mut a, mut b, mut c, mut d, mut e] = self.state;
-        for (i, &wi) in w.iter().enumerate() {
-            let (f, k) = match i {
-                0..20 => ((b & c) | (!b & d), 0x5a827999),
-                20..40 => (b ^ c ^ d, 0x6ed9eba1),
-                40..60 => ((b & c) | (b & d) | (c & d), 0x8f1bbcdc),
-                _ => (b ^ c ^ d, 0xca62c1d6),
-            };
-            let t = a
-                .rotate_left(5)
-                .wrapping_add(f)
-                .wrapping_add(e)
-                .wrapping_add(k)
-                .wrapping_add(wi);
-            (e, d, c, b, a) = (d, c, b.rotate_left(30), a, t);
-        }
-        for (s, v) in self.state.iter_mut().zip([a, b, c, d, e]) {
-            *s = s.wrapping_add(v);
-        }
+/// SHA-1's compression of one block into `state`.
+fn compress(state: &mut [u32; 5], block: &[u8; 64]) {
+    let mut w = [0u32; 80];
+    for (i, word) in block.chunks(4).enumerate() {
+        w[i] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
+    }
+    for i in 16..80 {
+        w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+    }
+    let [mut a, mut b, mut c, mut d, mut e] = *state;
+    for (i, &wi) in w.iter().enumerate() {
+        let (f, k) = match i {
+            0..20 => ((b & c) | (!b & d), 0x5a827999),
+            20..40 => (b ^ c ^ d, 0x6ed9eba1),
+            40..60 => ((b & c) | (b & d) | (c & d), 0x8f1bbcdc),
+            _ => (b ^ c ^ d, 0xca62c1d6),
+        };
+        let t = a
+            .rotate_left(5)
+            .wrapping_add(f)
+            .wrapping_add(e)
+            .wrapping_add(k)
+            .wrapping_add(wi);
+        (e, d, c, b, a) = (d, c, b.rotate_left(30), a, t);
+    }
+    for (s, v) in state.iter_mut().zip([a, b, c, d, e]) {
+        *s = s.wrapping_add(v);
     }
 }
 
@@ -630,14 +582,10 @@ mod native {
 mod tests {
     use super::*;
 
-    fn hex(b: &[u8]) -> String {
-        b.iter().map(|b| format!("{b:02x}")).collect()
-    }
-
     fn sha1(data: &[u8]) -> String {
         let mut h = Sha1::new();
         h.update(data);
-        hex(&h.finish())
+        crate::hex(&h.finish())
     }
 
     #[test]
@@ -660,9 +608,6 @@ mod tests {
             accept("dGhlIHNhbXBsZSBub25jZQ=="),
             "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
         );
-        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
-        assert_eq!(base64(b"fooba"), "Zm9vYmE=");
-        assert_eq!(base64(b"f"), "Zg==");
     }
 
     /// A frame as a client sends it: masked.

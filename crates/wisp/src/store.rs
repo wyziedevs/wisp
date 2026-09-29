@@ -120,11 +120,12 @@ fn invalid_name(table: &str) -> Option<Error> {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod files {
     use super::*;
-    use std::collections::HashMap;
+    use crate::Shared;
+    use std::collections::{BTreeMap, HashMap};
     use std::fs::{self, File, OpenOptions};
-    use std::io::Write;
+    use std::io::{Seek, SeekFrom, Write};
     use std::path::{Path, PathBuf};
-    use std::sync::{Arc, Mutex, OnceLock};
+    use std::sync::{Arc, OnceLock};
 
     /// Past this size a log may be written out again.
     const COMPACT_AFTER: u64 = 1 << 20;
@@ -140,12 +141,18 @@ pub(crate) mod files {
     pub(crate) struct Files {
         dir: PathBuf,
         sync: Sync,
-        logs: Mutex<Vec<Log>>,
+        /// Each table's log, by name. Held only to find one: each log has
+        /// a lock of its own.
+        logs: Shared<BTreeMap<String, Arc<Log>>>,
     }
 
     struct Log {
         table: String,
         path: PathBuf,
+        state: Shared<State>,
+    }
+
+    struct State {
         file: Arc<File>,
         /// Bytes in the file.
         size: u64,
@@ -154,6 +161,10 @@ pub(crate) mod files {
         live_bytes: u64,
         /// Written since it last reached the disk.
         dirty: bool,
+        /// A compaction is under way, on a thread of its own.
+        compacting: bool,
+        /// The size past which a compaction that failed is tried again.
+        retry_at: u64,
     }
 
     /// The store for `WISP_DATA`, made once; `None` for `off`.
@@ -212,24 +223,20 @@ pub(crate) mod files {
             Files {
                 dir,
                 sync,
-                logs: Mutex::new(Vec::new()),
+                logs: Shared::new(BTreeMap::new()),
             }
         }
 
-        fn logs(&self) -> std::sync::MutexGuard<'_, Vec<Log>> {
-            self.logs.lock().unwrap_or_else(|e| e.into_inner())
-        }
-
         /// Every log written since it last reached the disk, synced. The
-        /// files are synced outside the lock, so writes go on meanwhile.
+        /// files are synced outside the locks, so writes go on meanwhile.
         pub(crate) fn sync_dirty(&self) {
-            let dirty: Vec<Arc<File>> = self
-                .logs()
-                .iter_mut()
-                .filter_map(|l| std::mem::take(&mut l.dirty).then(|| l.file.clone()))
-                .collect();
-            for f in dirty {
-                if let Err(e) = f.sync_data() {
+            let logs: Vec<Arc<Log>> = self.logs.lock().values().cloned().collect();
+            for log in logs {
+                let file = {
+                    let mut s = log.state.lock();
+                    std::mem::take(&mut s.dirty).then(|| s.file.clone())
+                };
+                if let Some(Err(e)) = file.map(|f| f.sync_data()) {
                     crate::http::log(format_args!("wisp: could not sync a table to disk: {e}"));
                 }
             }
@@ -309,23 +316,25 @@ pub(crate) mod files {
                 live_bytes += n;
                 out.push((id, json));
             }
-            let mut logs = self.logs();
-            logs.retain(|l| l.table != table);
-            logs.push(Log {
+            let log = Log {
                 table: table.to_string(),
                 path,
-                file: Arc::new(file),
-                size: whole as u64,
-                live,
-                live_bytes,
-                dirty: false,
-            });
+                state: Shared::new(State {
+                    file: Arc::new(file),
+                    size: whole as u64,
+                    live,
+                    live_bytes,
+                    dirty: false,
+                    compacting: false,
+                    retry_at: 0,
+                }),
+            };
+            self.logs.lock().insert(table.to_string(), Arc::new(log));
             Ok(out)
         }
 
         fn save(&self, table: &str, id: u64, json: Option<&str>) -> Result {
-            let mut logs = self.logs();
-            let Some(log) = logs.iter_mut().find(|l| l.table == table) else {
+            let Some(log) = self.logs.lock().get(table).cloned() else {
                 return Err(Error::new(
                     500,
                     format!("table `{table}` was saved before it was loaded"),
@@ -337,26 +346,34 @@ pub(crate) mod files {
             line.push(b'\t');
             line.extend_from_slice(body.as_bytes());
             line.push(b'\n');
-            (&*log.file)
+            let mut s = log.state.lock();
+            (&*s.file)
                 .write_all(&line)
                 .map_err(|e| io(table, "write its log", e))?;
-            log.size += line.len() as u64;
+            s.size += line.len() as u64;
             let n = if json.is_some() { line.len() as u64 } else { 0 };
             let old = match n {
-                0 => log.live.remove(&id),
-                n => log.live.insert(id, n),
+                0 => s.live.remove(&id),
+                n => s.live.insert(id, n),
             };
-            log.live_bytes = log.live_bytes + n - old.unwrap_or(0);
-            match self.sync {
-                Sync::Always => log
-                    .file
-                    .sync_data()
-                    .map_err(|e| io(table, "sync its log", e))?,
-                Sync::Second => log.dirty = true,
-                Sync::Off => {}
+            s.live_bytes = s.live_bytes + n - old.unwrap_or(0);
+            s.dirty |= self.sync == Sync::Second;
+            let compact = !s.compacting
+                && s.size > COMPACT_AFTER.max(s.retry_at)
+                && s.size > 2 * s.live_bytes;
+            s.compacting |= compact;
+            let file = s.file.clone();
+            drop(s);
+            if compact {
+                let log = log.clone();
+                let _ = std::thread::Builder::new()
+                    .name("wisp-compact".into())
+                    .spawn(move || log.compact());
             }
-            if log.size > COMPACT_AFTER && log.size > 2 * log.live_bytes {
-                compact(log)?;
+            // Outside the log's lock: a compaction may swap the file
+            // meanwhile, and it syncs the line into the new one itself.
+            if self.sync == Sync::Always {
+                file.sync_data().map_err(|e| io(table, "sync its log", e))?;
             }
             Ok(())
         }
@@ -366,40 +383,66 @@ pub(crate) mod files {
         (id.to_string().len() + json + 2) as u64
     }
 
-    /// Writes the log out again with each row's last line only, then puts
-    /// it in the old one's place.
-    fn compact(log: &mut Log) -> Result {
-        let table = log.table.clone();
-        let text = fs::read(&log.path).map_err(|e| io(&table, "read its log", e))?;
-        let (rows, _) = replay(&text);
-        let mut ids: Vec<u64> = rows.keys().copied().collect();
-        ids.sort_unstable();
-        let mut out = Vec::with_capacity(log.live_bytes as usize);
-        for id in ids {
-            out.extend_from_slice(id.to_string().as_bytes());
-            out.push(b'\t');
-            out.extend_from_slice(rows[&id]);
-            out.push(b'\n');
+    impl Log {
+        /// Writes the log out again with each row's last line only, off the
+        /// request's thread, then puts it in the old one's place. Lines
+        /// written meanwhile are copied over, under the lock, as it swaps.
+        fn compact(&self) {
+            let size = self.state.lock().size;
+            let tmp = self.path.with_extension("log.tmp");
+            let swapped = self.rewrite(size, &tmp);
+            let mut s = self.state.lock();
+            s.compacting = false;
+            match swapped.and_then(|_| self.swap(&mut s, size, &tmp)) {
+                Ok(()) => {}
+                Err(e) => {
+                    s.retry_at = 2 * s.size;
+                    drop(s);
+                    let _ = fs::remove_file(&tmp);
+                    crate::http::log(format_args!(
+                        "wisp: table `{}`: could not compact its log: {e}",
+                        self.table
+                    ));
+                }
+            }
         }
-        let tmp = log.path.with_extension("log.tmp");
-        let write = || -> std::io::Result<File> {
-            let mut f = File::create(&tmp)?;
-            f.write_all(&out)?;
+
+        /// The rows of the log's first `size` bytes, written to `tmp`.
+        fn rewrite(&self, size: u64, tmp: &Path) -> std::io::Result<()> {
+            let text = fs::read(&self.path)?;
+            let (rows, _) = replay(&text[..(size as usize).min(text.len())]);
+            let mut ids: Vec<u64> = rows.keys().copied().collect();
+            ids.sort_unstable();
+            let mut out = Vec::with_capacity(size as usize / 2);
+            for id in ids {
+                out.extend_from_slice(id.to_string().as_bytes());
+                out.push(b'\t');
+                out.extend_from_slice(rows[&id]);
+                out.push(b'\n');
+            }
+            File::create(tmp)?.write_all(&out)
+        }
+
+        /// Adds the lines written since the log was `size` bytes to `tmp`,
+        /// and puts it in the log's place.
+        fn swap(&self, s: &mut State, size: u64, tmp: &Path) -> std::io::Result<()> {
+            let mut old = File::open(&self.path)?;
+            old.seek(SeekFrom::Start(size))?;
+            let mut f = OpenOptions::new().append(true).open(tmp)?;
+            std::io::copy(&mut old, &mut f)?;
             f.sync_all()?;
-            fs::rename(&tmp, &log.path)?;
+            drop((old, f));
+            fs::rename(tmp, &self.path)?;
             // The rename itself reaches the disk with the folder's entry.
             #[cfg(unix)]
-            if let Some(dir) = log.path.parent() {
+            if let Some(dir) = self.path.parent() {
                 File::open(dir)?.sync_all()?;
             }
-            OpenOptions::new().append(true).open(&log.path)
-        };
-        let file = write().map_err(|e| io(&table, "compact its log", e))?;
-        log.file = Arc::new(file);
-        log.size = out.len() as u64;
-        log.live_bytes = log.size;
-        log.dirty = false;
-        Ok(())
+            s.file = Arc::new(OpenOptions::new().append(true).open(&self.path)?);
+            s.size = s.file.metadata()?.len();
+            s.dirty = false;
+            Ok(())
+        }
     }
 
     #[cfg(test)]
@@ -456,8 +499,15 @@ pub(crate) mod files {
             for i in 0..1500 {
                 files.save("c", i % 3, Some(&big)).unwrap();
             }
+            // Compacted on a thread of its own, with the lines written meanwhile.
+            let log = files.logs.lock()["c"].clone();
+            let t = std::time::Instant::now();
+            while log.state.lock().compacting && t.elapsed().as_secs() < 10 {
+                std::thread::yield_now();
+            }
             let size = fs::metadata(d.join("c.log")).unwrap().len();
             assert!(size < COMPACT_AFTER, "compacted: {size}");
+            assert_eq!(size, log.state.lock().size);
             files.sync_dirty();
             let mut rows = Files::new(d.clone(), Sync::Off).load("c").unwrap();
             rows.sort();

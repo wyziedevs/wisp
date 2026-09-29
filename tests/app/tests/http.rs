@@ -3,106 +3,31 @@
 //! limits, streamed responses and browser code (client scripts and
 //! directives), each checked on the wire.
 
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpStream;
-use std::process::{Child, Command, Stdio};
+mod common;
+#[path = "../../../tests/shared/ws.rs"]
+mod ws;
+
+use common::{Server, Temp, body, connect, header, status};
+use std::io::{Read, Write};
 use std::time::Duration;
-
-/// The server, stopped when dropped.
-struct Server {
-    child: Child,
-    port: u16,
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
 
 fn start() -> Server {
     start_with(&[])
 }
 
-/// With these environment settings on top of the usual ones.
+/// With these environment settings on top of the usual ones (and a WebSocket
+/// that is idle for 2 s, not a minute).
 fn start_with(env: &[(&str, &str)]) -> Server {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_wisp-test-app"))
-        .env("PORT", "0")
-        .env("HOST", "127.0.0.1")
-        .env("WISP_THREADS", "2")
-        .env("WISP_SECRET", "0123456789abcdef0123456789abcdef")
-        .env("WISP_WS_IDLE", "2")
-        .env("WISP_DATA", "off")
-        .envs(env.iter().copied())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("start the test app");
-    let mut line = String::new();
-    BufReader::new(child.stdout.take().unwrap())
-        .read_line(&mut line)
-        .unwrap();
-    let port = line
-        .trim()
-        .rsplit(':')
-        .next()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or_else(|| panic!("no port in {line:?}"));
-    Server { child, port }
-}
-
-impl Server {
-    /// Sends `raw` as is and returns everything that comes back until the
-    /// server closes the connection.
-    fn send(&self, raw: &[u8]) -> String {
-        let mut s = TcpStream::connect(("127.0.0.1", self.port)).unwrap();
-        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        s.write_all(raw).unwrap();
-        let mut got = Vec::new();
-        let _ = s.read_to_end(&mut got);
-        String::from_utf8_lossy(&got).into_owned()
-    }
-
-    /// One request that closes the connection when answered.
-    fn request(&self, method: &str, target: &str, headers: &str, body: &[u8]) -> String {
-        let mut raw = format!(
-            "{method} {target} HTTP/1.1\r\nhost: 127.0.0.1:{}\r\nconnection: close\r\ncontent-length: {}\r\n{headers}\r\n",
-            self.port,
-            body.len()
-        )
-        .into_bytes();
-        raw.extend_from_slice(body);
-        self.send(&raw)
-    }
-}
-
-fn status(response: &str) -> u16 {
-    response
-        .get(9..12)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0)
-}
-
-fn header<'a>(response: &'a str, name: &str) -> Option<&'a str> {
-    let head = response.split("\r\n\r\n").next()?;
-    head.lines().find_map(|l| {
-        l.split_once(": ")
-            .filter(|(n, _)| n.eq_ignore_ascii_case(name))
-            .map(|(_, v)| v)
-    })
-}
-
-fn body(response: &str) -> &str {
-    response.split_once("\r\n\r\n").map_or("", |(_, b)| b)
+    let mut all = vec![("WISP_WS_IDLE", "2")];
+    all.extend_from_slice(env);
+    common::start(&all)
 }
 
 const FORM: &str = "content-type: application/x-www-form-urlencoded\r\n";
 
 #[test]
 fn saved_tables_survive_a_crash() {
-    let dir = std::env::temp_dir().join(format!("wisp-data-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = Temp::new("data");
     let data = dir.to_str().unwrap();
     let auth = "authorization: Bearer wisp-test-app\r\ncontent-type: application/json\r\n";
     {
@@ -118,8 +43,6 @@ fn saved_tables_survive_a_crash() {
     let next = s.request("POST", "/notes", auth, br#"{"title":"Next"}"#);
     assert!(body(&next).starts_with(r#"{"id":3,"#), "ids go on: {next}");
     assert!(dir.join("note.log").exists());
-    drop(s);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -355,46 +278,12 @@ fn server_sent_events() {
     assert!(old.ends_with("data: tick 2\ndata: line two\n\n"), "{old}");
 }
 
-/// A frame as a browser sends it: masked.
-fn ws_frame(fin: bool, op: u8, payload: &[u8]) -> Vec<u8> {
-    let mask = [1, 2, 3, 4];
-    let mut w = vec![if fin { 0x80 | op } else { op }];
-    if payload.len() < 126 {
-        w.push(0x80 | payload.len() as u8);
-    } else {
-        w.push(0x80 | 126);
-        w.extend_from_slice(&(payload.len() as u16).to_be_bytes());
-    }
-    w.extend_from_slice(&mask);
-    w.extend(payload.iter().enumerate().map(|(i, b)| b ^ mask[i & 3]));
-    w
-}
-
-/// The next frame from the server, which never masks: `(byte 0, payload)`.
-fn ws_read(s: &mut TcpStream) -> (u8, Vec<u8>) {
-    let mut head = [0u8; 2];
-    s.read_exact(&mut head).unwrap();
-    assert_eq!(head[1] & 0x80, 0, "server frames are not masked");
-    let len = match head[1] {
-        126 => {
-            let mut n = [0u8; 2];
-            s.read_exact(&mut n).unwrap();
-            u16::from_be_bytes(n) as usize
-        }
-        n => n as usize,
-    };
-    let mut payload = vec![0; len];
-    s.read_exact(&mut payload).unwrap();
-    (head[0], payload)
-}
-
 const UPGRADE: &str = "upgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-version: 13\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\n";
 
 #[test]
 fn websocket_idle() {
     let s = start();
-    let mut c = TcpStream::connect(("127.0.0.1", s.port)).unwrap();
-    c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut c = connect(s.port);
     c.write_all(format!("GET /ws HTTP/1.1\r\nhost: x\r\n{UPGRADE}\r\n").as_bytes())
         .unwrap();
     let mut head = Vec::new();
@@ -405,11 +294,11 @@ fn websocket_idle() {
     }
     // Quiet for half of WISP_WS_IDLE: pinged. The pong counts as traffic.
     let t = std::time::Instant::now();
-    assert_eq!(ws_read(&mut c), (0x89, Vec::new()));
-    c.write_all(&ws_frame(true, 10, b"")).unwrap();
-    assert_eq!(ws_read(&mut c), (0x89, Vec::new()));
+    assert_eq!(ws::read(&mut c), (0x89, Vec::new()));
+    c.write_all(&ws::frame(0x8a, b"")).unwrap();
+    assert_eq!(ws::read(&mut c), (0x89, Vec::new()));
     // Then silent for all of it: closed with 1001.
-    assert_eq!(ws_read(&mut c), (0x88, 1001u16.to_be_bytes().to_vec()));
+    assert_eq!(ws::read(&mut c), (0x88, 1001u16.to_be_bytes().to_vec()));
     let waited = t.elapsed().as_secs_f64();
     assert!((2.5..3.8).contains(&waited), "{waited}"); // ping at 1, pong, ping at 2, close at 3
 }
@@ -417,15 +306,14 @@ fn websocket_idle() {
 #[test]
 fn websocket_echo() {
     let s = start();
-    let mut c = TcpStream::connect(("127.0.0.1", s.port)).unwrap();
-    c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut c = connect(s.port);
     // The first message rides in the same packet as the handshake.
     let mut hello = format!(
         "GET /ws HTTP/1.1\r\nhost: 127.0.0.1:{}\r\norigin: http://127.0.0.1:{}\r\n{UPGRADE}\r\n",
         s.port, s.port
     )
     .into_bytes();
-    hello.extend(ws_frame(true, 1, b"first"));
+    hello.extend(ws::frame(0x81, b"first"));
     c.write_all(&hello).unwrap();
     let mut head = Vec::new();
     while !head.ends_with(b"\r\n\r\n") {
@@ -441,28 +329,27 @@ fn websocket_echo() {
     );
     assert_eq!(header(&head, "upgrade"), Some("websocket"));
     assert_eq!(header(&head, "x-app"), Some("test"), "hooks still run");
-    assert_eq!(ws_read(&mut c), (0x81, b"first".to_vec()));
+    assert_eq!(ws::read(&mut c), (0x81, b"first".to_vec()));
 
     // A fragmented text message with a ping between its parts, then binary.
-    let mut more = ws_frame(false, 1, b"frag");
-    more.extend(ws_frame(true, 9, b"are you there"));
-    more.extend(ws_frame(true, 0, b"mented"));
-    more.extend(ws_frame(true, 2, &[0xab; 300]));
+    let mut more = ws::frame(0x01, b"frag");
+    more.extend(ws::frame(0x89, b"are you there"));
+    more.extend(ws::frame(0x80, b"mented"));
+    more.extend(ws::frame(0x82, &[0xab; 300]));
     c.write_all(&more).unwrap();
-    assert_eq!(ws_read(&mut c), (0x8a, b"are you there".to_vec()));
-    assert_eq!(ws_read(&mut c), (0x81, b"fragmented".to_vec()));
-    assert_eq!(ws_read(&mut c), (0x82, vec![0xab; 300]));
+    assert_eq!(ws::read(&mut c), (0x8a, b"are you there".to_vec()));
+    assert_eq!(ws::read(&mut c), (0x81, b"fragmented".to_vec()));
+    assert_eq!(ws::read(&mut c), (0x82, vec![0xab; 300]));
 
     // A close is echoed, and the connection ends.
-    c.write_all(&ws_frame(true, 8, &1000u16.to_be_bytes()))
+    c.write_all(&ws::frame(0x88, &1000u16.to_be_bytes()))
         .unwrap();
-    assert_eq!(ws_read(&mut c), (0x88, 1000u16.to_be_bytes().to_vec()));
+    assert_eq!(ws::read(&mut c), (0x88, 1000u16.to_be_bytes().to_vec()));
     let mut rest = Vec::new();
     assert_eq!(c.read_to_end(&mut rest).map(|_| rest.len()).unwrap_or(0), 0);
 
     // An unmasked frame breaks the protocol: closed with 1002.
-    let mut c = TcpStream::connect(("127.0.0.1", s.port)).unwrap();
-    c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut c = connect(s.port);
     let mut raw = format!("GET /ws HTTP/1.1\r\nhost: x\r\n{UPGRADE}\r\n").into_bytes();
     raw.extend([0x81, 0x02, b'h', b'i']);
     c.write_all(&raw).unwrap();
@@ -1146,11 +1033,7 @@ fn snippets() {
 #[test]
 fn connection_cap() {
     let s = start_with(&[("WISP_MAX_CONNS", "2")]);
-    let open = || {
-        let c = TcpStream::connect(("127.0.0.1", s.port)).unwrap();
-        c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        c
-    };
+    let open = || connect(s.port);
     // Two idle connections fill it (one of them a WebSocket), so a third
     // is answered 503 and closed without being read.
     let a = open();

@@ -46,7 +46,7 @@ own errors:
 
 ```rust
 async fn post(cx: &mut Cx) -> Result<Response> {
-    let new: NewNote = serde_json::from_slice(cx.body()).or_400()?;
+    let new: NewNote = serde_json::from_slice(cx.body()).or_status(400)?;
     if new.title.is_empty() || new.title.len() > 200 {
         return error(422, "title must be 1 to 200 characters");
     }

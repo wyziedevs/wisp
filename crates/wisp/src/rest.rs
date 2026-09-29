@@ -10,12 +10,13 @@
 //! | `PATCH /notes/1` | the members sent replace the row's |
 //! | `DELETE /notes/1` | 204 |
 //!
-//! Each writes JSON while it holds the table's lock, so the type need not
-//! be `Clone`, and a list makes one `String`. Hooks (`fn before_create` and
-//! the like, in the same file) run outside the lock.
+//! A read writes its JSON under the table's read lock, which reads share,
+//! so the type need not be `Clone`, and a list makes one `String`. A change
+//! writes its row's JSON once, for the store and the answer both. Hooks
+//! (`fn before_create` and the like, in the same file) run outside the lock.
 
 use crate::json::{self, FromJson, Value};
-use crate::table::{Rows, row_json};
+use crate::table::{Rows, row_json, splice};
 use crate::{Cx, Error, Json, Method, Response, Result, Row, Table};
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -126,9 +127,29 @@ enum Op {
 
 struct Filter<'a> {
     field: &'static str,
-    kind: Kind,
     op: Op,
     want: Cow<'a, str>,
+    /// `want` as a number, for a number field: then a field's value that
+    /// is a number too compares as one.
+    number: Option<f64>,
+    /// `want` in lower case, for `.has`.
+    lower: String,
+}
+
+impl<'a> Filter<'a> {
+    fn new(field: &'static str, kind: Kind, op: Op, want: Cow<'a, str>) -> Filter<'a> {
+        Filter {
+            field,
+            op,
+            number: (kind == Kind::Number).then(|| want.parse().ok()).flatten(),
+            lower: if op == Op::Has {
+                want.to_lowercase()
+            } else {
+                String::new()
+            },
+            want,
+        }
+    }
 }
 
 /// What a GET asks for beyond the rows themselves.
@@ -157,12 +178,8 @@ fn view<'a, T: Resource>(cx: &'a Cx, list: bool) -> Result<View<'a>> {
         if name != "id"
             && let Ok((field, kind)) = field::<T>(name)
         {
-            v.filters.push(Filter {
-                field,
-                kind,
-                op: Op::Eq,
-                want: Cow::Borrowed(want),
-            });
+            v.filters
+                .push(Filter::new(field, kind, Op::Eq, Cow::Borrowed(want)));
         }
     }
     for (key, value) in cx.query_pairs() {
@@ -227,12 +244,7 @@ fn view<'a, T: Resource>(cx: &'a Cx, list: bool) -> Result<View<'a>> {
                     ),
                 };
                 let (field, kind) = field::<T>(name)?;
-                v.filters.push(Filter {
-                    field,
-                    kind,
-                    op,
-                    want: value,
-                });
+                v.filters.push(Filter::new(field, kind, op, value));
             }
         }
     }
@@ -257,20 +269,36 @@ fn text(json: &str) -> Cow<'_, str> {
     }
 }
 
-fn compare(kind: Kind, a: &str, b: &str) -> Ordering {
-    if kind == Kind::Number
-        && let (Ok(x), Ok(y)) = (a.parse::<f64>(), b.parse::<f64>())
-    {
-        return x.partial_cmp(&y).unwrap_or(Ordering::Equal);
+/// A field's value to sort by: its text, and the number it is, for a
+/// number field. Numbers compare as numbers, anything else as text.
+struct Key {
+    text: String,
+    number: Option<f64>,
+}
+
+impl Key {
+    fn new(kind: Kind, json: &str) -> Key {
+        let text = text(json).into_owned();
+        let number = (kind == Kind::Number).then(|| text.parse().ok()).flatten();
+        Key { text, number }
     }
-    a.cmp(b)
+
+    fn cmp(&self, other: &Key) -> Ordering {
+        match (self.number, other.number) {
+            (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
+            _ => self.text.cmp(&other.text),
+        }
+    }
 }
 
 impl Filter<'_> {
     /// Whether a field whose JSON is `json` passes.
     fn passes(&self, json: &str) -> bool {
         let got = text(json);
-        let ord = || compare(self.kind, &got, &self.want);
+        let ord = || match (self.number, self.number.and(got.parse::<f64>().ok())) {
+            (Some(y), Some(x)) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
+            _ => (*got).cmp(&*self.want),
+        };
         match self.op {
             Op::Eq => ord() == Ordering::Equal,
             Op::Ne => ord() != Ordering::Equal,
@@ -279,12 +307,12 @@ impl Filter<'_> {
             Op::Lt => ord() == Ordering::Less,
             Op::Lte => ord() != Ordering::Greater,
             // A list has the item; text has it in any case.
-            Op::Has => match json::parse(json) {
-                Ok(Value::Array(items)) => items.iter().any(|i| match i {
+            Op::Has => match json.starts_with('[').then(|| json::parse(json)) {
+                Some(Ok(Value::Array(items))) => items.iter().any(|i| match i {
                     Value::String(s) => *s == self.want,
                     other => json::to_json(other) == self.want,
                 }),
-                _ => got.to_lowercase().contains(&self.want.to_lowercase()),
+                _ => got.to_lowercase().contains(&self.lower),
             },
         }
     }
@@ -316,12 +344,28 @@ impl View<'_> {
     }
 }
 
-/// A strong ETag for a JSON body: FNV-1a of it.
-fn etag(body: &str) -> String {
+/// A 64-bit hash of `parts`, eight bytes at a step, for ETags and
+/// idempotency keys: quick, and not for secrets. Each step is a bijection
+/// of the state, so bodies of one length that differ never share a hash.
+pub(crate) fn hash(parts: &[&[u8]]) -> u64 {
+    const K: u64 = 0x517c_c1b7_2722_0a95;
+    let step = |h: u64, w: u64| (h.rotate_left(5) ^ w).wrapping_mul(K);
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for &b in body.as_bytes() {
-        h = (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3);
+    for p in parts {
+        let (words, rest) = p.as_chunks::<8>();
+        for w in words {
+            h = step(h, u64::from_le_bytes(*w));
+        }
+        let mut last = [0; 8];
+        last[..rest.len()].copy_from_slice(rest);
+        h = step(step(h, u64::from_le_bytes(last)), p.len() as u64);
     }
+    h ^ h >> 32
+}
+
+/// A strong ETag for a JSON body: its [`hash`].
+fn etag(body: &str) -> String {
+    let h = hash(&[body.as_bytes()]);
     let mut tag = String::with_capacity(18);
     tag.push('"');
     for shift in (0..16).rev() {
@@ -350,13 +394,17 @@ fn tagged(cx: &Cx, body: String) -> Response {
     Response::json(body).with_header("etag", tag)
 }
 
-/// 412 unless an `if-match` the request sends names the row as it is.
-fn check_match<T: Json>(cx: &Cx, id: u64, v: &T) -> Result {
+/// 412 unless an `if-match` the request sends names the row as it is:
+/// `json`, its value's JSON, or `v` written when that is not at hand.
+fn check_match<T: Json>(cx: &Cx, id: u64, v: &T, json: Option<&str>) -> Result {
     let Some(want) = cx.header("if-match") else {
         return Ok(());
     };
     let mut now = String::new();
-    row_json(&mut now, id, v);
+    match json {
+        Some(j) => splice(&mut now, id, j),
+        None => row_json(&mut now, id, v),
+    }
     if names(want, &etag(&now)) {
         return Ok(());
     }
@@ -378,13 +426,12 @@ pub fn list<T: Resource>(cx: &mut Cx, _: &Hooks<T>) -> Result<Response> {
     } else {
         ("[", ",", "]")
     };
-    let rows = T::table().rows();
+    let rows = T::table().read();
     let mut out = String::with_capacity(64 * rows.map.len().min(1024) + 2);
     out.push_str(open);
     let mut scratch = String::new();
     let limit = view.limit.unwrap_or(usize::MAX);
-    // Rows that pass, those of them past the cursor, those shown.
-    let (mut total, mut seen, mut shown, mut last) = (0, 0, 0, None);
+    let (mut shown, mut last) = (0, None);
     let mut put = |out: &mut String, id: u64, v: &T| {
         if shown > 0 {
             out.push_str(sep);
@@ -393,11 +440,22 @@ pub fn list<T: Resource>(cx: &mut Cx, _: &Hooks<T>) -> Result<Response> {
         shown += 1;
         last = Some(id);
     };
-    if view.sort.is_empty() {
+    // Rows that pass, and whether there are more past those shown.
+    let (total, more);
+    if view.sort.is_empty() && view.filters.is_empty() {
+        let after = std::ops::Bound::Excluded(view.after.unwrap_or(0));
+        let mut rest = rows.map.range((after, std::ops::Bound::Unbounded));
+        for (&id, v) in rest.by_ref().skip(view.offset).take(limit) {
+            put(&mut out, id, v);
+        }
+        (total, more) = (rows.map.len(), rest.next().is_some());
+    } else if view.sort.is_empty() {
         let after = view.after.unwrap_or(0);
+        // Rows that pass, and those of them past the cursor.
+        let (mut passed, mut seen) = (0, 0);
         for (&id, v) in &rows.map {
             if view.keeps(v, &mut scratch) {
-                total += 1;
+                passed += 1;
                 if id > after {
                     seen += 1;
                     if seen > view.offset && seen - view.offset <= limit {
@@ -406,40 +464,41 @@ pub fn list<T: Resource>(cx: &mut Cx, _: &Hooks<T>) -> Result<Response> {
                 }
             }
         }
+        (total, more) = (passed, seen > view.offset + shown);
     } else {
-        let mut found: Vec<(Vec<String>, u64, &T)> = Vec::new();
+        let mut found: Vec<(Vec<Key>, u64, &T)> = Vec::new();
         for (&id, v) in &rows.map {
             if view.keeps(v, &mut scratch) {
                 let keys = view
                     .sort
                     .iter()
-                    .map(|(f, _, _)| {
-                        let mut k = String::new();
-                        match *f {
-                            "id" => id.json(&mut k),
+                    .map(|&(f, kind, _)| {
+                        scratch.clear();
+                        match f {
+                            "id" => id.json(&mut scratch),
                             f => {
-                                v.field(f, &mut k);
+                                v.field(f, &mut scratch);
                             }
                         }
-                        text(&k).into_owned()
+                        Key::new(kind, &scratch)
                     })
                     .collect();
                 found.push((keys, id, v));
             }
         }
         found.sort_by(|a, b| {
-            for (k, (_, kind, desc)) in view.sort.iter().enumerate() {
-                let o = compare(*kind, &a.0[k], &b.0[k]);
+            for (k, &(_, _, desc)) in view.sort.iter().enumerate() {
+                let o = a.0[k].cmp(&b.0[k]);
                 if o != Ordering::Equal {
-                    return if *desc { o.reverse() } else { o };
+                    return if desc { o.reverse() } else { o };
                 }
             }
             a.1.cmp(&b.1)
         });
-        (total, seen) = (found.len(), found.len());
         for (_, id, v) in found.iter().skip(view.offset).take(limit) {
             put(&mut out, *id, v);
         }
+        (total, more) = (found.len(), found.len() > view.offset + shown);
     }
     drop(rows);
     if shown > 0 || !lines {
@@ -451,7 +510,7 @@ pub fn list<T: Resource>(cx: &mut Cx, _: &Hooks<T>) -> Result<Response> {
         tagged(cx, out)
     };
     res = res.with_header("x-total-count", total.to_string());
-    if shown > 0 && seen > view.offset + shown {
+    if shown > 0 && more {
         res = res.with_header("link", next(cx, &view, last, shown));
     }
     Ok(res)
@@ -486,7 +545,7 @@ pub fn get<T: Resource>(cx: &mut Cx, _: &Hooks<T>) -> Result<Response> {
     let cx = &*cx;
     let view = view::<T>(cx, false)?;
     let id = id(cx)?;
-    let rows = T::table().rows();
+    let rows = T::table().read();
     let v = one(&rows, id, &view)?;
     let mut out = String::with_capacity(128);
     view.write(&mut out, id, v);
@@ -530,10 +589,11 @@ fn body<T: Resource>(cx: &Cx) -> Result<Value> {
     Ok(v)
 }
 
-/// A row that was just written, read back from its JSON for an `after_`
-/// hook (the type need not be `Clone`).
-fn reread<T: Resource>(json: &str) -> Result<Row<T>> {
-    json::from_json(json.as_bytes())
+/// Row `id`, read back from its value's JSON for a hook (the type need not
+/// be `Clone`).
+fn reread<T: Resource>(id: u64, json: &str) -> Result<Row<T>> {
+    let value = json::from_json(json.as_bytes())?;
+    Ok(Row { id, value })
 }
 
 /// `POST /notes`: 201 with the new row and its `Location`. An array makes
@@ -552,36 +612,38 @@ pub fn create<T: Resource>(cx: &mut Cx, hooks: &Hooks<T>) -> Result<Response> {
             h(cx, v)?;
         }
     }
+    // Each value's JSON, written once for the store and the answer.
+    let values: Vec<(T, String)> = values
+        .into_iter()
+        .map(|mut v| {
+            v.stamp(None);
+            let json = json::to_json(&v);
+            (v, json)
+        })
+        .collect();
     let table = T::table();
-    let mut rows = table.rows();
-    let mut out = String::with_capacity(128 * values.len());
+    let mut rows = table.write();
     let mut made = Vec::with_capacity(values.len());
-    if many {
-        out.push('[');
-    }
-    for mut v in values {
-        v.stamp(None);
+    for (v, json) in values {
         let id = table.next_id(&mut rows);
-        let json = table.encode(&rows, &v);
-        table.write(&mut rows, id, Some(&json));
-        if !made.is_empty() {
-            out.push(',');
-        }
-        let at = out.len();
-        row_json(&mut out, id, &v);
-        made.push((id, at, out.len()));
+        table.save(&mut rows, id, Some(&json));
         rows.map.insert(id, v);
+        made.push((id, json));
     }
     drop(rows);
-    if many {
-        out.push(']');
+    let mut out = String::with_capacity(made.iter().map(|(_, j)| j.len() + 24).sum::<usize>() + 2);
+    out.push_str(if many { "[" } else { "" });
+    for (k, (id, json)) in made.iter().enumerate() {
+        out.push_str(if k > 0 { "," } else { "" });
+        splice(&mut out, *id, json);
     }
     if let Some(h) = hooks.after_create {
-        for &(_, a, b) in &made {
-            h(cx, &reread(&out[a..b])?)?;
+        for (id, json) in &made {
+            h(cx, &reread(*id, json)?)?;
         }
     }
     if many {
+        out.push(']');
         return Ok(Response::json(out).with_status(201));
     }
     let at = format!("{}/{}", cx.path().trim_end_matches('/'), made[0].0);
@@ -593,12 +655,9 @@ pub fn put<T: Resource>(cx: &mut Cx, hooks: &Hooks<T>) -> Result<Response> {
     guard::<T>(cx)?;
     let id = id(cx)?;
     let mut v: T = json::from_value(&body::<T>(cx)?)?;
-    {
-        let view = view::<T>(cx, false)?;
-        let rows = T::table().rows();
-        check_match(cx, id, one(&rows, id, &view)?)?;
-    }
     if let Some(h) = hooks.before_update {
+        // A 404 before the hook, for a row there is not.
+        one(&T::table().read(), id, &view::<T>(cx, false)?)?;
         h(cx, id, &mut v)?;
     }
     replace(cx, hooks, id, v, None)
@@ -614,23 +673,24 @@ fn replace<T: Resource>(
     was: Option<&str>,
 ) -> Result<Response> {
     let table = T::table();
-    let mut rows = table.rows();
-    let old = one(&rows, id, &view::<T>(cx, false)?)?;
+    let view = view::<T>(cx, false)?;
+    let mut rows = table.write();
+    let old = one(&rows, id, &view)?;
     if was.is_some_and(|w| json::to_json(old) != w) {
         return Err(
             Error::new(409, "The row changed while it was being updated").with_code("conflict"),
         );
     }
-    check_match(cx, id, old)?;
+    check_match(cx, id, old, was)?;
     v.stamp(Some(old));
-    let json = table.encode(&rows, &v);
-    table.write(&mut rows, id, Some(&json));
-    let mut out = String::with_capacity(128);
-    row_json(&mut out, id, &v);
+    let json = json::to_json(&v);
+    table.save(&mut rows, id, Some(&json));
     rows.map.insert(id, v);
     drop(rows);
+    let mut out = String::with_capacity(json.len() + 24);
+    splice(&mut out, id, &json);
     if let Some(h) = hooks.after_update {
-        h(cx, &reread(&out)?)?;
+        h(cx, &reread(id, &json)?)?;
     }
     Ok(tagged(cx, out))
 }
@@ -644,13 +704,7 @@ pub fn patch<T: Resource>(cx: &mut Cx, hooks: &Hooks<T>) -> Result<Response> {
     let Value::Object(sent) = body::<T>(cx)? else {
         return Err(Error::invalid("body", "expected an object"));
     };
-    let was = {
-        let view = view::<T>(cx, false)?;
-        let rows = T::table().rows();
-        let old = one(&rows, id, &view)?;
-        check_match(cx, id, old)?;
-        json::to_json(old)
-    };
+    let was = json::to_json(one(&T::table().read(), id, &view::<T>(cx, false)?)?);
     let Ok(Value::Object(mut members)) = json::parse(&was) else {
         return Err(Error::new(500, "The row is not a JSON object"));
     };
@@ -675,29 +729,22 @@ pub fn delete<T: Resource>(cx: &mut Cx, hooks: &Hooks<T>) -> Result<Response> {
     guard::<T>(cx)?;
     let id = id(cx)?;
     let table = T::table();
-    let view = view::<T>(cx, false)?;
+    // The row as it was, for the hooks.
     let hooked = hooks.before_delete.is_some() || hooks.after_delete.is_some();
-    let row = {
-        let rows = table.rows();
-        let v = one(&rows, id, &view)?;
-        check_match(cx, id, v)?;
-        let mut out = String::new();
-        if hooked {
-            row_json(&mut out, id, v);
-        }
-        out
-    };
-    let row = if hooked {
-        Some(reread::<T>(&row)?)
-    } else {
-        None
-    };
+    let row = hooked
+        .then(|| {
+            let json = json::to_json(one(&table.read(), id, &view::<T>(cx, false)?)?);
+            reread::<T>(id, &json)
+        })
+        .transpose()?;
     if let (Some(h), Some(row)) = (hooks.before_delete, &row) {
         h(cx, row)?;
     }
-    {
-        table.delete(&mut table.rows(), id).ok_or_else(missing)?;
-    }
+    let view = view::<T>(cx, false)?;
+    let mut rows = table.write();
+    check_match(cx, id, one(&rows, id, &view)?, None)?;
+    table.delete(&mut rows, id);
+    drop(rows);
     if let (Some(h), Some(row)) = (hooks.after_delete, &row) {
         h(cx, row)?;
     }
@@ -710,12 +757,7 @@ mod tests {
 
     #[test]
     fn filters_compare_by_kind() {
-        let f = |kind, op, want: &'static str| Filter {
-            field: "x",
-            kind,
-            op,
-            want: Cow::Borrowed(want),
-        };
+        let f = |kind, op, want: &'static str| Filter::new("x", kind, op, Cow::Borrowed(want));
         assert!(f(Kind::Text, Op::Eq, "Tea").passes("\"Tea\""));
         assert!(f(Kind::Text, Op::Eq, "a<b").passes("\"a\\u003cb\""));
         assert!(!f(Kind::Text, Op::Eq, "tea").passes("\"Tea\""));
@@ -735,6 +777,13 @@ mod tests {
         let t = etag("[]");
         assert!(t.starts_with('"') && t.len() == 18);
         assert_ne!(t, etag("[1]"));
+        assert_ne!(etag("[1234567]"), etag("[1234568]"));
+        assert_ne!(etag("[123456]\0"), etag("[123456]"), "the length counts");
+        assert_ne!(
+            hash(&[b"ab", b"c"]),
+            hash(&[b"a", b"bc"]),
+            "and each part's"
+        );
         assert!(names(&format!("\"x\", W/{t}"), &t));
         assert!(names("*", &t) && !names("\"x\"", &t));
     }

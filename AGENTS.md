@@ -237,7 +237,7 @@ Any other `pub fn` in hooks.rs is an error. `pub` types there are
 - Errors: `error(404, "msg")`, `redirect("/x")`, `invalid("f", "msg")` return
   `Result`; `opt.or_404()?`, `.or_status(403)?`; `Error::new(s, m)` for
   `map_err`; any `std::error::Error` via `?` → 500.
-- `Response::`: `json_of(&v) created(&v) text html redirect empty(s)
+- `Response::`: `json_of(&v) created(&v) text html empty(s)
   download(name, bytes) file_in(dir, name).await stream ndjson events
   websocket` + `.with_status(s) .with_header(n, v)`.
 - State: `Table<T>` (`Table::new()` memory, `Table::saved("name")` survives

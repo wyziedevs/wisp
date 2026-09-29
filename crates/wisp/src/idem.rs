@@ -7,40 +7,54 @@
 //! run again. Nothing is kept for requests without the header.
 
 use crate::http::{Body, Reply};
-use crate::{Cx, Error, Method};
+use crate::rest::hash;
+use crate::{Cx, Error, Method, Shared};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::sync::Arc;
 
 const MAX: usize = 10_000;
 const DAY: u64 = 24 * 60 * 60;
 
-type Headers = Vec<(Cow<'static, str>, Cow<'static, str>)>;
+/// An answer kept: status, headers and body.
+type Answer = (u16, Vec<(Cow<'static, str>, Cow<'static, str>)>, Box<[u8]>);
 
 struct Kept {
     /// The request's body, hashed: the same key must come with the same one.
     body: u64,
     at: u64,
-    /// Status, headers and body; `None` while the first request is being
-    /// answered.
-    reply: Option<(u16, Headers, Vec<u8>)>,
+    /// Its place in `Keys::order`.
+    seq: u64,
+    /// `None` while the first request is being answered. Shared, so a
+    /// replay copies it outside the lock.
+    reply: Option<Arc<Answer>>,
 }
 
-static KEPT: Mutex<BTreeMap<u64, Kept>> = Mutex::new(BTreeMap::new());
+struct Keys {
+    map: BTreeMap<u64, Kept>,
+    /// Each key by when it came (`seq`), oldest first: the next to go.
+    order: BTreeMap<u64, u64>,
+    seq: u64,
+}
 
-fn fnv(parts: &[&[u8]]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for p in parts {
-        for &b in *p {
-            h = (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3);
+impl Keys {
+    fn remove(&mut self, id: u64) {
+        if let Some(k) = self.map.remove(&id) {
+            self.order.remove(&k.seq);
         }
-        h = (h ^ 0xff).wrapping_mul(0x0000_0100_0000_01b3);
     }
-    h
 }
+
+static KEPT: Shared<Keys> = Shared::new(Keys {
+    map: BTreeMap::new(),
+    order: BTreeMap::new(),
+    seq: 0,
+});
 
 /// What to do with a request that may carry a key.
 pub(crate) enum Start {
+    /// No key (or not a POST): answer it as usual.
+    Skip,
     /// Answer it, then [`finish`] with this key.
     Fresh(u64),
     /// The first answer, again.
@@ -48,93 +62,101 @@ pub(crate) enum Start {
     Refused(Error),
 }
 
-/// `None` for a request without a key (or not a POST).
-pub(crate) fn start(cx: &Cx) -> Option<Start> {
-    if cx.method != Method::Post {
-        return None;
-    }
-    let key = cx.header("idempotency-key")?;
+pub(crate) fn start(cx: &Cx) -> Start {
+    let key = match cx.header("idempotency-key") {
+        Some(key) if cx.method == Method::Post => key,
+        _ => return Start::Skip,
+    };
     if key.is_empty() || key.len() > 255 {
-        return Some(Start::Refused(Error::new(
+        return Start::Refused(Error::new(
             400,
             "Idempotency-Key must be 1 to 255 characters",
-        )));
+        ));
     }
     let auth = cx.header("authorization").unwrap_or("");
-    let id = fnv(&[
+    let id = hash(&[
         key.as_bytes(),
         cx.path().as_bytes(),
         cx.query_string().as_bytes(),
         auth.as_bytes(),
     ]);
-    let body = fnv(&[cx.body()]);
+    let body = hash(&[cx.body()]);
     let now = crate::unix_now();
-    let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
     // A first request unanswered after a minute was dropped (its client
     // left, the task was cancelled): the key is free again.
-    let live = |k: &&Kept| match k.reply {
+    let live = |k: &Kept| match k.reply {
         Some(_) => now.saturating_sub(k.at) < DAY,
         None => now.saturating_sub(k.at) < 60,
     };
-    if let Some(k) = kept.get(&id).filter(live) {
+    let mut kept = KEPT.lock();
+    if let Some(k) = kept.map.get(&id).filter(|k| live(k)) {
         if k.body != body {
-            return Some(Start::Refused(
+            return Start::Refused(
                 Error::new(422, "This Idempotency-Key was used with another request")
                     .with_code("idempotency_key_reused"),
-            ));
+            );
         }
-        return Some(match &k.reply {
-            None => Start::Refused(
+        let Some(reply) = k.reply.clone() else {
+            return Start::Refused(
                 Error::new(409, "A request with this Idempotency-Key is being answered")
                     .with_code("idempotency_key_in_use"),
-            ),
-            Some((status, headers, bytes)) => {
-                let mut headers = headers.clone();
-                headers.push((Cow::Borrowed("idempotent-replayed"), Cow::Borrowed("true")));
-                Start::Replay(Reply {
-                    status: *status,
-                    headers,
-                    body: Body::Bytes(bytes.clone()),
-                })
-            }
+            );
+        };
+        drop(kept);
+        let (status, headers, bytes) = &*reply;
+        let mut headers = headers.clone();
+        headers.push((Cow::Borrowed("idempotent-replayed"), Cow::Borrowed("true")));
+        return Start::Replay(Reply {
+            status: *status,
+            headers,
+            body: Body::Bytes(bytes.to_vec()),
         });
     }
-    if kept.len() >= MAX {
-        kept.retain(|_, k| live(&&*k));
+    // The oldest go first: those a day old, then any while there are too many.
+    while let Some((_, &first)) = kept.order.first_key_value() {
+        let old = kept
+            .map
+            .get(&first)
+            .is_none_or(|k| now.saturating_sub(k.at) >= DAY);
+        if !old && kept.map.len() < MAX {
+            break;
+        }
+        kept.remove(first);
     }
-    if kept.len() >= MAX
-        && let Some(oldest) = kept.iter().min_by_key(|(_, k)| k.at).map(|(&id, _)| id)
-    {
-        kept.remove(&oldest);
-    }
-    kept.insert(
+    kept.remove(id);
+    kept.seq += 1;
+    let seq = kept.seq;
+    kept.order.insert(seq, id);
+    kept.map.insert(
         id,
         Kept {
             body,
             at: now,
+            seq,
             reply: None,
         },
     );
-    Some(Start::Fresh(id))
+    Start::Fresh(id)
 }
 
 /// Keeps the answer to the request [`start`] gave `id`, or forgets the key
 /// when the answer is not one to repeat.
 pub(crate) fn finish(id: u64, reply: &Reply) {
-    let bytes = match &reply.body {
-        Body::Bytes(b) => Some(b.clone()),
-        Body::Static(b) => Some(b.to_vec()),
+    let bytes: Option<Box<[u8]>> = match &reply.body {
+        Body::Bytes(b) => Some(b.as_slice().into()),
+        Body::Static(b) => Some((*b).into()),
         _ => None,
     };
-    let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
-    match bytes.filter(|_| reply.status < 500) {
-        Some(b) => {
-            if let Some(k) = kept.get_mut(&id) {
-                k.reply = Some((reply.status, reply.headers.clone(), b));
+    let kept = bytes
+        .filter(|_| reply.status < 500)
+        .map(|b| Arc::new((reply.status, reply.headers.clone(), b)));
+    let mut keys = KEPT.lock();
+    match kept {
+        Some(r) => {
+            if let Some(k) = keys.map.get_mut(&id) {
+                k.reply = Some(r);
             }
         }
-        None => {
-            kept.remove(&id);
-        }
+        None => keys.remove(id),
     }
 }

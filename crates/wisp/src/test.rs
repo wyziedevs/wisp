@@ -55,16 +55,29 @@ impl<A: App> Client<A> {
 
     /// A form post, as a browser sends one: `app.post_form("/login", &[("name", "ada")])`.
     pub fn post_form(&mut self, target: &str, fields: &[(&str, &str)]) -> Reply {
+        // As browsers encode forms: `+` for a space.
+        let encode = |out: &mut String, s: &str| {
+            for (k, word) in s.split(' ').enumerate() {
+                if k > 0 {
+                    out.push('+');
+                }
+                let _ = crate::cx::encode(out, word, |b| {
+                    b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'*')
+                });
+            }
+        };
         let mut req = Request::new("POST", target);
         req.header("content-type", "application/x-www-form-urlencoded");
+        let mut body = String::new();
         for (i, (name, value)) in fields.iter().enumerate() {
             if i > 0 {
-                req.body.push(b'&');
+                body.push('&');
             }
-            encode(&mut req.body, name);
-            req.body.push(b'=');
-            encode(&mut req.body, value);
+            encode(&mut body, name);
+            body.push('=');
+            encode(&mut body, value);
         }
+        req.body = body.into_bytes();
         self.send(req)
     }
 
@@ -158,16 +171,5 @@ impl<A: App> Client<A> {
             .iter()
             .find(|(n, _)| n == name)
             .map(|(_, v)| v.as_str())
-    }
-}
-
-/// `application/x-www-form-urlencoded`.
-fn encode(out: &mut Vec<u8>, s: &str) {
-    for &b in s.as_bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'*' => out.push(b),
-            b' ' => out.push(b'+'),
-            _ => out.extend_from_slice(format!("%{b:02X}").as_bytes()),
-        }
     }
 }

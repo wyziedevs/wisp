@@ -9,7 +9,7 @@
 // calls them.
 import { __wisp as X, page, store } from 'wisp';
 
-const { Sig, node, watch, scope, end, untrack, clones, binding, range, cls, css, track, proxy, same, proxied } = X;
+const { Sig, node, watch, scope, end, untrack, clones, binding, range, cls, css, track, proxy, same, proxied, on, report } = X;
 const { defs, instance, script, adopt, painted, place, drop, RAW, metas, sigOf, keysOf, verOf, changed, bump } = X;
 const trans = new WeakMap(); // element -> { i, o }: its in and out transitions, [kind, options]
 const anims = new WeakMap(); // element -> its running animation
@@ -153,7 +153,7 @@ X.await = (sc, inst, el, L, quiet, [, a]) => {
 X.try = (sc, inst, el, L, quiet) => {
   const st = new Sig({});
   const inner = scope(sc);
-  inner.b = (e) => (!st.x.f ? (st.v = { f: 1, e }) : sc.b ? sc.b(e) : console.error(e));
+  inner.b = (e) => (!st.x.f ? (st.v = { f: 1, e }) : report(sc, e));
   const R = Object.create(L);
   R.reset = () => (st.v = {});
   clones(inner, inst, el, R, quiet, 'each', () => [st.v], ['__tr']);
@@ -241,10 +241,6 @@ const READONLY = /^(files|duration|buffered|seekable|played|ended|readyState|vid
 // media element's, the window's and the document's: the property and the
 // variable, both ways where the element lets the variable set it.
 X.bind = (sc, el, L, a, get, set) => {
-  const on = (types, f) => {
-    for (const t of types.split(' ')) el.addEventListener(t, f);
-    sc.stops.push(() => types.split(' ').forEach((t) => el.removeEventListener(t, f)));
-  };
   if (SIZES.test(a)) {
     const size = /Size$|Rect$/.test(a);
     const ro = new ResizeObserver(([e]) => set(L, size ? e[a] : el[a]));
@@ -260,7 +256,7 @@ X.bind = (sc, el, L, a, get, set) => {
         : () => el[a];
   const mine = READONLY.test(a) || el === window || el === document;
   if (mine || get(L) == null) set(L, read());
-  on(EVENTS[a] || 'input', () => set(L, read()));
+  on(sc, el, EVENTS[a] || 'input', () => set(L, read()));
   if (mine && a != 'scrollX' && a != 'scrollY') return;
   node(sc, () => {
     const v = get(L);
@@ -293,8 +289,7 @@ X.comp = (sc, parent, anchor, L, quiet, [, id, props, binds, events]) => {
     try {
       script(child, { ...props(L) });
     } catch (e) {
-      if (sc.b) sc.b(e);
-      else console.error(e);
+      report(sc, e);
     }
     def.tpl ||= Object.assign(document.createElement('template'), { innerHTML: def.html || '' });
     return adopt(painted(anchor), child.sc, child, {}) || place(anchor, def.tpl, child.sc, child, {}, quiet);
@@ -360,13 +355,13 @@ X.shared.__wisp_snap = snap;
 X.shared.enhance = (form, f) => {
   let after;
   const ac = new AbortController();
-  const on = (type, g) => form.addEventListener(type, g, { signal: ac.signal });
+  const listen = (type, g) => form.addEventListener(type, g, { signal: ac.signal });
   form.__wispEnhance = true;
-  on('wisp:submit', (e) => {
+  listen('wisp:submit', (e) => {
     const { data: formData, submitter, action } = e.detail;
     after = typeof f == 'function' && f({ form, formData, submitter, action, cancel: () => e.preventDefault() });
   });
-  on('wisp:result', (e) => {
+  listen('wisp:result', (e) => {
     page.value = { ...page.value, form: e.detail.data };
     Promise.resolve(after).then((g) => typeof g == 'function' && g(e.detail));
   });

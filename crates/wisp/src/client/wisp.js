@@ -24,18 +24,22 @@
   const key = (u) => String(u).split('#')[0];
   let shown = key(location.href);
   const ran = new Set([...document.scripts].map((s) => s.src || s.text));
-  // Head elements the server sent, by their markup: a navigation swaps
-  // these, and leaves alone what scripts added.
-  let served = new Map([...document.head.children].map((n) => [n.outerHTML, n]));
+  // Head elements the server sent: a navigation swaps these, and leaves
+  // alone what scripts added.
+  let served = [...document.head.children];
 
   function swap(html, status = 200) {
     const doc = new DOMParser().parseFromString(html, 'text/html');
     if (doc.title) document.title = doc.title;
-    const next = new Map([...doc.head.children].map((n) => [n.outerHTML, n]));
-    for (const [k, n] of served) if (!next.has(k)) n.remove();
-    for (const [k, n] of next) if (served.has(k)) next.set(k, served.get(k));
-    else document.head.append(n);
-    served = next;
+    const next = [...doc.head.children];
+    served = served.filter((n) => {
+      const i = next.findIndex((m) => m.isEqualNode(n));
+      if (i < 0) n.remove();
+      else next.splice(i, 1);
+      return i >= 0;
+    });
+    document.head.append(...next);
+    served.push(...next);
     morph(document.body, doc.body);
     shown = key(location.href);
     // Parsed scripts are inert; a copy made here runs when inserted.
@@ -48,8 +52,8 @@
       s.text = old.text;
       old.replaceWith(s);
     }
+    wake(); // before the update: live.js takes the page's JSON over there
     send('wisp:update', { status });
-    wake();
   }
 
   const send = (type, detail, at = document) => {
@@ -150,8 +154,9 @@
     } else show();
   }
 
+  const link = (e) => e.target.closest?.('a[href]');
   document.addEventListener('click', (e) => {
-    const a = e.target.closest?.('a[href]');
+    const a = link(e);
     if (!a || e.defaultPrevented || e.button || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || !ours(a)) return;
     const url = new URL(a.href);
     // Same page, another #place (or a bare `#`): the browser scrolls there.
@@ -161,8 +166,7 @@
   });
 
   // Fetches a link's page ahead, used if it is followed within 10s.
-  function preload(e) {
-    const a = e.target.closest?.('a[href]');
+  function preload(a) {
     if (!a || !ours(a) || a.closest('[data-wisp-preload="off"]')) return;
     const k = key(a.href);
     if (k === key(location.href) || (pre.has(k) && Date.now() - pre.get(k)[0] < 10000)) return;
@@ -171,9 +175,10 @@
   let hover;
   document.addEventListener('mouseover', (e) => {
     clearTimeout(hover);
-    hover = setTimeout(() => preload(e), 60);
+    const a = link(e);
+    if (a) hover = setTimeout(() => preload(a), 60);
   });
-  document.addEventListener('touchstart', preload, { passive: true });
+  document.addEventListener('touchstart', (e) => preload(link(e)), { passive: true });
 
   // Back/forward across entries we pushed: show that URL's page.
   addEventListener('popstate', () => {
@@ -211,6 +216,7 @@
   }
 
   function children(a, b) {
+    let ids = null; // the old children by id, made once a new one has an id
     const skip = (c) => {
       while (c && c.__w) c = c.nextSibling;
       return c;
@@ -221,7 +227,10 @@
       next = n.nextSibling; // n may move out of b below
       let m = null;
       if (n.nodeType === 1 && n.id) {
-        for (let c = cur; c; c = c.nextSibling) if (!c.__w && c.id === n.id && c.nodeName === n.nodeName) { m = c; break; }
+        ids ||= new Map([...a.childNodes].filter((c) => c.id && !c.__w).reverse().map((c) => [c.id, c]));
+        m = ids.get(n.id);
+        if (m?.nodeName !== n.nodeName) m = null;
+        else ids.delete(n.id);
       } else if (cur && same(cur, n)) {
         m = cur;
       }
@@ -335,10 +344,12 @@
     woke?.abort();
     woke = new AbortController();
     const { signal } = woke;
-    const json = document.getElementById('wisp-live');
+    // Parsed here once: live.js takes it from `__j`.
+    const el = document.getElementById('wisp-live');
+    const json = el && (el.__j = JSON.parse(el.textContent));
     const parent = {};
     const waits = new Map(); // client:interaction islands -> their start
-    for (const [I, , P, how] of json && runtime ? JSON.parse(json.textContent).i : []) {
+    for (const [I, , P, how] of json && runtime ? json.i : []) {
       parent[I] = P;
       if (typeof how != 'string') continue;
       let started;
@@ -372,7 +383,7 @@
     };
     // The first pointer, focus or key in one starts it. A click that comes
     // before it is ready is held, and clicked again once it is.
-    for (const type of ['pointerdown', 'focusin', 'keydown', 'click']) {
+    if (waits.size) for (const type of ['pointerdown', 'focusin', 'keydown', 'click']) {
       document.addEventListener(type, (e) => {
         const go = waits.size && island(e.target);
         if (!go) return;

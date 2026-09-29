@@ -1,12 +1,13 @@
 //! `wisp build --static`'s export of the test app, into a temp folder.
 
-use std::path::PathBuf;
+mod common;
+
+use common::Temp;
 use wisp_test_app::Site;
 
 #[test]
 fn writes_pages_and_assets() {
-    let dir: PathBuf = std::env::temp_dir().join(format!("wisp-export-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = Temp::new("export");
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -23,5 +24,4 @@ fn writes_pages_and_assets() {
     assert!(read("_app/wisp.js").len() > 100);
     // A redirect, and an endpoint, are not pages.
     assert!(!dir.join("admin").exists() && !dir.join("echo").exists());
-    let _ = std::fs::remove_dir_all(&dir);
 }

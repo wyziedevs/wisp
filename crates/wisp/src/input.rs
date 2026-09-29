@@ -32,19 +32,24 @@ fn find<'a>(cx: &'a Cx, name: &str) -> Option<(Cow<'a, str>, From)> {
         if let Some(v) = cx.form().get(name) {
             return Some((v, From::Form));
         }
-        if let Some(v) = json_field(cx, name) {
-            return Some((Cow::Owned(v), From::Json));
+        if let Some(v) = json_values(cx, name).next() {
+            return Some((v, From::Json));
         }
     }
     cx.query(name).map(|v| (v, From::Query))
+}
+
+/// Whether the client asks for JSON rather than a page, by its `Accept`.
+pub(crate) fn asks_json(cx: &Cx) -> bool {
+    let accept = cx.header("accept").unwrap_or("");
+    accept.contains("json") && !accept.contains("text/html")
 }
 
 /// What an action's error does: `invalid(..)` from a form shows the page
 /// again, as a 422, for [`Cx::problem`] to tell; any other error, or one
 /// for a client that sent or asks for JSON, is the error.
 pub fn failed(cx: &mut Cx, e: Error) -> Result<()> {
-    let accept = cx.header("accept").unwrap_or("");
-    let json = is_json(cx) || (accept.contains("json") && !accept.contains("text/html"));
+    let json = is_json(cx) || asks_json(cx);
     if e.status() == 422 && !e.fields().is_empty() && !json {
         cx.fail(422, e);
         return Ok(());
@@ -73,35 +78,27 @@ impl Cx {
 
 /// Whether the request's body is JSON, by its `Content-Type`.
 pub(crate) fn is_json(cx: &Cx) -> bool {
-    cx.header("content-type").is_some_and(|t| {
-        let t = t.split(';').next().unwrap_or("").trim().as_bytes();
-        t.eq_ignore_ascii_case(b"application/json")
-            || t.len() > 5 && t[t.len() - 5..].eq_ignore_ascii_case(b"+json")
-    })
+    let t = cx.mime().as_bytes();
+    t.eq_ignore_ascii_case(b"application/json")
+        || t.len() > 5 && t[t.len() - 5..].eq_ignore_ascii_case(b"+json")
 }
 
 /// The members `name` of a JSON object body, as the text a form would send:
 /// a string as itself, a number or boolean as written, each item of an
-/// array. `null` is not there.
-fn json_values(cx: &Cx, name: &str) -> Vec<String> {
-    let scalar = |v: &Value| match v {
-        Value::String(s) => Some(s.clone()),
-        Value::Number(n) => Some(n.clone()),
-        Value::Bool(b) => Some(b.to_string()),
+/// array. `null` is not there. Borrowed from the parsed body.
+fn json_values<'a>(cx: &'a Cx, name: &str) -> impl Iterator<Item = Cow<'a, str>> {
+    let scalar = |v: &'a Value| match v {
+        Value::String(s) | Value::Number(s) => Some(Cow::Borrowed(s.as_str())),
+        Value::Bool(b) => Some(Cow::Borrowed(if *b { "true" } else { "false" })),
         _ => None,
     };
-    if !is_json(cx) {
-        return Vec::new();
-    }
-    match cx.json_body().and_then(|v| v.get(name)) {
-        Some(Value::Array(items)) => items.iter().filter_map(scalar).collect(),
-        Some(v) => scalar(v).into_iter().collect(),
-        None => Vec::new(),
-    }
-}
-
-fn json_field(cx: &Cx, name: &str) -> Option<String> {
-    json_values(cx, name).into_iter().next()
+    let found = is_json(cx).then(|| cx.json_body()?.get(name)).flatten();
+    let items = match found {
+        Some(Value::Array(items)) => items.as_slice(),
+        Some(v) => std::slice::from_ref(v),
+        None => &[],
+    };
+    items.iter().filter_map(scalar)
 }
 
 /// `body: T`: the request's JSON body read as a `T` (see
@@ -158,7 +155,7 @@ pub fn all<T: FromStr<Err: Display>>(cx: &Cx, name: &str) -> Result<Vec<T>> {
     let form: Vec<Cow<str>> = if !posts(cx) {
         Vec::new()
     } else if is_json(cx) {
-        json_values(cx, name).into_iter().map(Cow::Owned).collect()
+        json_values(cx, name).collect()
     } else {
         cx.form().all(name).collect()
     };
