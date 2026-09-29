@@ -14,14 +14,23 @@
 //!   `name: value` a line each, an empty line and the body.
 //! - `wisp_fetched(id, len)`: the answer to import `fetch`, `status`, then as
 //!   above (status 0: failed, the body says why).
+//! - `wisp_timer(id)`: import `timer`'s time has come.
+//! - `wisp_cancel(id)`: the client of request `id` left; its task is dropped,
+//!   so a streamed body's sender fails.
+//! - `wisp_pull(id)`: request `id`'s stream wants chunks again.
 //!
 //! - `wisp_current() -> id`: after a trap, the task that trapped: a
 //!   request's id, or `u32::MAX` for `init`.
 //! - `wisp_poll()`: after a trap, polls the tasks woken meanwhile.
 //!
 //! Imports (module `wisp`): `random(ptr, len)`, `log(ptr, len)`, `reply(id, ptr, len)` (the reply to
-//! request `id`, as `wisp_fetched` has it), `fetch(id, ptr, len)` (a request,
-//! its target a URL).
+//! request `id`, as `wisp_fetched` has it; a first line `200 stream` means the
+//! body follows as `chunk(id, ptr, len)` calls, the last one empty; a chunk
+//! returns 0 when the client is behind, and none follows until `wisp_pull`),
+//! `fetch(id, ptr, len)` (a request, its target a URL), `timer(id, ms)`.
+//!
+//! Tasks: a request's has its id; `init`'s is `u32::MAX`; those of
+//! `wisp::spawn` count up from `1 << 31`.
 //!
 //! Tasks are polled when the host calls in, and never between: every
 //! wakeup comes from a request or a fetch arriving. A panic traps, which
@@ -51,6 +60,9 @@ unsafe extern "C" {
     safe fn send_reply(id: u32, ptr: *const u8, len: usize);
     #[link_name = "fetch"]
     safe fn send_fetch(id: u32, ptr: *const u8, len: usize);
+    #[link_name = "chunk"]
+    safe fn send_chunk(id: u32, ptr: *const u8, len: usize) -> u32;
+    safe fn timer(id: u32, ms: u32);
 }
 
 type Task = Pin<Box<dyn Future<Output = ()>>>;
@@ -69,6 +81,12 @@ thread_local! {
     static WOKEN: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
     static FETCHES: RefCell<HashMap<u32, Fetching>> = RefCell::new(HashMap::new());
     static NEXT_FETCH: Cell<u32> = const { Cell::new(0) };
+    /// Timers not yet due, with what to wake; a due one is removed.
+    static TIMERS: RefCell<HashMap<u32, Option<Waker>>> = RefCell::new(HashMap::new());
+    static NEXT_TIMER: Cell<u32> = const { Cell::new(0) };
+    /// Streams waiting for `wisp_pull`, by request.
+    static PULLS: RefCell<HashMap<u32, Option<Waker>>> = RefCell::new(HashMap::new());
+    static NEXT_TASK: Cell<u32> = const { Cell::new(0) };
     static CURRENT: Cell<u32> = const { Cell::new(INIT) };
     /// `init` has finished: 0 not yet, 1 well, 2 failed.
     static READY: Cell<u8> = const { Cell::new(0) };
@@ -110,9 +128,7 @@ pub extern "C" fn wisp_request(id: u32, len: usize) {
             Some(req) => {
                 Ready.await;
                 match READY.get() {
-                    1 => {
-                        whole(HANDLER.get().expect("wisp::run registers the app")(req).await).await
-                    }
+                    1 => HANDLER.get().expect("wisp::run registers the app")(req).await,
                     _ => Reply::plain(500),
                 }
             }
@@ -120,6 +136,16 @@ pub extern "C" fn wisp_request(id: u32, len: usize) {
         };
         let wire = encode_reply(&reply);
         send_reply(id, wire.as_ptr(), wire.len());
+        // A stream's chunks go out as they come; an empty one ends it.
+        if let crate::Body::Stream(mut rx) = reply.body {
+            while let Some(chunk) = rx.recv().await {
+                if !chunk.is_empty() && send_chunk(id, chunk.as_ptr(), chunk.len()) == 0 {
+                    PULLS.with_borrow_mut(|p| p.insert(id, None));
+                    Wait(&PULLS, id).await;
+                }
+            }
+            send_chunk(id, std::ptr::null(), 0);
+        }
     };
     spawn(id, Box::pin(task));
 }
@@ -138,6 +164,23 @@ pub extern "C" fn wisp_fetched(id: u32, len: usize) {
     if let Some(w) = waker {
         w.wake();
     }
+    run();
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wisp_timer(id: u32) {
+    done(&TIMERS, id);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wisp_pull(id: u32) {
+    done(&PULLS, id);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wisp_cancel(id: u32) {
+    let task = TASKS.with_borrow_mut(|t| t.remove(&id));
+    drop(task); // outside the borrow: dropping it may wake others
     run();
 }
 
@@ -285,6 +328,58 @@ fn spawn(id: u32, task: Task) {
     run();
 }
 
+/// `wisp::spawn`: polled first by the `run` under way, since it is
+/// always called from a task.
+pub(crate) fn spawn_task(task: Task) {
+    let n = NEXT_TASK.get();
+    NEXT_TASK.set((n + 1) % (INIT >> 1)); // stays below `INIT`
+    let id = (1 << 31) + n;
+    TASKS.with_borrow_mut(|t| t.insert(id, task));
+    WOKEN.with_borrow_mut(|w| w.push(id));
+}
+
+type Waiting = std::thread::LocalKey<RefCell<HashMap<u32, Option<Waker>>>>;
+
+/// Waits until its id is taken out of the map, by [`done`]; dropped, it
+/// takes it out itself.
+struct Wait(&'static Waiting, u32);
+
+impl Future for Wait {
+    type Output = ();
+    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<()> {
+        self.0.with_borrow_mut(|m| match m.get_mut(&self.1) {
+            Some(w) => {
+                *w = Some(cx.waker().clone());
+                Poll::Pending
+            }
+            None => Poll::Ready(()),
+        })
+    }
+}
+
+impl Drop for Wait {
+    fn drop(&mut self) {
+        self.0.with_borrow_mut(|m| m.remove(&self.1));
+    }
+}
+
+/// Ends the [`Wait`] for `id`, if there is one.
+fn done(map: &'static Waiting, id: u32) {
+    if let Some(Some(w)) = map.with_borrow_mut(|m| m.remove(&id)) {
+        w.wake();
+    }
+    run();
+}
+
+/// `wisp::sleep`: the host's `setTimeout`.
+pub(crate) async fn sleep(duration: std::time::Duration) {
+    let id = NEXT_TIMER.get();
+    NEXT_TIMER.set(id.wrapping_add(1));
+    TIMERS.with_borrow_mut(|t| t.insert(id, None));
+    timer(id, duration.as_millis().min(u32::MAX as u128) as u32);
+    Wait(&TIMERS, id).await
+}
+
 /// Polls every woken task until none is. A task is taken out while it is
 /// polled, so it may spawn, wake or fetch freely.
 fn run() {
@@ -301,6 +396,7 @@ fn run() {
         {
             TASKS.with_borrow_mut(|t| t.insert(id, task));
         }
+        CURRENT.set(INIT); // a trap outside any task fails them all
     }
 }
 
@@ -352,21 +448,13 @@ fn push_headers<'a>(
     w.extend_from_slice(body);
 }
 
-/// `reply` with a streamed body gathered: edge replies go out whole.
-async fn whole(mut reply: Reply) -> Reply {
-    if let crate::Body::Stream(rx) = &mut reply.body {
-        let mut all = Vec::new();
-        while let Some(chunk) = rx.recv().await {
-            all.extend_from_slice(&chunk);
-        }
-        reply.body = crate::Body::Bytes(all);
-    }
-    reply
-}
-
-/// A stream's chunks were already gathered: edge replies go out whole.
+/// The reply's status, headers and body; a stream's head only, marked.
 fn encode_reply(reply: &Reply) -> Vec<u8> {
-    let mut w = format!("{}\n", reply.status).into_bytes();
+    let mark = match reply.body {
+        crate::Body::Stream(_) => " stream",
+        _ => "",
+    };
+    let mut w = format!("{}{mark}\n", reply.status).into_bytes();
     push_headers(
         &mut w,
         reply.headers.iter().map(|(n, v)| (&**n, &**v)),

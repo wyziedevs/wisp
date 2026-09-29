@@ -13,6 +13,9 @@
 //! is not read, since naming it would take an axum dependency: put the
 //! address in with a layer, `req.extensions_mut().insert(addr)`, or set
 //! `WISP_CLIENT_IP_HEADER` behind a proxy.
+//!
+//! A [`Response::websocket`] is answered with a 501: upgrades need Wisp's
+//! own server (or a WebSocket route of the host's own, such as axum's).
 
 use crate::http::{Reply, answer, body_limit, reason};
 use crate::{App, Cx, Response};
@@ -95,7 +98,9 @@ fn response(reply: Reply) -> http::Response<Body> {
         crate::Body::Bytes(b) => Body::full(Bytes::from(b)),
         crate::Body::Static(b) => Body::full(Bytes::from_static(b)),
         crate::Body::Stream(rx) => Body(Inner::Stream(rx)),
-        crate::Body::Page => unreachable!("answer renders pages"),
+        crate::Body::Page | crate::Body::WebSocket(_) => {
+            unreachable!("answer renders pages and refuses upgrades")
+        }
     };
     let mut res = http::Response::new(body);
     *res.status_mut() =

@@ -3,6 +3,8 @@
 // function, for Vercel, Firebase and anything built on node:http.
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { pathToFileURL } from 'node:url';
 import { wisp } from './bridge.mjs';
 
@@ -39,7 +41,12 @@ export default async function handler(req, res) {
   const peer = req.socket?.remoteAddress ?? '';
   const r = await app.handle({ method: req.method, target: req.url, peer, headers, body: new Uint8Array(body) });
   res.writeHead(r.status, r.headers.flat());
-  res.end(req.method === 'HEAD' ? undefined : r.body);
+  if (!(r.body instanceof ReadableStream)) return res.end(req.method === 'HEAD' ? undefined : r.body);
+  if (req.method === 'HEAD') return r.body.cancel().finally(() => res.end());
+  // Streamed: each chunk goes out as it comes. A client that leaves
+  // cancels the stream, which the app sees as its sender failing.
+  res.flushHeaders();
+  return pipeline(Readable.fromWeb(r.body), res).catch(() => {});
 }
 
 export { app };

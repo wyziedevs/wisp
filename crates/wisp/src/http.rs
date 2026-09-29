@@ -118,6 +118,7 @@ pub(crate) fn run<A: App>(addr: SocketAddr, threads: usize) -> io::Result<()> {
         let listener = TcpListener::from_std(listener)?;
         started(listener.local_addr()?);
         let mut signal = std::pin::pin!(stop_signal());
+        let max = crate::settings().max_conns;
         let mut next = 0;
         while let Some(accepted) = first(async { Some(listener.accept().await) }, async {
             signal.as_mut().await;
@@ -127,6 +128,10 @@ pub(crate) fn run<A: App>(addr: SocketAddr, threads: usize) -> io::Result<()> {
         {
             match accepted {
                 Ok((stream, peer)) => {
+                    let Some(slot) = Slot::take(max) else {
+                        refuse(stream);
+                        continue;
+                    };
                     let _ = stream.set_nodelay(true);
                     // Moved to the worker's driver, which serves it from here on.
                     let Ok(stream) = stream.into_std() else {
@@ -136,6 +141,7 @@ pub(crate) fn run<A: App>(addr: SocketAddr, threads: usize) -> io::Result<()> {
                         if let Ok(stream) = TcpStream::from_std(stream) {
                             connection::<A>(stream, peer).await;
                         }
+                        drop(slot);
                     });
                     next = (next + 1) % workers.len();
                 }
@@ -209,7 +215,7 @@ async fn stop_signal() {
 }
 
 /// Runs two futures at once and returns the output of the first to finish.
-async fn first<T>(a: impl Future<Output = T>, b: impl Future<Output = T>) -> T {
+pub(crate) async fn first<T>(a: impl Future<Output = T>, b: impl Future<Output = T>) -> T {
     let (mut a, mut b) = (std::pin::pin!(a), std::pin::pin!(b));
     std::future::poll_fn(move |cx| match a.as_mut().poll(cx) {
         Poll::Ready(v) => Poll::Ready(v),
@@ -223,8 +229,13 @@ static STOPPING: AtomicBool = AtomicBool::new(false);
 /// Wakes what waits for the server to stop.
 static STOP: Notify = Notify::const_new();
 
+/// Whether the server is stopping.
+pub(crate) fn stopping() -> bool {
+    STOPPING.load(Ordering::Relaxed)
+}
+
 /// Resolves once the server is stopping.
-async fn stopped() {
+pub(crate) async fn stopped() {
     let wait = STOP.notified();
     let mut wait = std::pin::pin!(wait);
     wait.as_mut().enable(); // before the check, so no notification is missed
@@ -258,6 +269,40 @@ impl Drop for Busy {
     }
 }
 
+/// Connections open now, WebSockets included, against `WISP_MAX_CONNS`.
+#[cfg(not(target_arch = "wasm32"))]
+static CONNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// One of `CONNS`, held for its connection's life.
+#[cfg(not(target_arch = "wasm32"))]
+struct Slot;
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Slot {
+    /// A slot, or `None` at the cap. Counted before the check, so two at
+    /// once cannot both take the last one; a refused one uncounts as it drops.
+    fn take(max: usize) -> Option<Slot> {
+        let slot = Slot;
+        (CONNS.fetch_add(1, Ordering::Relaxed) < max).then_some(slot)
+    }
+}
+
+/// A connection over the cap: told 503 (its send buffer, new and empty,
+/// takes it without waiting) and closed, before it costs a task or a read.
+#[cfg(not(target_arch = "wasm32"))]
+fn refuse(stream: TcpStream) {
+    if let Ok(s) = stream.into_std() {
+        let _ = (&s).write_all(b"HTTP/1.1 503 Service Unavailable\r\nretry-after: 1\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for Slot {
+    fn drop(&mut self) {
+        CONNS.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 /// Binds, with what to do about the usual failures.
 fn bind(addr: SocketAddr) -> io::Result<std::net::TcpListener> {
     std::net::TcpListener::bind(addr).map_err(|e| {
@@ -285,7 +330,7 @@ async fn read(stream: &mut TcpStream, buf: &mut Vec<u8>, deadline: u64) -> io::R
 /// `WRITE_TIMEOUT`, so one that stops reading cannot hold a connection (and
 /// its buffers) forever. A slow client that keeps reading is fine.
 #[cfg(not(target_arch = "wasm32"))]
-async fn write(stream: &mut TcpStream, buf: &[u8]) -> io::Result<()> {
+pub(crate) async fn write(stream: &mut (impl AsyncWriteExt + Unpin), buf: &[u8]) -> io::Result<()> {
     let mut at = 0;
     while at < buf.len() {
         match tokio::time::timeout(WRITE_TIMEOUT, stream.write(&buf[at..])).await {
@@ -309,11 +354,19 @@ pub(crate) async fn serve<A: App>(addr: SocketAddr) -> io::Result<()> {
         l
     })?;
     started(listener.local_addr()?);
+    let max = crate::settings().max_conns;
     loop {
         match listener.accept().await {
             Ok((stream, peer)) => {
+                let Some(slot) = Slot::take(max) else {
+                    refuse(stream);
+                    continue;
+                };
                 let _ = stream.set_nodelay(true);
-                tokio::spawn(connection::<A>(stream, peer));
+                tokio::spawn(async move {
+                    connection::<A>(stream, peer).await;
+                    drop(slot);
+                });
             }
             Err(e) => {
                 if accept_failed(&e) {
@@ -414,15 +467,27 @@ async fn connection<A: App>(mut stream: TcpStream, peer: SocketAddr) {
                 Parsed::Request { len, keep_alive } => {
                     let keep_alive = keep_alive && !STOPPING.load(Ordering::Relaxed);
                     decide::<A>(&mut cx, &mut out, &mut reply).await;
+                    // Only as a 101: a hook may have answered otherwise.
+                    let upgrade = reply.take_websocket().filter(|_| reply.status == 101);
                     let streamed = serialize::<A>(
                         &mut wbuf,
                         &mut reply,
                         &out,
                         cx.http11,
-                        keep_alive,
+                        keep_alive || upgrade.is_some(),
                         cx.method == Method::Head,
                     );
                     used += len;
+                    if let Some(upgrade) = upgrade {
+                        // The rest of the connection is the WebSocket's,
+                        // with what the client sent after its handshake.
+                        if write(&mut stream, &wbuf).await.is_ok() {
+                            let early = cx.buf[used..].to_vec();
+                            let limit = body_limit::<A>(cx.path());
+                            crate::ws::serve(stream, early, limit, upgrade, cx.path()).await;
+                        }
+                        return;
+                    }
                     head_since = None;
                     sent_continue = false;
                     if let Some(s) = streamed {
@@ -777,6 +842,10 @@ pub enum Body {
     Page,
     /// Chunks as a [`Response::stream`] makes them, until the sender is dropped.
     Stream(mpsc::Receiver<Vec<u8>>),
+    /// A [`Response::websocket`]: only the built-in server upgrades;
+    /// [`handle`] answers it with a 501.
+    #[doc(hidden)]
+    WebSocket(crate::ws::Upgrade),
 }
 
 impl Default for Reply {
@@ -819,6 +888,17 @@ impl Reply {
             .extend(headers.drain(..).map(|(n, v)| (n, Cow::Owned(v))));
     }
 
+    /// The upgrade of a [`Response::websocket`], taken out of the body.
+    fn take_websocket(&mut self) -> Option<crate::ws::Upgrade> {
+        if !matches!(self.body, Body::WebSocket(_)) {
+            return None;
+        }
+        match std::mem::replace(&mut self.body, Body::Static(b"")) {
+            Body::WebSocket(upgrade) => Some(upgrade),
+            _ => None,
+        }
+    }
+
     /// The first header called `name`.
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers
@@ -832,7 +912,7 @@ impl Reply {
         match &self.body {
             Body::Bytes(b) => b,
             Body::Static(b) => b,
-            Body::Page | Body::Stream(_) => b"",
+            Body::Page | Body::Stream(_) | Body::WebSocket(_) => b"",
         }
     }
 
@@ -887,6 +967,9 @@ pub(crate) async fn answer<A: App>(mut cx: Cx) -> Reply {
     let mut out = Out::default();
     let mut reply = Reply::default();
     decide::<A>(&mut cx, &mut out, &mut reply).await;
+    if let Body::WebSocket(_) = reply.body {
+        reply.set_plain(501, "WebSockets need Wisp's own server");
+    }
     if let Body::Page = reply.body {
         let live = out.live.tail();
         reply.body = Body::Bytes(page::<A>(&out, &live).concat().into_bytes());
@@ -897,7 +980,7 @@ pub(crate) async fn answer<A: App>(mut cx: Cx) -> Reply {
         let len = match &reply.body {
             Body::Bytes(b) => Some(b.len()),
             Body::Static(b) => Some(b.len()),
-            Body::Page | Body::Stream(_) => None,
+            Body::Page | Body::Stream(_) | Body::WebSocket(_) => None,
         };
         reply.body = Body::Static(b"");
         if let Some(len) = len.filter(|_| reply.header("content-length").is_none() && !bodiless) {
@@ -1011,7 +1094,15 @@ async fn decide<A: App>(cx: &mut Cx, out: &mut Out, reply: &mut Reply) {
     if let Some((id, params)) = route {
         cx.set_params(A::PARAMS[id], params);
     }
-    let result = catch(A::handle(route.map(|(id, _)| id), cx, out)).await;
+    let mut result = catch(A::handle(route.map(|(id, _)| id), cx, out)).await;
+    if result.is_ok()
+        && let Some(res) = out.response.as_mut().filter(|r| r.upgrade.is_some())
+    {
+        result = crate::ws::handshake(cx).map(|accept| {
+            res.headers
+                .push((Cow::Borrowed("sec-websocket-accept"), accept));
+        });
+    }
 
     // What went wrong in a 5xx, for the log. The page may say less.
     let mut failure = None;
@@ -1020,13 +1111,16 @@ async fn decide<A: App>(cx: &mut Cx, out: &mut Out, reply: &mut Reply) {
             Some(mut res) => {
                 reply.status = res.status;
                 reply.headers.clear();
-                reply
-                    .headers
-                    .push((Cow::Borrowed("content-type"), res.content_type));
+                if !res.content_type.is_empty() {
+                    reply
+                        .headers
+                        .push((Cow::Borrowed("content-type"), res.content_type));
+                }
                 reply.add(&mut res.headers);
-                reply.body = match res.stream.take() {
-                    Some(body) => Body::Stream(body),
-                    None => Body::Bytes(res.body),
+                reply.body = match (res.upgrade.take(), res.stream.take()) {
+                    (Some(upgrade), _) => Body::WebSocket(upgrade),
+                    (None, Some(body)) => Body::Stream(body),
+                    (None, None) => Body::Bytes(res.body),
                 };
             }
             None => reply.set(cx.status, "text/html; charset=utf-8", Body::Page),
@@ -1151,7 +1245,7 @@ fn serialize<A: App>(
         Body::Bytes(b) => b.len(),
         Body::Static(b) => b.len(),
         Body::Page => parts.iter().map(|p| p.len()).sum(),
-        Body::Stream(_) => 0,
+        Body::Stream(_) | Body::WebSocket(_) => 0,
     };
 
     status_line(w, reply.status);
@@ -1179,6 +1273,7 @@ fn serialize<A: App>(
     match body {
         Body::Bytes(b) => w.extend_from_slice(&b),
         Body::Static(b) => w.extend_from_slice(b),
+        Body::WebSocket(_) => {} // taken out before; a 101 has no body
         Body::Page => {
             w.reserve(len);
             for part in parts {
@@ -1256,7 +1351,7 @@ fn short_path(file: &str) -> String {
 
 /// Runs a handler future, turning a panic into a 500 so one bad request
 /// cannot take the connection (or anything else) down with it.
-async fn catch<F: Future<Output = crate::Result<()>>>(f: F) -> crate::Result<()> {
+pub(crate) async fn catch<F: Future<Output = crate::Result<()>>>(f: F) -> crate::Result<()> {
     let mut f = std::pin::pin!(f);
     std::future::poll_fn(move |cx| {
         let began = cfg!(all(debug_assertions, not(target_arch = "wasm32"))).then(Instant::now);
@@ -1612,6 +1707,7 @@ fn http_date(secs: u64) -> [u8; 29] {
 pub(crate) fn reason(status: u16) -> &'static str {
     match status {
         100 => "Continue",
+        101 => "Switching Protocols",
         200 => "OK",
         201 => "Created",
         202 => "Accepted",
@@ -1632,6 +1728,7 @@ pub(crate) fn reason(status: u16) -> &'static str {
         413 => "Content Too Large",
         415 => "Unsupported Media Type",
         422 => "Unprocessable Content",
+        426 => "Upgrade Required",
         429 => "Too Many Requests",
         431 => "Request Header Fields Too Large",
         500 => "Internal Server Error",
