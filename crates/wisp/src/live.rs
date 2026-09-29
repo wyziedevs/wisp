@@ -57,6 +57,8 @@ pub(crate) struct Live {
     instances: String,
     /// The instances rendering now, innermost last.
     open: Vec<u32>,
+    /// `,"r":"/post/[slug]","p":{"slug":"x"}` for a page with a `+page.js`.
+    route: String,
 }
 
 impl Live {
@@ -65,6 +67,7 @@ impl Live {
         self.modules.clear();
         self.instances.clear();
         self.open.clear();
+        self.route.clear();
     }
 
     /// What goes at the end of the page's body when it has instances: the
@@ -82,7 +85,9 @@ impl Live {
         }
         s.push_str("},\"i\":[");
         s.push_str(&self.instances);
-        s.push_str("]}</script>");
+        s.push(']');
+        s.push_str(&self.route);
+        s.push_str("}</script>");
         for m in &self.modules {
             let _ = write!(s, "<link rel=\"modulepreload\" href=\"{}\">", m.url);
         }
@@ -119,6 +124,25 @@ pub fn live_end(out: &mut Out) {
     out.live.open.pop();
 }
 
+/// The route of a page with a `+page.js`, which its `load` gets: the id (its
+/// pattern, such as `/post/[slug]`) and the parameters.
+pub fn live_route(out: &mut Out, id: &str, params: &[(&str, &str)]) {
+    let r = &mut out.live.route;
+    r.clear();
+    r.push_str(",\"r\":");
+    string(r, id);
+    r.push_str(",\"p\":{");
+    for (k, (name, value)) in params.iter().enumerate() {
+        if k > 0 {
+            r.push(',');
+        }
+        string(r, name);
+        r.push(':');
+        string(r, value);
+    }
+    r.push('}');
+}
+
 /// `value` as JSON. Generated code calls this, so a server value that is
 /// not `Json` is reported at its use in the template.
 #[inline]
@@ -126,19 +150,116 @@ pub fn json<T: Json + ?Sized>(out: &mut String, value: &T) {
     value.json(out);
 }
 
+/// `value`'s JSON, for `Js`.
+pub fn js_of<T: Json + ?Sized>(value: &T) -> String {
+    let mut s = String::new();
+    value.json(&mut s);
+    s
+}
+
 /// `value` as browser code would show it in `{:value}`, HTML-escaped: a
 /// string as itself, `null` as nothing, anything else as its JSON. The
 /// server's first paint of a hole whose value it knows.
 pub fn js_text<T: Json + ?Sized>(out: &mut String, value: &T) {
-    let mut j = String::new();
-    value.json(&mut j);
-    let Some(inner) = j.strip_prefix('"').and_then(|s| s.strip_suffix('"')) else {
-        if j != "null" {
-            crate::html::escape(out, &j);
+    Js(&js_of(value)).text(out);
+}
+
+/// A JSON value as browser code reads it: the server's first paint of a
+/// client block or component whose values it knows walks one of these.
+/// It reads what `Json` writes (no whitespace), not JSON in general.
+#[derive(Clone, Copy, Debug)]
+pub struct Js<'a>(pub &'a str);
+
+impl<'a> Js<'a> {
+    /// `data.user`: a member of an object; `null` for anything else, as
+    /// `undefined` shows and tests the same.
+    pub fn get(self, key: &str) -> Js<'a> {
+        let (s, b) = (self.0, self.0.as_bytes());
+        if b.first() == Some(&b'{') {
+            let mut i = 1;
+            while i < b.len() && b[i] == b'"' {
+                let k = value_end(b, i);
+                let v = k + 1; // after the `:`
+                let e = value_end(b, v);
+                if &s[i + 1..k - 1] == key {
+                    return Js(&s[v..e]);
+                }
+                i = e + 1; // after the `,`
+            }
         }
-        return;
-    };
-    // Undo the JSON string's escapes. `Json` writes only these.
+        Js("null")
+    }
+
+    /// The items of an array (nothing for anything else).
+    pub fn items(self) -> impl Iterator<Item = Js<'a>> {
+        let (s, b) = (self.0, self.0.as_bytes());
+        let mut i = if b.first() == Some(&b'[') { 1 } else { b.len() };
+        std::iter::from_fn(move || {
+            if i >= b.len() || b[i] == b']' {
+                return None;
+            }
+            let e = value_end(b, i);
+            let item = Js(&s[i..e]);
+            i = e + (e < b.len() && b[e] == b',') as usize;
+            Some(item)
+        })
+    }
+
+    /// `.length`: of an array, or of a string (in UTF-16 units, as
+    /// JavaScript counts); `None` (undefined) otherwise.
+    pub fn length(self) -> Option<usize> {
+        match self.0.as_bytes().first() {
+            Some(b'[') => Some(self.items().count()),
+            Some(b'"') => Some(unescape(self.0).encode_utf16().count()),
+            _ => None,
+        }
+    }
+
+    /// As `if (value)` tests it.
+    pub fn truthy(self) -> bool {
+        !matches!(self.0, "" | "null" | "false" | "0" | "-0" | "\"\"")
+    }
+
+    /// As `{:value}` shows it, HTML-escaped: a string as itself, `null` as
+    /// nothing, anything else as its JSON.
+    pub fn text(self, out: &mut String) {
+        match self.0.as_bytes().first() {
+            Some(b'"') => crate::html::escape(out, &unescape(self.0)),
+            _ if self.0 != "null" => crate::html::escape(out, self.0),
+            _ => {}
+        }
+    }
+}
+
+/// Where the JSON value starting at `i` ends: at the `,` `:` `]` or `}`
+/// after it, or the end.
+fn value_end(b: &[u8], mut i: usize) -> usize {
+    let mut depth = 0u32;
+    while i < b.len() {
+        match b[i] {
+            b'"' => {
+                i += 1;
+                while i < b.len() && b[i] != b'"' {
+                    i += if b[i] == b'\\' { 2 } else { 1 };
+                }
+            }
+            b'[' | b'{' => depth += 1,
+            b']' | b'}' if depth == 0 => return i,
+            b']' | b'}' => depth -= 1,
+            b',' | b':' if depth == 0 => return i,
+            _ => {}
+        }
+        i += 1;
+    }
+    b.len()
+}
+
+/// A JSON string's text, its escapes undone.
+fn unescape(json: &str) -> String {
+    let inner = json
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(json);
     let mut s = String::with_capacity(inner.len());
     let mut chars = inner.chars();
     let mut high = None; // the first half of a surrogate pair
@@ -169,7 +290,7 @@ pub fn js_text<T: Json + ?Sized>(out: &mut String, value: &T) {
             None => {}
         }
     }
-    crate::html::escape(out, &s);
+    s
 }
 
 /// Whether `build`, the version of wisp-build that generated an app's code,
@@ -445,6 +566,34 @@ mod tests {
             "\"a\\\"b\\\\c\\n\\t\\u0001\\u003c/script\\u003e\\u003c!--\\u0026\\u2028\\u2029é\""
         );
         assert!(!s.contains(['<', '>', '&']));
+    }
+
+    #[test]
+    fn first_paint_reads_json() {
+        let j = to_json(&(vec![("a", 1u8)], "x\\\"é<", (true, 0u8, Option::<u8>::None)));
+        let v = Js(&j);
+        let items: Vec<&str> = v.items().map(|i| i.0).collect();
+        assert_eq!(
+            items,
+            ["[[\"a\",1]]", "\"x\\\\\\\"é\\u003c\"", "[true,0,null]"]
+        );
+        let mut m = BTreeMap::new();
+        m.insert("list", vec![1u8, 2]);
+        m.insert("empty", vec![]);
+        let o = to_json(&m);
+        let o = Js(&o);
+        assert_eq!(o.get("list").0, "[1,2]");
+        assert_eq!(o.get("list").length(), Some(2));
+        assert_eq!(o.get("nope").0, "null");
+        assert!(o.get("list").truthy() && o.get("empty").truthy() && !o.get("nope").truthy());
+        assert!(!Js("0").truthy() && !Js("\"\"").truthy() && Js("\"0\"").truthy());
+        assert_eq!(Js("\"😀\"").length(), Some(2));
+        let mut s = String::new();
+        v.items().nth(1).unwrap().text(&mut s);
+        Js("null").text(&mut s);
+        Js("[1,2]").text(&mut s);
+        assert_eq!(s, "x\\&quot;é&lt;[1,2]");
+        assert_eq!(Js("5").items().count(), 0);
     }
 
     #[test]

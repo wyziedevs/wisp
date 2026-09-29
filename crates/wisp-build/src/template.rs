@@ -56,6 +56,22 @@ pub enum Node {
     Const(Code),
     /// `{@render children()}` in a layout.
     Render,
+    /// `{#snippet name(params)}…{/snippet}`: markup rendered later by
+    /// `{@render name(args)}` or given to a component as a prop. Each
+    /// parameter is a Rust `let` pattern, with a type or without.
+    Snippet {
+        name: String,
+        params: Vec<String>,
+        body: Vec<Node>,
+        line: u32,
+    },
+    /// `{@render name(args)}`: a snippet of this file above it (`local`),
+    /// or a prop holding one. `args` as written, without the parentheses.
+    RenderSnippet {
+        name: String,
+        args: Code,
+        local: bool,
+    },
     If {
         branches: Vec<(Code, Vec<Node>)>,
         otherwise: Option<Vec<Node>>,
@@ -91,9 +107,11 @@ pub enum Node {
     Hole {
         group: usize,
     },
-    /// A client block or client component: its `<template>` and what the
-    /// server renders inside it, spliced into the list it sits in.
-    Fragment(Vec<Node>),
+    /// A client block or client component: per branch (`{:else}` starts
+    /// one), the group of its `<template>`'s directive and the template's
+    /// content, which the browser copies. The server also paints the copies
+    /// after each template when it knows the values (see `codegen`).
+    Client(Vec<(usize, Vec<Node>)>),
 }
 
 /// A directive: browser code on an element, such as `on:click="…"`.
@@ -178,6 +196,12 @@ pub enum PropValue {
     Bind(Code),
     /// `on:name="handler"`: called when the component does `emit('name', x)`.
     On(Code),
+    /// A snippet of this file: `{row}`, `name={row}`, or a `{#snippet}`
+    /// written as a child of the component. `arity` is its parameter count.
+    Snippet {
+        name: String,
+        arity: usize,
+    },
 }
 
 /// A prop a component declares: `{@props title: &str, size: u8 = 2}`.
@@ -256,6 +280,9 @@ pub fn parse(src: &str) -> Result<Template, Error> {
         templates: Vec::new(),
         script: None,
         groups: Vec::new(),
+        end: src.len(),
+        snippets: Vec::new(),
+        rendering: Vec::new(),
     };
     p.run()?;
 
@@ -395,15 +422,26 @@ enum Frame {
         props: Vec<Prop>,
         body: Vec<Node>,
     },
+    /// `start` is where its body's source begins.
+    Snippet {
+        pos: usize,
+        name: String,
+        params: Vec<String>,
+        start: usize,
+        body: Vec<Node>,
+    },
     /// `{:#if}`, `{:#each}` or a client component with children: `kind` is
     /// `if`, `each` or `comp`. `name` is the component's; `conds`, an if's
     /// conditions so far, or an each's list (so `{:else}` can say "none").
+    /// `branches` are the ones before the current, whose group is `group`.
     Client {
         pos: usize,
         kind: &'static str,
         name: String,
         conds: Vec<String>,
         has_else: bool,
+        group: usize,
+        branches: Vec<(usize, Vec<Node>)>,
         body: Vec<Node>,
     },
 }
@@ -417,6 +455,7 @@ impl Frame {
             Frame::Match { pos, .. } => ("{#match}".into(), *pos),
             Frame::Head { pos, .. } => ("<wisp:head>".into(), *pos),
             Frame::Component { pos, name, .. } => (format!("<{name}>"), *pos),
+            Frame::Snippet { pos, .. } => ("{#snippet}".into(), *pos),
             Frame::Client {
                 pos,
                 kind: "comp",
@@ -476,11 +515,40 @@ struct Parser<'a> {
     templates: Vec<Option<Vec<String>>>,
     script: Option<Script>,
     groups: Vec<Group>,
+    /// Where scanning stops: the end, or the end of a snippet's body that
+    /// `{:@render}` is copying.
+    end: usize,
+    /// The snippets defined so far that are still in scope.
+    snippets: Vec<Snip>,
+    /// The snippets `{:@render}` is copying, innermost last.
+    rendering: Vec<String>,
+}
+
+/// A snippet defined above: its body's source, and the depth of the list
+/// it is in (it goes out of scope with that list).
+struct Snip {
+    name: String,
+    params: Vec<String>,
+    body: std::ops::Range<usize>,
+    depth: usize,
 }
 
 impl Parser<'_> {
     fn run(&mut self) -> Result<(), Error> {
-        while self.i < self.b.len() {
+        self.scan()?;
+        if self.ctx != Ctx::Text {
+            return Err(self.err(self.tag_pos, format!("unclosed <{}> tag", self.tag)));
+        }
+        self.flush()?;
+        if let Some(f) = self.frames.last() {
+            let (what, pos) = f.describe();
+            return Err(self.err(pos, format!("{what} is never closed")));
+        }
+        Ok(())
+    }
+
+    fn scan(&mut self) -> Result<(), Error> {
+        while self.i < self.end {
             let c = self.b[self.i];
             match self.ctx {
                 Ctx::Text => match c {
@@ -542,15 +610,6 @@ impl Parser<'_> {
                     _ => self.copy_until(|c| c == b'{' || c == q),
                 },
             }
-        }
-
-        if self.ctx != Ctx::Text {
-            return Err(self.err(self.tag_pos, format!("unclosed <{}> tag", self.tag)));
-        }
-        self.flush()?;
-        if let Some(f) = self.frames.last() {
-            let (what, pos) = f.describe();
-            return Err(self.err(pos, format!("{what} is never closed")));
         }
         Ok(())
     }
@@ -632,6 +691,7 @@ impl Parser<'_> {
             Some(
                 Frame::Head { body, .. }
                 | Frame::Component { body, .. }
+                | Frame::Snippet { body, .. }
                 | Frame::Client { body, .. },
             ) => body,
         }
@@ -708,7 +768,10 @@ impl Parser<'_> {
         let (name, _) = self.frames.last().expect("caller checked").describe();
         self.same_place(pos, &format!("the end of {name}"))?;
         self.opened.pop();
-        Ok(self.frames.pop().expect("caller checked"))
+        let frame = self.frames.pop().expect("caller checked");
+        let depth = self.frames.len();
+        self.snippets.retain(|s| s.depth <= depth);
+        Ok(frame)
     }
 
     /// `{/kw}` or `</wisp:head>` with no block of that kind open.
@@ -895,10 +958,28 @@ impl Parser<'_> {
             if let Frame::Component {
                 pos,
                 name,
-                props,
+                mut props,
                 body,
             } = self.end(start)?
             {
+                // A `{#snippet}` among the children is the prop of its name.
+                for n in &body {
+                    if let Node::Snippet {
+                        name: s, params, ..
+                    } = n
+                    {
+                        if props.iter().any(|p| p.name == *s) {
+                            return Err(self.err(pos, format!("<{name}> is given `{s}` twice")));
+                        }
+                        props.push(Prop {
+                            name: s.clone(),
+                            value: PropValue::Snippet {
+                                name: s.clone(),
+                                arity: params.len(),
+                            },
+                        });
+                    }
+                }
                 let line = self.line_of(pos);
                 self.list().push(Node::Component {
                     name,
@@ -921,6 +1002,20 @@ impl Parser<'_> {
                 Some(b'/') if b.get(j + 1) == Some(&b'>') => {
                     j += 2;
                     break true;
+                }
+                // `{row}` is `row={row}`.
+                Some(b'{') => {
+                    let e = hole_end(b, j + 1).ok_or_else(|| self.err(j, "unclosed {".into()))?;
+                    let prop = self.src[j + 1..e].trim();
+                    if !is_ident(prop) {
+                        return Err(self.err(j, "in a component's tag, {name} is name={name}: one name in the braces".into()));
+                    }
+                    if props.iter().any(|p| p.name == prop) {
+                        return Err(self.err(j, format!("<{name}> is given `{prop}` twice")));
+                    }
+                    let line = self.line_of(j);
+                    props.push(Prop { name: prop.into(), value: PropValue::Expr(Code { src: prop.into(), line }) });
+                    j = e + 1;
                 }
                 Some(&c) if c.is_ascii_alphabetic() || c == b'_' => {
                     let at = j;
@@ -1020,24 +1115,35 @@ impl Parser<'_> {
                 col: self.col_of(start),
             };
             self.require_text(start, &format!("<{name}>"))?;
+            self.begin(start)?;
+            let group = self.group(vec![d], self.line_of(start));
             if self_closing {
-                self.begin(start)?;
-                self.client_template(d)?;
-                self.text.push_str("</template>");
+                self.list().push(Node::Client(vec![(group, Vec::new())]));
                 return Ok(());
             }
-            self.begin(start)?;
             self.open(Frame::Client {
                 pos: start,
                 kind: "comp",
                 name,
                 conds: Vec::new(),
                 has_else: false,
+                group,
+                branches: Vec::new(),
                 body: Vec::new(),
             });
-            self.client_template(d)?;
             self.templates.push(Some(Vec::new()));
             return Ok(());
+        }
+        // A snippet of this file is given as itself, since it is not a value.
+        for p in &mut props {
+            if let PropValue::Expr(c) = &p.value
+                && let Some(s) = self.snippets.iter().rev().find(|s| s.name == c.src)
+            {
+                p.value = PropValue::Snippet {
+                    name: s.name.clone(),
+                    arity: s.params.len(),
+                };
+            }
         }
         if self_closing {
             let line = self.line_of(start);
@@ -1461,15 +1567,17 @@ impl Parser<'_> {
             }
         };
         self.begin(open)?;
+        let group = self.group(vec![d], line);
         self.open(Frame::Client {
             pos: open,
             kind,
             name: String::new(),
             conds,
             has_else: false,
+            group,
+            branches: Vec::new(),
             body: Vec::new(),
         });
-        self.client_template(d)?;
         self.templates.push(Some(names));
         self.skip_standalone(open);
         Ok(())
@@ -1527,7 +1635,6 @@ impl Parser<'_> {
                 ),
             ));
         };
-        self.text.push_str("</template>");
         self.templates.pop();
         let d = Directive {
             kind: Dir::If,
@@ -1539,7 +1646,17 @@ impl Parser<'_> {
             line,
             col,
         };
-        self.client_template(d)?;
+        let next = self.group(vec![d], line);
+        if let Some(Frame::Client {
+            group,
+            branches,
+            body,
+            ..
+        }) = self.frames.last_mut()
+        {
+            branches.push((*group, std::mem::take(body)));
+            *group = next;
+        }
         self.templates.push(Some(Vec::new()));
         self.skip_standalone(open);
         Ok(())
@@ -1547,10 +1664,128 @@ impl Parser<'_> {
 
     /// The end of the innermost client block or component, at `pos`.
     fn client_close(&mut self, pos: usize) -> Result<(), Error> {
-        self.text.push_str("</template>");
         self.templates.pop();
-        if let Frame::Client { body, .. } = self.end(pos)? {
-            self.list().push(Node::Fragment(body));
+        if let Frame::Client {
+            group,
+            mut branches,
+            body,
+            ..
+        } = self.end(pos)?
+        {
+            branches.push((group, body));
+            self.list().push(Node::Client(branches));
+        }
+        Ok(())
+    }
+
+    // ---- snippets ---------------------------------------------------------
+
+    /// `{#snippet name(params)}` at `open`.
+    fn snippet_open(&mut self, open: usize, arg: &str) -> Result<(), Error> {
+        self.require_text(open, "{#snippet}")?;
+        if self.templates.iter().any(Option::is_some) {
+            return Err(self.err(
+                open,
+                "a {#snippet} is defined outside client blocks and browser-drawn components; \
+                 draw it in one with {:@render name(…)}"
+                    .into(),
+            ));
+        }
+        let usage = "{#snippet name(param, …)}";
+        let (name, params) = self.call(open, arg, usage)?;
+        if name == "children" {
+            return Err(self.err(
+                open,
+                "`children` is what a component wraps; call the snippet something else".into(),
+            ));
+        }
+        let params: Vec<String> = split_top(&params, b',')
+            .into_iter()
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty())
+            .collect();
+        self.begin(open)?;
+        self.open(Frame::Snippet {
+            pos: open,
+            name,
+            params,
+            start: 0,
+            body: Vec::new(),
+        });
+        self.skip_standalone(open);
+        if let Some(Frame::Snippet { start, .. }) = self.frames.last_mut() {
+            *start = self.i;
+        }
+        Ok(())
+    }
+
+    /// `name(args)` → the name and the arguments. A snippet cannot render
+    /// itself, since it would never end; a component can.
+    fn call(&self, open: usize, arg: &str, usage: &str) -> Result<(String, String), Error> {
+        let (name, args) = arg
+            .split_once('(')
+            .and_then(|(n, a)| Some((n.trim(), a.strip_suffix(')')?)))
+            .filter(|(n, _)| is_ident(n))
+            .ok_or_else(|| self.err(open, format!("expected {usage}")))?;
+        let open_snippet = self
+            .frames
+            .iter()
+            .any(|f| matches!(f, Frame::Snippet { name: n, .. } if n == name));
+        if open_snippet || self.rendering.iter().any(|n| n == name) {
+            return Err(self.err(
+                open,
+                format!("snippet `{name}` renders itself, which never ends; a component can render itself inside a block that ends"),
+            ));
+        }
+        Ok((name.to_string(), args.trim().to_string()))
+    }
+
+    fn check_args(&self, open: usize, name: &str, n: usize, args: &str) -> Result<(), Error> {
+        let given = split_top(args, b',')
+            .iter()
+            .filter(|a| !a.trim().is_empty())
+            .count();
+        if given != n {
+            return Err(self.err(
+                open,
+                format!("snippet `{name}` takes {n} argument(s), and is given {given}"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// `{:@render name(args)}`: the browser draws the snippet. Its body is
+    /// read again here, inside a one-item `{:#each}` per parameter, so the
+    /// arguments are JavaScript and the body sees each by its name.
+    fn client_render(&mut self, open: usize, arg: &str) -> Result<(), Error> {
+        self.require_text(open, "{:@render}")?;
+        let (name, args) = self.call(open, arg, "{:@render name(arg, …)}")?;
+        let Some(s) = self.snippets.iter().rev().find(|s| s.name == name) else {
+            return Err(self.err(
+                open,
+                format!("no snippet `{name}` above: {{:@render}} draws a {{#snippet}} defined earlier in this file"),
+            ));
+        };
+        let (params, body) = (s.params.clone(), s.body.clone());
+        self.check_args(open, &name, params.len(), &args)?;
+        for (p, a) in params.iter().zip(split_top(&args, b',')) {
+            let p = untyped(p);
+            if !is_ident(p) || js::is_reserved(p) {
+                return Err(self.err(
+                    open,
+                    format!("the browser draws snippet `{name}` here, so its parameters are plain names, not `{p}`"),
+                ));
+            }
+            self.client_open(open, "each", &format!("[{}] as {p}", a.trim()))?;
+        }
+        let (i, end) = (self.i, self.end);
+        (self.i, self.end) = (body.start, body.end);
+        self.rendering.push(name);
+        self.scan()?;
+        self.rendering.pop();
+        (self.i, self.end) = (i, end);
+        for _ in &params {
+            self.client_close(open)?;
         }
         Ok(())
     }
@@ -1694,6 +1929,9 @@ impl Parser<'_> {
             if arg.is_empty() {
                 return Err(self.err(open, format!("{{#{kw}}} needs an expression")));
             }
+            if kw == "snippet" {
+                return self.snippet_open(open, arg);
+            }
             let frame = match kw {
                 "if" => Frame::If {
                     pos: open,
@@ -1735,6 +1973,9 @@ impl Parser<'_> {
             // The browser's: `{:#if}`, `{:/if}`, and `{:expr}`. `else` and
             // `case` are JavaScript keywords, so `{:else}` and `{:case}` are
             // always branches.
+            if let Some(call) = rest.strip_prefix("@render") {
+                return self.client_render(open, call.trim());
+            }
             if let Some(block) = rest.strip_prefix('#') {
                 let (kw, arg) = split_word(block);
                 if arg.is_empty() {
@@ -1844,6 +2085,7 @@ impl Parser<'_> {
                 Some(Frame::If { .. }) => "if",
                 Some(Frame::Each { .. }) => "each",
                 Some(Frame::Match { .. }) => "match",
+                Some(Frame::Snippet { .. }) => "snippet",
                 Some(Frame::Client { kind, .. }) if *kind != "comp" => kind,
                 _ => "",
             };
@@ -1887,6 +2129,26 @@ impl Parser<'_> {
                         return Err(self.err(pos, "{#match} needs at least one {:case}".into()));
                     }
                     Node::Match { scrutinee, arms }
+                }
+                Frame::Snippet {
+                    pos,
+                    name,
+                    params,
+                    start,
+                    body,
+                } => {
+                    self.snippets.push(Snip {
+                        name: name.clone(),
+                        params: params.clone(),
+                        body: start..open,
+                        depth: self.frames.len(),
+                    });
+                    Node::Snippet {
+                        name,
+                        params,
+                        body,
+                        line: self.line_of(pos),
+                    }
                 }
                 Frame::Head { .. } | Frame::Component { .. } | Frame::Client { .. } => {
                     unreachable!("kw matched the open block")
@@ -1977,6 +2239,21 @@ impl Parser<'_> {
                 "render" if arg.replace(' ', "") == "children()" && self.ctx == Ctx::Text => {
                     self.uses_children = true;
                     Node::Render
+                }
+                "render" if self.ctx == Ctx::Text => {
+                    let (name, args) = self.call(open, arg, "{@render name(arg, …)}")?;
+                    let local = match self.snippets.iter().rev().find(|s| s.name == name) {
+                        Some(s) => {
+                            self.check_args(open, &name, s.params.len(), &args)?;
+                            true
+                        }
+                        None => false,
+                    };
+                    Node::RenderSnippet {
+                        name,
+                        args: code(&args),
+                        local,
+                    }
                 }
                 _ => return Err(self.err(open, format!("unknown or malformed {{@{kw} …}}"))),
             };
@@ -2406,8 +2683,13 @@ fn split_client_each(arg: &str) -> Option<(&str, &str, Option<&str>)> {
 /// with no server expression or block.
 pub fn client_renderable(nodes: &[Node]) -> bool {
     nodes.iter().all(|n| match n {
-        Node::Text(_) | Node::Live { .. } | Node::Hole { .. } | Node::Render => true,
-        Node::Fragment(body) => client_renderable(body),
+        // A snippet's definition draws nothing; `{:@render}` copied it here.
+        Node::Text(_)
+        | Node::Live { .. }
+        | Node::Hole { .. }
+        | Node::Render
+        | Node::Snippet { .. } => true,
+        Node::Client(branches) => branches.iter().all(|(_, b)| client_renderable(b)),
         _ => false,
     })
 }
@@ -2422,6 +2704,7 @@ fn prop_shape(props: &[Prop], out: &mut Vec<u8>) {
             PropValue::Live(c) => (b':', c.src.as_str()),
             PropValue::Bind(c) => (b'b', c.src.as_str()),
             PropValue::On(c) => (b'o', c.src.as_str()),
+            PropValue::Snippet { name, .. } => (b's', name.as_str()),
         };
         out.push(tag);
         out.extend_from_slice(s.as_bytes());
@@ -2439,14 +2722,44 @@ pub fn is_component_name(name: &str) -> bool {
         && b.iter().all(|&c| c.is_ascii_alphanumeric() || c == b'_')
 }
 
+fn is_ident(s: &str) -> bool {
+    s.bytes()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == b'_')
+        && s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
+}
+
+/// A pattern without its type: `item: &Item` → `item`.
+pub(crate) fn untyped(pat: &str) -> &str {
+    let b = pat.as_bytes();
+    let mut colon = None;
+    for_each_top(pat, |i| {
+        let single = b[i] == b':' && b.get(i + 1) != Some(&b':') && (i == 0 || b[i - 1] != b':');
+        if single && colon.is_none() {
+            colon = Some(i);
+        }
+    });
+    pat[..colon.unwrap_or(pat.len())].trim()
+}
+
+/// A snippet prop's type: `Snippet<&Row, usize>` is a function that
+/// renders one, `&dyn Fn(&mut Out, &Row, usize)`.
+fn snippet_type(ty: &str) -> String {
+    let args = if ty == "Snippet" {
+        Some("")
+    } else {
+        ty.strip_prefix("Snippet<")
+            .and_then(|s| s.strip_suffix('>'))
+    };
+    match args.map(str::trim) {
+        Some("") => "&dyn Fn(&mut ::wisp::Out)".into(),
+        Some(a) => format!("&dyn Fn(&mut ::wisp::Out, {a})"),
+        None => ty.to_string(),
+    }
+}
+
 /// `title: &str, size: u8 = 2` → the props a component declares.
 fn parse_props(arg: &str) -> Result<Vec<PropDecl>, String> {
-    let ident = |s: &str| {
-        s.bytes()
-            .next()
-            .is_some_and(|c| c.is_ascii_alphabetic() || c == b'_')
-            && s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
-    };
     let mut out: Vec<PropDecl> = Vec::new();
     for part in split_top(arg, b',') {
         let part = part.trim();
@@ -2457,7 +2770,7 @@ fn parse_props(arg: &str) -> Result<Vec<PropDecl>, String> {
             .split_once(':')
             .ok_or_else(|| format!("expected `name: Type` in {{@props …}}, found `{part}`"))?;
         let name = name.trim();
-        if !ident(name) {
+        if !is_ident(name) {
             return Err(format!("`{name}` is not a name for a prop"));
         }
         if name == "children" || name.starts_with("__") {
@@ -2484,7 +2797,7 @@ fn parse_props(arg: &str) -> Result<Vec<PropDecl>, String> {
         }
         out.push(PropDecl {
             name: name.to_string(),
-            ty: ty.to_string(),
+            ty: snippet_type(ty),
             default,
         });
     }
@@ -2686,6 +2999,23 @@ fn shape(nodes: &[Node], out: &mut Vec<u8>) {
                 code(out, c);
             }
             Node::Render => out.push(b'R'),
+            Node::Snippet {
+                name, params, body, ..
+            } => {
+                out.push(b'S');
+                out.extend_from_slice(name.as_bytes());
+                out.push(0);
+                out.extend_from_slice(params.join(",").as_bytes());
+                out.push(0);
+                shape(body, out);
+                out.push(b'.');
+            }
+            Node::RenderSnippet { name, args, local } => {
+                out.push(if *local { b'r' } else { b'p' });
+                out.extend_from_slice(name.as_bytes());
+                out.push(0);
+                code(out, args);
+            }
             Node::If {
                 branches,
                 otherwise,
@@ -2762,9 +3092,14 @@ fn shape(nodes: &[Node], out: &mut Vec<u8>) {
                 out.extend_from_slice(group.to_string().as_bytes());
                 out.push(0);
             }
-            Node::Fragment(body) => {
+            Node::Client(branches) => {
                 out.push(b'F');
-                shape(body, out);
+                for (group, body) in branches {
+                    out.extend_from_slice(group.to_string().as_bytes());
+                    out.push(0);
+                    shape(body, out);
+                    out.push(b';');
+                }
                 out.push(b'.');
             }
         }
@@ -2898,7 +3233,8 @@ mod tests {
         assert!(err("<Card title=\"a {b}\" />").contains("plain text"));
         assert!(err("<Card title= />").contains("needs a value"));
         assert!(err("<Card a a />").contains("twice"));
-        assert!(err("<Card {x} />").contains("takes props"));
+        assert!(err("<Card {x + 1} />").contains("one name in the braces"));
+        assert!(err("<Card 1 />").contains("takes props"));
         assert!(err("<Card").contains("unclosed <Card>"));
     }
 
@@ -3424,7 +3760,13 @@ mod tests {
                 Node::Text(i) => out.push_str(&t.chunks[*i]),
                 Node::Live { group } => out.push_str(&format!("[{group}]")),
                 Node::Hole { group } => out.push_str(&format!("({group})")),
-                Node::Fragment(body) => markup(t, body, out),
+                Node::Client(branches) => {
+                    for (g, body) in branches {
+                        out.push_str(&format!("<template[{g}]>"));
+                        markup(t, body, out);
+                        out.push_str("</template>");
+                    }
+                }
                 _ => out.push('?'),
             }
         }
@@ -3515,6 +3857,75 @@ mod tests {
         assert!(err("{:#if a}{/each}").contains("does not match"));
         assert!(err("<p {:#if a}>").contains("goes in text"));
         assert!(err("{:#while a}{:/while}").contains("unknown block"));
+    }
+
+    #[test]
+    fn snippets() {
+        let t = parse(
+            "{#snippet row(item: &Item, i)}<li>{i} {item}</li>{/snippet}\n{@render row(x, 0)}{@render footer()}",
+        )
+        .unwrap();
+        assert!(
+            matches!(&t.nodes[1], Node::Snippet { name, params, body, .. }
+                if name == "row" && params == &["item: &Item", "i"] && body.len() == 5)
+        );
+        assert!(
+            matches!(&t.nodes[3], Node::RenderSnippet { name, args, local: true } if name == "row" && args.src == "x, 0")
+        );
+        assert!(
+            matches!(&t.nodes[5], Node::RenderSnippet { name, args, local: false } if name == "footer" && args.src.is_empty())
+        );
+
+        // A snippet among a component's children, or named in its tag, is a prop.
+        let t = parse(
+            "{#snippet a()}A{/snippet}<Table {a} b={x}>{#snippet row(r)}{r}{/snippet}</Table>",
+        )
+        .unwrap();
+        let Node::Component { props, .. } = &t.nodes[3] else {
+            panic!("{:?}", t.nodes)
+        };
+        let snip = |n: &str, k: usize| PropValue::Snippet {
+            name: n.into(),
+            arity: k,
+        };
+        assert_eq!(props[0].value, snip("a", 0));
+        assert!(matches!(props[1].value, PropValue::Expr(_)));
+        assert_eq!(props[2].value, snip("row", 1));
+        // It is out of scope after the component.
+        let t = parse("<Tb>{#snippet row(r)}{r}{/snippet}</Tb>{@render row(1)}").unwrap();
+        assert!(
+            matches!(&t.nodes[3], Node::RenderSnippet { local: false, .. }),
+            "{:?}",
+            t.nodes
+        );
+
+        // `{:@render}`: the browser draws it, one `{:#each}` per parameter.
+        let t = parse("{#snippet chip(label)}<b>{:label}</b>{/snippet}{:#each tags as tag}{:@render chip(tag)}{:/each}").unwrap();
+        let each = t
+            .groups
+            .iter()
+            .flat_map(|g| &g.directives)
+            .find(|d| d.kind == Dir::Each && d.name == "label")
+            .unwrap();
+        assert_eq!(each.value.as_ref().unwrap().src, "[tag]");
+        let hole = t
+            .groups
+            .iter()
+            .rfind(|g| g.directives[0].kind == Dir::Hole)
+            .unwrap();
+        assert_eq!(hole.locals, ["tag", "label"]);
+        assert!(client_renderable(&t.nodes));
+
+        let err = |src: &str| parse(src).unwrap_err().msg;
+        assert!(err("{#snippet r(a)}{@render r(a)}{/snippet}").contains("renders itself"));
+        assert!(err("{#snippet r(a)}x{/snippet}{@render r(1, 2)}").contains("takes 1 argument"));
+        assert!(err("{:#if a}{#snippet r()}x{/snippet}{:/if}").contains("outside client blocks"));
+        assert!(err("{:@render nope(1)}").contains("no snippet `nope` above"));
+        assert!(err("{#snippet r((a, b))}x{/snippet}{:@render r(1)}").contains("plain names"));
+        assert!(err("{#snippet r(a)}x{/if}").contains("does not match"));
+        assert!(err("{#snippet 1x()}x{/snippet}").contains("expected {#snippet"));
+        assert!(err("{#snippet children()}x{/snippet}").contains("`children`"));
+        assert!(err("<p {#snippet r()}{/snippet}>").contains("goes in text"));
     }
 
     #[test]

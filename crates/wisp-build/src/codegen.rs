@@ -7,6 +7,7 @@
 //! A template with browser code (a client script, directives) also gets an
 //! ES module, built here as text and compiled in: see `client`.
 
+use crate::js::Kind as JsKind;
 use crate::routes::Seg;
 use crate::rust_scan::{self, FnItem, Returns};
 use crate::template::{self, Code, Dir, Directive, Node, PropDecl, PropValue, Script, Template};
@@ -448,57 +449,62 @@ pub fn generate(input: &Input) -> Result<String, String> {
         })
         .collect();
 
-    // Modules, each after the components it renders in the browser, since
-    // it imports them by their content's hash.
+    // Browser modules.
     let as_client: Vec<String> = templates.iter().flat_map(|t| client_uses(&t.t)).collect();
-    let mut clients: Vec<Option<Client>> = templates.iter().map(|_| None).collect();
-    let mut done = vec![false; templates.len()];
-    while done.contains(&false) {
-        let mut progress = false;
-        for (k, t) in templates.iter().enumerate() {
-            let uses = client_uses(&t.t);
-            let ready = |ci: Option<usize>| ci.is_none_or(|ci| done[ci]);
-            if done[k]
-                || !uses
-                    .iter()
-                    .all(|n| ready(comps.iter().position(|c| c.name == *n)))
-            {
-                continue;
+    let mut clients: Vec<Option<Client>> = Vec::with_capacity(templates.len());
+    for (k, t) in templates.iter().enumerate() {
+        let load = match &t.load_js {
+            Some(f) => {
+                let source = rewrite_specifiers(&read(f)?, &lib_hash, None);
+                let hash = format!("{:016x}", fnv1a(source.as_bytes()));
+                let path = format!("/_app/c/t{}.load.js", t.id);
+                let url = format!("{path}?v={hash}");
+                js_files.push(JsFile { path, hash, source });
+                Some(url)
             }
-            let load = match &t.load_js {
-                Some(f) => {
-                    let source = rewrite_specifiers(&read(f)?, &lib_hash, None);
-                    let hash = format!("{:016x}", fnv1a(source.as_bytes()));
-                    let path = format!("/_app/c/t{}.load.js", t.id);
-                    let url = format!("{path}?v={hash}");
-                    js_files.push(JsFile { path, hash, source });
-                    Some(url)
+            None => None,
+        };
+        let is_client = t.kind == Kind::Component && as_client.contains(&comps[k].name);
+        let cx = ClientCx {
+            comps: &comps,
+            templates: &templates,
+            as_client: is_client,
+            lib_hash: &lib_hash,
+            load,
+        };
+        clients.push(client(t, &cx)?);
+    }
+    // A module imports the modules of the components it renders by URLs
+    // whose hash covers every module it can reach, so a change in any of
+    // them changes the URL. Components may render each other (or
+    // themselves) in a circle: a hash over the set needs no order.
+    let finals: Vec<String> = (0..clients.len())
+        .map(|k| {
+            let mut reach = vec![k];
+            let mut stack: Vec<usize> = clients[k].as_ref().map_or(Vec::new(), |c| c.uses.clone());
+            while let Some(ci) = stack.pop() {
+                if !reach.contains(&ci) {
+                    reach.push(ci);
+                    stack.extend(clients[ci].iter().flat_map(|c| &c.uses));
                 }
-                None => None,
-            };
-            let urls: Vec<Option<String>> = (0..comps.len())
-                .map(|ci| clients[ci].as_ref().map(Client::url))
+            }
+            reach.sort_unstable();
+            let all: String = reach
+                .iter()
+                .filter_map(|&j| clients[j].as_ref().map(|c| c.hash.as_str()))
                 .collect();
-            let is_client = t.kind == Kind::Component && as_client.contains(&comps[k].name);
-            let cx = ClientCx {
-                comps: &comps,
-                templates: &templates,
-                urls: &urls,
-                as_client: is_client,
-                lib_hash: &lib_hash,
-                load,
-            };
-            clients[k] = client(t, &cx)?;
-            done[k] = true;
-            progress = true;
+            format!("{:016x}", fnv1a(all.as_bytes()))
+        })
+        .collect();
+    for (k, c) in clients.iter_mut().enumerate() {
+        let Some(c) = c else { continue };
+        for &ci in &c.uses {
+            let url = format!("/_app/c/t{}.js?v={}", templates[ci].id, finals[ci]);
+            c.source = c
+                .source
+                .replacen(&js_str(&comp_placeholder(ci)), &js_str(&url), 1);
         }
-        if !progress {
-            let k = done.iter().position(|d| !d).expect("one is left");
-            return Err(format!(
-                "{}: components the browser renders cannot use each other in a circle (this one ends up rendering itself)",
-                templates[k].rel
-            ));
-        }
+        c.hash.clone_from(&finals[k]);
     }
 
     // ---- emit -------------------------------------------------------------
@@ -536,6 +542,11 @@ pub fn generate(input: &Input) -> Result<String, String> {
         }
         if r.server {
             g.module_decl(&format!("server_{i}"), &r.dir.join("+server.rs"));
+        }
+    }
+    for (m, file) in &tree.matchers {
+        if let Some(f) = file {
+            g.module_decl(&format!("param_{m}"), f);
         }
     }
     g.line(0, "");
@@ -588,6 +599,22 @@ pub fn generate(input: &Input) -> Result<String, String> {
         let page_load = infos[i].page_fns.iter().find(|f| f.name == "load");
         if let Some(load) = page_load {
             g.line(1, &format!("let d = {};", call(&format!("page_{i}"), load)));
+        }
+        // A `+page.js` load gets the route and its parameters.
+        if page.load_js.is_some() {
+            let params: Vec<String> = r
+                .params()
+                .iter()
+                .map(|p| format!("({0}, cx.param({0}))", lit(p)))
+                .collect();
+            g.line(
+                1,
+                &format!(
+                    "::wisp::rt::live_route(__o, {}, &[{}]);",
+                    lit(&r.pattern()),
+                    params.join(", ")
+                ),
+            );
         }
         let inner = format!(
             "{}::render(__o{})",
@@ -743,12 +770,23 @@ pub fn generate(input: &Input) -> Result<String, String> {
         let names = r.params();
         let mut values = vec!["E".to_string(); crate::routes::MAX_PARAMS];
         let mut pat = Vec::new();
+        // A matcher is a guard, so a segment it refuses goes on to the next arm.
+        let mut guards = Vec::new();
         for (k, seg) in exp.iter().enumerate() {
             match seg {
                 Seg::Static(s) => pat.push(lit(&encode_path(s))),
-                Seg::Param(n) | Seg::Optional(n) => {
+                Seg::Param(n, m) | Seg::Optional(n, m) => {
                     pat.push(format!("p{k}"));
                     values[names.iter().position(|x| x == n).unwrap()] = format!("*p{k}");
+                    let decoded = format!("&::wisp::rt::decode(p{k}.as_bytes(), false)");
+                    match tree.matchers.iter().find(|(x, _)| Some(x) == m.as_ref()) {
+                        Some((m, Some(_))) => guards.push(format!("param_{m}::matches({decoded})")),
+                        // `int`: digits that fit a u64, so `parse().unwrap()` holds.
+                        Some(_) => guards.push(format!(
+                            "p{k}.bytes().all(|b| b.is_ascii_digit()) && p{k}.parse::<u64>().is_ok()"
+                        )),
+                        None => {}
+                    }
                 }
                 Seg::Rest(n) => {
                     pat.push(format!("p{k} @ .."));
@@ -760,8 +798,13 @@ pub fn generate(input: &Input) -> Result<String, String> {
         g.line(
             3,
             &format!(
-                "[{}] => ({id}, [{}]), // {}",
+                "[{}]{} => ({id}, [{}]), // {}",
                 pat.join(", "),
+                if guards.is_empty() {
+                    String::new()
+                } else {
+                    format!(" if {}", guards.join(" && "))
+                },
                 values.join(", "),
                 r.pattern()
             ),
@@ -1189,7 +1232,12 @@ fn check_components(
                 }
             }
             Node::Head(body) => check_components(body, t, comps, rel, true)?,
-            Node::Fragment(body) => check_components(body, t, comps, rel, in_head)?,
+            Node::Snippet { body, .. } => check_components(body, t, comps, rel, in_head)?,
+            Node::Client(branches) => {
+                for (_, body) in branches {
+                    check_components(body, t, comps, rel, in_head)?;
+                }
+            }
             Node::Component {
                 name,
                 props,
@@ -1247,9 +1295,11 @@ fn check_components(
                     )));
                 }
                 if let Some(children) = children {
-                    let blank = children
-                        .iter()
-                        .all(|n| matches!(n, Node::Text(i) if t.chunks[*i].trim().is_empty()));
+                    let blank = children.iter().all(|n| match n {
+                        Node::Text(i) => t.chunks[*i].trim().is_empty(),
+                        Node::Snippet { .. } => true,
+                        _ => false,
+                    });
                     if !c.children && !blank {
                         return Err(at(format!(
                             "<{name}> does not show children: its template has no {{@render children()}}"
@@ -1389,7 +1439,7 @@ impl Gen {
     fn template(&mut self, t: &Tpl, comps: &[Comp], client: Option<&Client>) {
         self.line(0, &format!("// {}", t.rel));
         self.line(0, "#[doc(hidden)]");
-        self.line(0, "#[allow(unused_imports, unused_variables, unused_mut, unused_parens, unused_braces, dead_code, clippy::all)]");
+        self.line(0, "#[allow(unused_imports, unused_variables, unused_mut, unused_parens, unused_braces, unused_macros, dead_code, clippy::all)]");
         self.line(0, &format!("pub mod {} {{", t.module));
         // How `{expr}` is written: see `wisp::rt::Text`.
         self.line(
@@ -1485,12 +1535,43 @@ impl Gen {
             target: "body",
             each_depth: 0,
             client,
+            env: Vec::new(),
+            props: 0,
+            inert: false,
+            paint: false,
         };
         self.nodes(&t.t.nodes, 2, &mut cx);
         if client.is_some() {
             self.line(2, "::wisp::rt::live_end(__o);");
         }
         self.line(1, "}");
+        // A component the browser renders: its markup as the browser's copy
+        // of it, painted from its props' JSON, for a page to show first.
+        // Deep enough, a component rendering itself leaves the rest to the
+        // browser.
+        if let Some(c) = client.filter(|c| c.paints) {
+            self.line(1, "pub fn paint(__o: &mut ::wisp::Out, __p: &[::wisp::rt::Js<'_>], children: &dyn Fn(&mut ::wisp::Out), __wisp_d: u32) {");
+            self.line(2, "if __wisp_d > 32 { return; }");
+            self.line(2, "__o.body.push_str(\"<!--[-->\");");
+            let env: Vec<(String, Pv)> =
+                t.t.props
+                    .iter()
+                    .flat_map(|(ds, _)| ds)
+                    .enumerate()
+                    .map(|(k, d)| (d.name.clone(), Pv::Val(format!("__p[{k}]"))))
+                    .collect();
+            let mut cx = Emit {
+                props: env.len(),
+                env,
+                inert: false,
+                paint: true,
+                client: Some(c),
+                ..cx
+            };
+            self.nodes(&t.t.nodes, 2, &mut cx);
+            self.line(2, "__o.body.push_str(\"<!--]-->\");");
+            self.line(1, "}");
+        }
         self.line(0, "}");
         self.line(0, "");
     }
@@ -1595,7 +1676,52 @@ impl Gen {
                 cx,
             ),
             Node::Const(code) => self.code_line(ind, &format!("let {};", code.src), code, cx),
+            Node::Render if cx.paint => {
+                self.line(
+                    ind,
+                    &format!("{buf}.push_str(\"<template data-wslot></template>\");"),
+                );
+                self.line(ind, "children(__o);");
+            }
             Node::Render => self.line(ind, "children(__o);"),
+            // A macro rather than a closure: each render gives the
+            // parameters their types, and the body still sees the names
+            // around the definition.
+            Node::Snippet {
+                name,
+                params,
+                body,
+                line,
+            } => {
+                let args: String = (0..params.len()).map(|k| format!(", $a{k}:expr")).collect();
+                self.line(
+                    ind,
+                    &format!(
+                        "macro_rules! {} {{ ($__o:expr{args}) => {{{{ // {}:{line}",
+                        snippet_macro(name),
+                        cx.rel
+                    ),
+                );
+                self.line(ind + 1, "let __o: &mut ::wisp::Out = $__o;");
+                for (k, p) in params.iter().enumerate() {
+                    self.line(ind + 1, &format!("let {p} = $a{k};"));
+                }
+                self.nodes(body, ind + 1, cx);
+                self.line(ind, "}} }");
+            }
+            Node::RenderSnippet { name, args, local } => {
+                let rest = if args.src.is_empty() {
+                    String::new()
+                } else {
+                    format!(", {}", args.src)
+                };
+                let call = if *local {
+                    format!("{}!(__o{rest});", snippet_macro(name))
+                } else {
+                    format!("{name}(__o{rest});")
+                };
+                self.code_line(ind, &call, args, cx);
+            }
             Node::If {
                 branches,
                 otherwise,
@@ -1699,6 +1825,14 @@ impl Gen {
                             format!("::core::convert::Into::into({})", lit(text))
                         }
                         Some(PropValue::Flag) => "true".into(),
+                        // A closure over the macro, typed by the prop's `&dyn Fn`.
+                        Some(PropValue::Snippet { name, arity }) => {
+                            let a: String = (0..*arity).map(|k| format!(", __a{k}")).collect();
+                            format!(
+                                "&|__o: &mut ::wisp::Out{a}| {}!(__o{a})",
+                                snippet_macro(name)
+                            )
+                        }
                         Some(PropValue::Live(_) | PropValue::Bind(_) | PropValue::On(_)) => {
                             unreachable!("the parser makes such a component a client one")
                         }
@@ -1713,13 +1847,28 @@ impl Gen {
                     args.push_str(&arg);
                 }
                 let call = format!("super::{}::render(__o{args}", c.module);
+                // Snippets among the children are props: defined before the
+                // call, in a block of their own.
+                let is_snippet = |n: &&Node| matches!(n, Node::Snippet { .. });
+                let defs: Vec<&Node> = children.iter().flatten().filter(is_snippet).collect();
+                let ind = if defs.is_empty() {
+                    ind
+                } else {
+                    self.line(ind, "{");
+                    for d in &defs {
+                        self.node(d, ind + 1, cx);
+                    }
+                    ind + 1
+                };
                 match children {
                     Some(body) => {
                         self.line(
                             ind,
                             &format!("{call}, &|__o: &mut ::wisp::Out| {{ // {}:{line}", cx.rel),
                         );
-                        self.nodes(body, ind + 1, cx);
+                        for n in body.iter().filter(|n| !is_snippet(n)) {
+                            self.node(n, ind + 1, cx);
+                        }
                         self.line(ind, "});");
                     }
                     None => self.line(
@@ -1727,25 +1876,26 @@ impl Gen {
                         &format!("{call}, &|_: &mut ::wisp::Out| {{}}); // {}:{line}", cx.rel),
                     ),
                 }
+                if !defs.is_empty() {
+                    self.line(ind - 1, "}");
+                }
             }
-            Node::Fragment(body) => self.nodes(body, ind, cx),
+            Node::Client(branches) => self.client_block(branches, ind, cx),
+            // `{:x}`: the value, when the server knows it.
             Node::Hole { group } => {
-                let c = cx.client.expect("a template with directives has a module");
-                if let Some(place) = &c.ssr[*group] {
-                    let line = cx.template.groups[*group].line;
-                    self.line(
-                        ind,
-                        &format!(
-                            "::wisp::rt::js_text(&mut {buf}, &({place})); // {}:{line}",
-                            cx.rel
-                        ),
-                    );
+                let g = &cx.template.groups[*group];
+                let js = g.directives[0]
+                    .value
+                    .as_ref()
+                    .map_or("", |v| v.src.as_str());
+                if let Some(put) = paint_value(cx, *group, js).and_then(|v| v.text(&buf)) {
+                    self.line(ind, &format!("{put} // {}:{}", cx.rel, g.line));
                 }
             }
             Node::Live { group } => {
                 let c = cx.client.expect("a template with directives has a module");
                 let push = |s: String| format!("{buf}.push_str({});", lit(&s));
-                if cx.template.groups[*group].nested {
+                if cx.template.groups[*group].nested || cx.paint {
                     self.line(ind, &push(format!(" data-w=\"{group}\"")));
                 } else {
                     self.line(ind, &push(" data-w=\"".into()));
@@ -1769,6 +1919,390 @@ impl Gen {
             }
         }
     }
+
+    /// A client block or component: each branch's `<template>`, whose
+    /// content the browser copies (so nothing in it is painted), and after
+    /// it, when the server knows the values, the copies the browser would
+    /// make, each between `<!--[-->` and `<!--]-->`, which it takes over.
+    fn client_block(&mut self, branches: &[(usize, Vec<Node>)], ind: usize, cx: &mut Emit) {
+        let (target, tpl) = (cx.target, cx.template);
+        let push = |s: &str| format!("__o.{target}.push_str({});", lit(s));
+        let (open, close, start, end) = (
+            push("<template"),
+            push(">"),
+            push("<!--[-->"),
+            push("<!--]-->"),
+        );
+        // Painted copies of an `{:#each}`, which its `{:else}` needs none of.
+        let mut count: Option<String> = None;
+        for (k, (group, body)) in branches.iter().enumerate() {
+            self.line(ind, &open);
+            self.node(&Node::Live { group: *group }, ind, cx);
+            self.line(ind, &close);
+            let inert = std::mem::replace(&mut cx.inert, true);
+            self.nodes(body, ind, cx);
+            cx.inert = inert;
+            self.line(ind, &push("</template>"));
+            let g = &tpl.groups[*group];
+            let d = &g.directives[0];
+            let js = d.value.as_ref().map_or("", |v| v.src.as_str());
+            let at = format!("// {}:{}", cx.rel, g.line);
+            match d.kind {
+                Dir::Each => {
+                    let n = cx.each_depth;
+                    let (item, index) = (format!("__wisp_e{n}"), format!("__wisp_k{n}"));
+                    let head = match paint_value(cx, *group, js) {
+                        Some(Pv::Val(list)) => {
+                            format!("for ({index}, {item}) in {list}.items().enumerate() {{ {at}")
+                        }
+                        // `[x]`, as `{:@render}` passes an argument: one item, `x`.
+                        _ => match js
+                            .strip_prefix('[')
+                            .and_then(|s| s.strip_suffix(']'))
+                            .and_then(|x| paint_value(cx, *group, x)?.val())
+                        {
+                            Some(x) => format!("{{ let ({index}, {item}) = (0usize, {x}); {at}"),
+                            None => continue,
+                        },
+                    };
+                    if branches.len() > 1 {
+                        count = Some(format!("__wisp_n{n}"));
+                        self.line(ind, &format!("let mut __wisp_n{n} = 0usize;"));
+                    }
+                    self.line(ind, &head);
+                    if count.is_some() {
+                        self.line(ind + 1, &format!("__wisp_n{n} += 1;"));
+                    }
+                    let outer = cx.env.len();
+                    cx.env.push((d.name.clone(), Pv::Val(item)));
+                    if let Some(i) = d.mods.first() {
+                        cx.env.push((i.clone(), Pv::Num(format!("Some({index})"))));
+                    }
+                    cx.each_depth += 1;
+                    self.line(ind + 1, &start);
+                    self.nodes(body, ind + 1, cx);
+                    self.line(ind + 1, &end);
+                    cx.each_depth -= 1;
+                    cx.env.truncate(outer);
+                    self.line(ind, "}");
+                }
+                Dir::If if k > 0 && count.is_some() => {
+                    let n = count.as_deref().unwrap_or_default();
+                    self.line(ind, &format!("if {n} == 0 {{ {at}"));
+                    self.line(ind + 1, &start);
+                    self.nodes(body, ind + 1, cx);
+                    self.line(ind + 1, &end);
+                    self.line(ind, "}");
+                }
+                Dir::If => {
+                    let Some(v) = paint_value(cx, *group, js) else {
+                        continue;
+                    };
+                    self.line(ind, &format!("if {} {{ {at}", v.test()));
+                    self.line(ind + 1, &start);
+                    self.nodes(body, ind + 1, cx);
+                    self.line(ind + 1, &end);
+                    self.line(ind, "}");
+                }
+                Dir::Comp => self.paint_comp(*group, body, ind, cx),
+                _ => {}
+            }
+        }
+    }
+
+    /// A component the browser renders, painted by its `paint` when every
+    /// prop is known. What it is given as children is painted here.
+    fn paint_comp(&mut self, group: usize, body: &[Node], ind: usize, cx: &mut Emit) {
+        let (target, tpl, comps) = (cx.target, cx.template, cx.comps);
+        let g = &tpl.groups[group];
+        let d = &g.directives[0];
+        let Some(comp) = comps.iter().find(|c| c.name == d.name) else {
+            return;
+        };
+        let mut args = Vec::new();
+        for p in &comp.props {
+            let arg = match d.props.iter().find(|x| x.name == p.name).map(|x| &x.value) {
+                Some(PropValue::Text(s)) => format!("::wisp::rt::Js({})", lit(&js_str(s))),
+                Some(PropValue::Flag) => "::wisp::rt::Js(\"true\")".into(),
+                Some(PropValue::Live(c) | PropValue::Bind(c)) => {
+                    match paint_value(cx, group, &c.src).and_then(|v| v.val()) {
+                        Some(v) => v,
+                        None => return,
+                    }
+                }
+                _ => "::wisp::rt::Js(\"null\")".into(),
+            };
+            args.push(arg);
+        }
+        let depth = if cx.paint { "__wisp_d + 1" } else { "0" };
+        self.line(
+            ind,
+            &format!(
+                "super::{}::paint(__o, &[{}], &|__o: &mut ::wisp::Out| {{ // {}:{}",
+                comp.module,
+                args.join(", "),
+                cx.rel,
+                g.line
+            ),
+        );
+        let push = |s: &str| format!("__o.{target}.push_str({});", lit(s));
+        self.line(ind + 1, &push("<!--[-->"));
+        self.nodes(body, ind + 1, cx);
+        self.line(ind + 1, &push("<!--]-->"));
+        self.line(ind, &format!("}}, {depth});"));
+    }
+}
+
+// ---- first paint ------------------------------------------------------------
+//
+// The server paints client blocks, components and `{:…}` whose values it
+// knows, so the page shows them before (and without) JavaScript, and the
+// browser takes those nodes over. It knows server values (`data`, props,
+// Rust loop names), literals, script variables first set to those, and the
+// item and index of a client `each` it is painting; `!`, `&&`, `||` and
+// `.length` of those. Anything else (a call, a sum, a comparison) is left
+// to the browser.
+
+/// A browser value the server works out, as the Rust expression that does:
+/// a `wisp::rt::Js`, a length or index (`Option<usize>`), a `bool`, or a
+/// `&&`/`||` (a `bool` that only decides: its JavaScript value is an operand).
+#[derive(Clone, Debug)]
+enum Pv {
+    Val(String),
+    Num(String),
+    Bool(String),
+    Test(String),
+}
+
+impl Pv {
+    /// As `if (x)` tests it.
+    fn test(&self) -> String {
+        match self {
+            Pv::Val(e) => format!("{e}.truthy()"),
+            Pv::Num(e) => format!("{e}.is_some_and(|n| n > 0)"),
+            Pv::Bool(e) | Pv::Test(e) => e.clone(),
+        }
+    }
+
+    /// As a `Js` (a component's prop).
+    fn val(&self) -> Option<String> {
+        match self {
+            Pv::Val(e) => Some(e.clone()),
+            Pv::Num(e) => Some(format!("::wisp::rt::Js(&::wisp::rt::js_of(&{e}))")),
+            Pv::Bool(e) => Some(format!(
+                "::wisp::rt::Js(if {e} {{ \"true\" }} else {{ \"false\" }})"
+            )),
+            Pv::Test(_) => None,
+        }
+    }
+
+    /// The statement that writes it as `{:x}` shows it.
+    fn text(&self, buf: &str) -> Option<String> {
+        match self {
+            Pv::Val(e) => Some(format!("{e}.text(&mut {buf});")),
+            Pv::Num(e) | Pv::Bool(e) => Some(format!("::wisp::rt::js_text(&mut {buf}, &{e});")),
+            Pv::Test(_) => None,
+        }
+    }
+
+    /// `x.a.b`, or `x.length`.
+    fn member(self, rest: &[String]) -> Option<Pv> {
+        let mut v = self;
+        for (k, seg) in rest.iter().enumerate() {
+            v = match v {
+                Pv::Val(e) if seg == "length" && k + 1 == rest.len() => {
+                    Pv::Num(format!("{e}.length()"))
+                }
+                Pv::Val(e) => Pv::Val(format!("{e}.get({})", lit(seg))),
+                _ => return None,
+            };
+        }
+        Some(v)
+    }
+}
+
+/// The browser value `js`, read by group `group`, if the server knows it.
+fn paint_value(cx: &Emit, group: usize, js: &str) -> Option<Pv> {
+    let c = cx.client?;
+    if cx.inert {
+        return None;
+    }
+    paint_expr(js, &mut |path| resolve(cx, c, Some(group), path, 0))
+}
+
+/// A variable's path as the first paint knows it, read in `group`, or in
+/// the script (`None`), which sees only server values and the script's
+/// own variables. `depth` stops variables set from each other in a circle.
+fn resolve(cx: &Emit, c: &Client, group: Option<usize>, path: &[String], depth: u32) -> Option<Pv> {
+    let name = &path[0];
+    let env = &cx.env[..if group.is_some() {
+        cx.env.len()
+    } else {
+        cx.props
+    }];
+    if let Some((_, v)) = env.iter().rev().find(|(n, _)| n == name) {
+        return v.clone().member(&path[1..]);
+    }
+    if c.declared.contains(name) {
+        let (_, init) = c
+            .lets
+            .iter()
+            .find(|(n, _)| n == name)
+            .filter(|_| depth < 8)?;
+        return paint_expr(init, &mut |p| resolve(cx, c, None, p, depth + 1))?.member(&path[1..]);
+    }
+    // A client local the server is not painting.
+    if group.is_some_and(|g| cx.template.groups[g].locals.contains(name)) {
+        return None;
+    }
+    let rust = group.is_some_and(|g| c.scopes[g].contains(name));
+    if !rust && !(c.server.contains(name) && !cx.paint) {
+        return None;
+    }
+    let place = if c.whole && !rust {
+        path[..1].to_vec()
+    } else {
+        server_path(path)
+    };
+    Pv::Val(format!(
+        "::wisp::rt::Js(&::wisp::rt::js_of(&({})))",
+        rust_place(&place)
+    ))
+    .member(&path[place.len()..])
+}
+
+/// `js` worked out by the server, if it can be: see `Pv`. `root` resolves a
+/// variable's path (`data.user.name` whole).
+fn paint_expr(js: &str, root: &mut dyn FnMut(&[String]) -> Option<Pv>) -> Option<Pv> {
+    let t = js::tokens(js);
+    let mut k = 0;
+    let v = paint_or(js, &t, &mut k, root)?;
+    (k == t.len()).then_some(v)
+}
+
+type Root<'a> = dyn FnMut(&[String]) -> Option<Pv> + 'a;
+
+fn paint_or(js: &str, t: &[js::Token], k: &mut usize, root: &mut Root) -> Option<Pv> {
+    let mut v = paint_and(js, t, k, root)?;
+    while t.get(*k).is_some_and(|n| n.text(js) == "||") {
+        *k += 1;
+        let w = paint_and(js, t, k, root)?;
+        v = Pv::Test(format!("({} || {})", v.test(), w.test()));
+    }
+    Some(v)
+}
+
+fn paint_and(js: &str, t: &[js::Token], k: &mut usize, root: &mut Root) -> Option<Pv> {
+    let mut v = paint_not(js, t, k, root)?;
+    while t.get(*k).is_some_and(|n| n.text(js) == "&&") {
+        *k += 1;
+        let w = paint_not(js, t, k, root)?;
+        v = Pv::Test(format!("({} && {})", v.test(), w.test()));
+    }
+    Some(v)
+}
+
+fn paint_not(js: &str, t: &[js::Token], k: &mut usize, root: &mut Root) -> Option<Pv> {
+    let n = *t.get(*k)?;
+    let text = n.text(js);
+    match (n.kind, text) {
+        (JsKind::Punct, "!") => {
+            *k += 1;
+            let v = paint_not(js, t, k, root)?;
+            Some(Pv::Bool(format!("!({})", v.test())))
+        }
+        (JsKind::Punct, "(") => {
+            *k += 1;
+            let v = paint_or(js, t, k, root)?;
+            (t.get(*k)?.text(js) == ")").then(|| *k += 1)?;
+            Some(v)
+        }
+        (JsKind::Punct, "[" | "{") | (JsKind::Number | JsKind::String, _) => {
+            let end = if n.kind == JsKind::Punct {
+                (*k + 1..t.len()).find(|&j| t[j].depth <= n.depth)?
+            } else {
+                *k
+            };
+            let json = literal_json(js, &t[*k..=end])?;
+            *k = end + 1;
+            Some(Pv::Val(format!("::wisp::rt::Js({})", lit(&json))))
+        }
+        (JsKind::Ident, "true" | "false" | "null" | "undefined") => {
+            *k += 1;
+            let json = if text == "undefined" { "null" } else { text };
+            Some(Pv::Val(format!("::wisp::rt::Js({})", lit(json))))
+        }
+        (JsKind::Ident, _) if !js::is_reserved(text) && !text.starts_with('#') => {
+            let mut path = vec![text.to_string()];
+            *k += 1;
+            while t
+                .get(*k)
+                .is_some_and(|n| n.kind == JsKind::Punct && n.text(js) == ".")
+                && t.get(*k + 1)
+                    .is_some_and(|n| n.kind == JsKind::Ident && !n.text(js).starts_with('#'))
+            {
+                path.push(t[*k + 1].text(js).to_string());
+                *k += 2;
+            }
+            root(&path)
+        }
+        _ => None,
+    }
+}
+
+/// A JavaScript literal as JSON: numbers, strings, `true`, `false`, `null`,
+/// and arrays and objects of them.
+fn literal_json(js: &str, t: &[js::Token]) -> Option<String> {
+    let mut out = String::new();
+    for (k, n) in t.iter().enumerate() {
+        let text = n.text(js);
+        match n.kind {
+            JsKind::Punct => match text {
+                "[" | "{" | ":" | "," => out.push_str(text),
+                "]" | "}" => {
+                    if out.ends_with(',') {
+                        out.pop(); // a trailing comma
+                    }
+                    out.push_str(text);
+                }
+                "-" if t.get(k + 1).is_some_and(|m| m.kind == JsKind::Number) => out.push('-'),
+                _ => return None,
+            },
+            // As JavaScript shows it: `1.0` is `1`.
+            JsKind::Number => {
+                let x = text.parse::<f64>().ok().filter(|x| x.is_finite())?;
+                let _ = write!(out, "{x}");
+            }
+            JsKind::String => out.push_str(&js_str(&js_string(text)?)),
+            JsKind::Ident if n.key => out.push_str(&js_str(text)),
+            JsKind::Ident if matches!(text, "true" | "false" | "null") => out.push_str(text),
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+/// The text of a JavaScript string literal (`'a\'b'`), for the simple
+/// escapes; `None` for others.
+fn js_string(lit: &str) -> Option<String> {
+    let q = lit.chars().next()?;
+    let inner = lit.strip_prefix(q)?.strip_suffix(q)?;
+    let mut s = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            s.push(c);
+            continue;
+        }
+        s.push(match chars.next()? {
+            'n' => '\n',
+            't' => '\t',
+            'r' => '\r',
+            c @ ('\\' | '\'' | '"') => c,
+            _ => return None,
+        });
+    }
+    Some(s)
 }
 
 struct Emit<'a> {
@@ -1778,6 +2312,15 @@ struct Emit<'a> {
     target: &'static str,
     each_depth: usize,
     client: Option<&'a Client>,
+    /// What the first paint knows by name: a painted component's props
+    /// (the first `props` of them), then the item and index of each client
+    /// `each` being painted.
+    env: Vec<(String, Pv)>,
+    props: usize,
+    /// In a `<template>`'s content, which the browser copies: no first paint.
+    inert: bool,
+    /// A component's `paint`: its groups are marked as in the browser's copy.
+    paint: bool,
 }
 
 // ---- browser code -----------------------------------------------------------
@@ -1818,18 +2361,25 @@ struct Client {
     /// Per group: the loop values its directives read (a JSON object), or
     /// nothing.
     locals: Vec<Vec<Piece>>,
-    /// Per group: for a `{:path}` the server knows, the Rust place whose
-    /// value is its first paint.
-    ssr: Vec<Option<String>>,
+    /// The components it renders in the browser, whose modules it imports.
+    uses: Vec<usize>,
+    /// A component some page renders in the browser: it gets a `paint` fn.
+    paints: bool,
+    // For the first paint (see `resolve`): the server values it knows, the
+    // script's top-level names and what each is first set to, and per
+    // group the Rust names around it.
+    server: Vec<String>,
+    /// Server values are props, read whole (their types need not have the
+    /// fields the browser code reads), not `data`, read a field at a time.
+    whole: bool,
+    declared: Vec<String>,
+    lets: Vec<(String, String)>,
+    scopes: Vec<Vec<String>>,
 }
 
 impl Client {
     fn path(&self) -> String {
         format!("/_app/c/{}.js", self.id)
-    }
-
-    fn url(&self) -> String {
-        format!("{}?v={}", self.path(), self.hash)
     }
 }
 
@@ -1851,8 +2401,6 @@ const HELPERS: &str = "tick, setTimeout, setInterval, requestAnimationFrame, add
 struct ClientCx<'a> {
     comps: &'a [Comp],
     templates: &'a [Tpl],
-    /// Per component: its module's URL, once built.
-    urls: &'a [Option<String>],
     /// Some page renders this component in the browser.
     as_client: bool,
     lib_hash: &'a str,
@@ -1944,10 +2492,10 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
 
     let mut scopes = vec![Vec::new(); tt.groups.len()];
     rust_scopes(&tt.nodes, &mut Vec::new(), &mut scopes);
+    let own = cx.comps.iter().position(|c| c.module == t.module);
     let mut groups = Vec::new();
     let mut locals = Vec::new();
-    let mut ssr = Vec::new();
-    let mut imports: Vec<String> = Vec::new();
+    let mut uses: Vec<usize> = Vec::new();
     for (g, scope) in tt.groups.iter().zip(&scopes) {
         let mut rust: Vec<(Vec<String>, u32)> = Vec::new();
         // The names a closure over `expr` takes from the element's locals:
@@ -1976,26 +2524,28 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
             Ok(names)
         };
         let mut bindings = Vec::new();
-        let mut first_paint = None;
         for d in &g.directives {
             if d.kind == Dir::Comp {
-                let (b, url) = comp_binding(d, &mut names, cx).map_err(|m| at(d.line, d.col, m))?;
-                imports.extend(url.filter(|u| !imports.contains(u)));
+                let (b, ci) = comp_binding(d, &mut names, cx).map_err(|m| at(d.line, d.col, m))?;
+                // Outside any block that could stop it, it would never end.
+                if Some(ci) == own && !g.nested {
+                    return Err(at(
+                        d.line,
+                        d.col,
+                        format!(
+                            "<{0}> renders itself here with nothing to stop it; put it in a {{:#if}} or {{:#each}} that ends, \
+                         such as {{:#each node.children as child}}<{0} node={{:child}} />{{/each}}",
+                            d.name
+                        ),
+                    ));
+                }
+                if !uses.contains(&ci) && Some(ci) != own {
+                    uses.push(ci);
+                }
                 bindings.push(b);
                 continue;
             }
             bindings.push(binding(d, &mut names)?);
-            // `{:data.title}`: the server knows it, so it is the first paint.
-            if let (Dir::Hole, Some(v)) = (d.kind, &d.value)
-                && js::is_path(&v.src)
-            {
-                let path: Vec<String> = v.src.split('.').map(|s| s.trim().to_string()).collect();
-                let known = (scope.contains(&path[0]) && !g.locals.contains(&path[0]))
-                    || (server.contains(&path[0]) && !(cx.load.is_some() && path[0] == "data"));
-                if known && server_path(&path).len() == path.len() {
-                    first_paint = Some(rust_place(&path));
-                }
-            }
         }
         groups.push(bindings);
         locals.push(if rust.is_empty() {
@@ -2003,8 +2553,8 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
         } else {
             json_tree(&rust)
         });
-        ssr.push(first_paint);
     }
+    let imports: Vec<String> = uses.iter().map(|&ci| comp_placeholder(ci)).collect();
 
     let mut params: Vec<&str> = Vec::new();
     for (path, _) in &used {
@@ -2048,14 +2598,34 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
     } else {
         json_tree(&used)
     };
+    // What the first paint may read: a `+page.js` changes `data` in the
+    // browser, so the server does not know it.
+    let mut known = server;
+    known.retain(|n| !(cx.load.is_some() && n == "data"));
+    let lets = declared
+        .iter()
+        .filter_map(|(n, _)| Some((n.clone(), js::initializer(src, n)?.to_string())))
+        .collect();
     Ok(Some(Client {
         id,
         source,
         hash,
         blob,
         locals,
-        ssr,
+        uses,
+        paints: cx.as_client,
+        server: known,
+        whole: t.kind == Kind::Component,
+        declared: declared.into_iter().map(|(n, _)| n).collect(),
+        lets,
+        scopes,
     }))
+}
+
+/// Where a module's import of component `ci`'s module goes, until the
+/// URLs are known (see `generate`).
+fn comp_placeholder(ci: usize) -> String {
+    format!("@wisp/comp/{ci}")
 }
 
 /// The markup of a component the browser renders: its text, with every
@@ -2067,7 +2637,13 @@ fn client_html(nodes: &[Node], t: &Template, out: &mut String) {
             Node::Live { group } => {
                 let _ = write!(out, " data-w=\"{group}\"");
             }
-            Node::Fragment(body) => client_html(body, t, out),
+            Node::Client(branches) => {
+                for (g, body) in branches {
+                    let _ = write!(out, "<template data-w=\"{g}\">");
+                    client_html(body, t, out);
+                    out.push_str("</template>");
+                }
+            }
             Node::Render => out.push_str("<template data-wslot></template>"),
             _ => {}
         }
@@ -2370,13 +2946,13 @@ fn binding(d: &Directive, names: &mut Names) -> Result<String, String> {
 }
 
 /// `<Card title={:x} bind:open="o" on:select="pick">` where the browser
-/// renders it: `["comp", ID, (L) => props, binds, events]`, and the URL of
-/// the component's module, which the page's module imports.
+/// renders it: `["comp", ID, (L) => props, binds, events]`, and the
+/// component's index, whose module the page's module imports.
 fn comp_binding(
     d: &Directive,
     names: &mut Names,
     cx: &ClientCx,
-) -> Result<(String, Option<String>), String> {
+) -> Result<(String, usize), String> {
     let name = &d.name;
     let Some(ci) = cx.comps.iter().position(|c| c.name == *name) else {
         let known: Vec<&str> = cx.comps.iter().map(|c| c.name.as_str()).collect();
@@ -2447,7 +3023,9 @@ fn comp_binding(
                     handler_body(&code.src)
                 ));
             }
-            PropValue::Expr(_) => unreachable!("the parser refuses server props here"),
+            PropValue::Expr(_) | PropValue::Snippet { .. } => {
+                unreachable!("the parser refuses server props here")
+            }
         }
     }
     let b = format!(
@@ -2458,7 +3036,7 @@ fn comp_binding(
         binds.join(", "),
         events.join(", ")
     );
-    Ok((b, cx.urls[ci].clone()))
+    Ok((b, ci))
 }
 
 /// A JavaScript (and JSON) string literal.
@@ -2583,19 +3161,15 @@ fn rust_scopes(nodes: &[Node], scope: &mut Vec<String>, out: &mut [Vec<String>])
         match n {
             Node::Const(c) => {
                 // `{@const x: T = e}`: the pattern is before `=`, and before a type.
-                let pat = let_pattern(&c.src);
-                let mut colon = None;
-                template::for_each_top(pat, |i| {
-                    let b = pat.as_bytes();
-                    if b[i] == b':'
-                        && b.get(i + 1) != Some(&b':')
-                        && (i == 0 || b[i - 1] != b':')
-                        && colon.is_none()
-                    {
-                        colon = Some(i);
-                    }
-                });
-                scope.extend(pattern_names(&pat[..colon.unwrap_or(pat.len())]));
+                scope.extend(pattern_names(template::untyped(let_pattern(&c.src))));
+            }
+            Node::Snippet { params, body, .. } => {
+                let k = scope.len();
+                for p in params {
+                    scope.extend(pattern_names(template::untyped(p)));
+                }
+                rust_scopes(body, scope, out);
+                scope.truncate(k);
             }
             Node::Live { group } => out[*group] = scope.clone(),
             Node::If {
@@ -2648,15 +3222,23 @@ fn rust_scopes(nodes: &[Node], scope: &mut Vec<String>, out: &mut [Vec<String>])
                 ..
             } => rust_scopes(body, scope, out),
             // Its names end with it, as a block's do.
-            Node::Fragment(body) => {
-                let k = scope.len();
-                rust_scopes(body, scope, out);
-                scope.truncate(k);
+            Node::Client(branches) => {
+                for (group, body) in branches {
+                    out[*group] = scope.clone();
+                    let k = scope.len();
+                    rust_scopes(body, scope, out);
+                    scope.truncate(k);
+                }
             }
             _ => {}
         }
     }
     scope.truncate(outer);
+}
+
+/// The macro a `{#snippet}` of this name compiles to.
+fn snippet_macro(name: &str) -> String {
+    format!("__wisp_snippet_{name}")
 }
 
 /// `PAT = EXPR` → `PAT`.
@@ -2978,7 +3560,6 @@ pub fn load() -> Data { todo!() }";
         let cx = ClientCx {
             comps: &[],
             templates: &[],
-            urls: &[],
             as_client: false,
             lib_hash: "0",
             load: None,
@@ -3275,5 +3856,87 @@ pub fn load() -> Data { todo!() }";
             ),
             "{code}"
         );
+    }
+
+    #[test]
+    fn components_may_render_themselves() {
+        let page = (
+            "src/routes/+page.wisp",
+            "<Tree node={:{ name: 'r', kids: [] }} />",
+        );
+        let forever = (
+            "src/components/Tree.wisp",
+            "{@props node: &str}\n<p>{:node.name}</p><Tree node={:node} />",
+        );
+        assert!(
+            app("tree-forever", &[forever, page])
+                .unwrap_err()
+                .contains("nothing to stop it")
+        );
+        let tree = (
+            "src/components/Tree.wisp",
+            "{@props node: &str}\n<p>{:node.name}</p>{:#each node.kids as kid}<Tree node={:kid} />{/each}",
+        );
+        let code = app("tree", &[tree, page]).unwrap();
+        // It paints itself, a level deeper each time, from its props' JSON.
+        for want in [
+            "pub fn paint(__o: &mut ::wisp::Out, __p: &[::wisp::rt::Js<'_>]",
+            r#"__p[0].get("name").text(&mut __o.body);"#,
+            r#"for (__wisp_k0, __wisp_e0) in __p[0].get("kids").items().enumerate() {"#,
+            "super::tpl_component_0::paint(__o, &[__wisp_e0], &|__o: &mut ::wisp::Out| {",
+            "}, __wisp_d + 1);",
+            r#"super::tpl_component_0::paint(__o, &[::wisp::rt::Js("{\"name\":\"r\",\"kids\":[]}")], "#,
+        ] {
+            assert!(code.contains(want), "{want} in {code}");
+        }
+        // Two that render each other import each other.
+        let a = (
+            "src/components/Ping.wisp",
+            "{@props n: u8}\n{:#if n}<Pong n={:n} />{/if}",
+        );
+        let b = (
+            "src/components/Pong.wisp",
+            "{@props n: u8}\n{:#if n}<Ping n={:n} />{/if}",
+        );
+        let page = ("src/routes/+page.wisp", "<Ping n={:1} />");
+        let code = app("mutual", &[a, b, page]).unwrap();
+        assert!(!code.contains("@wisp/comp/"), "{code}");
+    }
+
+    #[test]
+    fn first_paint_expressions() {
+        let known = |path: &[String]| match path[0].as_str() {
+            "d" => Pv::Val("D".into()).member(&path[1..]),
+            _ => None,
+        };
+        let paint = |js: &str| match paint_expr(js, &mut known.clone()) {
+            Some(Pv::Val(e) | Pv::Num(e) | Pv::Bool(e) | Pv::Test(e)) => e,
+            None => "-".into(),
+        };
+        assert_eq!(paint("d.a.b"), "D.get(\"a\").get(\"b\")");
+        assert_eq!(paint("d.list.length"), "D.get(\"list\").length()");
+        assert_eq!(paint("!d.x"), "!(D.get(\"x\").truthy())");
+        assert_eq!(
+            paint("(d.x && !d.y) || d.z.length"),
+            "((D.get(\"x\").truthy() && !(D.get(\"y\").truthy())) || D.get(\"z\").length().is_some_and(|n| n > 0))"
+        );
+        assert_eq!(
+            paint("[1, 'a\\'b', { k: -2.50, 'q': [true, null,] }]"),
+            "::wisp::rt::Js(\"[1,\\\"a'b\\\",{\\\"k\\\":-2.5,\\\"q\\\":[true,null]}]\")"
+        );
+        assert_eq!(paint("undefined"), "::wisp::rt::Js(\"null\")");
+        for no in [
+            "f(d)",
+            "d.a()",
+            "d[0]",
+            "d?.a",
+            "d.a + 1",
+            "x",
+            "d.a === 1",
+            "{ k: x }",
+            "`t`",
+        ] {
+            assert_eq!(paint(no), "-", "{no}");
+        }
     }
 }

@@ -6,9 +6,10 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Seg {
     Static(String),
-    Param(String),
+    /// `[name]`, or `[name=matcher]`: the name and the matcher.
+    Param(String, Option<String>),
     /// `[[name]]`: present or absent.
-    Optional(String),
+    Optional(String, Option<String>),
     /// `[...name]`: zero or more segments.
     Rest(String),
 }
@@ -48,6 +49,14 @@ pub struct Tree {
     pub routes: Vec<Route>,
     pub layouts: Vec<Layout>,
     pub errors: Vec<ErrorPage>,
+    /// The param matchers routes use: each name with its `src/params` file,
+    /// or `None` for the built-in `int`.
+    pub matchers: Vec<(String, Option<PathBuf>)>,
+}
+
+/// `=int` for a matcher, nothing without one.
+fn matcher(m: &Option<String>) -> String {
+    m.as_ref().map_or(String::new(), |m| format!("={m}"))
 }
 
 impl Route {
@@ -61,8 +70,8 @@ impl Route {
             s.push('/');
             match seg {
                 Seg::Static(n) => s.push_str(n),
-                Seg::Param(n) => s.push_str(&format!("[{n}]")),
-                Seg::Optional(n) => s.push_str(&format!("[[{n}]]")),
+                Seg::Param(n, m) => s.push_str(&format!("[{n}{}]", matcher(m))),
+                Seg::Optional(n, m) => s.push_str(&format!("[[{n}{}]]", matcher(m))),
                 Seg::Rest(n) => s.push_str(&format!("[...{n}]")),
             }
         }
@@ -74,7 +83,7 @@ impl Route {
             .iter()
             .filter_map(|s| match s {
                 Seg::Static(_) => None,
-                Seg::Param(n) | Seg::Optional(n) | Seg::Rest(n) => Some(n.as_str()),
+                Seg::Param(n, _) | Seg::Optional(n, _) | Seg::Rest(n) => Some(n.as_str()),
             })
             .collect()
     }
@@ -84,7 +93,7 @@ impl Route {
     pub fn expansions(&self) -> Vec<Vec<&Seg>> {
         let mut out: Vec<Vec<&Seg>> = vec![Vec::new()];
         for seg in &self.segs {
-            if let Seg::Optional(_) = seg {
+            if let Seg::Optional(..) = seg {
                 let with: Vec<_> = out
                     .iter()
                     .map(|v| v.iter().copied().chain([seg]).collect())
@@ -116,6 +125,7 @@ pub fn scan(routes_dir: &Path) -> Result<Tree, String> {
     }
     let show = |p: &Path| show(routes_dir, p);
 
+    let mut matchers: Vec<(String, Option<PathBuf>)> = Vec::new();
     for r in &tree.routes {
         let params = r.params();
         if params.len() > MAX_PARAMS {
@@ -141,7 +151,26 @@ pub fn scan(routes_dir: &Path) -> Result<Tree, String> {
                 return Err(format!("{}: parameter `{p}` appears twice", r.pattern()));
             }
         }
+        for seg in &r.segs {
+            let (Seg::Param(_, Some(m)) | Seg::Optional(_, Some(m))) = seg else {
+                continue;
+            };
+            if matchers.iter().any(|(n, _)| n == m) {
+                continue;
+            }
+            let file = routes_dir.with_file_name("params").join(format!("{m}.rs"));
+            let file = file.is_file().then_some(file);
+            if file.is_none() && m != "int" {
+                return Err(format!(
+                    "{}: no param matcher `{m}`: add src/params/{m}.rs with `pub fn matches(s: &str) -> bool` (`int` is built in)",
+                    show(&r.dir)
+                ));
+            }
+            matchers.push((m.clone(), file));
+        }
     }
+    matchers.sort();
+    tree.matchers = matchers;
 
     // Route order only makes ids and generated code deterministic; matching
     // order comes from `arms`.
@@ -160,7 +189,7 @@ pub fn scan(routes_dir: &Path) -> Result<Tree, String> {
                 .iter()
                 .map(|s| match s {
                     Seg::Static(n) => format!("s:{n}"),
-                    Seg::Param(_) | Seg::Optional(_) => "p".into(),
+                    Seg::Param(_, m) | Seg::Optional(_, m) => format!("p{}", matcher(m)),
                     Seg::Rest(_) => "r".into(),
                 })
                 .collect();
@@ -348,9 +377,6 @@ fn walk(
 /// `None` for `(group)` directories, which do not appear in the URL.
 fn parse_segment(name: &str) -> Result<Option<Seg>, String> {
     let ident = |s: &str| -> Result<String, String> {
-        if s.contains('=') {
-            return Err("param matchers ([name=matcher]) are not supported yet".into());
-        }
         let ok = !s.is_empty()
             && s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
             && !s.as_bytes()[0].is_ascii_digit();
@@ -358,6 +384,16 @@ fn parse_segment(name: &str) -> Result<Option<Seg>, String> {
             return Err(format!("`{s}` is not a valid parameter name"));
         }
         Ok(s.to_string())
+    };
+    // `name=matcher`: the matcher is a file in src/params, or `int`.
+    let param = |s: &str| -> Result<(String, Option<String>), String> {
+        match s.split_once('=') {
+            Some((n, m)) => {
+                let m = ident(m).map_err(|_| format!("`{m}` is not a valid matcher name"))?;
+                Ok((ident(n)?, Some(m)))
+            }
+            None => Ok((ident(s)?, None)),
+        }
     };
     if let Some(inner) = name.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
         if inner.is_empty() || inner.contains(['(', ')']) {
@@ -368,13 +404,20 @@ fn parse_segment(name: &str) -> Result<Option<Seg>, String> {
         return Ok(None);
     }
     if let Some(inner) = name.strip_prefix("[[").and_then(|s| s.strip_suffix("]]")) {
-        return Ok(Some(Seg::Optional(ident(inner)?)));
+        let (n, m) = param(inner)?;
+        return Ok(Some(Seg::Optional(n, m)));
     }
     if let Some(inner) = name.strip_prefix("[...").and_then(|s| s.strip_suffix(']')) {
+        if inner.contains('=') {
+            return Err(
+                "matchers go on [name=matcher] and [[name=matcher]], not on [...rest]".into(),
+            );
+        }
         return Ok(Some(Seg::Rest(ident(inner)?)));
     }
     if let Some(inner) = name.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-        return Ok(Some(Seg::Param(ident(inner)?)));
+        let (n, m) = param(inner)?;
+        return Ok(Some(Seg::Param(n, m)));
     }
     if name.contains(['[', ']', '(', ')']) {
         return Err("mixed static and dynamic text in one segment is not supported".into());
@@ -382,18 +425,24 @@ fn parse_segment(name: &str) -> Result<Option<Seg>, String> {
     Ok(Some(Seg::Static(name.to_string())))
 }
 
-/// Static beats param beats optional beats rest, left to right. When one
-/// pattern is a prefix of the other, the shorter (more exact) one goes first.
+/// Static beats param beats optional beats rest, left to right, and one
+/// with a matcher beats one without. When one pattern is a prefix of the
+/// other, the shorter (more exact) one goes first.
 fn priority(a: &[&Seg], b: &[&Seg]) -> std::cmp::Ordering {
     let rank = |s: &Seg| match s {
         Seg::Static(_) => 0,
-        Seg::Param(_) => 1,
-        Seg::Optional(_) => 2,
-        Seg::Rest(_) => 3,
+        Seg::Param(_, Some(_)) => 1,
+        Seg::Param(_, None) => 2,
+        Seg::Optional(_, Some(_)) => 3,
+        Seg::Optional(_, None) => 4,
+        Seg::Rest(_) => 5,
     };
     for (&x, &y) in a.iter().zip(b) {
         let ord = rank(x).cmp(&rank(y)).then_with(|| match (x, y) {
             (Seg::Static(p), Seg::Static(q)) => p.cmp(q),
+            (Seg::Param(_, p) | Seg::Optional(_, p), Seg::Param(_, q) | Seg::Optional(_, q)) => {
+                p.cmp(q)
+            }
             _ => std::cmp::Ordering::Equal,
         });
         if ord.is_ne() {
@@ -476,6 +525,67 @@ mod tests {
         let slug = arms.iter().position(|p| p == "/[slug]").unwrap();
         assert!(hello < slug, "{arms:?}");
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn matchers() {
+        let root = tmp("matchers");
+        let routes = root.join("routes");
+        for f in [
+            "[slug]/+page.wisp",
+            "[id=int]/+page.wisp",
+            "[w=word]/+page.wisp",
+            "a/[[n=int]]/+page.wisp",
+        ] {
+            touch(&routes, f);
+        }
+        touch(&root, "params/word.rs");
+        let t = scan(&routes).unwrap();
+        assert_eq!(
+            t.matchers,
+            [
+                ("int".to_string(), None),
+                (
+                    "word".to_string(),
+                    Some(root.join("params").join("word.rs"))
+                )
+            ]
+        );
+        // Matched params go before unmatched ones.
+        let arms: Vec<_> = t
+            .arms()
+            .iter()
+            .map(|(_, id)| t.routes[*id].pattern())
+            .collect();
+        assert_eq!(
+            arms,
+            [
+                "/a/[[n=int]]",
+                "/a/[[n=int]]",
+                "/[id=int]",
+                "/[w=word]",
+                "/[slug]"
+            ]
+        );
+
+        touch(&routes, "b/[x=nope]/+page.wisp");
+        let err = scan(&routes).unwrap_err();
+        assert!(
+            err.contains("no param matcher `nope`") && err.contains("src/params/nope.rs"),
+            "{err}"
+        );
+        fs::remove_dir_all(&root).unwrap();
+
+        for (dir, want) in [
+            ("[...p=int]", "not on [...rest]"),
+            ("[a=]", "not a valid matcher"),
+        ] {
+            let root = tmp("matcher-bad");
+            touch(&root, &format!("{dir}/+page.wisp"));
+            let err = scan(&root).unwrap_err();
+            assert!(err.contains(want), "{dir}: {err}");
+            fs::remove_dir_all(&root).unwrap();
+        }
     }
 
     #[test]
