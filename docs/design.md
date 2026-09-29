@@ -50,18 +50,24 @@ the same time wherever the signatures differ. That keeps the runtime at two
 dependencies. Anything that encrypts would use a vetted crate; we do not
 write ciphers.
 
-Apps bring their own crates for everything else: serde for JSON
-(`serde_json::from_slice(cx.body())`, `Response::json(serde_json::to_string(&x)?)`),
-a database driver, a mailer.
+JSON is the same kind of thing: a fixed grammar (RFC 8259), so
+`crates/wisp/src/json.rs` has a strict parser for request bodies and
+`FromJson` with its checks, and `live.rs` writes JSON out
+([api.md](api.md)). Apps that want serde still use it
+(`serde_json::from_slice(cx.body())`, `Response::json(serde_json::to_string(&x)?)`).
+
+Apps bring their own crates for everything else: a database driver, a
+mailer, an HTTP client.
 
 ## Workspace
 
 ```
 crates/wisp        runtime: HTTP server, Cx, escaping, assets, dev hooks
 crates/wisp-build  compiler: route scan, .wisp parser, codegen (used from build.rs)
-crates/wisp-macros #[action], #[derive(Cookie)] and #[derive(Json)] (proc macros, no deps)
+crates/wisp-macros #[action], #[derive(Cookie)], #[derive(Json)] and #[derive(FromJson)] (proc macros, no deps)
 crates/wisp-cli    `wisp new | dev | build | check`; deploy targets
 examples/demo      the demo app, which is also `wisp new`'s demo template
+examples/api       a JSON API, which is also `wisp new --api`
 tests/app          an app that uses every feature, and the tests that run it
 bench/             the same app in other stacks, load generator, runner (bench-run)
 ```
@@ -218,7 +224,10 @@ async fn like(id: i64) -> Result<()> {
   and not in a layout, where it would do nothing.
 - A `+server.rs` method answers with the `Response` it returns; with any
   other value, that value as JSON (`#[derive(Json)]`); with nothing, a 204.
-  An `Option<Response>` that is `None` is a 404.
+  An `Option<Response>` that is `None` is a 404. `body: T` (a type other
+  than a string) is the JSON body read as a `FromJson` type, and an error
+  on a request under `/api`, or one that sent or asks for JSON, is answered
+  as JSON: see [api.md](api.md).
 
 ### Templates
 

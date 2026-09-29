@@ -3,6 +3,14 @@
 version = 4
 
 [[package]]
+name = "api"
+version = "0.1.0"
+dependencies = [
+ "wisp",
+ "wisp-build",
+]
+
+[[package]]
 name = "bench-run"
 version = "0.0.0"
 dependencies = [

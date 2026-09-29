@@ -4,6 +4,7 @@
 
 mod codegen;
 mod js;
+mod openapi;
 pub mod routes;
 pub mod rust_scan;
 mod shell;

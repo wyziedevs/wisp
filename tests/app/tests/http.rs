@@ -583,7 +583,10 @@ fn browser_code() {
     );
     let js = body(&module);
     assert!(js.starts_with(&format!("import {{ define }} from \"/_app/live.js?v={}\";\ndefine(\"{page_id}\", function (__wisp_p, __wisp_h) {{ const {{", env!("CARGO_PKG_VERSION"))), "{js}");
-    assert!(js.contains("let { data } = __wisp_p;"), "{js}");
+    assert!(
+        js.contains("const { data } = __wisp_props(__wisp_p, [\"data\"]);"),
+        "{js}"
+    );
     assert!(
         js.contains("[\"on\", \"click\", [\"prevent\"], ({ item }, event) => (pick(item.name))]"),
         "{js}"
@@ -596,9 +599,11 @@ fn browser_code() {
         js.ends_with("//# sourceURL=wisp:///src/routes/live/+page.wisp\n"),
         "{js}"
     );
-    // The script keeps its line numbers: `let open` is on line 14 of the file.
+    // The script keeps its line numbers: `let open` is on line 14 of the
+    // file. It is state: a signal.
     assert_eq!(
-        js.lines().position(|l| l.trim() == "let open = false"),
+        js.lines()
+            .position(|l| l.trim() == "let open = __wisp_s(false)"),
         Some(13),
         "{js}"
     );
@@ -683,14 +688,14 @@ fn client_parity() {
     );
     let js = body(&s.request("GET", &module_url(&holes, 0), "", b"")).to_string();
     for want in [
-        "[\"hole\", () => (title)]",
-        "[\"attr\", \"class\", () => (`card ${(mood) ?? ''}`)]",
-        "[\"attr\", \"aria-expanded\", () => (open)]",
-        "[\"each\", () => (items), [\"item\", \"i\"], ({ item, i }) => (item.id)]",
+        "[\"hole\", () => (title.v)]",
+        "[\"attr\", \"class\", () => (`card ${(mood.v) ?? ''}`)]",
+        "[\"attr\", \"aria-expanded\", () => (open.v)]",
+        "[\"each\", () => (items.v), [\"item\", \"i\"], ({ item, i }) => (item.id)]",
         "[\"animate\", \"flip\", null]",
-        "[\"if\", () => (![...(items ?? [])].length)]",
-        "[\"if\", () => (!(open) && (name))]",
-        "[\"if\", () => (!(open) && !(name))]",
+        "[\"if\", () => (![...(items.v ?? [])].length)]",
+        "[\"if\", () => (!(open.v) && (name.v))]",
+        "[\"if\", () => (!(open.v) && !(name.v))]",
     ] {
         assert!(js.contains(want), "{want} in {js}");
     }
@@ -701,12 +706,13 @@ fn client_parity() {
         state.contains(",0,{}],[2,\"") && state.contains("<div id=\"fresh\" data-wisp-reset>"),
         "{state}"
     );
-    // `$derived` is worked out again before each redraw; `watch` is a helper.
+    // State is signals, read as `.v`; `$derived` is a memo; `watch` is a
+    // helper.
     let js = body(&s.request("GET", &module_url(&state, 0), "", b"")).to_string();
     assert!(
-        js.contains("let double = __wisp_d(() => (clicks * 2), (__v) => double = __v)")
-            && js.contains("watch(() => data.count, () => bumps++)")
-            && js.contains(" watch, derived, __wisp_d, "),
+        js.contains("let double = __wisp_d(() => (clicks.v * 2))")
+            && js.contains("watch(() => data.v.count, () => bumps.v++)")
+            && js.contains(" effect, watch, derived, "),
         "{js}"
     );
 
@@ -714,7 +720,7 @@ fn client_parity() {
     // module, which carries its markup, slot and all.
     let comps = s.request("GET", "/a2/comps", "", b"");
     let js = body(&s.request("GET", &module_url(&comps, 0), "", b"")).to_string();
-    assert!(js.contains("[[\"count\", ({ name }) => (counts[name]), ({ name }, __wisp_v) => { (counts[name]) = __wisp_v }]], [[\"bump\", (_, event) => (bumped = event)]]]"), "{js}");
+    assert!(js.contains("[[\"count\", ({ name }) => (counts.v[name]), ({ name }, __wisp_v) => { (counts.v[name]) = __wisp_v }]], [[\"bump\", (_, event) => (bumped.v = event)]]]"), "{js}");
     let item = js
         .lines()
         .find_map(|l| l.strip_prefix("import \""))
@@ -722,7 +728,7 @@ fn client_parity() {
         .expect("the component's module");
     let item = body(&s.request("GET", item, "", b"")).to_string();
     assert!(
-        item.contains("let { label, count } = __wisp_p;")
+        item.contains("const { label, count } = __wisp_props(__wisp_p, [\"label\", \"count\"]);")
             && item.contains("<template data-wslot></template>")
             && item.contains("{ html: \""),
         "{item}"
@@ -770,6 +776,68 @@ fn client_parity() {
     let err = s.request("GET", "/a2/holes", "x-wisp-error: 1\r\n", b"");
     assert_eq!(status(&err), 500);
     assert!(err.contains("<h1 id=\"err\">Error 500</h1>"), "{err}");
+}
+
+#[test]
+fn islands_and_runes() {
+    let s = start();
+    let v = env!("CARGO_PKG_VERSION");
+    // Every instance is an island: the page is painted whole, and nothing
+    // loads until an island's moment comes (wisp.js wakes them). A
+    // `client:none` one sends neither its values nor its module.
+    let page = s.request("GET", "/a2/islands", "", b"");
+    assert!(
+        page.contains("<button class=\"tally\" data-w=\"4.0\"><template data-w=\"4.1\"></template>0<!----></button>"),
+        "{page}"
+    );
+    let json = &page[page.find("id=\"wisp-live\">").expect("instances")..];
+    assert!(
+        json.contains("\"i\":[[0,\"t")
+            && json.contains(",-1,\"i\",{}],[1,")
+            && json.contains(",-1,\"m(min-width: 1px)\",{}],[2,")
+            && json.contains(",-1,\"x\",{\"value\":0,\"step\":1}],[4,")
+            && json.contains(",-1,\"v\",{}]]}"),
+        "{json}"
+    );
+    assert!(!json.contains("[3,"), "{json}");
+    assert!(
+        !page.contains("modulepreload") && !page.contains(&format!("/_app/live.js?v={v}")),
+        "{page}"
+    );
+    // wisp.js has the wake-up, and live.js the hydrate() it calls.
+    assert!(body(&s.request("GET", "/_app/wisp.js", "", b"")).contains("m.hydrate(I)"));
+    assert!(
+        body(&s.request("GET", &format!("/_app/live.js?v={v}"), "", b""))
+            .contains("export function hydrate")
+    );
+
+    // Runes compile to signals, memos and effects; `$store` reads the store.
+    let runes = s.request("GET", "/a2/runes", "", b"");
+    assert!(runes.contains(&format!("/_app/live.js?v={v}")), "{runes}");
+    let js = body(&s.request("GET", &module_url(&runes, 0), "", b"")).to_string();
+    for want in [
+        "let count = __wisp_s(0)",
+        "let double = __wisp_d(() => (count.v * 2))",
+        "let done = __wisp_d(() => (todos.v.filter((t) => t.done).length))",
+        "__wisp_e(() => {\n    document.title = `Runes ${count.v}`",
+        "__wisp_e(() => console.log(...[count.v].map(__wisp_snap)))",
+        "[\"hole\", () => (cart.value.length)]",
+        "(_, event) => (todos.v.push({ id: todos.v.length + 1, text: 'new', done: false }))",
+    ] {
+        assert!(js.contains(want), "{want} in {js}");
+    }
+    let stepper = js
+        .lines()
+        .find_map(|l| l.strip_prefix("import \""))
+        .map(|l| l.trim_end_matches("\";"))
+        .expect("the component's module");
+    let stepper = body(&s.request("GET", stepper, "", b"")).to_string();
+    assert!(
+        stepper.contains(
+            "const { value, step } = __wisp_props(__wisp_p, [\"value\", \"step\"], { value: () => (0), step: () => (1) });"
+        ) && stepper.contains("(_, event) => (value.v += step.v)"),
+        "{stepper}"
+    );
 }
 
 #[test]

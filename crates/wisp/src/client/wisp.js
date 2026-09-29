@@ -49,6 +49,7 @@
       old.replaceWith(s);
     }
     send('wisp:update', { status });
+    wake();
   }
 
   const send = (type, detail, at = document) => {
@@ -320,4 +321,68 @@
     else if (to && !result.data) await go(to, { replace: false });
     send('wisp:result', result, form);
   });
+
+  // ---- islands --------------------------------------------------------------
+
+  // A component marked client:visible, client:idle, client:media or
+  // client:interaction starts when that happens: only then do its module,
+  // and live.js on a page with nothing else to start, load. Until then the
+  // server's HTML is all there is, and it works as HTML.
+  const runtime = document.currentScript?.src.replace('wisp.js', 'live.js');
+  let woke; // ends the last page's waits
+
+  function wake() {
+    woke?.abort();
+    woke = new AbortController();
+    const { signal } = woke;
+    const json = document.getElementById('wisp-live');
+    const parent = {};
+    const waits = new Map(); // client:interaction islands -> their start
+    for (const [I, , P, how] of json && runtime ? JSON.parse(json.textContent).i : []) {
+      parent[I] = P;
+      if (typeof how != 'string') continue;
+      let started;
+      const go = () =>
+        signal.aborted ||
+        (started ||= import(runtime)
+          .then((m) => signal.aborted || m.hydrate(I))
+          .finally(() => waits.delete(I)));
+      const idle = () => (window.requestIdleCallback || setTimeout)(go, { timeout: 2000 });
+      // What it shows: a hole's anchor is a <template>, so its parent.
+      const els = [...document.querySelectorAll(`[data-w^="${I}."]`)].map((el) => (el.content ? el.parentElement : el));
+      if (how == 'x') waits.set(I, go);
+      else if (how == 'v' && els.length) {
+        const io = new IntersectionObserver((es) => es.some((e) => e.isIntersecting) && (io.disconnect(), go()), { rootMargin: '200px' });
+        els.forEach((el) => io.observe(el));
+        signal.addEventListener('abort', () => io.disconnect());
+      } else if (how[0] == 'm') {
+        const mq = matchMedia(how.slice(1));
+        if (mq.matches) go();
+        else mq.addEventListener('change', () => mq.matches && go(), { signal });
+      } else idle();
+    }
+    // The island of the element an event is on, if it waits.
+    const island = (t) => {
+      for (let el = t.closest?.('[data-w]'); el; el = el.parentElement?.closest('[data-w]')) {
+        const [i, g] = el.dataset.w.split('.');
+        if (g == null) continue;
+        for (let I = +i; I > -1; I = parent[I] ?? -1) if (waits.has(I)) return waits.get(I);
+        return;
+      }
+    };
+    // The first pointer, focus or key in one starts it. A click that comes
+    // before it is ready is held, and clicked again once it is.
+    for (const type of ['pointerdown', 'focusin', 'keydown', 'click']) {
+      document.addEventListener(type, (e) => {
+        const go = waits.size && island(e.target);
+        if (!go) return;
+        const ready = go();
+        if (type != 'click') return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        ready.then(() => e.target.dispatchEvent(new MouseEvent('click', e)));
+      }, { capture: true, signal });
+    }
+  }
+  wake();
 })();

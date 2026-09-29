@@ -23,15 +23,53 @@ adds behavior.
 A bare `<script>` (no attributes) is the file's client script. It works in
 pages, layouts and components, and runs once for each place the file is shown.
 
-- Top-level `let`s are the state. Assign to one and the page updates.
-- `let total = $derived(price * qty)` is a value worked out from others:
-  it is set again before every redraw, so anything that reads it is current.
+- Top-level `let`s are the state. Assign to one, or change an object or
+  array in it (`todos.push(t)`, `todo.done = true`), and the page updates.
+- `let total = $derived(price * qty)` is a value worked out from others.
 - At most one script per file.
 - `import` lines at the top are moved to the module's head, so
   `import confetti from 'https://esm.sh/canvas-confetti'` works.
 - Errors point at the real `.wisp` file and line.
 
 A `<script>` with `type` or `src` stays plain HTML, as before.
+
+### Runes and fine-grained updates
+
+Every read of state in a binding is tracked. A write redraws only the
+bindings that read what changed: no virtual DOM, no diffing, and a
+component's script runs once, never again on an update. Changes made
+together are drawn together, in a microtask.
+
+```html
+<p>{:done} of {:todos.length} done</p>
+{:#each todos as todo (todo.id)}
+  <li class:done="todo.done" on:click="todo.done = !todo.done">{:todo.text}</li>
+{:/each}
+
+<script>
+  let todos = $state([{ id: 1, text: 'Tea', done: false }])
+  let done = $derived(todos.filter((t) => t.done).length)
+  $effect(() => { document.title = `${done} done` })
+</script>
+```
+
+Clicking one item writes one class and one number, nothing else.
+
+| Rune | Meaning |
+|---|---|
+| `let x = $state(v)` | State, deep: objects and arrays track each key. A plain `let x = v` is the same. |
+| `$state.raw(v)` | State that changes only when assigned. |
+| `$state.snapshot(x)` | A plain copy, for `structuredClone` or a library. |
+| `$derived(expr)`, `$derived.by(fn)` | Worked out when read after an input changed. Assigning to it is a build error. |
+| `$effect(fn)` | Runs after the DOM is drawn, and again when what it read changes. It may return a cleanup. |
+| `$effect.pre(fn)` | The same, before the DOM is drawn. |
+| `let { a, b = 1 } = $props()` | In a component: the props it reads, with browser defaults. They must be in `{@props}`. |
+| `$bindable(default)` | A prop a parent may `bind:`. Once a component uses `$props()`, only these can be bound. |
+| `$inspect(a, b)` | Logs them as they change. Gone in release builds. |
+| `$cart` | For a store `cart`: `cart.value`, tracked. `$cart = x` sets it. |
+
+`untrack(fn)` reads without tracking. A rune in the wrong place (in markup,
+inside a block, misspelled) is a build error at its line.
 
 ## Directives
 
@@ -229,7 +267,6 @@ Available inside any client script. No imports.
 let double = $derived(count * 2)                   // {:double}, kept current
 
 watch(() => data.id, (id) => { load(id) })         // when data.id changes
-effect(() => { document.title = `(${count})` })    // after every redraw
 effect(() => { load(id) }, () => [id])             // at the start, and when id changes
                                                    // (return a function to clean up)
 onMount(() => { ready = true })                    // may return a cleanup
@@ -241,7 +278,7 @@ await tick()                                       // wait for the redraw
 ```
 
 `setTimeout`, `setInterval`, `requestAnimationFrame` and `addEventListener`
-redraw after each callback and stop when the component goes away.
+stop when the component goes away.
 
 ### Shared state
 
@@ -264,9 +301,35 @@ export const count = derived(() => cart.value.length)  // a store's derived valu
 <button on:click="cart.value = [...cart.value, 'tea']">Add ({:count.value})</button>
 ```
 
-A store has `.value`, `set(v)`, `update(fn)` and `subscribe(fn)`. Setting it
-redraws. Files in `src/lib/**/*.js` are served with the app; `'wisp'` and
+A store has `.value`, `set(v)`, `update(fn)` and `subscribe(fn)`. It is deep,
+like `$state`, and a script can read it as `$cart`. Files in `src/lib/**/*.js` are served with the app; `'wisp'` and
 `'$lib/…'` imports work in them, in scripts and in `+page.js`.
+
+## Islands: load only what is needed
+
+A page ships JavaScript only for files with client code. A component can
+wait longer: its module is not even downloaded until its moment comes.
+
+```html
+<Chart client:visible />                        <!-- scrolled near (200px) -->
+<Comments client:idle />                        <!-- when the browser is idle -->
+<Filters client:media="(min-width: 800px)" />   <!-- when the query matches -->
+<Menu client:interaction />                     <!-- first pointer, focus or key on it -->
+<Badge client:none />                           <!-- never: no module, no values sent -->
+```
+
+`client:load`, the default, starts with the page. The server paints every
+island in full, so until it wakes it reads and works as HTML (links and
+forms too). A click that wakes an island is held and replayed once it is
+ready. What renders inside an island waits with it.
+
+Why it is faster: the browser parses and runs only the modules for what the
+visitor sees or touches. Islands get no `modulepreload`, and a page whose
+code is all islands does not load the runtime (`live.js`, about 9 KB) until
+the first one wakes. `wisp.js` does the waking.
+
+`client:*` goes on a component the server renders that has browser code;
+anywhere else it is a build error.
 
 ## Morphs keep state
 
@@ -367,6 +430,8 @@ the console with the `.wisp` file and line.
   [First paint](#first-paint)); live attributes (`:class`, `class="a {:b}"`)
   keep their static text until the browser starts.
 - Editing a client script rebuilds; editing markup still hot-swaps.
+- Deep state tracks plain objects and arrays. A `Map`, `Set`, `Date` or
+  class instance is not tracked inside: assign it again (`m = m`) to redraw.
 
 ## Less Rust boilerplate
 

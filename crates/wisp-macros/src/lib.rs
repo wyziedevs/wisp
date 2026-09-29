@@ -1,6 +1,7 @@
 //! `#[action]` marks a `+page.rs` function as a form action,
-//! `#[derive(Cookie)]` lets a type be kept in a cookie, and `#[derive(Json)]`
-//! lets browser code read it.
+//! `#[derive(Cookie)]` lets a type be kept in a cookie, `#[derive(Json)]`
+//! lets browser code and API clients read it, and `#[derive(FromJson)]` reads
+//! it from a JSON request body.
 //!
 //! No `syn`, no `quote`: this crate compiles instantly. `#[action]` returns
 //! its input unchanged (`wisp-build` finds it in the source and generates
@@ -41,6 +42,23 @@ pub fn derive_cookie(item: TokenStream) -> TokenStream {
 #[proc_macro_derive(Json)]
 pub fn derive_json(item: TokenStream) -> TokenStream {
     match json(item) {
+        Ok(code) => code,
+        Err((msg, span)) => error(&msg, span),
+    }
+}
+
+/// Implements `wisp::FromJson`, so an endpoint can take the type as its JSON
+/// body (`fn post(body: Note)`): a struct is read from an object of its
+/// fields (an `Option` field may be left out or `null`; other fields are
+/// ignored), a tuple struct with one field as that field, and an enum
+/// without fields from its variant's name.
+///
+/// `#[validate(...)]` on a field checks it once read: `min = 0`, `max = 10`
+/// (numbers), `min_len = 1`, `max_len = 200` (characters of a string, items
+/// of a list), `email`. Every problem is reported, by field, in one 422.
+#[proc_macro_derive(FromJson, attributes(validate))]
+pub fn derive_from_json(item: TokenStream) -> TokenStream {
+    match from_json(item) {
         Ok(code) => code,
         Err((msg, span)) => error(&msg, span),
     }
@@ -303,6 +321,173 @@ fn json(item: TokenStream) -> Result<TokenStream, Error> {
         }}"
     ));
     Ok(fill(template, &body, &TokenStream::new()))
+}
+
+fn from_json(item: TokenStream) -> Result<TokenStream, Error> {
+    let (name, shape) = read_type(item.clone(), "FromJson")?;
+    let bare = |id: &str| id.strip_prefix("r#").unwrap_or(id).to_string();
+    let body = match &shape {
+        Shape::Named(_) => {
+            let mut body = parse("let __m = __p.object(__v)?;");
+            let mut build = Vec::new();
+            for (k, field) in named_fields(&item)?.iter().enumerate() {
+                let id = field.name.to_string();
+                let key = format!("{:?}", bare(&id));
+                // Placed at the field, so a type that is not `FromJson` is
+                // the one the compiler points at.
+                body.extend(at(
+                    &format!(
+                        "let __f{k}: ::std::option::Option<{}> = __p.field(__m, {key});",
+                        field.ty
+                    ),
+                    field.name.span(),
+                ));
+                let mut checks = String::new();
+                for (rule, value, span) in &field.rules {
+                    let call = match (rule.as_str(), value) {
+                        ("min" | "max", Some(v)) => format!("{rule}(__x, ({v}) as f64)"),
+                        ("min_len" | "max_len", Some(v)) => format!("{rule}(__x, {v})"),
+                        ("email", None) => "email(__x)".into(),
+                        ("email", Some(_)) => return Err(("`email` takes no value".into(), *span)),
+                        (_, None) => {
+                            return Err((format!("`{rule}` needs a value: `{rule} = 1`"), *span));
+                        }
+                        _ => unreachable!("rules are checked as they are read"),
+                    };
+                    checks.push_str(&format!("__p.check({key}, ::wisp::json::check::{call});"));
+                }
+                if !checks.is_empty() {
+                    body.extend(at(
+                        &format!(
+                            "if let ::std::option::Option::Some(__x) = &__f{k} {{ {checks} }}"
+                        ),
+                        field.name.span(),
+                    ));
+                }
+                build.push(format!("{id}: __f{k}?,"));
+            }
+            body.extend(parse(&format!(
+                "::std::option::Option::Some({name} {{ {} }})",
+                build.concat()
+            )));
+            body
+        }
+        Shape::Tuple(fields) if fields.len() == 1 => parse(&format!(
+            "::wisp::FromJson::from_json(__v, __p).map({name})"
+        )),
+        Shape::Tuple(fields) => {
+            let n = fields.len();
+            let reads: String = (0..n)
+                .map(|i| format!("let __f{i} = __p.read(\"[{i}]\", &__a[{i}]);"))
+                .collect();
+            let build: String = (0..n).map(|i| format!("__f{i}?,")).collect();
+            parse(&format!(
+                "let __a = match __v.as_array() {{
+                    ::std::option::Option::Some(a) if a.len() == {n} => a,
+                    _ => {{ __p.add(\"expected an array of {n} items\"); return ::std::option::Option::None; }}
+                }};
+                {reads}
+                ::std::option::Option::Some({name}({build}))"
+            ))
+        }
+        Shape::Unit => parse(&format!(
+            "<() as ::wisp::FromJson>::from_json(__v, __p).map(|()| {name})"
+        )),
+        Shape::Enum(variants) => {
+            let arms: String = variants
+                .iter()
+                .map(|v| format!("::std::option::Option::Some({:?}) => ::std::option::Option::Some({name}::{v}),", bare(v)))
+                .collect();
+            let names: Vec<String> = variants.iter().map(|v| bare(v)).collect();
+            parse(&format!(
+                "match __v.as_str() {{
+                    {arms}
+                    _ => {{ __p.add({:?}); ::std::option::Option::None }}
+                }}",
+                format!("must be one of: {}", names.join(", "))
+            ))
+        }
+    };
+    let template = parse(&format!(
+        "impl ::wisp::FromJson for {name} {{
+            fn from_json(__v: &::wisp::Value, __p: &mut ::wisp::json::Problems) -> ::std::option::Option<Self> {{
+                __wisp_write
+            }}
+        }}"
+    ));
+    Ok(fill(template, &body, &TokenStream::new()))
+}
+
+/// A named field, for `FromJson`: its name, its type as text, and its
+/// `#[validate(...)]` rules (name, value as text, where it is).
+struct Field {
+    name: Ident,
+    ty: String,
+    rules: Vec<(String, Option<String>, Span)>,
+}
+
+/// The named fields of the struct `item`, with their types and rules.
+fn named_fields(item: &TokenStream) -> Result<Vec<Field>, Error> {
+    let Some(group) = item.clone().into_iter().find_map(|t| match t {
+        TokenTree::Group(g) if g.delimiter() == Delimiter::Brace => Some(g),
+        _ => None,
+    }) else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for field in items(group.stream()) {
+        let mut rules = Vec::new();
+        let mut rest = field.as_slice();
+        while let [TokenTree::Punct(hash), TokenTree::Group(attr), after @ ..] = rest
+            && hash.as_char() == '#'
+        {
+            let inner: Vec<TokenTree> = attr.stream().into_iter().collect();
+            if let [TokenTree::Ident(id), TokenTree::Group(args)] = inner.as_slice()
+                && id.to_string() == "validate"
+            {
+                for rule in items(args.stream()) {
+                    let TokenTree::Ident(rule_name) = &rule[0] else {
+                        return Err((
+                            "expected a rule, such as `min_len = 1`".into(),
+                            rule[0].span(),
+                        ));
+                    };
+                    let known = ["min", "max", "min_len", "max_len", "email"];
+                    let rule_text = rule_name.to_string();
+                    if !known.contains(&rule_text.as_str()) {
+                        return Err((
+                            format!(
+                                "#[validate] has no `{rule_text}`: it takes min, max, min_len, max_len and email"
+                            ),
+                            rule_name.span(),
+                        ));
+                    }
+                    let value = match &rule[1..] {
+                        [] => None,
+                        [TokenTree::Punct(eq), v @ ..] if eq.as_char() == '=' && !v.is_empty() => {
+                            Some(TokenStream::from_iter(v.iter().cloned()).to_string())
+                        }
+                        other => return Err(("expected `= value`".into(), other[0].span())),
+                    };
+                    rules.push((rule_text, value, rule_name.span()));
+                }
+            }
+            rest = after;
+        }
+        let rest = skip_visibility(rest);
+        let [TokenTree::Ident(name), TokenTree::Punct(colon), ty @ ..] = rest else {
+            return Err(("expected `name: Type`".into(), field[0].span()));
+        };
+        if colon.as_char() != ':' || ty.is_empty() {
+            return Err(("expected `name: Type`".into(), colon.span()));
+        }
+        out.push(Field {
+            name: name.clone(),
+            ty: TokenStream::from_iter(ty.iter().cloned()).to_string(),
+            rules,
+        });
+    }
+    Ok(out)
 }
 
 /// The impls for a type without fields, whose one value is `value`.

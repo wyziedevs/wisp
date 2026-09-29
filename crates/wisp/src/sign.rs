@@ -17,13 +17,7 @@ pub(crate) fn cookie_mac(name: &str, value: &str) -> String {
 /// Whether `mac` is the signature of cookie `name` holding `value`, in time
 /// that does not depend on where they differ.
 pub(crate) fn verify_cookie(name: &str, value: &str, mac: &str) -> bool {
-    let want = cookie_mac(name, value);
-    want.len() == mac.len()
-        && want
-            .bytes()
-            .zip(mac.bytes())
-            .fold(0, |d, (a, b)| d | (a ^ b))
-            == 0
+    crate::secure_eq(cookie_mac(name, value), mac)
 }
 
 /// The project directory, for the dev secret. Set when the server starts.

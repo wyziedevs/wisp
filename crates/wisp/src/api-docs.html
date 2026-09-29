@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>API</title>
+<style>
+/*ui.css*/
+body { margin: 0; background: var(--wisp-paper); color: var(--wisp-ink); font: 400 0.875rem/1.25rem var(--wisp-sans); }
+main { box-sizing: border-box; width: min(56rem, 100% - 2rem); margin: 3rem auto; }
+h1 { margin: 0 0 0.25rem; font-size: 1.5rem; line-height: 2rem; font-weight: 600; letter-spacing: -0.025em; }
+.sub { margin: 0 0 2rem; color: var(--wisp-slate); }
+.sub a { color: var(--wisp-accent); }
+details { margin: 0 0 0.75rem; border: 1px solid var(--wisp-line); border-radius: 0.5rem; background: var(--wisp-panel); box-shadow: var(--wisp-raised); }
+summary { display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem 1rem; cursor: pointer; list-style: none; }
+summary::-webkit-details-marker { display: none; }
+summary:focus-visible { outline: 2px solid var(--wisp-accent); outline-offset: 2px; border-radius: 0.5rem; }
+.method { box-sizing: border-box; min-width: 4.5rem; padding: 0.125rem 0.5rem; border: 1px solid var(--wisp-line); border-radius: 0.375rem; font: 600 0.75rem/1rem var(--wisp-mono); text-align: center; }
+.method.get { border-color: var(--wisp-accent-edge); color: var(--wisp-accent); }
+.method.delete { color: var(--wisp-danger); }
+.path { font: 500 0.875rem/1.25rem var(--wisp-mono); overflow-wrap: anywhere; }
+.body { padding: 0 1rem 1rem; border-top: 1px solid var(--wisp-line); }
+h3 { margin: 1rem 0 0.5rem; font-size: 0.75rem; line-height: 1rem; font-weight: 600; color: var(--wisp-slate); text-transform: uppercase; letter-spacing: 0.05em; }
+label { display: grid; grid-template-columns: minmax(6rem, 12rem) 1fr; align-items: center; gap: 0.75rem; margin: 0 0 0.5rem; font-family: var(--wisp-mono); }
+label small { display: block; color: var(--wisp-ash); font-family: var(--wisp-sans); }
+input, textarea { box-sizing: border-box; width: 100%; padding: 0.375rem 0.625rem; border: 1px solid var(--wisp-line); border-radius: 0.375rem; background: var(--wisp-inset); color: var(--wisp-ink); font: 400 0.8125rem/1.25rem var(--wisp-mono); }
+input:focus-visible, textarea:focus-visible { outline: 2px solid var(--wisp-accent); outline-offset: 1px; }
+textarea { min-height: 8rem; resize: vertical; }
+pre { box-sizing: border-box; max-height: 24rem; margin: 0; padding: 0.75rem; overflow: auto; border: 1px solid var(--wisp-line); border-radius: 0.375rem; background: var(--wisp-inset); font: 400 0.8125rem/1.25rem var(--wisp-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.codes { margin: 0; padding: 0; list-style: none; }
+.codes li { margin: 0 0 0.25rem; }
+.codes code { font-weight: 600; }
+.send { margin: 0.75rem 0; }
+.status { margin: 0 0 0.5rem; font: 600 0.875rem/1.25rem var(--wisp-mono); }
+.empty { color: var(--wisp-slate); }
+.token { margin: 0 0 1.5rem; font-family: var(--wisp-sans); font-weight: 500; }
+</style>
+</head>
+<body>
+<main>
+<h1 id="title">API</h1>
+<p class="sub">Every endpoint in <code>+server.rs</code> files, from <a href="/_wisp/openapi.json">/_wisp/openapi.json</a>. Requests sent here go to this server.</p>
+<label class="token"><span>Bearer token <small>sent with every request, if set</small></span><input id="token" autocomplete="off"></label>
+<div id="ops"><p class="empty">Loading…</p></div>
+</main>
+<script>
+const $ = (tag, props = {}, ...kids) => {
+  const el = Object.assign(document.createElement(tag), props)
+  el.append(...kids)
+  return el
+}
+let spec
+const resolve = s => s && s.$ref ? spec.components.schemas[s.$ref.split('/').pop()] || {} : s || {}
+// An example value for a schema, to start a request body from.
+const example = (s, depth = 0) => {
+  s = resolve(s)
+  if (depth > 4) return null
+  if (s.type === 'object') {
+    const o = {}
+    for (const [k, v] of Object.entries(s.properties || {})) o[k] = example(v, depth + 1)
+    return o
+  }
+  if (s.type === 'array') return [example(s.items, depth + 1)]
+  return { string: '', integer: 0, number: 0, boolean: false }[s.type] ?? null
+}
+const show = s => JSON.stringify(s, (k, v) => (v && v.$ref ? v.$ref.split('/').pop() : v), 2)
+
+function operation(path, method, op) {
+  const params = op.parameters || []
+  const body = op.requestBody && Object.values(op.requestBody.content)[0].schema
+  const inputs = params.map(p => {
+    const input = $('input', { name: p.name, placeholder: p.required ? 'required' : 'optional' })
+    return [p, $('label', {}, $('span', {}, p.name, $('small', { textContent: p.in })), input), input]
+  })
+  const text = body && $('textarea', { value: JSON.stringify(example(body), null, 2), ariaLabel: 'Request body' })
+  const status = $('p', { className: 'status' })
+  const out = $('pre', { hidden: true })
+  const send = $('button', { className: 'wisp-button wisp-primary send', type: 'button', textContent: 'Send request' })
+  send.onclick = async () => {
+    let url = path
+    const query = new URLSearchParams()
+    for (const [p, , input] of inputs) {
+      if (p.in === 'path') url = url.replace('{' + p.name + '}', encodeURIComponent(input.value))
+      else if (input.value) query.set(p.name, input.value)
+    }
+    if (String(query)) url += '?' + query
+    const init = { method: method.toUpperCase(), headers: { accept: 'application/json' } }
+    const token = document.getElementById('token').value.trim()
+    if (token) init.headers.authorization = 'Bearer ' + token
+    if (text) { init.body = text.value; init.headers['content-type'] = 'application/json' }
+    try {
+      const res = await fetch(url, init)
+      const raw = await res.text()
+      status.textContent = res.status + ' ' + res.statusText
+      try { out.textContent = JSON.stringify(JSON.parse(raw), null, 2) } catch { out.textContent = raw }
+    } catch (e) {
+      status.textContent = 'The request did not reach the server'
+      out.textContent = String(e)
+    }
+    out.hidden = !out.textContent
+  }
+  const codes = $('ul', { className: 'codes' }, ...Object.entries(op.responses || {}).map(([code, r]) => {
+    const schema = r.content && Object.values(r.content)[0].schema
+    return $('li', {}, $('code', { textContent: code }), ' ' + r.description + (schema ? ': ' + show(schema).replace(/\s+/g, ' ') : ''))
+  }))
+  const parts = [$('h3', { textContent: 'Responses' }), codes]
+  if (inputs.length) parts.push($('h3', { textContent: 'Parameters' }), ...inputs.map(i => i[1]))
+  if (text) parts.push($('h3', { textContent: 'Body' }), $('pre', { textContent: show(resolve(body)) }), $('h3', { textContent: 'Send' }), text)
+  parts.push(send, status, out)
+  return $('details', {},
+    $('summary', {}, $('span', { className: 'method ' + method, textContent: method.toUpperCase() }), $('span', { className: 'path', textContent: path })),
+    $('div', { className: 'body' }, ...parts))
+}
+
+fetch('/_wisp/openapi.json').then(r => r.json()).then(s => {
+  spec = s
+  document.title = s.info.title + ' · API'
+  document.getElementById('title').textContent = s.info.title
+  const list = []
+  for (const [path, ops] of Object.entries(s.paths)) {
+    for (const [method, op] of Object.entries(ops)) list.push(operation(path, method, op))
+  }
+  document.getElementById('ops').replaceChildren(...list)
+})
+</script>
+</body>
+</html>
