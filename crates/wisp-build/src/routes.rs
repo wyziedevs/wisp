@@ -30,6 +30,9 @@ pub struct Route {
     /// A `+page.js` whose `load` runs in the browser.
     pub page_js: bool,
     pub server: bool,
+    /// The `/[id]` its directory's `+server.rs` also serves: handlers that
+    /// take an `id` the directory does not give, or a `#[derive(Rest)]`'s.
+    pub member: bool,
     /// Indices into `Tree::layouts`, outermost first.
     pub layouts: Vec<usize>,
     /// Index into `Tree::errors` of the nearest `+error.wisp`, if any.
@@ -340,14 +343,34 @@ fn walk(
         });
         error = Some(tree.errors.len() - 1);
     }
-    if has("+page.wisp") || has("+server.rs") {
+    let (collection, member) = match has("+server.rs") {
+        true => server_shape(&dir.join("+server.rs"), segs),
+        false => (false, None),
+    };
+    if has("+page.wisp") || collection {
         tree.routes.push(Route {
             dir: dir.to_path_buf(),
             segs: segs.clone(),
             page: has("+page.wisp"),
             page_rs: has("+page.rs"),
             page_js: has("+page.js"),
-            server: has("+server.rs"),
+            server: collection,
+            member: false,
+            layouts: layouts.clone(),
+            error,
+        });
+    }
+    if let Some(matcher) = member {
+        let mut segs = segs.clone();
+        segs.push(Seg::Param("id".into(), matcher));
+        tree.routes.push(Route {
+            dir: dir.to_path_buf(),
+            segs,
+            page: false,
+            page_rs: false,
+            page_js: false,
+            server: true,
+            member: true,
             layouts: layouts.clone(),
             error,
         });
@@ -372,6 +395,79 @@ fn walk(
     }
     layouts.truncate(depth);
     Ok(())
+}
+
+/// The handler names of a `+server.rs`: HTTP methods, and `list` for a
+/// GET of the route when `get` is its `/[id]`'s.
+pub const HANDLERS: [&str; 6] = ["get", "post", "put", "patch", "delete", "list"];
+
+/// Whether handler `f` serves its route's `/[id]`: it takes an `id` that
+/// the route (`segs`) does not have.
+pub fn is_member(f: &crate::rust_scan::FnItem, segs: &[Seg]) -> bool {
+    let routed = segs
+        .iter()
+        .any(|s| matches!(s, Seg::Param(n, _) | Seg::Optional(n, _) | Seg::Rest(n) if n == "id"));
+    !routed
+        && f.inputs()
+            .is_ok_and(|ins| ins.iter().any(|(n, _)| *n == "id"))
+}
+
+/// The file's `#[derive(Rest)]` type, which it serves.
+pub fn rest_type(items: &crate::rust_scan::Items) -> Option<&str> {
+    let t = items
+        .types
+        .iter()
+        .find(|t| t.derives.iter().any(|d| d == "Rest"));
+    t.map(|t| t.name.as_str())
+}
+
+/// What a `+server.rs` serves: its route (true unless every handler is
+/// its `/[id]`'s), and that `/[id]`, if any, with the matcher `int` when
+/// every `id` it takes is an integer. A file that does not scan is left to
+/// `codegen`, which says what is wrong.
+fn server_shape(file: &Path, segs: &[Seg]) -> (bool, Option<Option<String>>) {
+    let Some(items) = crate::read_source(file)
+        .ok()
+        .and_then(|s| crate::rust_scan::scan(&s).ok())
+    else {
+        return (true, None);
+    };
+    let handlers: Vec<_> = items
+        .fns
+        .iter()
+        .filter(|f| HANDLERS.contains(&f.name.as_str()))
+        .collect();
+    let routed = segs
+        .iter()
+        .any(|s| matches!(s, Seg::Param(n, _) | Seg::Optional(n, _) | Seg::Rest(n) if n == "id"));
+    let rest = rest_type(&items).is_some() && !routed;
+    let members: Vec<_> = handlers.iter().filter(|f| is_member(f, segs)).collect();
+    let collection = rest || handlers.len() > members.len() || handlers.is_empty();
+    if !rest && members.is_empty() {
+        return (collection, None);
+    }
+    let int = members.iter().all(|f| {
+        f.inputs().is_ok_and(|ins| {
+            ins.iter().any(|(n, t)| {
+                *n == "id"
+                    && matches!(
+                        t.trim(),
+                        "u8" | "u16"
+                            | "u32"
+                            | "u64"
+                            | "u128"
+                            | "usize"
+                            | "i8"
+                            | "i16"
+                            | "i32"
+                            | "i64"
+                            | "i128"
+                            | "isize"
+                    )
+            })
+        })
+    });
+    (collection, Some(int.then(|| "int".to_string())))
 }
 
 /// `None` for `(group)` directories, which do not appear in the URL.
@@ -466,6 +562,44 @@ mod tests {
         let p = root.join(rel);
         fs::create_dir_all(p.parent().unwrap()).unwrap();
         fs::write(p, "").unwrap();
+    }
+
+    #[test]
+    fn handlers_with_an_id_make_a_member_route() {
+        let root = tmp("member");
+        let write = |rel: &str, src: &str| {
+            let p = root.join(rel);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, src).unwrap();
+        };
+        write(
+            "a/+server.rs",
+            "fn list() {}
+fn get(id: u64) {}",
+        );
+        write("b/+server.rs", "fn delete(id: String) {}");
+        write("c/+server.rs", "#[derive(wisp::Rest)]\nstruct R { a: u8 }");
+        write("d/[id]/+server.rs", "fn get(id: u64) {}");
+        let t = scan(&root).unwrap();
+        let _ = fs::remove_dir_all(&root);
+        let shape: Vec<(String, bool)> = t.routes.iter().map(|r| (r.pattern(), r.member)).collect();
+        for want in [
+            ("/a", false),
+            ("/a/[id=int]", true),
+            ("/b/[id]", true),
+            ("/c", false),
+            ("/c/[id=int]", true),
+            ("/d/[id]", false),
+        ] {
+            assert!(
+                shape.contains(&(want.0.to_string(), want.1)),
+                "{want:?}: {shape:?}"
+            );
+        }
+        assert!(
+            !shape.iter().any(|(p, _)| p == "/b"),
+            "no handler for /b: {shape:?}"
+        );
     }
 
     #[test]

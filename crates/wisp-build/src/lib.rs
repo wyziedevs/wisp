@@ -10,9 +10,10 @@ pub mod rust_scan;
 mod shell;
 pub mod template;
 
-/// JavaScript without comments and needless whitespace: the browser
-/// runtime as release builds serve it (`wisp`'s build.rs).
-pub use js::minify as minify_js;
+/// JavaScript without comments and needless whitespace, its names
+/// shortened: the browser runtime as release builds serve it (`wisp`'s
+/// build.rs).
+pub use js::runtime as minify_js;
 
 use std::env;
 use std::fs;
@@ -138,6 +139,17 @@ pub fn check(root: &Path) -> Result<(), String> {
         release: false,
     })
     .map(|_| ())
+}
+
+/// The TypeScript client of the project's `+server.rs` endpoints: a module
+/// whose `client({ base, token })` has a typed method per operation, for
+/// `wisp build --client ts`. Empty when the app has no endpoints.
+pub fn client_ts(root: &Path) -> Result<String, String> {
+    codegen::generate_all(&codegen::Input {
+        root,
+        release: false,
+    })
+    .map(|(_, ts)| ts)
 }
 
 /// FNV-1a, 64-bit. Used for shape and asset hashes, not for security.

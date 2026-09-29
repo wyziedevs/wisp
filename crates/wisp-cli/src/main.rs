@@ -16,7 +16,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 /// `wisp --help`: each command or option, and what it does.
-const COMMANDS: [(&str, &str); 7] = [
+const COMMANDS: [(&str, &str); 8] = [
     (
         "wisp new [name]",
         "Create an app. It asks a few questions; the options below answer them.",
@@ -40,6 +40,10 @@ const COMMANDS: [(&str, &str); 7] = [
     (
         "wisp build --target <host> [--out dist/<host>]",
         "Write a folder ready to deploy to cloudflare, deno, vercel, netlify or node.",
+    ),
+    (
+        "wisp build --client ts [--out client.ts]",
+        "Write a typed TypeScript client of the app's +server.rs endpoints.",
     ),
     (
         "wisp check",
@@ -148,10 +152,12 @@ struct BuildOptions {
     /// `--target <host>`, an edge or Node host (`static` and `docker` set
     /// the flags above).
     target: Option<String>,
+    /// `--client ts`: write the TypeScript client of the app's endpoints.
+    client: bool,
 }
 
 fn build_options(args: &[String]) -> Result<BuildOptions, String> {
-    let usage = "wisp build takes --static [--out <folder>], --docker [--force] and --target <host> [--out <folder>].";
+    let usage = "wisp build takes --static [--out <folder>], --docker [--force], --target <host> [--out <folder>] and --client ts [--out <file>].";
     let mut o = BuildOptions::default();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
@@ -166,6 +172,14 @@ fn build_options(args: &[String]) -> Result<BuildOptions, String> {
             _ if arg.starts_with("--target=") => target(&mut o, &arg["--target=".len()..])?,
             "--docker" => o.docker = true,
             "--force" => o.force = true,
+            "--client" | "--client=ts" => {
+                if arg == "--client" && args.next().map(String::as_str) != Some("ts") {
+                    return Err(format!(
+                        "--client takes ts: wisp build --client ts.\n{usage}"
+                    ));
+                }
+                o.client = true;
+            }
             "--out" | "-o" => {
                 let out = args.next().ok_or_else(|| {
                     format!(
@@ -192,8 +206,10 @@ fn build_options(args: &[String]) -> Result<BuildOptions, String> {
     }
     let wrong = if o.target.is_some() && (o.static_site || o.docker) {
         Some("--target <host> goes alone, without --static or --docker.")
-    } else if o.out.is_some() && !o.static_site && o.target.is_none() {
-        Some("--out goes with --static or --target.")
+    } else if o.client && (o.static_site || o.docker || o.target.is_some()) {
+        Some("--client ts goes alone, with --out <file> if you like.")
+    } else if o.out.is_some() && !o.static_site && o.target.is_none() && !o.client {
+        Some("--out goes with --static, --target or --client.")
     } else if o.force && !o.docker {
         Some("--force goes with --docker.")
     } else {
@@ -243,6 +259,28 @@ fn project() -> Result<&'static Path, String> {
 }
 
 fn build(root: &Path, o: &BuildOptions) -> Result<(), String> {
+    if o.client {
+        let ts = wisp_build::client_ts(root)?;
+        if ts.is_empty() {
+            return Err(
+                "The app has no endpoints (+server.rs files) to write a client for.".into(),
+            );
+        }
+        let out = o.out.as_deref().unwrap_or("client.ts");
+        if let Some(dir) = Path::new(out).parent() {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
+        }
+        std::fs::write(out, ts).map_err(|e| format!("Could not write {out}: {e}"))?;
+        term::done(&format!("Wrote {out}"));
+        let module = Path::new(out)
+            .file_stem()
+            .map_or("client".into(), |s| s.to_string_lossy());
+        println!(
+            "    import {{ client }} from './{module}'; const api = client({{ base, token }});"
+        );
+        return Ok(());
+    }
     if let Some(host) = &o.target {
         let out = o.out.clone().unwrap_or_else(|| format!("dist/{host}"));
         return targets::build(root, host, Path::new(&out));
@@ -307,6 +345,11 @@ mod tests {
         );
         assert_eq!(opts("--static --out=site"), opts("--static -o site"));
         assert!(opts("--docker --force").unwrap().force);
+        assert!(opts("--client ts --out web/api.ts").unwrap().client);
+        assert!(opts("--client=ts").unwrap().client);
+        for bad in ["--client", "--client js", "--client ts --static"] {
+            assert!(opts(bad).is_err(), "{bad}");
+        }
         for bad in ["--out site", "--force", "--static --out", "--x", "dist"] {
             assert!(opts(bad).is_err(), "{bad}");
         }

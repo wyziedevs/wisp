@@ -60,7 +60,10 @@ docker run -p 3000:3000 -e WISP_SECRET=... my-app
 ```
 
 Writes a two-stage `Dockerfile` (built on `rust:slim`, run on
-`debian:stable-slim` with `HOST=0.0.0.0`) and a `.dockerignore`.
+`debian:stable-slim` with `HOST=0.0.0.0`) and a `.dockerignore`. Saved
+tables (`#[derive(Rest)]`, `Table::saved`) are kept in `/data` in the
+image: mount a volume there (`-v my-app-data:/data`) so they outlive the
+container.
 
 ## Edge and serverless: `--target`
 
@@ -149,6 +152,10 @@ differ.
   alive (`waitUntil`) until the timers and fetches it started are done. Deno
   and Node hosts keep running anyway. Vercel may freeze the function once the
   response ends, so finish the work before answering there.
+- **Tables are in memory, per instance.** `#[derive(Rest)]` types and
+  `Table::saved` have no files there, and an instance may serve one request
+  or many: keep data that must last in D1, KV or a database over HTTP
+  (`wisp::edge::fetch`), in handlers of your own.
 - **Set `WISP_SECRET` as a host secret.** Read anything else with
   `wisp::env("KEY")`; `std::env::var` sees nothing on the edge.
 - **Streaming** (`Response::stream`, `Response::events`) is sent live on

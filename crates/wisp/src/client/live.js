@@ -36,10 +36,6 @@ const defs = new Map(); // module id -> { fn, html, load }
 const done = new Set(); // module urls imported
 const seen = new WeakSet(); // elements bound before: a restart does not animate them in
 const recs = new WeakMap(); // element -> its binding record { inst, key, sc, el }
-const FLAGS = 'prevent stop once self capture passive window document outside debounce ctrl shift alt meta'.split(' ');
-const KEYS = { space: ' ', up: 'arrowup', down: 'arrowdown', left: 'arrowleft', right: 'arrowright' };
-// Events that bubble, handled by one listener on the root for the page.
-const DELEGATE = new Set('click dblclick input change keydown keyup pointerdown pointerup pointermove mousedown mouseup contextmenu focusin focusout'.split(' '));
 const RAW = Symbol(); // proxy[RAW]: the object itself, tracking any change in it
 const NONE = {};
 let live = []; // the instances running, in render order
@@ -66,13 +62,19 @@ let queue = []; // nodes to run in the next batch
 let flushing = null; // the next batch
 let ids = 0; // creation order: a parent's nodes come before its children's
 let runs = 0; // per node run: a signal read twice in one is tracked once
-const all = new Set(); // DOM nodes: a start runs them again
+const all = new Set(); // DOM nodes outside copies: a start runs them again
 const proxied = new WeakSet();
-const proxies = new WeakMap(); // object -> its proxy
 
 // Whether b written over a changes nothing. An object that is not a proxy
 // (a Date, an element) may have changed inside, so it is always news.
 const same = (a, b) => Object.is(a, b) && (!a || typeof a != 'object' || proxied.has(a));
+
+// Links run both ways in flat arrays: a node's deps are [signal, where the
+// node is in its subs, ...] and a signal's subs [node, where the signal is
+// in its deps, ...], so either end unlinks in constant time.
+const notify = (s, st) => {
+  if (s) for (let i = 0; i < s.length; i += 2) mark(s[i], st);
+};
 
 // A value that tells what read it when it changes. Deep: objects and arrays
 // put in it are proxies, so a change inside them is a change too.
@@ -90,16 +92,32 @@ class Sig {
   set v(x) {
     if (this.d) x = proxy(x);
     if (same(x, this.x)) return;
+    const q = this.eq;
+    if (q) bump(q.get(this.x)), bump(q.get(x));
     this.x = x;
-    if (this.subs) for (const n of this.subs) mark(n, 2);
+    notify(this.subs, 2);
   }
+}
+
+// `x === v` in markup, x a state variable: what reads it runs again only
+// when x becomes v or stops being it, not on every change of x (a list's
+// `selected === row.id` redraws two rows, not all). A signal per v read,
+// dropped with its last reader (see unlink()).
+function eq(s, v) {
+  if (observer) {
+    const q = (s.eq ||= new Map());
+    let p = q.get(v);
+    if (!p) q.set(v, (p = new Sig(0))), (p.of = q), (p.k = v);
+    track(p);
+  }
+  return s.x === v;
 }
 
 // A value worked out from others, lazily: again only when it is read after
 // one of them changed, and what read it runs only if the result differs.
 class Memo {
   constructor(f, sc) {
-    Object.assign(this, { f, sc, st: 2, id: ++ids, deps: [], subs: null, stops: null, memo: 1, t: 0, run: 0 });
+    Object.assign(this, { f, sc, st: 2, id: ++ids, deps: null, di: 0, subs: null, stops: null, memo: 1, t: 0, run: 0 });
   }
   get v() {
     if (this.st) update(this);
@@ -108,13 +126,38 @@ class Memo {
   }
 }
 
+// A run reads mostly what the last one did: a read that matches the next
+// dependency just steps over it (di), and only from the first that differs
+// are links undone and made again.
 function track(s) {
   const o = observer;
-  if (o && !o.dead && s.t !== o.run) {
-    s.t = o.run;
-    o.deps.push(s);
-    (s.subs ||= new Set()).add(o);
+  if (!o || o.dead || s.t === o.run) return;
+  s.t = o.run;
+  const d = (o.deps ||= []);
+  if (d[o.di] === s) return void (o.di += 2);
+  if (o.di < d.length) unlink(o, o.di);
+  const subs = (s.subs ||= []);
+  d.push(s, subs.length);
+  subs.push(o, o.di);
+  o.di += 2;
+}
+
+// Drops n's dependencies from index i on.
+function unlink(n, i) {
+  const d = n.deps;
+  for (let k = d.length - 2; k >= i; k -= 2) {
+    const s = d[k];
+    const subs = s.subs;
+    const slot = d[k + 1];
+    const at = subs.pop();
+    const o = subs.pop();
+    if (slot < subs.length) {
+      subs[slot] = o;
+      subs[slot + 1] = at;
+      o.deps[at + 1] = slot;
+    } else if (!slot && s.of) s.of.delete(s.k);
   }
+  d.length = i;
 }
 
 // st: 0 current, 1 an input it derives from may have changed, 2 stale.
@@ -124,19 +167,17 @@ function mark(n, st) {
   n.st = st;
   if (was) return;
   if (!n.memo) queue.push(n), schedule();
-  else if (n.subs) for (const m of n.subs) mark(m, 1);
+  else notify(n.subs, 1);
 }
 
 const schedule = () => (flushing ||= Promise.resolve().then(flush));
 
 function update(n) {
-  if (n.st == 1) {
-    for (const d of n.deps) {
-      if (d.memo && d.st) update(d);
-      if (n.st == 2) break;
-    }
-    if (n.st == 1) n.st = 0;
+  const d = n.deps;
+  if (n.st == 1 && d) {
+    for (let i = 0; i < d.length && n.st == 1; i += 2) if (d[i].memo && d[i].st) update(d[i]);
   }
+  if (n.st == 1) n.st = 0;
   if (n.st == 2) exec(n);
 }
 
@@ -145,46 +186,51 @@ function update(n) {
 const failed = new WeakMap();
 function exec(n) {
   n.st = 0;
-  clean(n);
+  const s = n.stops;
+  if (s) (n.stops = null), run(s);
   const prev = observer;
   observer = n;
   n.run = ++runs;
+  n.di = 0;
   try {
     const r = n.f();
     if (n.memo) {
       if (same(r, n.x)) return;
       n.x = r;
-      if (n.subs) for (const m of n.subs) if (m.st == 1) m.st = 2;
+      const s = n.subs;
+      if (s) for (let i = 0; i < s.length; i += 2) if (s[i].st == 1) s[i].st = 2;
     } else if (n.u && typeof r == 'function') (n.stops ||= []).push(r);
   } catch (e) {
-    const b = n.sc?.b;
-    if (b) b(e);
-    else if (failed.get(n) !== String(e)) console.error(e), failed.set(n, String(e));
+    fail(n, e);
   } finally {
+    if (n.deps && n.di < n.deps.length) unlink(n, n.di);
     observer = prev;
   }
 }
 
-function clean(n) {
-  for (const d of n.deps) d.subs?.delete(n);
-  n.deps.length = 0;
-  const s = n.stops;
-  if (s) (n.stops = null), run(s);
+function fail(n, e) {
+  const b = n.sc?.b;
+  if (b) b(e);
+  else if (failed.get(n) !== String(e)) console.error(e), failed.set(n, String(e));
 }
 
 function dispose(n) {
   n.dead = 1;
   all.delete(n);
-  clean(n);
+  if (n.deps) unlink(n, 0);
+  const s = n.stops;
+  if (s) (n.stops = null), run(s);
 }
 
-// A node: f runs in the next batch, and again whenever what it read
-// changes. An effect (fx) runs once the DOM has settled; a user's (u) may
-// return its cleanup. It ends with its owner, a scope or an effect.
+// A node: f runs (as n.f()) in the next batch, and again whenever what it
+// read changes. An effect (fx) runs once the DOM has settled; a user's (u)
+// may return its cleanup. It ends with its owner, a scope or an effect.
+// One shape for all, with watch()'s fields.
 function node(owner, f, fx = 0, u = 0) {
-  const n = { f, fx, u, sc: owner?.sc || owner, id: ++ids, st: 0, deps: [], stops: null, run: 0, dead: 0 };
+  const sc = owner?.sc || owner;
+  const n = { f, fx, u, sc, id: ++ids, st: 0, deps: null, di: 0, stops: null, run: 0, dead: 0, ws: null, ep: epoch };
   if (owner) (owner.stops ||= []).push(n);
-  if (!u) all.add(n);
+  if (!u && !sc?.c) all.add(n);
   mark(n, 2);
   return n;
 }
@@ -236,66 +282,69 @@ export const tick = () => flushing || Promise.resolve();
 // A plain object or array, or a Map or a Set, as a proxy whose every key is a
 // signal: reads are tracked, and writes tell only what read that key (or
 // the keys, or the length). proxy[RAW] tracks any change. Anything else (a
-// Date, an element, a class instance) is left as it is.
+// Date, an element, a class instance) is left as it is. One handler for
+// all; each object's signals are made as something reads them.
+const metas = new WeakMap(); // object -> { p: its proxy, s: key -> Sig, k: its keys' Sig, v: any change's Sig }
+const sigOf = (m, k) => {
+  const s = (m.s ||= new Map());
+  let x = s.get(k);
+  if (!x) s.set(k, (x = new Sig(0)));
+  return x;
+};
+const keysOf = (m) => (m.k ||= new Sig(0));
+const verOf = (m) => (m.v ||= new Sig(0));
+const bump = (s) => s && (s.v = s.x + 1);
+function changed(m, k, added) {
+  bump(m.s?.get(k));
+  if (added) bump(m.k);
+  bump(m.v);
+}
+const OBJ = {
+  get(t, k, r) {
+    if (k === RAW) return track(verOf(metas.get(t))), t;
+    // Not methods: `list.map` reads the length and items it needs.
+    if (observer && (Object.hasOwn(t, k) || !(k in t))) track(sigOf(metas.get(t), k));
+    return proxy(Reflect.get(t, k, r));
+  },
+  has(t, k) {
+    if (observer) track(keysOf(metas.get(t)));
+    return k in t;
+  },
+  ownKeys(t) {
+    if (observer) track(keysOf(metas.get(t)));
+    return Reflect.ownKeys(t);
+  },
+  set(t, k, v) {
+    const m = metas.get(t);
+    const had = Object.hasOwn(t, k);
+    const old = t[k];
+    const n = t.length;
+    t[k] = v;
+    if (!had || !same(old, v)) changed(m, k, !had);
+    if (Array.isArray(t) && t.length !== n && m.s) {
+      bump(m.s.get('length'));
+      for (let i = t.length; i < n; i++) bump(m.s.get(String(i)));
+    }
+    return true;
+  },
+  deleteProperty(t, k) {
+    if (Object.hasOwn(t, k)) delete t[k], changed(metas.get(t), k, 1);
+    return true;
+  },
+};
 function proxy(x) {
   if (!x || typeof x != 'object' || proxied.has(x) || Object.isFrozen(x)) return x;
-  let p = proxies.get(x);
-  if (p) return p;
+  let m = metas.get(x);
+  if (m) return m.p;
   const proto = Object.getPrototypeOf(x);
   // A Map or a Set is state once extra.js is in (a script that makes one
   // imports it).
   const coll = x instanceof Map || x instanceof Set;
   if (coll ? !X.coll : proto && proto != Object.prototype && proto != Array.prototype) return x;
-  const sigs = new Map();
-  const keys = new Sig(0); // the keys, for `in`, iteration and size
-  const ver = new Sig(0); // any change
-  const sig = (k) => sigs.get(k) || (sigs.set(k, new Sig(0)), sigs.get(k));
-  const bump = (s) => s && (s.v = s.x + 1);
-  const changed = (k, added) => {
-    bump(sigs.get(k));
-    if (added) bump(keys);
-    bump(ver);
-  };
-  p = new Proxy(
-    x,
-    coll
-      ? X.coll({ sig, keys, ver, sigs, bump, changed }, () => p)
-      : {
-          get(t, k, r) {
-            if (k === RAW) return track(ver), t;
-            // Not methods: `list.map` reads the length and items it needs.
-            if (observer && (Object.hasOwn(t, k) || !(k in t))) track(sig(k));
-            return proxy(Reflect.get(t, k, r));
-          },
-          has(t, k) {
-            track(keys);
-            return k in t;
-          },
-          ownKeys(t) {
-            track(keys);
-            return Reflect.ownKeys(t);
-          },
-          set(t, k, v) {
-            const had = Object.hasOwn(t, k);
-            const old = t[k];
-            const n = t.length;
-            t[k] = v;
-            if (!had || !same(old, v)) changed(k, !had);
-            if (Array.isArray(t) && t.length !== n) {
-              bump(sigs.get('length'));
-              for (let i = t.length; i < n; i++) bump(sigs.get(String(i)));
-            }
-            return true;
-          },
-          deleteProperty(t, k) {
-            if (Object.hasOwn(t, k)) delete t[k], changed(k, 1);
-            return true;
-          },
-        },
-  );
-  proxied.add(p);
-  proxies.set(x, p);
-  return p;
+  m = { p: new Proxy(x, coll ? X.coll : OBJ), s: null, k: null, v: null };
+  proxied.add(m.p);
+  metas.set(x, m);
+  return m.p;
 }
 
 // ---- stores -----------------------------------------------------------------
@@ -329,35 +378,9 @@ export function store(value) {
   };
 }
 
-// A store kept in localStorage under `key`, and in step across tabs. It is
-// saved whenever it changes, in place too. One per key: a script that asks
-// again (each time it starts) gets the same.
-const saved = new Map();
-export function persisted(key, initial) {
-  if (saved.has(key)) return saved.get(key);
-  const load = (j) => {
-    try {
-      return j == null ? initial : JSON.parse(j);
-    } catch {
-      return initial;
-    }
-  };
-  let json = null;
-  try {
-    json = localStorage.getItem(key);
-  } catch {}
-  const s = store(load(json));
-  sub(() => JSON.stringify(s.value), (j) => {
-    if (j === json) return;
-    json = j;
-    try {
-      localStorage.setItem(key, j);
-    } catch {}
-  });
-  addEventListener('storage', (e) => e.key === key && (s.value = load((json = e.newValue))));
-  saved.set(key, s);
-  return s;
-}
+// A store kept in localStorage: extra.js has it, and a module or a lib
+// file that uses it imports that.
+export const persisted = (key, initial) => X.persisted(key, initial);
 
 // A value worked out from others, read as `total.value` like a store's.
 export function derived(f) {
@@ -413,30 +436,58 @@ function run(fns) {
   }
 }
 
-// A node that calls f(value, first) when get's value changed, or when a
-// start came between (a morph may have rewritten the DOM). `first` is true
-// then too.
-function watch(sc, get, L, f, again = true) {
-  let last = NONE;
-  let ep = epoch;
-  const n = node(sc, () => {
-    const v = get(L);
-    if (Object.is(v, last) && (ep === epoch || !again)) return;
-    const first = last === NONE || ep !== epoch;
-    ep = epoch;
-    last = v;
-    observer = null; // untracked, as untrack() does, without its closure
+// Calls f(value, first, el, a, scope) when get(L)'s value changed (as text,
+// with flag 1), or when a start came between (a morph may have rewritten
+// the DOM; not with flag 2). `first` is true then too. The element and name
+// are passed, so the common f are shared, not made per binding. While a
+// copy is bound (see copy()), its watchers are collected in `col` and run
+// as one node: [get, L, f, el, a, flags, last value, ...].
+let col = null;
+function watch(sc, get, L, f, flags = 0, el = null, a = null) {
+  if (col) return void col.push(get, L, f, el, a, flags, NONE);
+  node(sc, WATCH).ws = [get, L, f, el, a, flags, NONE];
+}
+
+function WATCH() {
+  const ws = this.ws;
+  const again = this.ep !== epoch;
+  this.ep = epoch;
+  for (let i = 0; i < ws.length; i += 7) {
+    observer = this;
     try {
-      f(v, first);
-    } finally {
-      observer = n;
+      let v = ws[i](ws[i + 1]);
+      const flags = ws[i + 5];
+      if (flags & 1) v = str(v);
+      const last = ws[i + 6];
+      const first = last === NONE || (again && !(flags & 2));
+      if (Object.is(v, last) && !first) continue;
+      ws[i + 6] = v;
+      observer = null; // untracked
+      ws[i + 2](v, first, ws[i + 3], ws[i + 4], this.sc);
+    } catch (e) {
+      fail(this, e);
+      if (this.dead) return;
     }
-  });
+  }
+}
+
+// Binds a copy's elements with f, its watchers made one node.
+function batch(sc, f) {
+  const prev = col;
+  const n = node(sc, WATCH);
+  col = n.ws = [];
+  try {
+    f();
+  } finally {
+    col = prev;
+  }
+  if (!n.ws.length) n.dead = 1;
 }
 
 // A scope owns cleanups (its nodes among them): one per instance, element
-// and copy. `b` is the {:#try} block it is in.
-const scope = (up) => ({ stops: [], b: up?.b, dead: 0 });
+// and copy. `b` is the {:#try} block it is in; `c` says it is in a copy,
+// whose nodes a morph does not touch.
+const scope = (up, c) => ({ stops: [], b: up?.b, dead: 0, c: c || up?.c || 0 });
 
 function end(sc) {
   if (!sc.dead) (sc.dead = 1), run(sc.stops);
@@ -656,6 +707,7 @@ function boundary(e) {
 const shared = {
   __wisp_s: (x) => new Sig(x, 1),
   __wisp_r: (x) => new Sig(x),
+  __wisp_eq: eq,
   untrack,
   tick,
   derived,
@@ -786,43 +838,51 @@ function bindEl(el, sc, inst, L, quiet, w, wl) {
 }
 
 // Where tpl's content has nodes to bind, as child index paths, found once
-// per template: [path, group, loop values]. The content is made lighter
-// first: a {:hole}'s anchor and end become one text node, which the hole
-// writes, and whitespace between table rows and cells goes.
+// per template: [path, group, loop values, the block's own content]. The
+// content is made lighter first: a {:hole}'s anchor and end become one
+// text node, which the hole writes; whitespace between table rows and
+// cells goes; and a block inside moves its content to a template of its
+// own (its copies' clones point there), so it is not cloned with each copy.
 const TABLE = /^(TABLE|THEAD|TBODY|TFOOT|TR|COLGROUP)$/;
+const ROW = /^(TR|TD|TH|THEAD|TBODY|TFOOT|CAPTION|COLGROUP|COL)$/;
 function paths(tpl) {
   if (tpl.__p) return tpl.__p;
+  const top = tpl.content;
+  const rows = [...top.children].some((c) => ROW.test(c.nodeName));
   const trim = (n) => {
     for (let c = n.firstChild, next; c; c = next) {
       next = c.nextSibling;
-      if (c.nodeType == 3 && TABLE.test(n.nodeName) && !c.data.trim()) c.remove();
+      if (c.nodeType == 3 && (n == top ? rows : TABLE.test(n.nodeName)) && !c.data.trim()) c.remove();
       else if (c.nodeType == 1) trim(c);
     }
   };
-  trim(tpl.content);
+  trim(top);
   const out = [];
   const walk = (n, path) => {
     let i = 0;
     for (let c = n.firstChild; c; c = c.nextSibling, i++) {
       if (c.nodeType != 1) continue;
       const p = [...path, i];
-      const [w, wl] = [c.dataset.w, c.dataset.wl && JSON.parse(c.dataset.wl)];
+      const w = c.dataset.w;
+      const wl = c.dataset.wl && JSON.parse(c.dataset.wl);
       const end = c.nextSibling;
       if (c.localName == 'template' && w && !c.content.firstChild && end?.nodeType == 8 && !end.data) {
         const t = document.createTextNode('');
         end.remove();
         c.replaceWith(t);
-        out.push([p, w, wl]);
+        out.push([p, w, wl, null]);
         c = t;
       } else {
-        if (w || c.hasAttribute('data-wslot')) out.push([p, w, wl]);
+        let own = null;
+        if (c.localName == 'template' && w) (own = document.createElement('template')).content.append(c.content);
+        if (w || c.hasAttribute('data-wslot')) out.push([p, w, wl, own]);
         walk(c, p);
       }
     }
   };
-  walk(tpl.content, []);
+  walk(top, []);
   // An end marker only where what comes last could grow after it.
-  const last = tpl.content.lastChild;
+  const last = top.lastChild;
   tpl.__end = !last || last.localName == 'template';
   return (tpl.__p = out);
 }
@@ -848,7 +908,9 @@ function adopt(c, sc, inst, L) {
   const els = [];
   walk(c.first.nextSibling, c.last, els);
   const [o, f] = [X.outs, X.flips];
-  for (const el of els) bindEl(el, sc, inst, L, true, el.dataset.w, el.dataset.wl && JSON.parse(el.dataset.wl));
+  batch(sc, () => {
+    for (const el of els) bindEl(el, sc, inst, L, true, el.dataset.w, el.dataset.wl && JSON.parse(el.dataset.wl));
+  });
   return Object.assign(c, { t: X.outs != o, f: X.flips != f });
 }
 
@@ -869,27 +931,37 @@ function drop(at) {
   for (let c; (c = painted(at)); ) range(c).forEach((n) => n.remove());
 }
 
-// A copy of tpl's content, bound to inst: a fragment, its first node and
-// its last (an end marker, so what is later put inside the range moves and
-// goes with it), and whether it has elements that play out (t) or slide
-// (f).
-function copy(tpl, sc, inst, L, quiet) {
+// A copy of tpl's content, bound to inst, put in c: a fragment, its first
+// node and its last (an end marker, so what is later put inside the range
+// moves and goes with it), and whether it has elements that play out (t)
+// or slide (f).
+function copy(tpl, sc, inst, L, quiet, c = {}) {
+  tpl = tpl.__src || tpl;
   const ps = paths(tpl);
   const frag = tpl.content.cloneNode(true);
   const found = [];
-  for (const [p, w, wl] of ps) {
+  for (const [p, , , own] of ps) {
     let n = frag;
     for (const i of p) {
       n = n.firstChild;
       for (let k = 0; k < i; k++) n = n.nextSibling;
     }
-    found.push([n, w, wl]);
+    if (own) n.__src = own;
+    found.push(n);
   }
   if (tpl.__end) frag.append(document.createComment(''));
   for (let n = frag.firstChild; n; n = n.nextSibling) n.__w = 1;
-  const [o, f] = [X.outs, X.flips];
-  for (const [el, w, wl] of found) bindEl(el, sc, inst, L, quiet, w, wl);
-  return { first: frag.firstChild, last: frag.lastChild, frag, t: X.outs != o, f: X.flips != f };
+  const o = X.outs;
+  const f = X.flips;
+  batch(sc, () => {
+    for (let k = 0; k < ps.length; k++) bindEl(found[k], sc, inst, L, quiet, ps[k][1], ps[k][2]);
+  });
+  c.first = frag.firstChild;
+  c.last = frag.lastChild;
+  c.frag = frag;
+  c.t = X.outs != o;
+  c.f = X.flips != f;
+  return c;
 }
 
 function place(at, tpl, sc, inst, L, quiet) {
@@ -922,19 +994,6 @@ const css = (v) =>
     .map(([k, x]) => `${k.startsWith('--') ? k : k.replace(/[A-Z]/g, (m) => '-' + m.toLowerCase())}:${x}`)
     .join(';');
 
-// The modifiers of an on: directive, worked out once per directive.
-function mods(b, type) {
-  const has = (m) => b.includes(m);
-  const t = has('debounce') && b[b.indexOf('debounce') + 1];
-  return {
-    has,
-    keys: b.filter((m) => !FLAGS.includes(m) && !/^\d+m?s$/.test(m)).map((k) => KEYS[k] || k),
-    held: ['ctrl', 'shift', 'alt', 'meta'].filter(has),
-    ms: !has('debounce') ? 0 : /s$/.test(t || '') ? parseInt(t) * (/ms$/.test(t) ? 1 : 1000) : 250,
-    // Handled at the root, unless it has to be where it is.
-    root: DELEGATE.has(type) && !['capture', 'passive', 'window', 'document', 'outside'].some(has),
-  };
-}
 
 // The root's listener for delegated events: the handlers of each element
 // from the target up, as if on each, until one stops the event.
@@ -943,76 +1002,95 @@ function delegate(e) {
   for (let n = e.target; n; n = n.parentNode) {
     const hs = n.__on;
     if (!hs) continue;
-    for (const h of hs) {
-      if (h[0] != e.type || h[2].dead) continue;
+    for (const [type, f, sc, L] of hs) {
+      if (type != e.type || sc.dead) continue;
       Object.defineProperty(e, 'currentTarget', { configurable: true, value: n });
-      h[1](e);
+      L ? untrack(() => f(L, e)) : f(e);
     }
     if (e.cancelBubble) break;
   }
+}
+
+// What watchers write.
+const text = (v, first, el) => (el.textContent = v);
+const data = (v, first, el) => (el.data = v);
+const style = (v, first, el, a) => (v == null || v === false ? el.style.removeProperty(a) : el.style.setProperty(a, v));
+function toggle(v, first, el, a) {
+  el.__cls?.set(a, !!v);
+  el.classList.toggle(a, !!v);
+}
+
+// :attr and attr={:…}: false, null and undefined remove it; aria-* states
+// are "true" or "false". A transition plays as `hidden` turns off, and
+// before it turns on.
+function attr(v, first, el, a, sc) {
+  const aria = a.startsWith('aria-');
+  if (a == 'class' && v && typeof v == 'object') v = cls(v);
+  else if (a == 'style' && v && typeof v == 'object') v = css(v);
+  const s = v == null || (v === false && !aria) ? null : v === true && !aria ? '' : String(v);
+  const put = () => {
+    if (s == null) el.removeAttribute(a);
+    else el.setAttribute(a, s);
+    if (a == 'value') el.value = s ?? '';
+    else if (a == 'checked' || a == 'selected') el[a] = s != null;
+    else if (a == 'class') el.__cls?.forEach((on, name) => el.classList.toggle(name, on));
+  };
+  if (a != 'hidden' || first || !X.hide) return put();
+  X.hide(el, s != null, put, sc);
 }
 
 function binding(sc, inst, el, L, quiet, bnd) {
   const [kind, a, b, c] = bnd;
   switch (kind) {
     case 'on': {
-      const m = (bnd.m ||= mods(b, a));
-      const at = m.has('window') ? window : m.has('document') || m.has('outside') ? document : el;
-      let timer, spent;
-      const h = (e) => {
-        if (m.has('self') && e.target !== el) return;
-        if (m.has('outside') && e.composedPath().includes(el)) return; // the path survives the target's removal
-        if (m.keys.length && !m.keys.includes(e.key?.toLowerCase())) return;
-        if (m.held.some((k) => !e[k + 'Key'])) return;
-        // .once by hand, so an event the filters above turn away does not use it up.
-        if (spent) return;
-        spent = m.has('once');
-        if (m.has('prevent')) e.preventDefault();
-        if (m.has('stop')) e.stopPropagation();
-        if (!m.ms) return untrack(() => c(L, e));
-        clearTimeout(timer);
-        timer = setTimeout(() => sc.dead || c(L, e), m.ms);
-      };
-      if (m.root && at === el && el.nodeType == 1) {
+      // b: the modifiers, as the compiler worked them out: bits (prevent 1,
+      // stop 2, once 4, self 8, capture 16, passive 32, window 64, document
+      // 128, outside 256, ctrl 512, shift 1024, alt 2048, meta 4096, and
+      // 8192 for an event the root handles), then the keys (e.key, lower
+      // case) and the debounce time.
+      const [, , , , keys, ms] = bnd;
+      const root = b & 8192 && el.nodeType == 1;
+      if (root) {
         if (!rooted.has(a)) rooted.add(a), document.documentElement.addEventListener(a, delegate);
         // A kept element bound again drops its old handlers.
         el.__on = el.__on ? el.__on.filter((x) => !x[2].dead) : [];
-        el.__on.push([a, h, sc]);
-        return;
+        // Without modifiers, no function of its own: the root calls c(L, e).
+        if (b == 8192) return void el.__on.push([a, c, sc, L]);
       }
-      const o = { capture: m.has('capture'), passive: m.has('passive') };
+      const at = b & 64 ? window : b & 384 ? document : el;
+      let timer, spent;
+      const h = (e) => {
+        if (b & 8 && e.target !== el) return;
+        if (b & 256 && e.composedPath().includes(el)) return; // the path survives the target's removal
+        if (keys && !keys.includes(e.key?.toLowerCase())) return;
+        if ((b & 512 && !e.ctrlKey) || (b & 1024 && !e.shiftKey) || (b & 2048 && !e.altKey) || (b & 4096 && !e.metaKey)) return;
+        // .once by hand, so an event the filters above turn away does not use it up.
+        if (spent) return;
+        spent = b & 4;
+        if (b & 1) e.preventDefault();
+        if (b & 2) e.stopPropagation();
+        if (!ms) return untrack(() => c(L, e));
+        clearTimeout(timer);
+        timer = setTimeout(() => sc.dead || c(L, e), ms);
+      };
+      if (root) return void el.__on.push([a, h, sc]);
+      const o = { capture: !!(b & 16), passive: !!(b & 32) };
       at.addEventListener(a, h, o);
       return void sc.stops.push(() => at.removeEventListener(a, h, o));
     }
     case 'bind':
       return a == 'this' ? c(L, el) : a == 'value' || a == 'checked' ? bind(sc, el, L, a, b, c) : X.bind(sc, el, L, a, b, c);
     case 'attr':
-      return watch(sc, b, L, (v, first) => {
-        // aria-* states are "true" or "false"; elsewhere false means absent.
-        const aria = a.startsWith('aria-');
-        if (a == 'class' && v && typeof v == 'object') v = cls(v);
-        else if (a == 'style' && v && typeof v == 'object') v = css(v);
-        const s = v == null || (v === false && !aria) ? null : v === true && !aria ? '' : String(v);
-        const put = () => {
-          if (s == null) el.removeAttribute(a);
-          else el.setAttribute(a, s);
-          if (a == 'value') el.value = s ?? '';
-          else if (a == 'checked' || a == 'selected') el[a] = s != null;
-          else if (a == 'class') el.__cls?.forEach((on, name) => el.classList.toggle(name, on));
-        };
-        // A transition plays as `hidden` turns off, and before it turns on.
-        if (a != 'hidden' || first || !X.hide) return put();
-        X.hide(el, s != null, put, sc);
-      });
+      return watch(sc, b, L, attr, 0, el, a);
     case 'text':
-      return watch(sc, (L) => str(a(L)), L, (v) => (el.textContent = v));
+      return watch(sc, a, L, text, 1, el);
     case 'hole': {
       // The anchor's value goes in one text node between it and the end
       // comment after it; a morph may have added or taken nodes there.
       // In a copy, the anchor is the text node itself (see paths()).
-      if (el.nodeType == 3) return watch(sc, (L) => str(a(L)), L, (s) => (el.data = s));
+      if (el.nodeType == 3) return watch(sc, a, L, data, 1, el);
       let t = null;
-      return watch(sc, (L) => str(a(L)), L, (s) => {
+      const put = (s) => {
         if (!t || t.previousSibling !== el) {
           t = null;
           for (let n = el.nextSibling; n && n.nodeType != 8; ) {
@@ -1024,22 +1102,20 @@ function binding(sc, inst, el, L, quiet, bnd) {
           if (!t) el.after((t = document.createTextNode('')));
         }
         if (t.data !== s) t.data = s;
-      });
+      };
+      return watch(sc, a, L, put, 1);
     }
     case 'class':
-      return watch(sc, b, L, (v) => {
-        (el.__cls ||= new Map()).set(a, !!v);
-        el.classList.toggle(a, !!v);
-      });
+      // Kept where the module writes class attributes too (see attr()).
+      bnd.k ??= inst.g.some((g) => g.some((x) => x[0] == 'attr' && x[1] == 'class'));
+      if (bnd.k) el.__cls ||= new Map();
+      return watch(sc, b, L, toggle, 0, el, a);
     case 'style':
-      return watch(sc, b, L, (v) => {
-        if (v == null || v === false) el.style.removeProperty(a);
-        else el.style.setProperty(a, v);
-      });
+      return watch(sc, b, L, style, 0, el, a);
     case 'use': {
       let r;
       sc.stops.push(() => (typeof r == 'function' ? r() : r?.destroy?.()));
-      return watch(sc, b || (() => {}), L, (v, first) => (first ? (r = a(L)(el, v)) : r?.update?.(v)), false);
+      return watch(sc, b || (() => {}), L, (v, first) => (first ? (r = a(L)(el, v)) : r?.update?.(v)), 2);
     }
     case 'each':
     case 'if':
@@ -1101,8 +1177,9 @@ function clones(sc, inst, tpl, L, quiet, kind, get, names, keyOf) {
     const raw = v?.[RAW];
     const items = kind == 'if' ? (v ? [0] : []) : kind == 'key' ? [v] : typeof v == 'number' ? Array.from({ length: v }, (_, i) => i) : raw ? raw.slice() : [...(v ?? [])];
     if (raw) for (let i = 0; i < items.length; i++) items[i] = proxy(items[i]);
+    // Keys are tracked: an item whose key changes in place moves.
+    const keys = kind == 'key' ? items : keyOf ? items.map((item, i) => (names[0] && (tmp[names[0]] = item), names[1] && (tmp[names[1]] = i), keyOf(tmp))) : null;
     untrack(() => {
-      const keys = kind == 'key' ? items : keyOf ? items.map((item, i) => (names[0] && (tmp[names[0]] = item), names[1] && (tmp[names[1]] = i), keyOf(tmp))) : null;
       // The server's copies: the first draw takes them over in order; after
       // a morph that kept this block, the new page's go.
       const pre = [];
@@ -1123,7 +1200,7 @@ function clones(sc, inst, tpl, L, quiet, kind, get, names, keyOf) {
           return c;
         }
         const cl = Object.create(P);
-        const n = { key, L: cl, $: (cl[S] = [new Sig(item), names[1] && new Sig(i)]), sc: scope(sc), i: -1 };
+        const n = { key, L: cl, $: (cl[S] = [new Sig(item), names[1] && new Sig(i)]), sc: scope(sc, 1), i: -1, first: null, last: null, frag: null, t: false, f: false };
         // A painted copy is taken over where it is.
         if (pre[i]) Object.assign(n, adopt(pre[i], n.sc, inst, cl), { i });
         return n;
@@ -1136,7 +1213,7 @@ function clones(sc, inst, tpl, L, quiet, kind, get, names, keyOf) {
       else quick.forEach((c) => range(c).forEach((n) => n.remove()));
       for (const c of gone) if (c.t) X.leave(sc, c);
       const flip = list.some((c) => c.f) && X.flip(list, old);
-      order(tpl.parentNode, tail, next, (c) => Object.assign(c, copy(tpl, c.sc, inst, c.L, quiet && first)));
+      order(tpl.parentNode, tail, next, (c) => copy(tpl, c.sc, inst, c.L, quiet && first, c));
       list = next;
       first = false;
       if (flip) flip();
@@ -1214,8 +1291,8 @@ function lis(a) {
 // animate:flip, so a copy knows whether it has any; `waiting` the elements
 // whose client:* has not come.
 const X = {
-  ...{ Sig, node, watch, scope, end, untrack, clones, binding, range, cls, css, track, proxy, same, proxied, shared },
-  ...{ defs, instance, script, adopt, painted, place, drop, RAW },
+  ...{ Sig, node, watch, scope, end, untrack, clones, binding, range, cls, css, track, proxy, same, proxied, shared, sub },
+  ...{ defs, instance, script, adopt, painted, place, drop, RAW, metas, sigOf, keysOf, verOf, changed, bump },
   outs: 0,
   flips: 0,
   waiting: 0,

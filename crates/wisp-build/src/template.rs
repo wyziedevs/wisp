@@ -306,6 +306,11 @@ pub fn parse(src: &str) -> Result<Template, Error> {
         snippets: Vec::new(),
         rendering: Vec::new(),
         elements: Vec::new(),
+        tag_seen: Vec::new(),
+        forms: Vec::new(),
+        svg: 0,
+        auto_head: false,
+        button_form: false,
     };
     p.run()?;
 
@@ -547,6 +552,17 @@ struct Parser<'a> {
     rendering: Vec<String>,
     /// The groups of the `<wisp:element>`s open, innermost last.
     elements: Vec<usize>,
+    /// The attributes of the tag being scanned, each with its value when
+    /// that is plain text.
+    tag_seen: Vec<(String, Option<String>)>,
+    /// One per open `<form>`: whether it posts to an action (`?/name`).
+    forms: Vec<bool>,
+    /// Depth of `<svg>`, whose `<title>` is its own.
+    svg: u32,
+    /// A top-level `<title>` is open, in the head it opened.
+    auto_head: bool,
+    /// A `<button action="?/name">` is open, in the form it opened.
+    button_form: bool,
 }
 
 /// A snippet defined above: its body's source, and the depth of the list
@@ -616,7 +632,14 @@ impl Parser<'_> {
                                 continue;
                             }
                             self.attr = raw.to_ascii_lowercase();
+                            if self.button_form && self.tag == "button" && self.attr == "action" {
+                                self.text.insert_str(self.text.len() - raw.len(), "form");
+                                self.attr = "formaction".into();
+                            }
                             self.typed |= matches!(self.attr.as_str(), "type" | "src" | "nomodule");
+                            self.tag_seen.push((self.attr.clone(), None));
+                        } else if let Some(a) = self.tag_seen.last_mut() {
+                            a.1 = Some(self.src[start..self.i].to_string());
                         }
                         self.last = b'a';
                     }
@@ -624,6 +647,11 @@ impl Parser<'_> {
                 Ctx::Quoted(q) => match c {
                     b'{' => self.hole()?,
                     _ if c == q => {
+                        if !self.value_events
+                            && let Some(a) = self.tag_seen.last_mut()
+                        {
+                            a.1 = Some(self.text[self.value_start..].to_string());
+                        }
                         self.end_value(self.i)?;
                         if self.attr == "class" {
                             self.write_classes()?;
@@ -896,6 +924,41 @@ impl Parser<'_> {
         }
         let name = raw_name.to_ascii_lowercase();
 
+        // `<slot />` is `{@render children()}`, as in Vue.
+        if name == "slot" && !closing {
+            let rest = self.src[end..].trim_start();
+            if rest.starts_with("/>") {
+                self.uses_children = true;
+                self.push_node(start, Node::Render)?;
+                self.i = self.src.len() - rest.len() + 2;
+                return Ok(());
+            }
+        }
+        // A `<title>` at the top level goes in the head, as it would with
+        // `<head>` around it.
+        if name == "title" && !closing && self.svg == 0 && self.frames.is_empty() {
+            self.begin(start)?;
+            self.open(Frame::Head {
+                pos: start,
+                body: Vec::new(),
+            });
+            self.auto_head = true;
+        }
+
+        // `<button action="?/remove&id={id}">` outside a form is a form of
+        // its own, as small as a link: its action is the button's
+        // `formaction`.
+        if name == "button"
+            && !closing
+            && self.forms.is_empty()
+            && self
+                .attr_prefix(start, "action")
+                .is_some_and(|v| v.starts_with("?/"))
+        {
+            self.text.push_str("<form method=\"post\">");
+            self.button_form = true;
+        }
+
         // A page is inside `<body>`, so its `<head>` can only mean what goes
         // in the document's: the same as `<wisp:head>`.
         if name == "wisp:head" || name == "head" {
@@ -930,6 +993,7 @@ impl Parser<'_> {
         self.tag_text = self.text.len();
         self.tag_frames = self.frames.len();
         self.tag_attrs = false;
+        self.tag_seen.clear();
         self.directives.clear();
         self.tag_classes = if closing {
             Vec::new()
@@ -1072,10 +1136,23 @@ impl Parser<'_> {
                     j += 2;
                     break true;
                 }
-                // `{row}` is `row={row}`.
+                // `{row}` is `row={row}`; `{:...props}` gives each key of a
+                // browser object as a prop (named `...`).
                 Some(b'{') => {
                     let e = hole_end(b, j + 1).ok_or_else(|| self.err(j, "unclosed {".into()))?;
                     let prop = self.src[j + 1..e].trim();
+                    if let Some(js) = prop.strip_prefix(':').map(str::trim).and_then(|p| p.strip_prefix("...")) {
+                        if js.trim().is_empty() {
+                            return Err(self.err(j, "`{:...}` spreads an object: <Card {:...props} />".into()));
+                        }
+                        let line = self.line_of(j);
+                        props.push(Prop { name: "...".into(), value: PropValue::Live(Code { src: js.trim().into(), line }) });
+                        j = skip_ws(e + 1);
+                        continue;
+                    }
+                    if prop.starts_with("...") {
+                        return Err(self.err(j, format!("a component's props are spread from a browser value: {{:{prop}}}; Rust props are given one by one")));
+                    }
                     if !is_ident(prop) {
                         return Err(self.err(j, "in a component's tag, {name} is name={name}: one name in the braces".into()));
                     }
@@ -1283,6 +1360,7 @@ impl Parser<'_> {
             self.text.push_str(" type=\"module\"");
         }
         if !self.closing {
+            self.form_defaults()?;
             if !self.tag_classes.is_empty() {
                 // No `class` attribute to put them in: write one.
                 let slash = self.last == b'/' && self.text.ends_with('/');
@@ -1317,13 +1395,30 @@ impl Parser<'_> {
             }
             self.live_element()?;
         }
+        let self_closed = self.last == b'/' && self.text.ends_with('/');
         self.push_byte(b'>');
         self.ctx = Ctx::Text;
         if self.closing {
-            if self.tag == "template" {
-                self.templates.pop();
+            match self.tag.as_str() {
+                "template" => {
+                    self.templates.pop();
+                }
+                "form" => {
+                    self.forms.pop();
+                }
+                "svg" => self.svg = self.svg.saturating_sub(1),
+                "button" if std::mem::take(&mut self.button_form) => self.text.push_str("</form>"),
+                "title" if std::mem::take(&mut self.auto_head) => {
+                    if let Frame::Head { body, .. } = self.end(self.i)? {
+                        self.list().push(Node::Head(body));
+                    }
+                }
+                _ => {}
             }
             return Ok(());
+        }
+        if self.tag == "svg" && !self_closed {
+            self.svg += 1;
         }
         match self.tag.as_str() {
             "pre" | "textarea" => self.preserve += 1,
@@ -1342,6 +1437,143 @@ impl Parser<'_> {
             _ => {}
         }
         Ok(())
+    }
+
+    /// What a form posting to an action needs and does not say: a
+    /// `<form action="?/add">` posts (`method="post"`), and an `<input
+    /// name="x">` in it without a value shows what was sent again when the
+    /// action refused it (`value={wisp::rt::kept(cx, "x")}`).
+    fn form_defaults(&mut self) -> Result<(), Error> {
+        let seen = |n: &str| self.tag_seen.iter().find(|(a, _)| a == n);
+        let mut method = false;
+        if self.tag == "form" {
+            let posts = self
+                .attr_prefix(self.tag_pos, "action")
+                .is_some_and(|v| v.starts_with("?/"));
+            method = posts && seen("method").is_none();
+            self.forms.push(posts);
+        }
+        let in_browser = !self.templates.is_empty()
+            || !self.rendering.is_empty()
+            || self
+                .frames
+                .iter()
+                .any(|f| matches!(f, Frame::Client { .. }));
+        let typed = seen("type")
+            .and_then(|(_, v)| v.as_deref())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let keeps = self.tag == "input"
+            && self.forms.contains(&true)
+            && !in_browser
+            && seen("value").is_none()
+            && !self
+                .directives
+                .iter()
+                .any(|d| d.name == "value" || d.kind == Dir::Spread)
+            && !matches!(
+                typed.as_str(),
+                "password"
+                    | "file"
+                    | "hidden"
+                    | "checkbox"
+                    | "radio"
+                    | "submit"
+                    | "button"
+                    | "image"
+                    | "reset"
+            );
+        let kept = seen("name").and_then(|(_, v)| v.clone()).filter(|_| keeps);
+        if !method && kept.is_none() {
+            return Ok(());
+        }
+        // Added before a self-closing tag's `/`.
+        let slash = self.last == b'/' && self.text.ends_with('/');
+        if slash {
+            self.text.pop();
+        }
+        self.text.truncate(self.text.trim_end().len());
+        if method {
+            self.text.push_str(" method=\"post\"");
+        }
+        if let Some(name) = kept {
+            let line = self.line_of(self.tag_pos);
+            self.push_node(
+                self.tag_pos,
+                Node::Attr {
+                    name: "value".into(),
+                    code: Code {
+                        src: format!("{KEPT}{name:?})"),
+                        line,
+                    },
+                    url: false,
+                },
+            )?;
+        }
+        if slash {
+            self.text.push('/');
+        }
+        Ok(())
+    }
+
+    /// The plain start of attribute `name`'s value (up to its end or its
+    /// first `{`) in the tag at `pos` of the source, if the tag has one.
+    fn attr_prefix(&self, pos: usize, name: &str) -> Option<&str> {
+        let b = self.b;
+        let mut i = pos + 1;
+        while i < b.len() && !is_ws(b[i]) && !matches!(b[i], b'>' | b'/') {
+            i += 1;
+        }
+        // Past a value (or a hole) whose first byte is at `i`, till `stop`.
+        let skip = |mut i: usize, stop: &dyn Fn(u8) -> bool| -> Option<usize> {
+            while i < b.len() && !stop(b[i]) {
+                i = if b[i] == b'{' {
+                    hole_end(b, i + 1)? + 1
+                } else {
+                    i + 1
+                };
+            }
+            Some(i)
+        };
+        loop {
+            while i < b.len() && (is_ws(b[i]) || b[i] == b'/') {
+                i += 1;
+            }
+            match *b.get(i)? {
+                b'>' => return None,
+                b'{' => {
+                    i = hole_end(b, i + 1)? + 1;
+                    continue;
+                }
+                _ => {}
+            }
+            let start = i;
+            while i < b.len() && !is_ws(b[i]) && !matches!(b[i], b'=' | b'>' | b'{' | b'/') {
+                i += 1;
+            }
+            let attr = &self.src[start..i];
+            while i < b.len() && is_ws(b[i]) {
+                i += 1;
+            }
+            if b.get(i) != Some(&b'=') {
+                continue;
+            }
+            i += 1;
+            while i < b.len() && is_ws(b[i]) {
+                i += 1;
+            }
+            let quote = matches!(b.get(i), Some(b'"' | b'\'')).then(|| b[i]);
+            let from = i + usize::from(quote.is_some());
+            let end = |c: u8| match quote {
+                Some(q) => c == q,
+                None => is_ws(c) || c == b'>',
+            };
+            if attr.eq_ignore_ascii_case(name) {
+                let plain = (from..b.len()).find(|&j| b[j] == b'{' || end(b[j]))?;
+                return Some(&self.src[from..plain]);
+            }
+            i = skip(from, &end)? + usize::from(quote.is_some());
+        }
     }
 
     // ---- browser code -----------------------------------------------------
@@ -1841,11 +2073,15 @@ impl Parser<'_> {
             line,
             col: self.col_of(open),
         };
-        let names = if dir == Dir::Each {
+        let mut names = if dir == Dir::Each {
             vec![name.to_string()]
         } else {
             Vec::new()
         };
+        // A try's `{:catch}` may call `reset()` to draw its body again.
+        if kind == "failed" {
+            names.push("reset".into());
+        }
         self.client_frame(open, kind, Vec::new(), d, names)
     }
 
@@ -2486,6 +2722,7 @@ impl Parser<'_> {
             }
             self.attr = t.to_string();
             self.typed |= matches!(t, "type" | "src" | "nomodule");
+            self.tag_seen.push((self.attr.clone(), None));
             self.text.push_str(t);
             self.text.push('=');
             self.last = b'=';
@@ -2693,6 +2930,10 @@ const URL_ATTRS: [&str; 9] = [
     "src",
     "xlink:href",
 ];
+
+/// The start of the value an `<input>` in an action's form gets (see
+/// `form_defaults`), which a component, having no `cx`, goes without.
+pub const KEPT: &str = "::wisp::rt::kept(cx, ";
 
 /// What the static start of a URL attribute's value says about its scheme.
 enum Scheme {
@@ -4075,6 +4316,72 @@ mod tests {
         );
         // The browser's `class:` still takes quoted JavaScript.
         assert!(parse("<p class:open=\"x\">").unwrap().is_live());
+    }
+
+    #[test]
+    fn action_forms_post_and_keep_what_was_typed() {
+        let kept = |n: &str| format!("[value={KEPT}\"{n}\")]");
+        assert_eq!(
+            sketch("<form action=\"?/add\"><input name=\"a\"><input name=b /></form>"),
+            format!(
+                "<form action=\"?/add\" method=\"post\"><input name=\"a\"{}><input name=b{}/></form>",
+                kept("a"),
+                kept("b")
+            )
+        );
+        // Told otherwise, a value of its own, not an action, or not text:
+        // left as written.
+        for src in [
+            "<form action=\"?/a\" method=\"get\"><input name=\"q\" value=\"x\"></form>",
+            "<form action=\"/a\"><input name=\"q\"></form>",
+            "<form action=\"?/a\"><input name=\"p\" type=\"password\"><input type=\"checkbox\" name=\"c\"></form>",
+            "<form action=\"?/a\"><input name=\"q\" bind:value=\"q\"></form>",
+            "<input name=\"q\">",
+        ] {
+            assert!(!sketch(src).contains("[value="), "{src}: {}", sketch(src));
+        }
+        assert!(
+            sketch("<form action=\"?/a\"></form><input name=\"q\">")
+                .ends_with("<input name=\"q\">")
+        );
+        assert_eq!(
+            sketch(
+                "<button class=\"x\" action=\"?/rm&id={id}\" {d}>x</button><button action=\"/a\">"
+            ),
+            "<form method=\"post\"><button class=\"x\" formaction=\"?/rm&id=?\"[d=d]>x</button></form><button action=\"/a\">"
+        );
+        assert_eq!(
+            sketch("<form action='?/a&b={b}'><button action=\"?/c\">x</button></form>"),
+            "<form action='?/a&b=?' method=\"post\"><button action=\"?/c\">x</button></form>"
+        );
+    }
+
+    #[test]
+    fn a_top_level_title_goes_in_the_head_and_slot_renders_children() {
+        let t = parse("<title>{t}</title><h1>x</h1><svg><title>s</title></svg>").unwrap();
+        assert_alternates(&t.nodes);
+        assert!(
+            matches!(&t.nodes[1], Node::Head(b) if b.len() == 3),
+            "{:?}",
+            t.nodes
+        );
+        assert!(
+            t.chunks
+                .iter()
+                .any(|c| c.contains("<svg><title>s</title></svg>"))
+        );
+        let t = parse("{#if a}<title>x</title>{/if}").unwrap();
+        assert!(
+            !format!("{:?}", t.nodes).contains("Head"),
+            "only at the top level"
+        );
+        let t = parse("<main><slot /></main><slot name=\"x\"></slot>").unwrap();
+        assert!(t.uses_children && t.nodes.contains(&Node::Render));
+        assert!(
+            t.chunks
+                .iter()
+                .any(|c| c.contains("<slot name=\"x\"></slot>"))
+        );
     }
 
     #[test]

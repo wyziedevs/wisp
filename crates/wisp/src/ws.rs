@@ -115,9 +115,10 @@ pub(crate) fn handshake(cx: &Cx) -> Result<String> {
     let refuse = |status: u16, message: &'static str, header: (&'static str, &str)| Error {
         status,
         message: Cow::Borrowed(message),
-        header: Some((header.0, header.1.to_string())),
+        header: Some(Box::new((header.0, header.1.to_string()))),
         source: None,
         fields: Vec::new(),
+        code: None,
     };
     if cx.method != Method::Get
         || !cx.http11

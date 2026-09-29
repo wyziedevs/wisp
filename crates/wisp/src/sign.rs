@@ -50,11 +50,12 @@ fn dev_key() -> Vec<u8> {
     if let Ok(text) = std::fs::read_to_string(&file)
         && text.trim().len() >= 32
     {
+        keep_private(&file);
         return text.trim().as_bytes().to_vec();
     }
     let secret: String = random::<32>().iter().map(|b| format!("{b:02x}")).collect();
     let saved = std::fs::create_dir_all(file.parent().unwrap_or(Path::new(".")))
-        .and_then(|()| std::fs::write(&file, &secret));
+        .and_then(|()| save_private(&file, &secret));
     if let Err(e) = saved {
         crate::http::log(format_args!(
             "wisp: could not save a dev secret to {}: {e}; signed cookies will not survive a restart",
@@ -62,6 +63,26 @@ fn dev_key() -> Vec<u8> {
         ));
     }
     secret.into_bytes()
+}
+
+/// Writes `secret` to a file only its owner can read: with it, anyone can
+/// sign in as anyone.
+fn save_private(file: &Path, secret: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(file)?.write_all(secret.as_bytes())
+}
+
+/// A secret saved by an earlier version, or by hand, may be readable by
+/// others: closed to them the next time it is read.
+fn keep_private(file: &Path) {
+    #[cfg(unix)]
+    let _ = std::fs::set_permissions(file, std::os::unix::fs::PermissionsExt::from_mode(0o600));
+    #[cfg(not(unix))]
+    let _ = file;
 }
 
 /// `N` bytes from the host's `crypto.getRandomValues`.
@@ -104,6 +125,71 @@ fn base64url(bytes: &[u8]) -> String {
         }
     }
     out
+}
+
+/// HMAC-SHA256 of `message` under `key`, for checking a webhook's
+/// signature by hand: `wisp::hex(&wisp::hmac_sha256(secret, body))`.
+pub fn hmac_sha256(key: impl AsRef<[u8]>, message: impl AsRef<[u8]>) -> [u8; 32] {
+    Hmac::new(key.as_ref()).sign(&[message.as_ref()])
+}
+
+/// Bytes as lowercase hex.
+pub fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+impl crate::Cx {
+    /// Unless the request's header `header` signs its body with the secret
+    /// in the environment variable `var`, a 401: how webhooks prove who
+    /// sent them. `cx.need_signature("GITHUB_SECRET", "x-hub-signature-256")?`
+    ///
+    /// The signature is HMAC-SHA256, in hex (`sha256=` in front is fine, as
+    /// GitHub sends it) or base64 (Shopify). Stripe's `t=…,v1=…` signs the
+    /// time and the body, and is refused more than five minutes after `t`.
+    /// Compared in constant time; an unset variable matches nothing.
+    pub fn need_signature(&self, var: &str, header: &str) -> crate::Result {
+        let refused =
+            || crate::Error::new(401, "The signature does not match").with_code("bad_signature");
+        let (Some(secret), Some(sent)) = (crate::env(var), self.header(header)) else {
+            return Err(refused());
+        };
+        if secret.is_empty() {
+            return Err(refused());
+        }
+        let key = Hmac::new(secret.as_bytes());
+        let stripe = sent.split(',').find_map(|p| p.trim().strip_prefix("t="));
+        let (mac, sigs): ([u8; 32], Vec<&str>) = match stripe {
+            Some(t) => {
+                let fresh = t
+                    .parse::<u64>()
+                    .is_ok_and(|t| crate::unix_now().abs_diff(t) <= 300);
+                if !fresh {
+                    return Err(refused());
+                }
+                let sigs = sent
+                    .split(',')
+                    .filter_map(|p| p.trim().strip_prefix("v1="))
+                    .collect();
+                (key.sign(&[t.as_bytes(), b".", self.body()]), sigs)
+            }
+            None => {
+                let s = sent.trim();
+                (
+                    key.sign(&[self.body()]),
+                    vec![s.strip_prefix("sha256=").unwrap_or(s)],
+                )
+            }
+        };
+        let hex = hex(&mac);
+        let url = base64url(&mac);
+        let standard: String = url.replace('-', "+").replace('_', "/") + "=";
+        let ok = sigs.iter().any(|s| {
+            crate::secure_eq(s.to_ascii_lowercase(), &hex)
+                || crate::secure_eq(s, &standard)
+                || crate::secure_eq(s, &url)
+        });
+        if ok { Ok(()) } else { Err(refused()) }
+    }
 }
 
 /// HMAC-SHA256 (RFC 2104) with one key: the hashes of its two padded
@@ -308,6 +394,52 @@ mod tests {
         assert_eq!(base64url(b"foob"), "Zm9vYg");
         assert_eq!(base64url(&[0xfb, 0xff]), "-_8");
         assert_eq!(base64url(&[0; 32]).len(), 43);
+    }
+
+    #[test]
+    fn webhook_signatures() {
+        // GitHub's documented example.
+        assert_eq!(
+            hex(&hmac_sha256("It's a Secret to Everybody", "Hello, World!")),
+            "757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17"
+        );
+        // The secret: `CARGO_PKG_NAME`, which cargo sets for tests.
+        let (var, secret, body) = ("CARGO_PKG_NAME", "wisp", "Hello, World!");
+        let cx = |h: &str, v: &str| {
+            crate::Cx::for_test(&format!("POST /h HTTP/1.1\r\n{h}: {v}\r\n\r\n{body}"), &[])
+        };
+        let mac = hmac_sha256(secret, body);
+        let github = format!("sha256={}", hex(&mac));
+        assert!(cx("x-sig", &github).need_signature(var, "x-sig").is_ok());
+        assert!(
+            cx("x-sig", &hex(&mac).to_uppercase())
+                .need_signature(var, "x-sig")
+                .is_ok()
+        );
+        let wrong = cx("x-sig", &github.replace('a', "b")).need_signature(var, "x-sig");
+        assert_eq!(wrong.unwrap_err().status(), 401);
+        assert!(
+            cx("x-sig", &github)
+                .need_signature("WISP_UNSET_SECRET", "x-sig")
+                .is_err()
+        );
+        assert!(cx("x-other", &github).need_signature(var, "x-sig").is_err());
+        let b64 = base64url(&mac).replace('-', "+").replace('_', "/") + "=";
+        assert!(cx("x-sig", &b64).need_signature(var, "x-sig").is_ok());
+        let t = crate::unix_now();
+        let v1 = hex(&hmac_sha256(secret, format!("{t}.{body}")));
+        let stripe = format!("t={t},v1=00,v1={v1}");
+        assert!(
+            cx("stripe-signature", &stripe)
+                .need_signature(var, "stripe-signature")
+                .is_ok()
+        );
+        let old = format!("t={},v1={v1}", t - 600);
+        assert!(
+            cx("stripe-signature", &old)
+                .need_signature(var, "stripe-signature")
+                .is_err()
+        );
     }
 
     #[test]

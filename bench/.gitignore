@@ -12,3 +12,5 @@ package-lock.json
 /node/sveltekit/build/
 /node/sveltekit/.svelte-kit/
 /node/nextjs/.next/
+/java/target/
+bun.lock

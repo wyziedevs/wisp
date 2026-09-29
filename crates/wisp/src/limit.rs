@@ -114,7 +114,7 @@ mod tests {
         assert!(limit.take("a", t).is_ok() && limit.take("a", t).is_ok());
         let e = limit.take("a", t).unwrap_err();
         assert_eq!(e.status(), 429);
-        assert_eq!(e.header, Some(("retry-after", "30".into())));
+        assert_eq!(e.header.as_deref(), Some(&("retry-after", "30".into())));
         assert!(limit.take("b", t).is_ok(), "each key has its own");
         assert!(limit.take("a", t + Duration::from_secs(29)).is_err());
         assert!(

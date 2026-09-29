@@ -104,49 +104,42 @@ const wisp = {
   done() {},
 }
 
-async function suite(F) {
-  const ops = {
-    create1k: async () => (await time(F.clear), time(() => F.run(1000))),
-    replace1k: async () => (await time(() => F.run(1000)), time(() => F.run(1000))),
-    update10th: async () => (await time(() => F.run(1000)), await time(F.update), time(F.update)),
-    select: async () => {
-      await time(() => F.run(1000))
-      const a = F.lbl()
-      await time(() => a[5].click())
-      return time(() => a[7].click())
-    },
-    swap: async () => (await time(() => F.run(1000)), time(F.swap)),
-    remove: async () => {
-      await time(() => F.run(1000))
-      const a = F.rm()
-      return time(() => a[500].click())
-    },
-    create10k: async () => (await time(F.clear), time(() => F.run(10000))),
-    append1k: async () => (await time(() => F.run(1000)), time(F.add)),
-    clear1k: async () => (await time(() => F.run(1000)), time(F.clear)),
-  }
-  const out = {}
-  for (const [k, f] of Object.entries(ops)) {
-    const t = []
-    for (let i = 0; i < (k == 'create10k' ? 5 : 11); i++) t.push(await f())
-    out[k] = +med(t).toFixed(1)
-  }
-  await time(F.clear)
-  F.done()
-  return out
+const OPS = {
+  create1k: async (F) => (await time(F.clear), time(() => F.run(1000))),
+  replace1k: async (F) => (await time(() => F.run(1000)), time(() => F.run(1000))),
+  update10th: async (F) => (await time(() => F.run(1000)), await time(F.update), time(F.update)),
+  select: async (F) => {
+    await time(() => F.run(1000))
+    const a = F.lbl()
+    await time(() => a[5].click())
+    return time(() => a[7].click())
+  },
+  swap: async (F) => (await time(() => F.run(1000)), time(F.swap)),
+  remove: async (F) => {
+    await time(() => F.run(1000))
+    const a = F.rm()
+    return time(() => a[500].click())
+  },
+  create10k: async (F) => (await time(F.clear), time(() => F.run(10000))),
+  append1k: async (F) => (await time(() => F.run(1000)), time(F.add)),
+  clear1k: async (F) => (await time(() => F.run(1000)), time(F.clear)),
 }
 
-// Wisp's times, vanilla's, the ratio, and their geometric mean.
+// Wisp's times, vanilla's, the ratio, and their geometric mean. The two take
+// turns at each operation, so a busy moment of the machine slows both alike.
 export async function run() {
-  const w = await suite(wisp)
-  const v = await suite(vanilla())
+  const both = [wisp, vanilla()]
   const out = {}
   let g = 0
-  for (const k in w) {
-    const r = Math.max(w[k], 0.1) / Math.max(v[k], 0.1)
-    out[k] = `${w[k]} / ${v[k]} (${r.toFixed(2)}x)`
+  for (const [k, op] of Object.entries(OPS)) {
+    const t = [[], []]
+    for (let i = 0; i < (k == 'create10k' ? 5 : 11); i++) for (const j of i % 2 ? [1, 0] : [0, 1]) t[j].push(await op(both[j]))
+    const [w, v] = t.map((a) => +med(a).toFixed(1))
+    const r = Math.max(w, 0.1) / Math.max(v, 0.1)
+    out[k] = `${w} / ${v} (${r.toFixed(2)}x)`
     g += Math.log(r)
   }
-  out.geomean = Math.exp(g / Object.keys(w).length).toFixed(2)
+  for (const F of both) await time(F.clear), F.done()
+  out.geomean = Math.exp(g / Object.keys(OPS).length).toFixed(2)
   return out
 }

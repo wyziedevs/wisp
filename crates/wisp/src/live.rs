@@ -223,6 +223,14 @@ pub fn js_text<T: Json + ?Sized>(out: &mut String, value: &T) {
     Js(&js_of(value)).text(out);
 }
 
+/// `{label}` and `title={label}` in Rust, for a prop only a component's
+/// `$props()` names (any browser value): shown as `{:label}` would be.
+impl crate::html::Direct for crate::html::Text<'_, dyn Json + '_> {
+    fn put(&self, out: &mut String) {
+        js_text(out, self.0);
+    }
+}
+
 /// A JSON value as browser code reads it: the server's first paint of a
 /// client block or component whose values it knows walks one of these.
 /// It reads what `Json` writes (no whitespace), not JSON in general.

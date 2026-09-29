@@ -44,7 +44,7 @@
   }
 </script>
 
-<form class="wisple" method="post" action="?/enter" bind:this="form" on:keydown.window="press">
+<form class="wisple" action="?/enter" bind:this="form" on:keydown.window="press">
   <a class="how-to-play" href="/wisple/how-to-play">How to play</a>
 
   <div class="grid" class:won={won} bind:this="grid">

@@ -30,6 +30,9 @@ pub struct FnItem {
     /// An action whose body uses `cx` without taking it: `#[action]` adds
     /// `cx: &mut Cx` as its first parameter, and the call passes it.
     pub implicit_cx: bool,
+    /// `#[validate(len = 1..=100)] text: String`: each parameter's rules,
+    /// as (parameter, what is inside `validate(…)`).
+    pub checks: Vec<(String, String)>,
 }
 
 /// A top-level `struct`, `enum`, `union` or `type`.
@@ -38,6 +41,11 @@ pub struct TypeItem {
     pub name: String,
     /// The fields of a struct with named fields: name and type.
     pub fields: Vec<(String, String)>,
+    /// What its `#[derive(...)]`s name, by last segment: `Json`, `Rest`.
+    pub derives: Vec<String>,
+    /// `#[validate(len = 1..=9)]` on its fields, as (field, what is inside
+    /// `validate(…)`).
+    pub rules: Vec<(String, String)>,
 }
 
 /// A top-level `const` or `static`.
@@ -161,16 +169,30 @@ impl FnItem {
         Ok(out)
     }
 
+    /// The type it returns, looking through a `Result`: `""` for nothing.
+    pub fn value_type(&self) -> &str {
+        let t = self.returns.trim();
+        match (self.fallible, t.contains('<')) {
+            (false, _) => t,
+            // `Result` alone is `Result<()>`.
+            (true, true) => first_arg(t).unwrap_or("?"),
+            (true, false) => "",
+        }
+    }
+
+    /// `T` of an `Option<T>` it returns (other than `Option<Response>`):
+    /// `None` is a 404, `Some(())` a 204.
+    pub fn optional_value(&self) -> Option<&str> {
+        let t = self.value_type();
+        match self.returns_kind() {
+            Returns::Other if last_segment(t) == "Option" => first_arg(t),
+            _ => None,
+        }
+    }
+
     /// What it returns, looking through a `Result`.
     pub fn returns_kind(&self) -> Returns {
-        let mut t = self.returns.trim();
-        if self.fallible {
-            // `Result` alone is `Result<()>`.
-            t = match t.contains('<') {
-                true => first_arg(t).unwrap_or("?"),
-                false => "",
-            };
-        }
+        let t = self.value_type();
         if t.is_empty() || t == "()" {
             Returns::Nothing
         } else if last_segment(t) == "Response" && !t.contains('<') {
@@ -241,6 +263,7 @@ pub fn scan(src: &str) -> Result<Items, String> {
     let mut action = false;
     let mut is_async = false;
     let mut public = false;
+    let mut derives: Vec<String> = Vec::new();
     let mut i = 0;
     while i < b.len() {
         let c = b[i];
@@ -291,6 +314,15 @@ pub fn scan(src: &str) -> Result<Items, String> {
                         ));
                     }
                     action |= marks_action;
+                    if depth == 0 && path.rsplit("::").next() == Some("derive") {
+                        let args = src[j + 1..end].split_once('(').map_or("", |(_, a)| a);
+                        derives.extend(
+                            args.trim_end_matches([')', ' ', '\n', '\r', '\t'])
+                                .split(',')
+                                .map(|d| last_segment(d).to_string())
+                                .filter(|d| !d.is_empty()),
+                        );
+                    }
                     i = end;
                 }
             }
@@ -299,9 +331,13 @@ pub fn scan(src: &str) -> Result<Items, String> {
                 depth = depth.saturating_sub(1);
                 if depth == 0 {
                     (action, is_async, public) = (false, false, false);
+                    derives.clear();
                 }
             }
-            b';' if depth == 0 => (action, is_async, public) = (false, false, false),
+            b';' if depth == 0 => {
+                (action, is_async, public) = (false, false, false);
+                derives.clear();
+            }
             _ if c.is_ascii_alphabetic() || c == b'_' => {
                 let start = i;
                 while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
@@ -349,7 +385,7 @@ pub fn scan(src: &str) -> Result<Items, String> {
                         if name.is_empty() {
                             // `fn(u8) -> u8` as a type, say.
                         } else if word == "fn" {
-                            let (params, fallible, returns, body) = signature(src, i);
+                            let ((params, checks), fallible, returns, body) = signature(src, i);
                             let line = line(name_start);
                             let takes_cx = params.iter().any(|(p, t)| p == "cx" || is_cx(t));
                             let implicit_cx = action
@@ -366,15 +402,22 @@ pub fn scan(src: &str) -> Result<Items, String> {
                                 returns,
                                 line,
                                 implicit_cx,
+                                checks,
                             });
                             (action, is_async, public) = (false, false, false);
+                            derives.clear();
                         } else {
-                            let fields = if word == "struct" {
+                            let (fields, rules) = if word == "struct" {
                                 fields(src, i)
                             } else {
-                                Vec::new()
+                                (Vec::new(), Vec::new())
                             };
-                            items.types.push(TypeItem { name, fields });
+                            items.types.push(TypeItem {
+                                name,
+                                fields,
+                                derives: std::mem::take(&mut derives),
+                                rules,
+                            });
                         }
                     }
                     _ => {}
@@ -388,15 +431,17 @@ pub fn scan(src: &str) -> Result<Items, String> {
     Ok(items)
 }
 
-/// The fields of the struct whose name ends at `i`, as (name, type).
-/// Tuple structs and generic ones have none.
-fn fields(src: &str, i: usize) -> Vec<(String, String)> {
+/// The fields of the struct whose name ends at `i`, as (name, type), and
+/// the `#[validate(…)]` rules on them. Tuple structs and generic ones have
+/// none.
+fn fields(src: &str, i: usize) -> Params {
     let b = src.as_bytes();
     let open = skip_space(b, i);
     if b.get(open) != Some(&b'{') {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
-    let (mut out, mut depth, mut start, mut j) = (Vec::new(), 0i32, open + 1, open + 1);
+    let (mut out, mut rules) = (Vec::new(), Vec::new());
+    let (mut depth, mut start, mut j) = (0i32, open + 1, open + 1);
     while j < b.len() {
         match b[j] {
             b'/' if b.get(j + 1) == Some(&b'/') => j = skip_space(b, j) - 1,
@@ -407,7 +452,10 @@ fn fields(src: &str, i: usize) -> Vec<(String, String)> {
             b'>' if b[j - 1] == b'-' => {}
             b')' | b']' | b'>' => depth -= 1,
             b',' | b'}' if depth <= 0 => {
-                out.extend(field(&src[start..j]));
+                if let Some((name, ty, rule)) = field(&src[start..j]) {
+                    rules.extend(rule.map(|r| (name.clone(), r)));
+                    out.push((name, ty));
+                }
                 if b[j] == b'}' {
                     break;
                 }
@@ -418,19 +466,22 @@ fn fields(src: &str, i: usize) -> Vec<(String, String)> {
         }
         j += 1;
     }
-    out
+    (out, rules)
 }
 
 /// `name: Type`, after any attributes, comments and visibility (`pub`,
 /// `pub(crate)`): the template is compiled inside the module, so it sees
-/// private fields too.
-fn field(mut s: &str) -> Option<(String, String)> {
+/// private fields too. And what is inside its `#[validate(…)]`, if it has one.
+fn field(mut s: &str) -> Option<(String, String, Option<String>)> {
+    let mut rules = None;
     loop {
         s = s.trim_start();
         if let Some(c) = s.strip_prefix("//") {
             s = c.split_once('\n').map_or("", |x| x.1);
         } else if s.starts_with("#[") {
-            s = &s[matching_bracket(s.as_bytes(), 1)? + 1..];
+            let end = matching_bracket(s.as_bytes(), 1)?;
+            rules = validate_args(&s[2..end]).or(rules);
+            s = &s[end + 1..];
         } else {
             break;
         }
@@ -443,7 +494,18 @@ fn field(mut s: &str) -> Option<(String, String)> {
         };
     }
     let (name, ty) = s.split_once(':')?;
-    Some((name.trim().to_string(), ty.trim().to_string()))
+    Some((name.trim().to_string(), ty.trim().to_string(), rules))
+}
+
+/// What is inside `validate(…)`, for the inside of an attribute's brackets.
+fn validate_args(inner: &str) -> Option<String> {
+    let args = inner
+        .trim()
+        .strip_prefix("validate")?
+        .trim_start()
+        .strip_prefix('(')?
+        .strip_suffix(')')?;
+    Some(args.trim().to_string())
 }
 
 /// `a: u8, b: impl Fn(u8) -> u8` split at its top-level commas, blank
@@ -480,17 +542,39 @@ fn param(p: &str) -> (String, String) {
     }
 }
 
+/// A parameter's `#[validate(…)]` rules (what is inside the parentheses)
+/// and the parameter without its attributes.
+fn param_attrs(mut p: &str) -> (Option<String>, &str) {
+    let mut rules = None;
+    loop {
+        p = p.trim_start();
+        let Some(end) = p
+            .strip_prefix('#')
+            .and_then(|r| r.trim_start().starts_with('[').then_some(()))
+            .and_then(|()| matching_bracket(p.as_bytes(), p.find('[')?))
+        else {
+            return (rules, p);
+        };
+        rules = validate_args(&p[p.find('[').unwrap_or(0) + 1..end]).or(rules);
+        p = &p[end + 1..];
+    }
+}
+
+/// Names and types, and the `#[validate(…)]` rules on them: a signature's
+/// parameters, a struct's fields.
+type Params = (Vec<(String, String)>, Vec<(String, String)>);
+
 /// Reads a signature from just past the function's name up to its body:
-/// its parameters, whether its return type is a `Result` (`Result<T>`,
-/// `wisp::Result<T>`, `io::Result<T>`, ...), that type, and where the body's
-/// `{` (or the `;` of a function without one) is.
-fn signature(src: &str, mut i: usize) -> (Vec<(String, String)>, bool, String, usize) {
+/// its parameters (and their rules), whether its return type is a `Result`
+/// (`Result<T>`, `wisp::Result<T>`, `io::Result<T>`, ...), that type, and
+/// where the body's `{` (or the `;` of a function without one) is.
+fn signature(src: &str, mut i: usize) -> (Params, bool, String, usize) {
     let b = src.as_bytes();
     let mut depth = 0i32; // (), [] and <>
     // Where the parameter list starts, until it has been read.
     let mut open = None;
     let mut read = false;
-    let mut params = Vec::new();
+    let mut params: Params = (Vec::new(), Vec::new());
     let mut ret = None;
     while i < b.len() {
         match b[i] {
@@ -515,7 +599,14 @@ fn signature(src: &str, mut i: usize) -> (Vec<(String, String)>, bool, String, u
                 {
                     read = true;
                     let text = strip_comments(&src[start..i]);
-                    params = split_top(&text).into_iter().map(param).collect();
+                    for piece in split_top(&text) {
+                        let (rules, rest) = param_attrs(piece);
+                        let (name, ty) = param(rest);
+                        if let Some(r) = rules {
+                            params.1.push((name.clone(), r));
+                        }
+                        params.0.push((name, ty));
+                    }
                 }
             }
             b'{' | b';' if depth == 0 => break,
@@ -1342,6 +1433,26 @@ fn a() {}"
             line_ends_in_code(code),
             [false, true, true, false, false, true]
         );
+    }
+
+    #[test]
+    fn parameter_rules() {
+        let f = &top_level_fns(
+            "fn a(#[validate(len = 1..=9, email)] mut t: String, #[allow(x)] n: u8) {}",
+        )[0];
+        assert_eq!(
+            f.params,
+            [
+                ("mut t".to_string(), "String".to_string()),
+                ("n".into(), "u8".into())
+            ]
+        );
+        assert_eq!(
+            f.checks,
+            [("mut t".to_string(), "len = 1..=9, email".to_string())]
+        );
+        let g = &top_level_fns("fn g(id: u64) -> Result<Option<Note>> { todo!() }")[0];
+        assert_eq!(g.optional_value(), Some("Note"));
     }
 
     #[test]

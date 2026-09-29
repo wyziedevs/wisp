@@ -20,12 +20,16 @@ mod form;
 mod fuzz;
 mod html;
 mod http;
+mod idem;
 mod input;
 pub mod json;
 #[cfg(not(target_arch = "wasm32"))]
 mod limit;
 mod live;
+mod rest;
 mod sign;
+mod store;
+mod table;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod test;
 #[cfg(feature = "tower")]
@@ -42,7 +46,11 @@ pub use json::{FromJson, Value, from_json, to_json};
 #[cfg(not(target_arch = "wasm32"))]
 pub use limit::RateLimit;
 pub use live::{ClientModule, Json};
-pub use wisp_macros::{Cookie, FromJson, Json, action};
+pub use rest::Resource;
+pub use sign::{hex, hmac_sha256};
+pub use store::{Store, store};
+pub use table::{Row, Table};
+pub use wisp_macros::{Cookie, FromJson, Json, Rest, action};
 pub use ws::{Message, WebSocket};
 
 use std::any::{Any, TypeId};
@@ -63,8 +71,8 @@ pub mod prelude {
     #[cfg(not(target_arch = "wasm32"))]
     pub use crate::RateLimit;
     pub use crate::{
-        Cookie, CookieOptions, Cx, Error, FromJson, Json, Method, OrStatus, Response, Result,
-        SameSite, Shared, Value, action, error, invalid, redirect,
+        Cookie, CookieOptions, Cx, Error, FromJson, Json, Method, OrStatus, Response, Rest, Result,
+        Row, SameSite, Shared, Table, Value, action, error, invalid, redirect,
     };
 }
 
@@ -150,7 +158,9 @@ pub fn run<A: App>() {
         None => std::thread::available_parallelism().map_or(1, |n| n.get()),
     };
     settings();
-    if let Err(e) = http::run::<A>(addr, threads) {
+    let served = http::run::<A>(addr, threads);
+    store::files::flush();
+    if let Err(e) = served {
         fail(&e.to_string());
     }
 }
@@ -322,6 +332,16 @@ pub fn secure_eq(a: impl AsRef<[u8]>, b: impl AsRef<[u8]>) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0, |d, (x, y)| d | (x ^ y)) == 0
 }
 
+/// Whole seconds since 1970, by the wall clock (the host's, on the edge).
+pub(crate) fn unix_now() -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    return edge::unix_seconds();
+    #[cfg(not(target_arch = "wasm32"))]
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
 /// Values given to [`provide`], leaked: they live as long as the process.
 static STATE: RwLock<Vec<Provided>> = RwLock::new(Vec::new());
 type Provided = (TypeId, &'static (dyn Any + Send + Sync));
@@ -408,6 +428,22 @@ pub(crate) struct Settings {
     /// `WISP_API_DOCS`: serve `/_wisp/openapi.json` and `/_wisp/docs`
     /// (`on` in dev builds, `off` in release ones).
     pub api_docs: bool,
+    /// `WISP_REQUEST_ID`: give every request an id, not only those that ask
+    /// for one with `cx.request_id()` (`off`).
+    pub request_id: bool,
+    /// `WISP_PROBLEM_JSON`: JSON errors as RFC 9457 `application/problem+json`
+    /// for every client, not only those whose `accept` asks for it (`off`).
+    pub problem_json: bool,
+}
+
+/// An `on`/`off` setting, `default` when it is not set.
+fn switch(name: &str, default: bool) -> bool {
+    match setting::<String>(name, "on or off").map(|v| v.to_ascii_lowercase()) {
+        None => default,
+        Some(v) if matches!(&*v, "on" | "1" | "true") => true,
+        Some(v) if matches!(&*v, "off" | "0" | "false") => false,
+        Some(v) => fail(&format!("{name} is {v:?}, which is not on or off")),
+    }
 }
 
 pub(crate) fn settings() -> &'static Settings {
@@ -437,13 +473,10 @@ pub(crate) fn settings() -> &'static Settings {
             Some(0) => usize::MAX,
             n => n.unwrap_or(10_000),
         };
-        let api_docs = match setting::<String>("WISP_API_DOCS", "on or off").map(|v| v.to_ascii_lowercase()) {
-            None => cfg!(debug_assertions),
-            Some(v) if matches!(&*v, "on" | "1" | "true") => true,
-            Some(v) if matches!(&*v, "off" | "0" | "false") => false,
-            Some(v) => fail(&format!("WISP_API_DOCS is {v:?}, which is not on or off")),
-        };
-        Settings { body_limit, origin, client_ip_header, secret, ws_idle, max_conns, api_docs }
+        let api_docs = switch("WISP_API_DOCS", cfg!(debug_assertions));
+        let request_id = switch("WISP_REQUEST_ID", false);
+        let problem_json = switch("WISP_PROBLEM_JSON", false);
+        Settings { body_limit, origin, client_ip_header, secret, ws_idle, max_conns, api_docs, request_id, problem_json }
     })
 }
 
@@ -496,6 +529,11 @@ pub trait App: 'static {
     /// The OpenAPI document of the app's `+server.rs` endpoints, served at
     /// `/_wisp/openapi.json`; empty without any.
     fn openapi() -> &'static str {
+        ""
+    }
+    /// A typed TypeScript client of the same endpoints, served at
+    /// `/_wisp/client.ts`; empty without any.
+    fn client_ts() -> &'static str {
         ""
     }
     /// Every route, for `wisp build --static`.
@@ -597,6 +635,27 @@ impl Response {
             let _ = task.await; // `Gone`: the client left, which ends it too
         });
         res
+    }
+
+    /// Newline-delimited JSON (`application/x-ndjson`), a value per line,
+    /// sent as it is made: a big list without holding all of it.
+    ///
+    /// ```ignore
+    /// fn get() -> Response {
+    ///     Response::ndjson(|out| async move {
+    ///         for note in db::notes().await {
+    ///             out.line(&note).await?;
+    ///         }
+    ///         Ok(())
+    ///     })
+    /// }
+    /// ```
+    pub fn ndjson<F, Fut>(body: F) -> Response
+    where
+        F: FnOnce(Sender) -> Fut,
+        Fut: Future<Output = Result<(), Gone>> + Send + 'static,
+    {
+        Response::stream("application/x-ndjson", body)
     }
 
     /// [`Response::stream`] for a body written from elsewhere: the response
@@ -737,7 +796,8 @@ impl Response {
 
     /// `value` as JSON, with `#[derive(Json)]` or one of the built-in impls.
     pub fn json_of(value: &(impl Json + ?Sized)) -> Response {
-        let mut body = String::new();
+        // Room for a small object, which would otherwise grow three times.
+        let mut body = String::with_capacity(64);
         value.json(&mut body);
         Response::json(body)
     }
@@ -794,6 +854,14 @@ impl Sender {
         self.send(out).await
     }
 
+    /// Sends `value` as JSON and a newline: a line of [`Response::ndjson`].
+    pub async fn line(&self, value: &(impl Json + ?Sized)) -> Result<(), Gone> {
+        let mut out = String::with_capacity(64);
+        value.json(&mut out);
+        out.push('\n');
+        self.send(out).await
+    }
+
     /// Whether the client has gone, so nothing more can reach it.
     pub fn is_closed(&self) -> bool {
         self.0.is_closed()
@@ -818,10 +886,13 @@ pub struct Error {
     status: u16,
     message: Cow<'static, str>,
     /// `location` for redirects, `allow` for 405, `retry-after` for 429.
-    header: Option<(&'static str, String)>,
+    header: Option<Box<(&'static str, String)>>,
     source: Option<Box<dyn std::error::Error + Send + Sync>>,
     /// For a 422: what is wrong, by field.
     fields: Vec<(String, String)>,
+    /// What an API client matches on, from [`Error::with_code`]; else one
+    /// for the status.
+    code: Option<&'static str>,
 }
 
 impl Error {
@@ -836,7 +907,46 @@ impl Error {
             header: None,
             source: None,
             fields: Vec::new(),
+            code: None,
         }
+    }
+
+    /// A code for API clients to match on, in place of the status's own
+    /// (`not_found`, `invalid`...): `Error::new(409, "Taken").with_code("email_taken")`.
+    pub fn with_code(mut self, code: &'static str) -> Error {
+        self.code = Some(code);
+        self
+    }
+
+    /// The error's code: the one given, or the status's: `bad_request`
+    /// `unauthorized` `forbidden` `not_found` `method_not_allowed`
+    /// `conflict` `precondition_failed` `too_large` `unsupported_media_type`
+    /// `invalid` `rate_limited` `internal` `unavailable`...
+    pub fn code(&self) -> &'static str {
+        self.code.unwrap_or(match self.status {
+            400 => "bad_request",
+            401 => "unauthorized",
+            403 => "forbidden",
+            404 => "not_found",
+            405 => "method_not_allowed",
+            406 => "not_acceptable",
+            408 | 504 => "timeout",
+            409 => "conflict",
+            410 => "gone",
+            412 => "precondition_failed",
+            413 => "too_large",
+            415 => "unsupported_media_type",
+            422 => "invalid",
+            428 => "precondition_required",
+            429 => "rate_limited",
+            431 => "headers_too_large",
+            500 => "internal",
+            501 => "not_implemented",
+            502 => "bad_gateway",
+            503 => "unavailable",
+            s if s < 500 => "client_error",
+            _ => "server_error",
+        })
     }
 
     /// A 422 for input that does not pass: `field` and what is wrong with
@@ -879,14 +989,32 @@ impl Error {
             cx::valid_header(name, &value),
             "invalid header {name:?}: {value:?}"
         );
-        self.header = Some((name, value));
+        self.header = Some(Box::new((name, value)));
         self
     }
 
-    /// The error as JSON, for an API client: `{"status":422,"error":"...",
-    /// "errors":{"title":"is required"}}` (`errors` only when there are some).
-    pub(crate) fn json(&self, message: &str) -> String {
-        let mut out = format!("{{\"status\":{},\"error\":", self.status);
+    /// The error as JSON, for an API client: `{"status":422,"code":"invalid",
+    /// "error":"...","errors":{"title":"is required"}}` (`errors` only when
+    /// there are some). As a `problem` (RFC 9457) it is `{"type":"about:blank",
+    /// "title":"Unprocessable Content","status":422,"detail":"...",…}`.
+    pub(crate) fn json(&self, message: &str, problem: bool) -> String {
+        let mut out = String::with_capacity(96);
+        if problem {
+            out.push_str("{\"type\":\"about:blank\",\"title\":");
+            http::reason(self.status).json(&mut out);
+            out.push(',');
+        } else {
+            out.push('{');
+        }
+        out.push_str("\"status\":");
+        self.status.json(&mut out);
+        out.push_str(",\"code\":");
+        self.code().json(&mut out);
+        out.push_str(if problem {
+            ",\"detail\":"
+        } else {
+            ",\"error\":"
+        });
         message.json(&mut out);
         if !self.fields.is_empty() {
             out.push_str(",\"errors\":{");
@@ -920,9 +1048,10 @@ impl Error {
         Error {
             status,
             message: Cow::Borrowed(""),
-            header: Some(("location", location)),
+            header: Some(Box::new(("location", location))),
             source: None,
             fields: Vec::new(),
+            code: None,
         }
     }
 
@@ -973,6 +1102,7 @@ impl<E: std::error::Error + Send + Sync + 'static> From<E> for Error {
             header: None,
             source: Some(Box::new(e)),
             fields: Vec::new(),
+            code: None,
         }
     }
 }
@@ -980,7 +1110,7 @@ impl<E: std::error::Error + Send + Sync + 'static> From<E> for Error {
 impl fmt::Debug for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{} {}", self.status, self.message)?;
-        if let Some((name, value)) = &self.header {
+        if let Some((name, value)) = self.header.as_deref() {
             write!(f, " ({name}: {value})")?;
         }
         if let Some(s) = &self.source {
@@ -1026,6 +1156,78 @@ impl<T, E: fmt::Display> OrStatus<T> for std::result::Result<T, E> {
 pub mod rt {
     pub use crate::cx::{BadCookie, CookieReader, CookieWriter, MAX_PARAMS, decode};
     pub use crate::dev::chunk;
+    /// A `#[derive(Rest)]` type's handlers and hooks (see `rest.rs`).
+    pub mod rest {
+        pub use crate::rest::{Hooks, Kind, create, delete, get, list, patch, put};
+    }
+
+    /// A `created_at` or `updated_at` field of a `#[derive(Rest)]` type:
+    /// whole seconds since 1970 as a number, or RFC 3339 UTC text
+    /// (`2026-09-29T12:00:00Z`) as a `String`.
+    pub trait Stamp {
+        fn now() -> Self;
+    }
+
+    use crate::unix_now;
+
+    macro_rules! stamps {
+        ($($t:ty)*) => {$(
+            impl Stamp for $t {
+                fn now() -> $t {
+                    unix_now() as $t
+                }
+            }
+        )*};
+    }
+    stamps!(u64 i64 u128 i128 f64);
+
+    impl Stamp for String {
+        fn now() -> String {
+            rfc3339(unix_now())
+        }
+    }
+
+    /// Seconds since 1970 as `2026-09-29T12:00:00Z`.
+    pub(crate) fn rfc3339(s: u64) -> String {
+        {
+            let (days, rem) = (s / 86_400, s % 86_400);
+            // Civil from days (Howard Hinnant's algorithm).
+            let z = days as i64 + 719_468;
+            let era = z.div_euclid(146_097);
+            let doe = z - era * 146_097;
+            let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+            let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+            let mp = (5 * doy + 2) / 153;
+            let day = doy - (153 * mp + 2) / 5 + 1;
+            let month = if mp < 10 { mp + 3 } else { mp - 9 };
+            let year = yoe + era * 400 + i64::from(month <= 2);
+            format!(
+                "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+                rem / 3600,
+                rem / 60 % 60,
+                rem % 60
+            )
+        }
+    }
+
+    impl<T: Stamp> Stamp for Option<T> {
+        fn now() -> Option<T> {
+            Some(T::now())
+        }
+    }
+
+    /// An auto field of an object being read: what it holds, or now when it
+    /// is left out.
+    pub fn stamped<T: crate::FromJson + Stamp>(
+        p: &mut crate::json::Problems,
+        members: &[(String, crate::Value)],
+        name: &str,
+    ) -> Option<T> {
+        match members.iter().rev().find(|(k, _)| k == name) {
+            Some((_, v)) => p.read(name, v),
+            None => Some(T::now()),
+        }
+    }
     /// A handler's parameters, read by name (see `input.rs`).
     pub mod input {
         pub use crate::input::{all, body, failed, flag, optional, required};
@@ -1052,8 +1254,20 @@ pub mod rt {
         }
     }
 
+    /// What the form sent for `name`, when an action refused it: an
+    /// `<input name="x">` in a `<form action="?/…">` shows it again.
+    pub fn kept<'a>(cx: &'a Cx, name: &str) -> Option<std::borrow::Cow<'a, str>> {
+        cx.get::<Error>()?;
+        cx.input(name)
+    }
+
     pub fn respond(out: &mut Out, r: Response) {
         out.response = Some(r);
+    }
+
+    /// The request is routed to a `+server.rs` endpoint: its errors are JSON.
+    pub fn endpoint(cx: &mut Cx) {
+        cx.api = true;
     }
 
     /// The `before` hook has run: the headers it set stay on this request's
@@ -1114,9 +1328,10 @@ pub mod rt {
         Error {
             status: 405,
             message: "Method Not Allowed".into(),
-            header: Some(("allow", allow.into())),
+            header: Some(Box::new(("allow", allow.into()))),
             source: None,
             fields: Vec::new(),
+            code: None,
         }
     }
 
@@ -1190,5 +1405,26 @@ mod tests {
         assert_eq!(super::state::<Answer>().0, 2, "a copy made before is stale");
         let other = std::thread::spawn(|| super::state::<Answer>().0);
         assert_eq!(other.join().unwrap(), 2);
+    }
+
+    #[test]
+    fn timestamps_and_error_codes() {
+        use super::rt::rfc3339;
+        assert_eq!(rfc3339(0), "1970-01-01T00:00:00Z");
+        assert_eq!(rfc3339(951_868_800), "2000-03-01T00:00:00Z");
+        assert_eq!(rfc3339(1_709_164_800), "2024-02-29T00:00:00Z");
+        assert_eq!(rfc3339(1_735_689_599), "2024-12-31T23:59:59Z");
+
+        let e = super::Error::invalid("title", "is required");
+        assert_eq!(
+            e.json("title: is required", false),
+            r#"{"status":422,"code":"invalid","error":"title: is required","errors":{"title":"is required"}}"#
+        );
+        let e = super::Error::new(409, "Taken").with_code("email_taken");
+        assert_eq!(
+            e.json("Taken", true),
+            r#"{"type":"about:blank","title":"Conflict","status":409,"code":"email_taken","detail":"Taken"}"#
+        );
+        assert_eq!(super::Error::new(418, "x").code(), "client_error");
     }
 }

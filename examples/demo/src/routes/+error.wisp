@@ -1,4 +1,4 @@
-<head><title>{status}</title></head>
+<title>{status}</title>
 
 <div class="text-column error">
   <img class="vanish" src="/favicon.svg" alt="" width="72" height="72">

@@ -2,7 +2,7 @@
 
 > A fast, fun web framework for Rust: file routes, `.wisp` templates compiled to Rust, form actions that work without JavaScript, optional browser reactivity, one binary. Built so apps take as few tokens as possible to write.
 
-A page is one file: `src/routes/blog/[slug]/+page.wisp` holds a `---` block of Rust (statements are the load, `#[action]` functions handle form posts) and then the markup, which reads the block's names. `+server.rs` files are JSON endpoints. Read AGENTS.md first: it is the complete, compact reference.
+A page is one file: `src/routes/blog/[slug]/+page.wisp` holds a `---` block of Rust (statements are the load, `#[action]` functions handle form posts) and then the markup, which reads the block's names. `+server.rs` files are JSON endpoints; a `#[derive(Rest)]` struct in one is a whole CRUD API, saved across restarts, with filters (`?done=true&title.has=x`), sorting, cursor pages, ETags, bulk creates, timestamps and hooks (`fn before_create(note: &mut Note)`). Read AGENTS.md first: it is the complete, compact reference.
 
 ## Docs
 
@@ -10,7 +10,7 @@ A page is one file: `src/routes/blog/[slug]/+page.wisp` holds a `---` block of R
 - [README](README.md): overview and quick start
 - [Design](docs/design.md): routes, page logic, templates, components, forms, cookies, hooks, runtime, build
 - [Client code](docs/client.md): scripts, runes, directives, client blocks, components, stores, router, islands
-- [APIs](docs/api.md): endpoints, JSON input and validation, errors, CORS, auth, rate limits, channels, jobs, OpenAPI
+- [APIs](docs/api.md): resources and their queries, storage and `wisp::Store`, endpoints, JSON input and validation, error codes, CORS, auth, webhooks, idempotency, rate limits, streams, channels, jobs, OpenAPI, TypeScript client
 - [Deploy](docs/deploy.md): binary, static, Docker, Cloudflare, Deno, Vercel, Netlify, Node
 - [Embedding and tests](docs/embed.md): in-process tests, tower, axum, Lambda
 

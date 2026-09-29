@@ -1,41 +1,66 @@
 # Benchmarks
 
-Wisp against the stacks it competes with, on the same machine, doing the
-same work: ASP.NET Core, Actix Web, Axum, Go's net/http, Fiber, Fastify,
-SvelteKit and Next.js.
+Wisp against the ten most popular web frameworks and the ten fastest
+(TechEmpower's top tier), on the same machine, doing the same work.
+
+- Popular: ASP.NET Core, Actix Web, Axum, Go's net/http, Gin, Fiber,
+  Express, Fastify, SvelteKit, Next.js.
+- Fastest: Actix Web, may-minihttp, xitca-web, ntex, hyper, fasthttp,
+  Vert.x, uWebSockets.js, Bun, Elysia.
 
 ```
 cargo run -r -p bench-run -- [-c 64] [-d 10] [-w 5] [--rounds 1]
-    [--only wisp,actix] [--paths fortunes] [--no-build] [--csv results.csv]
+    [--group fast|popular|all] [--only wisp,actix] [--paths fortunes]
+    [--no-build] [--csv results.csv]
 ```
 
 Runs on Linux and Windows. Needs Rust; a server whose toolchain (the .NET 10
-SDK, Go, Node) is missing is skipped with a note. `--only` and `--paths`
-pick servers and paths by substring, `--rounds` runs every server that many
-times, taking turns, and reports the mean, and `--extra NAME=COMMAND` adds a
-server of your own (it gets `PORT` and `THREADS`, and is measured on
-`/plaintext`).
+SDK, Go, Node, Bun, a JDK and Maven) is missing, or whose build fails, is
+skipped with a note. may-minihttp, uWebSockets.js, Bun and Elysia run on
+Linux only (may-minihttp's Windows I/O answers a kept-alive connection's
+first request again; the others share the port with SO_REUSEPORT).
+`--group` picks either list or both (the default), Wisp always included;
+`--only` and `--paths` narrow it by substring, `--rounds` runs every server
+that many times, taking turns, and reports the mean, and `--extra
+NAME=COMMAND` adds a server of your own (it gets `PORT` and `THREADS`, and
+is measured on `/plaintext`). The table is sorted fastest first on each
+path, and a `rank` line per path gives Wisp's place.
 
-- `app/`: the Wisp side. `/fortunes` is TechEmpower's fortunes test without
-  the database: copy 12 rows, add one, sort by message, render an HTML table
-  with escaping. `/plaintext` returns `Hello, World!`, and `/json`
-  (Wisp, Actix and Axum only) serializes `{"message":"Hello, World!"}`
-  per request.
-- `aspnet/`: the same two endpoints, written the way the ASP.NET Core docs
-  and templates do: `/fortunes` as a Razor Page, `/fortunes-blazor` as a Blazor
-  component (static SSR), and `/plaintext` as a minimal API. Logging is set to
+Every server answers the same three paths. `/fortunes` is TechEmpower's
+fortunes test without the database: copy 12 rows, add one, sort by message,
+render an HTML table with escaping. `/plaintext` returns `Hello, World!`,
+and `/json` serializes `{"message":"Hello, World!"}` per request. None
+caches a response.
+
+- `app/`: the Wisp side. It also answers `/messages/1`, `/json`'s object
+  as a `#[derive(Rest)]` row through the resource's own GET (lock, JSON,
+  ETag): on Windows (8 server cores, mean of 3 rounds) 8.2 µs of CPU a
+  request to `/json`'s 7.7, the half microsecond being the table's lock,
+  the ETag and its 33 bytes.
+- `aspnet/`: written the way the ASP.NET Core docs and templates do:
+  `/fortunes` as a Razor Page, `/fortunes-blazor` as a Blazor component
+  (static SSR), `/plaintext` and `/json` as minimal APIs. Logging is set to
   `Warning` as the templates' appsettings do, and the HTML encoder emits
   non-ASCII as is, like Wisp.
-- `rust/`: Actix Web and Axum in one binary (`bench-rust actix|axum`), both
-  rendering with Askama, which compiles templates to Rust as Wisp does. A
+- `rust/`: Actix Web, Axum, may-minihttp, xitca-web, ntex and bare hyper
+  (a tokio runtime per thread, SO_REUSEPORT) in one binary (`bench-rust
+  actix|axum|may|xitca|ntex|hyper`), all rendering with Askama, which
+  compiles templates to Rust as Wisp does, and serializing with serde. A
   Cargo workspace of its own, so none of it reaches Wisp's `Cargo.lock`.
-- `go/`: net/http and Fiber v3 in one binary (`bench-go nethttp|fiber`),
-  both rendering with `html/template`, which Fiber's html engine wraps.
-- `node/`: Fastify rendering with a template literal (no template engine,
-  Node's fastest path), SvelteKit with adapter-node (`+page.server.js` and
-  `+page.svelte`), and Next.js with the App Router (a server component forced
-  dynamic, so it renders per request like the rest, not once at build). Each
-  runs under `cluster.mjs`, one process per server CPU, as `pm2 -i` does.
+- `go/`: net/http, Gin, Fiber v3 and bare fasthttp in one binary
+  (`bench-go nethttp|gin|fiber|fasthttp`), all rendering with
+  `html/template` (Gin's and Fiber's html renderers wrap it) and
+  serializing with `encoding/json`.
+- `java/`: Vert.x 4.5 on epoll, a verticle per event loop, the page from a
+  `StringBuilder` as its TechEmpower entry does. `mvn package`.
+- `node/`: Express (its defaults) and Fastify, the page from a template
+  literal (`fortunes.mjs`: no template engine, the fastest path), SvelteKit
+  with adapter-node (`+page.server.js` and `+page.svelte`), Next.js with the
+  App Router (a server component forced dynamic, so it renders per request
+  like the rest, not once at build), and uWebSockets.js. Each runs under
+  `cluster.mjs`, one process per server CPU, as `pm2 -i` does. Bun
+  (`Bun.serve`) and Elysia use the same page and run under
+  `bun-cluster.js`, one process per CPU sharing the port.
 - `run/`: the runner, `bench-run`.
 - `load/`: the load generator, a library the runner calls and a command of
   its own (`wisp-load http://127.0.0.1:3000/ -c 64 -d 10`). It is

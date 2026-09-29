@@ -229,23 +229,20 @@ fn read_response(s: &mut TcpStream, buf: &mut Vec<u8>) -> Option<Response> {
     })
 }
 
+/// Reads into a block of this thread's, zeroed once, then appends what came:
+/// zeroing `buf`'s spare room for every read cost a 64 KB memset per
+/// response, on the cores the load shares.
 fn fill(s: &mut TcpStream, buf: &mut Vec<u8>) -> Option<()> {
-    let len = buf.len();
-    if buf.capacity() - len < 16 * 1024 {
-        buf.reserve(64 * 1024);
+    thread_local! {
+        static BLOCK: std::cell::RefCell<Vec<u8>> = std::cell::RefCell::new(vec![0; 64 * 1024]);
     }
-    buf.resize(buf.capacity(), 0);
-    let n = s.read(&mut buf[len..]);
-    match n {
+    BLOCK.with_borrow_mut(|block| match s.read(block) {
         Ok(n) if n > 0 => {
-            buf.truncate(len + n);
+            buf.extend_from_slice(&block[..n]);
             Some(())
         }
-        _ => {
-            buf.truncate(len);
-            None
-        }
-    }
+        _ => None,
+    })
 }
 
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {

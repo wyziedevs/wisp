@@ -1,4 +1,5 @@
-// TechEmpower's fortunes minus the database, shared by the Node servers.
+// TechEmpower's fortunes minus the database, shared by the Node and Bun
+// servers.
 const rows = [
     { id: 1, message: 'fortune: No such file or directory' },
     { id: 2, message: "A computer scientist is someone who fixes things that aren't broken." },
@@ -18,4 +19,23 @@ export function load() {
     const list = [...rows, { id: 0, message: 'Additional fortune added at request time.' }];
     list.sort((a, b) => (a.message < b.message ? -1 : a.message > b.message ? 1 : 0));
     return list;
+}
+
+const escapes = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+const escape = (s) => s.replace(/[&<>"']/g, (c) => escapes[c]);
+
+// The page, from a template literal: no template engine, the fastest way to
+// produce HTML in JavaScript. Every server without an engine of its own
+// uses it.
+export function render() {
+    const rows = load().map((f) => `<tr><td>${f.id}</td><td>${escape(f.message)}</td></tr>`).join('\n');
+    return `<!DOCTYPE html>
+<html>
+<head><title>Fortunes</title></head>
+<body><table>
+<tr><th>id</th><th>message</th></tr>
+${rows}
+</table></body>
+</html>
+`;
 }

@@ -97,9 +97,12 @@ COPY . .
 RUN cargo build --release && cp target/release/{package} /server
 
 FROM debian:stable-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/* \\
+ && mkdir /data && chown nobody /data
 COPY --from=build /server /usr/local/bin/server
-ENV HOST=0.0.0.0 PORT=3000
+# Saved tables (#[derive(Rest)], Table::saved) live in /data: mount a volume there.
+ENV HOST=0.0.0.0 PORT=3000 WISP_DATA=/data
+VOLUME /data
 EXPOSE 3000
 USER nobody
 CMD [\"server\"]
@@ -114,6 +117,7 @@ node_modules
 .wisp/*
 !.wisp/app.css
 dist
+data
 Dockerfile
 .dockerignore
 ";

@@ -425,7 +425,7 @@ fn bound(src: &str, t: &[Token]) -> Vec<bool> {
                 }
                 function(j, &mut scopes);
             }
-            "catch" => function(k + 1, &mut scopes),
+            "catch" if is(k + 1, "(") => function(k + 1, &mut scopes),
             "class" if tok.depth > 0 && t.get(k + 1).is_some_and(|n| n.kind == Kind::Ident) => {
                 scopes.push((vec![k + 1], k, block_end(k)));
             }
@@ -790,10 +790,18 @@ fn shorthand(src: &str, t: &[Token], k: usize) -> bool {
     let open = (0..k).rev().find(|&j| t[j].depth < t[k].depth).unwrap_or(0);
     open.checked_sub(1).is_some_and(|p| {
         t[p].kind == Kind::String
-            || !matches!(
-                t[p].text(src),
-                ")" | ";" | "{" | "}" | "=>" | "else" | "do" | "try" | "finally"
-            )
+            || match t[p].text(src) {
+                ")" | ";" | "{" | "}" | "=>" | "else" | "do" | "try" | "finally" => false,
+                // `case x: {` opens a block; `a ? b : {` and `k: {` an object.
+                ":" => !(0..p)
+                    .rev()
+                    .take_while(|&j| t[j].depth >= t[p].depth)
+                    .filter(|&j| t[j].depth == t[p].depth)
+                    .map(|j| t[j].text(src))
+                    .find(|w| matches!(*w, "case" | "default" | "?" | "{" | "," | ";" | "}"))
+                    .is_some_and(|w| w == "case" || w == "default"),
+                _ => true,
+            }
     })
 }
 
@@ -1349,8 +1357,74 @@ pub fn rewrite(src: &str, r: &Reactive) -> Result<String, (usize, String)> {
         ));
     }
     let mut edits = Vec::new();
-    refs(src, &t, r, &[], &mut edits)?;
+    let skip = selects(src, &t, r, &mut edits);
+    refs(src, &t, r, &skip, &mut edits)?;
     Ok(apply(src, edits))
+}
+
+/// The edits that make `x === e` (and `!==`), for a state variable `x`,
+/// `__wisp_eq(x, e)`: what reads it then runs again only when the answer
+/// may change, when `x` becomes `e` or stops being it (see live.js's `eq`).
+/// So `class:on="selected === row.id"` redraws two rows of a list, not all.
+/// Only where nothing before `x` binds tighter, and `e` ends on its line.
+/// The tokens of the `x`s are returned.
+fn selects(
+    src: &str,
+    t: &[Token],
+    r: &Reactive,
+    edits: &mut Vec<(usize, usize, String)>,
+) -> Vec<usize> {
+    let own = bound(src, t);
+    let punct = |j: usize, set: &[&str]| t[j].kind == Kind::Punct && set.contains(&t[j].text(src));
+    let mut out = Vec::new();
+    for k in 0..t.len().saturating_sub(2) {
+        let (tok, op) = (t[k], t[k + 1]);
+        let name = tok.text(src);
+        let open = k == 0
+            || punct(
+                k - 1,
+                &[
+                    "(", "[", "{", ",", ";", "?", ":", "&&", "||", "??", "=>", "=",
+                ],
+            )
+            || t[k - 1].is(src, Kind::Ident, "return");
+        if tok.kind != Kind::Ident
+            || tok.member
+            || tok.key
+            || own[k]
+            || !open
+            || !punct(k + 1, &["===", "!=="])
+            || !r.state.iter().any(|s| s == name)
+            || r.derived.iter().any(|d| d == name)
+        {
+            continue;
+        }
+        let d = tok.depth;
+        let loose = [
+            "&&", "||", "??", "?", ":", ",", ";", "==", "!=", "===", "!==", "&", "|", "^", "=",
+            "=>",
+        ];
+        let mut e = k + 2;
+        while e < t.len()
+            && t[e].depth >= d
+            && !(t[e].depth == d && (punct(e, &loose) || t[e].newline))
+        {
+            e += 1;
+        }
+        // A new line goes on the expression, unless a statement starts there.
+        let split = t.get(e).is_some_and(|n| {
+            let word = n.kind == Kind::Ident && !matches!(n.text(src), "in" | "instanceof");
+            n.depth == d && n.newline && !word && !punct(e, &loose)
+        });
+        if e == k + 2 || split {
+            continue;
+        }
+        let not = if op.text(src) == "!==" { "!" } else { "" };
+        edits.push((tok.start, op.end, format!("{not}__wisp_eq({name},")));
+        edits.push((t[e - 1].end, t[e - 1].end, ")".into()));
+        out.push(k);
+    }
+    out
 }
 
 /// `src` without its comments and the whitespace JavaScript does not need,
@@ -1398,6 +1472,144 @@ pub fn minify(src: &str) -> String {
         prev = Some(tok);
     }
     out
+}
+
+/// The runtime's own files as release builds serve them: `mangle`d, then
+/// `minify`d.
+pub fn runtime(src: &str) -> String {
+    minify(&mangle(src))
+}
+
+/// `src` with the names it binds shortened, for the runtime's own files:
+/// each one not exported and never read unbound (as a global) becomes the
+/// shortest name free, the most used first. A name is renamed alike
+/// wherever it is bound, so every scope still sees what it saw. Properties,
+/// object keys and method names stay; `{ a }` becomes `{ a: x }`, and
+/// `const` is `let`. The code keeps to what this reads: no `eval`, `with`,
+/// labels or class fields.
+/// With `export { … }` or `export default`, `src` is left as it is.
+pub fn mangle(src: &str) -> String {
+    let t = tokens(src);
+    let own = bound(src, &t);
+    let top: Vec<String> = declarations(src).into_iter().map(|(n, _)| n).collect();
+    let is = |j: usize, s: &str| {
+        t.get(j)
+            .is_some_and(|n| n.kind == Kind::Punct && n.text(src) == s)
+    };
+    let word = |j: usize| {
+        t.get(j)
+            .filter(|n| n.kind == Kind::Ident)
+            .map(|n| n.text(src))
+    };
+    // What the module exports keeps its name.
+    let mut kept: Vec<&str> = Vec::new();
+    for k in (0..t.len()).filter(|&k| t[k].depth == 0 && word(k) == Some("export")) {
+        match word(k + 1) {
+            Some("const" | "let" | "var") => {
+                let mut names = Vec::new();
+                let mut j = pattern(src, &t, k + 2, &mut names);
+                // More declarators after top-level commas.
+                while j < t.len() && !is(j, ";") && !(t[j].newline && t[j].depth == 0) {
+                    if t[j].depth == 0 && is(j, ",") {
+                        j = pattern(src, &t, j + 1, &mut names);
+                    } else {
+                        j += 1;
+                    }
+                }
+                kept.extend(names.iter().map(|&n| t[n].text(src)));
+            }
+            Some("function" | "class") => kept.extend(word(k + 2)),
+            Some("async") => kept.extend(word(k + 3)),
+            _ => return src.to_string(),
+        }
+    }
+    // Each name's tokens, and whether each of them is bound where it is.
+    let mut uses: std::collections::BTreeMap<&str, (Vec<usize>, bool)> = Default::default();
+    for (j, n) in t.iter().enumerate() {
+        let w = n.text(src);
+        if n.kind != Kind::Ident || n.member || n.key || is_reserved(w) {
+            continue;
+        }
+        // `get x()`, `static`, `async`: words; `name(…) {`: a method's name.
+        let modifier = matches!(w, "get" | "set" | "static" | "async")
+            && (word(j + 1).is_some() || is(j + 1, "[") || is(j + 1, "#"));
+        let named = j.checked_sub(1).is_some_and(|p| {
+            word(p) == Some("function") || (is(p, "*") && p > 0 && word(p - 1) == Some("function"))
+        });
+        let method = !named && is(j + 1, "(") && {
+            let c = close(&t, j + 1);
+            is(c + 1, "{") && !t[c + 1].newline
+        };
+        if modifier || method {
+            continue;
+        }
+        let u = uses.entry(w).or_insert((Vec::new(), true));
+        u.0.push(j);
+        u.1 &= own[j] || top.iter().any(|x| x == w);
+    }
+    let taken = |w: &str| {
+        is_reserved(w)
+            || matches!(
+                w,
+                "with"
+                    | "yield"
+                    | "of"
+                    | "as"
+                    | "let"
+                    | "get"
+                    | "set"
+                    | "static"
+                    | "async"
+                    | "from"
+                    | "arguments"
+                    | "eval"
+                    | "undefined"
+                    | "NaN"
+                    | "Infinity"
+            )
+    };
+    let mut names: Vec<(&str, &Vec<usize>)> = uses
+        .iter()
+        .filter(|(w, (_, ok))| *ok && !kept.contains(w) && !taken(w))
+        .map(|(w, (at, _))| (*w, at))
+        .collect();
+    names.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then(a.0.cmp(b.0)));
+    // New names must not be a name that stays: a global, an export.
+    let stays = |w: &str| taken(w) || uses.get(w).is_some_and(|_| !names.iter().any(|n| n.0 == w));
+    const FIRST: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_$";
+    const NEXT: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_$0123456789";
+    let mut i = 0;
+    let mut edits = Vec::new();
+    for (w, at) in &names {
+        let short = loop {
+            let mut s = String::from(FIRST[i % FIRST.len()] as char);
+            let mut n = i / FIRST.len();
+            while n > 0 {
+                n -= 1;
+                s.push(NEXT[n % NEXT.len()] as char);
+                n /= NEXT.len();
+            }
+            i += 1;
+            if !stays(&s) {
+                break s;
+            }
+        };
+        for &j in at.iter() {
+            let text = if shorthand(src, &t, j) {
+                format!("{w}: {short}")
+            } else {
+                short.clone()
+            };
+            edits.push((t[j].start, t[j].end, text));
+        }
+    }
+    // `const` does what `let` does here, in fewer bytes.
+    for n in &t {
+        if n.kind == Kind::Ident && !n.member && !n.key && n.text(src) == "const" {
+            edits.push((n.start, n.end, "let".into()));
+        }
+    }
+    apply(src, edits)
 }
 
 /// `src` with each range replaced by spaces, its line breaks kept, so the
@@ -1568,6 +1780,29 @@ mod tests {
             .unwrap(),
             "({ item }, event) => (n.v++, item.x + double.v + cart.value.length)"
         );
+        // `state === e` is a selector; not where it is an operand of
+        // something tighter, on a derived value, or split over lines.
+        for (src, out) in [
+            (
+                "({ row }) => (n === row.id)",
+                "({ row }) => (__wisp_eq(n, row.id))",
+            ),
+            (
+                "({ row }) => (n !== row.id && list)",
+                "({ row }) => (!__wisp_eq(n, row.id) && list.v)",
+            ),
+            (
+                "() => (a ? n === f(m) : 0)",
+                "() => (a.v ? __wisp_eq(n, f(m.v)) : 0)",
+            ),
+            ("() => (!n === 1)", "() => (!n.v === 1)"),
+            ("() => (n.x === 1)", "() => (n.v.x === 1)"),
+            ("() => (double === 1)", "() => (double.v === 1)"),
+            ("() => { n === 1\nf() }", "() => { __wisp_eq(n, 1)\nf() }"),
+            ("() => { n === a\n.b }", "() => { n.v === a.v\n.b }"),
+        ] {
+            assert_eq!(rewrite(src, &r).unwrap(), out);
+        }
         for (bad, what) in [
             ("f($derived(1))", "$derived"),
             ("let x = $derived()", "$derived"),
@@ -1945,5 +2180,27 @@ mod tests {
         let texts =
             |s: &str| -> Vec<String> { tokens(s).iter().map(|t| t.text(s).to_string()).collect() };
         assert_eq!(texts(src), texts(&minify(src)));
+    }
+
+    #[test]
+    fn mangle_renames_what_is_bound() {
+        let src = "import { page } from 'wisp'\nexport const kept = 1\nconst observer = 2\n\
+                   function update(node, { deep }) { const node2 = { node, deep: 1 }; return node2.node + observer }\n\
+                   const o = { update(x) { return x }, get size() { return observer } }\n\
+                   try { f() } catch (error) { console.log(error, document) }\n\
+                   switch (observer) { case 1: { observer; break } }";
+        // The most used names get the shortest, never a global's (`f`);
+        // globals, imports, exports, keys, properties and method names stay.
+        assert_eq!(
+            mangle(src),
+            "import { page } from 'wisp'\nexport let kept = 1\nlet a = 2\n\
+             function i(c, { deep: g }) { let d = { node: c, deep: 1 }; return d.node + a }\n\
+             let h = { update(e) { return e }, get size() { return a } }\n\
+             try { f() } catch (b) { console.log(b, document) }\n\
+             switch (a) { case 1: { a; break } }"
+        );
+        // `export { … }` leaves a file as it is.
+        let src = "const x = 1\nexport { x }";
+        assert_eq!(mangle(src), src);
     }
 }

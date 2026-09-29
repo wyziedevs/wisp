@@ -131,6 +131,12 @@ enum Shim {
 /// `kind` says, whatever `f` returns. The file's errors are the caller's to
 /// prefix with its path.
 fn shim(f: &FnItem, kind: Shim) -> Result<String, String> {
+    if !f.checks.is_empty() && !(kind == Shim::Answer && f.action) {
+        return Err(format!(
+            "{}: `#[validate]` on a parameter checks an action's input; an endpoint's `body: T` is checked by `T`'s fields",
+            f.line
+        ));
+    }
     let mut lets = String::new();
     let mut args = Vec::new();
     if f.implicit_cx {
@@ -151,7 +157,10 @@ fn shim(f: &FnItem, kind: Shim) -> Result<String, String> {
         let (line, arg) = if name == "body" && !text(&t) && !inner.is_some_and(text) {
             // `body: T` is the whole JSON body; a string `body` is still
             // a field of that name.
-            (format!("let {v} = ::wisp::rt::input::body(cx)?;"), v)
+            (
+                format!("let {v} = ::wisp::rt::input::body(cx)?;"),
+                v.clone(),
+            )
         } else if is_str_ref(&t) {
             (
                 format!("let {v}: String = {}?;", read("required")),
@@ -163,18 +172,32 @@ fn shim(f: &FnItem, kind: Shim) -> Result<String, String> {
                 format!("{v}.as_deref()"),
             )
         } else if t == "bool" {
-            (format!("let {v} = {};", read("flag")), v)
+            (format!("let {v} = {};", read("flag")), v.clone())
         } else {
             let how = match rust_scan::last_segment(&t) {
                 "Option" => "optional",
                 "Vec" => "all",
                 _ => "required",
             };
-            (format!("let {v} = {}?;", read(how)), v)
+            (format!("let {v} = {}?;", read(how)), v.clone())
         };
         lets.push_str(&line);
         lets.push(' ');
+        for (p, rules) in &f.checks {
+            if p.trim_start_matches("mut ").trim() == name {
+                lets.push_str(&checks(name, &v, rules).map_err(|e| format!("{}: {e}", f.line))?);
+            }
+        }
         args.push(arg);
+    }
+    if let Some((p, _)) = f.checks.iter().find(|(p, _)| {
+        let p = p.trim_start_matches("mut ").trim();
+        !f.inputs().is_ok_and(|ins| ins.iter().any(|(n, _)| *n == p))
+    }) {
+        return Err(format!(
+            "{}: `#[validate]` is on `{p}`, which is not read from the request",
+            f.line
+        ));
     }
     let call = format!(
         "super::{}({}){}{}",
@@ -209,7 +232,16 @@ fn shim(f: &FnItem, kind: Shim) -> Result<String, String> {
                     format!("{call}.ok_or_else(|| ::wisp::Error::new(404, \"Not Found\"))")
                 }
                 Returns::Nothing => format!("let () = {call}; Ok(::wisp::Response::empty(204))"),
-                Returns::Other => format!("Ok(::wisp::Response::json_of(&{call}))"),
+                // `Option<T>`: `None` is a 404, `Some(())` a 204.
+                Returns::Other => match f.optional_value() {
+                    Some("()") => format!(
+                        "{call}.map(|()| ::wisp::Response::empty(204)).ok_or_else(|| ::wisp::Error::new(404, \"Not Found\"))"
+                    ),
+                    Some(_) => format!(
+                        "{call}.map(|v| ::wisp::Response::json_of(&v)).ok_or_else(|| ::wisp::Error::new(404, \"Not Found\"))"
+                    ),
+                    None => format!("Ok(::wisp::Response::json_of(&{call}))"),
+                },
             };
             format!(
                 "pub async fn {name}(cx: &mut ::wisp::Cx) -> ::wisp::Result<::wisp::Response> {{ {lets}{back} }}"
@@ -219,6 +251,96 @@ fn shim(f: &FnItem, kind: Shim) -> Result<String, String> {
             format!("pub async fn init() -> ::wisp::Result<()> {{ let () = {call}; Ok(()) }}")
         }
     })
+}
+
+/// The code a shim runs after reading the input `name` into `v`, for its
+/// `#[validate(rules)]`: each rule that fails returns `invalid(name, …)`,
+/// so the page shows again as a 422 with the problem.
+fn checks(name: &str, v: &str, rules: &str) -> Result<String, String> {
+    let mut calls = Vec::new();
+    for rule in rules.split(',').map(str::trim).filter(|r| !r.is_empty()) {
+        let (key, value) = match rule.split_once('=') {
+            Some((k, x)) => (k.trim(), Some(x.trim())),
+            None => (rule, None),
+        };
+        match (key, value) {
+            ("min" | "max", Some(x)) => calls.push(format!("{key}(&{v}, ({x}) as f64)")),
+            ("min_len" | "max_len", Some(x)) => calls.push(format!("{key}(&{v}, {x})")),
+            ("len", Some(x)) => {
+                let (lo, hi) = len_range(x)?;
+                calls.extend(lo.map(|lo| format!("min_len(&{v}, {lo})")));
+                calls.extend(hi.map(|hi| format!("max_len(&{v}, {hi})")));
+            }
+            ("email", None) => calls.push(format!("email(&{v})")),
+            ("email", Some(_)) => return Err("`email` takes no value".into()),
+            ("min" | "max" | "min_len" | "max_len" | "len", None) => {
+                return Err(format!("`{key}` needs a value: `{key} = 1`"));
+            }
+            _ => {
+                return Err(format!(
+                    "#[validate] has no `{key}`: it takes len, min, max, min_len, max_len and email"
+                ));
+            }
+        }
+    }
+    Ok(calls
+        .iter()
+        .map(|c| {
+            format!(
+                "if let Some(__m) = ::wisp::json::check::{c} {{ return ::wisp::invalid({}, __m); }} ",
+                lit(name)
+            )
+        })
+        .collect())
+}
+
+/// `1..=100` → (Some("1"), Some("100")); `..10` → (None, Some("10 - 1")).
+fn len_range(x: &str) -> Result<(Option<String>, Option<String>), String> {
+    let x: String = x.chars().filter(|c| !c.is_whitespace()).collect();
+    let Some((lo, hi)) = x.split_once("..") else {
+        return Err(format!(
+            "`len = {x}` needs a range, such as `len = 1..=100`"
+        ));
+    };
+    let lo = (!lo.is_empty()).then(|| lo.to_string());
+    let hi = match hi.strip_prefix('=') {
+        Some(h) => (!h.is_empty()).then(|| h.to_string()),
+        None => (!hi.is_empty()).then(|| format!("{hi} - 1")),
+    };
+    if lo.is_none() && hi.is_none() {
+        return Err("`len = ..` needs a bound, such as `len = 1..=100`".into());
+    }
+    Ok((lo, hi))
+}
+
+/// A component has no `cx`, so its action forms' inputs do not show what
+/// was sent again (see `template::KEPT`): their value is never there.
+fn unkeep(nodes: &mut [Node]) {
+    for n in nodes {
+        match n {
+            Node::Attr { code, .. } if code.src.starts_with(template::KEPT) => {
+                code.src = "None::<&str>".into();
+            }
+            Node::If {
+                branches,
+                otherwise,
+            } => {
+                branches.iter_mut().for_each(|(_, b)| unkeep(b));
+                otherwise.iter_mut().for_each(|b| unkeep(b));
+            }
+            Node::Each {
+                body, otherwise, ..
+            } => {
+                unkeep(body);
+                otherwise.iter_mut().for_each(|b| unkeep(b));
+            }
+            Node::Match { arms, .. } => arms.iter_mut().for_each(|(_, b)| unkeep(b)),
+            Node::Head(b) | Node::Snippet { body: b, .. } => unkeep(b),
+            Node::Component { children, .. } => children.iter_mut().for_each(|b| unkeep(b)),
+            Node::Client(branches) => branches.iter_mut().for_each(|(_, b)| unkeep(b)),
+            _ => {}
+        }
+    }
 }
 
 /// `&str` or `&'a str`, without spaces.
@@ -236,6 +358,12 @@ fn is_str_ref(t: &str) -> bool {
 }
 
 pub fn generate(input: &Input) -> Result<String, String> {
+    generate_all(input).map(|(code, _)| code)
+}
+
+/// The generated Rust, and the TypeScript client of the app's endpoints
+/// (empty without any).
+pub fn generate_all(input: &Input) -> Result<(String, String), String> {
     let root = input.root;
     let routes_dir = root.join("src").join("routes");
     let tree = crate::routes::scan(&routes_dir)?;
@@ -392,6 +520,7 @@ pub fn generate(input: &Input) -> Result<String, String> {
                 ));
             }
             let mut t = t;
+            unkeep(&mut t.nodes);
             let rune = match &t.script {
                 Some(s) => js::props_rune(&s.src).map_err(|(off, msg)| {
                     let (line, col) = script_pos(s, off);
@@ -529,7 +658,10 @@ pub fn generate(input: &Input) -> Result<String, String> {
     struct RouteInfo {
         page_tpl: Option<usize>,
         page_fns: Vec<FnItem>,
-        server_fns: Vec<FnItem>,
+        /// Its `+server.rs` handlers, their module, and whether it has `before`.
+        server: Vec<Handler>,
+        server_mod: String,
+        before: bool,
         /// The types its `+server.rs` defines, for the OpenAPI document.
         server_types: Vec<rust_scan::TypeItem>,
         /// The module whose `BODY_LIMIT` applies.
@@ -563,11 +695,15 @@ pub fn generate(input: &Input) -> Result<String, String> {
         Ok(())
     };
     let mut infos = Vec::new();
+    // Each `+server.rs` once, though it may serve two routes.
+    let mut servers: Vec<ServerFile> = Vec::new();
     for (i, r) in tree.routes.iter().enumerate() {
         let mut info = RouteInfo {
             page_tpl: None,
             page_fns: Vec::new(),
-            server_fns: Vec::new(),
+            server: Vec::new(),
+            server_mod: String::new(),
+            before: false,
             server_types: Vec::new(),
             body_limit: None,
             data: Vec::new(),
@@ -681,55 +817,61 @@ pub fn generate(input: &Input) -> Result<String, String> {
         }
         if r.server {
             let file = r.dir.join("+server.rs");
-            let items = scan(&file)?;
-            let mut shims = Vec::new();
-            body_limit(&mut info, &items, &file, format!("server_{i}"), &mut shims)?;
-            info.server_types = items.types;
-            let fns = items.fns;
-            let at = |f: &FnItem, msg: String| format!("{}:{}: {msg}", rel(&file), f.line);
-            if let Some(f) = fns.iter().find(|f| f.action) {
-                return Err(at(
-                    f,
-                    format!(
-                        "`{}` is marked #[action], but actions belong in a +page.rs",
-                        f.name
-                    ),
-                ));
-            }
-            if let Some(f) = fns.iter().find(|f| f.name == "head" || f.name == "options") {
-                return Err(at(
-                    f,
-                    format!(
-                        "`{}` is never called: HEAD is answered by `get`, and OPTIONS by Wisp",
-                        f.name
-                    ),
-                ));
-            }
-            info.server_fns = fns
-                .into_iter()
-                .filter(|f| METHODS.iter().any(|(m, _, _)| *m == f.name))
+            let k = match servers.iter().position(|s: &ServerFile| s.file == file) {
+                Some(k) => {
+                    if servers[k].limit {
+                        if info.body_limit.is_some() {
+                            return Err(format!(
+                                "{}: `BODY_LIMIT` is also set in this route's +page.rs; set it in one place",
+                                rel(&file)
+                            ));
+                        }
+                        info.body_limit = Some(servers[k].module.clone());
+                    }
+                    k
+                }
+                None => {
+                    let items = scan(&file)?;
+                    let module = format!("server_{i}");
+                    let mut shims = Vec::new();
+                    body_limit(&mut info, &items, &file, module.clone(), &mut shims)?;
+                    let segs = &r.segs[..r.segs.len() - usize::from(r.member)];
+                    let (handlers, before) = server_handlers(&items, segs, &mut shims)
+                        .map_err(|e| format!("{}:{e}", rel(&file)))?;
+                    user_mods.push(UserMod {
+                        name: module.clone(),
+                        file: file.clone(),
+                        inline: None,
+                        shims,
+                    });
+                    servers.push(ServerFile {
+                        file: file.clone(),
+                        limit: info.body_limit.is_some(),
+                        module,
+                        handlers,
+                        before,
+                        types: items.types,
+                    });
+                    servers.len() - 1
+                }
+            };
+            let sf = &servers[k];
+            info.server = sf
+                .handlers
+                .iter()
+                .filter(|h| h.member == r.member)
+                .cloned()
                 .collect();
-            if info.server_fns.is_empty() {
-                return Err(format!(
-                    "{}: defines none of get, post, put, patch, delete",
-                    rel(&file)
-                ));
-            }
-            for f in &info.server_fns {
-                shims.push(shim(f, Shim::Endpoint).map_err(|e| format!("{}:{e}", rel(&file)))?);
-            }
-            user_mods.push(UserMod {
-                name: format!("server_{i}"),
-                file: file.clone(),
-                inline: None,
-                shims,
-            });
+            info.server_mod.clone_from(&sf.module);
+            info.before = sf.before;
+            info.server_types.clone_from(&sf.types);
             let has_actions = info.page_fns.iter().any(|f| f.action);
-            for m in info.server_fns.iter().map(|f| f.name.as_str()) {
-                if r.page && (m == "get" || (m == "post" && has_actions)) {
+            for h in &info.server {
+                if r.page && (h.method == "get" || (h.method == "post" && has_actions)) {
                     return Err(format!(
-                        "{}: `{m}` conflicts with the page in the same directory",
-                        rel(&file)
+                        "{}: `{}` conflicts with the page in the same directory",
+                        rel(&file),
+                        h.shim
                     ));
                 }
             }
@@ -792,22 +934,14 @@ pub fn generate(input: &Input) -> Result<String, String> {
         }
         format!("{:016x}", fnv1a(&h))
     };
-    let mut js_files: Vec<JsFile> = lib_src
-        .iter()
-        .map(|(p, src)| {
-            let dir = p.rfind('/').map_or("", |i| &p[..i]);
-            JsFile {
-                path: format!("/_app/c/lib/{p}"),
-                hash: lib_hash.clone(),
-                source: rewrite_specifiers(src, &lib_hash, Some(dir)),
-            }
-        })
-        .collect();
-
     // The runtime's less used half, which modules that use it import.
     let extra = {
         let src = rewrite_specifiers(EXTRA_JS, &lib_hash, None);
-        let source = if input.release { js::minify(&src) } else { src };
+        let source = if input.release {
+            js::runtime(&src)
+        } else {
+            src
+        };
         let hash = format!("{:016x}", fnv1a(source.as_bytes()));
         JsFile {
             path: "/_app/c/extra.js".into(),
@@ -816,6 +950,26 @@ pub fn generate(input: &Input) -> Result<String, String> {
         }
     };
     let extra_url = format!("{}?v={}", extra.path, extra.hash);
+    // A lib file that makes a `persisted` store imports it too (last, so
+    // its lines stay).
+    let lib_file = |src: &str, dir: Option<&str>| {
+        let mut s = rewrite_specifiers(src, &lib_hash, dir);
+        if js::tokens(src)
+            .iter()
+            .any(|t| !t.member && t.text(src) == "persisted")
+        {
+            s.push_str(&format!("\nimport {};\n", js_str(&extra_url)));
+        }
+        s
+    };
+    let mut js_files: Vec<JsFile> = lib_src
+        .iter()
+        .map(|(p, src)| JsFile {
+            path: format!("/_app/c/lib/{p}"),
+            hash: lib_hash.clone(),
+            source: lib_file(src, Some(p.rfind('/').map_or("", |i| &p[..i]))),
+        })
+        .collect();
 
     // Browser modules.
     let as_client: Vec<String> = templates.iter().flat_map(|t| client_uses(&t.t)).collect();
@@ -823,7 +977,7 @@ pub fn generate(input: &Input) -> Result<String, String> {
     for (k, t) in templates.iter().enumerate() {
         let load = match &t.load_js {
             Some(f) => {
-                let source = rewrite_specifiers(&read(f)?, &lib_hash, None);
+                let source = lib_file(&read(f)?, None);
                 let hash = format!("{:016x}", fnv1a(source.as_bytes()));
                 let path = format!("/_app/c/t{}.load.js", t.id);
                 let url = format!("{path}?v={hash}");
@@ -1265,22 +1419,31 @@ pub fn generate(input: &Input) -> Result<String, String> {
             shared.extend(items.types);
         }
     }
-    let types: Vec<Vec<rust_scan::TypeItem>> = infos
+    let types: Vec<(Vec<FnItem>, Vec<rust_scan::TypeItem>)> = infos
         .iter()
-        .map(|info| info.server_types.iter().chain(&shared).cloned().collect())
+        .map(|info| {
+            let fns = info.server.iter().map(|h| h.f.clone()).collect();
+            (
+                fns,
+                info.server_types.iter().chain(&shared).cloned().collect(),
+            )
+        })
         .collect();
     let endpoints: Vec<crate::openapi::Endpoint> = tree
         .routes
         .iter()
-        .zip(infos.iter().zip(&types))
+        .zip(&types)
         .filter(|(r, _)| r.server)
-        .map(|(route, (info, types))| crate::openapi::Endpoint {
-            route,
-            fns: &info.server_fns,
-            types,
-        })
+        .map(|(route, (fns, types))| crate::openapi::Endpoint { route, fns, types })
         .collect();
+    let client = match endpoints.is_empty() {
+        true => String::new(),
+        false => crate::openapi::typescript(&endpoints),
+    };
     if !endpoints.is_empty() {
+        g.line(1, "fn client_ts() -> &'static str {");
+        g.line(2, &lit(&client));
+        g.line(1, "}");
         let var = |k: &str, or: &str| std::env::var(k).unwrap_or_else(|_| or.into());
         let spec = crate::openapi::spec(
             &var("CARGO_PKG_NAME", "app"),
@@ -1433,13 +1596,18 @@ pub fn generate(input: &Input) -> Result<String, String> {
                 allow.push("POST");
             }
         }
-        for f in &info.server_fns {
-            let (_, variants, allowed) = METHODS.iter().find(|(n, _, _)| *n == f.name).unwrap();
+        for h in &info.server {
+            let (_, variants, allowed) = METHODS.iter().find(|(n, _, _)| *n == h.method).unwrap();
+            let m = &info.server_mod;
+            let before = match info.before {
+                true => answer(&format!("{m}::__call::before")) + " ",
+                false => String::new(),
+            };
             g.line(
                 3,
                 &format!(
-                    "({i}, {variants}) => {{ ::wisp::rt::respond(__o, server_{i}::__call::{}(cx).await?); Ok(()) }}",
-                    f.name
+                    "({i}, {variants}) => {{ ::wisp::rt::endpoint(cx); {before}::wisp::rt::respond(__o, {m}::__call::{}(cx).await?); Ok(()) }}",
+                    h.shim
                 ),
             );
             allow.push(allowed);
@@ -1452,9 +1620,14 @@ pub fn generate(input: &Input) -> Result<String, String> {
             3,
             &format!("({i}, Options) => {{ ::wisp::rt::respond(__o, ::wisp::rt::options({allow})); Ok(()) }}"),
         );
+        // An endpoint's errors are JSON, whatever its path.
+        let api = match r.page || info.server.is_empty() {
+            true => "",
+            false => "::wisp::rt::endpoint(cx); ",
+        };
         g.line(
             3,
-            &format!("({i}, _) => Err(::wisp::rt::method_not_allowed({allow})),"),
+            &format!("({i}, _) => {{ {api}Err(::wisp::rt::method_not_allowed({allow})) }}"),
         );
     }
     g.line(3, "_ => Err(::wisp::Error::new(404, \"Not Found\")),");
@@ -1502,7 +1675,274 @@ pub fn generate(input: &Input) -> Result<String, String> {
     g.line(1, "}");
     g.line(0, "}");
 
-    Ok(g.out)
+    Ok((g.out, client))
+}
+
+/// A `+server.rs`, which serves its route, its `/[id]`, or both.
+struct ServerFile {
+    file: PathBuf,
+    module: String,
+    handlers: Vec<Handler>,
+    /// It has `fn before`, which runs before each of its handlers.
+    before: bool,
+    /// It sets `BODY_LIMIT`.
+    limit: bool,
+    types: Vec<rust_scan::TypeItem>,
+}
+
+/// A handler of a `+server.rs`: the method it answers, its shim in
+/// `__call`, whether it is for the `/[id]`, and its signature (named for
+/// the method) for the OpenAPI document.
+#[derive(Clone)]
+struct Handler {
+    method: &'static str,
+    shim: String,
+    member: bool,
+    f: FnItem,
+}
+
+/// The handlers of a `+server.rs` whose route is `segs`, their shims added
+/// to `shims`, and whether it has `before`. A `#[derive(Rest)]` type
+/// answers each method (on the route and its `/[id]`) the file does not.
+fn server_handlers(
+    items: &rust_scan::Items,
+    segs: &[Seg],
+    shims: &mut Vec<String>,
+) -> Result<(Vec<Handler>, bool), String> {
+    use crate::routes::{HANDLERS, is_member, rest_type};
+    let mut handlers: Vec<Handler> = Vec::new();
+    let mut before = false;
+    for f in &items.fns {
+        let at = |msg: String| format!("{}: {msg}", f.line);
+        if f.action {
+            return Err(at(format!(
+                "`{}` is marked #[action], but actions belong in a +page.rs",
+                f.name
+            )));
+        }
+        let name = f.name.as_str();
+        if name == "head" || name == "options" {
+            return Err(at(format!(
+                "`{name}` is never called: HEAD is answered by `get`, and OPTIONS by Wisp"
+            )));
+        }
+        if name == "before" {
+            check_before(f).map_err(at)?;
+            shims.push(shim(f, Shim::Answer)?);
+            before = true;
+            continue;
+        }
+        if !HANDLERS.contains(&name) {
+            continue;
+        }
+        let member = is_member(f, segs);
+        if name == "list" && member {
+            return Err(at(
+                "`list` answers GET on the route; `get(id: u64)` is the one for its `/[id]`".into(),
+            ));
+        }
+        let method = METHODS
+            .iter()
+            .map(|(m, _, _)| *m)
+            .find(|m| *m == name || (name == "list" && *m == "get"))
+            .expect("a handler name is a method or list");
+        if let Some(h) = handlers
+            .iter()
+            .find(|h| h.member == member && h.method == method)
+        {
+            return Err(at(format!(
+                "`{name}` and `{}` both answer {} on {}",
+                h.shim,
+                method.to_uppercase(),
+                if member { "`/[id]`" } else { "the route" }
+            )));
+        }
+        shims.push(shim(f, Shim::Endpoint)?);
+        let mut doc = f.clone();
+        doc.name = method.into();
+        handlers.push(Handler {
+            method,
+            shim: f.name.clone(),
+            member,
+            f: doc,
+        });
+    }
+    if let Some(ty) = rest_type(items) {
+        if segs.iter().any(
+            |s| matches!(s, Seg::Param(n, _) | Seg::Optional(n, _) | Seg::Rest(n) if n == "id"),
+        ) {
+            return Err(format!(
+                " `{ty}` is served at this route and its `/[id]`, but the route already has an `id`"
+            ));
+        }
+        shims.extend(rest_hooks(items, ty)?);
+        let one = |n: &str| vec![(n.to_string(), "u64".to_string())];
+        let with_body = |mut v: Vec<(String, String)>| {
+            v.push(("body".into(), ty.to_string()));
+            v
+        };
+        let row = format!("Row<{ty}>");
+        // What a list takes besides filters by field (`?done=true`).
+        let paging = ["limit", "offset", "after", "sort", "fields"]
+            .map(|n| {
+                let t = if n == "after" {
+                    "u64"
+                } else if n == "limit" || n == "offset" {
+                    "u32"
+                } else {
+                    "String"
+                };
+                (n.to_string(), format!("Option<{t}>"))
+            })
+            .to_vec();
+        let auto = [
+            (false, "get", "list", paging, format!("Vec<{row}>")),
+            (false, "post", "create", with_body(Vec::new()), row.clone()),
+            (true, "get", "get", one("id"), format!("Option<{row}>")),
+            (
+                true,
+                "put",
+                "put",
+                with_body(one("id")),
+                format!("Option<{row}>"),
+            ),
+            (
+                true,
+                "patch",
+                "patch",
+                with_body(one("id")),
+                format!("Option<{row}>"),
+            ),
+            (true, "delete", "delete", one("id"), "Option<()>".into()),
+        ];
+        for (member, method, what, params, returns) in auto {
+            if handlers
+                .iter()
+                .any(|h| h.member == member && h.method == method)
+            {
+                continue;
+            }
+            let shim = format!("__rest_{what}");
+            shims.push(format!(
+                "pub async fn {shim}(cx: &mut ::wisp::Cx) -> ::wisp::Result<::wisp::Response> {{ ::wisp::rt::rest::{what}::<super::{ty}>(cx, &__REST_HOOKS) }}"
+            ));
+            let f = FnItem {
+                name: method.into(),
+                action: false,
+                public: false,
+                is_async: false,
+                params,
+                fallible: false,
+                returns,
+                line: 0,
+                implicit_cx: false,
+                checks: Vec::new(),
+            };
+            handlers.push(Handler {
+                method,
+                shim,
+                member,
+                f,
+            });
+        }
+    }
+    if handlers.is_empty() {
+        return Err(
+            " defines none of get, post, put, patch, delete, list, nor a `#[derive(Rest)]` type"
+                .into(),
+        );
+    }
+    Ok((handlers, before))
+}
+
+/// The hooks a `+server.rs` may define for its `#[derive(Rest)]` type, and
+/// whether each is given the row (with its id) rather than the value.
+const REST_HOOKS: [(&str, bool); 6] = [
+    ("before_create", false),
+    ("before_update", false),
+    ("before_delete", true),
+    ("after_create", true),
+    ("after_update", true),
+    ("after_delete", true),
+];
+
+/// `__REST_HOOKS` for the `#[derive(Rest)]` type `ty`, and an adapter for
+/// each hook the file defines: plain functions that take, in any order,
+/// `cx`, the value (`&mut T`, or `&T`), the row (`&Row<T>`) or its `id`,
+/// and return nothing or a `Result`.
+fn rest_hooks(items: &rust_scan::Items, ty: &str) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    let mut set = String::new();
+    for (hook, row) in REST_HOOKS {
+        let Some(f) = items.function(hook) else {
+            continue;
+        };
+        let at = |msg: String| format!("{}: {msg}", f.line);
+        let takes = match (row, hook) {
+            (true, _) => format!("`cx`, `row: &Row<{ty}>`, `note: &{ty}` or `id: u64`"),
+            (false, "before_update") => format!("`cx`, `note: &mut {ty}` or `id: u64`"),
+            _ => format!("`cx` and `note: &mut {ty}`"),
+        };
+        if f.is_async || f.returns_kind() != Returns::Nothing {
+            return Err(at(format!(
+                "`{hook}` is a hook: a plain `fn` that returns nothing or a `Result`, taking {takes}"
+            )));
+        }
+        let mut args = Vec::new();
+        for (_, written) in &f.params {
+            let t: String = written.chars().filter(|c| !c.is_whitespace()).collect();
+            let arg = if rust_scan::is_cx(written) {
+                "cx"
+            } else if t == "u64" && row {
+                "row.id"
+            } else if t == "u64" && hook == "before_update" {
+                "id"
+            } else if row && t == format!("&Row<{ty}>") {
+                "row"
+            } else if row && t == format!("&{ty}") {
+                "&row.value"
+            } else if !row && (t == format!("&mut{ty}") || t == format!("&{ty}")) {
+                "v"
+            } else {
+                return Err(at(format!("`{hook}` takes {takes}, not `{t}`")));
+            };
+            args.push(arg);
+        }
+        let call = format!("super::{hook}({})", args.join(", "));
+        let back = match f.fallible {
+            true => format!("{call}?; Ok(())"),
+            false => format!("let () = {call}; Ok(())"),
+        };
+        let params = match (row, hook) {
+            (true, _) => format!("row: &::wisp::Row<super::{ty}>"),
+            (false, "before_update") => format!("id: u64, v: &mut super::{ty}"),
+            _ => format!("v: &mut super::{ty}"),
+        };
+        out.push(format!(
+            "#[allow(unused_variables)] fn __hook_{hook}(cx: &mut ::wisp::Cx, {params}) -> ::wisp::Result {{ {back} }}"
+        ));
+        set.push_str(&format!("{hook}: Some(__hook_{hook}), "));
+    }
+    out.push(format!(
+        "static __REST_HOOKS: ::wisp::rt::rest::Hooks<super::{ty}> = ::wisp::rt::rest::Hooks {{ {set}..::wisp::rt::rest::Hooks::NONE }};"
+    ));
+    Ok(out)
+}
+
+/// `before`, in `src/hooks.rs` or a `+server.rs`: it takes only `cx` and
+/// returns nothing, a `Result`, or a response to send instead.
+fn check_before(f: &FnItem) -> Result<(), String> {
+    if f.returns_kind() == Returns::Other {
+        return Err(format!(
+            "`before` returns `{}`. It returns nothing (or `Result<()>`), or a `Response` to send instead \
+             (or `Option<Response>`, to send one only sometimes).",
+            f.returns
+        ));
+    }
+    if f.params.iter().any(|(_, ty)| !rust_scan::is_cx(ty)) {
+        return Err("`before` takes only `cx`: `fn before(cx: &mut Cx)`".into());
+    }
+    Ok(())
 }
 
 /// `+server.rs` function, the `Method` variants it serves, its `Allow` entry.
@@ -1570,16 +2010,7 @@ fn hooks(root: &Path) -> Result<Option<UserMod>, String> {
                 shims.push(shim(f, Shim::Init).map_err(|e| format!("src/hooks.rs:{e}"))?);
             }
             "before" => {
-                if f.returns_kind() == Returns::Other {
-                    return Err(at(format!(
-                        "`before` returns `{}`. It returns nothing (or `Result<()>`), or a `Response` to send instead of the page \
-                         (or `Option<Response>`, to send one only sometimes).",
-                        f.returns
-                    )));
-                }
-                if f.params.iter().any(|(_, ty)| !rust_scan::is_cx(ty)) {
-                    return Err(at("`before` runs for every route, so it takes only `cx`: `fn before(cx: &mut Cx)`".into()));
-                }
+                check_before(f).map_err(at)?;
                 shims.push(shim(f, Shim::Answer).map_err(|e| format!("src/hooks.rs:{e}"))?);
             }
             name if f.public => {
@@ -2870,6 +3301,10 @@ impl Gen {
         let Some(comp) = comps.iter().find(|c| c.name == d.name) else {
             return;
         };
+        // What a spread gives is the browser's to work out.
+        if d.props.iter().any(|p| p.name == "...") {
+            return;
+        }
         let mut args = Vec::new();
         for p in &comp.props {
             let arg = match d.props.iter().find(|x| x.name == p.name).map(|x| &x.value) {
@@ -3312,7 +3747,7 @@ struct JsFile {
 /// no import for them.
 const HELPERS: &str = "tick, untrack, setTimeout, setInterval, requestAnimationFrame, addEventListener, listen, onMount, onDestroy, effect, watch, \
                        derived, store, persisted, emit, setContext, getContext, goto, invalidate, page, navigating, enhance, \
-                       context, portal, __wisp_s, __wisp_r, __wisp_d, __wisp_e, __wisp_ep, __wisp_snap, __wisp_props";
+                       context, portal, __wisp_s, __wisp_r, __wisp_d, __wisp_e, __wisp_ep, __wisp_snap, __wisp_props, __wisp_eq";
 
 /// What `client` needs to know beyond the template.
 struct ClientCx<'a> {
@@ -3333,7 +3768,7 @@ struct ClientCx<'a> {
 const EXTRA_JS: &str = include_str!("extra.js");
 
 /// Whether a directive needs `extra.js` (so does a module whose code makes
-/// a Map or a Set, or uses `enhance` or `$state.snapshot`).
+/// a Map or a Set, or uses `enhance`, `$state.snapshot` or `persisted`).
 fn is_extra(d: &Directive) -> bool {
     matches!(
         d.kind,
@@ -3614,7 +4049,11 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
                 .chain(groups.iter().flatten().map(String::as_str))
                 .any(|c| {
                     js::tokens(c).iter().any(|t| {
-                        !t.member && matches!(t.text(c), "Map" | "Set" | "enhance" | "__wisp_snap")
+                        !t.member
+                            && matches!(
+                                t.text(c),
+                                "Map" | "Set" | "enhance" | "__wisp_snap" | "persisted"
+                            )
                     })
                 }))
         .then_some(cx.extra),
@@ -3889,6 +4328,72 @@ fn rewrite_specifiers(src: &str, lib_hash: &str, base: Option<&str>) -> String {
 /// element's locals, which its closure destructures, are returned.
 type Names<'a> = dyn FnMut(&str, u32) -> Result<Vec<String>, String> + 'a;
 
+/// An `on:` directive's modifiers as live.js takes them: bits, in the order
+/// of `FLAGS`, and 8192 for an event handled by one listener at the root
+/// (one that bubbles, and need not be where it is); then, when there are,
+/// the keys (`KeyboardEvent.key` in lower case) and the debounce time in ms.
+fn on_mods(event: &str, mods: &[String]) -> (u32, String) {
+    const FLAGS: [&str; 13] = [
+        "prevent", "stop", "once", "self", "capture", "passive", "window", "document", "outside",
+        "ctrl", "shift", "alt", "meta",
+    ];
+    const ROOTED: [&str; 14] = [
+        "click",
+        "dblclick",
+        "input",
+        "change",
+        "keydown",
+        "keyup",
+        "pointerdown",
+        "pointerup",
+        "pointermove",
+        "mousedown",
+        "mouseup",
+        "contextmenu",
+        "focusin",
+        "focusout",
+    ];
+    let (mut bits, mut keys, mut ms) = (0u32, Vec::new(), 0u32);
+    let mut k = 0;
+    while k < mods.len() {
+        let m = mods[k].as_str();
+        if let Some(i) = FLAGS.iter().position(|f| *f == m) {
+            bits |= 1 << i;
+        } else if m == "debounce" {
+            ms = 250;
+            let time = mods.get(k + 1).and_then(|t| match t.strip_suffix("ms") {
+                Some(n) => n.parse::<u32>().ok(),
+                None => t.strip_suffix('s')?.parse::<u32>().ok().map(|n| n * 1000),
+            });
+            if let Some(t) = time {
+                ms = t;
+                k += 1;
+            }
+        } else {
+            keys.push(js_str(match m {
+                "space" => " ",
+                "up" => "arrowup",
+                "down" => "arrowdown",
+                "left" => "arrowleft",
+                "right" => "arrowright",
+                key => key,
+            }));
+        }
+        k += 1;
+    }
+    // capture, passive, window, document, outside: where it is.
+    if ROOTED.contains(&event) && bits & 0b1_1111_0000 == 0 {
+        bits |= 8192;
+    }
+    let rest = match (keys.is_empty(), ms) {
+        (true, 0) => String::new(),
+        (true, ms) => format!(", null, {ms}"),
+        (false, 0) => format!(", [{}]", keys.join(", ")),
+        (false, ms) => format!(", [{}], {ms}", keys.join(", ")),
+    };
+    (bits, rest)
+}
+
 /// `(L) =>` and `(L, x) =>`, destructuring what the expression reads.
 fn one(n: &[String]) -> String {
     if n.is_empty() {
@@ -3964,10 +4469,9 @@ fn binding(d: &Directive, names: &mut Names) -> Result<String, String> {
         Dir::On => {
             let c = value();
             let n = names(&c.src, c.line)?;
-            let mods: Vec<String> = d.mods.iter().map(|m| js_str(m)).collect();
+            let (bits, rest) = on_mods(&d.name, &d.mods);
             format!(
-                "[\"on\", {name}, [{}], {} => {}]",
-                mods.join(", "),
+                "[\"on\", {name}, {bits}, {} => {}{rest}]",
                 two(&n, "event"),
                 handler_body(&c.src)
             )
@@ -4089,6 +4593,12 @@ fn comp_binding(
     };
     let (mut props, mut binds, mut events) = (Vec::new(), Vec::new(), Vec::new());
     for p in &d.props {
+        // `{:...obj}`: its keys, where it stands among the others.
+        if let (true, PropValue::Live(code)) = (p.name == "...", &p.value) {
+            add(names(&code.src, code.line)?);
+            props.push(format!("...{}", paren(&code.src)));
+            continue;
+        }
         let key = js_str(&p.name);
         let declared = c.props.iter().any(|x| x.name == p.name);
         if !declared && !c.rest && !matches!(p.value, PropValue::On(_)) {
@@ -4629,6 +5139,97 @@ mod tests {
     }
 
     #[test]
+    fn server_files_serve_their_route_and_its_id() {
+        let s = |src: &'static str| ("src/routes/notes/+server.rs", src);
+        let code = app(
+            "rest",
+            &[s("#[derive(Rest)]\nstruct N { t: String }\n\
+                 fn before(cx: &mut Cx) {}\nfn delete(id: u64) -> Option<()> { None }\n\
+                 fn before_create(cx: &mut Cx, n: &mut N) -> Result { Ok(()) }\n\
+                 fn after_update(row: &Row<N>, id: u64) {}")],
+        )
+        .unwrap();
+        for want in [
+            "// /notes/[id=int]",
+            "::wisp::rt::rest::list::<super::N>(cx, &__REST_HOOKS)",
+            "::wisp::rt::rest::patch::<super::N>(cx, &__REST_HOOKS)",
+            "__call::before(cx).await? {",
+            ".map(|()| ::wisp::Response::empty(204))",
+            "fn __hook_before_create(cx: &mut ::wisp::Cx, v: &mut super::N) -> ::wisp::Result { super::before_create(cx, v)?; Ok(()) }",
+            "let () = super::after_update(row, row.id); Ok(())",
+            "Hooks { before_create: Some(__hook_before_create), after_update: Some(__hook_after_update), ..",
+        ] {
+            assert!(code.contains(want), "{want}: {code}");
+        }
+        assert!(
+            !code.contains("__rest_delete"),
+            "the file's own `delete` answers"
+        );
+        let err = |name, src| app(name, &[s(src)]).unwrap_err();
+        assert!(
+            err(
+                "bad-hook",
+                "#[derive(Rest)] struct N { t: String }\nfn before_create(n: N) {}"
+            )
+            .contains(":2: `before_create` takes `cx` and `note: &mut N`, not `N`")
+        );
+        assert!(
+            err("list-id", "fn list(id: u64) {}").contains(":1: `list` answers GET on the route")
+        );
+        assert!(
+            err("two-gets", "fn get() {}\nfn list() {}")
+                .contains(":2: `list` and `get` both answer GET")
+        );
+        assert!(err("none", "fn helper() {}").contains("+server.rs: defines none of"));
+        assert!(
+            err("checked", "fn post(#[validate(len = 1..)] n: String) {}")
+                .contains("checks an action's input")
+        );
+        let under_id = (
+            "src/routes/n/[id]/+server.rs",
+            "#[derive(Rest)] struct A { a: u8 }",
+        );
+        assert!(
+            app("rest-id", &[under_id])
+                .unwrap_err()
+                .contains("already has an `id`")
+        );
+    }
+
+    #[test]
+    fn action_parameters_are_checked() {
+        let page = |src: &'static str| ("src/routes/+page.wisp", src);
+        let code = app(
+            "rules",
+            &[page("---\n#[action]\nfn add(#[validate(len = 1..10, email)] t: String, #[validate(min = 1)] n: Option<u8>) {}\n---\nx")],
+        )
+        .unwrap();
+        for want in [
+            "::wisp::json::check::min_len(&__a0, 1) { return ::wisp::invalid(\"t\", __m); }",
+            "::wisp::json::check::max_len(&__a0, 10 - 1)",
+            "::wisp::json::check::email(&__a0)",
+            "::wisp::json::check::min(&__a1, (1) as f64)",
+        ] {
+            assert!(code.contains(want), "{want}: {code}");
+        }
+        let err = |name, src| app(name, &[page(src)]).unwrap_err();
+        assert!(
+            err(
+                "rule",
+                "---\n#[action]\nfn a(#[validate(size = 1)] t: String) {}\n---\nx"
+            )
+            .contains("has no `size`")
+        );
+        assert!(
+            err(
+                "range",
+                "---\n#[action]\nfn a(#[validate(len = 5)] t: String) {}\n---\nx"
+            )
+            .contains("needs a range")
+        );
+    }
+
+    #[test]
     fn body_limits_are_checked() {
         let page = ("src/routes/+page.wisp", "x");
         let rs = |src: &'static str| ("src/routes/+page.rs", src);
@@ -4866,7 +5467,7 @@ pub fn load() -> Data { todo!() }";
                 .position(|l| l == "  let open = __wisp_s(false)"),
             Some(12)
         );
-        let tail = "  function toggle() { open.v = !open.v }\nreturn { g: [\n  [[\"on\", \"click\", [], (_, event) => toggle(event)], [\"attr\", \"hidden\", () => (data.v.done)]],\n] };\n} } });\n\
+        let tail = "  function toggle() { open.v = !open.v }\nreturn { g: [\n  [[\"on\", \"click\", 8192, (_, event) => toggle(event)], [\"attr\", \"hidden\", () => (data.v.done)]],\n] };\n} } });\n\
                     //# sourceURL=wisp:///src/routes/+page.wisp\n";
         assert!(c.source.ends_with(tail), "{}", c.source);
         assert_eq!(
@@ -4901,9 +5502,9 @@ pub fn load() -> Data { todo!() }";
         let c = page_client(src, false).unwrap();
         let group = c.source.lines().find(|l| l.starts_with("  [[")).unwrap();
         let want = [
-            "[\"on\", \"input\", [\"debounce\", \"300ms\"], (_, event) => (q = event.target.value)]",
-            "[\"on\", \"keydown\", [\"enter\"], (_, event) => { if (ok) send(); else warn() }]",
-            "[\"on\", \"click\", [], (_, event) => { a(); b() // why\n }]",
+            "[\"on\", \"input\", 8192, (_, event) => (q = event.target.value), null, 300]",
+            "[\"on\", \"keydown\", 8192, (_, event) => { if (ok) send(); else warn() }, [\"enter\"]]",
+            "[\"on\", \"click\", 8192, (_, event) => { a(); b() // why\n }]",
             "[\"bind\", \"value\", () => (form.q), (_, __wisp_v) => { (form.q) = __wisp_v }]",
             "[\"bind\", \"this\", null, (_, __wisp_v) => { (el) = __wisp_v }]",
             "[\"style\", \"--x\", () => (x)]",
@@ -4950,7 +5551,7 @@ pub fn load() -> Data { todo!() }";
         assert_eq!(text(&c.blob), "{\"data\":{\"x\":<data.x>}}");
         assert!(
             c.source.contains(
-                "[\"on\", \"click\", [], ({ key, i, n }, event) => (press(key.letter, i, n))]"
+                "[\"on\", \"click\", 8192, ({ key, i, n }, event) => (press(key.letter, i, n))]"
             ),
             "{}",
             c.source
