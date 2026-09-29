@@ -1,0 +1,230 @@
+/*
+ * Wisp's own UI: its tokens, its buttons, and the error page every app falls
+ * back to. The build error dialog (dialog.css) is built on this, so the two
+ * are one family.
+ *
+ * Kinetrix roles and values, light and dark, with Wisp violet as the one
+ * accent. Everything is a --wisp-* token or a .wisp-* class, so an app's own
+ * CSS and this never touch.
+ */
+
+:root,
+:host {
+  --wisp-paper: #f4f4f4;
+  --wisp-panel: #ffffff;
+  --wisp-panel-hover: #f4f4f4;
+  --wisp-inset: #f4f4f4;
+  --wisp-inset-hover: #e8e8e8;
+  --wisp-line: #bcbcbc;
+  --wisp-line-strong: #949494;
+  --wisp-ink: #141414;
+  --wisp-slate: #565656;
+  --wisp-ash: #6f6f6f;
+  /* Violet: 5.2:1 under white text, and as text on the panel. */
+  --wisp-accent: #7456d6;
+  --wisp-accent-edge: #6545c8;
+  --wisp-accent-hover: #6545c8;
+  --wisp-on-accent: #ffffff;
+  --wisp-danger: #bc2e24;
+
+  --wisp-raised: 0 1px 2px rgb(0 0 0 / 0.04), 0 6px 16px -4px rgb(0 0 0 / 0.03);
+  --wisp-overlay: 0 16px 40px rgb(0 0 0 / 0.1), 0 4px 12px rgb(0 0 0 / 0.06);
+
+  --wisp-sans: "Open Sans Variable", "Open Sans", "Segoe UI Variable", "Segoe UI", -apple-system,
+    BlinkMacSystemFont, system-ui, sans-serif;
+  --wisp-mono: "Cascadia Code", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Arrive on the emphasized deceleration, leave on an ease out, change in
+     place on a quartic ease out. */
+  --wisp-enter: cubic-bezier(0.05, 0.7, 0.1, 1);
+  --wisp-exit: cubic-bezier(0.33, 1, 0.68, 1);
+  --wisp-change: cubic-bezier(0.25, 1, 0.5, 1);
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root,
+  :host {
+    --wisp-paper: #141414;
+    --wisp-panel: #1f1f1f;
+    --wisp-panel-hover: #2e2e2e;
+    --wisp-inset: #1a1a1a;
+    --wisp-inset-hover: #2e2e2e;
+    --wisp-line: #4b4b4b;
+    --wisp-line-strong: #6f6f6f;
+    --wisp-ink: #fafafa;
+    --wisp-slate: #a8a8a8;
+    --wisp-ash: #949494;
+    /* Dark text on violet: 4.6:1, where white would be 4.0:1. */
+    --wisp-accent: #896ce0;
+    --wisp-accent-edge: #7456d6;
+    --wisp-accent-hover: #9f8ce7;
+    --wisp-on-accent: #141414;
+    --wisp-danger: #ef8780;
+
+    --wisp-raised: 0 1px 2px rgb(0 0 0 / 0.22), 0 6px 16px -4px rgb(0 0 0 / 0.17);
+    --wisp-overlay: 0 16px 40px rgb(0 0 0 / 0.3), 0 4px 12px rgb(0 0 0 / 0.23);
+
+    color-scheme: dark;
+  }
+}
+
+/* ---- Buttons --------------------------------------------------------------
+   36px tall, always edged so every variant is the same size. A hover
+   changes fill and edge, a press lays down a wash of the button's own ink,
+   and nothing moves. */
+
+.wisp-button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  box-sizing: border-box;
+  height: 2.25rem;
+  margin: 0;
+  padding: 0 0.75rem;
+  border: 1px solid var(--wisp-line);
+  border-radius: 0.375rem;
+  background: var(--wisp-panel);
+  box-shadow: var(--wisp-raised);
+  color: var(--wisp-ink);
+  font: 500 0.875rem/1.25rem var(--wisp-sans);
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color 250ms var(--wisp-change),
+    border-color 250ms var(--wisp-change),
+    color 250ms var(--wisp-change);
+}
+
+.wisp-button:hover {
+  border-color: var(--wisp-line-strong);
+  background-color: var(--wisp-panel-hover);
+}
+
+.wisp-button:active {
+  background-image: linear-gradient(color-mix(in srgb, currentColor 8%, transparent) 0 0);
+}
+
+.wisp-button.wisp-primary {
+  border-color: var(--wisp-accent-edge);
+  background-color: var(--wisp-accent);
+  color: var(--wisp-on-accent);
+}
+
+.wisp-button.wisp-primary:hover {
+  border-color: var(--wisp-accent-hover);
+  background-color: var(--wisp-accent-hover);
+}
+
+/* Ghost: no plate until it is reached. */
+.wisp-button.wisp-ghost {
+  border-color: transparent;
+  background-color: transparent;
+  box-shadow: none;
+  color: var(--wisp-slate);
+}
+
+.wisp-button.wisp-ghost:hover {
+  border-color: var(--wisp-line);
+  background-color: var(--wisp-inset);
+  color: var(--wisp-ink);
+}
+
+/* An icon button's glyph holds still and takes no wash. */
+.wisp-button.wisp-icon {
+  width: 2.25rem;
+  padding: 0;
+}
+
+.wisp-button.wisp-icon:active {
+  background-image: none;
+}
+
+.wisp-button.wisp-small {
+  gap: 0.375rem;
+  height: 2rem;
+  padding: 0 0.625rem;
+  font-size: 0.75rem;
+  line-height: 1rem;
+}
+
+.wisp-button svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+/* The one focus treatment. `.wisp-ring` puts it on the way out of a dialog
+   the moment the dialog opens. */
+.wisp-button:focus-visible,
+.wisp-button.wisp-ring {
+  outline: 2px solid var(--wisp-accent);
+  outline-offset: 2px;
+}
+
+/* ---- The error page ---------------------------------------------------------
+   What happened, what it means or what to do, and the status with the
+   request as the reference line. */
+
+body:has(.wisp-error) {
+  margin: 0;
+  background: var(--wisp-paper);
+}
+
+.wisp-error {
+  box-sizing: border-box;
+  width: min(28rem, 100% - 2rem);
+  margin: 16vh auto 2rem;
+  padding: 1.25rem;
+  border: 1px solid var(--wisp-line);
+  border-radius: 0.5rem;
+  background: var(--wisp-panel);
+  box-shadow: var(--wisp-raised);
+  color: var(--wisp-ink);
+  font: 400 0.875rem/1.25rem var(--wisp-sans);
+}
+
+.wisp-error h1 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 600;
+  line-height: 1.5rem;
+  letter-spacing: -0.025em;
+}
+
+.wisp-error h1 svg {
+  flex: none;
+  width: 1.125rem;
+  height: 1.125rem;
+  color: var(--wisp-danger);
+}
+
+.wisp-error p {
+  margin: 0.25rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.wisp-error .wisp-ref {
+  margin-top: 0.75rem;
+  color: var(--wisp-ash);
+  font: 400 0.6875rem/1rem var(--wisp-mono);
+}
+
+.wisp-error .wisp-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 1.25rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wisp-button {
+    transition-duration: 1ms !important;
+  }
+}
