@@ -37,6 +37,12 @@ struct Comp {
     props: Vec<PropDecl>,
     /// Shows its children: `{@render children()}`.
     children: bool,
+    /// The props a parent may `bind:`: those its script's `$props()`
+    /// marks `$bindable`, or any, without one.
+    bindable: Option<Vec<String>>,
+    /// Has browser code, so `client:visible` and the like have a module
+    /// to load late.
+    live: bool,
 }
 
 struct Tpl {
@@ -116,7 +122,12 @@ fn shim(f: &FnItem, kind: Shim) -> Result<String, String> {
         let t: String = ty.chars().filter(|c| !c.is_whitespace()).collect();
         let inner = t.strip_prefix("Option<").and_then(|r| r.strip_suffix('>'));
         let read = |how: &str| format!("::wisp::rt::input::{how}(cx, {})", lit(name));
-        let (line, arg) = if is_str_ref(&t) {
+        let text = |t: &str| is_str_ref(t) || rust_scan::last_segment(t) == "String";
+        let (line, arg) = if name == "body" && !text(&t) && !inner.is_some_and(text) {
+            // `body: T` is the whole JSON body; a string `body` is still
+            // a field of that name.
+            (format!("let {v} = ::wisp::rt::input::body(cx)?;"), v)
+        } else if is_str_ref(&t) {
             (
                 format!("let {v}: String = {}?;", read("required")),
                 format!("&{v}"),
@@ -301,11 +312,22 @@ pub fn generate(input: &Input) -> Result<String, String> {
             let t = template::parse(&read(&file)?).map_err(|e| format!("{}:{e}", rel(&file)))?;
             let props = t.props.as_ref().map(|(p, _)| p.clone()).unwrap_or_default();
             let module = format!("tpl_component_{}", comps.len());
+            let bindable = match &t.script {
+                Some(s) => js::props_rune(&s.src)
+                    .map_err(|(off, msg)| {
+                        let (line, col) = script_pos(s, off);
+                        format!("{}:{line}:{col}: {msg}", rel(&file))
+                    })?
+                    .map(|p| p.props.into_iter().filter(|x| x.2).map(|x| x.0).collect()),
+                None => None,
+            };
             comps.push(Comp {
                 name,
                 module: module.clone(),
                 props,
                 children: t.uses_children,
+                bindable,
+                live: t.is_live(),
             });
             tpl_paths.push((rel(&file), t.shape));
             templates.push(Tpl {
@@ -408,6 +430,8 @@ pub fn generate(input: &Input) -> Result<String, String> {
         page_tpl: Option<usize>,
         page_fns: Vec<FnItem>,
         server_fns: Vec<FnItem>,
+        /// The types its `+server.rs` defines, for the OpenAPI document.
+        server_types: Vec<rust_scan::TypeItem>,
         /// The module whose `BODY_LIMIT` applies.
         body_limit: Option<String>,
         data: Vec<(String, String)>,
@@ -444,6 +468,7 @@ pub fn generate(input: &Input) -> Result<String, String> {
             page_tpl: None,
             page_fns: Vec::new(),
             server_fns: Vec::new(),
+            server_types: Vec::new(),
             body_limit: None,
             data: Vec::new(),
         };
@@ -524,6 +549,7 @@ pub fn generate(input: &Input) -> Result<String, String> {
             let items = scan(&file)?;
             let mut shims = Vec::new();
             body_limit(&mut info, &items, &file, format!("server_{i}"), &mut shims)?;
+            info.server_types = items.types;
             let fns = items.fns;
             let at = |f: &FnItem, msg: String| format!("{}:{}: {msg}", rel(&file), f.line);
             if let Some(f) = fns.iter().find(|f| f.action) {
@@ -662,6 +688,7 @@ pub fn generate(input: &Input) -> Result<String, String> {
             as_client: is_client,
             lib_hash: &lib_hash,
             load,
+            release: input.release,
         };
         clients.push(client(t, &cx)?);
     }
@@ -1061,6 +1088,49 @@ pub fn generate(input: &Input) -> Result<String, String> {
     g.line(1, "}");
     g.line(0, "");
 
+    // Types an endpoint names but does not define may be in the app's own
+    // modules (`src/models.rs`); a file that does not scan is skipped.
+    let mut shared = Vec::new();
+    for entry in fs::read_dir(root.join("src"))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let p = entry.path();
+        if p.extension().is_some_and(|e| e == "rs")
+            && let Ok(items) = read(&p).and_then(|s| rust_scan::scan(&s))
+        {
+            shared.extend(items.types);
+        }
+    }
+    let types: Vec<Vec<rust_scan::TypeItem>> = infos
+        .iter()
+        .map(|info| info.server_types.iter().chain(&shared).cloned().collect())
+        .collect();
+    let endpoints: Vec<crate::openapi::Endpoint> = tree
+        .routes
+        .iter()
+        .zip(infos.iter().zip(&types))
+        .filter(|(r, _)| r.server)
+        .map(|(route, (info, types))| crate::openapi::Endpoint {
+            route,
+            fns: &info.server_fns,
+            types,
+        })
+        .collect();
+    if !endpoints.is_empty() {
+        let var = |k: &str, or: &str| std::env::var(k).unwrap_or_else(|_| or.into());
+        let spec = crate::openapi::spec(
+            &var("CARGO_PKG_NAME", "app"),
+            &var("CARGO_PKG_VERSION", "0.1.0"),
+            &endpoints,
+        );
+        g.line(1, "fn openapi() -> &'static str {");
+        g.line(2, &lit(&spec));
+        g.line(1, "}");
+        g.line(0, "");
+    }
+
     g.line(1, "async fn init() -> ::wisp::Result<()> {");
     if has_hook("init") {
         g.line(2, "hooks::__call::init().await?;");
@@ -1207,12 +1277,17 @@ pub fn generate(input: &Input) -> Result<String, String> {
             );
             allow.push(allowed);
         }
+        // OPTIONS says what the route takes; CORS preflights are answered
+        // by `cx.cors` in `before`, which runs first.
+        allow.push("OPTIONS");
+        let allow = lit(&allow.join(", "));
         g.line(
             3,
-            &format!(
-                "({i}, _) => Err(::wisp::rt::method_not_allowed({})),",
-                lit(&allow.join(", "))
-            ),
+            &format!("({i}, Options) => {{ ::wisp::rt::respond(__o, ::wisp::rt::options({allow})); Ok(()) }}"),
+        );
+        g.line(
+            3,
+            &format!("({i}, _) => Err(::wisp::rt::method_not_allowed({allow})),"),
         );
     }
     g.line(3, "_ => Err(::wisp::Error::new(404, \"Not Found\")),");
@@ -1491,6 +1566,15 @@ fn check_components(
                     }
                 };
                 for p in props {
+                    if p.name.starts_with("client:") {
+                        if !c.live {
+                            return Err(at(format!(
+                                "<{name}> has no browser code, so `{}` has nothing to load; it is plain HTML already",
+                                p.name
+                            )));
+                        }
+                        continue;
+                    }
                     let Some(d) = c.props.iter().find(|d| d.name == p.name) else {
                         return Err(at(format!(
                             "<{name}> has no prop `{}`; it takes {}",
@@ -2072,6 +2156,20 @@ impl Gen {
                     args.push_str(&arg);
                 }
                 let call = format!("{}{}::render(__o{args}", cx.top, c.module);
+                // `client:visible` and the like: an island, which starts late.
+                let how = props
+                    .iter()
+                    .find_map(|p| match (p.name.as_str(), &p.value) {
+                        ("client:visible", _) => Some("v".to_string()),
+                        ("client:idle", _) => Some("i".into()),
+                        ("client:interaction", _) => Some("x".into()),
+                        ("client:none", _) => Some("n".into()),
+                        ("client:media", PropValue::Text(q)) => Some(format!("m{q}")),
+                        _ => None,
+                    });
+                if let Some(how) = how {
+                    self.line(ind, &format!("::wisp::rt::live_how(__o, {});", lit(&how)));
+                }
                 // Snippets among the children are props: defined before the
                 // call, in a block of their own.
                 let is_snippet = |n: &&Node| matches!(n, Node::Snippet { .. });
@@ -2623,8 +2721,9 @@ struct JsFile {
 /// The helpers every module's function takes. Most are scoped to the
 /// instance; the rest are live.js's exports, handed over so a script needs
 /// no import for them.
-const HELPERS: &str = "tick, setTimeout, setInterval, requestAnimationFrame, addEventListener, listen, onMount, onDestroy, effect, watch, \
-                       derived, __wisp_d, store, persisted, emit, setContext, getContext, goto, invalidate, page, navigating, enhance";
+const HELPERS: &str = "tick, untrack, setTimeout, setInterval, requestAnimationFrame, addEventListener, listen, onMount, onDestroy, effect, watch, \
+                       derived, store, persisted, emit, setContext, getContext, goto, invalidate, page, navigating, enhance, \
+                       __wisp_s, __wisp_r, __wisp_d, __wisp_e, __wisp_ep, __wisp_snap, __wisp_props";
 
 /// What `client` needs to know beyond the template.
 struct ClientCx<'a> {
@@ -2635,6 +2734,18 @@ struct ClientCx<'a> {
     lib_hash: &'a str,
     /// The page's `+page.js`, served at this URL.
     load: Option<String>,
+    /// A release build: `$inspect` goes.
+    release: bool,
+}
+
+/// A place in a script, as a line and column of its file.
+fn script_pos(s: &template::Script, off: usize) -> (u32, u32) {
+    let before = &s.src[..off];
+    let col = match before.rfind('\n') {
+        Some(n) => before[n + 1..].chars().count() as u32 + 1,
+        None => s.col + before.chars().count() as u32,
+    };
+    (s.line + before.matches('\n').count() as u32, col)
 }
 
 /// The components `nodes` has the browser render.
@@ -2667,23 +2778,46 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
         _ => Vec::new(),
     };
     let script = tt.script.as_ref();
-    let src = script.map_or("", |s| s.src.as_str());
-    let declared = js::declarations(src);
-    // A place in the script, as a line and column of the file.
-    let script_at = |off: usize| -> (u32, u32) {
-        let s = script.expect("an offset in the script");
-        let before = &s.src[..off];
-        let col = match before.rfind('\n') {
-            Some(n) => before[n + 1..].chars().count() as u32 + 1,
-            None => s.col + before.chars().count() as u32,
-        };
-        (s.line + before.matches('\n').count() as u32, col)
-    };
-    // What the module runs: the script, its `$derived` values compiled.
-    let runs = js::derived(src).map_err(|(off, msg)| {
+    let original = script.map_or("", |s| s.src.as_str());
+    let script_at = |off: usize| script_pos(script.expect("an offset in the script"), off);
+    let script_err = |(off, msg): (usize, String)| {
         let (line, col) = script_at(off);
         at(line, col, msg)
-    })?;
+    };
+    // A component's `let { a, b = 1 } = $props()` names props it reads,
+    // with their browser defaults. Blanked, it declares nothing.
+    let rune = js::props_rune(original).map_err(script_err)?;
+    let blanked;
+    let src = match &rune {
+        Some(p) => {
+            let (line, col) = script_at(p.span.0);
+            if t.kind != Kind::Component {
+                return Err(at(
+                    line,
+                    col,
+                    "`$props()` is for components; a page's server values are `data`".into(),
+                ));
+            }
+            if let Some((name, ..)) = p.props.iter().find(|x| !server.contains(&x.0)) {
+                return Err(at(
+                    line,
+                    col,
+                    format!(
+                        "`{name}` is not a prop of this component: declare it in {{@props …}}, with its Rust type{}",
+                        if server.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" (it has {})", server.join(", "))
+                        }
+                    ),
+                ));
+            }
+            blanked = js::blank(original, &[p.span]);
+            blanked.as_str()
+        }
+        None => original,
+    };
+    let declared = js::declarations(src);
     // A server name the script declares too could mean either.
     let clash = |name: &str| -> Result<(), String> {
         match declared.iter().find(|(n, _)| n == name) {
@@ -2716,6 +2850,10 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
             clash(&path[0])?;
             used.push((sent(&path), script_at(off).0));
         }
+    }
+    if let Some(p) = &rune {
+        let line = script_at(p.span.0).0;
+        used.extend(p.props.iter().map(|x| (vec![x.0.clone()], line)));
     }
     if cx.load.is_some() && server_load {
         used.push((
@@ -2808,6 +2946,21 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
     if cx.load.is_some() && !params.contains(&"data") {
         params.push("data");
     }
+    // What the module runs: the script with its state as signals, and the
+    // directives reading them as it does.
+    let owned: Vec<String> = params.iter().map(|p| p.to_string()).collect();
+    let (runs, reactive) = js::script(src, &owned, cx.release).map_err(script_err)?;
+    for (bindings, g) in groups.iter_mut().zip(&tt.groups) {
+        for b in bindings.iter_mut() {
+            *b = js::rewrite(b, &reactive)
+                .map_err(|(_, msg)| format!("{}:{}: {msg}", t.rel, g.line))?;
+        }
+    }
+    let defaults: Vec<(String, String)> = rune
+        .iter()
+        .flat_map(|p| &p.props)
+        .filter_map(|(n, d, _)| Some((n.clone(), d.clone()?)))
+        .collect();
     let id = format!("t{}", t.id);
     let html = cx.as_client.then(|| {
         let mut s = String::new();
@@ -2818,6 +2971,7 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
         id: &id,
         rel: &t.rel,
         params: &params,
+        defaults: &defaults,
         script: script.map(|s| (runs.as_str(), s.line)),
         groups: &groups,
         imports: &imports,
@@ -2838,7 +2992,12 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
     known.retain(|n| !(cx.load.is_some() && n == "data"));
     let lets = declared
         .iter()
-        .filter_map(|(n, _)| Some((n.clone(), js::initializer(src, n)?.to_string())))
+        .filter_map(|(n, _)| {
+            Some((
+                n.clone(),
+                js::plain_init(js::initializer(src, n)?)?.to_string(),
+            ))
+        })
         .collect();
     Ok(Some(Client {
         id,
@@ -2889,6 +3048,8 @@ struct Module<'a> {
     id: &'a str,
     rel: &'a str,
     params: &'a [&'a str],
+    /// `$props()` defaults: a prop's JavaScript when it is not given.
+    defaults: &'a [(String, String)],
     /// The script, as it runs, and the line of the file it starts on.
     script: Option<(&'a str, u32)>,
     groups: &'a [Vec<String>],
@@ -2903,10 +3064,9 @@ struct Module<'a> {
 /// lines before it allow, so the browser's errors point into the .wisp file.
 ///
 /// The script runs in blocks of its own, inside the helpers and then the
-/// server values, so it may reuse a helper's name and a server value may
-/// too. Its function returns the binding groups, and for an instance that a
-/// morph keeps, `s` to take new server values and `p` to read them back
-/// (for `bind:` on a component).
+/// server values (signals, which the runtime sets again when a morph or a
+/// parent brings new ones), so it may reuse a helper's name and a server
+/// value may too. Its function returns the binding groups.
 fn module_source(m: &Module) -> String {
     let mut s = String::new();
     let _ = writeln!(
@@ -2930,14 +3090,29 @@ fn module_source(m: &Module) -> String {
         }
         body = js::blank(src, &spans);
     }
-    let names = m.params.join(", ");
     let _ = write!(
         s,
         "define({}, function (__wisp_p, __wisp_h) {{ const {{ {HELPERS} }} = __wisp_h; {{ ",
         js_str(m.id)
     );
     if !m.params.is_empty() {
-        let _ = write!(s, "let {{ {names} }} = __wisp_p; ");
+        let list: Vec<String> = m.params.iter().map(|p| js_str(p)).collect();
+        let defaults: Vec<String> = m
+            .defaults
+            .iter()
+            .map(|(n, d)| format!("{n}: () => ({d})"))
+            .collect();
+        let _ = write!(
+            s,
+            "const {{ {} }} = __wisp_props(__wisp_p, [{}]{}); ",
+            m.params.join(", "),
+            list.join(", "),
+            if defaults.is_empty() {
+                String::new()
+            } else {
+                format!(", {{ {} }}", defaults.join(", "))
+            }
+        );
     }
     s.push_str("{\n");
     if let Some((_, line)) = m.script {
@@ -2954,14 +3129,7 @@ fn module_source(m: &Module) -> String {
     for g in m.groups {
         let _ = writeln!(s, "  [{}],", g.join(", "));
     }
-    s.push(']');
-    if !m.params.is_empty() {
-        let _ = write!(
-            s,
-            ", s: (__wisp_n) => {{ ({{ {names} }} = __wisp_n) }}, p: () => ({{ {names} }})"
-        );
-    }
-    s.push_str(" };\n} } }");
+    s.push_str("] };\n} } }");
     let mut opts = Vec::new();
     if let Some(h) = m.html {
         opts.push(format!("html: {}", js_str(h)));
@@ -3239,6 +3407,13 @@ fn comp_binding(
                 props.push(format!("{key}: {}", paren(&code.src)));
             }
             PropValue::Bind(code) => {
+                if c.bindable.as_ref().is_some_and(|b| !b.contains(&p.name)) {
+                    return Err(format!(
+                        "<{name}>'s `{0}` is not bindable: its script marks the props a parent may bind, \
+                         `let {{ {0} = $bindable() }} = $props()`",
+                        p.name
+                    ));
+                }
                 let n = names(&code.src, code.line)?;
                 binds.push(format!(
                     "[{key}, {} => {}, {} => {{ {} = __wisp_v }}]",
@@ -3748,11 +3923,15 @@ mod tests {
             ),
             (
                 "src/routes/api/+server.rs",
-                "fn get(n: Option<u8>) -> Vec<u8> { vec![] }\nfn post(name: String) {}\nfn delete() -> Option<Response> { None }",
+                "fn get(n: Option<u8>) -> Vec<u8> { vec![] }\nfn post(name: String) {}\nfn delete() -> Option<Response> { None }\n\
+                 fn put(body: Note) {}\nfn patch(body: Option<String>) {}",
             ),
         ];
         let code = app("inputs", &files).unwrap();
         for want in [
+            "let __a0 = ::wisp::rt::input::body(cx)?; let () = super::put(__a0);",
+            "let __a0 = ::wisp::rt::input::optional(cx, \"body\")?;",
+            "(0, Options) => { ::wisp::rt::respond(__o, ::wisp::rt::options(\"GET, HEAD, POST, DELETE, PUT, PATCH, OPTIONS\")); Ok(()) }",
             "let __a0 = ::wisp::rt::input::required(cx, \"id\")?; let __a1: Option<String> = ::wisp::rt::input::optional(cx, \"q\")?; Ok(Loaded(super::load(__a0, __a1.as_deref())))",
             "let __a1: String = ::wisp::rt::input::required(cx, \"text\")?; let __a2 = ::wisp::rt::input::all(cx, \"tags\")?; \
              let __a3 = ::wisp::rt::input::flag(cx, \"on\"); let () = super::add(cx, &__a1, __a2, __a3).await; Ok(None)",
@@ -3881,6 +4060,7 @@ pub fn load() -> Data { todo!() }";
             as_client: false,
             lib_hash: "0",
             load: None,
+            release: false,
         };
         client(&t, &cx).map(|c| c.expect("the page has browser code"))
     }
@@ -3892,25 +4072,26 @@ pub fn load() -> Data { todo!() }";
         assert_eq!(c.id, "t7");
         let head = format!(
             "import {{ define }} from \"/_app/live.js?v={}\";\nimport a from 'a'\nimport {{\n    b }} from \"b\";\n\
-             define(\"t7\", function (__wisp_p, __wisp_h) {{ const {{ {HELPERS} }} = __wisp_h; {{ let {{ data }} = __wisp_p; {{\n",
+             define(\"t7\", function (__wisp_p, __wisp_h) {{ const {{ {HELPERS} }} = __wisp_h; {{ const {{ data }} = __wisp_props(__wisp_p, [\"data\"]); {{\n",
             env!("CARGO_PKG_VERSION")
         );
         assert!(c.source.starts_with(&head), "{}", c.source);
         // Blank lines, then the script with its imports blanked out: `let
         // open` is on line 13 of the file, and of the module.
         let blanked = format!(
-            "\n\n\n\n{}\n{}\n{}\n  let open = false\n",
+            "\n\n\n\n{}\n{}\n{}\n  let open = __wisp_s(false)\n",
             " ".repeat(19),
             " ".repeat(10),
             " ".repeat(17)
         );
         assert!(c.source[head.len()..].starts_with(&blanked), "{}", c.source);
         assert_eq!(
-            c.source.lines().position(|l| l == "  let open = false"),
+            c.source
+                .lines()
+                .position(|l| l == "  let open = __wisp_s(false)"),
             Some(12)
         );
-        let tail = "  function toggle() { open = !open }\nreturn { g: [\n  [[\"on\", \"click\", [], (_, event) => toggle(event)], [\"attr\", \"hidden\", () => (data.done)]],\n], \
-                    s: (__wisp_n) => { ({ data } = __wisp_n) }, p: () => ({ data }) };\n} } });\n\
+        let tail = "  function toggle() { open.v = !open.v }\nreturn { g: [\n  [[\"on\", \"click\", [], (_, event) => toggle(event)], [\"attr\", \"hidden\", () => (data.v.done)]],\n] };\n} } });\n\
                     //# sourceURL=wisp:///src/routes/+page.wisp\n";
         assert!(c.source.ends_with(tail), "{}", c.source);
         assert_eq!(
@@ -3930,7 +4111,7 @@ pub fn load() -> Data { todo!() }";
         // module only has bindings.
         let c = page_client("<p :text=\"data\"></p>", false).unwrap();
         assert!(
-            !c.source.contains("__wisp_p; {") && c.source.contains("[[\"text\", () => (data)]]"),
+            !c.source.contains("__wisp_props(") && c.source.contains("[[\"text\", () => (data)]]"),
             "{}",
             c.source
         );
@@ -4000,8 +4181,9 @@ pub fn load() -> Data { todo!() }";
             c.source
         );
         assert!(
-            c.source
-                .contains("[\"attr\", \"title\", ({ key }) => (key.mark.label() + data.x.length)]"),
+            c.source.contains(
+                "[\"attr\", \"title\", ({ key }) => (key.mark.label() + data.v.x.length)]"
+            ),
             "{}",
             c.source
         );
@@ -4059,7 +4241,86 @@ pub fn load() -> Data { todo!() }";
             code.contains("\"/_app/c/t1.js\" => Some(&tpl_component_0::__WISP_CLIENT),"),
             "{code}"
         );
-        assert!(code.contains("let { n, title } = __wisp_p;"), "{code}");
+        assert!(
+            code.contains(
+                "const { n, title } = __wisp_props(__wisp_p, [\\\"n\\\", \\\"title\\\"]);"
+            ),
+            "{code}"
+        );
+    }
+
+    #[test]
+    fn props_rune_and_islands() {
+        let item = (
+            "src/components/Item.wisp",
+            "{@props label: &str, count: u32 = 0}\n<button on:click=\"count++\">{:label}</button>\n\
+             <script>\n  let { label, count = $bindable(1) } = $props()\n</script>",
+        );
+        let page = (
+            "src/routes/+page.wisp",
+            "<Item label=\"a\" client:visible /><Item label=\"b\" client:media=\"(min-width: 800px)\" /><Item label=\"c\" client:load />",
+        );
+        let code = app("runes-props", &[item, page]).unwrap();
+        // Every prop the rune names is sent; its default is the browser's.
+        assert!(
+            code.contains(
+                "const { label, count } = __wisp_props(__wisp_p, [\\\"label\\\", \\\"count\\\"], { count: () => (1) });"
+            ),
+            "{code}"
+        );
+        assert!(code.contains("::wisp::rt::live_how(__o, \"v\");"), "{code}");
+        assert!(
+            code.contains("::wisp::rt::live_how(__o, \"m(min-width: 800px)\");"),
+            "{code}"
+        );
+        assert_eq!(code.matches("live_how").count(), 2, "{code}");
+
+        let err = |files: &[(&str, &str)]| app("runes-bad", files).err().unwrap();
+        let bad = err(&[
+            ("src/components/Plain.wisp", "<p>hi</p>"),
+            ("src/routes/+page.wisp", "<Plain client:idle />"),
+        ]);
+        assert!(bad.contains("<Plain> has no browser code"), "{bad}");
+        let bad = err(&[("src/routes/+page.wisp", "<p client:visible>x</p>")]);
+        assert!(bad.contains("goes on a component"), "{bad}");
+        let bad = err(&[
+            ("src/components/Item.wisp", item.1),
+            ("src/routes/+page.wisp", "<Item label=\"a\" client:soon />"),
+        ]);
+        assert!(bad.contains("client:soon"), "{bad}");
+        // Once a component names its props, only a $bindable one may be bound.
+        let bad = err(&[
+            (
+                "src/components/Item.wisp",
+                "{@props label: &str, count: u32 = 0}\n<b>{:label}</b><script>let { label, count } = $props()</script>",
+            ),
+            (
+                "src/routes/+page.wisp",
+                "<Item label={:\"x\"} bind:count=\"n\" /><script>let n = 0</script>",
+            ),
+        ]);
+        assert!(bad.contains("is not bindable"), "{bad}");
+        let bad = err(&[
+            (
+                "src/components/Item.wisp",
+                "{@props label: &str}\n<b>{:label}</b><script>let { label, size } = $props()</script>",
+            ),
+            ("src/routes/+page.wisp", "<Item label=\"x\" />"),
+        ]);
+        assert!(
+            bad.contains("src/components/Item.wisp:2:") && bad.contains("`size` is not a prop"),
+            "{bad}"
+        );
+        let bad = err(&[(
+            "src/routes/+page.wisp",
+            "<p>{:x}</p><script>let { x } = $props()</script>",
+        )]);
+        assert!(bad.contains("for components"), "{bad}");
+        let bad = err(&[("src/routes/+page.wisp", "<p :text=\"$state(1)\"></p>")]);
+        assert!(
+            bad.contains("src/routes/+page.wisp:1: `$state` goes in the script"),
+            "{bad}"
+        );
     }
 
     #[test]

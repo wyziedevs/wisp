@@ -155,6 +155,11 @@ differ.
 - **No WebSockets.** `Response::websocket` answers 501 on every edge target
   (and under the `tower` feature). Use the binary or Docker for them, or
   server-sent events (`Response::events`), which work everywhere.
+- **No in-process state across requests.** `wisp::channel`, `wisp::every`
+  and `RateLimit` are not in the edge build (the app does not compile with
+  them), since each request may run in an instance of its own: use the
+  host's queues, cron triggers and rate limiting. JSON bodies, validation,
+  CORS and the rest of [api.md](api.md) work everywhere.
 - **Outbound HTTP** goes through `wisp::edge::fetch`, for a database over
   HTTP (D1, Turso, Supabase):
 

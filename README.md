@@ -28,7 +28,7 @@ cd my-app
 wisp dev
 ```
 
-`wisp new` asks a few questions: a demo app or a blank one, Tailwind CSS, git, and whether to compile dependencies now. Then open http://127.0.0.1:3000.
+`wisp new` asks a few questions: a demo app, a blank one or a JSON API, Tailwind CSS, git, and whether to compile dependencies now. Then open http://127.0.0.1:3000.
 
 ## A page
 
@@ -72,11 +72,11 @@ Braces `{…}` are Rust and run on the server. A quoted value on a directive, an
 <script>
   let count = 0
   let name = data.name          // server values arrive as data.*
-  let big = $derived(count > 5) // worked out again on every change
+  let big = $derived(count > 5) // follows count; only what reads it redraws
 </script>
 ```
 
-Turn JavaScript off and the server's HTML still works. Lists and conditions (`{:#each}`, `{:#if}`), client components, stores, a client router, `use:enhance` and `+page.js` are in [docs/client.md](docs/client.md).
+Turn JavaScript off and the server's HTML still works. Lists and conditions (`{:#each}`, `{:#if}`), runes, islands (`<Chart client:visible />`), client components, stores, a client router, `use:enhance` and `+page.js` are in [docs/client.md](docs/client.md).
 
 Less boilerplate on the server side too:
 
@@ -107,6 +107,25 @@ Beside the routes:
 | `src/hooks.rs`               | `init` runs once at start; `before` runs before every request    |
 
 Pages can also stream (server-sent events), take uploads, answer with a file, set signed cookies a visitor cannot forge, and share values like a database pool through `wisp::provide`. [docs/design.md](docs/design.md) shows how.
+
+## APIs
+
+An API is a folder of `+server.rs` files, beside the pages or on its own (`wisp new my-api --api`):
+
+```rust
+// src/routes/api/notes/+server.rs
+#[derive(FromJson)]
+struct NewNote {
+    #[validate(min_len = 1, max_len = 200)]
+    title: String,
+}
+
+fn post(body: NewNote) -> Response {
+    Response::created(&db::add(body.title))
+}
+```
+
+A JSON body that does not pass comes back as a 422 listing every problem by field, and every error under `/api` is JSON. CORS and API keys are a line in `src/hooks.rs`; rate limits, channels for live updates, background jobs, an OpenAPI document with a page to try it (`/_wisp/docs`) and JSON test helpers are built in. See [docs/api.md](docs/api.md).
 
 ## Commands
 
@@ -159,6 +178,7 @@ On a server-rendered HTML benchmark on Linux, Wisp serves 13% more requests than
 
 - [docs/design.md](docs/design.md): the template language, routing, actions, the runtime and the dev server.
 - [docs/client.md](docs/client.md): scripts, directives, components, stores, the router.
+- [docs/api.md](docs/api.md): JSON APIs, validation, CORS, auth, rate limits, channels, jobs, OpenAPI.
 - [docs/embed.md](docs/embed.md): testing, `wisp::handle`, axum, hyper, Lambda.
 - [docs/deploy.md](docs/deploy.md): static, Docker and every host.
 

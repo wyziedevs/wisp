@@ -6,6 +6,7 @@ members = [
     "crates/wisp-macros",
     "crates/wisp-cli",
     "examples/demo",
+    "examples/api",
     "tests/app",
     "bench/load",
     "bench/run",

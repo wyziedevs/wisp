@@ -1023,6 +1023,34 @@ impl Parser<'_> {
                         j += 1;
                     }
                     let mut prop = self.src[at..j].to_string();
+                    // `client:visible`: when the component's browser code starts.
+                    if prop == "client" && b.get(j) == Some(&b':') {
+                        let n = j + 1;
+                        j = n;
+                        while j < b.len() && b[j].is_ascii_alphabetic() {
+                            j += 1;
+                        }
+                        let how = &self.src[n..j];
+                        let raw = format!("client:{how}");
+                        if !matches!(how, "load" | "visible" | "idle" | "interaction" | "media" | "none") {
+                            return Err(self.err(at, format!("`{raw}` is not a way to start: client:load (the default), client:visible, client:idle, client:interaction, client:media=\"(query)\" or client:none")));
+                        }
+                        if props.iter().any(|p| p.name.starts_with("client:")) {
+                            return Err(self.err(at, format!("<{name}> starts one way: `{raw}` is a second")));
+                        }
+                        self.i = j;
+                        let value = self.directive_value(&raw)?;
+                        j = self.i;
+                        let value = match (how, value) {
+                            ("media", Some(q)) if !q.src.trim().is_empty() => PropValue::Text(q.src.trim().to_string()),
+                            ("media", _) => return Err(self.err(at, "`client:media` needs its query: client:media=\"(min-width: 800px)\"".into())),
+                            (_, None) => PropValue::Flag,
+                            (_, Some(_)) => return Err(self.err(at, format!("`{raw}` takes no value"))),
+                        };
+                        props.push(Prop { name: raw, value });
+                        j = skip_ws(j);
+                        continue;
+                    }
                     // `bind:open="x"` and `on:select="pick"`: browser code.
                     if matches!(prop.as_str(), "bind" | "on") && b.get(j) == Some(&b':') {
                         let n = j + 1;
@@ -1098,6 +1126,12 @@ impl Parser<'_> {
             )
         });
         if live || self.templates.iter().any(Option::is_some) {
+            if let Some(p) = props.iter().find(|p| p.name.starts_with("client:")) {
+                return Err(self.err(
+                    start,
+                    format!("<{name}> is rendered in the browser here, where its code already runs: `{}` is for a component the server renders", p.name),
+                ));
+            }
             if let Some(p) = props.iter().find(|p| matches!(p.value, PropValue::Expr(_))) {
                 return Err(self.err(
                     start,
@@ -2431,6 +2465,7 @@ fn is_directive(raw: &str, tag: &str) -> bool {
             "transition:",
             "use:",
             "animate:",
+            "client:",
         ]
         .iter()
         .any(|p| raw.starts_with(p))
@@ -2445,6 +2480,11 @@ fn directive_parts(raw: &str, tag: &str) -> Result<(Dir, String, Vec<String>), S
     }
     if tag == "template" && raw.eq_ignore_ascii_case("if") {
         return Ok((Dir::If, String::new(), Vec::new()));
+    }
+    if raw.starts_with("client:") {
+        return Err(format!(
+            "`{raw}` goes on a component, such as <Chart {raw} />: a component's module is what loads late"
+        ));
     }
     let (kind, name) = if let Some(n) = raw.strip_prefix("on:") {
         let mut parts = n.split('.');

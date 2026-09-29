@@ -77,6 +77,14 @@ const DEV_JS: &[u8] = include_bytes!("client/wisp-dev.js");
 pub(crate) const UI_CSS: &str = include_str!("client/ui.css");
 const DIALOG_CSS: &[u8] = include_bytes!("client/dialog.css");
 
+/// The page at `/_wisp/docs` that lists the app's endpoints and sends
+/// requests to them, with Wisp's own styles.
+fn api_docs() -> &'static [u8] {
+    static PAGE: OnceLock<String> = OnceLock::new();
+    PAGE.get_or_init(|| include_str!("api-docs.html").replace("/*ui.css*/", UI_CSS))
+        .as_bytes()
+}
+
 /// `<link>`/`<script>` tags for `%wisp.head%`. Fixed for the process.
 static HEAD_TAGS: OnceLock<String> = OnceLock::new();
 
@@ -920,6 +928,20 @@ impl Reply {
     pub fn text(&self) -> &str {
         std::str::from_utf8(self.bytes()).unwrap_or("")
     }
+
+    /// The body read from JSON, for tests: `app.get("/api/notes").json::<Vec<Note>>()`,
+    /// or `json::<wisp::Value>()` for any JSON. Panics, showing the body,
+    /// if it is not a `T`.
+    pub fn json<T: crate::FromJson>(&self) -> T {
+        match crate::from_json(self.bytes()) {
+            Ok(v) => v,
+            Err(e) => panic!(
+                "the body is not a {}: {e:?}\n{}",
+                std::any::type_name::<T>(),
+                self.text()
+            ),
+        }
+    }
 }
 
 /// A request for [`handle`], from a host other than the built-in server,
@@ -1061,6 +1083,20 @@ async fn decide<A: App>(cx: &mut Cx, out: &mut Out, reply: &mut Reply) {
     if !path.starts_with('/') {
         return reply.set_plain(400, "Bad Request");
     }
+    if matches!(path, "/_wisp/openapi.json" | "/_wisp/docs")
+        && matches!(method, Method::Get | Method::Head)
+        && crate::settings().api_docs
+        && !A::openapi().is_empty()
+    {
+        return match path {
+            "/_wisp/docs" => reply.set(200, "text/html; charset=utf-8", Body::Static(api_docs())),
+            _ => reply.set(
+                200,
+                "application/json",
+                Body::Static(A::openapi().as_bytes()),
+            ),
+        };
+    }
     if cfg!(debug_assertions) && path.starts_with("/_wisp/") {
         let (status, msg) = dev::endpoint::<A>(method, path, cx.body(), cx.peer());
         return reply.set_plain(status, msg);
@@ -1162,19 +1198,24 @@ async fn decide<A: App>(cx: &mut Cx, out: &mut Out, reply: &mut Reply) {
             // The headers of the page that failed go with it; the `before`
             // hook's stay.
             cx.out_headers.truncate(cx.kept_headers);
-            let rendered = catch(A::error(
-                route.map(|(id, _)| id),
-                cx,
-                out,
-                e.status,
-                message,
-            ))
-            .await;
-            if rendered.is_err() || out.response.is_some() {
-                out.clear();
-                rt::default_error(cx, out, e.status, message);
+            if wants_json(cx) {
+                let body = e.json(message).into_bytes();
+                reply.set(e.status, "application/json", Body::Bytes(body));
+            } else {
+                let rendered = catch(A::error(
+                    route.map(|(id, _)| id),
+                    cx,
+                    out,
+                    e.status,
+                    message,
+                ))
+                .await;
+                if rendered.is_err() || out.response.is_some() {
+                    out.clear();
+                    rt::default_error(cx, out, e.status, message);
+                }
+                reply.set(e.status, "text/html; charset=utf-8", Body::Page);
             }
-            reply.set(e.status, "text/html; charset=utf-8", Body::Page);
             if let Some((name, value)) = e.header.take() {
                 reply.headers.push((Cow::Borrowed(name), Cow::Owned(value)));
             }
@@ -1200,6 +1241,17 @@ async fn decide<A: App>(cx: &mut Cx, out: &mut Out, reply: &mut Reply) {
             cx.path()
         ));
     }
+}
+
+/// Whether an error goes back as JSON rather than an error page: a request
+/// under `/api`, one that sent JSON, or one that asks for JSON and not HTML.
+fn wants_json(cx: &Cx) -> bool {
+    let path = cx.path();
+    let accept = cx.header("accept").unwrap_or("");
+    path == "/api"
+        || path.starts_with("/api/")
+        || crate::input::is_json(cx)
+        || (accept.contains("json") && !accept.contains("text/html"))
 }
 
 /// A status whose response has no body, and no `content-length` (RFC 9110

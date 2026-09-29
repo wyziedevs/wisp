@@ -19,6 +19,8 @@ use std::marker::PhantomData;
 pub struct Client<A> {
     runtime: tokio::runtime::Runtime,
     cookies: Vec<(String, String)>,
+    /// `authorization`, from [`Client::bearer`].
+    auth: Option<String>,
     app: PhantomData<fn() -> A>,
 }
 
@@ -34,6 +36,7 @@ pub fn client<A: App>() -> Client<A> {
     Client {
         runtime,
         cookies: Vec::new(),
+        auth: None,
         app: PhantomData,
     }
 }
@@ -58,8 +61,46 @@ impl<A: App> Client<A> {
         self.send(req)
     }
 
-    /// Any request, with the client's cookies added.
+    /// A JSON request, as an API client sends one:
+    /// `app.post_json("/api/notes", r#"{"title": "Tea"}"#)`.
+    pub fn post_json(&mut self, target: &str, json: &str) -> Reply {
+        self.send_json("POST", target, json)
+    }
+
+    pub fn put_json(&mut self, target: &str, json: &str) -> Reply {
+        self.send_json("PUT", target, json)
+    }
+
+    pub fn patch_json(&mut self, target: &str, json: &str) -> Reply {
+        self.send_json("PATCH", target, json)
+    }
+
+    pub fn delete(&mut self, target: &str) -> Reply {
+        self.send(Request::new("DELETE", target))
+    }
+
+    fn send_json(&mut self, method: &str, target: &str, json: &str) -> Reply {
+        let mut req = Request::new(method, target);
+        req.header("content-type", "application/json");
+        req.body = json.as_bytes().to_vec();
+        self.send(req)
+    }
+
+    /// Sends `Authorization: Bearer <token>` with every request from now on.
+    pub fn bearer(&mut self, token: &str) {
+        self.auth = Some(format!("Bearer {token}"));
+    }
+
+    /// Any request, with the client's cookies (and bearer token) added.
     pub fn send(&mut self, mut req: Request) -> Reply {
+        if let Some(auth) = &self.auth
+            && !req
+                .headers
+                .iter()
+                .any(|(n, _)| n.eq_ignore_ascii_case("authorization"))
+        {
+            req.header("authorization", auth);
+        }
         if !self.cookies.is_empty() {
             let jar: Vec<String> = self
                 .cookies

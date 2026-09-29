@@ -3,9 +3,10 @@
 //! each by its name: a route parameter first, then the form a POST, PUT or
 //! PATCH sends, then the URL's query. The type says how: `Option` when it
 //! may be left out (or blank), `bool` for a checkbox, `Vec` for every value
-//! of a repeated field, anything else `FromStr` when it must be there.
+//! of a repeated field, anything else `FromStr` when it must be there. A
+//! JSON body's members are read the same way, and `body: T` reads all of it.
 
-use crate::{Cx, Error, Method, Result};
+use crate::{Cx, Error, FromJson, Method, Result, Value};
 use std::borrow::Cow;
 use std::fmt::Display;
 use std::str::FromStr;
@@ -15,6 +16,7 @@ use std::str::FromStr;
 enum From {
     Param,
     Form,
+    Json,
     Query,
 }
 
@@ -26,19 +28,74 @@ fn find<'a>(cx: &'a Cx, name: &str) -> Option<(Cow<'a, str>, From)> {
     if let Some(v) = cx.route_param(name) {
         return Some((Cow::Borrowed(v), From::Param));
     }
-    if posts(cx)
-        && let Some(v) = cx.form().get(name)
-    {
-        return Some((v, From::Form));
+    if posts(cx) {
+        if let Some(v) = cx.form().get(name) {
+            return Some((v, From::Form));
+        }
+        if let Some(v) = json_field(cx, name) {
+            return Some((Cow::Owned(v), From::Json));
+        }
     }
     cx.query(name).map(|v| (v, From::Query))
 }
 
+/// Whether the request's body is JSON, by its `Content-Type`.
+pub(crate) fn is_json(cx: &Cx) -> bool {
+    cx.header("content-type").is_some_and(|t| {
+        let t = t.split(';').next().unwrap_or("").trim();
+        t.eq_ignore_ascii_case("application/json") || t.to_ascii_lowercase().ends_with("+json")
+    })
+}
+
+/// The members `name` of a JSON object body, as the text a form would send:
+/// a string as itself, a number or boolean as written, each item of an
+/// array. `null` is not there.
+fn json_values(cx: &Cx, name: &str) -> Vec<String> {
+    let scalar = |v: &Value| match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.clone()),
+        Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    };
+    let Some(body) = is_json(cx)
+        .then(|| std::str::from_utf8(cx.body()).ok())
+        .flatten()
+    else {
+        return Vec::new();
+    };
+    match crate::json::parse(body)
+        .ok()
+        .as_ref()
+        .and_then(|v| v.get(name))
+    {
+        Some(Value::Array(items)) => items.iter().filter_map(scalar).collect(),
+        Some(v) => scalar(v).into_iter().collect(),
+        None => Vec::new(),
+    }
+}
+
+fn json_field(cx: &Cx, name: &str) -> Option<String> {
+    json_values(cx, name).into_iter().next()
+}
+
+/// `body: T`: the request's JSON body read as a `T` (see
+/// [`crate::from_json`]). A body sent as another type is a 415.
+pub fn body<T: FromJson>(cx: &Cx) -> Result<T> {
+    if cx.header("content-type").is_some() && !is_json(cx) {
+        return Err(Error::new(
+            415,
+            "Expected a JSON body, sent with Content-Type: application/json",
+        ));
+    }
+    crate::from_json(cx.body())
+}
+
 fn parse<T: FromStr<Err: Display>>(name: &str, v: &str, from: From) -> Result<T> {
-    v.parse().map_err(|e| match from {
+    v.parse().map_err(|e: T::Err| match from {
         // A path whose segment is not one of these: there is no such page.
         From::Param => Error::new(404, "Not Found"),
         From::Form => Error::new(400, format!("form field `{name}`: {e}")),
+        From::Json => Error::invalid(name, e.to_string()),
         From::Query => Error::new(400, format!("query parameter `{name}`: {e}")),
     })
 }
@@ -48,6 +105,7 @@ fn parse<T: FromStr<Err: Display>>(name: &str, v: &str, from: From) -> Result<T>
 pub fn required<T: FromStr<Err: Display>>(cx: &Cx, name: &str) -> Result<T> {
     match find(cx, name) {
         Some((v, from)) => parse(name, &v, from),
+        None if posts(cx) && is_json(cx) => Err(Error::invalid(name, "is required")),
         None if posts(cx) => Err(Error::new(400, format!("missing form field `{name}`"))),
         None => Err(Error::new(400, format!("missing query parameter `{name}`"))),
     }
@@ -71,15 +129,17 @@ pub fn flag(cx: &Cx, name: &str) -> bool {
 /// `name: Vec<T>`: every value sent under the name, such as a group of
 /// checkboxes; empty when there are none.
 pub fn all<T: FromStr<Err: Display>>(cx: &Cx, name: &str) -> Result<Vec<T>> {
-    let form: Vec<Cow<str>> = if posts(cx) {
-        cx.form().all(name).collect()
-    } else {
+    let form: Vec<Cow<str>> = if !posts(cx) {
         Vec::new()
+    } else if is_json(cx) {
+        json_values(cx, name).into_iter().map(Cow::Owned).collect()
+    } else {
+        cx.form().all(name).collect()
     };
     let (sent, from) = if form.is_empty() {
         (cx.query_all(name).collect(), From::Query)
     } else {
-        (form, From::Form)
+        (form, if is_json(cx) { From::Json } else { From::Form })
     };
     sent.iter().map(|v| parse(name, v, from)).collect()
 }
@@ -129,6 +189,39 @@ mod tests {
         assert_eq!(
             required::<String>(&post, "name").unwrap_err().message(),
             "missing form field `name`"
+        );
+    }
+
+    #[test]
+    fn json_bodies() {
+        let post = cx(
+            "POST /p HTTP/1.1\r\nContent-Type: application/json; charset=utf-8\r\n\r\n{\"text\":\"hi\",\"n\":3,\"on\":true,\"tags\":[\"a\",\"b\"],\"no\":null}",
+            &[],
+        );
+        assert_eq!(required::<String>(&post, "text").unwrap(), "hi");
+        assert_eq!(required::<u8>(&post, "n").unwrap(), 3);
+        assert!(flag(&post, "on") && !flag(&post, "no"));
+        assert_eq!(all::<String>(&post, "tags").unwrap(), ["a", "b"]);
+        assert_eq!(optional::<u8>(&post, "no").unwrap(), None);
+        let missing = required::<u8>(&post, "gone").unwrap_err();
+        assert_eq!(
+            (missing.status(), missing.fields()[0].1.as_str()),
+            (422, "is required")
+        );
+        assert_eq!(required::<u8>(&post, "text").unwrap_err().status(), 422);
+        let whole: crate::Value = body(&post).unwrap();
+        assert_eq!(whole.get("n").and_then(|n| n.as_i64()), Some(3));
+
+        let form = cx(
+            "POST /p HTTP/1.1\r\nContent-Type: text/plain\r\n\r\n{}",
+            &[],
+        );
+        assert_eq!(body::<crate::Value>(&form).unwrap_err().status(), 415);
+        let bare = cx("POST /p HTTP/1.1\r\n\r\n[1]", &[]);
+        assert_eq!(
+            body::<Vec<u8>>(&bare).unwrap(),
+            [1],
+            "no Content-Type: tried as JSON"
         );
     }
 }

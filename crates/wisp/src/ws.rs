@@ -117,6 +117,7 @@ pub(crate) fn handshake(cx: &Cx) -> Result<String> {
         message: Cow::Borrowed(message),
         header: Some((header.0, header.1.to_string())),
         source: None,
+        fields: Vec::new(),
     };
     if cx.method != Method::Get
         || !cx.http11

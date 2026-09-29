@@ -8,6 +8,8 @@
 // the one exception (`edge.rs`).
 #![cfg_attr(not(target_arch = "wasm32"), forbid(unsafe_code))]
 
+#[cfg(not(target_arch = "wasm32"))]
+mod channel;
 mod cx;
 mod dev;
 #[cfg(target_arch = "wasm32")]
@@ -17,6 +19,9 @@ mod form;
 mod html;
 mod http;
 mod input;
+pub mod json;
+#[cfg(not(target_arch = "wasm32"))]
+mod limit;
 mod live;
 mod sign;
 #[cfg(not(target_arch = "wasm32"))]
@@ -25,12 +30,17 @@ pub mod test;
 pub mod tower;
 mod ws;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use channel::{Channel, Subscription, channel};
 pub use cx::{CookieOptions, Cx, Method, SameSite};
 pub use export::{Entry, ExportRoute, export};
 pub use form::{File, Form};
 pub use http::{Body, Reply, Request, handle};
+pub use json::{FromJson, Value, from_json, to_json};
+#[cfg(not(target_arch = "wasm32"))]
+pub use limit::RateLimit;
 pub use live::{ClientModule, Json};
-pub use wisp_macros::{Cookie, Json, action};
+pub use wisp_macros::{Cookie, FromJson, Json, action};
 pub use ws::{Message, WebSocket};
 
 use std::any::{Any, TypeId};
@@ -46,9 +56,11 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 /// What every `+page.rs`, `+layout.rs`, `+server.rs` and `src/hooks.rs`
 /// sees without a `use` line. Other Rust files can `use wisp::prelude::*`.
 pub mod prelude {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub use crate::RateLimit;
     pub use crate::{
-        Cookie, CookieOptions, Cx, Error, Json, Method, OrStatus, Response, Result, SameSite,
-        action, error, redirect,
+        Cookie, CookieOptions, Cx, Error, FromJson, Json, Method, OrStatus, Response, Result,
+        SameSite, Value, action, error, invalid, redirect,
     };
 }
 
@@ -205,6 +217,77 @@ pub async fn sleep(duration: std::time::Duration) {
     edge::sleep(duration).await;
 }
 
+/// Runs `task` every `period`, the first time one `period` from now, until
+/// the server stops: a cleanup, a digest email, a cache refresh. Call it
+/// from `init` in `src/hooks.rs`:
+///
+/// ```ignore
+/// fn init() {
+///     wisp::every(Duration::from_secs(3600), || async {
+///         db::delete_expired_sessions().await;
+///     });
+/// }
+/// ```
+///
+/// Runs in this process, on the thread that called it; a task that takes
+/// longer than `period` is not started again until it is done. Not in the
+/// edge build, whose instances live for a request: use the host's cron
+/// triggers there.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn every<F, Fut>(period: std::time::Duration, mut task: F)
+where
+    F: FnMut() -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    assert!(!period.is_zero(), "wisp::every needs a period above zero");
+    spawn(async move {
+        let mut next = tokio::time::Instant::now() + period;
+        loop {
+            let stopped = http::first(
+                async {
+                    tokio::time::sleep_until(next).await;
+                    false
+                },
+                async {
+                    http::stopped().await;
+                    true
+                },
+            )
+            .await;
+            if stopped {
+                return;
+            }
+            task().await;
+            next = (next + period).max(tokio::time::Instant::now());
+        }
+    });
+}
+
+/// An environment variable parsed as any `FromStr` type, or `default` when
+/// it is not set: `let workers: usize = wisp::env_or("WORKERS", 4);`. One
+/// that is set but does not parse panics, naming it, so a typo is never
+/// quietly replaced by the default (in `init`, that stops the server).
+pub fn env_or<T: FromStr>(key: &str, default: T) -> T {
+    match env(key) {
+        None => default,
+        Some(v) => match v.trim().parse() {
+            Ok(v) => v,
+            Err(_) => panic!(
+                "{key} is {v:?}, which is not a {}",
+                std::any::type_name::<T>()
+            ),
+        },
+    }
+}
+
+/// Whether `a` and `b` are the same, in time that does not depend on where
+/// they differ: for checking an API key or a token, which `==` would let an
+/// attacker guess a byte at a time.
+pub fn secure_eq(a: impl AsRef<[u8]>, b: impl AsRef<[u8]>) -> bool {
+    let (a, b) = (a.as_ref(), b.as_ref());
+    a.len() == b.len() && a.iter().zip(b).fold(0, |d, (x, y)| d | (x ^ y)) == 0
+}
+
 /// Values given to [`provide`], leaked: they live as long as the process.
 static STATE: RwLock<Vec<(TypeId, &'static (dyn Any + Send + Sync))>> = RwLock::new(Vec::new());
 
@@ -278,6 +361,9 @@ pub(crate) struct Settings {
     /// no cap).
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // no sockets there
     pub max_conns: usize,
+    /// `WISP_API_DOCS`: serve `/_wisp/openapi.json` and `/_wisp/docs`
+    /// (`on` in dev builds, `off` in release ones).
+    pub api_docs: bool,
 }
 
 pub(crate) fn settings() -> &'static Settings {
@@ -307,7 +393,13 @@ pub(crate) fn settings() -> &'static Settings {
             Some(0) => usize::MAX,
             n => n.unwrap_or(10_000),
         };
-        Settings { body_limit, origin, client_ip_header, secret, ws_idle, max_conns }
+        let api_docs = match setting::<String>("WISP_API_DOCS", "on or off").map(|v| v.to_ascii_lowercase()) {
+            None => cfg!(debug_assertions),
+            Some(v) if matches!(&*v, "on" | "1" | "true") => true,
+            Some(v) if matches!(&*v, "off" | "0" | "false") => false,
+            Some(v) => fail(&format!("WISP_API_DOCS is {v:?}, which is not on or off")),
+        };
+        Settings { body_limit, origin, client_ip_header, secret, ws_idle, max_conns, api_docs }
     })
 }
 
@@ -356,6 +448,11 @@ pub trait App: 'static {
     fn client_module(path: &str) -> Option<&'static ClientModule> {
         let _ = path;
         None
+    }
+    /// The OpenAPI document of the app's `+server.rs` endpoints, served at
+    /// `/_wisp/openapi.json`; empty without any.
+    fn openapi() -> &'static str {
+        ""
     }
     /// Every route, for `wisp build --static`.
     fn export_routes() -> Vec<ExportRoute> {
@@ -601,6 +698,12 @@ impl Response {
         Response::json(body)
     }
 
+    /// `value` as JSON with 201 Created, the answer to a POST that made
+    /// something: `Response::created(&note)`.
+    pub fn created(value: &(impl Json + ?Sized)) -> Response {
+        Response::json_of(value).with_status(201)
+    }
+
     pub fn with_status(mut self, status: u16) -> Response {
         assert!((100..=999).contains(&status), "invalid status {status}");
         self.status = status;
@@ -670,9 +773,11 @@ impl std::error::Error for Gone {}
 pub struct Error {
     status: u16,
     message: Cow<'static, str>,
-    /// `location` for redirects, `allow` for 405.
+    /// `location` for redirects, `allow` for 405, `retry-after` for 429.
     header: Option<(&'static str, String)>,
     source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    /// For a 422: what is wrong, by field.
+    fields: Vec<(String, String)>,
 }
 
 impl Error {
@@ -686,7 +791,73 @@ impl Error {
             message: message.into(),
             header: None,
             source: None,
+            fields: Vec::new(),
         }
+    }
+
+    /// A 422 for input that does not pass: `field` and what is wrong with
+    /// it. [`invalid`] returns one; [`Error::and`] adds more.
+    pub fn invalid(field: impl Into<String>, problem: impl Into<String>) -> Error {
+        Error::invalid_fields(vec![(field.into(), problem.into())])
+    }
+
+    /// Another field that does not pass, on a 422 from [`Error::invalid`].
+    pub fn and(mut self, field: impl Into<String>, problem: impl Into<String>) -> Error {
+        self.fields.push((field.into(), problem.into()));
+        self.message = Cow::Owned(Error::summary(&self.fields));
+        self
+    }
+
+    pub(crate) fn invalid_fields(fields: Vec<(String, String)>) -> Error {
+        Error {
+            message: Cow::Owned(Error::summary(&fields)),
+            fields,
+            ..Error::new(422, "")
+        }
+    }
+
+    /// `title: must have at least 1 character; age: is required`.
+    fn summary(fields: &[(String, String)]) -> String {
+        let all: Vec<String> = fields.iter().map(|(f, p)| format!("{f}: {p}")).collect();
+        all.join("; ")
+    }
+
+    /// What is wrong, by field, for a 422 about input: `("title", "is required")`.
+    pub fn fields(&self) -> &[(String, String)] {
+        &self.fields
+    }
+
+    /// A header to send with the error, such as `retry-after` on a 429.
+    /// Panics on CR/LF in the value.
+    pub fn with_header(mut self, name: &'static str, value: impl Into<String>) -> Error {
+        let value = value.into();
+        assert!(
+            cx::valid_header(name, &value),
+            "invalid header {name:?}: {value:?}"
+        );
+        self.header = Some((name, value));
+        self
+    }
+
+    /// The error as JSON, for an API client: `{"status":422,"error":"...",
+    /// "errors":{"title":"is required"}}` (`errors` only when there are some).
+    pub(crate) fn json(&self, message: &str) -> String {
+        let mut out = format!("{{\"status\":{},\"error\":", self.status);
+        message.json(&mut out);
+        if !self.fields.is_empty() {
+            out.push_str(",\"errors\":{");
+            for (k, (field, problem)) in self.fields.iter().enumerate() {
+                if k > 0 {
+                    out.push(',');
+                }
+                field.json(&mut out);
+                out.push(':');
+                problem.json(&mut out);
+            }
+            out.push('}');
+        }
+        out.push('}');
+        out
     }
 
     /// A redirect with a status other than [`redirect`]'s 303, such as 308
@@ -707,6 +878,7 @@ impl Error {
             message: Cow::Borrowed(""),
             header: Some(("location", location)),
             source: None,
+            fields: Vec::new(),
         }
     }
 
@@ -735,6 +907,13 @@ pub fn error<T>(status: u16, message: impl Into<Cow<'static, str>>) -> Result<T>
     Err(Error::new(status, message))
 }
 
+/// `return invalid("email", "is already taken")`: a 422 for input that does
+/// not pass, by field, as `#[validate]` gives one. An API client gets
+/// `{"errors":{"email":"is already taken"}}`; [`Error::and`] adds fields.
+pub fn invalid<T>(field: impl Into<String>, problem: impl Into<String>) -> Result<T> {
+    Err(Error::invalid(field, problem))
+}
+
 /// `return redirect("/login")`: 303 See Other, which sends the browser
 /// to `location` with a GET, whether it came with a form post or a link.
 /// [`Error::redirect`] takes other statuses. Panics on CR/LF in `location`.
@@ -749,6 +928,7 @@ impl<E: std::error::Error + Send + Sync + 'static> From<E> for Error {
             message: Cow::Owned(e.to_string()),
             header: None,
             source: Some(Box::new(e)),
+            fields: Vec::new(),
         }
     }
 }
@@ -804,12 +984,14 @@ pub mod rt {
     pub use crate::dev::chunk;
     /// A handler's parameters, read by name (see `input.rs`).
     pub mod input {
-        pub use crate::input::{all, flag, optional, required};
+        pub use crate::input::{all, body, flag, optional, required};
     }
     pub use crate::html::{
         Always, Attr, Direct, Formatted, Maybe, Text, escape, guard_url, raw as html, text,
     };
-    pub use crate::live::{Js, js_of, js_text, json, live, live_end, live_route, same_version};
+    pub use crate::live::{
+        Js, js_of, js_text, json, live, live_end, live_how, live_route, same_version,
+    };
     use crate::{Cx, Error, Out, Response};
 
     /// The text of a `[...rest]` match: from its first segment to the end of
@@ -878,12 +1060,18 @@ pub mod rt {
         Error::new(404, format!("No action named `{name}` on this page"))
     }
 
+    /// The answer to OPTIONS: no body, and what the route takes.
+    pub fn options(allow: &'static str) -> Response {
+        Response::empty(204).with_header("allow", allow)
+    }
+
     pub fn method_not_allowed(allow: &'static str) -> Error {
         Error {
             status: 405,
             message: "Method Not Allowed".into(),
             header: Some(("allow", allow.into())),
             source: None,
+            fields: Vec::new(),
         }
     }
 

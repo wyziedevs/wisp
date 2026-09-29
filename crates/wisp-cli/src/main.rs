@@ -49,8 +49,8 @@ const COMMANDS: [(&str, &str); 7] = [
 
 const NEW_OPTIONS: [(&str, &str); 5] = [
     (
-        "--template demo|minimal",
-        "An app to learn from, or one empty page.",
+        "--template demo|minimal|api",
+        "An app to learn from, one empty page, or a JSON API (also --api).",
     ),
     ("--[no-]tailwind", "Add Tailwind CSS, or leave it out."),
     ("--[no-]git", "Create a git repository, or leave it out."),

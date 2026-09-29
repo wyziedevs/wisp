@@ -51,14 +51,32 @@ pub struct ClientModule {
 #[derive(Default)]
 pub(crate) struct Live {
     count: u32,
-    modules: Vec<&'static ClientModule>,
+    /// The modules instances use, each with whether one of them starts
+    /// with the page (rather than as an island, later).
+    modules: Vec<(&'static ClientModule, bool)>,
     /// `[0,"t3",-1,{…}],[1,"t5",0,{…}]`: id, module, the instance it
     /// renders inside (for context), and its server values.
     instances: String,
-    /// The instances rendering now, innermost last.
-    open: Vec<u32>,
+    /// The instances rendering now, innermost last, and when each starts.
+    open: Vec<(u32, Start)>,
     /// `,"r":"/post/[slug]","p":{"slug":"x"}` for a page with a `+page.js`.
     route: String,
+    /// The `client:…` of the component about to render (see `live_how`).
+    next: Option<&'static str>,
+    /// Where a `client:none` instance writes its values: thrown away.
+    scratch: String,
+}
+
+/// When an instance's browser code starts.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Start {
+    /// With the page.
+    Now,
+    /// When the browser sees fit: it, or an instance it renders inside, is
+    /// an island (`client:visible`, `client:idle`, …).
+    Later,
+    /// Never: `client:none`, or inside one. Its code is not sent.
+    Never,
 }
 
 impl Live {
@@ -68,18 +86,21 @@ impl Live {
         self.instances.clear();
         self.open.clear();
         self.route.clear();
+        self.next = None;
     }
 
     /// What goes at the end of the page's body when it has instances: the
-    /// instances and the modules they need, the modules preloaded, and the
-    /// runtime that starts them. Empty otherwise.
+    /// instances and the modules they need, the modules that start with the
+    /// page preloaded, and the runtime that starts them, if any does (an
+    /// island's wake-up is in wisp.js, which loads the runtime itself).
+    /// Empty otherwise.
     pub(crate) fn tail(&self) -> String {
-        if self.count == 0 {
+        if self.instances.is_empty() {
             return String::new();
         }
         let mut s = String::with_capacity(self.instances.len() + 200 * self.modules.len() + 200);
         s.push_str("<script type=\"application/json\" id=\"wisp-live\">{\"m\":{");
-        for (k, m) in self.modules.iter().enumerate() {
+        for (k, (m, _)) in self.modules.iter().enumerate() {
             let comma = if k > 0 { "," } else { "" };
             let _ = write!(s, "{comma}\"{}\":\"{}\"", m.id, m.url);
         }
@@ -88,8 +109,11 @@ impl Live {
         s.push(']');
         s.push_str(&self.route);
         s.push_str("}</script>");
-        for m in &self.modules {
+        for (m, _) in self.modules.iter().filter(|m| m.1) {
             let _ = write!(s, "<link rel=\"modulepreload\" href=\"{}\">", m.url);
+        }
+        if !self.modules.iter().any(|m| m.1) {
+            return s;
         }
         s.push_str(concat!(
             "<script type=\"module\" src=\"/_app/live.js?v=",
@@ -105,18 +129,43 @@ impl Live {
 /// The caller writes the blob and then the `]` that closes the record.
 pub fn live<'a>(out: &'a mut Out, module: &'static ClientModule) -> (u32, &'a mut String) {
     let l = &mut out.live;
-    if !l.modules.iter().any(|m| m.id == module.id) {
-        l.modules.push(module);
-    }
+    let how = l.next.take();
+    let parent = l.open.last().copied();
+    let start = match (how, parent.map(|p| p.1)) {
+        (Some("n"), _) | (_, Some(Start::Never)) => Start::Never,
+        (Some(_), _) | (_, Some(Start::Later)) => Start::Later,
+        _ => Start::Now,
+    };
     let i = l.count;
     l.count += 1;
-    if i > 0 {
+    l.open.push((i, start));
+    if start == Start::Never {
+        l.scratch.clear();
+        return (i, &mut l.scratch);
+    }
+    match l.modules.iter_mut().find(|m| m.0.id == module.id) {
+        Some(m) => m.1 |= start == Start::Now,
+        None => l.modules.push((module, start == Start::Now)),
+    }
+    if !l.instances.is_empty() {
         l.instances.push(',');
     }
-    let parent = l.open.last().map_or(-1, |&p| p as i64);
-    l.open.push(i);
+    let parent = parent.map_or(-1, |p| p.0 as i64);
     let _ = write!(l.instances, "[{i},\"{}\",{parent},", module.id);
+    if let Some(how) = how {
+        string(&mut l.instances, how);
+        l.instances.push(',');
+    }
     (i, &mut l.instances)
+}
+
+/// The component about to render is an island: its instance starts as
+/// `how` says, rather than with the page. `v` when it is seen, `i` when
+/// the browser is idle, `x` at the first pointer, focus or key on it,
+/// `m(query)` when the media query matches, `n` never (`client:none`: its
+/// code and values are not sent). What renders inside it waits with it.
+pub fn live_how(out: &mut Out, how: &'static str) {
+    out.live.next = Some(how);
 }
 
 /// The instance `live` started last has rendered everything inside it.
@@ -643,5 +692,30 @@ mod tests {
         )));
         out.live.clear();
         assert_eq!(out.live.tail(), "");
+
+        // An island and what renders inside it wait, and nothing loads the
+        // runtime or preloads their module; `client:none` sends nothing.
+        for (how, m, blob, ends) in [
+            (Some("v"), &A, "{}]", 0),
+            (None, &B, "{}]", 2),
+            (Some("n"), &B, "{\"secret\":1}]", 1),
+        ] {
+            if let Some(h) = how {
+                live_how(&mut out, h);
+            }
+            let (_, b) = live(&mut out, m);
+            b.push_str(blob);
+            for _ in 0..ends {
+                live_end(&mut out);
+            }
+        }
+        let tail = out.live.tail();
+        assert!(
+            tail.contains("\"i\":[[0,\"t1\",-1,\"v\",{}],[1,\"t2\",0,{}]]}</script>")
+                && !tail.contains("secret")
+                && !tail.contains("modulepreload")
+                && !tail.contains("live.js"),
+            "{tail}"
+        );
     }
 }

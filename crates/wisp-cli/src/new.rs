@@ -13,14 +13,19 @@ use std::process::{Command, Stdio};
 enum Template {
     Demo,
     Minimal,
+    Api,
 }
 
-const TEMPLATES: [(&str, &str); 2] = [
+const TEMPLATES: [(&str, &str); 3] = [
     (
         "Demo",
         "A home page with a counter, an about page and a word game to learn from.",
     ),
     ("Minimal", "One empty page, a layout and an error page."),
+    (
+        "API",
+        "A JSON API: notes with validation, an API key, live events and docs.",
+    ),
 ];
 
 #[derive(Default)]
@@ -62,12 +67,13 @@ pub fn run(args: &[String]) -> Result<(), String> {
 
     let template = match a.template {
         Some(t) => t,
-        None if asking => {
-            [Template::Demo, Template::Minimal][ask::choose("Which template?", &TEMPLATES, 0)?]
-        }
+        None if asking => [Template::Demo, Template::Minimal, Template::Api]
+            [ask::choose("Which template?", &TEMPLATES, 0)?],
         None => Template::Demo,
     };
-    let tailwind = answer(a.tailwind, asking, "Add Tailwind CSS?", false)?;
+    // An API has no pages to style.
+    let tailwind =
+        template != Template::Api && answer(a.tailwind, asking, "Add Tailwind CSS?", false)?;
     // Like `cargo new`: a repository by default, unless the app is going
     // inside one already.
     let parent = root
@@ -88,10 +94,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
     }
 
     write(root, &crate_name, template, tailwind)?;
-    let label = if template == Template::Demo {
-        "demo"
-    } else {
-        "minimal"
+    let label = match template {
+        Template::Demo => "demo",
+        Template::Minimal => "minimal",
+        Template::Api => "API",
     };
     term::done(&format!(
         "Created {} from the {label} template.",
@@ -127,12 +133,16 @@ pub fn run(args: &[String]) -> Result<(), String> {
     } else {
         format!("cd {name}")
     };
+    let open = match template {
+        Template::Api => "http://127.0.0.1:3000/_wisp/docs",
+        _ => "http://127.0.0.1:3000",
+    };
     println!(
         "\n{}\n\n  {}\n  {}\n\nThen open {}.\n",
         term::bold("Next Steps"),
         term::accent(&cd),
         term::accent("wisp dev"),
-        term::bold("http://127.0.0.1:3000")
+        term::bold(open)
     );
     Ok(())
 }
@@ -151,13 +161,15 @@ fn parse(args: &[String]) -> Result<Answers, String> {
                 a.template = Some(match value.as_str() {
                     "demo" => Template::Demo,
                     "minimal" => Template::Minimal,
+                    "api" => Template::Api,
                     _ => {
                         return Err(format!(
-                            "There is no template called {value}.\nPick demo or minimal."
+                            "There is no template called {value}.\nPick demo, minimal or api."
                         ));
                     }
                 });
             }
+            "--api" => a.template = Some(Template::Api),
             "--tailwind" => a.tailwind = Some(true),
             "--no-tailwind" => a.tailwind = Some(false),
             "--git" => a.git = Some(true),
@@ -276,6 +288,7 @@ fn write(root: &Path, crate_name: &str, template: Template, tailwind: bool) -> R
     let (files, css): (&[(&str, &str)], &str) = match template {
         Template::Demo => (&DEMO, DEMO_CSS),
         Template::Minimal => (&MINIMAL, MINIMAL_CSS),
+        Template::Api => (&API, ""),
     };
     let css = if tailwind {
         with_tailwind(css)
@@ -286,12 +299,20 @@ fn write(root: &Path, crate_name: &str, template: Template, tailwind: bool) -> R
         ("Cargo.toml", cargo_toml.as_str()),
         (".gitignore", "/target\n/.wisp\n"),
         ("build.rs", BUILD_RS),
+    ];
+    // An API has its own main.rs, and no pages to wrap or style.
+    let pages = [
         ("src/main.rs", MAIN_RS),
         ("src/app.html", APP_HTML),
         ("src/app.css", &css),
         ("static/favicon.svg", FAVICON),
     ];
-    for (rel, text) in common.iter().chain(files) {
+    let pages = if template == Template::Api {
+        &pages[..0]
+    } else {
+        &pages[..]
+    };
+    for (rel, text) in common.iter().chain(pages).chain(files) {
         let path = root.join(rel);
         fs::create_dir_all(path.parent().expect("files are inside the app"))
             .map_err(|e| format!("Could not create {}: {e}.", root.display()))?;
@@ -373,6 +394,29 @@ const DEMO: [(&str, &str); 10] = [
     demo!("src/routes/wisple/+page.rs"),
     demo!("src/routes/wisple/words.txt"),
     demo!("src/routes/wisple/how-to-play/+page.wisp"),
+];
+
+// The API template is examples/api, as the demo is examples/demo.
+macro_rules! api {
+    ($path:literal) => {
+        (
+            $path,
+            include_str!(concat!("../../../examples/api/", $path)),
+        )
+    };
+}
+
+const API: [(&str, &str); 10] = [
+    api!("src/main.rs"),
+    api!("src/hooks.rs"),
+    api!("src/notes.rs"),
+    api!("src/tests.rs"),
+    api!("src/routes/+server.rs"),
+    api!("src/routes/healthz/+server.rs"),
+    api!("src/routes/api/notes/+server.rs"),
+    api!("src/routes/api/notes/[id=int]/+server.rs"),
+    api!("src/routes/api/events/+server.rs"),
+    api!("src/routes/api/chat/+server.rs"),
 ];
 
 const MINIMAL: [(&str, &str); 3] = [
@@ -511,6 +555,8 @@ mod tests {
                 && a.yes
         );
         assert!(parse(&args("app -t demo")).unwrap().template == Some(Template::Demo));
+        assert!(parse(&args("app --api")).unwrap().template == Some(Template::Api));
+        assert!(parse(&args("app -t api")).unwrap().template == Some(Template::Api));
         assert!(parse(&args("app --template vue")).is_err());
         assert!(parse(&args("app --nope")).is_err());
         assert!(parse(&args("app other")).is_err());

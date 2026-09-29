@@ -6,7 +6,7 @@
 //! borrowing it) keeps `Cx` free of lifetimes: handlers take `&mut Cx`.
 
 use crate::form::{Form, pairs};
-use crate::sign;
+use crate::{Response, sign};
 use std::any::{Any, TypeId};
 use std::borrow::Cow;
 use std::net::{IpAddr, SocketAddr};
@@ -244,6 +244,65 @@ impl Cx {
         let (scheme, token) = v.split_once(' ')?;
         let token = token.trim();
         (scheme.eq_ignore_ascii_case("bearer") && !token.is_empty()).then_some(token)
+    }
+
+    /// The user name and password of an `Authorization: Basic` header, as
+    /// `curl -u name:password` sends them. Compare the password with
+    /// [`crate::secure_eq`].
+    pub fn basic_auth(&self) -> Option<(String, String)> {
+        let v = self.header("authorization")?;
+        let (scheme, encoded) = v.split_once(' ')?;
+        if !scheme.eq_ignore_ascii_case("basic") {
+            return None;
+        }
+        let text = String::from_utf8(base64(encoded.trim())?).ok()?;
+        let (name, password) = text.split_once(':')?;
+        Some((name.to_string(), password.to_string()))
+    }
+
+    /// Lets pages on other sites call the app from the browser (CORS):
+    /// `origins` is `*` for any site, or the sites allowed, separated by
+    /// spaces or commas (`"https://app.example.com https://example.com"`),
+    /// which may also send their cookies. Call it from `before` in
+    /// `src/hooks.rs` and return what it returns, which answers the
+    /// browser's preflight (the OPTIONS it sends before a request that is
+    /// not a plain form post):
+    ///
+    /// ```ignore
+    /// fn before(cx: &mut Cx) -> Option<Response> {
+    ///     cx.cors("*")
+    /// }
+    /// ```
+    ///
+    /// A request from a site not allowed gets no CORS headers, so its
+    /// browser does not hand it the answer.
+    pub fn cors(&mut self, origins: &str) -> Option<Response> {
+        let origin = self.header("origin")?.to_string();
+        self.set_header("vary", "origin");
+        let any = origins.trim() == "*";
+        let listed = origins
+            .split([',', ' '])
+            .any(|o| !o.is_empty() && o.trim_end_matches('/').eq_ignore_ascii_case(&origin));
+        if !any && !listed {
+            return None;
+        }
+        if any {
+            self.set_header("access-control-allow-origin", "*");
+        } else {
+            self.set_header("access-control-allow-origin", origin);
+            self.set_header("access-control-allow-credentials", "true");
+        }
+        let method = self.header("access-control-request-method")?;
+        if self.method != Method::Options {
+            return None;
+        }
+        let mut preflight = Response::empty(204)
+            .with_header("access-control-allow-methods", method)
+            .with_header("access-control-max-age", "86400");
+        if let Some(h) = self.header("access-control-request-headers") {
+            preflight = preflight.with_header("access-control-allow-headers", h);
+        }
+        Some(preflight)
     }
 
     /// Every request header as `(name, value)`, in the order sent. Values
@@ -534,6 +593,30 @@ impl Cx {
     }
 }
 
+/// Standard base64 (RFC 4648), padded or not; `None` for anything else.
+fn base64(s: &str) -> Option<Vec<u8>> {
+    let s = s.trim_end_matches('=');
+    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    let (mut bits, mut n) = (0u32, 0);
+    for b in s.bytes() {
+        let v = match b {
+            b'A'..=b'Z' => b - b'A',
+            b'a'..=b'z' => b - b'a' + 26,
+            b'0'..=b'9' => b - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        };
+        bits = bits << 6 | v as u32;
+        n += 6;
+        if n >= 8 {
+            n -= 8;
+            out.push((bits >> n) as u8);
+        }
+    }
+    (n < 6).then_some(out)
+}
+
 pub(crate) fn valid_header(name: &str, value: &str) -> bool {
     !name.is_empty()
         && name.bytes().all(|b| b.is_ascii_graphic() && b != b':')
@@ -740,6 +823,55 @@ mod tests {
         assert_eq!(decode(b"%zz%4", true), "%zz%4");
         assert_eq!(decode(b"%C3%BC", true), "ü");
         assert_eq!(decode(b"%FF", true), "\u{FFFD}");
+    }
+
+    #[test]
+    fn basic_auth_and_cors() {
+        let cx = cx_for("GET / HTTP/1.1\r\nAuthorization: Basic YWRhOmx1diA6eA==\r\n\r\n");
+        assert_eq!(cx.basic_auth(), Some(("ada".into(), "luv :x".into())));
+        assert_eq!(base64("YQ"), Some(b"a".to_vec()));
+        assert_eq!(base64("Y*=="), None);
+        assert_eq!(
+            cx_for("GET / HTTP/1.1\r\nAuthorization: Bearer x\r\n\r\n").basic_auth(),
+            None
+        );
+
+        let headers = |cx: &Cx| -> Vec<String> {
+            cx.out_headers
+                .iter()
+                .map(|(n, v)| format!("{n}: {v}"))
+                .collect()
+        };
+        let mut same = cx_for("GET / HTTP/1.1\r\n\r\n");
+        assert!(same.cors("*").is_none() && same.out_headers.is_empty());
+        let mut get = cx_for("GET / HTTP/1.1\r\nOrigin: https://a.example\r\n\r\n");
+        assert!(get.cors("https://b.example, https://a.example/").is_none());
+        assert_eq!(
+            headers(&get),
+            [
+                "vary: origin",
+                "access-control-allow-origin: https://a.example",
+                "access-control-allow-credentials: true"
+            ]
+        );
+        let mut other = cx_for("GET / HTTP/1.1\r\nOrigin: https://evil.example\r\n\r\n");
+        assert!(other.cors("https://a.example").is_none());
+        assert_eq!(headers(&other), ["vary: origin"]);
+        let mut pre = cx_for(
+            "OPTIONS /api HTTP/1.1\r\nOrigin: https://x.example\r\nAccess-Control-Request-Method: PUT\r\nAccess-Control-Request-Headers: content-type\r\n\r\n",
+        );
+        let r = pre.cors("*").expect("a preflight is answered");
+        assert_eq!(r.status, 204);
+        let names: Vec<&str> = r.headers.iter().map(|(n, _)| &**n).collect();
+        assert_eq!(
+            names,
+            [
+                "access-control-allow-methods",
+                "access-control-max-age",
+                "access-control-allow-headers"
+            ]
+        );
+        assert_eq!(headers(&pre)[1], "access-control-allow-origin: *");
     }
 
     #[test]

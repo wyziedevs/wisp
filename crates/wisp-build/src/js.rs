@@ -701,53 +701,511 @@ pub fn imports(src: &str) -> Vec<(usize, usize)> {
     out
 }
 
-/// `src` with each `let name = $derived(expression)` (or `const`) at its top
-/// level rewritten for live.js, as `let name = __wisp_d(() => (expression),
-/// (__v) => name = __v)`, which works `name` out again before every redraw.
-/// Line breaks stay where they were. Any other `$derived` is an error, with
-/// its offset.
-pub fn derived(src: &str) -> Result<String, (usize, String)> {
+/// The runes a script may use, each where it goes.
+const RUNES: [&str; 7] = [
+    "$state",
+    "$derived",
+    "$effect",
+    "$props",
+    "$bindable",
+    "$inspect",
+    "$host",
+];
+
+/// What the runtime makes of a script's names, for `rewrite`.
+#[derive(Debug, Default, Clone)]
+pub struct Reactive {
+    /// Signals, read and written as `name.v`: `let`s, `$state`s, `$derived`
+    /// values, and the server values or props.
+    pub state: Vec<String>,
+    /// The `$derived` ones, which nothing may assign to.
+    pub derived: Vec<String>,
+    /// Names whose `$name` reads the store's value: `$cart` is `cart.value`.
+    pub stores: Vec<String>,
+}
+
+/// A component's `let { a, b = 1, c = $bindable() } = $props()`: its span in
+/// the script, and per prop its name, its default (JavaScript) and whether
+/// a parent may `bind:` it.
+#[derive(Debug, PartialEq)]
+pub struct PropsRune {
+    pub span: (usize, usize),
+    pub props: Vec<(String, Option<String>, bool)>,
+}
+
+/// The rune called by the whole of `t[s..e]`, as `$name` or `$name.member`,
+/// with the tokens of its parentheses: `$state(0)` is `("$state", s + 1, e - 1)`.
+fn rune_call<'a>(src: &'a str, t: &[Token], s: usize, e: usize) -> Option<(&'a str, usize, usize)> {
+    let first = t.get(s)?;
+    if first.kind != Kind::Ident || first.member || !first.text(src).starts_with('$') {
+        return None;
+    }
+    let dotted = t.get(s + 1)?.is(src, Kind::Punct, ".") && t.get(s + 2)?.kind == Kind::Ident;
+    let open = if dotted { s + 3 } else { s + 1 };
+    if !t.get(open)?.is(src, Kind::Punct, "(") || close(t, open) + 1 != e {
+        return None;
+    }
+    let end = if dotted { t[s + 2].end } else { first.end };
+    Some((&src[first.start..end], open, e - 1))
+}
+
+/// Where the expression starting at token `s` ends, at the top level: at a
+/// `,` or `;`, or at a line that starts another statement.
+fn expr_end(src: &str, t: &[Token], s: usize) -> usize {
+    (s + 1..t.len())
+        .find(|&j| {
+            let prev = t[j - 1];
+            t[j].depth == 0
+                && (matches!(t[j].text(src), "," | ";")
+                    || (t[j].newline
+                        && t[j].kind != Kind::Punct
+                        && prev.depth == 0
+                        && (prev.kind != Kind::Punct || matches!(prev.text(src), ")" | "]" | "}"))))
+        })
+        .unwrap_or(t.len())
+}
+
+/// An identifier written `{ name }` in an object or pattern, for `name: name`;
+/// not in a block, such as a function's body.
+fn shorthand(src: &str, t: &[Token], k: usize) -> bool {
+    if !(t[k].inner == b'{'
+        && k > 0
+        && matches!(t[k - 1].text(src), "{" | ",")
+        && t.get(k + 1)
+            .is_some_and(|n| matches!(n.text(src), "," | "}" | "=")))
+    {
+        return false;
+    }
+    let open = (0..k).rev().find(|&j| t[j].depth < t[k].depth).unwrap_or(0);
+    open.checked_sub(1).is_some_and(|p| {
+        t[p].kind == Kind::String
+            || !matches!(
+                t[p].text(src),
+                ")" | ";" | "{" | "}" | "=>" | "else" | "do" | "try" | "finally"
+            )
+    })
+}
+
+/// Whether the name at `k` is assigned to (`=`, `+=`, `++`, ...).
+fn written(src: &str, t: &[Token], k: usize) -> bool {
+    let next = t.get(k + 1).map_or("", |n| n.text(src));
+    let prev = k.checked_sub(1).map_or("", |p| t[p].text(src));
+    matches!(prev, "++" | "--")
+        || matches!(next, "++" | "--")
+        || (next.ends_with('=')
+            && !matches!(next, "==" | "===" | "!=" | "!==" | "<=" | ">=" | "=>"))
+}
+
+/// A component's `$props()`, if its script has one. It must be the
+/// destructuring declaration of the props, at the top of the script.
+pub fn props_rune(src: &str) -> Result<Option<PropsRune>, (usize, String)> {
     let t = tokens(src);
-    let mut out = String::with_capacity(src.len());
+    let found: Vec<usize> = (0..t.len())
+        .filter(|&k| !t[k].member && t[k].is(src, Kind::Ident, "$props"))
+        .collect();
+    let Some(&k) = found.first() else {
+        return Ok(None);
+    };
+    let usage = "`$props()` names a component's props at the top of its script: `let { title, count = 0 } = $props()`";
+    if let Some(&again) = found.get(1) {
+        return Err((t[again].start, "a component has one `$props()`".into()));
+    }
+    let is = |j: usize, s: &str| {
+        t.get(j)
+            .is_some_and(|n| n.kind == Kind::Punct && n.text(src) == s)
+    };
+    let open = (k >= 3 && is(k - 1, "=") && is(k - 2, "}") && t[k - 2].depth == 0)
+        .then(|| (0..k - 2).rev().find(|&j| t[j].depth == 0 && is(j, "{")))
+        .flatten()
+        .filter(|&o| o > 0 && matches!(t[o - 1].text(src), "let" | "const") && t[o - 1].depth == 0);
+    let Some(open) = open.filter(|_| is(k + 1, "(") && is(k + 2, ")")) else {
+        return Err((t[k].start, usage.into()));
+    };
+    let mut props = Vec::new();
+    let mut a = open + 1;
+    while a < k - 2 {
+        let b = (a..k - 2)
+            .find(|&j| t[j].depth == 1 && is(j, ","))
+            .unwrap_or(k - 2);
+        let name = t[a].text(src);
+        if is(a, "...") {
+            return Err((
+                t[a].start,
+                "name each prop in `$props()`: `...rest` is not supported".into(),
+            ));
+        }
+        if t[a].kind != Kind::Ident || is_reserved(name) || name.starts_with('$') {
+            return Err((t[a].start, usage.into()));
+        }
+        if is(a + 1, ":") {
+            return Err((
+                t[a].start,
+                format!("a prop keeps its name in `$props()`: write `{name}`"),
+            ));
+        }
+        let (default, bindable) = if b == a + 1 {
+            (None, false)
+        } else if is(a + 1, "=") && a + 2 < b {
+            match rune_call(src, &t, a + 2, b) {
+                Some(("$bindable", o, c)) => (
+                    (c > o + 1).then(|| src[t[o + 1].start..t[c - 1].end].to_string()),
+                    true,
+                ),
+                _ => (Some(src[t[a + 2].start..t[b - 1].end].to_string()), false),
+            }
+        } else {
+            return Err((t[a].start, usage.into()));
+        };
+        props.push((name.to_string(), default, bindable));
+        a = b + 1;
+    }
+    let end = if is(k + 3, ";") {
+        t[k + 3].end
+    } else {
+        t[k + 2].end
+    };
+    Ok(Some(PropsRune {
+        span: (t[open - 1].start, end),
+        props,
+    }))
+}
+
+/// What a top-level declaration first sets a name to, as the first paint
+/// sees it: `$state(x)` is `x`; another rune is nothing it can know.
+pub fn plain_init(init: &str) -> Option<&str> {
+    let t = tokens(init);
+    match rune_call(init, &t, 0, t.len()) {
+        Some(("$state" | "$state.raw", o, c)) if c > o + 1 => {
+            Some(&init[t[o + 1].start..t[c - 1].end])
+        }
+        Some(_) => None,
+        None if t.first().is_some_and(|f| RUNES.contains(&f.text(init))) => None,
+        None => Some(init),
+    }
+}
+
+/// The local names a script's `import` statements (as byte ranges) bind.
+fn import_names(src: &str, spans: &[(usize, usize)]) -> Vec<String> {
+    let mut out = Vec::new();
+    for &(a, b) in spans {
+        let s = &src[a..b];
+        let t = tokens(s);
+        for k in 0..t.len() {
+            let w = t[k].text(s);
+            if t[k].kind == Kind::Ident
+                && !t[k].key
+                && !matches!(w, "import" | "from" | "as" | "with" | "assert")
+                && !t.get(k + 1).is_some_and(|n| n.text(s) == "as")
+            {
+                out.push(w.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Replaces byte ranges of `src`. An insertion is an empty range, and goes
+/// before a replacement that starts where it is.
+fn apply(src: &str, mut edits: Vec<(usize, usize, String)>) -> String {
+    edits.sort_by_key(|e| (e.0, e.1));
+    let mut out = String::with_capacity(src.len() + edits.len() * 8);
     let mut at = 0;
+    for (s, e, text) in edits {
+        out.push_str(&src[at..s]);
+        out.push_str(&text);
+        at = e;
+    }
+    out.push_str(&src[at..]);
+    out
+}
+
+/// The edits that make `t`'s free names read the runtime's signals and
+/// stores: `count` is `count.v` (`{ count }` is `{ count: count.v }`), and
+/// `$cart` is `cart.value`. Tokens in `skip` are left.
+fn refs(
+    src: &str,
+    t: &[Token],
+    r: &Reactive,
+    skip: &[usize],
+    edits: &mut Vec<(usize, usize, String)>,
+) -> Result<(), (usize, String)> {
+    let own = bound(src, t);
+    for k in 0..t.len() {
+        let tok = t[k];
+        if tok.kind != Kind::Ident || tok.member || tok.key || own[k] || skip.contains(&k) {
+            continue;
+        }
+        let word = tok.text(src);
+        let (name, value) = match word.strip_prefix('$') {
+            Some(base)
+                if r.stores.iter().any(|s| s == base) && !r.state.iter().any(|s| s == word) =>
+            {
+                (base, ".value")
+            }
+            _ => (word, ""),
+        };
+        let signal = r.state.iter().any(|s| s == name);
+        if !signal && value.is_empty() {
+            continue;
+        }
+        if r.derived.iter().any(|d| d == name) && written(src, t, k) {
+            return Err((
+                tok.start,
+                format!(
+                    "`{name}` is `$derived`: it follows its expression, so change what that reads instead"
+                ),
+            ));
+        }
+        let read = format!("{name}{}{value}", if signal { ".v" } else { "" });
+        let text = if shorthand(src, t, k) && value.is_empty() {
+            format!("{word}: {read}")
+        } else {
+            read
+        };
+        edits.push((tok.start, tok.end, text));
+    }
+    Ok(())
+}
+
+/// A script as live.js runs it, and what `rewrite` needs for the file's
+/// directives. `params` are the server values or props it gets, as signals.
+///
+/// - A top-level `let` (or `var`) is state: `let n = 0` is `let n =
+///   __wisp_s(0)`, and every read and write of `n` is `n.v`. Objects and
+///   arrays in it are deep: a change inside them is a change.
+/// - `$state(x)` is the same, spelled out, and works with `const` too;
+///   `$state.raw(x)` is not deep. `$state.snapshot(x)` is a plain copy.
+/// - `$derived(expr)` and `$derived.by(fn)`: a value worked out from others.
+/// - `$effect(fn)` and `$effect.pre(fn)`: code that runs again when what
+///   it read changes. `$inspect(a, b)` logs them as they change, in
+///   development; in release it is gone.
+/// - `$name`, for a store `name`, is `name.value`.
+///
+/// Line breaks stay where they were. A rune somewhere else is an error,
+/// with its offset.
+pub fn script(
+    src: &str,
+    params: &[String],
+    release: bool,
+) -> Result<(String, Reactive), (usize, String)> {
+    let t = tokens(src);
+    let mut edits: Vec<(usize, usize, String)> = Vec::new();
+    let mut skip: Vec<usize> = Vec::new(); // declared names, and runes handled
+    let mut r = Reactive {
+        state: params.to_vec(),
+        ..Reactive::default()
+    };
+    let is = |j: usize, s: &str| {
+        t.get(j)
+            .is_some_and(|n| n.kind == Kind::Punct && n.text(src) == s)
+    };
     let mut k = 0;
     while k < t.len() {
-        if t[k].member || !t[k].is(src, Kind::Ident, "$derived") {
+        let tok = t[k];
+        let kw = tok.text(src);
+        if tok.depth != 0
+            || tok.member
+            || tok.kind != Kind::Ident
+            || !matches!(kw, "let" | "const" | "var")
+        {
             k += 1;
             continue;
         }
-        let declared = k >= 3
-            && t[k - 3].depth == 0
-            && matches!(t[k - 3].text(src), "let" | "const")
-            && t[k - 2].kind == Kind::Ident
-            && t[k - 1].is(src, Kind::Punct, "=");
-        let open = k + 1;
-        let end = close(&t, open);
-        if !declared || !t.get(open).is_some_and(|n| n.is(src, Kind::Punct, "(")) {
-            return Err((
-                t[k].start,
-                "`$derived` declares a value at the top of the script: `let name = $derived(expression)`".into(),
-            ));
+        let is_let = kw != "const";
+        let mut j = k + 1;
+        loop {
+            let mut names = Vec::new();
+            let after = pattern(src, &t, j, &mut names);
+            if names.is_empty() {
+                break;
+            }
+            let simple = after == j + 1;
+            let init = is(after, "=").then(|| (after + 1, expr_end(src, &t, after + 1)));
+            let end = init.map_or(after, |(_, e)| e);
+            let rune = init.and_then(|(s, e)| rune_call(src, &t, s, e));
+            let name = t[j].text(src);
+            match rune {
+                Some((
+                    kind @ ("$derived" | "$derived.by" | "$state" | "$state.raw"),
+                    open,
+                    close,
+                )) => {
+                    let s = after + 1;
+                    if !simple {
+                        return Err((
+                            t[s].start,
+                            format!("`{kind}` sets one name: `let name = {kind}(…)`"),
+                        ));
+                    }
+                    let derived = kind.starts_with("$derived");
+                    if derived && close == open + 1 {
+                        return Err((
+                            t[s].start,
+                            format!("`{kind}(…)` takes what the value is worked out from"),
+                        ));
+                    }
+                    let (head, tail) = match kind {
+                        "$derived" => ("__wisp_d(() => (", "))"),
+                        "$derived.by" => ("__wisp_d(", ")"),
+                        "$state" => ("__wisp_s(", ")"),
+                        _ => ("__wisp_r(", ")"),
+                    };
+                    edits.push((t[s].start, t[open].end, head.into()));
+                    edits.push((t[close].start, t[close].end, tail.into()));
+                    skip.extend([j, s]);
+                    r.state.push(name.into());
+                    if derived {
+                        r.derived.push(name.into());
+                    }
+                }
+                _ if !is_let => {}
+                _ if simple => {
+                    skip.push(j);
+                    r.state.push(name.into());
+                    match init {
+                        Some((s, e)) => {
+                            edits.push((t[s].start, t[s].start, "__wisp_s(".into()));
+                            edits.push((t[e - 1].end, t[e - 1].end, ")".into()));
+                        }
+                        None => edits.push((t[j].end, t[j].end, " = __wisp_s()".into())),
+                    }
+                }
+                _ => {
+                    // `let { a, b: c } = x` binds hidden names, then the state.
+                    let mut tail = String::new();
+                    for &n in &names {
+                        let name = t[n].text(src);
+                        let text = if shorthand(src, &t, n) {
+                            format!("{name}: __wisp_{name}")
+                        } else {
+                            format!("__wisp_{name}")
+                        };
+                        edits.push((t[n].start, t[n].end, text));
+                        tail.push_str(&format!(", {name} = __wisp_s(__wisp_{name})"));
+                        skip.push(n);
+                        r.state.push(name.into());
+                    }
+                    let at = t[end - 1].end;
+                    edits.push((at, at, tail));
+                }
+            }
+            if !(is(end, ",") && t[end].depth == 0) {
+                j = end;
+                break;
+            }
+            j = end + 1;
         }
-        if end >= t.len() || end == open + 1 {
-            return Err((
-                t[k].start,
-                "`$derived(…)` takes the expression the value is worked out from".into(),
-            ));
-        }
-        let (keyword, name) = (t[k - 3], t[k - 2].text(src));
-        out.push_str(&src[at..keyword.start]);
-        // `const` too: the value is set again on every redraw.
-        out.push_str("let");
-        out.push_str(&src[keyword.end..t[k].start]);
-        out.push_str("__wisp_d(() => (");
-        out.push_str(&src[t[open].end..t[end].start]);
-        out.push_str(&format!("), (__v) => {name} = __v)"));
-        at = t[end].end;
-        k = end + 1;
+        k = j.max(k + 1);
     }
-    out.push_str(&src[at..]);
-    Ok(out)
+
+    // The other runes, where they may be.
+    let mut k = 0;
+    while k < t.len() {
+        let tok = t[k];
+        let word = tok.text(src);
+        if tok.kind != Kind::Ident || tok.member || skip.contains(&k) || !RUNES.contains(&word) {
+            k += 1;
+            continue;
+        }
+        let member = (is(k + 1, ".") && t.get(k + 2).is_some_and(|n| n.kind == Kind::Ident))
+            .then(|| t[k + 2].text(src));
+        let callee_end = if member.is_some() { k + 3 } else { k + 1 };
+        let called = is(callee_end, "(");
+        let with = |name: &str| (tok.start, t[callee_end - 1].end, name.to_string());
+        match (word, member) {
+            ("$effect", None) if called => edits.push(with("__wisp_e")),
+            ("$effect", Some("pre")) if called => edits.push(with("__wisp_ep")),
+            ("$state", Some("snapshot")) if called => edits.push(with("__wisp_snap")),
+            ("$inspect", None) if called => {
+                let c = close(&t, callee_end);
+                if c >= t.len() {
+                    return Err((tok.start, "`$inspect(…)` is not closed".into()));
+                }
+                if is(c + 1, ".") {
+                    return Err((
+                        tok.start,
+                        "`$inspect(…)` logs what it is given; `.with` is not supported".into(),
+                    ));
+                }
+                if release {
+                    // Gone, but its line breaks stay.
+                    let lines = src[tok.start..t[c].end].matches('\n').count();
+                    edits.push((tok.start, t[c].end, format!("void 0{}", "\n".repeat(lines))));
+                    skip.extend(k..=c);
+                    k = c + 1;
+                    continue;
+                }
+                edits.push((
+                    tok.start,
+                    t[callee_end].end,
+                    "__wisp_e(() => console.log(...[".into(),
+                ));
+                edits.push((t[c].start, t[c].end, "].map(__wisp_snap)))".into()));
+            }
+            ("$state", _) => {
+                return Err((tok.start, "`$state(…)` declares state at the top of the script: `let name = $state(value)`".into()));
+            }
+            ("$derived", _) => {
+                return Err((
+                    tok.start,
+                    "`$derived(…)` declares a value at the top of the script: `let name = $derived(expression)`".into(),
+                ));
+            }
+            ("$props" | "$bindable", _) => {
+                return Err((
+                    tok.start,
+                    "`$props()` names a component's props at the top of its script: `let { title, count = $bindable(0) } = $props()`".into(),
+                ));
+            }
+            ("$effect", _) => {
+                return Err((
+                    tok.start,
+                    "`$effect(fn)` and `$effect.pre(fn)` run fn again when what it reads changes"
+                        .into(),
+                ));
+            }
+            ("$inspect", _) => {
+                return Err((
+                    tok.start,
+                    "`$inspect(a, b)` logs values as they change".into(),
+                ));
+            }
+            _ => {
+                return Err((
+                    tok.start,
+                    format!(
+                        "`{word}` is not a rune in Wisp: there are $state, $derived, $effect, $props and $inspect"
+                    ),
+                ));
+            }
+        }
+        k += 1;
+    }
+
+    let mut stores = import_names(src, &imports(src));
+    stores.extend(declarations(src).into_iter().map(|(n, _)| n));
+    stores.extend(params.iter().cloned());
+    r.stores = stores;
+    refs(src, &t, &r, &skip, &mut edits)?;
+    Ok((apply(src, edits), r))
+}
+
+/// A directive's JavaScript as it runs: its script's names read as
+/// `script` made them. A rune here is an error: runes go in the script.
+pub fn rewrite(src: &str, r: &Reactive) -> Result<String, (usize, String)> {
+    let t = tokens(src);
+    if let Some(tok) = t
+        .iter()
+        .find(|n| n.kind == Kind::Ident && !n.member && RUNES.contains(&n.text(src)))
+    {
+        return Err((
+            tok.start,
+            format!("`{}` goes in the script, not in markup", tok.text(src)),
+        ));
+    }
+    let mut edits = Vec::new();
+    refs(src, &t, r, &[], &mut edits)?;
+    Ok(apply(src, edits))
 }
 
 /// `src` with each range replaced by spaces, its line breaks kept, so the
@@ -851,29 +1309,101 @@ mod tests {
     }
 
     #[test]
-    fn derived_values() {
-        let src = "let n = 0\nconst double = $derived(n * 2)\nlet ready = $derived(\n  guess.length === 5\n)\nx.$derived(1)";
-        let out = derived(src).unwrap();
+    fn runes_and_state() {
+        let data = ["data".to_string()];
+        let src = "import { cart } from '$lib/cart.js'\nlet n = 0, m\nconst k = 1\nlet double = $derived(n * 2)\n\
+                   let big = $derived.by(() => {\n  return n > 9\n})\nlet list = $state([1])\nconst raw = $state.raw({ a: 1 })\n\
+                   function inc(k) { n++; list.push(n); return { n, k, m: data.x } }\n$effect(() => console.log(double, $cart))\n\
+                   $effect.pre(() => {})\nconst plain = $state.snapshot(list)\nlet { a, b: c } = data.y\n$inspect(n, list)";
+        let (out, r) = script(src, &data, false).unwrap();
         assert_eq!(
             out,
-            "let n = 0\nlet double = __wisp_d(() => (n * 2), (__v) => double = __v)\n\
-             let ready = __wisp_d(() => (\n  guess.length === 5\n), (__v) => ready = __v)\nx.$derived(1)"
+            "import { cart } from '$lib/cart.js'\nlet n = __wisp_s(0), m = __wisp_s()\nconst k = 1\nlet double = __wisp_d(() => (n.v * 2))\n\
+             let big = __wisp_d(() => {\n  return n.v > 9\n})\nlet list = __wisp_s([1])\nconst raw = __wisp_r({ a: 1 })\n\
+             function inc(k) { n.v++; list.v.push(n.v); return { n: n.v, k, m: data.v.x } }\n__wisp_e(() => console.log(double.v, cart.value))\n\
+             __wisp_ep(() => {})\nconst plain = __wisp_snap(list.v)\nlet { a: __wisp_a, b: __wisp_c } = data.v.y, a = __wisp_s(__wisp_a), c = __wisp_s(__wisp_c)\n\
+             __wisp_e(() => console.log(...[n.v, list.v].map(__wisp_snap)))"
         );
-        assert_eq!(out.lines().count(), src.lines().count());
-        for bad in [
-            "f($derived(1))",
-            "let x = $derived",
-            "let x = $derived()",
-            "{ let y = $derived(1) }",
+        assert_eq!(
+            r.state,
+            ["data", "n", "m", "double", "big", "list", "raw", "a", "c"]
+        );
+        assert_eq!(r.derived, ["double", "big"]);
+        // Release drops `$inspect`, keeping the lines.
+        let (out, _) = script("let n = 1\n$inspect(\n  n\n)\nn", &[], true).unwrap();
+        assert_eq!(out, "let n = __wisp_s(1)\nvoid 0\n\n\nn.v");
+        // A block is no object: `{ n = 2 }` in a body assigns.
+        let (out, _) = script(
+            "let n = 1\nfunction f() { n = 2 }\nconst o = { n }",
+            &[],
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            "let n = __wisp_s(1)\nfunction f() { n.v = 2 }\nconst o = { n: n.v }"
+        );
+        // Directives read the same names; their own parameters shadow them.
+        assert_eq!(
+            rewrite(
+                "({ item }, event) => (n++, item.x + double + $cart.length)",
+                &r
+            )
+            .unwrap(),
+            "({ item }, event) => (n.v++, item.x + double.v + cart.value.length)"
+        );
+        for (bad, what) in [
+            ("f($derived(1))", "$derived"),
+            ("let x = $derived()", "$derived"),
+            ("{ let y = $state(1) }", "$state"),
+            ("let { a } = $state(x)", "$state"),
+            ("let d = $derived(1)\nd = 2", "d"),
+            ("let d = $derived(1)\nfunction f() { d++ }", "d"),
+            ("$effect.root(() => {})", "$effect"),
+            ("$inspect(x).with(f)", "$inspect"),
+            ("$host()", "$host"),
+            ("let { a } = $props()", "$props"),
         ] {
-            let (off, msg) = derived(bad).unwrap_err();
+            let (off, msg) = script(bad, &[], false).unwrap_err();
             assert!(
-                bad[off..].starts_with("$derived") && msg.contains("$derived"),
+                bad[off..].starts_with(what) && msg.contains('`'),
                 "{bad}: {msg}"
             );
         }
+        assert!(rewrite("$state(1)", &r).unwrap_err().1.contains("script"));
     }
 
+    #[test]
+    fn props_rune_and_first_paint() {
+        let src = "const x = 1\nlet { title, count = 0, open = $bindable(), n = $bindable(f(1, 2)) } = $props();\nlet y";
+        let p = props_rune(src).unwrap().unwrap();
+        assert_eq!(
+            &src[p.span.0..p.span.1],
+            "let { title, count = 0, open = $bindable(), n = $bindable(f(1, 2)) } = $props();"
+        );
+        assert_eq!(
+            p.props,
+            [
+                ("title".into(), None, false),
+                ("count".into(), Some("0".into()), false),
+                ("open".into(), None, true),
+                ("n".into(), Some("f(1, 2)".into()), true),
+            ]
+        );
+        assert_eq!(props_rune("let x = 1").unwrap(), None);
+        for bad in [
+            "const p = $props()",
+            "let { ...rest } = $props()",
+            "let { a: b } = $props()",
+            "f($props())",
+        ] {
+            assert!(props_rune(bad).is_err(), "{bad}");
+        }
+        assert_eq!(plain_init("$state([1, 2])"), Some("[1, 2]"));
+        assert_eq!(plain_init("$derived(a)"), None);
+        assert_eq!(plain_init("$state()"), None);
+        assert_eq!(plain_init("data.x"), Some("data.x"));
+    }
     #[test]
     fn regex_or_division() {
         assert_eq!(
