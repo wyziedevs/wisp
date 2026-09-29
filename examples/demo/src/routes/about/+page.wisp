@@ -1,7 +1,7 @@
-<wisp:head>
+<head>
   <title>About</title>
   <meta name="description" content="About Wisp">
-</wisp:head>
+</head>
 
 <div class="text-column">
   <h1>About Wisp</h1>

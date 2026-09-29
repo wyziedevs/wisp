@@ -1,4 +1,4 @@
-<wisp:head><title>{status}</title></wisp:head>
+<head><title>{status}</title></head>
 
 <div class="text-column error">
   <img class="vanish" src="/favicon.svg" alt="" width="72" height="72">

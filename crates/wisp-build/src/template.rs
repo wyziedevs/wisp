@@ -107,6 +107,12 @@ pub enum Node {
     Hole {
         group: usize,
     },
+    /// The name in `<wisp:element this="…">` and its end tag: what the
+    /// server knows of `this` (group's `Tag` directive), else
+    /// `wisp-element`, which the browser gives its tag.
+    Tag {
+        group: usize,
+    },
     /// A client block or client component: per branch (`{:else}` starts
     /// one), the group of its `<template>`'s directive and the template's
     /// content, which the browser copies. The server also paints the copies
@@ -155,6 +161,22 @@ pub enum Dir {
     Animate,
     /// A component the browser renders: `name` is the component.
     Comp,
+    /// `{:...attrs}` in a tag: an object's keys as attributes.
+    Spread,
+    /// `{:#key expr}`: its content drawn afresh when `expr` changes.
+    Key,
+    /// `{:#await promise}`: one copy, whose `__aw` says how it went.
+    Await,
+    /// `{:#try}`: one copy, whose `__tr` holds what failed in it.
+    Try,
+    /// `<wisp:window>`, `<wisp:document>`, `<wisp:body>`: where the other
+    /// directives go (`name`).
+    At,
+    /// `client:visible` (`name` is `v`, `i`, `x`, `n` or `m(query)`) on an
+    /// element: it and what is inside it start then.
+    Wait,
+    /// `this="tag"` on `<wisp:element>`: the element's tag.
+    Tag,
 }
 
 /// The directives of one element.
@@ -283,6 +305,7 @@ pub fn parse(src: &str) -> Result<Template, Error> {
         end: src.len(),
         snippets: Vec::new(),
         rendering: Vec::new(),
+        elements: Vec::new(),
     };
     p.run()?;
 
@@ -462,7 +485,7 @@ impl Frame {
                 name,
                 ..
             } => (format!("<{name}>"), *pos),
-            Frame::Client { pos, kind, .. } => (format!("{{:#{kind}}}"), *pos),
+            Frame::Client { pos, kind, .. } => (format!("{{:#{}}}", block_of(kind)), *pos),
         }
     }
 }
@@ -522,6 +545,8 @@ struct Parser<'a> {
     snippets: Vec<Snip>,
     /// The snippets `{:@render}` is copying, innermost last.
     rendering: Vec<String>,
+    /// The groups of the `<wisp:element>`s open, innermost last.
+    elements: Vec<usize>,
 }
 
 /// A snippet defined above: its body's source, and the depth of the list
@@ -871,7 +896,9 @@ impl Parser<'_> {
         }
         let name = raw_name.to_ascii_lowercase();
 
-        if name == "wisp:head" {
+        // A page is inside `<body>`, so its `<head>` can only mean what goes
+        // in the document's: the same as `<wisp:head>`.
+        if name == "wisp:head" || name == "head" {
             let mut j = end;
             while j < self.b.len() && is_ws(self.b[j]) {
                 j += 1;
@@ -909,7 +936,49 @@ impl Parser<'_> {
         } else {
             self.server_classes(end)
         };
-        self.text.push_str(&self.src[start..end]);
+        // `<wisp:window on:resize="…" />` and the like: a `<template>` whose
+        // directives go on the window; `<wisp:element this="tag">`, an
+        // element whose tag the browser sets.
+        let target = name
+            .strip_prefix("wisp:")
+            .filter(|t| matches!(*t, "window" | "document" | "body"));
+        if let Some(t) = target {
+            if closing {
+                return Err(self.err(start, format!("<wisp:{t}> closes itself: <wisp:{t} … />")));
+            }
+            self.text.push_str("<template");
+            self.directives.push(Directive {
+                kind: Dir::At,
+                name: t.into(),
+                mods: Vec::new(),
+                value: None,
+                key: None,
+                props: Vec::new(),
+                line: self.line_of(start),
+                col: self.col_of(start),
+            });
+        } else if name == "wisp:element" {
+            // Its group is taken now, for the name here and in its end tag.
+            self.text.push_str(if closing { "</" } else { "<" });
+            let group = if closing {
+                self.elements.pop().ok_or_else(|| {
+                    self.err(
+                        start,
+                        "</wisp:element> has no <wisp:element> to close".into(),
+                    )
+                })?
+            } else {
+                let g = self.group(Vec::new(), self.line_of(start));
+                self.elements.push(g);
+                g
+            };
+            self.push_node(start, Node::Tag { group })?;
+            self.tag_text = self.text.len();
+        } else if name.starts_with("wisp:") {
+            return Err(self.err(start, format!("<{name}> is not a Wisp element: there are <wisp:head>, <wisp:window>, <wisp:document>, <wisp:body> and <wisp:element>")));
+        } else {
+            self.text.push_str(&self.src[start..end]);
+        }
         self.i = end;
         self.ctx = Ctx::Tag;
         self.tag = name;
@@ -1228,6 +1297,24 @@ impl Parser<'_> {
                     self.text.push('/');
                 }
             }
+            if self.tag == "wisp:element" && !self.directives.iter().any(|d| d.kind == Dir::Tag) {
+                return Err(self.err(
+                    self.tag_pos,
+                    "<wisp:element> needs its tag, from the browser's code: this={:tag}".into(),
+                ));
+            }
+            if self.directives.first().is_some_and(|d| d.kind == Dir::At) {
+                let t = self.tag.clone();
+                if !(self.last == b'/' && self.text.ends_with('/')) {
+                    return Err(self.err(self.tag_pos, format!("<{t}> closes itself: <{t} … />")));
+                }
+                self.text.pop();
+                self.live_element()?;
+                self.push_byte(b'>');
+                self.text.push_str("</template>");
+                self.ctx = Ctx::Text;
+                return Ok(());
+            }
             self.live_element()?;
         }
         self.push_byte(b'>');
@@ -1323,10 +1410,39 @@ impl Parser<'_> {
             self.i = hole_end(self.b, open + 1).map_or(self.b.len(), |e| e + 1);
             return Ok(());
         }
-        let value = self.directive_value(raw)?;
-        let (kind, name, mut mods) =
+        let mut value = self.directive_value(raw)?;
+        let (kind, mut name, mut mods) =
             directive_parts(raw, &self.tag).map_err(|m| self.err(start, m))?;
-        let needs_value = !matches!(kind, Dir::Transition | Dir::Use | Dir::Animate);
+        // `bind:value`, `class:open`, `style:color` alone: the variable of
+        // that name.
+        if value.is_none()
+            && matches!(kind, Dir::Bind | Dir::Class | Dir::Style)
+            && is_ident(&name)
+            && !js::is_reserved(&name)
+        {
+            value = Some(Code {
+                src: name.clone(),
+                line: self.line_of(start),
+            });
+        }
+        if kind == Dir::Wait {
+            let how = name.clone();
+            match (how.as_str(), value) {
+                ("", None) => return Ok(()), // client:load, as without it
+                ("m", Some(q)) if !q.src.is_empty() => name = format!("m{}", q.src),
+                ("m", _) => {
+                    return Err(self.err(
+                        start,
+                        "`client:media` needs its query: client:media=\"(min-width: 800px)\""
+                            .into(),
+                    ));
+                }
+                (_, Some(_)) => return Err(self.err(start, format!("`{raw}` takes no value"))),
+                _ => {}
+            }
+            value = None;
+        }
+        let needs_value = !matches!(kind, Dir::Transition | Dir::Use | Dir::Animate | Dir::Wait);
         if needs_value && value.as_ref().is_none_or(|v| v.src.is_empty()) {
             return Err(self.err(
                 start,
@@ -1459,7 +1575,10 @@ impl Parser<'_> {
     /// before its `>` (or `/>`). A `<template>` also starts or ends the
     /// names its `each` gives the elements inside it.
     fn live_element(&mut self) -> Result<(), Error> {
-        let directives = std::mem::take(&mut self.directives);
+        let mut directives = std::mem::take(&mut self.directives);
+        // Where the rest go, when they start, and the tag come first: the
+        // runtime reads them before the others.
+        directives.sort_by_key(|d| !matches!(d.kind, Dir::At | Dir::Wait | Dir::Tag));
         let client = directives
             .iter()
             .find(|d| matches!(d.kind, Dir::Each | Dir::If));
@@ -1482,17 +1601,27 @@ impl Parser<'_> {
                 self.text.pop();
                 self.text.truncate(self.text.trim_end().len());
             }
-            let group = self.groups.len();
             let (nested, locals) = (
                 self.templates.iter().any(Option::is_some),
                 self.templates.iter().flatten().flatten().cloned().collect(),
             );
-            self.groups.push(Group {
+            let g = Group {
                 directives,
                 locals,
                 nested,
                 line: self.line_of(self.tag_pos),
-            });
+            };
+            // A `<wisp:element>`'s group was taken with its name.
+            let group = match self.elements.last() {
+                Some(&e) if self.tag == "wisp:element" => {
+                    self.groups[e] = g;
+                    e
+                }
+                _ => {
+                    self.groups.push(g);
+                    self.groups.len() - 1
+                }
+            };
             self.push_node(self.i, Node::Live { group })?;
             if slash {
                 self.text.push('/');
@@ -1565,7 +1694,14 @@ impl Parser<'_> {
                 let bad = || {
                     self.err(open, "expected {:#each list as item}, {:#each list as item, i} or with a key: {:#each list as item, i (item.id)}".into())
                 };
-                let (list, pat, key) = split_client_each(arg).ok_or_else(bad)?;
+                // `{:#each list}` alone draws its content once per item.
+                let (list, pat, key) = match split_client_each(arg) {
+                    Some(x) => x,
+                    None if !arg.contains(" as ") && !arg.trim_end().ends_with(" as") => {
+                        (arg, "", None)
+                    }
+                    None => return Err(bad()),
+                };
                 let (item, index) = match pat.split_once(',') {
                     Some((a, b)) => (a.trim(), Some(b.trim())),
                     None => (pat.trim(), None),
@@ -1578,7 +1714,7 @@ impl Parser<'_> {
                             .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'$')
                         && !js::is_reserved(s)
                 };
-                if !ident(item) || index.is_some_and(|i| !ident(i)) {
+                if !(ident(item) || pat.is_empty()) || index.is_some_and(|i| !ident(i)) {
                     return Err(bad());
                 }
                 d.kind = Dir::Each;
@@ -1591,16 +1727,73 @@ impl Parser<'_> {
                     .collect();
                 ("each", vec![list.trim().to_string()], names)
             }
+            // `{:#key x}`: drawn afresh when x changes.
+            "key" => {
+                d.kind = Dir::Key;
+                ("key", Vec::new(), Vec::new())
+            }
+            // `{:#await p}…{:then v}…{:catch e}…{:/await}` and `{:#try}…
+            // {:catch e}…{:/try}`: one copy with a local saying how it went,
+            // around a block per branch that reads it (see `client_branch`).
+            "await" | "try" => {
+                let (promise, then) = match arg.find(" then") {
+                    Some(n)
+                        if kw == "await"
+                            && arg[n + 5..]
+                                .trim()
+                                .bytes()
+                                .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'$') =>
+                    {
+                        (&arg[..n], Some(arg[n + 5..].trim()))
+                    }
+                    _ => (arg, None),
+                };
+                if kw == "try" && !arg.trim().is_empty() {
+                    return Err(self.err(
+                        open,
+                        "{:#try} takes nothing: {:#try}…{:catch error}…{:/try}".into(),
+                    ));
+                }
+                d.kind = if kw == "await" { Dir::Await } else { Dir::Try };
+                d.value = (kw == "await").then(|| js(promise));
+                let local = if kw == "await" { "__aw" } else { "__tr" };
+                let outer = if kw == "await" { "await" } else { "try" };
+                self.client_frame(open, outer, Vec::new(), d, vec![local.into()])?;
+                let first = match then {
+                    Some(v) => ("then", v),
+                    None if kw == "await" => ("pending", ""),
+                    None => ("body", ""),
+                };
+                self.client_branch(open, first.0, first.1)?;
+                self.skip_standalone(open);
+                return Ok(());
+            }
             _ => {
                 return Err(self.err(
                     open,
                     format!(
-                        "unknown block {{:#{kw}}}: the browser's blocks are {{:#if}} and {{:#each}}"
+                        "unknown block {{:#{kw}}}: the browser's blocks are {{:#if}}, {{:#each}}, {{:#key}}, {{:#await}} and {{:#try}}"
                     ),
                 ));
             }
         };
+        self.client_frame(open, kind, conds, d, names)?;
+        self.skip_standalone(open);
+        Ok(())
+    }
+
+    /// Opens a client block of `kind` at `open`, whose `<template>` has the
+    /// one directive `d` and gives the elements inside it `names`.
+    fn client_frame(
+        &mut self,
+        open: usize,
+        kind: &'static str,
+        conds: Vec<String>,
+        d: Directive,
+        names: Vec<String>,
+    ) -> Result<(), Error> {
         self.begin(open)?;
+        let line = d.line;
         let group = self.group(vec![d], line);
         self.open(Frame::Client {
             pos: open,
@@ -1613,8 +1806,47 @@ impl Parser<'_> {
             body: Vec::new(),
         });
         self.templates.push(Some(names));
-        self.skip_standalone(open);
         Ok(())
+    }
+
+    /// A branch of `{:#await}` or `{:#try}`: `pending`, `then` or `catch`
+    /// (an await's), `body` or `failed` (a try's), with the name its value
+    /// is read as. It is a block of its own, inside the one copy, drawn
+    /// when the copy's `__aw` or `__tr` says so.
+    fn client_branch(&mut self, open: usize, kind: &'static str, name: &str) -> Result<(), Error> {
+        if !name.is_empty() && (!is_ident(name) || js::is_reserved(name)) {
+            return Err(self.err(
+                open,
+                format!("`{name}` is not a name for what the block gives"),
+            ));
+        }
+        let (dir, test) = match kind {
+            "pending" => (Dir::If, "!__aw.k"),
+            "then" => (Dir::Each, "__aw.k == 1 ? [__aw.x] : []"),
+            "catch" => (Dir::Each, "__aw.k == 2 ? [__aw.x] : []"),
+            "body" => (Dir::If, "!__tr.f"),
+            _ => (Dir::Each, "__tr.f ? [__tr.e] : []"),
+        };
+        let line = self.line_of(open);
+        let d = Directive {
+            kind: dir,
+            name: name.into(),
+            mods: Vec::new(),
+            value: Some(Code {
+                src: test.into(),
+                line,
+            }),
+            key: None,
+            props: Vec::new(),
+            line,
+            col: self.col_of(open),
+        };
+        let names = if dir == Dir::Each {
+            vec![name.to_string()]
+        } else {
+            Vec::new()
+        };
+        self.client_frame(open, kind, Vec::new(), d, names)
     }
 
     /// `{:else}` or `{:else if cond}` in a client block: the branch before
@@ -2012,22 +2244,46 @@ impl Parser<'_> {
             }
             if let Some(block) = rest.strip_prefix('#') {
                 let (kw, arg) = split_word(block);
-                if arg.is_empty() {
+                if arg.is_empty() && kw != "try" {
                     return Err(self.err(open, format!("{{:#{kw}}} needs an expression")));
                 }
                 return self.client_open(open, kw, arg);
             }
             if let Some(kw) = rest.strip_prefix('/') {
                 let kw = kw.trim();
-                if !matches!(self.frames.last(), Some(Frame::Client { kind, .. }) if *kind == kw && kw != "comp")
-                {
+                let top = match self.frames.last() {
+                    Some(Frame::Client { kind, .. }) => block_of(kind),
+                    _ => "",
+                };
+                if top.is_empty() || top != kw || kw == "comp" {
                     return Err(self.unexpected_close(open, &format!("{{:/{kw}}}")));
+                }
+                // An await's or try's branch, then the block around it.
+                if matches!(kw, "await" | "try") {
+                    self.client_close(open)?;
                 }
                 self.client_close(open)?;
                 self.skip_standalone(open);
                 return Ok(());
             }
             let (kw, arg) = split_word(rest);
+            // `{:then v}` and `{:catch e}`: the next branch of an await or try.
+            let branch = match self.frames.last() {
+                Some(Frame::Client { kind, .. }) => *kind,
+                _ => "",
+            };
+            let next = match (kw, branch) {
+                ("then", "pending") => Some("then"),
+                ("catch", "pending" | "then") => Some("catch"),
+                ("catch", "body") => Some("failed"),
+                _ => None,
+            };
+            if let Some(next) = next {
+                self.client_close(open)?;
+                self.client_branch(open, next, arg)?;
+                self.skip_standalone(open);
+                return Ok(());
+            }
             if !matches!(kw, "else" | "case" | "elseif" | "elif" | "elsif") {
                 let js = rest.trim();
                 if js.is_empty() {
@@ -2044,10 +2300,12 @@ impl Parser<'_> {
                         self.unwrite_attr_name(open)?;
                         let (line, col) = (self.line_of(open), self.col_of(open));
                         let name = self.attr.clone();
+                        // A whole value (`{}`): the server may paint it.
+                        let tag = self.tag == "wisp:element" && name == "this";
                         self.directives.push(Directive {
-                            kind: Dir::Attr,
+                            kind: if tag { Dir::Tag } else { Dir::Attr },
                             name,
-                            mods: Vec::new(),
+                            mods: if tag { Vec::new() } else { vec!["{}".into()] },
                             value: Some(Code {
                                 src: js.to_string(),
                                 line,
@@ -2060,9 +2318,30 @@ impl Parser<'_> {
                         self.last = b'a';
                         Ok(())
                     }
+                    Ctx::Tag
+                        if js.starts_with("...")
+                            && !js[3..].trim().is_empty()
+                            && self.frames.len() == self.tag_frames =>
+                    {
+                        let (line, col) = (self.line_of(open), self.col_of(open));
+                        self.directives.push(Directive {
+                            kind: Dir::Spread,
+                            name: String::new(),
+                            mods: Vec::new(),
+                            value: Some(Code {
+                                src: js[3..].trim().to_string(),
+                                line,
+                            }),
+                            key: None,
+                            props: Vec::new(),
+                            line,
+                            col,
+                        });
+                        Ok(())
+                    }
                     Ctx::Tag => Err(self.err(
                         open,
-                        "inside a tag, {:…} must be an attribute's value: name={:expr}".into(),
+                        "inside a tag, {:…} must be an attribute's value, name={:expr}, or {:...attributes}".into(),
                     )),
                 };
             }
@@ -2120,13 +2399,16 @@ impl Parser<'_> {
                 Some(Frame::Each { .. }) => "each",
                 Some(Frame::Match { .. }) => "match",
                 Some(Frame::Snippet { .. }) => "snippet",
-                Some(Frame::Client { kind, .. }) if *kind != "comp" => kind,
+                Some(Frame::Client { kind, .. }) if *kind != "comp" => block_of(kind),
                 _ => "",
             };
             if kw != open_kind {
                 return Err(self.unexpected_close(open, &format!("{{/{kw}}}")));
             }
             if matches!(self.frames.last(), Some(Frame::Client { .. })) {
+                if matches!(kw, "await" | "try") {
+                    self.client_close(open)?;
+                }
                 self.client_close(open)?;
                 self.skip_standalone(open);
                 return Ok(());
@@ -2452,6 +2734,16 @@ fn scheme(prefix: &str) -> Scheme {
     Scheme::Open
 }
 
+/// The block a client frame's kind is written as: an await's or try's
+/// branches are theirs.
+fn block_of(kind: &str) -> &str {
+    match kind {
+        "pending" | "then" | "catch" => "await",
+        "body" | "failed" => "try",
+        k => k,
+    }
+}
+
 /// An attribute that is browser code rather than HTML: `on:click`,
 /// `bind:value`, `:hidden`, `class:open`, `style:--x`, `transition:fade`,
 /// `use:tooltip`, and `each` or `if` on a `<template>`.
@@ -2463,6 +2755,8 @@ fn is_directive(raw: &str, tag: &str) -> bool {
             "class:",
             "style:",
             "transition:",
+            "in:",
+            "out:",
             "use:",
             "animate:",
             "client:",
@@ -2481,10 +2775,21 @@ fn directive_parts(raw: &str, tag: &str) -> Result<(Dir, String, Vec<String>), S
     if tag == "template" && raw.eq_ignore_ascii_case("if") {
         return Ok((Dir::If, String::new(), Vec::new()));
     }
-    if raw.starts_with("client:") {
-        return Err(format!(
-            "`{raw}` goes on a component, such as <Chart {raw} />: a component's module is what loads late"
-        ));
+    if let Some(how) = raw.strip_prefix("client:") {
+        let short = match how {
+            "load" => "",
+            "visible" => "v",
+            "idle" => "i",
+            "interaction" => "x",
+            "none" => "n",
+            "media" => "m",
+            _ => {
+                return Err(format!(
+                    "`{raw}` is not a way to start: client:load (the default), client:visible, client:idle, client:interaction, client:media=\"(query)\" or client:none"
+                ));
+            }
+        };
+        return Ok((Dir::Wait, short.into(), Vec::new()));
     }
     let (kind, name) = if let Some(n) = raw.strip_prefix("on:") {
         let mut parts = n.split('.');
@@ -2496,9 +2801,9 @@ fn directive_parts(raw: &str, tag: &str) -> Result<(Dir, String, Vec<String>), S
         check_modifiers(&mods)?;
         return Ok((Dir::On, event.to_string(), mods));
     } else if let Some(n) = raw.strip_prefix("bind:") {
-        if !matches!(n, "value" | "checked" | "this") {
+        if !is_ident(n) {
             return Err(format!(
-                "`{raw}` is not a binding: use bind:value, bind:checked or bind:this"
+                "`{raw}` binds a property of the element: bind:value, bind:checked, bind:group, bind:files, bind:this, bind:clientWidth, …"
             ));
         }
         (Dir::Bind, n)
@@ -2506,13 +2811,22 @@ fn directive_parts(raw: &str, tag: &str) -> Result<(Dir, String, Vec<String>), S
         (Dir::Class, n)
     } else if let Some(n) = raw.strip_prefix("style:") {
         (Dir::Style, n)
-    } else if let Some(n) = raw.strip_prefix("transition:") {
-        if !matches!(n, "fade" | "slide" | "scale" | "fly") {
+    } else if let Some((dir, n)) = ["transition:", "in:", "out:"]
+        .iter()
+        .find_map(|p| Some((&p[..p.len() - 1], raw.strip_prefix(p)?)))
+    {
+        // A built-in (fade, slide, scale, fly, blur) or a script function.
+        if !is_ident(n) {
             return Err(format!(
-                "`{raw}` is not a transition: use transition:fade, transition:slide, transition:scale or transition:fly"
+                "`{raw}` needs a transition: fade, slide, scale, fly, blur, or a function of the script, such as {dir}:spin"
             ));
         }
-        (Dir::Transition, n)
+        let mods = if dir == "transition" {
+            Vec::new()
+        } else {
+            vec![dir.to_string()]
+        };
+        return Ok((Dir::Transition, n.to_string(), mods));
     } else if let Some(n) = raw.strip_prefix("animate:") {
         if n != "flip" {
             return Err(format!(
@@ -2727,6 +3041,7 @@ pub fn client_renderable(nodes: &[Node]) -> bool {
         Node::Text(_)
         | Node::Live { .. }
         | Node::Hole { .. }
+        | Node::Tag { .. }
         | Node::Render
         | Node::Snippet { .. } => true,
         Node::Client(branches) => branches.iter().all(|(_, b)| client_renderable(b)),
@@ -3123,11 +3438,11 @@ fn shape(nodes: &[Node], out: &mut Vec<u8>) {
                 }
                 out.push(b'.');
             }
-            Node::Live { group } | Node::Hole { group } => {
-                out.push(if matches!(n, Node::Live { .. }) {
-                    b'W'
-                } else {
-                    b'O'
+            Node::Live { group } | Node::Hole { group } | Node::Tag { group } => {
+                out.push(match n {
+                    Node::Live { .. } => b'W',
+                    Node::Hole { .. } => b'O',
+                    _ => b'N',
                 });
                 out.extend_from_slice(group.to_string().as_bytes());
                 out.push(0);
@@ -3564,8 +3879,8 @@ mod tests {
         assert!(err("<a on:click.nope=\"go\">").contains("`.nope` is not an event modifier"));
         assert!(err("<a on:click.debounce.fast=\"go\">").contains("`.fast`"));
         assert!(err("<a on:=\"go\">").contains("event's name"));
-        assert!(err("<a bind:text=\"x\">").contains("bind:value, bind:checked or bind:this"));
-        assert!(err("<a transition:spin>").contains("not a transition"));
+        assert!(err("<a bind:text-x=\"x\">").contains("binds a property"));
+        assert!(err("<a transition:spin-x>").contains("needs a transition"));
         assert!(err("<a use:a-b>").contains("name of a function"));
         assert!(err("<a :=\"x\">").contains("a name after"));
         assert!(err("<template each=\"x of xs\">").contains("item in list"));
@@ -3893,7 +4208,7 @@ mod tests {
 
         let err = |src: &str| parse(src).unwrap_err().msg;
         assert!(err("{:#if a}{:else}{:else}{:/if}").contains("not allowed"));
-        assert!(err("{:#each xs}{:/each}").contains("expected {:#each"));
+        assert!(err("{:#each xs as}{:/each}").contains("expected {:#each"));
         assert!(err("{:#if a}{/each}").contains("does not match"));
         assert!(err("<p {:#if a}>").contains("goes in text"));
         assert!(err("{:#while a}{:/while}").contains("unknown block"));
@@ -3999,5 +4314,96 @@ mod tests {
                 .msg
                 .contains("browser values")
         );
+    }
+
+    /// Random templates, well formed or not, parse or fail with an error:
+    /// never a panic. (A deterministic xorshift picks the pieces.)
+    #[test]
+    fn fuzz_never_panics() {
+        const PIECES: &[&str] = &[
+            "<p",
+            "<div",
+            "</p>",
+            "</div>",
+            ">",
+            "/>",
+            " ",
+            "
+",
+            "=",
+            "\"",
+            "'",
+            "{",
+            "}",
+            "{x}",
+            "{:x}",
+            "{:#if a}",
+            "{:else}",
+            "{:/if}",
+            "{:#each xs as x (x.id)}",
+            "{:/each}",
+            "{:#key k}",
+            "{:/key}",
+            "{:#await p}",
+            "{:then v}",
+            "{:catch e}",
+            "{:/await}",
+            "{:#try}",
+            "{:/try}",
+            "{#if c}",
+            "{/if}",
+            "{#each v as x}",
+            "{/each}",
+            "{#snippet s(a)}",
+            "{/snippet}",
+            "{:@render s(1)}",
+            "on:click=\"n++\"",
+            "bind:value",
+            "bind:group=\"g\"",
+            "class:on",
+            "in:fade",
+            "out:spin",
+            "transition:fly=\"{ y: 1 }\"",
+            "client:visible",
+            "client:media=\"(x)\"",
+            "use:portal",
+            ":hidden=\"h\"",
+            "{:...rest}",
+            "<wisp:window",
+            "<wisp:element this={:t}",
+            "</wisp:element>",
+            "<Card",
+            "</Card>",
+            "<template each=\"x in xs\">",
+            "</template>",
+            "<script>",
+            "</script>",
+            "let n = 0",
+            "<!--",
+            "-->",
+            "é",
+            "😀",
+            "{@props a: u8}",
+            "{@html h}",
+            "{:#if}",
+            "{:/",
+            "{:",
+            "<",
+            "</",
+        ];
+        let mut x: u64 = 0x2545_f491_4f6c_dd1d;
+        for round in 0..6000 {
+            let src: String = (0..1 + round % 30)
+                .map(|_| {
+                    x ^= x << 13;
+                    x ^= x >> 7;
+                    x ^= x << 17;
+                    PIECES[x as usize % PIECES.len()]
+                })
+                .collect();
+            if let Err(e) = parse(&src) {
+                assert!(e.line >= 1 && !e.msg.is_empty(), "{src:?}");
+            }
+        }
     }
 }

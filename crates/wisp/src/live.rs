@@ -45,6 +45,9 @@ pub struct ClientModule {
     pub url: &'static str,
     pub etag: &'static str,
     pub source: &'static str,
+    /// A module it imports that the page preloads with it (the runtime's
+    /// less used half, `/_app/c/extra.js?v=…`), or "".
+    pub preload: &'static str,
 }
 
 /// The instances a response rendered, kept in its `Out`.
@@ -109,8 +112,15 @@ impl Live {
         s.push(']');
         s.push_str(&self.route);
         s.push_str("}</script>");
+        let mut extra = "";
         for (m, _) in self.modules.iter().filter(|m| m.1) {
             let _ = write!(s, "<link rel=\"modulepreload\" href=\"{}\">", m.url);
+            if extra.is_empty() {
+                extra = m.preload;
+            }
+        }
+        if !extra.is_empty() {
+            let _ = write!(s, "<link rel=\"modulepreload\" href=\"{extra}\">");
         }
         if !self.modules.iter().any(|m| m.1) {
             return s;
@@ -239,6 +249,30 @@ impl<'a> Js<'a> {
         Js("null")
     }
 
+    /// The keys and values of an object (nothing for anything else).
+    pub fn entries(self) -> impl Iterator<Item = (String, Js<'a>)> {
+        let (s, b) = (self.0, self.0.as_bytes());
+        let mut i = if b.first() == Some(&b'{') { 1 } else { b.len() };
+        std::iter::from_fn(move || {
+            if i >= b.len() || b[i] != b'"' {
+                return None;
+            }
+            let k = value_end(b, i);
+            let e = value_end(b, k + 1);
+            let item = (unescape(&s[i..k]), Js(&s[k + 1..e]));
+            i = e + 1;
+            Some(item)
+        })
+    }
+
+    /// As `String(value)` has it: a string's text, anything else its JSON.
+    pub fn raw(self, out: &mut String) {
+        match self.0.as_bytes().first() {
+            Some(b'"') => out.push_str(&unescape(self.0)),
+            _ => out.push_str(self.0),
+        }
+    }
+
     /// The items of an array (nothing for anything else).
     pub fn items(self) -> impl Iterator<Item = Js<'a>> {
         let (s, b) = (self.0, self.0.as_bytes());
@@ -277,6 +311,135 @@ impl<'a> Js<'a> {
             _ if self.0 != "null" => crate::html::escape(out, self.0),
             _ => {}
         }
+    }
+}
+
+/// A `name={:value}` attribute's first paint, as the browser sets it:
+/// ` name="value"`, ` name` for `true`, nothing for `null` and `false` (but
+/// `aria-*` writes them). `class` also takes arrays and objects of names
+/// (`[a, { on: b }]`), `style` an object of properties.
+pub fn js_attr(out: &mut String, name: &str, v: Js<'_>) {
+    let aria = name.starts_with("aria-");
+    match v.0 {
+        "null" => return,
+        "false" | "true" if !aria => {
+            if v.0 == "true" {
+                out.push(' ');
+                out.push_str(name);
+            }
+            return;
+        }
+        _ => {}
+    }
+    let mut s = String::new();
+    let open = v.0.as_bytes().first().copied();
+    if name == "class" && matches!(open, Some(b'[' | b'{')) {
+        class_names(v, &mut s);
+    } else if name == "style" && open == Some(b'{') {
+        for (k, x) in v.entries() {
+            if matches!(x.0, "null" | "false") {
+                continue;
+            }
+            if !s.is_empty() {
+                s.push(';');
+            }
+            for c in k.chars() {
+                if c.is_ascii_uppercase() && !k.starts_with("--") {
+                    s.push('-');
+                    s.push(c.to_ascii_lowercase());
+                } else {
+                    s.push(c);
+                }
+            }
+            s.push(':');
+            x.raw(&mut s);
+        }
+    } else {
+        v.raw(&mut s);
+    }
+    out.push(' ');
+    out.push_str(name);
+    out.push_str("=\"");
+    crate::html::escape(out, &s);
+    out.push('"');
+}
+
+/// `{:...attrs}`'s first paint: each key an attribute (see `js_attr`), but
+/// the `on…` ones, which are the browser's listeners. Pairs of a name and a
+/// value too.
+pub fn js_attrs(out: &mut String, v: Js<'_>) {
+    // A component's `...rest` comes as `[name, value]` pairs.
+    let pairs = v.items().filter_map(|p| {
+        let mut i = p.items();
+        let (k, x) = (i.next()?, i.next()?);
+        let mut name = String::new();
+        k.raw(&mut name);
+        Some((name, x))
+    });
+    for (k, x) in v.entries().chain(pairs) {
+        let ok = !k.starts_with("on")
+            && !k.is_empty()
+            && k.bytes()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b':' | b'.'));
+        if ok {
+            js_attr(out, &k, x);
+        }
+    }
+}
+
+/// `class={:[a, { on: b }]}`'s names: strings, and keys whose value holds,
+/// at any depth.
+fn class_names(v: Js<'_>, out: &mut String) {
+    let mut add = |s: &str| {
+        if !s.is_empty() {
+            if !out.is_empty() {
+                out.push(' ');
+            }
+            out.push_str(s);
+        }
+    };
+    match v.0.as_bytes().first() {
+        Some(b'[') => {
+            for item in v.items() {
+                let mut s = String::new();
+                class_names(item, &mut s);
+                add(&s);
+            }
+        }
+        Some(b'{') => {
+            for (k, x) in v.entries() {
+                if x.truthy() {
+                    add(&k);
+                }
+            }
+        }
+        _ if v.truthy() && v.0 != "true" => {
+            let mut s = String::new();
+            v.raw(&mut s);
+            add(&s);
+        }
+        _ => {}
+    }
+}
+
+/// `<wisp:element this="…">`'s name as the server paints it: the value, when
+/// it is a string that is a tag's name, else `wisp-element` (the browser
+/// sets the tag when it starts).
+pub fn tag_name(out: &mut String, v: Js<'_>) {
+    let s =
+        v.0.strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .unwrap_or("");
+    let ok = s.bytes().next().is_some_and(|c| c.is_ascii_alphabetic())
+        && s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-');
+    out.push_str(if ok { s } else { "wisp-element" });
+}
+
+/// Written as the JSON it holds: a component's browser-value prop defaults
+/// to one (`$props()` without `{@props}`).
+impl Json for Js<'_> {
+    fn json(&self, out: &mut String) {
+        out.push_str(self.0);
     }
 }
 
@@ -659,6 +822,7 @@ mod tests {
             url: "/_app/c/t1.js?v=1",
             etag: "\"1\"",
             source: "",
+            preload: "",
         };
         static B: ClientModule = ClientModule {
             id: "t2",
@@ -666,6 +830,7 @@ mod tests {
             url: "/_app/c/t2.js?v=2",
             etag: "\"2\"",
             source: "",
+            preload: "",
         };
         let mut out = Out::default();
         assert_eq!(out.live.tail(), "");

@@ -8,25 +8,33 @@ This document is the contract for v0. When code and doc disagree, fix one of the
 
 ## Principles
 
-1. **Fast by construction.** Templates compile to straight-line `push_str` calls.
+1. **Speed, then flexibility, then durability; developer happiness last. And
+   app code in as few tokens as possible.** AI writes most code now, so a
+   developer picks the framework whose apps cost the fewest tokens to write,
+   run fastest, bend furthest and keep working. Every feature is judged
+   first by what it costs the app's code: a convention beats a line of
+   setup, one file beats two, and a name the build can infer is not written.
+   [tokens.md](tokens.md) measures it against other frameworks, and
+   [AGENTS.md](../AGENTS.md) is the whole language in one short page.
+2. **Fast by construction.** Templates compile to straight-line `push_str` calls.
    Routes compile to one `match`. Buffers are reused per connection. No boxing,
    no dynamic dispatch, no allocation on the hot path after warm-up.
-2. **Minimal dependencies.** The runtime depends on `tokio` and `httparse`. The
+3. **Minimal dependencies.** The runtime depends on `tokio` and `httparse`. The
    build crate and CLI depend on nothing but std. Every new dependency needs a
    written reason in this file.
-3. **Boring code.** Plain functions and plain data. Abstractions only where they
+4. **Boring code.** Plain functions and plain data. Abstractions only where they
    remove more code than they add. Invariants are asserted, not assumed.
-4. **Safe.** No `unsafe` anywhere in Wisp or in the code it generates; the
+5. **Safe.** No `unsafe` anywhere in Wisp or in the code it generates; the
    workspace lint is `forbid`. (The benchmark runner, which pins processes to
    CPUs through the OS, is the one crate that sets its own.)
-5. **Mistakes fail early, in the user's own file.** Whatever the build can
+6. **Mistakes fail early, in the user's own file.** Whatever the build can
    check, it checks, and says where and what to do: a private `load`, an
    `#[action]` in the wrong place, `page.wisp` without its `+`, a block that
    leaves a tag open in one branch. rustc should only ever point at code the
    user wrote.
-6. **Fast dev loop.** Editing markup never waits for `cargo`. Editing Rust
+7. **Fast dev loop.** Editing markup never waits for `cargo`. Editing Rust
    rebuilds only the app crate.
-7. **Works without JavaScript.** Forms are real forms and links are real links.
+8. **Works without JavaScript.** Forms are real forms and links are real links.
    `wisp.js` enhances them; it is never required.
 
 ## Dependency budget
@@ -84,11 +92,16 @@ my-app/
   src/hooks.rs        optional; `init` at start, `before` every request
   src/components/...  optional; Card.wisp is <Card>
   src/routes/...      pages
+  src/db.rs           optional; any src/NAME.rs is the module `NAME`
   static/...          served as-is at /
 ```
 
-Other modules of the app's own (`mod db;` in `main.rs`) are ordinary Rust,
-reachable from routes as `crate::db`.
+Each `src/NAME.rs` (but `main.rs`, `lib.rs` and `hooks.rs`) is a module of
+the app with no `mod` line: Wisp compiles it as `crate::NAME`, with the
+prelude in scope like a route file, and route files, `---` blocks, templates
+and `src/hooks.rs` reach it as plain `NAME` (`db::find(id)`). A file that
+`main.rs` or `lib.rs` declares itself (`mod db;`) is left to them, as
+ordinary Rust.
 
 ### Routes
 
@@ -96,10 +109,10 @@ Directory names are URL segments. Files that start with `+` are route files.
 
 | File           | Meaning                                                           |
 |----------------|-------------------------------------------------------------------|
-| `+page.wisp`   | Markup for the page at this path.                                 |
-| `+page.rs`     | `load` for the page and its `#[action]` functions.                |
+| `+page.wisp`   | The page at this path: markup, after an optional `---` block of Rust. |
+| `+page.rs`     | Optional, instead of the block: `load` and `#[action]` functions. |
 | `+layout.wisp` | Wraps this page and every page below it. `{@render children()}`.  |
-| `+layout.rs`   | `load` for the layout.                                            |
+| `+layout.rs`   | Optional, instead of a block: `load` for the layout.              |
 | `+error.wisp`  | Rendered for errors below this directory. Gets `status`, `message` (a sentence about the status when the error says no more than its name). |
 | `+page.js`     | Optional. `load({ data, url, params, route, fetch })` in the browser. |
 | `+server.rs`   | `get`/`post`/`put`/`patch`/`delete` endpoints.                    |
@@ -134,8 +147,51 @@ top-level `_app` or `_wisp` directory, which Wisp's own files use; a
 
 ### Page logic
 
+A page's Rust goes at the top of its `.wisp`, between two `---` lines:
+
+```html
+<!-- src/routes/blog/[slug]/+page.wisp -->
+---
+let post = db::post(&slug).await.or_404()?;
+
+#[action]
+async fn like(id: i64) -> Result {
+    db::like(id).await?;
+    Ok(())
+}
+---
+<head><title>{post.title}</title></head>
+<h1>{post.title}</h1>
+<form method="post" action="?/like"><button name="id" value={post.id}>Like</button></form>
+```
+
+- The block holds items (`fn`, `struct`, `use`, `static`, `const`, `impl`,
+  `#[action]`s...), which go in the page's module, and statements, which
+  are its load: they run for each request, before the markup renders, and
+  the markup reads their names (`post`). They run in an `async` function
+  that returns a `Result`, so `.await`, `?`, `return redirect("/")` and
+  `return error(404, "…")` work in them. `cx` is there (`&mut Cx`), and each
+  route parameter the file names is a local: `slug: String` for `[slug]`
+  and `[...rest]`, `id: u64` for `[id=int]`, `Option<String>` (or
+  `Option<u64>`) for `[[lang]]`. A page with no Rust at all reads them too:
+  `<h1>{slug}</h1>`.
+- The markup also sees `cx` (`&Cx`) in any page, layout or error page:
+  `{cx.path()}`, `value={cx.input("email")}`.
+- A `+page.rs` beside the `.wisp` is the other way to write the same page:
+  a `load` that returns a `Data` struct (whose fields the markup reads by
+  name), and the actions. A block may also hold exactly what a `+page.rs`
+  would, `fn load` and `struct Data` included, but not a `fn load` and
+  statements, and a page cannot have both a block and a `+page.rs`: the
+  build says which line to move. A `+layout.wisp` takes a block the same
+  way; its statements run while the layout renders, so they take `cx` as
+  `&Cx` and cannot await or use `?` (a `+layout.rs` `load` can). Components
+  and error pages take none.
+- Build and type errors in a block point at the `.wisp` file and line. A
+  block's text is part of the file's shape: editing it compiles again, while
+  editing the markup still swaps in without a compile.
+
 ```rust
-// src/routes/blog/[slug]/+page.rs
+// The same page as src/routes/blog/[slug]/+page.rs:
 struct Data {
     post: Post,
 }
@@ -143,12 +199,6 @@ struct Data {
 async fn load(slug: String) -> Result<Data> {
     let post = db::post(&slug).await.or_404()?;
     Ok(Data { post })
-}
-
-#[action]
-async fn like(id: i64) -> Result<()> {
-    db::like(id).await?;
-    Ok(())
 }
 ```
 
@@ -166,9 +216,11 @@ async fn like(id: i64) -> Result<()> {
 - Signatures are as short as the function allows. `load`, actions and
   `+server.rs` endpoints may be `fn` or `async fn`; take `cx: &mut Cx`,
   `cx: &Cx` or no `cx`; and return their value (`Data`, `()`, `Response`)
-  either plain or in a `Result`. The build reads which from the signature and
-  generates the matching call; rustc checks the types. A counter is
-  `fn load(cx: &mut Cx) -> Data` and `#[action] fn increment(cx: &mut Cx)`.
+  either plain or in a `Result` (`Result` alone is `Result<()>`). The build
+  reads which from the signature and generates the matching call; rustc
+  checks the types. An `#[action]` whose body uses `cx` without taking it
+  gets it (`#[action]` adds `cx: &mut Cx`), so a counter's action is
+  `#[action] fn increment() { cx.set_cookie("n", n + 1) }`.
 - Every other parameter is an input, read from the request by its name: a
   route parameter of that name first, then the form a POST, PUT or PATCH
   sends, then the URL's query. The type says how. `T` must be there and be
@@ -179,13 +231,14 @@ async fn like(id: i64) -> Result<()> {
   `&str` borrows a `String`. So `fn load(slug: String)`,
   `fn load(q: Option<String>, page: Option<u32>)` and
   `#[action] fn add(text: String, done: bool)` need no `cx` at all.
-  `cx.form()` still reads anything else, files too.
-- `fn entries() -> Vec<…>` in a `+page.rs` under `[params]` lists the pages
+  `cx.form()` still reads anything else, files too, and `cx.input(name)`
+  finds any one by name the same way (in a block's statements, say).
+- `fn entries() -> Vec<…>` in a page under `[params]` lists the pages
   `wisp build --static` writes (see [deploy.md](deploy.md)).
-- The build checks, against `+page.rs`, that `load` returns `Data` (plain or
+- The build checks, against the file, that `load` returns `Data` (plain or
   in a `Result`), that every parameter but `cx` has a plain name, and that
   `#[action]` (by any path, `wisp::action` too) marks only top-level
-  functions of a `+page.rs`.
+  functions of a page.
 - Errors: `?` on any `std::error::Error` gives a 500 (details only in dev).
   `return error(404, "…")` stops with that status and message, and
   `return redirect("/…")` with a 303; both are `Err`s, so they end a
@@ -199,25 +252,30 @@ async fn like(id: i64) -> Result<()> {
 - An action returns nothing (or `Result<()>`), and then the page renders. It
   may instead return a `Response` (a CSV export, a file), sent in place of
   the page, or an `Option<Response>` to do that only sometimes.
-- A form that fails validation: the action calls `cx.fail(status, problem)`,
-  and `load`, which runs next in the same request, takes the problem with
-  `cx.take` and what was typed from its inputs (the form is still there):
+- A form that fails validation: the action returns `invalid(field,
+  problem)`, and the page renders again, as a 422, with the form still
+  there: `cx.problem(field)` is what is wrong and `cx.input(field)` what was
+  typed. (Any other error from an action shows the error page.)
 
-  ```rust
-  struct Problem(&'static str);
-
+  ```html
+  ---
   #[action]
-  fn signup(cx: &mut Cx, email: String) {
+  fn signup(email: String) -> Result {
       if !email.contains('@') {
-          cx.fail(422, Problem("That email address is missing its @"));
+          return invalid("email", "That email address is missing its @");
       }
+      redirect("/welcome")
   }
-
-  fn load(cx: &mut Cx, email: Option<String>) -> Data {
-      Data { problem: cx.take().map(|Problem(p)| p), email }
-  }
+  ---
+  <form method="post" action="?/signup">
+    <input name="email" value={cx.input("email")}>
+    {#if let Some(p) = cx.problem("email")}<p>{p}</p>{/if}
+  </form>
   ```
-- `const BODY_LIMIT: usize = 20 * wisp::MB;` in a `+page.rs` or
+
+  For more than a message, `cx.fail(status, value)` keeps any value for the
+  load, which takes it with `cx.take()`.
+- `const BODY_LIMIT: usize = 20 * wisp::MB;` in a page or a
   `+server.rs` sets the largest body that route takes (the default is 1 MB,
   or `WISP_BODY_LIMIT`). A larger one is refused with a 413 as soon as its
   head arrives. The build checks that it is a `usize`, set once per route,
@@ -232,7 +290,7 @@ async fn like(id: i64) -> Result<()> {
 ### Templates
 
 ```html
-<wisp:head><title>{data.post.title}</title></wisp:head>
+<head><title>{data.post.title}</title></head>
 
 <h1 class="text-3xl font-bold">{data.post.title}</h1>
 
@@ -270,7 +328,8 @@ async fn like(id: i64) -> Result<()> {
 | `{@render children()}`         | layout slot                                        |
 | `{#snippet row(item, i)}…{/snippet}` | markup to render later, in this file or a component |
 | `{@render row(x, 0)}`          | renders a snippet                                  |
-| `<wisp:head>…</wisp:head>`     | appended to the document head                      |
+| `<head>…</head>` or `<wisp:head>…</wisp:head>` | appended to the document head |
+| `{cx.path()}`                  | `cx`, the request (`&Cx`), in pages, layouts, error pages |
 
 Expressions are Rust, passed to `rustc` verbatim, so type errors are real type
 errors. Inside `<script>`, `<style>` and HTML comments there are no holes, so
@@ -517,6 +576,10 @@ fn before(cx: &mut Cx) -> Result<()> {
 - `wisp::provide(value)` makes a value (a database pool, a client) available
   everywhere as `wisp::state::<T>()`. A type that was never provided panics
   with its name: a missing line at startup, found by the first request.
+- `static TODOS: Shared<Vec<Todo>> = Shared::new(Vec::new());` is a value
+  in memory that every request shares: `TODOS.lock().push(todo)`. A
+  `Mutex` without the `unwrap` (a panic while it was held leaves the value
+  as it was); do not hold the guard across an `.await`.
 - `cx.set(value)` hands a value along the rest of one request, and
   `cx.get::<T>()` reads it: `before` finds the user once, every page reads it.
   `cx.take::<T>()` moves it out, so it need not be `Clone`.
@@ -729,12 +792,15 @@ the app uses them.)
 
 1. Walks `src/routes`, builds the route table, sorts by priority, rejects conflicts.
 2. Parses every `.wisp` file (routes and `src/components`) into a node list.
-   Errors are `file:line:col: msg`.
-3. Scans `+page.rs`/`+layout.rs`/`+server.rs` and `src/hooks.rs` with a tiny
+   Errors are `file:line:col: msg`. A `---` block at the top is cut off
+   first, with its lines left blank so the markup keeps its line numbers,
+   and split by the same lexer into its items and its statements.
+3. Scans `+page.rs`/`+layout.rs`/`+server.rs`, the blocks' items,
+   `src/hooks.rs` and the app's `src/NAME.rs` modules with a tiny
    Rust lexer for `fn load`, `#[action] … fn name`, HTTP-method functions,
    hooks and `const BODY_LIMIT`, and reads from each signature whether it is
-   async, takes `cx`, which inputs it reads by name, returns a `Result` and
-   returns a `Response`.
+   async, takes `cx` (or, for an action, uses it without taking it), which
+   inputs it reads by name, returns a `Result` and returns a `Response`.
 4. Writes `$OUT_DIR/wisp.rs`: a module per user file, which `include!`s it
    after `use wisp::prelude::*` and holds a `__call` module of small shims
    that read inputs and adapt what the function returns (so the file's items
@@ -742,6 +808,11 @@ the app uses them.)
    template, the router `match`, `handle`, and asset tables. A `load`'s
    `Data` leaves its module in a public box (`__call::Loaded`) only that
    module's template opens, since a private type cannot travel on its own.
+   A block's statements need no box: they are the start of the page's
+   render function, which is `async`, and the markup is a closure after
+   them that the layouts call, so it reads their locals with the types rustc
+   infers. Each line of a block is written with a `// file.wisp:line`
+   comment, which `wisp dev` uses to tell rustc's errors against the file.
 
 Release builds embed `static/` and the built CSS into the binary with a content
 hash, served with `Cache-Control: immutable` under `?v=hash` URLs.

@@ -1,4 +1,4 @@
-use crate::notes::{self, Note};
+use notes::Note;
 
 /// What to change; what is left out stays as it is.
 #[derive(FromJson)]
@@ -18,7 +18,7 @@ fn patch(id: u64, body: Changes) -> Result<Note> {
     Ok(note)
 }
 
-fn delete(id: u64) -> Result<()> {
+fn delete(id: u64) -> Result {
     if !notes::remove(id) {
         return error(404, "No such note");
     }

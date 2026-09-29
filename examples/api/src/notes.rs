@@ -1,9 +1,9 @@
 //! The notes, kept in memory. A real app keeps them in a database: it opens
 //! a pool in `init` (src/hooks.rs), hands it to `wisp::provide`, and reads
 //! it here with `wisp::state`. docs/api.md shows sqlx, rusqlite and Redis.
-
-use std::sync::{Mutex, MutexGuard};
-use wisp::Json;
+//!
+//! A file in src/ is a module of the app with no `mod` line: routes call
+//! these as `notes::list`, and Wisp's prelude is in scope, as in a route.
 
 #[derive(Clone, Json)]
 pub struct Note {
@@ -14,10 +14,10 @@ pub struct Note {
 }
 
 /// The last id given out, and the notes.
-static NOTES: Mutex<(u64, Vec<Note>)> = Mutex::new((0, Vec::new()));
+static NOTES: Shared<(u64, Vec<Note>)> = Shared::new((0, Vec::new()));
 
-fn notes() -> MutexGuard<'static, (u64, Vec<Note>)> {
-    NOTES.lock().unwrap_or_else(|e| e.into_inner())
+fn notes() -> std::sync::MutexGuard<'static, (u64, Vec<Note>)> {
+    NOTES.lock()
 }
 
 /// Every note, or those whose title has `q` in it.

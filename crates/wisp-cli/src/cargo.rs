@@ -210,7 +210,7 @@ fn strip_generated_modules(s: &str) -> String {
         let at_word = i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_');
         if at_word {
             let rest = &s[i..];
-            let plain = ["__wisp::", "__call::"]
+            let plain = ["__wisp::", "__call::", "__mods::"]
                 .iter()
                 .find_map(|p| rest.strip_prefix(p));
             let skip = if let Some(r) = plain {

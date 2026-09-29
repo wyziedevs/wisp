@@ -383,11 +383,9 @@ const APP_HTML: &str = include_str!("../../../examples/demo/src/app.html");
 const FAVICON: &str = include_str!("../../../examples/demo/static/favicon.svg");
 const DEMO_CSS: &str = include_str!("../../../examples/demo/src/app.css");
 
-const DEMO: [(&str, &str); 10] = [
+const DEMO: [(&str, &str); 8] = [
     demo!("src/routes/+layout.wisp"),
-    demo!("src/routes/+layout.rs"),
     demo!("src/routes/+page.wisp"),
-    demo!("src/routes/+page.rs"),
     demo!("src/routes/+error.wisp"),
     demo!("src/routes/about/+page.wisp"),
     demo!("src/routes/wisple/+page.wisp"),
@@ -426,7 +424,7 @@ const MINIMAL: [(&str, &str); 3] = [
     ),
     (
         "src/routes/+page.wisp",
-        r#"<wisp:head><title>Home</title></wisp:head>
+        r#"<head><title>Home</title></head>
 
 <h1>Welcome to Wisp</h1>
 <p>Edit <code>src/routes/+page.wisp</code> and save to see it change.</p>
@@ -434,7 +432,7 @@ const MINIMAL: [(&str, &str); 3] = [
     ),
     (
         "src/routes/+error.wisp",
-        r#"<wisp:head><title>{status}</title></wisp:head>
+        r#"<head><title>{status}</title></head>
 
 <h1>{status}</h1>
 <p>{message}</p>

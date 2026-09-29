@@ -12,7 +12,10 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 /// Past this many keys, buckets that have filled up again are dropped, so
-/// clients that came once do not stay in memory.
+/// clients that came once do not stay in memory. If that is not enough
+/// (more keys than this in one window: many addresses, or made-up keys),
+/// others are forgotten too, so memory stays bounded, and each forgotten
+/// key starts again with a full bucket.
 const KEYS: usize = 10_000;
 
 /// `requests` per `window` for each key, as a static:
@@ -31,8 +34,15 @@ const KEYS: usize = 10_000;
 pub struct RateLimit {
     requests: u32,
     window: Duration,
-    /// Per key's hash: tokens left, and when they were counted.
-    buckets: Mutex<BTreeMap<u64, (f64, Instant)>>,
+    buckets: Mutex<Buckets>,
+}
+
+/// Per key's hash: tokens left, and when they were counted.
+struct Buckets {
+    map: BTreeMap<u64, (f64, Instant)>,
+    /// The earliest the next sweep may run: at most one a second, so a map
+    /// that stays full is not walked on every request.
+    sweep: Option<Instant>,
 }
 
 impl RateLimit {
@@ -41,7 +51,10 @@ impl RateLimit {
         RateLimit {
             requests,
             window,
-            buckets: Mutex::new(BTreeMap::new()),
+            buckets: Mutex::new(Buckets {
+                map: BTreeMap::new(),
+                sweep: None,
+            }),
         }
     }
 
@@ -68,11 +81,17 @@ impl RateLimit {
         key.hash(&mut h);
         let full = self.requests as f64;
         let rate = full / self.window.as_secs_f64(); // tokens a second
-        let mut buckets = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
-        if buckets.len() >= KEYS {
-            buckets.retain(|_, (_, at)| now.saturating_duration_since(*at) < self.window);
+        let mut guard = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
+        let Buckets { map, sweep } = &mut *guard;
+        if map.len() >= KEYS && sweep.is_none_or(|s| now >= s) {
+            map.retain(|_, (_, at)| now.saturating_duration_since(*at) < self.window);
+            *sweep = Some(now + Duration::from_secs(1));
         }
-        let (tokens, at) = buckets.entry(h.finish()).or_insert((full, now));
+        // Keys are hashes, so the first ones are as good as random.
+        while map.len() >= 2 * KEYS {
+            map.pop_first();
+        }
+        let (tokens, at) = map.entry(h.finish()).or_insert((full, now));
         *tokens = (*tokens + now.saturating_duration_since(*at).as_secs_f64() * rate).min(full);
         *at = now;
         if *tokens >= 1.0 {
@@ -103,5 +122,22 @@ mod tests {
             "one back every 30 s"
         );
         assert!(limit.take("a", t + Duration::from_secs(32)).is_err());
+    }
+
+    #[test]
+    fn many_keys_stay_bounded() {
+        let limit = RateLimit::per_hour(1);
+        let t = Instant::now();
+        for k in 0..5 * KEYS {
+            assert!(limit.take(k, t).is_ok());
+        }
+        assert!(limit.buckets.lock().unwrap().map.len() <= 2 * KEYS);
+        let later = t + Duration::from_secs(3601);
+        assert!(limit.take("new", later).is_ok());
+        assert_eq!(
+            limit.buckets.lock().unwrap().map.len(),
+            1,
+            "all filled up again"
+        );
     }
 }

@@ -14,6 +14,7 @@ path = "main.rs"
 actix-web = "4"
 askama = "0.16"
 axum = "0.8"
+serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net"] }
 
 [workspace]

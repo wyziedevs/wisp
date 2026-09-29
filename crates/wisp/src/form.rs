@@ -429,4 +429,119 @@ b\r\n--XyZ--\r\nepilogue";
                 .is_none()
         );
     }
+
+    use crate::fuzz::{Rng, mutate};
+
+    /// `s` as a browser sends it in a urlencoded form.
+    fn urlencode(s: &str) -> String {
+        s.bytes()
+            .map(|b| match b {
+                b' ' => "+".to_string(),
+                b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'*' => {
+                    (b as char).to_string()
+                }
+                _ => format!("%{b:02X}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn urlencoded_fields_read_back() {
+        let mut rng = Rng::new(10);
+        for _ in 0..3000 {
+            let fields: Vec<(String, String)> = (0..rng.below(6))
+                .map(|i| (format!("{}{i}", rng.text(4)), rng.text(12)))
+                .collect();
+            let body: Vec<String> = fields
+                .iter()
+                .map(|(k, v)| format!("{}={}", urlencode(k), urlencode(v)))
+                .collect();
+            let body = body.join("&");
+            let f = Form::new(URLENCODED, body.as_bytes());
+            for (k, v) in &fields {
+                assert_eq!(f.get(k).as_deref(), Some(v.as_str()), "{body}");
+            }
+            assert_eq!(f.iter().count(), fields.len());
+            let mut broken = body.into_bytes();
+            mutate(&mut rng, &mut broken);
+            let _ = Form::new(URLENCODED, &broken).iter().count();
+            assert!(decode(&broken, true).len() <= broken.len() * 3);
+        }
+    }
+
+    /// Whether `value`, followed by CRLF and the delimiter, would end early:
+    /// it holds a delimiter itself, which a browser picks a boundary to avoid.
+    fn holds_delimiter(value: &[u8], boundary: &[u8]) -> bool {
+        let delimiter = [b"\r\n--", boundary].concat();
+        let mut with_end = value.to_vec();
+        with_end.extend_from_slice(b"\r\n");
+        (0..with_end.len()).any(|i| {
+            with_end[i..].starts_with(&delimiter)
+                && matches!(
+                    with_end.get(i + delimiter.len()),
+                    None | Some(b'-' | b'\r' | b' ' | b'\t')
+                )
+        })
+    }
+
+    #[test]
+    fn multipart_fields_and_files_read_back() {
+        let mut rng = Rng::new(11);
+        let mut checked = 0;
+        for _ in 0..3000 {
+            let boundary = rng.upto(20, b"abXY09'()+_,-./:=? ");
+            let boundary = String::from_utf8(boundary).unwrap();
+            let boundary = boundary.trim();
+            if boundary.is_empty() {
+                continue;
+            }
+            let mut body = Vec::new();
+            if rng.one_in(3) {
+                body.extend_from_slice(b"preamble\r\n");
+            }
+            let mut sent = Vec::new();
+            for i in 0..rng.below(5) {
+                let value = rng.upto(40, b"ab\r\n-\x00\xff ");
+                let file = rng.one_in(2);
+                sent.push((format!("f{i}"), value, file));
+            }
+            if sent
+                .iter()
+                .any(|(_, v, _)| holds_delimiter(v, boundary.as_bytes()))
+            {
+                continue;
+            }
+            for (name, value, file) in &sent {
+                body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+                let disposition = format!("Content-Disposition: form-data; name=\"{name}\"");
+                body.extend_from_slice(disposition.as_bytes());
+                if *file {
+                    body.extend_from_slice(b"; filename=\"a.bin\"\r\nContent-Type: x/y");
+                }
+                body.extend_from_slice(b"\r\n\r\n");
+                body.extend_from_slice(value);
+                body.extend_from_slice(b"\r\n");
+            }
+            body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+            let ct = format!("multipart/form-data; boundary=\"{boundary}\"");
+            let f = Form::new(Some(&ct), &body);
+            for (name, value, file) in &sent {
+                if *file {
+                    let got = f.file(name).map(|f| f.bytes);
+                    assert_eq!(got, Some(&value[..]), "{body:?}");
+                } else {
+                    let text = String::from_utf8_lossy(value);
+                    assert_eq!(f.get(name), Some(text), "{body:?}");
+                }
+            }
+            checked += 1;
+            for _ in 0..4 {
+                let mut broken = body.clone();
+                mutate(&mut rng, &mut broken);
+                let f = Form::new(Some(&ct), &broken);
+                let _ = (f.iter().count(), f.files("f1").count());
+            }
+        }
+        assert!(checked > 1000);
+    }
 }

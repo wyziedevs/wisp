@@ -18,7 +18,9 @@ server of your own (it gets `PORT` and `THREADS`, and is measured on
 
 - `app/`: the Wisp side. `/fortunes` is TechEmpower's fortunes test without
   the database: copy 12 rows, add one, sort by message, render an HTML table
-  with escaping. `/plaintext` returns `Hello, World!`.
+  with escaping. `/plaintext` returns `Hello, World!`, and `/json`
+  (Wisp, Actix and Axum only) serializes `{"message":"Hello, World!"}`
+  per request.
 - `aspnet/`: the same two endpoints, written the way the ASP.NET Core docs
   and templates do: `/fortunes` as a Razor Page, `/fortunes-blazor` as a Blazor
   component (static SSR), and `/plaintext` as a minimal API. Logging is set to

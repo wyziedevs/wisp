@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 
 /// The signature of cookie `name` holding `value`: base64url, no padding.
 pub(crate) fn cookie_mac(name: &str, value: &str) -> String {
-    base64url(&hmac(key(), &[name.as_bytes(), b"=", value.as_bytes()]))
+    base64url(&key().sign(&[name.as_bytes(), b"=", value.as_bytes()]))
 }
 
 /// Whether `mac` is the signature of cookie `name` holding `value`, in time
@@ -26,14 +26,14 @@ pub(crate) static ROOT: OnceLock<&'static str> = OnceLock::new();
 /// `WISP_SECRET`; in dev builds without it, a secret kept in the project's
 /// `.wisp/secret`, so signed cookies survive restarts. A release build
 /// without one cannot sign: the panic is the request's 500, with the reason.
-fn key() -> &'static [u8] {
-    static KEY: OnceLock<Vec<u8>> = OnceLock::new();
+fn key() -> &'static Hmac {
+    static KEY: OnceLock<Hmac> = OnceLock::new();
     KEY.get_or_init(|| {
         if let Some(secret) = &crate::settings().secret {
-            return secret.as_bytes().to_vec();
+            return Hmac::new(secret.as_bytes());
         }
         if cfg!(debug_assertions) {
-            return dev_key();
+            return Hmac::new(&dev_key());
         }
         panic!(
             "signed cookies need a secret: set WISP_SECRET to at least 32 random characters \
@@ -106,25 +106,42 @@ fn base64url(bytes: &[u8]) -> String {
     out
 }
 
-/// HMAC-SHA256 (RFC 2104) of the concatenation of `parts`.
-fn hmac(key: &[u8], parts: &[&[u8]]) -> [u8; 32] {
-    let mut k = [0u8; 64];
-    if key.len() > 64 {
-        k[..32].copy_from_slice(&sha256(&[key]));
-    } else {
-        k[..key.len()].copy_from_slice(key);
+/// HMAC-SHA256 (RFC 2104) with one key: the hashes of its two padded
+/// blocks are kept, which halves the work of each signature.
+struct Hmac {
+    inner: Sha256,
+    outer: Sha256,
+}
+
+impl Hmac {
+    fn new(key: &[u8]) -> Hmac {
+        let mut k = [0u8; 64];
+        if key.len() > 64 {
+            k[..32].copy_from_slice(&sha256(&[key]));
+        } else {
+            k[..key.len()].copy_from_slice(key);
+        }
+        let padded = |byte: u8| {
+            let mut h = Sha256::new();
+            h.update(&k.map(|b| b ^ byte));
+            h
+        };
+        Hmac {
+            inner: padded(0x36),
+            outer: padded(0x5c),
+        }
     }
-    let pad = |byte: u8| k.map(|b| b ^ byte);
-    let mut inner = Sha256::new();
-    inner.update(&pad(0x36));
-    for p in parts {
-        inner.update(p);
+
+    /// The signature of the concatenation of `parts`.
+    fn sign(&self, parts: &[&[u8]]) -> [u8; 32] {
+        let mut inner = self.inner.clone();
+        for p in parts {
+            inner.update(p);
+        }
+        let mut outer = self.outer.clone();
+        outer.update(&inner.finish());
+        outer.finish()
     }
-    let inner = inner.finish();
-    let mut outer = Sha256::new();
-    outer.update(&pad(0x5c));
-    outer.update(&inner);
-    outer.finish()
 }
 
 fn sha256(parts: &[&[u8]]) -> [u8; 32] {
@@ -136,6 +153,7 @@ fn sha256(parts: &[&[u8]]) -> [u8; 32] {
 }
 
 /// SHA-256, FIPS 180-4.
+#[derive(Clone)]
 struct Sha256 {
     state: [u32; 8],
     block: [u8; 64],
@@ -185,9 +203,8 @@ impl Sha256 {
     fn finish(mut self) -> [u8; 32] {
         let bits = self.total * 8;
         self.update(&[0x80]);
-        while self.filled != 56 {
-            self.update(&[0]);
-        }
+        let zeros = (120 - self.filled) % 64;
+        self.update(&[0; 64][..zeros]);
         self.update(&bits.to_be_bytes());
         let mut out = [0u8; 32];
         for (o, s) in out.chunks_mut(4).zip(self.state) {
@@ -267,17 +284,15 @@ mod tests {
     fn hmac_vectors() {
         // RFC 4231 test cases 1, 2 and 6 (a key longer than a block).
         assert_eq!(
-            hex(&hmac(&[0x0b; 20], &[b"Hi There"])),
+            hex(&Hmac::new(&[0x0b; 20]).sign(&[b"Hi There"])),
             "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
         );
         assert_eq!(
-            hex(&hmac(b"Jefe", &[b"what do ya want for nothing?"])),
+            hex(&Hmac::new(b"Jefe").sign(&[b"what do ya want for nothing?"])),
             "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
         );
-        let long = hmac(
-            &[0xaa; 131],
-            &[b"Test Using Larger Than Block-Size Key - Hash Key First"],
-        );
+        let long = Hmac::new(&[0xaa; 131])
+            .sign(&[b"Test Using Larger Than Block-Size Key - Hash Key First"]);
         assert_eq!(
             hex(&long),
             "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"

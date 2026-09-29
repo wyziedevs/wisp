@@ -24,6 +24,10 @@ tokio.workspace = true
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tokio = { version = "1.53", default-features = false, features = ["sync"] }
 
+# Minifies the browser runtime for release builds (build.rs).
+[build-dependencies]
+wisp-build.workspace = true
+
 [features]
 tower = ["dep:bytes", "dep:http", "dep:http-body", "dep:tower-service"]
 

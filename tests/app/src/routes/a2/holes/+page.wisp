@@ -1,3 +1,6 @@
+---
+let greeting = "Hello <server>".to_string();
+---
 <h1 id="title">{:title}</h1>
 <p id="greet" class="card {:mood}">Hi {:name}, you have {:items.length} items.</p>
 <button id="exp" :aria-expanded="open" on:click="open = !open">Toggle</button>

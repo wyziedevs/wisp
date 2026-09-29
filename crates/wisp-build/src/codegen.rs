@@ -40,6 +40,9 @@ struct Comp {
     /// The props a parent may `bind:`: those its script's `$props()`
     /// marks `$bindable`, or any, without one.
     bindable: Option<Vec<String>>,
+    /// Takes any prop (its `$props()` has `...rest`): the ones it does not
+    /// name go in its `__rest`.
+    rest: bool,
     /// Has browser code, so `client:visible` and the like have a module
     /// to load late.
     live: bool,
@@ -58,6 +61,10 @@ struct Tpl {
     data: Vec<(String, String)>,
     /// A page's `+page.js`.
     load_js: Option<PathBuf>,
+    /// The statements of its `---` block (as long as the file, the rest
+    /// blanked), which run before it renders and whose names it reads; and
+    /// a `let` per route parameter they or the markup name.
+    stmts: Option<(String, Vec<String>)>,
     t: Template,
 }
 
@@ -78,6 +85,9 @@ impl Tpl {
 struct UserMod {
     name: String,
     file: PathBuf,
+    /// The items of a `.wisp` file's `---` block, which stand for the file
+    /// (as long as it, the rest blanked). `None`: the file is Rust.
+    inline: Option<String>,
     /// The items of `__call`.
     shims: Vec<String>,
 }
@@ -89,6 +99,18 @@ impl UserMod {
             .iter()
             .any(|s| s.starts_with(&format!("pub async fn {name}(")))
     }
+}
+
+/// A page's or layout's Rust, from whichever place it is in.
+struct Logic {
+    items: rust_scan::Items,
+    /// Its `+page.rs` or `+layout.rs`, or the `.wisp` whose `---` block it
+    /// is; `None` when it has none.
+    file: Option<PathBuf>,
+    /// The block's items, for `UserMod::inline`.
+    inline: Option<String>,
+    /// The block's statements.
+    stmts: Option<String>,
 }
 
 /// What the generated code expects back from a function it calls.
@@ -111,6 +133,9 @@ enum Shim {
 fn shim(f: &FnItem, kind: Shim) -> Result<String, String> {
     let mut lets = String::new();
     let mut args = Vec::new();
+    if f.implicit_cx {
+        args.push("cx".to_string());
+    }
     let mut inputs = f.inputs()?.into_iter();
     for (_, ty) in &f.params {
         if rust_scan::is_cx(ty) {
@@ -222,22 +247,71 @@ pub fn generate(input: &Input) -> Result<String, String> {
             .replace('\\', "/")
     };
     let read = |p: &Path| crate::read_source(p).map_err(|e| format!("{}: {e}", p.display()));
-    // A page, layout or error page: everything but a component.
-    let parse = |p: &Path| -> Result<Template, String> {
-        let t = template::parse(&read(p)?).map_err(|e| format!("{}:{e}", rel(p)))?;
+    // A page, layout or error page: everything but a component. With the
+    // Rust of its `---` block, if it has one, and its whole source.
+    let parse = |p: &Path| -> Result<(Template, Option<String>, String), String> {
+        let src = read(p)?;
+        let (t, rust) = crate::parse_wisp(&src).map_err(|e| format!("{}:{e}", rel(p)))?;
         if let Some((_, line)) = t.props {
             return Err(format!(
                 "{}:{line}: only components, in src/components, take props",
                 rel(p)
             ));
         }
-        Ok(t)
+        Ok((t, rust, src))
     };
     // A `+layout.rs`, `+page.rs` or `+server.rs`.
     let scan = |p: &Path| -> Result<rust_scan::Items, String> {
         let items = rust_scan::scan(&read(p)?).map_err(|e| format!("{}:{e}", rel(p)))?;
         items.check().map_err(|e| format!("{}:{e}", rel(p)))?;
         Ok(items)
+    };
+    // A page's or layout's Rust: its `+page.rs` or `+layout.rs` (`rs`), or
+    // the `---` block of its `.wisp`, split into the items its module holds
+    // and the statements that run before it renders.
+    let logic = |rs: Option<PathBuf>,
+                 wisp: &Path,
+                 front: Option<String>|
+     -> Result<Logic, String> {
+        let Some(code) = front else {
+            let items = match &rs {
+                Some(f) => scan(f)?,
+                None => rust_scan::Items::default(),
+            };
+            return Ok(Logic {
+                items,
+                file: rs,
+                inline: None,
+                stmts: None,
+            });
+        };
+        if let Some(f) = rs {
+            return Err(format!(
+                "{}: this file starts with a `---` block of Rust, and {} is beside it; keep the Rust in one of them",
+                rel(wisp),
+                f.file_name()
+                    .map(|n| n.to_string_lossy())
+                    .unwrap_or_default()
+            ));
+        }
+        let (items_src, stmts) = rust_scan::split_items(&code);
+        let at = |e: String| format!("{}:{e}", rel(wisp));
+        let items = rust_scan::scan(&items_src).map_err(at)?;
+        items.check().map_err(at)?;
+        let stmts = (!stmts.trim().is_empty()).then_some(stmts);
+        if let (Some(s), Some(load)) = (&stmts, items.function("load")) {
+            let first = s.lines().position(|l| !l.trim().is_empty()).unwrap_or(0) + 1;
+            return Err(at(format!(
+                "{first}: the statements of a `---` block are the page's load, and this block also has `fn load` (line {}); keep one",
+                load.line
+            )));
+        }
+        Ok(Logic {
+            items,
+            file: Some(wisp.to_path_buf()),
+            inline: Some(items_src),
+            stmts,
+        })
     };
     // The modules of the app's own Rust files, and the shims in them.
     let mut user_mods: Vec<UserMod> = Vec::new();
@@ -309,21 +383,41 @@ pub fn generate(input: &Input) -> Result<String, String> {
                     other.module
                 ));
             }
-            let t = template::parse(&read(&file)?).map_err(|e| format!("{}:{e}", rel(&file)))?;
-            let props = t.props.as_ref().map(|(p, _)| p.clone()).unwrap_or_default();
-            let module = format!("tpl_component_{}", comps.len());
-            let bindable = match &t.script {
-                Some(s) => js::props_rune(&s.src)
-                    .map_err(|(off, msg)| {
-                        let (line, col) = script_pos(s, off);
-                        format!("{}:{line}:{col}: {msg}", rel(&file))
-                    })?
-                    .map(|p| p.props.into_iter().filter(|x| x.2).map(|x| x.0).collect()),
+            let (t, rust) =
+                crate::parse_wisp(&read(&file)?).map_err(|e| format!("{}:{e}", rel(&file)))?;
+            if rust.is_some() {
+                return Err(format!(
+                    "{}: a component takes what it shows as {{@props …}}; a `---` block of Rust is for pages and layouts",
+                    rel(&file)
+                ));
+            }
+            let mut t = t;
+            let rune = match &t.script {
+                Some(s) => js::props_rune(&s.src).map_err(|(off, msg)| {
+                    let (line, col) = script_pos(s, off);
+                    format!("{}:{line}:{col}: {msg}", rel(&file))
+                })?,
                 None => None,
             };
+            // Without {@props}, `$props()` says what the component takes.
+            if t.props.is_none()
+                && let Some(r) = &rune
+            {
+                t.props = Some((inferred_props(r), 0));
+            }
+            let props = t.props.as_ref().map(|(p, _)| p.clone()).unwrap_or_default();
+            let module = format!("tpl_component_{}", comps.len());
+            let bindable = rune.as_ref().map(|p| {
+                p.props
+                    .iter()
+                    .filter(|x| x.bindable)
+                    .map(|x| x.name.clone())
+                    .collect()
+            });
             comps.push(Comp {
                 name,
                 module: module.clone(),
+                rest: props.iter().any(|d| d.name == REST),
                 props,
                 children: t.uses_children,
                 bindable,
@@ -338,6 +432,7 @@ pub fn generate(input: &Input) -> Result<String, String> {
                 user: None,
                 data: Vec::new(),
                 load_js: None,
+                stmts: None,
                 t,
             });
         }
@@ -347,48 +442,45 @@ pub fn generate(input: &Input) -> Result<String, String> {
     let mut layout_fns: Vec<Vec<FnItem>> = Vec::new();
     for (i, l) in tree.layouts.iter().enumerate() {
         let file = l.dir.join("+layout.wisp");
-        let t = parse(&file)?;
+        let (t, front, _) = parse(&file)?;
         if !t.uses_children {
             return Err(format!(
                 "{}: a layout must contain {{@render children()}}",
                 rel(&file)
             ));
         }
-        let items = if l.has_rs {
-            scan(&l.dir.join("+layout.rs"))?
-        } else {
-            rust_scan::Items::default()
-        };
-        if let Some(a) = items.fns.iter().find(|f| f.action) {
+        let rs = l.has_rs.then(|| l.dir.join("+layout.rs"));
+        let lg = logic(rs, &file, front)?;
+        let where_ = lg.file.as_deref().map(&rel).unwrap_or_default();
+        if let Some(a) = lg.items.fns.iter().find(|f| f.action) {
             return Err(format!(
-                "{}:{}: layouts cannot have actions (`{}`); put it in a +page.rs",
-                rel(&l.dir.join("+layout.rs")),
-                a.line,
-                a.name
+                "{where_}:{}: layouts cannot have actions (`{}`); put it in the page",
+                a.line, a.name
             ));
         }
-        if let Some(c) = items.constant("BODY_LIMIT") {
+        if let Some(c) = lg.items.constant("BODY_LIMIT") {
             return Err(format!(
-                "{}:{}: a layout's `BODY_LIMIT` does nothing; set it in the +page.rs or +server.rs whose requests it limits",
-                rel(&l.dir.join("+layout.rs")),
+                "{where_}:{}: a layout's `BODY_LIMIT` does nothing; set it in the page or +server.rs whose requests it limits",
                 c.line
             ));
         }
-        let data = items.data_fields();
-        let fns = items.fns;
+        let data = lg.items.data_fields();
+        let fns = lg.items.fns;
         let has_load = fns.iter().any(|f| f.name == "load");
-        let user = l.has_rs.then(|| (format!("layout_{i}"), has_load));
-        if l.has_rs {
-            let file = l.dir.join("+layout.rs");
+        // The template reads `data` from a load, or names from statements.
+        let reads = has_load || lg.stmts.is_some();
+        let user = lg.file.is_some().then(|| (format!("layout_{i}"), reads));
+        if let Some(src) = lg.file {
             let shims = fns
                 .iter()
                 .filter(|f| f.name == "load")
                 .map(|f| shim(f, Shim::Load))
                 .collect::<Result<_, _>>()
-                .map_err(|e| format!("{}:{e}", rel(&file)))?;
+                .map_err(|e| format!("{where_}:{e}"))?;
             user_mods.push(UserMod {
                 name: format!("layout_{i}"),
-                file,
+                file: src,
+                inline: lg.inline,
                 shims,
             });
         }
@@ -401,6 +493,7 @@ pub fn generate(input: &Input) -> Result<String, String> {
             user,
             data,
             load_js: None,
+            stmts: lg.stmts.map(|s| (s, Vec::new())),
             t,
         });
         layout_fns.push(fns);
@@ -410,8 +503,14 @@ pub fn generate(input: &Input) -> Result<String, String> {
     // Error pages.
     for (i, e) in tree.errors.iter().enumerate() {
         let file = e.dir.join("+error.wisp");
-        let t = parse(&file)?;
+        let (t, front, _) = parse(&file)?;
         check_no_children(&t, &rel(&file))?;
+        if front.is_some() {
+            return Err(format!(
+                "{}: an error page shows `status` and `message` (and can read `cx`); a `---` block of Rust is for pages and layouts",
+                rel(&file)
+            ));
+        }
         tpl_paths.push((rel(&file), t.shape));
         templates.push(Tpl {
             id: tpl_paths.len() - 1,
@@ -421,6 +520,7 @@ pub fn generate(input: &Input) -> Result<String, String> {
             user: None,
             data: Vec::new(),
             load_js: None,
+            stmts: None,
             t,
         });
     }
@@ -474,17 +574,44 @@ pub fn generate(input: &Input) -> Result<String, String> {
         };
         if r.page {
             let file = r.dir.join("+page.wisp");
-            let t = parse(&file)?;
+            let (t, front, src) = parse(&file)?;
             check_no_children(&t, &rel(&file))?;
-            let rs = r.dir.join("+page.rs");
+            let lg = logic(r.page_rs.then(|| r.dir.join("+page.rs")), &file, front)?;
+            let rs = lg.file.clone().unwrap_or_else(|| r.dir.join("+page.rs"));
             let mut shims = Vec::new();
-            if r.page_rs {
-                let items = scan(&rs)?;
-                body_limit(&mut info, &items, &rs, format!("page_{i}"), &mut shims)?;
-                info.data = items.data_fields();
-                info.page_fns = items.fns;
-            }
+            body_limit(&mut info, &lg.items, &rs, format!("page_{i}"), &mut shims)?;
+            info.data = lg.items.data_fields();
+            info.page_fns = lg.items.fns;
             let has_load = info.page_fns.iter().any(|f| f.name == "load");
+            if lg.stmts.is_some() && r.page_js {
+                return Err(format!(
+                    "{}: +page.js gets the page's `data`, which comes from a `load`; with a `---` block of statements there is none. Move them into `fn load`.",
+                    rel(&file)
+                ));
+            }
+            // A `let` for each route parameter the statements or markup name.
+            let binds: Vec<String> = r
+                .segs
+                .iter()
+                .filter_map(|s| {
+                    let (n, how) = match s {
+                        Seg::Static(_) => return None,
+                        Seg::Param(n, m) if m.as_deref() == Some("int") => {
+                            (n, ": u64 = cx.param(@).parse().unwrap_or_default()")
+                        }
+                        Seg::Param(n, _) | Seg::Rest(n) => (n, " = cx.param(@).to_string()"),
+                        Seg::Optional(n, m) if m.as_deref() == Some("int") => {
+                            (n, ": Option<u64> = cx.param(@).parse().ok()")
+                        }
+                        Seg::Optional(n, _) => (
+                            n,
+                            ": Option<String> = Some(cx.param(@)).filter(|s| !s.is_empty()).map(str::to_string)",
+                        ),
+                    };
+                    names_word(&src, n)
+                        .then(|| format!("let {n}{};", how.replace('@', &lit(n))))
+                })
+                .collect();
             let at = |f: &FnItem, msg: String| format!("{}:{}: {msg}", rel(&rs), f.line);
             if let Some(f) = info.page_fns.iter().find(|f| f.action && f.name == "load") {
                 return Err(at(
@@ -523,14 +650,16 @@ pub fn generate(input: &Input) -> Result<String, String> {
                 };
                 shims.push(shim(f, kind).map_err(|e| format!("{}:{e}", rel(&rs)))?);
             }
-            if r.page_rs {
+            let reads = has_load || lg.stmts.is_some();
+            let user = lg.file.is_some().then(|| (format!("page_{i}"), reads));
+            if lg.file.is_some() {
                 user_mods.push(UserMod {
                     name: format!("page_{i}"),
                     file: rs.clone(),
+                    inline: lg.inline,
                     shims,
                 });
             }
-            let user = r.page_rs.then(|| (format!("page_{i}"), has_load));
             tpl_paths.push((rel(&file), t.shape));
             templates.push(Tpl {
                 id: tpl_paths.len() - 1,
@@ -540,6 +669,12 @@ pub fn generate(input: &Input) -> Result<String, String> {
                 user,
                 data: info.data.clone(),
                 load_js: r.page_js.then(|| r.dir.join("+page.js")),
+                // A page with no Rust still reads its route parameters.
+                stmts: match lg.stmts {
+                    Some(s) => Some((s, binds)),
+                    None if !has_load && !binds.is_empty() => Some((String::new(), binds)),
+                    None => None,
+                },
                 t,
             });
             info.page_tpl = Some(templates.len() - 1);
@@ -586,6 +721,7 @@ pub fn generate(input: &Input) -> Result<String, String> {
             user_mods.push(UserMod {
                 name: format!("server_{i}"),
                 file: file.clone(),
+                inline: None,
                 shims,
             });
             let has_actions = info.page_fns.iter().any(|f| f.action);
@@ -618,9 +754,11 @@ pub fn generate(input: &Input) -> Result<String, String> {
         user_mods.push(UserMod {
             name: format!("param_{m}"),
             file: file.clone(),
+            inline: None,
             shims: vec!["pub fn matches(s: &str) -> bool { super::matches(s) }".into()],
         });
     }
+    let mods = app_mods(root)?;
     for t in &templates {
         check_components(&t.t.nodes, &t.t, &comps, &t.rel, false)?;
     }
@@ -666,6 +804,19 @@ pub fn generate(input: &Input) -> Result<String, String> {
         })
         .collect();
 
+    // The runtime's less used half, which modules that use it import.
+    let extra = {
+        let src = rewrite_specifiers(EXTRA_JS, &lib_hash, None);
+        let source = if input.release { js::minify(&src) } else { src };
+        let hash = format!("{:016x}", fnv1a(source.as_bytes()));
+        JsFile {
+            path: "/_app/c/extra.js".into(),
+            hash,
+            source,
+        }
+    };
+    let extra_url = format!("{}?v={}", extra.path, extra.hash);
+
     // Browser modules.
     let as_client: Vec<String> = templates.iter().flat_map(|t| client_uses(&t.t)).collect();
     let mut clients: Vec<Option<Client>> = Vec::with_capacity(templates.len());
@@ -689,8 +840,16 @@ pub fn generate(input: &Input) -> Result<String, String> {
             lib_hash: &lib_hash,
             load,
             release: input.release,
+            extra: &extra_url,
         };
         clients.push(client(t, &cx)?);
+    }
+    if clients
+        .iter()
+        .flatten()
+        .any(|c| c.source.contains(&extra_url))
+    {
+        js_files.push(extra);
     }
     // A module imports the modules of the components it renders by URLs
     // whose hash covers every module it can reach, so a change in any of
@@ -747,32 +906,18 @@ pub fn generate(input: &Input) -> Result<String, String> {
     if hooks.is_none() {
         g.line(0, "pub mod hooks {}");
     }
+    // Modules of the app's own (`src/notes.rs`), reachable by name from
+    // every route file and as `crate::notes` (see `wisp::app!`).
+    g.line(0, "#[doc(hidden)]");
+    g.line(0, "pub mod __mods {");
+    for m in &mods {
+        g.user_mod(m, &rel(&m.file), "super::*")?;
+        g.line(0, "}");
+    }
+    g.line(0, "}");
+    g.line(0, "");
     for m in hooks.iter().chain(&user_mods) {
-        g.line(0, &format!("pub mod {} {{", m.name));
-        // The file's own `//!` docs and `#![…]` attributes come first, which
-        // is only possible with the file written into the module; a file
-        // without any is included, so that errors point at it.
-        let src = crate::read_source(&m.file).map_err(|e| format!("{}: {e}", rel(&m.file)))?;
-        let top = rust_scan::inner_end(&src);
-        if top > 0 {
-            g.out.push_str(&src[..top]);
-            g.out.push('\n');
-        }
-        // Not twice: a file that imports the prelude itself would be told
-        // that one of the two is unused.
-        let squeezed: String = src.split_whitespace().collect();
-        if !squeezed.contains("usewisp::prelude::*;")
-            && !squeezed.contains("use::wisp::prelude::*;")
-        {
-            g.line(1, "#[allow(unused_imports)]");
-            g.line(1, "use ::wisp::prelude::*;");
-        }
-        if top > 0 {
-            g.out.push_str(&src[top..]);
-            g.out.push('\n');
-        } else {
-            g.line(1, &format!("include!({});", lit(&m.file.to_string_lossy())));
-        }
+        g.user_mod(m, &rel(&m.file), "super::__mods::*")?;
         g.line(1, "#[doc(hidden)]");
         g.line(1, "#[allow(unused_variables, clippy::all)]");
         g.line(1, "pub mod __call {");
@@ -806,7 +951,7 @@ pub fn generate(input: &Input) -> Result<String, String> {
 
     for (i, f) in js_files.iter().enumerate() {
         g.line(0, &format!(
-            "static __WISP_JS_{i}: ::wisp::ClientModule = ::wisp::ClientModule {{ id: {}, path: {}, url: {}, etag: {}, source: {} }};",
+            "static __WISP_JS_{i}: ::wisp::ClientModule = ::wisp::ClientModule {{ id: {}, path: {}, url: {}, etag: {}, source: {}, preload: \"\" }};",
             lit(&f.path),
             lit(&f.path),
             lit(&format!("{}?v={}", f.path, f.hash)),
@@ -861,19 +1006,35 @@ pub fn generate(input: &Input) -> Result<String, String> {
                 ),
             );
         }
-        let inner = format!(
-            "{}::render(__o{})",
-            page.path(),
-            if page_load { ", &d" } else { "" }
-        );
-        g.line(
-            1,
-            &format!(
-                "{};",
-                wrap_layouts(&r.layouts, &layout_paths, &layout_has_load, inner)
-            ),
-        );
-        g.line(1, "Ok(())");
+        if page.stmts.is_some() {
+            // The page runs its statements, then hands its render to this
+            // closure, which puts it inside the layouts.
+            let wrap = wrap_layouts(
+                &r.layouts,
+                &layout_paths,
+                &layout_has_load,
+                "__p(__o)".into(),
+            );
+            g.line(1, &format!(
+                "{}::render(cx, __o, |__o: &mut ::wisp::Out, cx: &::wisp::Cx, __p: &dyn Fn(&mut ::wisp::Out)| {wrap}).await",
+                page.path()
+            ));
+        } else {
+            let inner = format!(
+                "{}::render(__o, cx{})",
+                page.path(),
+                if page_load { ", &d" } else { "" }
+            );
+            g.line(1, "let cx: &::wisp::Cx = cx;");
+            g.line(
+                1,
+                &format!(
+                    "{};",
+                    wrap_layouts(&r.layouts, &layout_paths, &layout_has_load, inner)
+                ),
+            );
+            g.line(1, "Ok(())");
+        }
         g.line(0, "}");
         g.line(0, "");
     }
@@ -890,7 +1051,8 @@ pub fn generate(input: &Input) -> Result<String, String> {
                 );
             }
         }
-        let inner = format!("tpl_error_{i}::render(__o, status, message)");
+        let inner = format!("tpl_error_{i}::render(__o, cx, status, message)");
+        g.line(1, "let cx: &::wisp::Cx = cx;");
         g.line(
             1,
             &format!(
@@ -1249,13 +1411,18 @@ pub fn generate(input: &Input) -> Result<String, String> {
                 g.line(3, &format!("({i}, Post) => {{"));
                 g.line(4, "::wisp::rt::check_origin(cx)?;");
                 g.line(4, "match cx.action() {");
+                // `invalid(field, ..)` shows the page again, as a 422, with
+                // what is wrong for `cx.problem(field)`.
                 for a in &actions {
                     g.line(
                         5,
                         &format!(
-                            "{} => {{ {} }}",
+                            "{} => match page_{i}::__call::{}(cx).await {{ \
+                             Ok(Some(r)) => {{ ::wisp::rt::respond(__o, r); return Ok(()); }} \
+                             Ok(None) => {{}} \
+                             Err(e) => ::wisp::rt::input::failed(cx, e)?, }},",
                             lit(&a.name),
-                            answer(&format!("page_{i}::__call::{}", a.name))
+                            a.name
                         ),
                     );
                 }
@@ -1426,8 +1593,79 @@ fn hooks(root: &Path) -> Result<Option<UserMod>, String> {
     Ok(Some(UserMod {
         name: "hooks".into(),
         file,
+        inline: None,
         shims,
     }))
+}
+
+/// The app's own modules: each `src/NAME.rs` that `main.rs` and `lib.rs` do
+/// not declare themselves (with `mod NAME;`), but for `main.rs`, `lib.rs`
+/// and `hooks.rs`. Wisp compiles each as `crate::NAME` with the prelude in
+/// scope, and route files and templates reach it as `NAME`.
+fn app_mods(root: &Path) -> Result<Vec<UserMod>, String> {
+    let src = root.join("src");
+    let mut declared = String::new();
+    for f in ["main.rs", "lib.rs"] {
+        declared.push_str(&crate::read_source(&src.join(f)).unwrap_or_default());
+        declared.push('\n');
+    }
+    let mut out = Vec::new();
+    let Ok(dir) = fs::read_dir(&src) else {
+        return Ok(out);
+    };
+    let mut files: Vec<PathBuf> = dir.flatten().map(|e| e.path()).collect();
+    files.sort();
+    for file in files {
+        let Some(name) = file
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.strip_suffix(".rs"))
+        else {
+            continue;
+        };
+        let ident = name.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
+            && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+        if !file.is_file()
+            || !ident
+            || matches!(name, "main" | "lib" | "hooks")
+            || declares_mod(&declared, name)
+        {
+            continue;
+        }
+        let items =
+            rust_scan::scan(&crate::read_source(&file).map_err(|e| format!("src/{name}.rs: {e}"))?)
+                .map_err(|e| format!("src/{name}.rs:{e}"))?;
+        items
+            .check_inner()
+            .map_err(|e| format!("src/{name}.rs:{e}"))?;
+        out.push(UserMod {
+            name: name.to_string(),
+            file,
+            inline: None,
+            shims: Vec::new(),
+        });
+    }
+    Ok(out)
+}
+
+/// Whether `src` has `mod NAME;` (`pub mod`, with attributes, anywhere).
+fn declares_mod(src: &str, name: &str) -> bool {
+    src.match_indices("mod ").any(|(i, _)| {
+        let before = src[..i].chars().next_back();
+        let rest = src[i + 4..].trim_start();
+        before.is_none_or(|c| !(c.is_alphanumeric() || c == '_'))
+            && rest
+                .strip_prefix(name)
+                .is_some_and(|r| r.trim_start().starts_with(';'))
+    })
+}
+
+/// Whether `name` appears in `src` as a whole word.
+fn names_word(src: &str, name: &str) -> bool {
+    let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    src.match_indices(name).any(|(i, _)| {
+        !word(src[..i].chars().next_back()) && !word(src[i + name.len()..].chars().next())
+    })
 }
 
 /// A field type that is certainly `Copy`: a number, `bool`, `char`, a shared
@@ -1481,7 +1719,7 @@ fn wrap_layouts(
             String::new()
         };
         format!(
-            "{}::render(__o{data}, &|__o: &mut ::wisp::Out| {acc})",
+            "{}::render(__o, cx{data}, &|__o: &mut ::wisp::Out| {acc})",
             paths[l]
         )
     })
@@ -1495,6 +1733,41 @@ fn check_no_children(t: &Template, rel: &str) -> Result<(), String> {
     } else {
         Ok(())
     }
+}
+
+/// The Rust type of a prop only `$props()` names: any browser value.
+const DYN: &str = "&dyn ::wisp::Json";
+/// The prop that holds the rest, for `...rest`: `[name, value]` pairs.
+const REST: &str = "__rest";
+
+/// The props of a component with `$props()` and no `{@props}`: every one
+/// optional, a browser value whose default the server knows when it is a
+/// literal (else `null`, which the browser's default replaces).
+fn inferred_props(r: &js::PropsRune) -> Vec<PropDecl> {
+    let mut out: Vec<PropDecl> = r
+        .props
+        .iter()
+        .map(|p| {
+            let json = p
+                .default
+                .as_deref()
+                .and_then(|d| literal_json(d, &js::tokens(d)))
+                .unwrap_or_else(|| "null".into());
+            PropDecl {
+                name: p.name.clone(),
+                ty: DYN.into(),
+                default: Some(format!("&::wisp::rt::Js({})", lit(&json))),
+            }
+        })
+        .collect();
+    if r.rest.is_some() {
+        out.push(PropDecl {
+            name: REST.into(),
+            ty: format!("&[(&str, {DYN})]"),
+            default: Some("&[]".into()),
+        });
+    }
+    out
 }
 
 /// Every component used in `nodes` exists and is given what it takes.
@@ -1575,14 +1848,18 @@ fn check_components(
                         }
                         continue;
                     }
-                    let Some(d) = c.props.iter().find(|d| d.name == p.name) else {
+                    let Some(d) = c.props.iter().find(|d| d.name == p.name && d.name != REST)
+                    else {
+                        if c.rest {
+                            continue;
+                        }
                         return Err(at(format!(
                             "<{name}> has no prop `{}`; it takes {}",
                             p.name,
                             takes()
                         )));
                     };
-                    if p.value == PropValue::Flag && d.ty != "bool" {
+                    if p.value == PropValue::Flag && d.ty != "bool" && d.ty != DYN {
                         return Err(at(format!(
                             "`{}` alone means true, but <{name}>'s `{}` is a `{}`: write {}={{…}}",
                             p.name, d.name, d.ty, p.name
@@ -1686,16 +1963,23 @@ fn is_field_path(s: &str) -> bool {
             .all(|&c| c.is_ascii_alphanumeric() || c == b'_' || c == b'.')
 }
 
-fn borrow_place(expr: &str) -> String {
-    if is_field_path(expr) {
+/// A field path, or one of `locals`: the names a `---` block's statements
+/// bind, which the markup (a closure that may run more than once) can only
+/// borrow.
+fn is_place(expr: &str, locals: &[String]) -> bool {
+    is_field_path(expr) || locals.iter().any(|l| l == expr)
+}
+
+fn borrow_place(expr: &str, locals: &[String]) -> String {
+    if is_place(expr, locals) {
         format!("&({expr})")
     } else {
         expr.to_string()
     }
 }
 
-/// `let PAT = EXPR` with EXPR borrowed when it is a field path.
-fn if_condition(cond: &str) -> String {
+/// `let PAT = EXPR` with EXPR borrowed when it is a place.
+fn if_condition(cond: &str, locals: &[String]) -> String {
     let Some(rest) = cond
         .strip_prefix("let")
         .filter(|r| r.starts_with(char::is_whitespace))
@@ -1716,7 +2000,7 @@ fn if_condition(cond: &str) -> String {
         Some(i) => format!(
             "let {} = {}",
             rest[..i].trim(),
-            borrow_place(rest[i + 1..].trim())
+            borrow_place(rest[i + 1..].trim(), locals)
         ),
         None => cond.to_string(),
     }
@@ -1736,6 +2020,71 @@ impl Gen {
         self.out.push('\n');
     }
 
+    /// Opens `pub mod NAME {` with an app file in it: its own `//!` docs
+    /// and `#![…]` attributes first (only possible with the file written
+    /// into the module), the prelude, `use {glob};`, then the file:
+    /// included, so errors point at it, unless it has inner attributes; a
+    /// `---` block's items line by line, each marked with its line.
+    fn user_mod(&mut self, m: &UserMod, rel: &str, glob: &str) -> Result<(), String> {
+        self.line(0, &format!("pub mod {} {{", m.name));
+        let src = match &m.inline {
+            Some(s) => s.clone(),
+            None => crate::read_source(&m.file).map_err(|e| format!("{rel}: {e}"))?,
+        };
+        let top = rust_scan::inner_end(&src);
+        if top > 0 {
+            self.out.push_str(&src[..top]);
+            self.out.push('\n');
+        }
+        // Not twice: a file that imports the prelude itself would be told
+        // that one of the two is unused.
+        let squeezed: String = src.split_whitespace().collect();
+        if !squeezed.contains("usewisp::prelude::*;")
+            && !squeezed.contains("use::wisp::prelude::*;")
+        {
+            self.line(1, "#[allow(unused_imports)]");
+            self.line(1, "use ::wisp::prelude::*;");
+        }
+        self.line(1, "#[allow(unused_imports)]");
+        self.line(1, &format!("use {glob};"));
+        if m.inline.is_some() {
+            let first = src[..top].matches('\n').count() + 1;
+            self.rust_lines(1, &src[top..], first, rel);
+        } else if top > 0 {
+            self.out.push_str(&src[top..]);
+            self.out.push('\n');
+        } else {
+            self.line(1, &format!("include!({});", lit(&m.file.to_string_lossy())));
+        }
+        Ok(())
+    }
+
+    /// Rust from a `.wisp` file, whose first line is line `first` of it,
+    /// each line marked with where it is (`// file.wisp:7`) so that rustc's
+    /// errors are told against the file. Blank lines are left out, and a
+    /// line inside a string is written as it is.
+    fn rust_lines(&mut self, ind: usize, code: &str, first: usize, rel: &str) {
+        let ends = rust_scan::line_ends_in_code(code);
+        let mut inside = false;
+        for (k, l) in code.split('\n').enumerate() {
+            let safe = ends.get(k).copied().unwrap_or(true);
+            if !inside && l.trim().is_empty() {
+                continue;
+            }
+            if inside {
+                self.out.push_str(l);
+            } else {
+                self.out.push_str(&"    ".repeat(ind));
+                self.out.push_str(l.trim_end());
+            }
+            if safe {
+                let _ = write!(self.out, " // {rel}:{}", first + k);
+            }
+            self.out.push('\n');
+            inside = !safe;
+        }
+    }
+
     fn template(&mut self, t: &Tpl, comps: &[Comp], client: Option<&Client>) {
         self.line(0, &format!("// {}", t.rel));
         self.line(0, "#[doc(hidden)]");
@@ -1748,8 +2097,11 @@ impl Gen {
         );
         // Inside the module of its `+page.rs` (or `+layout.rs`), it sees
         // what the file sees, private items and the prelude too.
+        // Otherwise it sees the app's modules (`db::find`).
         if t.user.is_some() {
             self.line(1, "use super::*;");
+        } else {
+            self.line(1, "use super::__mods::*;");
         }
         if !self.release {
             let chunks: Vec<String> = t.t.chunks.iter().map(|c| lit(c)).collect();
@@ -1768,25 +2120,35 @@ impl Gen {
         if let Some(c) = client {
             let (path, url) = (c.path(), format!("{}?v={}", c.path(), c.hash));
             self.line(1, &format!(
-                "pub static __WISP_CLIENT: ::wisp::ClientModule = ::wisp::ClientModule {{ id: {}, path: {}, url: {}, etag: {}, source: {} }};",
+                "pub static __WISP_CLIENT: ::wisp::ClientModule = ::wisp::ClientModule {{ id: {}, path: {}, url: {}, etag: {}, source: {}, preload: {} }};",
                 lit(&c.id),
                 lit(&path),
                 lit(&url),
                 lit(&format!("\"{}\"", c.hash)),
-                lit(&c.source)
+                lit(&c.source),
+                lit(c.extra.as_deref().unwrap_or(""))
             ));
         }
-        let data = match &t.user {
-            Some((_, true)) => ", __d: &super::__call::Loaded",
-            _ => "",
+        // A load hands its `Data` over; statements are in the render itself.
+        let loaded = t.stmts.is_none() && matches!(t.user, Some((_, true)));
+        let data = if loaded {
+            ", __d: &super::__call::Loaded"
+        } else {
+            ""
         };
         let sig = match t.kind {
-            Kind::Page => format!("pub fn render(__o: &mut ::wisp::Out{data})"),
+            // The statements run first, and may await and use `cx` mutably;
+            // then `__wrap` renders the layouts around the page.
+            Kind::Page if t.stmts.is_some() => "pub async fn render(cx: &mut ::wisp::Cx, __o: &mut ::wisp::Out, \
+                 __wrap: impl FnOnce(&mut ::wisp::Out, &::wisp::Cx, &dyn Fn(&mut ::wisp::Out))) -> ::wisp::Result<()>"
+                .into(),
+            Kind::Page => format!("pub fn render(__o: &mut ::wisp::Out, cx: &::wisp::Cx{data})"),
             Kind::Layout => format!(
-                "pub fn render(__o: &mut ::wisp::Out{data}, children: &dyn Fn(&mut ::wisp::Out))"
+                "pub fn render(__o: &mut ::wisp::Out, cx: &::wisp::Cx{data}, children: &dyn Fn(&mut ::wisp::Out))"
             ),
             Kind::Error => {
-                "pub fn render(__o: &mut ::wisp::Out, status: u16, message: &str)".into()
+                "pub fn render(__o: &mut ::wisp::Out, cx: &::wisp::Cx, status: u16, message: &str)"
+                    .into()
             }
             Kind::Component => {
                 let props: String =
@@ -1806,13 +2168,59 @@ impl Gen {
         }
         // `data.count` is also `count`: `Copy` fields by value, the rest by
         // reference. A local of the same name shadows it.
-        if matches!(t.user, Some((_, true))) {
+        if loaded {
             self.line(2, "let data: &super::Data = &__d.0;");
             for (name, ty) in &t.data {
                 if !matches!(name.as_str(), "data" | "children") {
                     let by = if is_copy(ty) { "" } else { "&" };
                     self.line(2, &format!("let {name} = {by}data.{name};"));
                 }
+            }
+        }
+        if let Some((stmts, binds)) = &t.stmts {
+            for b in binds {
+                self.line(2, b);
+            }
+            self.rust_lines(2, stmts, 1, &t.rel);
+            if t.kind == Kind::Page {
+                self.line(2, "let cx: &::wisp::Cx = cx;");
+                self.line(2, "__wrap(__o, cx, &|__o: &mut ::wisp::Out| {");
+            }
+            // Browser code reads the statements' names as `data.name`.
+            let names: Vec<&str> = client
+                .iter()
+                .flat_map(|c| &c.blob)
+                .filter_map(|p| match p {
+                    Piece::Value { expr, .. } => expr.strip_prefix("data."),
+                    Piece::Text(_) => None,
+                })
+                .map(|rest| rest.split('.').next().unwrap_or(rest))
+                .fold(Vec::new(), |mut v, n| {
+                    if !v.contains(&n) {
+                        v.push(n);
+                    }
+                    v
+                });
+            if !names.is_empty() {
+                let params: Vec<String> = (0..names.len()).map(|k| format!("T{k}")).collect();
+                let fields: Vec<String> = names
+                    .iter()
+                    .zip(&params)
+                    .map(|(n, p)| format!("{n}: {p}"))
+                    .collect();
+                let values: Vec<String> = names.iter().map(|n| format!("{n}: &{n}")).collect();
+                self.line(
+                    2,
+                    &format!(
+                        "struct __WispData<{}> {{ {} }}",
+                        params.join(", "),
+                        fields.join(", ")
+                    ),
+                );
+                self.line(
+                    2,
+                    &format!("let data = __WispData {{ {} }};", values.join(", ")),
+                );
             }
         }
         if let Some(c) = client {
@@ -1848,10 +2256,19 @@ impl Gen {
             props: 0,
             inert: false,
             paint: false,
+            locals: t
+                .stmts
+                .as_ref()
+                .map(|(s, _)| rust_scan::let_names(s))
+                .unwrap_or_default(),
         };
         self.nodes(&t.t.nodes, 2, &mut cx);
         if client.is_some() {
             self.line(2, "::wisp::rt::live_end(__o);");
+        }
+        if t.kind == Kind::Page && t.stmts.is_some() {
+            self.line(2, "});");
+            self.line(2, "Ok(())");
         }
         self.line(1, "}");
         // A component the browser renders: its markup as the browser's copy
@@ -2039,7 +2456,7 @@ impl Gen {
                     let kw = if k == 0 { "if" } else { "} else if" };
                     self.code_line(
                         ind,
-                        &format!("{kw} {} {{", if_condition(&cond.src)),
+                        &format!("{kw} {} {{", if_condition(&cond.src, &cx.locals)),
                         cond,
                         cx,
                     );
@@ -2063,7 +2480,11 @@ impl Gen {
                 // A field path is iterated by reference. Method-call syntax lets
                 // autoderef find the impl whether the field is a Vec, a slice
                 // reference or a map.
-                let amp = if is_field_path(&iter.src) { "&" } else { "" };
+                let amp = if is_place(iter.src.trim(), &cx.locals) {
+                    "&"
+                } else {
+                    ""
+                };
                 let src = format!("({amp}({})).into_iter()", iter.src);
                 let head = match index {
                     Some(i) => format!("for ({i}, {pat}) in {src}.enumerate() {{"),
@@ -2090,7 +2511,7 @@ impl Gen {
             Node::Match { scrutinee, arms } => {
                 self.code_line(
                     ind,
-                    &format!("match {} {{", borrow_place(&scrutinee.src)),
+                    &format!("match {} {{", borrow_place(&scrutinee.src, &cx.locals)),
                     scrutinee,
                     cx,
                 );
@@ -2122,9 +2543,42 @@ impl Gen {
                 // type takes a borrow of the expression, so `title={post.title}`
                 // passes a `&String` where the prop is a `&str`.
                 let mut args = String::new();
+                // A browser value (a prop only `$props()` names) is any
+                // `Json`, text and flags too.
+                let any = |v: &PropValue| match v {
+                    PropValue::Text(text) => Some(format!("&{}", lit(text))),
+                    PropValue::Flag => Some("&true".into()),
+                    _ => None,
+                };
                 for d in &c.props {
                     let by_ref = d.ty.starts_with('&');
-                    let arg = match props.iter().find(|p| p.name == d.name).map(|p| &p.value) {
+                    let given = props.iter().find(|p| p.name == d.name).map(|p| &p.value);
+                    if d.name == REST && c.rest {
+                        let rest: Vec<String> = props
+                            .iter()
+                            .filter(|p| {
+                                !p.name.starts_with("client:")
+                                    && !c.props.iter().any(|x| x.name == p.name)
+                            })
+                            .map(|p| {
+                                let v = match &p.value {
+                                    PropValue::Expr(code) => format!("&({})", code.src),
+                                    v => any(v).unwrap_or_else(|| "&()".into()),
+                                };
+                                format!("({}, {v} as {DYN})", lit(&p.name))
+                            })
+                            .collect();
+                        args.push_str(&format!(", &[{}]", rest.join(", ")));
+                        continue;
+                    }
+                    if d.ty == DYN
+                        && let Some(v) = given.and_then(any)
+                    {
+                        args.push_str(", ");
+                        args.push_str(&v);
+                        continue;
+                    }
+                    let arg = match given {
                         Some(PropValue::Expr(code)) if by_ref => format!("&({})", code.src),
                         Some(PropValue::Expr(code)) => format!("({})", code.src),
                         Some(PropValue::Text(text)) if by_ref || d.ty.starts_with("impl") => {
@@ -2204,6 +2658,27 @@ impl Gen {
                 }
             }
             Node::Client(branches) => self.client_block(branches, ind, cx),
+            // `<wisp:element this="…">`'s name: the tag, when the server
+            // knows it.
+            Node::Tag { group } => {
+                let g = &cx.template.groups[*group];
+                let js = g
+                    .directives
+                    .iter()
+                    .find(|d| d.kind == Dir::Tag)
+                    .and_then(|d| d.value.as_ref())
+                    .map_or("", |v| v.src.as_str());
+                match paint_value(cx, *group, js).and_then(|v| v.val()) {
+                    Some(v) => self.line(
+                        ind,
+                        &format!(
+                            "::wisp::rt::tag_name(&mut {buf}, {v}); // {}:{}",
+                            cx.rel, g.line
+                        ),
+                    ),
+                    None => self.line(ind, &format!("{buf}.push_str(\"wisp-element\");")),
+                }
+            }
             // `{:x}`: the value, when the server knows it.
             Node::Hole { group } => {
                 let g = &cx.template.groups[*group];
@@ -2238,6 +2713,38 @@ impl Gen {
                     self.line(ind + 1, &format!("::wisp::rt::escape(&mut {buf}, __j);"));
                     self.line(ind, "}");
                     self.line(ind, &push("\"".into()));
+                }
+                // `name={:x}` attributes whose value the server knows.
+                let g = &cx.template.groups[*group];
+                for d in g.directives.iter().filter(|d| d.kind == Dir::Spread) {
+                    let js = d.value.as_ref().map_or("", |v| v.src.as_str());
+                    if let Some(v) = paint_value(cx, *group, js).and_then(|v| v.val()) {
+                        self.line(
+                            ind,
+                            &format!(
+                                "::wisp::rt::js_attrs(&mut {buf}, {v}); // {}:{}",
+                                cx.rel, d.line
+                            ),
+                        );
+                    }
+                }
+                for d in g
+                    .directives
+                    .iter()
+                    .filter(|d| d.kind == Dir::Attr && d.mods == ["{}"])
+                {
+                    let js = d.value.as_ref().map_or("", |v| v.src.as_str());
+                    if let Some(v) = paint_value(cx, *group, js).and_then(|v| v.val()) {
+                        self.line(
+                            ind,
+                            &format!(
+                                "::wisp::rt::js_attr(&mut {buf}, {}, {v}); // {}:{}",
+                                lit(&d.name),
+                                cx.rel,
+                                d.line
+                            ),
+                        );
+                    }
                 }
             }
         }
@@ -2328,6 +2835,27 @@ impl Gen {
                     self.line(ind, "}");
                 }
                 Dir::Comp => self.paint_comp(*group, body, ind, cx),
+                // One copy, always: an await as pending, a try as not failed.
+                Dir::Key | Dir::Await | Dir::Try => {
+                    let outer = cx.env.len();
+                    let state = match d.kind {
+                        Dir::Await => Some(("__aw", "{\"k\":0}")),
+                        Dir::Try => Some(("__tr", "{}")),
+                        _ => None,
+                    };
+                    if let Some((name, json)) = state {
+                        cx.env.push((
+                            name.into(),
+                            Pv::Val(format!("::wisp::rt::Js({})", lit(json))),
+                        ));
+                    }
+                    self.line(ind, &format!("{{ {at}"));
+                    self.line(ind + 1, &start);
+                    self.nodes(body, ind + 1, cx);
+                    self.line(ind + 1, &end);
+                    self.line(ind, "}");
+                    cx.env.truncate(outer);
+                }
                 _ => {}
             }
         }
@@ -2547,9 +3075,11 @@ fn paint_not(js: &str, t: &[js::Token], k: &mut usize, root: &mut Root) -> Optio
             } else {
                 *k
             };
-            let json = literal_json(js, &t[*k..=end])?;
-            *k = end + 1;
-            Some(Pv::Val(format!("::wisp::rt::Js({})", lit(&json))))
+            if let Some(json) = literal_json(js, &t[*k..=end]) {
+                *k = end + 1;
+                return Some(Pv::Val(format!("::wisp::rt::Js({})", lit(&json))));
+            }
+            paint_composite(js, t, k, end, root)
         }
         (JsKind::Ident, "true" | "false" | "null" | "undefined") => {
             *k += 1;
@@ -2576,6 +3106,60 @@ fn paint_not(js: &str, t: &[js::Token], k: &mut usize, root: &mut Root) -> Optio
 
 /// A JavaScript literal as JSON: numbers, strings, `true`, `false`, `null`,
 /// and arrays and objects of them.
+/// An array or object literal (`[a, 'b']`, `{ color: c, on }`) from `t[*k]`
+/// to its end, whose values the first paint knows: its JSON, built when
+/// the page renders.
+fn paint_composite(
+    js: &str,
+    t: &[js::Token],
+    k: &mut usize,
+    end: usize,
+    root: &mut Root,
+) -> Option<Pv> {
+    let array = t[*k].text(js) == "[";
+    let (mut fmt, mut args) = (String::from(if array { "[" } else { "{{" }), Vec::new());
+    let mut j = *k + 1;
+    while j < end {
+        if !args.is_empty() {
+            fmt.push(',');
+        }
+        if !array {
+            // `key: value`, `'key': value` or `name` for `name: name`.
+            let n = t[j];
+            let key = match n.kind {
+                JsKind::Ident => n.text(js).to_string(),
+                JsKind::String => js_string(n.text(js))?,
+                _ => return None,
+            };
+            let _ = write!(
+                fmt,
+                "{}:",
+                js_str(&key).replace('{', "{{").replace('}', "}}")
+            );
+            if t.get(j + 1).is_some_and(|x| x.text(js) == ":") {
+                j += 2;
+            } else if n.kind != JsKind::Ident {
+                return None;
+            }
+        }
+        let v = paint_or(js, t, &mut j, root)?.val()?;
+        fmt.push_str("{}");
+        args.push(format!("({v}).0"));
+        match t.get(j).map(|x| x.text(js)) {
+            Some(",") if j < end => j += 1,
+            _ if j == end => {}
+            _ => return None,
+        }
+    }
+    fmt.push_str(if array { "]" } else { "}}" });
+    *k = end + 1;
+    Some(Pv::Val(format!(
+        "::wisp::rt::Js(&format!({}{}))",
+        lit(&fmt),
+        args.iter().map(|a| format!(", {a}")).collect::<String>()
+    )))
+}
+
 fn literal_json(js: &str, t: &[js::Token]) -> Option<String> {
     let mut out = String::new();
     for (k, n) in t.iter().enumerate() {
@@ -2648,6 +3232,9 @@ struct Emit<'a> {
     inert: bool,
     /// A component's `paint`: its groups are marked as in the browser's copy.
     paint: bool,
+    /// The names a `---` block's statements bind, borrowed where they are
+    /// iterated or matched on.
+    locals: Vec<String>,
 }
 
 // ---- browser code -----------------------------------------------------------
@@ -2680,6 +3267,8 @@ enum Piece {
 struct Client {
     /// `t3`, from the template's id.
     id: String,
+    /// The URL of `extra.js`, when it imports it.
+    extra: Option<String>,
     source: String,
     /// Of `source`, for the module's URL.
     hash: String,
@@ -2723,7 +3312,7 @@ struct JsFile {
 /// no import for them.
 const HELPERS: &str = "tick, untrack, setTimeout, setInterval, requestAnimationFrame, addEventListener, listen, onMount, onDestroy, effect, watch, \
                        derived, store, persisted, emit, setContext, getContext, goto, invalidate, page, navigating, enhance, \
-                       __wisp_s, __wisp_r, __wisp_d, __wisp_e, __wisp_ep, __wisp_snap, __wisp_props";
+                       context, portal, __wisp_s, __wisp_r, __wisp_d, __wisp_e, __wisp_ep, __wisp_snap, __wisp_props";
 
 /// What `client` needs to know beyond the template.
 struct ClientCx<'a> {
@@ -2736,6 +3325,27 @@ struct ClientCx<'a> {
     load: Option<String>,
     /// A release build: `$inspect` goes.
     release: bool,
+    /// The URL of the runtime's less used half (`extra.js`).
+    extra: &'a str,
+}
+
+/// The runtime's less used half: served when a module uses it.
+const EXTRA_JS: &str = include_str!("extra.js");
+
+/// Whether a directive needs `extra.js` (so does a module whose code makes
+/// a Map or a Set, or uses `enhance` or `$state.snapshot`).
+fn is_extra(d: &Directive) -> bool {
+    matches!(
+        d.kind,
+        Dir::Transition
+            | Dir::Animate
+            | Dir::Await
+            | Dir::Try
+            | Dir::Tag
+            | Dir::Spread
+            | Dir::Wait
+            | Dir::Comp
+    ) || (d.kind == Dir::Bind && !matches!(d.name.as_str(), "value" | "checked" | "this"))
 }
 
 /// A place in a script, as a line and column of its file.
@@ -2798,7 +3408,12 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
                     "`$props()` is for components; a page's server values are `data`".into(),
                 ));
             }
-            if let Some((name, ..)) = p.props.iter().find(|x| !server.contains(&x.0)) {
+            if let Some(name) = p
+                .props
+                .iter()
+                .map(|x| &x.name)
+                .find(|n| !server.contains(n))
+            {
                 return Err(at(
                     line,
                     col,
@@ -2853,7 +3468,10 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
     }
     if let Some(p) = &rune {
         let line = script_at(p.span.0).0;
-        used.extend(p.props.iter().map(|x| (vec![x.0.clone()], line)));
+        used.extend(p.props.iter().map(|x| (vec![x.name.clone()], line)));
+        if p.rest.is_some() && server.iter().any(|s| s == REST) {
+            used.push((vec![REST.into()], line));
+        }
     }
     if cx.load.is_some() && server_load {
         used.push((
@@ -2928,28 +3546,42 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
     }
     let imports: Vec<String> = uses.iter().map(|&ci| comp_placeholder(ci)).collect();
 
-    let mut params: Vec<&str> = Vec::new();
-    for (path, _) in &used {
-        if !params.contains(&path[0].as_str()) {
-            params.push(&path[0]);
+    // The server values or props the module takes, each with the variable
+    // it is read as (`$props()` may rename one), and `...rest`'s.
+    let local = |p: &str| {
+        rune.as_ref()
+            .and_then(|r| r.props.iter().find(|x| x.name == p))
+            .map_or_else(|| p.to_string(), |x| x.local.clone())
+    };
+    let mut params: Vec<(String, String)> = Vec::new();
+    let mut take = |name: &str| {
+        if name != REST && !js::is_reserved(name) && !params.iter().any(|p| p.0 == name) {
+            params.push((name.to_string(), local(name)));
         }
+    };
+    for (path, _) in &used {
+        take(&path[0]);
     }
     // A component the browser renders takes every prop, from the page's
     // code; a `+page.js` hands the page its `data`.
     if cx.as_client {
         for name in &server {
-            if !params.contains(&name.as_str()) && !js::is_reserved(name) {
-                params.push(name);
-            }
+            take(name);
         }
     }
-    if cx.load.is_some() && !params.contains(&"data") {
-        params.push("data");
+    if cx.load.is_some() {
+        take("data");
     }
+    let rest = rune.as_ref().and_then(|r| r.rest.clone());
     // What the module runs: the script with its state as signals, and the
     // directives reading them as it does.
-    let owned: Vec<String> = params.iter().map(|p| p.to_string()).collect();
-    let (runs, reactive) = js::script(src, &owned, cx.release).map_err(script_err)?;
+    let owned: Vec<String> = params
+        .iter()
+        .map(|p| p.1.clone())
+        .chain(rest.clone())
+        .collect();
+    let written: Vec<&str> = groups.iter().flatten().map(String::as_str).collect();
+    let (runs, reactive) = js::script(src, &owned, cx.release, &written).map_err(script_err)?;
     for (bindings, g) in groups.iter_mut().zip(&tt.groups) {
         for b in bindings.iter_mut() {
             *b = js::rewrite(b, &reactive)
@@ -2959,7 +3591,7 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
     let defaults: Vec<(String, String)> = rune
         .iter()
         .flat_map(|p| &p.props)
-        .filter_map(|(n, d, _)| Some((n.clone(), d.clone()?)))
+        .filter_map(|x| Some((x.name.clone(), x.default.clone()?)))
         .collect();
     let id = format!("t{}", t.id);
     let html = cx.as_client.then(|| {
@@ -2971,11 +3603,21 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
         id: &id,
         rel: &t.rel,
         params: &params,
+        rest: rest.as_deref(),
         defaults: &defaults,
         script: script.map(|s| (runs.as_str(), s.line)),
         groups: &groups,
         imports: &imports,
         load: cx.load.as_deref(),
+        extra: (tt.groups.iter().flat_map(|g| &g.directives).any(is_extra)
+            || std::iter::once(runs.as_str())
+                .chain(groups.iter().flatten().map(String::as_str))
+                .any(|c| {
+                    js::tokens(c).iter().any(|t| {
+                        !t.member && matches!(t.text(c), "Map" | "Set" | "enhance" | "__wisp_snap")
+                    })
+                }))
+        .then_some(cx.extra),
         html: html.as_deref(),
         lib_hash: cx.lib_hash,
     };
@@ -2990,7 +3632,7 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
     // browser, so the server does not know it.
     let mut known = server;
     known.retain(|n| !(cx.load.is_some() && n == "data"));
-    let lets = declared
+    let mut lets: Vec<(String, String)> = declared
         .iter()
         .filter_map(|(n, _)| {
             Some((
@@ -2999,7 +3641,22 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
             ))
         })
         .collect();
+    // A prop `$props()` renames is its prop, to the first paint.
+    let mut declared: Vec<String> = declared.into_iter().map(|(n, _)| n).collect();
+    for p in rune
+        .iter()
+        .flat_map(|r| &r.props)
+        .filter(|p| p.local != p.name)
+    {
+        lets.push((p.local.clone(), p.name.clone()));
+        declared.push(p.local.clone());
+    }
+    if let Some(r) = &rest {
+        lets.push((r.clone(), REST.into()));
+        declared.push(r.clone());
+    }
     Ok(Some(Client {
+        extra: m.extra.map(String::from),
         id,
         source,
         hash,
@@ -3009,7 +3666,7 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
         paints: cx.as_client,
         server: known,
         whole: t.kind == Kind::Component,
-        declared: declared.into_iter().map(|(n, _)| n).collect(),
+        declared,
         lets,
         scopes,
     }))
@@ -3038,6 +3695,7 @@ fn client_html(nodes: &[Node], t: &Template, out: &mut String) {
                 }
             }
             Node::Render => out.push_str("<template data-wslot></template>"),
+            Node::Tag { .. } => out.push_str("wisp-element"),
             _ => {}
         }
     }
@@ -3047,7 +3705,10 @@ fn client_html(nodes: &[Node], t: &Template, out: &mut String) {
 struct Module<'a> {
     id: &'a str,
     rel: &'a str,
-    params: &'a [&'a str],
+    /// The server values or props, and the variable each is read as.
+    params: &'a [(String, String)],
+    /// `...rest`'s variable: the props not named.
+    rest: Option<&'a str>,
     /// `$props()` defaults: a prop's JavaScript when it is not given.
     defaults: &'a [(String, String)],
     /// The script, as it runs, and the line of the file it starts on.
@@ -3056,6 +3717,8 @@ struct Module<'a> {
     /// Modules of the components it renders.
     imports: &'a [String],
     load: Option<&'a str>,
+    /// `extra.js`'s URL, when the module uses it.
+    extra: Option<&'a str>,
     html: Option<&'a str>,
     lib_hash: &'a str,
 }
@@ -3080,6 +3743,9 @@ fn module_source(m: &Module) -> String {
     if let Some(url) = m.load {
         let _ = writeln!(s, "import * as __wisp_u from {};", js_str(url));
     }
+    if let Some(url) = m.extra {
+        let _ = writeln!(s, "import {};", js_str(url));
+    }
     let mut body = String::new();
     if let Some((src, _)) = m.script {
         // Imports go first, as a module's must; they leave blank lines.
@@ -3095,23 +3761,38 @@ fn module_source(m: &Module) -> String {
         "define({}, function (__wisp_p, __wisp_h) {{ const {{ {HELPERS} }} = __wisp_h; {{ ",
         js_str(m.id)
     );
-    if !m.params.is_empty() {
-        let list: Vec<String> = m.params.iter().map(|p| js_str(p)).collect();
+    if !m.params.is_empty() || m.rest.is_some() {
+        let list: Vec<String> = m.params.iter().map(|p| js_str(&p.0)).collect();
+        let mut names: Vec<String> = m
+            .params
+            .iter()
+            .map(|(p, l)| {
+                if p == l {
+                    p.clone()
+                } else {
+                    format!("{p}: {l}")
+                }
+            })
+            .collect();
+        names.extend(m.rest.map(|r| format!("{REST}: {r}")));
         let defaults: Vec<String> = m
             .defaults
             .iter()
             .map(|(n, d)| format!("{n}: () => ({d})"))
             .collect();
+        let tail = match (defaults.is_empty(), m.rest.is_some()) {
+            (true, false) => String::new(),
+            (_, rest) => format!(
+                ", {{ {} }}{}",
+                defaults.join(", "),
+                if rest { ", 1" } else { "" }
+            ),
+        };
         let _ = write!(
             s,
-            "const {{ {} }} = __wisp_props(__wisp_p, [{}]{}); ",
-            m.params.join(", "),
+            "const {{ {} }} = __wisp_props(__wisp_p, [{}]{tail}); ",
+            names.join(", "),
             list.join(", "),
-            if defaults.is_empty() {
-                String::new()
-            } else {
-                format!(", {{ {} }}", defaults.join(", "))
-            }
         );
     }
     s.push_str("{\n");
@@ -3310,10 +3991,24 @@ fn binding(d: &Directive, names: &mut Names) -> Result<String, String> {
         Dir::Hole => format!("[\"hole\", {}]", getter(value(), names)?),
         Dir::Class => format!("[\"class\", {name}, {}]", getter(value(), names)?),
         Dir::Style => format!("[\"style\", {name}, {}]", getter(value(), names)?),
-        Dir::Transition => format!(
-            "[\"transition\", {name}, {}]",
-            optional(d.value.as_ref(), names)?
-        ),
+        // A built-in by its name, else the script's function; then 0 both
+        // ways, 1 in, 2 out.
+        Dir::Transition => {
+            let kind = if matches!(d.name.as_str(), "fade" | "slide" | "scale" | "fly" | "blur") {
+                name
+            } else {
+                format!("{} => {}", one(&names(&d.name, d.line)?), d.name)
+            };
+            let dir = match d.mods.first().map(String::as_str) {
+                Some("in") => 1,
+                Some("out") => 2,
+                _ => 0,
+            };
+            format!(
+                "[\"transition\", {kind}, {}, {dir}]",
+                optional(d.value.as_ref(), names)?
+            )
+        }
         Dir::Animate => format!(
             "[\"animate\", {name}, {}]",
             optional(d.value.as_ref(), names)?
@@ -3344,6 +4039,15 @@ fn binding(d: &Directive, names: &mut Names) -> Result<String, String> {
             )
         }
         Dir::If => format!("[\"if\", {}]", getter(value(), names)?),
+        Dir::Key => format!("[\"key\", {}]", getter(value(), names)?),
+        Dir::Await => format!("[\"await\", {}]", getter(value(), names)?),
+        Dir::Try => "[\"try\"]".into(),
+        Dir::Spread => format!("[\"spread\", {}]", getter(value(), names)?),
+        Dir::Tag => format!("[\"tag\", {}]", getter(value(), names)?),
+        Dir::At | Dir::Wait => format!(
+            "[\"{}\", {name}]",
+            if d.kind == Dir::At { "at" } else { "wait" }
+        ),
         Dir::Comp => unreachable!("comp_binding builds it"),
     })
 }
@@ -3387,7 +4091,7 @@ fn comp_binding(
     for p in &d.props {
         let key = js_str(&p.name);
         let declared = c.props.iter().any(|x| x.name == p.name);
-        if !declared && !matches!(p.value, PropValue::On(_)) {
+        if !declared && !c.rest && !matches!(p.value, PropValue::On(_)) {
             let takes: Vec<&str> = c.props.iter().map(|x| x.name.as_str()).collect();
             return Err(format!(
                 "<{name}> has no prop `{}`; it takes {}",
@@ -3738,17 +4442,23 @@ mod tests {
 
     #[test]
     fn let_conditions_borrow_places() {
+        let locals = ["user".to_string()];
+        let cond = |c: &str| if_condition(c, &locals);
         assert_eq!(
-            if_condition("let Some(u) = data.user"),
+            cond("let Some(u) = data.user"),
             "let Some(u) = &(data.user)"
         );
+        assert_eq!(cond("let Some(u) = user"), "let Some(u) = &(user)");
+        assert_eq!(cond("let Some(u) = find(x)"), "let Some(u) = find(x)");
+        assert_eq!(cond("let 1..=5 = n"), "let 1..=5 = n");
+        assert_eq!(cond("a == b"), "a == b");
+        assert_eq!(cond("letter"), "letter");
         assert_eq!(
-            if_condition("let Some(u) = find(x)"),
-            "let Some(u) = find(x)"
+            rust_scan::let_names(
+                "let (a, mut b) = x;\nif c { let d = 1; }\nlet Some(e) = f else { return };\nlet g: Vec<u8> = h;"
+            ),
+            ["a", "b", "e", "g"]
         );
-        assert_eq!(if_condition("let 1..=5 = n"), "let 1..=5 = n");
-        assert_eq!(if_condition("a == b"), "a == b");
-        assert_eq!(if_condition("letter"), "letter");
     }
 
     /// Generates the app made of `files` (path, contents), in a scratch
@@ -3815,6 +4525,69 @@ mod tests {
             app("props", &[page("{@props a: u8}")])
                 .unwrap_err()
                 .contains("only components")
+        );
+    }
+
+    #[test]
+    fn page_blocks() {
+        let page = |src: &'static str| ("src/routes/blog/[slug]/+page.wisp", src);
+        let code = app(
+            "block-ok",
+            &[
+                page("---\nlet n = slug.len();\n\n#[action]\nfn like() { cx.flash(\"x\"); }\nlet s = \"a\nb\";\n---\n<p>{n}{#each list as x}{x}{/each}</p>"),
+                ("src/routes/+layout.wisp", "---\nconst A: u8 = 1;\nlet p = cx.path();\n---\n{@render children()}"),
+                ("src/db.rs", "pub fn f() {}"),
+                ("src/main.rs", "mod own;\nwisp::main!();"),
+                ("src/own.rs", ""),
+            ],
+        )
+        .unwrap();
+        for want in [
+            "let slug = cx.param(\"slug\").to_string();",
+            "    let n = slug.len(); // src/routes/blog/[slug]/+page.wisp:2",
+            "    fn like() { cx.flash(\"x\"); } // src/routes/blog/[slug]/+page.wisp:5",
+            "        let s = \"a\nb\"; // src/routes/blog/[slug]/+page.wisp:7",
+            "pub async fn like(cx: &mut ::wisp::Cx) -> ::wisp::Result<Option<::wisp::Response>> { let () = super::like(cx); Ok(None) }",
+            "pub async fn render(cx: &mut ::wisp::Cx, __o: &mut ::wisp::Out, __wrap:",
+            "page_0::tpl_page_0::render(cx, __o, |__o: &mut ::wisp::Out, cx: &::wisp::Cx, __p: &dyn Fn(&mut ::wisp::Out)| layout_0::tpl_layout_0::render(__o, cx, &|__o: &mut ::wisp::Out| __p(__o))).await",
+            "    const A: u8 = 1; // src/routes/+layout.wisp:2",
+            "        let p = cx.path(); // src/routes/+layout.wisp:3",
+            "pub mod db {",
+            "Err(e) => ::wisp::rt::input::failed(cx, e)?,",
+        ] {
+            assert!(code.contains(want), "{want}\n{code}");
+        }
+        assert!(!code.contains("pub mod own"), "{code}");
+        let err = |name, files: &[(&str, &str)]| app(name, files).unwrap_err();
+        assert!(
+            err(
+                "both",
+                &[
+                    page("---\nlet a = 1;\n---\n"),
+                    ("src/routes/blog/[slug]/+page.rs", "")
+                ]
+            )
+            .contains("and +page.rs is beside it")
+        );
+        assert!(
+            err(
+                "load",
+                &[page(
+                    "---\nstruct Data;\nfn load() -> Data { Data }\nlet a = 1;\n---\n"
+                )]
+            )
+            .starts_with("src/routes/blog/[slug]/+page.wisp:4: the statements of a `---` block")
+        );
+        assert!(
+            err("open", &[page("\n---\nlet a = 1;\n")])
+                .starts_with("src/routes/blog/[slug]/+page.wisp:2:1: this `---` starts")
+        );
+        assert!(
+            err(
+                "comp",
+                &[page("x"), ("src/components/Card.wisp", "---\n---\nx")]
+            )
+            .contains("a component takes")
         );
     }
 
@@ -3900,7 +4673,7 @@ mod tests {
         for want in [
             "{ Ok(Some(super::csv())) }",
             "{ Ok(super::maybe()?) }",
-            "\"csv\" => { if let Some(r) = page_0::__call::csv(cx).await? { ::wisp::rt::respond(__o, r); return Ok(()); } }",
+            "\"csv\" => match page_0::__call::csv(cx).await { Ok(Some(r)) => { ::wisp::rt::respond(__o, r); return Ok(()); } Ok(None) => {} Err(e) => ::wisp::rt::input::failed(cx, e)?, },",
         ] {
             assert!(code.contains(want), "{want}\n{code}");
         }
@@ -4027,10 +4800,10 @@ pub fn load() -> Data { todo!() }";
             "let hidden = data.hidden;",
             "pub mod page_0 {",
             "use ::wisp::prelude::*;",
-            "pub fn render(__o: &mut ::wisp::Out, __d: &super::__call::Loaded) {",
+            "pub fn render(__o: &mut ::wisp::Out, cx: &::wisp::Cx, __d: &super::__call::Loaded) {",
             "let data: &super::Data = &__d.0;",
             "let d = page_0::__call::load(cx).await?;",
-            "page_0::tpl_page_0::render(__o, &d)",
+            "page_0::tpl_page_0::render(__o, cx, &d)",
         ] {
             assert!(
                 code.contains(want),
@@ -4052,6 +4825,7 @@ pub fn load() -> Data { todo!() }";
             user: Some(("page_0".into(), loads)),
             data: Vec::new(),
             load_js: None,
+            stmts: None,
             t: template::parse(src).unwrap(),
         };
         let cx = ClientCx {
@@ -4061,6 +4835,7 @@ pub fn load() -> Data { todo!() }";
             lib_hash: "0",
             load: None,
             release: false,
+            extra: "/_app/c/extra.js",
         };
         client(&t, &cx).map(|c| c.expect("the page has browser code"))
     }
@@ -4132,7 +4907,7 @@ pub fn load() -> Data { todo!() }";
             "[\"bind\", \"value\", () => (form.q), (_, __wisp_v) => { (form.q) = __wisp_v }]",
             "[\"bind\", \"this\", null, (_, __wisp_v) => { (el) = __wisp_v }]",
             "[\"style\", \"--x\", () => (x)]",
-            "[\"transition\", \"fly\", () => ({ y: 4 })]",
+            "[\"transition\", \"fly\", () => ({ y: 4 }), 0]",
             "[\"use\", () => tip, () => ('hi')]",
             "[\"use\", () => focus, null]",
             "[\"class\", \"on\", () => ({ a: 1 }.a)]",
@@ -4281,8 +5056,19 @@ pub fn load() -> Data { todo!() }";
             ("src/routes/+page.wisp", "<Plain client:idle />"),
         ]);
         assert!(bad.contains("<Plain> has no browser code"), "{bad}");
-        let bad = err(&[("src/routes/+page.wisp", "<p client:visible>x</p>")]);
-        assert!(bad.contains("goes on a component"), "{bad}");
+        // On an element, it and what is inside wait.
+        let code = app(
+            "runes-el",
+            &[(
+                "src/routes/+page.wisp",
+                "<p client:visible on:click=\"n++\">{:n}</p><script>let n = 0</script>",
+            )],
+        )
+        .unwrap();
+        assert!(
+            code.contains("[\\\"wait\\\", \\\"v\\\"], [\\\"on\\\""),
+            "{code}"
+        );
         let bad = err(&[
             ("src/components/Item.wisp", item.1),
             ("src/routes/+page.wisp", "<Item label=\"a\" client:soon />"),

@@ -40,6 +40,8 @@ const MAX_SEGS: usize = 32;
 /// and then for each part of its body: a large upload may take minutes, as
 /// long as it keeps coming.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+/// Bytes a second a request body must average, after `REQUEST_TIMEOUT`.
+const MIN_BODY_RATE: usize = 1024;
 /// Time an idle keep-alive connection is kept open.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Time a client may take none of a response before it is dropped.
@@ -326,10 +328,38 @@ fn bind(addr: SocketAddr) -> io::Result<std::net::TcpListener> {
 
 /// Reads more into `buf`: `Ok(0)` when the peer closed, `TimedOut` if
 /// nothing came by `deadline` (in `seconds()`).
+///
+/// `timer` is the connection's one timer. Deadlines are whole seconds, so
+/// it is moved at most once a second, and a later deadline only updates it
+/// in place: a timer made and dropped per read cost two lock round trips on
+/// the timer wheel and a clock read, every request.
 #[cfg(not(target_arch = "wasm32"))]
-async fn read(stream: &mut TcpStream, buf: &mut Vec<u8>, deadline: u64) -> io::Result<usize> {
-    let left = Duration::from_secs(deadline.saturating_sub(seconds()));
-    tokio::time::timeout(left, stream.read_buf(buf))
+async fn read(
+    stream: &mut TcpStream,
+    buf: &mut Vec<u8>,
+    mut timer: std::pin::Pin<&mut tokio::time::Sleep>,
+    deadline: u64,
+) -> io::Result<usize> {
+    let when = instant(deadline);
+    if timer.deadline() != when {
+        timer.as_mut().reset(when);
+    }
+    first(stream.read_buf(buf), async {
+        timer.await;
+        Err(io::ErrorKind::TimedOut.into())
+    })
+    .await
+}
+
+/// Runs `f`, giving up with `TimedOut` after `limit`. A timer is only set
+/// up when `f` cannot finish at once, which most writes can.
+#[cfg(not(target_arch = "wasm32"))]
+async fn within<T>(limit: Duration, f: impl Future<Output = io::Result<T>>) -> io::Result<T> {
+    let mut f = std::pin::pin!(f);
+    if let Poll::Ready(done) = std::future::poll_fn(|cx| Poll::Ready(f.as_mut().poll(cx))).await {
+        return done;
+    }
+    tokio::time::timeout(limit, f)
         .await
         .unwrap_or_else(|_| Err(io::ErrorKind::TimedOut.into()))
 }
@@ -341,11 +371,9 @@ async fn read(stream: &mut TcpStream, buf: &mut Vec<u8>, deadline: u64) -> io::R
 pub(crate) async fn write(stream: &mut (impl AsyncWriteExt + Unpin), buf: &[u8]) -> io::Result<()> {
     let mut at = 0;
     while at < buf.len() {
-        match tokio::time::timeout(WRITE_TIMEOUT, stream.write(&buf[at..])).await {
-            Ok(Ok(0)) => return Err(io::ErrorKind::WriteZero.into()),
-            Ok(Ok(n)) => at += n,
-            Ok(Err(e)) => return Err(e),
-            Err(_) => return Err(io::ErrorKind::TimedOut.into()),
+        match within(WRITE_TIMEOUT, stream.write(&buf[at..])).await? {
+            0 => return Err(io::ErrorKind::WriteZero.into()),
+            n => at += n,
         }
     }
     Ok(())
@@ -463,7 +491,9 @@ async fn connection<A: App>(mut stream: TcpStream, peer: SocketAddr) {
     let mut reply = Reply::default();
     let mut busy = Busy(false);
     let mut head_since: Option<u64> = None;
+    let mut body_since: Option<u64> = None;
     let mut sent_continue = false;
+    let mut timer = std::pin::pin!(tokio::time::sleep_until(instant(0)));
 
     loop {
         let mut used = 0;
@@ -486,6 +516,14 @@ async fn connection<A: App>(mut stream: TcpStream, peer: SocketAddr) {
                         cx.method == Method::Head,
                     );
                     used += len;
+                    // Answers to many small pipelined requests go out in
+                    // pieces, so a buffer of them cannot make a huge one.
+                    if streamed.is_none() && upgrade.is_none() && wbuf.len() >= KEEP_CAPACITY {
+                        if write(&mut stream, &wbuf).await.is_err() {
+                            return;
+                        }
+                        wbuf.clear();
+                    }
                     if let Some(upgrade) = upgrade {
                         // The rest of the connection is the WebSocket's,
                         // with what the client sent after its handshake.
@@ -497,6 +535,7 @@ async fn connection<A: App>(mut stream: TcpStream, peer: SocketAddr) {
                         return;
                     }
                     head_since = None;
+                    body_since = None;
                     sent_continue = false;
                     if let Some(s) = streamed {
                         // What was answered so far goes first, then the body as
@@ -579,11 +618,16 @@ async fn connection<A: App>(mut stream: TcpStream, peer: SocketAddr) {
             }
             seconds() + IDLE_TIMEOUT.as_secs()
         } else if in_body {
-            seconds() + REQUEST_TIMEOUT.as_secs()
+            // Each part in time, and the whole at `MIN_BODY_RATE` at least
+            // after the same grace: a body sent a byte at a time cannot hold
+            // a connection for days.
+            let since = *body_since.get_or_insert_with(seconds);
+            let rate = since + REQUEST_TIMEOUT.as_secs() + (cx.buf.len() / MIN_BODY_RATE) as u64;
+            (seconds() + REQUEST_TIMEOUT.as_secs()).min(rate)
         } else {
             *head_since.get_or_insert_with(seconds) + REQUEST_TIMEOUT.as_secs()
         };
-        match read(&mut stream, &mut cx.buf, deadline).await {
+        match read(&mut stream, &mut cx.buf, timer.as_mut(), deadline).await {
             Ok(n) if n > 0 => busy.set(true),
             _ => return, // closed, error or too slow
         }
@@ -615,7 +659,15 @@ fn parse<A: App>(cx: &mut Cx, at: usize) -> Parsed {
     let mut transfer_encodings = 0;
     let mut keep_alive = req.version == Some(1);
     let mut expect_continue = false;
+    cx.headers.clear();
     for h in req.headers.iter() {
+        cx.headers
+            .push((Span::of(buf, h.name.as_bytes()), Span::of(buf, h.value)));
+        // Only these four matter here; their lengths tell most others apart
+        // without comparing a byte.
+        if !matches!(h.name.len(), 6 | 10 | 14 | 17) {
+            continue;
+        }
         if h.name.eq_ignore_ascii_case("content-length") {
             // Strict: digits only, and repeated headers must agree (smuggling).
             match (parse_decimal(h.value), content_length) {
@@ -690,11 +742,6 @@ fn parse<A: App>(cx: &mut Cx, at: usize) -> Parsed {
         start: body_start as u32,
         len: len as u32,
     };
-    cx.headers.clear();
-    for h in req.headers.iter() {
-        cx.headers
-            .push((Span::of(buf, h.name.as_bytes()), Span::of(buf, h.value)));
-    }
     if chunked {
         // The body's data moves up over the chunk framing, into one piece
         // where `cx.body` says. The head stays as it is.
@@ -706,8 +753,13 @@ fn parse<A: App>(cx: &mut Cx, at: usize) -> Parsed {
     }
 }
 
+/// The largest body any route takes, whatever its limit says: requests are
+/// described by 32-bit offsets into the read buffer.
+const MAX_BODY: usize = 1 << 31;
+
 /// The body limit for a request to `path`: its route's `BODY_LIMIT`, or
-/// `WISP_BODY_LIMIT`. Only requests with a body look it up.
+/// `WISP_BODY_LIMIT`, and at most `MAX_BODY`. Only requests with a body
+/// look it up.
 pub(crate) fn body_limit<A: App>(path: &str) -> usize {
     let mut segs = [""; MAX_SEGS];
     let route = if path.starts_with('/') {
@@ -718,6 +770,7 @@ pub(crate) fn body_limit<A: App>(path: &str) -> usize {
     route
         .and_then(|(id, _)| A::body_limit(id))
         .unwrap_or(crate::settings().body_limit)
+        .min(MAX_BODY)
 }
 
 enum Chunks {
@@ -797,7 +850,7 @@ fn chunks(b: &[u8], limit: usize) -> Chunks {
         if i > body.saturating_mul(2).saturating_add(MAX_HEAD) {
             return Chunks::TooLarge;
         }
-        if b.len() < i + size + 2 {
+        if b.len() - i < size + 2 {
             return Chunks::Partial;
         }
         if &b[i + size..i + size + 2] != b"\r\n" {
@@ -1011,9 +1064,15 @@ pub(crate) async fn answer<A: App>(mut cx: Cx) -> Reply {
                 .push((Cow::Borrowed("content-length"), Cow::Owned(len.to_string())));
         }
     }
-    // As `header` does on the wire: a header that would split the response is
-    // left out, whichever host sends it.
-    reply.headers.retain(|(n, v)| valid_header(n, v));
+    // As `serialize` does on the wire: a header that would split the
+    // response is left out, and the framing is the host's (only an answer
+    // to HEAD may give its length).
+    let head = cx.method == Method::Head;
+    reply.headers.retain(|(n, v)| {
+        valid_header(n, v)
+            && !n.eq_ignore_ascii_case("transfer-encoding")
+            && (head || !n.eq_ignore_ascii_case("content-length"))
+    });
     reply
 }
 
@@ -1105,13 +1164,14 @@ async fn decide<A: App>(cx: &mut Cx, out: &mut Out, reply: &mut Reply) {
         return;
     }
     if path.len() > 1 && path.ends_with('/') {
-        let trimmed = path.trim_end_matches('/');
-        let trimmed = if trimmed.is_empty() { "/" } else { trimmed };
+        // One leading slash: `//evil.example/` would send the browser to
+        // another site (and so would `/\evil.example/`).
+        let trimmed = path.trim_matches(['/', '\\']);
         let query = cx.query_string();
         let location = if query.is_empty() {
-            trimmed.to_string()
+            format!("/{trimmed}")
         } else {
-            format!("{trimmed}?{query}")
+            format!("/{trimmed}?{query}")
         };
         reply.set_plain(308, "");
         reply
@@ -1300,10 +1360,15 @@ fn serialize<A: App>(
         Body::Stream(_) | Body::WebSocket(_) => 0,
     };
 
+    // The framing is the server's: an app's own `content-length` or
+    // `transfer-encoding` (copied from another server's response, say) would
+    // contradict it, and the client would read the next response wrong. Only
+    // an answer to HEAD, which has no body to count, may give its length.
+    let own_length = head_only && reply.header("content-length").is_some();
     status_line(w, reply.status);
     if chunked {
         w.extend_from_slice(b"transfer-encoding: chunked\r\n");
-    } else if !stream && !bodiless {
+    } else if !stream && !bodiless && !own_length {
         w.extend_from_slice(b"content-length: ");
         push_decimal(w, len as u64);
         w.extend_from_slice(b"\r\n");
@@ -1311,9 +1376,19 @@ fn serialize<A: App>(
     date(w);
     if !keep_alive {
         w.extend_from_slice(b"connection: close\r\n");
+    } else if !http11 {
+        // HTTP/1.0 closes after each response unless told otherwise.
+        w.extend_from_slice(b"connection: keep-alive\r\n");
     }
     for (name, value) in &reply.headers {
-        header(w, name, value);
+        let framing = match name.len() {
+            14 => !own_length && name.eq_ignore_ascii_case("content-length"),
+            17 => name.eq_ignore_ascii_case("transfer-encoding"),
+            _ => false,
+        };
+        if !framing {
+            header(w, name, value);
+        }
     }
     w.extend_from_slice(b"\r\n");
 
@@ -1650,7 +1725,8 @@ fn parse_decimal(s: &[u8]) -> Option<usize> {
         return None;
     }
     s.iter().try_fold(0usize, |n, &b| {
-        b.is_ascii_digit().then(|| n * 10 + (b - b'0') as usize)
+        let digit = b.checked_sub(b'0').filter(|&d| d < 10)?;
+        n.checked_mul(10)?.checked_add(digit as usize)
     })
 }
 
@@ -1676,11 +1752,21 @@ fn unix_now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// When `seconds()` was 0.
+static START: OnceLock<Instant> = OnceLock::new();
+
+/// The instant of `deadline`, in `seconds()`, for a tokio timer.
+#[cfg(not(target_arch = "wasm32"))]
+fn instant(deadline: u64) -> tokio::time::Instant {
+    let start = *START.get_or_init(Instant::now);
+    tokio::time::Instant::from_std(start + Duration::from_secs(deadline))
+}
+
 fn start_clock() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         NOW.store(unix_now(), Ordering::Relaxed);
-        let start = Instant::now();
+        let start = *START.get_or_init(Instant::now);
         std::thread::Builder::new()
             .name("wisp-clock".into())
             .spawn(move || {
@@ -1927,6 +2013,312 @@ mod tests {
             "/a/",
         ] {
             assert_eq!(safe_relative_path(bad), None, "{bad}");
+        }
+    }
+
+    use crate::fuzz::{Fuzz, Rng, SMALL, mutate};
+
+    /// A request as a client may send it, and what it should parse to.
+    struct Sent {
+        wire: Vec<u8>,
+        path: &'static str,
+        query: String,
+        body: Vec<u8>,
+        headers: usize,
+    }
+
+    fn sent(rng: &mut Rng) -> Sent {
+        let method = rng.pick(&["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]);
+        let path = rng.pick(&["/", "/small", "/p/a%20b", "/no/such/page"]);
+        let n = rng.below(24);
+        let query = String::from_utf8(rng.bytes(n, b"ab=&%2F+.")).unwrap();
+        let mut wire = format!("{method} {path}");
+        if !query.is_empty() || rng.one_in(4) {
+            wire += "?";
+            wire += &query;
+        }
+        wire += " HTTP/1.1\r\n";
+        let mut headers = rng.below(12);
+        for _ in 0..headers {
+            let n = 1 + rng.below(10);
+            let name = String::from_utf8(rng.bytes(n, b"abcxyz-_")).unwrap();
+            let n = rng.below(40);
+            let value = String::from_utf8(rng.bytes(n, b"abc 012=;,/\t")).unwrap();
+            wire += &format!(
+                "x-{name}:{}{}\r\n",
+                rng.pick(&["", " ", "  "]),
+                value.trim()
+            );
+        }
+        let n = rng.pick(&[0, 1, 10, SMALL, SMALL + 1, 500]);
+        let body = rng.bytes(n, b"");
+        if rng.one_in(2) {
+            headers += 1;
+            wire += "transfer-encoding: chunked\r\n\r\n";
+            let mut wire = wire.into_bytes();
+            let mut left = &body[..];
+            while !left.is_empty() {
+                let size = (1 + rng.below(80)).min(left.len());
+                let size_text = if rng.one_in(2) {
+                    format!("{size:x}")
+                } else {
+                    format!("{size:X}")
+                };
+                wire.extend_from_slice(size_text.as_bytes());
+                if rng.one_in(4) {
+                    wire.extend_from_slice(b";ext=\"v\"");
+                }
+                wire.extend_from_slice(b"\r\n");
+                wire.extend_from_slice(&left[..size]);
+                wire.extend_from_slice(b"\r\n");
+                left = &left[size..];
+            }
+            wire.extend_from_slice(b"0\r\n");
+            if rng.one_in(3) {
+                wire.extend_from_slice(b"x-trailer: 1\r\n");
+            }
+            wire.extend_from_slice(b"\r\n");
+            return Sent {
+                wire,
+                path,
+                query,
+                body,
+                headers,
+            };
+        }
+        if !body.is_empty() || rng.one_in(3) {
+            headers += 1;
+            wire += &format!("Content-Length: {}\r\n", body.len());
+        }
+        wire += "\r\n";
+        let mut wire = wire.into_bytes();
+        wire.extend_from_slice(&body);
+        Sent {
+            wire,
+            path,
+            query,
+            body,
+            headers,
+        }
+    }
+
+    fn limit(path: &str) -> usize {
+        if path == "/small" {
+            SMALL
+        } else {
+            crate::settings().body_limit
+        }
+    }
+
+    fn cx_with(bytes: &[u8]) -> Cx {
+        let mut cx = Cx::new(SocketAddr::from(([127, 0, 0, 1], 1)));
+        cx.buf.extend_from_slice(bytes);
+        cx
+    }
+
+    /// What a parsed request says must lie inside the buffer, within limits.
+    fn check_parsed(cx: &Cx, at: usize, len: usize) {
+        assert!(at + len <= cx.buf.len());
+        let body = cx.body.range();
+        assert!(body.start >= at && body.end <= at + len);
+        assert!(body.len() <= limit(cx.path()));
+        for (n, v) in &cx.headers {
+            assert!(n.range().end <= at + len && v.range().end <= at + len);
+        }
+        let _ = (cx.query_string(), cx.headers().count(), cx.cookie("a"));
+        let _ = (
+            cx.form().iter().count(),
+            cx.host(),
+            cx.bearer(),
+            cx.basic_auth(),
+        );
+    }
+
+    #[test]
+    fn requests_parse_whole_or_wait_for_more() {
+        let mut rng = Rng::new(1);
+        for _ in 0..3000 {
+            let s = sent(&mut rng);
+            let too_large = s.body.len() > limit(s.path);
+            let mut cx = cx_with(&s.wire);
+            match parse::<Fuzz>(&mut cx, 0) {
+                Parsed::Request { len, .. } if !too_large => {
+                    assert_eq!(len, s.wire.len());
+                    assert_eq!(
+                        (cx.path(), cx.query_string(), cx.body()),
+                        (s.path, &*s.query, &s.body[..])
+                    );
+                    assert_eq!(cx.headers.len(), s.headers);
+                    check_parsed(&cx, 0, len);
+                }
+                Parsed::Invalid(413) if too_large => {}
+                _ => panic!("{:?}", String::from_utf8_lossy(&s.wire)),
+            }
+            // Any prefix is a request still arriving (or already too large).
+            let cuts: Vec<usize> = if s.wire.len() < 200 {
+                (0..s.wire.len()).collect()
+            } else {
+                (0..40).map(|_| rng.below(s.wire.len())).collect()
+            };
+            for cut in cuts {
+                let mut cx = cx_with(&s.wire[..cut]);
+                match parse::<Fuzz>(&mut cx, 0) {
+                    Parsed::Partial { .. } => {}
+                    Parsed::Invalid(413) if too_large => {}
+                    _ => panic!("{cut} of {:?}", String::from_utf8_lossy(&s.wire)),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pipelined_requests_parse_in_turn() {
+        let mut rng = Rng::new(2);
+        for _ in 0..1000 {
+            let (a, b) = (sent(&mut rng), sent(&mut rng));
+            if a.body.len() > limit(a.path) || b.body.len() > limit(b.path) {
+                continue;
+            }
+            let mut cx = cx_with(&[&a.wire[..], &b.wire].concat());
+            let Parsed::Request { len, .. } = parse::<Fuzz>(&mut cx, 0) else {
+                panic!()
+            };
+            assert_eq!((len, cx.body()), (a.wire.len(), &a.body[..]));
+            let Parsed::Request { len, .. } = parse::<Fuzz>(&mut cx, len) else {
+                panic!()
+            };
+            assert_eq!((len, cx.body()), (b.wire.len(), &b.body[..]));
+        }
+    }
+
+    #[test]
+    fn broken_requests_never_panic() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let mut rng = Rng::new(3);
+        let (mut out, mut reply, mut w) = (Out::default(), Reply::default(), Vec::new());
+        for _ in 0..20_000 {
+            let mut wire = sent(&mut rng).wire;
+            mutate(&mut rng, &mut wire);
+            let mut cx = cx_with(&wire);
+            match parse::<Fuzz>(&mut cx, 0) {
+                Parsed::Request { len, .. } => {
+                    check_parsed(&cx, 0, len);
+                    rt.block_on(decide::<Fuzz>(&mut cx, &mut out, &mut reply));
+                    w.clear();
+                    serialize::<Fuzz>(&mut w, &mut reply, &out, cx.http11, true, false);
+                    assert!(w.starts_with(b"HTTP/1.1 "));
+                }
+                Parsed::Partial { need, .. } => assert!(need <= MAX_HEAD + MAX_BODY),
+                Parsed::Invalid(status) => assert!(matches!(status, 400 | 413 | 431 | 501)),
+            }
+        }
+    }
+
+    #[test]
+    fn heads_and_chunk_framing_are_bounded() {
+        // A head that never ends is refused once it passes MAX_HEAD.
+        let mut long = b"GET / HTTP/1.1\r\n".to_vec();
+        while long.len() <= MAX_HEAD {
+            long.extend_from_slice(b"x-a: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\r\n");
+        }
+        assert!(matches!(
+            parse::<Fuzz>(&mut cx_with(&long), 0),
+            Parsed::Invalid(431)
+        ));
+        let many: String = (0..MAX_HEADERS + 1)
+            .map(|i| format!("x-{i}: 1\r\n"))
+            .collect();
+        let many = format!("GET / HTTP/1.1\r\n{many}\r\n");
+        assert!(matches!(
+            parse::<Fuzz>(&mut cx_with(many.as_bytes()), 0),
+            Parsed::Invalid(431)
+        ));
+
+        let head = "POST /small HTTP/1.1\r\ntransfer-encoding: chunked\r\n\r\n";
+        let body_of = |chunked: &str| {
+            let mut cx = cx_with(format!("{head}{chunked}").as_bytes());
+            match parse::<Fuzz>(&mut cx, 0) {
+                Parsed::Request { .. } => Ok(cx.body().to_vec()),
+                Parsed::Invalid(status) => Err(status),
+                Parsed::Partial { .. } => Err(0),
+            }
+        };
+        assert_eq!(
+            body_of("3\r\nabc\r\n2;x=y\r\nde\r\n0\r\nt: 1\r\n\r\n"),
+            Ok(b"abcde".to_vec())
+        );
+        assert_eq!(body_of("41\r\n"), Err(413), "over the route's limit");
+        assert_eq!(body_of("ffffffffffffffff\r\n"), Err(413));
+        assert_eq!(body_of("10000000000000000\r\n"), Err(400), "17 digits");
+        assert_eq!(body_of("3\r\nabcX\r\n0\r\n\r\n"), Err(400));
+        assert_eq!(body_of("3\nabc\r\n0\r\n\r\n"), Err(400), "bare LF");
+        assert_eq!(body_of("-3\r\nabc\r\n0\r\n\r\n"), Err(400));
+        assert_eq!(body_of("3\r\nabc\r\n0\r\n"), Err(0), "no end yet");
+        // Framing that is most of the wire, with empty chunks, is refused.
+        let padded = format!("1;{}\r\na\r\n", "e".repeat(MAX_HEAD - 8)).repeat(3);
+        assert_eq!(body_of(&padded), Err(413));
+
+        let mut rng = Rng::new(4);
+        for _ in 0..20_000 {
+            let n = rng.below(64);
+            let b = rng.bytes(n, b"0123456789abcdefgxX;= \r\n");
+            if let Chunks::Complete { wire, body } = chunks(&b, 1 << 20) {
+                assert!(wire <= b.len() && body <= wire);
+                let mut copy = b.clone();
+                unchunk(&mut copy[..wire]);
+            }
+        }
+    }
+
+    #[test]
+    fn slash_redirects_stay_on_the_site_and_framing_is_ours() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let (mut out, mut reply) = (Out::default(), Reply::default());
+        for (path, to) in [
+            ("//evil.example/", "/evil.example"),
+            ("/\\evil.example/", "/evil.example"),
+            ("/a/b//?x=1", "/a/b?x=1"),
+            ("///", "/"),
+        ] {
+            let mut cx = cx_with(format!("GET {path} HTTP/1.1\r\n\r\n").as_bytes());
+            assert!(matches!(parse::<Fuzz>(&mut cx, 0), Parsed::Request { .. }));
+            rt.block_on(decide::<Fuzz>(&mut cx, &mut out, &mut reply));
+            assert_eq!((reply.status, reply.header("location")), (308, Some(to)));
+        }
+
+        let mut w = Vec::new();
+        let mut reply = Reply::plain(200);
+        for (n, v) in [("content-length", "99"), ("Transfer-Encoding", "chunked")] {
+            reply.headers.push((Cow::Borrowed(n), Cow::Borrowed(v)));
+        }
+        serialize::<Fuzz>(&mut w, &mut reply, &out, false, true, false);
+        let text = String::from_utf8(w).unwrap().to_ascii_lowercase();
+        assert!(text.contains("content-length: 2\r\n") && text.contains("connection: keep-alive"));
+        assert!(!text.contains("99") && !text.contains("chunked"), "{text}");
+    }
+
+    #[test]
+    fn requests_from_other_hosts_never_panic() {
+        let mut rng = Rng::new(5);
+        for _ in 0..5000 {
+            let method = String::from_utf8(rng.upto(8, b"GETPOSt \r")).unwrap();
+            let n = rng.below(30);
+            let target =
+                String::from_utf8_lossy(&rng.bytes(n, b"/a?=%& \x7f\xc3\xa9\r\n")).into_owned();
+            let name = rng.text(8);
+            let value = rng.upto(20, b"");
+            let headers = [(name.as_str(), &value[..])];
+            let body = rng.upto(100, b"");
+            if let Ok(cx) =
+                Cx::from_request::<Fuzz>(&method, &target, headers, &body, cx_with(b"").peer())
+            {
+                assert_eq!(cx.body(), body);
+                check_parsed(&cx, 0, cx.buf.len());
+            }
         }
     }
 }

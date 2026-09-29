@@ -39,11 +39,44 @@ fn find<'a>(cx: &'a Cx, name: &str) -> Option<(Cow<'a, str>, From)> {
     cx.query(name).map(|v| (v, From::Query))
 }
 
+/// What an action's error does: `invalid(..)` from a form shows the page
+/// again, as a 422, for [`Cx::problem`] to tell; any other error, or one
+/// for a client that sent or asks for JSON, is the error.
+pub fn failed(cx: &mut Cx, e: Error) -> Result<()> {
+    let accept = cx.header("accept").unwrap_or("");
+    let json = is_json(cx) || (accept.contains("json") && !accept.contains("text/html"));
+    if e.status() == 422 && !e.fields().is_empty() && !json {
+        cx.fail(422, e);
+        return Ok(());
+    }
+    Err(e)
+}
+
+impl Cx {
+    /// The request's value `name`, found the way a handler's parameter of
+    /// that name is: a route parameter, then the form a POST, PUT or PATCH
+    /// sends (or its JSON body), then the query. It shows what was typed
+    /// again: `<input name="email" value={cx.input("email")}>`.
+    pub fn input(&self, name: &str) -> Option<Cow<'_, str>> {
+        find(self, name).map(|(v, _)| v)
+    }
+
+    /// What is wrong with the field `name` when an action returned
+    /// `invalid(name, problem)`, which renders the page again as a 422:
+    /// `{#if let Some(p) = cx.problem("email")}<p>{p}</p>{/if}`.
+    pub fn problem(&self, name: &str) -> Option<&str> {
+        let e = self.get::<Error>()?;
+        let (_, problem) = e.fields().iter().find(|(f, _)| f == name)?;
+        Some(problem)
+    }
+}
+
 /// Whether the request's body is JSON, by its `Content-Type`.
 pub(crate) fn is_json(cx: &Cx) -> bool {
     cx.header("content-type").is_some_and(|t| {
-        let t = t.split(';').next().unwrap_or("").trim();
-        t.eq_ignore_ascii_case("application/json") || t.to_ascii_lowercase().ends_with("+json")
+        let t = t.split(';').next().unwrap_or("").trim().as_bytes();
+        t.eq_ignore_ascii_case(b"application/json")
+            || t.len() > 5 && t[t.len() - 5..].eq_ignore_ascii_case(b"+json")
     })
 }
 
@@ -57,17 +90,10 @@ fn json_values(cx: &Cx, name: &str) -> Vec<String> {
         Value::Bool(b) => Some(b.to_string()),
         _ => None,
     };
-    let Some(body) = is_json(cx)
-        .then(|| std::str::from_utf8(cx.body()).ok())
-        .flatten()
-    else {
+    if !is_json(cx) {
         return Vec::new();
-    };
-    match crate::json::parse(body)
-        .ok()
-        .as_ref()
-        .and_then(|v| v.get(name))
-    {
+    }
+    match cx.json_body().and_then(|v| v.get(name)) {
         Some(Value::Array(items)) => items.iter().filter_map(scalar).collect(),
         Some(v) => scalar(v).into_iter().collect(),
         None => Vec::new(),

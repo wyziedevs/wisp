@@ -354,7 +354,7 @@ fn pattern(src: &str, t: &[Token], k: usize, out: &mut Vec<usize>) -> usize {
         }
         j += 1;
     }
-    end + 1
+    (end + 1).min(t.len())
 }
 
 /// Per token: a name bound inside `src` rather than read from outside it:
@@ -724,13 +724,24 @@ pub struct Reactive {
     pub stores: Vec<String>,
 }
 
-/// A component's `let { a, b = 1, c = $bindable() } = $props()`: its span in
-/// the script, and per prop its name, its default (JavaScript) and whether
-/// a parent may `bind:` it.
+/// A component's `let { a, b = 1, c: d, e = $bindable(), ...rest } =
+/// $props()`: its span in the script, its props and the name of the rest.
 #[derive(Debug, PartialEq)]
 pub struct PropsRune {
     pub span: (usize, usize),
-    pub props: Vec<(String, Option<String>, bool)>,
+    pub props: Vec<RuneProp>,
+    pub rest: Option<String>,
+}
+
+/// One prop of `$props()`: its name, the variable it is read as (`c: d`
+/// reads prop `c` as `d`), its default (JavaScript) and whether a parent
+/// may `bind:` it.
+#[derive(Debug, PartialEq)]
+pub struct RuneProp {
+    pub name: String,
+    pub local: String,
+    pub default: Option<String>,
+    pub bindable: bool,
 }
 
 /// The rune called by the whole of `t[s..e]`, as `$name` or `$name.member`,
@@ -788,12 +799,48 @@ fn shorthand(src: &str, t: &[Token], k: usize) -> bool {
 
 /// Whether the name at `k` is assigned to (`=`, `+=`, `++`, ...).
 fn written(src: &str, t: &[Token], k: usize) -> bool {
-    let next = t.get(k + 1).map_or("", |n| n.text(src));
-    let prev = k.checked_sub(1).map_or("", |p| t[p].text(src));
+    // `(x) = v` writes x too.
+    let (mut a, mut b) = (k, k + 1);
+    let text = |j: usize| t.get(j).map_or("", |n| n.text(src));
+    while a > 0 && text(a - 1) == "(" && text(b) == ")" {
+        (a, b) = (a - 1, b + 1);
+    }
+    let next = text(b);
+    let prev = a.checked_sub(1).map_or("", text);
     matches!(prev, "++" | "--")
         || matches!(next, "++" | "--")
         || (next.ends_with('=')
             && !matches!(next, "==" | "===" | "!=" | "!==" | "<=" | ">=" | "=>"))
+}
+
+/// A string, number, boolean or null literal: a value nothing can change
+/// inside.
+fn is_primitive(src: &str, tok: Token) -> bool {
+    match tok.kind {
+        Kind::Number | Kind::String => true,
+        Kind::Template => !tok.text(src).contains("${"),
+        Kind::Ident => matches!(tok.text(src), "true" | "false" | "null"),
+        _ => false,
+    }
+}
+
+/// Whether the variable `name` of a script is assigned to, in `src` (its
+/// tokens `t`, declared at `decl`) or in any of `more`, other than where
+/// something inside declares a name of its own.
+fn assigned(name: &str, decl: usize, src: &str, t: &[Token], more: &[&str]) -> bool {
+    let hit = |s: &str, t: &[Token], skip: usize| {
+        let own = bound(s, t);
+        (0..t.len()).any(|k| {
+            k != skip
+                && t[k].kind == Kind::Ident
+                && !t[k].member
+                && !t[k].key
+                && !own[k]
+                && t[k].text(s) == name
+                && written(s, t, k)
+        })
+    };
+    hit(src, t, decl) || more.iter().any(|m| hit(m, &tokens(m), usize::MAX))
 }
 
 /// A component's `$props()`, if its script has one. It must be the
@@ -821,42 +868,76 @@ pub fn props_rune(src: &str) -> Result<Option<PropsRune>, (usize, String)> {
     let Some(open) = open.filter(|_| is(k + 1, "(") && is(k + 2, ")")) else {
         return Err((t[k].start, usage.into()));
     };
-    let mut props = Vec::new();
+    let mut props: Vec<RuneProp> = Vec::new();
+    let mut rest = None;
+    let name_at = |j: usize| {
+        t.get(j)
+            .filter(|n| {
+                n.kind == Kind::Ident
+                    && !is_reserved(n.text(src))
+                    && !n.text(src).starts_with(['$', '#'])
+            })
+            .map(|n| n.text(src).to_string())
+    };
     let mut a = open + 1;
     while a < k - 2 {
         let b = (a..k - 2)
             .find(|&j| t[j].depth == 1 && is(j, ","))
             .unwrap_or(k - 2);
-        let name = t[a].text(src);
+        if rest.is_some() {
+            return Err((t[a].start, "`...rest` comes last in `$props()`".into()));
+        }
         if is(a, "...") {
-            return Err((
-                t[a].start,
-                "name each prop in `$props()`: `...rest` is not supported".into(),
-            ));
+            match name_at(a + 1).filter(|_| b == a + 2) {
+                Some(r) => rest = Some(r),
+                None => return Err((t[a].start, "`...` takes a name: `...rest`".into())),
+            }
+            a = b + 1;
+            continue;
         }
-        if t[a].kind != Kind::Ident || is_reserved(name) || name.starts_with('$') {
-            return Err((t[a].start, usage.into()));
-        }
-        if is(a + 1, ":") {
-            return Err((
-                t[a].start,
-                format!("a prop keeps its name in `$props()`: write `{name}`"),
-            ));
-        }
-        let (default, bindable) = if b == a + 1 {
+        // A reserved word is a prop's name only when read as another:
+        // `class: cls`.
+        let name = match name_at(a) {
+            Some(n) => n,
+            None if t[a].kind == Kind::Ident && is(a + 1, ":") => t[a].text(src).to_string(),
+            None => return Err((t[a].start, usage.into())),
+        };
+        // `name: local` reads the prop as another variable.
+        let (local, v) = if is(a + 1, ":") {
+            match name_at(a + 2) {
+                Some(l) => (l, a + 3),
+                None => {
+                    return Err((
+                        t[a].start,
+                        format!("`{name}:` takes the name to read it as: `{name}: other`"),
+                    ));
+                }
+            }
+        } else {
+            (name.clone(), a + 1)
+        };
+        let (default, bindable) = if b == v {
             (None, false)
-        } else if is(a + 1, "=") && a + 2 < b {
-            match rune_call(src, &t, a + 2, b) {
+        } else if is(v, "=") && v + 1 < b {
+            match rune_call(src, &t, v + 1, b) {
                 Some(("$bindable", o, c)) => (
                     (c > o + 1).then(|| src[t[o + 1].start..t[c - 1].end].to_string()),
                     true,
                 ),
-                _ => (Some(src[t[a + 2].start..t[b - 1].end].to_string()), false),
+                _ => (Some(src[t[v + 1].start..t[b - 1].end].to_string()), false),
             }
         } else {
             return Err((t[a].start, usage.into()));
         };
-        props.push((name.to_string(), default, bindable));
+        if props.iter().any(|p| p.name == name) {
+            return Err((t[a].start, format!("`{name}` is in `$props()` twice")));
+        }
+        props.push(RuneProp {
+            name,
+            local,
+            default,
+            bindable,
+        });
         a = b + 1;
     }
     let end = if is(k + 3, ";") {
@@ -867,6 +948,7 @@ pub fn props_rune(src: &str) -> Result<Option<PropsRune>, (usize, String)> {
     Ok(Some(PropsRune {
         span: (t[open - 1].start, end),
         props,
+        rest,
     }))
 }
 
@@ -911,6 +993,10 @@ fn apply(src: &str, mut edits: Vec<(usize, usize, String)>) -> String {
     let mut out = String::with_capacity(src.len() + edits.len() * 8);
     let mut at = 0;
     for (s, e, text) in edits {
+        // Code the scan misread can give overlapping edits: the first wins.
+        if s < at {
+            continue;
+        }
         out.push_str(&src[at..s]);
         out.push_str(&text);
         at = e;
@@ -987,6 +1073,7 @@ pub fn script(
     src: &str,
     params: &[String],
     release: bool,
+    extra: &[&str],
 ) -> Result<(String, Reactive), (usize, String)> {
     let t = tokens(src);
     let mut edits: Vec<(usize, usize, String)> = Vec::new();
@@ -1020,7 +1107,8 @@ pub fn script(
                 break;
             }
             let simple = after == j + 1;
-            let init = is(after, "=").then(|| (after + 1, expr_end(src, &t, after + 1)));
+            let init = (is(after, "=") && after + 1 < t.len())
+                .then(|| (after + 1, expr_end(src, &t, after + 1)));
             let end = init.map_or(after, |(_, e)| e);
             let rune = init.and_then(|(s, e)| rune_call(src, &t, s, e));
             let name = t[j].text(src);
@@ -1059,6 +1147,14 @@ pub fn script(
                     }
                 }
                 _ if !is_let => {}
+                // Set once to a string, number, boolean or null and never
+                // again (here or in `extra`): a constant, not a signal.
+                None if simple
+                    && init.is_some_and(|(s, e)| e == s + 1 && is_primitive(src, t[s]))
+                    && !assigned(name, j, src, &t, extra) =>
+                {
+                    skip.push(j);
+                }
                 _ if simple => {
                     skip.push(j);
                     r.state.push(name.into());
@@ -1096,6 +1192,55 @@ pub fn script(
             j = end + 1;
         }
         k = j.max(k + 1);
+    }
+
+    // A class's `count = $state(0)` field is a private signal behind a
+    // getter and setter (a `$derived` one, a getter), so its instances are
+    // state too.
+    for k in 0..t.len() {
+        if t[k].member || !t[k].is(src, Kind::Ident, "class") {
+            continue;
+        }
+        let Some(open) = (k + 1..t.len()).find(|&j| t[j].depth == t[k].depth && is(j, "{")) else {
+            continue;
+        };
+        let body = close(&t, open);
+        let d = t[open].depth + 1;
+        for j in open + 1..body {
+            let f = t[j];
+            let starts = f.depth == d
+                && f.kind == Kind::Ident
+                && !f.text(src).starts_with('#')
+                && (j == open + 1 || f.newline || is(j - 1, ";"))
+                && is(j + 1, "=");
+            let p = if is(j + 3, "(") { j + 3 } else { j + 5 };
+            if !starts || !is(p, "(") {
+                continue;
+            }
+            let e = close(&t, p) + 1;
+            if e > t.len() {
+                continue;
+            }
+            let Some((kind, o, c)) = rune_call(src, &t, j + 2, e) else {
+                continue;
+            };
+            let (head, tail, set) = match kind {
+                "$state" => ("__wisp_s(", ")", true),
+                "$state.raw" => ("__wisp_r(", ")", true),
+                "$derived" if c > o + 1 => ("__wisp_d(() => (", "))", false),
+                "$derived.by" if c > o + 1 => ("__wisp_d(", ")", false),
+                _ => continue,
+            };
+            let name = f.text(src);
+            let mut access = format!("; get {name}() {{ return this.#w_{name}.v }}");
+            if set {
+                access.push_str(&format!(" set {name}(v) {{ this.#w_{name}.v = v }}"));
+            }
+            edits.push((f.start, f.end, format!("#w_{name}")));
+            edits.push((t[j + 2].start, t[o].end, head.into()));
+            edits.push((t[c].start, t[c].end, format!("{tail}{access}")));
+            skip.extend([j, j + 2]);
+        }
     }
 
     // The other runes, where they may be.
@@ -1208,6 +1353,53 @@ pub fn rewrite(src: &str, r: &Reactive) -> Result<String, (usize, String)> {
     Ok(apply(src, edits))
 }
 
+/// `src` without its comments and the whitespace JavaScript does not need,
+/// for what release builds serve. A line break stays only where taking it
+/// out could join two statements (after a value, before one), so no
+/// semicolon the source leaves out is lost.
+pub fn minify(src: &str) -> String {
+    let mut out = String::with_capacity(src.len() / 2);
+    let mut prev: Option<Token> = None;
+    for tok in tokens(src) {
+        let text = tok.text(src);
+        if let Some(p) = prev {
+            let pt = p.text(src);
+            let ends = matches!(
+                p.kind,
+                Kind::Ident | Kind::Number | Kind::String | Kind::Regex
+            ) || (p.kind == Kind::Template && pt.ends_with('`'))
+                || matches!(pt, ")" | "]" | "}" | "++" | "--");
+            let starts = matches!(
+                tok.kind,
+                Kind::Ident | Kind::Number | Kind::String | Kind::Regex
+            ) || (tok.kind == Kind::Template && text.starts_with('`'))
+                || matches!(text, "++" | "--" | "!" | "~");
+            let (l, f) = (pt.as_bytes()[pt.len() - 1], text.as_bytes()[0]);
+            if tok.newline && ends && starts {
+                out.push('\n');
+            } else if (ident_byte(l) && (ident_byte(f) || f == b'#'))
+                || (p.kind == Kind::Regex && ident_byte(f))
+                // A number goes on through letters, digits, dots and an
+                // exponent's sign.
+                || (p.kind == Kind::Number
+                    && (ident_byte(f) || f == b'.' || (matches!(l, b'e' | b'E') && matches!(f, b'+' | b'-'))))
+                || (l == b'.' && f.is_ascii_digit())
+                // Two marks that would read as one: `* *`, `+ +`, `/ /re/`.
+                || (!ident_byte(l)
+                    && !ident_byte(f)
+                    && ([l, f] == *b"/*"
+                        || [l, f] == *b"//"
+                        || PUNCTS.iter().any(|p| p.as_bytes().windows(2).any(|w| w == [l, f]))))
+            {
+                out.push(' ');
+            }
+        }
+        out.push_str(text);
+        prev = Some(tok);
+    }
+    out
+}
+
 /// `src` with each range replaced by spaces, its line breaks kept, so the
 /// rest keeps its line numbers.
 pub fn blank(src: &str, ranges: &[(usize, usize)]) -> String {
@@ -1315,7 +1507,7 @@ mod tests {
                    let big = $derived.by(() => {\n  return n > 9\n})\nlet list = $state([1])\nconst raw = $state.raw({ a: 1 })\n\
                    function inc(k) { n++; list.push(n); return { n, k, m: data.x } }\n$effect(() => console.log(double, $cart))\n\
                    $effect.pre(() => {})\nconst plain = $state.snapshot(list)\nlet { a, b: c } = data.y\n$inspect(n, list)";
-        let (out, r) = script(src, &data, false).unwrap();
+        let (out, r) = script(src, &data, false, &[]).unwrap();
         assert_eq!(
             out,
             "import { cart } from '$lib/cart.js'\nlet n = __wisp_s(0), m = __wisp_s()\nconst k = 1\nlet double = __wisp_d(() => (n.v * 2))\n\
@@ -1330,13 +1522,37 @@ mod tests {
         );
         assert_eq!(r.derived, ["double", "big"]);
         // Release drops `$inspect`, keeping the lines.
-        let (out, _) = script("let n = 1\n$inspect(\n  n\n)\nn", &[], true).unwrap();
-        assert_eq!(out, "let n = __wisp_s(1)\nvoid 0\n\n\nn.v");
+        let (out, _) = script("let n = 1\n$inspect(\n  n\n)\nn++", &[], true, &[]).unwrap();
+        assert_eq!(out, "let n = __wisp_s(1)\nvoid 0\n\n\nn.v++");
+        // Set to a literal and never again, here or in `extra`: a constant.
+        let (out, r2) = script(
+            "let a = 1, b = 'x', c = 2\nf(a, b, c)",
+            &[],
+            false,
+            &["(_, v) => { c = v }"],
+        )
+        .unwrap();
+        assert_eq!(out, "let a = 1, b = 'x', c = __wisp_s(2)\nf(a, b, c.v)");
+        assert_eq!(r2.state, ["c"]);
+        // State fields of a class.
+        let (out, _) = script(
+            "class T {\n  done = $state(false)\n  n = $derived(this.done ? 1 : 0);\n  go() { this.done = true }\n}",
+            &[],
+            false,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            "class T {\n  #w_done = __wisp_s(false); get done() { return this.#w_done.v } set done(v) { this.#w_done.v = v }\n  \
+             #w_n = __wisp_d(() => (this.done ? 1 : 0)); get n() { return this.#w_n.v };\n  go() { this.done = true }\n}"
+        );
         // A block is no object: `{ n = 2 }` in a body assigns.
         let (out, _) = script(
             "let n = 1\nfunction f() { n = 2 }\nconst o = { n }",
             &[],
             false,
+            &[],
         )
         .unwrap();
         assert_eq!(
@@ -1364,7 +1580,7 @@ mod tests {
             ("$host()", "$host"),
             ("let { a } = $props()", "$props"),
         ] {
-            let (off, msg) = script(bad, &[], false).unwrap_err();
+            let (off, msg) = script(bad, &[], false, &[]).unwrap_err();
             assert!(
                 bad[off..].starts_with(what) && msg.contains('`'),
                 "{bad}: {msg}"
@@ -1381,20 +1597,35 @@ mod tests {
             &src[p.span.0..p.span.1],
             "let { title, count = 0, open = $bindable(), n = $bindable(f(1, 2)) } = $props();"
         );
+        let got: Vec<(&str, Option<&str>, bool)> = p
+            .props
+            .iter()
+            .map(|x| (x.name.as_str(), x.default.as_deref(), x.bindable))
+            .collect();
         assert_eq!(
-            p.props,
+            got,
             [
-                ("title".into(), None, false),
-                ("count".into(), Some("0".into()), false),
-                ("open".into(), None, true),
-                ("n".into(), Some("f(1, 2)".into()), true),
+                ("title", None, false),
+                ("count", Some("0"), false),
+                ("open", None, true),
+                ("n", Some("f(1, 2)"), true),
             ]
         );
+        // Renamed, and the rest.
+        let p = props_rune("let { class: cls = 'x', ...rest } = $props()")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (p.props[0].name.as_str(), p.props[0].local.as_str()),
+            ("class", "cls")
+        );
+        assert_eq!(p.rest.as_deref(), Some("rest"));
         assert_eq!(props_rune("let x = 1").unwrap(), None);
         for bad in [
             "const p = $props()",
-            "let { ...rest } = $props()",
-            "let { a: b } = $props()",
+            "let { ...rest, a } = $props()",
+            "let { a: 1 } = $props()",
+            "let { a, a } = $props()",
             "f($props())",
         ] {
             assert!(props_rune(bad).is_err(), "{bad}");
@@ -1560,5 +1791,159 @@ mod tests {
         assert_eq!(each("x of xs"), None);
         assert_eq!(each("x in"), None);
         assert_eq!(each("if in xs"), None);
+    }
+
+    /// Deterministic pseudo-random numbers: xorshift64.
+    pub(crate) struct Rng(pub u64);
+
+    impl Rng {
+        pub fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+
+        /// Text of `n` pieces picked from `from`.
+        pub fn text(&mut self, from: &[&str], n: usize) -> String {
+            (0..n)
+                .map(|_| from[self.next() as usize % from.len()])
+                .collect()
+        }
+    }
+
+    const PIECES: &[&str] = &[
+        "let ",
+        "const ",
+        "var ",
+        "x",
+        "y",
+        "data",
+        ".",
+        "?.",
+        "(",
+        ")",
+        "[",
+        "]",
+        "{",
+        "}",
+        ",",
+        ";",
+        ":",
+        "=",
+        "=>",
+        "+",
+        "++",
+        "-",
+        "/",
+        "*",
+        "!",
+        "?",
+        " ",
+        "\n",
+        "'",
+        "\"",
+        "`",
+        "${",
+        "\\",
+        "/*",
+        "*/",
+        "//",
+        "1",
+        "0x1f",
+        "1e-3",
+        "$state(",
+        "$derived(",
+        "$derived.by(",
+        "$effect(",
+        "$props()",
+        "$bindable(",
+        "$inspect(",
+        "$cart",
+        "...",
+        "class ",
+        "function ",
+        "return ",
+        "import ",
+        "from ",
+        "export ",
+        "é",
+        "😀",
+        "#p",
+        "this",
+        "new ",
+        "async ",
+        "in ",
+        "of ",
+        "for ",
+        "if ",
+        "else ",
+        "catch ",
+        "get ",
+        "static ",
+        "=",
+        "a = $state(0)",
+        "{ a, b: c = 1, ...r }",
+        "/re/g",
+        "`a${b}c`",
+    ];
+
+    /// Random scripts, well formed or not: the tokenizer and everything
+    /// built on it never panic, and minified code tokenizes the same.
+    #[test]
+    fn fuzz_never_panics() {
+        let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+        let r = Reactive {
+            state: vec!["x".into(), "data".into()],
+            derived: vec!["y".into()],
+            stores: vec!["cart".into()],
+        };
+        for round in 0..4000 {
+            let src = rng.text(PIECES, 1 + round % 40);
+            let t = tokens(&src);
+            assert!(
+                t.iter().all(|k| k.start < k.end && k.end <= src.len()),
+                "{src:?}"
+            );
+            let _ = chains(&src);
+            let _ = declarations(&src);
+            let _ = imports(&src);
+            let _ = props_rune(&src);
+            let _ = script(&src, &r.state, round % 2 == 0, &["x = 1"]);
+            let _ = rewrite(&src, &r);
+            let _ = (initializer(&src, "x"), plain_init(&src), each(&src));
+            let _ = (
+                is_path(&src),
+                is_statements(&src),
+                ends_in_line_comment(&src),
+            );
+            let min = minify(&src);
+            // Unterminated strings end at a line break, which minifying can
+            // take away; elsewhere the tokens are the same.
+            if !src.contains(['\'', '"', '`', '\\']) {
+                let a: Vec<&str> = t.iter().map(|k| k.text(&src)).collect();
+                let b: Vec<&str> = tokens(&min).iter().map(|k| k.text(&min)).collect();
+                assert_eq!(a, b, "{src:?} -> {min:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn minify_keeps_statements_apart() {
+        assert_eq!(
+            minify(
+                "// c\nlet a = 1\nlet b = a\n/* x */ return\nb\nx = y\n++z\nf(1) / 2\nq = /re/ in o"
+            ),
+            "let a=1\nlet b=a\nreturn\nb\nx=y\n++z\nf(1)/2\nq=/re/ in o"
+        );
+        assert_eq!(
+            minify("a + +b - -c; 1 .x; `a ${ b } c`"),
+            "a+ +b- -c;1 .x;`a ${b} c`"
+        );
+        // The runtime's extra half, as release builds serve it.
+        let src = include_str!("extra.js");
+        let texts =
+            |s: &str| -> Vec<String> { tokens(s).iter().map(|t| t.text(s).to_string()).collect() };
+        assert_eq!(texts(src), texts(&minify(src)));
     }
 }

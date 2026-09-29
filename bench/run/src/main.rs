@@ -54,7 +54,7 @@ const SERVERS: &[Server] = &[
         args: &[],
         threads: "WISP_THREADS",
         env: &[("HOST", "127.0.0.1")],
-        extra: &[],
+        extra: &["/json"],
     },
     Server {
         name: "ASP.NET Core",
@@ -70,7 +70,7 @@ const SERVERS: &[Server] = &[
         args: &["actix"],
         threads: "THREADS",
         env: &[],
-        extra: &[],
+        extra: &["/json"],
     },
     Server {
         name: "Axum",
@@ -78,7 +78,7 @@ const SERVERS: &[Server] = &[
         args: &["axum"],
         threads: "THREADS",
         env: &[],
-        extra: &[],
+        extra: &["/json"],
     },
     Server {
         name: "Go net/http",

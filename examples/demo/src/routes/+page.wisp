@@ -1,7 +1,26 @@
-<wisp:head>
+---
+// The count lives in a cookie, so every visitor has their own and it
+// survives a reload. The buttons post to the actions: without JavaScript
+// that is a normal form post; with it, wisp.js sends it in the background
+// and updates the page in place.
+let count: i64 = cx.cookie_or("count", 0);
+
+#[action]
+fn increment() {
+    let count: i64 = cx.cookie_or("count", 0);
+    cx.set_cookie("count", count + 1);
+}
+
+#[action]
+fn decrement() {
+    let count: i64 = cx.cookie_or("count", 0);
+    cx.set_cookie("count", count - 1);
+}
+---
+<head>
   <title>Home</title>
   <meta name="description" content="Your new Wisp app">
-</wisp:head>
+</head>
 
 <section class="welcome">
   <!-- Decoration, with two things to find: it watches the pointer, and it

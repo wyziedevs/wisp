@@ -117,6 +117,7 @@ const DEPTH: u32 = 128;
 /// column 9`.
 pub fn parse(text: &str) -> Result<Value, String> {
     let mut p = Parser {
+        s: text,
         b: text.as_bytes(),
         i: 0,
         depth: 0,
@@ -137,6 +138,7 @@ pub fn parse(text: &str) -> Result<Value, String> {
 }
 
 struct Parser<'a> {
+    s: &'a str,
     b: &'a [u8],
     i: usize,
     depth: u32,
@@ -270,28 +272,36 @@ impl Parser<'_> {
         {
             return Err("expected a number");
         }
-        // Only ASCII was taken, so this slice is text.
-        Ok(Value::Number(
-            String::from_utf8_lossy(&self.b[start..self.i]).into_owned(),
-        ))
+        // Only ASCII was taken, so these are character boundaries.
+        Ok(Value::Number(self.s[start..self.i].to_string()))
     }
 
-    /// A string, at its opening quote.
+    /// A string, at its opening quote. Runs of plain text are copied whole:
+    /// they start and end at ASCII bytes, so at character boundaries of the
+    /// text, which is UTF-8 already.
     fn string(&mut self) -> Result<String, &'static str> {
         self.i += 1;
-        let mut out = Vec::new();
+        let mut out = String::new();
         loop {
+            let run = self.i;
+            while self
+                .peek()
+                .is_some_and(|b| b != b'"' && b != b'\\' && b >= 0x20)
+            {
+                self.i += 1;
+            }
+            out.push_str(&self.s[run..self.i]);
             let Some(b) = self.peek() else {
                 return Err("unterminated string");
             };
             self.i += 1;
             match b {
-                b'"' => break,
+                b'"' => return Ok(out),
                 0..0x20 => {
                     self.i -= 1;
                     return Err("control character in a string");
                 }
-                b'\\' => {
+                _ => {
                     let Some(e) = self.peek() else {
                         return Err("unterminated string");
                     };
@@ -327,13 +337,10 @@ impl Parser<'_> {
                             return Err("unknown escape");
                         }
                     };
-                    out.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes());
+                    out.push(c);
                 }
-                _ => out.push(b),
             }
         }
-        // The input was a `&str` and escapes add whole characters.
-        String::from_utf8(out).map_err(|_| "invalid UTF-8")
     }
 
     fn hex4(&mut self) -> Result<u32, &'static str> {
@@ -341,11 +348,10 @@ impl Parser<'_> {
             .b
             .get(self.i..self.i + 4)
             .ok_or("expected 4 hex digits")?;
-        let text = std::str::from_utf8(digits).map_err(|_| "expected 4 hex digits")?;
-        let n = u32::from_str_radix(text, 16).map_err(|_| "expected 4 hex digits")?;
-        if text.starts_with('+') {
-            return Err("expected 4 hex digits");
-        }
+        let n = digits
+            .iter()
+            .try_fold(0, |n, &d| Some(n << 4 | (d as char).to_digit(16)?))
+            .ok_or("expected 4 hex digits")?;
         self.i += 4;
         Ok(n)
     }
@@ -377,6 +383,17 @@ impl Problems {
             self.at.push('.');
         }
         self.at.push_str(segment);
+        let out = T::from_json(v, self);
+        self.at.truncate(len);
+        out
+    }
+
+    /// [`Problems::read`] for item `i` of an array, without a `String` for
+    /// its `[i]`.
+    fn item<T: FromJson>(&mut self, i: usize, v: &Value) -> Option<T> {
+        use std::fmt::Write;
+        let len = self.at.len();
+        let _ = write!(self.at, "[{i}]");
         let out = T::from_json(v, self);
         self.at.truncate(len);
         out
@@ -587,7 +604,7 @@ impl<T: FromJson> FromJson for Vec<T> {
         let mut out = Vec::with_capacity(items.len());
         let mut ok = true;
         for (i, item) in items.iter().enumerate() {
-            match p.read(&format!("[{i}]"), item) {
+            match p.item(i, item) {
                 Some(x) if ok => out.push(x),
                 Some(_) => {}
                 None => ok = false,
@@ -796,6 +813,61 @@ mod tests {
             parse(&("[".repeat(100) + &"]".repeat(100))).map(|_| ()),
             Ok(())
         );
+    }
+
+    use crate::fuzz::{Rng, mutate};
+
+    fn any_value(rng: &mut Rng, depth: u32) -> Value {
+        match rng.below(if depth > 4 { 4 } else { 6 }) {
+            0 => Value::Null,
+            1 => Value::Bool(rng.one_in(2)),
+            2 => Value::Number(
+                rng.pick(&[
+                    "0",
+                    "-0",
+                    "7",
+                    "-12.5e-3",
+                    "1E+400",
+                    "18446744073709551616",
+                    "0.1",
+                ])
+                .into(),
+            ),
+            3 => Value::String(rng.text(12)),
+            4 => Value::Array(
+                (0..rng.below(4))
+                    .map(|_| any_value(rng, depth + 1))
+                    .collect(),
+            ),
+            _ => Value::Object(
+                (0..rng.below(4))
+                    .map(|_| (rng.text(6), any_value(rng, depth + 1)))
+                    .collect(),
+            ),
+        }
+    }
+
+    #[test]
+    fn any_value_reads_back_and_broken_text_never_panics() {
+        let mut rng = Rng::new(30);
+        for _ in 0..5000 {
+            let v = any_value(&mut rng, 0);
+            let text = to_json(&v);
+            assert_eq!(parse(&text).as_ref(), Ok(&v), "{text}");
+            let spaced = format!(" \n{text}\t\r");
+            assert_eq!(parse(&spaced).as_ref(), Ok(&v), "{spaced}");
+            for _ in 0..4 {
+                let mut broken = text.clone().into_bytes();
+                mutate(&mut rng, &mut broken);
+                if let Ok(text) = std::str::from_utf8(&broken) {
+                    let _ = parse(text);
+                }
+                let _ = from_json::<Vec<BTreeMap<String, Option<i64>>>>(&broken);
+            }
+        }
+        // Deep nesting is refused, not a stack overflow, however it is mixed.
+        let deep = "[{\"a\":".repeat(10_000);
+        assert!(parse(&deep).unwrap_err().starts_with("nested too deeply"));
     }
 
     #[test]
