@@ -450,14 +450,28 @@ impl Response {
         F: FnOnce(Sender) -> Fut,
         Fut: Future<Output = Result<(), Gone>> + Send + 'static,
     {
-        let (tx, rx) = tokio::sync::mpsc::channel(16);
-        let mut res = Response::new(content_type, Vec::new());
-        res.stream = Some(rx);
-        let task = body(Sender(tx));
+        let (res, tx) = Response::channel(content_type);
+        let task = body(tx);
         spawn(async move {
             let _ = task.await; // `Gone`: the client left, which ends it too
         });
         res
+    }
+
+    /// [`Response::stream`] for a body written from elsewhere: the response
+    /// and the [`Sender`] that writes it, which ends when it is dropped.
+    /// This is what `Response::stream` was before it took a closure.
+    pub fn channel(content_type: impl Into<Cow<'static, str>>) -> (Response, Sender) {
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        let mut res = Response::new(content_type, Vec::new());
+        res.stream = Some(rx);
+        (res, Sender(tx))
+    }
+
+    /// Sends the browser to `location` with a GET (303): the answer of an
+    /// endpoint that does not return a `Result`. Panics on CR/LF in it.
+    pub fn redirect(location: impl Into<String>) -> Response {
+        Response::empty(303).with_header("location", location)
     }
 
     /// No body, only a status (and the headers added to it):
@@ -547,10 +561,24 @@ impl Response {
         F: FnOnce(Sender) -> Fut,
         Fut: Future<Output = Result<(), Gone>> + Send + 'static,
     {
+        let (res, tx) = Response::event_channel();
+        let task = send(tx);
+        spawn(async move {
+            let _ = task.await;
+        });
+        res
+    }
+
+    /// [`Response::events`] with the [`Sender`] handed back, as it was
+    /// before `events` took a closure.
+    pub fn event_channel() -> (Response, Sender) {
+        let (res, tx) = Response::channel("text/event-stream");
         // `x-accel-buffering` stops nginx from holding events back.
-        Response::stream("text/event-stream", send)
-            .with_header("cache-control", "no-store")
-            .with_header("x-accel-buffering", "no")
+        (
+            res.with_header("cache-control", "no-store")
+                .with_header("x-accel-buffering", "no"),
+            tx,
+        )
     }
 
     pub fn text(body: impl Into<String>) -> Response {

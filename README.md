@@ -58,7 +58,7 @@ fn add(cx: &mut Cx, by: i64) {
 </form>
 ```
 
-No `use` lines and no `pub`: Wisp brings in what route files need. A parameter other than `cx` is read from the request by its name (a route parameter, a form field, or the query), so `by` above is the button's value. Page functions can also be `async`, and can return a `Result` so `?` works inside them; `return error(404, "No such post")` and `return redirect("/login")` stop one early.
+No `use` lines and no `pub`: Wisp brings in what route files need. A parameter other than `cx` is read from the request by its name (a route parameter, a form field, or the query), so `by` above is the button's value. Page functions can also be `async`, and can return a `Result` so `?` works inside them; `return error(404, "No such post")` and `return redirect("/login")` stop one early (they return the `Result` themselves, so not `Err(error(..))`; the build says so if you write it). Docs, `#![…]` attributes, `use` lines and `pub` are all still fine.
 
 ## Reactivity
 

@@ -233,6 +233,19 @@ impl Cx {
         std::str::from_utf8(&self.buf[v.range()]).ok()
     }
 
+    /// The `Host` header: `example.com` or `localhost:3000`.
+    pub fn host(&self) -> Option<&str> {
+        self.header("host")
+    }
+
+    /// The token of an `Authorization: Bearer <token>` header, for APIs.
+    pub fn bearer(&self) -> Option<&str> {
+        let v = self.header("authorization")?;
+        let (scheme, token) = v.split_once(' ')?;
+        let token = token.trim();
+        (scheme.eq_ignore_ascii_case("bearer") && !token.is_empty()).then_some(token)
+    }
+
     /// Every request header as `(name, value)`, in the order sent. Values
     /// that are not UTF-8 are left out.
     pub fn headers(&self) -> impl Iterator<Item = (&str, &str)> {
@@ -380,6 +393,11 @@ impl Cx {
     /// `\`, control or non-ASCII); encode such values first.
     pub fn set_cookie(&mut self, name: &str, value: impl std::fmt::Display) {
         self.set_cookie_with(name, value, CookieOptions::default());
+    }
+
+    /// Deletes a cookie the site set: `cx.delete_cookie("user")`.
+    pub fn delete_cookie(&mut self, name: &str) {
+        self.set_cookie(name, "");
     }
 
     /// Sets a cookie a visitor cannot forge or change, read back with
@@ -755,6 +773,18 @@ mod tests {
                 .starts_with("wisp-flash=; Path=/; Max-Age=0;")
         );
         assert_eq!(cx_for("GET / HTTP/1.1\r\n\r\n").flashed(), None);
+    }
+
+    #[test]
+    fn bearer_host_and_deleting() {
+        let mut cx = cx_for(
+            "GET / HTTP/1.1\r\nHost: a.test:80\r\nAuthorization: bearer  tok\r\nCookie: a=1\r\n\r\n",
+        );
+        assert_eq!((cx.host(), cx.bearer()), (Some("a.test:80"), Some("tok")));
+        let basic = cx_for("GET / HTTP/1.1\r\nAuthorization: Basic x\r\n\r\n");
+        assert_eq!(basic.bearer(), None);
+        cx.delete_cookie("a");
+        assert_eq!(cx.cookie("a"), None);
     }
 
     fn cx_for(raw: &str) -> Cx {

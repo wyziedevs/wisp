@@ -64,8 +64,11 @@ pub struct Items {
     pub types: Vec<TypeItem>,
     pub consts: Vec<ConstItem>,
     /// The line of the first inner attribute or doc comment (`#![…]`,
-    /// `//!`), which a file Wisp includes into a module cannot have.
+    /// `//!`) after the file's first item: those belong at the top.
     pub inner: Option<usize>,
+    /// The first `Err(error(..))` or the like, from before `error()` and
+    /// `redirect()` returned the `Result` themselves: line and function.
+    old_call: Option<(usize, &'static str)>,
 }
 
 impl Items {
@@ -84,9 +87,7 @@ impl Items {
     }
 
     /// Why the file cannot be a route file (or `src/hooks.rs`), if it
-    /// cannot: Wisp includes it into a module of its own, with the prelude,
-    /// so it cannot start with `//!` docs or `#![…]` attributes, and its
-    /// `load` must return the `Data` the template reads.
+    /// cannot: its `load` must return the `Data` the template reads.
     pub fn check(&self) -> Result<(), String> {
         self.check_inner()?;
         let Some(load) = self.function("load") else {
@@ -110,15 +111,25 @@ impl Items {
         Ok(())
     }
 
-    /// The file has no `//!` docs or `#![…]` attributes, which a file Wisp
-    /// includes into a module cannot have.
+    /// The file has `//!` docs and `#![…]` attributes only at its top, and
+    /// no `Err(error(..))`, which `error()` returning the `Result` broke.
     pub fn check_inner(&self) -> Result<(), String> {
-        match self.inner {
-            Some(line) => Err(format!(
-                "{line}: Wisp includes this file into a module of its own, so it cannot have `//!` docs or `#![…]` \
-                 attributes; write `//` comments, or `///` on an item"
-            )),
-            None => Ok(()),
+        if let Some(line) = self.inner {
+            return Err(format!(
+                "{line}: `//!` docs and `#![…]` attributes go at the top of the file, before its first item"
+            ));
+        }
+        match self.old_call {
+            Some((line, name)) if !self.fns.iter().any(|f| f.name == name) => {
+                let error = match name {
+                    "error" => "Error::new(status, message)",
+                    _ => "Error::redirect(status, location)",
+                };
+                Err(format!(
+                    "{line}: `{name}()` returns the `Result` itself, so `Err({name}(..))` is a `Result` inside an `Err`.                      Write `return {name}(..)`, or `{error}` where the `Error` is wanted (`Err(..)`, `ok_or`, `map_err`)."
+                ))
+            }
+            _ => Ok(()),
         }
     }
 }
@@ -217,6 +228,7 @@ pub fn scan(src: &str) -> Result<Items, String> {
     let b = src.as_bytes();
     let mut items = Items::default();
     let mut depth = 0u32;
+    let lead = inner_end(src);
     let line = |at: usize| src[..at].matches('\n').count() + 1;
     // Seen since the last item ended.
     let mut action = false;
@@ -227,7 +239,7 @@ pub fn scan(src: &str) -> Result<Items, String> {
         let c = b[i];
         match c {
             b'/' if b.get(i + 1) == Some(&b'/') => {
-                if depth == 0 && b.get(i + 2) == Some(&b'!') {
+                if depth == 0 && i >= lead && b.get(i + 2) == Some(&b'!') {
                     items.inner.get_or_insert(line(i));
                 }
                 while i < b.len() && b[i] != b'\n' {
@@ -235,7 +247,7 @@ pub fn scan(src: &str) -> Result<Items, String> {
                 }
             }
             b'/' if b.get(i + 1) == Some(&b'*') => {
-                if depth == 0 && b.get(i + 2) == Some(&b'!') {
+                if depth == 0 && i >= lead && b.get(i + 2) == Some(&b'!') {
                     items.inner.get_or_insert(line(i));
                 }
                 i = skip_block_comment(b, i);
@@ -247,7 +259,7 @@ pub fn scan(src: &str) -> Result<Items, String> {
                 // Attribute: #[path] or #![path]. Record the marker, skip the rest.
                 let mut j = i + 1;
                 if b.get(j) == Some(&b'!') {
-                    if depth == 0 {
+                    if depth == 0 && i >= lead {
                         items.inner.get_or_insert(line(i));
                     }
                     j += 1;
@@ -289,6 +301,10 @@ pub fn scan(src: &str) -> Result<Items, String> {
                     i += 1;
                 }
                 match &src[start..i] {
+                    word @ ("error" | "redirect") if old_call(b, start, i) => {
+                        let name = if word == "error" { "error" } else { "redirect" };
+                        items.old_call.get_or_insert((line(start), name));
+                    }
                     "pub" if depth == 0 => public = true,
                     "async" if depth == 0 => is_async = true,
                     word @ ("const" | "static") if depth == 0 => {
@@ -576,6 +592,61 @@ fn skip_block_comment(b: &[u8], mut i: usize) -> usize {
     b.len()
 }
 
+/// Where the file's leading `//!` docs and `#![…]` attributes end (0 if it
+/// has none). A module can hold them only at its top, so the build splices
+/// what Wisp adds after them.
+pub fn inner_end(src: &str) -> usize {
+    let b = src.as_bytes();
+    let (mut i, mut end) = (0, 0);
+    loop {
+        while i < b.len() && b[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let rest = &src[i..];
+        if rest.starts_with("//!") || (rest.starts_with("//") && !rest.starts_with("///")) {
+            let doc = rest.starts_with("//!");
+            i += rest.find('\n').unwrap_or(rest.len());
+            if doc {
+                end = i;
+            }
+        } else if rest.starts_with("/*") && !rest.starts_with("/**") {
+            let doc = rest.starts_with("/*!");
+            i = skip_block_comment(b, i) + 1;
+            if doc {
+                end = i;
+            }
+        } else if rest.starts_with("#![") {
+            match matching_bracket(b, i + 2) {
+                Some(close) => (i, end) = (close + 1, close + 1),
+                None => return end,
+            }
+        } else {
+            return end;
+        }
+    }
+}
+
+/// Whether `error` or `redirect` at `start..end` is a call written the old
+/// way: inside `Err(`, `ok_or(` or a closure, which wants an `Error`.
+fn old_call(b: &[u8], start: usize, end: usize) -> bool {
+    if b.get(skip_space(b, end)) != Some(&b'(') {
+        return false;
+    }
+    let mut at = start;
+    let back = |mut at: usize| {
+        while at > 0 && b[at - 1].is_ascii_whitespace() {
+            at -= 1;
+        }
+        at
+    };
+    at = back(at);
+    if b[..at].ends_with(b"wisp::") {
+        at = back(at - 6);
+    }
+    let before = &b[..at];
+    before.ends_with(b"Err(") || before.ends_with(b"ok_or(") || before.ends_with(b"|")
+}
+
 /// The `]` that closes the `[` at `open`, if there is one.
 fn matching_bracket(b: &[u8], open: usize) -> Option<usize> {
     let mut depth = 0;
@@ -858,20 +929,89 @@ mod tests {
     }
 
     #[test]
-    fn inner_attributes_are_refused() {
+    fn inner_attributes_belong_at_the_top() {
         let check = |src: &str| scan(src).unwrap().check();
-        assert!(
-            check("//! Docs.\nfn a() {}")
-                .unwrap_err()
-                .starts_with("1: Wisp includes this file")
+        assert_eq!(
+            check(
+                "//! Docs.
+#![allow(dead_code)]
+fn a() {}"
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            check(
+                "// Hi
+/*! Docs. */
+#![allow(x)]
+fn a() {}"
+            ),
+            Ok(())
         );
         assert!(
-            check("fn a() {}\n#![allow(dead_code)]")
-                .unwrap_err()
-                .starts_with("2: ")
+            check(
+                "fn a() {}
+#![allow(dead_code)]"
+            )
+            .unwrap_err()
+            .starts_with("2: ")
         );
-        assert!(check("/*! Docs. */").is_err());
-        assert_eq!(check("/// An item's.\nfn a() { let s = \"//!\"; }"), Ok(()));
+        assert!(
+            check(
+                "fn a() {}
+//! late"
+            )
+            .is_err()
+        );
+        assert_eq!(
+            check(
+                "/// An item's.
+fn a() { let s = \"//!\"; }"
+            ),
+            Ok(())
+        );
+        let src = "//! A.
+#![allow(x)]
+
+use a;";
+        assert_eq!(
+            &src[..inner_end(src)],
+            "//! A.
+#![allow(x)]"
+        );
+        assert_eq!(
+            inner_end(
+                "use a;
+//! b"
+            ),
+            0
+        );
+        assert_eq!(
+            inner_end(
+                "// only
+fn a() {}"
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn the_old_error_calls_are_found() {
+        let check = |src: &str| scan(src).unwrap().check();
+        for src in [
+            "fn a() { return Err(error(404, \"x\")); }",
+            "fn a() { Err(wisp::redirect(\"/x\")) }",
+            "fn a() { x.ok_or(error(404, \"x\"))? }",
+            "fn a() { x.ok_or_else(|| error(404, \"x\"))? }",
+            "fn a() { x.map_err(|_| error(500, \"x\"))? }",
+        ] {
+            let e = check(src).unwrap_err();
+            assert!(e.contains("Result` inside an `Err`"), "{src}: {e}");
+        }
+        assert_eq!(check("fn a() { return error(404, \"x\"); }"), Ok(()));
+        assert_eq!(check("fn a() { Err(Error::new(404, \"x\")) }"), Ok(()));
+        assert_eq!(check("fn a() { Err(redirect_to(1)) }"), Ok(()));
+        assert_eq!(check("fn error(s: u8) {} fn a() { Err(error(4)) }"), Ok(()));
     }
 
     #[test]

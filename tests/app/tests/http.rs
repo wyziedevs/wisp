@@ -978,3 +978,11 @@ fn connection_cap() {
     }
     panic!("no slot came back");
 }
+
+#[test]
+fn long_form_route_files() {
+    let s = start();
+    // Docs, `#![…]`, explicit imports and `pub` are all still allowed.
+    assert!(body(&s.request("GET", "/compat?who=you", "", b"")).contains("hi you"));
+    assert_eq!(status(&s.request("GET", "/compat", "", b"")), 400);
+}

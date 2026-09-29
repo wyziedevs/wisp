@@ -43,11 +43,23 @@ pub fn run() {
     }
 }
 
+/// A source file's text with `\r\n` (Windows checkouts) as `\n` and no byte
+/// order mark, so that a template compiles to the same code either way.
+pub fn read_source(path: &Path) -> std::io::Result<String> {
+    let text = fs::read_to_string(path)?;
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+    Ok(if text.contains('\r') {
+        text.replace("\r\n", "\n")
+    } else {
+        text.to_string()
+    })
+}
+
 /// For `wisp dev`: the static chunks and shape of the template at `rel`
 /// (relative to the project root, `/`-separated). A running dev build can
 /// take new chunks without recompiling as long as the shape is unchanged.
 pub fn hot_chunks(root: &Path, rel: &str) -> Result<(Vec<String>, u64), String> {
-    let src = fs::read_to_string(root.join(rel)).map_err(|e| format!("{rel}: {e}"))?;
+    let src = read_source(&root.join(rel)).map_err(|e| format!("{rel}: {e}"))?;
     if rel == "src/app.html" {
         let parts = shell::split(&src).map_err(|e| format!("{rel}: {e}"))?;
         return Ok((parts.to_vec(), shell::SHAPE));
