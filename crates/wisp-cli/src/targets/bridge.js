@@ -42,13 +42,20 @@ export function wisp(module, env = {}) {
   let next = 0;
 
   async function start() {
-    const x = { pending: new Map(), retired: false };
+    // `work`: timers and fetches under way, which `idle` waits out.
+    const x = { pending: new Map(), streams: new Map(), retired: false, work: 0, idlers: [] };
     const mem = () => new Uint8Array(x.exports.memory.buffer);
     const copy = (p, n) => mem().slice(p, p + n);
     x.put = (bytes) => {
       const p = x.exports.wisp_buf(bytes.length); // may grow memory: view it after
       mem().set(bytes, p);
       return bytes.length;
+    };
+    x.idle = () => (x.work ? new Promise((r) => x.idlers.push(r)) : Promise.resolve());
+    // Runs `f` once `promise` settles, counted as work until then.
+    x.later = (promise, f) => {
+      x.work++;
+      promise.then(f).finally(() => --x.work || x.idlers.splice(0).forEach((r) => r()));
     };
     x.call = (f) => {
       try {
@@ -57,13 +64,18 @@ export function wisp(module, env = {}) {
         console.error(`wisp: the app failed (${e}); a new instance takes the next requests`);
         x.retired = true;
         const id = x.exports.wisp_current();
-        if (x.pending.has(id)) {
-          x.pending.get(id)(null);
+        const fail = (id) => {
+          x.pending.get(id)?.(null);
           x.pending.delete(id);
+          x.streams.get(id)?.error(e);
+          x.streams.delete(id);
+        };
+        if (id !== 0xffffffff) {
+          // One task trapped (a request's, or a `wisp::spawn`'s): the others go on.
+          fail(id);
           x.call(() => x.exports.wisp_poll());
         } else {
-          for (const done of x.pending.values()) done(null);
-          x.pending.clear();
+          [...x.pending.keys(), ...x.streams.keys()].forEach(fail);
         }
       }
     };
@@ -74,9 +86,31 @@ export function wisp(module, env = {}) {
         reply: (id, p, n) => {
           const done = x.pending.get(id);
           x.pending.delete(id);
-          done?.(decode(copy(p, n)));
+          const r = decode(copy(p, n));
+          if (r.first.endsWith(' stream')) {
+            r.body = new ReadableStream({
+              start: (c) => void x.streams.set(id, c),
+              // Deferred: the stream may pull from inside `chunk`, while the app runs.
+              pull: () => queueMicrotask(() => x.call(() => x.exports.wisp_pull(id))),
+              // The client left: dropping the request's task fails the app's sender.
+              cancel: () => x.streams.delete(id) && x.call(() => x.exports.wisp_cancel(id)),
+            });
+          }
+          done?.(r);
         },
-        fetch: (id, p, n) => void outbound(decode(copy(p, n))).then((b) => x.call(() => x.exports.wisp_fetched(id, x.put(b)))),
+        // 0 when the client is behind: the app waits for `wisp_pull`.
+        chunk: (id, p, n) => {
+          const c = x.streams.get(id);
+          if (n && c) {
+            c.enqueue(copy(p, n));
+            return c.desiredSize > 0 ? 1 : 0;
+          }
+          x.streams.delete(id);
+          c?.close();
+          return 1;
+        },
+        fetch: (id, p, n) => x.later(outbound(decode(copy(p, n))), (b) => x.call(() => x.exports.wisp_fetched(id, x.put(b)))),
+        timer: (id, ms) => x.later(new Promise((r) => setTimeout(r, ms)), () => x.call(() => x.exports.wisp_timer(id))),
       },
     };
     x.exports = (await WebAssembly.instantiate(module, imports)).exports;
@@ -102,30 +136,37 @@ export function wisp(module, env = {}) {
   }
 
   // One request as plain parts: { method, target, peer, headers: [[name, value]], body: Uint8Array }.
+  // The answer's body is a Uint8Array, or a ReadableStream for a streamed
+  // response. `idle` settles once the timers and fetches the app started
+  // (`wisp::spawn`, `wisp::sleep`) are done: pass it to the host's `waitUntil`.
   async function handle({ method, target, peer = '', headers, body }) {
     let x;
     try {
       x = await instance();
     } catch (e) {
       console.error(e);
-      return failed;
+      return { ...failed, idle: Promise.resolve() };
     }
     const id = (next = (next + 1) & 0x7fffffff);
     const answer = new Promise((resolve) => x.pending.set(id, resolve));
     const bytes = encode(`${method} ${target} ${peer}`, headers, body);
     x.call(() => x.exports.wisp_request(id, x.put(bytes)));
     const r = await answer;
-    return r ? { status: Number(r.first) || 500, headers: r.headers, body: r.body } : failed;
+    const idle = x.idle();
+    return r ? { status: parseInt(r.first) || 500, headers: r.headers, body: r.body, idle } : { ...failed, idle };
   }
 
-  // A web `Request` to a web `Response`: Workers, Deno, Netlify.
-  async function serve(request, peer = '') {
+  // A web `Request` to a web `Response`: Workers, Deno, Netlify. `ctx` is
+  // the host's context, whose `waitUntil` keeps background work alive.
+  async function serve(request, peer = '', ctx) {
     const url = new URL(request.url);
     const headers = [...request.headers];
     if (!request.headers.has('host')) headers.push(['host', url.host]);
     const body = new Uint8Array(await request.arrayBuffer());
     const r = await handle({ method: request.method, target: url.pathname + url.search, peer, headers, body });
+    ctx?.waitUntil?.(r.idle);
     const empty = r.status < 200 || r.status === 204 || r.status === 304 || request.method === 'HEAD';
+    if (empty && r.body instanceof ReadableStream) r.body.cancel(); // ends the app's stream
     const h = new Headers();
     for (const [k, v] of r.headers) h.append(k, v);
     return new Response(empty ? null : r.body, { status: r.status, headers: h });

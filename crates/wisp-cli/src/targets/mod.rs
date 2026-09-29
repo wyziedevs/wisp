@@ -102,7 +102,7 @@ fn layout(host: &str, package: &str, wasm: Vec<u8>, has_static: bool) -> Result<
                     (".vercel/output/config.json", text(r#"{"version":3,"routes":[{"handle":"filesystem"},{"src":"/(.*)","dest":"/index"}]}"#)),
                     (
                         ".vercel/output/functions/index.func/.vc-config.json",
-                        text(r#"{"runtime":"nodejs22.x","handler":"index.mjs","launcherType":"Nodejs","shouldAddHelpers":false}"#),
+                        text(r#"{"runtime":"nodejs22.x","handler":"index.mjs","launcherType":"Nodejs","shouldAddHelpers":false,"supportsResponseStreaming":true}"#),
                     ),
                     (".vercel/output/functions/index.func/index.mjs", text(NODE)),
                     (".vercel/output/functions/index.func/bridge.mjs", bridge()),
@@ -286,6 +286,9 @@ mod tests {
             "wisp_fetched",
             "wisp_current",
             "wisp_poll",
+            "wisp_timer",
+            "wisp_cancel",
+            "wisp_pull",
             "main",
         ] {
             assert!(BRIDGE.contains(&format!("exports.{export}(")), "{export}");

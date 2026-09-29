@@ -6,8 +6,8 @@ import { wisp } from './bridge.mjs';
 let app;
 
 export default {
-  fetch(request, env) {
+  fetch(request, env, ctx) {
     app ??= wisp(module, env);
-    return app.fetch(request, request.headers.get('cf-connecting-ip') ?? '');
+    return app.fetch(request, request.headers.get('cf-connecting-ip') ?? '', ctx);
   },
 };

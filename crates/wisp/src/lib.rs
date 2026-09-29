@@ -22,6 +22,7 @@ mod sign;
 pub mod test;
 #[cfg(feature = "tower")]
 pub mod tower;
+mod ws;
 
 pub use cx::{CookieOptions, Cx, Method, SameSite};
 pub use export::{Entry, ExportRoute, export};
@@ -29,6 +30,7 @@ pub use form::{File, Form};
 pub use http::{Body, Reply, Request, handle};
 pub use live::{ClientModule, Json};
 pub use wisp_macros::{Cookie, Json, action};
+pub use ws::{Message, WebSocket};
 
 use std::any::{Any, TypeId};
 use std::borrow::Cow;
@@ -178,6 +180,27 @@ pub fn env(key: &str) -> Option<String> {
     return edge::env(key);
 }
 
+/// Runs `task` in the background: the body of a [`Response::stream`], work
+/// that outlives its request. On the built-in server it is `tokio::spawn`,
+/// on the thread of the request that spawned it (so call it from a request
+/// or `init`). In the edge build the host runs it; Cloudflare and Netlify
+/// keep the instance alive until its timers and fetches are done.
+pub fn spawn(task: impl Future<Output = ()> + Send + 'static) {
+    #[cfg(not(target_arch = "wasm32"))]
+    tokio::spawn(task);
+    #[cfg(target_arch = "wasm32")]
+    edge::spawn_task(Box::pin(task));
+}
+
+/// Waits for `duration` without holding the thread: `tokio::time::sleep` on
+/// the built-in server, the host's `setTimeout` in the edge build.
+pub async fn sleep(duration: std::time::Duration) {
+    #[cfg(not(target_arch = "wasm32"))]
+    tokio::time::sleep(duration).await;
+    #[cfg(target_arch = "wasm32")]
+    edge::sleep(duration).await;
+}
+
 /// Values given to [`provide`], leaked: they live as long as the process.
 static STATE: RwLock<Vec<(TypeId, &'static (dyn Any + Send + Sync))>> = RwLock::new(Vec::new());
 
@@ -242,6 +265,15 @@ pub(crate) struct Settings {
     pub client_ip_header: Option<String>,
     /// `WISP_SECRET`: signs cookies.
     pub secret: Option<String>,
+    /// `WISP_WS_IDLE`: seconds a WebSocket client may stay quiet (60; 0
+    /// never closes). It is pinged halfway.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // no upgrades there
+    pub ws_idle: std::time::Duration,
+    /// `WISP_MAX_CONNS`: open connections, WebSockets too, past which the
+    /// built-in server answers new ones 503 and closes them (10000; 0 is
+    /// no cap).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // no sockets there
+    pub max_conns: usize,
 }
 
 pub(crate) fn settings() -> &'static Settings {
@@ -266,7 +298,12 @@ pub(crate) fn settings() -> &'static Settings {
                 s.len()
             ));
         }
-        Settings { body_limit, origin, client_ip_header, secret }
+        let ws_idle = std::time::Duration::from_secs(setting::<u64>("WISP_WS_IDLE", "a number of seconds").unwrap_or(60));
+        let max_conns = match setting::<usize>("WISP_MAX_CONNS", "a number of connections") {
+            Some(0) => usize::MAX,
+            n => n.unwrap_or(10_000),
+        };
+        Settings { body_limit, origin, client_ip_header, secret, ws_idle, max_conns }
     })
 }
 
@@ -374,6 +411,8 @@ pub struct Response {
     pub body: Vec<u8>,
     /// For [`Response::stream`]: the body, as it is made.
     stream: Option<tokio::sync::mpsc::Receiver<Vec<u8>>>,
+    /// For [`Response::websocket`]: what runs once upgraded.
+    upgrade: Option<ws::Upgrade>,
 }
 
 impl Response {
@@ -384,6 +423,7 @@ impl Response {
             headers: Vec::new(),
             body: body.into(),
             stream: None,
+            upgrade: None,
         }
     }
 
@@ -393,7 +433,7 @@ impl Response {
     ///
     /// ```ignore
     /// let (res, body) = Response::stream("text/csv");
-    /// tokio::spawn(async move {
+    /// wisp::spawn(async move {
     ///     for row in rows().await {
     ///         if body.send(row.to_csv()).await.is_err() { break } // the client left
     ///     }
@@ -679,12 +719,12 @@ impl<T, E: fmt::Display> OrStatus<T> for std::result::Result<T, E> {
 /// Support for generated code. Not a stable API.
 #[doc(hidden)]
 pub mod rt {
-    pub use crate::cx::{BadCookie, CookieReader, CookieWriter, MAX_PARAMS};
+    pub use crate::cx::{BadCookie, CookieReader, CookieWriter, MAX_PARAMS, decode};
     pub use crate::dev::chunk;
     pub use crate::html::{
         Always, Attr, Direct, Formatted, Maybe, Text, escape, guard_url, raw as html, text,
     };
-    pub use crate::live::{js_text, json, live, live_end, same_version};
+    pub use crate::live::{Js, js_of, js_text, json, live, live_end, live_route, same_version};
     use crate::{Cx, Error, Out, Response};
 
     /// The text of a `[...rest]` match: from its first segment to the end of
