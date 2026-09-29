@@ -6,7 +6,9 @@ members = [
     "crates/wisp-macros",
     "crates/wisp-cli",
     "examples/demo",
+    "tests/app",
     "bench/load",
+    "bench/run",
     "bench/app",
 ]
 
@@ -22,8 +24,10 @@ wisp = { path = "crates/wisp" }
 wisp-build = { path = "crates/wisp-build" }
 wisp-macros = { path = "crates/wisp-macros" }
 httparse = { version = "1.10", default-features = false, features = ["std"] }
-tokio = { version = "1.53", default-features = false, features = ["rt", "net", "io-util", "time"] }
+tokio = { version = "1.53", default-features = false, features = ["rt", "net", "io-util", "time", "signal", "sync", "fs"] }
 
+# No `unsafe` anywhere in Wisp or in apps' generated code. (bench/run, a
+# benchmark tool that calls the OS to pin processes to CPUs, sets its own.)
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
