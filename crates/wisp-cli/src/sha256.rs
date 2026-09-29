@@ -27,10 +27,12 @@ pub fn hex_digest(data: &[u8]) -> String {
     }
     tail.extend_from_slice(&((data.len() as u64) * 8).to_be_bytes());
 
-    for block in data[..full].chunks_exact(64).chain(tail.chunks_exact(64)) {
+    let (body, _) = data[..full].as_chunks::<64>();
+    let (tail, _) = tail.as_chunks::<64>();
+    for block in body.iter().chain(tail) {
         let mut w = [0u32; 64];
-        for (i, word) in block.chunks_exact(4).enumerate() {
-            w[i] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
+        for (i, word) in block.as_chunks::<4>().0.iter().enumerate() {
+            w[i] = u32::from_be_bytes(*word);
         }
         for i in 16..64 {
             let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
