@@ -1782,6 +1782,7 @@ pub(crate) fn mime(ext: &str) -> &'static str {
         "json" | "map" => "application/json",
         "webmanifest" => "application/manifest+json",
         "txt" => "text/plain; charset=utf-8",
+        "csv" => "text/csv",
         "xml" => "application/xml",
         "wasm" => "application/wasm",
         "svg" => "image/svg+xml",

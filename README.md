@@ -34,46 +34,45 @@ wisp dev
 
 ```rust
 // src/routes/+page.rs
-use wisp::prelude::*;
-
-pub struct Data {
-    pub count: i64,
+struct Data {
+    count: i64,
 }
 
-pub fn load(cx: &mut Cx) -> Data {
+fn load(cx: &mut Cx) -> Data {
     Data { count: cx.cookie_or("count", 0) }
 }
 
 #[action]
-pub fn increment(cx: &mut Cx) {
+fn add(cx: &mut Cx, by: i64) {
     let count: i64 = cx.cookie_or("count", 0);
-    cx.set_cookie("count", count + 1);
+    cx.set_cookie("count", count + by);
 }
 ```
 
 ```html
 <!-- src/routes/+page.wisp -->
-<h1>Clicked {data.count} times</h1>
+<h1>Clicked {count} times</h1>
 
-<form method="post" action="?/increment">
-  <button disabled={data.count >= 10}>Click me</button>
+<form method="post" action="?/add">
+  <button name="by" value="1" disabled={count >= 10}>Click me</button>
 </form>
 ```
 
-Page functions can also be `async`, and can return a `Result` so `?` works inside them.
+No `use` lines and no `pub`: Wisp brings in what route files need. A parameter other than `cx` is read from the request by its name (a route parameter, a form field, or the query), so `by` above is the button's value. Page functions can also be `async`, and can return a `Result` so `?` works inside them; `return error(404, "No such post")` and `return redirect("/login")` stop one early.
 
 ## Reactivity
 
 Braces `{…}` are Rust and run on the server. A quoted value on a directive, and `{:…}`, are JavaScript and run in the browser.
 
 ```html
-<button on:click="count++" class:hot="count > 5">Clicked {:count} times</button>
+<button on:click="count++" class:hot="big">Clicked {:count} times</button>
 <input bind:value="name">
 <p>Hello {:name}</p>
 
 <script>
   let count = 0
   let name = data.name          // server values arrive as data.*
+  let big = $derived(count > 5) // worked out again on every change
 </script>
 ```
 
@@ -96,7 +95,7 @@ Less boilerplate on the server side too:
 | `+page.js`     | Optional `load` that runs in the browser    |
 | `+layout.wisp` | Wraps this page and every page below it     |
 | `+error.wisp`  | Shown when something below it fails         |
-| `+server.rs`   | Plain HTTP endpoints: `get`, `post`, ...    |
+| `+server.rs`   | Endpoints: `get`, `post`, ... A value they return is sent as JSON |
 
 Folders named `[slug]` are parameters, `[[lang]]` optional ones, `[...rest]` match the rest of the path, and `(group)` folders organize routes without changing the URL. `[id=int]` only matches digits (that fit a `u64`); `[slug=word]` uses your own matcher in `src/params/word.rs`.
 

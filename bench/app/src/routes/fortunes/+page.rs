@@ -1,13 +1,13 @@
-//! TechEmpower's "fortunes", minus the database: copy the rows, add one,
-//! sort by message, render with escaping. `bench/aspnet` does the same.
+// TechEmpower's "fortunes", minus the database: copy the rows, add one,
+// sort by message, render with escaping. `bench/aspnet` does the same.
 
-pub struct Fortune {
-    pub id: u32,
-    pub message: &'static str,
+struct Fortune {
+    id: u32,
+    message: &'static str,
 }
 
-pub struct Data {
-    pub fortunes: Vec<Fortune>,
+struct Data {
+    fortunes: Vec<Fortune>,
 }
 
 const ROWS: [(u32, &str); 12] = [
@@ -25,7 +25,7 @@ const ROWS: [(u32, &str); 12] = [
     (12, "フレームワークのベンチマーク"),
 ];
 
-pub fn load() -> Data {
+fn load() -> Data {
     let mut fortunes = Vec::with_capacity(ROWS.len() + 1);
     fortunes.extend(ROWS.iter().map(|&(id, message)| Fortune { id, message }));
     fortunes.push(Fortune { id: 0, message: "Additional fortune added at request time." });

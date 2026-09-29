@@ -1,9 +1,7 @@
-use wisp::prelude::*;
-
-pub struct Data {
-    pub slug: String,
+struct Data {
+    slug: String,
 }
 
-pub fn load(cx: &mut Cx) -> Data {
-    Data { slug: cx.param("slug").to_string() }
+fn load(slug: String) -> Data {
+    Data { slug }
 }

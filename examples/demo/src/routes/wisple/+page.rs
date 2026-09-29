@@ -1,11 +1,10 @@
-//! Wisple, a word game in the style of Wordle, and a tour of `load` and form
-//! actions. The game lives in a cookie, so every visitor has their own, and
-//! it works with JavaScript turned off: each key on the keyboard is a form
-//! post. With JavaScript, the page types letters itself and only posts a
-//! finished guess.
+// Wisple, a word game in the style of Wordle, and a tour of `load` and form
+// actions. The game lives in a cookie, so every visitor has their own, and
+// it works with JavaScript turned off: each key on the keyboard is a form
+// post. With JavaScript, the page types letters itself and only posts a
+// finished guess.
 
 use std::hash::{BuildHasher, RandomState};
-use wisp::prelude::*;
 
 const TRIES: usize = 6;
 const LEN: usize = 5;
@@ -15,36 +14,36 @@ const ALPHABET: &str = "abcdefghijklmnopqrstuvwxyz";
 /// The answers, five lowercase letters each, separated by whitespace.
 static WORDS: &str = include_str!("words.txt");
 
-pub struct Data {
-    pub rows: [Row; TRIES],
+struct Data {
+    rows: [Row; TRIES],
     /// The on-screen keyboard, each key marked with the best it has scored.
-    pub keys: [Vec<Tile>; 3],
+    keys: [Vec<Tile>; 3],
     /// The row being typed, sent back with the next guess.
-    pub guess: String,
+    guess: String,
     /// The row is full, so Enter is on and the letters are off.
-    pub full: bool,
-    pub won: bool,
-    pub over: bool,
-    pub answer: &'static str,
-    pub tries: usize,
+    full: bool,
+    won: bool,
+    over: bool,
+    answer: &'static str,
+    tries: usize,
 }
 
-pub struct Row {
-    pub tiles: [Tile; LEN],
+struct Row {
+    tiles: [Tile; LEN],
     /// `current` while typing into it, `fresh` for the guess just made.
-    pub class: &'static str,
+    class: &'static str,
 }
 
 /// A letter on the board or the keyboard.
-pub struct Tile {
-    pub letter: &'static str,
-    pub mark: Mark,
+struct Tile {
+    letter: &'static str,
+    mark: Mark,
 }
 
 /// What a guess says about a letter. Ordered, so a key shows the best it
 /// has scored across all guesses.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub enum Mark {
+enum Mark {
     Unknown,
     Missing,
     Close,
@@ -52,7 +51,7 @@ pub enum Mark {
 }
 
 impl Mark {
-    pub fn class(self) -> &'static str {
+    fn class(self) -> &'static str {
         match self {
             Mark::Unknown => "",
             Mark::Missing => "missing",
@@ -62,7 +61,7 @@ impl Mark {
     }
 
     /// Spoken after the letter by screen readers.
-    pub fn label(self) -> &'static str {
+    fn label(self) -> &'static str {
         match self {
             Mark::Unknown => "",
             Mark::Missing => "(not in the word)",
@@ -72,15 +71,15 @@ impl Mark {
     }
 }
 
-pub fn load(cx: &mut Cx) -> Data {
+fn load(cx: &mut Cx) -> Data {
     Game::read(cx).data()
 }
 
 /// Without JavaScript, every key on the page's keyboard posts here.
 #[action]
-pub fn update(cx: &mut Cx) -> Result<()> {
+fn update(cx: &mut Cx, key: String) {
     let mut game = Game::read(cx);
-    match cx.form().required("key")?.as_bytes() {
+    match key.as_bytes() {
         b"backspace" => {
             game.current.pop();
         }
@@ -88,16 +87,15 @@ pub fn update(cx: &mut Cx) -> Result<()> {
         _ => {}
     }
     cx.set_cookie("wisple", game);
-    Ok(())
 }
 
 /// A finished guess. It comes from the form, where the page's script typed
 /// it; without JavaScript, `update` put the same letters there.
 #[action]
-pub fn enter(cx: &mut Cx) -> Result<()> {
-    let guess = cx.form().required("guess")?.to_ascii_lowercase();
+fn enter(cx: &mut Cx, guess: String) -> Result<()> {
+    let guess = guess.to_ascii_lowercase();
     if guess.len() != LEN || !letters(&guess) {
-        return Err(error(400, "A guess is five letters."));
+        return error(400, "A guess is five letters.");
     }
     let mut game = Game::read(cx);
     if !game.over() {
@@ -109,7 +107,7 @@ pub fn enter(cx: &mut Cx) -> Result<()> {
 }
 
 #[action]
-pub fn restart(cx: &mut Cx) {
+fn restart(cx: &mut Cx) {
     cx.set_cookie("wisple", Game::new());
 }
 

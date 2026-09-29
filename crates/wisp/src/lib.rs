@@ -16,6 +16,7 @@ mod export;
 mod form;
 mod html;
 mod http;
+mod input;
 mod live;
 mod sign;
 #[cfg(not(target_arch = "wasm32"))]
@@ -42,13 +43,16 @@ use std::sync::{OnceLock, RwLock};
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
+/// What every `+page.rs`, `+layout.rs`, `+server.rs` and `src/hooks.rs`
+/// sees without a `use` line. Other Rust files can `use wisp::prelude::*`.
 pub mod prelude {
     pub use crate::{
-        Cookie, CookieOptions, Cx, Error, Json, OrStatus, Response, Result, action, error, redirect,
+        Cookie, CookieOptions, Cx, Error, Json, Method, OrStatus, Response, Result, SameSite,
+        action, error, redirect,
     };
 }
 
-/// Sizes for `BODY_LIMIT`: `pub const BODY_LIMIT: usize = 20 * wisp::MB;`
+/// Sizes for `BODY_LIMIT`: `const BODY_LIMIT: usize = 20 * wisp::MB;`
 pub const KB: usize = 1024;
 pub const MB: usize = 1024 * KB;
 
@@ -428,26 +432,62 @@ impl Response {
     }
 
     /// A response whose body is sent while it is being made: a live feed,
-    /// a large export. Returns it with the [`Sender`] that writes the body,
-    /// which usually moves into a task of its own:
+    /// a large export. `body` writes it, in a task of its own:
     ///
     /// ```ignore
-    /// let (res, body) = Response::stream("text/csv");
-    /// wisp::spawn(async move {
+    /// Response::stream("text/csv", |out| async move {
     ///     for row in rows().await {
-    ///         if body.send(row.to_csv()).await.is_err() { break } // the client left
+    ///         out.send(row.to_csv()).await?; // stops once the client has left
     ///     }
-    /// });
-    /// res
+    ///     Ok(())
+    /// })
     /// ```
     ///
-    /// Each `send` goes out at once; the body ends when the sender is
-    /// dropped, or when the server stops.
-    pub fn stream(content_type: impl Into<Cow<'static, str>>) -> (Response, Sender) {
+    /// Each `send` goes out at once; the body ends when `body` returns, or
+    /// when the server stops.
+    pub fn stream<F, Fut>(content_type: impl Into<Cow<'static, str>>, body: F) -> Response
+    where
+        F: FnOnce(Sender) -> Fut,
+        Fut: Future<Output = Result<(), Gone>> + Send + 'static,
+    {
         let (tx, rx) = tokio::sync::mpsc::channel(16);
         let mut res = Response::new(content_type, Vec::new());
         res.stream = Some(rx);
-        (res, Sender(tx))
+        let task = body(Sender(tx));
+        spawn(async move {
+            let _ = task.await; // `Gone`: the client left, which ends it too
+        });
+        res
+    }
+
+    /// No body, only a status (and the headers added to it):
+    /// `Response::empty(204)`.
+    pub fn empty(status: u16) -> Response {
+        Response::new("", Vec::new()).with_status(status)
+    }
+
+    /// `body` as a file the browser saves as `name`, typed by its extension:
+    /// `Response::download("report.csv", csv)`.
+    pub fn download(name: &str, body: impl Into<Vec<u8>>) -> Response {
+        let ext = name
+            .rsplit_once('.')
+            .map(|(_, e)| e.to_ascii_lowercase())
+            .unwrap_or_default();
+        // The name goes in a quoted header value: nothing in it may end the quotes or the line.
+        let safe: String = name
+            .chars()
+            .map(|c| {
+                if c == '"' || c == '\\' || c.is_control() {
+                    '_'
+                } else {
+                    c
+                }
+            })
+            .collect();
+        Response::new(http::mime(&ext), body).with_header(
+            "content-disposition",
+            format!("attachment; filename=\"{safe}\""),
+        )
     }
 
     /// The file `name` in the directory `dir`, such as an upload saved
@@ -490,17 +530,27 @@ impl Response {
         }
     }
 
-    /// Server-sent events, which a page receives with `new EventSource(url)`:
-    /// a stream that no proxy or browser caches or holds back. Send each
-    /// event with [`Sender::event`].
-    pub fn events() -> (Response, Sender) {
-        let (res, tx) = Response::stream("text/event-stream");
+    /// Server-sent events, which a page receives with `listen(url, …)` or
+    /// `new EventSource(url)`: a stream that no proxy or browser caches or
+    /// holds back. `send` sends each one with [`Sender::event`]:
+    ///
+    /// ```ignore
+    /// Response::events(|events| async move {
+    ///     loop {
+    ///         events.event(&now()).await?; // stops once the client has left
+    ///         wisp::sleep(Duration::from_secs(1)).await;
+    ///     }
+    /// })
+    /// ```
+    pub fn events<F, Fut>(send: F) -> Response
+    where
+        F: FnOnce(Sender) -> Fut,
+        Fut: Future<Output = Result<(), Gone>> + Send + 'static,
+    {
         // `x-accel-buffering` stops nginx from holding events back.
-        (
-            res.with_header("cache-control", "no-store")
-                .with_header("x-accel-buffering", "no"),
-            tx,
-        )
+        Response::stream("text/event-stream", send)
+            .with_header("cache-control", "no-store")
+            .with_header("x-accel-buffering", "no")
     }
 
     pub fn text(body: impl Into<String>) -> Response {
@@ -612,7 +662,8 @@ impl Error {
     }
 
     /// A redirect with a status other than [`redirect`]'s 303, such as 308
-    /// for a page that moved for good. Panics on CR/LF in `location`.
+    /// for a page that moved for good: `return Err(Error::redirect(308, "/new"))`.
+    /// Panics on CR/LF in `location`.
     pub fn redirect(status: u16, location: impl Into<String>) -> Error {
         let location = location.into();
         assert!(
@@ -649,16 +700,18 @@ impl Error {
     }
 }
 
-/// `Err(error(404, "No such post"))?`
-pub fn error(status: u16, message: impl Into<Cow<'static, str>>) -> Error {
-    Error::new(status, message)
+/// `return error(404, "No such post")`: stops the `load`, action or
+/// endpoint, and the nearest `+error.wisp` shows `message`.
+/// [`Error::new`] is the error itself, for `map_err` and the like.
+pub fn error<T>(status: u16, message: impl Into<Cow<'static, str>>) -> Result<T> {
+    Err(Error::new(status, message))
 }
 
-/// `return Err(redirect("/login"))`: 303 See Other, which sends the browser
+/// `return redirect("/login")`: 303 See Other, which sends the browser
 /// to `location` with a GET, whether it came with a form post or a link.
 /// [`Error::redirect`] takes other statuses. Panics on CR/LF in `location`.
-pub fn redirect(location: impl Into<String>) -> Error {
-    Error::redirect(303, location)
+pub fn redirect<T>(location: impl Into<String>) -> Result<T> {
+    Err(Error::redirect(303, location))
 }
 
 impl<E: std::error::Error + Send + Sync + 'static> From<E> for Error {
@@ -721,6 +774,10 @@ impl<T, E: fmt::Display> OrStatus<T> for std::result::Result<T, E> {
 pub mod rt {
     pub use crate::cx::{BadCookie, CookieReader, CookieWriter, MAX_PARAMS, decode};
     pub use crate::dev::chunk;
+    /// A handler's parameters, read by name (see `input.rs`).
+    pub mod input {
+        pub use crate::input::{all, flag, optional, required};
+    }
     pub use crate::html::{
         Always, Attr, Direct, Formatted, Maybe, Text, escape, guard_url, raw as html, text,
     };

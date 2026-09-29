@@ -3,11 +3,11 @@
 //! The build step needs to know whether `+page.rs` defines `load`, which
 //! functions carry `#[action]`, and which HTTP methods `+server.rs` defines.
 //! Of a signature it reads only what shapes the call: `pub` or not, `async`
-//! or not, `cx` or no parameters, `Result` or a plain value, plus the return
-//! type's text. That is enough to catch the usual mistakes here, against
-//! the user's file, rather than by rustc in generated code: a private
-//! `load`, an action that returns a value, a `Data` the template cannot see.
-//! Other types are left to rustc.
+//! or not, its parameters (`cx`, and the inputs read by name), `Result` or a
+//! plain value, plus the return type's text. That is enough to catch the
+//! usual mistakes here, against the user's file, rather than by rustc in
+//! generated code: an action that returns a value, a `load` that returns
+//! something the template cannot read. Other types are left to rustc.
 
 use crate::template::{raw_str_start, skip_char, skip_raw_str, skip_str};
 
@@ -15,12 +15,12 @@ use crate::template::{raw_str_start, skip_char, skip_raw_str, skip_str};
 pub struct FnItem {
     pub name: String,
     pub action: bool,
-    /// `pub`, in any form: the generated code, outside the module, can call it.
+    /// `pub`, in any form.
     pub public: bool,
     /// `async fn`: the call is awaited.
     pub is_async: bool,
-    /// Has parameters, so it is passed `cx`.
-    pub takes_cx: bool,
+    /// Every parameter, as its pattern and its type: `("slug", "String")`.
+    pub params: Vec<(String, String)>,
     /// Returns a `Result`, so the call ends in `?`.
     pub fallible: bool,
     /// The return type as written, `""` for none.
@@ -33,9 +33,7 @@ pub struct FnItem {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeItem {
     pub name: String,
-    pub public: bool,
-    pub line: usize,
-    /// The `pub` fields of a struct with named fields: name and type.
+    /// The fields of a struct with named fields: name and type.
     pub fields: Vec<(String, String)>,
 }
 
@@ -43,7 +41,6 @@ pub struct TypeItem {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConstItem {
     pub name: String,
-    pub public: bool,
     /// The type as written.
     pub ty: String,
     pub line: usize,
@@ -66,6 +63,9 @@ pub struct Items {
     pub fns: Vec<FnItem>,
     pub types: Vec<TypeItem>,
     pub consts: Vec<ConstItem>,
+    /// The line of the first inner attribute or doc comment (`#![…]`,
+    /// `//!`), which a file Wisp includes into a module cannot have.
+    pub inner: Option<usize>,
 }
 
 impl Items {
@@ -73,7 +73,7 @@ impl Items {
         self.fns.iter().find(|f| f.name == name)
     }
 
-    /// The `pub` fields of `Data`, which a template can use by name.
+    /// The fields of `Data`, which a template can use by name.
     pub fn data_fields(&self) -> Vec<(String, String)> {
         let data = self.types.iter().find(|t| t.name == "Data");
         data.map(|t| t.fields.clone()).unwrap_or_default()
@@ -83,13 +83,15 @@ impl Items {
         self.consts.iter().find(|c| c.name == name)
     }
 
-    /// Why `load` and the `Data` it returns cannot be used by the page's
-    /// template, if they cannot.
-    pub fn check_load(&self) -> Result<(), String> {
+    /// Why the file cannot be a route file (or `src/hooks.rs`), if it
+    /// cannot: Wisp includes it into a module of its own, with the prelude,
+    /// so it cannot start with `//!` docs or `#![…]` attributes, and its
+    /// `load` must return the `Data` the template reads.
+    pub fn check(&self) -> Result<(), String> {
+        self.check_inner()?;
         let Some(load) = self.function("load") else {
             return Ok(());
         };
-        load.check_public()?;
         if !load
             .returns
             .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
@@ -105,27 +107,44 @@ impl Items {
                 load.line
             ));
         }
-        if let Some(t) = self.types.iter().find(|t| t.name == "Data" && !t.public) {
-            return Err(format!(
-                "{}: `Data` must be `pub` (and so must its fields) for the template to read it",
-                t.line
-            ));
-        }
         Ok(())
+    }
+
+    /// The file has no `//!` docs or `#![…]` attributes, which a file Wisp
+    /// includes into a module cannot have.
+    pub fn check_inner(&self) -> Result<(), String> {
+        match self.inner {
+            Some(line) => Err(format!(
+                "{line}: Wisp includes this file into a module of its own, so it cannot have `//!` docs or `#![…]` \
+                 attributes; write `//` comments, or `///` on an item"
+            )),
+            None => Ok(()),
+        }
     }
 }
 
 impl FnItem {
-    /// Generated code, outside the module, calls it: it must be `pub`.
-    pub fn check_public(&self) -> Result<(), String> {
-        if self.public {
-            Ok(())
-        } else {
-            Err(format!(
-                "{}: `{}` must be `pub` for Wisp to call it: `pub fn {}`",
-                self.line, self.name, self.name
-            ))
+    /// The parameters other than `cx`, which are read from the request by
+    /// name, as (name, type). A pattern that is not a plain name is an error.
+    pub fn inputs(&self) -> Result<Vec<(&str, &str)>, String> {
+        let mut out = Vec::new();
+        for (pat, ty) in &self.params {
+            if is_cx(ty) {
+                continue;
+            }
+            let name = pat.strip_prefix("mut ").unwrap_or(pat).trim();
+            let plain = name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+                && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                && name != "_";
+            if !plain {
+                return Err(format!(
+                    "{}: `{}` takes `{pat}: {ty}`; each parameter but `cx` is read from the request by its name, so it needs one, like `id: u64`",
+                    self.line, self.name
+                ));
+            }
+            out.push((name, ty.as_str()));
         }
+        Ok(out)
     }
 
     /// What it returns, looking through a `Result`.
@@ -148,6 +167,20 @@ impl FnItem {
     }
 }
 
+/// A `Cx` parameter's type: `&mut Cx`, `&Cx`, `&'a mut wisp::Cx`.
+pub fn is_cx(ty: &str) -> bool {
+    let t = ty.trim().strip_prefix('&').unwrap_or(ty).trim_start();
+    let t = match t.strip_prefix('\'') {
+        Some(rest) => rest.trim_start_matches(|c: char| c.is_ascii_alphanumeric() || c == '_'),
+        None => t,
+    };
+    let t = t
+        .trim_start()
+        .strip_prefix("mut ")
+        .unwrap_or(t.trim_start());
+    last_segment(t) == "Cx" && !t.contains('<')
+}
+
 /// `Result<Option<Response>, E>` → `Option<Response>`.
 fn first_arg(t: &str) -> Option<&str> {
     let open = t.find('<')?;
@@ -165,7 +198,7 @@ fn first_arg(t: &str) -> Option<&str> {
 }
 
 /// `wisp::Response` → `Response`, `Option<T>` → `Option`.
-fn last_segment(t: &str) -> &str {
+pub fn last_segment(t: &str) -> &str {
     t.split('<')
         .next()
         .unwrap_or("")
@@ -194,11 +227,19 @@ pub fn scan(src: &str) -> Result<Items, String> {
         let c = b[i];
         match c {
             b'/' if b.get(i + 1) == Some(&b'/') => {
+                if depth == 0 && b.get(i + 2) == Some(&b'!') {
+                    items.inner.get_or_insert(line(i));
+                }
                 while i < b.len() && b[i] != b'\n' {
                     i += 1;
                 }
             }
-            b'/' if b.get(i + 1) == Some(&b'*') => i = skip_block_comment(b, i),
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                if depth == 0 && b.get(i + 2) == Some(&b'!') {
+                    items.inner.get_or_insert(line(i));
+                }
+                i = skip_block_comment(b, i);
+            }
             b'"' => i = skip_str(b, i),
             b'\'' => i = skip_char(b, i),
             b'r' if raw_str_start(b, i).is_some() => i = skip_raw_str(b, i),
@@ -206,6 +247,9 @@ pub fn scan(src: &str) -> Result<Items, String> {
                 // Attribute: #[path] or #![path]. Record the marker, skip the rest.
                 let mut j = i + 1;
                 if b.get(j) == Some(&b'!') {
+                    if depth == 0 {
+                        items.inner.get_or_insert(line(i));
+                    }
                     j += 1;
                 }
                 if b.get(j) == Some(&b'[') {
@@ -265,7 +309,6 @@ pub fn scan(src: &str) -> Result<Items, String> {
                             };
                             items.consts.push(ConstItem {
                                 name: name.to_string(),
-                                public,
                                 ty,
                                 line: line(at),
                             });
@@ -283,14 +326,14 @@ pub fn scan(src: &str) -> Result<Items, String> {
                         if name.is_empty() {
                             // `fn(u8) -> u8` as a type, say.
                         } else if word == "fn" {
-                            let (takes_cx, fallible, returns) = signature(src, i);
+                            let (params, fallible, returns) = signature(src, i);
                             let line = line(name_start);
                             items.fns.push(FnItem {
                                 name,
                                 action,
                                 public,
                                 is_async,
-                                takes_cx,
+                                params,
                                 fallible,
                                 returns,
                                 line,
@@ -302,12 +345,7 @@ pub fn scan(src: &str) -> Result<Items, String> {
                             } else {
                                 Vec::new()
                             };
-                            items.types.push(TypeItem {
-                                name,
-                                public,
-                                line: line(name_start),
-                                fields,
-                            });
+                            items.types.push(TypeItem { name, fields });
                         }
                     }
                     _ => {}
@@ -321,7 +359,7 @@ pub fn scan(src: &str) -> Result<Items, String> {
     Ok(items)
 }
 
-/// The `pub` fields of the struct whose name ends at `i`, as (name, type).
+/// The fields of the struct whose name ends at `i`, as (name, type).
 /// Tuple structs and generic ones have none.
 fn fields(src: &str, i: usize) -> Vec<(String, String)> {
     let b = src.as_bytes();
@@ -354,7 +392,9 @@ fn fields(src: &str, i: usize) -> Vec<(String, String)> {
     out
 }
 
-/// `pub name: Type`, after any attributes and comments; `None` if not `pub`.
+/// `name: Type`, after any attributes, comments and visibility (`pub`,
+/// `pub(crate)`): the template is compiled inside the module, so it sees
+/// private fields too.
 fn field(mut s: &str) -> Option<(String, String)> {
     loop {
         s = s.trim_start();
@@ -366,19 +406,61 @@ fn field(mut s: &str) -> Option<(String, String)> {
             break;
         }
     }
-    let rest = s.strip_prefix("pub")?;
-    // `pub(crate)` is not visible to the generated code's module.
-    let (name, ty) = rest.strip_prefix(char::is_whitespace)?.split_once(':')?;
+    if let Some(rest) = s.strip_prefix("pub") {
+        let rest = rest.trim_start();
+        s = match rest.strip_prefix('(') {
+            Some(r) => &r[r.find(')')? + 1..],
+            None => rest,
+        };
+    }
+    let (name, ty) = s.split_once(':')?;
     Some((name.trim().to_string(), ty.trim().to_string()))
 }
 
+/// `a: u8, b: impl Fn(u8) -> u8` split at its top-level commas, blank
+/// pieces (after a trailing comma) left out.
+fn split_top(s: &str) -> Vec<&str> {
+    let b = s.as_bytes();
+    let (mut out, mut depth, mut start) = (Vec::new(), 0i32, 0);
+    for (i, &c) in b.iter().enumerate() {
+        match c {
+            b'(' | b'[' | b'<' | b'{' => depth += 1,
+            b'>' if i > 0 && b[i - 1] == b'-' => {}
+            b')' | b']' | b'>' | b'}' => depth -= 1,
+            b',' if depth == 0 => {
+                out.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&s[start..]);
+    out.retain(|p| !p.trim().is_empty());
+    out
+}
+
+/// `slug: String` → `("slug", "String")`: split at the first `:` that is
+/// not part of a `::`.
+fn param(p: &str) -> (String, String) {
+    let b = p.as_bytes();
+    let colon = (0..b.len())
+        .find(|&i| b[i] == b':' && b.get(i + 1) != Some(&b':') && (i == 0 || b[i - 1] != b':'));
+    match colon {
+        Some(i) => (p[..i].trim().to_string(), p[i + 1..].trim().to_string()),
+        None => (p.trim().to_string(), String::new()),
+    }
+}
+
 /// Reads a signature from just past the function's name up to its body:
-/// whether it has parameters, whether its return type is a `Result`
-/// (`Result<T>`, `wisp::Result<T>`, `io::Result<T>`, ...), and that type.
-fn signature(src: &str, mut i: usize) -> (bool, bool, String) {
+/// its parameters, whether its return type is a `Result` (`Result<T>`,
+/// `wisp::Result<T>`, `io::Result<T>`, ...), and that type.
+fn signature(src: &str, mut i: usize) -> (Vec<(String, String)>, bool, String) {
     let b = src.as_bytes();
     let mut depth = 0i32; // (), [] and <>
-    let mut params = None;
+    // Where the parameter list starts, until it has been read.
+    let mut open = None;
+    let mut read = false;
+    let mut params = Vec::new();
     let mut ret = None;
     while i < b.len() {
         match b[i] {
@@ -389,13 +471,23 @@ fn signature(src: &str, mut i: usize) -> (bool, bool, String) {
                 i += 1;
             }
             b'(' => {
-                if depth == 0 && params.is_none() {
-                    params = Some(b.get(skip_space(b, i + 1)) != Some(&b')'));
+                if depth == 0 && !read {
+                    open = Some(i + 1);
                 }
                 depth += 1;
             }
             b'[' | b'<' => depth += 1,
-            b')' | b']' | b'>' => depth -= 1,
+            b')' | b']' | b'>' => {
+                depth -= 1;
+                if depth == 0
+                    && b[i] == b')'
+                    && let Some(start) = open.take()
+                {
+                    read = true;
+                    let text = strip_comments(&src[start..i]);
+                    params = split_top(&text).into_iter().map(param).collect();
+                }
+            }
             b'{' | b';' if depth == 0 => break,
             b'\'' => i = skip_char(b, i),
             _ => {}
@@ -416,7 +508,26 @@ fn signature(src: &str, mut i: usize) -> (bool, bool, String) {
         .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == ':'))
         .next();
     let fallible = path.and_then(|p| p.rsplit("::").next()) == Some("Result");
-    (params.unwrap_or(false), fallible, returns.to_string())
+    (params, fallible, returns.to_string())
+}
+
+/// `s` with its comments blanked out.
+fn strip_comments(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i..].starts_with(b"//") || b[i..].starts_with(b"/*") {
+            let end = skip_space(b, i);
+            out.push(' ');
+            i = end;
+        } else {
+            let n = s[i..].chars().next().map_or(1, char::len_utf8);
+            out.push_str(&s[i..i + n]);
+            i += n;
+        }
+    }
+    out
 }
 
 /// The index of the first byte at or after `i` that is not whitespace or
@@ -494,6 +605,10 @@ mod tests {
         scan(src).unwrap().fns
     }
 
+    fn takes_cx(f: &FnItem) -> bool {
+        f.params.iter().any(|(_, ty)| is_cx(ty))
+    }
+
     fn names(src: &str) -> Vec<(String, bool)> {
         top_level_fns(src)
             .into_iter()
@@ -552,7 +667,7 @@ mod tests {
         "#;
         let sigs: Vec<_> = top_level_fns(src)
             .into_iter()
-            .map(|f| (f.name, f.is_async, f.takes_cx, f.fallible))
+            .map(|f| (f.name.clone(), f.is_async, takes_cx(&f), f.fallible))
             .collect();
         assert_eq!(
             sigs,
@@ -631,15 +746,9 @@ mod tests {
         let consts: Vec<_> = items
             .consts
             .iter()
-            .map(|c| (c.name.as_str(), c.public, c.ty.as_str(), c.line))
+            .map(|c| (c.name.as_str(), c.ty.as_str(), c.line))
             .collect();
-        assert_eq!(
-            consts,
-            [
-                ("BODY_LIMIT", true, "usize", 1),
-                ("N", false, "AtomicU8", 4)
-            ]
-        );
+        assert_eq!(consts, [("BODY_LIMIT", "usize", 1), ("N", "AtomicU8", 4)]);
         let fns: Vec<_> = items
             .fns
             .iter()
@@ -691,7 +800,7 @@ mod tests {
         let fns = top_level_fns(
             "pub fn load(/* none */) -> Data {}\npub fn b( // why\n) {}\npub fn c(/* x */ cx: &Cx) {}",
         );
-        let takes: Vec<_> = fns.iter().map(|f| f.takes_cx).collect();
+        let takes: Vec<_> = fns.iter().map(takes_cx).collect();
         assert_eq!(takes, [false, false, true]);
     }
 
@@ -708,7 +817,16 @@ mod tests {
 }";
         let got = scan(src).unwrap().data_fields();
         let names: Vec<_> = got.iter().map(|(n, t)| format!("{n}:{t}")).collect();
-        assert_eq!(names, ["a:Vec<(u8, u8)>", "b:String", "e:fn(u8) -> u8"]);
+        assert_eq!(
+            names,
+            [
+                "a:Vec<(u8, u8)>",
+                "b:String",
+                "c:u8",
+                "d:u8",
+                "e:fn(u8) -> u8"
+            ]
+        );
         assert!(
             scan("pub struct Data(pub u8);")
                 .unwrap()
@@ -719,38 +837,77 @@ mod tests {
     }
 
     #[test]
-    fn load_and_data_must_be_visible() {
-        let check = |src: &str| scan(src).unwrap().check_load();
+    fn load_returns_data() {
+        let check = |src: &str| scan(src).unwrap().check();
+        assert_eq!(check("struct Data;\nfn load() -> Data { Data }"), Ok(()));
         assert_eq!(
-            check("pub struct Data;\npub fn load() -> Data { Data }"),
+            check("pub struct Data;\npub async fn load(cx: &mut Cx) -> Result<Data> { todo!() }"),
             Ok(())
         );
-        assert_eq!(
-            check(
-                "pub struct Data;\npub(crate) async fn load(cx: &mut Cx) -> Result<Data> { todo!() }"
-            ),
-            Ok(())
-        );
-        assert_eq!(check("pub fn helper() {}"), Ok(()));
+        assert_eq!(check("fn helper() {}"), Ok(()));
         assert!(
-            check("pub struct Data;\nfn load() -> Data { Data }")
-                .unwrap_err()
-                .starts_with("2: `load` must be `pub`")
-        );
-        assert!(
-            check("struct Data;\npub fn load() -> Data { Data }")
-                .unwrap_err()
-                .starts_with("1: `Data` must be `pub`")
-        );
-        assert!(
-            check("pub struct Page;\npub fn load() -> Page { Page }")
+            check("struct Page;\nfn load() -> Page { Page }")
                 .unwrap_err()
                 .contains("returns Page")
         );
         assert!(
-            check("pub fn load() {}")
+            check("fn load() {}")
                 .unwrap_err()
                 .contains("returns nothing")
         );
+    }
+
+    #[test]
+    fn inner_attributes_are_refused() {
+        let check = |src: &str| scan(src).unwrap().check();
+        assert!(
+            check("//! Docs.\nfn a() {}")
+                .unwrap_err()
+                .starts_with("1: Wisp includes this file")
+        );
+        assert!(
+            check("fn a() {}\n#![allow(dead_code)]")
+                .unwrap_err()
+                .starts_with("2: ")
+        );
+        assert!(check("/*! Docs. */").is_err());
+        assert_eq!(check("/// An item's.\nfn a() { let s = \"//!\"; }"), Ok(()));
+    }
+
+    #[test]
+    fn parameters() {
+        let f = &top_level_fns(
+            "fn a(cx: &mut Cx, slug: String, mut n: Option<u32>, f: impl Fn(u8, u8) -> u8,) {}\n\
+             fn b<'a>(cx: &'a wisp::Cx, /* c */ tags: Vec<String>) {}\nfn c((a, b): (u8, u8)) {}\nfn d(x: &mut Cxx) {}",
+        );
+        let params: Vec<_> = f[0]
+            .params
+            .iter()
+            .map(|(p, t)| format!("{p}:{t}"))
+            .collect();
+        assert_eq!(
+            params,
+            [
+                "cx:&mut Cx",
+                "slug:String",
+                "mut n:Option<u32>",
+                "f:impl Fn(u8, u8) -> u8"
+            ]
+        );
+        assert_eq!(
+            f[0].inputs().unwrap(),
+            [
+                ("slug", "String"),
+                ("n", "Option<u32>"),
+                ("f", "impl Fn(u8, u8) -> u8")
+            ]
+        );
+        assert!(takes_cx(&f[1]) && f[1].inputs().unwrap() == [("tags", "Vec<String>")]);
+        assert!(
+            f[2].inputs()
+                .unwrap_err()
+                .contains("needs one, like `id: u64`")
+        );
+        assert!(!takes_cx(&f[3]));
     }
 }

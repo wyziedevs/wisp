@@ -162,7 +162,7 @@ pub fn scan(routes_dir: &Path) -> Result<Tree, String> {
             let file = file.is_file().then_some(file);
             if file.is_none() && m != "int" {
                 return Err(format!(
-                    "{}: no param matcher `{m}`: add src/params/{m}.rs with `pub fn matches(s: &str) -> bool` (`int` is built in)",
+                    "{}: no param matcher `{m}`: add src/params/{m}.rs with `fn matches(s: &str) -> bool` (`int` is built in)",
                     show(&r.dir)
                 ));
             }

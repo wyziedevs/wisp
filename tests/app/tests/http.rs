@@ -701,6 +701,14 @@ fn client_parity() {
         state.contains(",0,{}],[2,\"") && state.contains("<div id=\"fresh\" data-wisp-reset>"),
         "{state}"
     );
+    // `$derived` is worked out again before each redraw; `watch` is a helper.
+    let js = body(&s.request("GET", &module_url(&state, 0), "", b"")).to_string();
+    assert!(
+        js.contains("let double = __wisp_d(() => (clicks * 2), (__v) => double = __v)")
+            && js.contains("watch(() => data.count, () => bumps++)")
+            && js.contains(" watch, derived, __wisp_d, "),
+        "{js}"
+    );
 
     // A component the browser renders: the page's module imports its
     // module, which carries its markup, slot and all.
@@ -846,6 +854,36 @@ fn template_shorthands() {
     let api = s.request("GET", "/sugar/api", "", b"");
     assert_eq!(header(&api, "content-type"), Some("application/json"));
     assert_eq!(body(&api), "[[\"a\\u003cb\",1],[\"c\",null]]");
+}
+
+#[test]
+fn inputs_by_name() {
+    let s = start();
+    // A route parameter, then query values: `Option`, `Vec` and a checkbox.
+    let r = s.request("GET", "/inputs/7?q=tea&n=1&n=2&on=on", "", b"");
+    assert_eq!(header(&r, "content-type"), Some("application/json"));
+    assert_eq!(
+        body(&r),
+        "{\"id\":7,\"q\":\"tea\",\"n\":[1,2],\"on\":true,\"names\":[]}"
+    );
+    // A path that is not one of these is no page; a bad value is a 400.
+    assert_eq!(status(&s.request("GET", "/inputs/x", "", b"")), 404);
+    let bad = s.request("GET", "/inputs/7?n=x", "", b"");
+    assert_eq!(status(&bad), 400);
+    // A form's fields; an endpoint that returns nothing answers 204.
+    assert_eq!(
+        status(&s.request("POST", "/inputs/7", FORM, b"name=ada")),
+        204
+    );
+    let missing = s.request("POST", "/inputs/7", FORM, b"");
+    assert!(
+        status(&missing) == 400 && missing.contains("missing form field `name`"),
+        "{missing}"
+    );
+    assert_eq!(
+        body(&s.request("GET", "/inputs/7", "", b"")),
+        "{\"id\":7,\"q\":null,\"n\":[],\"on\":false,\"names\":[\"ada\"]}"
+    );
 }
 
 #[test]

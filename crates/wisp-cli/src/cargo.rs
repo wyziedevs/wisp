@@ -210,7 +210,10 @@ fn strip_generated_modules(s: &str) -> String {
         let at_word = i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_');
         if at_word {
             let rest = &s[i..];
-            let skip = if let Some(r) = rest.strip_prefix("__wisp::") {
+            let plain = ["__wisp::", "__call::"]
+                .iter()
+                .find_map(|p| rest.strip_prefix(p));
+            let skip = if let Some(r) = plain {
                 Some(rest.len() - r.len())
             } else {
                 [
@@ -452,6 +455,10 @@ mod tests {
         assert_eq!(
             strip_generated_modules("__wisp::layout_12::Data and tpl_page_3::render"),
             "Data and render"
+        );
+        assert_eq!(
+            strip_generated_modules("page_2::tpl_page_2::render and page_2::__call::Loaded"),
+            "render and Loaded"
         );
         assert_eq!(
             strip_generated_modules("my_page_1::X page_::Y page_2x::Z"),

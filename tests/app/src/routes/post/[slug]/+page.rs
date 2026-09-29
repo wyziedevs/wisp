@@ -1,14 +1,12 @@
-use wisp::prelude::*;
-
-pub struct Data {
-    pub slug: String,
+struct Data {
+    slug: String,
 }
 
-pub fn load(cx: &mut Cx) -> Data {
-    Data { slug: cx.param("slug").to_string() }
+fn load(slug: String) -> Data {
+    Data { slug }
 }
 
 /// The pages `wisp build --static` writes for this route.
-pub fn entries() -> Vec<&'static str> {
+fn entries() -> Vec<&'static str> {
     vec!["hello", "second-post"]
 }

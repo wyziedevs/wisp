@@ -10,7 +10,7 @@
 use crate::js::Kind as JsKind;
 use crate::routes::Seg;
 use crate::rust_scan::{self, FnItem, Returns};
-use crate::template::{self, Code, Dir, Directive, Node, PropDecl, PropValue, Script, Template};
+use crate::template::{self, Code, Dir, Directive, Node, PropDecl, PropValue, Template};
 use crate::{fnv1a, js, shell};
 use std::fmt::Write as _;
 use std::fs;
@@ -44,13 +44,159 @@ struct Tpl {
     module: String,
     rel: String,
     kind: Kind,
-    /// User module whose items the template can see, and whether it has `load`.
+    /// User module whose items the template can see, and whether it has
+    /// `load`. The template's module goes inside it, so it sees private
+    /// items and fields too.
     user: Option<(String, bool)>,
-    /// The `pub` fields of its `Data`, which the template reads by name.
+    /// The fields of its `Data`, which the template reads by name.
     data: Vec<(String, String)>,
     /// A page's `+page.js`.
     load_js: Option<PathBuf>,
     t: Template,
+}
+
+impl Tpl {
+    /// Its module's path from the generated file's top.
+    fn path(&self) -> String {
+        match &self.user {
+            Some((m, _)) => format!("{m}::{}", self.module),
+            None => self.module.clone(),
+        }
+    }
+}
+
+/// A Rust file of the app's own that Wisp includes: `src/hooks.rs`, a
+/// `+layout.rs`, `+page.rs` or `+server.rs`, a param matcher. It becomes a
+/// module with the prelude in scope, and a `__call` module inside it where
+/// the generated code calls its functions (so they need not be `pub`).
+struct UserMod {
+    name: String,
+    file: PathBuf,
+    /// The items of `__call`.
+    shims: Vec<String>,
+}
+
+impl UserMod {
+    /// Whether it has a shim for the function `name`.
+    fn has(&self, name: &str) -> bool {
+        self.shims
+            .iter()
+            .any(|s| s.starts_with(&format!("pub async fn {name}(")))
+    }
+}
+
+/// What the generated code expects back from a function it calls.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Shim {
+    /// `load`: its `Data`.
+    Load,
+    /// An action or `before`: a `Response` to send instead of the page, if any.
+    Answer,
+    /// A `+server.rs` method: the response (JSON for a value).
+    Endpoint,
+    /// `init`: nothing.
+    Init,
+}
+
+/// The `__call` function for `f`: reads its inputs (the parameters other
+/// than `cx`) from the request by name, calls it, and hands back what
+/// `kind` says, whatever `f` returns. The file's errors are the caller's to
+/// prefix with its path.
+fn shim(f: &FnItem, kind: Shim) -> Result<String, String> {
+    let mut lets = String::new();
+    let mut args = Vec::new();
+    let mut inputs = f.inputs()?.into_iter();
+    for (_, ty) in &f.params {
+        if rust_scan::is_cx(ty) {
+            args.push("cx".to_string());
+            continue;
+        }
+        let (name, ty) = inputs.next().expect("an input per parameter but cx");
+        let v = format!("__a{}", args.len());
+        let t: String = ty.chars().filter(|c| !c.is_whitespace()).collect();
+        let inner = t.strip_prefix("Option<").and_then(|r| r.strip_suffix('>'));
+        let read = |how: &str| format!("::wisp::rt::input::{how}(cx, {})", lit(name));
+        let (line, arg) = if is_str_ref(&t) {
+            (
+                format!("let {v}: String = {}?;", read("required")),
+                format!("&{v}"),
+            )
+        } else if inner.is_some_and(is_str_ref) {
+            (
+                format!("let {v}: Option<String> = {}?;", read("optional")),
+                format!("{v}.as_deref()"),
+            )
+        } else if t == "bool" {
+            (format!("let {v} = {};", read("flag")), v)
+        } else {
+            let how = match rust_scan::last_segment(&t) {
+                "Option" => "optional",
+                "Vec" => "all",
+                _ => "required",
+            };
+            (format!("let {v} = {}?;", read(how)), v)
+        };
+        lets.push_str(&line);
+        lets.push(' ');
+        args.push(arg);
+    }
+    let call = format!(
+        "super::{}({}){}{}",
+        f.name,
+        args.join(", "),
+        if f.is_async { ".await" } else { "" },
+        if f.fallible { "?" } else { "" }
+    );
+    let name = &f.name;
+    Ok(match kind {
+        // `Data` may be private to the file, and a value of a private type
+        // cannot leave its module: it goes out in a public box that only
+        // the file's module (and its template, inside it) can open.
+        Shim::Load => format!(
+            "pub struct Loaded(pub(super) super::Data); \
+             pub async fn load(cx: &mut ::wisp::Cx) -> ::wisp::Result<Loaded> {{ {lets}Ok(Loaded({call})) }}"
+        ),
+        Shim::Answer => {
+            let back = match f.returns_kind() {
+                Returns::Response => format!("Ok(Some({call}))"),
+                Returns::MaybeResponse => format!("Ok({call})"),
+                Returns::Nothing | Returns::Other => format!("let () = {call}; Ok(None)"),
+            };
+            format!(
+                "pub async fn {name}(cx: &mut ::wisp::Cx) -> ::wisp::Result<Option<::wisp::Response>> {{ {lets}{back} }}"
+            )
+        }
+        Shim::Endpoint => {
+            let back = match f.returns_kind() {
+                Returns::Response => format!("Ok({call})"),
+                Returns::MaybeResponse => {
+                    format!("{call}.ok_or_else(|| ::wisp::Error::new(404, \"Not Found\"))")
+                }
+                Returns::Nothing => format!("let () = {call}; Ok(::wisp::Response::empty(204))"),
+                Returns::Other => format!("Ok(::wisp::Response::json_of(&{call}))"),
+            };
+            format!(
+                "pub async fn {name}(cx: &mut ::wisp::Cx) -> ::wisp::Result<::wisp::Response> {{ {lets}{back} }}"
+            )
+        }
+        Shim::Init => {
+            format!("pub async fn init() -> ::wisp::Result<()> {{ let () = {call}; Ok(()) }}")
+        }
+    })
+}
+
+/// `&str` or `&'a str`, without spaces.
+fn is_str_ref(t: &str) -> bool {
+    match t.strip_prefix('&').and_then(|r| r.strip_suffix("str")) {
+        Some("") => true,
+        Some(life) => {
+            life.starts_with('\'')
+                && life[1..]
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        }
+        None => false,
+    }
 }
 
 pub fn generate(input: &Input) -> Result<String, String> {
@@ -76,12 +222,14 @@ pub fn generate(input: &Input) -> Result<String, String> {
         }
         Ok(t)
     };
-    // A `+layout.rs` or `+page.rs`, whose `load` the template reads.
+    // A `+layout.rs`, `+page.rs` or `+server.rs`.
     let scan = |p: &Path| -> Result<rust_scan::Items, String> {
         let items = rust_scan::scan(&read(p)?).map_err(|e| format!("{}:{e}", rel(p)))?;
-        items.check_load().map_err(|e| format!("{}:{e}", rel(p)))?;
+        items.check().map_err(|e| format!("{}:{e}", rel(p)))?;
         Ok(items)
     };
+    // The modules of the app's own Rust files, and the shims in them.
+    let mut user_mods: Vec<UserMod> = Vec::new();
 
     let mut g = Gen {
         out: String::new(),
@@ -208,6 +356,20 @@ pub fn generate(input: &Input) -> Result<String, String> {
         let fns = items.fns;
         let has_load = fns.iter().any(|f| f.name == "load");
         let user = l.has_rs.then(|| (format!("layout_{i}"), has_load));
+        if l.has_rs {
+            let file = l.dir.join("+layout.rs");
+            let shims = fns
+                .iter()
+                .filter(|f| f.name == "load")
+                .map(|f| shim(f, Shim::Load))
+                .collect::<Result<_, _>>()
+                .map_err(|e| format!("{}:{e}", rel(&file)))?;
+            user_mods.push(UserMod {
+                name: format!("layout_{i}"),
+                file,
+                shims,
+            });
+        }
         tpl_paths.push((rel(&file), t.shape));
         templates.push(Tpl {
             id: tpl_paths.len() - 1,
@@ -221,8 +383,7 @@ pub fn generate(input: &Input) -> Result<String, String> {
         });
         layout_fns.push(fns);
     }
-    let layout_load = |i: usize| layout_fns[i].iter().find(|f| f.name == "load");
-    let layout_has_load = |i: usize| layout_load(i).is_some();
+    let layout_has_load = |i: usize| layout_fns[i].iter().any(|f| f.name == "load");
 
     // Error pages.
     for (i, e) in tree.errors.iter().enumerate() {
@@ -251,21 +412,17 @@ pub fn generate(input: &Input) -> Result<String, String> {
         body_limit: Option<String>,
         data: Vec<(String, String)>,
     }
-    // A route's `BODY_LIMIT`, checked: public, a `usize`, set once.
+    // A route's `BODY_LIMIT`, checked: a `usize`, set once.
     let body_limit = |info: &mut RouteInfo,
                       items: &rust_scan::Items,
                       file: &Path,
-                      module: String|
+                      module: String,
+                      shims: &mut Vec<String>|
      -> Result<(), String> {
         let Some(c) = items.constant("BODY_LIMIT") else {
             return Ok(());
         };
         let at = |msg: &str| format!("{}:{}: {msg}", rel(file), c.line);
-        if !c.public {
-            return Err(at(
-                "`BODY_LIMIT` must be `pub` for Wisp to read it: `pub const BODY_LIMIT: usize = ...`",
-            ));
-        }
         if c.ty != "usize" {
             return Err(at(&format!(
                 "`BODY_LIMIT` is a `{}`; make it a `usize`, such as `20 * wisp::MB`",
@@ -278,6 +435,7 @@ pub fn generate(input: &Input) -> Result<String, String> {
             ));
         }
         info.body_limit = Some(module);
+        shims.push("pub const BODY_LIMIT: usize = super::BODY_LIMIT;".into());
         Ok(())
     };
     let mut infos = Vec::new();
@@ -293,50 +451,59 @@ pub fn generate(input: &Input) -> Result<String, String> {
             let file = r.dir.join("+page.wisp");
             let t = parse(&file)?;
             check_no_children(&t, &rel(&file))?;
+            let rs = r.dir.join("+page.rs");
+            let mut shims = Vec::new();
             if r.page_rs {
-                let rs = r.dir.join("+page.rs");
                 let items = scan(&rs)?;
-                body_limit(&mut info, &items, &rs, format!("page_{i}"))?;
+                body_limit(&mut info, &items, &rs, format!("page_{i}"), &mut shims)?;
                 info.data = items.data_fields();
                 info.page_fns = items.fns;
             }
             let has_load = info.page_fns.iter().any(|f| f.name == "load");
+            let at = |f: &FnItem, msg: String| format!("{}:{}: {msg}", rel(&rs), f.line);
             if let Some(f) = info.page_fns.iter().find(|f| f.action && f.name == "load") {
-                return Err(format!(
-                    "{}:{}: `{}` cannot be both load and an action",
-                    rel(&r.dir.join("+page.rs")),
-                    f.line,
-                    f.name
+                return Err(at(
+                    f,
+                    format!("`{}` cannot be both load and an action", f.name),
                 ));
             }
-            for f in info.page_fns.iter().filter(|f| f.action) {
-                f.check_public()
-                    .map_err(|e| format!("{}:{e}", rel(&r.dir.join("+page.rs"))))?;
-            }
             if let Some(f) = info.page_fns.iter().find(|f| f.name == "entries") {
-                f.check_public()
-                    .map_err(|e| format!("{}:{e}", rel(&r.dir.join("+page.rs"))))?;
-                if f.takes_cx || f.is_async || f.action {
-                    return Err(format!(
-                        "{}:{}: `entries` is `pub fn entries() -> Vec<...>`: no `cx`, not async, not an action",
-                        rel(&r.dir.join("+page.rs")),
-                        f.line
+                if !f.params.is_empty() || f.is_async || f.action {
+                    return Err(at(
+                        f,
+                        "`entries` is `fn entries() -> Vec<...>`: no parameters, not async, not an action".into(),
                     ));
                 }
+                shims.push("pub fn entries() -> Vec<Vec<String>> { super::entries().into_iter().map(::wisp::Entry::params).collect() }".into());
             }
             if let Some(f) = info
                 .page_fns
                 .iter()
                 .find(|f| f.action && f.returns_kind() == Returns::Other)
             {
-                return Err(format!(
-                    "{}:{}: action `{}` returns `{}`. An action returns nothing (or `Result<()>`, so it can use `?`), \
-                     or a `Response` to send instead of the page (or `Option<Response>`, to send one only sometimes).",
-                    rel(&r.dir.join("+page.rs")),
-                    f.line,
-                    f.name,
-                    f.returns
+                return Err(at(
+                    f,
+                    format!(
+                        "action `{}` returns `{}`. An action returns nothing (or `Result<()>`, so it can use `?`), \
+                         or a `Response` to send instead of the page (or `Option<Response>`, to send one only sometimes).",
+                        f.name, f.returns
+                    ),
                 ));
+            }
+            for f in &info.page_fns {
+                let kind = match f.name.as_str() {
+                    _ if f.action => Shim::Answer,
+                    "load" => Shim::Load,
+                    _ => continue,
+                };
+                shims.push(shim(f, kind).map_err(|e| format!("{}:{e}", rel(&rs)))?);
+            }
+            if r.page_rs {
+                user_mods.push(UserMod {
+                    name: format!("page_{i}"),
+                    file: rs.clone(),
+                    shims,
+                });
             }
             let user = r.page_rs.then(|| (format!("page_{i}"), has_load));
             tpl_paths.push((rel(&file), t.shape));
@@ -355,7 +522,8 @@ pub fn generate(input: &Input) -> Result<String, String> {
         if r.server {
             let file = r.dir.join("+server.rs");
             let items = scan(&file)?;
-            body_limit(&mut info, &items, &file, format!("server_{i}"))?;
+            let mut shims = Vec::new();
+            body_limit(&mut info, &items, &file, format!("server_{i}"), &mut shims)?;
             let fns = items.fns;
             let at = |f: &FnItem, msg: String| format!("{}:{}: {msg}", rel(&file), f.line);
             if let Some(f) = fns.iter().find(|f| f.action) {
@@ -387,9 +555,13 @@ pub fn generate(input: &Input) -> Result<String, String> {
                 ));
             }
             for f in &info.server_fns {
-                f.check_public()
-                    .map_err(|e| format!("{}:{e}", rel(&file)))?;
+                shims.push(shim(f, Shim::Endpoint).map_err(|e| format!("{}:{e}", rel(&file)))?);
             }
+            user_mods.push(UserMod {
+                name: format!("server_{i}"),
+                file: file.clone(),
+                shims,
+            });
             let has_actions = info.page_fns.iter().any(|f| f.action);
             for m in info.server_fns.iter().map(|f| f.name.as_str()) {
                 if r.page && (m == "get" || (m == "post" && has_actions)) {
@@ -404,6 +576,25 @@ pub fn generate(input: &Input) -> Result<String, String> {
     }
 
     let hooks = hooks(root)?;
+    let has_hook = |name: &str| hooks.as_ref().is_some_and(|h| h.has(name));
+    for (m, file) in &tree.matchers {
+        let Some(file) = file else { continue };
+        let items = rust_scan::scan(&read(file)?).map_err(|e| format!("{}:{e}", rel(file)))?;
+        items
+            .check_inner()
+            .map_err(|e| format!("{}:{e}", rel(file)))?;
+        if items.function("matches").is_none() {
+            return Err(format!(
+                "{}: a param matcher is `fn matches(s: &str) -> bool`, which this file does not have",
+                rel(file)
+            ));
+        }
+        user_mods.push(UserMod {
+            name: format!("param_{m}"),
+            file: file.clone(),
+            shims: vec!["pub fn matches(s: &str) -> bool { super::matches(s) }".into()],
+        });
+    }
     for t in &templates {
         check_components(&t.t.nodes, &t.t, &comps, &t.rel, false)?;
     }
@@ -524,32 +715,31 @@ pub fn generate(input: &Input) -> Result<String, String> {
     ));
     g.line(0, "");
 
-    // User modules, declared with #[path] so rust-analyzer treats them as
-    // ordinary modules of the crate.
-    if hooks.is_some() {
-        g.module_decl("hooks", &root.join("src").join("hooks.rs"));
-    } else {
+    // The app's own Rust files, each included into a module with the
+    // prelude, its shims, and the template it gives data to.
+    if hooks.is_none() {
         g.line(0, "pub mod hooks {}");
     }
-    for (i, l) in tree.layouts.iter().enumerate() {
-        if l.has_rs {
-            g.module_decl(&format!("layout_{i}"), &l.dir.join("+layout.rs"));
+    for m in hooks.iter().chain(&user_mods) {
+        g.line(0, &format!("pub mod {} {{", m.name));
+        g.line(1, "#[allow(unused_imports)]");
+        g.line(1, "use ::wisp::prelude::*;");
+        g.line(1, &format!("include!({});", lit(&m.file.to_string_lossy())));
+        g.line(1, "#[doc(hidden)]");
+        g.line(1, "#[allow(unused_variables, clippy::all)]");
+        g.line(1, "pub mod __call {");
+        for s in &m.shims {
+            g.line(2, s);
         }
+        g.line(1, "}");
+        for (t, c) in templates.iter().zip(&clients) {
+            if t.user.as_ref().is_some_and(|(u, _)| *u == m.name) {
+                g.template(t, &comps, c.as_ref());
+            }
+        }
+        g.line(0, "}");
+        g.line(0, "");
     }
-    for (i, r) in tree.routes.iter().enumerate() {
-        if r.page_rs {
-            g.module_decl(&format!("page_{i}"), &r.dir.join("+page.rs"));
-        }
-        if r.server {
-            g.module_decl(&format!("server_{i}"), &r.dir.join("+server.rs"));
-        }
-    }
-    for (m, file) in &tree.matchers {
-        if let Some(f) = file {
-            g.module_decl(&format!("param_{m}"), f);
-        }
-    }
-    g.line(0, "");
 
     // Shell.
     g.line(0, "#[doc(hidden)]");
@@ -577,8 +767,15 @@ pub fn generate(input: &Input) -> Result<String, String> {
         ));
     }
     for (t, c) in templates.iter().zip(&clients) {
-        g.template(t, &comps, c.as_ref());
+        if t.user.is_none() {
+            g.template(t, &comps, c.as_ref());
+        }
     }
+    let layout_paths: Vec<String> = templates
+        .iter()
+        .filter(|t| t.kind == Kind::Layout)
+        .map(Tpl::path)
+        .collect();
 
     // Page handlers: run loads outermost-first, then render inside the layouts.
     for (i, r) in tree.routes.iter().enumerate() {
@@ -589,16 +786,16 @@ pub fn generate(input: &Input) -> Result<String, String> {
         g.line(0, "#[allow(unused_variables)]");
         g.line(0, &format!("async fn serve_page_{i}(cx: &mut ::wisp::Cx, __o: &mut ::wisp::Out) -> ::wisp::Result<()> {{"));
         for &l in &r.layouts {
-            if let Some(load) = layout_load(l) {
+            if layout_has_load(l) {
                 g.line(
                     1,
-                    &format!("let d{l} = {};", call(&format!("layout_{l}"), load)),
+                    &format!("let d{l} = layout_{l}::__call::load(cx).await?;"),
                 );
             }
         }
-        let page_load = infos[i].page_fns.iter().find(|f| f.name == "load");
-        if let Some(load) = page_load {
-            g.line(1, &format!("let d = {};", call(&format!("page_{i}"), load)));
+        let page_load = infos[i].page_fns.iter().any(|f| f.name == "load");
+        if page_load {
+            g.line(1, &format!("let d = page_{i}::__call::load(cx).await?;"));
         }
         // A `+page.js` load gets the route and its parameters.
         if page.load_js.is_some() {
@@ -618,12 +815,15 @@ pub fn generate(input: &Input) -> Result<String, String> {
         }
         let inner = format!(
             "{}::render(__o{})",
-            page.module,
-            if page_load.is_some() { ", &d" } else { "" }
+            page.path(),
+            if page_load { ", &d" } else { "" }
         );
         g.line(
             1,
-            &format!("{};", wrap_layouts(&r.layouts, &layout_has_load, inner)),
+            &format!(
+                "{};",
+                wrap_layouts(&r.layouts, &layout_paths, &layout_has_load, inner)
+            ),
         );
         g.line(1, "Ok(())");
         g.line(0, "}");
@@ -635,17 +835,20 @@ pub fn generate(input: &Input) -> Result<String, String> {
         g.line(0, "#[allow(unused_variables)]");
         g.line(0, &format!("async fn serve_error_{i}(cx: &mut ::wisp::Cx, __o: &mut ::wisp::Out, status: u16, message: &str) -> ::wisp::Result<()> {{"));
         for &l in &e.layouts {
-            if let Some(load) = layout_load(l) {
+            if layout_has_load(l) {
                 g.line(
                     1,
-                    &format!("let d{l} = {};", call(&format!("layout_{l}"), load)),
+                    &format!("let d{l} = layout_{l}::__call::load(cx).await?;"),
                 );
             }
         }
         let inner = format!("tpl_error_{i}::render(__o, status, message)");
         g.line(
             1,
-            &format!("{};", wrap_layouts(&e.layouts, &layout_has_load, inner)),
+            &format!(
+                "{};",
+                wrap_layouts(&e.layouts, &layout_paths, &layout_has_load, inner)
+            ),
         );
         g.line(1, "Ok(())");
         g.line(0, "}");
@@ -780,7 +983,9 @@ pub fn generate(input: &Input) -> Result<String, String> {
                     values[names.iter().position(|x| x == n).unwrap()] = format!("*p{k}");
                     let decoded = format!("&::wisp::rt::decode(p{k}.as_bytes(), false)");
                     match tree.matchers.iter().find(|(x, _)| Some(x) == m.as_ref()) {
-                        Some((m, Some(_))) => guards.push(format!("param_{m}::matches({decoded})")),
+                        Some((m, Some(_))) => {
+                            guards.push(format!("param_{m}::__call::matches({decoded})"))
+                        }
                         // `int`: digits that fit a u64, so `parse().unwrap()` holds.
                         Some(_) => guards.push(format!(
                             "p{k}.bytes().all(|b| b.is_ascii_digit()) && p{k}.parse::<u64>().is_ok()"
@@ -827,7 +1032,7 @@ pub fn generate(input: &Input) -> Result<String, String> {
     } else {
         g.line(2, "match route {");
         for (i, m) in limits {
-            g.line(3, &format!("{i} => Some({m}::BODY_LIMIT),"));
+            g.line(3, &format!("{i} => Some({m}::__call::BODY_LIMIT),"));
         }
         g.line(3, "_ => None,");
         g.line(2, "}");
@@ -836,11 +1041,8 @@ pub fn generate(input: &Input) -> Result<String, String> {
     g.line(0, "");
 
     g.line(1, "async fn init() -> ::wisp::Result<()> {");
-    if let Some(init) = hooks
-        .as_ref()
-        .and_then(|h| h.iter().find(|f| f.name == "init"))
-    {
-        g.line(2, &format!("let () = {};", call("hooks", init)));
+    if has_hook("init") {
+        g.line(2, "hooks::__call::init().await?;");
     }
     g.line(2, "Ok(())");
     g.line(1, "}");
@@ -893,7 +1095,7 @@ pub fn generate(input: &Input) -> Result<String, String> {
         for (t, c) in modules {
             g.line(
                 3,
-                &format!("{} => Some(&{}::__WISP_CLIENT),", lit(&c.path()), t.module),
+                &format!("{} => Some(&{}::__WISP_CLIENT),", lit(&c.path()), t.path()),
             );
         }
         for (i, f) in js_files.iter().enumerate() {
@@ -911,11 +1113,9 @@ pub fn generate(input: &Input) -> Result<String, String> {
     for (i, r) in tree.routes.iter().enumerate() {
         let info = &infos[i];
         let actions = info.page_fns.iter().any(|f| f.action);
-        let entries = match info.page_fns.iter().find(|f| f.name == "entries") {
-            Some(_) => format!(
-                "Some(|| page_{i}::entries().into_iter().map(::wisp::Entry::params).collect())"
-            ),
-            None => "None".into(),
+        let entries = match info.page_fns.iter().any(|f| f.name == "entries") {
+            true => format!("Some(page_{i}::__call::entries)"),
+            false => "None".into(),
         };
         g.line(3, &format!(
             "::wisp::ExportRoute {{ pattern: {}, page: {}, actions: {actions}, server: {}, entries: {entries} }},",
@@ -930,12 +1130,9 @@ pub fn generate(input: &Input) -> Result<String, String> {
 
     g.line(1, "async fn handle(route: Option<usize>, cx: &mut ::wisp::Cx, __o: &mut ::wisp::Out) -> ::wisp::Result<()> {");
     g.line(2, "use ::wisp::Method::*;");
-    if let Some(before) = hooks
-        .as_ref()
-        .and_then(|h| h.iter().find(|f| f.name == "before"))
-    {
+    if has_hook("before") {
         g.line(2, "// src/hooks.rs");
-        g.line(2, &answer(before, &call("hooks", before)));
+        g.line(2, &answer("hooks::__call::before"));
     }
     g.line(2, "::wisp::rt::hooked(cx);");
     g.line(
@@ -967,7 +1164,7 @@ pub fn generate(input: &Input) -> Result<String, String> {
                         &format!(
                             "{} => {{ {} }}",
                             lit(&a.name),
-                            answer(a, &call(&format!("page_{i}"), a))
+                            answer(&format!("page_{i}::__call::{}", a.name))
                         ),
                     );
                 }
@@ -983,8 +1180,8 @@ pub fn generate(input: &Input) -> Result<String, String> {
             g.line(
                 3,
                 &format!(
-                    "({i}, {variants}) => {{ ::wisp::rt::respond(__o, {}); Ok(()) }}",
-                    call(&format!("server_{i}"), f)
+                    "({i}, {variants}) => {{ ::wisp::rt::respond(__o, server_{i}::__call::{}(cx).await?); Ok(()) }}",
+                    f.name
                 ),
             );
             allow.push(allowed);
@@ -1054,31 +1251,16 @@ const METHODS: [(&str, &str, &str); 5] = [
     ("delete", "Delete", "DELETE"),
 ];
 
-/// `module::name(cx)` the way its signature asks: without `cx` if it takes
-/// no parameters, awaited if it is async, and with `?` if it returns a Result.
-fn call(module: &str, f: &FnItem) -> String {
-    let arg = if f.takes_cx { "cx" } else { "" };
-    let wait = if f.is_async { ".await" } else { "" };
-    let try_ = if f.fallible { "?" } else { "" };
-    format!("{module}::{}({arg}){wait}{try_}", f.name)
+/// The statement in `handle` that runs an `Answer` shim (an action or
+/// `before`): a `Response` it hands back is sent instead of the page.
+fn answer(shim: &str) -> String {
+    format!("if let Some(r) = {shim}(cx).await? {{ ::wisp::rt::respond(__o, r); return Ok(()); }}")
 }
 
-/// The statement that runs `call` of `f` (an action or `before`) in
-/// `handle`: a `Response` it returns is sent instead of the page. `let ()`
-/// makes any other value a compile error rather than a dropped one.
-fn answer(f: &FnItem, call: &str) -> String {
-    match f.returns_kind() {
-        Returns::Response => format!("::wisp::rt::respond(__o, {call}); return Ok(());"),
-        Returns::MaybeResponse => {
-            format!("if let Some(r) = {call} {{ ::wisp::rt::respond(__o, r); return Ok(()); }}")
-        }
-        Returns::Nothing | Returns::Other => format!("let () = {call};"),
-    }
-}
-
-/// The functions of `src/hooks.rs`, if there is one, checked: `init` and
-/// `before` are the only public functions, and look the way they are called.
-fn hooks(root: &Path) -> Result<Option<Vec<FnItem>>, String> {
+/// `src/hooks.rs`, if there is one, checked, as a module with shims for
+/// the hooks it has: `init` and `before`, which look the way they are
+/// called, and no other public function (a typo would never run).
+fn hooks(root: &Path) -> Result<Option<UserMod>, String> {
     // A `mod hooks;` of the app's own would compile the file a second time,
     // with statics of its own.
     let main = root.join("src").join("main.rs");
@@ -1098,10 +1280,12 @@ fn hooks(root: &Path) -> Result<Option<Vec<FnItem>>, String> {
         return Ok(None);
     }
     let src = fs::read_to_string(&file).map_err(|e| format!("src/hooks.rs: {e}"))?;
-    let fns = rust_scan::scan(&src)
-        .map_err(|e| format!("src/hooks.rs:{e}"))?
-        .fns;
-    for f in &fns {
+    let items = rust_scan::scan(&src).map_err(|e| format!("src/hooks.rs:{e}"))?;
+    items
+        .check_inner()
+        .map_err(|e| format!("src/hooks.rs:{e}"))?;
+    let mut shims = Vec::new();
+    for f in &items.fns {
         let at = |msg: String| format!("src/hooks.rs:{}: {msg}", f.line);
         if f.action {
             return Err(at(format!(
@@ -1111,9 +1295,8 @@ fn hooks(root: &Path) -> Result<Option<Vec<FnItem>>, String> {
         }
         match f.name.as_str() {
             "init" => {
-                f.check_public().map_err(|e| format!("src/hooks.rs:{e}"))?;
-                if f.takes_cx {
-                    return Err(at("`init` runs once, before the server takes requests, so it has no `cx`: `pub async fn init()`".into()));
+                if !f.params.is_empty() {
+                    return Err(at("`init` runs once, before the server takes requests, so it has no `cx`: `async fn init()`".into()));
                 }
                 if f.returns_kind() != Returns::Nothing {
                     return Err(at(format!(
@@ -1121,9 +1304,9 @@ fn hooks(root: &Path) -> Result<Option<Vec<FnItem>>, String> {
                         f.returns
                     )));
                 }
+                shims.push(shim(f, Shim::Init).map_err(|e| format!("src/hooks.rs:{e}"))?);
             }
             "before" => {
-                f.check_public().map_err(|e| format!("src/hooks.rs:{e}"))?;
                 if f.returns_kind() == Returns::Other {
                     return Err(at(format!(
                         "`before` returns `{}`. It returns nothing (or `Result<()>`), or a `Response` to send instead of the page \
@@ -1131,6 +1314,10 @@ fn hooks(root: &Path) -> Result<Option<Vec<FnItem>>, String> {
                         f.returns
                     )));
                 }
+                if f.params.iter().any(|(_, ty)| !rust_scan::is_cx(ty)) {
+                    return Err(at("`before` runs for every route, so it takes only `cx`: `fn before(cx: &mut Cx)`".into()));
+                }
+                shims.push(shim(f, Shim::Answer).map_err(|e| format!("src/hooks.rs:{e}"))?);
             }
             name if f.public => {
                 return Err(at(format!(
@@ -1140,7 +1327,11 @@ fn hooks(root: &Path) -> Result<Option<Vec<FnItem>>, String> {
             _ => {}
         }
     }
-    Ok(Some(fns))
+    Ok(Some(UserMod {
+        name: "hooks".into(),
+        file,
+        shims,
+    }))
 }
 
 /// A field type that is certainly `Copy`: a number, `bool`, `char`, a shared
@@ -1179,15 +1370,24 @@ fn opt(x: Option<usize>) -> String {
     x.map_or("None".into(), |i| format!("Some({i})"))
 }
 
-/// `tpl_layout_0::render(__o, &d0, &|__o| tpl_layout_3::render(__o, &|__o| inner))`
-fn wrap_layouts(layouts: &[usize], has_load: &dyn Fn(usize) -> bool, inner: String) -> String {
+/// `layout_0::tpl_layout_0::render(__o, &d0, &|__o| tpl_layout_3::render(__o, &|__o| inner))`,
+/// where `paths` has each layout template's module path.
+fn wrap_layouts(
+    layouts: &[usize],
+    paths: &[String],
+    has_load: &dyn Fn(usize) -> bool,
+    inner: String,
+) -> String {
     layouts.iter().rev().fold(inner, |acc, &l| {
         let data = if has_load(l) {
             format!(", &d{l}")
         } else {
             String::new()
         };
-        format!("tpl_layout_{l}::render(__o{data}, &|__o: &mut ::wisp::Out| {acc})")
+        format!(
+            "{}::render(__o{data}, &|__o: &mut ::wisp::Out| {acc})",
+            paths[l]
+        )
     })
 }
 
@@ -1431,11 +1631,6 @@ impl Gen {
         self.out.push('\n');
     }
 
-    fn module_decl(&mut self, name: &str, file: &Path) {
-        self.line(0, &format!("#[path = {}]", lit(&file.to_string_lossy())));
-        self.line(0, &format!("pub mod {name};"));
-    }
-
     fn template(&mut self, t: &Tpl, comps: &[Comp], client: Option<&Client>) {
         self.line(0, &format!("// {}", t.rel));
         self.line(0, "#[doc(hidden)]");
@@ -1446,8 +1641,10 @@ impl Gen {
             1,
             "use ::wisp::rt::{Always as _, Direct as _, Formatted as _, Maybe as _};",
         );
-        if let Some((m, _)) = &t.user {
-            self.line(1, &format!("use super::{m}::*;"));
+        // Inside the module of its `+page.rs` (or `+layout.rs`), it sees
+        // what the file sees, private items and the prelude too.
+        if t.user.is_some() {
+            self.line(1, "use super::*;");
         }
         if !self.release {
             let chunks: Vec<String> = t.t.chunks.iter().map(|c| lit(c)).collect();
@@ -1475,8 +1672,8 @@ impl Gen {
             ));
         }
         let data = match &t.user {
-            Some((m, true)) => format!(", data: &super::{m}::Data"),
-            _ => String::new(),
+            Some((_, true)) => ", __d: &super::__call::Loaded",
+            _ => "",
         };
         let sig = match t.kind {
             Kind::Page => format!("pub fn render(__o: &mut ::wisp::Out{data})"),
@@ -1505,6 +1702,7 @@ impl Gen {
         // `data.count` is also `count`: `Copy` fields by value, the rest by
         // reference. A local of the same name shadows it.
         if matches!(t.user, Some((_, true))) {
+            self.line(2, "let data: &super::Data = &__d.0;");
             for (name, ty) in &t.data {
                 if !matches!(name.as_str(), "data" | "children") {
                     let by = if is_copy(ty) { "" } else { "&" };
@@ -1532,6 +1730,12 @@ impl Gen {
             rel: &t.rel,
             template: &t.t,
             comps,
+            // Components are at the top of the generated file.
+            top: if t.user.is_some() {
+                "super::super::"
+            } else {
+                "super::"
+            },
             target: "body",
             each_depth: 0,
             client,
@@ -1846,7 +2050,7 @@ impl Gen {
                     args.push_str(", ");
                     args.push_str(&arg);
                 }
-                let call = format!("super::{}::render(__o{args}", c.module);
+                let call = format!("{}{}::render(__o{args}", cx.top, c.module);
                 // Snippets among the children are props: defined before the
                 // call, in a block of their own.
                 let is_snippet = |n: &&Node| matches!(n, Node::Snippet { .. });
@@ -2038,7 +2242,8 @@ impl Gen {
         self.line(
             ind,
             &format!(
-                "super::{}::paint(__o, &[{}], &|__o: &mut ::wisp::Out| {{ // {}:{}",
+                "{}{}::paint(__o, &[{}], &|__o: &mut ::wisp::Out| {{ // {}:{}",
+                cx.top,
                 comp.module,
                 args.join(", "),
                 cx.rel,
@@ -2309,6 +2514,9 @@ struct Emit<'a> {
     rel: &'a str,
     template: &'a Template,
     comps: &'a [Comp],
+    /// The path from the template's module to the top of the generated
+    /// file, where the components are.
+    top: &'static str,
     target: &'static str,
     each_depth: usize,
     client: Option<&'a Client>,
@@ -2394,8 +2602,8 @@ struct JsFile {
 /// The helpers every module's function takes. Most are scoped to the
 /// instance; the rest are live.js's exports, handed over so a script needs
 /// no import for them.
-const HELPERS: &str = "tick, setTimeout, setInterval, requestAnimationFrame, addEventListener, listen, onMount, onDestroy, effect, derived, \
-                       store, persisted, emit, setContext, getContext, goto, invalidate, page, navigating, enhance";
+const HELPERS: &str = "tick, setTimeout, setInterval, requestAnimationFrame, addEventListener, listen, onMount, onDestroy, effect, watch, \
+                       derived, __wisp_d, store, persisted, emit, setContext, getContext, goto, invalidate, page, navigating, enhance";
 
 /// What `client` needs to know beyond the template.
 struct ClientCx<'a> {
@@ -2450,6 +2658,11 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
         };
         (s.line + before.matches('\n').count() as u32, col)
     };
+    // What the module runs: the script, its `$derived` values compiled.
+    let runs = js::derived(src).map_err(|(off, msg)| {
+        let (line, col) = script_at(off);
+        at(line, col, msg)
+    })?;
     // A server name the script declares too could mean either.
     let clash = |name: &str| -> Result<(), String> {
         match declared.iter().find(|(n, _)| n == name) {
@@ -2584,7 +2797,7 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
         id: &id,
         rel: &t.rel,
         params: &params,
-        script,
+        script: script.map(|s| (runs.as_str(), s.line)),
         groups: &groups,
         imports: &imports,
         load: cx.load.as_deref(),
@@ -2655,7 +2868,8 @@ struct Module<'a> {
     id: &'a str,
     rel: &'a str,
     params: &'a [&'a str],
-    script: Option<&'a Script>,
+    /// The script, as it runs, and the line of the file it starts on.
+    script: Option<(&'a str, u32)>,
     groups: &'a [Vec<String>],
     /// Modules of the components it renders.
     imports: &'a [String],
@@ -2686,14 +2900,14 @@ fn module_source(m: &Module) -> String {
         let _ = writeln!(s, "import * as __wisp_u from {};", js_str(url));
     }
     let mut body = String::new();
-    if let Some(sc) = m.script {
+    if let Some((src, _)) = m.script {
         // Imports go first, as a module's must; they leave blank lines.
-        let spans = js::imports(&sc.src);
+        let spans = js::imports(src);
         for &(a, b) in &spans {
-            s.push_str(&rewrite_specifiers(&sc.src[a..b], m.lib_hash, None));
+            s.push_str(&rewrite_specifiers(&src[a..b], m.lib_hash, None));
             s.push('\n');
         }
-        body = js::blank(&sc.src, &spans);
+        body = js::blank(src, &spans);
     }
     let names = m.params.join(", ");
     let _ = write!(
@@ -2705,9 +2919,9 @@ fn module_source(m: &Module) -> String {
         let _ = write!(s, "let {{ {names} }} = __wisp_p; ");
     }
     s.push_str("{\n");
-    if let Some(sc) = m.script {
+    if let Some((_, line)) = m.script {
         let next = s.matches('\n').count() as u32 + 1;
-        for _ in next..sc.line {
+        for _ in next..line {
             s.push('\n');
         }
         s.push_str(&body);
@@ -3412,16 +3626,24 @@ mod tests {
     fn hooks_are_checked() {
         let page = ("src/routes/+page.wisp", "x");
         let hooks = |src: &'static str| ("src/hooks.rs", src);
-        let code = app("hooks-ok", &[page, hooks("pub async fn init() -> Result<()> { Ok(()) }\npub fn before(cx: &mut Cx) -> Option<Response> { None }\nfn helper() {}")]).unwrap();
-        assert!(code.contains("let () = hooks::init().await?;"), "{code}");
-        assert!(
-            code.contains("if let Some(r) = hooks::before(cx) {"),
-            "{code}"
-        );
+        let code = app("hooks-ok", &[page, hooks("async fn init() -> Result<()> { Ok(()) }\nfn before(cx: &mut Cx) -> Option<Response> { None }\nfn helper() {}")]).unwrap();
+        for want in [
+            "pub async fn init() -> ::wisp::Result<()> { let () = super::init().await?; Ok(()) }",
+            "pub async fn before(cx: &mut ::wisp::Cx) -> ::wisp::Result<Option<::wisp::Response>> { Ok(super::before(cx)) }",
+            "hooks::__call::init().await?;",
+            "if let Some(r) = hooks::__call::before(cx).await? {",
+        ] {
+            assert!(code.contains(want), "{want}\n{code}");
+        }
         let err = |name, src| app(name, &[page, hooks(src)]).unwrap_err();
         assert!(err("typo", "pub fn befor(cx: &mut Cx) {}").contains("`befor` is not a hook"));
-        assert!(err("private", "fn before(cx: &mut Cx) {}").contains("must be `pub`"));
-        assert!(err("init-cx", "pub fn init(cx: &mut Cx) {}").contains("has no `cx`"));
+        assert!(err("init-cx", "fn init(cx: &mut Cx) {}").contains("has no `cx`"));
+        assert!(
+            err("before-input", "fn before(cx: &mut Cx, id: u8) {}").contains("takes only `cx`")
+        );
+        assert!(
+            err("inner", "//! Hooks.\nfn init() {}").starts_with("src/hooks.rs:1: Wisp includes")
+        );
         assert!(
             err("returns", "pub fn before(cx: &mut Cx) -> u8 { 1 }")
                 .contains("`before` returns `u8`")
@@ -3440,14 +3662,16 @@ mod tests {
         let rs = |src: &'static str| ("src/routes/+page.rs", src);
         let code = app(
             "limit-ok",
-            &[page, rs("pub const BODY_LIMIT: usize = 8 * wisp::MB;")],
+            &[page, rs("const BODY_LIMIT: usize = 8 * wisp::MB;")],
         )
         .unwrap();
-        assert!(code.contains("0 => Some(page_0::BODY_LIMIT),"), "{code}");
         assert!(
-            app("limit-pub", &[page, rs("const BODY_LIMIT: usize = 1;")])
-                .unwrap_err()
-                .contains("must be `pub`")
+            code.contains("0 => Some(page_0::__call::BODY_LIMIT),"),
+            "{code}"
+        );
+        assert!(
+            code.contains("pub const BODY_LIMIT: usize = super::BODY_LIMIT;"),
+            "{code}"
         );
         assert!(
             app("limit-type", &[page, rs("pub const BODY_LIMIT: u64 = 1;")])
@@ -3471,22 +3695,69 @@ mod tests {
         let page = ("src/routes/+page.wisp", "x");
         let rs = (
             "src/routes/+page.rs",
-            "#[action] pub fn csv() -> Response { todo!() }\n#[action] pub fn maybe() -> Result<Option<Response>> { todo!() }",
+            "#[action] fn csv() -> Response { todo!() }\n#[action] fn maybe() -> Result<Option<Response>> { todo!() }",
         );
         let code = app("respond", &[page, rs]).unwrap();
-        assert!(
-            code.contains("\"csv\" => { ::wisp::rt::respond(__o, page_0::csv()); return Ok(()); }"),
-            "{code}"
-        );
-        assert!(
-            code.contains("\"maybe\" => { if let Some(r) = page_0::maybe()? {"),
-            "{code}"
-        );
+        for want in [
+            "{ Ok(Some(super::csv())) }",
+            "{ Ok(super::maybe()?) }",
+            "\"csv\" => { if let Some(r) = page_0::__call::csv(cx).await? { ::wisp::rt::respond(__o, r); return Ok(()); } }",
+        ] {
+            assert!(code.contains(want), "{want}\n{code}");
+        }
         let bad = ("src/routes/+page.rs", "#[action] pub fn n() -> u8 { 1 }");
         assert!(
             app("respond-bad", &[page, bad])
                 .unwrap_err()
                 .contains("or a `Response` to send instead of the page")
+        );
+    }
+
+    #[test]
+    fn inputs_are_read_by_name() {
+        let files = [
+            ("src/routes/[id]/+page.wisp", "x"),
+            (
+                "src/routes/[id]/+page.rs",
+                "struct Data;\nfn load(id: u64, q: Option<&str>) -> Data { Data }\n\
+                 #[action] async fn add(cx: &mut Cx, text: &str, tags: Vec<String>, on: bool) {}",
+            ),
+            (
+                "src/routes/api/+server.rs",
+                "fn get(n: Option<u8>) -> Vec<u8> { vec![] }\nfn post(name: String) {}\nfn delete() -> Option<Response> { None }",
+            ),
+        ];
+        let code = app("inputs", &files).unwrap();
+        for want in [
+            "let __a0 = ::wisp::rt::input::required(cx, \"id\")?; let __a1: Option<String> = ::wisp::rt::input::optional(cx, \"q\")?; Ok(Loaded(super::load(__a0, __a1.as_deref())))",
+            "let __a1: String = ::wisp::rt::input::required(cx, \"text\")?; let __a2 = ::wisp::rt::input::all(cx, \"tags\")?; \
+             let __a3 = ::wisp::rt::input::flag(cx, \"on\"); let () = super::add(cx, &__a1, __a2, __a3).await; Ok(None)",
+            "Ok(::wisp::Response::json_of(&super::get(__a0)))",
+            "let () = super::post(__a0); Ok(::wisp::Response::empty(204))",
+            "super::delete().ok_or_else(|| ::wisp::Error::new(404, \"Not Found\"))",
+        ] {
+            assert!(code.contains(want), "{want}\n{code}");
+        }
+        let bad = [
+            ("src/routes/+page.wisp", "x"),
+            (
+                "src/routes/+page.rs",
+                "\n#[action] fn a((x, y): (u8, u8)) {}",
+            ),
+        ];
+        let err = app("inputs-bad", &bad).unwrap_err();
+        assert!(
+            err.starts_with("src/routes/+page.rs:2: `a` takes `(x, y): (u8, u8)`"),
+            "{err}"
+        );
+        let docs = [
+            ("src/routes/+page.wisp", "x"),
+            ("src/routes/+page.rs", "//! A page."),
+        ];
+        assert!(
+            app("inner", &docs)
+                .unwrap_err()
+                .starts_with("src/routes/+page.rs:1: Wisp includes")
         );
     }
 
@@ -3533,6 +3804,14 @@ pub fn load() -> Data { todo!() }";
             "let pair = data.pair;",
             "let rows = &data.rows;",
             "let cb = &data.cb;",
+            // Private fields too: the template is inside the page's module.
+            "let hidden = data.hidden;",
+            "pub mod page_0 {",
+            "use ::wisp::prelude::*;",
+            "pub fn render(__o: &mut ::wisp::Out, __d: &super::__call::Loaded) {",
+            "let data: &super::Data = &__d.0;",
+            "let d = page_0::__call::load(cx).await?;",
+            "page_0::tpl_page_0::render(__o, &d)",
         ] {
             assert!(
                 code.contains(want),
@@ -3540,7 +3819,6 @@ pub fn load() -> Data { todo!() }";
 {code}"
             );
         }
-        assert!(!code.contains("let hidden"), "{code}");
         assert!(is_copy("&'static str") && is_copy("Option<(u8, char)>"));
         assert!(!is_copy("&mut u8") && !is_copy("Vec<u8>") && !is_copy("Option<String>"));
     }

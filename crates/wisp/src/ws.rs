@@ -75,7 +75,7 @@ impl Response {
     /// `new WebSocket(url)`.
     ///
     /// ```ignore
-    /// pub fn get() -> Response {
+    /// fn get() -> Response {
     ///     Response::websocket(|ws| async move {
     ///         while let Some(msg) = ws.recv().await {
     ///             ws.send(msg).await?;

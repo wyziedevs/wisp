@@ -1,9 +1,7 @@
-pub struct Data {
-    pub greeting: String,
+struct Data {
+    greeting: String,
 }
 
-pub fn load() -> Data {
-    Data {
-        greeting: "Hello <server>".into(),
-    }
+fn load() -> Data {
+    Data { greeting: "Hello <server>".into() }
 }

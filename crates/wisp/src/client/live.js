@@ -372,7 +372,31 @@ function helpers(inst) {
   const sc = inst.sc;
   const signal = sc.signal;
   const wrap = (f) => (...a) => signal.aborted || fire(f, ...a);
+  // effect(fn) runs after every redraw; effect(fn, () => [a, b]) when a or
+  // b changed. What fn returns runs before the next run and at the end.
+  const effect = (fn, deps) => {
+    const e = { fn, deps, last: NONE, done: null };
+    effects.add(e);
+    sc.stops.push(() => (effects.delete(e), e.done?.()));
+  };
   return {
+    effect,
+    // watch(() => a, (a) => …) runs when a changes, not at the start.
+    watch(get, fn) {
+      let started = false;
+      effect((v) => (started ? fn(v) : void (started = true)), get);
+    },
+    // `let x = $derived(expr)` in a script compiles to this: x is worked out
+    // again before every redraw, ahead of the bindings that read it. A name
+    // declared further down is not there yet, so x starts undefined then.
+    __wisp_d(get, set) {
+      sc.draws.push(() => set(get()));
+      try {
+        return get();
+      } catch (e) {
+        if (!(e instanceof ReferenceError)) throw e;
+      }
+    },
     tick,
     setTimeout: (f, ms, ...a) => setTimeout(wrap(f), ms, ...a),
     requestAnimationFrame: (f) => requestAnimationFrame(wrap(f)),
@@ -390,13 +414,6 @@ function helpers(inst) {
     },
     onMount: (f) => mounts.push([inst, f]),
     onDestroy: (f) => sc.stops.push(f),
-    // effect(fn) runs after every redraw; effect(fn, () => [a, b]) when a or
-    // b changed. What fn returns runs before the next run and at the end.
-    effect(fn, deps) {
-      const e = { fn, deps, last: NONE, done: null };
-      effects.add(e);
-      sc.stops.push(() => (effects.delete(e), e.done?.()));
-    },
     derived,
     store,
     persisted,

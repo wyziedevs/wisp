@@ -96,20 +96,20 @@ Directory names are URL segments. Files that start with `+` are route files.
 | `+layout.rs`   | `load` for the layout.                                            |
 | `+error.wisp`  | Rendered for errors below this directory. Gets `status`, `message` (a sentence about the status when the error says no more than its name). |
 | `+page.js`     | Optional. `load({ data, url, params, route, fetch })` in the browser. |
-| `+server.rs`   | `pub async fn get/post/put/patch/delete` endpoints.               |
+| `+server.rs`   | `get`/`post`/`put`/`patch`/`delete` endpoints.                    |
 
 Segment syntax: `blog` (static), `[slug]` (param), `[[lang]]` (optional),
 `[...rest]` (rest, may be empty), `(group)` (not part of the URL).
 
 A param may name a matcher: `[id=int]`, `[[lang=locale]]`. A matcher is
-`src/params/<name>.rs` with `pub fn matches(s: &str) -> bool`, given the
+`src/params/<name>.rs` with `fn matches(s: &str) -> bool`, given the
 decoded segment; `int` (ASCII digits that fit a `u64`) is built in. A segment the matcher
 refuses goes on to the next route, so `/[id=int]` and `/[slug]` can live
 side by side. Naming a matcher that does not exist is a build error.
 
 ```rust
 // src/params/locale.rs
-pub fn matches(s: &str) -> bool {
+fn matches(s: &str) -> bool {
     matches!(s, "en" | "fr" | "de")
 }
 ```
@@ -130,72 +130,90 @@ top-level `_app` or `_wisp` directory, which Wisp's own files use; a
 
 ```rust
 // src/routes/blog/[slug]/+page.rs
-use wisp::prelude::*;
+struct Data {
+    post: Post,
+}
 
-pub struct Data { pub post: Post }
-
-pub async fn load(cx: &mut Cx) -> Result<Data> {
-    let post = db::post(cx.param("slug")).await.or_404()?;
+async fn load(slug: String) -> Result<Data> {
+    let post = db::post(&slug).await.or_404()?;
     Ok(Data { post })
 }
 
 #[action]
-pub async fn like(cx: &mut Cx) -> Result<()> {
-    let id: i64 = cx.form().parse("id")?;
+async fn like(id: i64) -> Result<()> {
     db::like(id).await?;
     Ok(())
 }
 ```
 
+- A route file needs no `use` lines and no `pub`. Wisp includes it into a
+  module of its own with `wisp::prelude` in scope (`Cx`, `Response`,
+  `Result`, `error`, `redirect`, `#[action]`, the derives, ...), and its
+  template is compiled inside that module, so it reads private types and
+  fields. `pub` still works, and rustc reports an old `use wisp::prelude::*`
+  as unused. The one thing such a file cannot have is a
+  `//!` doc or a `#![…]` attribute at its top (a build error says so).
 - `load` is found by name, actions by the `#[action]` marker. Nothing else in the
-  file is reachable from HTTP. This is deliberate: a helper `pub async fn` must
+  file is reachable from HTTP. This is deliberate: a helper function must
   never become an endpoint by accident.
 - Signatures are as short as the function allows. `load`, actions and
   `+server.rs` endpoints may be `fn` or `async fn`; take `cx: &mut Cx`,
-  `cx: &Cx` or nothing; and return their value (`Data`, `()`, `Response`)
+  `cx: &Cx` or no `cx`; and return their value (`Data`, `()`, `Response`)
   either plain or in a `Result`. The build reads which from the signature and
   generates the matching call; rustc checks the types. A counter is
-  `pub fn load(cx: &mut Cx) -> Data` and `#[action] pub fn increment(cx: &mut Cx)`.
-- `pub fn entries() -> Vec<…>` in a `+page.rs` under `[params]` lists the pages
+  `fn load(cx: &mut Cx) -> Data` and `#[action] fn increment(cx: &mut Cx)`.
+- Every other parameter is an input, read from the request by its name: a
+  route parameter of that name first, then the form a POST, PUT or PATCH
+  sends, then the URL's query. The type says how. `T` must be there and be
+  a `T` (any `FromStr`): missing or not one is a 400 that says which field,
+  and a route parameter that is not one is a 404. `Option<T>` is `None` when
+  it is missing or blank, `bool` is a checkbox (sent at all, and not
+  `false`, `off` or `0`), `Vec<T>` is every value of a repeated field, and
+  `&str` borrows a `String`. So `fn load(slug: String)`,
+  `fn load(q: Option<String>, page: Option<u32>)` and
+  `#[action] fn add(text: String, done: bool)` need no `cx` at all.
+  `cx.form()` still reads anything else, files too.
+- `fn entries() -> Vec<…>` in a `+page.rs` under `[params]` lists the pages
   `wisp build --static` writes (see [deploy.md](deploy.md)).
-- `Data` must be a public type in `+page.rs` (defined or re-exported) with
-  public fields, because the template reads it. The build checks, against
-  `+page.rs`, that `load` and every action are `pub`, that `load` returns
-  `Data` (plain or in a `Result`), that a `Data` defined there is `pub`, and
-  that `#[action]` (by any path, `wisp::action` too) marks only top-level
+- The build checks, against `+page.rs`, that `load` returns `Data` (plain or
+  in a `Result`), that every parameter but `cx` has a plain name, and that
+  `#[action]` (by any path, `wisp::action` too) marks only top-level
   functions of a `+page.rs`.
 - Errors: `?` on any `std::error::Error` gives a 500 (details only in dev).
-  `error(404, "…")` and `redirect("/…")` (303) construct control-flow errors;
-  `Error::redirect(status, "/…")` takes another status. `Option::or_404()` is
-  the common shortcut. `cx.form().parse("id")` reads a field as any `FromStr`
-  type, and a missing or unparsable field is a 400 that says why.
+  `return error(404, "…")` stops with that status and message, and
+  `return redirect("/…")` with a 303; both are `Err`s, so they end a
+  function that returns a `Result`. `Error::new(status, "…")` is the error
+  itself, and `Error::redirect(status, "/…")` takes another status.
+  `Option::or_404()` is the common shortcut.
 - An action returns nothing (or `Result<()>`), and then the page renders. It
   may instead return a `Response` (a CSV export, a file), sent in place of
   the page, or an `Option<Response>` to do that only sometimes.
-- A form that fails validation: the action sets a status and hands what
-  went wrong to `load`, which runs next in the same request, and the page
-  shows it with what was typed (`cx.form()` still has it):
+- A form that fails validation: the action calls `cx.fail(status, problem)`,
+  and `load`, which runs next in the same request, takes the problem with
+  `cx.take` and what was typed from its inputs (the form is still there):
 
   ```rust
-  pub struct Problem(pub &'static str);
+  struct Problem(&'static str);
 
   #[action]
-  pub fn signup(cx: &mut Cx) {
-      if cx.form().get("email").is_none_or(|e| !e.contains('@')) {
-          cx.set_status(422);
-          cx.set(Problem("That email address is missing its @"));
+  fn signup(cx: &mut Cx, email: String) {
+      if !email.contains('@') {
+          cx.fail(422, Problem("That email address is missing its @"));
       }
   }
 
-  pub fn load(cx: &mut Cx) -> Data {
-      Data { problem: cx.get::<Problem>().map(|p| p.0), email: cx.form().get("email").unwrap_or_default().into_owned() }
+  fn load(cx: &mut Cx, email: Option<String>) -> Data {
+      Data { problem: cx.take().map(|Problem(p)| p), email }
   }
   ```
-- `pub const BODY_LIMIT: usize = 20 * wisp::MB;` in a `+page.rs` or
+- `const BODY_LIMIT: usize = 20 * wisp::MB;` in a `+page.rs` or
   `+server.rs` sets the largest body that route takes (the default is 1 MB,
   or `WISP_BODY_LIMIT`). A larger one is refused with a 413 as soon as its
-  head arrives. The build checks that it is a `pub` `usize`, set once per
-  route, and not in a layout, where it would do nothing.
+  head arrives. The build checks that it is a `usize`, set once per route,
+  and not in a layout, where it would do nothing.
+- A `+server.rs` method answers with the `Response` it returns; with any
+  other value, that value as JSON (`#[derive(Json)]`); with nothing, a 204.
+  An `Option<Response>` that is `None` is a 404.
 
 ### Templates
 
@@ -368,7 +386,7 @@ A snippet is markup a file renders more than once, or gives to a component:
 `action` posts to the action named `default`. Flow:
 
 1. Same-origin check: if `Origin` is present it must match `Host` (403 otherwise).
-2. The action runs. `Err(redirect)` → 303. Other errors → error page. For
+2. The action runs. `redirect("/…")` → 303. Other errors → error page. For
    `wisp.js` (its requests carry `x-wisp`) a redirect is a 200 with
    `x-wisp-location`, and the script goes there itself: fetch would follow it
    with the post's own headers, and to another site (a payment page) not at
@@ -405,9 +423,11 @@ type says nothing the bytes do not. Text fields read the same either way.
 Uploads are held in memory, so a route that takes large ones raises its own
 `BODY_LIMIT` rather than the whole app's.
 
-To serve saved files back, `Response::file_in("uploads", cx.param("name")).await?`
-in a `[...name]/+server.rs` reads one from the directory without blocking,
-typed by its extension. The name may come straight from the URL: one that
+To serve saved files back, `async fn get(name: String) -> Result<Response> {
+Response::file_in("uploads", &name).await }` in a `[...name]/+server.rs`
+reads one from the directory without blocking, typed by its extension.
+`Response::download("report.csv", bytes)` sends bytes the browser saves as
+a file of that name. The name may come straight from the URL: one that
 would reach outside the directory (`..`, an absolute path, a drive) is a
 404, like a file that does not exist.
 
@@ -450,25 +470,23 @@ on any load; a script that a morph brings into the same page (one inside an
 `src/hooks.rs` holds what runs outside any one route:
 
 ```rust
-use wisp::prelude::*;
-
 pub struct User(pub String);
 
 /// Once, before the server listens. A failure stops it with the reason.
-pub async fn init() -> Result<()> {
+async fn init() -> Result<()> {
     wisp::provide(Db::connect(&std::env::var("DATABASE_URL")?).await?);
     Ok(())
 }
 
 /// Before every page, action and endpoint (and 404), not static files.
-pub fn before(cx: &mut Cx) -> Result<()> {
+fn before(cx: &mut Cx) -> Result<()> {
     cx.set_header("x-frame-options", "DENY");
     if let Some(name) = cx.signed_cookie("user") {
         let user = User(name.to_string());
         cx.set(user);
     }
     if cx.path().starts_with("/admin") && cx.get::<User>().is_none() {
-        return Err(redirect("/login"));
+        return redirect("/login");
     }
     Ok(())
 }
@@ -487,31 +505,36 @@ pub fn before(cx: &mut Cx) -> Result<()> {
   with its name: a missing line at startup, found by the first request.
 - `cx.set(value)` hands a value along the rest of one request, and
   `cx.get::<T>()` reads it: `before` finds the user once, every page reads it.
-- `src/hooks.rs` is `crate::hooks`, so routes can use its types. The build
-  checks it: `init` and `before` are `pub` and shaped as above, any other
-  `pub fn` is a mistake (a typo like `befor` would never run), and
-  `main.rs` must not declare `mod hooks` itself.
+  `cx.take::<T>()` moves it out, so it need not be `Clone`.
+- `cx.flash("Saved")` leaves a message for the next page the visitor sees
+  (after a `redirect`, say), whose `load` reads it once with `cx.flashed()`.
+- `src/hooks.rs` is `crate::hooks`, so routes can use its `pub` types. Like
+  a route file it needs no `use` lines. The build checks it: `init` and
+  `before` are shaped as above, any other `pub fn` is a mistake (a typo like
+  `befor` would never run; a private one is a helper, and rustc warns when
+  nothing calls it), and `main.rs` must not declare `mod hooks` itself.
 
 ### Streaming
 
-`Response::stream(content_type)` returns a response and a `Sender` for its
-body: each `send` goes out at once (chunked on HTTP/1.1), and the body ends
-when the sender is dropped. `Response::events()` is the same for
-server-sent events, uncached and unbuffered by proxies, and `Sender::event`
-writes one event whatever lines it has; a page listens with `new
-EventSource(url)`. A send fails once the client has gone, which is the
-signal to stop. When the server stops, open streams end properly.
+`Response::stream(content_type, |body| async move { … })` returns a
+response whose body the closure writes, in a task of its own, with a
+`Sender`: each `send` goes out at once (chunked on HTTP/1.1), and the body
+ends when the closure returns. `Response::events(|events| …)` is the same
+for server-sent events, uncached and unbuffered by proxies, and
+`Sender::event` writes one event whatever lines it has; a page listens with
+`listen(url, …)` or `new EventSource(url)`. A send fails once the client
+has gone, so `?` on it stops the closure. When the server stops, open
+streams end properly.
 
 ```rust
 // src/routes/clock/+server.rs
-pub fn get() -> Response {
-    let (res, events) = Response::events();
-    tokio::spawn(async move {
-        while events.event(&now()).await.is_ok() {
-            tokio::time::sleep(Duration::from_secs(1)).await;
+fn get() -> Response {
+    Response::events(|events| async move {
+        loop {
+            events.event(&now()).await?;
+            wisp::sleep(Duration::from_secs(1)).await;
         }
-    });
-    res
+    })
 }
 ```
 
@@ -660,7 +683,8 @@ and [deploy.md](deploy.md).
 - `class:won={data.won}` toggles a class on the server.
 - `<a {href}>` is `href={href}`.
 - An `Option` attribute (`aria-current={current}`) is left out when `None`.
-- `#[derive(Json)]` and `Response::json_of(&value)` for JSON without serde.
+- `#[derive(Json)]` for JSON without serde: an endpoint returns the value,
+  or `Response::json_of(&value)` wraps it.
 
 Generated code implements one trait:
 
@@ -689,10 +713,15 @@ the app uses them.)
 3. Scans `+page.rs`/`+layout.rs`/`+server.rs` and `src/hooks.rs` with a tiny
    Rust lexer for `fn load`, `#[action] … fn name`, HTTP-method functions,
    hooks and `const BODY_LIMIT`, and reads from each signature whether it is
-   async, takes `cx`, returns a `Result` and returns a `Response`.
-4. Writes `$OUT_DIR/wisp.rs`: `#[path]` modules for the user's files (so
-   rust-analyzer sees them as normal modules), one render function per template,
-   the router `match`, `handle`, and asset tables.
+   async, takes `cx`, which inputs it reads by name, returns a `Result` and
+   returns a `Response`.
+4. Writes `$OUT_DIR/wisp.rs`: a module per user file, which `include!`s it
+   after `use wisp::prelude::*` and holds a `__call` module of small shims
+   that read inputs and adapt what the function returns (so the file's items
+   need not be `pub`), and the template it feeds; one render function per
+   template, the router `match`, `handle`, and asset tables. A `load`'s
+   `Data` leaves its module in a public box (`__call::Loaded`) only that
+   module's template opens, since a private type cannot travel on its own.
 
 Release builds embed `static/` and the built CSS into the binary with a content
 hash, served with `Cache-Control: immutable` under `?v=hash` URLs.

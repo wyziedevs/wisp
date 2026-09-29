@@ -1,27 +1,23 @@
 use std::sync::Mutex;
-use wisp::prelude::*;
+use std::time::Duration;
 
 static ITEMS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-pub struct Data {
-    pub items: Vec<String>,
+struct Data {
+    items: Vec<String>,
 }
 
-pub fn load() -> Data {
-    Data {
-        items: ITEMS.lock().unwrap().clone(),
-    }
+fn load() -> Data {
+    Data { items: ITEMS.lock().unwrap().clone() }
 }
 
 #[action]
-pub async fn add(cx: &mut Cx) -> Result<()> {
-    let text = cx.form().required("text")?.into_owned();
-    wisp::sleep(std::time::Duration::from_millis(300)).await;
+async fn add(text: String) {
+    wisp::sleep(Duration::from_millis(300)).await;
     ITEMS.lock().unwrap().push(text);
-    Ok(())
 }
 
 #[action]
-pub fn answer() -> Response {
+fn answer() -> Response {
     Response::json("{\"n\":42}")
 }

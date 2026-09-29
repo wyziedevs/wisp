@@ -53,6 +53,13 @@ fn sign_in_keeps_cookies() {
     let admin = app.get("/admin");
     assert_eq!(admin.status, 200);
     assert!(admin.text().contains("Welcome, ada"));
+    // The flash from signing in shows once.
+    assert!(
+        admin.text().contains("<p class=\"flash\">Hello, ada!</p>"),
+        "{}",
+        admin.text()
+    );
+    assert!(!app.get("/admin").text().contains("class=\"flash\""));
 
     let bad = app.post_form("/login", &[("name", "a d&a")]);
     assert_eq!(bad.status, 400);
