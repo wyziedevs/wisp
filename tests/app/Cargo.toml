@@ -1,0 +1,29 @@
+# An app that uses every part of Wisp a demo would not: hooks, uploads,
+# signed cookies, streamed responses, body limits, browser code.
+# `tests/http.rs` runs it as a server, `tests/client.rs` in process.
+[package]
+name = "wisp-test-app"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+wisp.workspace = true
+
+# The edge build (`wisp build --target cloudflare`): no sockets or threads.
+# `tokio::spawn` and `tokio::time` compile there, but panic (a 500) with no
+# runtime to run on.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio.workspace = true
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tokio = { version = "1.53", default-features = false, features = ["sync", "rt", "time"] }
+
+[build-dependencies]
+wisp-build.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# `tests/tower.rs`: the app as a tower service.
+tower = ["wisp/tower"]

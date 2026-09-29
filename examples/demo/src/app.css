@@ -714,7 +714,8 @@ nav a[aria-current="page"]::before {
   background: var(--panel-hover);
 }
 
-.keyboard button:active:not(:disabled) {
+.keyboard button:active:not(:disabled),
+.keyboard button.pressed {
   background-image: linear-gradient(color-mix(in oklab, currentColor 10%, transparent) 0 0);
 }
 
