@@ -8,6 +8,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 pub struct Events {
     pub port: u16,
@@ -22,15 +23,22 @@ impl Events {
         let list = clients.clone();
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                if let Some(s) = accept(stream) {
-                    list.lock().unwrap_or_else(|e| e.into_inner()).push(s);
-                }
+                // Off the accept thread, so a connection that never sends its
+                // request cannot keep the next one waiting.
+                let list = list.clone();
+                thread::spawn(move || {
+                    if let Some(s) = accept(stream) {
+                        list.lock().unwrap_or_else(|e| e.into_inner()).push(s);
+                    }
+                });
             }
         });
         Ok(Events { port, clients })
     }
 
     /// Sends one event. `data` may span lines; the browser gets `kind\ndata`.
+    /// A client that takes too long to take it is dropped, since the file
+    /// watcher waits on this.
     pub fn send(&self, kind: &str, data: &str) {
         let mut msg = format!("data: {kind}\n");
         for line in data.lines() {
@@ -45,6 +53,8 @@ impl Events {
 }
 
 fn accept(mut s: TcpStream) -> Option<TcpStream> {
+    s.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+    s.set_write_timeout(Some(Duration::from_secs(1))).ok()?;
     // Read (and ignore) the request head; any path is the event stream.
     let mut buf = [0u8; 4096];
     let mut n = 0;

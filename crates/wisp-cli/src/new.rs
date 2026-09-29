@@ -3,8 +3,9 @@
 //! Every question has a flag, so scripts and CI can answer up front; `--yes`
 //! (or no terminal to ask on) takes the defaults for the rest.
 
-use crate::{ask, css};
+use crate::{ask, css, term};
 use std::fs;
+use std::io::{self, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -15,8 +16,11 @@ enum Template {
 }
 
 const TEMPLATES: [(&str, &str); 2] = [
-    ("Demo", "a home page with a counter, an about page and a word game to learn from"),
-    ("Minimal", "one empty page, a layout and an error page"),
+    (
+        "Demo",
+        "A home page with a counter, an about page and a word game to learn from.",
+    ),
+    ("Minimal", "One empty page, a layout and an error page."),
 ];
 
 #[derive(Default)]
@@ -31,64 +35,105 @@ struct Answers {
 
 const REPO: &str = "https://github.com/wyziedevs/wisp";
 
-const USAGE: &str = "wisp new [name] [--template demo|minimal] [--[no-]tailwind] [--[no-]git] [--[no-]install] [--yes]";
-
 pub fn run(args: &[String]) -> Result<(), String> {
     let mut a = parse(args)?;
     let asking = !a.yes && ask::interactive();
     if asking {
-        println!("\n{}  {}\n", ask::accent("wisp new"), ask::dim("fast, fun web apps in Rust"));
+        println!("\n{}\n", term::banner());
     }
 
     let name = match a.name.take() {
         Some(name) => name,
         None if asking => ask::text("Where should the app go?", "my-app")?,
-        None => return Err(format!("which directory? usage: {USAGE}")),
+        None => return Err("Which folder should the app go in?\nName it: wisp new my-app".into()),
     };
     let root = Path::new(&name);
-    if fs::read_dir(root).is_ok_and(|mut d| d.next().is_some()) {
-        return Err(format!("{name} already exists and is not empty"));
+    match fs::read_dir(root).map(|mut d| d.next().is_none()) {
+        Ok(true) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Ok(false) => {
+            return Err(format!(
+                "{name} already exists and is not empty.\nPick another name, or empty the folder first."
+            ));
+        }
+        Err(e) => return Err(format!("Could not use {name}: {e}.\nPick another name.")),
     }
     let crate_name = crate_name(root)?;
 
     let template = match a.template {
         Some(t) => t,
-        None if asking => [Template::Demo, Template::Minimal][ask::choose("Which template?", &TEMPLATES, 0)?],
+        None if asking => {
+            [Template::Demo, Template::Minimal][ask::choose("Which template?", &TEMPLATES, 0)?]
+        }
         None => Template::Demo,
     };
     let tailwind = answer(a.tailwind, asking, "Add Tailwind CSS?", false)?;
     // Like `cargo new`: a repository by default, unless the app is going
     // inside one already.
-    let parent = root.parent().filter(|p| p.is_dir()).unwrap_or(Path::new("."));
+    let parent = root
+        .parent()
+        .filter(|p| p.is_dir())
+        .unwrap_or(Path::new("."));
     let has_git = git(parent, &["--version"]).is_ok();
     let git_default = has_git && git(parent, &["rev-parse", "--is-inside-work-tree"]).is_err();
-    let use_git = has_git && answer(a.git, asking, "Initialize a git repository?", git_default)?;
-    let install = answer(a.install, asking, "Download and compile dependencies now?", true)?;
+    let use_git = has_git && answer(a.git, asking, "Create a git repository?", git_default)?;
+    let install = answer(
+        a.install,
+        asking,
+        "Download and compile dependencies now?",
+        true,
+    )?;
     if asking {
         println!();
     }
 
     write(root, &crate_name, template, tailwind)?;
-    let label = if template == Template::Demo { "demo" } else { "minimal" };
-    println!("Created {} with the {label} template.", ask::bold(&name));
+    let label = if template == Template::Demo {
+        "demo"
+    } else {
+        "minimal"
+    };
+    term::done(&format!(
+        "Created {} from the {label} template.",
+        term::bold(&name)
+    ));
 
     if use_git {
-        git(root, &["init", "--quiet"]).map_err(|e| format!("git init: {e}"))?;
-        println!("Initialized a git repository.");
+        git(root, &["init", "--quiet"])
+            .map_err(|e| format!("Could not create a git repository: {e}."))?;
+        term::done("Created a git repository.");
     }
     if install {
         if tailwind {
             css::install()?;
         }
-        println!("Compiling dependencies (the first build takes a minute; later ones take seconds)...\n");
-        let ok = Command::new("cargo").arg("build").current_dir(root).status().is_ok_and(|s| s.success());
-        if !ok {
-            println!("\n{}", ask::dim("cargo build failed; `wisp dev` will show the errors."));
+        term::step(
+            "Compiling dependencies. The first build takes a minute; later ones take seconds.",
+        );
+        let ok = Command::new("cargo")
+            .arg("build")
+            .current_dir(root)
+            .status()
+            .is_ok_and(|s| s.success());
+        if ok {
+            term::done("Compiled the dependencies.");
+        } else {
+            term::warn("The dependencies did not compile. wisp dev will show the errors.");
         }
     }
 
-    let cd = if name.contains(' ') { format!("cd \"{name}\"") } else { format!("cd {name}") };
-    println!("\nNext:\n\n  {}\n  {}\n\nThen open {}.\n", ask::accent(&cd), ask::accent("wisp dev"), ask::bold("http://127.0.0.1:3000"));
+    let cd = if name.contains(' ') {
+        format!("cd \"{name}\"")
+    } else {
+        format!("cd {name}")
+    };
+    println!(
+        "\n{}\n\n  {}\n  {}\n\nThen open {}.\n",
+        term::bold("Next Steps"),
+        term::accent(&cd),
+        term::accent("wisp dev"),
+        term::bold("http://127.0.0.1:3000")
+    );
     Ok(())
 }
 
@@ -106,7 +151,11 @@ fn parse(args: &[String]) -> Result<Answers, String> {
                 a.template = Some(match value.as_str() {
                     "demo" => Template::Demo,
                     "minimal" => Template::Minimal,
-                    _ => return Err(format!("unknown template `{value}` (demo or minimal)")),
+                    _ => {
+                        return Err(format!(
+                            "There is no template called {value}.\nPick demo or minimal."
+                        ));
+                    }
                 });
             }
             "--tailwind" => a.tailwind = Some(true),
@@ -116,9 +165,17 @@ fn parse(args: &[String]) -> Result<Answers, String> {
             "--install" => a.install = Some(true),
             "--no-install" => a.install = Some(false),
             "--yes" | "-y" => a.yes = true,
-            f if f.starts_with('-') => return Err(format!("unknown option `{f}`\nusage: {USAGE}")),
+            f if f.starts_with('-') => {
+                return Err(format!(
+                    "There is no option {f}.\nRun wisp --help to see the options."
+                ));
+            }
             _ if a.name.is_none() => a.name = Some(arg.clone()),
-            _ => return Err(format!("unexpected `{arg}`\nusage: {USAGE}")),
+            _ => {
+                return Err(format!(
+                    "Unexpected {arg}.\nwisp new takes one name, then options."
+                ));
+            }
         }
     }
     Ok(a)
@@ -132,18 +189,63 @@ fn answer(flag: Option<bool>, asking: bool, question: &str, default: bool) -> Re
     }
 }
 
-/// The package name Cargo will accept for the app's directory.
+/// The package name Cargo will accept for the app's directory: its letters
+/// and digits, lowercase, with one `-` for each run of anything else.
 fn crate_name(root: &Path) -> Result<String, String> {
     // `.` and `..` have no name of their own; the directory they mean does.
-    let dir = if root.file_name().is_some() { root.to_path_buf() } else { root.canonicalize().unwrap_or_default() };
-    let base = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    let name: String = base.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
-    let name = name.trim_matches('-');
-    match name.chars().next() {
-        None => Err(format!("cannot make a package name from `{}`", root.display())),
-        Some(c) if c.is_ascii_digit() => Ok(format!("app-{name}")),
-        Some(_) => Ok(name.to_string()),
+    let dir = if root.file_name().is_some() {
+        root.to_path_buf()
+    } else {
+        root.canonicalize().unwrap_or_default()
+    };
+    let base = dir
+        .file_name()
+        .map(|n| n.to_string_lossy())
+        .unwrap_or_default();
+    let mut name = String::new();
+    for c in base.chars() {
+        if c.is_ascii_alphanumeric() {
+            name.push(c.to_ascii_lowercase());
+        } else if !name.is_empty() && !name.ends_with('-') {
+            name.push('-');
+        }
     }
+    let name = name.trim_end_matches('-');
+    let name = match name.chars().next() {
+        None => {
+            return Err(format!(
+                "Could not make a package name from {}.\nUse a name with a letter or a digit in it.",
+                root.display()
+            ));
+        }
+        Some(c) if c.is_ascii_digit() => format!("app-{name}"),
+        Some(_) => name.to_string(),
+    };
+    let why = match name.as_str() {
+        "build" | "deps" | "examples" | "incremental" => {
+            "Cargo uses that name for a folder of its own."
+        }
+        "test" => "It is the name of Rust's built-in test library.",
+        "wisp" | "wisp-build" | "wisp-macros" | "wisp-cli" => "Wisp's own crates are called that.",
+        _ => return Ok(name),
+    };
+    Err(format!(
+        "An app cannot be called {name}.\n{why} Pick another name, like my-{name}."
+    ))
+}
+
+/// Whether `dir` is inside a Cargo workspace: a Cargo.toml above it with a
+/// `[workspace]` table. An app there builds as part of the workspace, or
+/// not at all, unless its own Cargo.toml says it is a workspace of its own.
+fn in_workspace(dir: &Path) -> bool {
+    let Ok(dir) = std::path::absolute(dir) else {
+        return false;
+    };
+    dir.ancestors().skip(1).any(|d| {
+        let toml = fs::read_to_string(d.join("Cargo.toml")).unwrap_or_default();
+        toml.lines()
+            .any(|l| l.trim_start().starts_with("[workspace"))
+    })
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<(), String> {
@@ -154,18 +256,32 @@ fn git(dir: &Path, args: &[&str]) -> Result<(), String> {
         .stderr(Stdio::null())
         .status()
         .map_err(|e| e.to_string())?;
-    if status.success() { Ok(()) } else { Err(format!("exited with {status}")) }
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("exited with {status}"))
+    }
 }
 
 fn write(root: &Path, crate_name: &str, template: Template, tailwind: bool) -> Result<(), String> {
     let (wisp, wisp_build) = wisp_source();
-    let cargo_toml = CARGO_TOML.replace("{name}", crate_name).replace("{wisp}", &wisp).replace("{wisp-build}", &wisp_build);
+    let mut cargo_toml = CARGO_TOML
+        .replace("{name}", crate_name)
+        .replace("{wisp}", &wisp)
+        .replace("{wisp-build}", &wisp_build);
+    if in_workspace(root) {
+        cargo_toml.push_str("\n# Not part of the workspace this folder is in.\n[workspace]\n");
+    }
 
     let (files, css): (&[(&str, &str)], &str) = match template {
         Template::Demo => (&DEMO, DEMO_CSS),
         Template::Minimal => (&MINIMAL, MINIMAL_CSS),
     };
-    let css = if tailwind { with_tailwind(css) } else { css.to_string() };
+    let css = if tailwind {
+        with_tailwind(css)
+    } else {
+        css.to_string()
+    };
     let common = [
         ("Cargo.toml", cargo_toml.as_str()),
         (".gitignore", "/target\n/.wisp\n"),
@@ -177,8 +293,13 @@ fn write(root: &Path, crate_name: &str, template: Template, tailwind: bool) -> R
     ];
     for (rel, text) in common.iter().chain(files) {
         let path = root.join(rel);
-        fs::create_dir_all(path.parent().expect("files are inside the app")).map_err(|e| format!("{}: {e}", root.display()))?;
-        fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
+        fs::create_dir_all(path.parent().expect("files are inside the app"))
+            .map_err(|e| format!("Could not create {}: {e}.", root.display()))?;
+        // `create_new`: a file that appeared since the folder was found empty
+        // is someone's, and stays as it is.
+        fs::File::create_new(&path)
+            .and_then(|mut f| f.write_all(text.as_bytes()))
+            .map_err(|e| format!("Could not write {}: {e}.", path.display()))?;
     }
     Ok(())
 }
@@ -190,11 +311,19 @@ fn write(root: &Path, crate_name: &str, template: Template, tailwind: bool) -> R
 /// checkout Cargo built it from is Cargo's to delete.
 fn wisp_source() -> (String, String) {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
-    let repo = repo.canonicalize().unwrap_or(repo).to_string_lossy().replace('\\', "/");
+    let repo = repo
+        .canonicalize()
+        .unwrap_or(repo)
+        .to_string_lossy()
+        .replace('\\', "/");
     let repo = repo.strip_prefix("//?/").unwrap_or(&repo);
     let from_git = repo.contains("/git/checkouts/");
     let dep = |name: &str| {
-        if from_git { format!("{name} = {{ git = \"{REPO}\" }}") } else { format!("{name} = {{ path = \"{repo}/crates/{name}\" }}") }
+        if from_git {
+            format!("{name} = {{ git = \"{REPO}\" }}")
+        } else {
+            format!("{name} = {{ path = \"{repo}/crates/{name}\" }}")
+        }
     };
     (dep("wisp"), dep("wisp-build"))
 }
@@ -220,7 +349,10 @@ fn with_tailwind(css: &str) -> String {
 
 macro_rules! demo {
     ($path:literal) => {
-        ($path, include_str!(concat!("../../../examples/demo/", $path)))
+        (
+            $path,
+            include_str!(concat!("../../../examples/demo/", $path)),
+        )
     };
 }
 
@@ -244,7 +376,10 @@ const DEMO: [(&str, &str); 10] = [
 ];
 
 const MINIMAL: [(&str, &str); 3] = [
-    ("src/routes/+layout.wisp", "<main>\n  {@render children()}\n</main>\n"),
+    (
+        "src/routes/+layout.wisp",
+        "<main>\n  {@render children()}\n</main>\n",
+    ),
     (
         "src/routes/+page.wisp",
         r#"<wisp:head><title>Home</title></wisp:head>
@@ -253,18 +388,51 @@ const MINIMAL: [(&str, &str); 3] = [
 <p>Edit <code>src/routes/+page.wisp</code> and save to see it change.</p>
 "#,
     ),
-    ("src/routes/+error.wisp", "<wisp:head><title>{status}</title></wisp:head>\n\n<h1>{status}</h1>\n<p>{message}</p>\n"),
+    (
+        "src/routes/+error.wisp",
+        r#"<wisp:head><title>{status}</title></wisp:head>
+
+<h1>{status}</h1>
+<p>{message}</p>
+<p><a href="/">Go to the Home Page</a></p>
+"#,
+    ),
 ];
 
-const MINIMAL_CSS: &str = r#":root {
-  color-scheme: dark;
+const MINIMAL_CSS: &str = r#"/*
+ * The app's styles. Every color and font is a token here; the rules below
+ * only name them. Light by default, dark when the system is.
+ */
+
+:root {
+  --paper: #f4f4f4;
+  --ink: #141414;
+  --ink-muted: #565656;
+  --accent: #7456d6;
+
+  --font-sans: "Open Sans Variable", "Open Sans", "Segoe UI Variable", "Segoe UI", -apple-system,
+    BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono: "Cascadia Code", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #141414;
+    --ink: #fafafa;
+    --ink-muted: #a8a8a8;
+    --accent: #9f8ce7;
+
+    color-scheme: dark;
+  }
 }
 
 body {
   margin: 0;
-  background: #141414;
-  color: #fafafa;
-  font: 1rem/1.5 system-ui, sans-serif;
+  background: var(--paper);
+  color: var(--ink);
+  font: 400 1rem/1.5 var(--font-sans);
 }
 
 main {
@@ -273,8 +441,31 @@ main {
   padding: 4rem 1rem;
 }
 
+h1 {
+  margin: 0 0 0.5rem;
+  font-size: 1.5rem;
+  font-weight: 600;
+  line-height: 2rem;
+  letter-spacing: -0.025em;
+}
+
+p {
+  margin: 0 0 1rem;
+  color: var(--ink-muted);
+}
+
 a {
-  color: #9f8ce7;
+  color: var(--accent);
+  text-underline-offset: 0.2em;
+}
+
+code {
+  font: 0.875em var(--font-mono);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 "#;
 
@@ -313,7 +504,12 @@ mod tests {
     fn flags() {
         let a = parse(&args("app --template=minimal --no-tailwind --git -y")).unwrap();
         assert_eq!(a.name.as_deref(), Some("app"));
-        assert!(a.template == Some(Template::Minimal) && a.tailwind == Some(false) && a.git == Some(true) && a.yes);
+        assert!(
+            a.template == Some(Template::Minimal)
+                && a.tailwind == Some(false)
+                && a.git == Some(true)
+                && a.yes
+        );
         assert!(parse(&args("app -t demo")).unwrap().template == Some(Template::Demo));
         assert!(parse(&args("app --template vue")).is_err());
         assert!(parse(&args("app --nope")).is_err());
@@ -324,12 +520,46 @@ mod tests {
     fn package_names() {
         assert_eq!(crate_name(Path::new("My App")).unwrap(), "my-app");
         assert_eq!(crate_name(Path::new("apps/2048")).unwrap(), "app-2048");
+        assert_eq!(crate_name(Path::new("café app")).unwrap(), "caf-app");
+        assert_eq!(crate_name(Path::new("_my__app_")).unwrap(), "my-app");
         assert!(crate_name(Path::new("___")).is_err());
+        for taken in [
+            "build",
+            "Deps",
+            "examples",
+            "incremental",
+            "test",
+            "wisp",
+            "wisp_build",
+            "wisp-macros",
+            "wisp cli",
+        ] {
+            assert!(crate_name(Path::new(taken)).is_err(), "{taken}");
+        }
+    }
+
+    #[test]
+    fn standalone_inside_a_workspace() {
+        let root = std::env::temp_dir().join(format!("wisp-new-{}", std::process::id()));
+        fs::create_dir_all(root.join("outside")).unwrap();
+        fs::write(root.join("outside/Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        fs::create_dir_all(root.join("inside")).unwrap();
+        fs::write(
+            root.join("inside/Cargo.toml"),
+            "[workspace]\nmembers = []\n",
+        )
+        .unwrap();
+        assert!(!in_workspace(&root.join("outside/app")));
+        assert!(in_workspace(&root.join("inside/apps/app")));
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
     fn tailwind_wraps_template_styles() {
         let css = with_tailwind("a {\n  color: red;\n}\n\nb {}\n");
-        assert_eq!(css, "@import \"tailwindcss\";\n\n@layer base {\n  a {\n    color: red;\n  }\n\n  b {}\n}\n");
+        assert_eq!(
+            css,
+            "@import \"tailwindcss\";\n\n@layer base {\n  a {\n    color: red;\n  }\n\n  b {}\n}\n"
+        );
     }
 }
