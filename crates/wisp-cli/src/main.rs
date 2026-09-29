@@ -3,53 +3,233 @@
 mod ask;
 mod cargo;
 mod css;
+mod deploy;
 mod dev;
 mod events;
 mod new;
 mod sha256;
+mod targets;
+mod term;
 
 use std::path::Path;
 use std::process::ExitCode;
+use std::time::Instant;
 
-const USAGE: &str = "wisp: fast, fun web apps in Rust
+/// `wisp --help`: each command or option, and what it does.
+const COMMANDS: [(&str, &str); 7] = [
+    (
+        "wisp new [name]",
+        "Create an app. It asks a few questions; the options below answer them.",
+    ),
+    (
+        "wisp dev [--port <n>]",
+        "Run the app, rebuilding and reloading on every save. Port 3000 by default.",
+    ),
+    (
+        "wisp build",
+        "Build one release binary with the CSS and static files inside.",
+    ),
+    (
+        "wisp build --static [--out dist]",
+        "Write the pages as plain files, for any static host.",
+    ),
+    (
+        "wisp build --docker [--force]",
+        "Write a Dockerfile and .dockerignore.",
+    ),
+    (
+        "wisp build --target <host> [--out dist/<host>]",
+        "Write a folder ready to deploy to cloudflare, deno, vercel, netlify or node.",
+    ),
+    (
+        "wisp check",
+        "Check routes and templates without compiling.",
+    ),
+];
 
-usage:
-  wisp new [name]         create an app (asks a few questions; see below)
-  wisp dev [--port <n>]   run with hot reload (default port 3000)
-  wisp build              release binary with CSS and static files inside
-  wisp check              check routes and templates without compiling
+const NEW_OPTIONS: [(&str, &str); 5] = [
+    (
+        "--template demo|minimal",
+        "An app to learn from, or one empty page.",
+    ),
+    ("--[no-]tailwind", "Add Tailwind CSS, or leave it out."),
+    ("--[no-]git", "Create a git repository, or leave it out."),
+    (
+        "--[no-]install",
+        "Download and compile dependencies now, or later.",
+    ),
+    ("-y, --yes", "Take the defaults for anything not given."),
+];
 
-wisp new options, to answer its questions up front:
-  --template demo|minimal   an app to learn from, or one empty page
-  --tailwind, --no-tailwind
-  --git, --no-git           create a git repository
-  --install, --no-install   download and compile dependencies now
-  -y, --yes                 take the defaults for anything not given
-";
+fn usage() -> String {
+    let width = COMMANDS
+        .iter()
+        .chain(&NEW_OPTIONS)
+        .map(|(c, _)| c.len())
+        .max()
+        .unwrap_or(0);
+    let rows = |rows: &[(&str, &str)]| -> String {
+        rows.iter()
+            .map(|(c, about)| format!("  {}  {about}\n", term::accent(&format!("{c:width$}"))))
+            .collect()
+    };
+    format!(
+        "{}\n\n{}\n{}\n{}\n{}",
+        term::banner(),
+        term::bold("Usage"),
+        rows(&COMMANDS),
+        term::bold("Options for wisp new"),
+        rows(&NEW_OPTIONS)
+    )
+}
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let arg = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1));
     let result = match args.first().map(String::as_str) {
         Some("new") => new::run(&args[1..]),
         Some("dev") => {
-            let port = arg("--port").map_or(Ok(3000), |p| p.parse().map_err(|_| format!("bad port: {p}")));
-            port.and_then(|port| project().and_then(|root| dev::run(root, port)))
+            dev_port(&args[1..]).and_then(|port| project().and_then(|root| dev::run(root, port)))
         }
-        Some("build") => project().and_then(build),
-        Some("check") => project().and_then(|root| wisp_build::check(root).map(|()| println!("ok"))),
+        Some("build") => {
+            build_options(&args[1..]).and_then(|o| project().and_then(|root| build(root, &o)))
+        }
+        Some("check") => no_options("check", &args[1..])
+            .and_then(|()| project())
+            .and_then(|root| {
+                wisp_build::check(root).map(|()| term::done("Routes and templates are valid."))
+            }),
         Some("-h" | "--help" | "help") | None => {
-            print!("{USAGE}");
+            print!("{}", usage());
             Ok(())
         }
-        Some(other) => Err(format!("unknown command `{other}`\n\n{USAGE}")),
+        Some(other) => Err(format!(
+            "There is no command {other}.\nRun wisp --help to see the commands."
+        )),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("wisp: {e}");
+            term::failed(&e);
             ExitCode::FAILURE
         }
+    }
+}
+
+/// `wisp dev`'s one option: `--port <n>`, `--port=<n>` or `-p <n>`.
+fn dev_port(args: &[String]) -> Result<u16, String> {
+    let usage = "wisp dev takes --port <n>, like wisp dev --port 3001.";
+    let mut port = 3000;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        let value = match arg.split_once('=') {
+            Some(("--port" | "-p", v)) => v,
+            _ if arg == "--port" || arg == "-p" => args
+                .next()
+                .ok_or_else(|| format!("{arg} needs a port number.\n{usage}"))?,
+            _ if arg.starts_with('-') => return Err(format!("There is no option {arg}.\n{usage}")),
+            _ => return Err(format!("Unexpected {arg}.\n{usage}")),
+        };
+        port = value.parse().map_err(|_| {
+            format!(
+                "{value} is not a port number.\nUse one from 1 to 65535, like wisp dev --port 3001."
+            )
+        })?;
+    }
+    Ok(port)
+}
+
+/// What `wisp build` was asked for.
+#[derive(Debug, Default, PartialEq)]
+struct BuildOptions {
+    static_site: bool,
+    docker: bool,
+    force: bool,
+    out: Option<String>,
+    /// `--target <host>`, an edge or Node host (`static` and `docker` set
+    /// the flags above).
+    target: Option<String>,
+}
+
+fn build_options(args: &[String]) -> Result<BuildOptions, String> {
+    let usage = "wisp build takes --static [--out <folder>], --docker [--force] and --target <host> [--out <folder>].";
+    let mut o = BuildOptions::default();
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--static" => o.static_site = true,
+            "--target" | "-t" => {
+                let host = args
+                    .next()
+                    .ok_or_else(|| format!("{arg} needs a host.\n{usage}"))?;
+                target(&mut o, host)?;
+            }
+            _ if arg.starts_with("--target=") => target(&mut o, &arg["--target=".len()..])?,
+            "--docker" => o.docker = true,
+            "--force" => o.force = true,
+            "--out" | "-o" => {
+                let out = args.next().ok_or_else(|| {
+                    format!(
+                        "{arg} needs a folder.
+{usage}"
+                    )
+                })?;
+                o.out = Some(out.clone());
+            }
+            _ if arg.starts_with("--out=") => o.out = Some(arg["--out=".len()..].to_string()),
+            _ if arg.starts_with('-') => {
+                return Err(format!(
+                    "There is no option {arg}.
+{usage}"
+                ));
+            }
+            _ => {
+                return Err(format!(
+                    "Unexpected {arg}.
+{usage}"
+                ));
+            }
+        }
+    }
+    let wrong = if o.target.is_some() && (o.static_site || o.docker) {
+        Some("--target <host> goes alone, without --static or --docker.")
+    } else if o.out.is_some() && !o.static_site && o.target.is_none() {
+        Some("--out goes with --static or --target.")
+    } else if o.force && !o.docker {
+        Some("--force goes with --docker.")
+    } else {
+        None
+    };
+    if let Some(wrong) = wrong {
+        return Err(format!(
+            "{wrong}
+{usage}"
+        ));
+    }
+    Ok(o)
+}
+
+/// `--target <host>`: `static` and `docker` are the options of those names.
+fn target(o: &mut BuildOptions, host: &str) -> Result<(), String> {
+    match host {
+        "static" => o.static_site = true,
+        "docker" => o.docker = true,
+        _ if targets::HOSTS.contains(&host) => o.target = Some(host.to_string()),
+        _ => {
+            return Err(format!(
+                "There is no target {host}.\nThe targets are {}, static and docker.",
+                targets::HOSTS.join(", ")
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn no_options(command: &str, args: &[String]) -> Result<(), String> {
+    match args.first() {
+        Some(arg) => Err(format!(
+            "Unexpected {arg}.\nwisp {command} takes no options."
+        )),
+        None => Ok(()),
     }
 }
 
@@ -57,17 +237,123 @@ fn main() -> ExitCode {
 fn project() -> Result<&'static Path, String> {
     let root = Path::new(".");
     if !root.join("Cargo.toml").exists() || !root.join("build.rs").exists() {
-        return Err("run this in a Wisp app (a directory with Cargo.toml and build.rs)".into());
+        return Err("There is no Wisp app here.\nRun this in an app's folder, the one with Cargo.toml and build.rs, or create one with wisp new.".into());
     }
     Ok(root)
 }
 
-fn build(root: &Path) -> Result<(), String> {
+fn build(root: &Path, o: &BuildOptions) -> Result<(), String> {
+    if let Some(host) = &o.target {
+        let out = o.out.clone().unwrap_or_else(|| format!("dist/{host}"));
+        return targets::build(root, host, Path::new(&out));
+    }
+    if o.docker {
+        css::build(root)?;
+        deploy::docker(
+            root,
+            &cargo::package_name(root).ok_or("Cargo.toml has no package name.")?,
+            o.force,
+        )?;
+        if !o.static_site {
+            return Ok(());
+        }
+    }
     wisp_build::check(root)?;
     css::build(root)?;
-    let b = cargo::build(root, true);
-    let exe = b.exe.filter(|_| b.ok).ok_or("build failed")?;
+    let started = Instant::now();
+    term::step("Building for release");
+    let b = cargo::build(root, true, false);
+    let exe = b.exe.filter(|_| b.ok).ok_or(
+        "The build failed.
+The compiler's errors are above.",
+    )?;
     let size = std::fs::metadata(&exe).map(|m| m.len()).unwrap_or(0);
-    println!("\nbuilt {} ({:.1} MB) — one file, ready to deploy", exe.display(), size as f64 / 1e6);
+    term::done(&format!(
+        "Built {} {}",
+        cargo::relative(&exe.to_string_lossy()),
+        term::dim(&format!(
+            "{:.1} MB in {:.1}s",
+            size as f64 / 1e6,
+            started.elapsed().as_secs_f64()
+        ))
+    ));
+    if o.static_site {
+        return deploy::static_site(root, &exe, Path::new(o.out.as_deref().unwrap_or("dist")));
+    }
+    println!("    One file with the CSS and static files inside. Copy it to a server and run it.");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn port(s: &str) -> Result<u16, String> {
+        dev_port(&s.split_whitespace().map(String::from).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn build_flags() {
+        let opts =
+            |s: &str| build_options(&s.split_whitespace().map(String::from).collect::<Vec<_>>());
+        assert_eq!(opts(""), Ok(BuildOptions::default()));
+        assert_eq!(
+            opts("--static --out site").unwrap(),
+            BuildOptions {
+                static_site: true,
+                out: Some("site".into()),
+                ..Default::default()
+            }
+        );
+        assert_eq!(opts("--static --out=site"), opts("--static -o site"));
+        assert!(opts("--docker --force").unwrap().force);
+        for bad in ["--out site", "--force", "--static --out", "--x", "dist"] {
+            assert!(opts(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn target_flags() {
+        let opts =
+            |s: &str| build_options(&s.split_whitespace().map(String::from).collect::<Vec<_>>());
+        assert_eq!(
+            opts("--target cloudflare").unwrap().target.as_deref(),
+            Some("cloudflare")
+        );
+        assert_eq!(
+            opts("--target=node --out app").unwrap().out.as_deref(),
+            Some("app")
+        );
+        assert!(opts("-t static").unwrap().static_site);
+        assert!(opts("--target docker").unwrap().docker);
+        for bad in [
+            "--target",
+            "--target heroku",
+            "--target=",
+            "--target node --static",
+            "--docker -t deno",
+        ] {
+            assert!(opts(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn dev_flags() {
+        assert_eq!(port(""), Ok(3000));
+        assert_eq!(port("--port 3001"), Ok(3001));
+        assert_eq!(port("--port=3002"), Ok(3002));
+        assert_eq!(port("-p 3003"), Ok(3003));
+        assert_eq!(port("-p 0"), Ok(0));
+        for bad in [
+            "--port",
+            "--port x",
+            "--port 70000",
+            "--prot 3000",
+            "-x",
+            "3000",
+            "--port= 3000",
+        ] {
+            assert!(port(bad).is_err(), "{bad}");
+        }
+    }
 }
