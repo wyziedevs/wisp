@@ -100,7 +100,10 @@ pub struct Item { pub name: String, pub price: u32 }
 ```
 
 A value that can't be sent is a compile error that names `wisp::Json`. A
-name that is both a Rust value and a script variable is a build error.
+name that is both a Rust value and a script variable is a build error. A
+parameter or a local variable of the same name is just that: in
+`items.map(data => data.x)` or `function f({ data }) {}`, `data` is not the
+page's, and nothing is sent for it.
 
 ## `{:expr}` holes
 
@@ -112,8 +115,8 @@ name that is both a Rust value and a script variable is a build error.
 <a href={:url}>Link</a>
 ```
 
-When the expression is a plain server value (`{:data.count}`), the server
-also writes it, so the first paint is right. Mixing `{…}` and `{:…}` in one
+When the server can work the value out, it writes it too, so the first paint
+is right (see [First paint](#first-paint)). Mixing `{…}` and `{:…}` in one
 attribute value is a build error.
 
 ## Client blocks
@@ -143,6 +146,39 @@ colon.
 also the `<template each="item, i in list">` and `<template if="cond">`
 form.
 
+### Snippets in the browser
+
+`{:@render name(args)}` draws a `{#snippet}` of the file in the browser,
+inside a client block or anywhere text goes. The arguments are JavaScript,
+and the snippet's parameters are plain names its body reads in `{:…}`:
+
+```html
+{#snippet chip(tag)}<b class="chip">{:tag}</b>{/snippet}
+
+{:#each tags as tag (tag)}{:@render chip(tag)}{:/each}
+```
+
+Each parameter is a one-item `{:#each}` around the body, so the server
+paints it when it knows the argument. The same snippet can still be
+rendered on the server with `{@render chip(x)}`.
+
+### First paint
+
+When the server knows what a block, a component or a `{:…}` shows, it
+renders it into the page: people see it before the JavaScript loads, and
+without JavaScript at all. The browser then takes those nodes over (no
+flicker, nothing drawn twice) and keeps them live. The server knows:
+
+- server values: `data.x`, props, Rust loop values;
+- literals: `0`, `'text'`, `true`, `null`, `[1, 2]`, `{ id: 1 }`;
+- script variables first set to one of those: `let todos = data.todos`;
+- an `{:#each}`'s item and index, inside it;
+- `!`, `&&`, `||` and `.length` of those.
+
+Anything else (a call, a sum, a comparison, a `+page.js` page's `data`) is
+left to the browser, which draws that part when it starts. If a script
+changes a value before it starts, the browser corrects what the server drew.
+
 ## Client components
 
 A component inside a client block, or given a `{:…}` value, a `bind:` or an
@@ -167,8 +203,21 @@ A component inside a client block, or given a `{:…}` value, a `bind:` or an
 - `emit('bump', x)` fires the parent's `on:bump`; the handler sees `x` as `event`.
 - A component drawn in the browser can only use text, directives, `{:…}`,
   client blocks and `{@render children()}`. Server code in it is a build error.
-- A component that renders itself is a build error.
+- A component may render itself, as a tree view does, inside an `{:#if}` or
+  `{:#each}` that ends; with nothing around it, it is a build error. Nesting
+  stops at 64 levels in the browser (and the server paints 32).
 - `setContext(key, value)` and `getContext(key)` share values with descendants.
+
+```html
+<!-- src/components/Tree.wisp -->
+{@props node: &str}
+<li>{:node.name}
+  <ul>{:#each node.kids as kid (kid.name)}<Tree node={:kid} />{/each}</ul>
+</li>
+```
+
+The Rust type of a prop only matters where Rust renders the component; a
+component only the browser draws can use any `Json` type, such as `&str`.
 
 ## State helpers
 
@@ -291,7 +340,7 @@ A file beside `+page.wisp` that runs in the browser on every navigation:
 
 ```js
 // src/routes/search/+page.js
-export async function load({ data, url, fetch }) {
+export async function load({ data, url, params, route, fetch }) {
   const r = await fetch('/api/search?q=' + url.searchParams.get('q'))
   return { ...data, results: await r.json() }
 }
@@ -299,8 +348,9 @@ export async function load({ data, url, fetch }) {
 
 What it returns is the `data` of the page's script. Your `+server.rs`
 endpoints are its API. With a server `load`, the whole `Data` is sent, so it
-must `#[derive(Json)]`. It gets `url`, not `params`, and it does not run on
-the server.
+must `#[derive(Json)]`. `params` holds the route's parameters (for
+`blog/[slug]`, `params.slug`) and `route.id` its pattern (`/blog/[slug]`),
+on the first load and after every navigation. It does not run on the server.
 
 ## Errors
 
@@ -310,8 +360,9 @@ the console with the `.wisp` file and line.
 
 ## Limits
 
-- Client blocks and client components have no server first paint. The
-  browser draws them.
+- The first paint leaves out what it cannot work out (see
+  [First paint](#first-paint)); live attributes (`:class`, `class="a {:b}"`)
+  keep their static text until the browser starts.
 - Editing a client script rebuilds; editing markup still hot-swaps.
 
 ## Less Rust boilerplate

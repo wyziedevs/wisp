@@ -138,13 +138,23 @@ Node.js service with start command `npm start`. Notes are in `hosts/`.
 The edge build has no threads, no sockets and no files, so a few things
 differ.
 
-- **No tokio spawn, timers or `Response::file_in`.** Code that needs the tokio
-  runtime (`tokio::spawn`, `sleep`, sqlx, reqwest) does not run there. It runs
+- **Use `wisp::spawn` and `wisp::sleep`, not tokio's.** They are tokio's in
+  the binary and the host's task queue and `setTimeout` on the edge. Code that
+  needs the tokio runtime itself (`tokio::spawn`, `tokio::time`, sqlx,
+  reqwest) answers 500 there, as does `Response::file_in`. All of it runs
   fine in the binary, Docker and Lambda.
+- **Background work.** Cloudflare and Netlify keep a request's instance
+  alive (`waitUntil`) until the timers and fetches it started are done. Deno
+  and Node hosts keep running anyway. Vercel may freeze the function once the
+  response ends, so finish the work before answering there.
 - **Set `WISP_SECRET` as a host secret.** Read anything else with
   `wisp::env("KEY")`; `std::env::var` sees nothing on the edge.
-- **Streaming** (`Response::stream`, `Response::events`) is gathered and sent
-  whole, not live.
+- **Streaming** (`Response::stream`, `Response::events`) is sent live on
+  Cloudflare, Deno, Netlify, Vercel and Node, a chunk as it is made. A client
+  that leaves makes the app's `send` fail, as on the binary.
+- **No WebSockets.** `Response::websocket` answers 501 on every edge target
+  (and under the `tower` feature). Use the binary or Docker for them, or
+  server-sent events (`Response::events`), which work everywhere.
 - **Outbound HTTP** goes through `wisp::edge::fetch`, for a database over
   HTTP (D1, Turso, Supabase):
 

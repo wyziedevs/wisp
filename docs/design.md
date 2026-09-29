@@ -95,15 +95,30 @@ Directory names are URL segments. Files that start with `+` are route files.
 | `+layout.wisp` | Wraps this page and every page below it. `{@render children()}`.  |
 | `+layout.rs`   | `load` for the layout.                                            |
 | `+error.wisp`  | Rendered for errors below this directory. Gets `status`, `message` (a sentence about the status when the error says no more than its name). |
-| `+page.js`     | Optional. `load({ data, url, fetch })` in the browser on navigation. |
+| `+page.js`     | Optional. `load({ data, url, params, route, fetch })` in the browser. |
 | `+server.rs`   | `pub async fn get/post/put/patch/delete` endpoints.               |
 
 Segment syntax: `blog` (static), `[slug]` (param), `[[lang]]` (optional),
 `[...rest]` (rest, may be empty), `(group)` (not part of the URL).
 
-Priority when several routes match: static segment > param > optional > rest,
-compared left to right. Two routes that resolve to the same pattern are a build
-error. `/about/` redirects (308) to `/about`.
+A param may name a matcher: `[id=int]`, `[[lang=locale]]`. A matcher is
+`src/params/<name>.rs` with `pub fn matches(s: &str) -> bool`, given the
+decoded segment; `int` (ASCII digits that fit a `u64`) is built in. A segment the matcher
+refuses goes on to the next route, so `/[id=int]` and `/[slug]` can live
+side by side. Naming a matcher that does not exist is a build error.
+
+```rust
+// src/params/locale.rs
+pub fn matches(s: &str) -> bool {
+    matches!(s, "en" | "fr" | "de")
+}
+```
+
+Priority when several routes match: static segment > param with a matcher >
+param > optional with a matcher > optional > rest, compared left to right
+(two matchers in one place are tried in name order). Two routes that
+resolve to the same pattern are a build error. `/about/` redirects (308)
+to `/about`.
 
 Also build errors: a `.wisp` file (or `page.rs`, `layout.rs`, `server.rs`)
 under `src/routes` without its `+`, which would otherwise be ignored; a
@@ -221,6 +236,8 @@ pub async fn like(cx: &mut Cx) -> Result<()> {
 | `{#each e as pat[, i]}…{:else}…{/each}` | `for`; a plain place like `data.posts` is borrowed |
 | `{#match e}{:case pat}…{/match}` | `match`; a plain place is borrowed               |
 | `{@render children()}`         | layout slot                                        |
+| `{#snippet row(item, i)}…{/snippet}` | markup to render later, in this file or a component |
+| `{@render row(x, 0)}`          | renders a snippet                                  |
 | `<wisp:head>…</wisp:head>`     | appended to the document head                      |
 
 Expressions are Rust, passed to `rustc` verbatim, so type errors are real type
@@ -308,8 +325,42 @@ its file: `Card.wisp` is `<Card>`. It declares what it takes at the top:
 - Component files hot-swap like any template.
 
 Components can also be drawn by the browser (inside client blocks, or with
-`{:…}` props, `bind:` and `on:`); see [client.md](client.md). Snippets
-(markup reused within one file) are v0.2.
+`{:…}` props, `bind:` and `on:`); see [client.md](client.md).
+
+### Snippets
+
+A snippet is markup a file renders more than once, or gives to a component:
+
+```html
+{#snippet row(post, i)}
+  <td>{i}</td><td>{post.title}</td>
+{/snippet}
+
+<table>{#each data.posts as post, i}<tr>{@render row(post, i)}</tr>{/each}</table>
+
+<Table rows={data.posts} {row} />
+<Table rows={data.posts}>
+  {#snippet row(post, i)}<td>{post.title}</td>{/snippet}
+</Table>
+```
+
+```html
+<!-- src/components/Table.wisp -->
+{@props rows: &[Post], row: Snippet<&Post, usize>}
+<table>{#each rows as r, i}<tr>{@render row(r, i)}</tr>{/each}</table>
+```
+
+- Parameters are Rust `let` patterns, typed or not: each render gives them
+  their types. The body sees the names around its definition, like a
+  closure. A snippet is in scope after its `{/snippet}`, to the end of the
+  block it is in; it cannot render itself (a component can).
+- A component takes one as a prop of type `Snippet<A, B>` (`Snippet` for
+  none), which is `&dyn Fn(&mut Out, A, B)`: `{row}` or `row={row}` in its
+  tag, or a `{#snippet row(…)}` among its children, and it renders it with
+  `{@render row(…)}`.
+- `{:@render row(x)}` has the browser draw it: the arguments are
+  JavaScript, and the body uses its parameters in `{:…}` (see
+  [client.md](client.md)).
 
 ### Actions and `wisp.js`
 
@@ -533,6 +584,7 @@ and `.wisp-*` classes, so they never touch an app's own CSS.
   | `WISP_SECRET`           | Signs cookies; at least 32 characters                              |
   | `ORIGIN`                | The site's address (`https://example.com`), for a proxy that does not pass `Host` on |
   | `WISP_CLIENT_IP_HEADER` | The header the proxy puts the client's address in, for `cx.client_ip()` |
+  | `WISP_MAX_CONNS`        | Open connections, WebSockets included, before new ones get a 503; 10000 by default, 0 for no cap |
 
   They are strict: one that is set but not valid stops the server with a
   message, rather than falling back to a default. `HOST` takes an IP address
@@ -732,6 +784,8 @@ expression or `.rs` edit rebuilds and restarts in 0.3 s.
 - Dev endpoints exist only in debug builds and only answer loopback peers.
 - Request size and time limits as above; no request smuggling surface
   (strict chunked parsing, CL+TE rejected).
+- At most `WISP_MAX_CONNS` (10000) open connections, WebSockets included;
+  past it a new one gets a 503 and is closed before it costs a task.
 - URL attributes whose scheme an expression decides are checked where they
   end; `javascript:` never reaches a page (see Templates).
 - `examples/demo/tests/http.rs` runs the demo's binary and sends it
@@ -744,10 +798,9 @@ expression or `.rs` edit rebuilds and restarts in 0.3 s.
 
 ## v0 non-goals
 
-ORM, auth, background jobs, i18n, WebSockets, HTTP/2 in process, Windows
-services. Each is either a library users pick or a later
-version. Server-sent events cover pushing updates to a page; a job runner
-can be started from `init` with `tokio::spawn`.
+ORM, auth, background jobs, i18n, HTTP/2 in process, Windows services.
+Each is either a library users pick or a later version. A job runner can be
+started from `init` with `wisp::spawn`.
 
 ## Milestones
 
@@ -759,5 +812,4 @@ can be started from `init` with `tokio::spawn`.
    streaming, body limits, proxies.  ← done
    **Reactive and everywhere** – client scripts, router, tower, static
    export, Docker, edge targets.  ← done
-4. **v0.2** – snippets, behaviors, link boosting, param matchers, docs site
-   built with Wisp.
+4. **v0.2** – behaviors, link boosting, docs site built with Wisp.
