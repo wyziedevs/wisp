@@ -7,8 +7,13 @@
 //! code and their HTML context), and dev builds can hot-swap text without a
 //! compile. Anything that could change what the generated Rust does is part
 //! of the shape.
+//!
+//! Browser code is kept apart from the HTML: the bare `<script>` and each
+//! element's directives (`on:click="…"`, `:hidden="…"`, …) leave the text,
+//! and a `Node::Live` marks where the element's `data-w` goes. Their
+//! JavaScript is part of the shape, since it is compiled into the binary.
 
-use crate::fnv1a;
+use crate::{fnv1a, js};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Code {
@@ -20,21 +25,167 @@ pub struct Code {
 pub enum Node {
     /// Index into `Template::chunks`.
     Text(usize),
-    /// `{expr}`, HTML-escaped. `quote` wraps it in `"…"` (from `attr={expr}`).
-    Expr { code: Code, quote: bool },
+    /// `{expr}`, HTML-escaped. (`attr={expr}` gets its quotes as text.)
+    Expr(Code),
+    /// The value of a URL attribute such as `href` starts here, `prefix`
+    /// bytes back, and its scheme is decided by an expression. `UrlEnd`
+    /// follows where the value ends: a value that would run script there
+    /// (`javascript:`) is replaced (`wisp::rt::guard_url`).
+    UrlStart {
+        prefix: String,
+    },
+    UrlEnd,
     /// `disabled={cond}`: ` disabled` when `cond` is true, nothing otherwise.
-    Bool { name: String, code: Code },
+    /// With `class` set it is `class:name={cond}`, a name inside the `class`
+    /// value: the space before it is left out when it would come first.
+    Bool {
+        name: String,
+        code: Code,
+        class: bool,
+    },
+    /// `href={expr}`: ` href="…"`, or nothing when `expr` is an `Option`
+    /// that is `None`. `url` is set for URL attributes, which are guarded.
+    Attr {
+        name: String,
+        code: Code,
+        url: bool,
+    },
     /// `{@html expr}`, not escaped.
     Html(Code),
     /// `{@const name = expr}`.
     Const(Code),
     /// `{@render children()}` in a layout.
     Render,
-    If { branches: Vec<(Code, Vec<Node>)>, otherwise: Option<Vec<Node>> },
-    Each { iter: Code, pat: String, index: Option<String>, body: Vec<Node>, otherwise: Option<Vec<Node>> },
-    Match { scrutinee: Code, arms: Vec<(Code, Vec<Node>)> },
+    If {
+        branches: Vec<(Code, Vec<Node>)>,
+        otherwise: Option<Vec<Node>>,
+    },
+    Each {
+        iter: Code,
+        pat: String,
+        index: Option<String>,
+        body: Vec<Node>,
+        otherwise: Option<Vec<Node>>,
+    },
+    Match {
+        scrutinee: Code,
+        arms: Vec<(Code, Vec<Node>)>,
+    },
     /// `<wisp:head>…</wisp:head>`: output goes to the document head.
     Head(Vec<Node>),
+    /// `<Card title={x}>…</Card>`: a component from `src/components`, with
+    /// its props as written and its children (`None` for `<Card />`).
+    Component {
+        name: String,
+        props: Vec<Prop>,
+        children: Option<Vec<Node>>,
+        line: u32,
+    },
+    /// Where an element's browser directives were, just before its `>`:
+    /// ` data-w="…"` (and ` data-wl="…"`) for `Template::groups[group]`.
+    Live {
+        group: usize,
+    },
+    /// After a `{:expr}`'s anchor: its first paint, when the server knows
+    /// the value (a server value's path), else nothing.
+    Hole {
+        group: usize,
+    },
+    /// A client block or client component: its `<template>` and what the
+    /// server renders inside it, spliced into the list it sits in.
+    Fragment(Vec<Node>),
+}
+
+/// A directive: browser code on an element, such as `on:click="…"`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Directive {
+    pub kind: Dir,
+    /// The event, attribute, class, style property, transition or `use`
+    /// function; `value`, `checked` or `this` for `bind:`; for `each`, the
+    /// item's name.
+    pub name: String,
+    /// An event's modifiers, as written; for `each`, the index's name.
+    pub mods: Vec<String>,
+    /// The JavaScript, when there is a value.
+    pub value: Option<Code>,
+    /// A client `each`'s key: `{:#each todos as todo (todo.id)}`.
+    pub key: Option<Code>,
+    /// A client component's props (`Dir::Comp`).
+    pub props: Vec<Prop>,
+    /// Where the directive's name is.
+    pub line: u32,
+    pub col: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dir {
+    On,
+    Bind,
+    Attr,
+    Text,
+    Class,
+    Style,
+    Transition,
+    Use,
+    /// `<template each="item, i in list">`
+    Each,
+    /// `<template if="cond">`
+    If,
+    /// `{:expr}` in text, on its `<template>` anchor.
+    Hole,
+    /// `animate:flip` on an element of a keyed client `each`.
+    Animate,
+    /// A component the browser renders: `name` is the component.
+    Comp,
+}
+
+/// The directives of one element.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Group {
+    pub directives: Vec<Directive>,
+    /// The names of the client `<template each>`s around it.
+    pub locals: Vec<String>,
+    /// Inside a client `<template>`, whose copies the browser binds.
+    pub nested: bool,
+    pub line: u32,
+}
+
+/// The file's client script: its bare `<script>`, as written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Script {
+    pub src: String,
+    /// Where its text starts.
+    pub line: u32,
+    pub col: u32,
+}
+
+/// A prop given to a component: `name={expr}`, `name="text"` or `name`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Prop {
+    pub name: String,
+    pub value: PropValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PropValue {
+    Expr(Code),
+    Text(String),
+    /// The name alone: `true`.
+    Flag,
+    /// `name={:js}`: a browser value.
+    Live(Code),
+    /// `bind:name="target"`: the prop and a script variable, both ways.
+    Bind(Code),
+    /// `on:name="handler"`: called when the component does `emit('name', x)`.
+    On(Code),
+}
+
+/// A prop a component declares: `{@props title: &str, size: u8 = 2}`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PropDecl {
+    pub name: String,
+    pub ty: String,
+    pub default: Option<String>,
 }
 
 #[derive(Debug)]
@@ -44,6 +195,18 @@ pub struct Template {
     /// Hash of everything except static text. Equal shape ⇒ hot-swappable.
     pub shape: u64,
     pub uses_children: bool,
+    /// `{@props …}`, which only a component has, and its line.
+    pub props: Option<(Vec<PropDecl>, u32)>,
+    /// Browser code: the client script and every element's directives.
+    pub script: Option<Script>,
+    pub groups: Vec<Group>,
+}
+
+impl Template {
+    /// Has code for the browser, so each render is an instance of a module.
+    pub fn is_live(&self) -> bool {
+        self.script.is_some() || !self.groups.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,15 +231,31 @@ pub fn parse(src: &str) -> Result<Template, Error> {
         tag: String::new(),
         tag_pos: 0,
         closing: false,
+        typed: false,
         attr: String::new(),
         last: b' ',
+        value_start: 0,
+        value_events: false,
+        url_guard: false,
         preserve: 0,
         text: String::new(),
         chunks: Vec::new(),
         root: Vec::new(),
         frames: Vec::new(),
+        opened: Vec::new(),
         uses_children: false,
-        line_starts: std::iter::once(0).chain(src.match_indices('\n').map(|(i, _)| i + 1)).collect(),
+        props: None,
+        line_starts: std::iter::once(0)
+            .chain(src.match_indices('\n').map(|(i, _)| i + 1))
+            .collect(),
+        tag_text: 0,
+        tag_frames: 0,
+        tag_attrs: false,
+        directives: Vec::new(),
+        tag_classes: Vec::new(),
+        templates: Vec::new(),
+        script: None,
+        groups: Vec::new(),
     };
     p.run()?;
 
@@ -90,7 +269,65 @@ pub fn parse(src: &str) -> Result<Template, Error> {
 
     let mut h = Vec::new();
     shape(&p.root, &mut h);
-    Ok(Template { shape: fnv1a(&h), nodes: p.root, chunks: p.chunks, uses_children: p.uses_children })
+    for d in p.props.iter().flat_map(|(ds, _)| ds) {
+        h.extend_from_slice(
+            format!(
+                "P{}\0{}\0{}\0",
+                d.name,
+                d.ty,
+                d.default.as_deref().unwrap_or("")
+            )
+            .as_bytes(),
+        );
+    }
+    // Browser code is compiled into the binary as a module, so changing it
+    // takes a build.
+    if let Some(s) = &p.script {
+        h.extend_from_slice(b"S");
+        h.extend_from_slice(s.src.as_bytes());
+        h.push(0);
+    }
+    for g in &p.groups {
+        h.extend_from_slice(format!("G{}\0{}\0", g.nested, g.locals.join(",")).as_bytes());
+        for d in &g.directives {
+            h.extend_from_slice(
+                format!("{:?}\0{}\0{}\0", d.kind, d.name, d.mods.join(".")).as_bytes(),
+            );
+            h.extend_from_slice(
+                d.value
+                    .as_ref()
+                    .map_or("\u{1}", |v| v.src.as_str())
+                    .as_bytes(),
+            );
+            h.push(0);
+            h.extend_from_slice(
+                d.key
+                    .as_ref()
+                    .map_or("\u{1}", |v| v.src.as_str())
+                    .as_bytes(),
+            );
+            h.push(0);
+            prop_shape(&d.props, &mut h);
+        }
+    }
+    // A component the browser can render has its markup compiled into its
+    // module too, so its text is part of the shape. (One without props is
+    // not told from a page here: its text hot-swaps on the server only.)
+    if p.props.is_some() && client_renderable(&p.root) {
+        for c in &p.chunks {
+            h.extend_from_slice(c.as_bytes());
+            h.push(0);
+        }
+    }
+    Ok(Template {
+        shape: fnv1a(&h),
+        nodes: p.root,
+        chunks: p.chunks,
+        uses_children: p.uses_children,
+        props: p.props,
+        script: p.script,
+        groups: p.groups,
+    })
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -100,11 +337,95 @@ enum Ctx {
     Quoted(u8),
 }
 
+/// Where in the HTML the parser is, as far as a hole cares: text, a tag,
+/// right after `name=`, or a quoted value.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Place {
+    ctx: Ctx,
+    value_next: bool,
+}
+
+impl Place {
+    fn describe(self) -> &'static str {
+        match self.ctx {
+            Ctx::Text => "in text",
+            Ctx::Tag if self.value_next => "right after an attribute's `=`",
+            Ctx::Tag => "inside a tag",
+            Ctx::Quoted(_) => "inside a quoted attribute value",
+        }
+    }
+}
+
+/// Where a block began. Each of its branches must begin there too, and the
+/// block must end there: otherwise one branch could leave the page inside a
+/// tag that another never opened, and a later `{x}` would be escaped for
+/// the wrong place.
+struct Opened {
+    place: Place,
+    last: u8,
+    attr: String,
+}
+
 enum Frame {
-    If { pos: usize, branches: Vec<(Code, Vec<Node>)>, otherwise: Option<Vec<Node>> },
-    Each { pos: usize, iter: Code, pat: String, index: Option<String>, body: Vec<Node>, otherwise: Option<Vec<Node>> },
-    Match { pos: usize, scrutinee: Code, arms: Vec<(Code, Vec<Node>)> },
-    Head { pos: usize, body: Vec<Node> },
+    If {
+        pos: usize,
+        branches: Vec<(Code, Vec<Node>)>,
+        otherwise: Option<Vec<Node>>,
+    },
+    Each {
+        pos: usize,
+        iter: Code,
+        pat: String,
+        index: Option<String>,
+        body: Vec<Node>,
+        otherwise: Option<Vec<Node>>,
+    },
+    Match {
+        pos: usize,
+        scrutinee: Code,
+        arms: Vec<(Code, Vec<Node>)>,
+    },
+    Head {
+        pos: usize,
+        body: Vec<Node>,
+    },
+    Component {
+        pos: usize,
+        name: String,
+        props: Vec<Prop>,
+        body: Vec<Node>,
+    },
+    /// `{:#if}`, `{:#each}` or a client component with children: `kind` is
+    /// `if`, `each` or `comp`. `name` is the component's; `conds`, an if's
+    /// conditions so far, or an each's list (so `{:else}` can say "none").
+    Client {
+        pos: usize,
+        kind: &'static str,
+        name: String,
+        conds: Vec<String>,
+        has_else: bool,
+        body: Vec<Node>,
+    },
+}
+
+impl Frame {
+    /// How the block is written, and where it opened.
+    fn describe(&self) -> (String, usize) {
+        match self {
+            Frame::If { pos, .. } => ("{#if}".into(), *pos),
+            Frame::Each { pos, .. } => ("{#each}".into(), *pos),
+            Frame::Match { pos, .. } => ("{#match}".into(), *pos),
+            Frame::Head { pos, .. } => ("<wisp:head>".into(), *pos),
+            Frame::Component { pos, name, .. } => (format!("<{name}>"), *pos),
+            Frame::Client {
+                pos,
+                kind: "comp",
+                name,
+                ..
+            } => (format!("<{name}>"), *pos),
+            Frame::Client { pos, kind, .. } => (format!("{{:#{kind}}}"), *pos),
+        }
+    }
 }
 
 struct Parser<'a> {
@@ -116,18 +437,45 @@ struct Parser<'a> {
     tag: String,
     tag_pos: usize,
     closing: bool,
+    /// The tag has a `type` or `src` attribute (see `tag_close`).
+    typed: bool,
     /// Lowercased name of the attribute being scanned inside a tag.
     attr: String,
     /// Last significant byte inside a tag; `=` means a value comes next.
     last: u8,
+    /// Where the current attribute value's text starts in `text`, and
+    /// whether a hole or block has appeared in it yet (the first one flushes
+    /// `text`, so `value_start` is good until then).
+    value_start: usize,
+    value_events: bool,
+    /// A `UrlStart` is open and needs its `UrlEnd` where the value ends.
+    url_guard: bool,
     /// Depth of `<pre>`/`<textarea>`, where whitespace is kept verbatim.
     preserve: u32,
     text: String,
     chunks: Vec<String>,
     root: Vec<Node>,
     frames: Vec<Frame>,
+    /// One per frame.
+    opened: Vec<Opened>,
     uses_children: bool,
+    props: Option<(Vec<PropDecl>, u32)>,
     line_starts: Vec<usize>,
+    /// Where the tag being scanned starts in `text`, how many blocks were
+    /// open at its start, and whether it has any attribute (or hole).
+    tag_text: usize,
+    tag_frames: usize,
+    tag_attrs: bool,
+    /// The directives of the tag being scanned.
+    directives: Vec<Directive>,
+    /// The `class:name={cond}` of the tag being scanned, until they are
+    /// written into its `class` attribute.
+    tag_classes: Vec<(String, Code)>,
+    /// One per open `<template>`: the names a client `<template each|if>`
+    /// gives the elements inside it, `None` for a plain one.
+    templates: Vec<Option<Vec<String>>>,
+    script: Option<Script>,
+    groups: Vec<Group>,
 }
 
 impl Parser<'_> {
@@ -147,6 +495,8 @@ impl Parser<'_> {
                     b'"' | b'\'' => {
                         self.push_byte(c);
                         self.ctx = Ctx::Quoted(c);
+                        self.value_start = self.text.len();
+                        self.value_events = false;
                     }
                     b'=' | b'/' => {
                         self.push_byte(c);
@@ -154,13 +504,26 @@ impl Parser<'_> {
                     }
                     _ if is_ws(c) => {
                         self.whitespace();
-                        self.last = b' ';
+                        // `name= value` is still name's value.
+                        if self.last != b'=' {
+                            self.last = b' ';
+                        }
                     }
                     _ => {
                         let start = self.i;
-                        self.copy_until(|c| matches!(c, b'{' | b'>' | b'"' | b'\'' | b'=' | b'/') || is_ws(c));
+                        self.copy_until(|c| {
+                            matches!(c, b'{' | b'>' | b'"' | b'\'' | b'=' | b'/') || is_ws(c)
+                        });
                         if self.last != b'=' {
-                            self.attr = self.src[start..self.i].to_ascii_lowercase();
+                            self.tag_attrs = true;
+                            let raw = &self.src[start..self.i];
+                            if !self.closing && is_directive(raw, &self.tag) {
+                                self.directive(start)?;
+                                self.last = b'a';
+                                continue;
+                            }
+                            self.attr = raw.to_ascii_lowercase();
+                            self.typed |= matches!(self.attr.as_str(), "type" | "src" | "nomodule");
                         }
                         self.last = b'a';
                     }
@@ -168,6 +531,10 @@ impl Parser<'_> {
                 Ctx::Quoted(q) => match c {
                     b'{' => self.hole()?,
                     _ if c == q => {
+                        self.end_value(self.i)?;
+                        if self.attr == "class" {
+                            self.write_classes()?;
+                        }
                         self.push_byte(c);
                         self.ctx = Ctx::Tag;
                         self.last = b'a';
@@ -182,12 +549,7 @@ impl Parser<'_> {
         }
         self.flush()?;
         if let Some(f) = self.frames.last() {
-            let (pos, what) = match f {
-                Frame::If { pos, .. } => (*pos, "{#if}"),
-                Frame::Each { pos, .. } => (*pos, "{#each}"),
-                Frame::Match { pos, .. } => (*pos, "{#match}"),
-                Frame::Head { pos, .. } => (*pos, "<wisp:head>"),
-            };
+            let (what, pos) = f.describe();
             return Err(self.err(pos, format!("{what} is never closed")));
         }
         Ok(())
@@ -247,16 +609,31 @@ impl Parser<'_> {
     fn list(&mut self) -> &mut Vec<Node> {
         match self.frames.last_mut() {
             None => &mut self.root,
-            Some(Frame::If { branches, otherwise, .. }) => match otherwise {
+            Some(Frame::If {
+                branches,
+                otherwise,
+                ..
+            }) => match otherwise {
                 Some(o) => o,
                 None => &mut branches.last_mut().expect("if frame always has a branch").1,
             },
-            Some(Frame::Each { body, otherwise, .. }) => match otherwise {
+            Some(Frame::Each {
+                body, otherwise, ..
+            }) => match otherwise {
                 Some(o) => o,
                 None => body,
             },
-            Some(Frame::Match { arms, .. }) => &mut arms.last_mut().expect("flush rejects nodes before the first case").1,
-            Some(Frame::Head { body, .. }) => body,
+            Some(Frame::Match { arms, .. }) => {
+                &mut arms
+                    .last_mut()
+                    .expect("flush rejects nodes before the first case")
+                    .1
+            }
+            Some(
+                Frame::Head { body, .. }
+                | Frame::Component { body, .. }
+                | Frame::Client { body, .. },
+            ) => body,
         }
     }
 
@@ -278,10 +655,110 @@ impl Parser<'_> {
         Ok(())
     }
 
-    /// Closes the innermost block: flushes its last text and returns the frame.
-    fn end(&mut self) -> Result<Option<Frame>, Error> {
+    fn place(&self) -> Place {
+        Place {
+            ctx: self.ctx,
+            value_next: self.ctx == Ctx::Tag && self.last == b'=',
+        }
+    }
+
+    fn open(&mut self, frame: Frame) {
+        self.opened.push(Opened {
+            place: self.place(),
+            last: self.last,
+            attr: self.attr.clone(),
+        });
+        self.frames.push(frame);
+    }
+
+    /// A branch (`{:else}`, `{:case}`) or the end of the innermost block is
+    /// at `pos`: it must be where the block began.
+    fn same_place(&self, pos: usize, what: &str) -> Result<(), Error> {
+        let (Some(o), Some(f)) = (self.opened.last(), self.frames.last()) else {
+            return Ok(());
+        };
+        if o.place == self.place() {
+            return Ok(());
+        }
+        let (name, at) = f.describe();
+        Err(self.err(
+            pos,
+            format!(
+                "{what} is {} but its {name} (line {}) is {}. A block must begin and end in the same place, \
+                 such as both in text or both inside one tag, so that every branch leaves the page in the same place.",
+                self.place().describe(),
+                self.line_of(at),
+                o.place.describe()
+            ),
+        ))
+    }
+
+    /// A new branch of the innermost block starts where the block did.
+    fn restart(&mut self) {
+        if let Some(o) = self.opened.last() {
+            self.last = o.last;
+            self.attr.clone_from(&o.attr);
+        }
+    }
+
+    /// Closes the innermost block, which the caller checked exists: flushes
+    /// its last text and returns the frame.
+    fn end(&mut self, pos: usize) -> Result<Frame, Error> {
         self.flush()?;
-        Ok(self.frames.pop())
+        let (name, _) = self.frames.last().expect("caller checked").describe();
+        self.same_place(pos, &format!("the end of {name}"))?;
+        self.opened.pop();
+        Ok(self.frames.pop().expect("caller checked"))
+    }
+
+    /// `{/kw}` or `</wisp:head>` with no block of that kind open.
+    fn unexpected_close(&self, pos: usize, what: &str) -> Error {
+        match self.frames.last() {
+            Some(f) => {
+                let (name, at) = f.describe();
+                self.err(pos, format!("{what} does not match the {name} still open from line {}; close that first", self.line_of(at)))
+            }
+            None => self.err(pos, format!("{what} has no block to close")),
+        }
+    }
+
+    /// A hole or a block is about to start at `pos`, inside an attribute
+    /// value (quoted, or right after `name=`). The first one in a URL
+    /// attribute's value decides whether the value needs guarding, from the
+    /// static text before it.
+    fn in_value(&mut self, pos: usize) -> Result<(), Error> {
+        if self.value_events {
+            return Ok(());
+        }
+        self.value_events = true;
+        if !URL_ATTRS.contains(&self.attr.as_str()) {
+            return Ok(());
+        }
+        let prefix = self.text[self.value_start..].to_string();
+        match scheme(&prefix) {
+            Scheme::Fixed => Ok(()),
+            Scheme::Script => Err(self.err(
+                pos,
+                format!("no expressions in a `{}` that runs script; put data in data-* attributes and read them from a <script>", self.attr),
+            )),
+            Scheme::Encoded => Err(self.err(
+                pos,
+                format!("`{}` has a character reference (`&...;`) before its scheme and an expression; write the URL's start plainly", self.attr),
+            )),
+            Scheme::Open => {
+                self.push_node(pos, Node::UrlStart { prefix })?;
+                self.url_guard = true;
+                Ok(())
+            }
+        }
+    }
+
+    /// The attribute value ends at `pos`: a guarded one gets its `UrlEnd`.
+    fn end_value(&mut self, pos: usize) -> Result<(), Error> {
+        if std::mem::take(&mut self.url_guard) {
+            self.push_node(pos, Node::UrlEnd)?;
+        }
+        Ok(())
     }
 
     // ---- tags -------------------------------------------------------------
@@ -290,25 +767,46 @@ impl Parser<'_> {
         let start = self.i;
         let rest = &self.b[start + 1..];
         if rest.starts_with(b"!--") {
-            // Comments are dropped, holes inside them included.
-            match self.src[start + 4..].find("-->") {
-                Some(n) => self.i = start + 4 + n + 3,
+            // Comments are dropped, holes inside them included. `<!-->` and
+            // `<!--->` are whole (empty) comments, as browsers read them.
+            let body = &self.src[start + 4..];
+            let n = match body.find("-->") {
+                _ if body.starts_with('>') => 1,
+                _ if body.starts_with("->") => 2,
+                Some(n) => n + 3,
                 None => return Err(self.err(start, "unclosed <!-- comment".into())),
-            }
+            };
+            self.i = start + 4 + n;
             return Ok(());
         }
         let closing = rest.first() == Some(&b'/');
         let name_start = start + 1 + closing as usize;
         let first = self.b.get(name_start).copied().unwrap_or(0);
+        if first == b'{' {
+            return Err(self.err(
+                start,
+                "a tag's name cannot be an expression; choose between tags with {#if}".into(),
+            ));
+        }
         if !(first.is_ascii_alphabetic() || (!closing && first == b'!')) {
-            self.push_byte(b'<'); // A literal '<' in text, like "a < b".
+            // A literal '<' in text, like "a < b". Written as `&lt;` so that
+            // nothing after it, a hole's value included, can make it a tag.
+            self.text.push_str("&lt;");
+            self.i += 1;
             return Ok(());
         }
         let mut end = name_start + 1;
-        while end < self.b.len() && (self.b[end].is_ascii_alphanumeric() || matches!(self.b[end], b'-' | b':' | b'_')) {
+        while end < self.b.len()
+            && (self.b[end].is_ascii_alphanumeric() || matches!(self.b[end], b'-' | b':' | b'_'))
+        {
             end += 1;
         }
-        let name = self.src[name_start..end].to_ascii_lowercase();
+        // `<Card>` is a component; `<DIV>`, all capitals, is still HTML.
+        let raw_name = &self.src[name_start..end];
+        if is_component_name(raw_name) {
+            return self.component(start, end, raw_name.to_string(), closing);
+        }
+        let name = raw_name.to_ascii_lowercase();
 
         if name == "wisp:head" {
             let mut j = end;
@@ -320,20 +818,34 @@ impl Parser<'_> {
             }
             self.i = j + 1;
             if closing {
-                match self.end()? {
-                    Some(Frame::Head { body, .. }) => self.list().push(Node::Head(body)),
-                    _ => return Err(self.err(start, "</wisp:head> without matching <wisp:head>".into())),
+                if !matches!(self.frames.last(), Some(Frame::Head { .. })) {
+                    return Err(self.unexpected_close(start, "</wisp:head>"));
+                }
+                if let Frame::Head { body, .. } = self.end(start)? {
+                    self.list().push(Node::Head(body));
                 }
             } else {
                 if self.frames.iter().any(|f| matches!(f, Frame::Head { .. })) {
                     return Err(self.err(start, "<wisp:head> cannot be nested".into()));
                 }
                 self.begin(start)?;
-                self.frames.push(Frame::Head { pos: start, body: Vec::new() });
+                self.open(Frame::Head {
+                    pos: start,
+                    body: Vec::new(),
+                });
             }
             return Ok(());
         }
 
+        self.tag_text = self.text.len();
+        self.tag_frames = self.frames.len();
+        self.tag_attrs = false;
+        self.directives.clear();
+        self.tag_classes = if closing {
+            Vec::new()
+        } else {
+            self.server_classes(end)
+        };
         self.text.push_str(&self.src[start..end]);
         self.i = end;
         self.ctx = Ctx::Tag;
@@ -341,6 +853,7 @@ impl Parser<'_> {
         self.tag_pos = start;
         self.closing = closing;
         self.attr.clear();
+        self.typed = false;
         self.last = b' ';
         if closing && matches!(self.tag.as_str(), "pre" | "textarea") {
             self.preserve = self.preserve.saturating_sub(1);
@@ -348,10 +861,241 @@ impl Parser<'_> {
         Ok(())
     }
 
+    /// `<Card …>`, `<Card … />` or `</Card>`, whose name ends at `name_end`.
+    /// A component's tag holds props, not HTML attributes: `name={expr}`,
+    /// `name="text"` or `name` alone for `true`.
+    fn component(
+        &mut self,
+        start: usize,
+        name_end: usize,
+        name: String,
+        closing: bool,
+    ) -> Result<(), Error> {
+        let b = self.b;
+        let skip_ws = |mut j: usize| {
+            while j < b.len() && is_ws(b[j]) {
+                j += 1;
+            }
+            j
+        };
+        let mut j = skip_ws(name_end);
+        if closing {
+            if b.get(j) != Some(&b'>') {
+                return Err(self.err(start, format!("</{name}> takes nothing but its name")));
+            }
+            self.i = j + 1;
+            if matches!(self.frames.last(), Some(Frame::Client { kind: "comp", name: open, .. }) if *open == name)
+            {
+                return self.client_close(start);
+            }
+            if !matches!(self.frames.last(), Some(Frame::Component { name: open, .. }) if *open == name)
+            {
+                return Err(self.unexpected_close(start, &format!("</{name}>")));
+            }
+            if let Frame::Component {
+                pos,
+                name,
+                props,
+                body,
+            } = self.end(start)?
+            {
+                let line = self.line_of(pos);
+                self.list().push(Node::Component {
+                    name,
+                    props,
+                    children: Some(body),
+                    line,
+                });
+            }
+            return Ok(());
+        }
+
+        let mut props: Vec<Prop> = Vec::new();
+        let self_closing = loop {
+            match b.get(j) {
+                None => return Err(self.err(start, format!("unclosed <{name}> tag"))),
+                Some(b'>') => {
+                    j += 1;
+                    break false;
+                }
+                Some(b'/') if b.get(j + 1) == Some(&b'>') => {
+                    j += 2;
+                    break true;
+                }
+                Some(&c) if c.is_ascii_alphabetic() || c == b'_' => {
+                    let at = j;
+                    while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'_') {
+                        j += 1;
+                    }
+                    let mut prop = self.src[at..j].to_string();
+                    // `bind:open="x"` and `on:select="pick"`: browser code.
+                    if matches!(prop.as_str(), "bind" | "on") && b.get(j) == Some(&b':') {
+                        let n = j + 1;
+                        j = n;
+                        while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'_') {
+                            j += 1;
+                        }
+                        let name_end = j;
+                        let raw = self.src[at..j].to_string();
+                        if j == n {
+                            return Err(self.err(at, format!("`{raw}` needs a name, such as {raw}open")));
+                        }
+                        self.i = j;
+                        let Some(value) = self.directive_value(&raw)?.filter(|v| !v.src.is_empty()) else {
+                            return Err(self.err(at, format!("`{raw}` needs a value: {raw}=\"…\", with JavaScript in the quotes")));
+                        };
+                        j = self.i;
+                        let is_bind = prop == "bind";
+                        prop = self.src[n..name_end].to_string();
+                        if props.iter().any(|p| p.name == prop) {
+                            return Err(self.err(at, format!("<{name}> is given `{prop}` twice")));
+                        }
+                        props.push(Prop { name: prop, value: if is_bind { PropValue::Bind(value) } else { PropValue::On(value) } });
+                        j = skip_ws(j);
+                        continue;
+                    }
+                    let k = skip_ws(j);
+                    let value = if b.get(k) == Some(&b'=') {
+                        let k = skip_ws(k + 1);
+                        match b.get(k) {
+                            Some(b'{') => {
+                                let e = hole_end(b, k + 1).ok_or_else(|| self.err(k, "unclosed {".into()))?;
+                                let expr = self.src[k + 1..e].trim();
+                                if expr.is_empty() || has_line_comment(expr) {
+                                    return Err(self.err(k, format!("`{prop}={{…}}` needs an expression, without // comments")));
+                                }
+                                j = e + 1;
+                                match expr.strip_prefix(':') {
+                                    Some(js) if !js.starts_with(':') => PropValue::Live(Code { src: js.trim().to_string(), line: self.line_of(k) }),
+                                    _ => PropValue::Expr(Code { src: expr.to_string(), line: self.line_of(k) }),
+                                }
+                            }
+                            Some(&q @ (b'"' | b'\'')) => {
+                                let e = k + 1 + b[k + 1..].iter().position(|&c| c == q).ok_or_else(|| self.err(k, "unclosed quote".into()))?;
+                                let text = &self.src[k + 1..e];
+                                if text.contains('{') {
+                                    return Err(self.err(k, format!("a quoted prop is plain text; for an expression write {prop}={{…}}, such as {prop}={{format!(\"…\")}}")));
+                                }
+                                j = e + 1;
+                                PropValue::Text(text.to_string())
+                            }
+                            _ => return Err(self.err(k, format!("`{prop}=` needs a value: {{expression}} or \"text\""))),
+                        }
+                    } else {
+                        PropValue::Flag
+                    };
+                    if props.iter().any(|p| p.name == prop) {
+                        return Err(self.err(at, format!("<{name}> is given `{prop}` twice")));
+                    }
+                    props.push(Prop { name: prop, value });
+                }
+                Some(_) => return Err(self.err(j, format!("<{name}> takes props: name={{expr}}, name=\"text\", or a name alone for true"))),
+            }
+            j = skip_ws(j);
+        };
+        self.i = j;
+        // Inside a client block, or given browser values, the browser
+        // renders it: its props are JavaScript.
+        let live = props.iter().any(|p| {
+            matches!(
+                p.value,
+                PropValue::Live(_) | PropValue::Bind(_) | PropValue::On(_)
+            )
+        });
+        if live || self.templates.iter().any(Option::is_some) {
+            if let Some(p) = props.iter().find(|p| matches!(p.value, PropValue::Expr(_))) {
+                return Err(self.err(
+                    start,
+                    format!("<{name}> is rendered in the browser here, so its props are browser values: write {0}={{:…}} rather than {0}={{…}}", p.name),
+                ));
+            }
+            let d = Directive {
+                kind: Dir::Comp,
+                name: name.clone(),
+                mods: Vec::new(),
+                value: None,
+                key: None,
+                props,
+                line: self.line_of(start),
+                col: self.col_of(start),
+            };
+            self.require_text(start, &format!("<{name}>"))?;
+            if self_closing {
+                self.begin(start)?;
+                self.client_template(d)?;
+                self.text.push_str("</template>");
+                return Ok(());
+            }
+            self.begin(start)?;
+            self.open(Frame::Client {
+                pos: start,
+                kind: "comp",
+                name,
+                conds: Vec::new(),
+                has_else: false,
+                body: Vec::new(),
+            });
+            self.client_template(d)?;
+            self.templates.push(Some(Vec::new()));
+            return Ok(());
+        }
+        if self_closing {
+            let line = self.line_of(start);
+            self.push_node(
+                start,
+                Node::Component {
+                    name,
+                    props,
+                    children: None,
+                    line,
+                },
+            )
+        } else {
+            self.begin(start)?;
+            self.open(Frame::Component {
+                pos: start,
+                name,
+                props,
+                body: Vec::new(),
+            });
+            Ok(())
+        }
+    }
+
     fn tag_close(&mut self) -> Result<(), Error> {
+        if self.tag == "script" && !self.closing && !self.tag_attrs {
+            return self.client_script();
+        }
+        // Any other inline `<script>` is a module: it has a scope of its
+        // own, so its top-level names need no `(() => { ... })()` around
+        // them, and it runs once the page is parsed, so everything it looks
+        // up exists. A script with a `type` or a `src` is left as written.
+        if self.tag == "script" && !self.closing && !self.typed {
+            self.text.push_str(" type=\"module\"");
+        }
+        if !self.closing {
+            if !self.tag_classes.is_empty() {
+                // No `class` attribute to put them in: write one.
+                let slash = self.last == b'/' && self.text.ends_with('/');
+                if slash {
+                    self.text.pop();
+                    self.text.truncate(self.text.trim_end().len());
+                }
+                self.text.push_str(" class=\"");
+                self.write_classes()?;
+                self.text.push('"');
+                if slash {
+                    self.text.push('/');
+                }
+            }
+            self.live_element()?;
+        }
         self.push_byte(b'>');
         self.ctx = Ctx::Text;
         if self.closing {
+            if self.tag == "template" {
+                self.templates.pop();
+            }
             return Ok(());
         }
         match self.tag.as_str() {
@@ -373,15 +1117,576 @@ impl Parser<'_> {
         Ok(())
     }
 
+    // ---- browser code -----------------------------------------------------
+
+    /// A `<script>` without attributes is the file's client script. It
+    /// leaves the HTML: the build makes it a module, which runs once for
+    /// each rendered copy of this file (see `codegen`).
+    fn client_script(&mut self) -> Result<(), Error> {
+        let at = self.tag_pos;
+        if !self.frames.is_empty() || !self.templates.is_empty() {
+            return Err(self.err(
+                at,
+                "a <script> without attributes is this file's client script, which goes at the top level, outside blocks, \
+                 <template> and <wisp:head>. To keep a script where it is, give it an attribute such as type=\"module\""
+                    .into(),
+            ));
+        }
+        if let Some(first) = &self.script {
+            return Err(self.err(
+                at,
+                format!(
+                    "a file has one client script (a <script> without attributes), and this file's is on line {}: \
+                     put this code there, or give this script an attribute such as type=\"module\" to keep it as it is",
+                    first.line
+                ),
+            ));
+        }
+        self.text.truncate(self.tag_text);
+        let body = self.i + 1;
+        let hay = &self.src[body..];
+        let n = hay
+            .as_bytes()
+            .windows(8)
+            .position(|w| w.eq_ignore_ascii_case(b"</script"))
+            .ok_or_else(|| self.err(at, "unclosed <script>".into()))?;
+        let end = hay[n..].find('>').map_or(hay.len(), |e| n + e + 1);
+        self.script = Some(Script {
+            src: hay[..n].to_string(),
+            line: self.line_of(body),
+            col: self.col_of(body),
+        });
+        self.i = body + end;
+        self.ctx = Ctx::Text;
+        Ok(())
+    }
+
+    /// A directive whose name, at `start`, was just copied into `text`. It
+    /// comes back out, with the whitespace before it, and is kept for
+    /// `live_element` along with its value.
+    fn directive(&mut self, start: usize) -> Result<(), Error> {
+        let src = self.src;
+        let raw = &src[start..self.i];
+        self.text.truncate(self.text.len() - raw.len());
+        self.text.truncate(self.text.trim_end().len());
+        self.attr.clear();
+        if self.frames.len() != self.tag_frames {
+            return Err(self.err(start, format!("`{raw}` cannot be inside a {{#…}} block; put the condition in its JavaScript instead")));
+        }
+        if raw.starts_with("class:") && self.next_is_hole() {
+            // Read ahead by `server_classes`; it joins the `class` attribute.
+            let open = self.i
+                + self.b[self.i..]
+                    .iter()
+                    .position(|&c| c == b'{')
+                    .unwrap_or(0);
+            self.i = hole_end(self.b, open + 1).map_or(self.b.len(), |e| e + 1);
+            return Ok(());
+        }
+        let value = self.directive_value(raw)?;
+        let (kind, name, mut mods) =
+            directive_parts(raw, &self.tag).map_err(|m| self.err(start, m))?;
+        let needs_value = !matches!(kind, Dir::Transition | Dir::Use | Dir::Animate);
+        if needs_value && value.as_ref().is_none_or(|v| v.src.is_empty()) {
+            return Err(self.err(
+                start,
+                format!("`{raw}` needs a value: {raw}=\"…\", with JavaScript in the quotes"),
+            ));
+        }
+        let (name, value) = match (kind, value) {
+            (Dir::Each, Some(v)) => {
+                let Some((item, index, at)) = js::each(&v.src) else {
+                    return Err(self.err(start, "expected <template each=\"item in list\"> or <template each=\"item, i in list\">".into()));
+                };
+                mods.extend(index);
+                let line = v.line + v.src[..at].matches('\n').count() as u32;
+                (
+                    item,
+                    Some(Code {
+                        src: v.src[at..].trim_end().to_string(),
+                        line,
+                    }),
+                )
+            }
+            (_, value) => (name, value),
+        };
+        let (line, col) = (self.line_of(start), self.col_of(start));
+        self.directives.push(Directive {
+            kind,
+            name,
+            mods,
+            value,
+            key: None,
+            props: Vec::new(),
+            line,
+            col,
+        });
+        Ok(())
+    }
+
+    /// `="…"` or `='…'` after a directive's name, if there is one. It is
+    /// JavaScript, taken as written: no holes, no whitespace changes.
+    fn directive_value(&mut self, raw: &str) -> Result<Option<Code>, Error> {
+        let b = self.b;
+        let skip_ws = |mut j: usize| {
+            while j < b.len() && is_ws(b[j]) {
+                j += 1;
+            }
+            j
+        };
+        let eq = skip_ws(self.i);
+        if b.get(eq) != Some(&b'=') {
+            return Ok(None);
+        }
+        let j = skip_ws(eq + 1);
+        match b.get(j) {
+            Some(&q @ (b'"' | b'\'')) => {
+                let e = j + 1 + b[j + 1..].iter().position(|&c| c == q).ok_or_else(|| self.err(j, "unclosed quote".into()))?;
+                self.i = e + 1;
+                let value = &self.src[j + 1..e];
+                let lead = value.len() - value.trim_start().len();
+                Ok(Some(Code { src: value.trim().to_string(), line: self.line_of(j + 1 + lead) }))
+            }
+            Some(b'{') => Err(self.err(j, format!("`{raw}` takes JavaScript in quotes, {raw}=\"…\": braces are Rust, which runs on the server"))),
+            _ => Err(self.err(j, format!("`{raw}=` needs its JavaScript in quotes: {raw}=\"…\""))),
+        }
+    }
+
+    /// `={` follows: the value is Rust, not JavaScript in quotes.
+    fn next_is_hole(&self) -> bool {
+        let rest = self.src[self.i..].trim_start();
+        rest.strip_prefix('=')
+            .is_some_and(|r| r.trim_start().starts_with('{'))
+    }
+
+    /// The `class:name={cond}` attributes of the tag whose attributes start
+    /// at `i`. They are found before the tag is read because they go into its
+    /// `class` attribute, which may come first.
+    fn server_classes(&self, mut i: usize) -> Vec<(String, Code)> {
+        let b = self.b;
+        let mut found = Vec::new();
+        while i < b.len() && b[i] != b'>' {
+            match b[i] {
+                b'{' => i = hole_end(b, i + 1).unwrap_or(b.len()),
+                q @ (b'"' | b'\'') => {
+                    i += 1;
+                    while i < b.len() && b[i] != q {
+                        if b[i] == b'{' {
+                            i = hole_end(b, i + 1).unwrap_or(b.len());
+                        }
+                        i += 1;
+                    }
+                }
+                b'c' if is_ws(b[i - 1]) && self.src[i..].starts_with("class:") => {
+                    let name = &self.src[i + 6..];
+                    let n = name
+                        .find(|c: char| c.is_ascii_whitespace() || matches!(c, '=' | '>' | '/'))
+                        .unwrap_or(name.len());
+                    let at = i + 6 + n;
+                    if let Some(open) = b[at..].starts_with(b"={").then_some(at + 1)
+                        && let Some(e) = hole_end(b, open + 1)
+                    {
+                        let src = self.src[open + 1..e].trim().to_string();
+                        let line = self.line_of(open);
+                        found.push((name[..n].to_string(), Code { src, line }));
+                        i = e;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        found
+    }
+
+    /// Where a tag's `class` value ends: its `class:name={cond}` add their
+    /// names, ` name` for each that holds.
+    fn write_classes(&mut self) -> Result<(), Error> {
+        for (name, code) in std::mem::take(&mut self.tag_classes) {
+            self.push_node(
+                self.i,
+                Node::Bool {
+                    name,
+                    code,
+                    class: true,
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    /// The tag being closed, if it has directives, gets a `Live` node just
+    /// before its `>` (or `/>`). A `<template>` also starts or ends the
+    /// names its `each` gives the elements inside it.
+    fn live_element(&mut self) -> Result<(), Error> {
+        let directives = std::mem::take(&mut self.directives);
+        let client = directives
+            .iter()
+            .find(|d| matches!(d.kind, Dir::Each | Dir::If));
+        if client.is_some() && directives.len() > 1 {
+            return Err(self.err(self.tag_pos, "a <template> with `each` or `if` takes no other directive; put them on the elements inside it".into()));
+        }
+        let names = client.map(|d| {
+            if d.kind == Dir::Each {
+                std::iter::once(d.name.clone())
+                    .chain(d.mods.iter().cloned())
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        });
+        if !directives.is_empty() {
+            // `<input … />` keeps its `/` last.
+            let slash = self.last == b'/' && self.text.ends_with('/');
+            if slash {
+                self.text.pop();
+                self.text.truncate(self.text.trim_end().len());
+            }
+            let group = self.groups.len();
+            let (nested, locals) = (
+                self.templates.iter().any(Option::is_some),
+                self.templates.iter().flatten().flatten().cloned().collect(),
+            );
+            self.groups.push(Group {
+                directives,
+                locals,
+                nested,
+                line: self.line_of(self.tag_pos),
+            });
+            self.push_node(self.i, Node::Live { group })?;
+            if slash {
+                self.text.push('/');
+            }
+        }
+        if self.tag == "template" {
+            self.templates.push(names);
+        }
+        Ok(())
+    }
+
+    /// A group for `directives` on the element being written.
+    fn group(&mut self, directives: Vec<Directive>, line: u32) -> usize {
+        let (nested, locals) = (
+            self.templates.iter().any(Option::is_some),
+            self.templates.iter().flatten().flatten().cloned().collect(),
+        );
+        self.groups.push(Group {
+            directives,
+            locals,
+            nested,
+            line,
+        });
+        self.groups.len() - 1
+    }
+
+    /// Client blocks, holes and components go where text does.
+    fn require_text(&self, pos: usize, what: &str) -> Result<(), Error> {
+        if self.ctx != Ctx::Text {
+            return Err(self.err(
+                pos,
+                format!("{what} goes in text, not {}", self.place().describe()),
+            ));
+        }
+        Ok(())
+    }
+
+    /// `<template data-w="…">`, the anchor of a client block, hole or
+    /// component, whose one directive is `d`.
+    fn client_template(&mut self, d: Directive) -> Result<(), Error> {
+        let line = d.line;
+        self.text.push_str("<template");
+        let group = self.group(vec![d], line);
+        self.push_node(self.i, Node::Live { group })?;
+        self.text.push('>');
+        Ok(())
+    }
+
+    /// `{:#if cond}` or `{:#each list as item, i (key)}` at `open`.
+    fn client_open(&mut self, open: usize, kw: &str, arg: &str) -> Result<(), Error> {
+        self.require_text(open, &format!("{{:#{kw}}}"))?;
+        let line = self.line_of(open);
+        let js = |s: &str| Code {
+            src: s.trim().to_string(),
+            line,
+        };
+        let mut d = Directive {
+            kind: Dir::If,
+            name: String::new(),
+            mods: Vec::new(),
+            value: Some(js(arg)),
+            key: None,
+            props: Vec::new(),
+            line,
+            col: self.col_of(open),
+        };
+        let (kind, conds, names) = match kw {
+            "if" => ("if", vec![arg.trim().to_string()], Vec::new()),
+            "each" => {
+                let bad = || {
+                    self.err(open, "expected {:#each list as item}, {:#each list as item, i} or with a key: {:#each list as item, i (item.id)}".into())
+                };
+                let (list, pat, key) = split_client_each(arg).ok_or_else(bad)?;
+                let (item, index) = match pat.split_once(',') {
+                    Some((a, b)) => (a.trim(), Some(b.trim())),
+                    None => (pat.trim(), None),
+                };
+                let ident = |s: &str| {
+                    s.bytes()
+                        .next()
+                        .is_some_and(|c| c.is_ascii_alphabetic() || c == b'_' || c == b'$')
+                        && s.bytes()
+                            .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'$')
+                        && !js::is_reserved(s)
+                };
+                if !ident(item) || index.is_some_and(|i| !ident(i)) {
+                    return Err(bad());
+                }
+                d.kind = Dir::Each;
+                d.name = item.to_string();
+                d.mods.extend(index.map(String::from));
+                d.value = Some(js(list));
+                d.key = key.map(js);
+                let names: Vec<String> = std::iter::once(item.to_string())
+                    .chain(index.map(String::from))
+                    .collect();
+                ("each", vec![list.trim().to_string()], names)
+            }
+            _ => {
+                return Err(self.err(
+                    open,
+                    format!(
+                        "unknown block {{:#{kw}}}: the browser's blocks are {{:#if}} and {{:#each}}"
+                    ),
+                ));
+            }
+        };
+        self.begin(open)?;
+        self.open(Frame::Client {
+            pos: open,
+            kind,
+            name: String::new(),
+            conds,
+            has_else: false,
+            body: Vec::new(),
+        });
+        self.client_template(d)?;
+        self.templates.push(Some(names));
+        self.skip_standalone(open);
+        Ok(())
+    }
+
+    /// `{:else}` or `{:else if cond}` in a client block: the branch before
+    /// ends, and a `<template if>` for this one begins, whose condition is
+    /// that no branch before it holds.
+    fn client_else(&mut self, open: usize, arg: &str) -> Result<(), Error> {
+        let line = self.line_of(open);
+        let col = self.col_of(open);
+        let Some(Frame::Client {
+            kind,
+            conds,
+            has_else,
+            ..
+        }) = self.frames.last_mut()
+        else {
+            unreachable!("caller checked")
+        };
+        let (kind, cond) = (*kind, arg.trim());
+        let not = |c: &String| format!("!({c})");
+        let test = match (kind, split_word(cond)) {
+            _ if *has_else => None,
+            ("if", ("", _)) => {
+                *has_else = true;
+                Some(conds.iter().map(not).collect::<Vec<_>>().join(" && "))
+            }
+            ("if", ("if", c)) if !c.is_empty() => {
+                let t = conds
+                    .iter()
+                    .map(not)
+                    .chain(std::iter::once(format!("({c})")))
+                    .collect::<Vec<_>>()
+                    .join(" && ");
+                conds.push(c.to_string());
+                Some(t)
+            }
+            ("each", ("", _)) => {
+                *has_else = true;
+                Some(format!("![...({} ?? [])].length", conds[0]))
+            }
+            _ => None,
+        };
+        let Some(test) = test else {
+            return Err(self.err(
+                open,
+                format!(
+                    "{{:else}} is not allowed here: a {{:#{kind}}} takes {}",
+                    if kind == "if" {
+                        "{:else if …} and then one {:else}"
+                    } else {
+                        "one {:else}, shown when the list is empty"
+                    }
+                ),
+            ));
+        };
+        self.text.push_str("</template>");
+        self.templates.pop();
+        let d = Directive {
+            kind: Dir::If,
+            name: String::new(),
+            mods: Vec::new(),
+            value: Some(Code { src: test, line }),
+            key: None,
+            props: Vec::new(),
+            line,
+            col,
+        };
+        self.client_template(d)?;
+        self.templates.push(Some(Vec::new()));
+        self.skip_standalone(open);
+        Ok(())
+    }
+
+    /// The end of the innermost client block or component, at `pos`.
+    fn client_close(&mut self, pos: usize) -> Result<(), Error> {
+        self.text.push_str("</template>");
+        self.templates.pop();
+        if let Frame::Client { body, .. } = self.end(pos)? {
+            self.list().push(Node::Fragment(body));
+        }
+        Ok(())
+    }
+
+    /// `{:expr}` in text: an anchor the browser puts the value after, what
+    /// the server knows of it, and the end of it.
+    fn live_text(&mut self, open: usize, js: &str) -> Result<(), Error> {
+        let (line, col) = (self.line_of(open), self.col_of(open));
+        let d = Directive {
+            kind: Dir::Hole,
+            name: String::new(),
+            mods: Vec::new(),
+            value: Some(Code {
+                src: js.to_string(),
+                line,
+            }),
+            key: None,
+            props: Vec::new(),
+            line,
+            col,
+        };
+        self.begin(open)?;
+        self.client_template(d)?;
+        let group = self.groups.len() - 1;
+        self.text.push_str("</template>");
+        self.push_node(open, Node::Hole { group })?;
+        self.text.push_str("<!---->");
+        Ok(())
+    }
+
+    /// `{:…}` in a quoted attribute value that began at `value_start`: the
+    /// whole value, read here, becomes a live attribute (a template literal),
+    /// and the server writes its static text. The closing quote is left for
+    /// the main loop.
+    fn live_value(&mut self, open: usize, q: u8) -> Result<(), Error> {
+        if self.value_events {
+            return Err(self.err(open, format!("`{}` mixes {{…}} (the server's) and {{:…}} (the browser's); use one kind in a value", self.attr)));
+        }
+        self.check_live_attr(open)?;
+        let mut js = String::from("`");
+        let lit = |s: &str, js: &mut String| {
+            for c in s.chars() {
+                if matches!(c, '`' | '\\' | '$') {
+                    js.push('\\');
+                }
+                js.push(c);
+            }
+        };
+        lit(&self.text[self.value_start..], &mut js);
+        let mut i = open;
+        loop {
+            match self.b.get(i) {
+                None => return Err(self.err(open, "unclosed quote".into())),
+                Some(&c) if c == q => break,
+                Some(b'{') => {
+                    let e =
+                        hole_end(self.b, i + 1).ok_or_else(|| self.err(i, "unclosed {".into()))?;
+                    let Some(expr) = self.src[i + 1..e]
+                        .trim()
+                        .strip_prefix(':')
+                        .filter(|x| !x.trim().is_empty())
+                    else {
+                        return Err(self.err(i, format!("`{}` mixes {{…}} (the server's) and {{:…}} (the browser's); use one kind in a value", self.attr)));
+                    };
+                    js.push_str("${(");
+                    js.push_str(expr.trim());
+                    js.push_str(") ?? ''}");
+                    i = e + 1;
+                }
+                Some(_) => {
+                    let s = i;
+                    while i < self.b.len() && self.b[i] != q && self.b[i] != b'{' {
+                        i += 1;
+                    }
+                    lit(&self.src[s..i], &mut js);
+                    self.text.push_str(&self.src[s..i]);
+                }
+            }
+        }
+        js.push('`');
+        self.i = i;
+        let (line, col) = (self.line_of(open), self.col_of(open));
+        let name = self.attr.clone();
+        self.directives.push(Directive {
+            kind: Dir::Attr,
+            name,
+            mods: Vec::new(),
+            value: Some(Code { src: js, line }),
+            key: None,
+            props: Vec::new(),
+            line,
+            col,
+        });
+        Ok(())
+    }
+
+    /// A live value may go on this attribute here.
+    fn check_live_attr(&self, open: usize) -> Result<(), Error> {
+        if self.frames.len() != self.tag_frames {
+            return Err(self.err(open, "a {:…} value cannot be inside a {#…} block; put the condition in its JavaScript instead".into()));
+        }
+        if self.attr.starts_with("on") || self.attr == "srcdoc" || self.attr.is_empty() {
+            return Err(self.err(
+                open,
+                format!(
+                    "no {{:…}} in `{}`; for events use on:click=\"…\"",
+                    self.attr
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     // ---- holes ------------------------------------------------------------
 
     fn hole(&mut self) -> Result<(), Error> {
         let open = self.i;
-        let end = hole_end(self.b, open + 1).ok_or_else(|| self.err(open, "unclosed {".into()))?;
+        let end = hole_end(self.b, open + 1).ok_or_else(|| {
+            self.err(
+                open,
+                "unclosed {; to show a { as text, write {\"{\"}".into(),
+            )
+        })?;
         self.i = end + 1;
         let t = self.src[open + 1..end].trim();
+        if has_line_comment(t) {
+            return Err(self.err(open, "no // comments inside {…}: the code after it would be commented out too. Use /* … */".into()));
+        }
         let line = self.line_of(open);
-        let code = |s: &str| Code { src: s.trim().to_string(), line };
+        let code = |s: &str| Code {
+            src: s.trim().to_string(),
+            line,
+        };
+        if self.ctx != Ctx::Text {
+            self.tag_attrs = true;
+        }
 
         // Blocks may appear anywhere, even inside tags (conditional attributes).
         if let Some(rest) = t.strip_prefix('#') {
@@ -390,53 +1695,202 @@ impl Parser<'_> {
                 return Err(self.err(open, format!("{{#{kw}}} needs an expression")));
             }
             let frame = match kw {
-                "if" => Frame::If { pos: open, branches: vec![(code(arg), Vec::new())], otherwise: None },
+                "if" => Frame::If {
+                    pos: open,
+                    branches: vec![(code(arg), Vec::new())],
+                    otherwise: None,
+                },
                 "each" => {
-                    let (iter, pat, index) = split_each(arg)
-                        .ok_or_else(|| self.err(open, "expected {#each <expr> as <pattern>[, <index>]}".into()))?;
-                    Frame::Each { pos: open, iter: code(iter), pat: pat.into(), index: index.map(Into::into), body: Vec::new(), otherwise: None }
+                    let (iter, pat, index) = split_each(arg).ok_or_else(|| {
+                        self.err(
+                            open,
+                            "expected {#each <expr> as <pattern>[, <index>]}".into(),
+                        )
+                    })?;
+                    Frame::Each {
+                        pos: open,
+                        iter: code(iter),
+                        pat: pat.into(),
+                        index: index.map(Into::into),
+                        body: Vec::new(),
+                        otherwise: None,
+                    }
                 }
-                "match" => Frame::Match { pos: open, scrutinee: code(arg), arms: Vec::new() },
+                "match" => Frame::Match {
+                    pos: open,
+                    scrutinee: code(arg),
+                    arms: Vec::new(),
+                },
                 _ => return Err(self.err(open, format!("unknown block {{#{kw}}}"))),
             };
+            if matches!(self.ctx, Ctx::Quoted(_)) {
+                self.in_value(open)?;
+            }
             self.begin(open)?;
-            self.frames.push(frame);
+            self.open(frame);
             self.skip_standalone(open);
             return Ok(());
         }
         if let Some(rest) = t.strip_prefix(':').filter(|_| !t.starts_with("::")) {
-            let (kw, arg) = split_word(rest);
-            self.flush()?;
-            match (kw, self.frames.last_mut()) {
-                ("else", Some(Frame::If { branches, otherwise, .. })) if otherwise.is_none() => {
-                    match split_word(arg) {
-                        ("", _) => *otherwise = Some(Vec::new()),
-                        ("if", c) if !c.is_empty() => branches.push((code(c), Vec::new())),
-                        _ => return Err(self.err(open, "expected {:else} or {:else if <cond>}".into())),
-                    }
+            // The browser's: `{:#if}`, `{:/if}`, and `{:expr}`. `else` and
+            // `case` are JavaScript keywords, so `{:else}` and `{:case}` are
+            // always branches.
+            if let Some(block) = rest.strip_prefix('#') {
+                let (kw, arg) = split_word(block);
+                if arg.is_empty() {
+                    return Err(self.err(open, format!("{{:#{kw}}} needs an expression")));
                 }
-                ("else", Some(Frame::Each { otherwise, .. })) if otherwise.is_none() && arg.is_empty() => {
+                return self.client_open(open, kw, arg);
+            }
+            if let Some(kw) = rest.strip_prefix('/') {
+                let kw = kw.trim();
+                if !matches!(self.frames.last(), Some(Frame::Client { kind, .. }) if *kind == kw && kw != "comp")
+                {
+                    return Err(self.unexpected_close(open, &format!("{{:/{kw}}}")));
+                }
+                self.client_close(open)?;
+                self.skip_standalone(open);
+                return Ok(());
+            }
+            let (kw, arg) = split_word(rest);
+            if !matches!(kw, "else" | "case" | "elseif" | "elif" | "elsif") {
+                let js = rest.trim();
+                if js.is_empty() {
+                    return Err(self.err(
+                        open,
+                        "empty {:}: write the JavaScript to show, such as {:count}".into(),
+                    ));
+                }
+                return match self.ctx {
+                    Ctx::Text => self.live_text(open, js),
+                    Ctx::Quoted(q) => self.live_value(open, q),
+                    Ctx::Tag if self.last == b'=' => {
+                        self.check_live_attr(open)?;
+                        self.unwrite_attr_name(open)?;
+                        let (line, col) = (self.line_of(open), self.col_of(open));
+                        let name = self.attr.clone();
+                        self.directives.push(Directive {
+                            kind: Dir::Attr,
+                            name,
+                            mods: Vec::new(),
+                            value: Some(Code {
+                                src: js.to_string(),
+                                line,
+                            }),
+                            key: None,
+                            props: Vec::new(),
+                            line,
+                            col,
+                        });
+                        self.last = b'a';
+                        Ok(())
+                    }
+                    Ctx::Tag => Err(self.err(
+                        open,
+                        "inside a tag, {:…} must be an attribute's value: name={:expr}".into(),
+                    )),
+                };
+            }
+            if kw == "else"
+                && matches!(
+                    self.frames.last(),
+                    Some(Frame::Client {
+                        kind: "if" | "each",
+                        ..
+                    })
+                )
+            {
+                self.flush()?;
+                return self.client_else(open, arg);
+            }
+            self.flush()?;
+            self.same_place(open, &format!("{{:{kw}}}"))?;
+            match (kw, self.frames.last_mut()) {
+                (
+                    "else",
+                    Some(Frame::If {
+                        branches,
+                        otherwise,
+                        ..
+                    }),
+                ) if otherwise.is_none() => match split_word(arg) {
+                    ("", _) => *otherwise = Some(Vec::new()),
+                    ("if", c) if !c.is_empty() => branches.push((code(c), Vec::new())),
+                    _ => return Err(self.err(open, "expected {:else} or {:else if <cond>}".into())),
+                },
+                ("else", Some(Frame::Each { otherwise, .. }))
+                    if otherwise.is_none() && arg.is_empty() =>
+                {
                     *otherwise = Some(Vec::new());
                 }
-                ("case", Some(Frame::Match { arms, .. })) if !arg.is_empty() => arms.push((code(arg), Vec::new())),
+                ("case", Some(Frame::Match { arms, .. })) if !arg.is_empty() => {
+                    arms.push((code(arg), Vec::new()))
+                }
+                ("elseif" | "elif" | "elsif", _) => {
+                    return Err(self.err(
+                        open,
+                        format!("{{:{kw}}} is written {{:else if <condition>}}"),
+                    ));
+                }
                 _ => return Err(self.err(open, format!("{{:{kw}}} is not allowed here"))),
             }
+            self.restart();
             self.skip_standalone(open);
             return Ok(());
         }
         if let Some(rest) = t.strip_prefix('/') {
-            let node = match (rest.trim(), self.end()?) {
-                ("if", Some(Frame::If { branches, otherwise, .. })) => Node::If { branches, otherwise },
-                ("each", Some(Frame::Each { iter, pat, index, body, otherwise, .. })) => {
-                    Node::Each { iter, pat, index, body, otherwise }
-                }
-                ("match", Some(Frame::Match { pos, scrutinee, arms })) => {
+            let kw = rest.trim();
+            let open_kind = match self.frames.last() {
+                Some(Frame::If { .. }) => "if",
+                Some(Frame::Each { .. }) => "each",
+                Some(Frame::Match { .. }) => "match",
+                Some(Frame::Client { kind, .. }) if *kind != "comp" => kind,
+                _ => "",
+            };
+            if kw != open_kind {
+                return Err(self.unexpected_close(open, &format!("{{/{kw}}}")));
+            }
+            if matches!(self.frames.last(), Some(Frame::Client { .. })) {
+                self.client_close(open)?;
+                self.skip_standalone(open);
+                return Ok(());
+            }
+            let node = match self.end(open)? {
+                Frame::If {
+                    branches,
+                    otherwise,
+                    ..
+                } => Node::If {
+                    branches,
+                    otherwise,
+                },
+                Frame::Each {
+                    iter,
+                    pat,
+                    index,
+                    body,
+                    otherwise,
+                    ..
+                } => Node::Each {
+                    iter,
+                    pat,
+                    index,
+                    body,
+                    otherwise,
+                },
+                Frame::Match {
+                    pos,
+                    scrutinee,
+                    arms,
+                } => {
                     if arms.is_empty() {
                         return Err(self.err(pos, "{#match} needs at least one {:case}".into()));
                     }
                     Node::Match { scrutinee, arms }
                 }
-                (kw, _) => return Err(self.err(open, format!("unexpected {{/{kw}}}"))),
+                Frame::Head { .. } | Frame::Component { .. } | Frame::Client { .. } => {
+                    unreachable!("kw matched the open block")
+                }
             };
             self.list().push(node);
             self.skip_standalone(open);
@@ -445,30 +1899,81 @@ impl Parser<'_> {
 
         // Output holes: where they may appear depends on the HTML context.
         if self.ctx == Ctx::Tag && self.last != b'=' {
-            return Err(self.err(open, "inside a tag, expressions must be attribute values: name={expr}".into()));
+            // `{href}` is `href={href}`.
+            if !t.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_') || t.is_empty() {
+                return Err(self.err(
+                    open,
+                    "inside a tag, expressions must be attribute values: name={expr}, or {name} for name={name}".into(),
+                ));
+            }
+            self.attr = t.to_string();
+            self.typed |= matches!(t, "type" | "src" | "nomodule");
+            self.text.push_str(t);
+            self.text.push('=');
+            self.last = b'=';
         }
         if self.ctx != Ctx::Text && self.attr.starts_with("on") {
-            return Err(self.err(open, format!("no expressions in event handler attributes like `{}`; use data-* attributes", self.attr)));
+            return Err(self.err(
+                open,
+                format!(
+                    "no expressions in event handler attributes like `{}`; use data-* attributes",
+                    self.attr
+                ),
+            ));
         }
-        let quote = self.ctx == Ctx::Tag;
-        if quote {
+        if self.ctx != Ctx::Text && self.attr == "srcdoc" {
+            return Err(self.err(open, "no expressions in `srcdoc`: its value is a whole HTML document, where escaping for an attribute is not enough".into()));
+        }
+        let unquoted = self.ctx == Ctx::Tag;
+        if unquoted {
             self.last = b'a';
         }
         if self.ctx != Ctx::Text && BOOLEAN_ATTRS.contains(&self.attr.as_str()) {
             // On or off. A value, even "false", would turn it on.
-            if !quote || t.is_empty() || t.starts_with('@') {
-                return Err(self.err(open, format!("`{0}` is on or off: write {0}={{condition}}", self.attr)));
+            if !unquoted || t.is_empty() || t.starts_with('@') {
+                return Err(self.err(
+                    open,
+                    format!("`{0}` is on or off: write {0}={{condition}}", self.attr),
+                ));
             }
             self.unwrite_attr_name(open)?;
-            return self.push_node(open, Node::Bool { name: self.attr.clone(), code: code(t) });
+            return self.push_node(
+                open,
+                Node::Bool {
+                    name: self.attr.clone(),
+                    code: code(t),
+                    class: false,
+                },
+            );
         }
 
         if let Some(rest) = t.strip_prefix('@') {
             let (kw, arg) = split_word(rest);
+            if kw == "props" {
+                if self.ctx != Ctx::Text || !self.frames.is_empty() {
+                    return Err(self.err(
+                        open,
+                        "{@props …} goes at the top of a component, outside any tag or block"
+                            .into(),
+                    ));
+                }
+                if self.props.is_some() {
+                    return Err(self.err(
+                        open,
+                        "a component declares its props once, in one {@props …}".into(),
+                    ));
+                }
+                let decls = parse_props(arg).map_err(|m| self.err(open, m))?;
+                self.props = Some((decls, line));
+                self.skip_standalone(open);
+                return Ok(());
+            }
             let node = match kw {
-                "html" if self.ctx != Ctx::Text => return Err(self.err(open, "{@html} is not allowed inside tags".into())),
+                "html" if self.ctx != Ctx::Text => {
+                    return Err(self.err(open, "{@html} is not allowed inside tags".into()));
+                }
                 "html" if !arg.is_empty() => Node::Html(code(arg)),
-                "const" if arg.contains('=') => Node::Const(code(arg)),
+                "const" if arg.contains('=') && !unquoted => Node::Const(code(arg)),
                 "render" if arg.replace(' ', "") == "children()" && self.ctx == Ctx::Text => {
                     self.uses_children = true;
                     Node::Render
@@ -485,16 +1990,54 @@ impl Parser<'_> {
         if t.is_empty() {
             return Err(self.err(open, "empty {}".into()));
         }
-        self.push_node(open, Node::Expr { code: code(t), quote })
+        // A whole attribute value: `None` leaves the attribute out.
+        // (`name = {x}` with spaces cannot be taken back, and is written as text.)
+        if unquoted
+            && (self.attr != "class" || self.tag_classes.is_empty())
+            && self.unwrite_attr_name(open).is_ok()
+        {
+            let name = self.attr.clone();
+            let url = URL_ATTRS.contains(&name.as_str());
+            return self.push_node(
+                open,
+                Node::Attr {
+                    name,
+                    code: code(t),
+                    url,
+                },
+            );
+        }
+        if unquoted {
+            // `name={expr}`: the value is quoted here, so it cannot end early.
+            self.text.push('"');
+            self.value_start = self.text.len();
+            self.value_events = false;
+        }
+        if self.ctx != Ctx::Text {
+            self.in_value(open)?;
+        }
+        self.push_node(open, Node::Expr(code(t)))?;
+        if unquoted {
+            self.end_value(open)?;
+            self.write_classes()?;
+            self.text.push('"');
+        }
+        Ok(())
     }
 
     /// Takes ` name=` back off the end of the text: a boolean attribute's name
     /// is printed by its node, and only when its condition holds.
     fn unwrite_attr_name(&mut self, open: usize) -> Result<(), Error> {
         let t = self.text.strip_suffix('=').unwrap_or(&self.text).trim_end();
-        let at = t.len().checked_sub(self.attr.len()).filter(|&n| t.as_bytes()[n..].eq_ignore_ascii_case(self.attr.as_bytes()));
+        let at = t
+            .len()
+            .checked_sub(self.attr.len())
+            .filter(|&n| t.as_bytes()[n..].eq_ignore_ascii_case(self.attr.as_bytes()));
         let Some(at) = at else {
-            return Err(self.err(open, format!("write {}={{condition}} in one piece", self.attr)));
+            return Err(self.err(
+                open,
+                format!("write {}={{condition}} in one piece", self.attr),
+            ));
         };
         let keep = t[..at].trim_end().len();
         self.text.truncate(keep);
@@ -510,7 +2053,10 @@ impl Parser<'_> {
             return;
         }
         let inline = |c: &u8| matches!(c, b' ' | b'\t' | b'\r');
-        let line_start = self.b[..open].iter().rposition(|c| !inline(c)).is_none_or(|p| self.b[p] == b'\n');
+        let line_start = self.b[..open]
+            .iter()
+            .rposition(|c| !inline(c))
+            .is_none_or(|p| self.b[p] == b'\n');
         let rest = &self.b[self.i..];
         let line_end = rest.iter().find(|c| !inline(c)).is_none_or(|&c| c == b'\n');
         if line_start && line_end {
@@ -526,18 +2072,270 @@ impl Parser<'_> {
         self.line_starts.partition_point(|&s| s <= pos) as u32
     }
 
-    fn err(&self, pos: usize, msg: String) -> Error {
-        let line = self.line_of(pos);
-        let col = self.src[self.line_starts[line as usize - 1]..pos].chars().count() as u32 + 1;
-        Error { line, col, msg }
+    fn col_of(&self, pos: usize) -> u32 {
+        self.src[self.line_starts[self.line_of(pos) as usize - 1]..pos]
+            .chars()
+            .count() as u32
+            + 1
     }
+
+    fn err(&self, pos: usize, msg: String) -> Error {
+        Error {
+            line: self.line_of(pos),
+            col: self.col_of(pos),
+            msg,
+        }
+    }
+}
+
+/// Attributes whose value is a URL, where `javascript:` would run script.
+const URL_ATTRS: [&str; 9] = [
+    "action",
+    "background",
+    "cite",
+    "data",
+    "formaction",
+    "href",
+    "poster",
+    "src",
+    "xlink:href",
+];
+
+/// What the static start of a URL attribute's value says about its scheme.
+enum Scheme {
+    /// Relative (`/x`, `?q`, `#top`), or a scheme that runs no script.
+    Fixed,
+    /// `javascript:` or `vbscript:`.
+    Script,
+    /// A character reference before the scheme ends, which a browser decodes.
+    Encoded,
+    /// Undecided: what an expression writes next decides it.
+    Open,
+}
+
+fn scheme(prefix: &str) -> Scheme {
+    // As a browser reads a URL: leading spaces and controls are dropped, and
+    // tabs and newlines are ignored anywhere.
+    let s: String = prefix
+        .trim_start_matches(|c: char| c <= ' ')
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+        .collect();
+    for (i, c) in s.char_indices() {
+        match c {
+            ':' if i > 0 => {
+                let name = s[..i].to_ascii_lowercase();
+                return if name == "javascript" || name == "vbscript" {
+                    Scheme::Script
+                } else {
+                    Scheme::Fixed
+                };
+            }
+            '&' => return Scheme::Encoded,
+            _ if c.is_ascii_alphabetic() => {}
+            _ if i > 0 && (c.is_ascii_digit() || matches!(c, '+' | '-' | '.')) => {}
+            // Not a scheme's character: the URL is relative.
+            _ => return Scheme::Fixed,
+        }
+    }
+    Scheme::Open
+}
+
+/// An attribute that is browser code rather than HTML: `on:click`,
+/// `bind:value`, `:hidden`, `class:open`, `style:--x`, `transition:fade`,
+/// `use:tooltip`, and `each` or `if` on a `<template>`.
+fn is_directive(raw: &str, tag: &str) -> bool {
+    raw.starts_with(':')
+        || [
+            "on:",
+            "bind:",
+            "class:",
+            "style:",
+            "transition:",
+            "use:",
+            "animate:",
+        ]
+        .iter()
+        .any(|p| raw.starts_with(p))
+        || (tag == "template"
+            && (raw.eq_ignore_ascii_case("each") || raw.eq_ignore_ascii_case("if")))
+}
+
+/// A directive's kind, name and modifiers, checked, from its attribute name.
+fn directive_parts(raw: &str, tag: &str) -> Result<(Dir, String, Vec<String>), String> {
+    if tag == "template" && raw.eq_ignore_ascii_case("each") {
+        return Ok((Dir::Each, String::new(), Vec::new()));
+    }
+    if tag == "template" && raw.eq_ignore_ascii_case("if") {
+        return Ok((Dir::If, String::new(), Vec::new()));
+    }
+    let (kind, name) = if let Some(n) = raw.strip_prefix("on:") {
+        let mut parts = n.split('.');
+        let event = parts.next().unwrap_or("");
+        if event.is_empty() {
+            return Err(format!("`{raw}` needs an event's name, such as on:click"));
+        }
+        let mods: Vec<String> = parts.map(String::from).collect();
+        check_modifiers(&mods)?;
+        return Ok((Dir::On, event.to_string(), mods));
+    } else if let Some(n) = raw.strip_prefix("bind:") {
+        if !matches!(n, "value" | "checked" | "this") {
+            return Err(format!(
+                "`{raw}` is not a binding: use bind:value, bind:checked or bind:this"
+            ));
+        }
+        (Dir::Bind, n)
+    } else if let Some(n) = raw.strip_prefix("class:") {
+        (Dir::Class, n)
+    } else if let Some(n) = raw.strip_prefix("style:") {
+        (Dir::Style, n)
+    } else if let Some(n) = raw.strip_prefix("transition:") {
+        if !matches!(n, "fade" | "slide" | "scale" | "fly") {
+            return Err(format!(
+                "`{raw}` is not a transition: use transition:fade, transition:slide, transition:scale or transition:fly"
+            ));
+        }
+        (Dir::Transition, n)
+    } else if let Some(n) = raw.strip_prefix("animate:") {
+        if n != "flip" {
+            return Err(format!(
+                "`{raw}` is not an animation: use animate:flip, on an element of a keyed {{:#each}}"
+            ));
+        }
+        (Dir::Animate, n)
+    } else if let Some(n) = raw.strip_prefix("use:") {
+        let ident = n
+            .bytes()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == b'_' || c == b'$')
+            && n.bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'$');
+        if !ident {
+            return Err(format!(
+                "`{raw}` needs the name of a function in the script, such as use:tooltip"
+            ));
+        }
+        (Dir::Use, n)
+    } else {
+        let n = raw.strip_prefix(':').unwrap_or(raw);
+        (
+            if n.eq_ignore_ascii_case("text") {
+                Dir::Text
+            } else {
+                Dir::Attr
+            },
+            n,
+        )
+    };
+    if name.is_empty() {
+        return Err(format!("`{raw}` needs a name after the `:`"));
+    }
+    Ok((kind, name.to_string(), Vec::new()))
+}
+
+const MODIFIERS: [&str; 10] = [
+    "prevent", "stop", "once", "self", "capture", "passive", "window", "document", "outside",
+    "debounce",
+];
+const KEY_NAMES: [&str; 14] = [
+    "enter",
+    "escape",
+    "space",
+    "tab",
+    "backspace",
+    "delete",
+    "up",
+    "down",
+    "left",
+    "right",
+    "home",
+    "end",
+    "pageup",
+    "pagedown",
+];
+const MODIFIER_KEYS: [&str; 4] = ["ctrl", "shift", "alt", "meta"];
+
+/// An event's modifiers: known ones, keys, and a duration after `debounce`.
+fn check_modifiers(mods: &[String]) -> Result<(), String> {
+    let duration = |d: &str| {
+        let digits = d
+            .strip_suffix("ms")
+            .or_else(|| d.strip_suffix('s'))
+            .unwrap_or("");
+        !digits.is_empty() && digits.bytes().all(|c| c.is_ascii_digit())
+    };
+    let mut k = 0;
+    while k < mods.len() {
+        let m = mods[k].as_str();
+        if m == "debounce" && mods.get(k + 1).is_some_and(|d| duration(d)) {
+            k += 2;
+            continue;
+        }
+        let one_key = m.len() == 1
+            && m.bytes()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+        if !(MODIFIERS.contains(&m)
+            || KEY_NAMES.contains(&m)
+            || MODIFIER_KEYS.contains(&m)
+            || one_key)
+        {
+            return Err(format!(
+                "`.{m}` is not an event modifier. Use {}, with a time after debounce if you like (debounce.300ms); \
+                 a key: {}, or one letter or digit; or a key held down: {}",
+                MODIFIERS.join(", "),
+                KEY_NAMES.join(", "),
+                MODIFIER_KEYS.join(", ")
+            ));
+        }
+        k += 1;
+    }
+    Ok(())
+}
+
+/// True if `code` has a `//` comment outside its string and char literals.
+fn has_line_comment(code: &str) -> bool {
+    let b = code.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'/' if b.get(i + 1) == Some(&b'/') => return true,
+            b'"' => i = skip_str(b, i),
+            b'\'' => i = skip_char(b, i),
+            b'r' if raw_str_start(b, i).is_some() => i = skip_raw_str(b, i),
+            _ => {}
+        }
+        i += 1;
+    }
+    false
 }
 
 /// HTML's boolean attributes: present means on, whatever the value.
 const BOOLEAN_ATTRS: [&str; 25] = [
-    "allowfullscreen", "async", "autofocus", "autoplay", "checked", "controls", "default", "defer", "disabled",
-    "formnovalidate", "hidden", "inert", "ismap", "itemscope", "loop", "multiple", "muted", "nomodule",
-    "novalidate", "open", "playsinline", "readonly", "required", "reversed", "selected",
+    "allowfullscreen",
+    "async",
+    "autofocus",
+    "autoplay",
+    "checked",
+    "controls",
+    "default",
+    "defer",
+    "disabled",
+    "formnovalidate",
+    "hidden",
+    "inert",
+    "ismap",
+    "itemscope",
+    "loop",
+    "multiple",
+    "muted",
+    "nomodule",
+    "novalidate",
+    "open",
+    "playsinline",
+    "readonly",
+    "required",
+    "reversed",
+    "selected",
 ];
 
 fn is_ws(c: u8) -> bool {
@@ -559,7 +2357,10 @@ fn split_each(arg: &str) -> Option<(&str, &str, Option<&str>)> {
     let b = arg.as_bytes();
     let mut at = None;
     for_each_top(arg, |i| {
-        let word = b[i..].starts_with(b"as") && i > 0 && is_ws(b[i - 1]) && b.get(i + 2).is_some_and(|&c| is_ws(c));
+        let word = b[i..].starts_with(b"as")
+            && i > 0
+            && is_ws(b[i - 1])
+            && b.get(i + 2).is_some_and(|&c| is_ws(c));
         if word {
             at = Some(i);
         }
@@ -576,11 +2377,154 @@ fn split_each(arg: &str) -> Option<(&str, &str, Option<&str>)> {
         Some(c) => (rest[..c].trim(), Some(rest[c + 1..].trim())),
         None => (rest, None),
     };
-    let ident_ok = |s: &str| s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_') && !s.is_empty();
+    let ident_ok = |s: &str| {
+        s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
+            && s.bytes().next().is_some_and(|c| !c.is_ascii_digit())
+    };
     if iter.is_empty() || pat.is_empty() || index.is_some_and(|i| !ident_ok(i)) {
         return None;
     }
     Some((iter, pat, index))
+}
+
+/// `list as item, i (key)`: the list, the pattern and the key. The last
+/// top-level ` as ` separates; the key is a parenthesized tail after it.
+fn split_client_each(arg: &str) -> Option<(&str, &str, Option<&str>)> {
+    let at = arg.rfind(" as ")?;
+    let (list, mut pat) = (arg[..at].trim(), arg[at + 4..].trim());
+    let mut key = None;
+    if pat.ends_with(')') {
+        let open = pat.find('(')?;
+        key = Some(pat[open + 1..pat.len() - 1].trim()).filter(|k| !k.is_empty());
+        key?;
+        pat = pat[..open].trim();
+    }
+    (!list.is_empty() && !pat.is_empty()).then_some((list, pat, key))
+}
+
+/// Markup the browser can render by itself: static text and browser code,
+/// with no server expression or block.
+pub fn client_renderable(nodes: &[Node]) -> bool {
+    nodes.iter().all(|n| match n {
+        Node::Text(_) | Node::Live { .. } | Node::Hole { .. } | Node::Render => true,
+        Node::Fragment(body) => client_renderable(body),
+        _ => false,
+    })
+}
+
+fn prop_shape(props: &[Prop], out: &mut Vec<u8>) {
+    for p in props {
+        out.extend_from_slice(p.name.as_bytes());
+        let (tag, s) = match &p.value {
+            PropValue::Expr(c) => (b'=', c.src.as_str()),
+            PropValue::Text(t) => (b'"', t.as_str()),
+            PropValue::Flag => (b'!', ""),
+            PropValue::Live(c) => (b':', c.src.as_str()),
+            PropValue::Bind(c) => (b'b', c.src.as_str()),
+            PropValue::On(c) => (b'o', c.src.as_str()),
+        };
+        out.push(tag);
+        out.extend_from_slice(s.as_bytes());
+        out.push(0);
+    }
+}
+
+/// A component's tag, and so its file name: a capital letter first, a
+/// lowercase letter somewhere (an all-capitals tag is HTML), and only
+/// letters, digits and `_`.
+pub fn is_component_name(name: &str) -> bool {
+    let b = name.as_bytes();
+    b.first().is_some_and(u8::is_ascii_uppercase)
+        && b.iter().any(u8::is_ascii_lowercase)
+        && b.iter().all(|&c| c.is_ascii_alphanumeric() || c == b'_')
+}
+
+/// `title: &str, size: u8 = 2` → the props a component declares.
+fn parse_props(arg: &str) -> Result<Vec<PropDecl>, String> {
+    let ident = |s: &str| {
+        s.bytes()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == b'_')
+            && s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
+    };
+    let mut out: Vec<PropDecl> = Vec::new();
+    for part in split_top(arg, b',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue; // a trailing comma
+        }
+        let (name, rest) = part
+            .split_once(':')
+            .ok_or_else(|| format!("expected `name: Type` in {{@props …}}, found `{part}`"))?;
+        let name = name.trim();
+        if !ident(name) {
+            return Err(format!("`{name}` is not a name for a prop"));
+        }
+        if name == "children" || name.starts_with("__") {
+            return Err(format!(
+                "`{name}` is a name Wisp uses; call the prop something else"
+            ));
+        }
+        let (ty, default) = match split_top(rest, b'=').as_slice() {
+            [ty] => (ty.trim(), None),
+            [ty, default] if !default.trim().is_empty() => {
+                (ty.trim(), Some(default.trim().to_string()))
+            }
+            _ => {
+                return Err(format!(
+                    "expected `{name}: Type` or `{name}: Type = default` in {{@props …}}"
+                ));
+            }
+        };
+        if ty.is_empty() {
+            return Err(format!("prop `{name}` needs a type: `{name}: &str`"));
+        }
+        if out.iter().any(|d| d.name == name) {
+            return Err(format!("prop `{name}` is declared twice"));
+        }
+        out.push(PropDecl {
+            name: name.to_string(),
+            ty: ty.to_string(),
+            default,
+        });
+    }
+    if out.is_empty() {
+        return Err(
+            "{@props …} lists the component's props: {@props title: &str, count: u32 = 0}".into(),
+        );
+    }
+    Ok(out)
+}
+
+/// Splits `s` at each `sep` that is outside brackets (`<>` too, since types
+/// have them), strings and chars. `=` never splits `==`, `=>`, `<=`, `>=`
+/// or `!=`, and `->` is not a bracket.
+fn split_top(s: &str, sep: u8) -> Vec<&str> {
+    let b = s.as_bytes();
+    let (mut depth, mut from, mut i) = (0i32, 0, 0);
+    let mut parts = Vec::new();
+    while i < b.len() {
+        match b[i] {
+            b'(' | b'[' | b'{' | b'<' => depth += 1,
+            b'>' if i > 0 && matches!(b[i - 1], b'-' | b'=') => {}
+            b')' | b']' | b'}' | b'>' => depth -= 1,
+            b'"' => i = skip_str(b, i),
+            b'\'' => i = skip_char(b, i),
+            c if c == sep && depth == 0 => {
+                let paired = sep == b'='
+                    && (b.get(i + 1).is_some_and(|&n| n == b'=' || n == b'>')
+                        || (i > 0 && matches!(b[i - 1], b'=' | b'!' | b'<' | b'>')));
+                if !paired {
+                    parts.push(&s[from..i]);
+                    from = i + 1;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    parts.push(&s[from.min(s.len())..]);
+    parts
 }
 
 /// Calls `f` with every byte index at bracket depth 0 that is outside string
@@ -654,7 +2598,11 @@ pub(crate) fn skip_char(b: &[u8], i: usize) -> usize {
                 0xe0..=0xef => 3,
                 _ => 4,
             };
-            if b.get(i + 1 + len) == Some(&b'\'') { i + 1 + len } else { i }
+            if b.get(i + 1 + len) == Some(&b'\'') {
+                i + 1 + len
+            } else {
+                i
+            }
         }
         None => i,
     }
@@ -663,7 +2611,8 @@ pub(crate) fn skip_char(b: &[u8], i: usize) -> usize {
 /// If `b[i]` starts a raw string (`r"`, `r#"`, `br"`), returns the hash count.
 pub(crate) fn raw_str_start(b: &[u8], i: usize) -> Option<usize> {
     let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
-    let prefix_ok = i == 0 || !ident(b[i - 1]) || (b[i - 1] == b'b' && (i == 1 || !ident(b[i - 2])));
+    let prefix_ok =
+        i == 0 || !ident(b[i - 1]) || (b[i - 1] == b'b' && (i == 1 || !ident(b[i - 2])));
     if b[i] != b'r' || !prefix_ok {
         return None;
     }
@@ -678,7 +2627,14 @@ pub(crate) fn skip_raw_str(b: &[u8], i: usize) -> usize {
     let hashes = raw_str_start(b, i).expect("caller checked");
     let mut j = i + 2 + hashes;
     while j < b.len() {
-        if b[j] == b'"' && b[j + 1..].iter().take(hashes).filter(|&&c| c == b'#').count() == hashes {
+        if b[j] == b'"'
+            && b[j + 1..]
+                .iter()
+                .take(hashes)
+                .filter(|&&c| c == b'#')
+                .count()
+                == hashes
+        {
             return j + hashes;
         }
         j += 1;
@@ -695,14 +2651,30 @@ fn shape(nodes: &[Node], out: &mut Vec<u8>) {
     for n in nodes {
         match n {
             Node::Text(_) => out.push(b'T'),
-            Node::Expr { code: c, quote } => {
-                out.extend_from_slice(if *quote { b"Eq" } else { b"E" });
+            Node::Expr(c) => {
+                out.push(b'E');
                 code(out, c);
             }
-            Node::Bool { name, code: c } => {
-                out.push(b'B');
+            Node::UrlStart { prefix } => {
+                out.push(b'U');
+                out.extend_from_slice(prefix.as_bytes());
+                out.push(0);
+            }
+            Node::UrlEnd => out.push(b'u'),
+            Node::Bool {
+                name,
+                code: c,
+                class,
+            } => {
+                out.push(if *class { b'b' } else { b'B' });
                 out.extend_from_slice(name.as_bytes());
                 out.push(0);
+                code(out, c);
+            }
+            Node::Attr { name, code: c, url } => {
+                out.push(b'A');
+                out.extend_from_slice(name.as_bytes());
+                out.push(*url as u8);
                 code(out, c);
             }
             Node::Html(c) => {
@@ -714,7 +2686,10 @@ fn shape(nodes: &[Node], out: &mut Vec<u8>) {
                 code(out, c);
             }
             Node::Render => out.push(b'R'),
-            Node::If { branches, otherwise } => {
+            Node::If {
+                branches,
+                otherwise,
+            } => {
                 out.push(b'I');
                 for (c, body) in branches {
                     code(out, c);
@@ -727,7 +2702,13 @@ fn shape(nodes: &[Node], out: &mut Vec<u8>) {
                 }
                 out.push(b'.');
             }
-            Node::Each { iter, pat, index, body, otherwise } => {
+            Node::Each {
+                iter,
+                pat,
+                index,
+                body,
+                otherwise,
+            } => {
                 out.push(b'L');
                 code(out, iter);
                 out.extend_from_slice(pat.as_bytes());
@@ -756,6 +2737,36 @@ fn shape(nodes: &[Node], out: &mut Vec<u8>) {
                 shape(body, out);
                 out.push(b'.');
             }
+            Node::Component {
+                name,
+                props,
+                children,
+                ..
+            } => {
+                out.push(b'K');
+                out.extend_from_slice(name.as_bytes());
+                out.push(0);
+                prop_shape(props, out);
+                if let Some(c) = children {
+                    out.push(b'!');
+                    shape(c, out);
+                }
+                out.push(b'.');
+            }
+            Node::Live { group } | Node::Hole { group } => {
+                out.push(if matches!(n, Node::Live { .. }) {
+                    b'W'
+                } else {
+                    b'O'
+                });
+                out.extend_from_slice(group.to_string().as_bytes());
+                out.push(0);
+            }
+            Node::Fragment(body) => {
+                out.push(b'F');
+                shape(body, out);
+                out.push(b'.');
+            }
         }
     }
 }
@@ -776,19 +2787,119 @@ mod tests {
         for (i, n) in nodes.iter().enumerate() {
             assert_eq!(matches!(n, Node::Text(_)), i % 2 == 0, "{nodes:?}");
             match n {
-                Node::If { branches, otherwise } => {
+                Node::If {
+                    branches,
+                    otherwise,
+                } => {
                     branches.iter().for_each(|b| assert_alternates(&b.1));
                     otherwise.iter().for_each(|o| assert_alternates(o));
                 }
-                Node::Each { body, otherwise, .. } => {
+                Node::Each {
+                    body, otherwise, ..
+                } => {
                     assert_alternates(body);
                     otherwise.iter().for_each(|o| assert_alternates(o));
                 }
                 Node::Match { arms, .. } => arms.iter().for_each(|a| assert_alternates(&a.1)),
                 Node::Head(b) => assert_alternates(b),
+                Node::Component {
+                    children: Some(c), ..
+                } => assert_alternates(c),
                 _ => {}
             }
         }
+    }
+
+    #[test]
+    fn components() {
+        let t = parse("<ul>{#each xs as x}<Item name={x.name} big label=\"a b\" >\n  <b>{x}</b>\n</Item>{/each}<Divider/></ul>").unwrap();
+        assert_alternates(&t.nodes);
+        let Node::Each { body, .. } = &t.nodes[1] else {
+            panic!("{:?}", t.nodes)
+        };
+        let Node::Component {
+            name,
+            props,
+            children: Some(children),
+            line,
+        } = &body[1]
+        else {
+            panic!("{body:?}")
+        };
+        assert_eq!((name.as_str(), *line), ("Item", 1));
+        let props: Vec<_> = props
+            .iter()
+            .map(|p| (p.name.as_str(), p.value.clone()))
+            .collect();
+        let code = Code {
+            src: "x.name".into(),
+            line: 1,
+        };
+        assert_eq!(
+            props,
+            [
+                ("name", PropValue::Expr(code)),
+                ("big", PropValue::Flag),
+                ("label", PropValue::Text("a b".into()))
+            ]
+        );
+        assert!(matches!(&children[1], Node::Expr(c) if c.src == "x"));
+        assert!(
+            matches!(&t.nodes[3], Node::Component { name, children: None, .. } if name == "Divider")
+        );
+        // Lowercase tags are HTML, whatever their case in the source.
+        assert_eq!(parse("<Div-x>a</Div-x>").unwrap().nodes.len(), 1);
+    }
+
+    #[test]
+    fn component_props() {
+        let t = parse("{@props title: &str, tags: HashMap<String, Vec<u8>> = HashMap::new(), on: bool = a == b,}\n<h2>{title}</h2>").unwrap();
+        let (props, line) = t.props.as_ref().unwrap();
+        let decls: Vec<_> = props
+            .iter()
+            .map(|d| (d.name.as_str(), d.ty.as_str(), d.default.as_deref()))
+            .collect();
+        assert_eq!(
+            decls,
+            [
+                ("title", "&str", None),
+                ("tags", "HashMap<String, Vec<u8>>", Some("HashMap::new()")),
+                ("on", "bool", Some("a == b"))
+            ]
+        );
+        assert_eq!(*line, 1);
+        assert_eq!(text(&t, &t.nodes[0]), "<h2>");
+        let f = parse("{@props f: &dyn Fn(u8) -> u8}")
+            .unwrap()
+            .props
+            .unwrap()
+            .0;
+        assert_eq!(f[0].ty, "&dyn Fn(u8) -> u8");
+
+        let err = |src: &str| parse(src).unwrap_err().msg;
+        assert!(err("{@props}").contains("lists the component's props"));
+        assert!(err("{@props a}").contains("expected `name: Type`"));
+        assert!(err("{@props a: u8, a: u8}").contains("declared twice"));
+        assert!(err("{@props children: u8}").contains("a name Wisp uses"));
+        assert!(err("{@props a: u8}{@props b: u8}").contains("once"));
+        assert!(err("{#if x}{@props a: u8}{/if}").contains("at the top"));
+    }
+
+    #[test]
+    fn component_errors() {
+        let err = |src: &str| parse(src).unwrap_err().msg;
+        assert!(
+            err("<Card>x</div>").contains("never closed"),
+            "{}",
+            err("<Card>x</div>")
+        );
+        assert!(err("<Card>{#if a}</Card>{/if}").contains("does not match the {#if}"));
+        assert!(err("<Card>x</Other>").contains("does not match the <Card>"));
+        assert!(err("<Card title=\"a {b}\" />").contains("plain text"));
+        assert!(err("<Card title= />").contains("needs a value"));
+        assert!(err("<Card a a />").contains("twice"));
+        assert!(err("<Card {x} />").contains("takes props"));
+        assert!(err("<Card").contains("unclosed <Card>"));
     }
 
     #[test]
@@ -803,7 +2914,7 @@ mod tests {
         let t = parse("<ul>\n    <li>{a.b}</li>\n  </ul>").unwrap();
         assert_alternates(&t.nodes);
         assert_eq!(text(&t, &t.nodes[0]), "<ul>\n<li>");
-        assert!(matches!(&t.nodes[1], Node::Expr { code, quote: false } if code.src == "a.b" && code.line == 2));
+        assert!(matches!(&t.nodes[1], Node::Expr(code) if code.src == "a.b" && code.line == 2));
         assert_eq!(text(&t, &t.nodes[2]), "</li>\n</ul>");
     }
 
@@ -811,31 +2922,301 @@ mod tests {
     fn braces_in_rust_literals() {
         let t = parse(r#"{format!("{}}", x)}{'}'}{r"}"}"#).unwrap();
         assert_alternates(&t.nodes);
-        let exprs: Vec<_> = t.nodes.iter().filter_map(|n| if let Node::Expr { code, .. } = n { Some(code.src.as_str()) } else { None }).collect();
+        let exprs: Vec<_> = t
+            .nodes
+            .iter()
+            .filter_map(|n| {
+                if let Node::Expr(code) = n {
+                    Some(code.src.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
         assert_eq!(exprs, [r#"format!("{}}", x)"#, "'}'", r#"r"}""#]);
     }
 
     #[test]
     fn attribute_values() {
-        let t = parse(r#"<a href="/p/{id}" class={cls} data-x='{y}'>"#).unwrap();
-        let quotes: Vec<_> = t.nodes.iter().filter_map(|n| if let Node::Expr { quote, .. } = n { Some(*quote) } else { None }).collect();
-        assert_eq!(quotes, [false, true, false]);
-        assert_eq!(text(&t, &t.nodes[2]), r#"" class="#);
+        let t = parse(r#"<a href="/p/{id}" class={cls} data-x='{y}' title= {z}>"#).unwrap();
+        assert_alternates(&t.nodes);
+        let texts: Vec<_> = t.nodes.iter().step_by(2).map(|n| text(&t, n)).collect();
+        assert_eq!(
+            texts,
+            [
+                r#"<a href="/p/"#,
+                r#"""#,
+                r#" data-x='"#,
+                r#"' title= ""#,
+                r#"">"#
+            ]
+        );
     }
 
     #[test]
     fn rejects_unsafe_contexts() {
-        assert!(parse("<div {x}>").unwrap_err().msg.contains("attribute values"));
-        assert!(parse(r#"<a onclick="go({x})">"#).unwrap_err().msg.contains("event handler"));
-        assert!(parse("<a onclick={x}>").unwrap_err().msg.contains("event handler"));
+        let err = |src: &str| parse(src).unwrap_err().msg;
+        assert!(err("<div {x.y}>").contains("attribute values"));
+        assert!(err(r#"<a onclick="go({x})">"#).contains("event handler"));
+        assert!(err("<a onclick={x}>").contains("event handler"));
         assert!(parse(r#"<a title="{@html x}">"#).is_err());
+        assert!(err("<p><{x}></p>").contains("tag's name"));
+        assert!(err("<p></{x}></p>").contains("tag's name"));
+        assert!(err("<iframe srcdoc={x}>").contains("srcdoc"));
+        assert!(err(r#"<a href="javascript:go('{x}')">"#).contains("runs script"));
+        assert!(err(r#"<a href=" JavaScript:{x}">"#).contains("runs script"));
+        assert!(err(r#"<a href="java&#115;cript:{x}">"#).contains("character reference"));
+        assert!(err("<p>{x // why}</p>").contains("// comments"));
+    }
+
+    #[test]
+    fn a_bare_less_than_cannot_start_a_tag() {
+        let t = parse("<p>a < b, &lt;{x}</p>").unwrap();
+        assert_eq!(text(&t, &t.nodes[0]), "<p>a &lt; b, &lt;");
+        let t = parse("<p>1 <2</p>").unwrap();
+        assert_eq!(text(&t, &t.nodes[0]), "<p>1 &lt;2</p>");
+    }
+
+    #[test]
+    fn url_values_whose_scheme_is_an_expression_are_guarded() {
+        let kinds = |src: &str| -> String {
+            let t = parse(src).unwrap();
+            assert_alternates(&t.nodes);
+            t.nodes
+                .iter()
+                .filter_map(|n| match n {
+                    Node::UrlStart { prefix } => Some(format!("[{prefix}")),
+                    Node::UrlEnd => Some("]".into()),
+                    Node::Attr { code, url, .. } if *url => Some(format!("[{}]", code.src)),
+                    Node::Attr { code, .. } | Node::Expr(code) => Some(code.src.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(kinds("<a href={u}>"), "[u]");
+        assert_eq!(kinds(r#"<a href="{a}{b}" title={c}>"#), "[ab]c");
+        assert_eq!(kinds(r#"<img src='java{x}'>"#), "[javax]");
+        assert_eq!(kinds(r#"<form action="{#if a}{x}{/if}">"#), "[]"); // x is inside the {#if}
+        // A static start that fixes the scheme needs no guard.
+        for fixed in [
+            r#"<a href="/p/{id}">"#,
+            r#"<a href="https://x.com/{p}">"#,
+            r#"<a href="?q={q}">"#,
+            r#"<a href="mailto:{m}">"#,
+        ] {
+            assert_eq!(
+                kinds(fixed).len(),
+                kinds(fixed).trim_matches(['[', ']']).len(),
+                "{fixed}"
+            );
+        }
+    }
+
+    #[test]
+    fn blocks_end_where_they_began() {
+        let err = |src: &str| parse(src).unwrap_err().msg;
+        assert!(err(r#"<div {#if a}class="on">{/if}{x}</div>"#).contains("same place"));
+        assert!(err(r#"<a {#if a}title={:else}{/if}{y}>"#).contains("same place"));
+        assert!(err(r#"<a title="{#if a}x"{/if}>"#).contains("same place"));
+        assert!(err("{#if a}<p {:else}<b>{/if}>").contains("same place"));
+        assert!(parse(r#"<a {#if a}class="x"{:else}title={t}{/if} href="/">"#).is_ok());
+        assert!(parse(r#"<a title="{#if a}x{:else}{y}{/if}">"#).is_ok());
+    }
+
+    #[test]
+    fn helpful_errors() {
+        let err = |src: &str| parse(src).unwrap_err().msg;
+        assert!(err("{#if a}x{:elseif b}y{/if}").contains("{:else if"));
+        assert!(
+            err("{#each xs as x}
+{/if}")
+            .contains("{#each} still open from line 1")
+        );
+        assert!(err("<p>use { to</p>").contains(r#"{"{"}"#));
+        assert!(err("{#each xs as x, 0}{/each}").contains("expected {#each"));
+        assert!(err("{/if}").contains("no block to close"));
+    }
+
+    #[test]
+    fn empty_comments_and_nomodule() {
+        let t = parse("<!-->shown<!--->too<!-- {x} -->").unwrap();
+        assert_eq!(text(&t, &t.nodes[0]), "showntoo");
+        let t = parse("<script nomodule>old()</script>").unwrap();
+        assert_eq!(text(&t, &t.nodes[0]), "<script nomodule>old()</script>");
     }
 
     #[test]
     fn script_style_comment_are_raw() {
-        let t = parse("<style>a { color: red }</style><script>if (a) { b() }</script><!-- {x} -->done").unwrap();
+        let t = parse(
+            "<style>a { color: red }</style><script defer>if (a) { b() }</script><!-- {x} -->done",
+        )
+        .unwrap();
         assert_eq!(t.nodes.len(), 1);
-        assert_eq!(text(&t, &t.nodes[0]), "<style>a { color: red }</style><script>if (a) { b() }</script>done");
+        assert_eq!(
+            text(&t, &t.nodes[0]),
+            "<style>a { color: red }</style><script defer type=\"module\">if (a) { b() }</script>done"
+        );
+    }
+
+    #[test]
+    fn a_bare_script_is_the_client_script() {
+        let t = parse("<p>hi</p>\n\n<SCRIPT>\n  let a = '</p>' // {x}\n</SCRIPT >\n").unwrap();
+        assert_eq!(t.nodes.len(), 1);
+        assert_eq!(text(&t, &t.nodes[0]), "<p>hi</p>");
+        assert_eq!(
+            t.script,
+            Some(Script {
+                src: "\n  let a = '</p>' // {x}\n".into(),
+                line: 3,
+                col: 9
+            })
+        );
+        assert!(t.is_live());
+
+        let err = |src: &str| parse(src).unwrap_err().msg;
+        assert!(err("<script>a</script><script>b</script>").contains("one client script"));
+        assert!(err("{#if x}<script>a</script>{/if}").contains("top level"));
+        assert!(err("<wisp:head><script>a</script></wisp:head>").contains("top level"));
+        assert!(err("<script>a").contains("unclosed <script>"));
+    }
+
+    #[test]
+    fn directives_leave_the_html() {
+        let t = parse("<button class=\"b\"\n  on:click.prevent=\"open = !open\" :aria-expanded='open' title={t}\n  class:on=\" on \">Go</button>").unwrap();
+        assert_alternates(&t.nodes);
+        let texts: Vec<_> = t.nodes.iter().step_by(2).map(|n| text(&t, n)).collect();
+        assert_eq!(texts, ["<button class=\"b\"", "", ">Go</button>"]);
+        assert!(matches!(t.nodes[3], Node::Live { group: 0 }));
+        let g = &t.groups[0];
+        assert_eq!((g.nested, g.line, g.locals.len()), (false, 1, 0));
+        let got: Vec<_> = g
+            .directives
+            .iter()
+            .map(|d| {
+                (
+                    d.kind,
+                    d.name.as_str(),
+                    d.mods.join("."),
+                    d.value.as_ref().map(|v| (v.src.as_str(), v.line)),
+                    d.line,
+                    d.col,
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (
+                    Dir::On,
+                    "click",
+                    "prevent".into(),
+                    Some(("open = !open", 2)),
+                    2,
+                    3
+                ),
+                (
+                    Dir::Attr,
+                    "aria-expanded",
+                    String::new(),
+                    Some(("open", 2)),
+                    2,
+                    35
+                ),
+                (Dir::Class, "on", String::new(), Some(("on", 3)), 3, 3),
+            ]
+        );
+
+        // `/>` stays last; bare transitions and uses need no value.
+        let t = parse("<input bind:value=\"q\" transition:fade use:focus />").unwrap();
+        assert_eq!(text(&t, &t.nodes[0]), "<input");
+        assert_eq!(text(&t, &t.nodes[2]), "/>");
+        assert_eq!(
+            t.groups[0]
+                .directives
+                .iter()
+                .map(|d| d.value.is_some())
+                .collect::<Vec<_>>(),
+            [true, false, false]
+        );
+        // Keys, a debounce time and held keys are modifiers.
+        let t = parse("<input on:keydown.ctrl.enter.prevent=\"go\" on:input.debounce.300ms=\"s\" on:keyup.k.window=\"k\">").unwrap();
+        assert_eq!(t.groups[0].directives[1].mods, ["debounce", "300ms"]);
+    }
+
+    #[test]
+    fn client_templates() {
+        let t = parse("<ul><template each=\"item, i in data.list\"><li :text=\"item.name\"></li><template if=\"i\"><b :text=\"i\"></b></template></template></ul><p :hidden=\"x\"></p>").unwrap();
+        assert_alternates(&t.nodes);
+        assert_eq!(text(&t, &t.nodes[0]), "<ul><template");
+        let each = &t.groups[0];
+        assert_eq!(
+            (
+                each.nested,
+                each.directives[0].kind,
+                each.directives[0].name.as_str()
+            ),
+            (false, Dir::Each, "item")
+        );
+        assert_eq!(
+            (
+                each.directives[0].mods.as_slice(),
+                each.directives[0].value.as_ref().unwrap().src.as_str()
+            ),
+            (["i".to_string()].as_slice(), "data.list")
+        );
+        assert_eq!(
+            (t.groups[1].nested, t.groups[1].locals.as_slice()),
+            (true, ["item".to_string(), "i".to_string()].as_slice())
+        );
+        assert_eq!(
+            (t.groups[2].nested, t.groups[2].directives[0].kind),
+            (true, Dir::If)
+        );
+        assert_eq!(t.groups[3].locals, ["item", "i"]);
+        assert_eq!((t.groups[4].nested, t.groups[4].locals.len()), (false, 0));
+        // `each` and `if` are plain attributes elsewhere.
+        assert!(parse("<p each=\"x\" if=\"y\">").unwrap().groups.is_empty());
+    }
+
+    #[test]
+    fn directive_errors() {
+        let err = |src: &str| parse(src).unwrap_err().msg;
+        assert!(err("<a on:click>").contains("needs a value"));
+        assert!(err("<a on:click=\"\">").contains("needs a value"));
+        assert!(err("<a on:click={go}>").contains("braces are Rust"));
+        assert!(err("<a on:click=go>").contains("in quotes"));
+        assert!(err("<a on:click.nope=\"go\">").contains("`.nope` is not an event modifier"));
+        assert!(err("<a on:click.debounce.fast=\"go\">").contains("`.fast`"));
+        assert!(err("<a on:=\"go\">").contains("event's name"));
+        assert!(err("<a bind:text=\"x\">").contains("bind:value, bind:checked or bind:this"));
+        assert!(err("<a transition:spin>").contains("not a transition"));
+        assert!(err("<a use:a-b>").contains("name of a function"));
+        assert!(err("<a :=\"x\">").contains("a name after"));
+        assert!(err("<template each=\"x of xs\">").contains("item in list"));
+        assert!(err("<template each=\"x in xs\" on:click=\"f\">").contains("no other directive"));
+        assert!(err("<a {#if c}on:click=\"f\"{/if}>").contains("inside a {#…} block"));
+        let e = parse("<p>\n  <a :x='1' on:click.bad=\"f\">").unwrap_err();
+        assert_eq!((e.line, e.col), (2, 13));
+    }
+
+    #[test]
+    fn browser_code_is_part_of_the_shape() {
+        let a = parse("<p :hidden=\"a\">Hi</p><script>let a</script>").unwrap();
+        let b = parse("<p :hidden=\"a\" class=\"x\">Bye</p>\n<script>let a</script>").unwrap();
+        let c = parse("<p :hidden=\"!a\">Hi</p><script>let a</script>").unwrap();
+        let d = parse("<p :hidden=\"a\">Hi</p><script>let b</script>").unwrap();
+        assert_eq!(a.shape, b.shape);
+        assert_ne!(a.shape, c.shape);
+        assert_ne!(a.shape, d.shape);
+    }
+
+    #[test]
+    fn inline_scripts_are_modules() {
+        let t = parse(r#"<script src="/x.js"></script><script type="application/ld+json">{}</script><SCRIPT defer>go()</SCRIPT>"#).unwrap();
+        assert_eq!(
+            text(&t, &t.nodes[0]),
+            r#"<script src="/x.js"></script><script type="application/ld+json">{}</script><SCRIPT defer type="module">go()</SCRIPT>"#
+        );
     }
 
     #[test]
@@ -847,7 +3228,9 @@ mod tests {
     #[test]
     fn standalone_block_tags_leave_no_blank_lines() {
         let t = parse("<ul>\n  {#each xs as x}\n    <li>{x}</li>\n  {/each}\n</ul>").unwrap();
-        let Node::Each { body, .. } = &t.nodes[1] else { panic!("{:?}", t.nodes) };
+        let Node::Each { body, .. } = &t.nodes[1] else {
+            panic!("{:?}", t.nodes)
+        };
         assert_eq!(text(&t, &t.nodes[0]), "<ul>\n");
         assert_eq!(text(&t, &body[0]), "<li>");
         assert_eq!(text(&t, &body[2]), "</li>\n");
@@ -857,7 +3240,9 @@ mod tests {
         let t = parse("<p>{#if a}A{/if}\n<b>B</b>").unwrap();
         assert_eq!(text(&t, &t.nodes[2]), "\n<b>B</b>");
         let t = parse("<pre>\n{#if a}\nA\n{/if}\n</pre>").unwrap();
-        let Node::If { branches, .. } = &t.nodes[1] else { panic!() };
+        let Node::If { branches, .. } = &t.nodes[1] else {
+            panic!()
+        };
         assert_eq!(text(&t, &branches[0].1[0]), "\nA\n");
     }
 
@@ -869,7 +3254,10 @@ mod tests {
         let t = parse(src).unwrap();
         assert_alternates(&t.nodes);
         match &t.nodes[1] {
-            Node::If { branches, otherwise } => {
+            Node::If {
+                branches,
+                otherwise,
+            } => {
                 assert_eq!(branches.len(), 2);
                 assert_eq!(branches[1].0.src, "let Some(x) = b");
                 assert!(otherwise.is_some());
@@ -877,8 +3265,17 @@ mod tests {
             n => panic!("{n:?}"),
         }
         match &t.nodes[3] {
-            Node::Each { iter, pat, index, otherwise, .. } => {
-                assert_eq!((iter.src.as_str(), pat.as_str(), index.as_deref()), ("items", "(k, v)", Some("i")));
+            Node::Each {
+                iter,
+                pat,
+                index,
+                otherwise,
+                ..
+            } => {
+                assert_eq!(
+                    (iter.src.as_str(), pat.as_str(), index.as_deref()),
+                    ("items", "(k, v)", Some("i"))
+                );
                 assert!(otherwise.is_some());
             }
             n => panic!("{n:?}"),
@@ -891,7 +3288,10 @@ mod tests {
 
     #[test]
     fn each_with_cast() {
-        assert_eq!(split_each("0..n as usize as i"), Some(("0..n as usize", "i", None)));
+        assert_eq!(
+            split_each("0..n as usize as i"),
+            Some(("0..n as usize", "i", None))
+        );
         assert_eq!(split_each("xs"), None);
     }
 
@@ -903,21 +3303,93 @@ mod tests {
 
     #[test]
     fn boolean_attributes() {
-        let t = parse("<button class=\"k\"
-  DISABLED ={!ok} name=k>").unwrap();
+        let t = parse(
+            "<button class=\"k\"
+  DISABLED ={!ok} name=k>",
+        )
+        .unwrap();
         assert_alternates(&t.nodes);
         assert_eq!(text(&t, &t.nodes[0]), "<button class=\"k\"");
-        assert!(matches!(&t.nodes[1], Node::Bool { name, code } if name == "disabled" && code.src == "!ok"));
+        assert!(
+            matches!(&t.nodes[1], Node::Bool { name, code, .. } if name == "disabled" && code.src == "!ok")
+        );
         assert_eq!(text(&t, &t.nodes[2]), " name=k>");
-        assert!(parse("<input checked=\"{on}\">").unwrap_err().msg.contains("on or off"));
+        assert!(
+            parse("<input checked=\"{on}\">")
+                .unwrap_err()
+                .msg
+                .contains("on or off")
+        );
         assert!(parse("<details open={@html x}>").is_err());
-        // Anything else is a value, as before.
-        assert!(matches!(&parse("<a aria-hidden={h}>").unwrap().nodes[1], Node::Expr { quote: true, .. }));
+    }
+
+    /// The nodes of `src` as a line of text: `[name=code]` for an attribute,
+    /// `[+name?code]` for a class or boolean attribute.
+    fn sketch(src: &str) -> String {
+        let t = parse(src).unwrap();
+        t.nodes
+            .iter()
+            .map(|n| match n {
+                Node::Text(i) => t.chunks[*i].clone(),
+                Node::Attr { name, code, .. } => format!("[{name}={}]", code.src),
+                Node::Bool { name, code, .. } => format!("[+{name}?{}]", code.src),
+                _ => "?".into(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn attribute_values_may_be_left_out() {
+        // `Option`s are told apart from other values by the compiler, not here.
+        assert_eq!(
+            sketch("<a aria-hidden={h} id=x>"),
+            "<a[aria-hidden=h] id=x>"
+        );
+        assert!(matches!(
+            &parse("<a href={u}>").unwrap().nodes[1],
+            Node::Attr { url: true, .. }
+        ));
+        // Quoted values are text with holes in it.
+        assert!(matches!(
+            &parse("<a id=\"n{u}\">").unwrap().nodes[1],
+            Node::Expr(_)
+        ));
+    }
+
+    #[test]
+    fn shorthand_attributes() {
+        assert_eq!(sketch("<a {href} {id}>x"), "<a[href=href][id=id]>x");
+        assert_eq!(sketch("<b {disabled}>"), "<b[+disabled?disabled]>");
+        let err = parse("<a {x.y}>").unwrap_err().msg;
+        assert!(err.contains("{name} for name={name}"), "{err}");
+    }
+
+    #[test]
+    fn server_classes_join_the_class_attribute() {
+        let want = "<p class=\"a[+on?x > 1][+b?c]\" id=\"q\">";
+        assert_eq!(
+            sketch("<p class=\"a\" class:on={x > 1} class:b={c} id=\"q\">"),
+            want
+        );
+        assert_eq!(
+            sketch("<p class:on={x > 1} class:b={c} class=\"a\" id=\"q\">"),
+            want
+        );
+        assert_eq!(sketch("<p class:b={c}>"), "<p class=\"[+b?c]\">");
+        assert_eq!(sketch("<i class:b={c} />"), "<i class=\"[+b?c]\"/>");
+        // With other holes in the tag, and one in the class.
+        assert_eq!(
+            sketch("<a {href} class=\"k {m}\" class:on={c}>"),
+            "<a[href=href] class=\"k ?[+on?c]\">"
+        );
+        // The browser's `class:` still takes quoted JavaScript.
+        assert!(parse("<p class:open=\"x\">").unwrap().is_live());
     }
 
     #[test]
     fn head_and_render() {
-        let t = parse("<wisp:head><title>{t}</title></wisp:head><main>{@render children()}</main>").unwrap();
+        let t = parse("<wisp:head><title>{t}</title></wisp:head><main>{@render children()}</main>")
+            .unwrap();
         assert!(t.uses_children);
         assert_alternates(&t.nodes);
         assert!(matches!(&t.nodes[1], Node::Head(b) if b.len() == 3));
@@ -928,7 +3400,7 @@ mod tests {
         let e = parse("<p>\n  {#if x}\n</p>").unwrap_err();
         assert_eq!((e.line, e.col), (2, 3));
         let e = parse("{/each}").unwrap_err();
-        assert!(e.msg.contains("unexpected"));
+        assert!(e.msg.contains("no block"));
         let e = parse("{#match x} junk {:case _}{/match}").unwrap_err();
         assert!(e.msg.contains("case"));
     }
@@ -938,10 +3410,143 @@ mod tests {
         let a = parse("<h1>Hello {name}</h1>").unwrap();
         let b = parse("<h2 class='big'>Goodbye {name}!</h2>").unwrap();
         let c = parse("<h1>Hello {name.len()}</h1>").unwrap();
-        let d = parse("<h1 title={name}>Hello</h1>").unwrap();
+        let d = parse("<a href={name}>Hello</a>").unwrap();
         assert_eq!(a.shape, b.shape);
         assert_ne!(a.shape, c.shape);
-        assert_ne!(a.shape, d.shape); // same code, different context
+        assert_ne!(a.shape, d.shape); // same code, but guarded as a URL
         assert_eq!(a.chunks.len(), b.chunks.len());
+    }
+
+    /// The markup as the browser gets it, groups as `[g]`, first paints as `(g)`.
+    fn markup(t: &Template, nodes: &[Node], out: &mut String) {
+        for n in nodes {
+            match n {
+                Node::Text(i) => out.push_str(&t.chunks[*i]),
+                Node::Live { group } => out.push_str(&format!("[{group}]")),
+                Node::Hole { group } => out.push_str(&format!("({group})")),
+                Node::Fragment(body) => markup(t, body, out),
+                _ => out.push('?'),
+            }
+        }
+    }
+
+    fn flat(src: &str) -> (String, Template) {
+        let t = parse(src).unwrap();
+        let mut s = String::new();
+        markup(&t, &t.nodes, &mut s);
+        (s, t)
+    }
+
+    #[test]
+    fn live_holes_and_attributes() {
+        let (s, t) = flat("<p class=\"a {:b} c\" title={:t}>Hi {:name}!</p>");
+        assert_eq!(
+            s,
+            "<p class=\"a  c\"[0]>Hi <template[1]></template>(1)<!---->!</p>"
+        );
+        let d = &t.groups[0].directives;
+        assert_eq!(
+            (
+                d[0].name.as_str(),
+                d[0].value.as_ref().unwrap().src.as_str()
+            ),
+            ("class", "`a ${(b) ?? ''} c`")
+        );
+        assert_eq!(
+            (
+                d[1].name.as_str(),
+                d[1].value.as_ref().unwrap().src.as_str()
+            ),
+            ("title", "t")
+        );
+        assert_eq!(t.groups[1].directives[0].kind, Dir::Hole);
+        // `{:else}` and `{:case}` stay branches.
+        assert!(parse("{#if a}x{:else}y{/if}").unwrap().groups.is_empty());
+        let err = |src: &str| parse(src).unwrap_err().msg;
+        assert!(err("<a class=\"{x} {:y}\">").contains("mixes"));
+        assert!(err("<a onclick=\"{:y}\">").contains("on:click"));
+        assert!(err("<a {:y}>").contains("attribute's value"));
+        assert!(err("{:}").contains("empty"));
+    }
+
+    #[test]
+    fn client_blocks() {
+        let (s, t) = flat(
+            "<ul>{:#each todos as todo, i (todo.id)}<li animate:flip>{:todo.text}</li>{:else}<li>none</li>{:/each}</ul>",
+        );
+        assert_eq!(
+            s,
+            "<ul><template[0]><li[1]><template[2]></template>(2)<!----></li></template><template[3]><li>none</li></template></ul>"
+        );
+        let each = &t.groups[0].directives[0];
+        assert_eq!(
+            (each.kind, each.name.as_str(), each.mods.clone()),
+            (Dir::Each, "todo", vec!["i".to_string()])
+        );
+        assert_eq!(each.key.as_ref().unwrap().src, "todo.id");
+        assert_eq!(t.groups[1].locals, ["todo", "i"]);
+        assert!(t.groups[1].nested && !t.groups[0].nested && t.groups[3].locals.is_empty());
+        assert_eq!(
+            t.groups[3].directives[0].value.as_ref().unwrap().src,
+            "![...(todos ?? [])].length"
+        );
+
+        let (s, t) = flat("{:#if a}A{:else if b}B{:else}C{/if}");
+        assert_eq!(
+            s,
+            "<template[0]>A</template><template[1]>B</template><template[2]>C</template>"
+        );
+        let cond = |g: usize| {
+            t.groups[g].directives[0]
+                .value
+                .as_ref()
+                .unwrap()
+                .src
+                .clone()
+        };
+        assert_eq!(
+            [cond(0), cond(1), cond(2)],
+            ["a", "!(a) && (b)", "!(a) && !(b)"]
+        );
+
+        let err = |src: &str| parse(src).unwrap_err().msg;
+        assert!(err("{:#if a}{:else}{:else}{:/if}").contains("not allowed"));
+        assert!(err("{:#each xs}{:/each}").contains("expected {:#each"));
+        assert!(err("{:#if a}{/each}").contains("does not match"));
+        assert!(err("<p {:#if a}>").contains("goes in text"));
+        assert!(err("{:#while a}{:/while}").contains("unknown block"));
+    }
+
+    #[test]
+    fn client_components() {
+        let (s, t) = flat(
+            "{:#each xs as x}<Card title={:x} bind:open=\"o[x]\" on:pick=\"go\" size=\"2\" big><b>{:x}</b></Card>{:/each}<Card label={:y} />",
+        );
+        assert_eq!(
+            s,
+            "<template[0]><template[1]><b><template[2]></template>(2)<!----></b></template></template><template[3]></template>"
+        );
+        let c = &t.groups[1].directives[0];
+        assert_eq!((c.kind, c.name.as_str()), (Dir::Comp, "Card"));
+        let props: Vec<String> = c
+            .props
+            .iter()
+            .map(|p| format!("{}={:?}", p.name, p.value))
+            .collect();
+        assert_eq!(props[0], "title=Live(Code { src: \"x\", line: 1 })");
+        assert!(
+            props[1].starts_with("open=Bind")
+                && props[2].starts_with("pick=On")
+                && props[3] == "size=Text(\"2\")"
+                && props[4] == "big=Flag"
+        );
+        // The slot's content belongs to the page and sees the loop's names.
+        assert_eq!(t.groups[2].locals, ["x"]);
+        assert!(
+            parse("{:#each xs as x}<Card n={x} />{:/each}")
+                .unwrap_err()
+                .msg
+                .contains("browser values")
+        );
     }
 }

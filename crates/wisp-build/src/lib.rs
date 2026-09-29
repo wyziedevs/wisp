@@ -3,6 +3,7 @@
 //! `$OUT_DIR/wisp.rs` for `wisp::app!()` to include.
 
 mod codegen;
+mod js;
 pub mod routes;
 pub mod rust_scan;
 mod shell;
@@ -14,8 +15,12 @@ use std::path::{Path, PathBuf};
 
 /// Entry point for an app's `build.rs`.
 pub fn run() {
-    let root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("wisp_build::run must be called from build.rs"));
-    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("wisp_build::run must be called from build.rs"));
+    let root = PathBuf::from(
+        env::var_os("CARGO_MANIFEST_DIR").expect("wisp_build::run must be called from build.rs"),
+    );
+    let out_dir = PathBuf::from(
+        env::var_os("OUT_DIR").expect("wisp_build::run must be called from build.rs"),
+    );
     let release = env::var("PROFILE").is_ok_and(|p| p == "release");
 
     // Only existing paths: Cargo treats a missing one as always changed, which
@@ -26,7 +31,10 @@ pub fn run() {
         }
     }
 
-    match codegen::generate(&codegen::Input { root: &root, release }) {
+    match codegen::generate(&codegen::Input {
+        root: &root,
+        release,
+    }) {
         Ok(code) => write_if_changed(&out_dir.join("wisp.rs"), &code),
         Err(e) => {
             eprintln!("\nwisp: {e}\n");
@@ -50,7 +58,11 @@ pub fn hot_chunks(root: &Path, rel: &str) -> Result<(Vec<String>, u64), String> 
 
 /// Checks the whole project the way `run` does, without writing anything.
 pub fn check(root: &Path) -> Result<(), String> {
-    codegen::generate(&codegen::Input { root, release: false }).map(|_| ())
+    codegen::generate(&codegen::Input {
+        root,
+        release: false,
+    })
+    .map(|_| ())
 }
 
 /// FNV-1a, 64-bit. Used for shape and asset hashes, not for security.
