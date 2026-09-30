@@ -1,7 +1,7 @@
 ---
 // @feature form
 #[action]
-fn default(#[validate(len = 1..=50)] name: String, #[validate(email)] email: String) -> Result {
+fn default(#[validate(len = 1..=50)] name: String, email: Email) {
     eprintln!("{name} <{email}>");
     redirect("/")
 }

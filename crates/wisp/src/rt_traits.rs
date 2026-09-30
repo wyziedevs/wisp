@@ -84,6 +84,37 @@ impl Answer for Option<Response> {
     }
 }
 
+/// The body of an action written without `->`: `#[action]` makes it return
+/// `Result`, so it may end in `redirect("/")` or `invalid(..)`, use `?`, or
+/// end in `;` as a function returning nothing does.
+#[diagnostic::on_unimplemented(
+    message = "an action without `->` ends in `;`, or in a `Result` such as `redirect(\"/\")`, not in a `{Self}`",
+    note = "end its last line with `;`, or write the return type (`-> Response`)"
+)]
+pub trait Done {
+    fn done(self) -> Result;
+}
+
+impl Done for () {
+    #[inline(always)]
+    fn done(self) -> Result {
+        Ok(())
+    }
+}
+
+impl Done for Result {
+    #[inline(always)]
+    fn done(self) -> Result {
+        self
+    }
+}
+
+/// What `#[action]` wraps such a body in.
+#[inline(always)]
+pub fn done(body: impl Done) -> Result {
+    body.done()
+}
+
 /// What a `+server.rs` handler returns, as the response. rustc picks the
 /// first that fits, most particular first: `(&&&Ret::new(v)).respond()`.
 /// A `Response` is sent as it is; nothing is a 204; `None` is a 404; any

@@ -51,4 +51,10 @@ fn search() {
     let module = app.get(url).text().to_string();
     // `bind:value="q"` declared `q`, as state, with no script.
     assert!(module.contains("let q = __wisp_s()"), "{module}");
+    // `items` is the block's `items`, sent as it is.
+    assert!(
+        module.contains("__wisp_props(__wisp_p, [\"items\"])"),
+        "{module}"
+    );
+    assert!(page.contains("\"items\":[{\"id\":1,"), "{page}");
 }

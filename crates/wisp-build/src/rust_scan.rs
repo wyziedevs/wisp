@@ -23,7 +23,8 @@ pub struct FnItem {
     pub is_async: bool,
     /// Every parameter, as its pattern and its type: `("slug", "String")`.
     pub params: Vec<(String, String)>,
-    /// Returns a `Result`, so the call ends in `?`.
+    /// Returns a `Result`, so the call ends in `?`: so does an action
+    /// without `->`, which `#[action]` makes return one.
     pub fallible: bool,
     /// The return type as written, `""` for none.
     pub returns: String,
@@ -374,6 +375,8 @@ pub fn scan(src: &str) -> Result<Items, String> {
                                 && !takes_cx
                                 && b.get(body) == Some(&b'{')
                                 && uses_ident(&b[body..block_end(b, body)], b"cx");
+                            // `#[action]` makes one without `->` return `Result`.
+                            let fallible = fallible || (action && returns.is_empty());
                             items.fns.push(FnItem {
                                 name,
                                 action,
@@ -796,6 +799,22 @@ pub fn let_names(stmts: &str) -> Vec<String> {
         i += 1;
     }
     out
+}
+
+/// Whether the expression `code` awaits: `.await` outside its literals.
+pub fn awaits(code: &str) -> bool {
+    let b = code.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'.' {
+            let at = skip_space(b, i + 1);
+            if b[at..].starts_with(b"await") && b.get(at + 5).is_none_or(|&c| !is_word(c)) {
+                return true;
+            }
+        }
+        i = skip_literal(b, i) + 1;
+    }
+    false
 }
 
 /// If an item starts at `i` (after any comments, attributes and `pub`),
@@ -1438,6 +1457,18 @@ fn a() {}"
     fn plain_result_is_nothing() {
         let f = &top_level_fns("fn a() -> Result { Ok(()) }")[0];
         assert!(f.fallible && f.returns_kind() == Returns::Nothing);
+        // `#[action]` makes one without `->` return `Result`; a plain fn stays.
+        let fs = top_level_fns("#[action]\nfn a() { redirect(\"/\") }\nfn b() {}");
+        assert!(fs[0].fallible && fs[0].returns_kind() == Returns::Nothing);
+        assert!(!fs[1].fallible);
+    }
+
+    #[test]
+    fn awaits() {
+        assert!(super::awaits("db::items().await"));
+        assert!(super::awaits("f(x). await ?"));
+        assert!(!super::awaits("\"a.await\""));
+        assert!(!super::awaits("x.awaited"));
     }
 
     #[test]
