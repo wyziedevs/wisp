@@ -47,7 +47,12 @@ pub fn command(env: &[(&str, &str)]) -> Command {
 }
 
 /// Runs `cmd` (the app, or a shell that runs it) and waits for its port.
-pub fn spawn(mut cmd: Command) -> Server {
+pub fn spawn(cmd: Command) -> Server {
+    try_spawn(cmd).expect("the test app printed no port")
+}
+
+/// Like `spawn`, but `None` when the app exits without printing its port (it could not bind).
+pub fn try_spawn(mut cmd: Command) -> Option<Server> {
     let mut child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -57,13 +62,9 @@ pub fn spawn(mut cmd: Command) -> Server {
     BufReader::new(child.stdout.take().unwrap())
         .read_line(&mut line)
         .unwrap();
-    let port = line
-        .trim()
-        .rsplit(':')
-        .next()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or_else(|| panic!("no port in {line:?}"));
-    Server { child, port }
+    let mut server = Server { child, port: 0 };
+    server.port = line.trim().rsplit(':').next()?.parse().ok()?;
+    Some(server)
 }
 
 /// The app, started with `env`.
