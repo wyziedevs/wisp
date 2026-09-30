@@ -2,9 +2,11 @@
 //! /fortunes, /plaintext, /json and /page as bench/app, all rendering with
 //! Askama (templates compiled to Rust, like Wisp) and serializing with serde:
 //! Actix Web and Axum, the popular ones, and may-minihttp, xitca-web, ntex
-//! and bare hyper, TechEmpower's top tier.
+//! and bare hyper, TechEmpower's top tier. Each also answers the-benchmarker's
+//! `GET /`, `GET /user/:id` and `POST /user` as its entry there does (xitca-web
+//! and ntex have none), and ohkami, from its top ten, answers only those.
 //!
-//!   bench-rust actix|axum|may|xitca|ntex|hyper    PORT sets the port, THREADS the worker count
+//!   bench-rust actix|axum|may|xitca|ntex|hyper|ohkami    PORT sets the port, THREADS the worker count
 
 use askama::Template;
 
@@ -97,8 +99,9 @@ fn main() -> std::io::Result<()> {
         Some("xitca") => xitca(port, threads),
         Some("ntex") => ntex(port, threads),
         Some("hyper") => hyper(port, threads),
+        Some("ohkami") => ohkami(port, threads),
         _ => {
-            eprintln!("usage: bench-rust actix|axum|may|xitca|ntex|hyper");
+            eprintln!("usage: bench-rust actix|axum|may|xitca|ntex|hyper|ohkami");
             std::process::exit(2);
         }
     }
@@ -114,6 +117,9 @@ fn actix(port: u16, threads: usize) -> std::io::Result<()> {
             .route("/fortunes", web::get().to(|| async { HttpResponse::Ok().content_type("text/html; charset=utf-8").body(fortunes()) }))
             .route("/json", web::get().to(|| async { web::Json(MESSAGE) }))
             .route("/page", web::get().to(|| async { HttpResponse::Ok().content_type("text/html; charset=utf-8").body(page()) }))
+            .route("/", web::get().to(HttpResponse::Ok))
+            .route("/user", web::post().to(HttpResponse::Ok))
+            .route("/user/{id}", web::get().to(|id: web::Path<String>| async move { id.into_inner() }))
     });
     actix_web::rt::System::new().block_on(server.workers(threads).bind(("127.0.0.1", port))?.run())
 }
@@ -121,12 +127,15 @@ fn actix(port: u16, threads: usize) -> std::io::Result<()> {
 /// What `#[tokio::main]` expands to, with the worker count set: one
 /// work-stealing runtime shared by all threads.
 fn axum(port: u16, threads: usize) -> std::io::Result<()> {
-    use axum::{Router, response::Html, routing::get};
+    use axum::{Router, extract::Path, response::Html, routing::get, routing::post};
     let app = Router::new()
         .route("/plaintext", get(|| async { "Hello, World!" }))
         .route("/fortunes", get(|| async { Html(fortunes()) }))
         .route("/json", get(|| async { axum::Json(MESSAGE) }))
-        .route("/page", get(|| async { Html(page()) }));
+        .route("/page", get(|| async { Html(page()) }))
+        .route("/", get(|| async {}))
+        .route("/user", post(|| async {}))
+        .route("/user/{id}", get(|Path(id): Path<String>| async move { id }));
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(threads).enable_all().build()?;
     rt.block_on(async {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
@@ -147,6 +156,16 @@ fn may(port: u16, threads: usize) -> std::io::Result<()> {
                 "/fortunes" => res.header("Content-Type: text/html; charset=utf-8").body_vec(fortunes().into_bytes()),
                 "/json" => res.header("Content-Type: application/json").body_vec(serde_json::to_vec(&MESSAGE)?),
                 "/page" => res.header("Content-Type: text/html; charset=utf-8").body_vec(page().into_bytes()),
+                "/" => {
+                    res.header("Content-Type: text/plain");
+                }
+                path if path.starts_with("/user") => {
+                    if req.method() == "GET" {
+                        let id = path.split('/').next_back().unwrap_or_default();
+                        res.header("Content-Type: text/plain");
+                        res.body_mut().extend_from_slice(id.as_bytes());
+                    }
+                }
                 _ => {
                     res.status_code(404, "Not Found");
                 }
@@ -167,12 +186,15 @@ fn may(port: u16, threads: usize) -> std::io::Result<()> {
 
 /// xitca-web: a thread-per-core server, `THREADS` workers.
 fn xitca(port: u16, threads: usize) -> std::io::Result<()> {
-    use xitca_web::{App, handler::handler_service, handler::html::Html, handler::json::Json, route::get};
+    use xitca_web::{App, handler::handler_service, handler::html::Html, handler::json::Json, handler::params::Params, route::get, route::post};
     App::new()
         .at("/plaintext", get(handler_service(async || "Hello, World!")))
         .at("/fortunes", get(handler_service(async || Html(fortunes()))))
         .at("/json", get(handler_service(async || Json(MESSAGE))))
         .at("/page", get(handler_service(async || Html(page()))))
+        .at("/", get(handler_service(async || "")))
+        .at("/user", post(handler_service(async || "")))
+        .at("/user/{id}", get(handler_service(async |Params(id): Params<String>| id)))
         .serve()
         .worker_threads(threads)
         .bind(("127.0.0.1", port))?
@@ -190,6 +212,9 @@ async fn ntex(port: u16, threads: usize) -> std::io::Result<()> {
             .route("/fortunes", web::get().to(async || HttpResponse::Ok().content_type("text/html; charset=utf-8").body(fortunes())))
             .route("/json", web::get().to(async || HttpResponse::Ok().json(&MESSAGE)))
             .route("/page", web::get().to(async || HttpResponse::Ok().content_type("text/html; charset=utf-8").body(page())))
+            .route("/", web::get().to(async || HttpResponse::Ok()))
+            .route("/user", web::post().to(async || HttpResponse::Ok()))
+            .route("/user/{id}", web::get().to(async |id: web::types::Path<String>| id.into_inner()))
     })
     .workers(threads)
     .bind(("127.0.0.1", port))?
@@ -211,6 +236,8 @@ fn hyper(port: u16, threads: usize) -> std::io::Result<()> {
             "/fortunes" => ("text/html; charset=utf-8", fortunes().into()),
             "/json" => ("application/json", serde_json::to_vec(&MESSAGE).expect("json").into()),
             "/page" => ("text/html; charset=utf-8", page().into()),
+            "/" | "/user" => return Ok(Response::new(Full::default())),
+            path if path.starts_with("/user/") => return Ok(Response::new(Full::new(Bytes::copy_from_slice(path[6..].as_bytes())))),
             _ => {
                 let mut res = Response::new(Full::default());
                 *res.status_mut() = StatusCode::NOT_FOUND;
@@ -257,5 +284,22 @@ fn hyper(port: u16, threads: usize) -> std::io::Result<()> {
     for w in workers {
         w.join().map_err(|_| std::io::Error::other("hyper worker panicked"))??;
     }
+    Ok(())
+}
+
+/// ohkami on nio, a thread-per-core runtime with `THREADS` workers: its
+/// the-benchmarker entry (rust/ohkami-nio), which answers only their routes.
+fn ohkami(port: u16, threads: usize) -> std::io::Result<()> {
+    use ohkami::prelude::*;
+    let workers = u8::try_from(threads).unwrap_or(u8::MAX);
+    nio::RuntimeBuilder::new().worker_threads(workers).build()?.block_on(async move {
+        Ohkami::new((
+            "/".GET(async || Response::OK()),
+            "/user".POST(async || Response::OK()),
+            "/user/:id".GET(async |Path(id): Path<String>| id),
+        ))
+        .howl(("127.0.0.1", port))
+        .await
+    });
     Ok(())
 }

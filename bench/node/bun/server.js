@@ -15,6 +15,10 @@ Bun.serve({
         '/fortunes': () => new Response(render(), { headers: html }),
         '/json': () => Response.json({ message: 'Hello, World!' }),
         '/page': () => new Response(renderPage(), { headers: html }),
+        // the-benchmarker's routes, as its Bun entry answers them.
+        '/': () => new Response(null, { status: 204 }),
+        '/user': () => new Response(null, { status: 204 }),
+        '/user/:id': ({ params }) => new Response(params.id, { status: 200 }),
     },
     fetch: () => new Response('Not Found', { status: 404 }),
 });

@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Vert.x, the JVM's entry in TechEmpower's top tier. `mvn package`
-     builds target/bench.jar, with its dependencies in target/lib. -->
+<!-- Vert.x, the JVM's entry in TechEmpower's top tier, and ActiveJ, its
+     entry in the-benchmarker's top ten. `mvn package` builds
+     target/bench.jar, with its dependencies in target/lib. -->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
@@ -35,6 +36,12 @@
       <artifactId>netty-transport-native-epoll</artifactId>
       <version>${netty.version}</version>
       <classifier>linux-aarch_64</classifier>
+    </dependency>
+    <!-- ActiveJ, the JVM's entry in the-benchmarker's top ten. -->
+    <dependency>
+      <groupId>io.activej</groupId>
+      <artifactId>activej-launchers-http</artifactId>
+      <version>5.5</version>
     </dependency>
   </dependencies>
 

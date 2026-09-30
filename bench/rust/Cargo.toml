@@ -1,4 +1,4 @@
-# Actix Web and Axum, the Rust side of bench/. A workspace of its own so
+# The Rust side of bench/ (see main.rs). A workspace of its own so
 # their dependencies stay out of Wisp's Cargo.lock.
 [package]
 name = "bench-rust"
@@ -25,7 +25,10 @@ may = "=0.3.51"
 may_minihttp = "=0.1.11"
 ntex = { version = "=3.12.3", features = ["neon"] }
 serde_json = "1"
-xitca-web = { version = "=0.8.3", features = ["json"] }
+xitca-web = { version = "=0.8.3", features = ["json", "params"] }
+# ohkami on nio, the-benchmarker's fastest Rust framework after may-minihttp.
+nio = "=0.1.4"
+ohkami = { version = "=0.24.9", features = ["rt_nio"] }
 
 [workspace]
 
