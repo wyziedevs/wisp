@@ -8,10 +8,12 @@ This document is the contract for v0. When code and doc disagree, fix one of the
 
 ## Principles
 
-1. **Speed, then flexibility, then durability; developer happiness last. And
-   app code in as few tokens as possible.** AI writes most code now, so a
-   developer picks the framework whose apps cost the fewest tokens to write,
-   run fastest, bend furthest and keep working. Every feature is judged
+1. **Ultra fast, then cheap, then durable, then flexible; developer happiness
+   last.** Cheap means app code in as few tokens as possible: AI writes most
+   code now, so a developer picks the framework whose apps run fastest, cost
+   the fewest tokens to write, keep working and bend furthest. Durable means
+   every fast path is proven at startup and falls back, and nothing after
+   startup takes the process down. Every feature is judged
    first by what it costs the app's code: a convention beats a line of
    setup, one file beats two, and a name the build can infer is not written.
    [tokens.md](tokens.md) measures it against other frameworks, and
