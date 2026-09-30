@@ -98,8 +98,8 @@ fn response(reply: Reply) -> http::Response<Body> {
         crate::Body::Bytes(b) => Body::full(Bytes::from(b)),
         crate::Body::Static(b) => Body::full(Bytes::from_static(b)),
         crate::Body::Stream(rx) => Body(Inner::Stream(rx)),
-        crate::Body::Page | crate::Body::WebSocket(_) => {
-            unreachable!("answer renders pages and refuses upgrades")
+        crate::Body::Page | crate::Body::Made(_) | crate::Body::WebSocket(_) => {
+            unreachable!("answer renders pages, unpacks made ones and refuses upgrades")
         }
     };
     let mut res = http::Response::new(body);

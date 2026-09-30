@@ -30,13 +30,18 @@ Every server answers the same three paths. `/fortunes` is TechEmpower's
 fortunes test without the database: copy 12 rows, add one, sort by message,
 render an HTML table with escaping. `/plaintext` returns `Hello, World!`,
 and `/json` serializes `{"message":"Hello, World!"}` per request. None
-caches a response.
+caches a response on these three (Wisp's cached and baked pages are paths
+of their own: see `app/` below).
 
 - `app/`: the Wisp side. It also answers `/messages/1`, `/json`'s object
   as a `#[derive(Rest)]` row through the resource's own GET (lock, JSON,
   ETag): on Windows (8 server cores, mean of 3 rounds) 8.2 µs of CPU a
   request to `/json`'s 7.7, the half microsecond being the table's lock,
-  the ETag and its 33 bytes.
+  the ETag and its 33 bytes. `/fortunes-cached` is `/fortunes` with
+  `const CACHE: u32 = 1;` (each worker renders it once a second), and
+  `/static` is its table written out as a page with no holes, which the
+  build bakes into the binary with its response head. Both are Wisp's
+  alone, beside the uncached `/fortunes` everyone renders.
 - `aspnet/`: written the way the ASP.NET Core docs and templates do:
   `/fortunes` as a Razor Page, `/fortunes-blazor` as a Blazor component
   (static SSR), `/plaintext` and `/json` as minimal APIs. Logging is set to

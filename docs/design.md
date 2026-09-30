@@ -280,6 +280,38 @@ async fn load(slug: String) -> Result<Data> {
   or `WISP_BODY_LIMIT`). A larger one is refused with a 413 as soon as its
   head arrives. The build checks that it is a `usize`, set once per route,
   and not in a layout, where it would do nothing.
+- `const CACHE: u32 = 60;` in a page or a `+server.rs` keeps what a GET
+  answers, as the bytes sent, for 60 seconds: a news page that changes a
+  few times a minute renders once a minute per worker instead of once a
+  request (Next.js calls it `revalidate`). The rules, which make it safe to
+  add to any page that reads only its URL:
+  - Each worker thread keeps its own, by `Host`, path and query, with no
+    lock. A new process (a deploy) starts with none; a write does not clear
+    it (it is kept for its time, like any cache).
+  - A request with a `cookie` or `authorization` header is answered by a
+    render, and nothing is kept from it: its cookie could make the page its
+    own. `const CACHE_PUBLIC: u32 = 60;` instead shares the kept answer with
+    those requests too, for a page that is the same for everyone.
+  - Only a 200 is kept, and never one that sets a cookie or has a
+    `cache-control` of `private` or `no-store`: a page can make one answer
+    its own that way. What the page or endpoint set in headers is kept with
+    it.
+  - `before` in `src/hooks.rs` and a `+server.rs`'s `before` still run on
+    every request, before the answer is looked for, so a guard or a header
+    they set applies as ever.
+  - A kept answer has an ETag: a client that sends it back gets a 304.
+  - A page that reads a header (`accept-language`, a custom one) varies by
+    it: do not `CACHE` it. Dev mode keeps nothing. At most 8 MB of answers
+    a worker; past that the stale ones go, and a flood of new query strings
+    costs renders, never memory.
+
+  The build checks that it is a `const` `u32`, one of the two names, set
+  once per route, and not in a layout.
+- A page that reads nothing of the request needs no `CACHE`: when it and
+  its layouts have no load, statements or `+page.js`, and every hole in them
+  is a literal or a component's prop given as one (`<Card title="Hi" />`,
+  `{#if featured}` on a flag), the build writes the whole response into the
+  binary (see [Build](#build)).
 - A `+server.rs` method answers with the `Response` it returns; with any
   other value, that value as JSON (`#[derive(Json)]`); with nothing, a 204.
   An `Option<Response>` that is `None` is a 404. `body: T` (a type other
@@ -839,6 +871,25 @@ the app uses them.)
 
 Release builds embed `static/` and the built CSS into the binary with a content
 hash, served with `Cache-Control: immutable` under `?v=hash` URLs.
+
+The build sees every route and template, and uses that:
+
+- A page whose output is the same for every request (no load, statements or
+  `+page.js` in it or its layouts; holes that are literals, components whose
+  props are literals or their literal defaults, `{#if}` on those) is baked:
+  its status line, `content-type`, `content-length`, ETag and whole document
+  are one `static` in the binary. Answering it is two copies and the date;
+  `if-none-match` with its ETag is a 304 without hashing a byte. Hooks still
+  run first. Dev mode renders it, since `wisp dev` swaps templates without a
+  build, and so does a status `before` set.
+- In a release build, text and literal holes next to each other are one
+  `push_str`: `<p title={"a"}>{"<b>"}</p>` is `<p title="a">&lt;b&gt;</p>`,
+  escaped at build time. Integers, floats and `bool` are written without
+  escaping: they cannot hold markup.
+- The router matches a path with no parameter in it whole, by its length
+  and then its bytes (no other route that matches it can come first); only
+  the rest split the path, into an array as deep as the deepest of them,
+  with parameters as slices of the path.
 
 ## `wisp new`
 
