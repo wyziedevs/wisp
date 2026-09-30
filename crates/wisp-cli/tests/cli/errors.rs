@@ -112,7 +112,7 @@ fn new_arguments() {
             &["new", "a", "--template=vue"],
             "Pick demo, minimal or api.",
         ),
-        (&["new", "a", "-t"], "Pick demo, minimal or api."),
+        (&["new", "a", "-t"], "-t needs a template: demo, minimal or api."),
         // Nothing to ask, and no name.
         (&["new", "-y"], "Which folder should the app go in?"),
         (&["new"], "Name it: wisp new my-app"),

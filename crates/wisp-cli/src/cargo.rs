@@ -53,6 +53,10 @@ pub fn build_for(root: &Path, release: bool, quiet: bool, target: Option<&str>) 
         Ok(c) => c,
         Err(e) => {
             let errors = format!("Could not run cargo: {e}.");
+            // Callers say "the errors are above"; quiet ones print `errors`.
+            if !quiet {
+                eprintln!("{errors}");
+            }
             return Build {
                 ok: false,
                 exe: None,

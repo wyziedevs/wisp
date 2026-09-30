@@ -157,7 +157,9 @@ fn parse(args: &[String]) -> Result<Answers, String> {
         };
         match flag {
             "--template" | "-t" => {
-                let value = inline.or_else(|| args.next().cloned()).unwrap_or_default();
+                let value = inline
+                    .or_else(|| args.next().cloned())
+                    .ok_or(format!("{flag} needs a template: demo, minimal or api."))?;
                 a.template = Some(match value.as_str() {
                     "demo" => Template::Demo,
                     "minimal" => Template::Minimal,
