@@ -402,6 +402,11 @@ export function invalidate() {
   return new Promise((done) => send('wisp:refresh', { done }));
 }
 
+// A live search's test: `items.filter((i) => matches(i.name, q))`. Whether
+// text has the query in it, whatever the case; an empty query matches all.
+export const matches = (text, q) =>
+  String(text ?? '').toLowerCase().includes(String(q ?? '').trim().toLowerCase());
+
 // A context of its own: `const [getUser, setUser] = context()`, in a lib
 // module or a script. Set in a component's script, got in its own or a
 // descendant's, as they start.
@@ -731,6 +736,7 @@ const shared = {
   persisted,
   goto,
   invalidate,
+  matches,
   page,
   navigating,
   context,

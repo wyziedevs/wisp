@@ -117,14 +117,15 @@ fn parse<T: FromStr<Err: Display>>(name: &str, v: &str, from: From) -> Result<T>
     v.parse().map_err(|e: T::Err| match from {
         // A path whose segment is not one of these: there is no such page.
         From::Param => Error::new(404, "Not Found"),
-        From::Form => Error::new(400, format!("form field `{name}`: {e}")),
-        From::Json => Error::invalid(name, e.to_string()),
+        // A field that is not one: the page again, the problem by it.
+        From::Form | From::Json => Error::invalid(name, e.to_string()),
         From::Query => Error::new(400, format!("query parameter `{name}`: {e}")),
     })
 }
 
-/// `name: T`: missing, or not a `T`, is a 400 that says which (a route
-/// parameter that is not a `T` is a 404).
+/// `name: T`: missing is a 400 that says which; sent but not a `T` is a 422
+/// by field, from a form or JSON (a 400 from the query, a 404 from the
+/// route).
 pub fn required<T: FromStr<Err: Display>>(cx: &Cx, name: &str) -> Result<T> {
     match find(cx, name) {
         Some((v, from)) => parse(name, &v, from),
@@ -167,9 +168,85 @@ pub fn all<T: FromStr<Err: Display>>(cx: &Cx, name: &str) -> Result<Vec<T>> {
     sent.iter().map(|v| parse(name, v, from)).collect()
 }
 
+/// An email address, checked as it is read: `#[action] fn join(email:
+/// Email)` gets one, or the page shows again with "must be an email
+/// address" by the input. Reads as the `&str` it holds.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Email(String);
+
+impl FromStr for Email {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Email, String> {
+        let s = s.to_string();
+        match crate::json::check::email(&s) {
+            Some(problem) => Err(problem),
+            None => Ok(Email(s)),
+        }
+    }
+}
+
+impl std::ops::Deref for Email {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl AsRef<str> for Email {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Display for Email {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::convert::From<Email> for String {
+    fn from(e: Email) -> String {
+        e.0
+    }
+}
+
+impl crate::Json for Email {
+    fn json(&self, out: &mut String) {
+        self.0.json(out);
+    }
+}
+
+impl FromJson for Email {
+    fn from_json(v: &Value, p: &mut crate::json::Problems) -> Option<Email> {
+        let s = String::from_json(v, p)?;
+        s.parse().map_err(|e: String| p.add(e)).ok()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn email() {
+        let e: Email = "ann@example.com".parse().unwrap();
+        assert_eq!(
+            (&*e, e.to_string()),
+            ("ann@example.com", "ann@example.com".into())
+        );
+        assert!("ann".parse::<Email>().is_err());
+        let post = cx(
+            "POST /p HTTP/1.1\r\ncontent-type: application/x-www-form-urlencoded\r\ncontent-length: 9\r\n\r\nemail=ann",
+            &[],
+        );
+        let bad = required::<Email>(&post, "email").unwrap_err();
+        assert_eq!(bad.status(), 422);
+        assert_eq!(bad.fields()[0].1, "must be an email address");
+        let r: crate::Result<Email> = crate::from_json(br#""ann""#);
+        assert_eq!(r.unwrap_err().status(), 422);
+    }
 
     fn cx(raw: &str, params: &[(&'static str, &str)]) -> Cx {
         Cx::for_test(raw, params)

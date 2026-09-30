@@ -70,7 +70,7 @@ Block rules:
   `return redirect("/x")`, `return error(404, "Gone")` work.
 - Route params are locals: `slug: String`, `[id=int]` → `id: u64`,
   `[[lang]]` → `Option<String>`. Works even with no block: `<h1>{slug}</h1>`.
-- No `use` lines needed: prelude = `Cx Response Result Error Json FromJson
+- No `use` lines needed: prelude = `Cx Response Result Error Email Json FromJson
   Rest Cookie Method Value Shared Table Row RateLimit OrStatus action error
   invalid redirect`.
   `Result` alone = `Result<()>`.
@@ -81,6 +81,9 @@ Block rules:
   all), nor an answer that sets a cookie or `cache-control: private` or
   `no-store`; not in dev. Hooks still run. The page must not read other
   headers.
+- `.await` in a page's markup, outside any block, runs with the statements
+  before render: `{#each db::items().await as item}` needs no block. Not
+  inside `{#if}`/`{#each}` bodies, layouts or components (build error).
 - A page that reads nothing (no load, statements or params; literal holes,
   components with literal props) is baked whole at build: no `CACHE` needed.
 - Old form: `+page.rs` with `struct Data {..}` + `fn load(..) -> Data`
@@ -90,19 +93,23 @@ Block rules:
 
 ```rust
 #[action]
-fn like(id: u64, note: Option<String>, agree: bool, tags: Vec<String>) -> Result {
+fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<String>) {
     cx.flash("Liked");                  // cx is added when the body uses it
-    redirect("/")                       // 303; or Ok(()) to re-render the page
+    redirect("/")                       // 303; or end in `;` to re-render the page
 }
 ```
+
+- No `->`: the action returns `Result`, so it may use `?`, `return
+  error(..)`, `return;`, and end in `redirect(..)`/`invalid(..)` or `;`.
 
 - `<form action="?/like">` posts to it (`method="post"` is added);
   `<form method="post">` with no `action` → `#[action] fn default`. `<button action="?/rm&id={x.id}">x</button>`
   outside a form is a one-button form.
-- Params by name: route param, then form, then query. `T` required (400),
-  `Option<T>` missing/blank → None, `bool` checkbox, `Vec<T>` repeated,
-  `&str` ok. Returns `()`/`Result`, or `Response`/`Option<Response>` to send
-  instead of the page.
+- Params by name: route param, then form, then query. `T` required (400
+  missing; sent but not a `T` → 422 by field, like `invalid`), `Option<T>`
+  missing/blank → None, `bool` checkbox, `Vec<T>` repeated, `&str` ok,
+  `Email` checked address. Returns nothing/`Result`, or
+  `Response`/`Option<Response>` to send instead of the page.
 - `#[validate(len = 1..=100)] text: String` (also `min max min_len max_len
   email`), or `return invalid("field", "msg")` → page re-renders as 422; each
   text `<input name>` of an action form (`?/x`, or `method="post"`) shows
@@ -151,13 +158,16 @@ typed and checked at build. No `---` block in components.
 <script>
   let count = 0                       // top-level lets are state
   let big = $derived(count > 5)
-  let name = data.name                // server values: data.x (a block's locals)
+  let name = user.name                // a block's `let user` (or `data.user`)
 </script>
 ```
 
-`bind:value="q"` with no `let q` anywhere declares it (state, starting from
-the input), so a live search needs no script: `<input bind:value="q">`
-`{:#each data.items.filter((i) => i.name.includes(q)) as i}…{:/each}`.
+A page's (or layout's) Rust names are browser values by name: `items` is
+the block's `items` (also `data.items`); a name the script declares is the
+script's (`let guess = data.guess`). `bind:value="q"` with no `let q`
+anywhere declares it (state), so a live search needs no script:
+`<input bind:value="q">` `{:#each items.filter((i) => matches(i.name, q)) as i}…{:/each}`
+(`matches(text, q)`: case-blind contains; empty `q` matches).
 
 Directives: `on:click="f"` (modifiers `.prevent .stop .once .self .window
 .document .outside .debounce.300ms .enter .escape .ctrl`…), `bind:value="q"`,
@@ -166,7 +176,7 @@ Directives: `on:click="f"` (modifiers `.prevent .stop .once .self .window
 `use:action="arg"`, `animate:flip`. Client blocks: `{:#if}…{:/if}`,
 `{:#each items as it, i (it.id)}…{:/each}`, `{:@render s(x)}`. Runes:
 `$state $state.raw $derived $effect $props $bindable $inspect`. Helpers (no
-import): `onMount onDestroy effect watch tick listen goto invalidate`.
+import): `onMount onDestroy effect watch tick listen goto invalidate matches`.
 Stores in `src/lib`: `import { store, persisted, derived } from 'wisp'`.
 Islands: `<Chart client:visible|idle|interaction|media="(…)"|none />`.
 Server values sent to JS must `#[derive(Json)]`. Full: docs/client.md.
@@ -262,7 +272,8 @@ Any other `pub fn` in hooks.rs is an error. `pub` types there are
   remove(id) len()`, rows are `Row { id, value }` that read as the value),
   `Shared<T>` (`.lock()`), `wisp::provide(v)` / `wisp::state::<T>()`,
   `wisp::env("K")`, `wisp::env_or("K", d)`, `wisp::spawn`, `wisp::every`,
-  `wisp::channel("x").send/subscribe/connect`, `RateLimit::per_minute(n)
+  `wisp::channel("x").send/subscribe/connect`, `fn get() -> Response {
+  wisp::channel("x").events() }` (SSE) or `.websocket()`, `RateLimit::per_minute(n)
   .check(key)?`, `#[derive(Cookie)]`, `#[derive(Json)]`.
 - Static export: `fn entries() -> Vec<&'static str>` in a `[param]` page's
   block. Test: `let mut app = wisp::test::client::<App>(); app.get("/").text()`,
@@ -279,7 +290,10 @@ Any other `pub fn` in hooks.rs is an error. `pub` types there are
 - Don't hold `Shared::lock()` or other guards across `.await`.
 - `{#each x as y}` borrows a field path; call `.iter()` on other expressions.
 - Handlers run on a thread per core: blocking work → `tokio::task::spawn_blocking`.
-- In JS, `data.x` reads server values; a name both Rust and JS is an error.
+- In a page's JS, a Rust name reads its server value (`data.x` too); a
+  browser global (`document`, `location`, `event`…) stays the browser's. In
+  a component, a prop the script also declares is an error.
+- An action without `->` must end in `;` or a `Result`, not another value.
 - In `+server.rs`, a param named `id` (the folder having no `[id]`) serves
   `/[id]`: use `list` for the folder's GET. `#[validate]` on params is for
   actions; endpoints validate their `body: T` type's fields.

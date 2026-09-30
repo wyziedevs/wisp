@@ -6,7 +6,8 @@
 //!
 //! No `syn`, no `quote`: this crate compiles instantly. `#[action]` returns
 //! its input as it is (`wisp-build` finds it in the source and generates
-//! the route), but for adding `cx` to one that uses it without taking it;
+//! the route), but for adding `cx` to one that uses it without taking it
+//! and `-> Result` to one without a return type;
 //! the derives read just enough of a type to know its name and its fields'
 //! names.
 
@@ -46,7 +47,8 @@ fn without_rules(params: TokenStream) -> Vec<TokenTree> {
 
 /// An action whose body uses `cx` but does not take it gets it: `cx: &mut
 /// Cx` as its first parameter (`wisp-build` sees the same and passes it).
-/// Its parameters' `#[validate(...)]` rules leave.
+/// One without `->` returns `Result`, so its body may end in `redirect("/")`
+/// or use `?`. Its parameters' `#[validate(...)]` rules leave.
 fn implicit_cx(item: TokenStream) -> TokenStream {
     let mut tokens: Vec<TokenTree> = item.into_iter().collect();
     let Some(f) = tokens
@@ -68,6 +70,7 @@ fn implicit_cx(item: TokenStream) -> TokenStream {
         return tokens.into_iter().collect();
     };
     let span = pg.span();
+    let (body_stream, body_span) = (bg.stream(), bg.span());
     let rest = without_rules(pg.stream());
     let mut stream: Vec<TokenTree> = Vec::new();
     if !names(&pg.stream(), &["cx", "Cx"]) && names(&bg.stream(), &["cx"]) {
@@ -84,7 +87,83 @@ fn implicit_cx(item: TokenStream) -> TokenStream {
     let mut group = Group::new(Delimiter::Parenthesis, stream.into_iter().collect());
     group.set_span(span);
     tokens[p] = group.into();
+    // No `->`: it returns `Result`, whatever its body ends in (`wisp::rt_traits::Done`).
+    let arrow = tokens[p..b].windows(2).any(|w| {
+        matches!((&w[0], &w[1]), (TokenTree::Punct(a), TokenTree::Punct(c)) if a.as_char() == '-' && c.as_char() == '>')
+    });
+    if !arrow {
+        let mut inner = Group::new(Delimiter::Brace, returns_done(body_stream));
+        inner.set_span(body_span);
+        let mut body = Group::new(Delimiter::Brace, done(TokenTree::from(inner).into()));
+        body.set_span(body_span);
+        tokens[b] = body.into();
+        let ret = parse("-> ::wisp::Result<()>");
+        tokens.splice(p + 1..p + 1, ret);
+    }
     tokens.into_iter().collect()
+}
+
+/// `::wisp::rt_traits::done(value)`.
+fn done(value: TokenStream) -> TokenStream {
+    let mut call = parse("::wisp::rt_traits::done");
+    call.extend([TokenTree::from(Group::new(Delimiter::Parenthesis, value))]);
+    call
+}
+
+/// The body of an action without `->`, each `return x` in it made
+/// `return done(x)` (a bare `return` is `done(())`), so it returns nothing or
+/// a `Result` alike. Closures, `async` blocks and inner functions keep their
+/// own `return`s.
+fn returns_done(body: TokenStream) -> TokenStream {
+    let tokens: Vec<TokenTree> = body.into_iter().collect();
+    let mut out: Vec<TokenTree> = Vec::with_capacity(tokens.len());
+    // The next `{…}` is a function's of its own (after `fn`).
+    let mut inner_fn = false;
+    let mut i = 0;
+    while i < tokens.len() {
+        match &tokens[i] {
+            TokenTree::Ident(id) if id.to_string() == "fn" => inner_fn = true,
+            TokenTree::Ident(id) if id.to_string() == "return" => {
+                // Up to the statement's `;`, the arm's `,` or the block's end.
+                let end = (i + 1..tokens.len())
+                    .find(|&j| matches!(&tokens[j], TokenTree::Punct(p) if matches!(p.as_char(), ';' | ',')))
+                    .unwrap_or(tokens.len());
+                let value: TokenStream = tokens[i + 1..end].iter().cloned().collect();
+                let value = if value.is_empty() {
+                    parse("()")
+                } else {
+                    returns_done(value)
+                };
+                out.push(tokens[i].clone());
+                out.extend(done(value));
+                i = end;
+                continue;
+            }
+            TokenTree::Group(g) => {
+                let own = match out.last() {
+                    Some(TokenTree::Punct(p)) => p.as_char() == '|',
+                    Some(TokenTree::Ident(id)) => {
+                        matches!(id.to_string().as_str(), "async" | "move")
+                    }
+                    _ => false,
+                } || (inner_fn && g.delimiter() == Delimiter::Brace);
+                if g.delimiter() == Delimiter::Brace {
+                    inner_fn = false;
+                }
+                if !own {
+                    let mut n = Group::new(g.delimiter(), returns_done(g.stream()));
+                    n.set_span(g.span());
+                    out.push(n.into());
+                    i += 1;
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        out.push(tokens[i].clone());
+        i += 1;
+    }
+    out.into_iter().collect()
 }
 
 /// Whether one of `idents` is in `s` as a name of its own, not a field or

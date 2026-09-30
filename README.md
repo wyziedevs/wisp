@@ -52,9 +52,9 @@ fn add(by: i64) {
 </form>
 ```
 
-Between the `---` lines is Rust. Its statements run for each request, and the markup reads their names (`count`); `cx` is the request. Its functions are the page's own: an `#[action]` handles a form post (it gets `cx` when it uses it), and each parameter is read from the request by its name (a route parameter, a form field, or the query), so `by` above is the button's value. No `use` lines and no `pub`. Statements can `.await`, use `?`, and stop early with `return error(404, "No such post")` or `return redirect("/login")`. A route parameter is already a local: `[slug]/+page.wisp` can just say `<h1>{slug}</h1>`.
+Between the `---` lines is Rust. Its statements run for each request, and the markup reads their names (`count`); `cx` is the request. Its functions are the page's own: an `#[action]` handles a form post (it gets `cx` when it uses it), and each parameter is read from the request by its name (a route parameter, a form field, or the query), so `by` above is the button's value. No `use` lines and no `pub`. Statements can `.await`, use `?`, and stop early with `return error(404, "No such post")` or `return redirect("/login")`; so can an action, with no `->`, ending in `redirect("/")` or `;`. The markup can await too: `{#each db::items().await as item}` runs before the page renders, with no block at all. A route parameter is already a local: `[slug]/+page.wisp` can just say `<h1>{slug}</h1>`.
 
-A form whose `action` is `?/name` posts to that action. One that does not pass shows the page again as a 422, keeping what was typed in its inputs, each followed by what was wrong with it (or `{cx.problem("email")}` where you want the message): `#[validate(len = 1..=100)] text: String` on the action's parameter checks it, and `return invalid("email", "is missing its @")` says anything else. The Rust can also live in a `+page.rs` beside the page, with a `load` that returns a `Data` struct.
+A form whose `action` is `?/name` posts to that action. One that does not pass shows the page again as a 422, keeping what was typed in its inputs, each followed by what was wrong with it (or `{cx.problem("email")}` where you want the message): `#[validate(len = 1..=100)] text: String` on the action's parameter checks it (so does its type: `email: Email`, `age: u8`), and `return invalid("email", "is missing its @")` says anything else. The Rust can also live in a `+page.rs` beside the page, with a `load` that returns a `Data` struct.
 
 ## Reactivity
 
@@ -67,7 +67,7 @@ Braces `{…}` are Rust and run on the server. A quoted value on a directive, an
 
 <script>
   let count = 0
-  let name = data.name          // server values arrive as data.*
+  let name = data.name          // server values: by their Rust name, or data.*
   let big = $derived(count > 5) // follows count; only what reads it redraws
 </script>
 ```
@@ -128,11 +128,11 @@ The same five features (a list page, a validated form, a JSON endpoint, a layout
 
 | Stack | Tokens | vs Wisp |
 |---|---:|---:|
-| **Wisp** | **531** | 1.0x |
-| SvelteKit | 928 | 1.7x |
-| Next.js | 934 | 1.8x |
-| Axum + askama | 1330 | 2.5x |
-| Actix + tera | 1457 | 2.7x |
+| **Wisp** | **494** | 1.0x |
+| SvelteKit | 928 | 1.9x |
+| Next.js | 934 | 1.9x |
+| Axum + askama | 1330 | 2.7x |
+| Actix + tera | 1457 | 2.9x |
 
 ## Commands
 
