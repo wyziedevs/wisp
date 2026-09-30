@@ -1,0 +1,16 @@
+@page "/page"
+@{
+    Layout = "_Layout";
+    ViewData["Title"] = "Roster";
+}
+<h1>Roster</h1>
+<table>
+<thead><tr><th>id</th><th>name</th><th>score</th></tr></thead>
+<tbody>
+@foreach (var p in Person.Load())
+{
+<tr class="@(p.Active ? "on" : "off")"><td>@p.Id</td><td>@p.Name</td><td>@p.Score</td></tr>
+}
+</tbody>
+</table>
+<form method="post" action="/subscribe"><label>Email <input type="email" name="email" required></label><button>Subscribe</button></form>

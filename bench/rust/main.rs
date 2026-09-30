@@ -1,6 +1,6 @@
 //! The Rust servers bench/ measures against Wisp, serving the same
-//! /fortunes, /plaintext and /json as bench/app, all rendering with Askama
-//! (templates compiled to Rust, like Wisp) and serializing with serde:
+//! /fortunes, /plaintext, /json and /page as bench/app, all rendering with
+//! Askama (templates compiled to Rust, like Wisp) and serializing with serde:
 //! Actix Web and Axum, the popular ones, and may-minihttp, xitca-web, ntex
 //! and bare hyper, TechEmpower's top tier.
 //!
@@ -55,6 +55,29 @@ fn fortunes() -> String {
     Fortunes { fortunes }.render().expect("render")
 }
 
+/// `/page`: a layout, a table of 50 rows built per request with a name to
+/// escape and a class chosen by a boolean, and a form. Templates in
+/// `templates/`, the layout inherited as Askama's docs do.
+struct Person {
+    id: u32,
+    name: &'static str,
+    score: u32,
+    active: bool,
+}
+
+#[derive(Template)]
+#[template(path = "roster.html")]
+struct Roster {
+    people: Vec<Person>,
+}
+
+const NAMES: [&str; 5] = ["Ada <&\"", "Alan <&\"", "Grace <&\"", "Linus <&\"", "Edsger <&\""];
+
+fn page() -> String {
+    let people = (1..=50).map(|id| Person { id, name: NAMES[id as usize % 5], score: id * 37 % 101, active: id % 3 != 0 }).collect();
+    Roster { people }.render().expect("render")
+}
+
 /// TechEmpower's "json": serialized per request, with serde.
 #[derive(serde::Serialize)]
 struct Message {
@@ -90,6 +113,7 @@ fn actix(port: u16, threads: usize) -> std::io::Result<()> {
             .route("/plaintext", web::get().to(|| async { "Hello, World!" }))
             .route("/fortunes", web::get().to(|| async { HttpResponse::Ok().content_type("text/html; charset=utf-8").body(fortunes()) }))
             .route("/json", web::get().to(|| async { web::Json(MESSAGE) }))
+            .route("/page", web::get().to(|| async { HttpResponse::Ok().content_type("text/html; charset=utf-8").body(page()) }))
     });
     actix_web::rt::System::new().block_on(server.workers(threads).bind(("127.0.0.1", port))?.run())
 }
@@ -98,7 +122,11 @@ fn actix(port: u16, threads: usize) -> std::io::Result<()> {
 /// work-stealing runtime shared by all threads.
 fn axum(port: u16, threads: usize) -> std::io::Result<()> {
     use axum::{Router, response::Html, routing::get};
-    let app = Router::new().route("/plaintext", get(|| async { "Hello, World!" })).route("/fortunes", get(|| async { Html(fortunes()) })).route("/json", get(|| async { axum::Json(MESSAGE) }));
+    let app = Router::new()
+        .route("/plaintext", get(|| async { "Hello, World!" }))
+        .route("/fortunes", get(|| async { Html(fortunes()) }))
+        .route("/json", get(|| async { axum::Json(MESSAGE) }))
+        .route("/page", get(|| async { Html(page()) }));
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(threads).enable_all().build()?;
     rt.block_on(async {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
@@ -118,6 +146,7 @@ fn may(port: u16, threads: usize) -> std::io::Result<()> {
                 "/plaintext" => res.header("Content-Type: text/plain; charset=utf-8").body("Hello, World!"),
                 "/fortunes" => res.header("Content-Type: text/html; charset=utf-8").body_vec(fortunes().into_bytes()),
                 "/json" => res.header("Content-Type: application/json").body_vec(serde_json::to_vec(&MESSAGE)?),
+                "/page" => res.header("Content-Type: text/html; charset=utf-8").body_vec(page().into_bytes()),
                 _ => {
                     res.status_code(404, "Not Found");
                 }
@@ -143,6 +172,7 @@ fn xitca(port: u16, threads: usize) -> std::io::Result<()> {
         .at("/plaintext", get(handler_service(async || "Hello, World!")))
         .at("/fortunes", get(handler_service(async || Html(fortunes()))))
         .at("/json", get(handler_service(async || Json(MESSAGE))))
+        .at("/page", get(handler_service(async || Html(page()))))
         .serve()
         .worker_threads(threads)
         .bind(("127.0.0.1", port))?
@@ -159,6 +189,7 @@ async fn ntex(port: u16, threads: usize) -> std::io::Result<()> {
             .route("/plaintext", web::get().to(async || "Hello, World!"))
             .route("/fortunes", web::get().to(async || HttpResponse::Ok().content_type("text/html; charset=utf-8").body(fortunes())))
             .route("/json", web::get().to(async || HttpResponse::Ok().json(&MESSAGE)))
+            .route("/page", web::get().to(async || HttpResponse::Ok().content_type("text/html; charset=utf-8").body(page())))
     })
     .workers(threads)
     .bind(("127.0.0.1", port))?
@@ -179,6 +210,7 @@ fn hyper(port: u16, threads: usize) -> std::io::Result<()> {
             "/plaintext" => ("text/plain; charset=utf-8", Bytes::from_static(b"Hello, World!")),
             "/fortunes" => ("text/html; charset=utf-8", fortunes().into()),
             "/json" => ("application/json", serde_json::to_vec(&MESSAGE).expect("json").into()),
+            "/page" => ("text/html; charset=utf-8", page().into()),
             _ => {
                 let mut res = Response::new(Full::default());
                 *res.status_mut() = StatusCode::NOT_FOUND;

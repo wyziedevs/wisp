@@ -1,4 +1,4 @@
-// Vert.x serving the same /fortunes, /plaintext and /json as bench/app:
+// Vert.x serving the same /fortunes, /plaintext, /json and /page as bench/app:
 // one verticle per event loop, THREADS of each, sharing the port. The page
 // is built with a StringBuilder (no template engine, as Vert.x's TechEmpower
 // entry does it) and the JSON with Vert.x's JsonObject (Jackson).
@@ -65,8 +65,28 @@ public final class Bench extends AbstractVerticle {
             case "/fortunes" -> res.putHeader("Content-Type", "text/html; charset=utf-8").end(fortunes());
             case "/json" -> res.putHeader("Content-Type", "application/json")
                 .end(new JsonObject().put("message", "Hello, World!").toBuffer());
+            case "/page" -> res.putHeader("Content-Type", "text/html; charset=utf-8").end(page());
             default -> res.setStatusCode(404).end();
         }
+    }
+
+    static final String[] NAMES = {"Ada <&\"", "Alan <&\"", "Grace <&\"", "Linus <&\"", "Edsger <&\""};
+
+    // /page: a layout, 50 rows built per request with a name to escape and a
+    // class chosen by a boolean, and a form.
+    static String page() {
+        StringBuilder html = new StringBuilder(6000);
+        html.append("<!DOCTYPE html>\n<html>\n<head><title>Roster</title></head>\n<body>\n")
+            .append("<header><nav><a href=\"/\">Home</a><a href=\"/page\">Roster</a><a href=\"/about\">About</a></nav></header>\n")
+            .append("<main>\n<h1>Roster</h1>\n<table>\n<thead><tr><th>id</th><th>name</th><th>score</th></tr></thead>\n<tbody>\n");
+        for (int id = 1; id <= 50; id++) {
+            html.append("<tr class=\"").append(id % 3 != 0 ? "on" : "off").append("\"><td>").append(id).append("</td><td>");
+            escape(html, NAMES[id % 5]);
+            html.append("</td><td>").append(id * 37 % 101).append("</td></tr>\n");
+        }
+        return html.append("</tbody>\n</table>\n")
+            .append("<form method=\"post\" action=\"/subscribe\"><label>Email <input type=\"email\" name=\"email\" required></label><button>Subscribe</button></form>\n")
+            .append("</main>\n<footer><p>Built with the framework under test.</p></footer>\n</body>\n</html>\n").toString();
     }
 
     static String fortunes() {

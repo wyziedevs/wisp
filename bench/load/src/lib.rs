@@ -5,6 +5,9 @@
 //! whole response before sending the next (no pipelining), like wrk and
 //! bombardier do by default. Blocking sockets keep it simple; with one
 //! request in flight per connection there is nothing for async to overlap.
+//! A pipeline depth of N (TechEmpower's plaintext uses 16) sends N requests
+//! back to back, then reads their N responses; a response's latency runs
+//! from the first byte of its batch.
 //!
 //! Only requests that complete inside the measured window are counted.
 
@@ -47,23 +50,28 @@ impl Report {
 }
 
 /// Runs `connections` closed loops of `GET path` against `addr` for
-/// `warmup + measure`, counting what completes during `measure`.
+/// `warmup + measure`, counting what completes during `measure`. Each loop
+/// sends `depth` requests at once and reads their responses; 1 waits for
+/// every response before the next request.
 pub fn run(
     addr: SocketAddr,
     path: &str,
     connections: usize,
+    depth: usize,
     warmup: Duration,
     measure: Duration,
 ) -> Report {
-    let request: Arc<[u8]> =
+    let depth = depth.max(1);
+    let batch: Arc<[u8]> =
         format!("GET {path} HTTP/1.1\r\nhost: {addr}\r\naccept: text/html,*/*\r\n\r\n")
+            .repeat(depth)
             .into_bytes()
             .into();
     let phase = Arc::new(AtomicU8::new(WARMUP));
     let workers: Vec<_> = (0..connections.max(1))
         .map(|_| {
-            let (phase, request) = (phase.clone(), request.clone());
-            thread::spawn(move || connection(addr, &request, &phase))
+            let (phase, batch) = (phase.clone(), batch.clone());
+            thread::spawn(move || connection(addr, &batch, depth, &phase))
         })
         .collect();
 
@@ -84,7 +92,7 @@ pub fn run(
     total
 }
 
-fn connection(addr: SocketAddr, request: &[u8], phase: &AtomicU8) -> Report {
+fn connection(addr: SocketAddr, batch: &[u8], depth: usize, phase: &AtomicU8) -> Report {
     let mut report = Report::default();
     let mut buf = Vec::with_capacity(64 * 1024);
     let mut conn: Option<TcpStream> = None;
@@ -110,32 +118,36 @@ fn connection(addr: SocketAddr, request: &[u8], phase: &AtomicU8) -> Report {
             },
         };
         let t = Instant::now();
-        let response = s
-            .write_all(request)
-            .ok()
-            .and_then(|()| read_response(s, &mut buf));
-        let took = t.elapsed();
-        // A request that started during warmup but ended in the window still
-        // counts: the window is defined by completions.
-        if phase.load(Ordering::Acquire) != MEASURE {
-            if response.as_ref().is_none_or(|r| r.close) {
-                conn = None;
+        let mut alive = s.write_all(batch).is_ok();
+        for _ in 0..depth {
+            let response = if alive {
+                read_response(s, &mut buf)
+            } else {
+                None
+            };
+            let took = t.elapsed();
+            // A request that started during warmup but ended in the window
+            // still counts: the window is defined by completions.
+            let measuring = phase.load(Ordering::Acquire) == MEASURE;
+            let Some(r) = response else {
+                alive = false;
+                report.errors += u64::from(measuring);
+                continue;
+            };
+            // Whatever a closing server has not answered yet is lost.
+            alive &= !r.close;
+            if !measuring {
+                continue;
             }
-            continue;
+            if (200..300).contains(&r.status) {
+                report.ok += 1;
+                report.bytes += r.len as u64;
+                report.latency.record(took.as_micros() as u64);
+            } else {
+                report.non_2xx += 1;
+            }
         }
-        let Some(r) = response else {
-            report.errors += 1;
-            conn = None;
-            continue;
-        };
-        if (200..300).contains(&r.status) {
-            report.ok += 1;
-            report.bytes += r.len as u64;
-            report.latency.record(took.as_micros() as u64);
-        } else {
-            report.non_2xx += 1;
-        }
-        if r.close {
+        if !alive {
             conn = None;
         }
     }
@@ -322,7 +334,32 @@ pub fn ms(us: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{BUCKETS, Histogram};
+    use super::{BUCKETS, Histogram, find, run};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    #[test]
+    fn pipeline_counts_every_response() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        // Answers each request as it arrives, however many came in one read.
+        std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let (mut buf, mut chunk) = (Vec::new(), [0; 4096]);
+            while let Ok(n @ 1..) = s.read(&mut chunk) {
+                buf.extend_from_slice(&chunk[..n]);
+                while let Some(i) = find(&buf, b"\r\n\r\n") {
+                    buf.drain(..i + 4);
+                    let _ = s.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok");
+                }
+            }
+        });
+        let r = run(addr, "/", 1, 8, Duration::ZERO, Duration::from_millis(200));
+        assert!(r.ok >= 8, "{}", r.ok);
+        assert_eq!((r.non_2xx, r.errors), (0, 0));
+        assert_eq!(r.bytes, r.ok * 40);
+    }
 
     #[test]
     fn histogram_buckets_are_contiguous() {

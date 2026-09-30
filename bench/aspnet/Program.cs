@@ -17,11 +17,20 @@ builder.Services.Configure<WebEncoderOptions>(o => o.TextEncoderSettings = new T
 var app = builder.Build();
 app.MapGet("/plaintext", () => "Hello, World!");
 app.MapGet("/json", () => new Message("Hello, World!"));
-app.MapRazorPages(); // /fortunes
+app.MapRazorPages(); // /fortunes and /page
 app.MapGet("/fortunes-blazor", () => new RazorComponentResult<FortunesPage>(new { Fortunes = Fortune.Load() }));
 app.Run();
 
 public sealed record Message(string message);
+
+// /page: 50 rows built per request, a name to escape, a class chosen by a boolean.
+public sealed record Person(int Id, string Name, int Score, bool Active)
+{
+    static readonly string[] Names = ["Ada <&\"", "Alan <&\"", "Grace <&\"", "Linus <&\"", "Edsger <&\""];
+
+    public static List<Person> Load() =>
+        Enumerable.Range(1, 50).Select(id => new Person(id, Names[id % 5], id * 37 % 101, id % 3 != 0)).ToList();
+}
 
 public sealed record Fortune(int Id, string Message)
 {

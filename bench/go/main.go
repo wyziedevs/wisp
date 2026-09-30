@@ -1,5 +1,5 @@
 // net/http, Gin, Fiber and bare fasthttp serving the same /fortunes,
-// /plaintext and /json as bench/app, all rendering with html/template
+// /plaintext, /json and /page as bench/app, all rendering with html/template
 // (Gin's and Fiber's html renderers wrap it) and serializing with
 // encoding/json.
 //
@@ -51,6 +51,49 @@ var page = template.Must(template.New("fortunes").Parse(`<!DOCTYPE html>
 </html>
 `))
 
+// /page: a layout, a table of 50 rows built per request with a name to
+// escape and a class chosen by a boolean, and a form; html/template's
+// define and template are its layouts.
+var roster = template.Must(template.New("layout").Parse(`<!DOCTYPE html>
+<html>
+<head><title>Roster</title></head>
+<body>
+<header><nav><a href="/">Home</a><a href="/page">Roster</a><a href="/about">About</a></nav></header>
+<main>{{template "content" .}}</main>
+<footer><p>Built with the framework under test.</p></footer>
+</body>
+</html>
+{{define "content"}}
+<h1>Roster</h1>
+<table>
+<thead><tr><th>id</th><th>name</th><th>score</th></tr></thead>
+<tbody>
+{{range .}}
+<tr class="{{if .Active}}on{{else}}off{{end}}"><td>{{.ID}}</td><td>{{.Name}}</td><td>{{.Score}}</td></tr>
+{{end}}
+</tbody>
+</table>
+<form method="post" action="/subscribe"><label>Email <input type="email" name="email" required></label><button>Subscribe</button></form>
+{{end}}`))
+
+type Person struct {
+	ID     int
+	Name   string
+	Score  int
+	Active bool
+}
+
+var names = [...]string{`Ada <&"`, `Alan <&"`, `Grace <&"`, `Linus <&"`, `Edsger <&"`}
+
+func people() []Person {
+	list := make([]Person, 50)
+	for i := range list {
+		id := i + 1
+		list[i] = Person{id, names[id%5], id * 37 % 101, id%3 != 0}
+	}
+	return list
+}
+
 type Message struct {
 	Message string `json:"message"`
 }
@@ -80,6 +123,10 @@ func main() {
 			w.Header().Set("Content-Type", "application/json")
 			w.Write(body)
 		})
+		http.HandleFunc("GET /page", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			roster.Execute(w, people())
+		})
 		panic(http.ListenAndServe(addr, nil))
 	case "gin":
 		gin.SetMode(gin.ReleaseMode)
@@ -94,6 +141,10 @@ func main() {
 		app.GET("/json", func(c *gin.Context) {
 			c.JSON(http.StatusOK, Message{"Hello, World!"})
 		})
+		app.GET("/page", func(c *gin.Context) {
+			c.Header("Content-Type", "text/html; charset=utf-8")
+			roster.Execute(c.Writer, people())
+		})
 		panic(app.Run(addr))
 	case "fiber":
 		app := fiber.New()
@@ -106,6 +157,10 @@ func main() {
 		})
 		app.Get("/json", func(c fiber.Ctx) error {
 			return c.JSON(Message{"Hello, World!"})
+		})
+		app.Get("/page", func(c fiber.Ctx) error {
+			c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
+			return roster.Execute(c.Response().BodyWriter(), people())
 		})
 		panic(app.Listen(addr, fiber.ListenConfig{DisableStartupMessage: true}))
 	case "fasthttp":
@@ -122,6 +177,9 @@ func main() {
 				body, _ := json.Marshal(Message{"Hello, World!"})
 				c.SetContentType("application/json")
 				c.SetBody(body)
+			case "/page":
+				c.SetContentType("text/html; charset=utf-8")
+				roster.Execute(c, people())
 			default:
 				c.Error("Not Found", fasthttp.StatusNotFound)
 			}
