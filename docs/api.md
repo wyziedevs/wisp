@@ -470,26 +470,21 @@ wisp::channel("notes").send(wisp::to_json(&note));
 
 // src/routes/api/events/+server.rs: each one, as server-sent events.
 fn get() -> Response {
-    let mut notes = wisp::channel("notes").subscribe();
-    Response::events(|events| async move {
-        while let Some(note) = notes.recv().await {
-            events.event(&note).await?;
-        }
-        Ok(())
-    })
+    wisp::channel("notes").events()
 }
 ```
 
-A WebSocket joins a channel both ways with `connect`: a chat room is
+A WebSocket joins a channel both ways: a chat room is
 
 ```rust
 fn get() -> Response {
-    Response::websocket(|ws| async move {
-        wisp::channel("chat").connect(&ws).await?;
-        Ok(())
-    })
+    wisp::channel("chat").websocket()
 }
 ```
+
+For more, `subscribe()` gives each message (`recv().await`) to a
+`Response::events` or `Response::websocket` of your own, and `connect(&ws)`
+joins a socket you already have.
 
 Channels are in the process. Several servers of one app each have their
 own; relay between them through Redis pub/sub or Postgres `LISTEN` in a task

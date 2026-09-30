@@ -157,9 +157,8 @@ A page's Rust goes at the top of its `.wisp`, between two `---` lines:
 let post = db::post(&slug).await.or_404()?;
 
 #[action]
-async fn like(id: i64) -> Result {
+async fn like(id: i64) {
     db::like(id).await?;
-    Ok(())
 }
 ---
 <head><title>{post.title}</title></head>
@@ -257,21 +256,25 @@ async fn load(slug: String) -> Result<Data> {
 - A form that fails validation: the action returns `invalid(field,
   problem)`, and the page renders again, as a 422, with the form still
   there: each of its inputs shows what was typed and what is wrong with it
-  (see [Actions](#actions-and-wispjs)); `cx.problem(field)` and
+  (see [Actions](#actions-and-wispjs)); a parameter whose type does not
+  parse (`email: Email`, `age: u8`) is the same 422 by field; an action
+  written without `->` returns `Result`, so it may end in `redirect(..)`;
+  `cx.problem(field)` and
   `cx.input(field)` are the same for markup that places them itself. (Any
   other error from an action shows the error page.)
 
   ```html
   ---
   #[action]
-  fn signup(email: String) -> Result {
-      if !email.contains('@') {
-          return invalid("email", "That email address is missing its @");
+  fn signup(name: String, email: Email) {
+      if name.trim().is_empty() {
+          return invalid("name", "Tell us your name");
       }
       redirect("/welcome")
   }
   ---
   <form action="?/signup">
+    <input name="name">
     <input name="email">
   </form>
   ```
@@ -385,8 +388,9 @@ prints the bare name or nothing, and a hole in a quoted value is an error.
 
 Escaping covers `& < > " '`, which is safe in text and in quoted attributes.
 Unquoted `attr={…}` is always quoted by the compiler. There is no way to put an
-Rust expression inside `<script>`; pass values by using them there as
-`data.x` (sent as JSON) or through `data-*` attributes.
+Rust expression inside `<script>`; pass values by using them there by
+their Rust name or as `data.x` (sent as JSON), or through `data-*`
+attributes.
 The one rule for client code: braces are Rust on the server, a quoted
 directive value or `{:expr}` is JavaScript in the browser.
 The parser tracks where in the HTML each hole lands, and refuses the places

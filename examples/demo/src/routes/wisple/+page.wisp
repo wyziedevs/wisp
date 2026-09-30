@@ -16,10 +16,10 @@
   const SHAKE = { translate: ['0', '-6px', '6px', '-4px', '4px', '0'] }
 
   // The server has a new row: start a fresh guess.
-  watch(() => data.tries, () => (guess = data.guess))
+  watch(() => tries, () => (guess = data.guess))
 
   function type(key) {
-    if (data.over) return
+    if (over) return
     guess = key === 'backspace' ? guess.slice(0, -1) : (guess + key).slice(0, 5)
   }
 

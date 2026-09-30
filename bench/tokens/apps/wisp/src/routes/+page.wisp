@@ -1,10 +1,7 @@
----
-// @feature list
-let items = db::items().await;
----
+<!-- @feature list -->
 <title>Items</title>
 <ul>
-  {#each items as item}
+  {#each db::items().await as item}
     <li>{item.name}: ${item.price}</li>
   {/each}
 </ul>

@@ -92,7 +92,7 @@ fn update(key: String) {
 /// A finished guess. It comes from the form, where the page's script typed
 /// it; without JavaScript, `update` put the same letters there.
 #[action]
-fn enter(guess: String) -> Result {
+fn enter(guess: String) {
     let guess = guess.to_ascii_lowercase();
     if guess.len() != LEN || !letters(&guess) {
         return error(400, "A guess is five letters.");
@@ -103,7 +103,6 @@ fn enter(guess: String) -> Result {
         game.current.clear();
         cx.set_cookie("wisple", game);
     }
-    Ok(())
 }
 
 #[action]
