@@ -22,7 +22,7 @@ export function load() {
 }
 
 const escapes = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
-const escape = (s) => s.replace(/[&<>"']/g, (c) => escapes[c]);
+export const escape = (s) => s.replace(/[&<>"']/g, (c) => escapes[c]);
 
 // The page, from a template literal: no template engine, the fastest way to
 // produce HTML in JavaScript. Every server without an engine of its own

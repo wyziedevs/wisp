@@ -1,6 +1,7 @@
 //! Load one URL and print what came back.
 //!
 //!   wisp-load <http://host:port/path> [-c connections] [-d seconds] [-w warmup-seconds]
+//!       [--pipeline requests-per-batch]
 
 use std::net::ToSocketAddrs;
 use std::time::Duration;
@@ -21,10 +22,13 @@ fn main() {
     let url = args
         .iter()
         .find(|a| a.starts_with("http://"))
-        .unwrap_or_else(|| die("usage: wisp-load <http://host:port/path> [-c 64] [-d 10] [-w 3]"));
+        .unwrap_or_else(|| {
+            die("usage: wisp-load <http://host:port/path> [-c 64] [-d 10] [-w 3] [--pipeline 1]")
+        });
     let connections = flag("-c", 64) as usize;
     let seconds = flag("-d", 10).max(1);
     let warmup = flag("-w", 3);
+    let depth = flag("--pipeline", 1).max(1) as usize;
 
     let rest = &url["http://".len()..];
     let (host, path) = match rest.find('/') {
@@ -41,11 +45,17 @@ fn main() {
         addr,
         path,
         connections,
+        depth,
         Duration::from_secs(warmup),
         Duration::from_secs(seconds),
     );
     let h = &r.latency;
-    println!("{url}  ({connections} connections, {seconds}s after {warmup}s warmup)");
+    let mode = if depth > 1 {
+        format!(", pipelined ×{depth}")
+    } else {
+        String::new()
+    };
+    println!("{url}  ({connections} connections{mode}, {seconds}s after {warmup}s warmup)");
     println!("  requests  {:>10}   {:>10.0} req/s", r.ok, r.rps());
     println!(
         "  latency   p50 {}  p90 {}  p99 {}  p99.9 {}  max {}",

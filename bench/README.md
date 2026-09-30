@@ -10,8 +10,8 @@ Wisp against the ten most popular web frameworks and the ten fastest
 
 ```
 cargo run -r -p bench-run -- [-c 64] [-d 10] [-w 5] [--rounds 1]
-    [--group fast|popular|all] [--only wisp,actix] [--paths fortunes]
-    [--no-build] [--csv results.csv]
+    [--pipeline 1] [--group fast|popular|all] [--only wisp,actix]
+    [--paths fortunes] [--no-build] [--csv results.csv]
 ```
 
 Runs on Linux and Windows. Needs Rust; a server whose toolchain (the .NET 10
@@ -24,40 +24,61 @@ first request again; the others share the port with SO_REUSEPORT).
 that many times, taking turns, and reports the mean, and `--extra
 NAME=COMMAND` adds a server of your own (it gets `PORT` and `THREADS`, and
 is measured on `/plaintext`). The table is sorted fastest first on each
-path, and a `rank` line per path gives Wisp's place.
+path. Below it, `rank` lines give Wisp's place: on each path in requests per
+second and in CPU per request (each line names how the load was sent), then
+on peak memory, time to first response and deploy size. `--pipeline N` sends
+N requests back to back on every connection before reading their N
+responses, as TechEmpower's plaintext does with 16; it is off by default,
+since browsers do not pipeline, and applies to every path that runs (use
+`--paths plaintext`). Pipelined and closed-loop numbers are not comparable.
 
-Every server answers the same three paths. `/fortunes` is TechEmpower's
+Every server answers the same four paths. `/fortunes` is TechEmpower's
 fortunes test without the database: copy 12 rows, add one, sort by message,
 render an HTML table with escaping. `/plaintext` returns `Hello, World!`,
-and `/json` serializes `{"message":"Hello, World!"}` per request. None
-caches a response.
+and `/json` serializes `{"message":"Hello, World!"}` per request. `/page` is
+a realistic server-rendered page: a layout (head, nav, footer), an `<h1>`, a
+table of 50 rows built per request, each with an id, a name containing `<&"`
+to escape, a number and a class (`on` or `off`) chosen by a boolean, and a
+small form. Each server writes it the way its own docs would: a layout and a
+page in the framework's template language where it has one, a string builder
+or template literal where its TechEmpower entry has none. The runner checks
+that every server sends the same page before measuring it: the parts above,
+and every row's class, id, number and unescaped name, ignoring whitespace,
+comments and how each template spells an escaped character (`&quot;`,
+`&#34;`, or none in text). None caches a response.
 
-- `app/`: the Wisp side. It also answers `/messages/1`, `/json`'s object
+- `app/`: the Wisp side. `/page` is a `+layout.wisp` in a route group
+  (`(site)`, so `/fortunes` is not wrapped) and a `+page.wisp` with its Rust
+  block. It also answers `/messages/1`, `/json`'s object
   as a `#[derive(Rest)]` row through the resource's own GET (lock, JSON,
   ETag): on Windows (8 server cores, mean of 3 rounds) 8.2 µs of CPU a
   request to `/json`'s 7.7, the half microsecond being the table's lock,
   the ETag and its 33 bytes.
 - `aspnet/`: written the way the ASP.NET Core docs and templates do:
-  `/fortunes` as a Razor Page, `/fortunes-blazor` as a Blazor component
-  (static SSR), `/plaintext` and `/json` as minimal APIs. Logging is set to
+  `/fortunes` as a Razor Page, `/page` as one with a `_Layout`,
+  `/fortunes-blazor` as a Blazor component (static SSR), `/plaintext` and
+  `/json` as minimal APIs. Logging is set to
   `Warning` as the templates' appsettings do, and the HTML encoder emits
   non-ASCII as is, like Wisp.
 - `rust/`: Actix Web, Axum, may-minihttp, xitca-web, ntex and bare hyper
   (a tokio runtime per thread, SO_REUSEPORT) in one binary (`bench-rust
   actix|axum|may|xitca|ntex|hyper`), all rendering with Askama, which
-  compiles templates to Rust as Wisp does, and serializing with serde. A
-  Cargo workspace of its own, so none of it reaches Wisp's `Cargo.lock`.
+  compiles templates to Rust as Wisp does (`/page` inherits `templates/`'s
+  layout), and serializing with serde. A Cargo workspace of its own, so none
+  of it reaches Wisp's `Cargo.lock`.
 - `go/`: net/http, Gin, Fiber v3 and bare fasthttp in one binary
   (`bench-go nethttp|gin|fiber|fasthttp`), all rendering with
-  `html/template` (Gin's and Fiber's html renderers wrap it) and
-  serializing with `encoding/json`.
-- `java/`: Vert.x 4.5 on epoll, a verticle per event loop, the page from a
+  `html/template` (Gin's and Fiber's html renderers wrap it; `/page`'s
+  layout is a `define`) and serializing with `encoding/json`.
+- `java/`: Vert.x 4.5 on epoll, a verticle per event loop, the pages from a
   `StringBuilder` as its TechEmpower entry does. `mvn package`.
-- `node/`: Express (its defaults) and Fastify, the page from a template
-  literal (`fortunes.mjs`: no template engine, the fastest path), SvelteKit
-  with adapter-node (`+page.server.js` and `+page.svelte`), Next.js with the
-  App Router (a server component forced dynamic, so it renders per request
-  like the rest, not once at build), and uWebSockets.js. Each runs under
+- `node/`: Express (its defaults) and Fastify, the pages from template
+  literals (`fortunes.mjs`, `page.mjs`: no template engine, the fastest
+  path), SvelteKit with adapter-node (`+page.server.js` and `+page.svelte`,
+  `/page` in a `(site)` route group with a `+layout.svelte`), Next.js with
+  the App Router (server components forced dynamic, so they render per
+  request like the rest, not once at build; `/page` under a `(site)` layout),
+  and uWebSockets.js. Each runs under
   `cluster.mjs`, one process per server CPU, as `pm2 -i` does. Bun
   (`Bun.serve`) and Elysia use the same page and run under
   `bun-cluster.js`, one process per CPU sharing the port.
@@ -66,19 +87,26 @@ caches a response.
   its own (`wisp-load http://127.0.0.1:3000/ -c 64 -d 10`). It is
   closed-loop: each connection sends a request and waits for the whole
   response before the next (no pipelining), like wrk and bombardier by
-  default. It records latency in a log-linear histogram and counts only
-  requests that complete in the measured window.
+  default; `--pipeline 16` sends 16 at once instead, timing each response
+  from the first byte of its batch. It records latency in a log-linear
+  histogram and counts only requests that complete in the measured window.
 
 `bench-run` builds everything in release mode and runs each server alone,
 pinned to half of the CPU cores, with the load generator on the other half
 (whole cores each, so the two never share a core's hyperthreads). Every
 server gets as many threads or processes as it has CPUs. Before measuring,
 it checks that each `/fortunes` sends the same 13 rows in the same order,
-escaped, with the non-ASCII row as is. Besides throughput and latency it
-reports the server's CPU time per request (throughput alone can be capped by
-the load generator or the OS network stack), peak memory, and the time from
-launch to the first response. CPU time and memory include every process a
-server starts. It prints the results as a Markdown table, like the one below.
+escaped, with the non-ASCII row as is, and that `/page` is the page above.
+Besides throughput and latency it reports the server's CPU time per request
+(throughput alone can be capped by the load generator or the OS network
+stack), peak memory, the time from launch to the first response, and its
+deploy size. CPU time and memory include every process a server starts.
+Deploy size is the binary or app directory you would copy, without the
+runtime (.NET, the JVM, Node and Bun are installed apart): Wisp's binary,
+ASP.NET's publish directory, Vert.x's jar, SvelteKit's `build/`, Next.js's
+standalone output, the `node_modules` of the others. The Rust and Go servers
+share one binary among several frameworks, so they have no size of their
+own. It prints the results as a Markdown table, like the one below.
 
 Only sources are tracked here; builds, `node_modules` and lockfiles are
 ignored.

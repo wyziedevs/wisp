@@ -3,21 +3,24 @@
 //! Builds every server in release mode, then runs each one alone on half of
 //! the CPU cores with the load generator on the other half, so the two never
 //! compete for a core. Prints throughput, latency, CPU time per request,
-//! response size, peak memory and time to first response, then a Markdown
-//! table of it all, fastest first on each path, with Wisp's rank.
+//! response size, peak memory, time to first response and deploy size, then
+//! a Markdown table of it all, fastest first on each path, with Wisp's rank
+//! on each.
 //!
 //!   cargo run -r -p bench-run -- [-c 64] [-d 10] [-w 5] [--rounds 1]
-//!       [--group fast|popular|all] [--only wisp,actix] [--paths fortunes]
-//!       [--no-build] [--csv FILE] [--extra NAME=COMMAND]...
+//!       [--pipeline 1] [--group fast|popular|all] [--only wisp,actix]
+//!       [--paths fortunes] [--no-build] [--csv FILE] [--extra NAME=COMMAND]...
 //!
 //! `--group` picks the ten fastest frameworks (TechEmpower's top tier), the
 //! ten most popular, or both (the default); Wisp is in each. `--only` and
-//! `--paths` narrow that by case-insensitive substring. `--extra
-//! NAME=COMMAND` adds a server of your own, measured on `/plaintext` only;
-//! it gets `PORT` and `THREADS` like the others. `--rounds` runs every
-//! server that many times, taking turns, and reports the mean. `--csv`
-//! appends every run to a file. A server whose toolchain is not installed
-//! is skipped with a note.
+//! `--paths` narrow that by case-insensitive substring. `--pipeline N` sends
+//! N requests back to back on each connection before reading their N
+//! responses, as TechEmpower's plaintext does with 16 (browsers do not
+//! pipeline, so it is off by default). `--extra NAME=COMMAND` adds a server
+//! of your own, measured on `/plaintext` only; it gets `PORT` and `THREADS`
+//! like the others. `--rounds` runs every server that many times, taking
+//! turns, and reports the mean. `--csv` appends every run to a file. A
+//! server whose toolchain is not installed is skipped with a note.
 
 mod sys;
 
@@ -57,7 +60,7 @@ struct Server {
     /// The variable that sets the server's thread or process count.
     threads: &'static str,
     env: &'static [(&'static str, &'static str)],
-    /// Paths it serves besides `/plaintext`, `/fortunes` and `/json`.
+    /// Paths it serves besides `/plaintext`, `/fortunes`, `/json` and `/page`.
     extra: &'static [&'static str],
     tags: u8,
 }
@@ -177,6 +180,8 @@ struct Options {
     duration: Duration,
     warmup: Duration,
     rounds: usize,
+    /// Requests in flight per connection; 1 is closed loop.
+    pipeline: usize,
     group: u8,
     only: Vec<String>,
     paths: Vec<String>,
@@ -198,6 +203,8 @@ struct Row {
     bytes: u64,
     peak_mb: f64,
     start_ms: u64,
+    /// What it takes to deploy, where the server has a size of its own.
+    size: Option<u64>,
     failures: u64,
 }
 
@@ -247,10 +254,11 @@ fn main() {
     sys::pin_self(&load_cpus);
     let threads = server_cpus.len().to_string();
     println!(
-        "servers on CPUs {}, load on {}; {} connections, {}s warmup, {}s measured, {} round{}",
+        "servers on CPUs {}, load on {}; {} connections, {}, {}s warmup, {}s measured, {} round{}",
         sys::list(&server_cpus),
         sys::list(&load_cpus),
         opt.connections,
+        mode(opt.pipeline),
         opt.warmup.as_secs(),
         opt.duration.as_secs(),
         opt.rounds,
@@ -263,7 +271,7 @@ fn main() {
             let all: &[&str] = if s.bin == Bin::Other {
                 &["/plaintext"]
             } else {
-                &["/plaintext", "/fortunes", "/json"]
+                &["/plaintext", "/fortunes", "/json", "/page"]
             };
             let paths: Vec<&'static str> = all
                 .iter()
@@ -290,7 +298,8 @@ fn main() {
                     continue;
                 }
             };
-            match measure(s, &mut child, addr, &paths, &opt, server_cpus.len()) {
+            let size = deploy_size(s, &repo, &bench);
+            match measure(s, &mut child, addr, &paths, &opt, server_cpus.len(), size) {
                 Ok(new) => rows.extend(new),
                 Err(e) => println!("{}: {e}", s.name),
             }
@@ -302,10 +311,10 @@ fn main() {
     }
 
     if let Some(file) = &opt.csv {
-        write_csv(file, &rows);
+        write_csv(file, &rows, opt.pipeline);
     }
     println!();
-    print_table(&rows, opt.connections);
+    print_table(&rows, opt.connections, opt.pipeline);
 }
 
 fn options() -> Options {
@@ -314,6 +323,7 @@ fn options() -> Options {
         duration: Duration::from_secs(10),
         warmup: Duration::from_secs(5),
         rounds: 1,
+        pipeline: 1,
         group: FAST | POPULAR,
         only: Vec::new(),
         paths: Vec::new(),
@@ -341,6 +351,7 @@ fn options() -> Options {
             "-d" => opt.duration = Duration::from_secs(number(value()).max(1)),
             "-w" => opt.warmup = Duration::from_secs(number(value())),
             "--rounds" => opt.rounds = number(value()).max(1) as usize,
+            "--pipeline" => opt.pipeline = number(value()).max(1) as usize,
             "--group" => {
                 opt.group = match value().as_str() {
                     "fast" => FAST,
@@ -378,7 +389,7 @@ fn options() -> Options {
             }
             "-h" | "--help" => {
                 println!(
-                    "usage: bench-run [-c 64] [-d 10] [-w 5] [--rounds 1] [--group fast|popular|all] [--only wisp,actix] [--paths fortunes] [--no-build] [--csv FILE] [--extra NAME=COMMAND]..."
+                    "usage: bench-run [-c 64] [-d 10] [-w 5] [--rounds 1] [--pipeline 1] [--group fast|popular|all] [--only wisp,actix] [--paths fortunes] [--no-build] [--csv FILE] [--extra NAME=COMMAND]..."
                 );
                 std::process::exit(0);
             }
@@ -447,6 +458,38 @@ fn unit(s: &Server) -> &'static str {
         Bin::Node | Bin::Bun => s.args[1].split('/').next().unwrap_or(""),
         Bin::Other => "",
     }
+}
+
+/// What it takes to deploy a server: its binary or app directory, without
+/// the runtime (.NET, the JVM, Node and Bun are installed apart). Servers
+/// that share one binary with others have no size of their own.
+fn deploy_size(s: &Server, repo: &Path, bench: &Path) -> Option<u64> {
+    let node = bench.join("node").join(unit(s));
+    let parts = match (s.bin, unit(s)) {
+        (Bin::Wisp, _) => vec![release_dir(repo).join(exe("wisp-bench"))],
+        (Bin::AspNet, _) => vec![bench.join("aspnet/out")],
+        (Bin::Java, _) => vec![bench.join("java/target/bench.jar")],
+        (Bin::Node | Bin::Bun, "sveltekit") => vec![node.join("build")],
+        (Bin::Node | Bin::Bun, "nextjs") => {
+            vec![node.join(".next/standalone"), node.join(".next/static")]
+        }
+        (Bin::Bun, "bun") => vec![node.join("server.js")],
+        (Bin::Node | Bin::Bun, _) => vec![node.join("node_modules")],
+        (Bin::Rust | Bin::Go | Bin::Other, _) => return None,
+    };
+    parts.iter().map(|p| bytes_in(p)).sum()
+}
+
+/// Bytes in a file, or in every file under a directory.
+fn bytes_in(path: &Path) -> Option<u64> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if !meta.is_dir() {
+        return Some(meta.len());
+    }
+    std::fs::read_dir(path)
+        .ok()?
+        .map(|e| bytes_in(&e.ok()?.path()))
+        .sum()
 }
 
 /// Builds every server in `servers`, then drops those whose build failed.
@@ -604,10 +647,14 @@ fn measure(
     paths: &[&'static str],
     opt: &Options,
     cpus: usize,
+    size: Option<u64>,
 ) -> Result<Vec<Row>, String> {
     let start_ms = wait_ready(child, addr)?;
     for path in paths.iter().filter(|p| p.starts_with("/fortunes")) {
         check_fortunes(addr, path)?;
+    }
+    if paths.contains(&"/page") {
+        check_page(addr, "/page")?;
     }
     let tree = sys::tree(child.id());
     println!(
@@ -622,7 +669,14 @@ fn measure(
         let tree = sys::tree(child.id());
         let before = sys::cpu_times(&tree);
         let wall = Instant::now();
-        let r = wisp_load::run(addr, path, opt.connections, opt.warmup, opt.duration);
+        let r = wisp_load::run(
+            addr,
+            path,
+            opt.connections,
+            opt.pipeline,
+            opt.warmup,
+            opt.duration,
+        );
         let after = sys::cpu_times(&tree);
         let wall = wall.elapsed().as_secs_f64();
         if let Ok(Some(status)) = child.try_wait() {
@@ -652,6 +706,7 @@ fn measure(
             bytes: r.bytes.checked_div(r.ok).unwrap_or(0),
             peak_mb: peak as f64 / (1024.0 * 1024.0),
             start_ms,
+            size,
             failures: r.non_2xx + r.errors,
         };
         println!(
@@ -731,7 +786,121 @@ fn check_fortunes(addr: SocketAddr, path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn write_csv(file: &Path, rows: &[Row]) {
+/// `/page` is the layout, the h1, 50 rows and the form, however each server's
+/// template spaces them: whitespace, comments and how `"` is escaped in text
+/// do not matter. Each row must have the class, id, number and (escaped)
+/// name of the same formula the servers use.
+fn check_page(addr: SocketAddr, path: &str) -> Result<(), String> {
+    let Some((200, body)) = wisp_load::get(addr, path, Duration::from_secs(5)) else {
+        return Err(format!("{path} did not answer 200"));
+    };
+    let html = without_comments(&String::from_utf8_lossy(&body));
+    for part in [
+        "<title>Roster</title>",
+        "<nav",
+        "<h1>Roster</h1>",
+        "<footer",
+        "<form",
+        "method=\"post\"",
+        "name=\"email\"",
+        "<button",
+    ] {
+        if !html.contains(part) {
+            return Err(format!("{path} has no {part}"));
+        }
+    }
+    let rows: Vec<&str> = html
+        .split("<tr")
+        .filter(|row| row.contains("<td>"))
+        .collect();
+    if rows.len() != 50 {
+        return Err(format!("{path} sent {} rows, not 50", rows.len()));
+    }
+    for (row, id) in rows.iter().zip(1usize..) {
+        let class = row
+            .split_once("class=\"")
+            .and_then(|(_, rest)| rest.split_once('"'))
+            .map(|(class, _)| class);
+        let cells: Vec<&str> = row
+            .split("<td>")
+            .skip(1)
+            .filter_map(|cell| cell.split_once("</td>"))
+            .map(|(cell, _)| cell.trim())
+            .collect();
+        let (want_id, want_score) = (id.to_string(), (id * 37 % 101).to_string());
+        let ok = class == Some(if id % 3 != 0 { "on" } else { "off" })
+            && matches!(cells[..], [i, name, score]
+                if i == want_id && score == want_score
+                    && unescape(name).as_deref() == Some(PAGE_NAMES[id % 5]));
+        if !ok {
+            return Err(format!("{path} row {id}: class {class:?}, cells {cells:?}"));
+        }
+    }
+    Ok(())
+}
+
+/// The names `/page`'s rows cycle through, by `id % 5`.
+const PAGE_NAMES: [&str; 5] = [
+    "Ada <&\"",
+    "Alan <&\"",
+    "Grace <&\"",
+    "Linus <&\"",
+    "Edsger <&\"",
+];
+
+/// `html` without its comments (Svelte and React leave markers).
+fn without_comments(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some((before, after)) = rest.split_once("<!--") {
+        out.push_str(before);
+        rest = after.split_once("-->").map_or("", |(_, tail)| tail);
+    }
+    out + rest
+}
+
+/// `text` with its entities decoded (`&lt;`, `&#60;` and `&#x3c;` alike);
+/// `None` if a `<` or a `&` that starts no entity is left in it, as
+/// unescaped text would.
+fn unescape(text: &str) -> Option<String> {
+    if text.contains('<') {
+        return None;
+    }
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some((before, after)) = rest.split_once('&') {
+        out += before;
+        let (entity, tail) = after.split_once(';')?;
+        out.push(match entity {
+            "amp" => '&',
+            "lt" => '<',
+            "gt" => '>',
+            "quot" => '"',
+            _ => {
+                let code = entity.strip_prefix('#')?;
+                let code = match code.strip_prefix(['x', 'X']) {
+                    Some(hex) => u32::from_str_radix(hex, 16),
+                    None => code.parse(),
+                };
+                char::from_u32(code.ok()?)?
+            }
+        });
+        rest = tail;
+    }
+    Some(out + rest)
+}
+
+/// How the load is sent, for headings: results with and without pipelining
+/// are not comparable.
+fn mode(pipeline: usize) -> String {
+    if pipeline > 1 {
+        format!("pipelined ×{pipeline}")
+    } else {
+        "closed loop".to_string()
+    }
+}
+
+fn write_csv(file: &Path, rows: &[Row], pipeline: usize) {
     let new = !file.exists();
     let mut f = std::fs::OpenOptions::new()
         .create(true)
@@ -740,11 +909,11 @@ fn write_csv(file: &Path, rows: &[Row]) {
         .unwrap_or_else(|e| die(&format!("{}: {e}", file.display())));
     let mut text = String::new();
     if new {
-        text.push_str("server,path,req/s,p50 us,p99 us,p99.9 us,cpu us,kernel us,bytes,peak MB,start ms,failures\n");
+        text.push_str("server,path,req/s,p50 us,p99 us,p99.9 us,cpu us,kernel us,bytes,peak MB,start ms,failures,pipeline,size bytes\n");
     }
     for r in rows {
         text.push_str(&format!(
-            "{},{},{:.0},{},{},{},{:.2},{:.2},{},{:.1},{},{}\n",
+            "{},{},{:.0},{},{},{},{:.2},{:.2},{},{:.1},{},{},{},{}\n",
             r.server,
             r.path,
             r.rps,
@@ -756,7 +925,9 @@ fn write_csv(file: &Path, rows: &[Row]) {
             r.bytes,
             r.peak_mb,
             r.start_ms,
-            r.failures
+            r.failures,
+            pipeline,
+            r.size.map_or(String::new(), |b| b.to_string())
         ));
     }
     f.write_all(text.as_bytes())
@@ -764,8 +935,10 @@ fn write_csv(file: &Path, rows: &[Row]) {
 }
 
 /// The mean of every round per server and path, as a Markdown table,
-/// fastest first on each path, then where Wisp ranks on each.
-fn print_table(rows: &[Row], connections: usize) {
+/// fastest first on each path, then where Wisp ranks on each path (in
+/// requests per second and CPU per request) and on what is a server's own:
+/// peak memory, time to first response and deploy size.
+fn print_table(rows: &[Row], connections: usize, pipeline: usize) {
     let mut order: Vec<(&str, &str)> = Vec::new();
     let mut groups: HashMap<(&str, &str), Vec<&Row>> = HashMap::new();
     for r in rows {
@@ -776,10 +949,11 @@ fn print_table(rows: &[Row], connections: usize) {
         groups.entry(key).or_default().push(r);
     }
     let rounds = groups.values().map(Vec::len).max().unwrap_or(1);
-    let rps = |key: &(&str, &str)| {
+    let mean = |key: &(&str, &str), f: fn(&Row) -> f64| {
         let g = &groups[key];
-        g.iter().map(|r| r.rps).sum::<f64>() / g.len() as f64
+        g.iter().map(|r| f(r)).sum::<f64>() / g.len() as f64
     };
+    let rps = |key: &(&str, &str)| mean(key, |r| r.rps);
     // Paths in the order they ran; on each, the fastest first.
     let mut paths: Vec<&str> = Vec::new();
     for key in &order {
@@ -803,6 +977,7 @@ fn print_table(rows: &[Row], connections: usize) {
         "Bytes".into(),
         "Peak MB".into(),
         "First response".into(),
+        "Deploy size".into(),
     ]];
     if rounds > 1 {
         table[0].push("CPU min..max".into());
@@ -815,7 +990,6 @@ fn print_table(rows: &[Row], connections: usize) {
             1
         };
         let g = &groups[key];
-        let mean = |f: fn(&Row) -> f64| g.iter().map(|r| f(r)).sum::<f64>() / g.len() as f64;
         let mut line = vec![
             key.1.to_string(),
             rank.to_string(),
@@ -824,15 +998,16 @@ fn print_table(rows: &[Row], connections: usize) {
             } else {
                 key.0.to_string()
             },
-            thousands(mean(|r| r.rps) as u64),
-            wisp_load::ms(mean(|r| r.p50 as f64) as u64),
-            wisp_load::ms(mean(|r| r.p99 as f64) as u64),
-            wisp_load::ms(mean(|r| r.p999 as f64) as u64),
-            format!("{:.1}", mean(|r| r.cpu_us)),
-            format!("{:.1}", mean(|r| r.kernel_us)),
-            format!("{:.0}", mean(|r| r.bytes as f64)),
-            format!("{:.0}", mean(|r| r.peak_mb)),
-            format!("{:.0} ms", mean(|r| r.start_ms as f64)),
+            thousands(rps(key) as u64),
+            wisp_load::ms(mean(key, |r| r.p50 as f64) as u64),
+            wisp_load::ms(mean(key, |r| r.p99 as f64) as u64),
+            wisp_load::ms(mean(key, |r| r.p999 as f64) as u64),
+            format!("{:.1}", mean(key, |r| r.cpu_us)),
+            format!("{:.1}", mean(key, |r| r.kernel_us)),
+            format!("{:.0}", mean(key, |r| r.bytes as f64)),
+            format!("{:.0}", mean(key, |r| r.peak_mb)),
+            format!("{:.0} ms", mean(key, |r| r.start_ms as f64)),
+            g[0].size.map_or("-".to_string(), size_text),
         ];
         if rounds > 1 {
             let lo = g.iter().map(|r| r.cpu_us).fold(f64::MAX, f64::min);
@@ -882,10 +1057,12 @@ fn print_table(rows: &[Row], connections: usize) {
         }
     }
     println!(
-        "\n{connections} connections, mean of {rounds} round{}.\n",
+        "\n{connections} connections, {}, mean of {rounds} round{}.\n",
+        mode(pipeline),
         if rounds == 1 { "" } else { "s" }
     );
 
+    let load = mode(pipeline);
     for path in &paths {
         let ranked: Vec<(&str, f64)> = order
             .iter()
@@ -895,28 +1072,90 @@ fn print_table(rows: &[Row], connections: usize) {
         let n = ranked.len();
         let (best, best_rps) = ranked[0];
         let best_text = thousands(best_rps as u64);
+        let tag = format!("{path} ({load})");
         match ranked.iter().position(|r| r.0 == "Wisp") {
             // One server's own path, like ASP.NET's /fortunes-blazor.
             None if n == 1 => {}
             None => println!(
-                "rank {path}: Wisp not measured; fastest of {n} is {best} ({best_text} req/s)"
+                "rank {tag}: Wisp not measured; fastest of {n} is {best} ({best_text} req/s)"
             ),
-            Some(0) if n == 1 => println!("rank {path}: Wisp alone, {best_text} req/s"),
+            Some(0) if n == 1 => println!("rank {tag}: Wisp alone, {best_text} req/s"),
             Some(0) => {
                 let (next, next_rps) = ranked[1];
                 println!(
-                    "rank {path}: Wisp 1st of {n}, {best_text} req/s, {:.0}% ahead of {next} ({} req/s)",
+                    "rank {tag}: Wisp 1st of {n}, {best_text} req/s, {:.0}% ahead of {next} ({} req/s)",
                     (best_rps / next_rps - 1.0) * 100.0,
                     thousands(next_rps as u64)
                 );
             }
             Some(i) => println!(
-                "rank {path}: Wisp {} of {n}, {} req/s, {:.0}% of {best} ({best_text} req/s)",
+                "rank {tag}: Wisp {} of {n}, {} req/s, {:.0}% of {best} ({best_text} req/s)",
                 ordinal(i + 1),
                 thousands(ranked[i].1 as u64),
                 ranked[i].1 / best_rps * 100.0
             ),
         }
+        let cpu = order
+            .iter()
+            .filter(|k| k.1 == *path)
+            .map(|k| (k.0, mean(k, |r| r.cpu_us)))
+            .collect();
+        rank_low(&format!("{tag} CPU per request"), cpu, |v| {
+            format!("{v:.1} µs")
+        });
+    }
+
+    let mut names: Vec<&str> = Vec::new();
+    for r in rows {
+        if !names.contains(&r.server) {
+            names.push(r.server);
+        }
+    }
+    let (mut memory, mut start, mut size) = (Vec::new(), Vec::new(), Vec::new());
+    for &name in &names {
+        let mine: Vec<&Row> = rows.iter().filter(|r| r.server == name).collect();
+        memory.push((name, mine.iter().map(|r| r.peak_mb).fold(0.0, f64::max)));
+        let starts: f64 = mine.iter().map(|r| r.start_ms as f64).sum();
+        start.push((name, starts / mine.len() as f64));
+        if let Some(bytes) = mine[0].size {
+            size.push((name, bytes as f64));
+        }
+    }
+    rank_low("peak memory", memory, |v| format!("{v:.1} MB"));
+    rank_low("first response", start, |v| format!("{v:.0} ms"));
+    rank_low("deploy size (runtime not counted)", size, |v| {
+        size_text(v as u64)
+    });
+}
+
+/// One line on where Wisp ranks in `all`, a figure where less is better,
+/// against the best of the others (or the next, when Wisp leads).
+fn rank_low(what: &str, mut all: Vec<(&str, f64)>, show: impl Fn(f64) -> String) {
+    all.sort_by(|a, b| a.1.total_cmp(&b.1));
+    let n = all.len();
+    let Some(i) = all.iter().position(|r| r.0 == "Wisp").filter(|_| n > 1) else {
+        return;
+    };
+    let (other, kind) = if i == 0 {
+        (all[1], "next")
+    } else {
+        (all[0], "best")
+    };
+    println!(
+        "rank {what}: Wisp {} of {n}, {}, {kind} {} ({})",
+        ordinal(i + 1),
+        show(all[i].1),
+        other.0,
+        show(other.1)
+    );
+}
+
+/// `1234567` → `1.2 MB`; under a megabyte, in KB.
+fn size_text(bytes: u64) -> String {
+    if bytes < 1 << 20 {
+        format!("{} KB", bytes.div_ceil(1024))
+    } else {
+        format!("{:.1} MB", bytes as f64 / (1 << 20) as f64)
     }
 }
 
@@ -946,4 +1185,27 @@ fn thousands(n: u64) -> String {
 fn die(msg: &str) -> ! {
     eprintln!("bench-run: {msg}");
     std::process::exit(2);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn page_text_is_compared_unescaped() {
+        let name = "Ada <&\"";
+        assert_eq!(unescape("Ada &lt;&amp;&quot;").as_deref(), Some(name));
+        assert_eq!(unescape("Ada &#60;&#38;&#34;").as_deref(), Some(name));
+        assert_eq!(unescape("Ada &#x3C;&#x26;&#x22;").as_deref(), Some(name));
+        assert_eq!(unescape("Ada &lt;&amp;\"").as_deref(), Some(name));
+        assert_eq!(unescape("Ada <&\""), None, "raw <");
+        assert_eq!(unescape("Ada &lt;&\""), None, "bare &");
+        assert_eq!(without_comments("a<!---->b<!--[-->c<!--]-->"), "abc");
+    }
+
+    #[test]
+    fn sizes() {
+        assert_eq!(size_text(1500), "2 KB");
+        assert_eq!(size_text(6 << 20), "6.0 MB");
+    }
 }
