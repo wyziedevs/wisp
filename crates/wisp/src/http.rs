@@ -46,7 +46,7 @@ const MIN_BODY_RATE: usize = 1024;
 /// Time an idle keep-alive connection is kept open.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Time a client may take none of a response before it is dropped.
-const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Time a stopping server waits for the requests under way.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 /// A handler that holds its thread longer than this in one go is reported
@@ -54,7 +54,7 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 const BLOCKING: Duration = Duration::from_millis(100);
 /// A buffer that grew past this for one large message is shrunk afterwards,
 /// so memory per idle connection stays bounded.
-const KEEP_CAPACITY: usize = 64 * 1024;
+pub(crate) const KEEP_CAPACITY: usize = 64 * 1024;
 
 /// The browser runtime: as written in dev builds, without comments and
 /// indentation in release ones (see `build.rs`). The ETag tells them apart.
@@ -97,7 +97,8 @@ static HEAD_TAGS: OnceLock<String> = OnceLock::new();
 /// thread for its whole life, so the request path never wakes another thread
 /// or shares a driver. (A multi-threaded tokio runtime funnels every socket event
 /// through one driver; it measured at under half the throughput with cores
-/// left idle.)
+/// left idle.) On Linux the workers accept for themselves, on io_uring
+/// ([`run_rings`]), unless it cannot be set up there.
 ///
 /// Returns on SIGTERM or Ctrl+C, once it has stopped accepting and the
 /// requests under way have been answered (see [`stop`]).
@@ -111,18 +112,13 @@ pub(crate) fn run<A: App>(addr: SocketAddr, threads: usize) -> io::Result<()> {
     main.block_on(crate::prepare::<A>())?;
 
     let listener = bind(addr)?;
+    #[cfg(target_os = "linux")]
+    if let Some(rings) = crate::uring::rings(threads.max(1)) {
+        return run_rings::<A>(&main, listener, rings);
+    }
     listener.set_nonblocking(true)?;
     let workers = (0..threads.max(1))
-        .map(|i| {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()?;
-            let handle = runtime.handle().clone();
-            std::thread::Builder::new()
-                .name(format!("wisp-{i}"))
-                .spawn(move || runtime.block_on(std::future::pending::<()>()))?;
-            Ok(handle)
-        })
+        .map(|i| worker(i, std::future::pending))
         .collect::<io::Result<Vec<_>>>()?;
 
     main.block_on(async {
@@ -142,7 +138,9 @@ pub(crate) fn run<A: App>(addr: SocketAddr, threads: usize) -> io::Result<()> {
             match accepted {
                 Ok((stream, peer)) => {
                     let Some(slot) = Slot::take(max) else {
-                        refuse(stream);
+                        if let Ok(s) = stream.into_std() {
+                            refuse(&s);
+                        }
                         continue;
                     };
                     let _ = stream.set_nodelay(true);
@@ -163,7 +161,7 @@ pub(crate) fn run<A: App>(addr: SocketAddr, threads: usize) -> io::Result<()> {
                     let held = Held(open.clone(), w);
                     workers[w].spawn(async move {
                         if let Ok(stream) = TcpStream::from_std(stream) {
-                            connection::<A>(stream, peer).await;
+                            connection::<A>(Conn::Tcp(stream), peer).await;
                         }
                         drop((slot, held));
                     });
@@ -181,7 +179,78 @@ pub(crate) fn run<A: App>(addr: SocketAddr, threads: usize) -> io::Result<()> {
     })
 }
 
-/// Stopping: new connections are already refused. A connection answers
+/// [`run`] on io_uring (`uring.rs`): each worker accepts on a listener of
+/// its own, and the kernel spreads connections over them.
+#[cfg(target_os = "linux")]
+fn run_rings<A: App>(
+    main: &tokio::runtime::Runtime,
+    listener: std::net::TcpListener,
+    rings: Vec<crate::uring::Ring>,
+) -> io::Result<()> {
+    // `listener` found the port free (and picked it, for port 0). The
+    // workers' listeners share it, which its own would not allow.
+    let addr = listener.local_addr()?;
+    drop(listener);
+    let listeners = rings
+        .iter()
+        .map(|_| crate::uring::listen(addr).map_err(|e| cannot_listen(addr, e)))
+        .collect::<io::Result<Vec<_>>>()?;
+    // Connections wait in the listeners' queues until their workers start.
+    started(addr);
+    let workers = rings
+        .into_iter()
+        .zip(listeners)
+        .enumerate()
+        .map(|(i, (ring, listener))| {
+            worker(i, move || async move {
+                tokio::spawn(crate::uring::serve(ring, listener, accepted::<A>));
+                std::future::pending().await
+            })
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    main.block_on(async {
+        stop_signal().await;
+        stop(&workers).await; // the workers close their listeners
+        Ok(())
+    })
+}
+
+/// Worker `i`: a thread with a single-threaded tokio runtime of its own,
+/// which runs `main` (it never ends) and what is spawned on the handle.
+#[cfg(not(target_arch = "wasm32"))]
+fn worker<F: Future<Output = ()>>(
+    i: usize,
+    main: impl FnOnce() -> F + Send + 'static,
+) -> io::Result<tokio::runtime::Handle> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let handle = runtime.handle().clone();
+    std::thread::Builder::new()
+        .name(format!("wisp-{i}"))
+        .spawn(move || runtime.block_on(main()))?;
+    Ok(handle)
+}
+
+/// A connection a worker's io_uring accepted: served on that worker, like
+/// one [`run`] hands it.
+#[cfg(target_os = "linux")]
+fn accepted<A: App>(stream: std::net::TcpStream) {
+    let Some(slot) = Slot::take(crate::settings().max_conns) else {
+        return refuse(&stream);
+    };
+    let Ok(peer) = stream.peer_addr() else {
+        return;
+    };
+    let conn = Conn::Ring(crate::uring::Sock::new(stream));
+    tokio::spawn(async move {
+        connection::<A>(conn, peer).await;
+        drop(slot);
+    });
+}
+
+/// Stopping: new connections are already refused (io_uring workers refuse
+/// them as this begins). A connection answers
 /// what it is receiving or working on with `connection: close` and closes;
 /// an idle one is closed as the process exits, as nginx does, and a client
 /// retries on another connection. Waits at most `DRAIN_TIMEOUT`, or until a
@@ -313,10 +382,8 @@ impl Slot {
 /// A connection over the cap: told 503 (its send buffer, new and empty,
 /// takes it without waiting) and closed, before it costs a task or a read.
 #[cfg(not(target_arch = "wasm32"))]
-fn refuse(stream: TcpStream) {
-    if let Ok(s) = stream.into_std() {
-        let _ = (&s).write_all(b"HTTP/1.1 503 Service Unavailable\r\nretry-after: 1\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
-    }
+fn refuse(mut s: &std::net::TcpStream) {
+    let _ = s.write_all(b"HTTP/1.1 503 Service Unavailable\r\nretry-after: 1\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -339,15 +406,85 @@ impl Drop for Held {
 
 /// Binds, with what to do about the usual failures.
 fn bind(addr: SocketAddr) -> io::Result<std::net::TcpListener> {
-    std::net::TcpListener::bind(addr).map_err(|e| {
-        let hint = match e.kind() {
-            io::ErrorKind::AddrInUse => "Another program, maybe another copy of this one, is using the port. Stop it, or set PORT to use another.",
-            io::ErrorKind::PermissionDenied => "The port is reserved or needs more privileges (below 1024 on Linux). Set PORT to use another.",
-            io::ErrorKind::AddrNotAvailable => "This machine has no such address. Set HOST to one of its own, or to 0.0.0.0 for all.",
-            _ => "",
-        };
-        io::Error::new(e.kind(), format!("cannot listen on {addr}: {e}\n  {hint}").trim_end().to_string())
-    })
+    std::net::TcpListener::bind(addr).map_err(|e| cannot_listen(addr, e))
+}
+
+fn cannot_listen(addr: SocketAddr, e: io::Error) -> io::Error {
+    let hint = match e.kind() {
+        io::ErrorKind::AddrInUse => {
+            "Another program, maybe another copy of this one, is using the port. Stop it, or set PORT to use another."
+        }
+        io::ErrorKind::PermissionDenied => {
+            "The port is reserved or needs more privileges (below 1024 on Linux). Set PORT to use another."
+        }
+        io::ErrorKind::AddrNotAvailable => {
+            "This machine has no such address. Set HOST to one of its own, or to 0.0.0.0 for all."
+        }
+        _ => "",
+    };
+    io::Error::new(
+        e.kind(),
+        format!("cannot listen on {addr}: {e}\n  {hint}")
+            .trim_end()
+            .to_string(),
+    )
+}
+
+/// A connection's socket: tokio's, or on Linux one on its worker's io_uring.
+#[cfg(not(target_arch = "wasm32"))]
+enum Conn {
+    Tcp(TcpStream),
+    #[cfg(target_os = "linux")]
+    Ring(crate::uring::Sock),
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Conn {
+    /// Reads what came onto the end of `buf`: `Ok(0)` when the peer closed.
+    /// Safe to drop unfinished.
+    async fn read(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
+        match self {
+            Conn::Tcp(s) => s.read_buf(buf).await,
+            #[cfg(target_os = "linux")]
+            Conn::Ring(s) => s.read(buf).await,
+        }
+    }
+
+    /// Writes all of `buf` (see [`write`]) and leaves it empty. On the ring
+    /// it is only queued, to go with the other connections' sends; a
+    /// failure shows in the next call.
+    async fn write(&mut self, buf: &mut Vec<u8>) -> io::Result<()> {
+        match self {
+            Conn::Tcp(s) => {
+                write(s, buf).await?;
+                buf.clear();
+                Ok(())
+            }
+            #[cfg(target_os = "linux")]
+            Conn::Ring(s) => s.write(buf).await,
+        }
+    }
+
+    /// Ends the sending side, once all of it is sent.
+    async fn shutdown(&mut self) {
+        match self {
+            Conn::Tcp(s) => {
+                let _ = s.shutdown().await;
+            }
+            #[cfg(target_os = "linux")]
+            Conn::Ring(s) => s.shutdown().await,
+        }
+    }
+
+    /// The socket as tokio's, for a WebSocket, and what came after the
+    /// handshake: `early`, then what the ring received that was not read.
+    async fn into_tcp(self, early: Vec<u8>) -> io::Result<(TcpStream, Vec<u8>)> {
+        match self {
+            Conn::Tcp(s) => Ok((s, early)),
+            #[cfg(target_os = "linux")]
+            Conn::Ring(s) => s.into_tcp(early).await,
+        }
+    }
 }
 
 /// Reads more into `buf`: `Ok(0)` when the peer closed, `TimedOut` if
@@ -359,7 +496,7 @@ fn bind(addr: SocketAddr) -> io::Result<std::net::TcpListener> {
 /// the timer wheel and a clock read, every request.
 #[cfg(not(target_arch = "wasm32"))]
 async fn read(
-    stream: &mut TcpStream,
+    stream: &mut Conn,
     buf: &mut Vec<u8>,
     mut timer: std::pin::Pin<&mut tokio::time::Sleep>,
     deadline: u64,
@@ -368,7 +505,7 @@ async fn read(
     if timer.deadline() != when {
         timer.as_mut().reset(when);
     }
-    first(stream.read_buf(buf), async {
+    first(stream.read(buf), async {
         timer.await;
         Err(io::ErrorKind::TimedOut.into())
     })
@@ -419,12 +556,14 @@ pub(crate) async fn serve<A: App>(addr: SocketAddr) -> io::Result<()> {
         match listener.accept().await {
             Ok((stream, peer)) => {
                 let Some(slot) = Slot::take(max) else {
-                    refuse(stream);
+                    if let Ok(s) = stream.into_std() {
+                        refuse(&s);
+                    }
                     continue;
                 };
                 let _ = stream.set_nodelay(true);
                 tokio::spawn(async move {
-                    connection::<A>(stream, peer).await;
+                    connection::<A>(Conn::Tcp(stream), peer).await;
                     drop(slot);
                 });
             }
@@ -487,7 +626,7 @@ pub(crate) fn log(line: std::fmt::Arguments) {
 /// A client that gave up before we accepted is routine. Anything else (out
 /// of file descriptors...) is logged, and the caller should back off
 /// instead of spinning: the return value says so.
-fn accept_failed(e: &std::io::Error) -> bool {
+pub(crate) fn accept_failed(e: &std::io::Error) -> bool {
     use std::io::ErrorKind::{ConnectionAborted, ConnectionReset, Interrupted};
     if matches!(e.kind(), ConnectionAborted | ConnectionReset | Interrupted) {
         return false;
@@ -529,7 +668,7 @@ thread_local! {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-async fn connection<A: App>(stream: TcpStream, peer: SocketAddr) {
+async fn connection<A: App>(stream: Conn, peer: SocketAddr) {
     let mut b = POOL.with_borrow_mut(Vec::pop).unwrap_or_else(|| Buffers {
         cx: Cx::new(peer),
         wbuf: Vec::with_capacity(16 * 1024),
@@ -552,7 +691,7 @@ async fn connection<A: App>(stream: TcpStream, peer: SocketAddr) {
 
 /// Answers the requests of one connection, until it closes.
 #[cfg(not(target_arch = "wasm32"))]
-async fn requests<A: App>(mut stream: TcpStream, b: &mut Buffers) {
+async fn requests<A: App>(mut stream: Conn, b: &mut Buffers) {
     let Buffers {
         cx,
         wbuf,
@@ -588,19 +727,22 @@ async fn requests<A: App>(mut stream: TcpStream, b: &mut Buffers) {
                     used += len;
                     // Answers to many small pipelined requests go out in
                     // pieces, so a buffer of them cannot make a huge one.
-                    if streamed.is_none() && upgrade.is_none() && wbuf.len() >= KEEP_CAPACITY {
-                        if write(&mut stream, wbuf).await.is_err() {
-                            return;
-                        }
-                        wbuf.clear();
+                    if streamed.is_none()
+                        && upgrade.is_none()
+                        && wbuf.len() >= KEEP_CAPACITY
+                        && stream.write(wbuf).await.is_err()
+                    {
+                        return;
                     }
                     if let Some(upgrade) = upgrade {
                         // The rest of the connection is the WebSocket's,
-                        // with what the client sent after its handshake.
-                        if write(&mut stream, wbuf).await.is_ok() {
-                            let early = cx.buf[used..].to_vec();
+                        // on tokio's socket, with what the client sent
+                        // after its handshake.
+                        if stream.write(wbuf).await.is_ok()
+                            && let Ok((tcp, early)) = stream.into_tcp(cx.buf[used..].to_vec()).await
+                        {
                             let limit = body_limit::<A>(cx.path());
-                            crate::ws::serve(stream, early, limit, upgrade, cx.path()).await;
+                            crate::ws::serve(tcp, early, limit, upgrade, cx.path()).await;
                         }
                         return;
                     }
@@ -612,10 +754,9 @@ async fn requests<A: App>(mut stream: TcpStream, b: &mut Buffers) {
                         // it comes. Bytes the client sends meanwhile (a request
                         // after this one) wait in `early`.
                         let mut early = Vec::new();
-                        if write(&mut stream, wbuf).await.is_err() {
+                        if stream.write(wbuf).await.is_err() {
                             return;
                         }
-                        wbuf.clear();
                         if pump(&mut stream, s.body, s.chunked, wbuf, &mut early)
                             .await
                             .is_err()
@@ -656,16 +797,15 @@ async fn requests<A: App>(mut stream: TcpStream, b: &mut Buffers) {
         }
 
         if !wbuf.is_empty() {
-            if write(&mut stream, wbuf).await.is_err() {
+            if stream.write(wbuf).await.is_err() {
                 return;
             }
-            wbuf.clear();
             if wbuf.capacity() > KEEP_CAPACITY {
                 wbuf.shrink_to(KEEP_CAPACITY);
             }
         }
         if close {
-            let _ = stream.shutdown().await;
+            stream.shutdown().await;
             return;
         }
 
@@ -1710,7 +1850,7 @@ fn send_file(reply: &mut Reply, cx: &Cx, body: Body, ext: &str, etag: Option<&'s
 /// meanwhile is kept in `early`, up to a limit.
 #[cfg(not(target_arch = "wasm32"))]
 async fn pump(
-    stream: &mut TcpStream,
+    stream: &mut Conn,
     mut body: mpsc::Receiver<Vec<u8>>,
     chunked: bool,
     w: &mut Vec<u8>,
@@ -1746,7 +1886,7 @@ async fn pump(
                         if early.len() >= KEEP_CAPACITY {
                             std::future::pending::<()>().await;
                         }
-                        match stream.read_buf(early).await {
+                        match stream.read(early).await {
                             Ok(0) | Err(_) => return Next::Gone,
                             Ok(_) => {}
                         }
@@ -1775,8 +1915,7 @@ async fn pump(
             w.extend_from_slice(b"0\r\n\r\n");
         }
         if !w.is_empty() {
-            write(stream, w).await?;
-            w.clear();
+            stream.write(w).await?;
         }
         if end {
             return Ok(());
