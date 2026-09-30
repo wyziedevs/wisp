@@ -233,6 +233,10 @@ fn hundreds_of_connections_at_once() {
 /// The app on `port`, with a limit on its open files when given one
 /// (`ulimit -n`, which the shell sets and `exec` keeps).
 fn start_at(port: &str, files: Option<u32>) -> Server {
+    spawn(command_at(port, files))
+}
+
+fn command_at(port: &str, files: Option<u32>) -> Command {
     let exe = env!("CARGO_BIN_EXE_wisp-test-app");
     let mut cmd = match files {
         None => Command::new(exe),
@@ -243,7 +247,7 @@ fn start_at(port: &str, files: Option<u32>) -> Server {
         }
     };
     common::configure(&mut cmd, &[("PORT", port)]);
-    spawn(cmd)
+    cmd
 }
 
 /// A signal to the server, sent as an operator or systemd would.
@@ -459,24 +463,30 @@ fn streams_end_properly_on(env: &[(&str, &str)]) {
 fn a_restart_takes_the_port_back_at_once() {
     // The server closes these first, which leaves the connections in TIME_WAIT on its side of
     // the port; a listener without SO_REUSEADDR could not bind again until they expire.
-    // Below Linux's ephemeral range (32768 and up), so a server another test starts on port 0
-    // cannot take it between the two starts here.
-    let free = 20000 + (std::process::id() % 10000) as u16;
-    let first = start_at(&free.to_string(), None);
-    assert_eq!(first.port, free);
-    for _ in 0..20 {
-        let mut c = connect(free);
-        c.write_all(b"GET / HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n")
-            .unwrap();
-        let mut all = Vec::new();
-        c.read_to_end(&mut all).unwrap();
-        assert!(all.starts_with(b"HTTP/1.1 200"));
+    // A port some other test's connection is using cannot be bound, so another is tried.
+    for attempt in 0..8 {
+        let free = 20000 + ((std::process::id() + attempt * 997) % 10000) as u16;
+        let Some(first) = common::try_spawn(command_at(&free.to_string(), None)) else {
+            continue;
+        };
+        for _ in 0..20 {
+            let mut c = connect(free);
+            c.write_all(b"GET / HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n")
+                .unwrap();
+            let mut all = Vec::new();
+            c.read_to_end(&mut all).unwrap();
+            assert!(all.starts_with(b"HTTP/1.1 200"));
+        }
+        drop(first);
+        let Some(second) = common::try_spawn(command_at(&free.to_string(), None)) else {
+            continue;
+        };
+        let mut c = BufReader::new(connect(second.port));
+        c.get_mut().write_all(GET).unwrap();
+        assert!(read_answer(&mut c).0.starts_with("HTTP/1.1 200"));
+        return;
     }
-    drop(first);
-    let second = start_at(&free.to_string(), None);
-    let mut c = BufReader::new(connect(second.port));
-    c.get_mut().write_all(GET).unwrap();
-    assert!(read_answer(&mut c).0.starts_with("HTTP/1.1 200"));
+    panic!("no port could be taken back");
 }
 
 /// How many files the process has open.
