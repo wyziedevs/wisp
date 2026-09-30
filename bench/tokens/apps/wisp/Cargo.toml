@@ -1,0 +1,15 @@
+[package]
+name = "tokens-wisp"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "The Wisp side of bench/tokens: five features, counted by wisp-tokens"
+
+[dependencies]
+wisp = { workspace = true }
+
+[build-dependencies]
+wisp-build = { workspace = true }
+
+[lints]
+workspace = true

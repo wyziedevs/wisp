@@ -2,11 +2,47 @@
 
 Most app code is now written by AI, so what an app costs to write is
 measured in tokens. The first of Wisp's principles ([design.md](design.md))
-is to keep that number low. This page measures it: the same four small apps,
-written idiomatically and as short as each framework allows, in Wisp and in
-six others.
+is to keep that number low. This page measures it twice: five features in
+four other stacks, counted by a program in the repository, and four small
+apps in six others.
 
-## The apps
+## Five features, counted by `wisp-tokens`
+
+`bench/tokens/apps` holds the same five features as a complete app in each
+stack: a list page loading its data, a contact form (name 1 to 50
+characters, a valid email; a 422 that shows each problem and keeps what was
+typed, else a redirect), a JSON endpoint of the list, a layout with a nav,
+and a live search filtered in the browser. `cargo run -p wisp-tokens`
+counts them (the method is the one below, in `bench/tokens/src/main.rs`,
+with characters / 4 beside it). A `@feature NAME` comment in a file says
+whose its lines are; a file without one, as a generator writes it, is not
+counted, nor the `[package]` table `cargo new` writes. The Wisp app builds
+with the workspace, and its tests check each feature.
+
+| Stack | list | form | api | layout | search | data | setup | total | chars / 4 | files |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| **Wisp** | 74 | 127 | 35 | 60 | 120 | 115 | 0 | **531** | 321 | 6 |
+| Wisp, before this round | 74 | 149 | 35 | 60 | 134 | 115 | 0 | 567 | 341 | 6 |
+| SvelteKit 2 | 128 | 396 | 57 | 83 | 192 | 72 | 0 | 928 | 596 | 9 |
+| Next.js 15 | 107 | 363 | 44 | 108 | 241 | 71 | 0 | 934 | 674 | 8 |
+| Axum 0.8 + askama | 145 | 455 | 29 | 104 | 217 | 123 | 257 | 1330 | 924 | 7 |
+| Actix Web 4 + tera | 164 | 519 | 46 | 104 | 237 | 123 | 264 | 1457 | 994 | 7 |
+
+Wisp's `data` is longer than JavaScript's: a Rust type with its fields'
+types and `pub`s. Everything else is shorter, the form most of all: its
+checks are attributes with messages of their own, and its markup is the
+inputs alone. What changed for it:
+
+| Was | Now | Saves |
+|---|---|---|
+| `{cx.problem("name")}` after each input | an action form's input shows its own problem after it, `<small class="problem">…</small>`; a file that writes `cx.problem` places them itself | 11 per input |
+| a `<form method="post">` (to `default`) kept nothing | it keeps what was typed, as a `?/name` form does | `value={cx.input("x")}` per input |
+| `<script>let q = ''</script>` for `bind:value="q"` | a bound name nothing declares is declared by the binding, as state | the script |
+
+An action form's page is now baked whole when nothing else in it reads the
+request: what was typed and what was wrong are never there on a GET.
+
+## Four apps, against six frameworks
 
 - **counter**: a button that counts clicks.
 - **todo**: a list kept in memory, a form that adds an item (1 to 100
@@ -144,7 +180,6 @@ fn remove(id: u64) {
 <form action="?/add">
   <input name="text">
   <button>Add</button>
-  {cx.problem("text")}
 </form>
 <ul>
   {#each TODOS.all() as todo}

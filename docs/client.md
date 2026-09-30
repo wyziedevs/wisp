@@ -91,7 +91,7 @@ inside a block, misspelled) is a build error at its line.
 | Syntax | Meaning |
 |---|---|
 | `on:click="count++"` | Event handler. A bare name (`on:click="press"`) is called with the event. |
-| `bind:value="q"` / `bind:checked="done"` | Two-way binding. `bind:value` alone binds `value`. |
+| `bind:value="q"` / `bind:checked="done"` | Two-way binding. `bind:value` alone binds `value`. A name no script, import or server value declares is declared by the binding, as state (`let q`): a live search needs no `<script>`. |
 | `bind:group="size"` | Radios (a value) and checkboxes (an array) with one `name`. |
 | `bind:files`, `bind:open`, `bind:innerHTML`, `bind:currentTime`, `bind:paused`, … | Any property; the element's own event keeps it current. |
 | `bind:clientWidth="w"` | Sizes (`clientWidth/Height`, `offsetWidth/Height`, `contentRect`), from a ResizeObserver. |

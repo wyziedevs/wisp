@@ -54,7 +54,7 @@ fn add(by: i64) {
 
 Between the `---` lines is Rust. Its statements run for each request, and the markup reads their names (`count`); `cx` is the request. Its functions are the page's own: an `#[action]` handles a form post (it gets `cx` when it uses it), and each parameter is read from the request by its name (a route parameter, a form field, or the query), so `by` above is the button's value. No `use` lines and no `pub`. Statements can `.await`, use `?`, and stop early with `return error(404, "No such post")` or `return redirect("/login")`. A route parameter is already a local: `[slug]/+page.wisp` can just say `<h1>{slug}</h1>`.
 
-A form whose `action` is `?/name` posts to that action. One that does not pass shows the page again as a 422, keeping what was typed in its inputs, with `{cx.problem("email")}` where the message goes: `#[validate(len = 1..=100)] text: String` on the action's parameter checks it, and `return invalid("email", "is missing its @")` says anything else. The Rust can also live in a `+page.rs` beside the page, with a `load` that returns a `Data` struct.
+A form whose `action` is `?/name` posts to that action. One that does not pass shows the page again as a 422, keeping what was typed in its inputs, each followed by what was wrong with it (or `{cx.problem("email")}` where you want the message): `#[validate(len = 1..=100)] text: String` on the action's parameter checks it, and `return invalid("email", "is missing its @")` says anything else. The Rust can also live in a `+page.rs` beside the page, with a `load` that returns a `Data` struct.
 
 ## Reactivity
 
@@ -121,6 +121,18 @@ struct Note {
 ```
 
 GET and POST `/api/notes`, GET, PUT, PATCH and DELETE `/api/notes/[id]`, writes only with `Authorization: Bearer $API_KEY`; lists take filters, sorting and pages (`?done=false&sort=-id&limit=20`), rows carry ETags, and hooks such as `fn before_create(note: &mut Note)` go in the same file. Rows live in log files by default, or in any database through `wisp::Store`. For queries of your own, write the handlers instead: `fn get(id: u64) -> Option<Note>` (an `id` puts it at `/api/notes/[id]`, `None` is a 404), `fn post(body: New) -> Response`, `fn list()`. A JSON body that does not pass comes back as a 422 listing every problem by field, and every error under `/api` is JSON. CORS and API keys are a line in `src/hooks.rs`; rate limits, channels for live updates, background jobs, webhook signatures, idempotency keys, error codes, an OpenAPI document with a page to try it (`/_wisp/docs`), a typed TypeScript client (`wisp build --client ts`) and JSON test helpers are built in. See [docs/api.md](docs/api.md).
+
+## Tokens
+
+The same five features (a list page, a validated form, a JSON endpoint, a layout with a nav, a live search) as a whole app in each stack, counted by `cargo run -p wisp-tokens` ([bench/README.md](bench/README.md#tokens)):
+
+| Stack | Tokens | vs Wisp |
+|---|---:|---:|
+| **Wisp** | **531** | 1.0x |
+| SvelteKit | 928 | 1.7x |
+| Next.js | 934 | 1.8x |
+| Axum + askama | 1330 | 2.5x |
+| Actix + tera | 1457 | 2.7x |
 
 ## Commands
 

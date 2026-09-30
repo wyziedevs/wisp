@@ -975,7 +975,7 @@ pub fn plain_init(init: &str) -> Option<&str> {
 }
 
 /// The local names a script's `import` statements (as byte ranges) bind.
-fn import_names(src: &str, spans: &[(usize, usize)]) -> Vec<String> {
+pub fn import_names(src: &str, spans: &[(usize, usize)]) -> Vec<String> {
     let mut out = Vec::new();
     for &(a, b) in spans {
         let s = &src[a..b];

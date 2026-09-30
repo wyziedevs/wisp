@@ -364,6 +364,32 @@ linearly (190k, 422k, 715k req/s at 1, 2, 4 threads) until the load
 generator became the limit. Axum is that first shape (`axum::serve` on one
 runtime), which is why it has cores to spare at half the throughput.
 
+## Tokens
+
+What an app costs to write, since AI writes most of it: `bench/tokens/apps`
+has the same five features in each stack, written idiomatically and as
+short as each allows, and `cargo run -p wisp-tokens` counts them. A list
+page loading its data, a contact form (name 1 to 50 characters, a valid
+email; a 422 that shows each problem and keeps what was typed, else a
+redirect), a JSON endpoint of the list, a layout with a nav, and a live
+search filtered in the browser; `data` is the list's type and source,
+`setup` the dependencies and wiring a stack needs. Only hand-written files
+count, with their paths; what `wisp new`, `sv create`, `create-next-app` or
+`cargo new` writes does not. The Wisp app is a workspace member, with tests
+that each feature works.
+
+| Stack | list | form | api | layout | search | data | setup | total | chars / 4 | files |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| **Wisp** | 74 | 127 | 35 | 60 | 120 | 115 | 0 | **531** | 321 | 6 |
+| SvelteKit | 128 | 396 | 57 | 83 | 192 | 72 | 0 | 928 | 596 | 9 |
+| Next.js | 107 | 363 | 44 | 108 | 241 | 71 | 0 | 934 | 674 | 8 |
+| Axum + askama | 145 | 455 | 29 | 104 | 217 | 123 | 257 | 1330 | 924 | 7 |
+| Actix + tera | 164 | 519 | 46 | 104 | 237 | 123 | 264 | 1457 | 994 | 7 |
+
+SvelteKit and Next.js take 1.7x and 1.8x Wisp's tokens, Axum and Actix
+2.5x and 2.7x. The estimate and what changed to get here:
+[docs/tokens.md](../docs/tokens.md).
+
 ## Caveats
 
 - Loopback on one machine, with the load generator on the same machine. The
