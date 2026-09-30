@@ -47,6 +47,8 @@ const ACCEPT: u64 = u64::MAX;
 const WATCH: u32 = (libc::EPOLLIN | libc::EPOLLOUT | libc::EPOLLRDHUP | libc::EPOLLET) as u32;
 const READABLE: u32 = (libc::EPOLLIN | libc::EPOLLRDHUP | libc::EPOLLHUP | libc::EPOLLERR) as u32;
 const WRITABLE: u32 = (libc::EPOLLOUT | libc::EPOLLHUP | libc::EPOLLERR) as u32;
+/// The peer's end, or an error: no event follows, so every receive tries.
+const ENDED: u32 = (libc::EPOLLRDHUP | libc::EPOLLHUP | libc::EPOLLERR) as u32;
 
 /// The events' `u64` for connection `id` in generation `generation` of its
 /// entry: an event taken in the turn that closed a connection cannot reach
@@ -121,6 +123,10 @@ struct Entry {
     /// set by its events, cleared by a receive that got less than it asked
     /// for.
     readable: bool,
+    /// An event said the peer ended or the socket failed: a short receive
+    /// no longer means the socket is empty, as its end (or error) is still
+    /// to be read and no event will say so again.
+    ended: bool,
     /// The rest of a send the socket had no room for, from `sent` on, or
     /// (empty) the buffer the next such send swaps in.
     out: Vec<u8>,
@@ -232,6 +238,7 @@ impl Worker {
         }
         if events & READABLE != 0 {
             e.readable = true;
+            e.ended |= events & ENDED != 0;
             if e.wants_recv {
                 e.wake();
             }
@@ -332,8 +339,9 @@ impl Worker {
             let room = buf.capacity() - buf.len();
             match recv(e.fd, buf) {
                 Ok(n) => {
-                    // Less than it could take: the socket is empty until its next event.
-                    e.readable = n == room || n == 0;
+                    // Less than it could take: the socket is empty until its
+                    // next event, unless its end came with what was read.
+                    e.readable = e.ended || n == room || n == 0;
                     return Poll::Ready(Ok(n));
                 }
                 Err(libc::EAGAIN) => e.readable = false,
@@ -728,5 +736,29 @@ mod tests {
         let mut got = String::new();
         c.read_to_string(&mut got).unwrap();
         assert_eq!(got, "3 bytes");
+    }
+
+    #[test]
+    fn an_end_that_came_with_the_bytes_is_read() {
+        // The bytes and the end arrive together, and the driver takes their
+        // one event before the first read: the read after the bytes gets the
+        // end, with no event left to say so.
+        fn late(s: TcpStream) {
+            let mut sock = Sock::new(s);
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                let mut buf = Vec::new();
+                while sock.read(&mut buf).await.is_ok_and(|n| n > 0) {}
+                let mut said = format!("{} bytes", buf.len()).into_bytes();
+                let _ = sock.write(&mut said).await;
+            });
+        }
+        let addr = server(late);
+        let mut c = connect(addr);
+        c.write_all(b"GET /hel").unwrap();
+        c.shutdown(Shutdown::Write).unwrap();
+        let mut got = String::new();
+        c.read_to_string(&mut got).unwrap();
+        assert_eq!(got, "8 bytes");
     }
 }
