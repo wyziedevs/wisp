@@ -250,28 +250,38 @@ fn worker<F: Future<Output = ()>>(
 /// A connection a worker's io_uring accepted, served on that worker.
 #[cfg(target_os = "linux")]
 fn ringed<A: App>(stream: std::net::TcpStream) {
-    accepted::<A>(stream, |s| Conn::Ring(crate::uring::Sock::new(s)));
-}
-
-/// A connection a worker's epoll accepted, served on that worker.
-#[cfg(target_os = "linux")]
-fn polled<A: App>(stream: std::net::TcpStream) {
-    accepted::<A>(stream, |s| Conn::Poll(crate::epoll::Sock::new(s)));
-}
-
-#[cfg(target_os = "linux")]
-fn accepted<A: App>(stream: std::net::TcpStream, conn: impl FnOnce(std::net::TcpStream) -> Conn) {
-    let Some(slot) = Slot::take(crate::settings().max_conns) else {
-        return refuse(&stream);
-    };
-    let Ok(peer) = stream.peer_addr() else {
+    let Some((slot, peer)) = admit(&stream) else {
         return;
     };
-    let conn = conn(stream);
+    let conn = Conn::Ring(crate::uring::Sock::new(stream));
     tokio::spawn(async move {
         connection::<A>(conn, peer).await;
         drop(slot);
     });
+}
+
+/// A connection a worker's epoll accepted, served on that worker: by its
+/// driver while it can, else by its task (`epoll::spawn`).
+#[cfg(target_os = "linux")]
+fn polled<A: App>(stream: std::net::TcpStream) {
+    let Some((slot, peer)) = admit(&stream) else {
+        return;
+    };
+    crate::epoll::spawn(stream, move |sock| async move {
+        connection::<A>(Conn::Poll(sock), peer).await;
+        drop(slot);
+    });
+}
+
+/// A slot for a connection a worker accepted, and its peer; `None` when it
+/// was refused at the cap, or is gone already.
+#[cfg(target_os = "linux")]
+fn admit(stream: &std::net::TcpStream) -> Option<(Slot, SocketAddr)> {
+    let Some(slot) = Slot::take(crate::settings().max_conns) else {
+        refuse(stream);
+        return None;
+    };
+    Some((slot, stream.peer_addr().ok()?))
 }
 
 /// Stopping: new connections are already refused (Linux workers refuse
@@ -547,7 +557,8 @@ impl Conn {
 /// `timer` is the connection's one timer. Deadlines are whole seconds, so
 /// it is moved at most once a second, and a later deadline only updates it
 /// in place: a timer made and dropped per read cost two lock round trips on
-/// the timer wheel and a clock read, every request.
+/// the timer wheel and a clock read, every request. On the epoll the
+/// driver keeps the deadline instead, and `timer` goes unused.
 #[cfg(not(target_arch = "wasm32"))]
 async fn read(
     stream: &mut Conn,
@@ -555,6 +566,10 @@ async fn read(
     mut timer: std::pin::Pin<&mut tokio::time::Sleep>,
     deadline: u64,
 ) -> io::Result<usize> {
+    #[cfg(target_os = "linux")]
+    if let Conn::Poll(s) = stream {
+        return s.read_by(buf, deadline).await;
+    }
     let when = instant(deadline);
     if timer.deadline() != when {
         timer.as_mut().reset(when);
@@ -2257,7 +2272,7 @@ fn instant(deadline: u64) -> tokio::time::Instant {
     tokio::time::Instant::from_std(start + Duration::from_secs(deadline))
 }
 
-fn start_clock() {
+pub(crate) fn start_clock() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         NOW.store(crate::unix_now(), Ordering::Relaxed);

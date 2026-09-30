@@ -757,15 +757,21 @@ and `.wisp-*` classes, so they never touch an app's own CSS.
   (through an eventfd), so handlers await timers, channels and database
   drivers as before; a WebSocket is handed to a tokio socket. At start, a
   throwaway ring receives and sends once through the workers' code, with a
-  buffer ring and then (some 6.8 kernels refuse those) with buffers
-  provided per call; the first that works is used, and one line on stderr
-  (`wisp: io: …`) says which and why not better. Where io_uring does not
-  work (an older kernel, a container's seccomp profile, the
-  `io_uring_disabled` sysctl) each worker runs the same way on an epoll of
+  buffer ring, and one line on stderr (`wisp: io: …`) says which I/O runs
+  and why not better. Where io_uring does not work (an older kernel, a
+  container's seccomp profile, the `io_uring_disabled` sysctl, some 6.8
+  kernels that refuse buffer rings; buffers provided per call instead
+  measured slower than epoll) each worker runs the same way on an epoll of
   its own (`crates/wisp/src/epoll.rs`), its
-  sockets in it edge-triggered from accept to close; a connection's task
+  sockets in it edge-triggered from accept to close; a connection
   receives and sends by itself (one `recv` and one `send` a request), and
-  only a send the socket has no room for is left to the driver.
+  only a send the socket has no room for is left to the driver. A
+  connection is a task, but when its socket brings a request, the driver
+  polls the connection's future itself, with the task's waker: a request
+  whose handler does not wait is received, answered and sent without the
+  scheduler, and one that waits wakes the task as usual. Receive
+  deadlines and stalled sends are one pass a second over the worker's
+  connections, not a timer each.
   `WISP_IO=epoll` asks for that. Other systems accept on the main thread
   and hand connections out, on tokio's sockets.
 - Settings, all from the environment:
