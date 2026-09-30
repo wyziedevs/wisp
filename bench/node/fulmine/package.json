@@ -1,0 +1,7 @@
+{
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "fulmine.js": "~5.21.0"
+  }
+}
