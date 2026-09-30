@@ -68,6 +68,9 @@ const ENTER_GETEVENTS: u32 = 1 << 0;
 const REGISTER_EVENTFD: u32 = 4;
 const REGISTER_ENABLE_RINGS: u32 = 12;
 const REGISTER_PBUF_RING: u32 = 22;
+/// The kernel makes the buffer ring's memory (`IOU_PBUF_RING_MMAP`), at this offset of the ring's fd (group 0).
+const PBUF_RING_MMAP: u16 = 1;
+const OFF_PBUF_RING: i64 = 0x8000_0000;
 const SQ_CQ_OVERFLOW: u32 = 1 << 1;
 const SQ_TASKRUN: u32 = 1 << 2;
 const OP_ACCEPT: u8 = 13;
@@ -255,6 +258,9 @@ pub(crate) struct Ring {
     rings: Map,
     sqes: Map,
     /// The buffer ring (a page of entries), then the buffers themselves.
+    /// The buffer ring the kernel takes buffers from: `BUFS` entries of 16 bytes.
+    pring: Map,
+    /// The buffers themselves.
     bufs: Map,
     sq_head: u32,
     sq_tail: u32,
@@ -276,6 +282,34 @@ pub(crate) struct Ring {
 // main thread and moved to its worker before any use; after that only the
 // worker touches it.
 unsafe impl Send for Ring {}
+
+/// The ring `fd` takes its receive buffers from. Memory of ours, registered,
+/// where the kernel allows it; else memory the kernel makes and we map (Linux
+/// 6.4 on), which some kernels insist on.
+fn buffer_ring(fd: &OwnedFd) -> io::Result<Map> {
+    let mut reg = BufReg {
+        ring_addr: 0,
+        ring_entries: BUFS as u32,
+        bgid: 0,
+        flags: 0,
+        resv: [0; 3],
+    };
+    let ours = Map::new(-1, BUFS * 16, 0)?;
+    reg.ring_addr = ours.0 as u64;
+    let Err(refused) = register(fd, REGISTER_PBUF_RING, Some(&reg), 1) else {
+        return Ok(ours);
+    };
+    reg.ring_addr = 0;
+    reg.flags = PBUF_RING_MMAP;
+    register(fd, REGISTER_PBUF_RING, Some(&reg), 1)
+        .and_then(|()| Map::new(fd.as_raw_fd(), BUFS * 16, OFF_PBUF_RING))
+        .map_err(|e| {
+            step(
+                "registering the buffer ring",
+                io::Error::new(e.kind(), format!("{refused}, then {e}")),
+            )
+        })
+}
 
 /// `e`, saying which step of making a ring it came from.
 fn step(what: &str, e: io::Error) -> io::Error {
@@ -327,7 +361,8 @@ impl Ring {
         let eventfd = owned(unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) })?;
         register(&fd, REGISTER_EVENTFD, Some(&eventfd.as_raw_fd()), 1)
             .map_err(|e| step("registering the eventfd", e))?;
-        let bufs = Map::new(-1, BUFS * (16 + BUF_SIZE), 0)?;
+        let bufs = Map::new(-1, BUFS * BUF_SIZE, 0)?;
+        let pring = buffer_ring(&fd)?;
         let mut ring = Ring {
             sq_head: sq.head,
             sq_tail: sq.tail,
@@ -345,21 +380,13 @@ impl Ring {
             eventfd: Some(eventfd),
             rings,
             sqes,
+            pring,
             bufs,
         };
         for bid in 0..BUFS as u16 {
             ring.give(bid);
         }
         ring.publish_bufs();
-        let reg = BufReg {
-            ring_addr: ring.bufs.0 as u64,
-            ring_entries: BUFS as u32,
-            bgid: 0,
-            flags: 0,
-            resv: [0; 3],
-        };
-        register(&ring.fd, REGISTER_PBUF_RING, Some(&reg), 1)
-            .map_err(|e| step("registering the buffer ring", e))?;
         Ok(ring)
     }
 
@@ -455,7 +482,7 @@ impl Ring {
 
     /// The first `len` bytes of buffer `bid`, which the kernel filled.
     fn buf(&self, bid: u16, len: usize) -> &[u8] {
-        let at = BUFS * 16 + (bid as usize % BUFS) * BUF_SIZE;
+        let at = (bid as usize % BUFS) * BUF_SIZE;
         // SAFETY: a buffer inside the mapping. The kernel wrote it before
         // posting the completion that named it, and writes it again only
         // once `give` hands it back.
@@ -466,13 +493,10 @@ impl Ring {
     /// `enter` on.
     fn give(&mut self, bid: u16) {
         let entry = self
-            .bufs
+            .pring
             .0
             .wrapping_add(16 * (self.buf_tail as usize % BUFS));
-        let addr = self
-            .bufs
-            .0
-            .wrapping_add(BUFS * 16 + bid as usize * BUF_SIZE);
+        let addr = self.bufs.0.wrapping_add(bid as usize * BUF_SIZE);
         // SAFETY: an entry of the buffer ring that the kernel has consumed
         // (or never used) and reads again only once the published tail
         // passes it. Its last two bytes are left alone: in the first entry
@@ -488,7 +512,7 @@ impl Ring {
     fn publish_bufs(&self) {
         // SAFETY: the buffer ring's tail, bytes 14..16 of its first entry,
         // which the kernel reads atomically.
-        let tail = unsafe { &*self.bufs.0.add(14).cast::<AtomicU16>() };
+        let tail = unsafe { &*self.pring.0.add(14).cast::<AtomicU16>() };
         tail.store(self.buf_tail, Ordering::Release);
     }
 }
