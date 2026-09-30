@@ -1,0 +1,16 @@
+{# @feature search #}
+{% extends "base.html" %}
+{% block title %}Search{% endblock %}
+{% block content %}
+<input id="q" placeholder="Search">
+<ul id="list">
+  {% for item in items %}
+    <li>{{ item.name }}</li>
+  {% endfor %}
+</ul>
+<script>
+  q.oninput = () => {
+    for (const li of list.children) li.hidden = !li.textContent.toLowerCase().includes(q.value.toLowerCase());
+  };
+</script>
+{% endblock %}

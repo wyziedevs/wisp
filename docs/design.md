@@ -254,8 +254,10 @@ async fn load(slug: String) -> Result<Data> {
   the page, or an `Option<Response>` to do that only sometimes.
 - A form that fails validation: the action returns `invalid(field,
   problem)`, and the page renders again, as a 422, with the form still
-  there: `cx.problem(field)` is what is wrong and `cx.input(field)` what was
-  typed. (Any other error from an action shows the error page.)
+  there: each of its inputs shows what was typed and what is wrong with it
+  (see [Actions](#actions-and-wispjs)); `cx.problem(field)` and
+  `cx.input(field)` are the same for markup that places them itself. (Any
+  other error from an action shows the error page.)
 
   ```html
   ---
@@ -267,9 +269,8 @@ async fn load(slug: String) -> Result<Data> {
       redirect("/welcome")
   }
   ---
-  <form method="post" action="?/signup">
-    <input name="email" value={cx.input("email")}>
-    {#if let Some(p) = cx.problem("email")}<p>{p}</p>{/if}
+  <form action="?/signup">
+    <input name="email">
   </form>
   ```
 
@@ -500,12 +501,16 @@ so `id` above is the action's `id: u64`.
 An action checks its input on its parameters, as a `FromJson` field does:
 `#[action] fn add(#[validate(len = 1..=100)] text: String)` (and `min`,
 `max`, `min_len`, `max_len`, `email`). A value that does not pass, or
-`return invalid("text", "…")`, shows the page again as a 422. There
-`{cx.problem("text")}` is the message (and nothing while there is none),
-and every text `<input name="…">` of the form without a `value` of its own
-shows what was sent (`wisp::rt::kept`); passwords, files, checkboxes,
-radios and hidden inputs are left alone, and so are the inputs of a
-component, which has no request. Flow:
+`return invalid("text", "…")`, shows the page again as a 422. There every
+text `<input name="…">` of the form (one posting to `?/name`, or a
+`method="post"` one posting to `default`) without a `value` of its own
+shows what was sent (`wisp::rt::kept`), followed by what was wrong with it,
+`<small class="problem">…</small>` (`wisp::rt::problem`); passwords, files,
+checkboxes, radios and hidden inputs are left alone, and so are the inputs
+of a component, which has no request. A file that writes `cx.problem(…)`
+anywhere places the messages itself (`{cx.problem("text")}` is the message,
+and nothing while there is none), and gets none added. A GET never has
+either, so they do not stop a page from being baked. Flow:
 
 1. Same-origin check: if `Origin` is present it must match `Host` (403 otherwise).
 2. The action runs. `redirect("/…")` → 303. Other errors → error page. For

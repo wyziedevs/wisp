@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{# @feature list #}
+{% block title %}Items{% endblock %}
+{% block content %}
+<ul>
+  {% for item in items %}
+    <li>{{ item.name }}: ${{ item.price }}</li>
+  {% endfor %}
+</ul>
+{% endblock %}
