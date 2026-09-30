@@ -6,7 +6,8 @@ compiled to Rust, form actions, optional browser reactivity, one binary.
 **Design rule (non-negotiable):** speed > flexibility > durability; developer
 happiness last; app code in as few tokens as possible (AI writes most code,
 so the cheapest, fastest, most flexible, durable framework wins). Wisp code:
-Carmack style, minimal deps, no `unsafe`, no dead code, zero warnings.
+Carmack style, minimal deps, no `unsafe` (but the Linux io_uring driver,
+`uring.rs`, and the edge exports), no dead code, zero warnings.
 
 ## Files
 

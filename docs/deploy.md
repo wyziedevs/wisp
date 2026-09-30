@@ -63,7 +63,10 @@ Writes a two-stage `Dockerfile` (built on `rust:slim`, run on
 `debian:stable-slim` with `HOST=0.0.0.0`) and a `.dockerignore`. Saved
 tables (`#[derive(Rest)]`, `Table::saved`) are kept in `/data` in the
 image: mount a volume there (`-v my-app-data:/data`) so they outlive the
-container.
+container. Docker's default seccomp profile refuses io_uring, so there the
+server runs on tokio's epoll rather than its io_uring (see docs/design.md);
+a profile that allows `io_uring_setup`, `io_uring_enter` and
+`io_uring_register` brings it back.
 
 ## Edge and serverless: `--target`
 
