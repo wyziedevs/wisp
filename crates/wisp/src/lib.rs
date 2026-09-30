@@ -4,9 +4,12 @@
 //! An app's `main.rs` is `wisp::main!();`; everything else is generated
 //! from `src/routes` by `wisp-build`.
 
-// No `unsafe` in a native build. The edge build's exports and imports are
-// the one exception (`edge.rs`).
-#![cfg_attr(not(target_arch = "wasm32"), forbid(unsafe_code))]
+// No `unsafe`, but for the edge build's exports and imports (`edge.rs`) and
+// the Linux server's io_uring (`uring.rs`).
+#![cfg_attr(
+    not(any(target_arch = "wasm32", target_os = "linux")),
+    forbid(unsafe_code)
+)]
 
 #[cfg(not(target_arch = "wasm32"))]
 mod channel;
@@ -36,6 +39,8 @@ mod table;
 pub mod test;
 #[cfg(feature = "tower")]
 pub mod tower;
+#[cfg(target_os = "linux")]
+mod uring;
 mod ws;
 
 #[cfg(not(target_arch = "wasm32"))]

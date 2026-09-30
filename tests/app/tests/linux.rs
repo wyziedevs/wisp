@@ -1,6 +1,7 @@
 //! Wisp runs on Linux, so what only Linux does is checked here, on the test
 //! app's binary: stopping on SIGTERM and a second signal, sockets and file
-//! descriptors, a restart on the same port, a client that vanishes.
+//! descriptors, a restart on the same port, a client that vanishes, and
+//! the two ways it takes connections (io_uring, and tokio's epoll).
 //!
 //! Other systems compile this file to nothing; the Linux run of the
 //! workspace's tests (`scratchpad/linux-test.sh`) is where it counts.
@@ -16,6 +17,217 @@ use std::time::{Duration, Instant};
 
 fn start() -> Server {
     common::start(&[])
+}
+
+/// The server's two ways of taking connections: io_uring (the default,
+/// where the kernel has it) and tokio's epoll.
+const BACKENDS: [&[(&str, &str)]; 2] = [&[], &[("WISP_IO", "epoll")]];
+
+/// Whether this kernel should serve through io_uring: Linux 6.1 or later,
+/// with io_uring not switched off.
+fn uring_expected() -> bool {
+    let release = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();
+    let mut v = release
+        .split(['.', '-'])
+        .map(|n| n.parse::<u32>().unwrap_or(0));
+    let version = (v.next().unwrap_or(0), v.next().unwrap_or(0));
+    let off = std::fs::read_to_string("/proc/sys/kernel/io_uring_disabled")
+        .is_ok_and(|s| s.trim() != "0");
+    version >= (6, 1) && !off
+}
+
+/// Whether the server has an io_uring open.
+fn on_uring(s: &Server) -> bool {
+    std::fs::read_dir(format!("/proc/{}/fd", s.child.id()))
+        .unwrap()
+        .flatten()
+        .any(|f| {
+            std::fs::read_link(f.path()).is_ok_and(|l| l.to_string_lossy().contains("io_uring"))
+        })
+}
+
+/// `answer` with its dates blanked: two servers' clocks tick apart.
+fn undated(answer: String) -> String {
+    answer
+        .split("\r\n")
+        .map(|l| {
+            if l.len() == 35 && l.starts_with("date: ") {
+                "date: -"
+            } else {
+                l
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\r\n")
+}
+
+#[test]
+fn io_uring_by_default_and_epoll_when_asked() {
+    let [uring, epoll] = BACKENDS.map(common::start);
+    if uring_expected() {
+        assert!(
+            on_uring(&uring),
+            "a kernel with io_uring, served without it"
+        );
+    }
+    assert!(!on_uring(&epoll));
+    for s in [&uring, &epoll] {
+        let mut c = BufReader::new(connect(s.port));
+        c.get_mut().write_all(GET).unwrap();
+        assert!(read_answer(&mut c).0.starts_with("HTTP/1.1 200"));
+    }
+    // A value it does not know stops it, saying why.
+    let out = common::command(&[("WISP_IO", "kqueue")])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        said.contains("WISP_IO is \"kqueue\", which is not epoll or uring"),
+        "{said}"
+    );
+}
+
+#[test]
+fn both_backends_send_the_same_bytes() {
+    let servers = BACKENDS.map(common::start);
+    let requests: [&[u8]; 11] = [
+        b"GET / HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n",
+        b"HEAD / HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n",
+        b"GET /nope HTTP/1.1\r\nhost: x\r\naccept: text/html\r\nconnection: close\r\n\r\n",
+        b"GET /files/Card.wisp HTTP/1.0\r\n\r\n",
+        b"GET /lines HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n",
+        b"GET /events HTTP/1.1\r\nhost: x\r\n\r\nGET / HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n",
+        b"POST /echo HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\n\r\nhelloPOST /echo HTTP/1.1\r\nhost: x\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n3\r\nabc\r\n0\r\n\r\n",
+        b"POST /echo HTTP/1.1\r\nhost: x\r\nexpect: 100-continue\r\ncontent-length: 2\r\nconnection: close\r\n\r\nhi",
+        b"GET /\x01 HTTP/1.1\r\n\r\n",
+        b"POST /echo HTTP/1.1\r\nhost: x\r\ncontent-length: 70000\r\n\r\n",
+        b"GET / HTTP/1.1\r\nhost: x\r\n\r\nGET /nope HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n",
+    ];
+    for raw in requests {
+        let [a, b] = servers.each_ref().map(|s| undated(s.send(raw)));
+        assert!(!a.is_empty(), "{:?}", String::from_utf8_lossy(raw));
+        assert_eq!(a, b, "{:?}", String::from_utf8_lossy(raw));
+    }
+}
+
+#[test]
+fn pipelined_requests_come_back_in_order_and_the_connection_stays() {
+    for env in BACKENDS {
+        let s = common::start(env);
+        let mut raw = Vec::new();
+        for i in 0..300 {
+            let n = i.to_string();
+            raw.extend_from_slice(
+                format!(
+                    "POST /echo HTTP/1.1\r\nhost: x\r\ncontent-length: {}\r\n\r\n{n}",
+                    n.len()
+                )
+                .as_bytes(),
+            );
+        }
+        let mut c = BufReader::new(connect(s.port));
+        c.get_mut().write_all(&raw).unwrap();
+        for i in 0..300 {
+            let (head, body) = read_answer(&mut c);
+            assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+            assert_eq!(body, format!("{}:{i}", i.to_string().len()), "{env:?}");
+        }
+        // Kept alive: a quiet moment, then more.
+        std::thread::sleep(Duration::from_millis(50));
+        for _ in 0..3 {
+            c.get_mut().write_all(GET).unwrap();
+            assert!(read_answer(&mut c).0.starts_with("HTTP/1.1 200"));
+        }
+    }
+}
+
+#[test]
+fn megabytes_of_answers_reach_a_client_that_reads_slowly() {
+    // Pipelined echoes sent while the client does not read yet: the server's
+    // sends fill the socket and go out in parts, and it stops receiving
+    // until it has answered what it has.
+    for env in BACKENDS {
+        let s = common::start(env);
+        let (n, body) = (40, vec![b'x'; 60_000]);
+        let c = connect(s.port);
+        let mut w = c.try_clone().unwrap();
+        let writer = std::thread::spawn(move || {
+            for _ in 0..n {
+                let head = format!(
+                    "POST /echo HTTP/1.1\r\nhost: x\r\ncontent-length: {}\r\n\r\n",
+                    body.len()
+                );
+                w.write_all(head.as_bytes()).unwrap();
+                w.write_all(&body).unwrap();
+            }
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        let mut c = BufReader::new(c);
+        for i in 0..n {
+            let (head, got) = read_answer(&mut c);
+            assert!(
+                head.starts_with("HTTP/1.1 200"),
+                "{env:?} answer {i}: {head}"
+            );
+            assert_eq!(got.len(), "60000:".len() + 60_000);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        writer.join().unwrap();
+    }
+}
+
+#[test]
+fn a_request_sent_a_byte_at_a_time() {
+    for env in BACKENDS {
+        let s = common::start(env);
+        let mut c = BufReader::new(connect(s.port));
+        c.get_ref().set_nodelay(true).unwrap();
+        for b in b"POST /echo HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\n\r\nhello" {
+            c.get_mut().write_all(&[*b]).unwrap();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let (head, body) = read_answer(&mut c);
+        assert!(head.starts_with("HTTP/1.1 200"), "{env:?} {head}");
+        assert_eq!(body, "5:hello");
+    }
+}
+
+#[test]
+fn a_large_upload() {
+    for env in BACKENDS {
+        let s = common::start(env);
+        let photo = vec![7u8; 3 * 1024 * 1024 + 17];
+        let mut b = b"--XX\r\ncontent-disposition: form-data; name=\"title\"\r\n\r\nCat\r\n--XX\r\ncontent-disposition: form-data; name=\"photo\"; filename=\"cat.png\"\r\ncontent-type: image/png\r\n\r\n".to_vec();
+        b.extend_from_slice(&photo);
+        b.extend_from_slice(b"\r\n--XX--\r\n");
+        let r = s.request(
+            "POST",
+            "/upload",
+            "content-type: multipart/form-data; boundary=XX\r\n",
+            &b,
+        );
+        let saved = format!("cat.png: {} bytes of image/png", photo.len());
+        assert!(r.contains(&saved), "{env:?} {}", &r[..r.len().min(300)]);
+    }
+}
+
+#[test]
+fn hundreds_of_connections_at_once() {
+    for env in BACKENDS {
+        let s = common::start(env);
+        let mut conns: Vec<_> = (0..400).map(|_| BufReader::new(connect(s.port))).collect();
+        for _ in 0..3 {
+            for c in &mut conns {
+                c.get_mut().write_all(GET).unwrap();
+            }
+            for c in &mut conns {
+                assert!(read_answer(c).0.starts_with("HTTP/1.1 200"), "{env:?}");
+            }
+        }
+    }
 }
 
 /// The app on `port`, with a limit on its open files when given one
@@ -127,21 +339,23 @@ const GET: &[u8] = b"GET / HTTP/1.1\r\nhost: x\r\n\r\n";
 
 #[test]
 fn sigterm_answers_the_request_under_way_and_exits_cleanly() {
-    let mut s = start();
-    let mut c = connect(s.port);
-    c.write_all(b"POST /echo HTTP/1.1\r\nhost: x\r\ncontent-length: 4\r\n\r\nab")
-        .unwrap();
-    wait_until_read(s.port, &c);
-    signal(&s, "TERM");
-    // No new connection, but the one with a request under way finishes it, and is told to close.
-    refuses_soon(s.port);
-    c.write_all(b"cd").unwrap();
-    let mut answer = String::new();
-    c.read_to_string(&mut answer).unwrap();
-    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
-    assert!(answer.contains("connection: close"), "{answer}");
-    assert!(answer.ends_with("4:abcd"), "{answer}");
-    assert!(exits_within(&mut s.child, 5).success());
+    for env in BACKENDS {
+        let mut s = common::start(env);
+        let mut c = connect(s.port);
+        c.write_all(b"POST /echo HTTP/1.1\r\nhost: x\r\ncontent-length: 4\r\n\r\nab")
+            .unwrap();
+        wait_until_read(s.port, &c);
+        signal(&s, "TERM");
+        // No new connection, but the one with a request under way finishes it, and is told to close.
+        refuses_soon(s.port);
+        c.write_all(b"cd").unwrap();
+        let mut answer = String::new();
+        c.read_to_string(&mut answer).unwrap();
+        assert!(answer.starts_with("HTTP/1.1 200"), "{env:?} {answer}");
+        assert!(answer.contains("connection: close"), "{answer}");
+        assert!(answer.ends_with("4:abcd"), "{answer}");
+        assert!(exits_within(&mut s.child, 5).success());
+    }
 }
 
 #[test]
@@ -191,8 +405,14 @@ fn a_second_signal_does_not_wait_for_a_request_that_never_ends() {
 
 #[test]
 fn streams_end_properly_and_sockets_hear_the_server_is_going_away() {
+    for env in BACKENDS {
+        streams_end_properly_on(env);
+    }
+}
+
+fn streams_end_properly_on(env: &[(&str, &str)]) {
     // A stream with no end of its own: it is ended, and its last chunk sent.
-    let mut s = start();
+    let mut s = common::start(env);
     let mut c = BufReader::new(connect(s.port));
     c.get_mut()
         .write_all(b"GET /t/forever HTTP/1.1\r\nhost: x\r\n\r\n")
@@ -216,7 +436,7 @@ fn streams_end_properly_and_sockets_hear_the_server_is_going_away() {
     assert!(exits_within(&mut s.child, 5).success());
 
     // A WebSocket gets a close frame, code 1001, and then the end.
-    let mut s = start();
+    let mut s = common::start(env);
     let mut c = BufReader::new(connect(s.port));
     c.get_mut()
         .write_all(
@@ -270,7 +490,13 @@ fn open_files(s: &Server) -> usize {
 
 #[test]
 fn every_way_a_connection_can_end_gives_its_descriptor_back() {
-    let s = start();
+    for env in BACKENDS {
+        descriptors_come_back_on(env);
+    }
+}
+
+fn descriptors_come_back_on(env: &[(&str, &str)]) {
+    let s = common::start(env);
     let mut warm = BufReader::new(connect(s.port));
     warm.get_mut().write_all(GET).unwrap();
     read_answer(&mut warm);
@@ -334,7 +560,8 @@ fn every_way_a_connection_can_end_gives_its_descriptor_back() {
 
 #[test]
 fn running_out_of_descriptors_pauses_accepting_and_no_more() {
-    // A process that may open 48 files: the listener, the runtimes and about thirty connections.
+    // A process that may open 48 files: the listeners, the runtimes (and rings) and about thirty
+    // connections.
     let s = start_at("0", Some(48));
     let mut conns: Vec<TcpStream> = (0..70).map(|_| connect(s.port)).collect();
     // One that was accepted is served, however many are waiting behind it.
