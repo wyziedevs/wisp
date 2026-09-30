@@ -368,6 +368,10 @@ fn schema(t: &str, types: &[TypeItem], schemas: &mut Vec<(String, J)>) -> J {
     }
     match last_segment(t) {
         "Option" | "Box" | "Arc" | "Rc" => schema(arg(), types, schemas),
+        // `wisp::Email`, unless the file has one of its own.
+        "Email" if types.iter().all(|x| x.name != "Email") => {
+            J::obj([("type", J::str("string")), ("format", J::str("email"))])
+        }
         "Vec" | "VecDeque" | "BTreeSet" | "HashSet" => array(schema(arg(), types, schemas)),
         "BTreeMap" | "HashMap" => {
             let value = arg().split_once(',').map_or("", |(_, v)| v);
@@ -703,6 +707,7 @@ fn ts(t: &str, types: &[TypeItem], decls: &mut Vec<(String, String)>) -> String 
     }
     match last_segment(t) {
         "Box" | "Arc" | "Rc" => ts(arg(), types, decls),
+        "Email" if types.iter().all(|x| x.name != "Email") => "string".into(),
         "Option" => format!("{} | null", ts(arg(), types, decls)),
         "Row" if inner(t).is_some() => format!("{{ id: number }} & {}", ts(arg(), types, decls)),
         "Vec" | "VecDeque" | "BTreeSet" | "HashSet" => array(ts(arg(), types, decls)),
@@ -892,6 +897,9 @@ mod tests {
             "{\"allOf\":[{\"type\":\"object\",\"required\":[\"id\"],\"properties\":{\"id\":{\"type\":\"integer\",\"minimum\":0}}},{\"$ref\":\"#/components/schemas/Note\"}]}"
         );
         assert_eq!(schemas[0].0, "Note");
+        let email = text(&schema("Option<Email>", &items.types, &mut schemas));
+        assert_eq!(email, "{\"type\":\"string\",\"format\":\"email\"}");
+        assert_eq!(ts("Email", &items.types, &mut Vec::new()), "string");
     }
 
     #[test]

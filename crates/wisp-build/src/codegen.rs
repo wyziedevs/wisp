@@ -304,6 +304,128 @@ fn unkeep(nodes: &mut [Node]) {
     }
 }
 
+/// `{#each db::items().await as item}` in a page: each markup expression
+/// that awaits, outside any block, becomes a statement that runs before the
+/// page renders (`let __wisp_a0 = db::items().await;`), in order, and the
+/// markup reads its name. Returned as the statement and its line. One inside
+/// a block, which may not run, is an error: `line: msg`.
+fn hoist_awaits(nodes: &mut [Node], out: &mut Vec<(String, u32)>) -> Result<(), String> {
+    fn take(code: &mut Code, out: &mut Vec<(String, u32)>) {
+        if rust_scan::awaits(&code.src) {
+            let name = format!("__wisp_a{}", out.len());
+            out.push((format!("let {name} = {};", code.src), code.line));
+            code.src = name;
+        }
+    }
+    let inside = |line: u32| {
+        format!(
+            "{line}: `.await` in markup runs before the page renders, so it goes outside any block \
+             (`{{#each db::items().await as item}}`); inside one, await in the `---` block and name the value"
+        )
+    };
+    for n in nodes {
+        // What stays of it is inside a block.
+        let rest: &[Node] = match n {
+            Node::Expr(code)
+            | Node::Html(code)
+            | Node::Attr { code, .. }
+            | Node::Bool { code, .. } => {
+                take(code, out);
+                &[]
+            }
+            Node::Each { iter, .. } => {
+                take(iter, out);
+                std::slice::from_ref(n)
+            }
+            Node::If { branches, .. } => {
+                take(&mut branches[0].0, out);
+                std::slice::from_ref(n)
+            }
+            Node::Match { scrutinee, .. } => {
+                take(scrutinee, out);
+                std::slice::from_ref(n)
+            }
+            Node::Head(children) => {
+                hoist_awaits(children, out)?;
+                &[]
+            }
+            _ => std::slice::from_ref(n),
+        };
+        if let Some(line) = first_await(rest) {
+            return Err(inside(line));
+        }
+    }
+    Ok(())
+}
+
+/// The line of the first markup expression in `nodes` that awaits.
+fn first_await(nodes: &[Node]) -> Option<u32> {
+    let code = |c: &Code| rust_scan::awaits(&c.src).then_some(c.line);
+    fn all<'a>(mut bs: impl Iterator<Item = &'a Vec<Node>>) -> Option<u32> {
+        bs.find_map(|b| first_await(b))
+    }
+    nodes.iter().find_map(|n| match n {
+        Node::Expr(c) | Node::Html(c) | Node::Const(c) => code(c),
+        Node::Attr { code: c, .. } | Node::Bool { code: c, .. } => code(c),
+        Node::RenderSnippet { args, .. } => code(args),
+        Node::Snippet { body, .. } | Node::Head(body) => first_await(body),
+        Node::If {
+            branches,
+            otherwise,
+        } => branches
+            .iter()
+            .find_map(|(c, b)| code(c).or_else(|| first_await(b)))
+            .or_else(|| all(otherwise.iter())),
+        Node::Each {
+            iter,
+            body,
+            otherwise,
+            ..
+        } => code(iter)
+            .or_else(|| first_await(body))
+            .or_else(|| all(otherwise.iter())),
+        Node::Match { scrutinee, arms } => code(scrutinee).or_else(|| {
+            arms.iter()
+                .find_map(|(c, b)| code(c).or_else(|| first_await(b)))
+        }),
+        Node::Component {
+            props, children, ..
+        } => props
+            .iter()
+            .find_map(|p| match &p.value {
+                template::PropValue::Expr(c) => code(c),
+                _ => None,
+            })
+            .or_else(|| all(children.iter())),
+        Node::Client(branches) => all(branches.iter().map(|(_, b)| b)),
+        _ => None,
+    })
+}
+
+/// `stmts` (a block's statements, as long as the file) with each of
+/// `lets` put on its line, so rustc's errors point at the markup.
+fn with_lets(stmts: Option<String>, lets: &[(String, u32)]) -> Option<String> {
+    if lets.is_empty() {
+        return stmts;
+    }
+    let mut lines: Vec<String> = stmts
+        .unwrap_or_default()
+        .split('\n')
+        .map(String::from)
+        .collect();
+    for (code, line) in lets {
+        for (j, part) in code.split('\n').enumerate() {
+            let at = *line as usize - 1 + j;
+            if lines.len() <= at {
+                lines.resize(at + 1, String::new());
+            }
+            lines[at].push(' ');
+            lines[at].push_str(part);
+        }
+    }
+    Some(lines.join("\n"))
+}
+
 pub fn generate(input: &Input) -> Result<String, String> {
     generate_all(input).map(|(code, _)| code)
 }
@@ -558,6 +680,11 @@ impl<'a> Project<'a> {
                     "{rel}: a component takes what it shows as {{@props …}}; a `---` block of Rust is for pages and layouts"
                 ));
             }
+            if let Some(line) = first_await(&t.nodes) {
+                return Err(format!(
+                    "{rel}:{line}: a component renders without waiting, so its markup cannot `.await`; await in the page and pass the value as a prop"
+                ));
+            }
             unkeep(&mut t.nodes);
             let rune = match &t.script {
                 Some(s) => js::props_rune(&s.src).map_err(|(off, msg)| {
@@ -600,6 +727,12 @@ impl<'a> Project<'a> {
             let dir = self.tree.layouts[i].dir.clone();
             let file = dir.join("+layout.wisp");
             let (t, front, _) = self.parse(&file)?;
+            if let Some(line) = first_await(&t.nodes) {
+                return Err(format!(
+                    "{}:{line}: a layout renders without waiting, so its markup cannot `.await`; await in the page's markup or `---` block",
+                    self.rel(&file)
+                ));
+            }
             if !t.uses_children {
                 return Err(format!(
                     "{}: a layout must contain {{@render children()}}",
@@ -770,9 +903,20 @@ impl<'a> Project<'a> {
         let r = &self.tree.routes[i];
         let (dir, page_rs, page_js) = (r.dir.clone(), r.page_rs, r.page_js);
         let file = dir.join("+page.wisp");
-        let (t, front, src) = self.parse(&file)?;
+        let (mut t, front, src) = self.parse(&file)?;
         check_no_children(&t, &self.rel(&file))?;
-        let lg = self.logic(page_rs.then(|| dir.join("+page.rs")), &file, front)?;
+        let mut lg = self.logic(page_rs.then(|| dir.join("+page.rs")), &file, front)?;
+        // `.await` in the markup: statements, after the block's own.
+        let mut lets = Vec::new();
+        hoist_awaits(&mut t.nodes, &mut lets).map_err(|e| format!("{}:{e}", self.rel(&file)))?;
+        if let (Some((_, line)), Some(load)) = (lets.first(), lg.items.function("load")) {
+            return Err(format!(
+                "{}:{line}: `.await` in markup runs with the page's statements, and this page has `fn load` (line {}); await in `load`",
+                self.rel(&file),
+                load.line
+            ));
+        }
+        lg.stmts = with_lets(lg.stmts, &lets);
         let rs = lg.file.clone().unwrap_or_else(|| dir.join("+page.rs"));
         let mut shims = Vec::new();
         self.body_limit(info, &lg.items, &rs, format!("page_{i}"), &mut shims)?;
@@ -4042,7 +4186,7 @@ struct JsFile {
 /// instance; the rest are live.js's exports, handed over so a script needs
 /// no import for them.
 const HELPERS: &str = "tick, untrack, setTimeout, setInterval, requestAnimationFrame, addEventListener, listen, onMount, onDestroy, effect, watch, \
-                       derived, store, persisted, emit, setContext, getContext, goto, invalidate, page, navigating, enhance, \
+                       derived, store, persisted, emit, setContext, getContext, goto, invalidate, matches, page, navigating, enhance, \
                        context, portal, __wisp_s, __wisp_r, __wisp_d, __wisp_e, __wisp_ep, __wisp_snap, __wisp_props, __wisp_eq";
 
 /// What `client` needs to know beyond the template.
@@ -4108,8 +4252,28 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
     }
     let at = |line: u32, col: u32, msg: String| format!("{}:{line}:{col}: {msg}", t.rel);
     let server_load = matches!(t.user, Some((_, true)));
-    let server: Vec<String> = match t.kind {
-        Kind::Page | Kind::Layout if server_load => vec!["data".into()],
+    let mut server: Vec<String> = match t.kind {
+        // `data`, and each of its names alone (`items` for `data.items`),
+        // but when a `+page.js` makes `data` in the browser.
+        Kind::Page | Kind::Layout if server_load => {
+            let mut names = vec!["data".to_string()];
+            if cx.load.is_none() {
+                let lets = t.stmts.as_ref().map(|(s, binds)| {
+                    let mut n = rust_scan::let_names(s);
+                    n.extend(rust_scan::let_names(&binds.join("\n")));
+                    n
+                });
+                let fields = t.data.iter().map(|(n, _)| n.clone());
+                for n in lets.unwrap_or_default().into_iter().chain(fields) {
+                    let own = n.starts_with("__") || matches!(n.as_str(), "cx" | "children");
+                    let js_own = js::is_reserved(&n) || js::is_global(&n);
+                    if !own && !js_own && !names.contains(&n) {
+                        names.push(n);
+                    }
+                }
+            }
+            names
+        }
         Kind::Component => tt
             .props
             .iter()
@@ -4164,6 +4328,14 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
         None => original,
     };
     let declared = js::declarations(src);
+    let imported = js::import_names(src, &js::imports(src));
+    // A name a page's script declares is the script's, as a name its Rust
+    // has too: `let guess = data.guess`.
+    if t.kind != Kind::Component {
+        server.retain(|n| {
+            n == "data" || !(declared.iter().any(|(d, _)| d == n) || imported.contains(n))
+        });
+    }
     // A server name the script declares too could mean either.
     let clash = |name: &str| -> Result<(), String> {
         match declared.iter().find(|(n, _)| n == name) {
@@ -4313,7 +4485,6 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
         .collect();
     // `bind:value="q"` with no `q` anywhere declares it: `let q` at the end
     // of the script (or as the whole script), so offsets in it hold.
-    let imported = js::import_names(src, &js::imports(src));
     let mut src = src.to_string();
     let mut bound: Vec<&str> = Vec::new();
     for (g, scope) in tt.groups.iter().zip(&scopes) {
@@ -5370,6 +5541,106 @@ mod tests {
     }
 
     #[test]
+    fn markup_awaits() {
+        let page = |src: &'static str| ("src/routes/+page.wisp", src);
+        let code = app(
+            "await-ok",
+            &[page(
+                "---\nlet n = 1;\n---\n<h1>{db::title().await}</h1>\n\n{#each db::items(n)\n  .await as i}{i}{/each}",
+            )],
+        )
+        .unwrap();
+        for want in [
+            "        let n = 1; // src/routes/+page.wisp:2",
+            " let __wisp_a0 = db::title().await; // src/routes/+page.wisp:4",
+            " let __wisp_a1 = db::items(n) // src/routes/+page.wisp:6",
+            "  .await; // src/routes/+page.wisp:7",
+            "__wisp_a0",
+            "__wisp_a1",
+        ] {
+            assert!(code.contains(want), "{want}\n{code}");
+        }
+        // No block: the page still awaits, before it renders.
+        let bare = app("await-bare", &[page("<p>{db::n().await}</p>")]).unwrap();
+        assert!(
+            bare.contains("let __wisp_a0 = db::n().await; // src/routes/+page.wisp:1"),
+            "{bare}"
+        );
+        let err = |name, files: &[(&str, &str)]| app(name, files).unwrap_err();
+        assert_eq!(
+            err("await-in", &[page("{#if ok}\n{db::n().await}{/if}")]),
+            "src/routes/+page.wisp:2: `.await` in markup runs before the page renders, so it goes outside any block \
+             (`{#each db::items().await as item}`); inside one, await in the `---` block and name the value"
+        );
+        assert!(
+            err(
+                "await-load",
+                &[
+                    page("{db::n().await}"),
+                    (
+                        "src/routes/+page.rs",
+                        "struct Data;\nfn load() -> Data { Data }"
+                    )
+                ]
+            )
+            .starts_with(
+                "src/routes/+page.wisp:1: `.await` in markup runs with the page's statements"
+            )
+        );
+        assert!(
+            err(
+                "await-layout",
+                &[("src/routes/+layout.wisp", "{db::n().await}<slot />")]
+            )
+            .starts_with("src/routes/+layout.wisp:1: a layout renders without waiting")
+        );
+        assert!(
+            err(
+                "await-comp",
+                &[(
+                    "src/components/Card.wisp",
+                    "{@props n: u8}\n<p>{db::n().await}</p>"
+                )]
+            )
+            .starts_with("src/components/Card.wisp:2: a component renders without waiting")
+        );
+        // In a string, `.await` is text.
+        let text = app("await-text", &[page("<p>{\"x.await\"}</p>")]).unwrap();
+        assert!(!text.contains("__wisp_a0"), "{text}");
+    }
+
+    #[test]
+    fn server_names_in_browser_code() {
+        let code = app(
+            "bare-names",
+            &[(
+                "src/routes/+page.wisp",
+                "---\nlet items = vec![1u8];\nlet guess = 2u8;\n---\n\
+                 <p :text=\"items.length\"></p><p :text=\"data.guess\"></p>\n\
+                 <script>let guess = data.guess\nlet n = items[0]</script>",
+            )],
+        )
+        .unwrap();
+        // `items` is sent under its own name; the script's `guess` is its
+        // own, and `data.guess` the server's.
+        for want in [
+            "::wisp::rt::json(__b, &(items));",
+            "const { data, items } = __wisp_props(__wisp_p, [\\\"data\\\", \\\"items\\\"])",
+            "let guess = __wisp_s(data.v.guess)",
+        ] {
+            assert!(code.contains(want), "{want}\n{code}");
+        }
+    }
+
+    #[test]
+    fn helpers_come_from_the_runtime() {
+        // `matches` needs no import: every module's function is handed it.
+        let live = include_str!("../../wisp/src/client/live.js");
+        assert!(HELPERS.contains(" matches,"));
+        assert!(live.contains("export const matches = ") && live.contains("  matches,"));
+    }
+
+    #[test]
     fn page_blocks() {
         let page = |src: &'static str| ("src/routes/blog/[slug]/+page.wisp", src);
         let code = app(
@@ -5388,7 +5659,7 @@ mod tests {
             "    let n = slug.len(); // src/routes/blog/[slug]/+page.wisp:2",
             "    fn like() { cx.flash(\"x\"); } // src/routes/blog/[slug]/+page.wisp:5",
             "        let s = \"a\nb\"; // src/routes/blog/[slug]/+page.wisp:7",
-            "pub async fn like(cx: &mut ::wisp::Cx) -> ::wisp::Result<Option<::wisp::Response>> { Ok(::wisp::rt_traits::Answer::answer(super::like(cx))) }",
+            "pub async fn like(cx: &mut ::wisp::Cx) -> ::wisp::Result<Option<::wisp::Response>> { Ok(::wisp::rt_traits::Answer::answer(super::like(cx)?)) }",
             "pub async fn render(cx: &mut ::wisp::Cx, __o: &mut ::wisp::Out, __wrap:",
             "page_0::tpl_page_0::render(cx, __o, |__o: &mut ::wisp::Out, cx: &::wisp::Cx, __p: &dyn Fn(&mut ::wisp::Out)| layout_0::tpl_layout_0::render(__o, cx, &|__o: &mut ::wisp::Out| __p(__o))).await",
             "    const A: u8 = 1; // src/routes/+layout.wisp:2",
@@ -5853,7 +6124,7 @@ mod tests {
             "let __a0 = ::wisp::rt_traits::FromInput::get(cx, \"id\")?; \
              let __a1: Option<String> = ::wisp::rt_traits::FromInput::get(cx, \"q\")?; Ok(Loaded(super::load(__a0, __a1.as_deref())))",
             "let __a1: String = ::wisp::rt_traits::FromInput::get(cx, \"text\")?; let __a2 = ::wisp::rt_traits::FromInput::get(cx, \"tags\")?; \
-             let __a3 = ::wisp::rt_traits::FromInput::get(cx, \"on\")?; Ok(::wisp::rt_traits::Answer::answer(super::add(cx, &__a1, __a2, __a3).await))",
+             let __a3 = ::wisp::rt_traits::FromInput::get(cx, \"on\")?; Ok(::wisp::rt_traits::Answer::answer(super::add(cx, &__a1, __a2, __a3).await?))",
             "(&&&Ret::new(super::get(__a0))).respond()",
             "(&&&Ret::new(super::post(__a0))).respond()",
             "(&&&Ret::new(super::delete())).respond()",

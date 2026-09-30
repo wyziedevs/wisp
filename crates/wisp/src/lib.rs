@@ -53,6 +53,7 @@ pub use cx::{CookieOptions, Cx, Method, SameSite};
 pub use export::{Entry, ExportRoute, export};
 pub use form::{File, Form};
 pub use http::{Body, Reply, Request, handle};
+pub use input::Email;
 pub use json::{FromJson, Value, from_json, to_json};
 #[cfg(not(target_arch = "wasm32"))]
 pub use limit::RateLimit;
@@ -82,8 +83,8 @@ pub mod prelude {
     #[cfg(not(target_arch = "wasm32"))]
     pub use crate::RateLimit;
     pub use crate::{
-        Cookie, CookieOptions, Cx, Error, FromJson, Json, Method, OrStatus, Response, Rest, Result,
-        Row, SameSite, Shared, Table, Value, action, error, invalid, redirect,
+        Cookie, CookieOptions, Cx, Email, Error, FromJson, Json, Method, OrStatus, Response, Rest,
+        Result, Row, SameSite, Shared, Table, Value, action, error, invalid, redirect,
     };
 }
 

@@ -21,17 +21,31 @@ with the workspace, and its tests check each feature.
 
 | Stack | list | form | api | layout | search | data | setup | total | chars / 4 | files |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| **Wisp** | 74 | 127 | 35 | 60 | 120 | 115 | 0 | **531** | 321 | 6 |
-| Wisp, before this round | 74 | 149 | 35 | 60 | 134 | 115 | 0 | 567 | 341 | 6 |
+| **Wisp** | 60 | 118 | 35 | 60 | 106 | 115 | 0 | **494** | 298 | 6 |
+| Wisp, before this round | 74 | 127 | 35 | 60 | 120 | 115 | 0 | 531 | 321 | 6 |
+| Wisp, two rounds ago | 74 | 149 | 35 | 60 | 134 | 115 | 0 | 567 | 341 | 6 |
 | SvelteKit 2 | 128 | 396 | 57 | 83 | 192 | 72 | 0 | 928 | 596 | 9 |
 | Next.js 15 | 107 | 363 | 44 | 108 | 241 | 71 | 0 | 934 | 674 | 8 |
 | Axum 0.8 + askama | 145 | 455 | 29 | 104 | 217 | 123 | 257 | 1330 | 924 | 7 |
 | Actix Web 4 + tera | 164 | 519 | 46 | 104 | 237 | 123 | 264 | 1457 | 994 | 7 |
 
 Wisp's `data` is longer than JavaScript's: a Rust type with its fields'
-types and `pub`s. Everything else is shorter, the form most of all: its
-checks are attributes with messages of their own, and its markup is the
-inputs alone. What changed for it:
+types and `pub`s. Everything else is shorter, the form most of all. Each
+cut of this round makes the code say less of what the framework knows, not
+say it more tersely:
+
+| Was | Now | Saves |
+|---|---|---|
+| `---` `let items = db::items().await;` `---`, then `{#each items as item}` | `{#each db::items().await as item}`: an `.await` in a page's markup, outside any block, runs before the page renders | 14 on the list |
+| `data.items.filter((i) => i.name.toLowerCase().includes(q.toLowerCase()))` | `items.filter((i) => matches(i.name, q))`: a page's Rust names are browser values by name, and `matches` is the case-blind test a live search wants | 14 on the search |
+| `#[validate(email)] email: String` | `email: Email`: a parameter's type checks it, and one that does not parse is a 422 by field, as a rule's is | 7 |
+| `fn default(..) -> Result { …; redirect("/") }`, `Ok(())` at the end | `fn default(..) { …; redirect("/") }`: an action without `->` returns `Result` | 2, and `Ok(())` |
+
+Of what is left, 60 tokens are file paths, 115 the Rust type and data, and
+the markup is the markup: the forms, the nav and the titles every stack
+writes. A convention for any of them would cost more to read than it saves.
+
+The round before:
 
 | Was | Now | Saves |
 |---|---|---|

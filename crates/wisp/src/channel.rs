@@ -53,10 +53,32 @@ impl Channel {
         self.0.receiver_count()
     }
 
+    /// What is sent from now on, as server-sent events, until the client
+    /// leaves: `fn get() -> Response { wisp::channel("notes").events() }`.
+    /// Subscribed before it answers, so nothing sent after is missed.
+    pub fn events(&self) -> crate::Response {
+        let mut sub = self.subscribe();
+        crate::Response::events(|out| async move {
+            while let Some(message) = sub.recv().await {
+                out.event(&message).await?;
+            }
+            Ok(())
+        })
+    }
+
+    /// A WebSocket joined to the channel (see [`Channel::connect`]): a chat
+    /// room is `fn get() -> Response { wisp::channel("chat").websocket() }`.
+    pub fn websocket(&self) -> crate::Response {
+        let me = self.clone();
+        crate::Response::websocket(|ws| async move {
+            me.connect(&ws).await?;
+            Ok(())
+        })
+    }
+
     /// Joins `ws` to the channel until the client leaves: each text message
     /// it sends goes to the channel, and each message on the channel (its
-    /// own too) goes to it. A chat room is
-    /// `Response::websocket(|ws| async move { wisp::channel("chat").connect(&ws).await?; Ok(()) })`.
+    /// own too) goes to it; [`Channel::websocket`] answers with one.
     pub async fn connect(&self, ws: &WebSocket) -> Result<(), Gone> {
         enum Next {
             Client(Option<crate::Message>),

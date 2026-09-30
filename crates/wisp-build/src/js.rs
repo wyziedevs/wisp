@@ -88,6 +88,27 @@ pub fn is_reserved(word: &str) -> bool {
     RESERVED.contains(&word) || matches!(word, "with" | "yield")
 }
 
+/// A browser global a page's code may mean even when its Rust has a name
+/// like it (`let location = …`): that one is read as `data.location`.
+pub fn is_global(word: &str) -> bool {
+    matches!(
+        word,
+        "window"
+            | "document"
+            | "console"
+            | "location"
+            | "history"
+            | "navigator"
+            | "event"
+            | "fetch"
+            | "alert"
+            | "confirm"
+            | "prompt"
+            | "performance"
+            | "globalThis"
+    )
+}
+
 /// After these words an expression starts, so `/` there begins a regex.
 const BEFORE_EXPRESSION: [&str; 14] = [
     "return",

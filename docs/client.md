@@ -141,8 +141,8 @@ parts it mentions.
 
 ```html
 <script>
-  let guess = data.guess          // data.* comes from `load`
-  const total = data.items.length
+  let guess = data.guess          // the script's own `guess`, from the server's
+  const total = items.length      // the page's `let items` (or `data.items`)
 </script>
 
 {#each keys as key}
@@ -150,9 +150,25 @@ parts it mentions.
 {/each}
 ```
 
-- `data.x.y` in pages and layouts.
+- A page's or layout's Rust names (its block's `let`s, route parameters,
+  `Data` fields) by name, or as `data.x.y`. A name the script declares is
+  the script's; a browser global (`document`, `location`, `event`, `fetch`…)
+  stays the browser's, and its Rust value is `data.location`.
 - Props in components.
 - Loop, `if let` and `{@const}` values used in a directive.
+
+A live search is then the input and the list:
+
+```html
+---
+let items = db::items().await;
+---
+<input bind:value="q" placeholder="Search">
+{:#each items.filter((i) => matches(i.name, q)) as item}<p>{:item.name}</p>{:/each}
+```
+
+`matches(text, q)` (no import) is whether `text` has `q` in it, whatever
+the case; an empty `q` matches everything.
 
 Values are sent as JSON through the `wisp::Json` trait. It is implemented for
 numbers, strings, `bool`, `Option`, `Vec`, arrays, tuples and maps. For your
@@ -164,7 +180,7 @@ struct Item { name: String, price: u32 }
 ```
 
 A value that can't be sent is a compile error that names `wisp::Json`. A
-name that is both a Rust value and a script variable is a build error. A
+component's prop that is also a script variable is a build error. A
 parameter or a local variable of the same name is just that: in
 `items.map(data => data.x)` or `function f({ data }) {}`, `data` is not the
 page's, and nothing is sent for it.
@@ -270,7 +286,7 @@ renders it into the page: people see it before the JavaScript loads, and
 without JavaScript at all. The browser then takes those nodes over (no
 flicker, nothing drawn twice) and keeps them live. The server knows:
 
-- server values: `data.x`, props, Rust loop values;
+- server values: a page's Rust names (`items`, `data.x`), props, Rust loop values;
 - literals: `0`, `'text'`, `true`, `null`, `[1, 2]`, `{ id: 1 }`;
 - script variables first set to one of those: `let todos = data.todos`;
 - an `{:#each}`'s item and index, inside it;
@@ -464,6 +480,7 @@ Inside scripts:
 ```js
 goto('/login')                       // or goto(url, { replace: true })
 invalidate()                         // run this page's load again
+matches(item.name, q)                // text has q in it, whatever the case
 
 page.value.url.pathname              // page: { url, status, form }
 navigating.value                     // { from, to } while loading, else null

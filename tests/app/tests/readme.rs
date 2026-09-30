@@ -39,10 +39,11 @@ fn the_readme_counter_counts_and_stops_at_ten() {
     assert!(tenth.text().contains("disabled"), "{}", tenth.text());
     assert!(app.get("/t/readme").text().contains("disabled"));
 
-    // The input is checked by its type: not a number is a 400 that names it.
+    // The input is checked by its type: not a number is the page again, a
+    // 422 with the problem by field; missing is a 400.
     let bad = app.post_form("/t/readme?/add", &[("by", "lots")]);
-    assert_eq!(bad.status, 400);
-    assert!(bad.text().contains("by"), "{}", bad.text());
+    assert_eq!(bad.status, 422);
+    assert!(bad.text().contains("Clicked 10 times"), "{}", bad.text());
     let missing = app.post_form("/t/readme?/add", &[]);
     assert_eq!(missing.status, 400);
     // An action that does not exist is a 404, and a page takes no other verb.
