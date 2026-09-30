@@ -72,6 +72,14 @@ Block rules:
   invalid redirect`.
   `Result` alone = `Result<()>`.
 - Layout blocks: statements are sync, `cx: &Cx`, no `.await`/`?`.
+- `const CACHE: u32 = 60;` (page or `+server.rs`): each worker keeps a GET's
+  answer per host, path and query for 60 s and sends it as is (ETag, 304).
+  Not for a request with a cookie or `authorization` (`CACHE_PUBLIC` is for
+  all), nor an answer that sets a cookie or `cache-control: private` or
+  `no-store`; not in dev. Hooks still run. The page must not read other
+  headers.
+- A page that reads nothing (no load, statements or params; literal holes,
+  components with literal props) is baked whole at build: no `CACHE` needed.
 - Old form: `+page.rs` with `struct Data {..}` + `fn load(..) -> Data`
   (markup reads Data fields by name, or `data.x`). A block may hold that too.
 

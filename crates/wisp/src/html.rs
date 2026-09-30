@@ -169,6 +169,20 @@ macro_rules! signed {
 unsigned!(u8 u16 u32 u64 usize);
 signed!(i8 i16 i32 i64 isize);
 
+/// A float prints digits, `.`, `-`, `e`, `inf` or `NaN`: nothing to escape.
+macro_rules! float {
+    ($($t:ty)*) => {$(
+        impl Direct for Text<'_, $t> {
+            #[inline]
+            fn put(&self, out: &mut String) {
+                let _ = write!(out, "{}", self.0);
+            }
+        }
+    )*};
+}
+
+float!(f32 f64);
+
 fn decimal(out: &mut String, mut n: u64) {
     let mut digits = [0u8; 20];
     let mut i = digits.len();

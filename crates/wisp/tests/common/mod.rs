@@ -35,12 +35,13 @@ impl App for Lab {
     const PARAMS: &'static [&'static [&'static str]] = &[&[], &["id"]];
     const TEMPLATES: &'static [(&'static str, u64)] = &[TEMPLATE];
 
-    fn route<'a>(_path: &'a str, segs: &[&'a str]) -> Option<(usize, [&'a str; MAX_PARAMS])> {
+    fn route(path: &str) -> Option<(usize, [&str; MAX_PARAMS])> {
         let mut params = [""; MAX_PARAMS];
-        match segs {
+        let mut segs = [""; wisp::rt::MAX_SEGS];
+        match wisp::rt::split(path, &mut segs)? {
             ["nowhere"] => None,
             ["item", id] => {
-                params[0] = id;
+                params[0] = *id;
                 Some((1, params))
             }
             _ => Some((0, params)),
