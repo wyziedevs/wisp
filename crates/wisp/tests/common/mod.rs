@@ -146,7 +146,7 @@ fn send(out: &mut Out, r: Response) -> Result<()> {
     Ok(())
 }
 
-fn text(out: &mut Out, s: impl Into<String>) -> Result<()> {
+fn text(out: &mut Out, s: impl wisp::IntoText) -> Result<()> {
     send(out, Response::text(s))
 }
 
