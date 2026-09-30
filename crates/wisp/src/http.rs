@@ -112,7 +112,7 @@ pub(crate) fn run<A: App>(addr: SocketAddr, threads: usize) -> io::Result<()> {
         .build()?;
     main.block_on(crate::prepare::<A>())?;
 
-    let listener = bind(addr)?;
+    let listener = bind_after_exit(addr)?;
     #[cfg(target_os = "linux")]
     return run_linux::<A>(&main, listener, threads.max(1));
     #[cfg(not(target_os = "linux"))]
@@ -432,6 +432,23 @@ impl Drop for Held {
 /// Binds, with what to do about the usual failures.
 fn bind(addr: SocketAddr) -> io::Result<std::net::TcpListener> {
     std::net::TcpListener::bind(addr).map_err(|e| cannot_listen(addr, e))
+}
+
+/// [`bind`], trying again for a moment when the port is taken: a server killed
+/// a moment ago keeps its io_uring listeners until the kernel has torn its
+/// ring down, and a restart must not lose that race. A copy that still runs
+/// holds the port past the wait.
+#[cfg(not(target_arch = "wasm32"))]
+fn bind_after_exit(addr: SocketAddr) -> io::Result<std::net::TcpListener> {
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        match bind(addr) {
+            Err(e) if e.kind() == io::ErrorKind::AddrInUse && Instant::now() < until => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            r => return r,
+        }
+    }
 }
 
 fn cannot_listen(addr: SocketAddr, e: io::Error) -> io::Error {
