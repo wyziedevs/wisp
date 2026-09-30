@@ -15,9 +15,13 @@
 //! like any other I/O, so handlers await timers, channels and database
 //! drivers as before. A WebSocket's socket is handed over to tokio.
 //!
-//! Where io_uring cannot be set up (before Linux 6.1, a seccomp profile that
-//! refuses it, the `io_uring_disabled` sysctl), and with `WISP_IO=epoll`, the
-//! workers run the same way on an epoll each instead (`epoll.rs`).
+//! What works is not guessed: at start, once, a throwaway ring receives and
+//! sends through the code the workers run, lending its buffers through a
+//! buffer ring, then (some 6.8 builds refuse those) one `PROVIDE_BUFFERS`
+//! per run given back. Where neither works (before Linux 6.1, a seccomp
+//! profile that refuses io_uring, the `io_uring_disabled` sysctl), and with
+//! `WISP_IO=epoll`, the workers run the same way on an epoll each instead
+//! (`epoll.rs`). One line on stderr says which, and why not better.
 //!
 //! With `epoll.rs`, the `unsafe` of a native build: the ring's setup and the
 //! memory it shares with the kernel, and the socket calls std has no word
@@ -30,6 +34,7 @@ use std::future::poll_fn;
 use std::io;
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
+use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
@@ -93,8 +98,9 @@ const CQE_F_MORE: u32 = 1 << 1;
 /// is its entry, generation and whether it is the send (see `op`).
 const ACCEPT: u64 = u64::MAX - 1;
 const IGNORE: u64 = u64::MAX;
-/// Buffers provided without a buffer ring: only a failure completes.
-const PROVIDE: u64 = u64::MAX - 2;
+/// The low word of the `user_data` of buffers provided without a buffer
+/// ring (`provided`): only a failure completes.
+const PROVIDE: u32 = u32::MAX - 2;
 
 /// io_uring_params.
 #[repr(C)]
@@ -191,6 +197,12 @@ fn op(id: usize, generation: u32, send: bool) -> u64 {
     (u64::from(generation) << 32) | ((id as u64) << 1) | u64::from(send)
 }
 
+/// The `user_data` of a `PROVIDE_BUFFERS` of the `n` buffers from `first`:
+/// a failure names them, so they are provided again.
+fn provided(first: u16, n: u16) -> u64 {
+    (u64::from(first) << 48) | (u64::from(n) << 32) | u64::from(PROVIDE)
+}
+
 /// The descriptor a call returned, or its error.
 pub(crate) fn owned(r: impl Into<i64>) -> io::Result<OwnedFd> {
     let r = r.into();
@@ -268,6 +280,8 @@ pub(crate) struct Ring {
     /// `pending` until the next `enter` provides them.
     pring: Option<Map>,
     pending: Vec<u16>,
+    /// The error of the last `PROVIDE_BUFFERS` that failed, for `check`.
+    refused: i32,
     /// The buffers themselves.
     bufs: Map,
     sq_head: u32,
@@ -294,7 +308,7 @@ unsafe impl Send for Ring {}
 /// The ring `fd` takes its receive buffers from. Memory of ours, registered,
 /// where the kernel allows it; else memory the kernel makes and we map (Linux
 /// 6.4 on), which some kernels insist on. Some refuse both.
-fn buffer_ring(fd: &OwnedFd) -> Option<Map> {
+fn buffer_ring(fd: &OwnedFd) -> io::Result<Map> {
     let mut reg = BufReg {
         ring_addr: 0,
         ring_entries: BUFS as u32,
@@ -302,15 +316,17 @@ fn buffer_ring(fd: &OwnedFd) -> Option<Map> {
         flags: 0,
         resv: [0; 3],
     };
-    let ours = Map::new(-1, BUFS * 16, 0).ok()?;
+    let ours = Map::new(-1, BUFS * 16, 0)?;
     reg.ring_addr = ours.0 as u64;
     if register(fd, REGISTER_PBUF_RING, Some(&reg), 1).is_ok() {
-        return Some(ours);
+        return Ok(ours);
     }
     reg.ring_addr = 0;
     reg.flags = PBUF_RING_MMAP;
-    register(fd, REGISTER_PBUF_RING, Some(&reg), 1).ok()?;
-    Map::new(fd.as_raw_fd(), BUFS * 16, OFF_PBUF_RING).ok()
+    register(fd, REGISTER_PBUF_RING, Some(&reg), 1)
+        .map_err(|e| step("registering the buffer ring", e))?;
+    Map::new(fd.as_raw_fd(), BUFS * 16, OFF_PBUF_RING)
+        .map_err(|e| step("mapping the buffer ring", e))
 }
 
 /// `e`, saying which step of making a ring it came from.
@@ -320,9 +336,9 @@ fn step(what: &str, e: io::Error) -> io::Error {
 
 impl Ring {
     /// A ring for one worker. It stays disabled until `serve` enables it on
-    /// the worker's thread, which then is the only one that submits. Without
-    /// `pbuf_ring` (tests), buffers are provided as where the kernel refuses
-    /// a buffer ring.
+    /// the worker's thread, which then is the only one that submits. Its
+    /// buffers go to the kernel through a buffer ring (`pbuf_ring`: an error
+    /// where refused), or one `PROVIDE_BUFFERS` per run given back.
     fn new(pbuf_ring: bool) -> io::Result<Ring> {
         let mut p = Params {
             cq_entries: CQ_ENTRIES,
@@ -347,7 +363,10 @@ impl Ring {
         .map_err(|e| step("io_uring_setup", e))?;
         let need = FEAT_SINGLE_MMAP | FEAT_NODROP | FEAT_FAST_POLL;
         if p.features & need != need {
-            return Err(io::ErrorKind::Unsupported.into());
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "io_uring_setup: this kernel's io_uring lacks features Wisp needs",
+            ));
         }
         let (sq, cq) = (&p.sq_off, &p.cq_off);
         let len = (sq.array + p.sq_entries * 4).max(cq.cqes + p.cq_entries * 16);
@@ -366,7 +385,10 @@ impl Ring {
         register(&fd, REGISTER_EVENTFD, Some(&eventfd.as_raw_fd()), 1)
             .map_err(|e| step("registering the eventfd", e))?;
         let bufs = Map::new(-1, BUFS * BUF_SIZE, 0)?;
-        let pring = if pbuf_ring { buffer_ring(&fd) } else { None };
+        let pring = match pbuf_ring {
+            true => Some(buffer_ring(&fd)?),
+            false => None,
+        };
         let mut ring = Ring {
             sq_head: sq.head,
             sq_tail: sq.tail,
@@ -386,6 +408,7 @@ impl Ring {
             sqes,
             pring,
             pending: Vec::with_capacity(BUFS),
+            refused: 0,
             bufs,
         };
         // Given before the ring is enabled: the first `enter` provides them
@@ -547,7 +570,7 @@ impl Ring {
                 off: u64::from(first),
                 addr: self.bufs.0 as u64 + u64::from(first) * BUF_SIZE as u64,
                 len: BUF_SIZE as u32,
-                user_data: PROVIDE,
+                user_data: provided(first, n as u16),
                 ..Sqe::default()
             };
             if !self.push(sqe) {
@@ -556,6 +579,14 @@ impl Ring {
             done += n;
         }
         self.pending.drain(..done);
+    }
+
+    /// A `PROVIDE_BUFFERS` failed (`user_data` `ud`): its buffers are
+    /// provided again with the next `enter`, and the server goes on.
+    fn unprovided(&mut self, ud: u64, errno: i32) {
+        let (first, n) = ((ud >> 48) as u16, (ud >> 32) as u16);
+        self.pending.extend(first..first + n);
+        self.refused = errno;
     }
 }
 
@@ -632,6 +663,8 @@ struct Worker {
     accepted: Vec<RawFd>,
     accepting: bool,
     accept_error: i32,
+    /// Submissions the queue had no room for, first in, submitted next turn.
+    backlog: Vec<Sqe>,
 }
 
 thread_local! {
@@ -645,10 +678,13 @@ fn with<R>(f: impl FnOnce(&mut Worker) -> R) -> R {
 
 impl Worker {
     fn queue(&mut self, sqe: Sqe) {
-        while !self.ring.push(sqe) {
-            // Full, which a turn's usual sends do not fill: submitting makes room.
-            if let Err(e) = self.ring.enter(false) {
-                crate::fail(&format!("io_uring stopped working: {e}"));
+        // Full, which a turn's usual sends do not fill: submitting makes room.
+        // A kernel too busy to take them (or a backlog already waiting, which
+        // keeps the order) leaves the rest to the next turn.
+        while !self.backlog.is_empty() || !self.ring.push(sqe) {
+            if !self.backlog.is_empty() || self.ring.enter(false).is_err() {
+                self.backlog.push(sqe);
+                break;
             }
         }
         if !self.woken {
@@ -659,16 +695,39 @@ impl Worker {
         }
     }
 
+    fn new(ring: Ring, listener: RawFd) -> Worker {
+        Worker {
+            ring,
+            conns: Vec::new(),
+            free: Vec::new(),
+            driver: None,
+            woken: true,
+            sending: 0,
+            checked: 0,
+            listener,
+            accepted: Vec::new(),
+            accepting: false,
+            accept_error: 0,
+            backlog: Vec::new(),
+        }
+    }
+
     /// One io_uring_enter: submits what is queued, runs what came in, and
-    /// hands the completions out.
-    fn turn(&mut self) {
+    /// hands the completions out. An error is the whole ring's.
+    fn turn(&mut self) -> io::Result<()> {
+        let taken = self
+            .backlog
+            .iter()
+            .take_while(|&&sqe| self.ring.push(sqe))
+            .count();
+        self.backlog.drain(..taken);
         let mut entered = self.ring.enter(true);
         loop {
             // Busy: completions wait in the kernel for room, which reading makes.
-            if let Err(e) = &entered
+            if let Err(e) = entered
                 && !matches!(e.raw_os_error(), Some(libc::EBUSY | libc::EAGAIN))
             {
-                crate::fail(&format!("io_uring stopped working: {e}"));
+                return Err(e);
             }
             while let Some(c) = self.ring.next() {
                 self.complete(c);
@@ -681,15 +740,12 @@ impl Worker {
         if self.sending > 0 && http::seconds() != self.checked {
             self.sweep();
         }
+        Ok(())
     }
 
     fn complete(&mut self, c: Cqe) {
         match c.user_data {
             IGNORE => {}
-            PROVIDE => crate::fail(&format!(
-                "io_uring stopped working: providing receive buffers: {}",
-                io::Error::from_raw_os_error(-c.res)
-            )),
             ACCEPT => {
                 if c.res >= 0 {
                     self.accepted.push(c.res);
@@ -699,6 +755,7 @@ impl Worker {
                     self.accept_error = (-c.res).max(0);
                 }
             }
+            ud if ud as u32 == PROVIDE => self.ring.unprovided(ud, -c.res),
             ud => {
                 let id = ((ud as u32) >> 1) as usize;
                 debug_assert_eq!(self.conns[id].generation, (ud >> 32) as u32);
@@ -1051,23 +1108,106 @@ impl Drop for Sock {
     }
 }
 
-/// The workers' rings, or `None` for an epoll each (`epoll.rs`): asked for with
-/// `WISP_IO=epoll`, or io_uring is not there (before Linux 6.1), switched
-/// off, or refused (a container's seccomp profile). `WISP_IO=uring` makes
-/// that last a failure, with the reason.
+/// Proves that a ring lending its buffers this way works here, through the
+/// code a worker runs: a throwaway ring, enabled on this thread, receives
+/// on a multishot receive into a lent buffer, gives it back and sends a
+/// reply; twice, so the second receive may take a buffer given back. Well
+/// under a millisecond; leaves no descriptor open.
+fn check(pbuf_ring: bool) -> io::Result<()> {
+    use std::io::{Read, Write};
+    let (ours, mut peer) = UnixStream::pair().map_err(|e| step("a socket pair", e))?;
+    peer.set_read_timeout(Some(Duration::from_secs(1)))?;
+    let ring = Ring::new(pbuf_ring)?;
+    register::<()>(&ring.fd, REGISTER_ENABLE_RINGS, None, 0)
+        .map_err(|e| step("enabling the ring", e))?;
+    let mut w = Worker::new(ring, -1);
+    let id = w.open(ours.as_raw_fd());
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    // One turn, then what went wrong with the connection, if anything.
+    let turn = |w: &mut Worker, what: &str| {
+        w.turn().map_err(|e| step("entering the ring", e))?;
+        let e = &w.conns[id];
+        let errno = [w.ring.refused, e.ended.unwrap_or(0), e.failed];
+        match errno.into_iter().find(|&e| e != 0) {
+            Some(e) => Err(step(what, io::Error::from_raw_os_error(e))),
+            None if e.ended.is_some() && e.inbox.is_empty() => {
+                Err(step(what, io::ErrorKind::UnexpectedEof.into()))
+            }
+            None if std::time::Instant::now() > deadline => {
+                Err(step(what, io::ErrorKind::TimedOut.into()))
+            }
+            None => Ok(()),
+        }
+    };
+    for round in 1..=2u8 {
+        peer.write_all(&[round; 3])?;
+        let mut got = Vec::new();
+        while got.len() < 3 {
+            turn(&mut w, "receiving")?;
+            got.append(&mut w.conns[id].inbox);
+        }
+        w.send(id, &mut got);
+        while w.conns[id].sending {
+            turn(&mut w, "sending")?;
+        }
+        let mut back = [0; 3];
+        peer.read_exact(&mut back)
+            .map_err(|e| step("reading the reply", e))?;
+        if back != [round; 3] {
+            return Err(step("reading the reply", io::ErrorKind::InvalidData.into()));
+        }
+    }
+    Ok(())
+}
+
+/// `n` workers' rings, lending buffers the best way `check` finds working,
+/// with why the best did not; or why io_uring does not work here.
+fn choose(n: usize) -> io::Result<(Vec<Ring>, Option<io::Error>)> {
+    let rings = |pbuf_ring| {
+        check(pbuf_ring)?;
+        (0..n)
+            .map(|_| Ring::new(pbuf_ring))
+            .collect::<io::Result<Vec<_>>>()
+    };
+    match rings(true) {
+        Ok(r) => Ok((r, None)),
+        Err(why) => rings(false).map(|r| (r, Some(why))),
+    }
+}
+
+/// The workers' rings, or `None` for an epoll each (`epoll.rs`): asked for
+/// with `WISP_IO=epoll`, or io_uring does not work here (`choose`). One line
+/// on stderr says which. With `WISP_IO=uring`, io_uring not working is a
+/// failure, with the reason.
 pub(crate) fn rings(n: usize) -> Option<Vec<Ring>> {
     let asked =
         crate::setting::<String>("WISP_IO", "epoll or uring").map(|v| v.to_ascii_lowercase());
     match asked.as_deref() {
-        Some("epoll") => None,
-        None => (0..n).map(|_| Ring::new(true).ok()).collect(),
-        Some("uring") => match (0..n).map(|_| Ring::new(true)).collect::<io::Result<_>>() {
-            Ok(rings) => Some(rings),
-            Err(e) => crate::fail(&format!(
-                "WISP_IO is uring, but io_uring cannot be set up here: {e}\n  It needs Linux 6.1 or later, not refused by seccomp or the io_uring_disabled sysctl. Unset WISP_IO to use epoll."
-            )),
-        },
+        Some("epoll") => {
+            http::log(format_args!("wisp: io: epoll (asked by WISP_IO)"));
+            return None;
+        }
+        None | Some("uring") => {}
         Some(v) => crate::fail(&format!("WISP_IO is {v:?}, which is not epoll or uring")),
+    }
+    match choose(n) {
+        Ok((rings, None)) => {
+            http::log(format_args!("wisp: io: io_uring"));
+            Some(rings)
+        }
+        Ok((rings, Some(why))) => {
+            http::log(format_args!(
+                "wisp: io: io_uring without a buffer ring ({why})"
+            ));
+            Some(rings)
+        }
+        Err(e) if asked.is_some() => crate::fail(&format!(
+            "WISP_IO is uring, but io_uring does not work here: {e}\n  It needs Linux 6.1 or later, not refused by seccomp or the io_uring_disabled sysctl. Unset WISP_IO to use epoll."
+        )),
+        Err(e) => {
+            http::log(format_args!("wisp: io: epoll (io_uring: {e})"));
+            None
+        }
     }
 }
 
@@ -1159,19 +1299,7 @@ pub(crate) async fn serve(mut ring: Ring, listener: TcpListener, accepted: fn(Tc
     let Some(Ok(eventfd)) = eventfd else {
         crate::fail("io_uring stopped working: its eventfd cannot be watched");
     };
-    WORKER.set(Some(Worker {
-        ring,
-        conns: Vec::new(),
-        free: Vec::new(),
-        driver: None,
-        woken: true,
-        sending: 0,
-        checked: 0,
-        listener: listener.as_raw_fd(),
-        accepted: Vec::new(),
-        accepting: false,
-        accept_error: 0,
-    }));
+    WORKER.set(Some(Worker::new(ring, listener.as_raw_fd())));
     with(Worker::accept);
     let mut listener = Some(listener);
     let mut stop = std::pin::pin!(http::stopped());
@@ -1186,7 +1314,10 @@ pub(crate) async fn serve(mut ring: Ring, listener: TcpListener, accepted: fn(Tc
         }
         let more = with(|w| {
             w.woken = true;
-            w.turn();
+            if let Err(e) = w.turn() {
+                // `check` proved this ring's calls work at start.
+                crate::fail(&format!("io_uring stopped working: {e}"));
+            }
             std::mem::swap(&mut fds, &mut w.accepted);
             if !w.accepting && listener.is_some() && retry.is_none() {
                 if w.accept_error != 0
@@ -1301,6 +1432,42 @@ mod tests {
         let c = std::net::TcpStream::connect(addr).unwrap();
         c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         c
+    }
+
+    #[test]
+    fn each_way_of_lending_buffers_passes_its_check_where_the_kernel_takes_it() {
+        for pbuf_ring in [true, false] {
+            if Ring::new(pbuf_ring).is_ok() {
+                check(pbuf_ring).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn choose_gives_every_worker_a_ring_or_says_why() {
+        match choose(3) {
+            Ok((rings, why)) => {
+                assert_eq!(rings.len(), 3);
+                assert_eq!(why.is_none(), Ring::new(true).is_ok(), "{why:?}");
+            }
+            Err(e) => assert!(Ring::new(false).is_err(), "{e}"),
+        }
+    }
+
+    #[test]
+    fn buffers_a_failed_provide_named_are_provided_again() {
+        let Ok(ring) = Ring::new(false) else {
+            return;
+        };
+        let mut w = Worker::new(ring, -1);
+        let before = w.ring.pending.len();
+        w.complete(Cqe {
+            user_data: provided(5, 3),
+            res: -libc::ENOMEM,
+            flags: 0,
+        });
+        assert_eq!(w.ring.pending[before..], [5, 6, 7]);
+        assert_eq!(w.ring.refused, libc::ENOMEM);
     }
 
     #[test]
