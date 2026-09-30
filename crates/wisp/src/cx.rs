@@ -28,15 +28,15 @@ pub enum Method {
 }
 
 impl Method {
-    pub(crate) fn parse(s: &str) -> Method {
+    pub(crate) fn parse(s: &[u8]) -> Method {
         match s {
-            "GET" => Method::Get,
-            "HEAD" => Method::Head,
-            "POST" => Method::Post,
-            "PUT" => Method::Put,
-            "PATCH" => Method::Patch,
-            "DELETE" => Method::Delete,
-            "OPTIONS" => Method::Options,
+            b"GET" => Method::Get,
+            b"HEAD" => Method::Head,
+            b"POST" => Method::Post,
+            b"PUT" => Method::Put,
+            b"PATCH" => Method::Patch,
+            b"DELETE" => Method::Delete,
+            b"OPTIONS" => Method::Options,
             _ => Method::Other,
         }
     }
@@ -691,7 +691,7 @@ impl Cx {
         let target = lines.next().unwrap().split(' ').nth(1).unwrap();
         let at = |s: &str| Span::of(raw.as_bytes(), s.as_bytes());
         let (path, query) = target.split_once('?').unwrap_or((target, ""));
-        cx.method = Method::parse(head.split(' ').next().unwrap());
+        cx.method = Method::parse(head.split(' ').next().unwrap().as_bytes());
         cx.path = at(path);
         cx.query = at(query);
         cx.body = at(body);
@@ -726,10 +726,15 @@ fn new_id() -> String {
     crate::hex(&(u64::from(seed) << 32 | u64::from(n)).to_be_bytes())
 }
 
+/// A name of visible ASCII but `:`, and a value with no CR, LF or NUL,
+/// eight bytes at a time: nothing that would end the line or the field.
 pub(crate) fn valid_header(name: &str, value: &str) -> bool {
+    use crate::swar::{above, below, eq, none};
     !name.is_empty()
-        && name.bytes().all(|b| b.is_ascii_graphic() && b != b':')
-        && !value.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0)
+        && none(name.as_bytes(), |x| {
+            below(x, 0x21) | above(x, 0x7e) | eq(x, b':')
+        })
+        && none(value.as_bytes(), |x| eq(x, b'\r') | eq(x, b'\n') | eq(x, 0))
 }
 
 /// How a cookie is kept, for [`Cx::set_cookie_with`]. The default is what

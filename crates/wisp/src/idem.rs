@@ -63,9 +63,11 @@ pub(crate) enum Start {
 }
 
 pub(crate) fn start(cx: &Cx) -> Start {
-    let key = match cx.header("idempotency-key") {
-        Some(key) if cx.method == Method::Post => key,
-        _ => return Start::Skip,
+    if cx.method != Method::Post {
+        return Start::Skip;
+    }
+    let Some(key) = cx.header("idempotency-key") else {
+        return Start::Skip;
     };
     if key.is_empty() || key.len() > 255 {
         return Start::Refused(Error::new(

@@ -24,6 +24,11 @@ tokio.workspace = true
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tokio = { version = "1.53", default-features = false, features = ["sync"] }
 
+# Counts the allocations of the test thread (it replaces the allocator of
+# Wisp's own test binaries only): a warm request must make none.
+[dev-dependencies]
+allocation-counter = "0.8"
+
 # Minifies the browser runtime for release builds (build.rs).
 [build-dependencies]
 wisp-build.workspace = true

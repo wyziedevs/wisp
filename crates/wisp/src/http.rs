@@ -708,77 +708,68 @@ async fn requests<A: App>(mut stream: TcpStream, b: &mut Buffers) {
 /// records it in `cx` as spans.
 fn parse<A: App>(cx: &mut Cx, at: usize) -> Parsed {
     cx.reset();
-    let buf = &cx.buf[..];
-    // Left uninitialized: zeroing 64 headers cost more than parsing a small request.
-    let mut raw = [const { MaybeUninit::uninit() }; MAX_HEADERS];
-    let mut req = httparse::Request::new(&mut []);
-    let head_len = match req.parse_with_uninit_headers(&buf[at..], &mut raw) {
-        Ok(httparse::Status::Complete(n)) if n <= MAX_HEAD => n,
-        Ok(httparse::Status::Partial) if buf.len() - at <= MAX_HEAD => {
-            return Parsed::Partial {
-                need: 0,
-                expect_continue: false,
-                body: false,
-            };
+    cx.headers.clear();
+    let head = match fast_head(&cx.buf, at, &mut cx.headers) {
+        Some(head) => head,
+        None => {
+            cx.headers.clear();
+            match slow_head(&cx.buf, at, &mut cx.headers) {
+                Ok(head) => head,
+                Err(parsed) => return parsed,
+            }
         }
-        Ok(_) | Err(httparse::Error::TooManyHeaders) => return Parsed::Invalid(431),
-        Err(_) => return Parsed::Invalid(400),
     };
+    let buf = &cx.buf[..];
 
     let mut content_length: Option<usize> = None;
     let mut transfer_encodings = 0;
-    let mut keep_alive = req.version == Some(1);
+    let mut keep_alive = head.http11;
     let mut expect_continue = false;
-    cx.headers.clear();
-    for h in req.headers.iter() {
-        cx.headers
-            .push((Span::of(buf, h.name.as_bytes()), Span::of(buf, h.value)));
+    for &(name, value) in &cx.headers {
         // Only these four matter here; their lengths tell most others apart
         // without comparing a byte.
-        if !matches!(h.name.len(), 6 | 10 | 14 | 17) {
+        if !matches!(name.len, 6 | 10 | 14 | 17) {
             continue;
         }
-        if h.name.eq_ignore_ascii_case("content-length") {
+        let (name, value) = (&buf[name.range()], &buf[value.range()]);
+        if name.eq_ignore_ascii_case(b"content-length") {
             // Strict: digits only, and repeated headers must agree (smuggling).
-            match (parse_decimal(h.value), content_length) {
+            match (parse_decimal(value), content_length) {
                 (Some(n), None) => content_length = Some(n),
                 (Some(n), Some(m)) if n == m => {}
                 _ => return Parsed::Invalid(400),
             }
-        } else if h.name.eq_ignore_ascii_case("transfer-encoding") {
+        } else if name.eq_ignore_ascii_case(b"transfer-encoding") {
             // Only `chunked`, alone: gzip and the like are for a proxy.
-            if !h.value.trim_ascii().eq_ignore_ascii_case(b"chunked") {
+            if !value.trim_ascii().eq_ignore_ascii_case(b"chunked") {
                 return Parsed::Invalid(501);
             }
             transfer_encodings += 1;
-        } else if h.name.eq_ignore_ascii_case("connection") {
-            for token in h.value.split(|&b| b == b',').map(<[u8]>::trim_ascii) {
+        } else if name.eq_ignore_ascii_case(b"connection") {
+            for token in value.split(|&b| b == b',').map(<[u8]>::trim_ascii) {
                 if token.eq_ignore_ascii_case(b"close") {
                     keep_alive = false;
                 } else if token.eq_ignore_ascii_case(b"keep-alive") {
                     keep_alive = true;
                 }
             }
-        } else if h.name.eq_ignore_ascii_case("expect") {
-            expect_continue = h.value.trim_ascii().eq_ignore_ascii_case(b"100-continue");
+        } else if name.eq_ignore_ascii_case(b"expect") {
+            expect_continue = value.trim_ascii().eq_ignore_ascii_case(b"100-continue");
         }
     }
     let chunked = transfer_encodings > 0;
     // Both framings at once is the classic smuggling vector; HTTP/1.0 has
     // no chunked framing at all.
-    if chunked && (content_length.is_some() || transfer_encodings > 1 || req.version != Some(1)) {
+    if chunked && (content_length.is_some() || transfer_encodings > 1 || !head.http11) {
         return Parsed::Invalid(400);
     }
 
-    let target = req.path.unwrap_or("");
-    let (path, query) = match target.find('?') {
-        Some(i) => (&target[..i], &target[i + 1..]),
-        None => (target, ""),
-    };
-    let body_start = at + head_len;
+    // The path only matters here for a body's limit.
+    let path = || std::str::from_utf8(&buf[head.path.range()]).unwrap_or("");
+    let body_start = at + head.len;
     let (len, total) = if chunked {
-        match chunks(&buf[body_start..], body_limit::<A>(path)) {
-            Chunks::Complete { wire, body } => (body, head_len + wire),
+        match chunks(&buf[body_start..], body_limit::<A>(path())) {
+            Chunks::Complete { wire, body } => (body, head.len + wire),
             Chunks::Partial => {
                 return Parsed::Partial {
                     need: 0,
@@ -791,23 +782,23 @@ fn parse<A: App>(cx: &mut Cx, at: usize) -> Parsed {
         }
     } else {
         let len = content_length.unwrap_or(0);
-        if len > 0 && len > body_limit::<A>(path) {
+        if len > 0 && len > body_limit::<A>(path()) {
             return Parsed::Invalid(413);
         }
         if buf.len() - body_start < len {
             return Parsed::Partial {
-                need: head_len + len,
+                need: head.len + len,
                 expect_continue,
                 body: true,
             };
         }
-        (len, head_len + len)
+        (len, head.len + len)
     };
 
-    cx.method = Method::parse(req.method.unwrap_or(""));
-    cx.http11 = req.version == Some(1);
-    cx.path = Span::of(buf, path.as_bytes());
-    cx.query = Span::of(buf, query.as_bytes());
+    cx.method = head.method;
+    cx.http11 = head.http11;
+    cx.path = head.path;
+    cx.query = head.query;
     cx.body = Span {
         start: body_start as u32,
         len: len as u32,
@@ -821,6 +812,193 @@ fn parse<A: App>(cx: &mut Cx, at: usize) -> Parsed {
         len: total,
         keep_alive,
     }
+}
+
+/// A request's head: its line, and its headers, which went to `cx.headers`.
+struct Head {
+    /// Its bytes, up to the body.
+    len: usize,
+    method: Method,
+    path: Span,
+    query: Span,
+    /// HTTP/1.1 rather than 1.0.
+    http11: bool,
+}
+
+/// The bytes of a header name (RFC 9110 `tchar`), as httparse takes them.
+const TOKEN: [bool; 256] = {
+    let mut t = [false; 256];
+    let mut c = 0;
+    while c < 256 {
+        t[c] = (c as u8).is_ascii_alphanumeric();
+        c += 1;
+    }
+    let symbols = b"!#$%&'*+-.^_`|~";
+    let mut k = 0;
+    while k < symbols.len() {
+        t[symbols[k] as usize] = true;
+        k += 1;
+    }
+    t
+};
+
+/// The head of `buf[at..]` when it has the usual shape: a method in
+/// capitals, a target of visible ASCII, `HTTP/1.1` or `HTTP/1.0`, lines that
+/// end in CRLF, header names of `tchar`s, and all of it here, in at most
+/// `MAX_HEAD` bytes. Header values are scanned 16 bytes at a time. It is
+/// `None` for anything else, which [`slow_head`] (httparse) then reads,
+/// or refuses: what this reads, httparse reads the same.
+fn fast_head(buf: &[u8], at: usize, headers: &mut Vec<(Span, Span)>) -> Option<Head> {
+    use crate::swar;
+    let b = &buf[..buf.len().min(at + MAX_HEAD)];
+    let mut i = at;
+    let method = if b.get(i..i + 4) == Some(b"GET ") {
+        i += 3;
+        Method::Get
+    } else {
+        while b.get(i).is_some_and(u8::is_ascii_uppercase) {
+            i += 1;
+        }
+        Method::parse(&b[at..i])
+    };
+    if i == at || b.get(i) != Some(&b' ') {
+        return None;
+    }
+    i += 1;
+
+    // The target, to the first byte that is not visible ASCII: its space.
+    let target = i;
+    while i + 8 <= b.len() {
+        let x = swar::word(b, i);
+        let stop = swar::below(x, 0x21) | swar::above(x, 0x7e);
+        if stop != 0 {
+            i += swar::first(stop);
+            break;
+        }
+        i += 8;
+    }
+    while b.get(i).is_some_and(|c| (0x21..=0x7e).contains(c)) {
+        i += 1;
+    }
+    let end = i;
+    let http11 = match b.get(i..i + 11)? {
+        b" HTTP/1.1\r\n" => true,
+        b" HTTP/1.0\r\n" => false,
+        _ => return None,
+    };
+    if end == target {
+        return None;
+    }
+    i += 11;
+    let span = |from: usize, to: usize| Span {
+        start: from as u32,
+        len: (to - from) as u32,
+    };
+    let (path, query) = match b[target..end].iter().position(|&c| c == b'?') {
+        Some(q) => (span(target, target + q), span(target + q + 1, end)),
+        None => (span(target, end), Span::default()),
+    };
+
+    loop {
+        if b.get(i..i + 2)? == b"\r\n" {
+            return Some(Head {
+                len: i + 2 - at,
+                method,
+                path,
+                query,
+                http11,
+            });
+        }
+        let name = i;
+        while b.get(i).is_some_and(|&c| TOKEN[usize::from(c)]) {
+            i += 1;
+        }
+        if i == name || b.get(i) != Some(&b':') {
+            return None;
+        }
+        let name = span(name, i);
+        i += 1;
+        while b.get(i).is_some_and(|&c| c == b' ' || c == b'\t') {
+            i += 1;
+        }
+        // The value, to its CR: past visible ASCII, spaces, tabs and
+        // bytes of 0x80 and up; any other control stops it.
+        let value = i;
+        loop {
+            if let Some(chunk) = b.get(i..i + 16) {
+                let mut stop = 0u8;
+                for &c in chunk {
+                    stop |= ((c < 0x20) | (c == 0x7f)) as u8;
+                }
+                if stop == 0 {
+                    i += 16;
+                    continue;
+                }
+            }
+            if i + 8 <= b.len() {
+                let x = swar::word(b, i);
+                let stop = swar::below(x, 0x20) | swar::eq(x, 0x7f);
+                if stop == 0 {
+                    i += 8;
+                    continue;
+                }
+                i += swar::first(stop);
+            } else {
+                while b.get(i).is_some_and(|&c| c >= 0x20 && c != 0x7f) {
+                    i += 1;
+                }
+            }
+            if b.get(i) != Some(&b'\t') {
+                break;
+            }
+            i += 1;
+        }
+        if b.get(i..i + 2)? != b"\r\n" {
+            return None;
+        }
+        let mut value_end = i;
+        while value_end > value && matches!(b[value_end - 1], b' ' | b'\t') {
+            value_end -= 1;
+        }
+        if headers.len() == MAX_HEADERS {
+            return None;
+        }
+        headers.push((name, span(value, value_end)));
+        i += 2;
+    }
+}
+
+/// The head of `buf[at..]` by httparse, which takes what [`fast_head`] does
+/// not: bare LF line ends, empty lines before the request, other methods
+/// and targets. `Err` is what to answer: wait for more, or refuse it.
+fn slow_head(buf: &[u8], at: usize, headers: &mut Vec<(Span, Span)>) -> Result<Head, Parsed> {
+    // Left uninitialized: zeroing 64 headers cost more than parsing a small request.
+    let mut raw = [const { MaybeUninit::uninit() }; MAX_HEADERS];
+    let mut req = httparse::Request::new(&mut []);
+    let len = match req.parse_with_uninit_headers(&buf[at..], &mut raw) {
+        Ok(httparse::Status::Complete(n)) if n <= MAX_HEAD => n,
+        Ok(httparse::Status::Partial) if buf.len() - at <= MAX_HEAD => {
+            return Err(Parsed::Partial {
+                need: 0,
+                expect_continue: false,
+                body: false,
+            });
+        }
+        Ok(_) | Err(httparse::Error::TooManyHeaders) => return Err(Parsed::Invalid(431)),
+        Err(_) => return Err(Parsed::Invalid(400)),
+    };
+    for h in req.headers.iter() {
+        headers.push((Span::of(buf, h.name.as_bytes()), Span::of(buf, h.value)));
+    }
+    let target = req.path.unwrap_or("");
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    Ok(Head {
+        len,
+        method: Method::parse(req.method.unwrap_or("").as_bytes()),
+        path: Span::of(buf, path.as_bytes()),
+        query: Span::of(buf, query.as_bytes()),
+        http11: req.version == Some(1),
+    })
 }
 
 /// The largest body any route takes, whatever its limit says: requests are
@@ -952,6 +1130,26 @@ fn parse_hex(digits: &[u8]) -> u64 {
     digits
         .iter()
         .fold(0, |n, &c| n << 4 | u64::from(hex_digit(c).unwrap_or(0)))
+}
+
+thread_local! {
+    /// The body of the last response this thread wrote, emptied, for the
+    /// next one to fill: a warm server allocates no bodies.
+    static SPARE: Cell<Vec<u8>> = const { Cell::new(Vec::new()) };
+}
+
+/// An empty buffer for a response body, with the room of an earlier one.
+pub(crate) fn spare() -> Vec<u8> {
+    SPARE.take()
+}
+
+/// Keeps `body`, now written, for [`spare`] to hand out again, unless one
+/// large message made it big.
+fn recycle(mut body: Vec<u8>) {
+    if body.capacity() <= KEEP_CAPACITY {
+        body.clear();
+        SPARE.set(body);
+    }
 }
 
 /// A response, decided but not yet written: what every host sends, the
@@ -1452,15 +1650,19 @@ fn serialize<A: App>(
 
     // See `framing`.
     let own_length = head_only && reply.header("content-length").is_some();
-    status_line(w, reply.status);
+    match status_line(reply.status) {
+        Some(line) => w.extend_from_slice(line),
+        None => {
+            w.extend_from_slice(b"HTTP/1.1 ");
+            push_decimal(w, reply.status.into());
+            w.extend_from_slice(b" \r\n");
+        }
+    }
     if chunked {
         w.extend_from_slice(b"transfer-encoding: chunked\r\n");
-    } else if !stream && !bodiless && !own_length {
-        w.extend_from_slice(b"content-length: ");
-        push_decimal(w, len as u64);
-        w.extend_from_slice(b"\r\n");
     }
-    date(w);
+    let length = !chunked && !stream && !bodiless && !own_length;
+    length_and_date(w, length.then_some(len));
     if !keep_alive {
         w.extend_from_slice(b"connection: close\r\n");
     } else if !http11 {
@@ -1476,26 +1678,30 @@ fn serialize<A: App>(
 
     let body = std::mem::replace(&mut reply.body, Body::Static(b""));
     reply.headers.clear();
-    if head_only || bodiless {
-        return None;
-    }
+    let send = !head_only && !bodiless;
     match body {
-        Body::Bytes(b) => w.extend_from_slice(&b),
-        Body::Static(b) => w.extend_from_slice(b),
-        Body::WebSocket(_) => {} // taken out before; a 101 has no body
-        Body::Page => {
+        Body::Bytes(b) => {
+            if send {
+                w.extend_from_slice(&b);
+            }
+            recycle(b);
+        }
+        Body::Static(b) if send => w.extend_from_slice(b),
+        Body::Page if send => {
             w.reserve(len);
             for part in parts.into_iter().flatten() {
                 w.extend_from_slice(part.as_bytes());
             }
         }
-        Body::Stream(body) => {
+        Body::Stream(body) if send => {
             return Some(Streamed {
                 body,
                 chunked,
                 close: !keep_alive,
             });
         }
+        // None to send: HEAD, 204, 304, or a 101's upgrade, taken out before.
+        _ => {}
     }
     None
 }
@@ -1784,14 +1990,6 @@ async fn pump(
     }
 }
 
-fn status_line(w: &mut Vec<u8>, status: u16) {
-    w.extend_from_slice(b"HTTP/1.1 ");
-    push_decimal(w, status as u64);
-    w.push(b' ');
-    w.extend_from_slice(reason(status).as_bytes());
-    w.extend_from_slice(b"\r\n");
-}
-
 /// A header the app set with a line break or NUL in it (through `Response`'s
 /// public fields, which nothing checks) would split the response: it is
 /// left out.
@@ -1813,18 +2011,10 @@ fn push_hex(w: &mut Vec<u8>, n: u64) {
     }
 }
 
-fn push_decimal(w: &mut Vec<u8>, mut n: u64) {
-    let mut digits = [0u8; 20];
-    let mut i = digits.len();
-    loop {
-        i -= 1;
-        digits[i] = b'0' + (n % 10) as u8;
-        n /= 10;
-        if n == 0 {
-            break;
-        }
-    }
-    w.extend_from_slice(&digits[i..]);
+fn push_decimal(w: &mut Vec<u8>, n: u64) {
+    let mut buf = [0u8; 20];
+    let start = crate::digits(&mut buf, 20, n);
+    w.extend_from_slice(&buf[start..]);
 }
 
 /// Digits only, no sign or whitespace, no overflow.
@@ -1882,25 +2072,45 @@ fn start_clock() {
     });
 }
 
+/// `date: Sun, 06 Nov 1994 08:49:37 GMT\r\n`
+const DATE_LINE: usize = 37;
+
 thread_local! {
-    /// (unix second, formatted date) — reformatted at most once a second.
-    static DATE: Cell<(u64, [u8; 29])> = const { Cell::new((u64::MAX, [0; 29])) };
+    /// (unix second, its `date` line), formatted at most once a second.
+    static DATE: Cell<(u64, [u8; DATE_LINE])> = const { Cell::new((u64::MAX, [0; DATE_LINE])) };
 }
 
-fn date(w: &mut Vec<u8>) {
+/// `content-length`, when the response has a `length`, and `date`, in one
+/// piece: the digits are written right to left, ending where the date
+/// line, kept formatted, begins.
+fn length_and_date(w: &mut Vec<u8>, length: Option<usize>) {
+    const PREFIX: &[u8] = b"content-length: ";
+    const LENGTH_LINE: usize = PREFIX.len() + 20 + 2;
+    let mut head = [0u8; LENGTH_LINE + DATE_LINE];
+    head[LENGTH_LINE..].copy_from_slice(&date_line());
+    let mut start = LENGTH_LINE;
+    if let Some(n) = length {
+        head[LENGTH_LINE - 2..LENGTH_LINE].copy_from_slice(b"\r\n");
+        start = crate::digits(&mut head, LENGTH_LINE - 2, n as u64) - PREFIX.len();
+        head[start..start + PREFIX.len()].copy_from_slice(PREFIX);
+    }
+    w.extend_from_slice(&head[start..]);
+}
+
+fn date_line() -> [u8; DATE_LINE] {
     let now = NOW.load(Ordering::Relaxed);
-    let text = DATE.with(|c| {
-        let (secs, text) = c.get();
+    DATE.with(|c| {
+        let (secs, line) = c.get();
         if secs == now {
-            return text;
+            return line;
         }
-        let text = http_date(now);
-        c.set((now, text));
-        text
-    });
-    w.extend_from_slice(b"date: ");
-    w.extend_from_slice(&text);
-    w.extend_from_slice(b"\r\n");
+        let mut line = [0; DATE_LINE];
+        line[..6].copy_from_slice(b"date: ");
+        line[6..35].copy_from_slice(&http_date(now));
+        line[35..].copy_from_slice(b"\r\n");
+        c.set((now, line));
+        line
+    })
 }
 
 /// IMF-fixdate, e.g. `Sun, 06 Nov 1994 08:49:37 GMT`.
@@ -1933,40 +2143,58 @@ fn http_date(secs: u64) -> [u8; 29] {
     out
 }
 
-pub(crate) fn reason(status: u16) -> &'static str {
-    match status {
-        100 => "Continue",
-        101 => "Switching Protocols",
-        200 => "OK",
-        201 => "Created",
-        202 => "Accepted",
-        204 => "No Content",
-        301 => "Moved Permanently",
-        302 => "Found",
-        303 => "See Other",
-        304 => "Not Modified",
-        307 => "Temporary Redirect",
-        308 => "Permanent Redirect",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        403 => "Forbidden",
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        409 => "Conflict",
-        410 => "Gone",
-        413 => "Content Too Large",
-        415 => "Unsupported Media Type",
-        422 => "Unprocessable Content",
-        426 => "Upgrade Required",
-        429 => "Too Many Requests",
-        431 => "Request Header Fields Too Large",
-        500 => "Internal Server Error",
-        501 => "Not Implemented",
-        502 => "Bad Gateway",
-        503 => "Service Unavailable",
-        504 => "Gateway Timeout",
-        _ => "",
-    }
+/// The statuses Wisp names: the reason phrase of each, and its whole
+/// status line, written in one piece.
+macro_rules! statuses {
+    ($($code:literal $reason:literal,)*) => {
+        pub(crate) fn reason(status: u16) -> &'static str {
+            match status {
+                $($code => $reason,)*
+                _ => "",
+            }
+        }
+
+        /// `HTTP/1.1 200 OK\r\n`; `None` for a status not named here.
+        fn status_line(status: u16) -> Option<&'static [u8]> {
+            Some(match status {
+                $($code => concat!("HTTP/1.1 ", $code, " ", $reason, "\r\n").as_bytes(),)*
+                _ => return None,
+            })
+        }
+    };
+}
+
+statuses! {
+    100 "Continue",
+    101 "Switching Protocols",
+    200 "OK",
+    201 "Created",
+    202 "Accepted",
+    204 "No Content",
+    301 "Moved Permanently",
+    302 "Found",
+    303 "See Other",
+    304 "Not Modified",
+    307 "Temporary Redirect",
+    308 "Permanent Redirect",
+    400 "Bad Request",
+    401 "Unauthorized",
+    403 "Forbidden",
+    404 "Not Found",
+    405 "Method Not Allowed",
+    409 "Conflict",
+    410 "Gone",
+    413 "Content Too Large",
+    415 "Unsupported Media Type",
+    422 "Unprocessable Content",
+    426 "Upgrade Required",
+    429 "Too Many Requests",
+    431 "Request Header Fields Too Large",
+    500 "Internal Server Error",
+    501 "Not Implemented",
+    502 "Bad Gateway",
+    503 "Service Unavailable",
+    504 "Gateway Timeout",
 }
 
 /// The error page's title: the status's name, or which side failed.
@@ -2268,6 +2496,91 @@ mod tests {
         }
     }
 
+    /// What `fast_head` reads, httparse reads the same, byte for byte; and
+    /// it reads every well-formed request `sent` makes, so it is the path
+    /// taken.
+    #[test]
+    fn the_fast_head_reads_as_httparse_does() {
+        let same = |wire: &[u8], must: bool| {
+            let (mut fast, mut slow) = (Vec::new(), Vec::new());
+            let Some(f) = fast_head(wire, 0, &mut fast) else {
+                assert!(!must, "{:?}", String::from_utf8_lossy(wire));
+                return;
+            };
+            let Ok(s) = slow_head(wire, 0, &mut slow) else {
+                panic!("httparse refused {:?}", String::from_utf8_lossy(wire));
+            };
+            let text = |s: Span| &wire[s.range()];
+            let pairs = |h: &[(Span, Span)]| {
+                h.iter()
+                    .map(|&(n, v)| (text(n), text(v)))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                (
+                    f.len,
+                    f.method,
+                    f.http11,
+                    text(f.path),
+                    text(f.query),
+                    pairs(&fast)
+                ),
+                (
+                    s.len,
+                    s.method,
+                    s.http11,
+                    text(s.path),
+                    text(s.query),
+                    pairs(&slow)
+                ),
+                "{:?}",
+                String::from_utf8_lossy(wire)
+            );
+        };
+        let mut rng = Rng::new(6);
+        for k in 0..30_000 {
+            let mut wire = sent(&mut rng).wire;
+            let whole = k % 3 == 0;
+            if !whole {
+                mutate(&mut rng, &mut wire);
+            }
+            same(&wire, whole);
+        }
+        // Every byte in a method, target, header name and value, and around
+        // the lines' ends.
+        for v in 0..=255u8 {
+            let c = char::from(v);
+            for wire in [
+                format!("G{c}T / HTTP/1.1\r\n\r\n").into_bytes(),
+                format!("GET /a{c}b HTTP/1.1\r\n\r\n").into_bytes(),
+                format!("GET / HTTP/1.1\r\nx{c}y: 1\r\n\r\n").into_bytes(),
+                format!("GET / HTTP/1.1\r\nx:{c}a\r\n\r\n").into_bytes(),
+                format!("GET / HTTP/1.1\r\nx: 0123456789{c}abcdef{c} \r\n\r\n").into_bytes(),
+                format!("GET / HTTP/1.1{c}\nx: 1\r{c}\r\n").into_bytes(),
+                [
+                    &b"GET / HTTP/1.1\r\nx: "[..],
+                    &[v, b'\r', b'\n', b'\r', b'\n'],
+                ]
+                .concat(),
+                [
+                    &b"GET /"[..],
+                    &[v; 9],
+                    b" HTTP/1.0\r\nx: ",
+                    &[v; 17],
+                    b"\r\n\r\n",
+                ]
+                .concat(),
+            ] {
+                same(&wire, false);
+            }
+        }
+        same(
+            b"GET /x?a=1&b HTTP/1.1\r\nHost: a\r\nX-Empty:\r\nX-Tabs:\t a\tb \t\r\n\r\n",
+            true,
+        );
+        same(b"DELETE /x HTTP/1.0\r\n\r\n", true);
+    }
+
     #[test]
     fn pipelined_requests_parse_in_turn() {
         let mut rng = Rng::new(2);
@@ -2416,6 +2729,235 @@ mod tests {
             Some(16)
         );
         assert_eq!(sent("/p/other", "abc-1").header("x-request-id"), None);
+    }
+
+    /// The routes of `bench/app`, as `wisp-build` writes them: `/plaintext`
+    /// (0), `/json` (1) and `/fortunes` (2), a page of escaped rows.
+    struct Bench;
+
+    struct Message {
+        message: &'static str,
+    }
+
+    impl crate::Json for Message {
+        fn json(&self, out: &mut String) {
+            out.push_str("{\"message\":");
+            crate::Json::json(&self.message, out);
+            out.push('}');
+        }
+    }
+
+    const ROWS: [(u32, &str); 13] = [
+        (0, "Additional fortune added at request time."),
+        (1, "fortune: No such file or directory"),
+        (
+            2,
+            "A computer scientist is someone who fixes things that aren't broken.",
+        ),
+        (3, "After enough decimal places, nobody gives a damn."),
+        (
+            4,
+            "A bad random number generator: 1, 1, 1, 1, 1, 4.33e+67, 1, 1, 1",
+        ),
+        (
+            5,
+            "A computer program does what you tell it to do, not what you want it to do.",
+        ),
+        (
+            6,
+            "Emacs is a nice operating system, but I prefer UNIX. — Tom Christaensen",
+        ),
+        (7, "Any program that runs right is obsolete."),
+        (
+            8,
+            "A list is only as strong as its weakest link. — Donald Knuth",
+        ),
+        (9, "Feature: A bug with seniority."),
+        (10, "Computers make very fast, very accurate mistakes."),
+        (
+            11,
+            "<script>alert(\"This should not be displayed in a browser alert box.\");</script>",
+        ),
+        (12, "フレームワークのベンチマーク"),
+    ];
+
+    impl App for Bench {
+        const ROOT: &'static str = ".";
+        const CSS: Option<&'static str> = None;
+        const PARAMS: &'static [&'static [&'static str]] = &[&[], &[], &[]];
+        const TEMPLATES: &'static [(&'static str, u64)] = &[];
+
+        fn route<'a>(_: &'a str, segs: &[&'a str]) -> Option<(usize, [&'a str; 8])> {
+            let id = match segs {
+                ["plaintext"] => 0,
+                ["json"] => 1,
+                ["fortunes"] => 2,
+                _ => return None,
+            };
+            Some((id, [""; 8]))
+        }
+
+        fn body_limit(_: usize) -> Option<usize> {
+            None
+        }
+
+        fn shell() -> [&'static str; 3] {
+            [
+                "<!DOCTYPE html>\n<html>\n<head>",
+                "</head>\n<body>",
+                "</body>\n</html>\n",
+            ]
+        }
+
+        fn asset(_: &str) -> Option<&'static crate::Asset> {
+            None
+        }
+
+        async fn init() -> crate::Result<()> {
+            Ok(())
+        }
+
+        #[allow(clippy::needless_borrow)] // the form the generated code has
+        async fn handle(route: Option<usize>, cx: &mut Cx, out: &mut Out) -> crate::Result<()> {
+            use crate::html::{Direct as _, Text};
+            use crate::rt_traits::ret::{Ret, Shape as _, Value as _};
+            crate::rt::hooked(cx);
+            let Some(route) = route else {
+                return Err(Error::new(404, "Not Found"));
+            };
+            if cx.method == Method::Get && cx.header("x-wisp-error").is_some() {
+                return Err(Error::new(500, "Something went wrong in the browser"));
+            }
+            match route {
+                0 => {
+                    crate::rt::endpoint(cx);
+                    let r = (&&&Ret::new(crate::Response::text("Hello, World!"))).respond()?;
+                    crate::rt::respond(out, r);
+                }
+                1 => {
+                    crate::rt::endpoint(cx);
+                    let r = (&&&Ret::new(Message {
+                        message: "Hello, World!",
+                    }))
+                        .respond()?;
+                    crate::rt::respond(out, r);
+                }
+                _ => {
+                    out.head.push_str("<title>Fortunes</title>");
+                    out.body
+                        .push_str("\n<table>\n<tr><th>id</th><th>message</th></tr>\n");
+                    for (id, message) in &ROWS {
+                        out.body.push_str("<tr><td>");
+                        (&Text(id)).put(&mut out.body);
+                        out.body.push_str("</td><td>");
+                        (&Text(message)).put(&mut out.body);
+                        out.body.push_str("</td></tr>\n");
+                    }
+                    out.body.push_str("</table>");
+                }
+            }
+            Ok(())
+        }
+
+        async fn error(
+            _: Option<usize>,
+            cx: &mut Cx,
+            out: &mut Out,
+            status: u16,
+            message: &str,
+        ) -> crate::Result<()> {
+            crate::rt::default_error(cx, out, status, message);
+            Ok(())
+        }
+    }
+
+    /// Polls `f` once: the routes of `Bench` never wait.
+    fn ready<F: Future>(f: F) -> F::Output {
+        let mut f = std::pin::pin!(f);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        match f.as_mut().poll(&mut cx) {
+            Poll::Ready(v) => v,
+            Poll::Pending => panic!("a Bench route waited"),
+        }
+    }
+
+    /// One request on a kept-alive connection, as `requests` answers it:
+    /// parsed from the read buffer, decided, written to the write buffer.
+    fn answer(b: &mut Buffers, request: &[u8]) {
+        b.cx.buf.clear();
+        b.cx.buf.extend_from_slice(request);
+        let Parsed::Request { keep_alive, .. } = parse::<Bench>(&mut b.cx, 0) else {
+            panic!("{:?}", String::from_utf8_lossy(request));
+        };
+        ready(decide::<Bench>(&mut b.cx, &mut b.out, &mut b.reply));
+        b.wbuf.clear();
+        let head = b.cx.method == Method::Head;
+        serialize::<Bench>(
+            &mut b.wbuf,
+            &mut b.reply,
+            &mut b.out,
+            b.cx.http11,
+            keep_alive,
+            head,
+        );
+    }
+
+    fn buffers() -> Buffers {
+        Buffers {
+            cx: Cx::new(SocketAddr::from(([127, 0, 0, 1], 1))),
+            wbuf: Vec::with_capacity(16 * 1024),
+            out: Out::default(),
+            reply: Reply::default(),
+        }
+    }
+
+    /// Once warm, a kept-alive connection answers `/plaintext`, `/json` and
+    /// a page of escaped rows, HEAD or GET, with no allocation: its
+    /// buffers, `Cx`, headers and response bodies are all reused. Measured
+    /// as a release server runs, with dev mode off: in a child process, when
+    /// this one has it on.
+
+    #[test]
+    fn warm_requests_allocate_nothing() {
+        if crate::settings().dev {
+            let name = "http::tests::warm_requests_allocate_nothing";
+            let child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([name, "--exact", "--nocapture"])
+                .env("WISP_DEV", "off")
+                .output()
+                .unwrap();
+            let said = String::from_utf8_lossy(&child.stdout);
+            assert!(
+                child.status.success() && said.contains("1 passed"),
+                "{said}"
+            );
+            return;
+        }
+        let mut b = buffers();
+        for (method, path, answered) in [
+            ("GET", "/plaintext", &b"Hello, World!"[..]),
+            ("GET", "/json", br#"{"message":"Hello, World!"}"#),
+            ("GET", "/fortunes", b"&lt;script&gt;alert(&quot;This"),
+            ("HEAD", "/json", b"content-length: 27\r\n"),
+        ] {
+            let request =
+                format!("{method} {path} HTTP/1.1\r\nhost: localhost\r\naccept: */*\r\n\r\n");
+            for _ in 0..3 {
+                answer(&mut b, request.as_bytes());
+            }
+            let made = allocation_counter::measure(|| {
+                for _ in 0..100 {
+                    answer(&mut b, request.as_bytes());
+                }
+            });
+            let text = String::from_utf8_lossy(&b.wbuf);
+            assert!(text.starts_with("HTTP/1.1 200 OK\r\n"), "{text}");
+            assert!(
+                b.wbuf.windows(answered.len()).any(|w| w == answered),
+                "{text}"
+            );
+            assert_eq!(made.count_total, 0, "{method} {path}");
+        }
     }
 
     #[test]
