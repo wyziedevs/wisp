@@ -643,9 +643,9 @@ mod tests {
 
     #[test]
     fn many_connections_at_once() {
-        // More than one turn's events.
+        // More than one turn's events (256), within the default 1024 descriptors.
         let addr = server(echo);
-        let mut conns: Vec<_> = (0..600).map(|_| connect(addr)).collect();
+        let mut conns: Vec<_> = (0..300).map(|_| connect(addr)).collect();
         for round in 0..3u8 {
             for (i, c) in conns.iter_mut().enumerate() {
                 c.write_all(format!("{round}:{i};").as_bytes()).unwrap();
