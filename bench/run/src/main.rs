@@ -23,7 +23,7 @@ mod sys;
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
@@ -276,6 +276,13 @@ fn main() {
             }
             let port = 3401 + i as u16;
             let addr: SocketAddr = ([127, 0, 0, 1], port).into();
+            // Whatever answers there is not the server we are about to start,
+            // and measuring it would print someone else's numbers.
+            if !port_free(addr, Duration::from_secs(5)) {
+                die(&format!(
+                    "port {port} is taken: is another benchmark running? Stop it first."
+                ));
+            }
             let mut child = match start(s, &repo, &bench, port, &threads, &server_cpus) {
                 Ok(child) => child,
                 Err(e) => {
@@ -618,6 +625,9 @@ fn measure(
         let r = wisp_load::run(addr, path, opt.connections, opt.warmup, opt.duration);
         let after = sys::cpu_times(&tree);
         let wall = wall.elapsed().as_secs_f64();
+        if let Ok(Some(status)) = child.try_wait() {
+            return Err(format!("exited during {path} ({status})"));
+        }
         // CPU time over the whole run (warmup included) per second of it, so
         // the cores kept busy; divided by the measured rate, CPU per request.
         let (mut total, mut kernel) = (0.0, 0.0);
@@ -663,6 +673,19 @@ fn measure(
         rows.push(row);
     }
     Ok(rows)
+}
+
+/// Whether nothing accepts connections on `addr`, waiting up to `wait` for
+/// a server just killed to let go of it.
+fn port_free(addr: SocketAddr, wait: Duration) -> bool {
+    let t = Instant::now();
+    while TcpStream::connect_timeout(&addr, Duration::from_millis(100)).is_ok() {
+        if t.elapsed() > wait {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    true
 }
 
 /// Milliseconds from launch until the first successful response.
