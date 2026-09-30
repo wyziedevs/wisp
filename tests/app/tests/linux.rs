@@ -560,30 +560,35 @@ fn descriptors_come_back_on(env: &[(&str, &str)]) {
 
 #[test]
 fn running_out_of_descriptors_pauses_accepting_and_no_more() {
-    // A process that may open 48 files: the listeners, the runtimes (and rings) and about thirty
-    // connections.
+    // A process that may open 48 files: the listeners, the runtimes (and rings) and some thirty
+    // connections, fewer on io_uring (a listener and a ring per worker). Of many that come at
+    // once, which are accepted is up to the kernel, which spreads them over those listeners.
     let s = start_at("0", Some(48));
-    let mut conns: Vec<TcpStream> = (0..70).map(|_| connect(s.port)).collect();
+    let served = |c: &mut BufReader<TcpStream>| {
+        c.get_mut().write_all(GET).unwrap();
+        assert!(read_answer(c).0.starts_with("HTTP/1.1 200"));
+    };
+    let mut first = BufReader::new(connect(s.port));
+    served(&mut first);
+    // Many more than fit, each listener too.
+    let mut conns: Vec<TcpStream> = (0..100).map(|_| connect(s.port)).collect();
     // One that was accepted is served, however many are waiting behind it.
-    conns[0].write_all(GET).unwrap();
-    let mut first = BufReader::new(conns[0].try_clone().unwrap());
-    assert!(read_answer(&mut first).0.starts_with("HTTP/1.1 200"));
+    served(&mut first);
     // One that was not is waiting: the listener has nowhere to put it.
-    let last = conns.len() - 1;
-    conns[last].write_all(GET).unwrap();
-    conns[last]
-        .set_read_timeout(Some(Duration::from_millis(100)))
+    let mut last = conns.pop().unwrap();
+    last.write_all(GET).unwrap();
+    last.set_read_timeout(Some(Duration::from_millis(100)))
         .unwrap();
     let mut byte = [0u8; 1];
-    let waiting = conns[last].read(&mut byte);
+    let waiting = last.read(&mut byte);
     assert!(
         matches!(&waiting, Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)),
         "{waiting:?}"
     );
-    // Room again: the waiting ones are accepted, and answered.
+    // Room again: the waiting ones kept, fewer than fit, are accepted and answered.
     drop(first);
-    conns.drain(..40);
-    let mut c = BufReader::new(conns.pop().unwrap());
+    conns.drain(..conns.len() - 10);
+    let mut c = BufReader::new(last);
     c.get_ref()
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
