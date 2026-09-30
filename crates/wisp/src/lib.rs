@@ -34,6 +34,7 @@ mod rest;
 pub mod rt_traits;
 mod sign;
 mod store;
+mod swar;
 mod table;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod test;
@@ -360,6 +361,41 @@ pub(crate) fn civil(days: u64) -> (u64, u64, u64) {
     let day = doy - (153 * mp + 2) / 5 + 1;
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     (yoe + era * 400 + u64::from(month <= 2), month, day)
+}
+
+/// `n` in decimal, written so it ends at `buf[end]`: returns where it
+/// starts. Two digits at a time from a table, so a division per pair
+/// rather than per digit.
+pub(crate) fn digits(buf: &mut [u8], end: usize, mut n: u64) -> usize {
+    const PAIRS: &[u8; 200] = b"\
+        0001020304050607080910111213141516171819\
+        2021222324252627282930313233343536373839\
+        4041424344454647484950515253545556575859\
+        6061626364656667686970717273747576777879\
+        8081828384858687888990919293949596979899";
+    let mut i = end;
+    while n >= 100 {
+        let pair = (n % 100) as usize * 2;
+        n /= 100;
+        i -= 2;
+        buf[i..i + 2].copy_from_slice(&PAIRS[pair..pair + 2]);
+    }
+    if n >= 10 {
+        let pair = n as usize * 2;
+        i -= 2;
+        buf[i..i + 2].copy_from_slice(&PAIRS[pair..pair + 2]);
+    } else {
+        i -= 1;
+        buf[i] = b'0' + n as u8;
+    }
+    i
+}
+
+/// `n` in decimal onto `out`: what templates and JSON write integers with.
+pub(crate) fn decimal(out: &mut String, n: u64) {
+    let mut buf = [0u8; 20];
+    let start = digits(&mut buf, 20, n);
+    out.push_str(std::str::from_utf8(&buf[start..]).unwrap_or_default());
 }
 
 /// Values given to [`provide`], leaked: they live as long as the process.
@@ -786,22 +822,24 @@ impl Response {
             .with_header("x-accel-buffering", "no")
     }
 
-    pub fn text(body: impl Into<String>) -> Response {
-        Response::new("text/plain; charset=utf-8", body.into())
+    pub fn text(body: impl IntoText) -> Response {
+        Response::new("text/plain; charset=utf-8", body.into_text())
     }
 
-    pub fn html(body: impl Into<String>) -> Response {
-        Response::new("text/html; charset=utf-8", body.into())
+    pub fn html(body: impl IntoText) -> Response {
+        Response::new("text/html; charset=utf-8", body.into_text())
     }
 
     /// Serialize with whatever you like; this only sets the content type.
-    pub fn json(body: impl Into<String>) -> Response {
-        Response::new("application/json", body.into())
+    pub fn json(body: impl IntoText) -> Response {
+        Response::new("application/json", body.into_text())
     }
 
     /// `value` as JSON, with `#[derive(Json)]` or one of the built-in impls.
     pub fn json_of(value: &(impl Json + ?Sized)) -> Response {
-        Response::json(to_json(value))
+        let mut out = String::from_utf8(http::spare()).unwrap_or_default();
+        value.json(&mut out);
+        Response::json(out)
     }
 
     /// `value` as JSON with 201 Created, the answer to a POST that made
@@ -829,6 +867,64 @@ impl Response {
         );
         self.headers.push((name, value));
         self
+    }
+}
+
+/// The text of [`Response::text`], [`Response::html`] and
+/// [`Response::json`]. A `String` becomes the body as it is; borrowed text
+/// is copied into a buffer that an earlier response on the thread left, so
+/// a warm server allocates nothing for it.
+#[diagnostic::on_unimplemented(
+    message = "a response's text is a `String` or a `&str`, not `{Self}`"
+)]
+pub trait IntoText {
+    fn into_text(self) -> Vec<u8>;
+}
+
+impl IntoText for String {
+    fn into_text(self) -> Vec<u8> {
+        self.into_bytes()
+    }
+}
+
+impl IntoText for &str {
+    fn into_text(self) -> Vec<u8> {
+        let mut body = http::spare();
+        body.extend_from_slice(self.as_bytes());
+        body
+    }
+}
+
+impl IntoText for &mut str {
+    fn into_text(self) -> Vec<u8> {
+        (&*self).into_text()
+    }
+}
+
+impl IntoText for &String {
+    fn into_text(self) -> Vec<u8> {
+        self.as_str().into_text()
+    }
+}
+
+impl IntoText for Box<str> {
+    fn into_text(self) -> Vec<u8> {
+        self.into_string().into_bytes()
+    }
+}
+
+impl IntoText for Cow<'_, str> {
+    fn into_text(self) -> Vec<u8> {
+        match self {
+            Cow::Owned(s) => s.into_bytes(),
+            Cow::Borrowed(s) => s.into_text(),
+        }
+    }
+}
+
+impl IntoText for char {
+    fn into_text(self) -> Vec<u8> {
+        self.encode_utf8(&mut [0; 4]).into_text()
     }
 }
 
@@ -1359,6 +1455,34 @@ pub mod rt {
 
 #[cfg(test)]
 mod tests {
+    /// Every number to 100 000, each power of ten and its neighbours, and
+    /// the ends of the range, against `Display`, written where asked.
+    #[test]
+    fn decimals_two_digits_at_a_time() {
+        let mut n = 1u64;
+        let mut edges = vec![
+            0,
+            u64::MAX,
+            u64::MAX - 1,
+            i64::MAX as u64,
+            i64::MIN.unsigned_abs(),
+        ];
+        while let Some(m) = n.checked_mul(10) {
+            edges.extend([n - 1, n, n + 1]);
+            n = m;
+        }
+        edges.extend([n - 1, n, n + 1]);
+        for n in (0..=100_000).chain(edges) {
+            let mut buf = [b'x'; 24];
+            let start = super::digits(&mut buf, 22, n);
+            assert_eq!(&buf[start..22], n.to_string().as_bytes());
+            assert!(buf[..start].iter().chain(&buf[22..]).all(|&b| b == b'x'));
+            let mut s = String::from("=");
+            super::decimal(&mut s, n);
+            assert_eq!(s, format!("={n}"));
+        }
+    }
+
     #[test]
     fn provided_values_reach_every_thread() {
         struct Answer(u32);

@@ -12,16 +12,26 @@ pub fn escape(out: &mut String, s: &str) {
     // 3.5x the speed of a byte loop on plain text.
     let (chunks, rest) = bytes.as_chunks::<16>();
     for (n, chunk) in chunks.iter().enumerate() {
-        let mut hit = 0u8;
-        for &b in chunk {
-            hit |= special(b) as u8;
-        }
-        if hit != 0 {
+        if hit(chunk) {
             escape_bytes(out, s, &mut done, n * 16, n * 16 + 16);
         }
     }
-    escape_bytes(out, s, &mut done, bytes.len() - rest.len(), bytes.len());
+    // The last few bytes, tested as the last 16 (which overlap the chunk
+    // before) when there are that many: a clean tail is not looked at one
+    // byte at a time either.
+    if !rest.is_empty() && bytes.last_chunk().is_none_or(hit) {
+        escape_bytes(out, s, &mut done, bytes.len() - rest.len(), bytes.len());
+    }
     out.push_str(&s[done..]);
+}
+
+#[inline(always)]
+fn hit(chunk: &[u8; 16]) -> bool {
+    let mut hit = 0u8;
+    for &b in chunk {
+        hit |= special(b) as u8;
+    }
+    hit != 0
 }
 
 /// `& ' < > "` in three compares: `&` and `'` differ only in bit 0, `<` and
@@ -146,7 +156,7 @@ macro_rules! unsigned {
         impl Direct for Text<'_, $t> {
             #[inline]
             fn put(&self, out: &mut String) {
-                decimal(out, *self.0 as u64);
+                crate::decimal(out, *self.0 as u64);
             }
         }
     )*};
@@ -160,7 +170,7 @@ macro_rules! signed {
                 if *self.0 < 0 {
                     out.push('-');
                 }
-                decimal(out, self.0.unsigned_abs() as u64);
+                crate::decimal(out, self.0.unsigned_abs() as u64);
             }
         }
     )*};
@@ -168,20 +178,6 @@ macro_rules! signed {
 
 unsigned!(u8 u16 u32 u64 usize);
 signed!(i8 i16 i32 i64 isize);
-
-fn decimal(out: &mut String, mut n: u64) {
-    let mut digits = [0u8; 20];
-    let mut i = digits.len();
-    loop {
-        i -= 1;
-        digits[i] = b'0' + (n % 10) as u8;
-        n /= 10;
-        if n == 0 {
-            break;
-        }
-    }
-    out.push_str(std::str::from_utf8(&digits[i..]).expect("digits are ASCII"));
-}
 
 /// `href={expr}` in a template compiles to `(&Attr(&expr)).get()`: the
 /// attribute is written for `Some(v)` and left out for `None`. An `Option`
@@ -314,6 +310,41 @@ mod tests {
             let mut s = String::new();
             escape(&mut s, input);
             assert_eq!(s, want, "{input}");
+        }
+    }
+
+    /// Every ASCII character and some longer ones, at every place of texts
+    /// 0 to 40 bytes long (whole chunks, the overlapping last 16, the tail),
+    /// alone and with a `&` at the end, against a character at a time.
+    #[test]
+    fn escapes_as_a_char_loop_would() {
+        let slow = |s: &str| -> String {
+            s.chars()
+                .map(|c| match c {
+                    '&' => "&amp;".to_string(),
+                    '<' => "&lt;".to_string(),
+                    '>' => "&gt;".to_string(),
+                    '"' => "&quot;".to_string(),
+                    '\'' => "&#39;".to_string(),
+                    c => c.to_string(),
+                })
+                .collect()
+        };
+        let chars = (0..128u8)
+            .map(char::from)
+            .chain(['é', '€', '😀', '\u{2028}']);
+        for c in chars {
+            for len in 0..=40 {
+                for at in 0..len {
+                    let mut s: String = (0..len).map(|k| if k == at { c } else { 'a' }).collect();
+                    for _ in 0..2 {
+                        let mut out = String::new();
+                        escape(&mut out, &s);
+                        assert_eq!(out, slow(&s), "{s:?}");
+                        s.push('&');
+                    }
+                }
+            }
         }
     }
 
