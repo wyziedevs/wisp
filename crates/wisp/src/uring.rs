@@ -277,6 +277,11 @@ pub(crate) struct Ring {
 // worker touches it.
 unsafe impl Send for Ring {}
 
+/// `e`, saying which step of making a ring it came from.
+fn step(what: &str, e: io::Error) -> io::Error {
+    io::Error::new(e.kind(), format!("{what}: {e}"))
+}
+
 impl Ring {
     /// A ring for one worker. It stays disabled until `serve` enables it on
     /// the worker's thread, which then is the only one that submits.
@@ -300,7 +305,8 @@ impl Ring {
                 libc::c_long::from(SQ_ENTRIES),
                 &raw mut p,
             )
-        })?;
+        })
+        .map_err(|e| step("io_uring_setup", e))?;
         let need = FEAT_SINGLE_MMAP | FEAT_NODROP | FEAT_FAST_POLL;
         if p.features & need != need {
             return Err(io::ErrorKind::Unsupported.into());
@@ -319,7 +325,8 @@ impl Ring {
         }
         // SAFETY: eventfd(2), no pointers.
         let eventfd = owned(unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) })?;
-        register(&fd, REGISTER_EVENTFD, Some(&eventfd.as_raw_fd()), 1)?;
+        register(&fd, REGISTER_EVENTFD, Some(&eventfd.as_raw_fd()), 1)
+            .map_err(|e| step("registering the eventfd", e))?;
         let bufs = Map::new(-1, BUFS * (16 + BUF_SIZE), 0)?;
         let mut ring = Ring {
             sq_head: sq.head,
@@ -351,7 +358,8 @@ impl Ring {
             flags: 0,
             resv: [0; 3],
         };
-        register(&ring.fd, REGISTER_PBUF_RING, Some(&reg), 1)?;
+        register(&ring.fd, REGISTER_PBUF_RING, Some(&reg), 1)
+            .map_err(|e| step("registering the buffer ring", e))?;
         Ok(ring)
     }
 
