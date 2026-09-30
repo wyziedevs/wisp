@@ -1342,6 +1342,24 @@ pub mod rt {
         cx.input(name)
     }
 
+    /// What was wrong with `name`, after its `<input>` in an action's form:
+    /// `<small class="problem">…</small>`, or nothing.
+    pub fn problem<'a>(cx: &'a Cx, name: &str) -> Problem<'a> {
+        Problem(cx.problem(name))
+    }
+
+    pub struct Problem<'a>(Option<&'a str>);
+
+    impl std::fmt::Display for Problem<'_> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            let Some(p) = self.0 else { return Ok(()) };
+            let mut s = String::from("<small class=\"problem\">");
+            escape(&mut s, p);
+            s.push_str("</small>");
+            f.write_str(&s)
+        }
+    }
+
     pub fn respond(out: &mut Out, r: Response) {
         out.response = Some(r);
     }

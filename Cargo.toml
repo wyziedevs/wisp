@@ -11,6 +11,8 @@ members = [
     "bench/load",
     "bench/run",
     "bench/app",
+    "bench/tokens",
+    "bench/tokens/apps/wisp",
 ]
 
 [workspace.package]

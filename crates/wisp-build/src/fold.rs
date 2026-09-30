@@ -8,7 +8,7 @@
 //! `wisp::rt::escape` does; a component's props given as literals (or left
 //! to literal defaults); `{#if}` on those. Anything else is left to run.
 
-use crate::template::{Node, PropDecl, PropValue, Template};
+use crate::template::{KEPT, Node, PROBLEM, PropDecl, PropValue, Template};
 use crate::ty::{self, Scalar};
 
 /// A value known at build time.
@@ -278,6 +278,10 @@ impl Fold<'_> {
                     };
                     self.nodes(&ct.nodes, ct, &own, doc, head, &kids)?;
                 }
+                // What an action refused, which a GET (all that is baked)
+                // never has: an input's value sent again, and its problem.
+                Node::Attr { code, .. } if code.src.starts_with(KEPT) => {}
+                Node::Html(c) if c.src.starts_with(PROBLEM) => {}
                 n => out.push_str(&fixed_in(n, t, env)?),
             }
         }

@@ -125,6 +125,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokens-wisp"
+version = "0.0.0"
+dependencies = [
+ "wisp",
+ "wisp-build",
+]
+
+[[package]]
 name = "tokio"
 version = "1.53.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -217,3 +225,7 @@ dependencies = [
  "wisp",
  "wisp-build",
 ]
+
+[[package]]
+name = "wisp-tokens"
+version = "0.0.0"

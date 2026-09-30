@@ -54,7 +54,6 @@ let count = TODOS.len();
 <title>Todos ({count})</title>
 <form action="?/add">
   <input name="text">
-  {cx.problem("text")}
 </form>
 {#each TODOS.all() as todo}
   <p>{todo} <button action="?/remove&id={todo.id}">x</button></p>
@@ -103,9 +102,11 @@ fn like(id: u64, note: Option<String>, agree: bool, tags: Vec<String>) -> Result
   `&str` ok. Returns `()`/`Result`, or `Response`/`Option<Response>` to send
   instead of the page.
 - `#[validate(len = 1..=100)] text: String` (also `min max min_len max_len
-  email`), or `return invalid("field", "msg")` → page re-renders as 422 with
-  `{cx.problem("field")}` (nothing when fine); an `<input name>` in the form
-  shows what was sent again by itself. Other errors → error page.
+  email`), or `return invalid("field", "msg")` → page re-renders as 422; each
+  text `<input name>` of an action form (`?/x`, or `method="post"`) shows
+  what was sent again and, after it, `<small class="problem">msg</small>`.
+  Write `{cx.problem("field")}` anywhere to place them yourself (then none
+  are added in that file). Other errors → error page.
 - Same-origin checked. Works without JS; wisp.js morphs the page in place.
 
 ## Templates (Rust on the server)
@@ -151,6 +152,10 @@ typed and checked at build. No `---` block in components.
   let name = data.name                // server values: data.x (a block's locals)
 </script>
 ```
+
+`bind:value="q"` with no `let q` anywhere declares it (state, starting from
+the input), so a live search needs no script: `<input bind:value="q">`
+`{:#each data.items.filter((i) => i.name.includes(q)) as i}…{:/each}`.
 
 Directives: `on:click="f"` (modifiers `.prevent .stop .once .self .window
 .document .outside .debounce.300ms .enter .escape .ctrl`…), `bind:value="q"`,

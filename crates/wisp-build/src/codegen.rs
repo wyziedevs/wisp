@@ -271,12 +271,16 @@ fn checks(name: &str, v: &str, rules: &str) -> Result<String, String> {
 }
 
 /// A component has no `cx`, so its action forms' inputs do not show what
-/// was sent again (see `template::KEPT`): their value is never there.
+/// was sent again or what was wrong with it (see `template::KEPT`): they
+/// are never there.
 fn unkeep(nodes: &mut [Node]) {
     for n in nodes {
         match n {
             Node::Attr { code, .. } if code.src.starts_with(template::KEPT) => {
                 code.src = "None::<&str>".into();
+            }
+            Node::Html(code) if code.src.starts_with(template::PROBLEM) => {
+                code.src = "\"\"".into();
             }
             Node::If {
                 branches,
@@ -4307,6 +4311,33 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
         .map(|p| p.1.clone())
         .chain(rest.clone())
         .collect();
+    // `bind:value="q"` with no `q` anywhere declares it: `let q` at the end
+    // of the script (or as the whole script), so offsets in it hold.
+    let imported = js::import_names(src, &js::imports(src));
+    let mut src = src.to_string();
+    let mut bound: Vec<&str> = Vec::new();
+    for (g, scope) in tt.groups.iter().zip(&scopes) {
+        for d in g.directives.iter().filter(|d| d.kind == Dir::Bind) {
+            let Some(v) = d.value.as_ref().map(|c| c.src.trim()) else {
+                continue;
+            };
+            let free = ty::is_ident(v)
+                && !js::is_reserved(v)
+                && !bound.contains(&v)
+                && !declared.iter().any(|(n, _)| n == v)
+                && !imported.iter().any(|n| n == v)
+                && !server.iter().any(|n| n == v)
+                && !owned.iter().any(|n| n == v)
+                && !g.locals.iter().any(|n| n == v)
+                && !scope.iter().any(|n| n == v);
+            if free {
+                bound.push(v);
+                src.push_str("\nlet ");
+                src.push_str(v);
+            }
+        }
+    }
+    let src = src.as_str();
     let written: Vec<&str> = groups.iter().flatten().map(String::as_str).collect();
     let (runs, reactive) = js::script(src, &owned, cx.release, &written).map_err(script_err)?;
     for (bindings, g) in groups.iter_mut().zip(&tt.groups) {
@@ -4332,7 +4363,8 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
         params: &params,
         rest: rest.as_deref(),
         defaults: &defaults,
-        script: script.map(|s| (runs.as_str(), s.line)),
+        script: (script.is_some() || !bound.is_empty())
+            .then(|| (runs.as_str(), script.map_or(1, |s| s.line))),
         groups: &groups,
         imports: &imports,
         load: cx.load.as_deref(),
@@ -5606,7 +5638,11 @@ mod tests {
                 "src/routes/+layout.wisp",
                 "<nav>{\"a&b\"}</nav>{@render children()}",
             ),
-            ("src/routes/+page.wisp", "<title>T</title><h1>{1}</h1>"),
+            // A GET never has what an action refused: the form is baked too.
+            (
+                "src/routes/+page.wisp",
+                "<title>T</title><h1>{1}</h1><form action=\"?/add\"><input name=\"x\"></form>",
+            ),
             ("src/routes/+page.rs", "#[action]\nfn add() {}"),
             ("src/routes/user/[name]/+page.wisp", "<h1>{name}</h1>"),
             (
@@ -5615,7 +5651,7 @@ mod tests {
             ),
         ];
         let code = app("baked", &files).unwrap();
-        let doc = "<html><head><script defer src=\\\"/_app/wisp.js?v=VERSION\\\"></script><title>T</title></head><body><nav>a&amp;b</nav><h1>1</h1></body></html>"
+        let doc = "<html><head><script defer src=\\\"/_app/wisp.js?v=VERSION\\\"></script><title>T</title></head><body><nav>a&amp;b</nav><h1>1</h1><form action=\\\"?/add\\\" method=\\\"post\\\"><input name=\\\"x\\\"></form></body></html>"
             .replace("VERSION", env!("CARGO_PKG_VERSION"));
         let etag = format!(
             "\\\"{:016x}\\\"",
@@ -6018,7 +6054,8 @@ pub fn load() -> Data { todo!() }";
             "[\"on\", \"keydown\", 8192, (_, event) => { if (ok) send(); else warn() }, [\"enter\"]]",
             "[\"on\", \"click\", 8192, (_, event) => { a(); b() // why\n }]",
             "[\"bind\", \"value\", () => (form.q), (_, __wisp_v) => { (form.q) = __wisp_v }]",
-            "[\"bind\", \"this\", null, (_, __wisp_v) => { (el) = __wisp_v }]",
+            // No script declares `el`: the binding does, as state.
+            "[\"bind\", \"this\", null, (_, __wisp_v) => { (el.v) = __wisp_v }]",
             "[\"style\", \"--x\", () => (x)]",
             "[\"transition\", \"fly\", () => ({ y: 4 }), 0]",
             "[\"use\", () => tip, () => ('hi')]",
