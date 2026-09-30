@@ -14,6 +14,26 @@ use std::str::FromStr;
 use std::time::Duration;
 
 pub const MAX_PARAMS: usize = 8;
+/// The deepest path a `[...rest]` route matches.
+pub const MAX_SEGS: usize = 32;
+
+/// `/a/b` → `["a", "b"]`, `/` → `[]`, for the router's arms with
+/// parameters (a path without any is matched whole). `None` when deeper
+/// than `N`: the router's deepest arm, or `MAX_SEGS` with a `[...rest]`.
+pub fn split<'a, 'b, const N: usize>(
+    path: &'a str,
+    segs: &'b mut [&'a str; N],
+) -> Option<&'b [&'a str]> {
+    if path == "/" {
+        return Some(&[]);
+    }
+    let mut n = 0;
+    for s in path.get(1..)?.split('/') {
+        *segs.get_mut(n)? = s;
+        n += 1;
+    }
+    Some(&segs[..n])
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Method {
@@ -955,6 +975,18 @@ mod tests {
         assert_eq!(decode(b"%zz%4", true), "%zz%4");
         assert_eq!(decode(b"%C3%BC", true), "ü");
         assert_eq!(decode(b"%FF", true), "\u{FFFD}");
+    }
+
+    #[test]
+    fn paths_split_into_segments() {
+        let mut segs = [""; MAX_SEGS];
+        assert_eq!(split("/", &mut segs), Some(&[][..]));
+        assert_eq!(split("/a//b", &mut segs), Some(&["a", "", "b"][..]));
+        assert_eq!(split(&"/x".repeat(40), &mut segs), None);
+        let mut two = [""; 2];
+        assert_eq!(split("/a/b", &mut two), Some(&["a", "b"][..]));
+        assert_eq!(split("/a/b/c", &mut two), None, "deeper than any arm");
+        assert_eq!(split("", &mut two), None);
     }
 
     #[test]

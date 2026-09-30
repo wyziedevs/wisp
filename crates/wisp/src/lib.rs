@@ -11,6 +11,7 @@
     forbid(unsafe_code)
 )]
 
+mod bake;
 #[cfg(not(target_arch = "wasm32"))]
 mod channel;
 mod cx;
@@ -576,7 +577,8 @@ pub trait App: 'static {
     /// `(path, shape)` per template id, for dev hot swapping.
     const TEMPLATES: &'static [(&'static str, u64)];
 
-    fn route<'a>(path: &'a str, segs: &[&'a str]) -> Option<(usize, [&'a str; cx::MAX_PARAMS])>;
+    /// The route of `path` and its parameters, slices of it.
+    fn route(path: &str) -> Option<(usize, [&str; cx::MAX_PARAMS])>;
     /// The route's own `BODY_LIMIT`, if its `+page.rs` or `+server.rs` sets one.
     fn body_limit(route: usize) -> Option<usize>;
     fn shell() -> [&'static str; 3];
@@ -626,6 +628,9 @@ pub struct Out {
     pub head: String,
     pub body: String,
     response: Option<Response>,
+    /// A response made before, sent as its bytes: a baked page, or one
+    /// `CACHE` kept.
+    made: Option<bake::Made>,
     /// The template instances with browser code the page rendered.
     live: live::Live,
 }
@@ -635,6 +640,7 @@ impl Out {
         self.head.clear();
         self.body.clear();
         self.response = None;
+        self.made = None;
         self.live.clear();
     }
 }
@@ -1235,7 +1241,10 @@ impl<T, E: fmt::Display> OrStatus<T> for std::result::Result<T, E> {
 /// Support for generated code. Not a stable API.
 #[doc(hidden)]
 pub mod rt {
-    pub use crate::cx::{BadCookie, CookieReader, CookieWriter, MAX_PARAMS, decode};
+    pub use crate::bake::{Baked, baked, cached, keep};
+    pub use crate::cx::{
+        BadCookie, CookieReader, CookieWriter, MAX_PARAMS, MAX_SEGS, decode, split,
+    };
     pub use crate::dev::chunk;
     /// A `#[derive(Rest)]` type's handlers and hooks (see `rest.rs`).
     pub mod rest {

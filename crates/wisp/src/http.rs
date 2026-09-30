@@ -36,7 +36,6 @@ use tokio::sync::{Notify, mpsc};
 
 const MAX_HEADERS: usize = 64;
 const MAX_HEAD: usize = 16 * 1024;
-const MAX_SEGS: usize = 32;
 /// Time allowed to receive a request's head once its first byte arrived,
 /// and then for each part of its body: a large upload may take minutes, as
 /// long as it keeps coming.
@@ -89,6 +88,8 @@ fn api_docs() -> &'static [u8] {
 }
 
 /// `<link>`/`<script>` tags for `%wisp.head%`. Fixed for the process.
+/// Baked pages have them as wisp-build writes them (`Project::baked`), the
+/// same out of dev mode: change both.
 static HEAD_TAGS: OnceLock<String> = OnceLock::new();
 
 /// Thread per core: `threads` workers, each a single-threaded tokio runtime
@@ -1149,9 +1150,8 @@ const MAX_BODY: usize = 1 << 31;
 /// `WISP_BODY_LIMIT`, and at most `MAX_BODY`. Only requests with a body
 /// look it up.
 pub(crate) fn body_limit<A: App>(path: &str) -> usize {
-    let mut segs = [""; MAX_SEGS];
     let route = if path.starts_with('/') {
-        split(path, &mut segs).and_then(|n| A::route(path, &segs[..n]))
+        A::route(path)
     } else {
         None
     };
@@ -1309,6 +1309,11 @@ pub enum Body {
     /// built-in server sees it; [`handle`] renders it to `Bytes`.
     #[doc(hidden)]
     Page,
+    /// A response made before (a baked page, or one `CACHE` kept), whose
+    /// head and body are sent as they are. [`handle`] turns it into headers
+    /// and `Static` or `Bytes`.
+    #[doc(hidden)]
+    Made(crate::bake::Made),
     /// Chunks as a [`Response::stream`] makes them, until the sender is dropped.
     Stream(mpsc::Receiver<Vec<u8>>),
     /// A [`Response::websocket`]: only the built-in server upgrades;
@@ -1381,6 +1386,7 @@ impl Reply {
         match &self.body {
             Body::Bytes(b) => b,
             Body::Static(b) => b,
+            Body::Made(m) => m.body(),
             Body::Page | Body::Stream(_) | Body::WebSocket(_) => b"",
         }
     }
@@ -1453,6 +1459,7 @@ pub(crate) async fn answer<A: App>(mut cx: Cx) -> Reply {
     match reply.body {
         Body::WebSocket(_) => reply.set_plain(501, "WebSockets need Wisp's own server"),
         Body::Page => reply.body = Body::Bytes(page::<A>(&mut out).concat().into_bytes()),
+        Body::Made(_) => crate::bake::unpack(&mut reply),
         _ => {}
     }
     let head = cx.method == Method::Head;
@@ -1584,8 +1591,7 @@ async fn decide_inner<A: App>(cx: &mut Cx, out: &mut Out, reply: &mut Reply) {
 
     // Route, then turn the matched parameters into spans so `cx` can be
     // handed out mutably.
-    let mut segs = [""; MAX_SEGS];
-    let route = split(path, &mut segs).and_then(|n| A::route(path, &segs[..n]));
+    let route = A::route(path);
     if matches!(method, Method::Get | Method::Head) && file::<A>(cx, path, route.is_some(), reply) {
         return;
     }
@@ -1624,7 +1630,10 @@ async fn decide_inner<A: App>(cx: &mut Cx, out: &mut Out, reply: &mut Reply) {
                         (None, None) => Body::Bytes(res.body),
                     };
                 }
-                None => reply.set(cx.status, "text/html; charset=utf-8", Body::Page),
+                None => match out.made.take() {
+                    Some(made) => crate::bake::reply(cx, made, reply),
+                    None => reply.set(cx.status, "text/html; charset=utf-8", Body::Page),
+                },
             }
             None
         }
@@ -1790,18 +1799,23 @@ fn serialize<A: App>(
 
     // See `framing`.
     let own_length = head_only && reply.header("content-length").is_some();
-    match status_line(reply.status) {
-        Some(line) => w.extend_from_slice(line),
-        None => {
-            w.extend_from_slice(b"HTTP/1.1 ");
-            push_decimal(w, reply.status.into());
-            w.extend_from_slice(b" \r\n");
+    let made = matches!(reply.body, Body::Made(_));
+    if let Body::Made(m) = &reply.body {
+        w.extend_from_slice(m.head()); // status line and length included
+    } else {
+        match status_line(reply.status) {
+            Some(line) => w.extend_from_slice(line),
+            None => {
+                w.extend_from_slice(b"HTTP/1.1 ");
+                push_decimal(w, reply.status.into());
+                w.extend_from_slice(b" \r\n");
+            }
+        }
+        if chunked {
+            w.extend_from_slice(b"transfer-encoding: chunked\r\n");
         }
     }
-    if chunked {
-        w.extend_from_slice(b"transfer-encoding: chunked\r\n");
-    }
-    let length = !chunked && !stream && !bodiless && !own_length;
+    let length = !made && !chunked && !stream && !bodiless && !own_length;
     length_and_date(w, length.then_some(len));
     if !keep_alive {
         w.extend_from_slice(b"connection: close\r\n");
@@ -1827,6 +1841,7 @@ fn serialize<A: App>(
             recycle(b);
         }
         Body::Static(b) if send => w.extend_from_slice(b),
+        Body::Made(m) if send => w.extend_from_slice(m.body()),
         Body::Page if send => {
             w.reserve(len);
             for part in parts.into_iter().flatten() {
@@ -1849,7 +1864,7 @@ fn serialize<A: App>(
 /// The parts of a page, in order: the shell around the tags for
 /// `%wisp.head%`, the page's head, and its body, which its browser code
 /// ends. Once a page.
-fn page<A: App>(out: &mut Out) -> [&str; 6] {
+pub(crate) fn page<A: App>(out: &mut Out) -> [&str; 6] {
     out.live.tail(&mut out.body);
     let [s0, s1, s2] = A::shell();
     let tags = HEAD_TAGS.get().map_or("", String::as_str);
@@ -1941,19 +1956,6 @@ pub(crate) async fn catch<F: Future<Output = crate::Result<()>>>(f: F) -> crate:
         }
     })
     .await
-}
-
-/// `/a/b` → `["a", "b"]`, `/` → `[]`. `None` when deeper than `MAX_SEGS`.
-fn split<'a>(path: &'a str, segs: &mut [&'a str; MAX_SEGS]) -> Option<usize> {
-    if path == "/" {
-        return Some(0);
-    }
-    let mut n = 0;
-    for s in path[1..].split('/') {
-        *segs.get_mut(n)? = s;
-        n += 1;
-    }
-    Some(n)
 }
 
 /// Wisp's own addresses: the browser runtime, the API docs and, in dev,
@@ -2181,6 +2183,15 @@ static SECONDS: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn seconds() -> u64 {
     SECONDS.load(Ordering::Relaxed)
+}
+
+/// The unix second: the clock's, when the server keeps one, else the
+/// system's (a host other than the built-in server).
+pub(crate) fn now() -> u64 {
+    match NOW.load(Ordering::Relaxed) {
+        0 => crate::unix_now(),
+        n => n,
+    }
 }
 
 /// When `seconds()` was 0.
@@ -2458,11 +2469,6 @@ mod tests {
 
     #[test]
     fn paths() {
-        let mut segs = [""; MAX_SEGS];
-        assert_eq!(split("/", &mut segs), Some(0));
-        assert_eq!(split("/a/b", &mut segs), Some(2));
-        assert_eq!(&segs[..2], ["a", "b"]);
-        assert_eq!(split(&"/x".repeat(40), &mut segs), None);
         assert_eq!(
             safe_relative_path("/img/a%20b.png").as_deref(),
             Some("img/a b.png")
@@ -2926,8 +2932,9 @@ mod tests {
         const PARAMS: &'static [&'static [&'static str]] = &[&[], &[], &[]];
         const TEMPLATES: &'static [(&'static str, u64)] = &[];
 
-        fn route<'a>(_: &'a str, segs: &[&'a str]) -> Option<(usize, [&'a str; 8])> {
-            let id = match segs {
+        fn route(path: &str) -> Option<(usize, [&str; 8])> {
+            let mut segs = [""; crate::rt::MAX_SEGS];
+            let id = match crate::rt::split(path, &mut segs)? {
                 ["plaintext"] => 0,
                 ["json"] => 1,
                 ["fortunes"] => 2,

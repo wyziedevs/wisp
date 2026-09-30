@@ -363,9 +363,9 @@ pub(crate) fn hash(parts: &[&[u8]]) -> u64 {
     h ^ h >> 32
 }
 
-/// A strong ETag for a JSON body: its [`hash`].
-fn etag(body: &str) -> String {
-    let h = hash(&[body.as_bytes()]);
+/// A strong ETag for a body (JSON, or a page `CACHE` keeps): its [`hash`].
+pub(crate) fn etag(body: impl AsRef<[u8]>) -> String {
+    let h = hash(&[body.as_ref()]);
     let mut tag = String::with_capacity(18);
     tag.push('"');
     for shift in (0..16).rev() {
@@ -378,7 +378,7 @@ fn etag(body: &str) -> String {
 }
 
 /// Whether `header` (`if-match` or `if-none-match`) names `tag`.
-fn names(header: &str, tag: &str) -> bool {
+pub(crate) fn names(header: &str, tag: &str) -> bool {
     header
         .split(',')
         .map(|t| t.trim().trim_start_matches("W/"))

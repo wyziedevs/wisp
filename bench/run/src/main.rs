@@ -86,8 +86,10 @@ const fn server(
 const SERVERS: &[Server] = &[
     Server {
         env: &[("HOST", "127.0.0.1")],
-        // A `#[derive(Rest)]` row, beside `/json`'s hand-written one.
-        extra: &["/messages/1"],
+        // A `#[derive(Rest)]` row, beside `/json`'s hand-written one;
+        // `/fortunes` kept for a second (`CACHE`); its table as a page with
+        // nothing to compute, baked at build time.
+        extra: &["/messages/1", "/fortunes-cached", "/static"],
         ..server("Wisp", Bin::Wisp, &[], "WISP_THREADS", FAST | POPULAR)
     },
     // Popular, then fast; each list is the top ten.

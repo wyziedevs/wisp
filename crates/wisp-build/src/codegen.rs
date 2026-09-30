@@ -13,7 +13,7 @@ use crate::openapi::Op;
 use crate::routes::Seg;
 use crate::rust_scan::{self, FnItem, Returns};
 use crate::template::{self, Code, Dir, Directive, Node, PropDecl, PropValue, Template};
-use crate::{fnv1a, js, rules, shell, ty};
+use crate::{fnv1a, fold, js, rules, shell, ty};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -338,6 +338,9 @@ struct RouteInfo {
     server_types: Vec<rust_scan::TypeItem>,
     /// The module whose `BODY_LIMIT` applies.
     body_limit: Option<String>,
+    /// The module whose `CACHE` applies to its GETs, and whether it is
+    /// `CACHE_PUBLIC`.
+    cache: Option<(String, bool)>,
 }
 
 /// The app, as far as it has been read.
@@ -614,6 +617,15 @@ impl<'a> Project<'a> {
                     c.line
                 ));
             }
+            if let Some(c) = ["CACHE", "CACHE_PUBLIC"]
+                .iter()
+                .find_map(|n| lg.items.constant(n))
+            {
+                return Err(format!(
+                    "{where_}:{}: a layout's `{}` does nothing; set it in the page or +server.rs whose responses it keeps",
+                    c.line, c.name
+                ));
+            }
             let load = lg.items.function("load");
             // The template reads `data` from a load, or names from statements.
             let reads = load.is_some() || lg.stmts.is_some();
@@ -683,6 +695,46 @@ impl<'a> Project<'a> {
         Ok(())
     }
 
+    /// A route's `CACHE` (or `CACHE_PUBLIC`), checked: a `u32`, one of the
+    /// two, set once.
+    fn cache(
+        &self,
+        info: &mut RouteInfo,
+        items: &rust_scan::Items,
+        file: &Path,
+        module: String,
+        shims: &mut Vec<String>,
+    ) -> Result<(), String> {
+        let (c, public) = match (items.constant("CACHE"), items.constant("CACHE_PUBLIC")) {
+            (None, None) => return Ok(()),
+            (Some(c), None) => (c, false),
+            (None, Some(c)) => (c, true),
+            (Some(_), Some(c)) => {
+                return Err(format!(
+                    "{}:{}: `CACHE_PUBLIC` is `CACHE` shared with signed-in visitors too; set one of them",
+                    self.rel(file),
+                    c.line
+                ));
+            }
+        };
+        let at = |msg: &str| format!("{}:{}: {msg}", self.rel(file), c.line);
+        if c.ty != "u32" || c.is_static {
+            return Err(at(&format!(
+                "`{}` is a `{}`; make it a `const` `u32`, the seconds a response is kept, such as `const {0}: u32 = 60;`",
+                c.name, c.ty
+            )));
+        }
+        if info.cache.is_some() {
+            return Err(at(&format!(
+                "`{}` is also set in this route's +page.rs; set it in one place",
+                c.name
+            )));
+        }
+        info.cache = Some((module, public));
+        shims.push(format!("pub const CACHE: u32 = super::{};", c.name));
+        Ok(())
+    }
+
     /// Pages and endpoints.
     fn routes(&mut self) -> Result<(), String> {
         // Each `+server.rs` once, though it may serve two routes.
@@ -696,6 +748,7 @@ impl<'a> Project<'a> {
                 before: false,
                 server_types: Vec::new(),
                 body_limit: None,
+                cache: None,
             };
             if self.tree.routes[i].page {
                 self.page(i, &mut info)?;
@@ -719,6 +772,7 @@ impl<'a> Project<'a> {
         let rs = lg.file.clone().unwrap_or_else(|| dir.join("+page.rs"));
         let mut shims = Vec::new();
         self.body_limit(info, &lg.items, &rs, format!("page_{i}"), &mut shims)?;
+        self.cache(info, &lg.items, &rs, format!("page_{i}"), &mut shims)?;
         let data = lg.items.data_fields();
         let tables = lg.items.tables();
         info.page_fns = lg.items.fns;
@@ -836,6 +890,15 @@ impl<'a> Project<'a> {
                     }
                     info.body_limit = Some(servers[k].module.clone());
                 }
+                if let Some(public) = servers[k].cache {
+                    if info.cache.is_some() {
+                        return Err(format!(
+                            "{}: `CACHE` is also set in this route's +page.rs; set it in one place",
+                            self.rel(&file)
+                        ));
+                    }
+                    info.cache = Some((servers[k].module.clone(), public));
+                }
                 k
             }
             None => {
@@ -843,6 +906,10 @@ impl<'a> Project<'a> {
                 let module = format!("server_{i}");
                 let mut shims = Vec::new();
                 self.body_limit(info, &items, &file, module.clone(), &mut shims)?;
+                self.cache(info, &items, &file, module.clone(), &mut shims)?;
+                let cache = (info.cache.as_ref())
+                    .filter(|(m, _)| *m == module)
+                    .map(|(_, public)| *public);
                 let segs = &self.tree.routes[i].segs;
                 let segs = &segs[..segs.len() - usize::from(member)];
                 let (handlers, before) = server_handlers(&items, segs, &mut shims)
@@ -852,6 +919,7 @@ impl<'a> Project<'a> {
                 servers.push(ServerFile {
                     file: file.clone(),
                     limit: info.body_limit.is_some(),
+                    cache,
                     module,
                     handlers,
                     before,
@@ -1057,6 +1125,56 @@ impl<'a> Project<'a> {
             .iter()
             .filter(|t| t.kind == Kind::Layout)
             .map(Tpl::path)
+            .collect()
+    }
+
+    /// Per route, its page when it is the same for every request, whole, as
+    /// it is sent: the shell with the head tags `setup` in wisp's http.rs
+    /// makes out of dev mode (`css` is `App::CSS`), the page's head and its
+    /// body. That is a page and layouts with no Rust that reads anything (a
+    /// load, statements, a `+page.js`) and markup the build can write out
+    /// (see `fold`).
+    fn baked(&self, css: Option<&str>) -> Vec<Option<String>> {
+        let comp = |name: &str| {
+            let k = self.comps.iter().position(|c| c.name == name)?;
+            let c = &self.comps[k];
+            (!c.live).then(|| (&self.templates[k].t, &c.props[..]))
+        };
+        let fold = fold::Fold { comp: &comp };
+        let layouts: Vec<&Tpl> = (self.templates.iter())
+            .filter(|t| t.kind == Kind::Layout)
+            .collect();
+        let reads = |t: &Tpl| {
+            t.stmts.is_some() || t.load_js.is_some() || t.user.as_ref().is_some_and(|(_, r)| *r)
+        };
+        let mut tags = String::new();
+        if let Some(v) = css {
+            let _ = write!(
+                tags,
+                "<link rel=\"stylesheet\" href=\"/_app/app.css?v={v}\">"
+            );
+        }
+        let _ = write!(
+            tags,
+            "<script defer src=\"/_app/wisp.js?v={}\"></script>",
+            env!("CARGO_PKG_VERSION")
+        );
+        let [s0, s1, s2] = &self.shell;
+        (self.tree.routes.iter().zip(&self.infos))
+            .map(|(r, info)| {
+                let mut layers: Vec<&Tpl> = r.layouts.iter().map(|&l| layouts[l]).collect();
+                layers.push(&self.templates[info.page_tpl?]);
+                if layers.iter().any(|t| reads(t)) {
+                    return None;
+                }
+                let ts: Vec<&Template> = layers.iter().map(|t| &t.t).collect();
+                let doc = fold.page(&ts)?;
+                Some(
+                    [s0, &tags, &doc.head, s1, &doc.body, s2]
+                        .map(String::as_str)
+                        .concat(),
+                )
+            })
             .collect()
     }
 
@@ -1282,6 +1400,34 @@ impl Gen {
 
     /// The `wisp::App` impl, and the TypeScript client of the endpoints.
     fn app(&mut self, p: &Project, web: &Web, assets: &Assets) -> Result<String, String> {
+        let css = match &assets.css_hash {
+            Some(h) if p.release => Some(h.as_str()),
+            Some(_) => Some("dev"),
+            None => None,
+        };
+        // Pages the same for every request, with their response heads.
+        let baked = p.baked(css);
+        for (i, doc) in baked.iter().enumerate() {
+            let Some(doc) = doc else { continue };
+            let etag = format!("\"{:016x}\"", fnv1a(doc.as_bytes()));
+            let head = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/html; charset=utf-8\r\netag: {etag}\r\ncontent-length: {}\r\n",
+                doc.len()
+            );
+            self.line(
+                0,
+                &format!(
+                    "static BAKED_{i}: ::wisp::rt::Baked = ::wisp::rt::Baked::new({}, {}, {}); // {}",
+                    lit(&head),
+                    lit(doc),
+                    lit(&etag),
+                    p.tree.routes[i].pattern()
+                ),
+            );
+        }
+        if baked.iter().any(Option::is_some) {
+            self.line(0, "");
+        }
         self.line(0, "pub struct App;");
         self.line(0, "");
         self.line(
@@ -1296,11 +1442,7 @@ impl Gen {
                 lit(&p.root.to_string_lossy())
             ),
         );
-        let css = match &assets.css_hash {
-            Some(h) if p.release => format!("Some({})", lit(h)),
-            Some(_) => "Some(\"dev\")".into(),
-            None => "None".into(),
-        };
+        let css = css.map_or("None".into(), |v| format!("Some({})", lit(v)));
         self.line(1, &format!("const CSS: Option<&'static str> = {css};"));
         let params: Vec<String> = p
             .tree
@@ -1442,20 +1584,99 @@ impl Gen {
         self.line(1, "}");
         self.line(0, "");
 
-        self.handle(p);
+        self.handle(p, &baked);
         self.error(p);
         self.line(0, "}");
         Ok(client)
     }
 
-    /// One slice-pattern match, most specific arm first.
+    /// The router. A path with no parameter in it is matched whole, by its
+    /// length and then its bytes: no other arm that matches the same path
+    /// comes before it (see `routes::priority`). The rest are one
+    /// slice-pattern match on the path's segments, most specific arm first,
+    /// their parameters slices of the path.
     fn router(&mut self, p: &Project) {
         let tree = &p.tree;
-        self.line(1, "fn route<'a>(path: &'a str, segs: &[&'a str]) -> Option<(usize, [&'a str; ::wisp::rt::MAX_PARAMS])> {");
-        self.line(2, "let _ = path;");
+        let (whole, parts): (Vec<_>, Vec<_>) = tree
+            .arms()
+            .into_iter()
+            .partition(|(exp, _)| exp.iter().all(|s| matches!(s, Seg::Static(_))));
+        self.line(
+            1,
+            "fn route(path: &str) -> Option<(usize, [&str; ::wisp::rt::MAX_PARAMS])> {",
+        );
+        if whole.is_empty() && parts.is_empty() {
+            self.line(2, "let _ = path;");
+            self.line(2, "None");
+        }
+        if !whole.is_empty() {
+            let mut paths: Vec<(String, usize)> = whole
+                .iter()
+                .map(|(exp, id)| {
+                    let mut s: String = exp
+                        .iter()
+                        .map(|seg| match seg {
+                            Seg::Static(x) => format!("/{}", encode_path(x)),
+                            _ => unreachable!("partitioned"),
+                        })
+                        .collect();
+                    if s.is_empty() {
+                        s.push('/');
+                    }
+                    (s, *id)
+                })
+                .collect();
+            paths.sort_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(&b.0)));
+            let (open, found) = match parts.is_empty() {
+                true => ("", "Some((@, [\"\"; ::wisp::rt::MAX_PARAMS]))"),
+                false => ("let whole = ", "Some(@)"),
+            };
+            self.line(2, &format!("{open}match (path.len(), path) {{"));
+            for (s, id) in &paths {
+                self.line(
+                    3,
+                    &format!(
+                        "({}, {}) => {}, // {}",
+                        s.len(),
+                        lit(s),
+                        found.replace('@', &id.to_string()),
+                        tree.routes[*id].pattern()
+                    ),
+                );
+            }
+            self.line(3, "_ => None,");
+            if parts.is_empty() {
+                self.line(2, "}");
+            } else {
+                self.line(2, "};");
+                self.line(2, "if let Some(id) = whole {");
+                self.line(3, "return Some((id, [\"\"; ::wisp::rt::MAX_PARAMS]));");
+                self.line(2, "}");
+            }
+        }
+        if parts.is_empty() {
+            self.line(1, "}");
+            self.line(0, "");
+            return;
+        }
+        // Room for the deepest arm, as a deeper path matches none: the
+        // array is set on every call.
+        let depth = match parts
+            .iter()
+            .any(|(exp, _)| exp.iter().any(|s| matches!(s, Seg::Rest(_))))
+        {
+            true => "::wisp::rt::MAX_SEGS".to_string(),
+            false => parts
+                .iter()
+                .map(|(exp, _)| exp.len())
+                .max()
+                .unwrap_or(0)
+                .to_string(),
+        };
         self.line(2, "const E: &str = \"\";");
-        self.line(2, "Some(match segs {");
-        for (exp, id) in tree.arms() {
+        self.line(2, &format!("let mut segs = [\"\"; {depth}];"));
+        self.line(2, "Some(match ::wisp::rt::split(path, &mut segs)? {");
+        for (exp, id) in parts {
             let r = &tree.routes[id];
             let names = r.params();
             let mut values = vec!["E".to_string(); crate::routes::MAX_PARAMS];
@@ -1604,7 +1825,7 @@ impl Gen {
         self.line(0, "");
     }
 
-    fn handle(&mut self, p: &Project) {
+    fn handle(&mut self, p: &Project, baked: &[Option<String>]) {
         self.line(1, "async fn handle(route: Option<usize>, cx: &mut ::wisp::Cx, __o: &mut ::wisp::Out) -> ::wisp::Result<()> {");
         self.line(2, "use ::wisp::Method::*;");
         if p.has_hook("before") {
@@ -1623,11 +1844,29 @@ impl Gen {
         for (i, (r, info)) in p.tree.routes.iter().zip(&p.infos).enumerate() {
             let mut allow: Vec<&str> = Vec::new();
             self.line(3, &format!("// {}", r.pattern()));
+            // A GET's statements, when `CACHE` keeps it: what this worker
+            // has, or else what `serve` answers, kept.
+            let kept = |serve: String| match &info.cache {
+                Some((m, public)) => format!(
+                    "if ::wisp::rt::cached(cx, __o, {public}) {{ return Ok(()); }} {serve} \
+                     ::wisp::rt::keep::<Self>(cx, __o, {m}::__call::CACHE, {public});"
+                ),
+                None => serve,
+            };
             if r.page {
-                self.line(
-                    3,
-                    &format!("({i}, Get | Head) => serve_page_{i}(cx, __o).await,"),
-                );
+                let get = match baked[i] {
+                    Some(_) => format!(
+                        "if ::wisp::rt::baked(cx, __o, &BAKED_{i}) {{ Ok(()) }} else {{ serve_page_{i}(cx, __o).await }}"
+                    ),
+                    None if info.cache.is_some() => {
+                        format!(
+                            "{{ {} Ok(()) }}",
+                            kept(format!("serve_page_{i}(cx, __o).await?;"))
+                        )
+                    }
+                    None => format!("serve_page_{i}(cx, __o).await"),
+                };
+                self.line(3, &format!("({i}, Get | Head) => {get},"));
                 allow.extend(["GET", "HEAD"]);
                 let actions: Vec<&FnItem> = info.page_fns.iter().filter(|f| f.action).collect();
                 if !actions.is_empty() {
@@ -1664,12 +1903,16 @@ impl Gen {
                     true => answer(&format!("{m}::__call::before")) + " ",
                     false => String::new(),
                 };
+                let mut serve = format!(
+                    "::wisp::rt::respond(__o, {m}::__call::{}(cx).await?);",
+                    h.shim
+                );
+                if h.op.method == "get" {
+                    serve = kept(serve);
+                }
                 self.line(
                     3,
-                    &format!(
-                        "({i}, {variants}) => {{ ::wisp::rt::endpoint(cx); {before}::wisp::rt::respond(__o, {m}::__call::{}(cx).await?); Ok(()) }}",
-                        h.shim
-                    ),
+                    &format!("({i}, {variants}) => {{ ::wisp::rt::endpoint(cx); {before}{serve} Ok(()) }}"),
                 );
                 allow.push(allowed);
             }
@@ -1757,6 +2000,8 @@ struct ServerFile {
     before: bool,
     /// It sets `BODY_LIMIT`.
     limit: bool,
+    /// It sets `CACHE` (`false`) or `CACHE_PUBLIC` (`true`).
+    cache: Option<bool>,
     types: Vec<rust_scan::TypeItem>,
 }
 
@@ -2767,9 +3012,28 @@ impl Gen {
         }
     }
 
-    fn nodes(&mut self, nodes: &[Node], ind: usize, cx: &mut Emit) {
+    /// In a release build, a run of text and holes the build can write
+    /// (literals) goes out as one `push_str`. A dev build keeps each text
+    /// apart: `wisp dev` swaps them by index.
+    fn nodes<'n>(&mut self, nodes: impl IntoIterator<Item = &'n Node>, ind: usize, cx: &mut Emit) {
+        let mut run = String::new();
         for n in nodes {
-            self.node(n, ind, cx);
+            match fold::fixed(n, cx.template).filter(|_| self.release) {
+                Some(s) => run.push_str(&s),
+                None => {
+                    self.text(&mut run, ind, cx);
+                    self.node(n, ind, cx);
+                }
+            }
+        }
+        self.text(&mut run, ind, cx);
+    }
+
+    /// Writes out the run `nodes` gathered, if any, and empties it.
+    fn text(&mut self, run: &mut String, ind: usize, cx: &Emit) {
+        if !run.is_empty() {
+            self.line(ind, &format!("__o.{}.push_str({});", cx.target, lit(run)));
+            run.clear();
         }
     }
 
@@ -2780,15 +3044,10 @@ impl Gen {
     fn node(&mut self, n: &Node, ind: usize, cx: &mut Emit) {
         let buf = format!("__o.{}", cx.target);
         match n {
+            // A release build writes text in runs (see `nodes`).
             Node::Text(i) => {
-                if self.release {
-                    let text = &cx.template.chunks[*i];
-                    if !text.is_empty() {
-                        self.line(ind, &format!("{buf}.push_str({});", lit(text)));
-                    }
-                } else {
-                    self.line(ind, &format!("{buf}.push_str(__wisp_s({i}));"));
-                }
+                debug_assert!(!self.release);
+                self.line(ind, &format!("{buf}.push_str(__wisp_s({i}));"));
             }
             Node::Expr(code) => {
                 self.code_line(
@@ -3140,9 +3399,7 @@ impl Gen {
                     ind,
                     &format!("{call}, &|__o: &mut ::wisp::Out| {{ // {}:{line}", cx.rel),
                 );
-                for n in body.iter().filter(|n| !is_snippet(n)) {
-                    self.node(n, ind + 1, cx);
-                }
+                self.nodes(body.iter().filter(|n| !is_snippet(n)), ind + 1, cx);
                 self.line(ind, "});");
             }
             None => self.line(
@@ -5011,6 +5268,11 @@ mod tests {
     /// Generates the app made of `files` (path, contents), in a scratch
     /// directory: the error if it fails, `Ok` with the code otherwise.
     fn app(name: &str, files: &[(&str, &str)]) -> Result<String, String> {
+        build(name, files, false)
+    }
+
+    /// `app`, as a release build or a dev one.
+    fn build(name: &str, files: &[(&str, &str)], release: bool) -> Result<String, String> {
         let root = std::env::temp_dir().join(format!("wisp-codegen-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         for (path, contents) in files {
@@ -5020,7 +5282,7 @@ mod tests {
         }
         let out = generate(&Input {
             root: &root,
-            release: false,
+            release,
         });
         let _ = fs::remove_dir_all(&root);
         out
@@ -5330,6 +5592,182 @@ mod tests {
             app("limit-layout", &layout)
                 .unwrap_err()
                 .contains("a layout's `BODY_LIMIT` does nothing")
+        );
+    }
+
+    #[test]
+    fn constant_pages_are_baked() {
+        let files = [
+            (
+                "src/app.html",
+                "<html><head>%wisp.head%</head><body>%wisp.body%</body></html>",
+            ),
+            (
+                "src/routes/+layout.wisp",
+                "<nav>{\"a&b\"}</nav>{@render children()}",
+            ),
+            ("src/routes/+page.wisp", "<title>T</title><h1>{1}</h1>"),
+            ("src/routes/+page.rs", "#[action]\nfn add() {}"),
+            ("src/routes/user/[name]/+page.wisp", "<h1>{name}</h1>"),
+            (
+                "src/routes/loads/+page.wisp",
+                "---\nlet n = 1;\n---\n<h1>n</h1>",
+            ),
+        ];
+        let code = app("baked", &files).unwrap();
+        let doc = "<html><head><script defer src=\\\"/_app/wisp.js?v=VERSION\\\"></script><title>T</title></head><body><nav>a&amp;b</nav><h1>1</h1></body></html>"
+            .replace("VERSION", env!("CARGO_PKG_VERSION"));
+        let etag = format!(
+            "\\\"{:016x}\\\"",
+            fnv1a(doc.replace("\\\"", "\"").as_bytes())
+        );
+        for want in [
+            format!(
+                "static BAKED_0: ::wisp::rt::Baked = ::wisp::rt::Baked::new(\"HTTP/1.1 200 OK\\r\\ncontent-type: text/html; charset=utf-8\\r\\netag: {etag}\\r\\ncontent-length: {}\\r\\n\", \"{doc}\", \"{etag}\"); // /",
+                doc.replace("\\\"", "\"").len()
+            ),
+            "(0, Get | Head) => if ::wisp::rt::baked(cx, __o, &BAKED_0) { Ok(()) } else { serve_page_0(cx, __o).await },".into(),
+            // The action's post renders as before.
+            "(0, Post) => {".into(),
+        ] {
+            assert!(code.contains(&want), "{want}\n{code}");
+        }
+        assert_eq!(code.matches("static BAKED_").count(), 1, "{code}");
+    }
+
+    #[test]
+    fn cache_keeps_gets() {
+        let page = (
+            "src/routes/+page.wisp",
+            "---\nconst CACHE: u32 = 60;\nlet n = 1;\n---\n{n}",
+        );
+        let code = app("cache-ok", &[page]).unwrap();
+        for want in [
+            "pub const CACHE: u32 = super::CACHE;",
+            "(0, Get | Head) => { if ::wisp::rt::cached(cx, __o, false) { return Ok(()); } serve_page_0(cx, __o).await?; \
+             ::wisp::rt::keep::<Self>(cx, __o, page_0::__call::CACHE, false); Ok(()) },",
+        ] {
+            assert!(code.contains(want), "{want}\n{code}");
+        }
+        let server = (
+            "src/routes/api/+server.rs",
+            "const CACHE_PUBLIC: u32 = 5;\nfn get() -> u8 { 1 }\nfn post() {}",
+        );
+        let code = app("cache-server", &[server]).unwrap();
+        for want in [
+            "pub const CACHE: u32 = super::CACHE_PUBLIC;",
+            "(0, Get | Head) => { ::wisp::rt::endpoint(cx); if ::wisp::rt::cached(cx, __o, true) { return Ok(()); } \
+             ::wisp::rt::respond(__o, server_0::__call::get(cx).await?); ::wisp::rt::keep::<Self>(cx, __o, server_0::__call::CACHE, true); Ok(()) }",
+            "(0, Post) => { ::wisp::rt::endpoint(cx); ::wisp::rt::respond(__o, server_0::__call::post(cx).await?); Ok(()) }",
+        ] {
+            assert!(code.contains(want), "{want}\n{code}");
+        }
+        let rs = |src: &'static str| [("src/routes/+page.wisp", "x"), ("src/routes/+page.rs", src)];
+        for (name, files, want) in [
+            (
+                "cache-type",
+                rs("const CACHE: u64 = 1;"),
+                "make it a `const` `u32`",
+            ),
+            (
+                "cache-static",
+                rs("static CACHE: u32 = 1;"),
+                "make it a `const` `u32`",
+            ),
+            (
+                "cache-both",
+                rs("const CACHE: u32 = 1;\nconst CACHE_PUBLIC: u32 = 1;"),
+                "set one of them",
+            ),
+        ] {
+            let err = app(name, &files).unwrap_err();
+            assert!(
+                err.contains(want) && err.starts_with("src/routes/+page.rs:"),
+                "{err}"
+            );
+        }
+        let layout = [
+            (
+                "src/routes/+layout.wisp",
+                "---\nconst CACHE_PUBLIC: u32 = 1;\n---\n{@render children()}",
+            ),
+            ("src/routes/+page.wisp", "x"),
+        ];
+        let err = app("cache-layout", &layout).unwrap_err();
+        assert!(
+            err.contains("a layout's `CACHE_PUBLIC` does nothing"),
+            "{err}"
+        );
+        let twice = [
+            (
+                "src/routes/+page.wisp",
+                "---\nconst CACHE: u32 = 1;\n---\nx",
+            ),
+            (
+                "src/routes/+server.rs",
+                "const CACHE: u32 = 1;\nfn post() {}",
+            ),
+        ];
+        let err = app("cache-twice", &twice).unwrap_err();
+        assert!(err.contains("set it in one place"), "{err}");
+    }
+
+    #[test]
+    fn routes_without_parameters_match_whole() {
+        let files = [
+            ("src/routes/+page.wisp", "x"),
+            ("src/routes/about/+page.wisp", "x"),
+            ("src/routes/blog/[slug]/+page.wisp", "{slug}"),
+            ("src/routes/blog/new/+page.wisp", "x"),
+        ];
+        let code = app("router", &files).unwrap();
+        for want in [
+            "let whole = match (path.len(), path) {",
+            "(1, \"/\") => Some(0), // /",
+            "(6, \"/about\") => Some(1), // /about",
+            "(9, \"/blog/new\") => Some(2), // /blog/new",
+            "let mut segs = [\"\"; 2];",
+            "[\"blog\", p1] => (3, [*p1, E, E, E, E, E, E, E]), // /blog/[slug]",
+        ] {
+            assert!(code.contains(want), "{want}\n{code}");
+        }
+        let code = app("router-flat", &files[..2]).unwrap();
+        assert!(
+            code.contains(
+                "(6, \"/about\") => Some((1, [\"\"; ::wisp::rt::MAX_PARAMS])), // /about"
+            ),
+            "{code}"
+        );
+        assert!(!code.contains("::wisp::rt::split"), "{code}");
+        let rest = [("src/routes/docs/[...path]/+page.wisp", "{path}")];
+        let code = app("router-rest", &rest).unwrap();
+        assert!(
+            code.contains("let mut segs = [\"\"; ::wisp::rt::MAX_SEGS];"),
+            "{code}"
+        );
+    }
+
+    #[test]
+    fn release_builds_write_runs_of_text_at_once() {
+        let page = (
+            "src/routes/+page.wisp",
+            "<p title={\"a\"}>{\"<b>\"} {2}</p>{#if on}{x}!{/if}<i>{3}</i>",
+        );
+        let code = build("runs", &[page], true).unwrap();
+        for want in [
+            "__o.body.push_str(\"<p title=\\\"a\\\">&lt;b&gt; 2</p>\");",
+            "(&::wisp::rt::Text(&(x))).put(&mut __o.body);",
+            "__o.body.push_str(\"!\");",
+            "__o.body.push_str(\"<i>3</i>\");",
+        ] {
+            assert!(code.contains(want), "{want}\n{code}");
+        }
+        // A dev build keeps each text apart, for `wisp dev` to swap.
+        let code = build("runs-dev", &[page], false).unwrap();
+        assert!(code.contains("__o.body.push_str(__wisp_s(0));"), "{code}");
+        assert!(
+            code.contains("(&::wisp::rt::Text(&(\"<b>\"))).put(&mut __o.body);"),
+            "{code}"
         );
     }
 
