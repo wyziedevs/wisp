@@ -179,6 +179,20 @@ macro_rules! signed {
 unsigned!(u8 u16 u32 u64 usize);
 signed!(i8 i16 i32 i64 isize);
 
+/// A float prints digits, `.`, `-`, `e`, `inf` or `NaN`: nothing to escape.
+macro_rules! float {
+    ($($t:ty)*) => {$(
+        impl Direct for Text<'_, $t> {
+            #[inline]
+            fn put(&self, out: &mut String) {
+                let _ = write!(out, "{}", self.0);
+            }
+        }
+    )*};
+}
+
+float!(f32 f64);
+
 /// `href={expr}` in a template compiles to `(&Attr(&expr)).get()`: the
 /// attribute is written for `Some(v)` and left out for `None`. An `Option`
 /// is unwrapped and every other value is always there; which is decided at

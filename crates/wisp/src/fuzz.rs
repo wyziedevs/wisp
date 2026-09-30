@@ -115,11 +115,12 @@ impl App for Fuzz {
     const PARAMS: &'static [&'static [&'static str]] = &[&[], &[], &["x"]];
     const TEMPLATES: &'static [(&'static str, u64)] = &[];
 
-    fn route<'a>(_: &'a str, segs: &[&'a str]) -> Option<(usize, [&'a str; 8])> {
-        Some(match segs {
+    fn route(path: &str) -> Option<(usize, [&str; 8])> {
+        let mut segs = [""; crate::rt::MAX_SEGS];
+        Some(match crate::rt::split(path, &mut segs)? {
             [] => (0, [""; 8]),
             ["small"] => (1, [""; 8]),
-            ["p", x] => (2, [x, "", "", "", "", "", "", ""]),
+            ["p", x] => (2, [*x, "", "", "", "", "", "", ""]),
             _ => return None,
         })
     }

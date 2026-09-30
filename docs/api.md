@@ -127,6 +127,12 @@ Every row and list comes with an `etag`. A client that sends it back as
 that sends `if-match` with the etag it read is refused with a 412 (`code`
 `changed`) when someone else changed the row since, so no update is lost.
 
+`const CACHE: u32 = 5;` in a `+server.rs` keeps each GET's answer (per
+path and query) in each worker for 5 seconds and sends those bytes again,
+for requests without a cookie or `authorization` (`CACHE_PUBLIC` for every
+request). A write does not clear it: a read may be 5 seconds old. See
+[design.md](design.md#page-logic) for the rules.
+
 ### Hooks
 
 Plain functions in the same file, named for when they run:

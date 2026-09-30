@@ -45,7 +45,8 @@ or template literal where its TechEmpower entry has none. The runner checks
 that every server sends the same page before measuring it: the parts above,
 and every row's class, id, number and unescaped name, ignoring whitespace,
 comments and how each template spells an escaped character (`&quot;`,
-`&#34;`, or none in text). None caches a response.
+`&#34;`, or none in text). None caches a response on these four (Wisp's
+cached and baked pages are paths of their own: see `app/` below).
 
 - `app/`: the Wisp side. `/page` is a `+layout.wisp` in a route group
   (`(site)`, so `/fortunes` is not wrapped) and a `+page.wisp` with its Rust
@@ -53,7 +54,11 @@ comments and how each template spells an escaped character (`&quot;`,
   as a `#[derive(Rest)]` row through the resource's own GET (lock, JSON,
   ETag): on Windows (8 server cores, mean of 3 rounds) 8.2 µs of CPU a
   request to `/json`'s 7.7, the half microsecond being the table's lock,
-  the ETag and its 33 bytes.
+  the ETag and its 33 bytes. `/fortunes-cached` is `/fortunes` with
+  `const CACHE: u32 = 1;` (each worker renders it once a second), and
+  `/static` is its table written out as a page with no holes, which the
+  build bakes into the binary with its response head. Both are Wisp's
+  alone, beside the uncached `/fortunes` everyone renders.
 - `aspnet/`: written the way the ASP.NET Core docs and templates do:
   `/fortunes` as a Razor Page, `/page` as one with a `_Layout`,
   `/fortunes-blazor` as a Blazor component (static SSR), `/plaintext` and
