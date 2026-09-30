@@ -56,6 +56,7 @@ const SETUP_CLAMP: u32 = 1 << 4;
 const SETUP_R_DISABLED: u32 = 1 << 6;
 const SETUP_SUBMIT_ALL: u32 = 1 << 7;
 const SETUP_COOP_TASKRUN: u32 = 1 << 8;
+const SETUP_TASKRUN_FLAG: u32 = 1 << 9;
 const SETUP_SINGLE_ISSUER: u32 = 1 << 12;
 const SETUP_DEFER_TASKRUN: u32 = 1 << 13;
 const FEAT_SINGLE_MMAP: u32 = 1 << 0;
@@ -68,6 +69,7 @@ const REGISTER_EVENTFD: u32 = 4;
 const REGISTER_ENABLE_RINGS: u32 = 12;
 const REGISTER_PBUF_RING: u32 = 22;
 const SQ_CQ_OVERFLOW: u32 = 1 << 1;
+const SQ_TASKRUN: u32 = 1 << 2;
 const OP_ACCEPT: u8 = 13;
 const OP_ASYNC_CANCEL: u8 = 14;
 const OP_CLOSE: u8 = 19;
@@ -284,6 +286,7 @@ impl Ring {
             flags: SETUP_SINGLE_ISSUER
                 | SETUP_DEFER_TASKRUN
                 | SETUP_COOP_TASKRUN
+                | SETUP_TASKRUN_FLAG
                 | SETUP_SUBMIT_ALL
                 | SETUP_CQSIZE
                 | SETUP_CLAMP
@@ -433,6 +436,13 @@ impl Ring {
     /// Whether completions did not fit in the queue and wait in the kernel.
     fn overflowed(&self) -> bool {
         self.rings.word(self.sq_flags).load(Ordering::Relaxed) & SQ_CQ_OVERFLOW != 0
+    }
+
+    /// Whether completion work waits for the next `enter`. A call runs only
+    /// so much of it (Linux 6.13 on), and the eventfd tells of new work, not
+    /// of what a call left.
+    fn behind(&self) -> bool {
+        self.rings.word(self.sq_flags).load(Ordering::Relaxed) & SQ_TASKRUN != 0
     }
 
     /// The first `len` bytes of buffer `bid`, which the kernel filled.
@@ -1092,15 +1102,17 @@ pub(crate) async fn serve(mut ring: Ring, listener: TcpListener, accepted: fn(Tc
                     w.accept();
                 }
             }
-            w.ring.queued() > 0
+            w.ring.queued() > 0 || w.ring.behind()
         });
         for fd in fds.drain(..) {
             // SAFETY: a socket the kernel just accepted for us; nothing else owns it.
             accepted(unsafe { TcpStream::from_raw_fd(fd) });
         }
         if more {
-            // Handling completions queued more (a send's rest, a rearm): the
-            // connections just woken go first, then another turn.
+            // Handling completions queued more (a send's rest, a rearm), or
+            // the kernel left work for another call: the connections just
+            // woken go first, then another turn. One turn a yield, so a busy
+            // ring never starves the worker's other tasks.
             let mut yielded = false;
             poll_fn(|cx| {
                 if std::mem::replace(&mut yielded, true) {
