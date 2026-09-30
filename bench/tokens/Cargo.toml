@@ -1,0 +1,13 @@
+[package]
+name = "wisp-tokens"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Counts the tokens of the same five features written in Wisp and four other stacks (bench/tokens/apps)"
+
+[[bin]]
+name = "wisp-tokens"
+path = "src/main.rs"
+
+[lints]
+workspace = true

@@ -1,0 +1,12 @@
+{# @feature form #}
+{% extends "base.html" %}
+{% block title %}Contact{% endblock %}
+{% block content %}
+<form method="post">
+  <input name="name" value="{{ name }}">
+  {% if let Some(e) = name_error %}<p>{{ e }}</p>{% endif %}
+  <input name="email" value="{{ email }}">
+  {% if let Some(e) = email_error %}<p>{{ e }}</p>{% endif %}
+  <button>Send</button>
+</form>
+{% endblock %}

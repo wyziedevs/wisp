@@ -312,6 +312,7 @@ pub fn parse(src: &str) -> Result<Template, Error> {
         svg: 0,
         auto_head: false,
         button_form: false,
+        problem: None,
     };
     p.run()?;
 
@@ -564,6 +565,8 @@ struct Parser<'a> {
     auto_head: bool,
     /// A `<button action="?/name">` is open, in the form it opened.
     button_form: bool,
+    /// The input just scanned, whose problem goes after it (see `PROBLEM`).
+    problem: Option<String>,
 }
 
 /// A snippet defined above: its body's source, and the depth of the list
@@ -1399,6 +1402,11 @@ impl Parser<'_> {
         let self_closed = self.last == b'/' && self.text.ends_with('/');
         self.push_byte(b'>');
         self.ctx = Ctx::Text;
+        if let Some(name) = self.problem.take() {
+            let src = format!("{PROBLEM}{name:?})");
+            let line = self.line_of(self.tag_pos);
+            self.push_node(self.tag_pos, Node::Html(Code { src, line }))?;
+        }
         if self.closing {
             match self.tag.as_str() {
                 "template" => {
@@ -1442,17 +1450,22 @@ impl Parser<'_> {
 
     /// What a form posting to an action needs and does not say: a
     /// `<form action="?/add">` posts (`method="post"`), and an `<input
-    /// name="x">` in it without a value shows what was sent again when the
-    /// action refused it (`value={wisp::rt::kept(cx, "x")}`).
+    /// name="x">` in it (or in a `<form method="post">`, which posts to
+    /// `default`) without a value shows what was sent again when the action
+    /// refused it (`value={wisp::rt::kept(cx, "x")}`), and after it what was
+    /// wrong (`PROBLEM`), unless the file shows problems itself.
     fn form_defaults(&mut self) -> Result<(), Error> {
         let seen = |n: &str| self.tag_seen.iter().find(|(a, _)| a == n);
         let mut method = false;
         if self.tag == "form" {
-            let posts = self
-                .attr_prefix(self.tag_pos, "action")
-                .is_some_and(|v| v.starts_with("?/"));
-            method = posts && seen("method").is_none();
-            self.forms.push(posts);
+            let action = self.attr_prefix(self.tag_pos, "action");
+            let to_action = action.is_some_and(|v| v.starts_with("?/"));
+            let to_default = seen("action").is_none()
+                && seen("method")
+                    .and_then(|(_, v)| v.as_deref())
+                    .is_some_and(|m| m.eq_ignore_ascii_case("post"));
+            method = to_action && seen("method").is_none();
+            self.forms.push(to_action || to_default);
         }
         let in_browser = !self.templates.is_empty()
             || !self.rendering.is_empty()
@@ -1499,6 +1512,9 @@ impl Parser<'_> {
         }
         if let Some(name) = kept {
             let line = self.line_of(self.tag_pos);
+            if !self.src.contains("problem(") {
+                self.problem = Some(name.clone());
+            }
             self.push_node(
                 self.tag_pos,
                 Node::Attr {
@@ -2959,6 +2975,11 @@ const URL_ATTRS: [&str; 9] = [
 /// `form_defaults`), which a component, having no `cx`, goes without.
 pub const KEPT: &str = "::wisp::rt::kept(cx, ";
 
+/// What goes after such an input: its problem, when the action refused it
+/// (`<small class="problem">…</small>`), unless the file writes
+/// `cx.problem(…)` somewhere itself.
+pub const PROBLEM: &str = "::wisp::rt::problem(cx, ";
+
 /// What the static start of a URL attribute's value says about its scheme.
 enum Scheme {
     /// Relative (`/x`, `?q`, `#top`), or a scheme that runs no script.
@@ -4333,12 +4354,27 @@ mod tests {
     #[test]
     fn action_forms_post_and_keep_what_was_typed() {
         let kept = |n: &str| format!("[value={KEPT}\"{n}\")]");
+        // Each input is followed by its problem (`?`, a hole).
         assert_eq!(
             sketch("<form action=\"?/add\"><input name=\"a\"><input name=b /></form>"),
             format!(
-                "<form action=\"?/add\" method=\"post\"><input name=\"a\"{}><input name=b{}/></form>",
+                "<form action=\"?/add\" method=\"post\"><input name=\"a\"{}>?<input name=b{}/>?</form>",
                 kept("a"),
                 kept("b")
+            )
+        );
+        let t = parse("<form method=\"POST\"><input name=\"a\"></form>").unwrap();
+        assert!(
+            matches!(&t.nodes[..], [_, Node::Attr { .. }, _, Node::Html(c), _] if c.src == format!("{PROBLEM}\"a\")")),
+            "{:?}",
+            t.nodes
+        );
+        // A file that shows problems itself gets none added.
+        assert_eq!(
+            sketch("<form method=\"post\"><input name=\"a\">{cx.problem(\"a\")}</form>"),
+            format!(
+                "<form method=\"post\"><input name=\"a\"{}>?</form>",
+                kept("a")
             )
         );
         // Told otherwise, a value of its own, not an action, or not text:
