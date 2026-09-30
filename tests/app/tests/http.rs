@@ -1035,11 +1035,16 @@ fn connection_cap() {
     let s = start_with(&[("WISP_MAX_CONNS", "2")]);
     let open = || connect(s.port);
     // Two idle connections fill it (one of them a WebSocket), so a third
-    // is answered 503 and closed without being read.
-    let a = open();
+    // is answered 503 and closed without being read. Each is answered
+    // first: one only connected may not be accepted yet (io_uring's workers
+    // each accept from a listener of their own), so it holds no slot.
+    let mut head = [0u8; 12];
+    let mut a = open();
+    write!(a, "GET / HTTP/1.1\r\nhost: x\r\n\r\n").unwrap();
+    a.read_exact(&mut head).unwrap();
+    assert_eq!(&head, b"HTTP/1.1 200");
     let mut ws = open();
     write!(ws, "GET /ws HTTP/1.1\r\nhost: x\r\n{UPGRADE}\r\n").unwrap();
-    let mut head = [0u8; 12];
     ws.read_exact(&mut head).unwrap();
     assert_eq!(&head, b"HTTP/1.1 101");
     let mut got = String::new();
