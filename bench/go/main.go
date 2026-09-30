@@ -1,12 +1,14 @@
 // net/http, Gin, Fiber and bare fasthttp serving the same /fortunes,
 // /plaintext, /json and /page as bench/app, all rendering with html/template
 // (Gin's and Fiber's html renderers wrap it) and serializing with
-// encoding/json.
+// encoding/json; and the-benchmarker's GET /, GET /user/:id and POST /user
+// as each one's entry there answers them.
 //
 //	bench-go nethttp|gin|fiber|fasthttp      PORT sets the port, GOMAXPROCS the threads
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"html/template"
 	"net/http"
@@ -127,6 +129,15 @@ func main() {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			roster.Execute(w, people())
 		})
+		http.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte(""))
+		})
+		http.HandleFunc("GET /user/{name}", func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte(r.PathValue("name")))
+		})
+		http.HandleFunc("POST /user", func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte(""))
+		})
 		panic(http.ListenAndServe(addr, nil))
 	case "gin":
 		gin.SetMode(gin.ReleaseMode)
@@ -145,9 +156,23 @@ func main() {
 			c.Header("Content-Type", "text/html; charset=utf-8")
 			roster.Execute(c.Writer, people())
 		})
+		app.GET("/", func(c *gin.Context) {
+			c.Writer.Write([]byte(""))
+		})
+		app.GET("/user/:name", func(c *gin.Context) {
+			c.Writer.Write([]byte(c.Params.ByName("name")))
+		})
+		app.POST("/user", func(c *gin.Context) {
+			c.Writer.Write([]byte(""))
+		})
 		panic(app.Run(addr))
 	case "fiber":
-		app := fiber.New()
+		// As Fiber's the-benchmarker entry configures it.
+		app := fiber.New(fiber.Config{
+			CaseSensitive:            true,
+			StrictRouting:            true,
+			DisableHeaderNormalizing: true,
+		})
 		app.Get("/plaintext", func(c fiber.Ctx) error {
 			return c.SendString("Hello, World!")
 		})
@@ -162,11 +187,18 @@ func main() {
 			c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
 			return roster.Execute(c.Response().BodyWriter(), people())
 		})
+		ok := func(c fiber.Ctx) error { return nil }
+		app.Get("/", ok)
+		app.Get("/user/:id", func(c fiber.Ctx) error {
+			return c.SendString(c.Params("id"))
+		})
+		app.Post("/user", ok)
 		panic(app.Listen(addr, fiber.ListenConfig{DisableStartupMessage: true}))
 	case "fasthttp":
 		// No router: a switch on the path, as its TechEmpower entry does.
 		panic(fasthttp.ListenAndServe(addr, func(c *fasthttp.RequestCtx) {
-			switch string(c.Path()) {
+			path := c.Path()
+			switch string(path) {
 			case "/plaintext":
 				c.SetContentType("text/plain; charset=utf-8")
 				c.SetBodyString("Hello, World!")
@@ -180,8 +212,13 @@ func main() {
 			case "/page":
 				c.SetContentType("text/html; charset=utf-8")
 				roster.Execute(c, people())
+			case "/", "/user":
 			default:
-				c.Error("Not Found", fasthttp.StatusNotFound)
+				if id, ok := bytes.CutPrefix(path, []byte("/user/")); ok {
+					c.SetBody(id)
+				} else {
+					c.Error("Not Found", fasthttp.StatusNotFound)
+				}
 			}
 		}))
 	}

@@ -8,19 +8,31 @@
 //! on each.
 //!
 //!   cargo run -r -p bench-run -- [-c 64] [-d 10] [-w 5] [--rounds 1]
-//!       [--pipeline 1] [--group fast|popular|all] [--only wisp,actix]
+//!       [--pipeline 1] [--group fast,popular,top|all] [--only wisp,actix]
 //!       [--paths fortunes] [--no-build] [--csv FILE] [--extra NAME=COMMAND]...
+//!       [--suite benchmarker]
 //!
 //! `--group` picks the ten fastest frameworks (TechEmpower's top tier), the
-//! ten most popular, or both (the default); Wisp is in each. `--only` and
-//! `--paths` narrow that by case-insensitive substring. `--pipeline N` sends
-//! N requests back to back on each connection before reading their N
-//! responses, as TechEmpower's plaintext does with 16 (browsers do not
-//! pipeline, so it is off by default). `--extra NAME=COMMAND` adds a server
-//! of your own, measured on `/plaintext` only; it gets `PORT` and `THREADS`
-//! like the others. `--rounds` runs every server that many times, taking
-//! turns, and reports the mean. `--csv` appends every run to a file. A
-//! server whose toolchain is not installed is skipped with a note.
+//! ten most popular, the-benchmarker's top ten, or a list of them (all by
+//! default); Wisp is in each. `--only` and `--paths` narrow that by
+//! case-insensitive substring. `--pipeline N` sends N requests back to back
+//! on each connection before reading their N responses, as TechEmpower's
+//! plaintext does with 16 (browsers do not pipeline, so it is off by
+//! default). `--extra NAME=COMMAND` adds a server of your own, measured on
+//! `/plaintext` only; it gets `PORT` and `THREADS` like the others.
+//! `--rounds` runs every server that many times, taking turns, and reports
+//! the mean. `--csv` appends every run to a file. A server whose toolchain
+//! is not installed is skipped with a note.
+//!
+//! `--suite benchmarker` measures what the-benchmarker's web-frameworks
+//! board does instead (github.com/the-benchmarker/web-frameworks): `GET /`,
+//! `GET /user/0` and `POST /user`, each closed loop for 15 s at 64, 256 and
+//! 512 connections (`-c` takes a list here) after one 5 s warmup of `GET /`
+//! at 50, with zrk and their flags where zrk is installed, else wisp-load
+//! sending zrk's request. Servers are ranked as their results page ranks
+//! them: by the mean of the three routes' rates at 64 connections. Wisp runs
+//! on epoll there, as in their Docker containers, whose seccomp profile
+//! refuses io_uring (`WISP_IO=uring` in the environment measures io_uring).
 
 mod sys;
 
@@ -28,7 +40,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, PartialEq)]
@@ -40,6 +52,8 @@ enum Bin {
     Node,
     Bun,
     Java,
+    Nim,
+    Dart,
     /// `--extra`: `args[0]` is the program.
     Other,
 }
@@ -49,9 +63,16 @@ const FAST: u8 = 1;
 /// `--group popular`: the most used framework of each kind.
 const POPULAR: u8 = 2;
 /// Runs on Linux only: its Windows I/O is broken (may-minihttp answers a
-/// kept-alive connection's first request again), or its processes share
-/// the port with SO_REUSEPORT, which Windows lacks.
+/// kept-alive connection's first request again), its processes share the
+/// port with SO_REUSEPORT, which Windows lacks, or it is written for Linux
+/// alone (Caprese, jet_server).
 const LINUX: u8 = 4;
+/// `--group top`: in the-benchmarker's top ten on its results page (at 64
+/// connections, 2026-09-28).
+const TOP: u8 = 8;
+/// Answers only the-benchmarker's three routes, as its entry there does, so
+/// runs only in `--suite benchmarker`.
+const THEIRS: u8 = 16;
 
 struct Server {
     name: &'static str,
@@ -62,6 +83,8 @@ struct Server {
     env: &'static [(&'static str, &'static str)],
     /// Paths it serves besides `/plaintext`, `/fortunes`, `/json` and `/page`.
     extra: &'static [&'static str],
+    /// The port it always listens on; 0 takes the one it is given.
+    port: u16,
     tags: u8,
 }
 
@@ -79,6 +102,7 @@ const fn server(
         threads,
         env: &[],
         extra: &[],
+        port: 0,
         tags,
     }
 }
@@ -90,7 +114,7 @@ const SERVERS: &[Server] = &[
         // `/fortunes` kept for a second (`CACHE`); its table as a page with
         // nothing to compute, baked at build time.
         extra: &["/messages/1", "/fortunes-cached", "/static"],
-        ..server("Wisp", Bin::Wisp, &[], "WISP_THREADS", FAST | POPULAR)
+        ..server("Wisp", Bin::Wisp, &[], "WISP_THREADS", FAST | POPULAR | TOP)
     },
     // Popular, then fast; each list is the top ten.
     Server {
@@ -142,7 +166,13 @@ const SERVERS: &[Server] = &[
             POPULAR,
         )
     },
-    server("may-minihttp", Bin::Rust, &["may"], "THREADS", FAST | LINUX),
+    server(
+        "may-minihttp",
+        Bin::Rust,
+        &["may"],
+        "THREADS",
+        FAST | TOP | LINUX,
+    ),
     server("xitca-web", Bin::Rust, &["xitca"], "THREADS", FAST),
     server("ntex", Bin::Rust, &["ntex"], "THREADS", FAST),
     server("hyper", Bin::Rust, &["hyper"], "THREADS", FAST),
@@ -159,7 +189,7 @@ const SERVERS: &[Server] = &[
         Bin::Node,
         &["cluster.mjs", "uws/server.mjs"],
         "WORKERS",
-        FAST | LINUX,
+        FAST | TOP | LINUX,
     ),
     server(
         "Bun",
@@ -175,10 +205,52 @@ const SERVERS: &[Server] = &[
         "WORKERS",
         FAST | LINUX,
     ),
+    // The rest of the-benchmarker's top ten: their entries, answering only
+    // their routes. Caprese's port is a constant of its build, and it starts
+    // a thread per CPU the machine has.
+    Server {
+        port: 3000,
+        ..server("Caprese", Bin::Nim, &[], "", TOP | THEIRS | LINUX)
+    },
+    server(
+        "fulmine.js",
+        Bin::Node,
+        &["fulmine/server.mjs"],
+        "WORKERS",
+        TOP | THEIRS | LINUX,
+    ),
+    server(
+        "jet_server",
+        Bin::Dart,
+        &[],
+        "THREADS",
+        TOP | THEIRS | LINUX,
+    ),
+    server("Ohkami", Bin::Rust, &["ohkami"], "THREADS", TOP | THEIRS),
+    server(
+        "MoroJS engine",
+        Bin::Node,
+        &["cluster.mjs", "morojs/server.mjs"],
+        "WORKERS",
+        TOP | THEIRS | LINUX,
+    ),
+    server(
+        "ActiveJ",
+        Bin::Java,
+        &["-XX:+UseParallelGC", "-jar", "target/bench.jar", "activej"],
+        "THREADS",
+        TOP | THEIRS,
+    ),
 ];
 
+/// the-benchmarker's routes, as "METHOD /path", and the body its contract
+/// wants back from each (github.com/the-benchmarker/web-frameworks, .env and
+/// .spec/route_spec.rb).
+const ROUTES: [(&str, &str); 3] = [("GET /", ""), ("GET /user/0", "0"), ("POST /user", "")];
+
 struct Options {
-    connections: usize,
+    /// One level, or `--suite benchmarker`'s list of them.
+    connections: Vec<usize>,
     duration: Duration,
     warmup: Duration,
     rounds: usize,
@@ -190,12 +262,18 @@ struct Options {
     build: bool,
     csv: Option<PathBuf>,
     extra: Vec<Server>,
+    /// `--suite benchmarker`: the-benchmarker's routes and load, not ours.
+    suite: bool,
+    /// In the suite, zrk's threads (one per load CPU, as their harness gives
+    /// it) when zrk is installed; else wisp-load sends the load.
+    zrk: Option<usize>,
 }
 
-/// One server on one path, one round.
+/// One server on one path (a route, in the suite) at one level, one round.
 struct Row {
     server: &'static str,
     path: &'static str,
+    connections: usize,
     rps: f64,
     p50: u64,
     p99: u64,
@@ -211,7 +289,9 @@ struct Row {
 }
 
 fn main() {
-    let opt = options();
+    let mut opt = options();
+    let (server_cpus, load_cpus) = sys::split_cpus();
+    opt.zrk = (opt.suite && installed("zrk")).then_some(load_cpus.len());
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()
@@ -220,7 +300,11 @@ fn main() {
 
     let mut servers: Vec<&Server> = SERVERS
         .iter()
-        .filter(|s| s.tags & opt.group != 0 && picked(&opt.only, s.name))
+        .filter(|s| {
+            s.tags & opt.group != 0
+                && (opt.suite || s.tags & THEIRS == 0)
+                && picked(&opt.only, s.name)
+        })
         .collect();
     servers.retain(|s| {
         let ok = cfg!(target_os = "linux") || s.tags & LINUX == 0;
@@ -252,39 +336,60 @@ fn main() {
         die("no servers to run");
     }
 
-    let (server_cpus, load_cpus) = sys::split_cpus();
     sys::pin_self(&load_cpus);
     let threads = server_cpus.len().to_string();
-    println!(
-        "servers on CPUs {}, load on {}; {} connections, {}, {}s warmup, {}s measured, {} round{}",
-        sys::list(&server_cpus),
-        sys::list(&load_cpus),
-        opt.connections,
-        mode(opt.pipeline),
-        opt.warmup.as_secs(),
-        opt.duration.as_secs(),
+    let rounds = format!(
+        "{} round{}",
         opt.rounds,
         if opt.rounds == 1 { "" } else { "s" }
     );
+    if opt.suite {
+        let levels: Vec<String> = opt.connections.iter().map(usize::to_string).collect();
+        println!(
+            "the-benchmarker suite: servers on CPUs {}, load on {} ({}); {} connections; {}s warmup of GET / at 50, then {}s a route; {rounds}",
+            sys::list(&server_cpus),
+            sys::list(&load_cpus),
+            match opt.zrk {
+                Some(t) => format!("zrk --closed, {t} threads, as theirs"),
+                None => "wisp-load sending zrk's request: zrk is not installed".into(),
+            },
+            levels.join(", "),
+            opt.warmup.as_secs(),
+            opt.duration.as_secs(),
+        );
+    } else {
+        println!(
+            "servers on CPUs {}, load on {}; {} connections, {}, {}s warmup, {}s measured, {rounds}",
+            sys::list(&server_cpus),
+            sys::list(&load_cpus),
+            opt.connections[0],
+            mode(opt.pipeline),
+            opt.warmup.as_secs(),
+            opt.duration.as_secs(),
+        );
+    }
 
     let mut rows = Vec::new();
     for round in 1..=opt.rounds {
         for (i, s) in servers.iter().enumerate() {
-            let all: &[&str] = if s.bin == Bin::Other {
+            let all: &[&str] = if opt.suite {
+                &ROUTES.map(|(route, _)| route)
+            } else if s.bin == Bin::Other {
                 &["/plaintext"]
             } else {
                 &["/plaintext", "/fortunes", "/json", "/page"]
             };
+            let extra = if opt.suite { &[][..] } else { s.extra };
             let paths: Vec<&'static str> = all
                 .iter()
-                .chain(s.extra)
+                .chain(extra)
                 .copied()
                 .filter(|p| picked(&opt.paths, p))
                 .collect();
             if paths.is_empty() {
                 continue;
             }
-            let port = 3401 + i as u16;
+            let port = if s.port > 0 { s.port } else { 3401 + i as u16 };
             let addr: SocketAddr = ([127, 0, 0, 1], port).into();
             // Whatever answers there is not the server we are about to start,
             // and measuring it would print someone else's numbers.
@@ -293,7 +398,7 @@ fn main() {
                     "port {port} is taken: is another benchmark running? Stop it first."
                 ));
             }
-            let mut child = match start(s, &repo, &bench, port, &threads, &server_cpus) {
+            let mut child = match start(s, &repo, &bench, port, &threads, &server_cpus, opt.suite) {
                 Ok(child) => child,
                 Err(e) => {
                     println!("{}: {e}", s.name);
@@ -301,7 +406,13 @@ fn main() {
                 }
             };
             let size = deploy_size(s, &repo, &bench);
-            match measure(s, &mut child, addr, &paths, &opt, server_cpus.len(), size) {
+            let cpus = server_cpus.len();
+            let measured = if opt.suite {
+                suite(s, &mut child, addr, &paths, &opt, cpus, size)
+            } else {
+                measure(s, &mut child, addr, &paths, &opt, cpus, size)
+            };
+            match measured {
                 Ok(new) => rows.extend(new),
                 Err(e) => println!("{}: {e}", s.name),
             }
@@ -316,22 +427,28 @@ fn main() {
         write_csv(file, &rows, opt.pipeline);
     }
     println!();
-    print_table(&rows, opt.connections, opt.pipeline);
+    if opt.suite {
+        print_suite(&rows, &opt.connections, server_cpus.len());
+    } else {
+        print_table(&rows, opt.connections[0], opt.pipeline);
+    }
 }
 
 fn options() -> Options {
     let mut opt = Options {
-        connections: 64,
-        duration: Duration::from_secs(10),
+        connections: Vec::new(),
+        duration: Duration::ZERO,
         warmup: Duration::from_secs(5),
         rounds: 1,
         pipeline: 1,
-        group: FAST | POPULAR,
+        group: FAST | POPULAR | TOP,
         only: Vec::new(),
         paths: Vec::new(),
         build: true,
         csv: None,
         extra: Vec::new(),
+        suite: false,
+        zrk: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -349,19 +466,32 @@ fn options() -> Options {
                 .collect()
         };
         match a.as_str() {
-            "-c" => opt.connections = number(value()) as usize,
+            "-c" => {
+                opt.connections = list(value())
+                    .into_iter()
+                    .map(|c| number(c).max(1) as usize)
+                    .collect()
+            }
             "-d" => opt.duration = Duration::from_secs(number(value()).max(1)),
             "-w" => opt.warmup = Duration::from_secs(number(value())),
             "--rounds" => opt.rounds = number(value()).max(1) as usize,
             "--pipeline" => opt.pipeline = number(value()).max(1) as usize,
             "--group" => {
-                opt.group = match value().as_str() {
-                    "fast" => FAST,
-                    "popular" => POPULAR,
-                    "all" => FAST | POPULAR,
-                    other => die(&format!("--group: fast, popular or all, not {other}")),
-                }
+                opt.group = list(value())
+                    .iter()
+                    .map(|g| match g.as_str() {
+                        "fast" => FAST,
+                        "popular" => POPULAR,
+                        "top" => TOP,
+                        "all" => FAST | POPULAR | TOP,
+                        other => die(&format!("--group: fast, popular, top or all, not {other}")),
+                    })
+                    .fold(0, |all, g| all | g)
             }
+            "--suite" => match value().as_str() {
+                "benchmarker" => opt.suite = true,
+                other => die(&format!("--suite: benchmarker, not {other}")),
+            },
             "--only" => opt.only = list(value()),
             "--paths" => opt.paths = list(value()),
             "--no-build" => opt.build = false,
@@ -379,24 +509,39 @@ fn options() -> Options {
                 if args.is_empty() {
                     die("--extra takes NAME=COMMAND");
                 }
-                opt.extra.push(Server {
-                    name: name.to_string().leak(),
-                    bin: Bin::Other,
-                    args: args.leak(),
-                    threads: "THREADS",
-                    env: &[],
-                    extra: &[],
-                    tags: FAST | POPULAR,
-                });
+                opt.extra.push(server(
+                    name.to_string().leak(),
+                    Bin::Other,
+                    args.leak(),
+                    "THREADS",
+                    FAST | POPULAR,
+                ));
             }
             "-h" | "--help" => {
                 println!(
-                    "usage: bench-run [-c 64] [-d 10] [-w 5] [--rounds 1] [--pipeline 1] [--group fast|popular|all] [--only wisp,actix] [--paths fortunes] [--no-build] [--csv FILE] [--extra NAME=COMMAND]..."
+                    "usage: bench-run [-c 64] [-d 10] [-w 5] [--rounds 1] [--pipeline 1] [--group fast,popular,top|all] [--only wisp,actix] [--paths fortunes] [--no-build] [--csv FILE] [--extra NAME=COMMAND]... [--suite benchmarker]"
                 );
                 std::process::exit(0);
             }
             _ => die(&format!("unknown argument {a}; see --help")),
         }
+    }
+    // the-benchmarker's .env: 15 s a route at 64, 256 and 512 connections.
+    if opt.connections.is_empty() {
+        opt.connections = if opt.suite {
+            vec![64, 256, 512]
+        } else {
+            vec![64]
+        };
+    }
+    if opt.duration.is_zero() {
+        opt.duration = Duration::from_secs(if opt.suite { 15 } else { 10 });
+    }
+    if opt.suite && opt.pipeline > 1 {
+        die("--suite benchmarker loads closed loop; --pipeline does not apply");
+    }
+    if !opt.suite && opt.connections.len() > 1 {
+        die("-c takes one level, or a list with --suite benchmarker");
     }
     opt
 }
@@ -416,6 +561,8 @@ fn toolchain(bin: Bin) -> &'static [&'static str] {
         Bin::Node => &["node", "npm"],
         Bin::Bun => &["bun"],
         Bin::Java => &["java", "mvn"],
+        Bin::Nim => &["nim", "nimble"],
+        Bin::Dart => &["dart"],
         Bin::Other => &[],
     }
 }
@@ -456,28 +603,35 @@ fn unit(s: &Server) -> &'static str {
         Bin::Go => "go",
         Bin::AspNet => "aspnet",
         Bin::Java => "java",
+        Bin::Nim => "nim",
+        Bin::Dart => "dart",
         // The app's directory: `cluster.mjs fastify/server.mjs` is fastify.
-        Bin::Node | Bin::Bun => s.args[1].split('/').next().unwrap_or(""),
+        Bin::Node | Bin::Bun => s
+            .args
+            .iter()
+            .find_map(|a| a.split_once('/'))
+            .map_or("", |(dir, _)| dir),
         Bin::Other => "",
     }
 }
 
 /// What it takes to deploy a server: its binary or app directory, without
-/// the runtime (.NET, the JVM, Node and Bun are installed apart). Servers
-/// that share one binary with others have no size of their own.
+/// the runtime (.NET, the JVM, Node, Bun and Dart's are installed apart).
+/// Servers that share one binary or jar with others have no size of their
+/// own.
 fn deploy_size(s: &Server, repo: &Path, bench: &Path) -> Option<u64> {
     let node = bench.join("node").join(unit(s));
     let parts = match (s.bin, unit(s)) {
         (Bin::Wisp, _) => vec![release_dir(repo).join(exe("wisp-bench"))],
         (Bin::AspNet, _) => vec![bench.join("aspnet/out")],
-        (Bin::Java, _) => vec![bench.join("java/target/bench.jar")],
+        (Bin::Nim | Bin::Dart, dir) => vec![bench.join(dir).join(exe("server"))],
         (Bin::Node | Bin::Bun, "sveltekit") => vec![node.join("build")],
         (Bin::Node | Bin::Bun, "nextjs") => {
             vec![node.join(".next/standalone"), node.join(".next/static")]
         }
         (Bin::Bun, "bun") => vec![node.join("server.js")],
         (Bin::Node | Bin::Bun, _) => vec![node.join("node_modules")],
-        (Bin::Rust | Bin::Go | Bin::Other, _) => return None,
+        (Bin::Rust | Bin::Go | Bin::Java | Bin::Other, _) => return None,
     };
     parts.iter().map(|p| bytes_in(p)).sum()
 }
@@ -529,6 +683,34 @@ fn build(repo: &Path, bench: &Path, servers: &mut Vec<&Server>) {
             "java" => run(Command::new(program("mvn"))
                 .args(["-q", "-B", "package"])
                 .current_dir(bench.join("java"))),
+            // As the-benchmarker's Dockerfiles build them.
+            "nim" => {
+                let nim = bench.join("nim");
+                run(Command::new("nimble")
+                    .args(["install", "-y", "--depsOnly"])
+                    .env("NOSSL", "1")
+                    .current_dir(&nim))
+                    && run(Command::new("nim")
+                        .args([
+                            "c",
+                            "-d:release",
+                            "--opt:speed",
+                            "--assertions:off",
+                            "--warnings:off",
+                            "--hints:off",
+                            "--passC:-flto",
+                            "--passL:-flto",
+                            "server.nim",
+                        ])
+                        .current_dir(&nim))
+            }
+            "dart" => {
+                let dart = bench.join("dart");
+                run(Command::new("dart").args(["pub", "get"]).current_dir(&dart))
+                    && run(Command::new("dart")
+                        .args(["compile", "exe", "server.dart", "-o", &exe("server")])
+                        .current_dir(&dart))
+            }
             // Bun.serve needs nothing; bun install is quick when all is there.
             "bun" => true,
             "elysia" => run(Command::new("bun")
@@ -596,6 +778,8 @@ fn run(cmd: &mut Command) -> bool {
     }
 }
 
+/// Starts a server pinned to `cpus`. In the suite Wisp runs on epoll, as in
+/// the-benchmarker's containers, unless `WISP_IO` says otherwise.
 fn start(
     s: &Server,
     repo: &Path,
@@ -603,6 +787,7 @@ fn start(
     port: u16,
     threads: &str,
     cpus: &[usize],
+    suite: bool,
 ) -> Result<Child, String> {
     let (program, dir) = match s.bin {
         Bin::Wisp => (
@@ -621,6 +806,10 @@ fn start(
         Bin::Node => (PathBuf::from("node"), bench.join("node")),
         Bin::Bun => (PathBuf::from("bun"), bench.join("node")),
         Bin::Java => (PathBuf::from("java"), bench.join("java")),
+        Bin::Nim | Bin::Dart => {
+            let dir = bench.join(unit(s));
+            (dir.join(exe("server")), dir)
+        }
         Bin::Other => (PathBuf::from(s.args[0]), repo.to_path_buf()),
     };
     let args = if s.bin == Bin::Other {
@@ -635,6 +824,9 @@ fn start(
         .env("ASPNETCORE_URLS", format!("http://127.0.0.1:{port}"));
     if !s.threads.is_empty() {
         cmd.env(s.threads, threads);
+    }
+    if suite && s.bin == Bin::Wisp && std::env::var_os("WISP_IO").is_none() {
+        cmd.env("WISP_IO", "epoll");
     }
     cmd.envs(s.env.iter().copied());
     sys::spawn_pinned(&mut cmd, cpus)
@@ -651,20 +843,14 @@ fn measure(
     cpus: usize,
     size: Option<u64>,
 ) -> Result<Vec<Row>, String> {
-    let start_ms = wait_ready(child, addr)?;
+    let start_ms = wait_ready(child, addr, &wisp_load::get_request(addr, "/plaintext"))?;
     for path in paths.iter().filter(|p| p.starts_with("/fortunes")) {
         check_fortunes(addr, path)?;
     }
     if paths.contains(&"/page") {
         check_page(addr, "/page")?;
     }
-    let tree = sys::tree(child.id());
-    println!(
-        "\n== {}  (first response after {start_ms} ms, {} process{})",
-        s.name,
-        tree.len(),
-        if tree.len() == 1 { "" } else { "es" }
-    );
+    announce(s, start_ms, sys::tree(child.id()).len());
 
     let mut rows = Vec::new();
     for &path in paths {
@@ -673,32 +859,26 @@ fn measure(
         let wall = Instant::now();
         let r = wisp_load::run(
             addr,
-            path,
-            opt.connections,
+            &wisp_load::get_request(addr, path),
+            opt.connections[0],
             opt.pipeline,
             opt.warmup,
             opt.duration,
         );
-        let after = sys::cpu_times(&tree);
+        let (total, kernel) = cpu_used(&before, &sys::cpu_times(&tree));
         let wall = wall.elapsed().as_secs_f64();
         if let Ok(Some(status)) = child.try_wait() {
             return Err(format!("exited during {path} ({status})"));
         }
         // CPU time over the whole run (warmup included) per second of it, so
         // the cores kept busy; divided by the measured rate, CPU per request.
-        let (mut total, mut kernel) = (0.0, 0.0);
-        for (pid, (t, k)) in &after {
-            if let Some((t0, k0)) = before.get(pid) {
-                total += t - t0;
-                kernel += k - k0;
-            }
-        }
         let rps = r.rps();
         let (cores, kernel_cores) = (total / wall, kernel / wall);
         let peak: u64 = tree.iter().map(|&pid| sys::peak_memory(pid)).sum();
         let row = Row {
             server: s.name,
             path,
+            connections: opt.connections[0],
             rps,
             p50: r.latency.percentile(0.50),
             p99: r.latency.percentile(0.99),
@@ -732,6 +912,206 @@ fn measure(
     Ok(rows)
 }
 
+/// the-benchmarker's measurement of a server: their contract checked (a
+/// 2xx on each route, empty but for the id), one warmup of `GET /` at 50
+/// connections, then each route closed loop at each level, with no warmup
+/// of its own, as their Makefile's `warmup` and `collect` targets run zrk.
+fn suite(
+    s: &Server,
+    child: &mut Child,
+    addr: SocketAddr,
+    routes: &[&'static str],
+    opt: &Options,
+    cpus: usize,
+    size: Option<u64>,
+) -> Result<Vec<Row>, String> {
+    let zrk = opt.zrk;
+    let start_ms = wait_ready(child, addr, &zrk_request(addr, "GET /"))?;
+    for (route, want) in ROUTES {
+        match wisp_load::send(addr, &zrk_request(addr, route), Duration::from_secs(5)) {
+            Some((200..=299, body)) if body == want.as_bytes() => {}
+            Some((status, body)) => {
+                return Err(format!(
+                    "{route} answered {status} {:?}, not a 2xx with {want:?}",
+                    String::from_utf8_lossy(&body)
+                ));
+            }
+            None => return Err(format!("{route} did not answer")),
+        }
+    }
+    let tree = sys::tree(child.id());
+    announce(s, start_ms, tree.len());
+    if !opt.warmup.is_zero() {
+        load(addr, "GET /", 50, opt.warmup, zrk)?;
+    }
+
+    let mut rows = Vec::new();
+    for &connections in &opt.connections {
+        let mut sum = 0.0;
+        for &route in routes {
+            let before = sys::cpu_times(&tree);
+            let wall = Instant::now();
+            let r = load(addr, route, connections, opt.duration, zrk)?;
+            let (total, kernel) = cpu_used(&before, &sys::cpu_times(&tree));
+            let wall = wall.elapsed().as_secs_f64();
+            if let Ok(Some(status)) = child.try_wait() {
+                return Err(format!("exited during {route} ({status})"));
+            }
+            let peak: u64 = tree.iter().map(|&pid| sys::peak_memory(pid)).sum();
+            let row = Row {
+                server: s.name,
+                path: route,
+                connections,
+                rps: r.rps,
+                p50: r.p50,
+                p99: r.p99,
+                p999: r.p999,
+                cpu_us: total / wall * 1e6 / r.rps,
+                kernel_us: kernel / wall * 1e6 / r.rps,
+                bytes: r.bytes,
+                peak_mb: peak as f64 / (1024.0 * 1024.0),
+                start_ms,
+                size,
+                failures: r.failures,
+            };
+            println!(
+                "  c={connections:<4} {route:<12} {:>9.0} req/s  p50 {}  p99 {}  {:.1} of {cpus} cores, {:.2} µs CPU per request{}",
+                row.rps,
+                wisp_load::ms(row.p50),
+                wisp_load::ms(row.p99),
+                total / wall,
+                row.cpu_us,
+                if row.failures > 0 {
+                    format!(", {} failures", row.failures)
+                } else {
+                    String::new()
+                }
+            );
+            sum += row.rps;
+            rows.push(row);
+        }
+        println!(
+            "  c={connections:<4} {:<12} {:>9.0} req/s",
+            "mean",
+            sum / routes.len() as f64
+        );
+    }
+    Ok(rows)
+}
+
+/// What one closed-loop run measured.
+struct Load {
+    rps: f64,
+    p50: u64,
+    p99: u64,
+    p999: u64,
+    /// Per response, head included.
+    bytes: u64,
+    failures: u64,
+}
+
+/// `route` loaded closed loop at `connections` for `time`: by zrk with the
+/// flags the-benchmarker's harness passes it (`zrk` is its threads), or by
+/// wisp-load sending the request zrk sends.
+fn load(
+    addr: SocketAddr,
+    route: &str,
+    connections: usize,
+    time: Duration,
+    zrk: Option<usize>,
+) -> Result<Load, String> {
+    let request = zrk_request(addr, route);
+    let Some(threads) = zrk else {
+        let r = wisp_load::run(addr, &request, connections, 1, Duration::ZERO, time);
+        return Ok(Load {
+            rps: r.rps(),
+            p50: r.latency.percentile(0.50),
+            p99: r.latency.percentile(0.99),
+            p999: r.latency.percentile(0.999),
+            bytes: r.bytes.checked_div(r.ok).unwrap_or(0),
+            failures: r.non_2xx + r.errors,
+        });
+    };
+    let (method, path) = route.split_once(' ').unwrap_or(("GET", route));
+    let report = std::env::temp_dir().join(format!("bench-run-zrk-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&report);
+    let status = Command::new("zrk")
+        .args(["--plain", "--closed", "-t", &threads.to_string()])
+        .args(["-c", &connections.to_string()])
+        .args(["-d", &format!("{}s", time.as_secs())])
+        .args([
+            "-m",
+            method,
+            "--timeout",
+            "8s",
+            "--format",
+            "json",
+            "--output",
+        ])
+        .arg(&report)
+        .arg(format!("http://{addr}{path}"))
+        .stdout(Stdio::null())
+        .status()
+        .map_err(|e| format!("cannot run zrk: {e}"))?;
+    let json = std::fs::read_to_string(&report)
+        .map_err(|e| format!("zrk ({status}) wrote no report: {e}"))?;
+    let n = |key: &str| number(&json, key).ok_or_else(|| format!("zrk's report has no {key}"));
+    let mut failures = 0.0;
+    for key in ["connect", "read", "write", "timeout", "non_2xx_3xx"] {
+        failures += n(key)?;
+    }
+    Ok(Load {
+        rps: n("achieved_rate")?,
+        p50: n("p50")? as u64,
+        p99: n("p99")? as u64,
+        p999: n("p99_9")? as u64,
+        bytes: (n("bytes")? / n("requests")?.max(1.0)) as u64,
+        failures: failures as u64,
+    })
+}
+
+/// The request zrk sends for `route` ("METHOD /path"): its user agent,
+/// keep-alive said aloud, and a zero length on a POST with no body.
+fn zrk_request(addr: SocketAddr, route: &str) -> String {
+    let (method, path) = route.split_once(' ').unwrap_or(("GET", route));
+    let length = if method == "POST" {
+        "Content-Length: 0\r\n"
+    } else {
+        ""
+    };
+    format!(
+        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nUser-Agent: zrk\r\nConnection: keep-alive\r\n{length}\r\n"
+    )
+}
+
+/// The number after `"key": ` in zrk's JSON report, whose keys are unique.
+fn number(json: &str, key: &str) -> Option<f64> {
+    let rest = &json[json.find(&format!("\"{key}\": "))? + key.len() + 4..];
+    rest[..rest.find([',', ' ', '\n', '}'])?].parse().ok()
+}
+
+/// The server's line before its results.
+fn announce(s: &Server, start_ms: u64, processes: usize) {
+    println!(
+        "\n== {}  (first response after {start_ms} ms, {processes} process{})",
+        s.name,
+        if processes == 1 { "" } else { "es" }
+    );
+}
+
+/// CPU seconds used between two readings of the same processes: in all,
+/// and in the kernel.
+fn cpu_used(before: &HashMap<u32, (f64, f64)>, after: &HashMap<u32, (f64, f64)>) -> (f64, f64) {
+    let (mut total, mut kernel) = (0.0, 0.0);
+    for (pid, (t, k)) in after {
+        if let Some((t0, k0)) = before.get(pid) {
+            total += t - t0;
+            kernel += k - k0;
+        }
+    }
+    (total, kernel)
+}
+
 /// Whether nothing accepts connections on `addr`, waiting up to `wait` for
 /// a server just killed to let go of it.
 fn port_free(addr: SocketAddr, wait: Duration) -> bool {
@@ -745,18 +1125,24 @@ fn port_free(addr: SocketAddr, wait: Duration) -> bool {
     true
 }
 
-/// Milliseconds from launch until the first successful response.
-fn wait_ready(child: &mut Child, addr: SocketAddr) -> Result<u64, String> {
+/// Milliseconds from launch until `request` is first answered with a 2xx.
+fn wait_ready(child: &mut Child, addr: SocketAddr, request: &str) -> Result<u64, String> {
     let t = Instant::now();
+    let mut last = None;
     loop {
         if let Ok(Some(status)) = child.try_wait() {
             return Err(format!("exited before answering ({status})"));
         }
         if t.elapsed() > Duration::from_secs(30) {
-            return Err("did not answer within 30 s".into());
+            return Err(match last {
+                Some(status) => format!("answered {status}, not a 2xx, for 30 s"),
+                None => "did not answer within 30 s".into(),
+            });
         }
-        if let Some((200, _)) = wisp_load::get(addr, "/plaintext", Duration::from_millis(250)) {
-            return Ok(t.elapsed().as_millis() as u64);
+        match wisp_load::send(addr, request, Duration::from_millis(250)) {
+            Some((200..=299, _)) => return Ok(t.elapsed().as_millis() as u64),
+            Some((status, _)) => last = Some(status),
+            None => {}
         }
         std::thread::sleep(Duration::from_millis(5));
     }
@@ -911,11 +1297,11 @@ fn write_csv(file: &Path, rows: &[Row], pipeline: usize) {
         .unwrap_or_else(|e| die(&format!("{}: {e}", file.display())));
     let mut text = String::new();
     if new {
-        text.push_str("server,path,req/s,p50 us,p99 us,p99.9 us,cpu us,kernel us,bytes,peak MB,start ms,failures,pipeline,size bytes\n");
+        text.push_str("server,path,req/s,p50 us,p99 us,p99.9 us,cpu us,kernel us,bytes,peak MB,start ms,failures,pipeline,size bytes,connections\n");
     }
     for r in rows {
         text.push_str(&format!(
-            "{},{},{:.0},{},{},{},{:.2},{:.2},{},{:.1},{},{},{},{}\n",
+            "{},{},{:.0},{},{},{},{:.2},{:.2},{},{:.1},{},{},{},{},{}\n",
             r.server,
             r.path,
             r.rps,
@@ -929,7 +1315,8 @@ fn write_csv(file: &Path, rows: &[Row], pipeline: usize) {
             r.start_ms,
             r.failures,
             pipeline,
-            r.size.map_or(String::new(), |b| b.to_string())
+            r.size.map_or(String::new(), |b| b.to_string()),
+            r.connections
         ));
     }
     f.write_all(text.as_bytes())
@@ -1018,9 +1405,104 @@ fn print_table(rows: &[Row], connections: usize, pipeline: usize) {
         }
         table.push(line);
     }
+    print_markdown(&table, &[0, 2]);
+    println!(
+        "\n{connections} connections, {}, mean of {rounds} round{}.\n",
+        mode(pipeline),
+        if rounds == 1 { "" } else { "s" }
+    );
 
-    // Text columns left, numbers right.
-    let left = |c: usize| c == 0 || c == 2;
+    let load = mode(pipeline);
+    for path in &paths {
+        let ranked: Vec<(&str, f64)> = order
+            .iter()
+            .filter(|k| k.1 == *path)
+            .map(|k| (k.0, rps(k)))
+            .collect();
+        let tag = format!("{path} ({load})");
+        rank_high(&tag, &ranked);
+        let cpu = order
+            .iter()
+            .filter(|k| k.1 == *path)
+            .map(|k| (k.0, mean(k, |r| r.cpu_us)))
+            .collect();
+        rank_low(&format!("{tag} CPU per request"), cpu, |v| {
+            format!("{v:.1} µs")
+        });
+    }
+    rank_own(rows);
+}
+
+/// the-benchmarker's board: each server's requests per second at each
+/// level, the mean of its routes (their data.json averages the routes'
+/// rates) and of the rounds, fastest first at the first level, as their
+/// results page sorts at 64; beside it that level's p99, CPU per request and
+/// cores kept busy (their saturation probe's figure). Then where Wisp ranks
+/// at each level and on what is a server's own.
+fn print_suite(rows: &[Row], levels: &[usize], cpus: usize) {
+    let mut names = names(rows);
+    let mean = |name: &str, level: usize, f: fn(&Row) -> f64| -> Option<f64> {
+        let mine: Vec<f64> = rows
+            .iter()
+            .filter(|r| r.server == name && r.connections == level)
+            .map(f)
+            .collect();
+        (!mine.is_empty()).then(|| mine.iter().sum::<f64>() / mine.len() as f64)
+    };
+    let rps = |name: &str, level: usize| mean(name, level, |r| r.rps).unwrap_or(0.0);
+    let first = levels[0];
+    names.sort_by(|a, b| rps(b, first).total_cmp(&rps(a, first)));
+
+    let mut table = vec![vec!["#".to_string(), "Server".into()]];
+    table[0].extend(levels.iter().map(|c| format!("req/s c={c}")));
+    table[0].extend(["p99", "CPU µs/req", "Cores busy"].map(|what| format!("{what} c={first}")));
+    for (i, &name) in names.iter().enumerate() {
+        let mut line = vec![
+            (i + 1).to_string(),
+            if name == "Wisp" {
+                "**Wisp**".to_string()
+            } else {
+                name.to_string()
+            },
+        ];
+        line.extend(levels.iter().map(|&c| thousands(rps(name, c) as u64)));
+        let at = |f: fn(&Row) -> f64| mean(name, first, f).unwrap_or(0.0);
+        line.push(wisp_load::ms(at(|r| r.p99 as f64) as u64));
+        line.push(format!("{:.1}", at(|r| r.cpu_us)));
+        line.push(format!("{:.1} of {cpus}", at(|r| r.cpu_us * r.rps / 1e6)));
+        table.push(line);
+    }
+    print_markdown(&table, &[1]);
+    let routes: Vec<&str> = ROUTES.iter().map(|r| r.0).collect();
+    println!(
+        "\nreq/s is the mean of {}, closed loop.\n",
+        routes.join(", ")
+    );
+
+    for &c in levels {
+        let mut ranked: Vec<(&str, f64)> = names
+            .iter()
+            .filter_map(|&n| Some((n, mean(n, c, |r| r.rps)?)))
+            .collect();
+        ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let headline = if c == 64 { " (their headline)" } else { "" };
+        rank_high(&format!("the-benchmarker c={c}{headline}"), &ranked);
+    }
+    let cpu = names
+        .iter()
+        .filter_map(|&n| Some((n, mean(n, first, |r| r.cpu_us)?)))
+        .collect();
+    rank_low(
+        &format!("the-benchmarker c={first} CPU per request"),
+        cpu,
+        |v| format!("{v:.1} µs"),
+    );
+    rank_own(rows);
+}
+
+/// `table` as Markdown, its first line the header: the `left` columns
+/// (text) aligned left, the others (numbers) right.
+fn print_markdown(table: &[Vec<String>], left: &[usize]) {
     let width: Vec<usize> = (0..table[0].len())
         .map(|c| {
             table
@@ -1035,7 +1517,7 @@ fn print_table(rows: &[Row], connections: usize, pipeline: usize) {
             .iter()
             .enumerate()
             .map(|(c, cell)| {
-                if left(c) {
+                if left.contains(&c) {
                     format!("{cell:<w$}", w = width[c])
                 } else {
                     format!("{cell:>w$}", w = width[c])
@@ -1048,7 +1530,7 @@ fn print_table(rows: &[Row], connections: usize, pipeline: usize) {
                 .iter()
                 .enumerate()
                 .map(|(c, &w)| {
-                    if left(c) {
+                    if left.contains(&c) {
                         "-".repeat(w + 2)
                     } else {
                         format!("{}:", "-".repeat(w + 1))
@@ -1058,63 +1540,45 @@ fn print_table(rows: &[Row], connections: usize, pipeline: usize) {
             println!("|{}|", rules.join("|"));
         }
     }
-    println!(
-        "\n{connections} connections, {}, mean of {rounds} round{}.\n",
-        mode(pipeline),
-        if rounds == 1 { "" } else { "s" }
-    );
+}
 
-    let load = mode(pipeline);
-    for path in &paths {
-        let ranked: Vec<(&str, f64)> = order
-            .iter()
-            .filter(|k| k.1 == *path)
-            .map(|k| (k.0, rps(k)))
-            .collect();
-        let n = ranked.len();
-        let (best, best_rps) = ranked[0];
-        let best_text = thousands(best_rps as u64);
-        let tag = format!("{path} ({load})");
-        match ranked.iter().position(|r| r.0 == "Wisp") {
-            // One server's own path, like ASP.NET's /fortunes-blazor.
-            None if n == 1 => {}
-            None => println!(
-                "rank {tag}: Wisp not measured; fastest of {n} is {best} ({best_text} req/s)"
-            ),
-            Some(0) if n == 1 => println!("rank {tag}: Wisp alone, {best_text} req/s"),
-            Some(0) => {
-                let (next, next_rps) = ranked[1];
-                println!(
-                    "rank {tag}: Wisp 1st of {n}, {best_text} req/s, {:.0}% ahead of {next} ({} req/s)",
-                    (best_rps / next_rps - 1.0) * 100.0,
-                    thousands(next_rps as u64)
-                );
-            }
-            Some(i) => println!(
-                "rank {tag}: Wisp {} of {n}, {} req/s, {:.0}% of {best} ({best_text} req/s)",
-                ordinal(i + 1),
-                thousands(ranked[i].1 as u64),
-                ranked[i].1 / best_rps * 100.0
-            ),
+/// One line on where Wisp ranks in `ranked`, requests per second fastest
+/// first, against the fastest of the others (or the next, when Wisp leads).
+fn rank_high(tag: &str, ranked: &[(&str, f64)]) {
+    let n = ranked.len();
+    let Some(&(best, best_rps)) = ranked.first() else {
+        return;
+    };
+    let best_text = thousands(best_rps as u64);
+    match ranked.iter().position(|r| r.0 == "Wisp") {
+        // One server's own path, like ASP.NET's /fortunes-blazor.
+        None if n == 1 => {}
+        None => {
+            println!("rank {tag}: Wisp not measured; fastest of {n} is {best} ({best_text} req/s)")
         }
-        let cpu = order
-            .iter()
-            .filter(|k| k.1 == *path)
-            .map(|k| (k.0, mean(k, |r| r.cpu_us)))
-            .collect();
-        rank_low(&format!("{tag} CPU per request"), cpu, |v| {
-            format!("{v:.1} µs")
-        });
+        Some(0) if n == 1 => println!("rank {tag}: Wisp alone, {best_text} req/s"),
+        Some(0) => {
+            let (next, next_rps) = ranked[1];
+            println!(
+                "rank {tag}: Wisp 1st of {n}, {best_text} req/s, {:.0}% ahead of {next} ({} req/s)",
+                (best_rps / next_rps - 1.0) * 100.0,
+                thousands(next_rps as u64)
+            );
+        }
+        Some(i) => println!(
+            "rank {tag}: Wisp {} of {n}, {} req/s, {:.0}% of {best} ({best_text} req/s)",
+            ordinal(i + 1),
+            thousands(ranked[i].1 as u64),
+            ranked[i].1 / best_rps * 100.0
+        ),
     }
+}
 
-    let mut names: Vec<&str> = Vec::new();
-    for r in rows {
-        if !names.contains(&r.server) {
-            names.push(r.server);
-        }
-    }
+/// Where Wisp ranks on what is a server's own, whatever it served: peak
+/// memory, time to first response and deploy size.
+fn rank_own(rows: &[Row]) {
     let (mut memory, mut start, mut size) = (Vec::new(), Vec::new(), Vec::new());
-    for &name in &names {
+    for name in names(rows) {
         let mine: Vec<&Row> = rows.iter().filter(|r| r.server == name).collect();
         memory.push((name, mine.iter().map(|r| r.peak_mb).fold(0.0, f64::max)));
         let starts: f64 = mine.iter().map(|r| r.start_ms as f64).sum();
@@ -1128,6 +1592,17 @@ fn print_table(rows: &[Row], connections: usize, pipeline: usize) {
     rank_low("deploy size (runtime not counted)", size, |v| {
         size_text(v as u64)
     });
+}
+
+/// The servers in `rows`, in the order they ran.
+fn names(rows: &[Row]) -> Vec<&'static str> {
+    let mut names = Vec::new();
+    for r in rows {
+        if !names.contains(&r.server) {
+            names.push(r.server);
+        }
+    }
+    names
 }
 
 /// One line on where Wisp ranks in `all`, a figure where less is better,
@@ -1203,6 +1678,23 @@ mod tests {
         assert_eq!(unescape("Ada <&\""), None, "raw <");
         assert_eq!(unescape("Ada &lt;&\""), None, "bare &");
         assert_eq!(without_comments("a<!---->b<!--[-->c<!--]-->"), "abc");
+    }
+
+    #[test]
+    fn zrk_is_read_and_imitated() {
+        let report = "{\n  \"requests\": 3000,\n  \"bytes\": 240000,\n  \"achieved_rate\": 200.50,\n  \"config\": { \"timeout_ms\": 8000 },\n  \"latency_us\": {\n    \"p50\": 250, \"p99\": 900, \"p99_9\": 1500, \"p99_99\": 2000\n  },\n  \"errors\": { \"connect\": 0, \"read\": 1, \"timeout\": 2, \"non_2xx_3xx\": 0 },\n}";
+        assert_eq!(number(report, "achieved_rate"), Some(200.5));
+        assert_eq!(number(report, "p99"), Some(900.0));
+        assert_eq!(number(report, "p99_9"), Some(1500.0));
+        assert_eq!(number(report, "timeout"), Some(2.0));
+        assert_eq!(number(report, "non_2xx_3xx"), Some(0.0));
+        assert_eq!(number(report, "missing"), None);
+        let addr: SocketAddr = ([127, 0, 0, 1], 3000).into();
+        assert_eq!(
+            zrk_request(addr, "POST /user"),
+            "POST /user HTTP/1.1\r\nHost: 127.0.0.1:3000\r\nUser-Agent: zrk\r\nConnection: keep-alive\r\nContent-Length: 0\r\n\r\n"
+        );
+        assert!(zrk_request(addr, "GET /user/0").starts_with("GET /user/0 HTTP/1.1\r\n"));
     }
 
     #[test]

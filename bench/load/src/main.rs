@@ -43,7 +43,7 @@ fn main() {
 
     let r = wisp_load::run(
         addr,
-        path,
+        &wisp_load::get_request(addr, path),
         connections,
         depth,
         Duration::from_secs(warmup),
