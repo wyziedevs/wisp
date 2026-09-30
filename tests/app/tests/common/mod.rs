@@ -50,7 +50,7 @@ pub fn command(env: &[(&str, &str)]) -> Command {
 pub fn spawn(mut cmd: Command) -> Server {
     let mut child = cmd
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::inherit())
         .spawn()
         .expect("start the test app");
     let mut line = String::new();
