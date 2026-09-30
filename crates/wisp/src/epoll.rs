@@ -1,6 +1,6 @@
-//! The Linux server's sockets where io_uring is not there (before Linux 6.1,
-//! a container's seccomp profile, the `io_uring_disabled` sysctl) or
-//! `WISP_IO=epoll` asks: `uring.rs`'s design on an epoll instead of a ring.
+//! The Linux server's sockets where io_uring does not work (before Linux
+//! 6.1, a container's seccomp profile, the `io_uring_disabled` sysctl; see
+//! `uring::rings`) or `WISP_IO=epoll` asks: `uring.rs`'s design on an epoll instead of a ring.
 //! Each worker accepts on a listener of its own (`SO_REUSEPORT`, the kernel
 //! spreads connections), and has an epoll of its own that its sockets are in,
 //! edge-triggered, from their accept to their close.

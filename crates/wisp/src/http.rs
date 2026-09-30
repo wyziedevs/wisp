@@ -191,8 +191,8 @@ fn run_tokio<A: App>(
 
 /// [`run`] on Linux: each worker accepts on a listener of its own, and the
 /// kernel spreads connections over them. Its sockets are on an io_uring of
-/// its own (`uring.rs`), or where that cannot be set up, an epoll of its
-/// own (`epoll.rs`).
+/// its own (`uring.rs`), or where that does not work, an epoll of its own
+/// (`epoll.rs`).
 #[cfg(target_os = "linux")]
 fn run_linux<A: App>(
     main: &tokio::runtime::Runtime,

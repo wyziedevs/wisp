@@ -751,10 +751,14 @@ and `.wisp-*` classes, so they never touch an app's own CSS.
   buffers the ring lends back and forth), and accepts are one multishot
   request per worker. The ring is one more thing tokio's epoll waits on
   (through an eventfd), so handlers await timers, channels and database
-  drivers as before; a WebSocket is handed to a tokio socket. Where
-  io_uring cannot be set up (an older kernel, a container's seccomp
-  profile, the `io_uring_disabled` sysctl) each worker quietly runs the
-  same way on an epoll of its own (`crates/wisp/src/epoll.rs`), its
+  drivers as before; a WebSocket is handed to a tokio socket. At start, a
+  throwaway ring receives and sends once through the workers' code, with a
+  buffer ring and then (some 6.8 kernels refuse those) with buffers
+  provided per call; the first that works is used, and one line on stderr
+  (`wisp: io: …`) says which and why not better. Where io_uring does not
+  work (an older kernel, a container's seccomp profile, the
+  `io_uring_disabled` sysctl) each worker runs the same way on an epoll of
+  its own (`crates/wisp/src/epoll.rs`), its
   sockets in it edge-triggered from accept to close; a connection's task
   receives and sends by itself (one `recv` and one `send` a request), and
   only a send the socket has no room for is left to the driver.
@@ -772,7 +776,7 @@ and `.wisp-*` classes, so they never touch an app's own CSS.
   | `ORIGIN`                | The site's address (`https://example.com`), for a proxy that does not pass `Host` on |
   | `WISP_CLIENT_IP_HEADER` | The header the proxy puts the client's address in, for `cx.client_ip()` |
   | `WISP_MAX_CONNS`        | Open connections, WebSockets included, before new ones get a 503; 10000 by default, 0 for no cap |
-  | `WISP_IO`               | Linux: `epoll` for an epoll per worker instead of io_uring; `uring` to fail at start, saying why, where io_uring is not available |
+  | `WISP_IO`               | Linux: `epoll` for an epoll per worker instead of io_uring; `uring` to fail at start, saying why, where io_uring does not work |
 
   They are strict: one that is set but not valid stops the server with a
   message, rather than falling back to a default. `HOST` takes an IP address

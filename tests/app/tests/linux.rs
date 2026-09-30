@@ -23,17 +23,35 @@ fn start() -> Server {
 /// where the kernel has it) and an epoll per worker.
 const BACKENDS: [&[(&str, &str)]; 2] = [&[], &[("WISP_IO", "epoll")]];
 
-/// Whether this kernel should serve through io_uring: Linux 6.1 or later,
-/// with io_uring not switched off.
-fn uring_expected() -> bool {
-    let release = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();
-    let mut v = release
-        .split(['.', '-'])
-        .map(|n| n.parse::<u32>().unwrap_or(0));
-    let version = (v.next().unwrap_or(0), v.next().unwrap_or(0));
-    let off = std::fs::read_to_string("/proc/sys/kernel/io_uring_disabled")
-        .is_ok_and(|s| s.trim() != "0");
-    version >= (6, 1) && !off
+/// The app started with `env`, and the line it says on stderr about its
+/// backend: which way it takes connections, or why it stopped. Its port is
+/// 0 when it printed none.
+fn start_saying(env: &[(&str, &str)]) -> (Server, String) {
+    let mut child = common::command(env)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut said = String::new();
+    let mut err = BufReader::new(child.stderr.take().unwrap());
+    while !said.starts_with("wisp: io: ") && !said.starts_with("wisp: WISP_IO") {
+        said.clear();
+        if err.read_line(&mut said).unwrap() == 0 {
+            break;
+        }
+    }
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let port = line.trim().rsplit(':').next().and_then(|p| p.parse().ok());
+    (
+        Server {
+            child,
+            port: port.unwrap_or(0),
+        },
+        said,
+    )
 }
 
 /// Whether the server has an io_uring open.
@@ -62,19 +80,36 @@ fn undated(answer: String) -> String {
 }
 
 #[test]
-fn io_uring_by_default_and_epoll_when_asked() {
-    let [uring, epoll] = BACKENDS.map(common::start);
-    if uring_expected() {
-        assert!(
-            on_uring(&uring),
-            "a kernel with io_uring, served without it"
-        );
-    }
+fn each_backend_serves_and_says_which_it_is() {
+    // The default takes what its start-up check found working, and says so.
+    let (default, said) = start_saying(&[]);
+    assert!(said.starts_with("wisp: io: "), "{said}");
+    assert_eq!(
+        said.starts_with("wisp: io: io_uring"),
+        on_uring(&default),
+        "{said}"
+    );
+    let (epoll, said) = start_saying(BACKENDS[1]);
+    assert_eq!(said.trim(), "wisp: io: epoll (asked by WISP_IO)");
     assert!(!on_uring(&epoll));
-    for s in [&uring, &epoll] {
+    for s in [&default, &epoll] {
         let mut c = BufReader::new(connect(s.port));
         c.get_mut().write_all(GET).unwrap();
         assert!(read_answer(&mut c).0.starts_with("HTTP/1.1 200"));
+    }
+    // Asked for io_uring: served on it, or stopped saying why not.
+    let (mut uring, said) = start_saying(&[("WISP_IO", "uring")]);
+    if said.starts_with("wisp: io: io_uring") {
+        assert!(on_uring(&uring));
+        let mut c = BufReader::new(connect(uring.port));
+        c.get_mut().write_all(GET).unwrap();
+        assert!(read_answer(&mut c).0.starts_with("HTTP/1.1 200"));
+    } else {
+        assert!(
+            said.contains("WISP_IO is uring, but io_uring does not work here: "),
+            "{said}"
+        );
+        assert_eq!(uring.child.wait().unwrap().code(), Some(1));
     }
     // A value it does not know stops it, saying why.
     let out = common::command(&[("WISP_IO", "kqueue")])
