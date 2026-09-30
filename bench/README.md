@@ -125,7 +125,11 @@ request, mean of 2 rounds; run-to-run noise was about 10%):
 | epoll, stopping after a short read               | 20.1 |   18.7 |
 | io_uring (single issuer, recv and send queued)   | 20.2 |   19.7 |
 
-None beat tokio, so Wisp's Linux workers are plain tokio, with no `unsafe`.
+None beat tokio then. The io_uring prototype waited in `io_uring_enter` for
+each completion, with no deferred task work, and rearmed a receive per
+request; Wisp's Linux workers now use a driver without those costs
+(`crates/wisp/src/uring.rs`, see docs/design.md), and `WISP_IO=epoll` runs
+the tokio path for comparison.
 
 ## Results on Windows
 

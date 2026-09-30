@@ -702,6 +702,20 @@ and `.wisp-*` classes, so they never touch an app's own CSS.
   tradeoff: no work stealing, so a handler that blocks its thread stalls that
   thread's connections. Dev builds log any handler that holds its thread for
   100 ms or more in one go, with what to use instead.
+- On Linux 6.1 and later each worker has an io_uring of its own
+  (`crates/wisp/src/uring.rs`) and a listener of its own on the same port
+  (`SO_REUSEPORT`: the kernel spreads connections, no thread hands them
+  out). One `io_uring_enter` per turn of a worker submits every response
+  its connections queued since the last turn and runs the completions that
+  came in meanwhile (`DEFER_TASKRUN`), in place of a `recv` and a `send`
+  per request. Receives stay armed for a connection's life (multishot, into
+  buffers the ring lends back and forth), and accepts are one multishot
+  request per worker. The ring is one more thing tokio's epoll waits on
+  (through an eventfd), so handlers await timers, channels and database
+  drivers as before; a WebSocket is handed to a tokio socket. Where
+  io_uring cannot be set up (an older kernel, a container's seccomp
+  profile, the `io_uring_disabled` sysctl) the server quietly runs as above
+  on tokio's epoll; `WISP_IO=epoll` asks for that.
 - Settings, all from the environment:
 
   | Setting                 | What it does                                                       |
@@ -714,6 +728,7 @@ and `.wisp-*` classes, so they never touch an app's own CSS.
   | `ORIGIN`                | The site's address (`https://example.com`), for a proxy that does not pass `Host` on |
   | `WISP_CLIENT_IP_HEADER` | The header the proxy puts the client's address in, for `cx.client_ip()` |
   | `WISP_MAX_CONNS`        | Open connections, WebSockets included, before new ones get a 503; 10000 by default, 0 for no cap |
+  | `WISP_IO`               | Linux: `epoll` for tokio's epoll instead of io_uring; `uring` to fail at start, saying why, where io_uring is not available |
 
   They are strict: one that is set but not valid stops the server with a
   message, rather than falling back to a default. `HOST` takes an IP address
@@ -731,11 +746,14 @@ and `.wisp-*` classes, so they never touch an app's own CSS.
   one), and returns after at most 10 s, or at a second signal.
 - Under `wisp dev` the app holds a pipe from the CLI as its stdin and exits
   when it closes, so a killed `wisp dev` never leaves an app on the port.
-- On Linux, the plain tokio worker measured level with hand-written epoll
-  and io_uring servers (bench/README.md), so there is no I/O code of our
-  own. On Windows (a development platform for Wisp apps) tokio waits on
-  sockets through AFD polls, which costs about 3 µs a request more than a
-  completion port would; not worth `unsafe`.
+- The io_uring driver is the one `unsafe` module of a native build: the
+  ring's setup, the memory it shares with the kernel, and the socket calls
+  std has no word for, each block with why it holds. An earlier io_uring
+  prototype, which waited in `io_uring_enter` and had no deferred task work,
+  measured level with plain tokio (bench/README.md). On Windows (a
+  development platform for Wisp apps) tokio waits on sockets through AFD
+  polls, which costs about 3 µs a request more than a completion port
+  would; not worth `unsafe`.
 - `wisp::serve::<App>(addr)` is the async form, for apps that must own their
   runtime. It runs until its future is dropped.
 - One task per connection. `Cx` owns the connection's read buffer; the task also
