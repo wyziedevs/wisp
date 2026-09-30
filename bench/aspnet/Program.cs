@@ -19,6 +19,10 @@ app.MapGet("/plaintext", () => "Hello, World!");
 app.MapGet("/json", () => new Message("Hello, World!"));
 app.MapRazorPages(); // /fortunes and /page
 app.MapGet("/fortunes-blazor", () => new RazorComponentResult<FortunesPage>(new { Fortunes = Fortune.Load() }));
+// the-benchmarker's routes, as its aspnet-minimal-api entry maps them.
+app.MapGet("/", () => { });
+app.MapGet("user/{id}", (string id) => id);
+app.MapPost("user", () => { });
 app.Run();
 
 public sealed record Message(string message);

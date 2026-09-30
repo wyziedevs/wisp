@@ -9,4 +9,8 @@ app.get('/plaintext', (req, res) => res.type('text/plain').send('Hello, World!')
 app.get('/fortunes', (req, res) => res.type('text/html').send(render()));
 app.get('/page', (req, res) => res.type('text/html').send(renderPage()));
 app.get('/json', (req, res) => res.json({ message: 'Hello, World!' }));
+// the-benchmarker's routes, as its Express entry answers them.
+app.get('/', (req, res) => res.send(''));
+app.get('/user/:id', (req, res) => res.send(req.params.id));
+app.post('/user', (req, res) => res.send(''));
 app.listen(Number(process.env.PORT), '127.0.0.1');

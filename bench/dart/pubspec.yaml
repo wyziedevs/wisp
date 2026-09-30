@@ -1,0 +1,9 @@
+# jet_server, Dart's entry in the-benchmarker's top ten (Linux only: FFI
+# and epoll). `dart pub get`, then `dart compile exe server.dart`.
+name: bench_jet
+
+environment:
+  sdk: "^3.13.0"
+
+dependencies:
+  jet_server: ^0.2.0

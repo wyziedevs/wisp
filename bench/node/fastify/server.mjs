@@ -14,4 +14,14 @@ app.get('/page', async (req, reply) => {
     reply.type('text/html; charset=utf-8');
     return renderPage();
 });
+// the-benchmarker's routes, as its Fastify entry answers them.
+app.get('/', (req, reply) => {
+    reply.send();
+});
+app.get('/user/:id', (req, reply) => {
+    reply.send(req.params.id);
+});
+app.post('/user', (req, reply) => {
+    reply.send();
+});
 await app.listen({ host: '127.0.0.1', port: Number(process.env.PORT) });

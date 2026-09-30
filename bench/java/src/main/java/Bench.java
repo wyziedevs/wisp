@@ -1,9 +1,11 @@
 // Vert.x serving the same /fortunes, /plaintext, /json and /page as bench/app:
 // one verticle per event loop, THREADS of each, sharing the port. The page
 // is built with a StringBuilder (no template engine, as Vert.x's TechEmpower
-// entry does it) and the JSON with Vert.x's JsonObject (Jackson).
+// entry does it) and the JSON with Vert.x's JsonObject (Jackson). It also
+// answers the-benchmarker's GET /, GET /user/:id and POST /user as its entry
+// there does; `activej` runs ActiveJ instead (ActiveJ.java).
 //
-//   java -jar target/bench.jar      PORT sets the port, THREADS the event loops
+//   java -jar target/bench.jar [activej]      PORT sets the port, THREADS the event loops
 
 import io.vertx.core.AbstractVerticle;
 import io.vertx.core.DeploymentOptions;
@@ -34,15 +36,20 @@ public final class Bench extends AbstractVerticle {
         new Fortune(12, "フレームワークのベンチマーク"));
 
     static final int PORT = Integer.parseInt(System.getenv("PORT"));
+    static final int THREADS = System.getenv("THREADS") == null
+        ? Runtime.getRuntime().availableProcessors()
+        : Integer.parseInt(System.getenv("THREADS"));
 
-    public static void main(String[] args) {
-        String t = System.getenv("THREADS");
-        int threads = t == null ? Runtime.getRuntime().availableProcessors() : Integer.parseInt(t);
-        Vertx vertx = Vertx.vertx(new VertxOptions().setEventLoopPoolSize(threads).setPreferNativeTransport(true));
+    public static void main(String[] args) throws Exception {
+        if (args.length > 0 && args[0].equals("activej")) {
+            new ActiveJ().launch(args);
+            return;
+        }
+        Vertx vertx = Vertx.vertx(new VertxOptions().setEventLoopPoolSize(THREADS).setPreferNativeTransport(true));
         if (!vertx.isNativeTransportEnabled()) {
             System.err.println("vertx: no native transport, using Java NIO");
         }
-        vertx.deployVerticle(Bench::new, new DeploymentOptions().setInstances(threads))
+        vertx.deployVerticle(Bench::new, new DeploymentOptions().setInstances(THREADS))
             .onFailure(e -> {
                 e.printStackTrace();
                 System.exit(1);
@@ -66,7 +73,14 @@ public final class Bench extends AbstractVerticle {
             case "/json" -> res.putHeader("Content-Type", "application/json")
                 .end(new JsonObject().put("message", "Hello, World!").toBuffer());
             case "/page" -> res.putHeader("Content-Type", "text/html; charset=utf-8").end(page());
-            default -> res.setStatusCode(404).end();
+            case "/", "/user" -> res.end();
+            default -> {
+                if (req.path().startsWith("/user/")) {
+                    res.end(req.path().substring(6));
+                } else {
+                    res.setStatusCode(404).end();
+                }
+            }
         }
     }
 

@@ -49,24 +49,26 @@ impl Report {
     }
 }
 
-/// Runs `connections` closed loops of `GET path` against `addr` for
-/// `warmup + measure`, counting what completes during `measure`. Each loop
-/// sends `depth` requests at once and reads their responses; 1 waits for
-/// every response before the next request.
+/// A `GET` of `path` with a host and an accept header, the smallest a
+/// browser sends.
+pub fn get_request(addr: SocketAddr, path: &str) -> String {
+    format!("GET {path} HTTP/1.1\r\nhost: {addr}\r\naccept: text/html,*/*\r\n\r\n")
+}
+
+/// Runs `connections` closed loops of `request` (a whole request, head and
+/// body) against `addr` for `warmup + measure`, counting what completes
+/// during `measure`. Each loop sends `depth` requests at once and reads
+/// their responses; 1 waits for every response before the next request.
 pub fn run(
     addr: SocketAddr,
-    path: &str,
+    request: &str,
     connections: usize,
     depth: usize,
     warmup: Duration,
     measure: Duration,
 ) -> Report {
     let depth = depth.max(1);
-    let batch: Arc<[u8]> =
-        format!("GET {path} HTTP/1.1\r\nhost: {addr}\r\naccept: text/html,*/*\r\n\r\n")
-            .repeat(depth)
-            .into_bytes()
-            .into();
+    let batch: Arc<[u8]> = request.repeat(depth).into_bytes().into();
     let phase = Arc::new(AtomicU8::new(WARMUP));
     let workers: Vec<_> = (0..connections.max(1))
         .map(|_| {
@@ -153,17 +155,19 @@ fn connection(addr: SocketAddr, batch: &[u8], depth: usize, phase: &AtomicU8) ->
     }
 }
 
-/// One `GET` on a connection of its own: the status and the body, with
+/// One `GET` on a connection of its own: see [`send`].
+pub fn get(addr: SocketAddr, path: &str, timeout: Duration) -> Option<(u16, Vec<u8>)> {
+    send(addr, &get_request(addr, path), timeout)
+}
+
+/// One request on a connection of its own: the status and the body, with
 /// chunked encoding undone. For checking what a server sends, and whether
 /// it is up yet: the connect gives up after 25 ms, since a refused connect
 /// takes 2 s to fail on Windows.
-pub fn get(addr: SocketAddr, path: &str, timeout: Duration) -> Option<(u16, Vec<u8>)> {
+pub fn send(addr: SocketAddr, request: &str, timeout: Duration) -> Option<(u16, Vec<u8>)> {
     let mut s = TcpStream::connect_timeout(&addr, Duration::from_millis(25)).ok()?;
     s.set_read_timeout(Some(timeout)).ok()?;
-    s.write_all(
-        format!("GET {path} HTTP/1.1\r\nhost: {addr}\r\naccept: text/html,*/*\r\n\r\n").as_bytes(),
-    )
-    .ok()?;
+    s.write_all(request.as_bytes()).ok()?;
     let mut buf = Vec::new();
     let r = read_response(&mut s, &mut buf)?;
     Some((r.status, r.body))
@@ -334,7 +338,7 @@ pub fn ms(us: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{BUCKETS, Histogram, find, run};
+    use super::{BUCKETS, Histogram, find, get_request, run};
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::time::Duration;
@@ -355,7 +359,15 @@ mod tests {
                 }
             }
         });
-        let r = run(addr, "/", 1, 8, Duration::ZERO, Duration::from_millis(200));
+        let request = get_request(addr, "/");
+        let r = run(
+            addr,
+            &request,
+            1,
+            8,
+            Duration::ZERO,
+            Duration::from_millis(200),
+        );
         assert!(r.ok >= 8, "{}", r.ok);
         assert_eq!((r.non_2xx, r.errors), (0, 0));
         assert_eq!(r.bytes, r.ok * 40);

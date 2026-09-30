@@ -14,3 +14,8 @@ package-lock.json
 /node/nextjs/.next/
 /java/target/
 bun.lock
+/nim/server
+/dart/server
+/dart/server.exe
+/dart/.dart_tool/
+/dart/pubspec.lock

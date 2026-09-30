@@ -1,25 +1,33 @@
 # Benchmarks
 
 Wisp against the ten most popular web frameworks and the ten fastest
-(TechEmpower's top tier), on the same machine, doing the same work.
+(TechEmpower's top tier), on the same machine, doing the same work; and,
+with `--suite benchmarker`, against the-benchmarker's top ten on its routes
+and load (below).
 
 - Popular: ASP.NET Core, Actix Web, Axum, Go's net/http, Gin, Fiber,
   Express, Fastify, SvelteKit, Next.js.
 - Fastest: Actix Web, may-minihttp, xitca-web, ntex, hyper, fasthttp,
   Vert.x, uWebSockets.js, Bun, Elysia.
+- the-benchmarker's top ten (`--group top`, suite only): Caprese,
+  uWebSockets.js, fulmine.js, may-minihttp, jet_server, Ohkami, MoroJS
+  engine, ActiveJ.
 
 ```
 cargo run -r -p bench-run -- [-c 64] [-d 10] [-w 5] [--rounds 1]
-    [--pipeline 1] [--group fast|popular|all] [--only wisp,actix]
+    [--pipeline 1] [--group fast,popular,top|all] [--only wisp,actix]
     [--paths fortunes] [--no-build] [--csv results.csv]
+    [--suite benchmarker]
 ```
 
 Runs on Linux and Windows. Needs Rust; a server whose toolchain (the .NET 10
-SDK, Go, Node, Bun, a JDK and Maven) is missing, or whose build fails, is
-skipped with a note. may-minihttp, uWebSockets.js, Bun and Elysia run on
-Linux only (may-minihttp's Windows I/O answers a kept-alive connection's
-first request again; the others share the port with SO_REUSEPORT).
-`--group` picks either list or both (the default), Wisp always included;
+SDK, Go, Node, Bun, a JDK and Maven, Nim, Dart) is missing, or whose build
+fails, is skipped with a note. may-minihttp, uWebSockets.js, Bun, Elysia,
+fulmine.js, MoroJS engine, Caprese and jet_server run on Linux only
+(may-minihttp's Windows I/O answers a kept-alive connection's first request
+again; Caprese and jet_server are written for Linux; the others share the
+port with SO_REUSEPORT). `--group` picks a list or several (all by default),
+Wisp always included;
 `--only` and `--paths` narrow it by substring, `--rounds` runs every server
 that many times, taking turns, and reports the mean, and `--extra
 NAME=COMMAND` adds a server of your own (it gets `PORT` and `THREADS`, and
@@ -67,16 +75,20 @@ cached and baked pages are paths of their own: see `app/` below).
   non-ASCII as is, like Wisp.
 - `rust/`: Actix Web, Axum, may-minihttp, xitca-web, ntex and bare hyper
   (a tokio runtime per thread, SO_REUSEPORT) in one binary (`bench-rust
-  actix|axum|may|xitca|ntex|hyper`), all rendering with Askama, which
+  actix|axum|may|xitca|ntex|hyper|ohkami`), all rendering with Askama, which
   compiles templates to Rust as Wisp does (`/page` inherits `templates/`'s
-  layout), and serializing with serde. A Cargo workspace of its own, so none
-  of it reaches Wisp's `Cargo.lock`.
+  layout), and serializing with serde; and Ohkami on its nio runtime. A
+  Cargo workspace of its own, so none of it reaches Wisp's `Cargo.lock`.
 - `go/`: net/http, Gin, Fiber v3 and bare fasthttp in one binary
   (`bench-go nethttp|gin|fiber|fasthttp`), all rendering with
   `html/template` (Gin's and Fiber's html renderers wrap it; `/page`'s
   layout is a `define`) and serializing with `encoding/json`.
 - `java/`: Vert.x 4.5 on epoll, a verticle per event loop, the pages from a
-  `StringBuilder` as its TechEmpower entry does. `mvn package`.
+  `StringBuilder` as its TechEmpower entry does; ActiveJ 5.5 in the same
+  jar (`activej`). `mvn package`.
+- `nim/`: Caprese, built as its Dockerfile there builds it (`NOSSL=1
+  nimble install`, `nim c -d:release --opt:speed` with LTO).
+- `dart/`: jet_server (FFI and epoll), compiled ahead of time.
 - `node/`: Express (its defaults) and Fastify, the pages from template
   literals (`fortunes.mjs`, `page.mjs`: no template engine, the fastest
   path), SvelteKit with adapter-node (`+page.server.js` and `+page.svelte`,
@@ -86,7 +98,9 @@ cached and baked pages are paths of their own: see `app/` below).
   and uWebSockets.js. Each runs under
   `cluster.mjs`, one process per server CPU, as `pm2 -i` does. Bun
   (`Bun.serve`) and Elysia use the same page and run under
-  `bun-cluster.js`, one process per CPU sharing the port.
+  `bun-cluster.js`, one process per CPU sharing the port. fulmine.js
+  (Express's API on uWebSockets.js, forking its own workers) and MoroJS
+  engine (a native HTTP engine) answer only the-benchmarker's routes.
 - `run/`: the runner, `bench-run`.
 - `load/`: the load generator, a library the runner calls and a command of
   its own (`wisp-load http://127.0.0.1:3000/ -c 64 -d 10`). It is
@@ -107,14 +121,125 @@ Besides throughput and latency it reports the server's CPU time per request
 stack), peak memory, the time from launch to the first response, and its
 deploy size. CPU time and memory include every process a server starts.
 Deploy size is the binary or app directory you would copy, without the
-runtime (.NET, the JVM, Node and Bun are installed apart): Wisp's binary,
-ASP.NET's publish directory, Vert.x's jar, SvelteKit's `build/`, Next.js's
-standalone output, the `node_modules` of the others. The Rust and Go servers
-share one binary among several frameworks, so they have no size of their
-own. It prints the results as a Markdown table, like the one below.
+runtime (.NET, the JVM, Node, Bun and Dart's are installed apart): Wisp's
+binary, ASP.NET's publish directory, Caprese's and jet_server's binaries,
+SvelteKit's `build/`, Next.js's standalone output, the `node_modules` of the
+others. The Rust, Go and Java servers share one binary or jar among several
+frameworks, so they have no size of their own. It prints the results as a
+Markdown table, like the one below.
 
 Only sources are tracked here; builds, `node_modules` and lockfiles are
 ignored.
+
+## the-benchmarker suite
+
+The board most people look at is the-benchmarker's web-frameworks
+([repo](https://github.com/the-benchmarker/web-frameworks),
+[results](https://web-frameworks-benchmark.netlify.app/result)).
+`--suite benchmarker` measures what it measures. What that is, read from
+their repo at 7980442 (2026-09-29) and the results of 2026-09-28 (a1107b4):
+
+- **Routes** (README's "Benchmark contract", `.spec/route_spec.rb`): `GET /`
+  answers a 2xx with an empty body, `GET /user/:id` a 2xx with the id,
+  `POST /user` a 2xx with an empty body. They are loaded as `GET /`,
+  `GET /user/0` and `POST /user` (`.env`: `ROUTES`).
+- **Load** (`.tasks/config.rake`, `run.sh`): [zrk](https://github.com/zoxy-io/zrk)
+  2.4 or later, `zrk --plain --closed -t THREADS -c N -d 15 -m METHOD
+  --timeout 8s --format json`: closed loop over keep-alive connections, no
+  pipelining, each connection sending its next request when its last
+  response is in. THREADS is the count of load CPUs (12). zrk's request has
+  `User-Agent: zrk`, `Connection: keep-alive`, and `Content-Length: 0` on
+  the POST. One warmup per framework, `zrk --closed -c 50 -d 5s` on `GET /`;
+  then each route for 15 s (`DURATION`) at 64, 256 and 512 connections
+  (`CONCURRENCIES`), with no warmup of its own. The rate is requests over
+  the whole run, connecting included (zrk's `achieved_rate`). The site's
+  home page still says wrk with 8 threads; the harness moved to zrk in
+  2026-09 (their README's "Why the figures moved").
+- **Where** (`config.yaml`, `.env`): each framework in a Docker container of
+  its own, built by its language's Dockerfile in release mode, started with
+  `docker run -td --cpuset-cpus=0-3`: the default bridge network, the
+  default seccomp profile, no published port (zrk loads the container's
+  bridge address, port 3000), zrk pinned to CPUs 4-15 with `taskset`. The
+  machine: 16 CPUs, 7 GB, Linux 7.2 (Fedora 44). `run.sh` per framework:
+  build, 60 s sleep, contract test, warmup, collect, stop.
+- **Ranking** (`.tasks/db.rake`, the results page): `data.json` keeps each
+  metric's `avg` per framework and level, so a framework's rate at a level
+  is the mean of its three routes. The results page sorts by "Requests /
+  Second (64)", with 256 and 512 beside it. They also keep p50 to p99.99
+  and a saturation probe (the container's CPU over its 4 cores): most of the
+  top runs near 50%, so zrk, not the server, set the pace there, which their
+  own `rake db:check_saturation` counts as a run to distrust.
+
+Their top 15 of 388 on 2026-09-28, req/s at 64 / 256 / 512 connections:
+
+| #  | Framework       | Language   |      64 |     256 |     512 |
+|---:|-----------------|------------|--------:|--------:|--------:|
+|  1 | caprese         | Nim        | 269,338 | 251,156 | 239,278 |
+|  2 | uwebsockets     | JavaScript | 255,933 | 238,546 | 231,757 |
+|  3 | fulmine.js      | JavaScript | 255,600 | 238,599 | 231,636 |
+|  4 | may_minihttp    | Rust       | 254,539 | 226,369 | 218,158 |
+|  5 | jet_server-vm   | Dart       | 240,851 | 251,249 | 244,779 |
+|  6 | jet_server      | Dart       | 239,539 | 251,346 | 244,814 |
+|  7 | ohkami-nio      | Rust       | 232,682 | 225,703 | 217,292 |
+|  8 | morojs-engine   | JavaScript | 230,776 | 209,728 | 204,495 |
+|  9 | ohkami-tokio    | Rust       | 230,163 | 215,284 | 212,694 |
+| 10 | activej         | Java       | 222,819 | 203,238 | 198,183 |
+| 11 | morojs          | JavaScript | 218,594 | 199,058 | 194,892 |
+| 12 | hyper           | Rust       | 214,474 | 199,897 | 196,622 |
+| 13 | breeze          | Go         | 213,463 | 196,845 | 191,137 |
+| 14 | sifrr           | JavaScript | 212,654 | 198,599 | 194,631 |
+| 15 | khttp           | Rust       | 212,390 | 198,445 | 195,663 |
+
+The others here, at 64: Actix 16th, Elysia 23rd, Vert.x 32nd, Axum 35th,
+fasthttp 38th, Fiber 44th, ASP.NET Core (minimal API) 66th, Bun 68th, Gin
+141st, net/http 143rd, Fastify 189th, Express 238th, Next.js 362nd.
+xitca-web, ntex, SvelteKit and Wisp have no entry.
+
+The suite sends the same requests on the same routes at the same levels,
+for the same time after the same warmup, and ranks by the same figure (the
+mean of the routes at 64; 256 and 512 get rank lines too), with zrk and
+their flags where zrk is installed (the Linux script installs 2.5.0), else
+wisp-load sending zrk's bytes (a thread per connection, so at 512 it costs
+the load CPUs more than zrk does). Before loading, each server must pass
+their contract. Every rival answers the routes with its entry's code where
+it has one there: Actix, Axum, hyper, may-minihttp, net/http, Gin, Fiber
+(and its config), fasthttp, Express, Fastify, uWebSockets.js (declarative
+responses, and `_cfg('silent')` for every path), Bun, Elysia, Next.js,
+ASP.NET Core's minimal API and Vert.x; xitca-web, ntex and SvelteKit have
+none and are written as their docs would. Wisp's are two `+server.rs`
+files: `fn get() {}` at the root, and `fn get(id: String) -> Response {
+Response::text(id) }` with `fn post() {}` in `user/`.
+
+From their top ten, the ones missing here were added from their entries,
+answering only the three routes: Caprese (Nim), fulmine.js, jet_server
+(Dart, the AOT build), Ohkami (on nio), MoroJS engine and ActiveJ. Left out:
+jet_server-vm and ohkami-tokio, the same code on the Dart VM and on tokio,
+each a place from the build here; morojs, 11th, below the ten.
+
+What differs:
+
+- **No Docker.** Their servers run in containers on a bridge network (a
+  veth pair and the bridge per packet) with 4 cores against zrk's 12; here
+  they run as processes pinned to half the cores, zrk on the other half,
+  over loopback. On a 4-vCPU machine that is 2 and 2, so the load
+  generator limits the fast servers sooner than theirs does, as it already
+  does there. A `--docker` mode would need an image per server and is not
+  here; their own harness (`bundle exec rake config`, then the generated
+  Makefiles) runs the exact setup.
+- **Threads.** Each server gets as many threads or processes as it has
+  CPUs, as elsewhere here. In their containers most see 4 CPUs, but
+  Caprese (Nim's CPU count) and jet_server (Dart's) count the host's 16;
+  here Caprese counts the machine's, as there.
+- **io_uring.** Docker's default seccomp profile refuses `io_uring_setup`,
+  `io_uring_enter` and `io_uring_register` ([Docker's seccomp
+  docs](https://docs.docker.com/engine/security/seccomp/),
+  [moby#46762](https://github.com/moby/moby/pull/46762)), so in their
+  container Wisp falls back to epoll (tokio). A faithful run uses epoll:
+  the suite starts Wisp with `WISP_IO=epoll` unless `WISP_IO` is set, and
+  `WISP_IO=uring` measures what a run outside Docker gets.
+- **Durations** in the Linux test script: 2 s a route after a 2 s warmup,
+  for Wisp, the fast group and their top ten (`--group fast,top`), to keep
+  it near 7 minutes. Run it with the defaults for their 15 s and 5 s.
 
 ## Results on Linux
 
