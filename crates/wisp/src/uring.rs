@@ -43,7 +43,9 @@ const SQ_ENTRIES: u32 = 512;
 const CQ_ENTRIES: u32 = 4096;
 /// Buffers the kernel receives into, each given back once its bytes are
 /// copied out: one per connection that received something in a turn. When
-/// they run out a receive stops (`ENOBUFS`) and is rearmed.
+/// they run out a receive stops (`ENOBUFS`) and is rearmed. They go to the
+/// kernel through a buffer ring, or, where the kernel refuses one (some 6.8
+/// builds), one `PROVIDE_BUFFERS` per run of buffers given back.
 const BUFS: usize = 256;
 const BUF_SIZE: usize = 4096;
 /// Received bytes a connection has not read, past which receiving pauses
@@ -78,7 +80,9 @@ const OP_ASYNC_CANCEL: u8 = 14;
 const OP_CLOSE: u8 = 19;
 const OP_SEND: u8 = 26;
 const OP_RECV: u8 = 27;
+const OP_PROVIDE_BUFFERS: u8 = 31;
 const SQE_BUFFER_SELECT: u8 = 1 << 5;
+const SQE_CQE_SKIP_SUCCESS: u8 = 1 << 6;
 const ACCEPT_MULTISHOT: u16 = 1 << 0;
 const RECV_MULTISHOT: u16 = 1 << 1;
 const CQE_F_BUFFER: u32 = 1 << 0;
@@ -89,6 +93,8 @@ const CQE_F_MORE: u32 = 1 << 1;
 /// is its entry, generation and whether it is the send (see `op`).
 const ACCEPT: u64 = u64::MAX - 1;
 const IGNORE: u64 = u64::MAX;
+/// Buffers provided without a buffer ring: only a failure completes.
+const PROVIDE: u64 = u64::MAX - 2;
 
 /// io_uring_params.
 #[repr(C)]
@@ -257,9 +263,11 @@ pub(crate) struct Ring {
     eventfd: Option<OwnedFd>,
     rings: Map,
     sqes: Map,
-    /// The buffer ring (a page of entries), then the buffers themselves.
-    /// The buffer ring the kernel takes buffers from: `BUFS` entries of 16 bytes.
-    pring: Map,
+    /// The buffer ring the kernel takes buffers from: `BUFS` entries of 16
+    /// bytes. None where the kernel refused one: buffers given back wait in
+    /// `pending` until the next `enter` provides them.
+    pring: Option<Map>,
+    pending: Vec<u16>,
     /// The buffers themselves.
     bufs: Map,
     sq_head: u32,
@@ -285,8 +293,8 @@ unsafe impl Send for Ring {}
 
 /// The ring `fd` takes its receive buffers from. Memory of ours, registered,
 /// where the kernel allows it; else memory the kernel makes and we map (Linux
-/// 6.4 on), which some kernels insist on.
-fn buffer_ring(fd: &OwnedFd) -> io::Result<Map> {
+/// 6.4 on), which some kernels insist on. Some refuse both.
+fn buffer_ring(fd: &OwnedFd) -> Option<Map> {
     let mut reg = BufReg {
         ring_addr: 0,
         ring_entries: BUFS as u32,
@@ -294,21 +302,15 @@ fn buffer_ring(fd: &OwnedFd) -> io::Result<Map> {
         flags: 0,
         resv: [0; 3],
     };
-    let ours = Map::new(-1, BUFS * 16, 0)?;
+    let ours = Map::new(-1, BUFS * 16, 0).ok()?;
     reg.ring_addr = ours.0 as u64;
-    let Err(refused) = register(fd, REGISTER_PBUF_RING, Some(&reg), 1) else {
-        return Ok(ours);
-    };
+    if register(fd, REGISTER_PBUF_RING, Some(&reg), 1).is_ok() {
+        return Some(ours);
+    }
     reg.ring_addr = 0;
     reg.flags = PBUF_RING_MMAP;
-    register(fd, REGISTER_PBUF_RING, Some(&reg), 1)
-        .and_then(|()| Map::new(fd.as_raw_fd(), BUFS * 16, OFF_PBUF_RING))
-        .map_err(|e| {
-            step(
-                "registering the buffer ring",
-                io::Error::new(e.kind(), format!("{refused}, then {e}")),
-            )
-        })
+    register(fd, REGISTER_PBUF_RING, Some(&reg), 1).ok()?;
+    Map::new(fd.as_raw_fd(), BUFS * 16, OFF_PBUF_RING).ok()
 }
 
 /// `e`, saying which step of making a ring it came from.
@@ -318,8 +320,10 @@ fn step(what: &str, e: io::Error) -> io::Error {
 
 impl Ring {
     /// A ring for one worker. It stays disabled until `serve` enables it on
-    /// the worker's thread, which then is the only one that submits.
-    fn new() -> io::Result<Ring> {
+    /// the worker's thread, which then is the only one that submits. Without
+    /// `pbuf_ring` (tests), buffers are provided as where the kernel refuses
+    /// a buffer ring.
+    fn new(pbuf_ring: bool) -> io::Result<Ring> {
         let mut p = Params {
             cq_entries: CQ_ENTRIES,
             flags: SETUP_SINGLE_ISSUER
@@ -362,7 +366,7 @@ impl Ring {
         register(&fd, REGISTER_EVENTFD, Some(&eventfd.as_raw_fd()), 1)
             .map_err(|e| step("registering the eventfd", e))?;
         let bufs = Map::new(-1, BUFS * BUF_SIZE, 0)?;
-        let pring = buffer_ring(&fd)?;
+        let pring = if pbuf_ring { buffer_ring(&fd) } else { None };
         let mut ring = Ring {
             sq_head: sq.head,
             sq_tail: sq.tail,
@@ -381,8 +385,11 @@ impl Ring {
             rings,
             sqes,
             pring,
+            pending: Vec::with_capacity(BUFS),
             bufs,
         };
+        // Given before the ring is enabled: the first `enter` provides them
+        // all, ahead of any receive.
         for bid in 0..BUFS as u16 {
             ring.give(bid);
         }
@@ -418,8 +425,9 @@ impl Ring {
     /// that came in, so that its completions are in the queue. Receives
     /// take buffers only in here, so the buffers given back are published
     /// first.
-    fn enter(&self, events: bool) -> io::Result<()> {
+    fn enter(&mut self, events: bool) -> io::Result<()> {
         self.publish_bufs();
+        self.provide();
         self.rings
             .word(self.sq_tail)
             .store(self.tail, Ordering::Release);
@@ -492,10 +500,10 @@ impl Ring {
     /// Hands buffer `bid` back to the kernel, which sees it from the next
     /// `enter` on.
     fn give(&mut self, bid: u16) {
-        let entry = self
-            .pring
-            .0
-            .wrapping_add(16 * (self.buf_tail as usize % BUFS));
+        let Some(pring) = &self.pring else {
+            return self.pending.push(bid);
+        };
+        let entry = pring.0.wrapping_add(16 * (self.buf_tail as usize % BUFS));
         let addr = self.bufs.0.wrapping_add(bid as usize * BUF_SIZE);
         // SAFETY: an entry of the buffer ring that the kernel has consumed
         // (or never used) and reads again only once the published tail
@@ -510,10 +518,44 @@ impl Ring {
     }
 
     fn publish_bufs(&self) {
+        let Some(pring) = &self.pring else { return };
         // SAFETY: the buffer ring's tail, bytes 14..16 of its first entry,
         // which the kernel reads atomically.
-        let tail = unsafe { &*self.pring.0.add(14).cast::<AtomicU16>() };
+        let tail = unsafe { &*pring.0.add(14).cast::<AtomicU16>() };
         tail.store(self.buf_tail, Ordering::Release);
+    }
+
+    /// Without a buffer ring: queues the buffers given back, one
+    /// `PROVIDE_BUFFERS` per run of consecutive ids. What does not fit in
+    /// the queue waits for the next call.
+    fn provide(&mut self) {
+        if self.pending.is_empty() {
+            return;
+        }
+        self.pending.sort_unstable();
+        let mut done = 0;
+        while done < self.pending.len() {
+            let first = self.pending[done];
+            let mut n = 1;
+            while self.pending.get(done + n) == Some(&(first + n as u16)) {
+                n += 1;
+            }
+            let sqe = Sqe {
+                opcode: OP_PROVIDE_BUFFERS,
+                flags: SQE_CQE_SKIP_SUCCESS,
+                fd: n as i32,
+                off: u64::from(first),
+                addr: self.bufs.0 as u64 + u64::from(first) * BUF_SIZE as u64,
+                len: BUF_SIZE as u32,
+                user_data: PROVIDE,
+                ..Sqe::default()
+            };
+            if !self.push(sqe) {
+                break;
+            }
+            done += n;
+        }
+        self.pending.drain(..done);
     }
 }
 
@@ -644,6 +686,10 @@ impl Worker {
     fn complete(&mut self, c: Cqe) {
         match c.user_data {
             IGNORE => {}
+            PROVIDE => crate::fail(&format!(
+                "io_uring stopped working: providing receive buffers: {}",
+                io::Error::from_raw_os_error(-c.res)
+            )),
             ACCEPT => {
                 if c.res >= 0 {
                     self.accepted.push(c.res);
@@ -790,6 +836,9 @@ impl Worker {
     }
 
     fn arm(&mut self, id: usize) {
+        // The buffers given back go first, so a receive rearmed after
+        // `ENOBUFS` finds them.
+        self.ring.provide();
         let e = &mut self.conns[id];
         e.armed = true;
         let sqe = Sqe {
@@ -1011,8 +1060,8 @@ pub(crate) fn rings(n: usize) -> Option<Vec<Ring>> {
         crate::setting::<String>("WISP_IO", "epoll or uring").map(|v| v.to_ascii_lowercase());
     match asked.as_deref() {
         Some("epoll") => None,
-        None => (0..n).map(|_| Ring::new().ok()).collect(),
-        Some("uring") => match (0..n).map(|_| Ring::new()).collect::<io::Result<_>>() {
+        None => (0..n).map(|_| Ring::new(true).ok()).collect(),
+        Some("uring") => match (0..n).map(|_| Ring::new(true)).collect::<io::Result<_>>() {
             Ok(rings) => Some(rings),
             Err(e) => crate::fail(&format!(
                 "WISP_IO is uring, but io_uring cannot be set up here: {e}\n  It needs Linux 6.1 or later, not refused by seccomp or the io_uring_disabled sysctl. Unset WISP_IO to use epoll."
@@ -1213,9 +1262,10 @@ mod tests {
     use std::io::{Read, Write};
 
     /// A worker serving each connection with `each`, or `None` where this
-    /// kernel has no io_uring for it.
-    fn server(each: fn(TcpStream)) -> Option<SocketAddr> {
-        let ring = Ring::new().ok()?;
+    /// kernel has no io_uring for it. Without `pbuf_ring`, its buffers are
+    /// provided as where the kernel refuses a buffer ring.
+    fn server(each: fn(TcpStream), pbuf_ring: bool) -> Option<SocketAddr> {
+        let ring = Ring::new(pbuf_ring).ok()?;
         let listener = listen("127.0.0.1:0".parse().unwrap()).unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -1262,9 +1312,20 @@ mod tests {
 
     #[test]
     fn echoes_megabytes_in_order() {
+        echo_megabytes(true);
+    }
+
+    #[test]
+    fn echoes_megabytes_with_provided_buffers() {
+        echo_megabytes(false);
+    }
+
+    fn echo_megabytes(pbuf_ring: bool) {
         // More than the socket buffers and the inbox limit hold at once:
         // partial sends, paused receives, buffers running out.
-        let Some(addr) = server(echo) else { return };
+        let Some(addr) = server(echo, pbuf_ring) else {
+            return;
+        };
         let sent = pattern(8 << 20);
         let mut c = connect(addr);
         let mut w = c.try_clone().unwrap();
@@ -1281,7 +1342,18 @@ mod tests {
 
     #[test]
     fn many_connections_at_once() {
-        let Some(addr) = server(echo) else { return };
+        many_connections(true);
+    }
+
+    #[test]
+    fn many_connections_with_provided_buffers() {
+        many_connections(false);
+    }
+
+    fn many_connections(pbuf_ring: bool) {
+        let Some(addr) = server(echo, pbuf_ring) else {
+            return;
+        };
         let mut conns: Vec<_> = (0..300).map(|_| connect(addr)).collect();
         for round in 0..3u8 {
             for (i, c) in conns.iter_mut().enumerate() {
@@ -1307,7 +1379,9 @@ mod tests {
                 let _ = sock.write(&mut buf).await;
             });
         }
-        let Some(addr) = server(answer) else { return };
+        let Some(addr) = server(answer, true) else {
+            return;
+        };
         let mut c = connect(addr);
         std::thread::sleep(Duration::from_millis(200));
         let mut got = Vec::new();
@@ -1335,7 +1409,9 @@ mod tests {
                 tcp.write_all(&early).await.unwrap();
             });
         }
-        let Some(addr) = server(handover) else { return };
+        let Some(addr) = server(handover, true) else {
+            return;
+        };
         let mut c = connect(addr);
         c.write_all(b"hello").unwrap();
         let mut ok = [0; 2];
