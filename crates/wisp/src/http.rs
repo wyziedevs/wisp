@@ -93,13 +93,13 @@ fn api_docs() -> &'static [u8] {
 static HEAD_TAGS: OnceLock<String> = OnceLock::new();
 
 /// Thread per core: `threads` workers, each a single-threaded tokio runtime
-/// with its own I/O driver and timers, and this thread accepting connections
-/// and handing each to the worker with the fewest. A connection stays on one
-/// thread for its whole life, so the request path never wakes another thread
-/// or shares a driver. (A multi-threaded tokio runtime funnels every socket event
+/// with its own I/O driver and timers. A connection stays on one thread for
+/// its whole life, so the request path never wakes another thread or shares
+/// a driver. (A multi-threaded tokio runtime funnels every socket event
 /// through one driver; it measured at under half the throughput with cores
-/// left idle.) On Linux the workers accept for themselves, on io_uring
-/// ([`run_rings`]), unless it cannot be set up there.
+/// left idle.) On Linux the workers accept for themselves ([`run_linux`]);
+/// elsewhere this thread accepts and hands each connection to the worker
+/// with the fewest ([`run_tokio`]).
 ///
 /// Returns on SIGTERM or Ctrl+C, once it has stopped accepting and the
 /// requests under way have been answered (see [`stop`]).
@@ -114,11 +114,20 @@ pub(crate) fn run<A: App>(addr: SocketAddr, threads: usize) -> io::Result<()> {
 
     let listener = bind(addr)?;
     #[cfg(target_os = "linux")]
-    if let Some(rings) = crate::uring::rings(threads.max(1)) {
-        return run_rings::<A>(&main, listener, rings);
-    }
+    return run_linux::<A>(&main, listener, threads.max(1));
+    #[cfg(not(target_os = "linux"))]
+    run_tokio::<A>(&main, listener, threads.max(1))
+}
+
+/// [`run`] where this thread accepts, on tokio's sockets.
+#[cfg(not(any(target_arch = "wasm32", target_os = "linux")))]
+fn run_tokio<A: App>(
+    main: &tokio::runtime::Runtime,
+    listener: std::net::TcpListener,
+    threads: usize,
+) -> io::Result<()> {
     listener.set_nonblocking(true)?;
-    let workers = (0..threads.max(1))
+    let workers = (0..threads)
         .map(|i| worker(i, std::future::pending))
         .collect::<io::Result<Vec<_>>>()?;
 
@@ -180,31 +189,36 @@ pub(crate) fn run<A: App>(addr: SocketAddr, threads: usize) -> io::Result<()> {
     })
 }
 
-/// [`run`] on io_uring (`uring.rs`): each worker accepts on a listener of
-/// its own, and the kernel spreads connections over them.
+/// [`run`] on Linux: each worker accepts on a listener of its own, and the
+/// kernel spreads connections over them. Its sockets are on an io_uring of
+/// its own (`uring.rs`), or where that cannot be set up, an epoll of its
+/// own (`epoll.rs`).
 #[cfg(target_os = "linux")]
-fn run_rings<A: App>(
+fn run_linux<A: App>(
     main: &tokio::runtime::Runtime,
     listener: std::net::TcpListener,
-    rings: Vec<crate::uring::Ring>,
+    threads: usize,
 ) -> io::Result<()> {
+    let mut rings = crate::uring::rings(threads).map(Vec::into_iter);
     // `listener` found the port free (and picked it, for port 0). The
     // workers' listeners share it, which its own would not allow.
     let addr = listener.local_addr()?;
     drop(listener);
-    let listeners = rings
-        .iter()
+    let listeners = (0..threads)
         .map(|_| crate::uring::listen(addr).map_err(|e| cannot_listen(addr, e)))
         .collect::<io::Result<Vec<_>>>()?;
     // Connections wait in the listeners' queues until their workers start.
     started(addr);
-    let workers = rings
+    let workers = listeners
         .into_iter()
-        .zip(listeners)
         .enumerate()
-        .map(|(i, (ring, listener))| {
+        .map(|(i, listener)| {
+            let ring = rings.as_mut().and_then(Iterator::next);
             worker(i, move || async move {
-                tokio::spawn(crate::uring::serve(ring, listener, accepted::<A>));
+                match ring {
+                    Some(ring) => tokio::spawn(crate::uring::serve(ring, listener, ringed::<A>)),
+                    None => tokio::spawn(crate::epoll::serve(listener, polled::<A>)),
+                };
                 std::future::pending().await
             })
         })
@@ -233,24 +247,34 @@ fn worker<F: Future<Output = ()>>(
     Ok(handle)
 }
 
-/// A connection a worker's io_uring accepted: served on that worker, like
-/// one [`run`] hands it.
+/// A connection a worker's io_uring accepted, served on that worker.
 #[cfg(target_os = "linux")]
-fn accepted<A: App>(stream: std::net::TcpStream) {
+fn ringed<A: App>(stream: std::net::TcpStream) {
+    accepted::<A>(stream, |s| Conn::Ring(crate::uring::Sock::new(s)));
+}
+
+/// A connection a worker's epoll accepted, served on that worker.
+#[cfg(target_os = "linux")]
+fn polled<A: App>(stream: std::net::TcpStream) {
+    accepted::<A>(stream, |s| Conn::Poll(crate::epoll::Sock::new(s)));
+}
+
+#[cfg(target_os = "linux")]
+fn accepted<A: App>(stream: std::net::TcpStream, conn: impl FnOnce(std::net::TcpStream) -> Conn) {
     let Some(slot) = Slot::take(crate::settings().max_conns) else {
         return refuse(&stream);
     };
     let Ok(peer) = stream.peer_addr() else {
         return;
     };
-    let conn = Conn::Ring(crate::uring::Sock::new(stream));
+    let conn = conn(stream);
     tokio::spawn(async move {
         connection::<A>(conn, peer).await;
         drop(slot);
     });
 }
 
-/// Stopping: new connections are already refused (io_uring workers refuse
+/// Stopping: new connections are already refused (Linux workers refuse
 /// them as this begins). A connection answers
 /// what it is receiving or working on with `connection: close` and closes;
 /// an idle one is closed as the process exits, as nginx does, and a client
@@ -364,7 +388,7 @@ impl Drop for Busy {
 
 /// Connections open now, WebSockets included, against `WISP_MAX_CONNS`.
 #[cfg(not(target_arch = "wasm32"))]
-static CONNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static CONNS: AtomicUsize = AtomicUsize::new(0);
 
 /// One of `CONNS`, held for its connection's life.
 #[cfg(not(target_arch = "wasm32"))]
@@ -394,11 +418,11 @@ impl Drop for Slot {
     }
 }
 
-/// A connection counted against its worker in [`run`], until it drops.
-#[cfg(not(target_arch = "wasm32"))]
+/// A connection counted against its worker in [`run_tokio`], until it drops.
+#[cfg(not(any(target_arch = "wasm32", target_os = "linux")))]
 struct Held(std::sync::Arc<[AtomicUsize]>, usize);
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "linux")))]
 impl Drop for Held {
     fn drop(&mut self) {
         self.0[self.1].fetch_sub(1, Ordering::Relaxed);
@@ -431,12 +455,15 @@ fn cannot_listen(addr: SocketAddr, e: io::Error) -> io::Error {
     )
 }
 
-/// A connection's socket: tokio's, or on Linux one on its worker's io_uring.
+/// A connection's socket: tokio's, or on Linux one on its worker's io_uring
+/// or epoll.
 #[cfg(not(target_arch = "wasm32"))]
 enum Conn {
     Tcp(TcpStream),
     #[cfg(target_os = "linux")]
     Ring(crate::uring::Sock),
+    #[cfg(target_os = "linux")]
+    Poll(crate::epoll::Sock),
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -448,12 +475,15 @@ impl Conn {
             Conn::Tcp(s) => s.read_buf(buf).await,
             #[cfg(target_os = "linux")]
             Conn::Ring(s) => s.read(buf).await,
+            #[cfg(target_os = "linux")]
+            Conn::Poll(s) => s.read(buf).await,
         }
     }
 
     /// Writes all of `buf` (see [`write`]) and leaves it empty. On the ring
-    /// it is only queued, to go with the other connections' sends; a
-    /// failure shows in the next call.
+    /// it is only queued, to go with the other connections' sends; on the
+    /// epoll what the socket has no room for goes on without the caller. A
+    /// failure then shows in the next call.
     async fn write(&mut self, buf: &mut Vec<u8>) -> io::Result<()> {
         match self {
             Conn::Tcp(s) => {
@@ -463,6 +493,8 @@ impl Conn {
             }
             #[cfg(target_os = "linux")]
             Conn::Ring(s) => s.write(buf).await,
+            #[cfg(target_os = "linux")]
+            Conn::Poll(s) => s.write(buf).await,
         }
     }
 
@@ -474,6 +506,8 @@ impl Conn {
             }
             #[cfg(target_os = "linux")]
             Conn::Ring(s) => s.shutdown().await,
+            #[cfg(target_os = "linux")]
+            Conn::Poll(s) => s.shutdown().await,
         }
     }
 
@@ -484,6 +518,8 @@ impl Conn {
             Conn::Tcp(s) => Ok((s, early)),
             #[cfg(target_os = "linux")]
             Conn::Ring(s) => s.into_tcp(early).await,
+            #[cfg(target_os = "linux")]
+            Conn::Poll(s) => s.into_tcp(early).await,
         }
     }
 }

@@ -64,7 +64,7 @@ Writes a two-stage `Dockerfile` (built on `rust:slim`, run on
 tables (`#[derive(Rest)]`, `Table::saved`) are kept in `/data` in the
 image: mount a volume there (`-v my-app-data:/data`) so they outlive the
 container. Docker's default seccomp profile refuses io_uring, so there the
-server runs on tokio's epoll rather than its io_uring (see docs/design.md);
+server runs on an epoll per worker rather than an io_uring (see docs/design.md);
 a profile that allows `io_uring_setup`, `io_uring_enter` and
 `io_uring_register` brings it back.
 

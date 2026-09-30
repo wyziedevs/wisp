@@ -746,8 +746,13 @@ and `.wisp-*` classes, so they never touch an app's own CSS.
   (through an eventfd), so handlers await timers, channels and database
   drivers as before; a WebSocket is handed to a tokio socket. Where
   io_uring cannot be set up (an older kernel, a container's seccomp
-  profile, the `io_uring_disabled` sysctl) the server quietly runs as above
-  on tokio's epoll; `WISP_IO=epoll` asks for that.
+  profile, the `io_uring_disabled` sysctl) each worker quietly runs the
+  same way on an epoll of its own (`crates/wisp/src/epoll.rs`), its
+  sockets in it edge-triggered from accept to close; a connection's task
+  receives and sends by itself (one `recv` and one `send` a request), and
+  only a send the socket has no room for is left to the driver.
+  `WISP_IO=epoll` asks for that. Other systems accept on the main thread
+  and hand connections out, on tokio's sockets.
 - Settings, all from the environment:
 
   | Setting                 | What it does                                                       |
@@ -760,7 +765,7 @@ and `.wisp-*` classes, so they never touch an app's own CSS.
   | `ORIGIN`                | The site's address (`https://example.com`), for a proxy that does not pass `Host` on |
   | `WISP_CLIENT_IP_HEADER` | The header the proxy puts the client's address in, for `cx.client_ip()` |
   | `WISP_MAX_CONNS`        | Open connections, WebSockets included, before new ones get a 503; 10000 by default, 0 for no cap |
-  | `WISP_IO`               | Linux: `epoll` for tokio's epoll instead of io_uring; `uring` to fail at start, saying why, where io_uring is not available |
+  | `WISP_IO`               | Linux: `epoll` for an epoll per worker instead of io_uring; `uring` to fail at start, saying why, where io_uring is not available |
 
   They are strict: one that is set but not valid stops the server with a
   message, rather than falling back to a default. `HOST` takes an IP address
@@ -778,9 +783,9 @@ and `.wisp-*` classes, so they never touch an app's own CSS.
   one), and returns after at most 10 s, or at a second signal.
 - Under `wisp dev` the app holds a pipe from the CLI as its stdin and exits
   when it closes, so a killed `wisp dev` never leaves an app on the port.
-- The io_uring driver is the one `unsafe` module of a native build: the
-  ring's setup, the memory it shares with the kernel, and the socket calls
-  std has no word for, each block with why it holds. An earlier io_uring
+- The io_uring and epoll drivers are the `unsafe` modules of a native
+  build: the ring's setup, the memory it shares with the kernel, and the
+  socket calls std has no word for, each block with why it holds. An earlier io_uring
   prototype, which waited in `io_uring_enter` and had no deferred task work,
   measured level with plain tokio (bench/README.md). On Windows (a
   development platform for Wisp apps) tokio waits on sockets through AFD
