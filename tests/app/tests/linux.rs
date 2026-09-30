@@ -11,7 +11,7 @@ mod common;
 
 use common::{Server, connect, spawn};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
@@ -459,11 +459,9 @@ fn streams_end_properly_on(env: &[(&str, &str)]) {
 fn a_restart_takes_the_port_back_at_once() {
     // The server closes these first, which leaves the connections in TIME_WAIT on its side of
     // the port; a listener without SO_REUSEADDR could not bind again until they expire.
-    let free = TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
+    // Below Linux's ephemeral range (32768 and up), so a server another test starts on port 0
+    // cannot take it between the two starts here.
+    let free = 20000 + (std::process::id() % 10000) as u16;
     let first = start_at(&free.to_string(), None);
     assert_eq!(first.port, free);
     for _ in 0..20 {
