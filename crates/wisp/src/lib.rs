@@ -5,7 +5,7 @@
 //! from `src/routes` by `wisp-build`.
 
 // No `unsafe`, but for the edge build's exports and imports (`edge.rs`) and
-// the Linux server's io_uring (`uring.rs`).
+// the Linux server's io_uring and epoll (`uring.rs`, `epoll.rs`).
 #![cfg_attr(
     not(any(target_arch = "wasm32", target_os = "linux")),
     forbid(unsafe_code)
@@ -18,6 +18,8 @@ mod cx;
 mod dev;
 #[cfg(target_arch = "wasm32")]
 pub mod edge;
+#[cfg(target_os = "linux")]
+mod epoll;
 mod export;
 mod form;
 #[cfg(test)]

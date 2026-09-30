@@ -17,9 +17,9 @@
 //!
 //! Where io_uring cannot be set up (before Linux 6.1, a seccomp profile that
 //! refuses it, the `io_uring_disabled` sysctl), and with `WISP_IO=epoll`, the
-//! server runs on tokio's epoll instead (`http::run`).
+//! workers run the same way on an epoll each instead (`epoll.rs`).
 //!
-//! The one `unsafe` module of a native build: the ring's setup and the
+//! With `epoll.rs`, the `unsafe` of a native build: the ring's setup and the
 //! memory it shares with the kernel, and the socket calls std has no word
 //! for. Each block says why it holds.
 #![allow(unsafe_code)]
@@ -183,7 +183,7 @@ fn op(id: usize, generation: u32, send: bool) -> u64 {
 }
 
 /// The descriptor a call returned, or its error.
-fn owned(r: impl Into<i64>) -> io::Result<OwnedFd> {
+pub(crate) fn owned(r: impl Into<i64>) -> io::Result<OwnedFd> {
     let r = r.into();
     if r < 0 {
         return Err(io::Error::last_os_error());
@@ -970,7 +970,7 @@ impl Drop for Sock {
     }
 }
 
-/// The workers' rings, or `None` for tokio's epoll: asked for with
+/// The workers' rings, or `None` for an epoll each (`epoll.rs`): asked for with
 /// `WISP_IO=epoll`, or io_uring is not there (before Linux 6.1), switched
 /// off, or refused (a container's seccomp profile). `WISP_IO=uring` makes
 /// that last a failure, with the reason.
@@ -1049,6 +1049,20 @@ pub(crate) fn listen(addr: SocketAddr) -> io::Result<TcpListener> {
     Ok(TcpListener::from(fd))
 }
 
+/// Lets the tasks woken meanwhile run, then goes on: a driver's yield
+/// between two turns.
+pub(crate) async fn yield_once() {
+    let mut yielded = false;
+    poll_fn(|cx| {
+        if std::mem::replace(&mut yielded, true) {
+            return Poll::Ready(());
+        }
+        cx.waker().wake_by_ref();
+        Poll::Pending
+    })
+    .await;
+}
+
 /// A worker's driver: accepts on `listener`, gives each connection to
 /// `accepted` (which starts its task), and turns the ring whenever a
 /// connection queued something or the kernel has completions. Stops
@@ -1113,15 +1127,7 @@ pub(crate) async fn serve(mut ring: Ring, listener: TcpListener, accepted: fn(Tc
             // the kernel left work for another call: the connections just
             // woken go first, then another turn. One turn a yield, so a busy
             // ring never starves the worker's other tasks.
-            let mut yielded = false;
-            poll_fn(|cx| {
-                if std::mem::replace(&mut yielded, true) {
-                    return Poll::Ready(());
-                }
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            })
-            .await;
+            yield_once().await;
             continue;
         }
         poll_fn(|cx| {

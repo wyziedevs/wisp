@@ -234,7 +234,7 @@ What differs:
   `io_uring_enter` and `io_uring_register` ([Docker's seccomp
   docs](https://docs.docker.com/engine/security/seccomp/),
   [moby#46762](https://github.com/moby/moby/pull/46762)), so in their
-  container Wisp falls back to epoll (tokio). A faithful run uses epoll:
+  container Wisp falls back to an epoll per worker. A faithful run uses epoll:
   the suite starts Wisp with `WISP_IO=epoll` unless `WISP_IO` is set, and
   `WISP_IO=uring` measures what a run outside Docker gets.
 - **Durations** in the Linux test script: 2 s a route after a 2 s warmup,
@@ -287,7 +287,7 @@ None beat tokio then. The io_uring prototype waited in `io_uring_enter` for
 each completion, with no deferred task work, and rearmed a receive per
 request; Wisp's Linux workers now use a driver without those costs
 (`crates/wisp/src/uring.rs`, see docs/design.md), and `WISP_IO=epoll` runs
-the tokio path for comparison.
+the same design on epoll (`crates/wisp/src/epoll.rs`).
 
 ## Results on Windows
 

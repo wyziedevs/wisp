@@ -23,7 +23,8 @@ tower-service = { version = "0.3", optional = true }
 tokio.workspace = true
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tokio = { version = "1.53", default-features = false, features = ["sync"] }
-# io_uring on Linux (`src/uring.rs`); tokio depends on it already.
+# io_uring and epoll on Linux (`src/uring.rs`, `src/epoll.rs`); tokio
+# depends on it already.
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
 
@@ -39,9 +40,10 @@ wisp-build.workspace = true
 [features]
 tower = ["dep:bytes", "dep:http", "dep:http-body", "dep:tower-service"]
 
-# The workspace's `forbid(unsafe_code)`, loosened to `deny` for two modules:
-# the edge build's exports and imports (`src/edge.rs`, wasm32 only), which
-# Rust spells `unsafe`, and the Linux server's io_uring (`src/uring.rs`).
+# The workspace's `forbid(unsafe_code)`, loosened to `deny` for three
+# modules: the edge build's exports and imports (`src/edge.rs`, wasm32
+# only), which Rust spells `unsafe`, and the Linux server's io_uring and
+# epoll (`src/uring.rs`, `src/epoll.rs`).
 # `lib.rs` still forbids it in every other native build.
 [lints.rust]
 unsafe_code = "deny"

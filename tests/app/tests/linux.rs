@@ -1,7 +1,7 @@
 //! Wisp runs on Linux, so what only Linux does is checked here, on the test
 //! app's binary: stopping on SIGTERM and a second signal, sockets and file
 //! descriptors, a restart on the same port, a client that vanishes, and
-//! the two ways it takes connections (io_uring, and tokio's epoll).
+//! the two ways it takes connections (io_uring, and epoll).
 //!
 //! Other systems compile this file to nothing; the Linux run of the
 //! workspace's tests (`scratchpad/linux-test.sh`) is where it counts.
@@ -20,7 +20,7 @@ fn start() -> Server {
 }
 
 /// The server's two ways of taking connections: io_uring (the default,
-/// where the kernel has it) and tokio's epoll.
+/// where the kernel has it) and an epoll per worker.
 const BACKENDS: [&[(&str, &str)]; 2] = [&[], &[("WISP_IO", "epoll")]];
 
 /// Whether this kernel should serve through io_uring: Linux 6.1 or later,
