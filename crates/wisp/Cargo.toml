@@ -10,6 +10,9 @@ repository.workspace = true
 [dependencies]
 httparse.workspace = true
 wisp-macros.workspace = true
+# The HTML context rules, the live-page wire protocol and the browser
+# runtime, which wisp-build builds against too.
+wisp-shared.workspace = true
 # The `tower` feature: `wisp::tower`, for axum, hyper, tower middleware and
 # AWS Lambda. Off by default.
 bytes = { version = "1", optional = true }
@@ -36,6 +39,7 @@ allocation-counter = "0.8"
 # Minifies the browser runtime for release builds (build.rs).
 [build-dependencies]
 wisp-build.workspace = true
+wisp-shared.workspace = true
 
 [features]
 tower = ["dep:bytes", "dep:http", "dep:http-body", "dep:tower-service"]

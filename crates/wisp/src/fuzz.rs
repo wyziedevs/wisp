@@ -2,6 +2,7 @@
 //! failure repeats, a mutator that breaks inputs the way hostile or buggy
 //! clients do, and an app to parse requests for.
 
+use crate::rt::RouteFacts;
 use crate::{App, Asset, Cx, Error, Method, Out, Response};
 
 /// xorshift64*: small, fast and good enough to find edge cases.
@@ -104,16 +105,26 @@ pub fn mutate(rng: &mut Rng, b: &mut Vec<u8>) {
 }
 
 /// Routes: `/` (index 0), `/small` (1), which takes bodies of at most
-/// `SMALL` bytes, and `/p/[x]` (2).
+/// `SMALL` bytes, and `/p/[x]` (2). One template, `TEMPLATE`, for the dev
+/// endpoint to swap.
 pub struct Fuzz;
 
 pub const SMALL: usize = 64;
 
+pub const TEMPLATE: (&str, u64) = ("src/routes/+page.wisp", 0xabc);
+
 impl App for Fuzz {
     const ROOT: &'static str = ".";
     const CSS: Option<&'static str> = None;
-    const PARAMS: &'static [&'static [&'static str]] = &[&[], &[], &["x"]];
-    const TEMPLATES: &'static [(&'static str, u64)] = &[];
+    const ROUTES: &'static [RouteFacts] = &[
+        RouteFacts::new(&[]),
+        RouteFacts {
+            body_limit: Some(SMALL),
+            ..RouteFacts::new(&[])
+        },
+        RouteFacts::new(&["x"]),
+    ];
+    const TEMPLATES: &'static [(&'static str, u64)] = &[TEMPLATE];
 
     fn route(path: &str) -> Option<(usize, [&str; 8])> {
         let mut segs = [""; crate::rt::MAX_SEGS];
@@ -123,10 +134,6 @@ impl App for Fuzz {
             ["p", x] => (2, [*x, "", "", "", "", "", "", ""]),
             _ => return None,
         })
-    }
-
-    fn body_limit(route: usize) -> Option<usize> {
-        (route == 1).then_some(SMALL)
     }
 
     fn shell() -> [&'static str; 3] {

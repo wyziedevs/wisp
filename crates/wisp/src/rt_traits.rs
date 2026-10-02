@@ -5,7 +5,7 @@
 //! way the type it names is. Not a stable API.
 
 use crate::json::check::{Length, max_len, min_len};
-use crate::{Cx, Json, Response, Result, input};
+use crate::{Cx, FromJson, Image, Json, Response, Result, input};
 use std::any::Any;
 use std::fmt::Display;
 use std::ops::{Bound, RangeBounds};
@@ -15,6 +15,13 @@ use std::str::FromStr;
 pub enum One {}
 pub enum Maybe {}
 pub enum Many {}
+pub enum Whole {}
+
+/// A struct with named fields that `#[derive(FromJson)]` (or `Rest`) reads:
+/// an action may take it whole (`fn save(post: Post)`), from a form or a
+/// JSON body. Only the derive implements it.
+pub trait Fields {}
+pub enum Upload {}
 
 /// A handler's parameter other than `cx`, read from the request by its
 /// name: a route parameter, then the form a POST, PUT or PATCH sends (or
@@ -22,7 +29,7 @@ pub enum Many {}
 #[diagnostic::on_unimplemented(
     message = "a handler cannot take a `{Self}`: its parameters are read from the request by name",
     label = "not read from a request",
-    note = "a parameter other than `cx` is `FromStr` (`String`, `u64`, a `bool` checkbox...), an `Option` of one (it may be left out), a `Vec` of one (every value sent), or `body: T` for a JSON body whose `T` is `FromJson`"
+    note = "a parameter other than `cx` is `FromStr` (`String`, `u64`, a `bool` checkbox...), an `Option` of one (it may be left out), a `Vec` of one (every value sent), an `Image` upload, a struct with `#[derive(FromJson)]` (its fields by name), or `body: T` for a JSON body whose `T` is `FromJson`"
 )]
 pub trait FromInput<M>: Sized {
     fn get(cx: &Cx, name: &str) -> Result<Self>;
@@ -55,6 +62,51 @@ impl<T: FromStr<Err: Display>> FromInput<Many> for Vec<T> {
     fn get(cx: &Cx, name: &str) -> Result<Vec<T>> {
         input::all(cx, name)
     }
+}
+
+/// `post: Post`: the struct's fields by name, from the form or a JSON body.
+impl<T: FromJson + Fields> FromInput<Whole> for T {
+    fn get(cx: &Cx, _: &str) -> Result<T> {
+        input::whole(cx)
+    }
+}
+
+/// `name: Image`: the file sent in the form's field `name`, if it is an
+/// image; none chosen, or another kind of file, is a 422 by the field.
+impl FromInput<Upload> for Image {
+    fn get(cx: &Cx, name: &str) -> Result<Image> {
+        input::image(cx, name)?.ok_or_else(|| crate::Error::invalid(name, "choose an image"))
+    }
+}
+
+/// `name: Option<Image>`: `None` when no file was chosen.
+impl FromInput<Upload> for Option<Image> {
+    fn get(cx: &Cx, name: &str) -> Result<Option<Image>> {
+        input::image(cx, name)
+    }
+}
+
+/// What `#[validate(max_size = …)]` measures: an upload.
+#[diagnostic::on_unimplemented(message = "`max_size` is for an `Image` parameter, not a `{Self}`")]
+pub trait Size {
+    fn size(&self) -> usize;
+}
+
+impl Size for Image {
+    fn size(&self) -> usize {
+        self.len()
+    }
+}
+
+impl<T: Size> Size for Option<T> {
+    fn size(&self) -> usize {
+        self.as_ref().map_or(0, T::size)
+    }
+}
+
+/// `#[validate(max_size = 1 * MB)]`: at most that many bytes.
+pub fn max_size(v: &impl Size, most: usize) -> Option<String> {
+    (v.size() > most).then(|| format!("must be at most {}", crate::image::size_text(most)))
 }
 
 /// What an action or `before` hands back: a response to send instead of
@@ -154,6 +206,19 @@ pub mod ret {
     impl Shape for &&&Ret<Option<Response>> {
         fn respond(self) -> Result<Response> {
             self.take().ok_or_else(not_found)
+        }
+    }
+
+    /// An image is itself, not its JSON (see [`crate::Image`]).
+    impl Shape for &&&Ret<Image> {
+        fn respond(self) -> Result<Response> {
+            Ok(self.take().into())
+        }
+    }
+
+    impl Shape for &&&Ret<Option<Image>> {
+        fn respond(self) -> Result<Response> {
+            self.take().map(Response::from).ok_or_else(not_found)
         }
     }
 
@@ -268,5 +333,43 @@ mod tests {
         let s = String::from("abc");
         assert_eq!(len(&s, 1..=3), None);
         assert!(len(&s, ..3).is_some() && len(&s, 4..).is_some());
+    }
+
+    #[test]
+    #[allow(clippy::needless_borrow)]
+    fn images_in_and_out() {
+        let post = |file: &[u8]| {
+            let mut raw = b"POST /p HTTP/1.1\r\ncontent-type: multipart/form-data; boundary=B\r\n\r\n--B\r\ncontent-disposition: form-data; name=\"pic\"; filename=\"a.png\"\r\ncontent-type: image/png\r\n\r\n".to_vec();
+            raw.extend_from_slice(file);
+            raw.extend_from_slice(b"\r\n--B--\r\n");
+            Cx::for_test(&String::from_utf8_lossy(&raw), &[])
+        };
+        let gif = b"GIF89a\x01\0 rest";
+        let cx = post(gif);
+        let pic: Image = FromInput::get(&cx, "pic").unwrap();
+        assert_eq!((pic.kind(), pic.bytes()), ("image/gif", &gif[..]));
+        let none: Option<Image> = FromInput::get(&cx, "other").unwrap();
+        assert!(none.is_none());
+        let problem = |r: Result<Image>| r.unwrap_err().fields()[0].1.clone();
+        assert_eq!(problem(FromInput::get(&cx, "other")), "choose an image");
+        let svg = post(b"<svg onload=\"alert(1)\"/>");
+        assert_eq!(
+            problem(FromInput::get(&svg, "pic")),
+            "must be a PNG, JPEG, GIF, WebP or AVIF image"
+        );
+        let maybe: Result<Option<Image>> = FromInput::get(&svg, "pic");
+        assert_eq!(maybe.unwrap_err().status(), 422);
+
+        assert_eq!(max_size(&pic, 13), None);
+        assert_eq!(
+            max_size(&pic, 12).as_deref(),
+            Some("must be at most 12 bytes")
+        );
+        assert_eq!(max_size(&None::<Image>, 0), None);
+
+        let r = (&&&Ret::new(Some(pic))).respond().unwrap();
+        assert_eq!((&*r.content_type, r.body.len()), ("image/gif", 13));
+        let gone = (&&&Ret::new(None::<Image>)).respond();
+        assert_eq!(gone.err().map(|e| e.status()), Some(404));
     }
 }

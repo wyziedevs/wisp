@@ -15,16 +15,86 @@ use tokio::sync::broadcast;
 /// How many messages a subscriber may fall behind by before it misses some.
 const BACKLOG: usize = 256;
 
+/// The channels by name, and how many there may be before the next sweep.
+struct Channels {
+    all: BTreeMap<Box<str>, broadcast::Sender<Arc<str>>>,
+    sweep_at: usize,
+}
+
+/// Channels made before the first sweep: past this, and then past twice as
+/// many as the last sweep kept, the ones nothing holds or listens to go.
+const SWEEP_AT: usize = 1024;
+
+static CHANNELS: RwLock<Channels> = RwLock::new(Channels {
+    all: BTreeMap::new(),
+    sweep_at: SWEEP_AT,
+});
+
+/// How many channels each thread keeps at hand (`NEAR`).
+const NEAR_MAX: usize = 8;
+
+/// The channels a thread used last, by name, and the slot the next one
+/// goes in once all are used: the oldest.
+struct Near {
+    slots: Vec<(String, Channel)>,
+    next: usize,
+}
+
+thread_local! {
+    /// The channels this thread used last: a handler that sends to the
+    /// same few names takes no lock. Each one held here is held in
+    /// `CHANNELS` too (a sweep keeps what is held), so it is still the
+    /// channel of its name.
+    static NEAR: std::cell::RefCell<Near> =
+        const { std::cell::RefCell::new(Near { slots: Vec::new(), next: 0 }) };
+}
+
 /// The channel called `name`, made on first use: every call with the same
-/// name gets the same channel.
+/// name gets the same channel. One that no `Channel` or subscriber holds
+/// may be forgotten (nothing could hear it anyway), so names made from
+/// requests (a room per id) do not pile up.
 pub fn channel(name: &str) -> Channel {
-    type All = BTreeMap<Box<str>, broadcast::Sender<Arc<str>>>;
-    static ALL: RwLock<All> = RwLock::new(BTreeMap::new());
-    if let Some(tx) = ALL.read().unwrap_or_else(|e| e.into_inner()).get(name) {
+    let near = NEAR.with_borrow(|n| {
+        let (_, c) = n.slots.iter().find(|(k, _)| k == name)?;
+        Some(c.clone())
+    });
+    if let Some(c) = near {
+        return c;
+    }
+    let c = shared(name);
+    NEAR.with_borrow_mut(|n| {
+        if n.slots.len() < NEAR_MAX {
+            n.slots.push((name.to_owned(), c.clone()));
+            return;
+        }
+        // The name's text goes where the oldest one's was: no allocation.
+        let (k, old) = &mut n.slots[n.next];
+        k.clear();
+        k.push_str(name);
+        *old = c.clone();
+        n.next = (n.next + 1) % NEAR_MAX;
+    });
+    c
+}
+
+/// The channel called `name`, from `CHANNELS`.
+fn shared(name: &str) -> Channel {
+    if let Some(tx) = CHANNELS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .all
+        .get(name)
+    {
         return Channel(tx.clone());
     }
-    let mut all = ALL.write().unwrap_or_else(|e| e.into_inner());
-    let tx = all
+    let mut c = CHANNELS.write().unwrap_or_else(|e| e.into_inner());
+    if c.all.len() >= c.sweep_at && !c.all.contains_key(name) {
+        c.all
+            .retain(|_, tx| tx.strong_count() > 1 || tx.receiver_count() > 0);
+        c.sweep_at = (2 * c.all.len()).max(SWEEP_AT);
+    }
+    let tx = c
+        .all
         .entry(name.into())
         .or_insert_with(|| broadcast::channel(BACKLOG).0);
     Channel(tx.clone())
@@ -148,5 +218,20 @@ mod tests {
             assert_eq!(sub.recv().await, Some("5".into()), "a slow one skips ahead");
             assert!(other.0.try_recv().is_err());
         });
+    }
+
+    #[test]
+    fn channels_nothing_holds_are_forgotten() {
+        let kept = channel("test-kept");
+        let mut sub = channel("test-heard").subscribe();
+        for i in 0..5 * SWEEP_AT {
+            channel(&format!("test-room-{i}")).send("x");
+        }
+        let n = CHANNELS.read().unwrap().all.len();
+        assert!(n <= 2 * SWEEP_AT + 8, "{n} channels");
+        let _late = channel("test-kept").subscribe();
+        assert_eq!(kept.send("x"), 1, "one held is still the same channel");
+        assert_eq!(channel("test-heard").send("hi"), 1);
+        assert_eq!(sub.0.try_recv().as_deref().ok(), Some("hi"));
     }
 }

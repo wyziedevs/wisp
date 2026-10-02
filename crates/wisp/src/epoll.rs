@@ -22,6 +22,12 @@
 //! the task polls the same future; once it waits on its socket again, the
 //! driver has it back.
 //!
+//! Between requests the future holds nothing (`readable`), and the driver
+//! goes one better: it answers requests to the routes the build found never
+//! wait itself (`http::on_driver`), without polling the future at all. The
+//! first request it cannot answer, and the rest after it, it hands to the
+//! future.
+//!
 //! The epoll lives inside tokio, as the ring does: it is one more thing
 //! tokio's epoll waits on, and one `epoll_wait` a turn of the worker's
 //! driver hands its events out. So handlers await timers, channels and
@@ -33,12 +39,12 @@
 //! why it holds.
 #![allow(unsafe_code)]
 
-use crate::http;
-use crate::uring::{owned, yield_once};
+use crate::uring::{owned, result, wait, yield_once};
+use crate::{http, policy};
 use std::cell::RefCell;
 use std::future::{Future, poll_fn};
 use std::io;
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::Pin;
@@ -143,8 +149,7 @@ struct Entry {
     /// no longer means the socket is empty, as its end (or error) is still
     /// to be read and no event will say so again.
     ended: bool,
-    /// The rest of a send the socket had no room for, from `sent` on, or
-    /// (empty) the buffer the next such send swaps in.
+    /// The rest of a send the socket had no room for, from `sent` on.
     out: Vec<u8>,
     sent: usize,
     sending: bool,
@@ -163,6 +168,13 @@ struct Entry {
     /// A future `spawn` started for the connection runs: the entry is not
     /// reused until it ends, socket or not.
     attached: bool,
+    /// The future waits in `readable`, holding nothing: the driver may
+    /// answer what comes itself (`http::on_driver`).
+    bare: bool,
+    /// The peer, for the requests the driver answers.
+    peer: Option<SocketAddr>,
+    /// What the driver received and leaves to the future (`http::Handed`).
+    handed: Option<http::Handed>,
     /// That future, while nothing polls it.
     serve: Option<Serve>,
     /// The waker of its task, which the driver polls it with.
@@ -170,23 +182,10 @@ struct Entry {
 }
 
 impl Entry {
-    fn wait(&mut self, cx: &Context) {
-        if !self.waker.as_ref().is_some_and(|w| w.will_wake(cx.waker())) {
-            self.waker = Some(cx.waker().clone());
-        }
-    }
-
     fn wake(&mut self) {
-        (self.wants_recv, self.wants_send) = (false, false);
+        (self.wants_recv, self.wants_send, self.bare) = (false, false, false);
         if let Some(w) = &self.waker {
             w.wake_by_ref();
-        }
-    }
-
-    fn result(&self) -> io::Result<()> {
-        match self.failed {
-            0 => Ok(()),
-            e => Err(io::Error::from_raw_os_error(e)),
         }
     }
 }
@@ -204,7 +203,20 @@ struct Worker {
     checked: u64,
     /// The listener had an event: connections may wait in it.
     acceptable: bool,
+    /// The driver answers requests itself (`serve`'s `now`).
+    answers: bool,
+    /// The connections (`token`s) with something to receive whose futures
+    /// wait holding nothing: the driver tries them first.
+    fast: Vec<u64>,
+    /// Buffers of sends that are over, for the next sends the socket has no
+    /// room for to swap in: a connection keeps none once its send is done.
+    spare: Vec<Vec<u8>>,
+    /// Connections with a send under way, for a stopping server to wait for.
+    sending: usize,
 }
+
+/// How many buffers `spare` keeps.
+const SPARE: usize = 64;
 
 thread_local! {
     /// This thread's worker, set once its driver starts.
@@ -265,7 +277,9 @@ impl Worker {
         if events & READABLE != 0 {
             e.readable = true;
             e.ended |= events & ENDED != 0;
-            if e.wants_recv {
+            if self.answers && e.bare && e.wants_recv && !e.ended {
+                self.fast.push(data);
+            } else if e.wants_recv {
                 if e.task.is_some() {
                     // Polled by the driver after the turn, with the task's waker.
                     e.wants_recv = false;
@@ -298,10 +312,13 @@ impl Worker {
         let e = &mut self.conns[id];
         e.sending = false;
         e.failed = failed;
-        e.out.clear();
-        if e.out.capacity() > http::KEEP_CAPACITY {
-            e.out.shrink_to(http::KEEP_CAPACITY);
+        let mut out = std::mem::take(&mut e.out);
+        out.clear();
+        if policy::kept(out.capacity()) && self.spare.len() < SPARE {
+            self.spare.push(out);
         }
+        self.sending -= 1;
+        let e = &mut self.conns[id];
         // A failure is for a connection waiting to receive too: its `read` fails.
         if e.wants_send || (failed != 0 && e.wants_recv) {
             e.wake();
@@ -323,7 +340,7 @@ impl Worker {
             if e.fd < 0 {
                 continue;
             }
-            if e.sending && now >= e.since + http::WRITE_TIMEOUT.as_secs() {
+            if e.sending && policy::stalled(now, e.since) {
                 self.sent(id, libc::ETIMEDOUT);
             } else if e.wants_recv && e.deadline != 0 && now >= e.deadline {
                 e.wake();
@@ -338,14 +355,11 @@ impl Worker {
             self.conns.len() - 1
         });
         let e = &mut self.conns[id];
-        let mut out = std::mem::take(&mut e.out);
-        out.clear();
         *e = Entry {
             fd,
             generation: e.generation.wrapping_add(1),
             // Its request is likely in already: the first read tries.
             readable: true,
-            out,
             ..Entry::default()
         };
         if let Err(err) = ctl(
@@ -374,9 +388,35 @@ impl Worker {
     /// Entry `id`'s future ended: free unless its socket is still in use.
     fn finish(&mut self, id: usize) {
         let e = &mut self.conns[id];
-        (e.attached, e.serve, e.task) = (false, None, None);
+        (e.attached, e.serve, e.task, e.handed) = (false, None, None, None);
         if e.fd < 0 {
             self.free.push(id);
+        }
+    }
+
+    /// Receives onto the end of `buf` what the socket may have: the bytes,
+    /// 0 at its end, or `WouldBlock` when it has nothing until its next
+    /// event.
+    fn try_read(&mut self, id: usize, buf: &mut Vec<u8>) -> io::Result<usize> {
+        let e = &mut self.conns[id];
+        result(e.failed)?;
+        if !e.readable {
+            return Err(io::ErrorKind::WouldBlock.into());
+        }
+        buf.reserve(RECV_ROOM);
+        let room = buf.capacity() - buf.len();
+        match recv(e.fd, buf) {
+            Ok(n) => {
+                // Less than it could take: the socket is empty until its
+                // next event, unless its end came with what was read.
+                e.readable = e.ended || n == room || n == 0;
+                Ok(n)
+            }
+            Err(libc::EAGAIN) => {
+                e.readable = false;
+                Err(io::ErrorKind::WouldBlock.into())
+            }
+            Err(errno) => Err(io::Error::from_raw_os_error(errno)),
         }
     }
 
@@ -387,50 +427,64 @@ impl Worker {
         deadline: u64,
         cx: &Context,
     ) -> Poll<io::Result<usize>> {
-        let e = &mut self.conns[id];
-        e.result()?;
-        if e.readable {
-            buf.reserve(RECV_ROOM);
-            let room = buf.capacity() - buf.len();
-            match recv(e.fd, buf) {
-                Ok(n) => {
-                    // Less than it could take: the socket is empty until its
-                    // next event, unless its end came with what was read.
-                    e.readable = e.ended || n == room || n == 0;
-                    return Poll::Ready(Ok(n));
-                }
-                Err(libc::EAGAIN) => e.readable = false,
-                Err(errno) => return Poll::Ready(Err(io::Error::from_raw_os_error(errno))),
-            }
+        match self.try_read(id, buf) {
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+            done => return Poll::Ready(done),
         }
+        let e = &mut self.conns[id];
         if deadline != 0 && http::seconds() >= deadline {
             return Poll::Ready(Err(io::ErrorKind::TimedOut.into()));
         }
         (e.wants_recv, e.deadline) = (true, deadline);
-        e.wait(cx);
+        wait(&mut e.waker, cx);
+        Poll::Pending
+    }
+
+    /// Ready once the socket may have something to receive (or its end, or
+    /// an error, which the receive after it reports), as `read` waits but
+    /// with no buffer. The driver moves the deadline on as it answers
+    /// requests itself (`next`), past the one the future had.
+    fn readable(&mut self, id: usize, deadline: u64, cx: &Context) -> Poll<io::Result<()>> {
+        let e = &mut self.conns[id];
+        result(e.failed)?;
+        if e.readable || e.handed.is_some() {
+            return Poll::Ready(Ok(()));
+        }
+        let deadline = deadline.max(e.deadline);
+        if deadline != 0 && http::seconds() >= deadline {
+            return Poll::Ready(Err(io::ErrorKind::TimedOut.into()));
+        }
+        (e.wants_recv, e.deadline, e.bare) = (true, deadline, true);
+        wait(&mut e.waker, cx);
         Poll::Pending
     }
 
     /// Sends all of `buf`, and leaves it empty: what the socket has no room
-    /// for goes on from the driver (and `buf` gets the buffer the last such
-    /// send used).
+    /// for goes on from the driver (and `buf` gets a spare buffer).
     fn write(&mut self, id: usize, buf: &mut Vec<u8>) -> io::Result<()> {
-        let e = &mut self.conns[id];
+        let Worker {
+            conns,
+            spare,
+            sending,
+            ..
+        } = self;
+        let e = &mut conns[id];
         debug_assert!(!e.sending && e.out.is_empty());
-        e.result()?;
+        result(e.failed)?;
         let mut at = 0;
         while at < buf.len() {
             match send(e.fd, &buf[at..]) {
                 Ok(n) => at += n,
                 Err(libc::EAGAIN) => {
-                    std::mem::swap(&mut e.out, buf);
+                    e.out = std::mem::replace(buf, spare.pop().unwrap_or_default());
                     (e.sent, e.sending, e.since) = (at, true, http::seconds());
+                    *sending += 1;
                     return Ok(());
                 }
                 Err(errno) => {
                     e.failed = errno;
                     buf.clear();
-                    return e.result();
+                    return result(e.failed);
                 }
             }
         }
@@ -438,14 +492,36 @@ impl Worker {
         Ok(())
     }
 
+    /// Receives onto the end of `buf`, as `read` does but without waiting.
+    fn receive(&mut self, id: usize, buf: &mut Vec<u8>) -> Got {
+        let e = &mut self.conns[id];
+        buf.reserve(RECV_ROOM);
+        let room = buf.capacity() - buf.len();
+        match recv(e.fd, buf) {
+            Ok(0) => Got::End, // and every receive after it
+            Ok(n) => {
+                e.readable = e.ended || n == room;
+                Got::Bytes(e.readable)
+            }
+            Err(libc::EAGAIN) => {
+                e.readable = false;
+                Got::Nothing
+            }
+            Err(errno) => {
+                e.failed = errno;
+                Got::End
+            }
+        }
+    }
+
     fn flushed(&mut self, id: usize, cx: &Context) -> Poll<io::Result<()>> {
         let e = &mut self.conns[id];
         if e.sending {
             e.wants_send = true;
-            e.wait(cx);
+            wait(&mut e.waker, cx);
             return Poll::Pending;
         }
-        Poll::Ready(e.result())
+        Poll::Ready(result(e.failed))
     }
 
     /// The `Sock` of `id` is gone, with its socket unless tokio has that:
@@ -479,6 +555,7 @@ fn step(mut serve: Serve, cx: &mut Context) -> Option<Serve> {
 /// `accepted`.
 pub(crate) fn spawn<F: Future<Output = ()> + 'static>(
     stream: TcpStream,
+    peer: Option<SocketAddr>,
     serve: impl FnOnce(Sock) -> F,
 ) {
     let sock = Sock::new(stream);
@@ -486,7 +563,7 @@ pub(crate) fn spawn<F: Future<Output = ()> + 'static>(
     let serve: Serve = Box::pin(serve(sock));
     let generation = with(|w| {
         let e = &mut w.conns[id];
-        (e.attached, e.serve) = (true, Some(serve));
+        (e.attached, e.serve, e.peer) = (true, Some(serve), peer);
         e.generation
     });
     tokio::spawn(poll_fn(move |cx| task(id, generation, cx)));
@@ -550,6 +627,113 @@ fn inline(token: u64) {
     }
 }
 
+/// The future of connection `token` takes over from the driver, which
+/// tried its requests first (`http::on_driver`): polled as an event would have.
+fn resume(token: u64) {
+    let (id, generation) = (token as u32 as usize, (token >> 32) as u32);
+    let polled = with(|w| {
+        let e = &mut w.conns[id];
+        if e.generation != generation || !e.wants_recv {
+            return false;
+        }
+        if e.task.is_some() {
+            (e.wants_recv, e.bare) = (false, false);
+            return true;
+        }
+        e.wake();
+        false
+    });
+    if polled {
+        inline(token);
+    }
+}
+
+/// What `receive` got.
+pub(crate) enum Got {
+    /// Bytes, and whether the socket may have more.
+    Bytes(bool),
+    /// Nothing yet.
+    Nothing,
+    /// The peer's end or an error, which the future then reads.
+    End,
+}
+
+/// For `http::on_driver`, when connection `token`'s future waits holding
+/// nothing and the socket is the driver's to receive from and send on: its
+/// entry, and what a receive onto the end of `buf` got. Its peer goes to
+/// `peer`.
+pub(crate) fn first(token: u64, buf: &mut Vec<u8>, peer: &mut SocketAddr) -> Option<(usize, Got)> {
+    let (id, generation) = (token as u32 as usize, (token >> 32) as u32);
+    with(|w| {
+        let e = &w.conns[id];
+        let free = e.fd >= 0 && e.generation == generation && e.bare && e.wants_recv;
+        if !free || e.ended || e.sending || e.failed != 0 || e.handed.is_some() {
+            return None;
+        }
+        *peer = e.peer?;
+        Some((id, w.receive(id, buf)))
+    })
+}
+
+/// For `http::on_driver`, once it answered what connection `id` sent: sends
+/// `out` as `Sock::write` does, and the connection waits for its next
+/// request until `deadline`. Then, if all of it went and the socket may
+/// have `more`, receives onto `buf`. `End` when the future goes on from
+/// here: the send failed, or the rest goes as the socket takes it.
+pub(crate) fn next(
+    id: usize,
+    out: &mut Vec<u8>,
+    buf: &mut Vec<u8>,
+    more: bool,
+    deadline: u64,
+) -> Got {
+    with(|w| {
+        w.conns[id].deadline = deadline;
+        if !out.is_empty() && (w.write(id, out).is_err() || w.conns[id].sending) {
+            return Got::End;
+        }
+        if !more {
+            return Got::Nothing;
+        }
+        w.receive(id, buf)
+    })
+}
+
+/// Sends what `h` has to send, as `Sock::write` does, and leaves the rest
+/// of it to the future of connection `id`, whose `readable` is then ready.
+/// A failure shows in the future's next call.
+pub(crate) fn hand(id: usize, mut h: http::Handed) {
+    with(|w| {
+        let out = h.wbuf();
+        if !out.is_empty() {
+            let _ = w.write(id, out);
+        }
+        w.conns[id].handed = Some(h);
+    });
+}
+
+/// Sends under way on this thread's worker, which a stopping server waits
+/// for: a response handed to the driver is not yet sent.
+pub(crate) fn sending() -> usize {
+    WORKER
+        .try_with(|w| {
+            w.try_borrow()
+                .map_or(0, |w| w.as_ref().map_or(0, |w| w.sending))
+        })
+        .unwrap_or(0)
+}
+
+/// Connection `token` fails: every call of its future does.
+fn fail(token: u64) {
+    let (id, generation) = (token as u32 as usize, (token >> 32) as u32);
+    with(|w| {
+        let e = &mut w.conns[id];
+        if e.generation == generation && e.failed == 0 {
+            e.failed = libc::EIO;
+        }
+    });
+}
+
 /// A connection on its worker's epoll. Like the future that holds it, it
 /// stays on the worker's thread.
 pub(crate) struct Sock {
@@ -579,11 +763,27 @@ impl Sock {
         poll_fn(|cx| with(|w| w.read(self.id, buf, deadline, cx))).await
     }
 
+    /// `read`, but `WouldBlock` rather than waiting.
+    pub(crate) fn try_read(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
+        with(|w| w.try_read(self.id, buf))
+    }
+
+    /// Waits, with no buffer, until a `read_by` would not: the socket may
+    /// have something to receive. `TimedOut` past `deadline`, as there.
+    pub(crate) async fn readable_by(&mut self, deadline: u64) -> io::Result<()> {
+        poll_fn(|cx| with(|w| w.readable(self.id, deadline, cx))).await
+    }
+
     /// Sends all of `buf` and leaves it empty. What the socket has no room
     /// for goes on without the caller; a failure then shows in the next call.
     pub(crate) async fn write(&mut self, buf: &mut Vec<u8>) -> io::Result<()> {
         self.flush().await?;
         with(|w| w.write(self.id, buf))
+    }
+
+    /// What the driver left to this connection's future, once `readable`.
+    pub(crate) fn handed(&mut self) -> Option<http::Handed> {
+        with(|w| w.conns[self.id].handed.take())
     }
 
     /// Waits for the send under way.
@@ -643,9 +843,16 @@ fn accept(listener: &TcpListener) -> io::Result<TcpStream> {
 /// A worker's driver: accepts on `listener` (from `uring::listen`), gives
 /// each connection to `accepted` (which `spawn`s it), turns the epoll
 /// whenever tokio's says it has events, and polls the connections those
-/// events are for. Stops accepting once the server is stopping; runs until
-/// the process ends.
-pub(crate) async fn serve(listener: TcpListener, accepted: fn(TcpStream)) {
+/// events are for. `now` (`http::on_driver`) first answers what it can of a
+/// connection whose future waits holding nothing, and says whether the
+/// future has anything to do. Says on `ready` once it is set up. Stops
+/// accepting once the server is stopping; runs until the process ends.
+pub(crate) async fn serve(
+    listener: TcpListener,
+    accepted: fn(TcpStream),
+    now: Option<fn(u64) -> bool>,
+    ready: std::sync::mpsc::Sender<()>,
+) {
     // SAFETY: epoll_create1(2), no pointers.
     let epoll = owned(unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) }).and_then(|epoll| {
         listener.set_nonblocking(true)?;
@@ -667,7 +874,12 @@ pub(crate) async fn serve(listener: TcpListener, accepted: fn(TcpStream)) {
         ready: Vec::new(),
         checked: 0,
         acceptable: true,
+        answers: now.is_some(),
+        fast: Vec::new(),
+        spare: Vec::new(),
+        sending: 0,
     }));
+    let _ = ready.send(());
     let mut listener = Some(listener);
     let mut stop = std::pin::pin!(http::stopped());
     // Wakes the driver for `tick` when nothing else does.
@@ -676,8 +888,9 @@ pub(crate) async fn serve(listener: TcpListener, accepted: fn(TcpStream)) {
     let mut retry: Option<Instant> = None;
     let mut wait = std::pin::pin!(tokio::time::sleep(Duration::ZERO));
     let mut acceptable = false;
-    // The `ready` of the last turn, swapped with the worker's: no allocation.
-    let mut ready = Vec::new();
+    // The `ready` and `fast` of the last turn, swapped with the worker's: no
+    // allocation.
+    let (mut ready, mut fast) = (Vec::new(), Vec::new());
     loop {
         if retry.is_some_and(|t| t <= Instant::now()) {
             retry = None;
@@ -686,8 +899,24 @@ pub(crate) async fn serve(listener: TcpListener, accepted: fn(TcpStream)) {
             let full = w.turn();
             acceptable |= std::mem::take(&mut w.acceptable);
             std::mem::swap(&mut ready, &mut w.ready);
+            std::mem::swap(&mut fast, &mut w.fast);
             full
         });
+        if let Some(now) = now {
+            for &token in &fast {
+                // A panic past the handlers' own `catch` is a bug in Wisp:
+                // the connection fails, the driver goes on.
+                match catch_unwind(|| now(token)) {
+                    Ok(true) => {}
+                    Ok(false) => resume(token),
+                    Err(_) => {
+                        fail(token);
+                        resume(token);
+                    }
+                }
+            }
+        }
+        fast.clear();
         for &token in &ready {
             inline(token);
         }
@@ -750,9 +979,8 @@ pub(crate) async fn serve(listener: TcpListener, accepted: fn(TcpStream)) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::uring::listen;
+    use crate::uring::{listen, socket_tests};
     use std::io::{Read, Write};
-    use std::net::SocketAddr;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Futures the driver polled itself, in every test's workers.
@@ -768,77 +996,20 @@ mod tests {
                 .build()
                 .unwrap();
             rt.block_on(async move {
-                tokio::spawn(serve(listener, each));
+                tokio::spawn(serve(listener, each, None, std::sync::mpsc::channel().0));
                 std::future::pending::<()>().await
             });
         });
         addr
     }
 
-    fn echo(s: TcpStream) {
-        let mut sock = Sock::new(s);
-        tokio::spawn(async move {
-            let mut buf = Vec::new();
-            while let Ok(n) = sock.read(&mut buf).await
-                && n > 0
-                && sock.write(&mut buf).await.is_ok()
-            {}
-            sock.shutdown().await;
-        });
-    }
-
-    fn pattern(n: usize) -> Vec<u8> {
-        (0..n).map(|i| (i % 251) as u8).collect()
-    }
-
-    fn connect(addr: SocketAddr) -> std::net::TcpStream {
-        let c = std::net::TcpStream::connect(addr).unwrap();
-        c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-        c
-    }
-
-    #[test]
-    fn echoes_megabytes_in_order() {
-        // More than the socket buffers hold at once: partial sends finished
-        // by the driver, receives that wait for them.
-        let addr = server(echo);
-        let sent = pattern(8 << 20);
-        let mut c = connect(addr);
-        let mut w = c.try_clone().unwrap();
-        let data = sent.clone();
-        let writer = std::thread::spawn(move || {
-            w.write_all(&data).unwrap();
-            w.shutdown(Shutdown::Write).unwrap();
-        });
-        let mut got = Vec::new();
-        c.read_to_end(&mut got).unwrap();
-        writer.join().unwrap();
-        assert!(got == sent, "{} bytes back of {}", got.len(), sent.len());
-    }
-
-    #[test]
-    fn many_connections_at_once() {
-        // More than one turn's events (256), within the default 1024 descriptors.
-        let addr = server(echo);
-        let mut conns: Vec<_> = (0..300).map(|_| connect(addr)).collect();
-        for round in 0..3u8 {
-            for (i, c) in conns.iter_mut().enumerate() {
-                c.write_all(format!("{round}:{i};").as_bytes()).unwrap();
-            }
-            for (i, c) in conns.iter_mut().enumerate() {
-                let want = format!("{round}:{i};");
-                let mut got = vec![0; want.len()];
-                c.read_exact(&mut got).unwrap();
-                assert_eq!(got, want.as_bytes());
-            }
-        }
-    }
+    socket_tests!(|each| Some(server(each)));
 
     /// Answers each line, in order, as `http::requests` answers requests:
     /// `wait` after a timer (a handler that awaits), `big` with 4 MB (a send
     /// the socket has no room for), `panic` not at all, others as they are.
     fn lines(s: TcpStream) {
-        spawn(s, |mut sock| async move {
+        spawn(s, None, |mut sock| async move {
             let (mut buf, mut out) = (Vec::new(), Vec::new());
             loop {
                 while let Some(end) = buf.iter().position(|&b| b == b'\n') {
@@ -920,7 +1091,7 @@ mod tests {
     #[test]
     fn a_read_past_its_deadline_fails() {
         fn waits(s: TcpStream) {
-            spawn(s, |mut sock| async move {
+            spawn(s, None, |mut sock| async move {
                 let mut buf = Vec::new();
                 let deadline = http::seconds() + 1;
                 if let Err(e) = sock.read_by(&mut buf, deadline).await {
@@ -939,54 +1110,29 @@ mod tests {
     }
 
     #[test]
-    fn a_response_outlives_its_socket() {
-        // Sent in part, then the socket dropped at once: all of it still
-        // arrives, then the end.
-        fn answer(s: TcpStream) {
-            let mut sock = Sock::new(s);
-            tokio::spawn(async move {
-                let mut buf = pattern(4 << 20);
-                let _ = sock.write(&mut buf).await;
+    fn a_deadline_the_driver_moved_on_holds() {
+        // The driver answered requests itself meanwhile (`next`): the
+        // deadline the future waited with, now past, does not end it.
+        fn waits(s: TcpStream) {
+            spawn(s, None, |mut sock| async move {
+                tokio::time::sleep(Duration::from_millis(1100)).await;
+                let _ = sock.try_read(&mut Vec::new()); // nothing yet
+                with(|w| w.conns[sock.id].deadline = http::seconds() + 100);
+                let said = match sock.readable_by(http::seconds()).await {
+                    Ok(()) => "ok".to_string(),
+                    Err(e) => format!("{:?}", e.kind()),
+                };
+                let _ = sock.write(&mut said.into_bytes()).await;
             });
         }
-        let addr = server(answer);
+        http::start_clock();
+        let addr = server(waits);
         let mut c = connect(addr);
-        std::thread::sleep(Duration::from_millis(200));
-        let mut got = Vec::new();
-        c.read_to_end(&mut got).unwrap();
-        assert!(got == pattern(4 << 20), "{} bytes", got.len());
-    }
-
-    #[test]
-    fn a_socket_goes_to_tokio_with_what_came() {
-        fn handover(s: TcpStream) {
-            use tokio::io::{AsyncReadExt, AsyncWriteExt};
-            let mut sock = Sock::new(s);
-            tokio::spawn(async move {
-                let mut buf = Vec::new();
-                while buf.len() < 5 {
-                    sock.read(&mut buf).await.unwrap();
-                }
-                sock.write(&mut b"ok".to_vec()).await.unwrap();
-                // What comes now waits in the socket.
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                let (mut tcp, mut early) = sock.into_tcp(buf.split_off(5)).await.unwrap();
-                while early.len() < 6 {
-                    tcp.read_buf(&mut early).await.unwrap();
-                }
-                tcp.write_all(&early).await.unwrap();
-            });
-        }
-        let addr = server(handover);
-        let mut c = connect(addr);
-        c.write_all(b"hello").unwrap();
-        let mut ok = [0; 2];
-        c.read_exact(&mut ok).unwrap();
-        assert_eq!(&ok, b"ok");
-        c.write_all(b"world!").unwrap();
-        let mut back = [0; 6];
-        c.read_exact(&mut back).unwrap();
-        assert_eq!(&back, b"world!");
+        std::thread::sleep(Duration::from_millis(1500));
+        c.write_all(b"x").unwrap();
+        let mut got = String::new();
+        let _ = c.read_to_string(&mut got);
+        assert_eq!(got, "ok");
     }
 
     #[test]
