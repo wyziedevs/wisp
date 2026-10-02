@@ -1,8 +1,4 @@
 ---
-// The count lives in a cookie, so every visitor has their own and it
-// survives a reload. The buttons post to the actions: without JavaScript
-// that is a normal form post; with it, wisp.js sends it in the background
-// and updates the page in place.
 let count: i64 = cx.cookie_or("count", 0);
 
 #[action]
@@ -23,10 +19,6 @@ fn decrement() {
 </head>
 
 <section class="welcome">
-  <!-- Casper, our logo. Decoration, with two things to find: it watches the
-       pointer, and it says boo when clicked. It hops whenever the count
-       changes, because a new count gives it a new id and so makes it a new
-       element. -->
   <div class="casper" title="Casper" aria-hidden="true" bind:this="casper" class:booing="booing"
        on:pointermove.window="look" on:click.window="boo" on:animationend="unboo"
        style:--look-x="x" style:--look-y="y">
@@ -44,14 +36,13 @@ fn decrement() {
   <p class="hint">try editing <code>src/routes/+page.wisp</code></p>
 
   <form class="counter" method="post">
-    <button formaction="?/decrement" aria-label="Decrease the counter by one">
+    <button formaction="?/decrement" aria-label="Decrease the counter by one" title="Minus one">
       <svg viewBox="0 0 1 1" aria-hidden="true"><path d="M0,0.5 L1,0.5"/></svg>
     </button>
-    <output class="count" aria-live="polite">
-      <!-- A new id each time, so the number is a new element and animates in. -->
+    <output class="count" aria-live="polite" title="Your count">
       <strong id="count-{count}">{count}</strong>
     </output>
-    <button formaction="?/increment" aria-label="Increase the counter by one">
+    <button formaction="?/increment" aria-label="Increase the counter by one" title="Plus one">
       <svg viewBox="0 0 1 1" aria-hidden="true"><path d="M0,0.5 L1,0.5 M0.5,0 L0.5,1"/></svg>
     </button>
   </form>
@@ -61,7 +52,6 @@ fn decrement() {
   let casper
   let x = 0, y = 0, booing = false
 
-  // Eyes follow the pointer, up to a unit and a bit off center.
   function look(e) {
     const box = casper.getBoundingClientRect()
     const dx = e.clientX - (box.left + box.width / 2)
@@ -75,7 +65,6 @@ fn decrement() {
     if (casper.contains(e.target)) booing = true
   }
 
-  // Ready for the next click once the boo has played.
   function unboo(e) {
     if (e.animationName === 'boo') booing = false
   }

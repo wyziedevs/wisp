@@ -1,10 +1,4 @@
-/*
- * The app's styles. Every color, size and timing is a token here; the rules
- * below only name them. Change a token and the whole app follows.
- */
-
 :root {
-  /* Surfaces, darkest to lightest */
   --paper: #141414;
   --inset: #1a1a1a;
   --panel: #1f1f1f;
@@ -12,12 +6,10 @@
   --line: #4b4b4b;
   --line-strong: #6f6f6f;
 
-  /* Text: the thing itself, supporting text, the quietest */
   --ink: #fafafa;
   --ink-muted: #a8a8a8;
   --ink-subtle: #949494;
 
-  /* Wisp violet. Text on it is dark: 4.6:1, where white would be 4.0:1. */
   --accent: #896ce0;
   --accent-hover: #9f8ce7;
   --accent-ink: #9f8ce7;
@@ -37,8 +29,6 @@
 
   color-scheme: dark;
 }
-
-/* ---- Base --------------------------------------------------------------- */
 
 *,
 *::before,
@@ -156,8 +146,6 @@ pre code {
   background: var(--accent-hover);
 }
 
-/* ---- Layout ------------------------------------------------------------- */
-
 .app {
   display: flex;
   flex-direction: column;
@@ -195,8 +183,6 @@ footer {
 .text-column h1 {
   margin-bottom: 0.5rem;
 }
-
-/* ---- Header: a tab hanging from the top edge ---------------------------- */
 
 .site-header {
   display: flex;
@@ -241,7 +227,6 @@ nav {
   justify-content: center;
 }
 
-/* The tab's slanted ends: two shapes the same color as the tab. */
 nav svg {
   display: block;
   width: 2rem;
@@ -298,7 +283,6 @@ nav a[aria-current="page"] {
   color: var(--ink);
 }
 
-/* The current page gets a small violet notch at the top of the tab. */
 nav a[aria-current="page"]::before {
   --size: 6px;
   content: "";
@@ -308,8 +292,6 @@ nav a[aria-current="page"]::before {
   border: var(--size) solid transparent;
   border-top-color: var(--accent);
 }
-
-/* ---- Home --------------------------------------------------------------- */
 
 .welcome {
   display: flex;
@@ -329,9 +311,6 @@ nav a[aria-current="page"]::before {
   -webkit-tap-highlight-color: transparent;
 }
 
-/* Three motions that stack: floating (transform), a hop when the count
-   changes (translate and scale, on arrival), and a lean toward the pointer
-   (rotate). */
 .casper svg {
   display: block;
   width: 100%;
@@ -344,7 +323,6 @@ nav a[aria-current="page"]::before {
     float 4s var(--ease-in-out) infinite alternate;
 }
 
-/* The shadow under Casper shrinks as it rises. */
 .casper::after {
   content: "";
   display: block;
@@ -473,8 +451,6 @@ nav a[aria-current="page"]::before {
   }
 }
 
-/* ---- Counter ------------------------------------------------------------ */
-
 .counter {
   display: flex;
   margin: 1rem 0;
@@ -537,8 +513,6 @@ nav a[aria-current="page"]::before {
   }
 }
 
-/* ---- Wisple ------------------------------------------------------------- */
-
 .wisple {
   display: flex;
   flex: 1;
@@ -584,8 +558,6 @@ nav a[aria-current="page"]::before {
   background: var(--panel);
 }
 
-/* Right place is filled, wrong place is a ring: told apart by shape as well
-   as color. */
 .exact {
   border-color: var(--accent);
   background: var(--accent);
@@ -603,7 +575,6 @@ nav a[aria-current="page"]::before {
   color: var(--ink-subtle);
 }
 
-/* A guess just made flips over tile by tile; a winning one then hops. */
 .row.fresh .letter {
   animation: flip 450ms var(--ease-out) backwards;
   animation-delay: calc(var(--i) * 90ms);
@@ -627,8 +598,6 @@ nav a[aria-current="page"]::before {
   }
 }
 
-/* On a win, little ghosts rise past the board, scattered by the golden
-   angle so no two paths line up. */
 .wisps {
   position: fixed;
   inset: 0;
@@ -774,8 +743,6 @@ nav a[aria-current="page"]::before {
   justify-content: center;
 }
 
-/* ---- Error -------------------------------------------------------------- */
-
 .error {
   align-items: center;
   text-align: center;
@@ -804,8 +771,6 @@ nav a[aria-current="page"]::before {
 .error p {
   color: var(--ink-muted);
 }
-
-/* ---- Motion ------------------------------------------------------------- */
 
 @media (prefers-reduced-motion: reduce) {
   *,

@@ -1,10 +1,4 @@
-/*
- * The app's styles, in the demo's design. Every color, size and timing is a
- * token here; the rules below only name them.
- */
-
 :root {
-  /* Surfaces, darkest to lightest */
   --paper: #141414;
   --inset: #1a1a1a;
   --panel: #1f1f1f;
@@ -12,12 +6,10 @@
   --line: #4b4b4b;
   --line-strong: #6f6f6f;
 
-  /* Text: the thing itself, supporting text, the quietest */
   --ink: #fafafa;
   --ink-muted: #a8a8a8;
   --ink-subtle: #949494;
 
-  /* Wisp violet. Text on it is dark: 4.6:1, where white would be 4.0:1. */
   --accent: #896ce0;
   --accent-hover: #9f8ce7;
   --accent-ink: #9f8ce7;
@@ -149,7 +141,6 @@ pre code {
   background: var(--accent-hover);
 }
 
-/* One centered column of text, a little above the middle of the page. */
 main {
   display: flex;
   flex: 0.8;

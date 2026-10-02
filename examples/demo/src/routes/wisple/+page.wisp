@@ -5,8 +5,6 @@
 
 <h1 class="visually-hidden">Wisple</h1>
 
-<!-- With JavaScript, letters are typed here and only a finished guess is
-     posted. Without it, each key is its own form post, which works too. -->
 <script>
   let guess = data.guess
   let full = $derived(guess.length === 5)
@@ -15,7 +13,6 @@
   const POP = [{ scale: 1.12 }, { scale: 1 }]
   const SHAKE = { translate: ['0', '-6px', '6px', '-4px', '4px', '0'] }
 
-  // The server has a new row: start a fresh guess.
   watch(() => tries, () => (guess = data.guess))
 
   function type(key) {
@@ -32,20 +29,19 @@
       else form.requestSubmit(enter)
     } else if (key === 'backspace' || /^[a-z]$/.test(key)) {
       e.preventDefault()
-      pressed = key // the on-screen key dips too
+      pressed = key
       setTimeout(() => (pressed = ''), 120)
       type(key)
     }
   }
 
-  // A tile pops when a letter lands in it.
   function pop(tile) {
     return { update: (letter) => letter && tile.animate(POP, 150) }
   }
 </script>
 
 <form class="wisple" action="?/enter" bind:this="form" on:keydown.window="press">
-  <a class="how-to-play" href="/wisple/how-to-play">How to play</a>
+  <a class="how-to-play" href="/wisple/how-to-play" title="How to play">How to play</a>
 
   <div class="grid" class:won={won} bind:this="grid">
     {#each rows as row, r}
@@ -62,7 +58,6 @@
   </div>
 
   {#if won}
-    <!-- A flock of little ghosts rises past the board. -->
     <div class="wisps" aria-hidden="true">
       {#each 0..16 as i}
         <span style="--i: {i}"></span>
@@ -81,22 +76,22 @@
           The word was <strong>{answer}</strong>.
         {/if}
       </p>
-      <button class="button primary restart" formaction="?/restart" bind:this="enter">Play again</button>
+      <button class="button primary restart" formaction="?/restart" title="Play again" bind:this="enter">Play again</button>
     {:else}
       <div class="keyboard">
         {#each keys as row, r}
           <div class="row">
             {#if r == 2}
-              <button class="wide enter" disabled={!full} :disabled="!full" bind:this="enter">Enter</button>
+              <button class="wide enter" title="Enter the guess" disabled={!full} :disabled="!full" bind:this="enter">Enter</button>
             {/if}
             {#each row as key}
               <button class={key.mark.class()} formaction="?/update" name="key" value={key.letter}
-                      aria-label="{key.letter} {key.mark.label()}" disabled={full}
+                      aria-label="{key.letter} {key.mark.label()}" title={key.letter} disabled={full}
                       :disabled="full" class:pressed="pressed === key.letter"
                       on:click.prevent="type(key.letter)">{key.letter}</button>
             {/each}
             {#if r == 2}
-              <button class="wide" formaction="?/update" name="key" value="backspace" aria-label="Backspace"
+              <button class="wide" formaction="?/update" name="key" value="backspace" aria-label="Backspace" title="Backspace"
                       class:pressed="pressed === 'backspace'" on:click.prevent="type('backspace')">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-6-7z M11 9l6 6 M17 9l-6 6"/></svg>
               </button>
