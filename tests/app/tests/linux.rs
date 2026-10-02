@@ -9,7 +9,7 @@
 
 mod common;
 
-use common::{Server, connect, spawn};
+use common::{MULTIPART, Server, connect, multipart, read_answer, read_head, spawn};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -257,15 +257,9 @@ fn a_large_upload() {
     for env in BACKENDS {
         let s = common::start(env);
         let photo = vec![7u8; 3 * 1024 * 1024 + 17];
-        let mut b = b"--XX\r\ncontent-disposition: form-data; name=\"title\"\r\n\r\nCat\r\n--XX\r\ncontent-disposition: form-data; name=\"photo\"; filename=\"cat.png\"\r\ncontent-type: image/png\r\n\r\n".to_vec();
-        b.extend_from_slice(&photo);
-        b.extend_from_slice(b"\r\n--XX--\r\n");
-        let r = s.request(
-            "POST",
-            "/upload",
-            "content-type: multipart/form-data; boundary=XX\r\n",
-            &b,
-        );
+        let b = multipart(&[("title", None, b"Cat"), ("photo", Some("cat.png"), &photo)]);
+        let ct = format!("content-type: {MULTIPART}\r\n");
+        let r = s.request("POST", "/upload", &ct, &b);
         let saved = format!("cat.png: {} bytes of image/png", photo.len());
         assert!(r.contains(&saved), "{env:?} {}", &r[..r.len().min(300)]);
     }
@@ -360,40 +354,6 @@ fn wait_until_read(server_port: u16, client: &TcpStream) {
         std::thread::sleep(Duration::from_millis(2));
     }
     panic!("the server did not read the request");
-}
-
-/// The status line and headers of the next answer, without the blank line.
-fn read_head(c: &mut BufReader<TcpStream>) -> String {
-    let mut head = String::new();
-    loop {
-        let mut line = String::new();
-        c.read_line(&mut line).unwrap();
-        if line == "\r\n" {
-            return head;
-        }
-        assert!(
-            !line.is_empty(),
-            "the connection closed inside a head: {head:?}"
-        );
-        head.push_str(&line);
-    }
-}
-
-/// One answer: the head, and the body if it says how long it is.
-fn read_answer(c: &mut BufReader<TcpStream>) -> (String, String) {
-    let head = read_head(c);
-    let len = head
-        .lines()
-        .find_map(|l| {
-            l.to_ascii_lowercase()
-                .strip_prefix("content-length: ")?
-                .parse()
-                .ok()
-        })
-        .unwrap_or(0);
-    let mut body = vec![0; len];
-    c.read_exact(&mut body).unwrap();
-    (head, String::from_utf8_lossy(&body).into_owned())
 }
 
 const GET: &[u8] = b"GET / HTTP/1.1\r\nhost: x\r\n\r\n";

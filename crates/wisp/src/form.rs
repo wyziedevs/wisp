@@ -107,7 +107,11 @@ impl<'a> Form<'a> {
                     return None;
                 }
                 Some(File {
-                    name: filename,
+                    name: if filename.is_empty() {
+                        Cow::Borrowed("file")
+                    } else {
+                        filename
+                    },
                     content_type: p.content_type.unwrap_or("application/octet-stream"),
                     bytes: p.data,
                 })
@@ -312,14 +316,23 @@ fn unquote(value: &[u8]) -> Cow<'_, str> {
 }
 
 /// A file name without the folders some clients send with it:
-/// `C:\photos\a.png` and `photos/a.png` are `a.png`.
+/// `C:\photos\a.png` and `photos/a.png` are `a.png`. Control characters
+/// are taken out, and a name that is then empty, `.` or `..` is `file`, so
+/// one joined to a folder stays in it. Only `""` as sent stays empty: the
+/// browser's "no file chosen".
 fn base_name(name: Cow<'_, str>) -> Cow<'_, str> {
-    let Some(at) = name.rfind(['/', '\\']) else {
+    if name.is_empty() {
         return name;
+    }
+    let at = name.rfind(['/', '\\']).map_or(0, |at| at + 1);
+    let clean = !name[at..].contains(char::is_control);
+    let name = match name {
+        Cow::Borrowed(s) if clean => Cow::Borrowed(&s[at..]),
+        _ => Cow::Owned(name[at..].chars().filter(|c| !c.is_control()).collect()),
     };
-    match name {
-        Cow::Borrowed(s) => Cow::Borrowed(&s[at + 1..]),
-        Cow::Owned(s) => Cow::Owned(s[at + 1..].to_string()),
+    match &*name {
+        "" | "." | ".." => Cow::Borrowed("file"),
+        _ => name,
     }
 }
 
@@ -412,7 +425,13 @@ b\r\n--XyZ--\r\nepilogue";
         for (sent, want) in [
             (r#"filename="a.png""#, "a.png"),
             (r#"filename="a%22b%22.png""#, "a\"b\".png"),
-            (r#"filename="a%0D%0ab.png""#, "a\r\nb.png"),
+            (r#"filename="a%0D%0ab.png""#, "ab.png"),
+            (r#"filename="a	b.png""#, "ab.png"),
+            (r#"filename="..""#, "file"),
+            (r#"filename="photos/.""#, "file"),
+            (r#"filename="photos/""#, "file"),
+            (r#"filename="%0D%0A""#, "file"),
+            (r#"filename="""#, "file"),
             (r#"filename="100%25 %41.png""#, "100%25 %41.png"),
             (r#"filename="a%2Fb.png""#, "a%2Fb.png"),
             (r#"filename="a \"b\".png""#, "a \"b\".png"),

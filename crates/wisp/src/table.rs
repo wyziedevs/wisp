@@ -42,12 +42,23 @@ pub(crate) struct Rows<T> {
 
 #[derive(Clone, Copy)]
 enum State {
-    /// A saved table whose rows are not read from the store yet.
-    Unread,
+    /// A saved table whose rows are not read yet: from this store, or the
+    /// app's (`None`) on first use.
+    Unread(Option<&'static dyn Store>),
     /// Kept in memory only.
     Memory,
     /// Read from the store, which keeps each change.
     Stored(&'static dyn Store),
+}
+
+impl<T> Rows<T> {
+    /// Rows that may be ahead of `store`, or half changed: read again from
+    /// it on next use.
+    fn stale(&mut self, store: &'static dyn Store) {
+        self.map.clear();
+        self.last = 0;
+        self.state = State::Unread(Some(store));
+    }
 }
 
 /// A row and its id. It reads as its value (`row.title`, `{row}`), and as
@@ -143,7 +154,7 @@ impl<T> Table<T> {
 
     const fn make(saved: Option<Saved<T>>, random: bool) -> Table<T> {
         let state = match saved {
-            Some(_) => State::Unread,
+            Some(_) => State::Unread(None),
             None => State::Memory,
         };
         Table {
@@ -190,7 +201,7 @@ impl<T> Table<T> {
         loop {
             // Poisoned: `write` mends it first.
             if let Ok(rows) = self.rows.read()
-                && !matches!(rows.state, State::Unread)
+                && !matches!(rows.state, State::Unread(_))
             {
                 return rows;
             }
@@ -207,15 +218,13 @@ impl<T> Table<T> {
             self.rows.clear_poison();
             let mut rows = e.into_inner();
             if let State::Stored(store) = rows.state {
-                rows.map.clear();
-                rows.last = 0;
-                // A store that fails here panics again, poisoned again.
-                self.load(&mut rows, Some(store));
+                rows.stale(store);
             }
             rows
         });
-        if matches!(rows.state, State::Unread) {
-            self.load(&mut rows, store::current());
+        if let State::Unread(from) = rows.state {
+            // A store that fails here panics, poisoned again.
+            self.load(&mut rows, from.or_else(store::current));
         }
         rows
     }
@@ -295,51 +304,73 @@ impl<T> Table<T> {
     }
 
     /// Saves row `id` of a saved table: `json` is its value's JSON, `None`
-    /// when it is removed. A store that fails panics, which is the
-    /// request's 500. What is in memory may then be ahead of the store, so
-    /// it is read again on next use.
-    pub(crate) fn save(&self, rows: &mut Rows<T>, id: u64, json: Option<&str>) {
-        let (State::Stored(store), Some(saved)) = (rows.state, &self.saved) else {
-            return;
-        };
-        if let Err(e) = store.save(saved.name, id, json) {
-            rows.map.clear();
-            rows.last = 0;
-            rows.state = State::Unread;
-            panic!(
-                "could not save row {id} of table `{}`: {}",
-                saved.name,
-                e.detail()
-            );
-        }
+    /// when it is removed. See [`Table::keep`].
+    pub(crate) fn save(&self, rows: &mut Rows<T>, id: u64, json: Option<&str>) -> Result {
+        self.keep(rows, |store, name| store.save(name, id, json))
     }
 
-    /// Saves rows just put in the table, as `(id, json)`, all or none. When
-    /// the store fails, the table is read again from it, which takes them
-    /// out, and the error is the request's 500.
+    /// Saves rows just put in the table, as `(id, json)`, all or none. See
+    /// [`Table::keep`].
     pub(crate) fn save_many(&self, rows: &mut Rows<T>, new: &[(u64, String)]) -> Result {
+        self.keep(rows, |store, name| store.save_many(name, new))
+    }
+
+    /// Has a saved table's store keep a change. A store that fails is the
+    /// request's 500, and the table is read again from the store on next
+    /// use, not here under the lock: what is in memory may be ahead of it.
+    fn keep(&self, rows: &mut Rows<T>, save: impl FnOnce(&dyn Store, &str) -> Result) -> Result {
         let (State::Stored(store), Some(saved)) = (rows.state, &self.saved) else {
             return Ok(());
         };
-        let kept = match new {
-            [(id, json)] => store.save(saved.name, *id, Some(json)),
-            _ => store.save_many(saved.name, new),
-        };
-        kept.map_err(|e| {
-            rows.map.clear();
-            rows.last = 0;
-            // A store that fails here too panics, and `write` reads it again.
-            self.load(rows, Some(store));
-            crate::Error::new(
-                500,
-                format!(
-                    "could not save {} rows of table `{}`: {}",
-                    new.len(),
-                    saved.name,
-                    e.detail()
-                ),
-            )
+        save(store, saved.name).map_err(|e| {
+            rows.stale(store);
+            let why = format!("could not save table `{}`: {}", saved.name, e.detail());
+            crate::Error::new(500, why)
         })
+    }
+
+    /// Reads a saved table's rows again from its store, for rows another
+    /// instance of the app changes there: a stored row the one in memory
+    /// lacks, or one `newer(in memory, stored)` says is newer, replaces it.
+    /// The store is read under the read lock, so no save runs meanwhile.
+    pub(crate) fn refresh(&self, newer: fn(&T, &T) -> bool) -> Result {
+        let unread = self
+            .rows
+            .read()
+            .is_ok_and(|r| matches!(r.state, State::Unread(_)));
+        if unread {
+            // The first read is the whole table.
+            drop(self.write());
+            return Ok(());
+        }
+        let rows = self.read();
+        let (State::Stored(store), Some(saved)) = (rows.state, &self.saved) else {
+            return Ok(());
+        };
+        let kept = store.load(saved.name)?;
+        drop(rows);
+        let mut fresh = Vec::with_capacity(kept.len());
+        for (id, json) in kept.into_iter().filter(|(id, _)| *id != 0) {
+            fresh.push((id, (saved.read)(json.as_bytes())?));
+        }
+        let mut rows = self.write();
+        for (id, v) in fresh {
+            rows.last = rows.last.max(id);
+            match rows.map.get_mut(&id) {
+                Some(old) if newer(old, &v) => *old = v,
+                Some(_) => {}
+                None => {
+                    rows.map.insert(id, v);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Panics with a store's error, which is the request's 500: for the
+    /// calls that answer with a value, not a `Result`.
+    fn kept<R>(r: Result<R>) -> R {
+        r.unwrap_or_else(|e| panic!("{}", e.message()))
     }
 
     /// Reads a saved table's rows from `store` now, for a test.
@@ -353,7 +384,7 @@ impl<T> Table<T> {
         let mut rows = self.write();
         let id = self.next_id(&mut rows);
         let json = self.encode(&rows, &value);
-        self.save(&mut rows, id, Some(&json));
+        Self::kept(self.save(&mut rows, id, Some(&json)));
         rows.map.insert(id, value);
         id
     }
@@ -361,20 +392,20 @@ impl<T> Table<T> {
     /// Saves that row `id` is gone and takes it out. When it had the last
     /// id given, the store keeps that id as row 0, so it is not given again
     /// after a restart.
-    pub(crate) fn delete(&self, rows: &mut Rows<T>, id: u64) -> Option<T> {
+    pub(crate) fn delete(&self, rows: &mut Rows<T>, id: u64) -> Result<Option<T>> {
         if !rows.map.contains_key(&id) {
-            return None;
+            return Ok(None);
         }
-        self.save(rows, id, None);
+        self.save(rows, id, None)?;
         if id == rows.last && !self.random {
-            self.save(rows, 0, Some(&id.to_string()));
+            self.save(rows, 0, Some(&id.to_string()))?;
         }
-        rows.map.remove(&id)
+        Ok(rows.map.remove(&id))
     }
 
     /// Takes the row out; `None` when there is none.
     pub fn remove(&self, id: u64) -> Option<T> {
-        self.delete(&mut self.write(), id)
+        Self::kept(self.delete(&mut self.write(), id))
     }
 
     /// Changes the row in place: `NOTES.update(id, |n| n.done = true)`.
@@ -383,7 +414,7 @@ impl<T> Table<T> {
         let mut rows = self.write();
         let r = f(rows.map.get_mut(&id)?);
         let json = self.encode(&rows, &rows.map[&id]);
-        self.save(&mut rows, id, Some(&json));
+        Self::kept(self.save(&mut rows, id, Some(&json)));
         Some(r)
     }
 
@@ -527,17 +558,7 @@ impl<T: Json> Json for Page<T> {
 /// `?page=n` with the rest of the request's query as it was sent (but an
 /// action's `/name`). Relative to the page, so no path is echoed back.
 fn page_href(cx: &crate::Cx, n: usize) -> String {
-    let mut href = String::from("?");
-    for part in cx.query_string().split('&') {
-        if part.is_empty() || part.starts_with('/') || part == "page" || part.starts_with("page=") {
-            continue;
-        }
-        href.push_str(part);
-        href.push('&');
-    }
-    href.push_str("page=");
-    href.push_str(&n.to_string());
-    href
+    format!("?{}page={n}", cx.query_without(&["page"]))
 }
 
 impl<T> Default for Table<T> {
@@ -697,7 +718,7 @@ mod tests {
         assert!(
             matches!(
                 t.rows.read().unwrap_or_else(|e| e.into_inner()).state,
-                State::Unread
+                State::Unread(Some(_))
             ),
             "read again, as the store has it"
         );
@@ -732,6 +753,22 @@ mod tests {
         assert!(half.is_err());
         assert_eq!(again.with(1, String::clone).as_deref(), Some("a!"));
         assert_eq!(again.add("d".into()), 4);
+
+        // Another instance's rows, read again: the newer of each wins.
+        let counts: Table<u64> = Table::saved("refresh_counts");
+        counts.load(&mut counts.rows.write().unwrap(), Some(mem));
+        counts.add(5);
+        mem.save("refresh_counts", 1, Some("7")).unwrap();
+        mem.save("refresh_counts", 2, Some("1")).unwrap();
+        counts.refresh(|now, stored| stored > now).unwrap();
+        assert_eq!(
+            (counts.with(1, |n| *n), counts.with(2, |n| *n)),
+            (Some(7), Some(1))
+        );
+        mem.save("refresh_counts", 1, Some("3")).unwrap();
+        counts.refresh(|now, stored| stored > now).unwrap();
+        assert_eq!(counts.with(1, |n| *n), Some(7), "never back");
+        assert_eq!(counts.add(9), 3);
 
         let random: Table<String> = Table::rest(None, true);
         let id = random.add("x".into());

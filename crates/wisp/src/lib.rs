@@ -214,9 +214,11 @@ pub async fn serve<A: App>(addr: SocketAddr) -> std::io::Result<()> {
 pub async fn prepare<A: App>() -> std::io::Result<()> {
     settings();
     http::setup::<A>();
-    A::init()
-        .await
-        .map_err(|e| std::io::Error::other(format!("init in src/hooks.rs failed: {}", e.detail())))
+    A::init().await.map_err(|e| {
+        std::io::Error::other(format!("init in src/hooks.rs failed: {}", e.detail()))
+    })?;
+    session::ready();
+    Ok(())
 }
 
 /// Makes `value` available to every request through [`state`]: a database
@@ -536,7 +538,7 @@ fn switch(name: &str, default: bool) -> bool {
     match setting::<String>(name, "on or off").map(|v| v.to_ascii_lowercase()) {
         None => default,
         Some(v) if matches!(&*v, "on" | "1" | "true") => true,
-        Some(v) if matches!(&*v, "off" | "0" | "false") => false,
+        Some(v) if !input::on(&v) => false,
         Some(v) => fail(&format!("{name} is {v:?}, which is not on or off")),
     }
 }
@@ -1304,7 +1306,7 @@ impl<T, E: fmt::Display> OrStatus<T> for std::result::Result<T, E> {
 /// Support for generated code. Not a stable API.
 #[doc(hidden)]
 pub mod rt {
-    pub use crate::bake::{Baked, baked, cached, cached_by_accept, keep, keep_by_accept};
+    pub use crate::bake::{Baked, baked, cached, keep};
     pub use crate::cx::{
         BadCookie, CookieReader, CookieWriter, MAX_PARAMS, MAX_SEGS, decode, split,
     };

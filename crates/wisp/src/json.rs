@@ -561,7 +561,7 @@ impl FromJson for bool {
         match v {
             Value::Bool(b) => Some(*b),
             // A checkbox, as `input::flag` reads one.
-            Value::String(s) if p.form => Some(!matches!(s.as_str(), "false" | "off" | "0")),
+            Value::String(s) if p.form => Some(crate::input::on(s)),
             other => expected(p, "true or false", other),
         }
     }
