@@ -6,6 +6,23 @@ use crate::rust_scan::{Items, TypeItem};
 use crate::ty::{self, Scalar};
 pub use wisp_shared::rules::{Key, Native, Rule, Validate, parse, plain, rule};
 
+/// An upload's type: `Image`, or `Option<Image>`.
+pub fn is_upload(ty: &str) -> bool {
+    ty::last_segment(ty::option_inner(ty).unwrap_or(ty)) == "Image"
+}
+
+/// The `#[validate(rules)]` of parameter `name` of type `ty`, or what is
+/// wrong with it: `max_size` is an upload's alone.
+pub fn validate(rules: &str, name: &str, ty: &str) -> Result<Validate, String> {
+    let v = parse(rules)?;
+    if v.max_size.is_some() && !is_upload(ty) {
+        return Err(format!(
+            "`max_size` is for an upload, and `{name}` is a `{ty}`: make it an `Image` (or `Option<Image>`)"
+        ));
+    }
+    Ok(v)
+}
+
 /// For a field of type `ty` with `rules`; `whole` for a struct's field
 /// (`fn default(post: Post)`), whose blank is missing.
 pub fn native(ty: &str, rules: &[Rule], whole: bool) -> Native {
@@ -20,7 +37,7 @@ pub fn native(ty: &str, rules: &[Rule], whole: bool) -> Native {
         Scalar::Unsigned | Scalar::Signed | Scalar::Float
     );
     let mut n = Native::default();
-    if !text && !number && last != "Email" && last != "Image" {
+    if !text && !number && last != "Email" && !is_upload(t) {
         return n;
     }
     n.email = last == "Email";

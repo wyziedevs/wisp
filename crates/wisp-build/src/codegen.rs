@@ -222,22 +222,14 @@ fn shim(f: &FnItem, kind: Shim) -> Result<String, String> {
     let mut lets = String::new();
     if let ([(_, v, get, owned)], true) = (read.as_slice(), f.checks.is_empty()) {
         // One input, nothing to check: its error is the answer.
-        let ty = if owned.is_empty() {
-            String::new()
-        } else {
-            format!(": {owned}")
-        };
+        let ty = annotation(owned, "{}");
         lets = format!("let {v}{ty} = {get}?; ");
     } else if !read.is_empty() {
         // Each input is read, and checked, before any answer: every one
         // that does not pass is listed in one 422.
         lets.push_str("let mut __p = ::wisp::json::Problems::default(); ");
         for (name, v, get, owned) in &read {
-            let ty = if owned.is_empty() {
-                String::new()
-            } else {
-                format!(": Option<{owned}>")
-            };
+            let ty = annotation(owned, "Option<{}>");
             lets.push_str(&format!(
                 "let {v}{ty} = ::wisp::rt::input::read(&mut __p, {get})?; "
             ));
@@ -285,6 +277,15 @@ fn shim(f: &FnItem, kind: Shim) -> Result<String, String> {
     })
 }
 
+/// `: T` on the `let` of an input read as `owned` (in `how`: `{}`, or
+/// `Option<{}>`) when the call borrows it; nothing when it takes it as read.
+fn annotation(owned: &str, how: &str) -> String {
+    match owned {
+        "" => String::new(),
+        t => format!(": {}", how.replace("{}", t)),
+    }
+}
+
 /// The code a shim runs after reading the input `name` into `v` (an
 /// `Option`, `None` when it did not pass), for its `#[validate(rules)]`:
 /// the first rule that fails is its problem, and the page shows again as a
@@ -304,17 +305,11 @@ fn upload_sizes(fns: &[FnItem]) -> Result<Option<String>, String> {
     let mut sum = String::new();
     for f in fns.iter().filter(|f| f.action) {
         for (p, rules) in &f.checks {
-            let rules = rules::parse(rules).map_err(|e| format!("{}: {e}", f.line))?;
+            let ty = (f.params.iter())
+                .find(|(n, _)| n == p)
+                .map_or("", |(_, t)| t.as_str());
+            let rules = rules::validate(rules, p, ty).map_err(|e| format!("{}: {e}", f.line))?;
             if let Some(size) = rules.max_size {
-                let ty = (f.params.iter())
-                    .find(|(n, _)| n == p)
-                    .map_or("", |(_, t)| t.as_str());
-                if ty::last_segment(ty::option_inner(ty).unwrap_or(ty)) != "Image" {
-                    return Err(format!(
-                        "{}: `max_size` is for an upload, and `{p}` is a `{ty}`: make it an `Image` (or `Option<Image>`)",
-                        f.line
-                    ));
-                }
                 let _ = write!(sum, " + ({size}) as usize");
             }
         }
@@ -1092,7 +1087,7 @@ impl<'a> Project<'a> {
                 if sf.limit {
                     set_once(
                         &mut route.body_limit,
-                        sf.module.clone(),
+                        sf.server.module.clone(),
                         "BODY_LIMIT",
                         page_file,
                     )
@@ -1100,7 +1095,7 @@ impl<'a> Project<'a> {
                 }
                 if let Some(public) = sf.cache {
                     let cache = model::Cache {
-                        module: sf.module.clone(),
+                        module: sf.server.module.clone(),
                         public,
                         by_accept: false,
                     };
@@ -1128,16 +1123,18 @@ impl<'a> Project<'a> {
                     file: file.clone(),
                     limit: route.body_limit.as_ref() == Some(&module),
                     cache,
-                    module,
-                    handlers,
-                    before,
-                    types: items.types,
-                    waits,
+                    server: model::Server {
+                        module,
+                        handlers,
+                        before,
+                        types: items.types.into(),
+                        waits,
+                    },
                 });
                 servers.len() - 1
             }
         };
-        let sf = &servers[k];
+        let sf = &servers[k].server;
         let handlers: Vec<model::Handler> = (sf.handlers.iter())
             .filter(|h| h.member == member)
             .cloned()
@@ -2179,17 +2176,12 @@ struct Assets {
 /// A `+server.rs`, which serves its route, its `/[id]`, or both.
 struct ServerFile {
     file: PathBuf,
-    module: String,
-    handlers: Vec<Handler>,
-    /// It has `fn before`, which runs before each of its handlers.
-    before: bool,
     /// It sets `BODY_LIMIT`.
     limit: bool,
     /// It sets `CACHE` (`false`) or `CACHE_PUBLIC` (`true`).
     cache: Option<bool>,
-    types: Vec<rust_scan::TypeItem>,
-    /// It has an `async fn`.
-    waits: bool,
+    /// All it serves: each of its routes takes its own handlers of it.
+    server: model::Server,
 }
 
 /// The handlers of a `+server.rs` whose route is `segs`, their shims added
@@ -3322,6 +3314,15 @@ impl Gen {
                 code,
                 cx,
             ),
+            Node::Selected(code) => self.code_line(
+                ind,
+                &format!(
+                    "if ::wisp::rt::is(&__wisp_sel, {}) {{ {buf}.push_str(\" selected\"); }}",
+                    code.src
+                ),
+                code,
+                cx,
+            ),
             Node::Const(code) => self.code_line(ind, &format!("let {};", code.src), code, cx),
             Node::Kept {
                 name,
@@ -3634,7 +3635,7 @@ impl Gen {
             let how = template::how(p.name.strip_prefix("client:")?)?;
             match &p.value {
                 _ if how.is_empty() => None,
-                PropValue::Text(q) if how == ISLAND_MEDIA => Some(format!("{how}{q}")),
+                PropValue::Text(q) if how == ISLAND_MEDIA => Some(template::island(how, q)),
                 _ if how == ISLAND_MEDIA => None,
                 _ => Some(how.to_string()),
             }
