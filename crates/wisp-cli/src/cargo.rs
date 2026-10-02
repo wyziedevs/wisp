@@ -52,7 +52,9 @@ pub fn build_for(root: &Path, release: bool, quiet: bool, target: Option<&str>) 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            let errors = format!("Could not run cargo: {e}.");
+            let errors = format!(
+                "Could not run cargo: {e}.\nInstall Rust from https://rustup.rs, and open a new terminal."
+            );
             // Callers say "the errors are above"; quiet ones print `errors`.
             if !quiet {
                 eprintln!("{errors}");
@@ -220,7 +222,8 @@ fn strip_generated_modules(s: &str) -> String {
     let mut copied = 0;
     while i < b.len() {
         let at_word = i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_');
-        if at_word {
+        // The names are ASCII: never look from the middle of a character.
+        if at_word && s.is_char_boundary(i) {
             let rest = &s[i..];
             let plain = ["__wisp::", "__call::", "__mods::"]
                 .iter()
@@ -283,7 +286,11 @@ fn from_template(diag: &Json, plain: &str, root: &Path) -> Option<String> {
 
     // What is underlined (columns count characters, from 1), and its label.
     let (from, to) = (first.num("highlight_start")?, first.num("highlight_end")?);
-    let underlined: String = code.chars().skip(from - 1).take(to - from).collect();
+    let underlined: String = code
+        .chars()
+        .skip(from.saturating_sub(1))
+        .take(to.saturating_sub(from))
+        .collect();
     let label = span.str("label").unwrap_or("");
     let column = (!underlined.is_empty())
         .then(|| text.find(&underlined))
@@ -481,7 +488,8 @@ impl Json {
                             // A surrogate pair: \uD83D\uDE00.
                             c.next_if_eq(&'\\')?;
                             c.next_if_eq(&'u')?;
-                            code = 0x10000 + ((code - 0xd800) << 10) + (hex(c)? - 0xdc00);
+                            code =
+                                0x10000 + ((code - 0xd800) << 10) + hex(c)?.checked_sub(0xdc00)?;
                         }
                         out.push(char::from_u32(code).unwrap_or('\u{fffd}'));
                     }
@@ -560,7 +568,16 @@ mod tests {
         let diag = Json::parse(msg).unwrap();
         let r = diag.get("message").and_then(|m| m.str("rendered")).unwrap();
         assert_eq!(strip_ansi(r), "error: bad \"x\" 😀\n");
-        for bad in ["", "{", "[1,]", "{\"a\" 1}", "tru", "\"x", "{} x"] {
+        for bad in [
+            "",
+            "{",
+            "[1,]",
+            "{\"a\" 1}",
+            "tru",
+            "\"x",
+            "{} x",
+            r#""\ud83dA""#, // a high surrogate without its low one
+        ] {
             assert_eq!(Json::parse(bad), None, "{bad}");
         }
     }
@@ -592,6 +609,11 @@ mod tests {
         assert_eq!(
             strip_generated_modules("my_page_1::X page_::Y page_2x::Z"),
             "my_page_1::X page_::Y page_2x::Z"
+        );
+        // Source lines in an error can hold any text.
+        assert_eq!(
+            strip_generated_modules("café “page_1::Data” 😀 __wisp::App"),
+            "café “Data” 😀 App"
         );
     }
 

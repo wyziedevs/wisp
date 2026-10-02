@@ -2,8 +2,41 @@
 //! other than running its one binary.
 
 use crate::term;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+
+/// Refuses an `--out` that is the app's own folder or inside `src/` or
+/// `static/`: exporting there would write over the app's files, or copy
+/// `static/` into itself.
+pub fn check_out(root: &Path, out: &Path) -> Result<(), String> {
+    let (root, out) = (resolved(root), resolved(out));
+    if out == root || out.starts_with(root.join("src")) || out.starts_with(root.join("static")) {
+        return Err(format!(
+            "{} is part of the app.\nPick another folder with --out, like dist.",
+            out.display()
+        ));
+    }
+    Ok(())
+}
+
+/// An absolute path with symlinks and `..` resolved as far as it exists.
+fn resolved(path: &Path) -> PathBuf {
+    let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut tail = Vec::new();
+    let mut at = abs.as_path();
+    loop {
+        if let Ok(found) = at.canonicalize() {
+            return tail.iter().rev().fold(found, |p, name| p.join(name));
+        }
+        match (at.parent(), at.file_name()) {
+            (Some(parent), Some(name)) => {
+                tail.push(name);
+                at = parent;
+            }
+            _ => return abs,
+        }
+    }
+}
 
 /// Runs the built app in export mode, which writes its pages and the files
 /// they use into `out` (see `wisp::export`), then adds `static/`.
@@ -160,6 +193,26 @@ mod tests {
                 .contains("FROM rust:slim")
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn out_stays_away_from_the_app() {
+        let root = temp("out");
+        std::fs::create_dir_all(root.join("static")).unwrap();
+        for bad in [
+            ".",
+            "src",
+            "static",
+            "static/public",
+            "./static/../static/x",
+        ] {
+            let err = check_out(&root, &root.join(bad)).unwrap_err();
+            assert!(err.contains("part of the app"), "{bad}: {err}");
+        }
+        for fine in ["dist", "dist/node", "../elsewhere", "statics"] {
+            check_out(&root, &root.join(fine)).unwrap();
+        }
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

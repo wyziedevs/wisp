@@ -32,7 +32,8 @@ const SETTLE: Duration = Duration::from_millis(20);
 const SETTLE_MAX: Duration = Duration::from_secs(1);
 
 pub fn run(root: &Path, port: u16) -> Result<(), String> {
-    let events = Events::start().map_err(|e| format!("Could not start the reload server: {e}."))?;
+    let events =
+        Events::start(port).map_err(|e| format!("Could not start the reload server: {e}."))?;
     let _tailwind = css::watch(root)?;
     let mut app = Server {
         root: root.to_path_buf(),
@@ -186,6 +187,9 @@ fn rebuild(app: &mut Server, events: &Events, root: &Path, first: bool) {
                     ));
                 }
                 _ => term::done(&format!("{what} {took}")),
+            }
+            if let Some(a) = app.addr {
+                events.allow(a);
             }
             events.send("reload", "");
         }
@@ -414,9 +418,26 @@ enum Change {
     Removed,
 }
 
-type Snapshot = HashMap<String, SystemTime>;
+/// A file's mtime, size, and, for a small one saved in the last seconds, a
+/// hash of its text (0 otherwise).
+type Snapshot = HashMap<String, (SystemTime, u64, u64)>;
 
-/// Every watched file (relative, `/`-separated) and its mtime.
+/// A save of the same size inside the file system's clock tick changes
+/// neither mtime nor size; so a small file that was just saved is hashed.
+fn stamp(path: &Path, m: SystemTime, len: u64) -> (SystemTime, u64, u64) {
+    let fresh = len < 1 << 20 && m.elapsed().is_ok_and(|age| age.as_secs() < 3);
+    let hash = match fresh.then(|| fs::read(path)) {
+        Some(Ok(text)) => {
+            text.iter().fold(0xcbf29ce484222325u64, |h, &b| {
+                (h ^ b as u64).wrapping_mul(0x100000001b3)
+            }) | 1
+        }
+        _ => 0,
+    };
+    (m, len, hash)
+}
+
+/// Every watched file (relative, `/`-separated) with its `stamp`.
 fn scan(root: &Path) -> Snapshot {
     fn walk(root: &Path, dir: &Path, out: &mut Snapshot) {
         let Ok(entries) = fs::read_dir(dir) else {
@@ -435,7 +456,7 @@ fn scan(root: &Path) -> Snapshot {
                     .unwrap_or(&path)
                     .to_string_lossy()
                     .replace('\\', "/");
-                out.insert(rel, m);
+                out.insert(rel, stamp(&path, m, meta.len()));
             }
         }
     }
@@ -443,8 +464,10 @@ fn scan(root: &Path) -> Snapshot {
     walk(root, &root.join("src"), &mut out);
     walk(root, &root.join("static"), &mut out);
     for f in ["Cargo.toml", "build.rs", ".wisp/app.css"] {
-        if let Ok(m) = fs::metadata(root.join(f)).and_then(|m| m.modified()) {
-            out.insert(f.to_string(), m);
+        if let Ok(meta) = fs::metadata(root.join(f))
+            && let Ok(m) = meta.modified()
+        {
+            out.insert(f.to_string(), stamp(&root.join(f), m, meta.len()));
         }
     }
     out
@@ -467,7 +490,9 @@ fn diff(old: &Snapshot, new: &Snapshot) -> Vec<(String, Change)> {
         .iter()
         .filter_map(|(p, t)| match old.get(p) {
             None => Some((p.clone(), Change::Added)),
-            Some(o) if o != t => Some((p.clone(), Change::Modified)),
+            Some(o) if o.0 != t.0 || o.1 != t.1 || (o.2 != t.2 && o.2 != 0 && t.2 != 0) => {
+                Some((p.clone(), Change::Modified))
+            }
             Some(_) => None,
         })
         .collect();

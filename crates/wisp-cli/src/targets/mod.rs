@@ -30,7 +30,9 @@ pub fn build(root: &Path, host: &str, out: &Path) -> Result<(), String> {
     let sysroot = std::process::Command::new("rustc")
         .args(["--print", "sysroot"])
         .output()
-        .map_err(|e| format!("Could not run rustc: {e}."))?;
+        .map_err(|e| {
+            format!("Could not run rustc: {e}.\nInstall Rust from https://rustup.rs, and open a new terminal.")
+        })?;
     let sysroot = String::from_utf8_lossy(&sysroot.stdout).trim().to_string();
     if !Path::new(&sysroot)
         .join("lib/rustlib")

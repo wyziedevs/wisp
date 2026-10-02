@@ -105,13 +105,21 @@ pub fn run(args: &[String]) -> Result<(), String> {
     ));
 
     if use_git {
-        git(root, &["init", "--quiet"])
-            .map_err(|e| format!("Could not create a git repository: {e}."))?;
-        term::done("Created a git repository.");
+        // The app is written: a repository that did not start is no reason
+        // to end in failure.
+        match git(root, &["init", "--quiet"]) {
+            Ok(()) => term::done("Created a git repository."),
+            Err(e) => term::warn(&format!(
+                "Could not create a git repository ({e}). Run git init in the app's folder."
+            )),
+        }
     }
     if install {
-        if tailwind {
-            css::install()?;
+        if tailwind && let Err(e) = css::install() {
+            term::warn(&format!(
+                "{}\n    wisp dev tries again.",
+                e.replace('\n', "\n    ")
+            ));
         }
         term::step(
             "Compiling dependencies. The first build takes a minute; later ones take seconds.",
@@ -240,13 +248,27 @@ fn crate_name(root: &Path) -> Result<String, String> {
             "Cargo uses that name for a folder of its own."
         }
         "test" => "It is the name of Rust's built-in test library.",
-        "wisp" | "wisp-build" | "wisp-macros" | "wisp-cli" => "Wisp's own crates are called that.",
+        "con" | "prn" | "aux" | "nul" => "Windows does not allow a file with that name.",
+        n if KEYWORDS.contains(&n) => "It is a Rust keyword.",
+        "wisp" | "wisp-build" | "wisp-macros" | "wisp-shared" | "wisp-cli" => {
+            "Wisp's own crates are called that."
+        }
         _ => return Ok(name),
     };
     Err(format!(
         "An app cannot be called {name}.\n{why} Pick another name, like my-{name}."
     ))
 }
+
+/// Words Cargo refuses as a package name. Names are lowercase here, so the
+/// ones that need a capital (`Self`) cannot come up.
+const KEYWORDS: [&str; 50] = [
+    "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern",
+    "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub",
+    "ref", "return", "self", "static", "struct", "super", "trait", "true", "type", "unsafe", "use",
+    "where", "while", "abstract", "become", "box", "do", "final", "macro", "override", "priv",
+    "try", "typeof", "unsized", "virtual", "yield",
+];
 
 /// Whether `dir` is inside a Cargo workspace: a Cargo.toml above it with a
 /// `[workspace]` table. An app there builds as part of the workspace, or
@@ -287,37 +309,24 @@ fn write(root: &Path, crate_name: &str, template: Template, tailwind: bool) -> R
         cargo_toml.push_str("\n# Not part of the workspace this folder is in.\n[workspace]\n");
     }
 
-    let (files, css): (&[(&str, &str)], &str) = match template {
-        Template::Demo => (&DEMO, DEMO_CSS),
-        Template::Minimal => (&MINIMAL, MINIMAL_CSS),
-        Template::Api => (&API, ""),
-    };
-    let css = if tailwind {
-        with_tailwind(css)
-    } else {
-        css.to_string()
+    let files = match template {
+        Template::Demo => DEMO,
+        Template::Minimal => MINIMAL,
+        Template::Api => API,
     };
     let common = [
         ("Cargo.toml", cargo_toml.as_str()),
         (".gitignore", "/target\n/.wisp\n/data\n"),
-        ("build.rs", BUILD_RS),
     ];
-    // An API has its own main.rs, and no pages to wrap or style.
-    let pages = [
-        ("src/main.rs", MAIN_RS),
-        ("src/app.html", APP_HTML),
-        ("src/app.css", &css),
-        ("static/favicon.svg", FAVICON),
-    ];
-    let pages = if template == Template::Api {
-        &pages[..0]
-    } else {
-        &pages[..]
-    };
-    for (rel, text) in common.iter().chain(pages).chain(files) {
+    for (rel, text) in common.iter().chain(files) {
         let path = root.join(rel);
         fs::create_dir_all(path.parent().expect("files are inside the app"))
             .map_err(|e| format!("Could not create {}: {e}.", root.display()))?;
+        let text = if tailwind && *rel == "src/app.css" {
+            with_tailwind(text)
+        } else {
+            text.to_string()
+        };
         // `create_new`: a file that appeared since the folder was found empty
         // is someone's, and stays as it is.
         fs::File::create_new(&path)
@@ -339,7 +348,11 @@ fn wisp_source() -> (String, String) {
         .unwrap_or(repo)
         .to_string_lossy()
         .replace('\\', "/");
-    let repo = repo.strip_prefix("//?/").unwrap_or(&repo);
+    // Windows' extended form: `//?/C:/x` is `C:/x`, `//?/UNC/host/x` is `//host/x`.
+    let repo = match repo.strip_prefix("//?/UNC/") {
+        Some(share) => format!("//{share}"),
+        None => repo.strip_prefix("//?/").unwrap_or(&repo).to_string(),
+    };
     let from_git = repo.contains("/git/checkouts/");
     let dep = |name: &str| {
         if from_git {
@@ -368,85 +381,10 @@ fn with_tailwind(css: &str) -> String {
 
 // ---- files --------------------------------------------------------------------
 //
-// The demo template is examples/demo itself, so the two can never drift.
+// DEMO, API and MINIMAL: each template's files, written by build.rs from the
+// folders in template_files.rs.
 
-macro_rules! demo {
-    ($path:literal) => {
-        (
-            $path,
-            include_str!(concat!("../../../examples/demo/", $path)),
-        )
-    };
-}
-
-const BUILD_RS: &str = include_str!("../../../examples/demo/build.rs");
-const MAIN_RS: &str = include_str!("../../../examples/demo/src/main.rs");
-const APP_HTML: &str = include_str!("../../../examples/demo/src/app.html");
-const FAVICON: &str = include_str!("../../../examples/demo/static/favicon.svg");
-const DEMO_CSS: &str = include_str!("../../../examples/demo/src/app.css");
-
-const DEMO: [(&str, &str); 8] = [
-    demo!("src/routes/+layout.wisp"),
-    demo!("src/routes/+page.wisp"),
-    demo!("src/routes/+error.wisp"),
-    demo!("src/routes/about/+page.wisp"),
-    demo!("src/routes/wisple/+page.wisp"),
-    demo!("src/routes/wisple/+page.rs"),
-    demo!("src/routes/wisple/words.txt"),
-    demo!("src/routes/wisple/how-to-play/+page.wisp"),
-];
-
-// The API template is examples/api, as the demo is examples/demo.
-macro_rules! api {
-    ($path:literal) => {
-        (
-            $path,
-            include_str!(concat!("../../../examples/api/", $path)),
-        )
-    };
-}
-
-const API: [(&str, &str); 8] = [
-    api!("src/main.rs"),
-    api!("src/hooks.rs"),
-    api!("src/tests.rs"),
-    api!("src/routes/+server.rs"),
-    api!("src/routes/healthz/+server.rs"),
-    api!("src/routes/api/notes/+server.rs"),
-    api!("src/routes/api/events/+server.rs"),
-    api!("src/routes/api/chat/+server.rs"),
-];
-
-const MINIMAL: [(&str, &str); 3] = [
-    ("src/routes/+layout.wisp", "<main>
-  <slot />
-</main>
-"),
-    (
-        "src/routes/+page.wisp",
-        r#"<title>Home</title>
-
-<h1>Welcome to Wisp</h1>
-<p>Edit <code>src/routes/+page.wisp</code> and save to see it change.</p>
-<p class="actions">
-  <a class="button primary" href="https://github.com/wyziedevs/wisp" title="Wisp on GitHub">Read the docs</a>
-</p>
-"#,
-    ),
-    (
-        "src/routes/+error.wisp",
-        r#"<title>{status}</title>
-
-<h1>{status}</h1>
-<p>{message}</p>
-<p class="actions"><a class="button" href="/" title="Back to the Home Page">Back to the Home Page</a></p>
-"#,
-    ),
-];
-
-// The minimal template is styled as examples/axum is: the demo's design, one
-// centered column.
-const MINIMAL_CSS: &str = include_str!("../../../examples/axum/src/app.css");
+include!(concat!(env!("OUT_DIR"), "/templates.rs"));
 
 const CARGO_TOML: &str = r#"[package]
 name = "{name}"
@@ -512,6 +450,11 @@ mod tests {
             "wisp_build",
             "wisp-macros",
             "wisp cli",
+            "fn",
+            "Self",
+            "type",
+            "NUL",
+            "con",
         ] {
             assert!(crate_name(Path::new(taken)).is_err(), "{taken}");
         }
@@ -539,6 +482,76 @@ mod tests {
         assert_eq!(
             css,
             "@import \"tailwindcss\";\n\n@layer base {\n  a {\n    color: red;\n  }\n\n  b {}\n}\n"
+        );
+    }
+
+    /// The copy a published crate builds from is the examples, and `refresh`
+    /// brings one folder to another's files, and leaves it alone when equal.
+    #[test]
+    fn vendored_templates_are_the_examples() {
+        use crate::template_files::{EXAMPLES, examples, read_all, refresh, vendor};
+        let base = Path::new(env!("CARGO_MANIFEST_DIR"));
+        for name in EXAMPLES {
+            let from = examples(base).join(name);
+            if from.is_dir() {
+                let copy = read_all(&vendor(base).join(name)).unwrap();
+                assert!(copy == read_all(&from).unwrap(), "{name}: vendor is stale");
+            }
+        }
+        let tmp = std::env::temp_dir().join(format!("wisp-refresh-{}", std::process::id()));
+        let (from, to) = (tmp.join("from"), tmp.join("to"));
+        fs::create_dir_all(from.join("src")).unwrap();
+        fs::create_dir_all(to.join("old")).unwrap();
+        fs::write(from.join("src/a.txt"), "a").unwrap();
+        fs::write(to.join("old/b.txt"), "b").unwrap();
+        refresh(&from, &to).unwrap();
+        assert_eq!(read_all(&to).unwrap(), read_all(&from).unwrap());
+        fs::remove_dir_all(tmp).unwrap();
+    }
+
+    /// A template is exactly its folders' files: one added there reaches new
+    /// apps, and nothing built or generated does.
+    #[test]
+    fn templates_are_their_folders() {
+        let base = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let tables = [("DEMO", DEMO), ("API", API), ("MINIMAL", MINIMAL)];
+        for ((name, layers), (table_name, table)) in
+            crate::template_files::TEMPLATES.iter().zip(tables)
+        {
+            assert_eq!(*name, table_name);
+            let found = crate::template_files::files(layers, base);
+            let embedded: Vec<&str> = table.iter().map(|(rel, _)| *rel).collect();
+            let wanted: Vec<&str> = found.keys().map(String::as_str).collect();
+            assert_eq!(embedded, wanted, "{name}");
+            for (rel, text) in table {
+                assert_eq!(
+                    *text,
+                    fs::read_to_string(&found[*rel]).unwrap(),
+                    "{name} {rel}"
+                );
+            }
+            for (rel, _) in table {
+                assert!(
+                    !rel.starts_with("tests/") && !rel.contains("target/") && *rel != "Cargo.toml",
+                    "{name} {rel}"
+                );
+            }
+        }
+        let paths = |t: &[(&'static str, &'static str)]| t.iter().map(|f| f.0).collect::<Vec<_>>();
+        assert!(paths(DEMO).contains(&"src/routes/wisple/words.txt"));
+        assert!(paths(API).contains(&"build.rs") && paths(API).contains(&"src/tests.rs"));
+        assert_eq!(
+            paths(MINIMAL),
+            [
+                "build.rs",
+                "src/app.css",
+                "src/app.html",
+                "src/main.rs",
+                "src/routes/+error.wisp",
+                "src/routes/+layout.wisp",
+                "src/routes/+page.wisp",
+                "static/favicon.svg",
+            ]
         );
     }
 }
