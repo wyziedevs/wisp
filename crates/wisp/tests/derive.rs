@@ -541,3 +541,51 @@ fn other_containers_are_read_from_json() {
     assert!(from_json::<()>(b"null").is_ok());
     assert!(from_json::<u8>(b"\"1\"").is_err());
 }
+
+/// What a body reads as through a `Value` alone, the way `from_json` read
+/// every body before its straight path (`json::Direct`).
+fn through_value<T: FromJson>(body: &[u8]) -> Option<T> {
+    let text = std::str::from_utf8(body).ok()?;
+    if text.trim().is_empty() {
+        return T::missing();
+    }
+    let v = json::parse(text).ok()?;
+    let mut p = json::Problems::default();
+    T::from_json(&v, &mut p).filter(|_| p.is_empty())
+}
+
+/// The straight path reads what the `Value` path reads, and refuses what
+/// it refuses: over bodies broken every way, keys twice, escapes, nesting.
+#[test]
+fn the_straight_path_reads_what_a_value_does() {
+    let seeds = [
+        GOOD,
+        r#"{"name":"Ada","email":"a@b.c","age":18,"tags":["x","y","z"],"nick":null,"admin":true,"extra":[1,{"deep":null}]}"#,
+        r#" { "age" : 40 , "name" : "Bo" , "email" : "b@c.d" , "tags" : [ "q" ] , "name" : "Cy" } "#,
+        r#"{"name":"A\"da","email":"a@b.c","age":20,"tags":["A"],"admin":false}"#,
+        r#"{"name":"Ada","email":"a@b.c","age":2e1,"tags":[],"nick":"n"}"#,
+    ];
+    let mut rng = wisp_shared::rng::Rng::new(9);
+    let special = b"{}[]\":,\\ 0123456789-.eEtrufalsn";
+    for _ in 0..40_000 {
+        let mut b = seeds[rng.below(seeds.len())].as_bytes().to_vec();
+        for _ in 0..rng.below(4) {
+            let at = rng.below(b.len() + 1);
+            match rng.below(4) {
+                0 if at < b.len() => b[at] = rng.pick(special),
+                1 if at < b.len() => drop(b.remove(at)),
+                2 => b.insert(at, rng.pick(special)),
+                _ => b.truncate(at),
+            }
+        }
+        let text = String::from_utf8_lossy(&b);
+        let want = through_value::<Signup>(&b);
+        let got = from_json::<Signup>(&b).ok();
+        assert_eq!(got, want, "{text}");
+        assert_eq!(
+            from_json::<Vec<Option<i64>>>(&b).ok(),
+            through_value(&b),
+            "{text}"
+        );
+    }
+}
