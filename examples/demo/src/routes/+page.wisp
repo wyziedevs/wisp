@@ -24,8 +24,9 @@ fn decrement() {
 
 <section class="welcome">
   <!-- Casper, our logo. Decoration, with two things to find: it watches the
-       pointer, and it says boo when clicked. It hops whenever the count changes, because a
-       new count gives it a new id and so makes it a new element. -->
+       pointer, and it says boo when clicked. It hops whenever the count
+       changes, because a new count gives it a new id and so makes it a new
+       element. -->
   <div class="casper" title="Casper" aria-hidden="true" bind:this="casper" class:booing="booing"
        on:pointermove.window="look" on:click.window="boo" on:animationend="unboo"
        style:--look-x="x" style:--look-y="y">
