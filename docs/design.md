@@ -665,8 +665,10 @@ action fails as a value, never by a panic.
 Passwords are kept as `wisp::password::hash(&password).await?`, checked with
 `wisp::password::check(&typed, hash).await?` (`hash` an `Option<&str>`:
 `None` for no such user hashes a stand-in, as slow, so the time does not
-say which names exist; a full hashing queue, about 3 s of work, is a 503
-with `retry-after`): PBKDF2-HMAC-SHA256 on the same
+say which names exist; a full hashing queue, about 3 s of work counted in
+rounds, so hashes planted with many cannot make the wait longer, is a 503
+with `retry-after`; that keeps the machine answering through a flood, and
+a `RateLimit` on the sign-in action is what stops one): PBKDF2-HMAC-SHA256 on the same
 HMAC, 600,000 rounds (OWASP), a random 16-byte salt, written as
 `$pbkdf2-sha256$i=600000$salt$key` so the count can be raised later and old
 hashes still check; `wisp::password::outdated(&hash)` says when one was made
