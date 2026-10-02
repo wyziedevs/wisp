@@ -9,8 +9,8 @@
 //! the route), but for adding `cx` to one that uses it without taking it,
 //! `-> Result` to one without a return type and `async` to one that
 //! `.await`s; the derives read just enough of a type to know its name and
-//! its fields' names, and `#[validate]`'s rules as `wisp_build::rules`
-//! reads them.
+//! its fields' names, and `#[validate]`'s rules as the build reads them
+//! (`wisp_shared::rules`).
 
 use proc_macro::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream, TokenTree};
 
@@ -73,7 +73,8 @@ fn implicit_cx(item: TokenStream) -> TokenStream {
     };
     let span = pg.span();
     let (body_stream, body_span) = (bg.stream(), bg.span());
-    let make_async = awaits(&body_stream)
+    // As the build reads the same body (`wisp_shared::rust::awaits`).
+    let make_async = wisp_shared::rust::awaits(&body_stream.to_string())
         && !tokens[..f]
             .iter()
             .any(|t| matches!(t, TokenTree::Ident(i) if i.to_string() == "async"));
@@ -111,21 +112,6 @@ fn implicit_cx(item: TokenStream) -> TokenStream {
         tokens.insert(f, Ident::new("async", fn_span).into());
     }
     tokens.into_iter().collect()
-}
-
-/// Whether `s` has `.await`, in any group: as `wisp-build`'s
-/// `rust_scan::awaits` reads the same body.
-fn awaits(s: &TokenStream) -> bool {
-    let mut dot = false;
-    for t in s.clone() {
-        match &t {
-            TokenTree::Ident(i) if dot && i.to_string() == "await" => return true,
-            TokenTree::Group(g) if awaits(&g.stream()) => return true,
-            _ => {}
-        }
-        dot = matches!(&t, TokenTree::Punct(p) if p.as_char() == '.');
-    }
-    false
 }
 
 /// `::wisp::rt_traits::done(value)`.
@@ -828,7 +814,7 @@ fn named_fields(item: &TokenStream) -> Result<Vec<Field>, Error> {
                         }
                         other => return Err(("expected `= value`".into(), other[0].span())),
                     };
-                    let r = wisp_build::rules::rule(&name.to_string(), value.as_deref())
+                    let r = wisp_shared::rules::rule(&name.to_string(), value.as_deref())
                         .map_err(|e| (e, name.span()))?;
                     checks.push(r.check("__x"));
                 }

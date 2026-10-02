@@ -430,9 +430,7 @@ fn constrain(schema: &mut J, rules: &str, t: &str) {
     };
     // Written as JSON writes a number: Rust's `5.`, `1_0` or `inf` are not.
     let mut add = |key: &str, n: &str| {
-        if let Ok(x) = n.parse::<f64>()
-            && x.is_finite()
-        {
+        if let Some(x) = rules::plain(n) {
             schema.set(key, J::Num(x.to_string()));
         }
     };
