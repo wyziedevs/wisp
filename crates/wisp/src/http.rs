@@ -14,8 +14,9 @@
 #![cfg_attr(target_arch = "wasm32", allow(dead_code, unused_imports))]
 
 use crate::cx::{Cx, Method, Span, decode, hex_digit, valid_header};
-use crate::idem::Start;
-use crate::policy::{self, KEEP_CAPACITY, READ_CAPACITY, WRITE_TIMEOUT};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::policy::READ_CAPACITY;
+use crate::policy::{self, KEEP_CAPACITY, WRITE_TIMEOUT};
 use crate::{App, Error, Out, dev, rt};
 use std::borrow::Cow;
 use std::cell::Cell;
@@ -272,7 +273,7 @@ fn polled<A: App>(stream: std::net::TcpStream) {
     let Some((slot, peer)) = admit(&stream) else {
         return;
     };
-    crate::epoll::spawn(stream, Some(peer), move |sock| async move {
+    crate::epoll::spawn(stream, peer, move |sock| async move {
         connection::<A>(Conn::Poll(sock), peer).await;
         drop(slot);
     });
@@ -324,14 +325,26 @@ async fn stop(workers: &[tokio::runtime::Handle]) {
     first(drained, stop_signal()).await;
 }
 
-/// Responses this thread's driver has yet to send (on Linux; elsewhere a
-/// connection sends its own before it is idle).
+thread_local! {
+    /// Responses this thread's driver has yet to send (on Linux; elsewhere a
+    /// connection sends its own before it is idle).
+    static SENDING: Cell<usize> = const { Cell::new(0) };
+}
+
+/// [`SENDING`] on this thread.
 #[cfg(not(target_arch = "wasm32"))]
-fn sending() -> usize {
-    #[cfg(target_os = "linux")]
-    return crate::uring::sending() + crate::epoll::sending();
-    #[cfg(not(target_os = "linux"))]
-    0
+pub(crate) fn sending() -> usize {
+    SENDING.get()
+}
+
+/// A send the driver finishes began (`true`) or ended.
+#[cfg(target_os = "linux")]
+pub(crate) fn send_under_way(began: bool) {
+    SENDING.set(if began {
+        SENDING.get() + 1
+    } else {
+        SENDING.get() - 1
+    });
 }
 
 /// SIGTERM, which is how systemd, Docker and Kubernetes stop a server, or
@@ -368,6 +381,7 @@ pub(crate) async fn first<T>(a: impl Future<Output = T>, b: impl Future<Output =
 
 /// Set once the server is stopping.
 static STOPPING: AtomicBool = AtomicBool::new(false);
+
 /// Wakes what waits for the server to stop.
 static STOP: Notify = Notify::const_new();
 
@@ -618,22 +632,14 @@ impl Conn {
 async fn read(
     stream: &mut Conn,
     buf: &mut Vec<u8>,
-    mut timer: std::pin::Pin<&mut tokio::time::Sleep>,
+    timer: std::pin::Pin<&mut tokio::time::Sleep>,
     deadline: u64,
 ) -> io::Result<usize> {
     #[cfg(target_os = "linux")]
     if let Conn::Poll(s) = stream {
         return s.read_by(buf, deadline).await;
     }
-    let when = instant(deadline);
-    if timer.deadline() != when {
-        timer.as_mut().reset(when);
-    }
-    first(stream.read(buf), async {
-        timer.await;
-        Err(io::ErrorKind::TimedOut.into())
-    })
-    .await
+    by(timer, deadline, stream.read(buf)).await
 }
 
 /// Waits until the socket has something to read (or its end, or an error,
@@ -642,7 +648,7 @@ async fn read(
 #[cfg(not(target_arch = "wasm32"))]
 async fn readable(
     stream: &mut Conn,
-    mut timer: std::pin::Pin<&mut tokio::time::Sleep>,
+    timer: std::pin::Pin<&mut tokio::time::Sleep>,
     deadline: u64,
 ) -> io::Result<()> {
     match stream {
@@ -650,18 +656,26 @@ async fn readable(
         Conn::Poll(s) => s.readable_by(deadline).await,
         #[cfg(target_os = "linux")]
         Conn::Ring(_) => Ok(()),
-        Conn::Tcp(s) => {
-            let when = instant(deadline);
-            if timer.deadline() != when {
-                timer.as_mut().reset(when);
-            }
-            first(s.readable(), async {
-                timer.await;
-                Err(io::ErrorKind::TimedOut.into())
-            })
-            .await
-        }
+        Conn::Tcp(s) => by(timer, deadline, s.readable()).await,
     }
+}
+
+/// `f`, unless `deadline` (in `seconds()`) comes first: then `TimedOut`.
+#[cfg(not(target_arch = "wasm32"))]
+async fn by<T>(
+    mut timer: std::pin::Pin<&mut tokio::time::Sleep>,
+    deadline: u64,
+    f: impl Future<Output = io::Result<T>>,
+) -> io::Result<T> {
+    let when = instant(deadline);
+    if timer.deadline() != when {
+        timer.as_mut().reset(when);
+    }
+    first(f, async {
+        timer.await;
+        Err(io::ErrorKind::TimedOut.into())
+    })
+    .await
 }
 
 /// Runs `f`, giving up with `TimedOut` after `limit`. A timer is only set
@@ -793,15 +807,18 @@ pub(crate) fn accept_failed(e: &std::io::Error) -> bool {
     true
 }
 
+/// A complete request, described by `cx`: its bytes, whether its client
+/// asked to keep the connection open, and its route when a body's limit
+/// had `parse` find it (its params are in `cx` then).
+#[derive(Clone, Copy)]
+struct Req {
+    len: usize,
+    keep_alive: bool,
+    routed: Option<Option<usize>>,
+}
+
 enum Parsed {
-    /// A complete request is described by `cx`; it occupies `len` bytes.
-    /// `hosted`: it has its `host` header, or is HTTP/1.0, which needs none
-    /// (a request from another host, `Cx::from_request`, may have none).
-    Request {
-        len: usize,
-        keep_alive: bool,
-        hosted: bool,
-    },
+    Request(Req),
     /// More bytes are needed. `need` is the full request size when known;
     /// `body` is set once the head is in.
     Partial {
@@ -851,25 +868,13 @@ fn take_buffers(peer: SocketAddr) -> Box<Buffers> {
     b
 }
 
-/// `b` back, for the next request on this thread.
+/// `b` back, for the next request on this thread. Each request reset its
+/// `Cx` as it was answered.
 #[cfg(not(target_arch = "wasm32"))]
 fn give_buffers(mut b: Box<Buffers>) {
     b.cx.wire.buf.clear();
-    b.cx.reset();
     b.wbuf.clear();
-    b.out.clear();
-    // What a large request or response grew them to goes.
-    policy::trim(&mut b.cx.wire.buf, READ_CAPACITY);
-    policy::trim(&mut b.wbuf, KEEP_CAPACITY);
-    if !policy::kept(b.out.body.capacity()) {
-        b.out = Out::default();
-    }
-    // Its headers keep their room (as `Reply::set` keeps it), unless many.
-    (b.reply.status, b.reply.body) = (200, Body::Static(b""));
-    b.reply.headers.clear();
-    if b.reply.headers.capacity() > 16 {
-        b.reply.headers = Vec::new();
-    }
+    trim_buffers(&mut b);
     POOL.with_borrow_mut(|p| {
         if p.len() < POOLED {
             p.push(b);
@@ -877,41 +882,75 @@ fn give_buffers(mut b: Box<Buffers>) {
     });
 }
 
+/// What one large request or response grew `b` to goes; the read buffer
+/// only once it is empty.
+#[cfg(not(target_arch = "wasm32"))]
+fn trim_buffers(b: &mut Buffers) {
+    if b.cx.wire.buf.is_empty() {
+        policy::trim(&mut b.cx.wire.buf, READ_CAPACITY);
+    }
+    policy::trim(&mut b.wbuf, KEEP_CAPACITY);
+    if !policy::kept(b.out.body.capacity()) {
+        b.out = Out::default();
+    }
+    if !policy::kept_headers(b.reply.headers.capacity()) {
+        b.reply.headers = Vec::new();
+    }
+}
+
 /// What the epoll driver received for a connection and leaves to its
 /// future (see [`on_driver`]): the buffers, how much of `cx.wire.buf` is
 /// answered, and the request after that when the driver got that far with
 /// it.
 pub(crate) struct Handed {
-    b: Box<Buffers>,
+    held: Holding,
     at: usize,
     ahead: Option<Ahead>,
 }
 
+/// The buffers of what is handed, or the request deciding in them: one the
+/// build said never waits, which did. The connection's future goes on
+/// polling it, so what it did so far is never lost.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+enum Holding {
+    Ready(Box<Buffers>),
+    Deciding(Deciding),
+}
+
+/// A decider (see [`decider`]) with a request under way.
+type Deciding = std::pin::Pin<Box<dyn Future<Output = ()> + Send>>;
+
 impl Handed {
     /// What is still to send, which the driver sends before it hands over.
+    /// A request still deciding has the answers before it: they go with
+    /// its own.
     #[cfg(target_os = "linux")]
-    pub(crate) fn wbuf(&mut self) -> &mut Vec<u8> {
-        &mut self.b.wbuf
+    pub(crate) fn wbuf(&mut self) -> Option<&mut Vec<u8>> {
+        match &mut self.held {
+            Holding::Ready(b) => Some(&mut b.wbuf),
+            Holding::Deciding(_) => None,
+        }
     }
 }
 
 /// A request [`on_driver`] parsed but leaves to the connection's future,
 /// whole: `parse` is not run on it again, which would read a chunked body
-/// it already moved over its framing. `routed`: the driver routed it too
-/// (its params are in `cx`). `decided`: and its reply is in `reply`, and
-/// needs the future (a stream, a WebSocket).
+/// it already moved over its framing.
 struct Ahead {
-    len: usize,
-    keep_alive: bool,
-    hosted: bool,
-    routed: Option<Option<usize>>,
-    decided: bool,
+    req: Req,
+    stage: Stage,
 }
 
-/// Set once a route `RouteFacts::now` said never waits did: the driver answers no
-/// more requests itself.
-#[cfg(target_os = "linux")]
-static NOW_OFF: AtomicBool = AtomicBool::new(false);
+/// How far the driver got with a request it hands on.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+enum Stage {
+    Parsed,
+    /// Routed too: its params are in `cx`.
+    Routed(Option<usize>),
+    /// Decided too: its reply is in `reply` (a stream, a WebSocket), or is
+    /// still being decided (`Holding::Deciding`).
+    Decided,
+}
 
 /// Whether some route of `A` answers without waiting, so [`on_driver`] can help.
 #[cfg(target_os = "linux")]
@@ -929,120 +968,97 @@ fn answers<A: App>() -> bool {
 /// It saves what the future's way costs a request: polling the
 /// connection's future and its state, and taking and giving back buffers
 /// across it. The work is the same: [`parse`], [`decide`], [`serialize`].
+/// A route that waits after all is no failure, only slower: its request,
+/// still deciding, goes on in the future.
 #[cfg(target_os = "linux")]
 pub(crate) fn on_driver<A: App>(token: u64) -> bool {
     use crate::epoll::{self, Got};
-    if NOW_OFF.load(Ordering::Relaxed) || STOPPING.load(Ordering::Relaxed) {
+    if stopping() {
         return false;
     }
-    let mut b = take_buffers(UNSPECIFIED);
-    let Some((id, mut got)) = epoll::first(token, &mut b.cx.wire.buf, &mut b.cx.wire.peer) else {
-        give_buffers(b);
+    let Some((id, peer)) = epoll::free(token) else {
         return false;
     };
+    let mut b = DRIVER.take().unwrap_or_else(|| take_buffers(peer));
+    b.cx.wire.peer = peer;
+    let mut got = epoll::receive(id, &mut b.cx.wire.buf);
     loop {
         let more = match got {
             Got::Bytes(more) => more,
             Got::Nothing => break,
             Got::End => {
-                give_buffers(b);
+                park(b);
                 return false;
             }
         };
-        let (at, ahead) = answer_whole::<A>(&mut b);
-        if at < b.cx.wire.buf.len() || ahead.is_some() {
-            epoll::hand(id, Handed { b, at, ahead });
-            return false;
-        }
+        b = match answer_whole::<A>(b) {
+            Ok(b) => b,
+            Err(h) => {
+                epoll::hand(id, h);
+                return false;
+            }
+        };
         b.cx.wire.buf.clear();
         // Sent, and the next: in one go on the worker. Something answered
-        // (`at` is all of it), so the connection waits from now on.
+        // (all of it), so the connection waits from now on.
         let deadline = policy::idle_deadline(seconds());
         got = epoll::next(id, &mut b.wbuf, &mut b.cx.wire.buf, more, deadline);
     }
-    give_buffers(b);
+    park(b);
     true
 }
 
-/// The peer of buffers [`epoll::first`] has yet to give one.
 #[cfg(target_os = "linux")]
-const UNSPECIFIED: SocketAddr = SocketAddr::V4(std::net::SocketAddrV4::new(
-    std::net::Ipv4Addr::UNSPECIFIED,
-    0,
-));
+thread_local! {
+    /// The buffers [`on_driver`] answers in, kept for its next connection:
+    /// its requests are each reset as answered, so only what came and what
+    /// went is cleared between.
+    static DRIVER: Cell<Option<Box<Buffers>>> = const { Cell::new(None) };
+}
 
-/// [`on_driver`]'s requests in `b.cx.wire.buf`, answered into `b.wbuf` while they can
-/// be: where it stopped, and the request there when it got as far as
-/// routing it.
+/// `b` back to [`DRIVER`].
 #[cfg(target_os = "linux")]
-fn answer_whole<A: App>(b: &mut Buffers) -> (usize, Option<Ahead>) {
-    let Buffers {
-        cx,
-        wbuf,
-        out,
-        reply,
-    } = b;
+fn park(mut b: Box<Buffers>) {
+    b.cx.wire.buf.clear();
+    b.wbuf.clear();
+    trim_buffers(&mut b);
+    DRIVER.set(Some(b));
+}
+
+/// [`on_driver`]'s requests in `b.cx.wire.buf`, answered into `b.wbuf`:
+/// the buffers when that was all of them, else what is left for the
+/// connection's future.
+#[cfg(target_os = "linux")]
+fn answer_whole<A: App>(mut b: Box<Buffers>) -> Result<Box<Buffers>, Handed> {
     let mut at = 0;
-    while at < cx.wire.buf.len() && wbuf.len() < KEEP_CAPACITY {
-        let Parsed::Request {
-            len,
-            keep_alive,
-            hosted,
-        } = parse::<A>(cx, at)
-        else {
+    while at < b.cx.wire.buf.len() && b.wbuf.len() < KEEP_CAPACITY {
+        let Parsed::Request(req) = parse::<A>(&mut b.cx, at, true) else {
             break;
         };
-        if !(keep_alive && hosted) {
-            let ahead = Ahead {
-                len,
-                keep_alive,
-                hosted,
-                routed: None,
-                decided: false,
-            };
-            return (at, Some(ahead));
-        }
-        let route = route::<A>(cx);
-        let now = match route {
-            Some(route) => A::ROUTES[route].now,
-            None => A::NOT_FOUND_NOW,
+        let hand = move |held, stage| {
+            let ahead = Some(Ahead { req, stage });
+            Err(Handed { held, at, ahead })
         };
-        if !now {
-            return (
-                at,
-                Some(Ahead {
-                    len,
-                    keep_alive,
-                    hosted,
-                    routed: Some(route),
-                    decided: false,
-                }),
-            );
+        if !policy::keeps_open(req.keep_alive, stopping()) {
+            return hand(Holding::Ready(b), Stage::Parsed);
         }
-        if !at_once(decide::<A>(cx, out, reply, Some(route))) {
-            // The build was wrong. What the route did so far stays done;
-            // it fails, and the futures answer from now on.
-            NOW_OFF.store(true, Ordering::Relaxed);
-            log(format_args!(
-                "wisp: {} {} waited, though its route looked like it never would; \
-                 requests are answered the usual way from now on",
-                cx.method.as_str(),
-                cx.path()
-            ));
-            *reply = Reply::plain(500);
+        let route = req.routed.unwrap_or_else(|| route::<A>(&mut b.cx));
+        if !route.map_or(A::NOT_FOUND_NOW, |r| A::ROUTES[r].now) {
+            return hand(Holding::Ready(b), Stage::Routed(route));
         }
-        if matches!(reply.body, Body::Stream(_) | Body::WebSocket(_)) {
-            return (
-                at,
-                Some(Ahead {
-                    len,
-                    keep_alive,
-                    hosted,
-                    routed: Some(route),
-                    decided: true,
-                }),
-            );
+        b = match at_once::<A>(b, route) {
+            Ok(b) => b,
+            Err(f) => return hand(Holding::Deciding(f), Stage::Decided),
+        };
+        if matches!(b.reply.body, Body::Stream(_) | Body::WebSocket(_)) {
+            return hand(Holding::Ready(b), Stage::Decided);
         }
+        let Buffers {
+            cx,
+            wbuf,
+            out,
+            reply,
+        } = &mut *b;
         serialize::<A>(
             wbuf,
             reply,
@@ -1051,18 +1067,85 @@ fn answer_whole<A: App>(b: &mut Buffers) -> (usize, Option<Ahead>) {
             true,
             cx.method == Method::Head,
         );
-        at += len;
+        cx.reset();
+        at += req.len;
     }
-    (at, None)
+    if at < b.cx.wire.buf.len() {
+        let held = Holding::Ready(b);
+        return Err(Handed {
+            held,
+            at,
+            ahead: None,
+        });
+    }
+    Ok(b)
 }
 
-/// Polls `f` once: whether that finished it. Dropped either way.
 #[cfg(target_os = "linux")]
-fn at_once(f: impl Future<Output = ()>) -> bool {
-    let waker = std::task::Waker::noop();
-    let f = std::pin::pin!(f);
-    f.poll(&mut std::task::Context::from_waker(waker))
-        .is_ready()
+thread_local! {
+    /// The decider of [`on_driver`]'s requests on this thread, for its app.
+    static DECIDER: Cell<Option<(std::any::TypeId, Deciding)>> = const { Cell::new(None) };
+    /// A request for the decider, and its route.
+    static INBOX: Cell<Option<(Box<Buffers>, Option<usize>)>> = const { Cell::new(None) };
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+thread_local! {
+    /// The buffers of the request a decider just decided, taken at once
+    /// by what polled it.
+    static OUTBOX: Cell<Option<Box<Buffers>>> = const { Cell::new(None) };
+}
+
+/// [`decide`] for the driver, as one future a thread keeps: each request
+/// comes in through [`INBOX`], its buffers go out through [`OUTBOX`] once
+/// it is decided, and no future is made or moved for it. A request that
+/// waits keeps its decider, which the connection's future polls on, and
+/// the thread makes another.
+#[cfg(target_os = "linux")]
+async fn decider<A: App>() {
+    loop {
+        let (mut b, route) =
+            std::future::poll_fn(|_| INBOX.take().map_or(Poll::Pending, Poll::Ready)).await;
+        {
+            let Buffers { cx, out, reply, .. } = &mut *b;
+            decide::<A>(cx, out, reply, Some(route)).await;
+        }
+        OUTBOX.set(Some(b));
+    }
+}
+
+/// Decides the request in `b`, routed to `route`, on this thread's
+/// decider: its buffers when that is done at once, else the decider, still
+/// deciding it (see [`decided`]).
+#[cfg(target_os = "linux")]
+fn at_once<A: App>(b: Box<Buffers>, route: Option<usize>) -> Result<Box<Buffers>, Deciding> {
+    let app = std::any::TypeId::of::<A>();
+    let mut d = match DECIDER.take() {
+        Some((of, d)) if of == app => d,
+        _ => Box::pin(decider::<A>()),
+    };
+    INBOX.set(Some((b, route)));
+    // Taken out meanwhile: one that panics is dropped, not polled again.
+    let _ = d
+        .as_mut()
+        .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()));
+    match OUTBOX.take() {
+        Some(b) => {
+            DECIDER.set(Some((app, d)));
+            Ok(b)
+        }
+        None => Err(d),
+    }
+}
+
+/// The buffers of the request the decider `d` decides, once it has.
+#[cfg(not(target_arch = "wasm32"))]
+async fn decided(mut d: Deciding) -> Box<Buffers> {
+    std::future::poll_fn(|cx| {
+        let _ = d.as_mut().poll(cx);
+        OUTBOX.take().map_or(Poll::Pending, Poll::Ready)
+    })
+    .await
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1088,43 +1171,30 @@ async fn requests<A: App>(mut stream: Conn, peer: SocketAddr, held: &mut Option<
     let mut ahead: Option<Ahead> = None;
 
     'conn: loop {
-        let Buffers {
-            cx,
-            wbuf,
-            out,
-            reply,
-        } = &mut **held.get_or_insert_with(|| take_buffers(peer));
+        let b = &mut **held.get_or_insert_with(|| take_buffers(peer));
         let mut used = std::mem::take(&mut start);
         let mut need = 0;
         let mut in_body = false;
         let mut close = false;
         let mut refused = false;
-        while used < cx.wire.buf.len() {
-            // `routed`: the driver routed it; `pre`: and decided it.
-            let (parsed, routed, pre) = match ahead.take() {
-                Some(a) => {
-                    let parsed = Parsed::Request {
-                        len: a.len,
-                        keep_alive: a.keep_alive,
-                        hosted: a.hosted,
-                    };
-                    (parsed, a.routed, a.decided)
-                }
-                None => (parse::<A>(cx, used), None, false),
+        while used < b.cx.wire.buf.len() {
+            let (parsed, stage) = match ahead.take() {
+                Some(a) => (Parsed::Request(a.req), a.stage),
+                None => (parse::<A>(&mut b.cx, used, true), Stage::Parsed),
             };
-            // On the wire, HTTP/1.1 must name its host (RFC 9112 §3.2).
-            let parsed = match parsed {
-                Parsed::Request { hosted: false, .. } => Parsed::Invalid(400),
-                parsed => parsed,
-            };
+            let Buffers {
+                cx,
+                wbuf,
+                out,
+                reply,
+            } = &mut *b;
             match parsed {
-                Parsed::Request {
-                    len, keep_alive, ..
-                } => {
-                    let keep_alive =
-                        policy::keeps_open(keep_alive, STOPPING.load(Ordering::Relaxed));
-                    if !pre {
-                        decide::<A>(cx, out, reply, routed).await;
+                Parsed::Request(req) => {
+                    let keep_alive = policy::keeps_open(req.keep_alive, stopping());
+                    match stage {
+                        Stage::Parsed => decide::<A>(cx, out, reply, req.routed).await,
+                        Stage::Routed(route) => decide::<A>(cx, out, reply, Some(route)).await,
+                        Stage::Decided => {}
                     }
                     // Only as a 101: a hook may have answered otherwise.
                     let upgrade = reply.take_websocket().filter(|_| reply.status == 101);
@@ -1136,7 +1206,8 @@ async fn requests<A: App>(mut stream: Conn, peer: SocketAddr, held: &mut Option<
                         keep_alive || upgrade.is_some(),
                         cx.method == Method::Head,
                     );
-                    used += len;
+                    cx.reset();
+                    used += req.len;
                     // Answers to many small pipelined requests go out in
                     // pieces, so a buffer of them cannot make a huge one.
                     if streamed.is_none()
@@ -1219,47 +1290,35 @@ async fn requests<A: App>(mut stream: Conn, peer: SocketAddr, held: &mut Option<
             }
         }
 
-        if !wbuf.is_empty() {
-            if stream.write(wbuf).await.is_err() {
-                return;
-            }
-            policy::trim(wbuf, KEEP_CAPACITY);
+        if !b.wbuf.is_empty() && stream.write(&mut b.wbuf).await.is_err() {
+            return;
         }
         if close {
             stream.shutdown().await;
             if refused {
-                linger(&mut stream, &mut cx.wire.buf, timer.as_mut()).await;
+                linger(&mut stream, &mut b.cx.wire.buf, timer.as_mut()).await;
             }
             return;
         }
 
-        cx.wire.buf.drain(..used);
-        if cx.wire.buf.is_empty() {
-            policy::trim(&mut cx.wire.buf, READ_CAPACITY);
-        }
-        if !policy::kept(out.body.capacity()) {
-            *out = Out::default();
-        }
-        // Room for the rest of the body, but at most 1 MB ahead of what came:
-        // a large `content-length` alone is not a reason to allocate.
-        cx.wire.buf.reserve(
-            need.saturating_sub(cx.wire.buf.len())
-                .clamp(4096, 1024 * 1024),
-        );
+        b.cx.wire.buf.drain(..used);
+        trim_buffers(b);
+        let have = b.cx.wire.buf.len();
+        b.cx.wire.buf.reserve(policy::read_ahead(need, have));
 
-        let deadline = if cx.wire.buf.is_empty() {
+        let deadline = if have == 0 {
             busy.set(false);
-            if STOPPING.load(Ordering::Relaxed) {
+            if stopping() {
                 return;
             }
             policy::idle_deadline(seconds())
         } else if in_body {
             let since = *body_since.get_or_insert_with(seconds);
-            policy::body_deadline(seconds(), since, cx.wire.buf.len())
+            policy::body_deadline(seconds(), since, have)
         } else {
             policy::head_deadline(*head_since.get_or_insert_with(seconds))
         };
-        if cx.wire.buf.is_empty() && stream.waits_bare() {
+        if have == 0 && stream.waits_bare() {
             // Nothing of a next request yet: wait for it without buffers,
             // which go to whichever request on this thread comes first.
             give_buffers(held.take().expect("taken at the top of the loop"));
@@ -1271,9 +1330,13 @@ async fn requests<A: App>(mut stream: Conn, peer: SocketAddr, held: &mut Option<
                     return; // closed, error or too slow
                 }
                 if let Some(h) = stream.handed() {
-                    *held = Some(h.b);
+                    busy.set(true);
+                    *held = Some(match h.held {
+                        Holding::Ready(b) => b,
+                        Holding::Deciding(d) => decided(d).await,
+                    });
                     (start, ahead) = (h.at, h.ahead);
-                    break;
+                    continue 'conn;
                 }
                 let b = held.insert(take_buffers(peer));
                 match stream.try_read(&mut b.cx.wire.buf) {
@@ -1289,7 +1352,7 @@ async fn requests<A: App>(mut stream: Conn, peer: SocketAddr, held: &mut Option<
             busy.set(true);
             continue;
         }
-        match read(&mut stream, &mut cx.wire.buf, timer.as_mut(), deadline).await {
+        match read(&mut stream, &mut b.cx.wire.buf, timer.as_mut(), deadline).await {
             Ok(n) if n > 0 => busy.set(true),
             _ => return, // closed, error or too slow
         }
@@ -1306,8 +1369,8 @@ async fn linger(
     buf: &mut Vec<u8>,
     mut timer: std::pin::Pin<&mut tokio::time::Sleep>,
 ) {
-    let deadline = seconds() + 2;
-    let mut left: usize = 1024 * 1024;
+    let deadline = seconds() + policy::LINGER.as_secs();
+    let mut left = policy::LINGER_BYTES;
     while left > 0 {
         buf.clear();
         match read(stream, buf, timer.as_mut(), deadline).await {
@@ -1318,10 +1381,11 @@ async fn linger(
 }
 
 /// Parses the request starting at `cx.wire.buf[at..]` and, if it is complete,
-/// records it in `cx` as spans.
-fn parse<A: App>(cx: &mut Cx, at: usize) -> Parsed {
+/// records it in `cx` as spans. `on_wire`: from a client of the built-in
+/// server, where HTTP/1.1 must name its host (RFC 9112 §3.2); a request
+/// from another host (`Cx::from_request`) may have none.
+fn parse<A: App>(cx: &mut Cx, at: usize, on_wire: bool) -> Parsed {
     use crate::swar;
-    cx.reset();
     cx.wire.headers.clear();
     let head = match fast_head(&cx.wire.buf, at, &mut cx.wire.headers) {
         Some(head) => head,
@@ -1394,11 +1458,23 @@ fn parse<A: App>(cx: &mut Cx, at: usize) -> Parsed {
         return Parsed::Invalid(400);
     }
 
-    // The path only matters here for a body's limit.
-    let path = || std::str::from_utf8(&buf[head.path.range()]).unwrap_or("");
+    cx.method = head.method;
+    cx.wire.http11 = head.http11;
+    cx.wire.path = head.path;
+    cx.wire.query = head.query;
+    // A body's limit is its route's: the request is routed for it now, once.
     let body_start = at + head.len;
+    let len = content_length.unwrap_or(0);
+    let mut routed = None;
+    let mut limit = 0;
+    if chunked || len > 0 {
+        let route = cx.path().starts_with('/').then(|| route::<A>(cx));
+        limit = limit_of::<A>(route.flatten());
+        routed = route;
+    }
+    let buf = &cx.wire.buf[..];
     let (len, total) = if chunked {
-        match chunks(&buf[body_start..], body_limit::<A>(path())) {
+        match chunks(&buf[body_start..], limit) {
             Chunks::Complete { wire, body } => (body, head.len + wire),
             Chunks::Partial => {
                 return Parsed::Partial {
@@ -1411,8 +1487,7 @@ fn parse<A: App>(cx: &mut Cx, at: usize) -> Parsed {
             Chunks::Invalid => return Parsed::Invalid(400),
         }
     } else {
-        let len = content_length.unwrap_or(0);
-        if len > 0 && len > body_limit::<A>(path()) {
+        if len > limit {
             return Parsed::Invalid(413);
         }
         if buf.len() - body_start < len {
@@ -1425,10 +1500,10 @@ fn parse<A: App>(cx: &mut Cx, at: usize) -> Parsed {
         (len, head.len + len)
     };
 
-    cx.method = head.method;
-    cx.wire.http11 = head.http11;
-    cx.wire.path = head.path;
-    cx.wire.query = head.query;
+    // Once whole, as the limits come first.
+    if on_wire && hosts == 0 && head.http11 {
+        return Parsed::Invalid(400);
+    }
     cx.wire.body = Span {
         start: body_start as u32,
         len: len as u32,
@@ -1438,11 +1513,11 @@ fn parse<A: App>(cx: &mut Cx, at: usize) -> Parsed {
         // where `cx.wire.body` says. The head stays as it is.
         unchunk(&mut cx.wire.buf[body_start..at + total]);
     }
-    Parsed::Request {
+    Parsed::Request(Req {
         len: total,
         keep_alive,
-        hosted: hosts == 1 || !head.http11,
-    }
+        routed,
+    })
 }
 
 /// A request's head: its line, and its headers, which went to `cx.wire.headers`.
@@ -1571,27 +1646,21 @@ fn fast_head(buf: &[u8], at: usize, headers: &mut Vec<(Span, Span)>) -> Option<H
         let value = i;
         loop {
             if i + 8 <= b.len() {
-                let x = swar::word(b, i);
-                let stop = swar::below(x, 0x20) | swar::eq(x, 0x7f);
+                let stop = swar::control(swar::word(b, i));
                 if stop == 0 {
                     i += 8;
                     // Past eight, a long value (a cookie, a user agent):
                     // sixteen at a time.
-                    while let Some(chunk) = b.get(i..i + 16) {
-                        let mut stop = 0u8;
-                        for &c in chunk {
-                            stop |= ((c < 0x20) | (c == 0x7f)) as u8;
-                        }
-                        if stop != 0 {
-                            break;
-                        }
+                    while let Some(chunk) = b.get(i..i + 16)
+                        && !swar::any_control(chunk)
+                    {
                         i += 16;
                     }
                     continue;
                 }
                 i += swar::first(stop);
             } else {
-                while b.get(i).is_some_and(|&c| c >= 0x20 && c != 0x7f) {
+                while b.get(i).is_some_and(|&c| !swar::is_control(c)) {
                     i += 1;
                 }
             }
@@ -1699,14 +1768,15 @@ const MAX_BODY: usize = 1 << 31;
 /// `WISP_BODY_LIMIT`, and at most `MAX_BODY`. Only requests with a body
 /// look it up.
 pub(crate) fn body_limit<A: App>(path: &str) -> usize {
+    let route = path.starts_with('/').then(|| A::route(path)).flatten();
+    limit_of::<A>(route.map(|(id, _)| id))
+}
+
+/// [`body_limit`] of a request routed to `route`.
+fn limit_of<A: App>(route: Option<usize>) -> usize {
     let usual = crate::settings().body_limit;
-    let route = if path.starts_with('/') {
-        A::route(path)
-    } else {
-        None
-    };
     route
-        .and_then(|(id, _)| A::ROUTES[id].limit(usual))
+        .and_then(|id| A::ROUTES[id].limit(usual))
         .unwrap_or(usual)
         .min(MAX_BODY)
 }
@@ -2076,17 +2146,23 @@ impl Cx {
         push_decimal(buf, body.len() as u64);
         buf.extend_from_slice(b"\r\n\r\n");
         buf.extend_from_slice(body);
-        match parse::<A>(&mut cx, 0) {
-            Parsed::Request { len, .. } if len == cx.wire.buf.len() => Ok(cx),
+        match parse::<A>(&mut cx, 0, false) {
+            Parsed::Request(r) if r.len == cx.wire.buf.len() => Ok(cx),
             Parsed::Invalid(status) => Err(status),
             _ => Err(400),
         }
     }
 }
 
-/// Decides the response to the request in `cx`, and gives it `x-request-id`
-/// when the request has an id (`WISP_REQUEST_ID=on`, or `cx.request_id()`).
-/// `routed`: its route, when [`route`] found it already.
+/// Decides the response to the request in `cx`: Wisp's own files, the
+/// app's, routing, hooks, redirects, error pages. Writes nothing; see
+/// [`serialize`]. Gives it `x-request-id` when the request has an id
+/// (`WISP_REQUEST_ID=on`, or `cx.request_id()`). `routed`: its route, when
+/// [`route`] found it already.
+///
+/// What it holds across its awaits is little, the handler's future and
+/// the error page's: the rest is done in plain functions around them, so
+/// the future moves cheaply as it is made, every request.
 async fn decide<A: App>(
     cx: &mut Cx,
     out: &mut Out,
@@ -2096,17 +2172,23 @@ async fn decide<A: App>(
     if crate::settings().request_id {
         cx.request_id();
     }
-    match crate::idem::start(cx) {
-        Start::Skip => decide_inner::<A>(cx, out, reply, routed).await,
-        Start::Fresh(key) => {
-            decide_inner::<A>(cx, out, reply, routed).await;
-            crate::idem::finish(key, reply);
-        }
-        Start::Replay(r) => *reply = r,
-        Start::Refused(e) => {
-            let body = e.json(e.message(), false).into_bytes();
-            reply.set(e.status, "application/json", Body::Bytes(body));
-        }
+    // Routed first (it only matches), so the path is read once.
+    let route = routed.unwrap_or_else(|| route::<A>(cx));
+    if !before_routes::<A>(cx, route, reply) {
+        let started = timed().then(Instant::now);
+        out.clear();
+        let result = catch_made(|| A::handle(route, cx, out)).await;
+        let failure = match answer_of(cx, out, reply, result) {
+            Ok(()) => None,
+            Err(e) => {
+                let (failure, page) = error_reply(cx, out, reply, e);
+                if let Some(page) = page {
+                    render_error::<A>(route, cx, out, page).await;
+                }
+                failure
+            }
+        };
+        answered(cx, reply, started, failure);
     }
     if let Some(id) = cx.id() {
         reply
@@ -2115,25 +2197,16 @@ async fn decide<A: App>(
     }
 }
 
-/// Wisp's own files, the app's, routing, hooks, redirects, error pages.
-/// Writes nothing; see [`serialize`].
-async fn decide_inner<A: App>(
-    cx: &mut Cx,
-    out: &mut Out,
-    reply: &mut Reply,
-    routed: Option<Option<usize>>,
-) {
-    let started = timed().then(Instant::now);
-    let method = cx.method;
-
-    // Routed first (it only matches), so the path is read once.
-    let route = routed.unwrap_or_else(|| route::<A>(cx));
+/// What is answered before the routes: a path that is not one, Wisp's own
+/// files, a trailing slash, the app's files. Whether it was.
+fn before_routes<A: App>(cx: &Cx, route: Option<usize>, reply: &mut Reply) -> bool {
     let path = cx.path();
     if !path.starts_with('/') {
-        return reply.set_plain(400, "Bad Request");
+        reply.set_plain(400, "Bad Request");
+        return true;
     }
     if internal::<A>(cx, path, reply) {
-        return;
+        return true;
     }
     if path.len() > 1 && path.ends_with('/') {
         // One leading slash: `//evil.example/` would send the browser to
@@ -2149,14 +2222,19 @@ async fn decide_inner<A: App>(
         reply
             .headers
             .push((Cow::Borrowed("location"), Cow::Owned(location)));
-        return;
+        return true;
     }
+    matches!(cx.method, Method::Get | Method::Head) && file::<A>(cx, path, route, reply)
+}
 
-    if matches!(method, Method::Get | Method::Head) && file::<A>(cx, path, route.is_some(), reply) {
-        return;
-    }
-    out.clear();
-    let mut result = catch(A::handle(route, cx, out)).await;
+/// The reply to what the handler did, `result`: its response, page or
+/// redirect; or the error an error page answers.
+fn answer_of(
+    cx: &mut Cx,
+    out: &mut Out,
+    reply: &mut Reply,
+    mut result: crate::Result<()>,
+) -> Result<(), Error> {
     if result.is_ok()
         && let Some(res) = out.response.as_mut().filter(|r| r.upgrade.is_some())
     {
@@ -2165,9 +2243,7 @@ async fn decide_inner<A: App>(
                 .push((Cow::Borrowed("sec-websocket-accept"), accept));
         });
     }
-
-    // What went wrong in a 5xx, for the log. The page may say less.
-    let failure = match result {
+    match result {
         Ok(()) => {
             match out.response.take() {
                 Some(mut res) => {
@@ -2181,7 +2257,9 @@ async fn decide_inner<A: App>(
                             .headers
                             .push((Cow::Borrowed("content-type"), res.content_type));
                     }
-                    reply.add(res.headers);
+                    if !res.headers.is_empty() {
+                        reply.add(res.headers);
+                    }
                     reply.body = match (res.upgrade.take(), res.stream.take()) {
                         (Some(upgrade), _) => Body::WebSocket(upgrade),
                         (None, Some(body)) => Body::Stream(body),
@@ -2193,33 +2271,42 @@ async fn decide_inner<A: App>(
                     None => reply.set(cx.status(), "text/html; charset=utf-8", Body::Page),
                 },
             }
-            None
+            Ok(())
         }
         Err(e) if e.status < 400 => {
             redirect_reply(cx, e, reply);
-            None
+            Ok(())
         }
-        Err(e) => render_error::<A>(route, cx, out, reply, e).await,
-    };
-    cx.send_headers(&mut reply.headers);
+        Err(e) => Err(e),
+    }
+}
 
+/// The reply decided: kept for its `Idempotency-Key`, given the headers the
+/// request set, and logged; `failure` is what went wrong in a 5xx, for the
+/// log (the page may say less).
+fn answered(cx: &mut Cx, reply: &mut Reply, started: Option<Instant>, failure: Option<String>) {
+    if let Some(key) = cx.idem.take() {
+        key.finish(reply, cx.page_headers());
+    }
+    cx.send_headers(&mut reply.headers);
+    let method = cx.method.as_str();
     if let Some(started) = started {
         let blocked = Some(BLOCKED.replace(Duration::ZERO)).filter(|&b| b >= BLOCKING);
+        let (path, id) = (cx.path(), cx.id());
         dev::log_request(
-            method.as_str(),
-            cx.path(),
+            method,
+            path,
             reply.status,
             started.elapsed(),
             failure.as_deref(),
             blocked,
-            cx.id(),
+            id,
         );
     } else if let Some(f) = failure {
         let id = cx.id().map_or(String::new(), |id| format!(" [{id}]"));
         log(format_args!(
-            "wisp: {} {} {}{id}: {f}",
+            "wisp: {} {method} {}{id}: {f}",
             reply.status,
-            method.as_str(),
             cx.path()
         ));
     }
@@ -2229,8 +2316,13 @@ async fn decide_inner<A: App>(
 /// parameters as spans, so `cx` can be handed out mutably.
 fn route<A: App>(cx: &mut Cx) -> Option<usize> {
     let (id, raw) = A::route(cx.path())?;
-    let params = raw.map(|s| Span::of(&cx.wire.buf, s.as_bytes()));
-    cx.set_params(A::ROUTES[id].params, params);
+    // Only the route's own: most have none.
+    let names = A::ROUTES[id].params;
+    let mut params = [Span::default(); crate::cx::MAX_PARAMS];
+    for (p, s) in params.iter_mut().zip(raw).take(names.len()) {
+        *p = Span::of(&cx.wire.buf, s.as_bytes());
+    }
+    cx.set_params(names, params);
     Some(id)
 }
 
@@ -2241,10 +2333,14 @@ fn route<A: App>(cx: &mut Cx) -> Option<usize> {
 fn not_modified(cx: &Cx, res: &crate::Response) -> bool {
     res.status == 200
         && matches!(cx.method, Method::Get | Method::Head)
-        && res.headers.iter().any(|(n, _)| n == "etag")
-        && cx.header("if-none-match").is_some_and(|sent| {
-            (res.headers.iter()).any(|(n, v)| n == "etag" && crate::rest::names(sent, v))
-        })
+        && (res.headers.iter()).any(|(n, v)| n == "etag" && fresh(cx, v))
+}
+
+/// Whether the request's `if-none-match` names `etag`, weakly as a GET
+/// compares (`W/"x"` is `"x"`), or is `*`: the client has it, a 304.
+pub(crate) fn fresh(cx: &Cx, etag: &str) -> bool {
+    cx.header("if-none-match")
+        .is_some_and(|h| crate::rest::names(h, etag))
 }
 
 /// A redirect. Headers set before it (a login cookie) still apply.
@@ -2264,15 +2360,31 @@ fn redirect_reply(cx: &Cx, e: Error, reply: &mut Reply) {
     }
 }
 
-/// The page for a 4xx or 5xx: the nearest `+error.wisp`, or JSON for a
-/// client that wants that. Returns what went wrong in a 5xx, for the log.
+/// The error page of `status` with `message`: the nearest `+error.wisp`,
+/// else Wisp's own.
 async fn render_error<A: App>(
     route: Option<usize>,
     cx: &mut Cx,
     out: &mut Out,
+    (status, message): (u16, Cow<'static, str>),
+) {
+    let rendered = catch_made(|| A::error(route, cx, out, status, &message)).await;
+    if rendered.is_err() || out.response.is_some() {
+        out.clear();
+        rt::default_error(cx, out, status, &message);
+    }
+}
+
+/// The reply to a 4xx or 5xx: JSON for a client that wants that, else an
+/// error page, whose status and message come back for [`render_error`].
+/// And what went wrong in a 5xx, for the log.
+#[allow(clippy::type_complexity)]
+fn error_reply(
+    cx: &mut Cx,
+    out: &mut Out,
     reply: &mut Reply,
     mut e: Error,
-) -> Option<String> {
+) -> (Option<String>, Option<(u16, Cow<'static, str>)>) {
     let failure = (e.status >= 500).then(|| e.detail());
     // 5xx details can leak internals; only dev shows them. An error that
     // says no more than its status's name gets a sentence about the status
@@ -2281,37 +2393,34 @@ async fn render_error<A: App>(
         || e.message.is_empty()
         || e.message.eq_ignore_ascii_case(reason(e.status))
     {
-        sentence(e.status)
+        Cow::Borrowed(sentence(e.status))
     } else {
-        e.message()
+        std::mem::take(&mut e.message)
     };
     out.clear();
     // The headers of the page that failed go with it; the `before` hook's
     // stay.
     cx.drop_page_headers();
-    if wants_json(cx) {
+    let page = if wants_json(cx) {
         let problem = crate::settings().problem_json
             || cx
                 .header("accept")
                 .is_some_and(|a| a.contains("application/problem+json"));
-        let body = e.json(message, problem).into_bytes();
+        let body = e.json(&message, problem).into_bytes();
         let kind = match problem {
             true => "application/problem+json",
             false => "application/json",
         };
         reply.set(e.status, kind, Body::Bytes(body));
+        None
     } else {
-        let rendered = catch(A::error(route, cx, out, e.status, message)).await;
-        if rendered.is_err() || out.response.is_some() {
-            out.clear();
-            rt::default_error(cx, out, e.status, message);
-        }
         reply.set(e.status, "text/html; charset=utf-8", Body::Page);
-    }
+        Some((e.status, message))
+    };
     if let Some((name, value)) = e.header.take().map(|h| *h) {
         reply.headers.push((Cow::Borrowed(name), Cow::Owned(value)));
     }
-    failure
+    (failure, page)
 }
 
 /// Whether an error goes back as JSON rather than an error page: a request
@@ -2510,9 +2619,19 @@ fn timed() -> bool {
 /// Runs a handler future, turning a panic into a 500 so one bad request
 /// cannot take the connection (or anything else) down with it.
 pub(crate) async fn catch<F: Future<Output = crate::Result<()>>>(f: F) -> crate::Result<()> {
-    let mut f = std::pin::pin!(f);
+    catch_made(|| f).await
+}
+
+/// [`catch`] of the future `make` makes. The future is made in place: a
+/// future taken as an argument would be held twice over, as it came and
+/// as it is polled, and moved in full each request.
+async fn catch_made<F: Future<Output = crate::Result<()>>>(
+    make: impl FnOnce() -> F,
+) -> crate::Result<()> {
+    let mut f = std::pin::pin!(make());
+    let timed = timed();
     std::future::poll_fn(move |cx| {
-        let began = timed().then(Instant::now);
+        let began = timed.then(Instant::now);
         IN_HANDLER.set(true);
         let polled = catch_unwind(AssertUnwindSafe(|| f.as_mut().poll(cx)));
         IN_HANDLER.set(false);
@@ -2569,9 +2688,10 @@ fn internal<A: App>(cx: &Cx, path: &str, reply: &mut Reply) -> bool {
 }
 
 /// The app's files: templates' browser modules, then its assets, embedded
-/// or, in dev, read from `static/`. `routed`: a route matches the path.
+/// or, in dev, read from `static/`. `route`: the route the path matches.
 /// `false` if the path is not a file.
-fn file<A: App>(cx: &Cx, path: &str, routed: bool, reply: &mut Reply) -> bool {
+fn file<A: App>(cx: &Cx, path: &str, route: Option<usize>, reply: &mut Reply) -> bool {
+    let routed = route.is_some();
     // Compiled in, in dev too: a change to one is a rebuild anyway.
     if path.starts_with("/_app/c/")
         && let Some(m) = A::client_module(path)
@@ -2599,6 +2719,10 @@ fn file<A: App>(cx: &Cx, path: &str, routed: bool, reply: &mut Reply) -> bool {
         send_file(reply, cx, Body::Bytes(bytes), &ext, None);
         return true;
     }
+    // The build knows which routes no embedded file is at.
+    if route.is_some_and(|r| !A::ROUTES[r].files) {
+        return false;
+    }
     let Some(a) = A::asset(path) else {
         return false;
     };
@@ -2616,7 +2740,7 @@ fn send_file(reply: &mut Reply, cx: &Cx, body: Body, ext: &str, etag: Option<&'s
         }
         Some(_) => "public, max-age=0, must-revalidate",
     };
-    if etag.is_some() && cx.header("if-none-match") == etag {
+    if etag.is_some_and(|tag| fresh(cx, tag)) {
         reply.set(304, "", Body::Static(b""));
         reply.headers.clear(); // a 304 describes the file it did not send
     } else {
@@ -2714,11 +2838,21 @@ async fn pump(
 /// A header the app set with a line break or NUL in it (through `Response`'s
 /// public fields, which nothing checks) would split the response: it is
 /// left out. A pair of `'static` strings (the code's own, as
-/// `content-type: text/plain` is) is checked once a thread while it repeats:
-/// such a string never changes, so its address and length say it is the same.
+/// `content-type: text/plain` is) is checked once a thread while it is one
+/// of the last few such pairs: such a string never changes, so its address
+/// and length say it is the same.
 fn header(w: &mut Vec<u8>, (name, value): &(Cow<'static, str>, Cow<'static, str>)) {
+    /// The pairs a thread keeps checked: a response's few static headers.
+    const KEPT: usize = 4;
     thread_local! {
-        static VALID: Cell<[usize; 4]> = const { Cell::new([0; 4]) };
+        static VALID: [Cell<[usize; 4]>; KEPT] = const { [const { Cell::new([0; 4]) }; KEPT] };
+        static NEXT: Cell<usize> = const { Cell::new(0) };
+    }
+    if name == "content-type"
+        && let Some(line) = type_line(value)
+    {
+        w.extend_from_slice(line);
+        return;
     }
     let key = match (name, value) {
         (Cow::Borrowed(n), Cow::Borrowed(v)) => {
@@ -2726,18 +2860,31 @@ fn header(w: &mut Vec<u8>, (name, value): &(Cow<'static, str>, Cow<'static, str>
         }
         _ => None,
     };
-    if key.is_none_or(|k| VALID.get() != k) {
+    if !key.is_some_and(|k| VALID.with(|v| v.iter().any(|c| c.get() == k))) {
         if !valid_header(name, value) {
             return;
         }
         if let Some(k) = key {
-            VALID.set(k);
+            let next = NEXT.get();
+            VALID.with(|v| v[next].set(k));
+            NEXT.set((next + 1) % KEPT);
         }
     }
     w.extend_from_slice(name.as_bytes());
     w.extend_from_slice(b": ");
     w.extend_from_slice(value.as_bytes());
     w.extend_from_slice(b"\r\n");
+}
+
+/// The `content-type` line of the types most responses have, written in
+/// one piece.
+fn type_line(value: &str) -> Option<&'static [u8]> {
+    Some(match value {
+        "text/plain; charset=utf-8" => b"content-type: text/plain; charset=utf-8\r\n",
+        "text/html; charset=utf-8" => b"content-type: text/html; charset=utf-8\r\n",
+        "application/json" => b"content-type: application/json\r\n",
+        _ => return None,
+    })
 }
 
 /// `n` in lowercase hex, as few digits as it takes.
@@ -3211,8 +3358,8 @@ mod tests {
             let s = sent(&mut rng);
             let too_large = s.body.len() > limit(s.path);
             let mut cx = cx_with(&s.wire);
-            match parse::<Fuzz>(&mut cx, 0) {
-                Parsed::Request { len, .. } if !too_large => {
+            match parse::<Fuzz>(&mut cx, 0, false) {
+                Parsed::Request(Req { len, .. }) if !too_large => {
                     assert_eq!(len, s.wire.len());
                     assert_eq!(
                         (cx.path(), cx.query_string(), cx.body()),
@@ -3232,7 +3379,7 @@ mod tests {
             };
             for cut in cuts {
                 let mut cx = cx_with(&s.wire[..cut]);
-                match parse::<Fuzz>(&mut cx, 0) {
+                match parse::<Fuzz>(&mut cx, 0, false) {
                     Parsed::Partial { .. } => {}
                     Parsed::Invalid(413) if too_large => {}
                     _ => panic!("{cut} of {:?}", String::from_utf8_lossy(&s.wire)),
@@ -3335,11 +3482,11 @@ mod tests {
                 continue;
             }
             let mut cx = cx_with(&[&a.wire[..], &b.wire].concat());
-            let Parsed::Request { len, .. } = parse::<Fuzz>(&mut cx, 0) else {
+            let Parsed::Request(Req { len, .. }) = parse::<Fuzz>(&mut cx, 0, false) else {
                 panic!()
             };
             assert_eq!((len, cx.body()), (a.wire.len(), &a.body[..]));
-            let Parsed::Request { len, .. } = parse::<Fuzz>(&mut cx, len) else {
+            let Parsed::Request(Req { len, .. }) = parse::<Fuzz>(&mut cx, len, false) else {
                 panic!()
             };
             assert_eq!((len, cx.body()), (b.wire.len(), &b.body[..]));
@@ -3357,8 +3504,8 @@ mod tests {
             let mut wire = sent(&mut rng).wire;
             mutate(&mut rng, &mut wire);
             let mut cx = cx_with(&wire);
-            match parse::<Fuzz>(&mut cx, 0) {
-                Parsed::Request { len, .. } => {
+            match parse::<Fuzz>(&mut cx, 0, false) {
+                Parsed::Request(Req { len, .. }) => {
                     check_parsed(&cx, 0, len);
                     rt.block_on(decide::<Fuzz>(&mut cx, &mut out, &mut reply, None));
                     w.clear();
@@ -3379,7 +3526,7 @@ mod tests {
             long.extend_from_slice(b"x-a: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\r\n");
         }
         assert!(matches!(
-            parse::<Fuzz>(&mut cx_with(&long), 0),
+            parse::<Fuzz>(&mut cx_with(&long), 0, false),
             Parsed::Invalid(431)
         ));
         let many: String = (0..MAX_HEADERS + 1)
@@ -3387,15 +3534,15 @@ mod tests {
             .collect();
         let many = format!("GET / HTTP/1.1\r\n{many}\r\n");
         assert!(matches!(
-            parse::<Fuzz>(&mut cx_with(many.as_bytes()), 0),
+            parse::<Fuzz>(&mut cx_with(many.as_bytes()), 0, false),
             Parsed::Invalid(431)
         ));
 
         let head = "POST /small HTTP/1.1\r\ntransfer-encoding: chunked\r\n\r\n";
         let body_of = |chunked: &str| {
             let mut cx = cx_with(format!("{head}{chunked}").as_bytes());
-            match parse::<Fuzz>(&mut cx, 0) {
-                Parsed::Request { .. } => Ok(cx.body().to_vec()),
+            match parse::<Fuzz>(&mut cx, 0, false) {
+                Parsed::Request(_) => Ok(cx.body().to_vec()),
                 Parsed::Invalid(status) => Err(status),
                 Parsed::Partial { .. } => Err(0),
             }
@@ -3429,20 +3576,22 @@ mod tests {
 
     #[test]
     fn http_1_1_names_one_host() {
-        let hosted = |wire: &[u8]| match parse::<Fuzz>(&mut cx_with(wire), 0) {
-            Parsed::Request { hosted, .. } => Ok(hosted),
+        // On the wire; from another host (`Cx::from_request`) it may not.
+        let hosted = |wire: &[u8], on_wire| match parse::<Fuzz>(&mut cx_with(wire), 0, on_wire) {
+            Parsed::Request(_) => Ok(()),
             Parsed::Invalid(status) => Err(status),
             Parsed::Partial { .. } => Err(0),
         };
-        assert_eq!(hosted(b"GET / HTTP/1.1\r\nHost: a\r\n\r\n"), Ok(true));
-        assert_eq!(hosted(b"GET / HTTP/1.1\r\nx: 1\r\n\r\n"), Ok(false));
-        assert_eq!(hosted(b"GET / HTTP/1.0\r\n\r\n"), Ok(true));
+        assert_eq!(hosted(b"GET / HTTP/1.1\r\nHost: a\r\n\r\n", true), Ok(()));
+        assert_eq!(hosted(b"GET / HTTP/1.1\r\nx: 1\r\n\r\n", true), Err(400));
+        assert_eq!(hosted(b"GET / HTTP/1.1\r\nx: 1\r\n\r\n", false), Ok(()));
+        assert_eq!(hosted(b"GET / HTTP/1.0\r\n\r\n", true), Ok(()));
         assert_eq!(
-            hosted(b"GET / HTTP/1.1\r\nhost: a\r\nHOST: a\r\n\r\n"),
+            hosted(b"GET / HTTP/1.1\r\nhost: a\r\nHOST: a\r\n\r\n", false),
             Err(400)
         );
         assert_eq!(
-            hosted(b"GET / HTTP/1.0\r\nhost: a\r\nhost: b\r\n\r\n"),
+            hosted(b"GET / HTTP/1.0\r\nhost: a\r\nhost: b\r\n\r\n", true),
             Err(400)
         );
     }
@@ -3451,8 +3600,8 @@ mod tests {
     fn an_absolute_target_is_its_path_on_its_host() {
         let read = |wire: &[u8]| {
             let mut cx = cx_with(wire);
-            match parse::<Fuzz>(&mut cx, 0) {
-                Parsed::Request { hosted: true, .. } => Some(format!(
+            match parse::<Fuzz>(&mut cx, 0, true) {
+                Parsed::Request(_) => Some(format!(
                     "{} {} {}",
                     cx.header("host").unwrap_or("-"),
                     cx.path(),
@@ -3504,7 +3653,10 @@ mod tests {
             ("///", "/"),
         ] {
             let mut cx = cx_with(format!("GET {path} HTTP/1.1\r\n\r\n").as_bytes());
-            assert!(matches!(parse::<Fuzz>(&mut cx, 0), Parsed::Request { .. }));
+            assert!(matches!(
+                parse::<Fuzz>(&mut cx, 0, false),
+                Parsed::Request(_)
+            ));
             rt.block_on(decide::<Fuzz>(&mut cx, &mut out, &mut reply, None));
             assert_eq!((reply.status, reply.header("location")), (308, Some(to)));
         }
@@ -3693,7 +3845,7 @@ mod tests {
     fn answer(b: &mut Buffers, request: &[u8]) {
         b.cx.wire.buf.clear();
         b.cx.wire.buf.extend_from_slice(request);
-        let Parsed::Request { keep_alive, .. } = parse::<Bench>(&mut b.cx, 0) else {
+        let Parsed::Request(Req { keep_alive, .. }) = parse::<Bench>(&mut b.cx, 0, false) else {
             panic!("{:?}", String::from_utf8_lossy(request));
         };
         ready(decide::<Bench>(&mut b.cx, &mut b.out, &mut b.reply, None));
@@ -3707,6 +3859,7 @@ mod tests {
             keep_alive,
             head,
         );
+        b.cx.reset();
     }
 
     fn buffers() -> Buffers {
@@ -3789,6 +3942,135 @@ mod tests {
             let ns = started.elapsed().as_nanos() as f64 / n as f64;
             println!("{path}: {ns:.0} ns a request");
         }
+    }
+
+    /// Routes the build said never wait: `/now` (0), and `/wait` (1),
+    /// which waits after all, as a wrong guess would.
+    #[cfg(target_os = "linux")]
+    struct Guessed;
+
+    #[cfg(target_os = "linux")]
+    static WAITED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    #[cfg(target_os = "linux")]
+    impl App for Guessed {
+        const ROOT: &'static str = ".";
+        const CSS: Option<&'static str> = None;
+        const ROUTES: &'static [crate::rt::RouteFacts] = &[const {
+            crate::rt::RouteFacts {
+                now: true,
+                ..crate::rt::RouteFacts::new(&[])
+            }
+        }; 2];
+        const TEMPLATES: &'static [(&'static str, u64)] = &[];
+
+        fn route(path: &str) -> Option<(usize, [&str; 8])> {
+            match path {
+                "/now" => Some((0, [""; 8])),
+                "/wait" => Some((1, [""; 8])),
+                _ => None,
+            }
+        }
+
+        fn shell() -> [&'static str; 3] {
+            ["", "", ""]
+        }
+
+        fn asset(_: &str) -> Option<&'static crate::Asset> {
+            None
+        }
+
+        async fn init() -> crate::Result<()> {
+            Ok(())
+        }
+
+        async fn handle(route: Option<usize>, cx: &mut Cx, out: &mut Out) -> crate::Result<()> {
+            crate::rt::hooked(cx);
+            crate::rt::endpoint(cx);
+            let text = match route {
+                Some(0) => "now",
+                Some(_) => {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    WAITED.fetch_add(1, Ordering::Relaxed);
+                    "waited"
+                }
+                None => return Err(Error::new(404, "Not Found")),
+            };
+            crate::rt::respond(out, crate::Response::text(text));
+            Ok(())
+        }
+
+        async fn error(
+            _: Option<usize>,
+            cx: &mut Cx,
+            out: &mut Out,
+            status: u16,
+            message: &str,
+        ) -> crate::Result<()> {
+            crate::rt::default_error(cx, out, status, message);
+            Ok(())
+        }
+    }
+
+    /// A request to a route the build wrongly said never waits is no
+    /// failure: the driver hands it, still deciding, to the connection's
+    /// future, which answers it once, then the requests after it, in order;
+    /// and the driver answers the next ones itself again.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_route_that_waits_after_all_is_answered_in_order() {
+        use std::io::{Read, Write};
+        let listener = crate::uring::listen("127.0.0.1:0".parse().unwrap()).unwrap();
+        let addr = listener.local_addr().unwrap();
+        start_clock();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async move {
+                let (ready, _) = std::sync::mpsc::channel();
+                let now = Some(on_driver::<Guessed> as fn(u64) -> bool);
+                tokio::spawn(crate::epoll::serve(listener, polled::<Guessed>, now, ready));
+                std::future::pending::<()>().await
+            });
+        });
+        let mut c = std::net::TcpStream::connect(addr).unwrap();
+        c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let get = |path: &str| format!("GET {path} HTTP/1.1\r\nhost: a\r\n\r\n");
+        // The bodies of the answers, in order, each by its content-length.
+        let mut ask = |paths: &[&str]| {
+            let wire: String = paths.iter().map(|p| get(p)).collect();
+            c.write_all(wire.as_bytes()).unwrap();
+            let (mut got, mut bodies, mut buf) = (String::new(), Vec::new(), [0; 4096]);
+            while bodies.len() < paths.len() {
+                if let Some(end) = got.find("\r\n\r\n") {
+                    let len: usize = got[..end]
+                        .split("content-length: ")
+                        .nth(1)
+                        .and_then(|l| l.split("\r\n").next()?.parse().ok())
+                        .unwrap();
+                    if got.len() >= end + 4 + len {
+                        assert!(got.starts_with("HTTP/1.1 200 OK"), "{got}");
+                        bodies.push(got[end + 4..end + 4 + len].to_string());
+                        got.drain(..end + 4 + len);
+                        continue;
+                    }
+                }
+                let n = c.read(&mut buf).unwrap();
+                assert!(n > 0, "closed after {got:?}");
+                got.push_str(std::str::from_utf8(&buf[..n]).unwrap());
+            }
+            bodies.join(" ")
+        };
+        let before = WAITED.load(Ordering::Relaxed);
+        assert_eq!(ask(&["/now"]), "now");
+        std::thread::sleep(Duration::from_millis(50)); // its future waits bare
+        assert_eq!(ask(&["/now", "/wait", "/now"]), "now waited now");
+        assert_eq!(WAITED.load(Ordering::Relaxed) - before, 1);
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(ask(&["/now", "/now"]), "now now");
+        assert_eq!(ask(&["/wait"]), "waited");
     }
 
     #[test]

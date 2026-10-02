@@ -12,8 +12,8 @@ use crate::json_str as js_str;
 use crate::model::{self, Handler, Model};
 use crate::openapi::Op;
 use crate::protocol::{
-    COPY_END, COPY_START, GROUP_ATTR, HEADER_ERROR, ISLAND_MEDIA, LOOP_ATTR, ON_FLAGS, ON_PLACED,
-    ON_ROOT, SLOT_ATTR,
+    COPY_END, COPY_START, GROUP_ATTR, ISLAND_MEDIA, LOOP_ATTR, ON_FLAGS, ON_PLACED, ON_ROOT,
+    SLOT_ATTR,
 };
 use crate::routes::Seg;
 use crate::rust_scan::{self, FnItem, Returns};
@@ -1643,7 +1643,7 @@ impl Gen {
         );
         let css = css.map_or("None".into(), |v| format!("Some({})", lit(v)));
         self.line(1, &format!("const CSS: Option<&'static str> = {css};"));
-        self.routes(p);
+        self.routes(p, assets);
         // Template 0 is the shell.
         let shell = [format!(
             "({}, 0x{:016x})",
@@ -1919,7 +1919,7 @@ impl Gen {
     /// model says the route cannot (`model::Route::waits`). Every doubt
     /// counts as waiting: a route wrongly `now` would fail its request
     /// (see `wisp::http::on_driver`).
-    fn routes(&mut self, p: &Project) {
+    fn routes(&mut self, p: &Project, assets: &Assets) {
         let m = &p.model;
         let before = p.hooks.as_ref().is_some_and(|h| h.waits);
         self.line(1, "const ROUTES: &'static [::wisp::rt::RouteFacts] = &[");
@@ -1928,10 +1928,13 @@ impl Gen {
             let limit = (route.body_limit.as_ref()).map(|m| format!("{m}::__call::BODY_LIMIT"));
             let uploads = (route.uploads.as_ref()).map(|m| format!("{m}::__call::UPLOADS"));
             let some = |x: Option<String>| x.map_or("None".into(), |x| format!("Some({x})"));
+            // An embedded file at one of its paths is served before it.
+            let files = (assets.files.iter())
+                .any(|(url, ..)| r.expansions().iter().any(|e| may_match(e, url)));
             self.line(
                 2,
                 &format!(
-                    "::wisp::rt::RouteFacts {{ params: &[{}], body_limit: {}, uploads: {}, now: {}, error: {} }}, // {}",
+                    "::wisp::rt::RouteFacts {{ params: &[{}], body_limit: {}, uploads: {}, now: {}, files: {files}, error: {} }}, // {}",
                     names.join(", "),
                     some(limit),
                     some(uploads),
@@ -2031,9 +2034,6 @@ impl Gen {
             2,
             "let Some(route) = route else { return Err(::wisp::Error::new(404, \"Not Found\")) };",
         );
-        // live.js asks for the route's error page this way when browser code
-        // fails while starting (see `boundary` in live.js).
-        self.line(2, &format!("if cx.method == Get && cx.header({}).is_some() {{ return Err(::wisp::Error::new(500, \"Something went wrong in the browser\")) }}", lit(HEADER_ERROR)));
         self.line(2, "match (route, cx.method) {");
         for (i, r) in p.model.routes.iter().enumerate() {
             let mut allow: Vec<&str> = Vec::new();
@@ -2065,12 +2065,19 @@ impl Gen {
                     }
                     None => format!("serve_page_{i}(cx, __o).await"),
                 };
-                self.line(3, &format!("({i}, Get | Head) => {get},"));
+                // live.js asks for the page's error page this way when its
+                // browser code fails while starting (see `boundary` in
+                // live.js): only pages have any.
+                self.line(
+                    3,
+                    &format!("({i}, Get | Head) => {{ ::wisp::rt::browser_ok(cx)?; {get} }},"),
+                );
                 allow.extend(["GET", "HEAD"]);
                 let actions: Vec<&FnItem> = page.actions().collect();
                 if !actions.is_empty() {
                     self.line(3, &format!("({i}, Post) => {{"));
                     self.line(4, "::wisp::rt::check_origin(cx)?;");
+                    self.line(4, IDEMPOTENT);
                     self.line(4, "match cx.action() {");
                     // `invalid(field, ..)` shows the page again, as a 422, with
                     // what is wrong for `cx.problem(field)`.
@@ -2099,10 +2106,15 @@ impl Gen {
                 let (_, variants, allowed) =
                     METHODS.iter().find(|(n, _, _)| *n == h.op.method).unwrap();
                 let m = &s.module;
-                let before = match s.before {
+                let mut before = match s.before {
                     true => answer(&format!("{m}::__call::before")) + " ",
                     false => String::new(),
                 };
+                if h.op.method == "post" {
+                    // After `before`'s `if … { … }`, a `;`: not an `else if`.
+                    let sep = if before.is_empty() { "" } else { "; " };
+                    before = format!("{}{sep}{IDEMPOTENT} ", before.trim_end());
+                }
                 let mut serve = format!(
                     "::wisp::rt::respond(__o, {m}::__call::{}(cx).await?);",
                     h.shim
@@ -2438,6 +2450,25 @@ const METHODS: [(&str, &str, &str); 5] = [
     ("patch", "Patch", "PATCH"),
     ("delete", "Delete", "DELETE"),
 ];
+
+/// Whether the path `url` (`/a/b.png`, encoded) may be one the route arm
+/// `exp` matches: by its segments, a parameter any but an empty one (a
+/// matcher's, any), a `[...rest]` anything.
+fn may_match(exp: &[&Seg], url: &str) -> bool {
+    if exp.iter().any(|s| matches!(s, Seg::Rest(_))) {
+        return true;
+    }
+    let segs: Vec<&str> = url.trim_start_matches('/').split('/').collect();
+    segs.len() == exp.len()
+        && exp.iter().zip(&segs).all(|(e, s)| match e {
+            Seg::Static(x) => encode_path(x) == *s,
+            _ => !s.is_empty(),
+        })
+}
+
+/// The statement in a POST's arm of `handle`, once its hooks passed, that
+/// answers a request whose `Idempotency-Key` was answered before.
+const IDEMPOTENT: &str = "if ::wisp::rt::idempotent(cx, __o) { return Ok(()); }";
 
 /// The statement in `handle` that runs an `Answer` shim (an action or
 /// `before`): a `Response` it hands back is sent instead of the page.
@@ -5647,6 +5678,23 @@ mod tests {
     }
 
     #[test]
+    fn a_route_knows_whether_a_file_may_be_at_its_paths() {
+        let s = |x: &str| Seg::Static(x.into());
+        let (user, param, rest) = (
+            s("user"),
+            Seg::Param("id".into(), None),
+            Seg::Rest("r".into()),
+        );
+        assert!(may_match(&[&user, &param], "/user/a.png"));
+        assert!(!may_match(&[&user, &param], "/static/app.js"));
+        assert!(!may_match(&[&user, &param], "/user/a/b.png"));
+        assert!(!may_match(&[&user], "/user/a.png"));
+        assert!(may_match(&[&s("a b")], "/a%20b"));
+        assert!(may_match(&[&user, &rest], "/x.css"));
+        assert!(!may_match(&[], "/x.css"));
+    }
+
+    #[test]
     fn routes_that_never_wait_are_answered_now() {
         let files = [
             ("src/routes/+page.wisp", "<p>hi</p>"),
@@ -6320,7 +6368,7 @@ mod tests {
                 "static BAKED_0: ::wisp::rt::Baked = ::wisp::rt::Baked::new(\"HTTP/1.1 200 OK\\r\\ncontent-type: text/html; charset=utf-8\\r\\netag: {etag}\\r\\ncontent-length: {}\\r\\n\", \"{doc}\", \"{etag}\"); // /",
                 doc.replace("\\\"", "\"").len()
             ),
-            "(0, Get | Head) => if ::wisp::rt::baked(cx, __o, &BAKED_0) { Ok(()) } else { serve_page_0(cx, __o).await },".into(),
+            "(0, Get | Head) => { ::wisp::rt::browser_ok(cx)?; if ::wisp::rt::baked(cx, __o, &BAKED_0) { Ok(()) } else { serve_page_0(cx, __o).await } },".into(),
             // The action's post renders as before.
             "(0, Post) => {".into(),
         ] {
@@ -6345,8 +6393,8 @@ mod tests {
         let code = app("cache-ok", &[page]).unwrap();
         for want in [
             "pub const CACHE: u32 = super::CACHE;",
-            "(0, Get | Head) => { if ::wisp::rt::cached(cx, __o, false) { return Ok(()); } serve_page_0(cx, __o).await?; \
-             ::wisp::rt::keep::<Self>(cx, __o, page_0::__call::CACHE, false); Ok(()) },",
+            "(0, Get | Head) => { ::wisp::rt::browser_ok(cx)?; { if ::wisp::rt::cached(cx, __o, false) { return Ok(()); } \
+             serve_page_0(cx, __o).await?; ::wisp::rt::keep::<Self>(cx, __o, page_0::__call::CACHE, false); Ok(()) } },",
         ] {
             assert!(code.contains(want), "{want}\n{code}");
         }
@@ -6361,7 +6409,8 @@ mod tests {
             "pub const CACHE: u32 = super::CACHE_PUBLIC;",
             "(0, Get | Head) => { ::wisp::rt::endpoint(cx); if ::wisp::rt::cached(cx, __o, true) { return Ok(()); } \
              ::wisp::rt::respond(__o, server_0::__call::get(cx).await?); ::wisp::rt::keep::<Self>(cx, __o, server_0::__call::CACHE, true); Ok(()) }",
-            "(0, Post) => { ::wisp::rt::endpoint(cx); ::wisp::rt::respond(__o, server_0::__call::post(cx).await?); Ok(()) }",
+            "(0, Post) => { ::wisp::rt::endpoint(cx); if ::wisp::rt::idempotent(cx, __o) { return Ok(()); } \
+             ::wisp::rt::respond(__o, server_0::__call::post(cx).await?); Ok(()) }",
         ] {
             assert!(code.contains(want), "{want}\n{code}");
         }
