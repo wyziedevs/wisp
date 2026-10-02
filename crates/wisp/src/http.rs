@@ -1100,8 +1100,9 @@ fn answer_whole<A: App>(mut b: Box<Buffers>) -> Result<Box<Buffers>, Handed> {
 
 #[cfg(target_os = "linux")]
 thread_local! {
-    /// The decider of [`on_driver`]'s requests on this thread, for its app.
-    static DECIDER: Cell<Option<(std::any::TypeId, Deciding)>> = const { Cell::new(None) };
+    /// The decider of [`on_driver`]'s requests on this thread. A thread
+    /// drives one app's server (its workers are its own), so it is that app's.
+    static DECIDER: Cell<Option<Deciding>> = const { Cell::new(None) };
     /// A request for the decider, and what is left to do for it.
     static INBOX: Cell<Option<(Box<Buffers>, Job)>> = const { Cell::new(None) };
 }
@@ -1197,11 +1198,7 @@ fn decide_now<A: App>(
 /// deciding it (see [`decided`]).
 #[cfg(target_os = "linux")]
 fn at_once<A: App>(b: Box<Buffers>, job: Job) -> Result<Box<Buffers>, Deciding> {
-    let app = std::any::TypeId::of::<A>();
-    let mut d = match DECIDER.take() {
-        Some((of, d)) if of == app => d,
-        _ => Box::pin(decider::<A>()),
-    };
+    let mut d = DECIDER.take().unwrap_or_else(|| Box::pin(decider::<A>()));
     INBOX.set(Some((b, job)));
     // Taken out meanwhile: one that panics is dropped, not polled again.
     let _ = d
@@ -1209,21 +1206,28 @@ fn at_once<A: App>(b: Box<Buffers>, job: Job) -> Result<Box<Buffers>, Deciding> 
         .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()));
     match OUTBOX.take() {
         Some(b) => {
-            DECIDER.set(Some((app, d)));
+            DECIDER.set(Some(d));
             Ok(b)
         }
         None => Err(d),
     }
 }
 
-/// The buffers of the request the decider `d` decides, once it has.
+/// The buffers of the request the decider `d` decides, once it has. `d`,
+/// waiting for its next request then, decides the thread's next ones when
+/// the thread has made none meanwhile.
 #[cfg(not(target_arch = "wasm32"))]
 async fn decided(mut d: Deciding) -> Box<Buffers> {
-    std::future::poll_fn(|cx| {
+    let b = std::future::poll_fn(|cx| {
         let _ = d.as_mut().poll(cx);
         OUTBOX.take().map_or(Poll::Pending, Poll::Ready)
     })
-    .await
+    .await;
+    #[cfg(target_os = "linux")]
+    if let Some(made) = DECIDER.replace(Some(d)) {
+        DECIDER.set(Some(made));
+    }
+    b
 }
 
 #[cfg(not(target_arch = "wasm32"))]
