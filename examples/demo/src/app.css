@@ -321,7 +321,7 @@ nav a[aria-current="page"]::before {
   text-align: center;
 }
 
-.mascot {
+.casper {
   position: relative;
   width: clamp(5.5rem, 4rem + 6vw, 8rem);
   margin-bottom: 0.5rem;
@@ -332,7 +332,7 @@ nav a[aria-current="page"]::before {
 /* Three motions that stack: floating (transform), a hop when the count
    changes (translate and scale, on arrival), and a lean toward the pointer
    (rotate). */
-.mascot svg {
+.casper svg {
   display: block;
   width: 100%;
   overflow: visible;
@@ -344,8 +344,8 @@ nav a[aria-current="page"]::before {
     float 4s var(--ease-in-out) infinite alternate;
 }
 
-/* The shadow under the ghost shrinks as it rises. */
-.mascot::after {
+/* The shadow under Casper shrinks as it rises. */
+.casper::after {
   content: "";
   display: block;
   width: 60%;
@@ -356,7 +356,7 @@ nav a[aria-current="page"]::before {
   animation: shadow 4s var(--ease-in-out) infinite alternate;
 }
 
-.ghost {
+.shape {
   fill: var(--accent);
 }
 

@@ -99,7 +99,7 @@ fn pages_files_and_redirects() {
         "the page's client script is started by the runtime"
     );
     assert!(
-        !home.contains("mascot.getBoundingClientRect"),
+        !home.contains("casper.getBoundingClientRect"),
         "the client script is a module of its own, not in the page"
     );
 
