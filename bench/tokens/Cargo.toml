@@ -3,7 +3,7 @@ name = "wisp-tokens"
 version = "0.0.0"
 edition = "2024"
 publish = false
-description = "Counts the tokens of the same five features written in Wisp and four other stacks (bench/tokens/apps)"
+description = "Counts the tokens of the same features written in Wisp and other stacks (bench/tokens/apps, bench/tokens/real)"
 
 [[bin]]
 name = "wisp-tokens"

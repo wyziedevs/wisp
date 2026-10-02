@@ -3,6 +3,7 @@ module wispbench
 go 1.26
 
 require (
+	github.com/coder/websocket v1.8.15
 	github.com/gin-gonic/gin v1.12.0
 	github.com/gofiber/fiber/v3 v3.5.0
 	github.com/valyala/fasthttp v1.73.0

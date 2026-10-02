@@ -10,6 +10,12 @@
 //! from the first byte of its batch.
 //!
 //! Only requests that complete inside the measured window are counted.
+//!
+//! `bench-run --suite real` needs tens of thousands of connections at once,
+//! which a thread each cannot hold: `real` runs those on a few threads.
+
+mod real;
+pub use real::{Answer, MIX, Step, Users, Ws, churn, closed_loop, raw, slow, ws, ws_check};
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -183,12 +189,22 @@ struct Response {
 
 /// Reads one response. `buf` keeps any bytes past its end for the next call.
 fn read_response(s: &mut TcpStream, buf: &mut Vec<u8>) -> Option<Response> {
-    let head_end = loop {
-        if let Some(i) = find(buf, b"\r\n\r\n") {
-            break i + 4;
+    loop {
+        if let Some(r) = parse(buf)? {
+            buf.drain(..r.len);
+            return Some(r);
         }
         fill(s, buf)?;
+    }
+}
+
+/// The response at the start of `buf`: `Some(None)` while it is not all
+/// there yet, `None` if it is not one.
+fn parse(buf: &[u8]) -> Option<Option<Response>> {
+    let Some(i) = find(buf, b"\r\n\r\n") else {
+        return Some(None);
     };
+    let head_end = i + 4;
     let head = std::str::from_utf8(&buf[..head_end]).ok()?;
     let status: u16 = head.get(9..12)?.parse().ok()?;
     let (mut length, mut chunked, mut close) = (None, false, false);
@@ -211,17 +227,15 @@ fn read_response(s: &mut TcpStream, buf: &mut Vec<u8>) -> Option<Response> {
         // size CRLF data CRLF ... 0 CRLF CRLF (no trailers expected)
         let mut at = head_end;
         loop {
-            let line_end = loop {
-                if let Some(i) = find(&buf[at..], b"\r\n") {
-                    break at + i;
-                }
-                fill(s, buf)?;
+            let Some(i) = find(&buf[at..], b"\r\n") else {
+                return Some(None);
             };
+            let line_end = at + i;
             let size_str = std::str::from_utf8(&buf[at..line_end]).ok()?;
             let size = usize::from_str_radix(size_str.split(';').next()?.trim(), 16).ok()?;
             at = line_end + 2 + size + 2;
-            while buf.len() < at {
-                fill(s, buf)?;
+            if buf.len() < at {
+                return Some(None);
             }
             body.extend_from_slice(&buf[line_end + 2..line_end + 2 + size]);
             if size == 0 {
@@ -230,19 +244,18 @@ fn read_response(s: &mut TcpStream, buf: &mut Vec<u8>) -> Option<Response> {
         }
     } else {
         let end = head_end + length.unwrap_or(0);
-        while buf.len() < end {
-            fill(s, buf)?;
+        if buf.len() < end {
+            return Some(None);
         }
         body.extend_from_slice(&buf[head_end..end]);
         end
     };
-    buf.drain(..end);
-    Some(Response {
+    Some(Some(Response {
         status,
         len: end,
         close,
         body,
-    })
+    }))
 }
 
 /// Reads into a block of this thread's, zeroed once, then appends what came:
@@ -261,7 +274,8 @@ fn fill(s: &mut TcpStream, buf: &mut Vec<u8>) -> Option<()> {
     })
 }
 
-fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+/// Where `needle` first appears in `hay`.
+pub fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 

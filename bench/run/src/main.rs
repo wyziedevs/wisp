@@ -10,7 +10,8 @@
 //!   cargo run -r -p bench-run -- [-c 64] [-d 10] [-w 5] [--rounds 1]
 //!       [--pipeline 1] [--group fast,popular,top|all] [--only wisp,actix]
 //!       [--paths fortunes] [--no-build] [--csv FILE] [--extra NAME=COMMAND]...
-//!       [--suite benchmarker]
+//!       [--suite benchmarker|real] [--think 1.0] [--max-users 50000]
+//!       [--slo-ms 100] [--tests users,churn,slow,wait,...] [--soak 60]
 //!
 //! `--group` picks the ten fastest frameworks (TechEmpower's top tier), the
 //! ten most popular, the-benchmarker's top ten, or a list of them (all by
@@ -33,7 +34,17 @@
 //! them: by the mean of the three routes' rates at 64 connections. Wisp runs
 //! on epoll there, as in their Docker containers, whose seccomp profile
 //! refuses io_uring (`WISP_IO=uring` in the environment measures io_uring).
+//!
+//! `--suite real` measures what happens in practice instead (see real.rs):
+//! how many users each sending a request every `--think` seconds a server
+//! serves within a p99 of `--slo-ms` (up to `--max-users`, `-d` seconds a
+//! step) and what twice that does to it, a new connection per request,
+//! slowloris clients beside normal ones; then the app's own work (waiting,
+//! JSON in, uploads, big JSON out, static files, WebSockets) and robustness
+//! (malformed requests, memory over `--soak` seconds, stopping on SIGTERM).
+//! `--tests` picks some of them.
 
+mod real;
 mod sys;
 
 use std::collections::HashMap;
@@ -147,7 +158,9 @@ const SERVERS: &[Server] = &[
         POPULAR,
     ),
     Server {
-        env: &[("HOST", "127.0.0.1")],
+        // adapter-node refuses bodies over 512 KB by default; /upload
+        // takes 8 MiB.
+        env: &[("HOST", "127.0.0.1"), ("BODY_SIZE_LIMIT", "8M")],
         ..server(
             "SvelteKit",
             Bin::Node,
@@ -264,6 +277,14 @@ struct Options {
     extra: Vec<Server>,
     /// `--suite benchmarker`: the-benchmarker's routes and load, not ours.
     suite: bool,
+    /// `--suite real`; the others below are its.
+    real: bool,
+    think: Duration,
+    max_users: usize,
+    slo_ms: u64,
+    /// Which of `real::TESTS` to run, and how long the soak lasts.
+    tests: Vec<String>,
+    soak: Duration,
     /// In the suite, zrk's threads (one per load CPU, as their harness gives
     /// it) when zrk is installed; else wisp-load sends the load.
     zrk: Option<usize>,
@@ -291,6 +312,22 @@ struct Row {
 fn main() {
     let mut opt = options();
     let (server_cpus, load_cpus) = sys::split_cpus();
+    if opt.real {
+        // A user is a connection here and one in the server.
+        if let Some(limit) = sys::raise_open_files() {
+            let need = 2 * opt.max_users as u64 + 1000;
+            if limit < need {
+                let max = (limit.saturating_sub(1000) / 2).max(1) as usize;
+                println!(
+                    "warning: {limit} open files at most (`ulimit -n`), {need} needed for {} users and twice that: capping users at {}",
+                    thousands(opt.max_users as u64),
+                    thousands(max as u64)
+                );
+                opt.max_users = max;
+            }
+        }
+        sys::fine_timers();
+    }
     opt.zrk = (opt.suite && installed("zrk")).then_some(load_cpus.len());
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -343,7 +380,9 @@ fn main() {
         opt.rounds,
         if opt.rounds == 1 { "" } else { "s" }
     );
-    if opt.suite {
+    if opt.real {
+        real::announce_suite(&opt, &server_cpus, &load_cpus);
+    } else if opt.suite {
         let levels: Vec<String> = opt.connections.iter().map(usize::to_string).collect();
         println!(
             "the-benchmarker suite: servers on CPUs {}, load on {} ({}); {} connections; {}s warmup of GET / at 50, then {}s a route; {rounds}",
@@ -370,6 +409,7 @@ fn main() {
     }
 
     let mut rows = Vec::new();
+    let mut real_rows = Vec::new();
     for round in 1..=opt.rounds {
         for (i, s) in servers.iter().enumerate() {
             let all: &[&str] = if opt.suite {
@@ -407,6 +447,14 @@ fn main() {
             };
             let size = deploy_size(s, &repo, &bench);
             let cpus = server_cpus.len();
+            if opt.real {
+                match real::measure(s, &mut child, addr, &opt, cpus, load_cpus.len()) {
+                    Ok(row) => real_rows.push(row),
+                    Err(e) => println!("{}: {e}", s.name),
+                }
+                sys::kill(&mut child);
+                continue;
+            }
             let measured = if opt.suite {
                 suite(s, &mut child, addr, &paths, &opt, cpus, size)
             } else {
@@ -423,6 +471,14 @@ fn main() {
         }
     }
 
+    if opt.real {
+        if let Some(file) = &opt.csv {
+            real::write_csv(file, &real_rows);
+        }
+        println!();
+        real::print(&real_rows, &opt);
+        return;
+    }
     if let Some(file) = &opt.csv {
         write_csv(file, &rows, opt.pipeline);
     }
@@ -448,6 +504,12 @@ fn options() -> Options {
         csv: None,
         extra: Vec::new(),
         suite: false,
+        real: false,
+        think: Duration::from_secs(1),
+        max_users: 50_000,
+        slo_ms: 100,
+        tests: real::TESTS.iter().map(|t| t.to_string()).collect(),
+        soak: Duration::from_secs(60),
         zrk: None,
     };
     let mut args = std::env::args().skip(1);
@@ -490,8 +552,29 @@ fn options() -> Options {
             }
             "--suite" => match value().as_str() {
                 "benchmarker" => opt.suite = true,
-                other => die(&format!("--suite: benchmarker, not {other}")),
+                "real" => opt.real = true,
+                other => die(&format!("--suite: benchmarker or real, not {other}")),
             },
+            "--think" => {
+                let v = value();
+                let secs: f64 = v
+                    .parse()
+                    .unwrap_or_else(|_| die(&format!("--think: not a number: {v}")));
+                opt.think = Duration::from_secs_f64(secs.max(0.001));
+            }
+            "--max-users" => opt.max_users = number(value()).max(1) as usize,
+            "--slo-ms" => opt.slo_ms = number(value()).max(1),
+            "--tests" => {
+                opt.tests = list(value());
+                if let Some(t) = opt
+                    .tests
+                    .iter()
+                    .find(|t| !real::TESTS.contains(&t.as_str()))
+                {
+                    die(&format!("--tests: {}, not {t}", real::TESTS.join(",")));
+                }
+            }
+            "--soak" => opt.soak = Duration::from_secs(number(value())),
             "--only" => opt.only = list(value()),
             "--paths" => opt.paths = list(value()),
             "--no-build" => opt.build = false,
@@ -519,7 +602,7 @@ fn options() -> Options {
             }
             "-h" | "--help" => {
                 println!(
-                    "usage: bench-run [-c 64] [-d 10] [-w 5] [--rounds 1] [--pipeline 1] [--group fast,popular,top|all] [--only wisp,actix] [--paths fortunes] [--no-build] [--csv FILE] [--extra NAME=COMMAND]... [--suite benchmarker]"
+                    "usage: bench-run [-c 64] [-d 10] [-w 5] [--rounds 1] [--pipeline 1] [--group fast,popular,top|all] [--only wisp,actix] [--paths fortunes] [--no-build] [--csv FILE] [--extra NAME=COMMAND]... [--suite benchmarker|real] [--think 1.0] [--max-users 50000] [--slo-ms 100] [--tests users,churn,...] [--soak 60]"
                 );
                 std::process::exit(0);
             }
@@ -539,6 +622,9 @@ fn options() -> Options {
     }
     if opt.suite && opt.pipeline > 1 {
         die("--suite benchmarker loads closed loop; --pipeline does not apply");
+    }
+    if opt.real && (opt.pipeline > 1 || opt.rounds > 1) {
+        die("--suite real runs once, closed loop or open; --pipeline and --rounds do not apply");
     }
     if !opt.suite && opt.connections.len() > 1 {
         die("-c takes one level, or a list with --suite benchmarker");
@@ -727,6 +813,15 @@ fn build(repo: &Path, bench: &Path, servers: &mut Vec<&Server>) {
                 (installed_since(&node)
                     || npm(&["install", "--no-audit", "--no-fund", "--loglevel=error"]))
                     && (!built || npm(&["run", "build", "--silent"]))
+                    // The standalone build serves `public/` only from beside
+                    // its server.js, where Next.js's docs say to copy it.
+                    && (u != "nextjs"
+                        || copy_dir(
+                            &node.join("public"),
+                            &node.join(".next/standalone/nextjs/public"),
+                        )
+                        .map_err(|e| println!("  copying public/: {e}"))
+                        .is_ok())
             }
         };
         if !ok {
@@ -740,6 +835,21 @@ fn build(repo: &Path, bench: &Path, servers: &mut Vec<&Server>) {
         }
         ok
     });
+}
+
+/// Copies every file under `from` to the same place under `to`.
+fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
 }
 
 /// Whether `dir` has an npm install newer than its package.json. npm
@@ -1420,7 +1530,7 @@ fn print_table(rows: &[Row], connections: usize, pipeline: usize) {
             .map(|k| (k.0, rps(k)))
             .collect();
         let tag = format!("{path} ({load})");
-        rank_high(&tag, &ranked);
+        rank_high(&tag, &ranked, " req/s");
         let cpu = order
             .iter()
             .filter(|k| k.1 == *path)
@@ -1486,7 +1596,11 @@ fn print_suite(rows: &[Row], levels: &[usize], cpus: usize) {
             .collect();
         ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
         let headline = if c == 64 { " (their headline)" } else { "" };
-        rank_high(&format!("the-benchmarker c={c}{headline}"), &ranked);
+        rank_high(
+            &format!("the-benchmarker c={c}{headline}"),
+            &ranked,
+            " req/s",
+        );
     }
     let cpu = names
         .iter()
@@ -1542,9 +1656,10 @@ fn print_markdown(table: &[Vec<String>], left: &[usize]) {
     }
 }
 
-/// One line on where Wisp ranks in `ranked`, requests per second fastest
-/// first, against the fastest of the others (or the next, when Wisp leads).
-fn rank_high(tag: &str, ranked: &[(&str, f64)]) {
+/// One line on where Wisp ranks in `ranked`, a figure where more is better
+/// (requests per second unless `unit` says otherwise), highest first,
+/// against the best of the others (or the next, when Wisp leads).
+fn rank_high(tag: &str, ranked: &[(&str, f64)], unit: &str) {
     let n = ranked.len();
     let Some(&(best, best_rps)) = ranked.first() else {
         return;
@@ -1554,19 +1669,19 @@ fn rank_high(tag: &str, ranked: &[(&str, f64)]) {
         // One server's own path, like ASP.NET's /fortunes-blazor.
         None if n == 1 => {}
         None => {
-            println!("rank {tag}: Wisp not measured; fastest of {n} is {best} ({best_text} req/s)")
+            println!("rank {tag}: Wisp not measured; best of {n} is {best} ({best_text}{unit})")
         }
-        Some(0) if n == 1 => println!("rank {tag}: Wisp alone, {best_text} req/s"),
+        Some(0) if n == 1 => println!("rank {tag}: Wisp alone, {best_text}{unit}"),
         Some(0) => {
             let (next, next_rps) = ranked[1];
             println!(
-                "rank {tag}: Wisp 1st of {n}, {best_text} req/s, {:.0}% ahead of {next} ({} req/s)",
+                "rank {tag}: Wisp 1st of {n}, {best_text}{unit}, {:.0}% ahead of {next} ({}{unit})",
                 (best_rps / next_rps - 1.0) * 100.0,
                 thousands(next_rps as u64)
             );
         }
         Some(i) => println!(
-            "rank {tag}: Wisp {} of {n}, {} req/s, {:.0}% of {best} ({best_text} req/s)",
+            "rank {tag}: Wisp {} of {n}, {}{unit}, {:.0}% of {best} ({best_text}{unit})",
             ordinal(i + 1),
             thousands(ranked[i].1 as u64),
             ranked[i].1 / best_rps * 100.0
