@@ -52,6 +52,14 @@ pub struct TypeItem {
     pub rules: Vec<(String, String)>,
 }
 
+impl TypeItem {
+    /// Field `name` is one Wisp sets when it is left out: a
+    /// `#[derive(Rest)]` type's `created_at` and `updated_at`.
+    pub fn set_by_wisp(&self, name: &str) -> bool {
+        matches!(name, "created_at" | "updated_at") && self.derives.iter().any(|d| d == "Rest")
+    }
+}
+
 /// A top-level `const` or `static`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConstItem {
@@ -177,7 +185,7 @@ impl FnItem {
             if is_cx(ty) {
                 continue;
             }
-            let name = pat.strip_prefix("mut ").unwrap_or(pat).trim();
+            let name = pat.as_str();
             if !is_ident(name) || name == "_" {
                 return Err(format!(
                     "{}: `{}` takes `{pat}: {ty}`; each parameter but `cx` is read from the request by its name, so it needs one, like `id: u64`",
@@ -593,6 +601,11 @@ fn signature(src: &str, mut i: usize) -> (Params, bool, String, usize) {
                     for piece in split_top(&text) {
                         let (rules, rest) = param_attrs(piece);
                         let (name, ty) = param(rest);
+                        // `mut n` reads input `n`: the name alone, once.
+                        let name = match name.strip_prefix("mut ") {
+                            Some(n) => n.trim().to_string(),
+                            None => name,
+                        };
                         if let Some(r) = rules {
                             params.1.push((name.clone(), r));
                         }
@@ -1520,13 +1533,13 @@ fn a() {}"
         assert_eq!(
             f.params,
             [
-                ("mut t".to_string(), "String".to_string()),
+                ("t".to_string(), "String".to_string()),
                 ("n".into(), "u8".into())
             ]
         );
         assert_eq!(
             f.checks,
-            [("mut t".to_string(), "len = 1..=9, email".to_string())]
+            [("t".to_string(), "len = 1..=9, email".to_string())]
         );
         let g = &top_level_fns("fn g(id: u64) -> Result<Option<Note>> { todo!() }")[0];
         assert_eq!(g.optional_value(), Some("Note"));
@@ -1599,7 +1612,7 @@ fn a() {}"
             [
                 "cx:&mut Cx",
                 "slug:String",
-                "mut n:Option<u32>",
+                "n:Option<u32>",
                 "f:impl Fn(u8, u8) -> u8"
             ]
         );

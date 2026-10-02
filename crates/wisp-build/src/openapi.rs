@@ -786,8 +786,7 @@ fn declare(
 /// `None`, an empty list and `false` are read for it, and a
 /// `#[derive(Rest)]` type's `created_at` and `updated_at` are Wisp's.
 fn may_leave_out(ty: &TypeItem, name: &str, t: &str) -> bool {
-    may_omit(t)
-        || (ty.derives.iter().any(|d| d == "Rest") && matches!(name, "created_at" | "updated_at"))
+    may_omit(t) || ty.set_by_wisp(name)
 }
 
 /// A request body's type. A struct of the file with members a request may
