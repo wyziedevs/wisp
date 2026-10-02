@@ -27,21 +27,33 @@ fn main() {
     }
     let mut out = String::new();
     for (name, layers) in template_files::TEMPLATES {
-        out.push_str(&format!("const {name}: &[(&str, &str)] = &[\n"));
+        out.push_str(&format!("const {name}: &[(&str, &[u8])] = &[\n"));
+        // Each file, and the folders a new one may appear in; not a whole
+        // example, whose builds (`.wisp`, `target`) would rerun this.
         for (dir, _) in layers {
-            println!(
-                "cargo:rerun-if-changed={}",
-                template_files::root(dir, &base).display()
-            );
+            let root = template_files::root(dir, &base);
+            for sub in ["src", "static"] {
+                if root.join(sub).is_dir() {
+                    println!("cargo:rerun-if-changed={}", root.join(sub).display());
+                }
+            }
         }
-        for (rel, path) in template_files::files(layers, &base) {
+        let files = template_files::files(layers, &base).unwrap_or_else(|e| {
+            eprintln!("wisp-cli: reading the {name} template: {e}");
+            std::process::exit(1);
+        });
+        for (rel, path) in files {
+            println!("cargo:rerun-if-changed={}", path.display());
             out.push_str(&format!(
-                "    ({rel:?}, include_str!({:?})),\n",
+                "    ({rel:?}, include_bytes!({:?})),\n",
                 path.to_string_lossy()
             ));
         }
         out.push_str("];\n");
     }
+    // Rewriting the same tables would rebuild the crate for nothing.
     let dest = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo sets it")).join("templates.rs");
-    fs::write(dest, out).expect("OUT_DIR is writable");
+    if fs::read(&dest).ok().as_deref() != Some(out.as_bytes()) {
+        fs::write(dest, out).expect("OUT_DIR is writable");
+    }
 }

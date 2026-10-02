@@ -27,6 +27,7 @@ struct Layout {
 }
 
 pub fn build(root: &Path, host: &str, out: &Path) -> Result<(), String> {
+    crate::deploy::check_out(root, out)?;
     let sysroot = std::process::Command::new("rustc")
         .args(["--print", "sysroot"])
         .output()
