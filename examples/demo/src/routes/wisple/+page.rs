@@ -1,8 +1,3 @@
-// Wisple, a word game in the style of Wordle, and a tour of `load` and form
-// actions. The game lives in a cookie, so every visitor has their own, and
-// it works with JavaScript turned off: each key on the keyboard is a form
-// post. With JavaScript, the page types letters itself and only posts a
-// finished guess.
 
 use std::hash::{BuildHasher, RandomState};
 
@@ -11,16 +6,12 @@ const LEN: usize = 5;
 const KEYBOARD: [&str; 3] = ["qwertyuiop", "asdfghjkl", "zxcvbnm"];
 const ALPHABET: &str = "abcdefghijklmnopqrstuvwxyz";
 
-/// The answers, five lowercase letters each, separated by whitespace.
 static WORDS: &str = include_str!("words.txt");
 
 struct Data {
     rows: [Row; TRIES],
-    /// The on-screen keyboard, each key marked with the best it has scored.
     keys: [Vec<Tile>; 3],
-    /// The row being typed, sent back with the next guess.
     guess: String,
-    /// The row is full, so Enter is on and the letters are off.
     full: bool,
     won: bool,
     over: bool,
@@ -30,18 +21,14 @@ struct Data {
 
 struct Row {
     tiles: [Tile; LEN],
-    /// `current` while typing into it, `fresh` for the guess just made.
     class: &'static str,
 }
 
-/// A letter on the board or the keyboard.
 struct Tile {
     letter: &'static str,
     mark: Mark,
 }
 
-/// What a guess says about a letter. Ordered, so a key shows the best it
-/// has scored across all guesses.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum Mark {
     Unknown,
@@ -60,7 +47,6 @@ impl Mark {
         }
     }
 
-    /// Spoken after the letter by screen readers.
     fn label(self) -> &'static str {
         match self {
             Mark::Unknown => "",
@@ -75,7 +61,6 @@ fn load(cx: &mut Cx) -> Data {
     Game::read(cx).data()
 }
 
-/// Without JavaScript, every key on the page's keyboard posts here.
 #[action]
 fn update(key: String) {
     let mut game = Game::read(cx);
@@ -89,8 +74,6 @@ fn update(key: String) {
     cx.set_cookie("wisple", game);
 }
 
-/// A finished guess. It comes from the form, where the page's script typed
-/// it; without JavaScript, `update` put the same letters there.
 #[action]
 fn enter(guess: String) {
     let guess = guess.to_ascii_lowercase();
@@ -110,16 +93,11 @@ fn restart() {
     cx.set_cookie("wisple", Game::new());
 }
 
-// ---- the game ----------------------------------------------------------------
 
-/// A visitor's game, kept in their `wisple` cookie as `42|cranesloth|pi`.
 #[derive(Cookie)]
 struct Game {
-    /// Index into `WORDS`.
     answer: usize,
-    /// Every guess so far, run together: `cranesloth` is two.
     guesses: String,
-    /// The row being typed.
     current: String,
 }
 
@@ -133,14 +111,11 @@ impl Game {
         Game { answer, guesses: String::new(), current: String::new() }
     }
 
-    /// The visitor's game, or a new one if they have none (or sent us
-    /// something that isn't one).
     fn read(cx: &Cx) -> Game {
         let game: Game = cx.cookie_or("wisple", Game::new());
         if game.valid() { game } else { Game::new() }
     }
 
-    /// The cookie comes from the browser, so it is checked like any input.
     fn valid(&self) -> bool {
         self.answer < words().count()
             && self.guesses.len().is_multiple_of(LEN)
@@ -177,8 +152,6 @@ impl Game {
                 for (&c, &m) in guess.iter().zip(&marks) {
                     best[index(c)] = best[index(c)].max(m);
                 }
-                // Fresh until the next row gets its first letter: that is
-                // when the page flips the tiles over.
                 let fresh = r + 1 == guesses.len() && self.current.is_empty();
                 Row {
                     tiles: std::array::from_fn(|i| Tile { letter: letter(guess[i]), mark: marks[i] }),
@@ -207,9 +180,6 @@ impl Game {
     }
 }
 
-/// Wordle's rule: exact letters first. Then each other letter of the guess
-/// is close while the answer still has an unclaimed copy of it, so guessing
-/// "geese" for "those" marks one `e` close, not three.
 fn score(guess: &[u8; LEN], answer: &[u8; LEN]) -> [Mark; LEN] {
     let mut marks = [Mark::Missing; LEN];
     let mut unclaimed = [0u8; 26];
@@ -238,7 +208,6 @@ fn index(c: u8) -> usize {
     (c - b'a') as usize
 }
 
-/// A letter as a `&'static str`, so tiles and keys borrow instead of allocate.
 fn letter(c: u8) -> &'static str {
     let i = index(c);
     &ALPHABET[i..i + 1]

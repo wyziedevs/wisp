@@ -429,7 +429,7 @@ const MINIMAL: [(&str, &str); 3] = [
 <h1>Welcome to Wisp</h1>
 <p>Edit <code>src/routes/+page.wisp</code> and save to see it change.</p>
 <p class="actions">
-  <a class="button primary" href="https://github.com/wyziedevs/wisp">Read the docs</a>
+  <a class="button primary" href="https://github.com/wyziedevs/wisp" title="Wisp on GitHub">Read the docs</a>
 </p>
 "#,
     ),
@@ -439,7 +439,7 @@ const MINIMAL: [(&str, &str); 3] = [
 
 <h1>{status}</h1>
 <p>{message}</p>
-<p class="actions"><a class="button" href="/">Back to the Home Page</a></p>
+<p class="actions"><a class="button" href="/" title="Back to the Home Page">Back to the Home Page</a></p>
 "#,
     ),
 ];

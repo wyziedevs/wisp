@@ -6,7 +6,7 @@
 <div class="text-column">
   <h1>How to play Wisple</h1>
 
-  <p>Wisple is a clone of <a href="https://www.nytimes.com/games/wordle/index.html">Wordle</a>, the word guessing game. To win, guess the secret five-letter word in six tries or fewer.</p>
+  <p>Wisple is a clone of <a href="https://www.nytimes.com/games/wordle/index.html" title="Wordle">Wordle</a>, the word guessing game. To win, guess the secret five-letter word in six tries or fewer.</p>
 
   <p>Type a guess and press Enter. Each tile then shows how close you were:</p>
 
@@ -23,5 +23,5 @@
 
   <p>The keyboard keeps score, so you can see which letters you have ruled out. Your game is saved in a cookie, so it is still here if you close the tab.</p>
 
-  <p><a class="button primary" href="/wisple">Play</a></p>
+  <p><a class="button primary" href="/wisple" title="Play Wisple">Play</a></p>
 </div>
