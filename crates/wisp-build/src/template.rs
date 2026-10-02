@@ -4902,11 +4902,9 @@ mod tests {
                 "<form method=\"post\"><select name=\"k\" value={post.kind}><option value=\"a&amp;b\">A</option>\
                    {#each ks as k}<option value={k.id}>{k.name}</option>{/each}<option>\n c  d </option><option>{e}</option></select></form>"
             ),
-            format!(
-                "<form method=\"post\"><select name=\"k\"{{chosen k|post.kind}}>\
-                 <option value=\"a&amp;b\"[+selected?\"a&b\"]>A</option>{{each ks}}<option[value=k.id][+selected?&(k.id)]>{{k.name}}</option>{{/each}}\
-                 <option[+selected?\"c d\"]>\nc  d </option><option>{{e}}</option></select><problem k></form>"
-            )
+            "<form method=\"post\"><select name=\"k\"{chosen k|post.kind}>\
+             <option value=\"a&amp;b\"[+selected?\"a&b\"]>A</option>{each ks}<option[value=k.id][+selected?&(k.id)]>{k.name}</option>{/each}\
+             <option[+selected?\"c d\"]>\nc  d </option><option>{e}</option></select><problem k></form>"
         );
         // A password or a file is never sent back; its problem is shown.
         assert_eq!(
