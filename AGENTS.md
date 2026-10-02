@@ -155,8 +155,8 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
 
 Holes can't go in `on*` attrs, tag names, `javascript:` URLs, SVG
 `<animate>`/`<set>` `to`/`from`/`values`/`by`, or `<meta http-equiv>`/refresh
-`content`. `<script>` and
-`<style>` contents are not parsed for holes.
+`content`, in any case; nor can `{:…}`/`:attr`, and `{:...obj}` leaves
+those keys out. `<script>` and `<style>` contents are not parsed for holes.
 
 ## Components (`src/components/Name.wisp`)
 
