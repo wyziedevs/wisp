@@ -109,7 +109,7 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
   missing or a body that isn't JSON; sent but not a `T` → 422 by field,
   like `invalid`), `Option<T>`
   missing/blank → None, `bool` checkbox, `Vec<T>` repeated, `&str` ok,
-  `Email` (what `<input type=email>` takes), a `#[derive(FromJson)]`/`Rest` struct
+  `Email` (what `<input type=email>` takes), a `#[derive(FromJson)]`/`Rest` struct (the page's or `src/*.rs`'s)
   (`fn default(post: Post)`: its fields by name, its `#[validate]`s; blank
   = missing). Returns nothing/`Result`, or `Response`/`Option<Response>`
   to send instead of the page.

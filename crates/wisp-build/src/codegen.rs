@@ -213,10 +213,7 @@ fn shim(f: &FnItem, kind: Shim) -> Result<String, String> {
         read.push((name, v, get, owned));
         args.push(arg);
     }
-    if let Some((p, _)) = f.checks.iter().find(|(p, _)| {
-        let p = p.trim_start_matches("mut ").trim();
-        !read.iter().any(|(n, ..)| *n == p)
-    }) {
+    if let Some((p, _)) = (f.checks.iter()).find(|(p, _)| !read.iter().any(|(n, ..)| n == p)) {
         return Err(format!(
             "{}: `#[validate]` is on `{p}`, which is not read from the request",
             f.line
@@ -245,7 +242,7 @@ fn shim(f: &FnItem, kind: Shim) -> Result<String, String> {
                 "let {v}{ty} = ::wisp::rt::input::read(&mut __p, {get})?; "
             ));
             for (p, rules) in &f.checks {
-                if p.trim_start_matches("mut ").trim() == *name {
+                if p == name {
                     lets.push_str(&checks(name, v, rules).map_err(|e| format!("{}: {e}", f.line))?);
                 }
             }
@@ -307,11 +304,10 @@ fn upload_sizes(fns: &[FnItem]) -> Result<Option<String>, String> {
     let mut sum = String::new();
     for f in fns.iter().filter(|f| f.action) {
         for (p, rules) in &f.checks {
-            let p = p.trim_start_matches("mut ").trim();
             let rules = rules::parse(rules).map_err(|e| format!("{}: {e}", f.line))?;
             if let Some(size) = rules.max_size {
                 let ty = (f.params.iter())
-                    .find(|(n, _)| n.trim_start_matches("mut ").trim() == p)
+                    .find(|(n, _)| n == p)
                     .map_or("", |(_, t)| t.as_str());
                 if ty::last_segment(ty::option_inner(ty).unwrap_or(ty)) != "Image" {
                     return Err(format!(
@@ -493,6 +489,8 @@ struct Project<'a> {
     hooks: Option<UserMod>,
     /// The app's own modules (`src/notes.rs`).
     mods: Vec<UserMod>,
+    /// The types of `src/*.rs`, which endpoints and action forms may name.
+    shared: Vec<rust_scan::TypeItem>,
 }
 
 /// The browser's half: the modules of templates (by template), and the
@@ -523,6 +521,7 @@ impl<'a> Project<'a> {
             model: Model::default(),
             hooks: None,
             mods: Vec::new(),
+            shared: crate::shared_types(root),
         })
     }
 
@@ -551,26 +550,31 @@ impl<'a> Project<'a> {
         crate::read_source(p).map_err(|e| format!("{}: {e}", p.display()))
     }
 
-    /// A page, layout or error page: everything but a component. With the
-    /// Rust of its `---` block, if it has one, and its whole source. A
-    /// page's `+page.rs` is `rs`.
-    fn parse(
+    /// A layout or error page: with the Rust of its `---` block, if it has
+    /// one.
+    fn parse(&self, p: &Path) -> Result<(Template, Option<String>), String> {
+        let (front, markup) =
+            crate::split_front(&self.read(p)?).map_err(|e| format!("{}:{e}", self.rel(p)))?;
+        self.markup(p, &markup, front, &[])
+    }
+
+    /// The markup of `p`, its action forms' `fields` given the browser's
+    /// checks: everything but a component.
+    fn markup(
         &self,
         p: &Path,
-        rs: Option<PathBuf>,
-    ) -> Result<(Template, Option<String>, String), String> {
-        let src = self.read(p)?;
-        let rs = rs.map(|f| self.read(&f)).transpose()?;
-        let rel = self.rel(p);
-        let (t, rust) =
-            crate::parse_page(&src, rs.as_deref(), &rel).map_err(|e| format!("{rel}:{e}"))?;
+        markup: &str,
+        front: Option<String>,
+        fields: &[rules::Field],
+    ) -> Result<(Template, Option<String>), String> {
+        let at = |e: String| format!("{}:{e}", self.rel(p));
+        let (t, rust) = crate::parse_markup(markup, front, fields).map_err(at)?;
         if let Some((_, line)) = t.props {
-            return Err(format!(
-                "{}:{line}: only components, in src/components, take props",
-                self.rel(p)
-            ));
+            return Err(at(format!(
+                "{line}: only components, in src/components, take props"
+            )));
         }
-        Ok((t, rust, src))
+        Ok((t, rust))
     }
 
     /// A `+layout.rs`, `+page.rs` or `+server.rs`.
@@ -749,7 +753,7 @@ impl<'a> Project<'a> {
         for i in 0..self.tree.layouts.len() {
             let dir = self.tree.layouts[i].dir.clone();
             let file = dir.join("+layout.wisp");
-            let (t, front, _) = self.parse(&file, None)?;
+            let (t, front) = self.parse(&file)?;
             if let Some(line) = first_await(&t.nodes) {
                 return Err(format!(
                     "{}:{line}: a layout renders without waiting, so its markup cannot `.await`; await in the page's markup or `---` block",
@@ -822,7 +826,7 @@ impl<'a> Project<'a> {
                 self.model.root_error = Some(i);
             }
             let file = dir.join("+error.wisp");
-            let (t, front, _) = self.parse(&file, None)?;
+            let (t, front) = self.parse(&file)?;
             check_no_children(&t, &self.rel(&file))?;
             if front.is_some() {
                 return Err(format!(
@@ -938,9 +942,14 @@ impl<'a> Project<'a> {
         let r = &self.tree.routes[i];
         let (dir, page_rs, page_js) = (r.dir.clone(), r.page_rs, r.page_js);
         let file = dir.join("+page.wisp");
-        let (mut t, front, src) = self.parse(&file, page_rs.then(|| dir.join("+page.rs")))?;
+        // Its Rust first: its actions' fields get the browser's checks.
+        let src = self.read(&file)?;
+        let (front, markup) =
+            crate::split_front(&src).map_err(|e| format!("{}:{e}", self.rel(&file)))?;
+        let mut lg = self.logic(page_rs.then(|| dir.join("+page.rs")), &file, front.clone())?;
+        let fields = rules::fields(&lg.items, &self.tree.routes[i].params(), &self.shared);
+        let (mut t, _) = self.markup(&file, &markup, front, &fields)?;
         check_no_children(&t, &self.rel(&file))?;
-        let mut lg = self.logic(page_rs.then(|| dir.join("+page.rs")), &file, front)?;
         // `.await` in the markup: statements, after the block's own.
         let mut lets = Vec::new();
         hoist_awaits(&mut t.nodes, &mut lets).map_err(|e| format!("{}:{e}", self.rel(&file)))?;
@@ -1952,28 +1961,14 @@ impl Gen {
     /// endpoints; the client comes back.
     fn api(&mut self, p: &Project) -> Result<String, String> {
         // Types an endpoint names but does not define may be in the app's own
-        // modules (`src/models.rs`); a file that does not scan is skipped.
-        // In name order, so that the first of two types of one name is the
-        // same on every machine.
-        let mut shared = Vec::new();
-        let mut files: Vec<PathBuf> = (fs::read_dir(p.root.join("src")).into_iter().flatten())
-            .flatten()
-            .map(|e| e.path())
-            .collect();
-        files.sort();
-        for f in files {
-            if f.extension().is_some_and(|e| e == "rs")
-                && let Ok(items) = p.read(&f).and_then(|s| rust_scan::scan(&s))
-            {
-                shared.extend(items.types);
-            }
-        }
+        // modules (`src/models.rs`).
+        let shared = &p.shared;
         let types: Vec<(&crate::routes::Route, Vec<Op>, Vec<rust_scan::TypeItem>)> =
             (p.tree.routes.iter().zip(&p.model.routes))
                 .filter_map(|(route, r)| {
                     let server = r.server.as_ref()?;
                     let ops = server.handlers.iter().map(|h| h.op.clone()).collect();
-                    let types = server.types.iter().chain(&shared).cloned().collect();
+                    let types = server.types.iter().chain(shared).cloned().collect();
                     Some((route, ops, types))
                 })
                 .collect();

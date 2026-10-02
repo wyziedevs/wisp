@@ -6,7 +6,7 @@
 //! tokens. The checks themselves are `wisp::json::check`'s. Each rule is
 //! one entry of `DEFS`.
 
-use crate::rust_scan::Items;
+use crate::rust_scan::{Items, TypeItem};
 use crate::ty::{self, Scalar};
 
 /// One rule, with its value as written (`""` for `email`; a range with no
@@ -354,11 +354,11 @@ pub struct Field {
 }
 
 /// The fields of the actions in `items` the browser can check: each
-/// parameter, and each field of a struct the file defines that one reads
-/// whole (`fn default(post: Post)`). None that is a route parameter in
-/// `params`: the route, not the form, gives that.
-pub fn fields(items: &Items, params: &[&str]) -> Vec<Field> {
-    let bare = |p: &str| p.trim_start_matches("mut ").trim().to_string();
+/// parameter, and each field of a struct that one reads whole (`fn
+/// default(post: Post)`), which the file defines or the app's `shared`
+/// modules do. None that is a route parameter in `params`: the route, not
+/// the form, gives that.
+pub fn fields(items: &Items, params: &[&str], shared: &[TypeItem]) -> Vec<Field> {
     let mut out = Vec::new();
     let mut push = |action: &str, name: String, native: Native| {
         if native != Native::default() && !params.contains(&name.as_str()) {
@@ -371,17 +371,14 @@ pub fn fields(items: &Items, params: &[&str]) -> Vec<Field> {
     };
     for f in items.fns.iter().filter(|f| f.action) {
         for (p, t) in &f.params {
-            let p = bare(p);
-            let whole = items.types.iter().find(|s| {
+            let whole = items.types.iter().chain(shared).find(|s| {
                 s.name == ty::last_segment(t)
                     && s.derives.iter().any(|d| d == "FromJson" || d == "Rest")
             });
             if let Some(s) = whole {
-                let rest = s.derives.iter().any(|d| d == "Rest");
                 for (name, ft) in &s.fields {
                     let name = name.strip_prefix("r#").unwrap_or(name);
-                    // Set by Wisp when left out.
-                    if rest && matches!(name, "created_at" | "updated_at") {
+                    if s.set_by_wisp(name) {
                         continue;
                     }
                     let rules = (s.rules.iter().filter(|(n, _)| n == name))
@@ -395,10 +392,10 @@ pub fn fields(items: &Items, params: &[&str]) -> Vec<Field> {
             if p == "body" && !ty::is_maybe_text(t) {
                 continue;
             }
-            let rules = (f.checks.iter().filter(|(c, _)| bare(c) == p))
+            let rules = (f.checks.iter().filter(|(c, _)| c == p))
                 .flat_map(|(_, r)| parse(r).unwrap_or_default().rules)
                 .collect::<Vec<_>>();
-            push(&f.name, p, Native::of(t, &rules, false));
+            push(&f.name, p.clone(), Native::of(t, &rules, false));
         }
     }
     out
@@ -545,14 +542,25 @@ mod tests {
             "#[derive(FromJson)] struct Post { #[validate(len = 1..=9)] title: String, note: Option<String>, done: bool }\n\
              #[action] fn add(#[validate(min_len = 2)] text: String, slug: String, n: Option<u8>) {}\n\
              #[action] fn default(post: Post) {}\n\
+             #[action] fn save(mut note: models::Note) {}\n\
              fn helper(x: Email) {}",
         )
         .unwrap();
-        let got: Vec<(String, String, bool)> = fields(&items, &["slug"])
+        // A type of the app's own modules too (`src/models.rs`).
+        let shared = crate::rust_scan::scan(
+            "#[derive(Rest)] pub struct Note { #[validate(min = 1)] stars: u8, created_at: String }",
+        )
+        .unwrap()
+        .types;
+        let got: Vec<(String, String, bool)> = fields(&items, &["slug"], &shared)
             .into_iter()
             .map(|f| (f.action, f.name, f.native.required))
             .collect();
-        let want = [("add", "text", true), ("default", "title", true)];
+        let want = [
+            ("add", "text", true),
+            ("default", "title", true),
+            ("save", "stars", true),
+        ];
         let want: Vec<(String, String, bool)> = want
             .iter()
             .map(|&(a, n, r)| (a.into(), n.into(), r))
