@@ -10,6 +10,7 @@ impl Rng {
         Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1)
     }
 
+    #[allow(clippy::should_implement_trait)] // an endless generator, not an iterator
     pub fn next(&mut self) -> u64 {
         self.0 ^= self.0 >> 12;
         self.0 ^= self.0 << 25;
