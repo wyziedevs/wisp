@@ -590,9 +590,8 @@ struct Worker {
     /// a connection that queues something wakes it, once.
     driver: Option<Waker>,
     woken: bool,
-    /// Connections with a send under way, and the second those were last
-    /// checked for stalls.
-    sending: usize,
+    /// The second sends under way (`http::sending`) were last checked for
+    /// stalls.
     checked: u64,
     listener: RawFd,
     /// Sockets accepted in this turn. `accepting`: the multishot accept is
@@ -639,7 +638,6 @@ impl Worker {
             free: Vec::new(),
             driver: None,
             woken: true,
-            sending: 0,
             checked: 0,
             listener,
             accepted: Vec::new(),
@@ -674,7 +672,7 @@ impl Worker {
             }
             entered = self.ring.enter(true);
         }
-        if self.sending > 0 && http::seconds() != self.checked {
+        if http::sending() > 0 && http::seconds() != self.checked {
             self.sweep();
         }
         Ok(())
@@ -765,7 +763,7 @@ impl Worker {
         e.timed_out = false;
         e.out.clear();
         policy::trim(&mut e.out, policy::KEEP_CAPACITY);
-        self.sending -= 1;
+        http::send_under_way(false);
         // A failure is for a task waiting to receive too: its `read` fails.
         if e.wants_send || (e.failed != 0 && e.wants_recv) {
             (e.wants_send, e.wants_recv) = (false, false);
@@ -924,7 +922,7 @@ impl Worker {
         debug_assert!(!e.sending && e.out.is_empty());
         std::mem::swap(&mut e.out, buf);
         (e.sent, e.sending, e.since) = (0, true, http::seconds());
-        self.sending += 1;
+        http::send_under_way(true);
         self.push_send(id);
     }
 
@@ -964,17 +962,6 @@ impl Worker {
         }
         self.release(id);
     }
-}
-
-/// Sends under way on this thread's worker, which a stopping server waits
-/// for: a response handed to the driver is not yet sent.
-pub(crate) fn sending() -> usize {
-    WORKER
-        .try_with(|w| {
-            w.try_borrow()
-                .map_or(0, |w| w.as_ref().map_or(0, |w| w.sending))
-        })
-        .unwrap_or(0)
 }
 
 /// A connection on its worker's ring. Like the task that holds it, it stays
@@ -1210,6 +1197,16 @@ pub(crate) async fn yield_once() {
     .await;
 }
 
+/// Refuses new connections at once, a stopping server's: the accept ends
+/// with an error, which is not a failure now. The listener is gone.
+fn refuse(listener: Option<TcpListener>) -> Option<TcpListener> {
+    if let Some(l) = listener {
+        // SAFETY: shutdown(2) on our listener.
+        unsafe { libc::shutdown(l.as_raw_fd(), libc::SHUT_RDWR) };
+    }
+    None
+}
+
 /// A worker's driver: accepts on `listener`, gives each connection to
 /// `accepted` (which starts its task), and turns the ring whenever a
 /// connection queued something or the kernel has completions. Stops
@@ -1240,6 +1237,9 @@ pub(crate) async fn serve(
     let mut retry: Option<Instant> = None;
     let mut fds = Vec::new();
     loop {
+        if listener.is_some() && http::stopping() {
+            (retry, listener) = (None, refuse(listener.take()));
+        }
         if retry.is_some_and(|t| t <= Instant::now()) {
             retry = None;
             with(Worker::accept);
@@ -1276,13 +1276,7 @@ pub(crate) async fn serve(
         }
         poll_fn(|cx| {
             if listener.is_some() && stop.as_mut().poll(cx).is_ready() {
-                // Refuses new connections at once; the accept ends with an
-                // error, which is not a failure now.
-                if let Some(l) = listener.take() {
-                    // SAFETY: shutdown(2) on our listener.
-                    unsafe { libc::shutdown(l.as_raw_fd(), libc::SHUT_RDWR) };
-                }
-                retry = None;
+                (retry, listener) = (None, refuse(listener.take()));
                 return Poll::Ready(());
             }
             let (queued, sending) = with(|w| {
@@ -1290,7 +1284,7 @@ pub(crate) async fn serve(
                     w.driver = Some(cx.waker().clone());
                 }
                 w.woken = false;
-                (w.ring.queued() > 0, w.sending > 0)
+                (w.ring.queued() > 0, http::sending() > 0)
             });
             if queued {
                 return Poll::Ready(());

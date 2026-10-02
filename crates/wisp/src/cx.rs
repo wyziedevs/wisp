@@ -143,6 +143,9 @@ pub struct Cx {
     id: std::sync::OnceLock<String>,
     /// Routed to a `+server.rs` endpoint, whose errors are JSON.
     api: bool,
+    /// The `Idempotency-Key` this request answers first, kept with its
+    /// answer (see `idem.rs`).
+    pub(crate) idem: Option<crate::idem::Key>,
 }
 
 impl Cx {
@@ -169,11 +172,16 @@ impl Cx {
             json: std::sync::OnceLock::new(),
             id: std::sync::OnceLock::new(),
             api: false,
+            idem: None,
         }
     }
 
-    /// Clears per-request state; request spans are set by the parser.
+    /// Clears what a request left, once it is answered; the next one's
+    /// spans are set by the parser. The edge build answers each request in
+    /// a `Cx` of its own.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn reset(&mut self) {
+        self.idem = None;
         // Only the route's own are ever set (`set_params`).
         self.decoded[..self.names.len()].fill(None);
         self.names = &[];

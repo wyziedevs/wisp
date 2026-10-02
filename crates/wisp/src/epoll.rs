@@ -79,6 +79,11 @@ fn token(id: usize, generation: u32) -> u64 {
     (u64::from(generation) << 32) | id as u64
 }
 
+/// The entry and generation of a `token`.
+fn untoken(t: u64) -> (usize, u32) {
+    (t as u32 as usize, (t >> 32) as u32)
+}
+
 /// The error of the call that just failed.
 fn errno() -> i32 {
     io::Error::last_os_error()
@@ -178,7 +183,7 @@ struct Entry {
     /// The future waits in `readable`, holding nothing: the driver may
     /// answer what comes itself (`http::on_driver`).
     bare: bool,
-    /// The peer, for the requests the driver answers.
+    /// The peer, for the requests the driver answers: set with `serve`.
     peer: Option<SocketAddr>,
     /// What the driver received and leaves to the future (`http::Handed`).
     handed: Option<http::Handed>,
@@ -218,8 +223,6 @@ struct Worker {
     /// Buffers of sends that are over, for the next sends the socket has no
     /// room for to swap in: a connection keeps none once its send is done.
     spare: Vec<Vec<u8>>,
-    /// Connections with a send under way, for a stopping server to wait for.
-    sending: usize,
 }
 
 /// How many buffers `spare` keeps.
@@ -236,8 +239,8 @@ fn with<R>(f: impl FnOnce(&mut Worker) -> R) -> R {
 
 impl Worker {
     /// One `epoll_wait`, without waiting: hands out the events that came.
-    /// How many it took.
-    fn turn(&mut self) -> usize {
+    /// Whether any did (or a signal cut it short): another turn may find more.
+    fn turn(&mut self) -> bool {
         self.events.clear();
         // SAFETY: epoll_wait(2) writes at most EVENTS events into the
         // vector's room, which has that many.
@@ -251,7 +254,7 @@ impl Worker {
         };
         if n < 0 {
             match errno() {
-                libc::EINTR => return 1,
+                libc::EINTR => return true,
                 e => crate::fail(&format!(
                     "epoll stopped working: {}",
                     io::Error::from_raw_os_error(e)
@@ -268,7 +271,7 @@ impl Worker {
         if http::seconds() != self.checked {
             self.tick();
         }
-        n as usize
+        n > 0
     }
 
     fn event(&mut self, data: u64, events: u32) {
@@ -276,9 +279,9 @@ impl Worker {
             self.acceptable = true;
             return;
         }
-        let id = data as u32 as usize;
+        let (id, generation) = untoken(data);
         let e = &mut self.conns[id];
-        if e.fd < 0 || e.generation != (data >> 32) as u32 {
+        if e.fd < 0 || e.generation != generation {
             return;
         }
         if events & READABLE != 0 {
@@ -324,7 +327,7 @@ impl Worker {
         if policy::kept(out.capacity()) && self.spare.len() < SPARE {
             self.spare.push(out);
         }
-        self.sending -= 1;
+        http::send_under_way(false);
         let e = &mut self.conns[id];
         // A failure is for a connection waiting to receive too: its `read` fails.
         if e.wants_send || (failed != 0 && e.wants_recv) {
@@ -449,19 +452,19 @@ impl Worker {
 
     /// Ready once the socket may have something to receive (or its end, or
     /// an error, which the receive after it reports), as `read` waits but
-    /// with no buffer. The driver moves the deadline on as it answers
-    /// requests itself (`next`), past the one the future had.
-    fn readable(&mut self, id: usize, deadline: u64, cx: &Context) -> Poll<io::Result<()>> {
+    /// with no buffer, until the entry's deadline: the one the future set
+    /// as it began to wait, or a later one the driver set as it answered
+    /// requests itself (`next`).
+    fn readable(&mut self, id: usize, cx: &Context) -> Poll<io::Result<()>> {
         let e = &mut self.conns[id];
         result(e.failed)?;
         if e.readable || e.handed.is_some() {
             return Poll::Ready(Ok(()));
         }
-        let deadline = deadline.max(e.deadline);
-        if deadline != 0 && http::seconds() >= deadline {
+        if e.deadline != 0 && http::seconds() >= e.deadline {
             return Poll::Ready(Err(io::ErrorKind::TimedOut.into()));
         }
-        (e.wants_recv, e.deadline, e.bare) = (true, deadline, true);
+        (e.wants_recv, e.bare) = (true, true);
         wait(&mut e.waker, cx);
         Poll::Pending
     }
@@ -469,12 +472,7 @@ impl Worker {
     /// Sends all of `buf`, and leaves it empty: what the socket has no room
     /// for goes on from the driver (and `buf` gets a spare buffer).
     fn write(&mut self, id: usize, buf: &mut Vec<u8>) -> io::Result<()> {
-        let Worker {
-            conns,
-            spare,
-            sending,
-            ..
-        } = self;
+        let Worker { conns, spare, .. } = self;
         let e = &mut conns[id];
         debug_assert!(!e.sending && e.out.is_empty());
         result(e.failed)?;
@@ -485,7 +483,7 @@ impl Worker {
                 Err(libc::EAGAIN) => {
                     e.out = std::mem::replace(buf, spare.pop().unwrap_or_default());
                     (e.sent, e.sending, e.since) = (at, true, http::seconds());
-                    *sending += 1;
+                    http::send_under_way(true);
                     return Ok(());
                 }
                 Err(errno) => {
@@ -500,6 +498,8 @@ impl Worker {
     }
 
     /// Receives onto the end of `buf`, as `read` does but without waiting.
+    /// Not `try_read`'s: its checks, which the driver made already, cost
+    /// the request on the driver more than this does.
     fn receive(&mut self, id: usize, buf: &mut Vec<u8>) -> Got {
         let e = &mut self.conns[id];
         buf.reserve(RECV_ROOM);
@@ -562,7 +562,7 @@ fn step(mut serve: Serve, cx: &mut Context) -> Option<Serve> {
 /// `accepted`.
 pub(crate) fn spawn<F: Future<Output = ()> + 'static>(
     stream: TcpStream,
-    peer: Option<SocketAddr>,
+    peer: SocketAddr,
     serve: impl FnOnce(Sock) -> F,
 ) {
     let sock = Sock::new(stream);
@@ -570,7 +570,7 @@ pub(crate) fn spawn<F: Future<Output = ()> + 'static>(
     let serve: Serve = Box::pin(serve(sock));
     let generation = with(|w| {
         let e = &mut w.conns[id];
-        (e.attached, e.serve, e.peer) = (true, Some(serve), peer);
+        (e.attached, e.serve, e.peer) = (true, Some(serve), Some(peer));
         e.generation
     });
     tokio::spawn(poll_fn(move |cx| task(id, generation, cx)));
@@ -608,7 +608,7 @@ fn task(id: usize, generation: u32, cx: &mut Context) -> Poll<()> {
 /// Polls the future of the connection `token` names on the driver, with
 /// its task's waker: what the task would do if woken, without waking it.
 fn inline(token: u64) {
-    let (id, generation) = (token as u32 as usize, (token >> 32) as u32);
+    let (id, generation) = untoken(token);
     let taken = with(|w| {
         let e = &mut w.conns[id];
         if e.generation != generation || e.task.is_none() {
@@ -637,7 +637,7 @@ fn inline(token: u64) {
 /// The future of connection `token` takes over from the driver, which
 /// tried its requests first (`http::on_driver`): polled as an event would have.
 fn resume(token: u64) {
-    let (id, generation) = (token as u32 as usize, (token >> 32) as u32);
+    let (id, generation) = untoken(token);
     let polled = with(|w| {
         let e = &mut w.conns[id];
         if e.generation != generation || !e.wants_recv {
@@ -665,21 +665,25 @@ pub(crate) enum Got {
     End,
 }
 
-/// For `http::on_driver`, when connection `token`'s future waits holding
-/// nothing and the socket is the driver's to receive from and send on: its
-/// entry, and what a receive onto the end of `buf` got. Its peer goes to
-/// `peer`.
-pub(crate) fn first(token: u64, buf: &mut Vec<u8>, peer: &mut SocketAddr) -> Option<(usize, Got)> {
-    let (id, generation) = (token as u32 as usize, (token >> 32) as u32);
+/// For `http::on_driver`: the entry and peer of connection `token`, when
+/// its future waits holding nothing and the socket is the driver's to
+/// receive from (`receive`) and send on.
+pub(crate) fn free(token: u64) -> Option<(usize, SocketAddr)> {
+    let (id, generation) = untoken(token);
     with(|w| {
         let e = &w.conns[id];
         let free = e.fd >= 0 && e.generation == generation && e.bare && e.wants_recv;
         if !free || e.ended || e.sending || e.failed != 0 || e.handed.is_some() {
             return None;
         }
-        *peer = e.peer?;
-        Some((id, w.receive(id, buf)))
+        Some((id, e.peer?))
     })
+}
+
+/// For `http::on_driver`: what a receive onto the end of `buf` got for
+/// connection `id`, which `free` gave it.
+pub(crate) fn receive(id: usize, buf: &mut Vec<u8>) -> Got {
+    with(|w| w.receive(id, buf))
 }
 
 /// For `http::on_driver`, once it answered what connection `id` sent: sends
@@ -711,28 +715,18 @@ pub(crate) fn next(
 /// A failure shows in the future's next call.
 pub(crate) fn hand(id: usize, mut h: http::Handed) {
     with(|w| {
-        let out = h.wbuf();
-        if !out.is_empty() {
+        if let Some(out) = h.wbuf()
+            && !out.is_empty()
+        {
             let _ = w.write(id, out);
         }
         w.conns[id].handed = Some(h);
     });
 }
 
-/// Sends under way on this thread's worker, which a stopping server waits
-/// for: a response handed to the driver is not yet sent.
-pub(crate) fn sending() -> usize {
-    WORKER
-        .try_with(|w| {
-            w.try_borrow()
-                .map_or(0, |w| w.as_ref().map_or(0, |w| w.sending))
-        })
-        .unwrap_or(0)
-}
-
 /// Connection `token` fails: every call of its future does.
 fn fail(token: u64) {
-    let (id, generation) = (token as u32 as usize, (token >> 32) as u32);
+    let (id, generation) = untoken(token);
     with(|w| {
         let e = &mut w.conns[id];
         if e.generation == generation && e.failed == 0 {
@@ -776,9 +770,16 @@ impl Sock {
     }
 
     /// Waits, with no buffer, until a `read_by` would not: the socket may
-    /// have something to receive. `TimedOut` past `deadline`, as there.
+    /// have something to receive. `TimedOut` past `deadline`, as there,
+    /// or past a later one the driver set as it answered requests itself:
+    /// a future that waits again after a wakeup with nothing behind it
+    /// keeps that.
     pub(crate) async fn readable_by(&mut self, deadline: u64) -> io::Result<()> {
-        poll_fn(|cx| with(|w| w.readable(self.id, deadline, cx))).await
+        with(|w| {
+            let e = &mut w.conns[self.id];
+            e.deadline = e.deadline.max(deadline);
+        });
+        poll_fn(|cx| with(|w| w.readable(self.id, cx))).await
     }
 
     /// Sends all of `buf` and leaves it empty. What the socket has no room
@@ -884,7 +885,6 @@ pub(crate) async fn serve(
         answers: now.is_some(),
         fast: Vec::new(),
         spare: Vec::new(),
-        sending: 0,
     }));
     let _ = ready.send(());
     let mut listener = Some(listener);
@@ -901,6 +901,9 @@ pub(crate) async fn serve(
     loop {
         if retry.is_some_and(|t| t <= Instant::now()) {
             retry = None;
+        }
+        if listener.is_some() && http::stopping() {
+            (listener, retry) = (None, None); // refuses new connections at once
         }
         let took = with(|w| {
             let took = w.turn();
@@ -943,14 +946,11 @@ pub(crate) async fn serve(
                 }
             }
         }
-        if took > 0 {
+        if took {
             // Events came, so more likely wait: the next turn is ours again
             // after the tasks woken, so a busy epoll never starves them, and
             // tokio turns its own epoll (which waits on ours) only now and
             // then rather than once a turn. A turn that takes none waits.
-            if http::stopping() {
-                (listener, retry) = (None, None); // refuses new connections at once
-            }
             yield_once().await;
             continue;
         }
@@ -1021,7 +1021,7 @@ mod tests {
     /// `wait` after a timer (a handler that awaits), `big` with 4 MB (a send
     /// the socket has no room for), `panic` not at all, others as they are.
     fn lines(s: TcpStream) {
-        spawn(s, None, |mut sock| async move {
+        spawn(s, ([127, 0, 0, 1], 0).into(), |mut sock| async move {
             let (mut buf, mut out) = (Vec::new(), Vec::new());
             loop {
                 while let Some(end) = buf.iter().position(|&b| b == b'\n') {
@@ -1103,7 +1103,7 @@ mod tests {
     #[test]
     fn a_read_past_its_deadline_fails() {
         fn waits(s: TcpStream) {
-            spawn(s, None, |mut sock| async move {
+            spawn(s, ([127, 0, 0, 1], 0).into(), |mut sock| async move {
                 let mut buf = Vec::new();
                 let deadline = http::seconds() + 1;
                 if let Err(e) = sock.read_by(&mut buf, deadline).await {
@@ -1126,7 +1126,7 @@ mod tests {
         // The driver answered requests itself meanwhile (`next`): the
         // deadline the future waited with, now past, does not end it.
         fn waits(s: TcpStream) {
-            spawn(s, None, |mut sock| async move {
+            spawn(s, ([127, 0, 0, 1], 0).into(), |mut sock| async move {
                 tokio::time::sleep(Duration::from_millis(1100)).await;
                 let _ = sock.try_read(&mut Vec::new()); // nothing yet
                 with(|w| w.conns[sock.id].deadline = http::seconds() + 100);
