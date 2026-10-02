@@ -40,8 +40,11 @@ pub trait FromInput<M>: Sized {
 impl<T: FromStr<Err: Display> + 'static> FromInput<One> for T {
     fn get(cx: &Cx, name: &str) -> Result<T> {
         let mut flag: Option<T> = None;
-        if let Some(b) = (&mut flag as &mut dyn Any).downcast_mut::<Option<bool>>() {
+        let any = &mut flag as &mut dyn Any;
+        if let Some(b) = any.downcast_mut::<Option<bool>>() {
             *b = Some(input::flag(cx, name));
+        } else if let Some(s) = any.downcast_mut::<Option<String>>() {
+            *s = Some(input::text(cx, name)?);
         }
         match flag {
             Some(v) => Ok(v),

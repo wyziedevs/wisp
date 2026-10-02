@@ -1984,6 +1984,18 @@ pub(crate) fn spare() -> Vec<u8> {
     SPARE.take()
 }
 
+/// [`spare`] for `len` bytes that may be kept long (a `String` input a
+/// handler stores): only one about that size, else a new buffer, so a
+/// small value never holds a large one's room.
+pub(crate) fn spare_for(len: usize) -> Vec<u8> {
+    let b = SPARE.take();
+    if (len..=len.max(16) * 4).contains(&b.capacity()) {
+        return b;
+    }
+    SPARE.set(b);
+    Vec::with_capacity(len)
+}
+
 /// Keeps `body`, now written, for [`spare`] to hand out again, unless one
 /// large message made it big.
 fn recycle(mut body: Vec<u8>) {
@@ -4290,6 +4302,18 @@ mod tests {
             bodies.iter().zip(ends).all(|(b, e)| b.ends_with(e)),
             "{text}"
         );
+    }
+
+    /// A `String` input takes a spare body only of about its size: one it
+    /// keeps (in a table, say) never holds a large body's room.
+    #[test]
+    fn a_string_input_takes_a_spare_of_its_size_only() {
+        recycle(Vec::with_capacity(4096));
+        assert!(spare_for(3).capacity() < 64);
+        assert_eq!(spare().capacity(), 4096);
+        recycle(Vec::with_capacity(32));
+        assert_eq!(spare_for(10).capacity(), 32);
+        assert_eq!(spare().capacity(), 0);
     }
 
     #[test]

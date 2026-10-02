@@ -139,6 +139,19 @@ pub fn required<T: FromStr<Err: Display>>(cx: &Cx, name: &str) -> Result<T> {
     }
 }
 
+/// [`required`] for a `String`, which never fails to parse: in a buffer
+/// a response gave back, when one of its size is there.
+pub fn text(cx: &Cx, name: &str) -> Result<String> {
+    match find(cx, name) {
+        Some((v, _)) => {
+            let mut s = String::from_utf8(crate::http::spare_for(v.len())).unwrap_or_default();
+            s.push_str(&v);
+            Ok(s)
+        }
+        None => required(cx, name),
+    }
+}
+
 /// `name: Option<T>`: `None` when it is missing or blank.
 pub fn optional<T: FromStr<Err: Display>>(cx: &Cx, name: &str) -> Result<Option<T>> {
     match find(cx, name) {
