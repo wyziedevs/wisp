@@ -222,6 +222,31 @@ fn javascript_is_minified() {
     assert_eq!(min(&once), once);
 }
 
+/// The runtime as release builds serve it (minified by `wisp`'s build.rs
+/// and codegen) still parses. Run by Node when there is one.
+#[test]
+fn the_minified_runtime_parses() {
+    let dir = std::env::temp_dir();
+    for (file, js) in [
+        ("live.mjs", wisp_shared::LIVE_JS),
+        ("wisp.js", wisp_shared::WISP_JS),
+        ("extra.mjs", wisp_shared::EXTRA_JS),
+    ] {
+        let path = dir.join(format!("wisp-check-{}-{file}", std::process::id()));
+        fs::write(&path, minify_js(js)).unwrap();
+        let checked = std::process::Command::new("node")
+            .arg("--check")
+            .arg(&path)
+            .output();
+        let _ = fs::remove_file(&path);
+        let Ok(checked) = checked else {
+            return; // no Node here
+        };
+        let why = String::from_utf8_lossy(&checked.stderr);
+        assert!(checked.status.success(), "{file}: {why}");
+    }
+}
+
 /// What the browser runtime is served as: names it binds are shortened,
 /// what it does not (exports, globals, properties) is not.
 #[test]

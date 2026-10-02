@@ -191,7 +191,7 @@ fn color() -> bool {
 /// built CSS (or `src/app.css`), anything else comes from `static/`.
 pub(crate) fn read_file(root: &str, path: &str) -> Option<(Vec<u8>, String)> {
     let root = Path::new(root);
-    let file = if path == "/_app/app.css" {
+    let file = if path == crate::protocol::APP_CSS_PATH {
         let built = root.join(".wisp").join("app.css");
         if built.is_file() {
             built

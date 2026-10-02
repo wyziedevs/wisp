@@ -12,8 +12,8 @@ use crate::json_str as js_str;
 use crate::model::{self, Handler, Model};
 use crate::openapi::Op;
 use crate::protocol::{
-    COPY_END, COPY_START, GROUP_ATTR, HEADER_ERROR, ISLAND_MEDIA, LOOP_ATTR, ON_FLAGS, ON_PLACED,
-    ON_ROOT, SLOT_ATTR,
+    APP_CSS_PATH, COPY_END, COPY_START, EXTRA_JS_PATH, GROUP_ATTR, HEADER_ERROR, ISLAND_MEDIA,
+    LIVE_JS_PATH, LOOP_ATTR, MODULES, ON_FLAGS, ON_PLACED, ON_ROOT, SLOT_ATTR, WISP_JS_PATH,
 };
 use crate::routes::Seg;
 use crate::rust_scan::{self, FnItem, Returns};
@@ -1232,7 +1232,7 @@ impl<'a> Project<'a> {
             let source = if self.release { js::runtime(&src) } else { src };
             let hash = format!("{:016x}", fnv1a(source.as_bytes()));
             JsFile {
-                path: "/_app/c/extra.js".into(),
+                path: EXTRA_JS_PATH.into(),
                 hash,
                 source,
             }
@@ -1253,7 +1253,7 @@ impl<'a> Project<'a> {
         let mut js_files: Vec<JsFile> = lib_src
             .iter()
             .map(|(p, src)| JsFile {
-                path: format!("/_app/c/lib/{p}"),
+                path: format!("{MODULES}lib/{p}"),
                 hash: lib_hash.clone(),
                 source: lib_file(src, Some(p.rfind('/').map_or("", |i| &p[..i]))),
             })
@@ -1271,7 +1271,7 @@ impl<'a> Project<'a> {
                 Some(f) => {
                     let source = lib_file(&self.read(f)?, None);
                     let hash = format!("{:016x}", fnv1a(source.as_bytes()));
-                    let path = format!("/_app/c/t{}.load.js", t.id);
+                    let path = format!("{MODULES}t{}.load.js", t.id);
                     let url = format!("{path}?v={hash}");
                     js_files.push(JsFile { path, hash, source });
                     Some(url)
@@ -1325,7 +1325,7 @@ impl<'a> Project<'a> {
             let url = |ci: usize| {
                 c.uses
                     .contains(&ci)
-                    .then(|| format!("/_app/c/t{}.js?v={}", self.templates[ci].id, finals[ci]))
+                    .then(|| format!("{MODULES}t{}.js?v={}", self.templates[ci].id, finals[ci]))
             };
             c.source = link_comps(&c.source, url);
             c.hash.clone_from(&finals[k]);
@@ -1353,12 +1353,12 @@ impl<'a> Project<'a> {
         if let Some(v) = css {
             let _ = write!(
                 tags,
-                "<link rel=\"stylesheet\" href=\"/_app/app.css?v={v}\">"
+                "<link rel=\"stylesheet\" href=\"{APP_CSS_PATH}?v={v}\">"
             );
         }
         let _ = write!(
             tags,
-            "<script defer src=\"/_app/wisp.js?v={}\"></script>",
+            "<script defer src=\"{WISP_JS_PATH}?v={}\"></script>",
             crate::runtime_version()
         );
         let [s0, s1, s2] = &self.shell;
@@ -1574,7 +1574,7 @@ impl Gen {
             return Ok(Assets { css_hash, files });
         }
         if let (Some(f), Some(h)) = (&css, &css_hash) {
-            files.push(("/_app/app.css".into(), f.clone(), h.clone()));
+            files.push((APP_CSS_PATH.into(), f.clone(), h.clone()));
         }
         let static_dir = p.root.join("static");
         if static_dir.is_dir() {
@@ -4289,7 +4289,7 @@ struct Client {
 
 impl Client {
     fn path(&self) -> String {
-        format!("/_app/c/{}.js", self.id)
+        format!("{MODULES}{}.js", self.id)
     }
 }
 
@@ -4815,7 +4815,7 @@ fn module_source(m: &Module) -> String {
     let mut s = String::new();
     let _ = writeln!(
         s,
-        "import {{ define }} from \"/_app/live.js?v={}\";",
+        "import {{ define }} from \"{LIVE_JS_PATH}?v={}\";",
         crate::runtime_version()
     );
     for url in m.imports {
@@ -4913,7 +4913,7 @@ fn module_source(m: &Module) -> String {
 /// (a full URL) stays as written.
 fn resolve_spec(spec: &str, lib_hash: &str, base: Option<&str>) -> Option<String> {
     if spec == "wisp" {
-        return Some(format!("/_app/live.js?v={}", crate::runtime_version()));
+        return Some(format!("{LIVE_JS_PATH}?v={}", crate::runtime_version()));
     }
     let rel = if let Some(p) = spec.strip_prefix("$lib/") {
         p.to_string()
@@ -4931,7 +4931,7 @@ fn resolve_spec(spec: &str, lib_hash: &str, base: Option<&str>) -> Option<String
         }
         parts.join("/")
     };
-    Some(format!("/_app/c/lib/{rel}?v={lib_hash}"))
+    Some(format!("{MODULES}lib/{rel}?v={lib_hash}"))
 }
 
 /// `src` with the module names of its imports (`import … from '…'`,

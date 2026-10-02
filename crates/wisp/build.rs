@@ -1,7 +1,7 @@
 //! Release builds serve the browser runtime (`wisp_shared::WISP_JS`,
 //! `LIVE_JS`) minified: no comments, only the whitespace JavaScript needs,
 //! and short names (see `wisp_build::minify_js`). Dev builds serve the
-//! files as written, for debugging.
+//! files as written, for debugging, so they minify nothing.
 
 use std::path::Path;
 
@@ -13,6 +13,10 @@ fn main() {
         "cargo:rustc-env=WISP_RUNTIME_V={}",
         wisp_build::runtime_version()
     );
+    // What `http.rs` serves by: `cfg(debug_assertions)`, the files as written.
+    if std::env::var_os("CARGO_CFG_DEBUG_ASSERTIONS").is_some() {
+        return;
+    }
     let out = std::env::var("OUT_DIR").expect("cargo sets OUT_DIR");
     for (name, js) in [
         ("wisp.js", wisp_shared::WISP_JS),

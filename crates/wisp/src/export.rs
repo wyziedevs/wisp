@@ -211,7 +211,7 @@ fn file(segs: &[String]) -> String {
 /// The `/_app/...` files a page refers to (scripts, CSS, browser modules).
 fn find_assets(html: &str, out: &mut BTreeSet<String>) {
     let mut rest = html;
-    while let Some(i) = rest.find("/_app/") {
+    while let Some(i) = rest.find(crate::protocol::APP_PREFIX) {
         let tail = &rest[i..];
         let end = tail
             .find(['"', '\'', '?', '<', '>', ' ', '\\', ')'])

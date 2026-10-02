@@ -85,6 +85,26 @@ pub const HEADER_LOCATION: &str = "x-wisp-location";
 /// Browser code failed to start: wisp.js asks for the route's error page.
 pub const HEADER_ERROR: &str = "x-wisp-error";
 
+/// `/_app/<file>`, where Wisp serves its own files, as a literal: for a
+/// `concat!` that builds a tag once, at compile time.
+#[macro_export]
+macro_rules! app_path {
+    ($file:literal) => {
+        concat!("/_app/", $file)
+    };
+}
+
+/// Where Wisp serves its own files.
+pub const APP_PREFIX: &str = app_path!("");
+/// The browser modules: templates', `src/lib`'s (`lib/`) and extra.js.
+pub const MODULES: &str = app_path!("c/");
+/// The browser runtime: wisp.js, live.js and live.js's less used half.
+pub const WISP_JS_PATH: &str = app_path!("wisp.js");
+pub const LIVE_JS_PATH: &str = app_path!("live.js");
+pub const EXTRA_JS_PATH: &str = app_path!("c/extra.js");
+/// The app's CSS (`src/app.css`, or what Tailwind built of it).
+pub const APP_CSS_PATH: &str = app_path!("app.css");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,6 +137,7 @@ mod tests {
             format!("how == {}", q(ISLAND_INTERACTION)),
             format!("how == {}", q(ISLAND_VISIBLE)),
             format!("how[0] == '{ISLAND_MEDIA}'"),
+            format!("startsWith({})", q(APP_PREFIX)),
             "for (const [I, , P, , how] of".into(),
         ];
         for want in &in_live {

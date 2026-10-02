@@ -134,7 +134,9 @@ impl Live {
         }
         if self.modules.iter().any(|m| m.1) {
             s.push_str(concat!(
-                "<script type=\"module\" src=\"/_app/live.js?v=",
+                "<script type=\"module\" src=\"",
+                wisp_shared::app_path!("live.js"),
+                "?v=",
                 env!("WISP_RUNTIME_V"),
                 "\"></script>"
             ));
@@ -1164,31 +1166,6 @@ mod tests {
             assert_eq!(server, browser, "{name}={json}");
         }
         assert_eq!(out.lines().count(), cases.len());
-
-        // The runtime as release builds serve it (minified by build.rs)
-        // still parses.
-        let dir = std::env::temp_dir();
-        for (file, min) in [
-            (
-                "live.mjs",
-                include_str!(concat!(env!("OUT_DIR"), "/live.js")),
-            ),
-            (
-                "wisp.js",
-                include_str!(concat!(env!("OUT_DIR"), "/wisp.js")),
-            ),
-        ] {
-            let path = dir.join(format!("wisp-check-{}-{file}", std::process::id()));
-            std::fs::write(&path, min).unwrap();
-            let checked = std::process::Command::new("node")
-                .arg("--check")
-                .arg(&path)
-                .output();
-            let _ = std::fs::remove_file(&path);
-            let checked = checked.unwrap();
-            let why = String::from_utf8_lossy(&checked.stderr);
-            assert!(checked.status.success(), "{file}: {why}");
-        }
     }
 
     /// JSON values and whether JavaScript counts them as true.
