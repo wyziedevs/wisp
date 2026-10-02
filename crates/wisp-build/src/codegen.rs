@@ -99,9 +99,6 @@ struct UserMod {
     shims: Vec<String>,
     /// The tables it keeps (`super::TODOS`), which load at startup.
     tables: Vec<String>,
-    /// It has an `async fn`, which a request through it may wait on: any
-    /// one, shim or helper, so a mistake errs towards waiting (see `now`).
-    waits: bool,
 }
 
 impl UserMod {
@@ -118,7 +115,6 @@ impl UserMod {
             inline,
             shims,
             tables: items.tables(),
-            waits: items.fns.iter().any(|f| f.is_async),
         }
     }
 
@@ -482,6 +478,8 @@ struct Project<'a> {
     /// The routes, layouts and error pages, as codegen prints them.
     model: Model,
     hooks: Option<UserMod>,
+    /// `before` in hooks.rs is an `async fn`: every request may wait.
+    before_waits: bool,
     /// The app's own modules (`src/notes.rs`).
     mods: Vec<UserMod>,
     /// The types of `src/*.rs`, which endpoints and action forms may name.
@@ -515,13 +513,14 @@ impl<'a> Project<'a> {
             user_mods: Vec::new(),
             model: Model::default(),
             hooks: None,
+            before_waits: false,
             mods: Vec::new(),
             shared: crate::shared_types(root),
         })
     }
 
     /// The whole app, read phase by phase, each finding what the next
-    /// needs; then its model, resolved.
+    /// needs, into its model.
     fn load(input: &Input<'a>) -> Result<Project<'a>, String> {
         let mut p = Project::new(input)?;
         p.components()?;
@@ -529,7 +528,6 @@ impl<'a> Project<'a> {
         p.error_pages()?;
         p.routes()?;
         p.app_files()?;
-        p.model.resolve();
         Ok(p)
     }
 
@@ -789,7 +787,9 @@ impl<'a> Project<'a> {
             // The template reads `data` from a load, or names from statements.
             let reads = load.is_some() || lg.stmts.is_some();
             let user = lg.file.is_some().then(|| (format!("layout_{i}"), reads));
-            let mut waits = false;
+            // Any `async fn`, shim or helper, may be waited on: a mistake
+            // errs towards waiting (see `now`).
+            let waits = lg.file.is_some() && lg.items.fns.iter().any(|f| f.is_async);
             if let Some(src) = lg.file {
                 let shims = load
                     .map(|f| shim(f, Shim::Load))
@@ -797,9 +797,8 @@ impl<'a> Project<'a> {
                     .map_err(|e| format!("{where_}:{e}"))?;
                 let name = format!("layout_{i}");
                 let shims = shims.into_iter().collect();
-                let m = UserMod::new(name, src, lg.inline, shims, &lg.items);
-                waits = m.waits;
-                self.user_mods.push(m);
+                self.user_mods
+                    .push(UserMod::new(name, src, lg.inline, shims, &lg.items));
             }
             let load = load.is_some();
             let data = lg.items.data_fields();
@@ -893,11 +892,7 @@ impl<'a> Project<'a> {
                 c.name, c.ty
             )));
         }
-        let cache = model::Cache {
-            module,
-            public,
-            by_accept: false,
-        };
+        let cache = model::Cache { module, public };
         set_once(&mut route.cache, cache, &c.name, page).map_err(|e| at(&e))?;
         shims.push(format!("pub const CACHE: u32 = super::{};", c.name));
         Ok(())
@@ -919,7 +914,6 @@ impl<'a> Project<'a> {
                 body_limit: None,
                 uploads: None,
                 cache: None,
-                waits: false,
             };
             if r.page {
                 self.page(i, &mut route)?;
@@ -1045,7 +1039,6 @@ impl<'a> Project<'a> {
                 inline: lg.inline,
                 shims,
                 tables,
-                waits: fns.iter().any(|f| f.is_async),
             });
         }
         let tpl = self.add_tpl(format!("tpl_page_{i}"), &file, Kind::Page, t);
@@ -1097,7 +1090,6 @@ impl<'a> Project<'a> {
                     let cache = model::Cache {
                         module: sf.server.module.clone(),
                         public,
-                        by_accept: false,
                     };
                     set_once(&mut route.cache, cache, "CACHE", page_file).map_err(at)?;
                 }
@@ -1116,9 +1108,14 @@ impl<'a> Project<'a> {
                 let segs = &segs[..segs.len() - usize::from(member)];
                 let (handlers, before) = server_handlers(&items, segs, &mut shims)
                     .map_err(|e| format!("{}:{e}", self.rel(&file)))?;
-                let m = UserMod::new(module.clone(), file.clone(), None, shims, &items);
-                let waits = m.waits;
-                self.user_mods.push(m);
+                let waits = items.fns.iter().any(|f| f.is_async);
+                (self.user_mods).push(UserMod::new(
+                    module.clone(),
+                    file.clone(),
+                    None,
+                    shims,
+                    &items,
+                ));
                 servers.push(ServerFile {
                     file: file.clone(),
                     limit: route.body_limit.as_ref() == Some(&module),
@@ -1165,7 +1162,7 @@ impl<'a> Project<'a> {
     /// `src/hooks.rs`, the param matchers, the app's own modules; then,
     /// with every template read, that the components they use exist.
     fn app_files(&mut self) -> Result<(), String> {
-        self.hooks = hooks(self.root)?;
+        (self.hooks, self.before_waits) = hooks(self.root)?;
         for (m, file) in &self.tree.matchers {
             let Some(file) = file else { continue };
             let at = |e: String| format!("{}:{e}", self.rel(file));
@@ -1997,12 +1994,12 @@ impl Gen {
     /// route, so none can drift from the others. `now` is whether a
     /// request is answered without waiting, decided here so the server
     /// pays nothing to know: when `before` in hooks.rs cannot wait and the
-    /// model says the route cannot (`model::Route::waits`). Every doubt
+    /// model says the route cannot (`Model::route_waits`). Every doubt
     /// counts as waiting: a route wrongly `now` would fail its request
     /// (see `wisp::http::on_driver`).
     fn routes(&mut self, p: &Project, assets: &Assets) {
         let m = &p.model;
-        let before = p.hooks.as_ref().is_some_and(|h| h.waits);
+        let before = p.before_waits;
         self.line(1, "const ROUTES: &'static [::wisp::rt::RouteFacts] = &[");
         for (r, route) in p.tree.routes.iter().zip(&m.routes) {
             let names: Vec<String> = r.params().iter().map(|p| lit(p)).collect();
@@ -2019,7 +2016,7 @@ impl Gen {
                     names.join(", "),
                     some(limit),
                     some(uploads),
-                    !before && !route.waits,
+                    !before && !m.route_waits(route),
                     opt(route.error),
                     route.pattern
                 ),
@@ -2111,7 +2108,7 @@ impl Gen {
             let kept = |serve: String| match &r.cache {
                 Some(c) => {
                     let (m, public) = (&c.module, c.public);
-                    let by = c.by_accept;
+                    let by = r.by_accept();
                     format!(
                         "if ::wisp::rt::cached::<{by}>(cx, __o, {public}) {{ return Ok(()); }} {serve} \
                          ::wisp::rt::keep::<Self, {by}>(cx, __o, {m}::__call::CACHE, {public});"
@@ -2552,8 +2549,9 @@ fn set_once<T>(slot: &mut Option<T>, v: T, name: &str, page: &str) -> Result<(),
 
 /// `src/hooks.rs`, if there is one, checked, as a module with shims for
 /// the hooks it has: `init` and `before`, which look the way they are
-/// called, and no other public function (a typo would never run).
-fn hooks(root: &Path) -> Result<Option<UserMod>, String> {
+/// called, and no other public function (a typo would never run). With it,
+/// whether `before` can make a request wait (`init` runs before any).
+fn hooks(root: &Path) -> Result<(Option<UserMod>, bool), String> {
     // A `mod hooks;` of the app's own would compile the file a second time,
     // with statics of its own.
     let main = root.join("src").join("main.rs");
@@ -2570,7 +2568,7 @@ fn hooks(root: &Path) -> Result<Option<UserMod>, String> {
     }
     let file = root.join("src").join("hooks.rs");
     if !file.exists() {
-        return Ok(None);
+        return Ok((None, false));
     }
     let src = crate::read_source(&file).map_err(|e| format!("src/hooks.rs: {e}"))?;
     let items = rust_scan::scan(&src).map_err(|e| format!("src/hooks.rs:{e}"))?;
@@ -2611,10 +2609,11 @@ fn hooks(root: &Path) -> Result<Option<UserMod>, String> {
             _ => {}
         }
     }
-    let mut m = UserMod::new("hooks".into(), file, None, shims, &items);
-    // `init` runs before any request: only `before` can make one wait.
-    m.waits = items.function("before").is_some_and(|f| f.is_async);
-    Ok(Some(m))
+    let waits = items.function("before").is_some_and(|f| f.is_async);
+    Ok((
+        Some(UserMod::new("hooks".into(), file, None, shims, &items)),
+        waits,
+    ))
 }
 
 /// The app's own modules: each `src/NAME.rs` that `main.rs` and `lib.rs` do
@@ -5732,7 +5731,7 @@ mod tests {
     fn waits(m: &Model) -> Vec<(&str, bool)> {
         m.routes
             .iter()
-            .map(|r| (r.pattern.as_str(), r.waits))
+            .map(|r| (r.pattern.as_str(), m.route_waits(r)))
             .collect()
     }
 
@@ -5819,7 +5818,7 @@ mod tests {
             "pub struct Data;\npub async fn load() -> Data { Data }",
         ));
         let m = model("now-error", &errors).unwrap();
-        assert!(m.routes.iter().all(|r| r.waits));
+        assert!(m.routes.iter().all(|r| m.route_waits(r)));
         assert!(m.root_error == Some(0) && m.root_waits());
         assert!(m.layouts[0].waits && m.error_waits(0) && m.errors[0].layouts == [0]);
         let code = app("now-error", &errors).unwrap();
@@ -5831,7 +5830,7 @@ mod tests {
     fn routes_that_may_wait_are_never_now() {
         let waits = |name: &str, files: &[(&str, &str)]| -> Vec<bool> {
             let m = model(name, files).unwrap();
-            m.routes.iter().map(|r| r.waits).collect()
+            m.routes.iter().map(|r| m.route_waits(r)).collect()
         };
         let server = |src| [("src/routes/+server.rs", src)];
         // Awaits a macro may hide, and one spaced out.
@@ -6456,7 +6455,7 @@ mod tests {
         );
         let cache = |m: &Model| -> Vec<Option<(String, bool, bool)>> {
             (m.routes.iter())
-                .map(|r| (r.cache.as_ref()).map(|c| (c.module.clone(), c.public, c.by_accept)))
+                .map(|r| (r.cache.as_ref()).map(|c| (c.module.clone(), c.public, r.by_accept())))
                 .collect()
         };
         let m = model("cache-ok", &[page]).unwrap();
@@ -6563,11 +6562,7 @@ mod tests {
             "const CACHE: u32 = 5;\n#[derive(Rest)]\nstruct N { t: String }\nfn list() -> Vec<u8> { vec![] }",
         )];
         let m = model("cache-own-list", &own).unwrap();
-        assert!(
-            m.routes
-                .iter()
-                .all(|r| !r.cache.as_ref().unwrap().by_accept)
-        );
+        assert!(m.routes.iter().all(|r| r.cache.is_some() && !r.by_accept()));
     }
 
     #[test]

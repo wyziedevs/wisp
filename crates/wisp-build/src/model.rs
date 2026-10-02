@@ -50,11 +50,18 @@ pub struct Route {
     /// bytes), which raise the body limit.
     pub uploads: Option<String>,
     pub cache: Option<Cache>,
-    /// A request may wait on something: its page's statements, or an
-    /// `async fn` of a module it may call (its page's, its layouts', its
-    /// `+server.rs`, its error page's layouts'). Every doubt counts as
-    /// waiting (see `Gen::routes`).
-    pub waits: bool,
+}
+
+impl Route {
+    /// What a `CACHE` keeps of a GET is kept apart per `accept`: its GET
+    /// varies by it (a `#[derive(Rest)]` list). Only such a route pays for
+    /// the key.
+    pub fn by_accept(&self) -> bool {
+        let handlers = self.server.iter().flat_map(|s| &s.handlers);
+        handlers
+            .filter(|h| h.op.method == "get")
+            .any(|h| h.by_accept)
+    }
 }
 
 /// A route's `+page.wisp`.
@@ -114,28 +121,18 @@ pub struct Cache {
     /// The module that sets it.
     pub module: String,
     pub public: bool,
-    /// What it keeps of a GET is kept apart per `accept`: its GET varies
-    /// by it. Only such a route pays for the key.
-    pub by_accept: bool,
 }
 
 impl Model {
-    /// Works out what follows from the rest: whether each route may wait,
-    /// and whether a cache is kept by `accept`.
-    pub fn resolve(&mut self) {
-        let mut routes = std::mem::take(&mut self.routes);
-        for r in &mut routes {
-            let get = r.server.iter().flat_map(|s| &s.handlers);
-            let by_accept = get.filter(|h| h.op.method == "get").any(|h| h.by_accept);
-            if let Some(c) = &mut r.cache {
-                c.by_accept = by_accept;
-            }
-            r.waits = r.page.as_ref().is_some_and(|p| p.waits)
-                || r.server.as_ref().is_some_and(|s| s.waits)
-                || self.layouts_wait(&r.layouts)
-                || r.error.is_some_and(|e| self.error_waits(e));
-        }
-        self.routes = routes;
+    /// Whether a request through `r` may wait on something: its page's
+    /// statements, or an `async fn` of a module it may call (its page's,
+    /// its layouts', its `+server.rs`, its error page's layouts'). Every
+    /// doubt counts as waiting (see `Gen::routes`).
+    pub fn route_waits(&self, r: &Route) -> bool {
+        r.page.as_ref().is_some_and(|p| p.waits)
+            || r.server.as_ref().is_some_and(|s| s.waits)
+            || self.layouts_wait(&r.layouts)
+            || r.error.is_some_and(|e| self.error_waits(e))
     }
 
     /// Whether one of `layouts` may wait.
