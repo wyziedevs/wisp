@@ -979,17 +979,12 @@ pub(crate) fn on_driver<A: App>(token: u64) -> bool {
     if stopping() {
         return false;
     }
-    let mut held = None;
-    let Some((id, mut got)) = epoll::free(token, |peer| {
-        let b = held.insert(DRIVER.take().unwrap_or_else(|| take_buffers(peer)));
-        b.cx.wire.peer = peer;
-        &mut b.cx.wire.buf
-    }) else {
+    let Some((id, peer)) = epoll::free(token) else {
         return false;
     };
-    let Some(mut b) = held else {
-        return false; // never: `free` took them
-    };
+    let mut b = DRIVER.take().unwrap_or_else(|| take_buffers(peer));
+    b.cx.wire.peer = peer;
+    let mut got = epoll::receive(id, &mut b.cx.wire.buf);
     loop {
         let more = match got {
             Got::Bytes(more) => more,
@@ -1165,7 +1160,7 @@ fn decide_now<A: App>(
     if !before_routes::<A>(cx, route, reply) {
         let started = timed().then(Instant::now);
         out.clear();
-        let Some(result) = catch_now(started.is_some(), || A::handle_now(route, cx, out)) else {
+        let Some(result) = catch_now(|| A::handle_now(route, cx, out)) else {
             return Some(Job::Decide(route));
         };
         let (failure, page) = settle(cx, out, reply, result);
@@ -1203,21 +1198,14 @@ fn at_once<A: App>(b: Box<Buffers>, job: Job) -> Result<Box<Buffers>, Deciding> 
     }
 }
 
-/// The buffers of the request the decider `d` decides, once it has. `d`,
-/// waiting for its next request then, decides the thread's next ones when
-/// the thread has made none meanwhile.
+/// The buffers of the request the decider `d` decides, once it has.
 #[cfg(not(target_arch = "wasm32"))]
 async fn decided(mut d: Deciding) -> Box<Buffers> {
-    let b = std::future::poll_fn(|cx| {
+    std::future::poll_fn(|cx| {
         let _ = d.as_mut().poll(cx);
         OUTBOX.take().map_or(Poll::Pending, Poll::Ready)
     })
-    .await;
-    #[cfg(target_os = "linux")]
-    if let Some(made) = DECIDER.replace(Some(d)) {
-        DECIDER.set(Some(made));
-    }
-    b
+    .await
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2265,7 +2253,7 @@ async fn decide<A: App>(
     if !before_routes::<A>(cx, route, reply) {
         let started = timed().then(Instant::now);
         out.clear();
-        let result = catch_made(started.is_some(), || A::handle(route, cx, out)).await;
+        let result = catch_made(|| A::handle(route, cx, out)).await;
         let (failure, page) = settle(cx, out, reply, result);
         if let Some(page) = page {
             render_error::<A>(route, cx, out, page).await;
@@ -2476,7 +2464,7 @@ async fn render_error<A: App>(
     out: &mut Out,
     (status, message): (u16, Cow<'static, str>),
 ) {
-    let rendered = catch_made(timed(), || A::error(route, cx, out, status, &message)).await;
+    let rendered = catch_made(|| A::error(route, cx, out, status, &message)).await;
     if rendered.is_err() || out.response.is_some() {
         out.clear();
         rt::default_error(cx, out, status, &message);
@@ -2730,18 +2718,17 @@ fn timed() -> bool {
 /// Runs a handler future, turning a panic into a 500 so one bad request
 /// cannot take the connection (or anything else) down with it.
 pub(crate) async fn catch<F: Future<Output = crate::Result<()>>>(f: F) -> crate::Result<()> {
-    catch_made(timed(), || f).await
+    catch_made(|| f).await
 }
 
-/// [`catch`] of the future `make` makes, its polls timed when `timed`
-/// (the caller read [`timed`] already). The future is made in place: a
+/// [`catch`] of the future `make` makes. The future is made in place: a
 /// future taken as an argument would be held twice over, as it came and
 /// as it is polled, and moved in full each request.
 async fn catch_made<F: Future<Output = crate::Result<()>>>(
-    timed: bool,
     make: impl FnOnce() -> F,
 ) -> crate::Result<()> {
     let mut f = std::pin::pin!(make());
+    let timed = timed();
     std::future::poll_fn(move |cx| {
         let began = timed.then(Instant::now);
         IN_HANDLER.set(true);
@@ -2755,11 +2742,11 @@ async fn catch_made<F: Future<Output = crate::Result<()>>>(
     .await
 }
 
-/// [`catch`] of a sync [`App::handle_now`], timed when `timed`: `None`
-/// when it answered nothing.
+/// [`catch`] of a sync [`App::handle_now`]: `None` when it answered
+/// nothing.
 #[cfg(target_os = "linux")]
-fn catch_now(timed: bool, f: impl FnOnce() -> crate::Result<bool>) -> Option<crate::Result<()>> {
-    let began = timed.then(Instant::now);
+fn catch_now(f: impl FnOnce() -> crate::Result<bool>) -> Option<crate::Result<()>> {
+    let began = timed().then(Instant::now);
     IN_HANDLER.set(true);
     let ran = catch_unwind(AssertUnwindSafe(f));
     IN_HANDLER.set(false);
