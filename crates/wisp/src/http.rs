@@ -2243,7 +2243,7 @@ fn not_modified(cx: &Cx, res: &crate::Response) -> bool {
         && matches!(cx.method, Method::Get | Method::Head)
         && res.headers.iter().any(|(n, _)| n == "etag")
         && cx.header("if-none-match").is_some_and(|sent| {
-            (res.headers.iter()).any(|(n, v)| n == "etag" && crate::rest::names(sent, v))
+            (res.headers.iter()).any(|(n, v)| n == "etag" && crate::rest::names::<true>(sent, v))
         })
 }
 
@@ -2317,7 +2317,7 @@ async fn render_error<A: App>(
 /// Whether an error goes back as JSON rather than an error page: a request
 /// under `/api`, one that sent JSON, one that asks for JSON and not HTML,
 /// or one to a `+server.rs` endpoint from anything but a browser page.
-fn wants_json(cx: &Cx) -> bool {
+pub(crate) fn wants_json(cx: &Cx) -> bool {
     let path = cx.path();
     path == "/api"
         || path.starts_with("/api/")

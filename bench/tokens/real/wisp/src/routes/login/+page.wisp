@@ -2,13 +2,12 @@
 // @feature auth
 #[action]
 fn default(email: Email, password: String) {
-    match db::USERS.find(|u| u.email == email) {
-        Some(u) if wisp::password::verify(&password, &u.hash).await => {
-            cx.sign_in(u.id);
-            redirect("/dashboard")
-        }
-        _ => invalid("email", "Wrong email or password"),
+    let user = db::USERS.find(|u| u.email == email);
+    if !wisp::password::check(&password, user.as_ref().map(|u| u.hash.as_str())).await? {
+        return invalid("email", "Wrong email or password");
     }
+    cx.sign_in(user.unwrap().id);
+    redirect("/dashboard")
 }
 ---
 <title>Log in</title>

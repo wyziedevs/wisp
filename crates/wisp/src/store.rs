@@ -104,7 +104,7 @@ pub(crate) fn memory() {
 /// Where a durable table loads from and saves to: `None` keeps it in
 /// memory (the edge build, tests, `WISP_DATA=off`).
 pub(crate) fn current() -> Option<&'static dyn Store> {
-    if let Some(s) = *CUSTOM.read().unwrap_or_else(|e| e.into_inner()) {
+    if let Some(s) = custom() {
         return Some(s);
     }
     #[cfg(target_arch = "wasm32")]
@@ -115,6 +115,29 @@ pub(crate) fn current() -> Option<&'static dyn Store> {
             return None;
         }
         files::default().map(|f| f as &'static dyn Store)
+    }
+}
+
+/// The store the app set with [`store`], which other instances of the app
+/// may share; `None` for the log files, each instance's own.
+pub(crate) fn custom() -> Option<&'static dyn Store> {
+    *CUSTOM.read().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Whether the store may hold rows of `table`, found without making a
+/// folder or a file: a log file is there, or the app's own store.
+pub(crate) fn holds(table: &str) -> bool {
+    if custom().is_some() {
+        return true;
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = table;
+        false
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        !MEMORY.load(Ordering::Relaxed) && files::default().is_some_and(|f| f.has(table))
     }
 }
 
@@ -245,6 +268,11 @@ pub(crate) mod files {
                 sync,
                 logs: Shared::new(BTreeMap::new()),
             }
+        }
+
+        /// Whether `table` has a log in the folder.
+        pub(crate) fn has(&self, table: &str) -> bool {
+            self.dir.join(format!("{table}.log")).exists()
         }
 
         /// Every log written since it last reached the disk, synced. The
@@ -403,11 +431,8 @@ pub(crate) mod files {
             }
             if let Err(e) = (&*s.file).write_all(lines) {
                 // Part of the lines may be in the file (a full disk): cut
-                // them off now, or before the next write.
+                // off before the next write.
                 s.bad = true;
-                if let Ok(file) = reopen(&log.path, s.size) {
-                    (s.file, s.bad) = (Arc::new(file), false);
-                }
                 return Err(io(table, "write its log", e));
             }
             s.size += lines.len() as u64;

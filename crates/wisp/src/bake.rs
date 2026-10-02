@@ -91,7 +91,7 @@ pub(crate) fn reply(cx: &Cx, made: Made, reply: &mut Reply) {
     reply.headers.clear();
     if !cx
         .header("if-none-match")
-        .is_some_and(|h| crate::rest::names(h, made.etag()))
+        .is_some_and(|h| crate::rest::names::<true>(h, made.etag()))
     {
         reply.status = 200;
         reply.body = Body::Made(made);
@@ -234,19 +234,11 @@ fn personal(name: &str, value: &str) -> bool {
 
 /// A `CACHE` route's GET: answered with the response this worker keeps for
 /// it, when it has a fresh one. `false`: render it (then [`keep`]).
-pub fn cached(cx: &Cx, out: &mut Out, public: bool) -> bool {
-    lookup::<false>(cx, out, public)
-}
-
-/// [`cached`] for a route whose answer varies by `accept` (a
-/// `#[derive(Rest)]` list: JSON or NDJSON), which keeps each apart. The
-/// build picks it for those routes alone.
-pub fn cached_by_accept(cx: &Cx, out: &mut Out, public: bool) -> bool {
-    lookup::<true>(cx, out, public)
-}
-
+/// `ACCEPT` for a route whose answer varies by `accept` (a
+/// `#[derive(Rest)]` list: JSON or NDJSON), which keeps each apart; the
+/// build sets it for those routes alone.
 #[inline(always)]
-fn lookup<const ACCEPT: bool>(cx: &Cx, out: &mut Out, public: bool) -> bool {
+pub fn cached<const ACCEPT: bool>(cx: &Cx, out: &mut Out, public: bool) -> bool {
     if !shared(cx, public) {
         return false;
     }
@@ -260,18 +252,10 @@ fn lookup<const ACCEPT: bool>(cx: &Cx, out: &mut Out, public: bool) -> bool {
 /// Keeps what a `CACHE` route just answered for `secs` seconds, and
 /// answers with it: a 200 page, or an endpoint's whole response, without a
 /// header that makes it personal. Headers the route set are kept with it;
-/// those of the `before` hook, which runs every time, are not.
-pub fn keep<A: App>(cx: &mut Cx, out: &mut Out, secs: u32, public: bool) {
-    store::<A, false>(cx, out, secs, public);
-}
-
-/// [`keep`] for a route [`cached_by_accept`] answers.
-pub fn keep_by_accept<A: App>(cx: &mut Cx, out: &mut Out, secs: u32, public: bool) {
-    store::<A, true>(cx, out, secs, public);
-}
-
+/// those of the `before` hook, which runs every time, are not. `ACCEPT`
+/// as for [`cached`].
 #[inline(always)]
-fn store<A: App, const ACCEPT: bool>(cx: &mut Cx, out: &mut Out, secs: u32, public: bool) {
+pub fn keep<A: App, const ACCEPT: bool>(cx: &mut Cx, out: &mut Out, secs: u32, public: bool) {
     if secs == 0 || cx.status() != 200 || out.made.is_some() || !shared(cx, public) {
         return;
     }

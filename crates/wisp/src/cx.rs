@@ -232,6 +232,21 @@ impl Cx {
         self.str(self.wire.query)
     }
 
+    /// The query as it was sent, each part followed by `&`, but those named
+    /// one of `keys` and an action's `/name`: for a link to the page with
+    /// those changed.
+    pub(crate) fn query_without(&self, keys: &[&str]) -> String {
+        let mut out = String::new();
+        for part in self.query_string().split('&') {
+            let key = part.split('=').next().unwrap_or("");
+            if !part.is_empty() && !part.starts_with('/') && !keys.contains(&key) {
+                out.push_str(part);
+                out.push('&');
+            }
+        }
+        out
+    }
+
     /// A route parameter such as `slug` in `blog/[slug]`, percent-decoded.
     /// Optional parameters that are absent are `""`.
     ///
