@@ -979,12 +979,17 @@ pub(crate) fn on_driver<A: App>(token: u64) -> bool {
     if stopping() {
         return false;
     }
-    let Some((id, peer)) = epoll::free(token) else {
+    let mut held = None;
+    let Some((id, mut got)) = epoll::free(token, |peer| {
+        let b = held.insert(DRIVER.take().unwrap_or_else(|| take_buffers(peer)));
+        b.cx.wire.peer = peer;
+        &mut b.cx.wire.buf
+    }) else {
         return false;
     };
-    let mut b = DRIVER.take().unwrap_or_else(|| take_buffers(peer));
-    b.cx.wire.peer = peer;
-    let mut got = epoll::receive(id, &mut b.cx.wire.buf);
+    let Some(mut b) = held else {
+        return false; // never: `free` took them
+    };
     loop {
         let more = match got {
             Got::Bytes(more) => more,

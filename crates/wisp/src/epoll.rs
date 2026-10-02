@@ -665,10 +665,14 @@ pub(crate) enum Got {
     End,
 }
 
-/// For `http::on_driver`: the entry and peer of connection `token`, when
-/// its future waits holding nothing and the socket is the driver's to
-/// receive from (`receive`) and send on.
-pub(crate) fn free(token: u64) -> Option<(usize, SocketAddr)> {
+/// For `http::on_driver`: when the future of connection `token` waits
+/// holding nothing and the socket is the driver's to receive from and send
+/// on, its entry and what a receive got onto the end of the buffer `take`
+/// gives for its peer. `take` is called only then.
+pub(crate) fn free<'b>(
+    token: u64,
+    take: impl FnOnce(SocketAddr) -> &'b mut Vec<u8>,
+) -> Option<(usize, Got)> {
     let (id, generation) = untoken(token);
     with(|w| {
         let e = &w.conns[id];
@@ -676,14 +680,9 @@ pub(crate) fn free(token: u64) -> Option<(usize, SocketAddr)> {
         if !free || e.ended || e.sending || e.failed != 0 || e.handed.is_some() {
             return None;
         }
-        Some((id, e.peer?))
+        let buf = take(e.peer?);
+        Some((id, w.receive(id, buf)))
     })
-}
-
-/// For `http::on_driver`: what a receive onto the end of `buf` got for
-/// connection `id`, which `free` gave it.
-pub(crate) fn receive(id: usize, buf: &mut Vec<u8>) -> Got {
-    with(|w| w.receive(id, buf))
 }
 
 /// For `http::on_driver`, once it answered what connection `id` sent: sends
