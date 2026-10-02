@@ -4,6 +4,7 @@ members = [
     "crates/wisp",
     "crates/wisp-build",
     "crates/wisp-macros",
+    "crates/wisp-shared",
     "crates/wisp-cli",
     "examples/demo",
     "examples/api",
@@ -13,6 +14,7 @@ members = [
     "bench/app",
     "bench/tokens",
     "bench/tokens/apps/wisp",
+    "bench/tokens/real/wisp",
 ]
 
 [workspace.package]
@@ -23,9 +25,10 @@ license = "MIT"
 repository = "https://github.com/wyziedevs/wisp"
 
 [workspace.dependencies]
-wisp = { path = "crates/wisp" }
-wisp-build = { path = "crates/wisp-build" }
-wisp-macros = { path = "crates/wisp-macros" }
+wisp = { path = "crates/wisp", version = "0.1.0" }
+wisp-build = { path = "crates/wisp-build", version = "0.1.0" }
+wisp-macros = { path = "crates/wisp-macros", version = "0.1.0" }
+wisp-shared = { path = "crates/wisp-shared", version = "0.1.0" }
 httparse = { version = "1.10", default-features = false, features = ["std"] }
 tokio = { version = "1.53", default-features = false, features = ["rt", "net", "io-util", "time", "signal", "sync", "fs"] }
 

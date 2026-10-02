@@ -13,6 +13,11 @@
 //! and a `Node::Live` marks where the element's `data-w` goes. Their
 //! JavaScript is part of the shape, since it is compiled into the binary.
 
+use crate::contexts::{Scheme, is_url_attr, scheme};
+use crate::protocol::{
+    ISLAND_IDLE, ISLAND_INTERACTION, ISLAND_MEDIA, ISLAND_NONE, ISLAND_VISIBLE, ON_FLAGS,
+};
+use crate::rules::Field;
 use crate::ty::{is_ident, is_word};
 use crate::{fnv1a, js};
 
@@ -98,8 +103,34 @@ pub enum Node {
         children: Option<Vec<Node>>,
         line: u32,
     },
+    /// A named field of an action's form (see `Parser::form_defaults`):
+    /// `sent`, which reads what was sent as `__k`, when the action refused
+    /// it, else `own`. A component, having no `cx`, writes `own` alone, as
+    /// does a GET, which is all that is baked.
+    Kept {
+        name: String,
+        sent: Vec<Node>,
+        own: Option<Vec<Node>>,
+        line: u32,
+    },
+    /// A kept `<select>`'s choice, `__wisp_sel`, by which its options are
+    /// `selected` (see `IS`): what was sent, when the action refused it,
+    /// else `own`, the code of its `value={…}`.
+    Chosen {
+        name: String,
+        own: Option<String>,
+        line: u32,
+    },
+    /// What was wrong with field `name`, when the action refused it:
+    /// `<small class="problem">…</small>`. After a kept field, unless the
+    /// file shows it itself; `{cx.problem("x")}` is one.
+    Problem {
+        name: String,
+        line: u32,
+    },
     /// Where an element's browser directives were, just before its `>`:
-    /// ` data-w="…"` (and ` data-wl="…"`) for `Template::groups[group]`.
+    /// its `protocol::GROUP_ATTR` (and `LOOP_ATTR`) for
+    /// `Template::groups[group]`.
     Live {
         group: usize,
     },
@@ -270,8 +301,15 @@ impl std::fmt::Display for Error {
 }
 
 pub fn parse(src: &str) -> Result<Template, Error> {
+    parse_with(src, &[])
+}
+
+/// A page's template, whose action forms' `fields` get the attributes the
+/// browser checks them by (`rules::Native`).
+pub fn parse_with(src: &str, fields: &[Field]) -> Result<Template, Error> {
     let mut p = Parser {
         src,
+        fields,
         b: src.as_bytes(),
         i: 0,
         ctx: Ctx::Text,
@@ -313,6 +351,8 @@ pub fn parse(src: &str) -> Result<Template, Error> {
         auto_head: false,
         button_form: false,
         problem: None,
+        tag_nodes: 0,
+        keep: None,
     };
     p.run()?;
 
@@ -499,6 +539,8 @@ impl Frame {
 
 struct Parser<'a> {
     src: &'a str,
+    /// The fields of the page's actions the browser can check.
+    fields: &'a [Field],
     b: &'a [u8],
     i: usize,
     ctx: Ctx,
@@ -557,16 +599,34 @@ struct Parser<'a> {
     /// The attributes of the tag being scanned, each with its value when
     /// that is plain text.
     tag_seen: Vec<(String, Option<String>)>,
-    /// One per open `<form>`: whether it posts to an action (`?/name`).
-    forms: Vec<bool>,
+    /// One per open `<form>`: the action it posts to (`?/name`, `default`
+    /// for a `method="post"` one), `""` when that is not plain, `None` for
+    /// one that posts to none.
+    forms: Vec<Option<String>>,
     /// Depth of `<svg>`, whose `<title>` is its own.
     svg: u32,
     /// A top-level `<title>` is open, in the head it opened.
     auto_head: bool,
     /// A `<button action="?/name">` is open, in the form it opened.
     button_form: bool,
-    /// The input just scanned, whose problem goes after it (see `PROBLEM`).
+    /// The input just scanned, whose problem goes after it (`Node::Problem`).
     problem: Option<String>,
+    /// The length of the current list when the tag being scanned began:
+    /// the nodes of its attributes are after it.
+    tag_nodes: usize,
+    /// The `<textarea>` or `<select>` of an action's form that is open.
+    keep: Option<Keep>,
+}
+
+/// A `<textarea>` or `<select>` of an action's form, till its end tag:
+/// what was sent goes back in it, and its problem after it.
+struct Keep {
+    name: String,
+    textarea: bool,
+    problem: bool,
+    /// Where its content begins: the frame depth and the list's length.
+    frames: usize,
+    at: usize,
 }
 
 /// A snippet defined above: its body's source, and the depth of the list
@@ -707,6 +767,12 @@ impl Parser<'_> {
     /// Moves the text buffer into the current list as a `Text` node. Called
     /// before every structural event, which is what keeps lists alternating.
     fn flush(&mut self) -> Result<(), Error> {
+        // A quoted value cut here has its start in an earlier chunk, so
+        // `value_start` is no good after it: the cut counts as an event in
+        // the value (a branch or block end in one that began in the block).
+        if matches!(self.ctx, Ctx::Quoted(_)) {
+            self.in_value(self.i)?;
+        }
         if let Some(Frame::Match { pos, arms, .. }) = self.frames.last()
             && arms.is_empty()
         {
@@ -851,7 +917,7 @@ impl Parser<'_> {
             return Ok(());
         }
         self.value_events = true;
-        if !URL_ATTRS.contains(&self.attr.as_str()) {
+        if !is_url_attr(&self.attr) {
             return Ok(());
         }
         let prefix = self.text[self.value_start..].to_string();
@@ -975,7 +1041,8 @@ impl Parser<'_> {
             }
             self.i = j + 1;
             if closing {
-                if !matches!(self.frames.last(), Some(Frame::Head { .. })) {
+                // The head a top-level `<title>` opened closes with it.
+                if !matches!(self.frames.last(), Some(Frame::Head { .. })) || self.auto_head {
                     return Err(self.unexpected_close(start, "</wisp:head>"));
                 }
                 if let Frame::Head { body, .. } = self.end(start)? {
@@ -994,6 +1061,14 @@ impl Parser<'_> {
             return Ok(());
         }
 
+        if closing && matches!(name.as_str(), "textarea" | "select") {
+            self.end_keep(start, name == "textarea")?;
+        }
+        // (Right after `{#match}`, where no tag may be, there is no list.)
+        self.tag_nodes = match self.frames.last() {
+            Some(Frame::Match { arms, .. }) if arms.is_empty() => 0,
+            _ => self.list().len(),
+        };
         self.tag_text = self.text.len();
         self.tag_frames = self.frames.len();
         self.tag_attrs = false;
@@ -1365,6 +1440,20 @@ impl Parser<'_> {
         }
         if !self.closing {
             self.form_defaults()?;
+            // `<meta http-equiv="refresh" content="0;url=…">` goes to its URL,
+            // which no guard checks: its `content` stays static.
+            if self.tag == "meta" {
+                let refresh = (self.tag_seen.iter()).any(|(a, v)| {
+                    a == "http-equiv"
+                        && v.as_deref()
+                            .is_some_and(|v| v.trim().eq_ignore_ascii_case("refresh"))
+                });
+                let dynamic = (self.tag_seen.iter()).any(|(a, v)| a == "content" && v.is_none())
+                    || self.directives.iter().any(|d| d.name == "content");
+                if refresh && dynamic {
+                    return Err(self.err(self.tag_pos, "no expressions in the `content` of a refresh: it is a URL that may run script; redirect from the server instead".into()));
+                }
+            }
             if !self.tag_classes.is_empty() {
                 // No `class` attribute to put them in: write one.
                 let slash = self.last == b'/' && self.text.ends_with('/');
@@ -1403,9 +1492,16 @@ impl Parser<'_> {
         self.push_byte(b'>');
         self.ctx = Ctx::Text;
         if let Some(name) = self.problem.take() {
-            let src = format!("{PROBLEM}{name:?})");
             let line = self.line_of(self.tag_pos);
-            self.push_node(self.tag_pos, Node::Html(Code { src, line }))?;
+            self.push_node(self.tag_pos, Node::Problem { name, line })?;
+        }
+        if !self.closing && self.tag == "textarea" && self.keep.is_some() {
+            // Its content starts in a list of its own.
+            self.flush()?;
+            let at = self.list().len();
+            if let Some(k) = &mut self.keep {
+                k.at = at;
+            }
         }
         if self.closing {
             match self.tag.as_str() {
@@ -1418,6 +1514,9 @@ impl Parser<'_> {
                 "svg" => self.svg = self.svg.saturating_sub(1),
                 "button" if std::mem::take(&mut self.button_form) => self.text.push_str("</form>"),
                 "title" if std::mem::take(&mut self.auto_head) => {
+                    if !matches!(self.frames.last(), Some(Frame::Head { .. })) {
+                        return Err(self.unexpected_close(self.tag_pos, "</title>"));
+                    }
                     if let Frame::Head { body, .. } = self.end(self.i)? {
                         self.list().push(Node::Head(body));
                     }
@@ -1449,23 +1548,33 @@ impl Parser<'_> {
     }
 
     /// What a form posting to an action needs and does not say: a
-    /// `<form action="?/add">` posts (`method="post"`), and an `<input
-    /// name="x">` in it (or in a `<form method="post">`, which posts to
-    /// `default`) without a value shows what was sent again when the action
-    /// refused it (`value={wisp::rt::kept(cx, "x")}`), and after it what was
-    /// wrong (`PROBLEM`), unless the file shows problems itself.
+    /// `<form action="?/add">` posts (`method="post"`), and in it (or in a
+    /// `<form method="post">`, which posts to `default`) a named `<input>`,
+    /// `<textarea>` or `<select>` shows what was sent again when the action
+    /// refused it (`Node::Kept`; else its own value, if any), and after it
+    /// what was wrong (`Node::Problem`), unless the file shows that field's
+    /// problem itself. A password or file is not sent back; its problem is.
     fn form_defaults(&mut self) -> Result<(), Error> {
         let seen = |n: &str| self.tag_seen.iter().find(|(a, _)| a == n);
         let mut method = false;
         if self.tag == "form" {
             let action = self.attr_prefix(self.tag_pos, "action");
-            let to_action = action.is_some_and(|v| v.starts_with("?/"));
+            let to_action = action.and_then(|v| v.strip_prefix("?/"));
             let to_default = seen("action").is_none()
                 && seen("method")
                     .and_then(|(_, v)| v.as_deref())
                     .is_some_and(|m| m.eq_ignore_ascii_case("post"));
-            method = to_action && seen("method").is_none();
-            self.forms.push(to_action || to_default);
+            method = to_action.is_some() && seen("method").is_none();
+            let posts = match to_action {
+                // `?/name&id={x}`, or all of a plain `?/name`.
+                Some(v) => Some(match v.split_once('&') {
+                    Some((name, _)) => name.to_string(),
+                    None if self.plain_after(v) => v.to_string(),
+                    None => String::new(),
+                }),
+                None => to_default.then(|| "default".to_string()),
+            };
+            self.forms.push(posts);
         }
         let in_browser = !self.templates.is_empty()
             || !self.rendering.is_empty()
@@ -1477,28 +1586,30 @@ impl Parser<'_> {
             .and_then(|(_, v)| v.as_deref())
             .unwrap_or("")
             .to_ascii_lowercase();
-        let keeps = self.tag == "input"
-            && self.forms.contains(&true)
+        // Whether it is sent back, and whether its problem is shown.
+        let (keeps, problem) = match self.tag.as_str() {
+            "input" => match typed.as_str() {
+                "password" | "file" => (false, true),
+                "hidden" | "checkbox" | "radio" | "submit" | "button" | "image" | "reset" => {
+                    (false, false)
+                }
+                _ => (true, true),
+            },
+            "textarea" | "select" => (true, true),
+            _ => (false, false),
+        };
+        let bound = self
+            .directives
+            .iter()
+            .any(|d| d.name == "value" || d.kind == Dir::Spread);
+        let name = seen("name")
+            .and_then(|(_, v)| v.clone())
+            .filter(|_| problem && self.forms.iter().any(Option::is_some) && !in_browser && !bound);
+        let chosen = self.tag == "option"
             && !in_browser
-            && seen("value").is_none()
-            && !self
-                .directives
-                .iter()
-                .any(|d| d.name == "value" || d.kind == Dir::Spread)
-            && !matches!(
-                typed.as_str(),
-                "password"
-                    | "file"
-                    | "hidden"
-                    | "checkbox"
-                    | "radio"
-                    | "submit"
-                    | "button"
-                    | "image"
-                    | "reset"
-            );
-        let kept = seen("name").and_then(|(_, v)| v.clone()).filter(|_| keeps);
-        if !method && kept.is_none() {
+            && seen("selected").is_none()
+            && self.keep.as_ref().is_some_and(|k| !k.textarea);
+        if !method && name.is_none() && !chosen {
             return Ok(());
         }
         // Added before a self-closing tag's `/`.
@@ -1510,27 +1621,189 @@ impl Parser<'_> {
         if method {
             self.text.push_str(" method=\"post\"");
         }
-        if let Some(name) = kept {
-            let line = self.line_of(self.tag_pos);
-            if !self.src.contains("problem(") {
-                self.problem = Some(name.clone());
+        if chosen {
+            self.choose_option()?;
+        }
+        if let Some(name) = name {
+            let action = self.forms.iter().rev().find_map(Option::as_deref);
+            let field =
+                (self.fields.iter()).find(|f| Some(f.action.as_str()) == action && f.name == name);
+            if let Some(f) = field {
+                let has = |a: &str| {
+                    self.tag_seen.iter().any(|(n, _)| n == a)
+                        || self.directives.iter().any(|d| d.name == a)
+                };
+                let attrs = f.native.attrs(&self.tag, &typed, &has);
+                self.text.push_str(&attrs);
             }
-            self.push_node(
-                self.tag_pos,
-                Node::Attr {
-                    name: "value".into(),
-                    code: Code {
-                        src: format!("{KEPT}{name:?})"),
-                        line,
-                    },
-                    url: false,
-                },
-            )?;
+            let problem = !shows_problem(self.src, &name);
+            if self.tag == "input" {
+                if keeps {
+                    self.keep_value(&name)?;
+                }
+                if problem {
+                    self.problem = Some(name);
+                }
+            } else {
+                if self.tag == "select" {
+                    self.choose(&name)?;
+                }
+                self.keep = Some(Keep {
+                    name,
+                    textarea: self.tag == "textarea",
+                    problem,
+                    frames: self.frames.len(),
+                    at: 0,
+                });
+            }
         }
         if slash {
             self.text.push('/');
         }
         Ok(())
+    }
+
+    /// A block's body of just `node`, between empty text, as lists go.
+    fn alone(&mut self, node: Node) -> Vec<Node> {
+        let at = self.chunks.len();
+        self.chunks.push(String::new());
+        self.chunks.push(String::new());
+        vec![Node::Text(at), node, Node::Text(at + 1)]
+    }
+
+    /// The index in the current list of the `value={expr}` of the tag being
+    /// scanned, if it has one.
+    fn value_attr(&mut self) -> Option<usize> {
+        if self.frames.len() != self.tag_frames {
+            return None;
+        }
+        let from = self.tag_nodes;
+        let list = self.list();
+        (from..list.len()).find(|&k| matches!(&list[k], Node::Attr { name, .. } if name == "value"))
+    }
+
+    /// An `<input name>`'s value: what was sent, when the action refused
+    /// it, else its own `value={expr}` (if it has one).
+    fn keep_value(&mut self, name: &str) -> Result<(), Error> {
+        let line = self.line_of(self.tag_pos);
+        let value = Node::Attr {
+            name: "value".into(),
+            code: Code {
+                src: "__k".into(),
+                line,
+            },
+            url: false,
+        };
+        let sent = self.alone(value);
+        let name = name.to_string();
+        match self.value_attr() {
+            Some(k) => {
+                let own = std::mem::replace(&mut self.list()[k], Node::Render);
+                let own = Some(self.alone(own));
+                self.list()[k] = Node::Kept {
+                    name,
+                    sent,
+                    own,
+                    line,
+                };
+                Ok(())
+            }
+            // `value="…"`, written as text: left as it is.
+            None if self.tag_seen.iter().any(|(a, _)| a == "value") => Ok(()),
+            None => self.push_node(
+                self.tag_pos,
+                Node::Kept {
+                    name,
+                    sent,
+                    own: None,
+                    line,
+                },
+            ),
+        }
+    }
+
+    /// A `<select name>`: the value its options are chosen by, in
+    /// `__wisp_sel`: what was sent, when the action refused it, else its
+    /// `value={expr}` (which a `<select>` does not otherwise have).
+    fn choose(&mut self, name: &str) -> Result<(), Error> {
+        let line = self.line_of(self.tag_pos);
+        let at = self.value_attr();
+        let own = match at.map(|k| &self.list()[k]) {
+            Some(Node::Attr { code, .. }) => Some(code.src.clone()),
+            _ => None,
+        };
+        let node = Node::Chosen {
+            name: name.to_string(),
+            own,
+            line,
+        };
+        match at {
+            Some(k) => {
+                self.list()[k] = node;
+                Ok(())
+            }
+            None => self.push_node(self.tag_pos, node),
+        }
+    }
+
+    /// An `<option>` with a value, of such a `<select>`: `selected` when it
+    /// is the one chosen.
+    fn choose_option(&mut self) -> Result<(), Error> {
+        let value = match self.tag_seen.iter().find(|(a, _)| a == "value") {
+            Some((_, Some(text))) => format!("{text:?}"),
+            Some((_, None)) => match self.value_attr().map(|k| &self.list()[k]) {
+                Some(Node::Attr { code, .. }) => format!("&({})", code.src),
+                _ => return Ok(()),
+            },
+            None => return Ok(()),
+        };
+        let line = self.line_of(self.tag_pos);
+        self.push_node(
+            self.tag_pos,
+            Node::Bool {
+                name: "selected".into(),
+                code: Code {
+                    src: format!("{IS}{value})"),
+                    line,
+                },
+                class: false,
+            },
+        )
+    }
+
+    /// The end tag of a `<textarea>` or `<select>` starts at `pos`: a kept
+    /// textarea's content is what was sent, when the action refused it,
+    /// else its own; the problem goes after the end tag.
+    fn end_keep(&mut self, pos: usize, textarea: bool) -> Result<(), Error> {
+        let Some(k) = self.keep.take_if(|k| k.textarea == textarea) else {
+            return Ok(());
+        };
+        if textarea && self.frames.len() == k.frames {
+            self.flush()?;
+            let line = self.line_of(pos);
+            let own = Some(self.list().split_off(k.at));
+            let sent = self.alone(Node::Expr(Code {
+                src: "__k".into(),
+                line,
+            }));
+            self.list().push(Node::Kept {
+                name: k.name.clone(),
+                sent,
+                own,
+                line,
+            });
+        }
+        if k.problem {
+            self.problem = Some(k.name);
+        }
+        Ok(())
+    }
+
+    /// Whether `v`, the end of what `attr_prefix` found, is the end of the
+    /// value too: no `{` comes after it.
+    fn plain_after(&self, v: &str) -> bool {
+        let end = v.as_ptr() as usize - self.src.as_ptr() as usize + v.len();
+        self.b.get(end) != Some(&b'{')
     }
 
     /// The plain start of attribute `name`'s value (up to its end or its
@@ -1678,8 +1951,10 @@ impl Parser<'_> {
             let how = name.clone();
             match (how.as_str(), value) {
                 ("", None) => return Ok(()), // client:load, as without it
-                ("m", Some(q)) if !q.src.is_empty() => name = format!("m{}", q.src),
-                ("m", _) => {
+                (ISLAND_MEDIA, Some(q)) if !q.src.is_empty() => {
+                    name = format!("{ISLAND_MEDIA}{}", q.src);
+                }
+                (ISLAND_MEDIA, _) => {
                     return Err(self.err(
                         start,
                         "`client:media` needs its query: client:media=\"(min-width: 800px)\""
@@ -1908,8 +2183,8 @@ impl Parser<'_> {
         Ok(())
     }
 
-    /// `<template data-w="…">`, the anchor of a client block, hole or
-    /// component, whose one directive is `d`.
+    /// `<template>` with a `protocol::GROUP_ATTR`, the anchor of a client block, hole
+    /// or component, whose one directive is `d`.
     fn client_template(&mut self, d: Directive) -> Result<(), Error> {
         let line = d.line;
         self.text.push_str("<template");
@@ -2344,6 +2619,15 @@ impl Parser<'_> {
             return Err(self.err(open, format!("`{}` mixes {{…}} (the server's) and {{:…}} (the browser's); use one kind in a value", self.attr)));
         }
         self.check_live_attr(open)?;
+        // A static start that runs script stays refused, as for `{…}`; the
+        // browser guards what the value decides.
+        if is_url_attr(&self.attr) {
+            match scheme(&self.text[self.value_start..]) {
+                Scheme::Script => return Err(self.err(open, format!("no expressions in a `{}` that runs script", self.attr))),
+                Scheme::Encoded => return Err(self.err(open, format!("`{}` has a character reference (`&...;`) before its scheme and an expression; write the URL's start plainly", self.attr))),
+                Scheme::Fixed | Scheme::Open => {}
+            }
+        }
         let mut js = String::from("`");
         let lit = |s: &str, js: &mut String| {
             for c in s.chars() {
@@ -2401,12 +2685,27 @@ impl Parser<'_> {
         Ok(())
     }
 
+    /// The attribute is one whose value can be a URL that runs script
+    /// without being a URL attribute: an SVG animation's values, which can
+    /// set an `href` (`<set attributeName="href" to="javascript:…">`), and
+    /// a `<meta>`'s `http-equiv`, which can make its `content` a refresh to
+    /// one (see `tag_close`).
+    fn hidden_url(&self) -> bool {
+        (matches!(self.tag.as_str(), "animate" | "set")
+            && matches!(self.attr.as_str(), "to" | "from" | "values" | "by"))
+            || (self.tag == "meta" && self.attr == "http-equiv")
+    }
+
     /// A live value may go on this attribute here.
     fn check_live_attr(&self, open: usize) -> Result<(), Error> {
         if self.frames.len() != self.tag_frames {
             return Err(self.err(open, "a {:…} value cannot be inside a {#…} block; put the condition in its JavaScript instead".into()));
         }
-        if self.attr.starts_with("on") || self.attr == "srcdoc" || self.attr.is_empty() {
+        if self.attr.starts_with("on")
+            || self.attr == "srcdoc"
+            || self.attr.is_empty()
+            || self.hidden_url()
+        {
             return Err(self.err(
                 open,
                 format!(
@@ -2635,6 +2934,9 @@ impl Parser<'_> {
         if self.ctx != Ctx::Text && self.attr == "srcdoc" {
             return Err(self.err(open, "no expressions in `srcdoc`: its value is a whole HTML document, where escaping for an attribute is not enough".into()));
         }
+        if self.ctx != Ctx::Text && self.hidden_url() {
+            return Err(self.err(open, format!("no expressions in the `{}` of a <{}>: it can hold a URL that runs script, which escaping does not stop", self.attr, self.tag)));
+        }
         let unquoted = self.ctx == Ctx::Tag;
         if unquoted {
             self.last = b'a';
@@ -2671,7 +2973,7 @@ impl Parser<'_> {
             && self.unwrite_attr_name(open).is_ok()
         {
             let name = self.attr.clone();
-            let url = URL_ATTRS.contains(&name.as_str());
+            let url = is_url_attr(&name);
             return self.push_node(
                 open,
                 Node::Attr {
@@ -2689,6 +2991,12 @@ impl Parser<'_> {
         }
         if self.ctx != Ctx::Text {
             self.in_value(open)?;
+        }
+        // `{cx.problem("x")}` in text: the element an input's problem gets.
+        if let Some(name) = problem_call(t).filter(|_| self.ctx == Ctx::Text) {
+            let name = name.to_string();
+            let line = self.line_of(open);
+            return self.push_node(open, Node::Problem { name, line });
         }
         self.push_node(open, Node::Expr(code(t)))?;
         if unquoted {
@@ -2765,7 +3073,8 @@ impl Parser<'_> {
             Some(Frame::Client { kind, .. }) if *kind != "comp" => block_of(kind),
             _ => "",
         };
-        if kw != open_kind {
+        // `{/}` names no block, and so closes none, even with none open.
+        if kw != open_kind || kw.is_empty() {
             return Err(self.unexpected_close(open, &format!("{{/{kw}}}")));
         }
         if matches!(self.frames.last(), Some(Frame::Client { .. })) {
@@ -2958,66 +3267,32 @@ impl Parser<'_> {
     }
 }
 
-/// Attributes whose value is a URL, where `javascript:` would run script.
-const URL_ATTRS: [&str; 9] = [
-    "action",
-    "background",
-    "cite",
-    "data",
-    "formaction",
-    "href",
-    "poster",
-    "src",
-    "xlink:href",
-];
+/// An `<option>`'s `selected={…}`, by its `<select>`'s choice
+/// (`Node::Chosen`).
+pub const IS: &str = "::wisp::rt::is(&__wisp_sel, ";
 
-/// The start of the value an `<input>` in an action's form gets (see
-/// `form_defaults`), which a component, having no `cx`, goes without.
-pub const KEPT: &str = "::wisp::rt::kept(cx, ";
-
-/// What goes after such an input: its problem, when the action refused it
-/// (`<small class="problem">…</small>`), unless the file writes
-/// `cx.problem(…)` somewhere itself.
-pub const PROBLEM: &str = "::wisp::rt::problem(cx, ";
-
-/// What the static start of a URL attribute's value says about its scheme.
-enum Scheme {
-    /// Relative (`/x`, `?q`, `#top`), or a scheme that runs no script.
-    Fixed,
-    /// `javascript:` or `vbscript:`.
-    Script,
-    /// A character reference before the scheme ends, which a browser decodes.
-    Encoded,
-    /// Undecided: what an expression writes next decides it.
-    Open,
+/// Whether the template `src` shows the problem of field `name` itself:
+/// it calls `problem("name")`, or `problem(…)` with a name it works out.
+fn shows_problem(src: &str, name: &str) -> bool {
+    src.match_indices("problem(").any(|(i, m)| {
+        let rest = src[i + m.len()..].trim_start();
+        match rest.strip_prefix('"') {
+            Some(r) => r.split_once('"').is_some_and(|(n, _)| n == name),
+            None => true,
+        }
+    })
 }
 
-fn scheme(prefix: &str) -> Scheme {
-    // As a browser reads a URL: leading spaces and controls are dropped, and
-    // tabs and newlines are ignored anywhere.
-    let s: String = prefix
-        .trim_start_matches(|c: char| c <= ' ')
-        .chars()
-        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
-        .collect();
-    for (i, c) in s.char_indices() {
-        match c {
-            ':' if i > 0 => {
-                let name = s[..i].to_ascii_lowercase();
-                return if name == "javascript" || name == "vbscript" {
-                    Scheme::Script
-                } else {
-                    Scheme::Fixed
-                };
-            }
-            '&' => return Scheme::Encoded,
-            _ if c.is_ascii_alphabetic() => {}
-            _ if i > 0 && (c.is_ascii_digit() || matches!(c, '+' | '-' | '.')) => {}
-            // Not a scheme's character: the URL is relative.
-            _ => return Scheme::Fixed,
-        }
-    }
-    Scheme::Open
+/// `cx.problem("x")` as a whole hole: the field's name.
+fn problem_call(t: &str) -> Option<&str> {
+    let name = t
+        .trim()
+        .strip_prefix("cx.problem(")?
+        .strip_suffix(')')?
+        .trim()
+        .strip_prefix('"')?
+        .strip_suffix('"')?;
+    (!name.contains(['"', '\\'])).then_some(name)
 }
 
 /// The block a client frame's kind is written as: an await's or try's
@@ -3061,19 +3336,11 @@ fn directive_parts(raw: &str, tag: &str) -> Result<(Dir, String, Vec<String>), S
     if tag == "template" && raw.eq_ignore_ascii_case("if") {
         return Ok((Dir::If, String::new(), Vec::new()));
     }
-    if let Some(how) = raw.strip_prefix("client:") {
-        let short = match how {
-            "load" => "",
-            "visible" => "v",
-            "idle" => "i",
-            "interaction" => "x",
-            "none" => "n",
-            "media" => "m",
-            _ => {
-                return Err(format!(
-                    "`{raw}` is not a way to start: client:load (the default), client:visible, client:idle, client:interaction, client:media=\"(query)\" or client:none"
-                ));
-            }
+    if let Some(start) = raw.strip_prefix("client:") {
+        let Some(short) = how(start) else {
+            return Err(format!(
+                "`{raw}` is not a way to start: client:load (the default), client:visible, client:idle, client:interaction, client:media=\"(query)\" or client:none"
+            ));
         };
         return Ok((Dir::Wait, short.into(), Vec::new()));
     }
@@ -3150,10 +3417,21 @@ fn directive_parts(raw: &str, tag: &str) -> Result<(Dir, String, Vec<String>), S
     Ok((kind, name.to_string(), Vec::new()))
 }
 
-const MODIFIERS: [&str; 10] = [
-    "prevent", "stop", "once", "self", "capture", "passive", "window", "document", "outside",
-    "debounce",
-];
+/// An island's start, `client:<start>`, as a record's `how` says it
+/// (`protocol::ISLAND_*`): "" for `load`, the default, which is no
+/// island; `None` for no way to start. `media`'s query follows it.
+pub fn how(start: &str) -> Option<&'static str> {
+    Some(match start {
+        "load" => "",
+        "visible" => ISLAND_VISIBLE,
+        "idle" => ISLAND_IDLE,
+        "interaction" => ISLAND_INTERACTION,
+        "none" => ISLAND_NONE,
+        "media" => ISLAND_MEDIA,
+        _ => return None,
+    })
+}
+
 const KEY_NAMES: [&str; 14] = [
     "enter",
     "escape",
@@ -3170,9 +3448,11 @@ const KEY_NAMES: [&str; 14] = [
     "pageup",
     "pagedown",
 ];
+/// The keys held down: the last of `ON_FLAGS`.
 const MODIFIER_KEYS: [&str; 4] = ["ctrl", "shift", "alt", "meta"];
 
-/// An event's modifiers: known ones, keys, and a duration after `debounce`.
+/// An event's modifiers: `ON_FLAGS` (which live.js takes as bits),
+/// `debounce` with a duration after it if it likes, and keys.
 fn check_modifiers(mods: &[String]) -> Result<(), String> {
     let duration = |d: &str| {
         let digits = d
@@ -3191,15 +3471,15 @@ fn check_modifiers(mods: &[String]) -> Result<(), String> {
         let one_key = m.len() == 1
             && m.bytes()
                 .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
-        if !(MODIFIERS.contains(&m)
-            || KEY_NAMES.contains(&m)
-            || MODIFIER_KEYS.contains(&m)
-            || one_key)
-        {
+        if !(ON_FLAGS.contains(&m) || m == "debounce" || KEY_NAMES.contains(&m) || one_key) {
+            let modifiers: Vec<&str> = (ON_FLAGS.iter().copied())
+                .filter(|f| !MODIFIER_KEYS.contains(f))
+                .chain(["debounce"])
+                .collect();
             return Err(format!(
                 "`.{m}` is not an event modifier. Use {}, with a time after debounce if you like (debounce.300ms); \
                  a key: {}, or one letter or digit; or a key held down: {}",
-                MODIFIERS.join(", "),
+                modifiers.join(", "),
                 KEY_NAMES.join(", "),
                 MODIFIER_KEYS.join(", ")
             ));
@@ -3227,7 +3507,7 @@ fn has_line_comment(code: &str) -> bool {
 }
 
 /// HTML's boolean attributes: present means on, whatever the value.
-const BOOLEAN_ATTRS: [&str; 25] = [
+pub(crate) const BOOLEAN_ATTRS: [&str; 25] = [
     "allowfullscreen",
     "async",
     "autofocus",
@@ -3532,7 +3812,7 @@ pub(crate) fn skip_char(b: &[u8], i: usize) -> usize {
             while j < b.len() && b[j] != b'\'' {
                 j += 1;
             }
-            j
+            j.min(b.len())
         }
         Some(&c) => {
             let len = match c {
@@ -3696,6 +3976,31 @@ fn shape(nodes: &[Node], out: &mut Vec<u8>) {
                 shape(body, out);
                 out.push(b'.');
             }
+            Node::Kept {
+                name, sent, own, ..
+            } => {
+                out.push(b'k');
+                out.extend_from_slice(name.as_bytes());
+                out.push(0);
+                shape(sent, out);
+                out.push(b';');
+                if let Some(own) = own {
+                    shape(own, out);
+                }
+                out.push(b'.');
+            }
+            Node::Chosen { name, own, .. } => {
+                out.push(b'c');
+                out.extend_from_slice(name.as_bytes());
+                out.push(0);
+                out.extend_from_slice(own.as_deref().unwrap_or("").as_bytes());
+                out.push(0);
+            }
+            Node::Problem { name, .. } => {
+                out.push(b'P');
+                out.extend_from_slice(name.as_bytes());
+                out.push(0);
+            }
             Node::Component {
                 name,
                 props,
@@ -3763,6 +4068,10 @@ mod tests {
                 } => {
                     assert_alternates(body);
                     otherwise.iter().for_each(|o| assert_alternates(o));
+                }
+                Node::Kept { sent, own, .. } => {
+                    assert_alternates(sent);
+                    own.iter().for_each(|o| assert_alternates(o));
                 }
                 Node::Match { arms, .. } => arms.iter().for_each(|a| assert_alternates(&a.1)),
                 Node::Head(b) => assert_alternates(b),
@@ -3932,6 +4241,19 @@ mod tests {
         assert!(err(r#"<a href=" JavaScript:{x}">"#).contains("runs script"));
         assert!(err(r#"<a href="java&#115;cript:{x}">"#).contains("character reference"));
         assert!(err("<p>{x // why}</p>").contains("// comments"));
+        // URLs that are not in URL attributes.
+        assert!(err(r#"<svg><a><set attributeName="href" to={x} /></a></svg>"#).contains("`to`"));
+        assert!(err(r#"<svg><animate values="0;{x}" /></svg>"#).contains("`values`"));
+        assert!(err(r#"<meta content={x} http-equiv="Refresh">"#).contains("refresh"));
+        assert!(err(r#"<meta http-equiv="refresh" content="0;url={x}">"#).contains("refresh"));
+        assert!(err("<meta http-equiv={x} content=\"0\">").contains("http-equiv"));
+        assert!(parse(r#"<meta name="description" content={x}>"#).is_ok());
+        assert!(parse(r#"<svg><animate attributeName="r" values="0;9" /></svg>"#).is_ok());
+        // Live values too, and a static start that runs script.
+        assert!(parse(r#"<svg><set to={:x} /></svg>"#).is_err());
+        assert!(parse(r#"<meta http-equiv="refresh" content={:x}>"#).is_err());
+        assert!(err(r#"<a href="javascript:{:x}">"#).contains("runs script"));
+        assert!(parse(r#"<a href="/p/{:x}">"#).is_ok());
     }
 
     #[test]
@@ -4303,6 +4625,41 @@ mod tests {
             .collect()
     }
 
+    /// `sketch`, with what an action's form adds spelled out.
+    fn forms(src: &str) -> String {
+        fn nodes(t: &Template, ns: &[Node]) -> String {
+            ns.iter()
+                .map(|n| match n {
+                    Node::Text(i) => t.chunks[*i].clone(),
+                    Node::Attr { name, code, .. } => format!("[{name}={}]", code.src),
+                    Node::Bool { name, code, .. } => format!("[+{name}?{}]", code.src),
+                    Node::Expr(c) => format!("{{{}}}", c.src),
+                    Node::Const(c) => format!("{{@const {}}}", c.src),
+                    Node::Problem { name, .. } => format!("<problem {name}>"),
+                    Node::Kept {
+                        name, sent, own, ..
+                    } => {
+                        let own = own.as_ref().map(|o| format!("|{}", nodes(t, o)));
+                        format!(
+                            "{{kept {name}:{}{}}}",
+                            nodes(t, sent),
+                            own.unwrap_or_default()
+                        )
+                    }
+                    Node::Chosen { name, own, .. } => {
+                        format!("{{chosen {name}|{}}}", own.as_deref().unwrap_or(""))
+                    }
+                    Node::Each { iter, body, .. } => {
+                        format!("{{each {}}}{}{{/each}}", iter.src, nodes(t, body))
+                    }
+                    _ => "?".into(),
+                })
+                .collect()
+        }
+        let t = parse(src).unwrap();
+        nodes(&t, &t.nodes)
+    }
+
     #[test]
     fn attribute_values_may_be_left_out() {
         // `Option`s are told apart from other values by the compiler, not here.
@@ -4353,40 +4710,74 @@ mod tests {
 
     #[test]
     fn action_forms_post_and_keep_what_was_typed() {
-        let kept = |n: &str| format!("[value={KEPT}\"{n}\")]");
-        // Each input is followed by its problem (`?`, a hole).
+        // Each input keeps what was sent (`{kept a}`: what the action
+        // refused, else its own value) and is followed by its problem.
         assert_eq!(
-            sketch("<form action=\"?/add\"><input name=\"a\"><input name=b /></form>"),
-            format!(
-                "<form action=\"?/add\" method=\"post\"><input name=\"a\"{}>?<input name=b{}/>?</form>",
-                kept("a"),
-                kept("b")
-            )
+            forms("<form action=\"?/add\"><input name=\"a\"><input name=b /></form>"),
+            "<form action=\"?/add\" method=\"post\"><input name=\"a\"{kept a:[value=__k]}><problem a>\
+             <input name=b{kept b:[value=__k]}/><problem b></form>"
         );
         let t = parse("<form method=\"POST\"><input name=\"a\"></form>").unwrap();
-        assert!(
-            matches!(&t.nodes[..], [_, Node::Attr { .. }, _, Node::Html(c), _] if c.src == format!("{PROBLEM}\"a\")")),
-            "{:?}",
-            t.nodes
-        );
-        // A file that shows problems itself gets none added.
+        assert_alternates(&t.nodes);
+        // Its own `value={…}` is what it shows on a GET.
         assert_eq!(
-            sketch("<form method=\"post\"><input name=\"a\">{cx.problem(\"a\")}</form>"),
+            forms("<form method=\"post\"><input name=\"t\" value={post.title}></form>"),
+            "<form method=\"post\"><input name=\"t\"{kept t:[value=__k]|[value=post.title]}><problem t></form>"
+        );
+        // A textarea's content likewise, its problem after it.
+        let t = parse("<form method=\"post\"><textarea name=\"b\">{post.body}</textarea></form>")
+            .unwrap();
+        assert_alternates(&t.nodes);
+        assert_eq!(
+            forms(
+                "<form method=\"post\"><textarea name=\"b\">{post.body}</textarea><textarea name=c></textarea></form>"
+            ),
+            "<form method=\"post\"><textarea name=\"b\">{kept b:{__k}|{post.body}}</textarea><problem b>\
+             <textarea name=c>{kept c:{__k}|}</textarea><problem c></form>"
+        );
+        // A select chooses its option by what was sent, else its value.
+        assert_eq!(
+            forms(
+                "<form method=\"post\"><select name=\"k\" value={post.kind}><option value=\"a\">A</option>\
+                   {#each ks as k}<option value={k.id}>{k.name}</option>{/each}<option>c</option></select></form>"
+            ),
             format!(
-                "<form method=\"post\"><input name=\"a\"{}>?</form>",
-                kept("a")
+                "<form method=\"post\"><select name=\"k\"{{chosen k|post.kind}}>\
+                 <option value=\"a\"[+selected?{IS}\"a\")]>A</option>{{each ks}}<option[value=k.id][+selected?{IS}&(k.id))]>{{k.name}}</option>{{/each}}\
+                 <option>c</option></select><problem k></form>"
             )
+        );
+        // A password or a file is never sent back; its problem is shown.
+        assert_eq!(
+            forms(
+                "<form action=\"?/a\"><input name=\"p\" type=\"password\"><input type=file name=f></form>"
+            ),
+            "<form action=\"?/a\" method=\"post\"><input name=\"p\" type=\"password\"><problem p>\
+             <input type=file name=f><problem f></form>"
+        );
+        // A file that shows a field's problem itself gets none added for
+        // it, and `{cx.problem("x")}` is the same element.
+        assert_eq!(
+            forms(
+                "<form method=\"post\"><input name=\"a\"><input name=\"b\"><p>{cx.problem(\"a\")}</p></form>"
+            ),
+            "<form method=\"post\"><input name=\"a\"{kept a:[value=__k]}><input name=\"b\"{kept b:[value=__k]}><problem b>\
+             <p><problem a></p></form>"
+        );
+        assert!(
+            !forms("<form method=\"post\"><input name=\"a\">{cx.problem(f)}</form>")
+                .contains("<problem a>")
         );
         // Told otherwise, a value of its own, not an action, or not text:
         // left as written.
         for src in [
             "<form action=\"?/a\" method=\"get\"><input name=\"q\" value=\"x\"></form>",
             "<form action=\"/a\"><input name=\"q\"></form>",
-            "<form action=\"?/a\"><input name=\"p\" type=\"password\"><input type=\"checkbox\" name=\"c\"></form>",
+            "<form action=\"?/a\"><input type=\"checkbox\" name=\"c\"><input type=hidden name=h></form>",
             "<form action=\"?/a\"><input name=\"q\" bind:value=\"q\"></form>",
             "<input name=\"q\">",
         ] {
-            assert!(!sketch(src).contains("[value="), "{src}: {}", sketch(src));
+            assert!(!forms(src).contains("{kept"), "{src}: {}", forms(src));
         }
         assert!(
             sketch("<form action=\"?/a\"></form><input name=\"q\">")
@@ -4449,6 +4840,15 @@ mod tests {
         assert!(e.msg.contains("no block"));
         let e = parse("{#match x} junk {:case _}{/match}").unwrap_err();
         assert!(e.msg.contains("case"));
+        // Broken input the fuzz tests found: errors, not panics.
+        for src in [
+            "{/}",
+            "{#if x}{/}",
+            "<title></wisp:head></title>",
+            "<d\"\"\"{#if n}=\"br\"{:else}\"",
+        ] {
+            assert!(parse(src).is_err(), "{src}");
+        }
     }
 
     #[test]
