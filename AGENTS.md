@@ -282,7 +282,7 @@ sessions, stolen ones too (saved; read at start; with a shared
 instance). Endpoints/JSON clients get 401. Sign-in page elsewhere:
 `wisp::sign_in_page("/enter")` in `init`. Hashes are PBKDF2-SHA256,
 600,000 rounds (~0.2 s of a core, on purpose, off the worker: `.await?`
-them; 503 + `retry-after` when ~3 s are queued). `wisp::password::outdated(&hash)` → rehash at
+them; 503 + `retry-after` when ~3 s are queued; `RateLimit` sign-in against floods). `wisp::password::outdated(&hash)` → rehash at
 sign-in. Rotate the secret: new `WISP_SECRET`, old one in `WISP_SECRET_OLD`
 for 30 days (sessions' life; 400 for other signed cookies), then drop it.
 

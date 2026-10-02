@@ -13,9 +13,12 @@
 //! what makes guessing slow. It runs on a thread kept for hashing, one for
 //! every two cores, so the request's worker goes on answering its other
 //! connections meanwhile, and a flood of sign-ins takes at most half the
-//! machine. Past about 3 s of hashes queued, one more is a 503 with
-//! `retry-after` rather than a longer wait. The edge build has no threads
-//! and hashes in place.
+//! machine. Past about 3 s of hashes queued, by their rounds, one more is
+//! a 503 with `retry-after` rather than a longer wait: hashes planted with
+//! many rounds cannot make the wait longer. That keeps the machine
+//! answering, not sign-ins working, through a flood: a `RateLimit` on the
+//! sign-in action, by name and by address, is the defence against one. The
+//! edge build has no threads and hashes in place.
 
 use crate::Result;
 use crate::sign::{base64, pbkdf2, random, unbase64};
@@ -30,8 +33,9 @@ const MAX_ROUNDS: u32 = 10_000_000;
 
 const PREFIX: &str = "$pbkdf2-sha256$i=";
 
-/// Hashes queued per hashing thread, about 3 s of work, before one more is
-/// a 503.
+/// Hashes of [`ROUNDS`] queued per hashing thread, about 3 s of work,
+/// before one more is a 503: counted in rounds, so a hash of more counts
+/// for more.
 #[cfg(not(target_arch = "wasm32"))]
 const QUEUED: usize = 16;
 
@@ -39,7 +43,7 @@ const QUEUED: usize = 16;
 pub async fn hash(password: &str) -> Result<String> {
     let salt = random::<16>();
     let password = password.as_bytes().to_vec();
-    let key = off_worker(move || pbkdf2(&password, &salt, ROUNDS)).await?;
+    let key = off_worker(ROUNDS, move || pbkdf2(&password, &salt, ROUNDS)).await?;
     Ok(encode(ROUNDS, &salt, &key))
 }
 
@@ -61,13 +65,8 @@ pub async fn check(password: &str, hash: Option<&str>) -> Result<bool> {
     let real = found.is_some();
     let (rounds, salt, key) = found.unwrap_or((ROUNDS, b"wisp: nobody".to_vec(), [0; 32]));
     let password = password.as_bytes().to_vec();
-    let made = off_worker(move || pbkdf2(&password, &salt, rounds)).await?;
+    let made = off_worker(rounds, move || pbkdf2(&password, &salt, rounds)).await?;
     Ok(crate::secure_eq(made, key) & real)
-}
-
-/// [`check`] of a hash there is.
-pub async fn verify(password: &str, hash: &str) -> Result<bool> {
-    check(password, Some(hash)).await
 }
 
 /// Whether `hash` was made with fewer rounds than [`hash`] uses now, or is
@@ -101,18 +100,32 @@ fn parse(hash: &str) -> Option<(u32, Vec<u8>, [u8; 32])> {
     Some((rounds, salt_bytes[..salt_len].to_vec(), key_bytes))
 }
 
-/// `work`'s answer, worked out on one of the threads kept for hashing while
-/// the caller's worker serves its other connections. The threads start with
-/// the first hash; where none will start, or in the edge build, it runs
-/// here. A full queue is a 503, tried again in a second; work whose caller
-/// is gone (its request dropped) is skipped.
+/// `work`'s answer, a hash of `rounds`, worked out on one of the threads
+/// kept for hashing while the caller's worker serves its other connections.
+/// The threads start with the first hash; where none will start, or in the
+/// edge build, it runs here. A full queue (in rounds, or in hashes) is a
+/// 503, tried again in a second, but an empty one always takes a hash;
+/// work whose caller is gone (its request dropped) is skipped.
 #[cfg(not(target_arch = "wasm32"))]
-async fn off_worker<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Result<T> {
+async fn off_worker<T: Send + 'static>(
+    rounds: u32,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T> {
     use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
     use std::sync::mpsc::{self, TrySendError};
     use std::sync::{Arc, Mutex, OnceLock};
     type Job = Box<dyn FnOnce() + Send>;
-    static POOL: OnceLock<Option<mpsc::SyncSender<Job>>> = OnceLock::new();
+    /// The rounds of the hashes queued or running.
+    static OWED: AtomicU64 = AtomicU64::new(0);
+    /// A job's rounds, given back to [`OWED`] once it ran or was dropped.
+    struct Owed(u64);
+    impl Drop for Owed {
+        fn drop(&mut self) {
+            OWED.fetch_sub(self.0, Relaxed);
+        }
+    }
+    static POOL: OnceLock<Option<(mpsc::SyncSender<Job>, u64)>> = OnceLock::new();
     let pool = POOL.get_or_init(|| {
         let threads = std::thread::available_parallelism().map_or(1, |n| n.get().div_ceil(2));
         let (send, take) = mpsc::sync_channel::<Job>(threads * QUEUED);
@@ -134,23 +147,35 @@ async fn off_worker<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static
                 });
             started += usize::from(thread.is_ok());
         }
-        (started > 0).then_some(send)
+        let budget = (started * QUEUED) as u64 * u64::from(ROUNDS);
+        (started > 0).then_some((send, budget))
     });
+    let busy = || {
+        let busy = crate::Error::new(503, "Too many passwords to check at once");
+        Err(busy.with_header("retry-after", "1"))
+    };
+    let owed = u64::from(rounds);
+    let before = OWED.fetch_add(owed, Relaxed);
+    let owed = Owed(owed);
+    if pool
+        .as_ref()
+        .is_some_and(|(_, budget)| !admits(before, owed.0, *budget))
+    {
+        return busy();
+    }
     let (done, answer) = tokio::sync::oneshot::channel();
     // A panic comes back to the caller, as if the work had run there; the
     // thread goes on.
     let job: Job = Box::new(move || {
+        let _owed = owed;
         if !done.is_closed() {
             let _ = done.send(catch_unwind(AssertUnwindSafe(work)));
         }
     });
     let unsent = match pool {
-        Some(pool) => match pool.try_send(job) {
+        Some((pool, _)) => match pool.try_send(job) {
             Ok(()) => None,
-            Err(TrySendError::Full(_)) => {
-                let busy = crate::Error::new(503, "Too many passwords to check at once");
-                return Err(busy.with_header("retry-after", "1"));
-            }
+            Err(TrySendError::Full(_)) => return busy(),
             Err(TrySendError::Disconnected(job)) => Some(job),
         },
         None => Some(job),
@@ -165,8 +190,16 @@ async fn off_worker<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static
     }
 }
 
+/// Whether a hash of `rounds` joins `queued` rounds of hashes, within
+/// `budget`: always into an empty queue, so a hash of more than the budget
+/// still runs, alone.
+#[cfg(not(target_arch = "wasm32"))]
+fn admits(queued: u64, rounds: u64, budget: u64) -> bool {
+    queued == 0 || queued + rounds <= budget
+}
+
 #[cfg(target_arch = "wasm32")]
-async fn off_worker<T>(work: impl FnOnce() -> T) -> Result<T> {
+async fn off_worker<T>(_: u32, work: impl FnOnce() -> T) -> Result<T> {
     Ok(work())
 }
 
@@ -195,7 +228,7 @@ mod tests {
     }
 
     fn verify(password: &str, hash: &str) -> bool {
-        block(super::verify(password, hash)).unwrap()
+        block(check(password, Some(hash))).unwrap()
     }
 
     #[test]
@@ -252,6 +285,26 @@ mod tests {
         }
     }
 
+    /// The queue is counted in rounds: hashes planted with many cannot
+    /// queue more work than ordinary ones, yet one always runs.
+    #[test]
+    fn the_queue_is_counted_in_rounds() {
+        let (r, max) = (u64::from(ROUNDS), u64::from(MAX_ROUNDS));
+        let budget = QUEUED as u64 * r;
+        let mut queued = 0;
+        let admitted = (0..QUEUED)
+            .filter(|_| {
+                admits(queued, r, budget) && {
+                    queued += r;
+                    true
+                }
+            })
+            .count();
+        assert_eq!(admitted, QUEUED);
+        assert!(!admits(queued, r, budget));
+        assert!(admits(0, max, budget) && !admits(max, max, budget));
+    }
+
     /// A hash leaves its worker free: a request beside it on the same
     /// single-threaded runtime is answered long before the hash is done.
     #[test]
@@ -277,8 +330,8 @@ mod tests {
     /// go on.
     #[test]
     fn panics_come_back() {
-        let caught = std::panic::catch_unwind(|| block(off_worker(|| panic!("boom"))));
+        let caught = std::panic::catch_unwind(|| block(off_worker(1, || panic!("boom"))));
         assert!(caught.is_err());
-        assert_eq!(block(off_worker(|| 7)).unwrap(), 7);
+        assert_eq!(block(off_worker(1, || 7)).unwrap(), 7);
     }
 }
