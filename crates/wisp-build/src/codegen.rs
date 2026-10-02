@@ -1305,7 +1305,7 @@ impl<'a> Project<'a> {
         let _ = write!(
             tags,
             "<script defer src=\"/_app/wisp.js?v={}\"></script>",
-            env!("CARGO_PKG_VERSION")
+            crate::runtime_version()
         );
         let [s0, s1, s2] = &self.shell;
         (self.tree.routes.iter().zip(&self.infos))
@@ -1357,10 +1357,10 @@ impl Gen {
             ),
         );
         self.line(0, "");
-        // Browser modules import the runtime by wisp-build's version.
+        // Browser modules import the runtime by the version wisp-build gives it.
         self.line(0, &format!(
             "const _: () = assert!(::wisp::rt::same_version({}), \"wisp and wisp-build are different versions: use the same version of both\");",
-            lit(env!("CARGO_PKG_VERSION"))
+            lit(crate::runtime_version())
         ));
         self.line(0, "");
         if p.hooks.is_none() {
@@ -4695,7 +4695,7 @@ fn module_source(m: &Module) -> String {
     let _ = writeln!(
         s,
         "import {{ define }} from \"/_app/live.js?v={}\";",
-        env!("CARGO_PKG_VERSION")
+        crate::runtime_version()
     );
     for url in m.imports {
         let _ = writeln!(s, "import {};", js_str(url));
@@ -4792,7 +4792,7 @@ fn module_source(m: &Module) -> String {
 /// (a full URL) stays as written.
 fn resolve_spec(spec: &str, lib_hash: &str, base: Option<&str>) -> Option<String> {
     if spec == "wisp" {
-        return Some(format!("/_app/live.js?v={}", env!("CARGO_PKG_VERSION")));
+        return Some(format!("/_app/live.js?v={}", crate::runtime_version()));
     }
     let rel = if let Some(p) = spec.strip_prefix("$lib/") {
         p.to_string()
@@ -5923,7 +5923,7 @@ mod tests {
         ];
         let code = app("baked", &files).unwrap();
         let doc = "<html><head><script defer src=\\\"/_app/wisp.js?v=VERSION\\\"></script><title>T</title></head><body><nav>a&amp;b</nav><h1>1</h1><form action=\\\"?/add\\\" method=\\\"post\\\"><input name=\\\"x\\\"></form></body></html>"
-            .replace("VERSION", env!("CARGO_PKG_VERSION"));
+            .replace("VERSION", crate::runtime_version());
         let etag = format!(
             "\\\"{:016x}\\\"",
             fnv1a(doc.replace("\\\"", "\"").as_bytes())
@@ -6268,7 +6268,7 @@ pub fn load() -> Data { todo!() }";
         let head = format!(
             "import {{ define }} from \"/_app/live.js?v={}\";\nimport a from 'a'\nimport {{\n    b }} from \"b\";\n\
              define(\"t7\", function (__wisp_p, __wisp_h) {{ const {{ {HELPERS} }} = __wisp_h; {{ const {{ data }} = __wisp_props(__wisp_p, [\"data\"]); {{\n",
-            env!("CARGO_PKG_VERSION")
+            crate::runtime_version()
         );
         assert!(c.source.starts_with(&head), "{}", c.source);
         // Blank lines, then the script with its imports blanked out: `let
@@ -6593,7 +6593,7 @@ pub fn load() -> Data { todo!() }";
 
     #[test]
     fn imports_are_rewritten() {
-        let v = env!("CARGO_PKG_VERSION");
+        let v = crate::runtime_version();
         let src = "import { store } from 'wisp'\nimport a from '$lib/a.js'\nexport * from '../b.js'\nimport './c.js'\nimport x from 'https://esm.sh/x'\nconst y = import('$lib/y.js')\nconst s = 'wisp'";
         let out = rewrite_specifiers(src, "H", Some("sub"));
         assert_eq!(

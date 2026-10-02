@@ -62,9 +62,9 @@ const CLIENT_JS: &[u8] = include_bytes!("client/wisp.js");
 #[cfg(not(debug_assertions))]
 const CLIENT_JS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/wisp.js"));
 #[cfg(debug_assertions)]
-const CLIENT_JS_ETAG: &str = concat!("\"", env!("CARGO_PKG_VERSION"), "-dev\"");
+const CLIENT_JS_ETAG: &str = concat!("\"", env!("WISP_RUNTIME_V"), "-dev\"");
 #[cfg(not(debug_assertions))]
-const CLIENT_JS_ETAG: &str = concat!("\"", env!("CARGO_PKG_VERSION"), "\"");
+const CLIENT_JS_ETAG: &str = concat!("\"", env!("WISP_RUNTIME_V"), "\"");
 /// The runtime of client scripts and directives, linked by pages that
 /// render any (see `live.rs`). Versioned like `wisp.js`.
 #[cfg(debug_assertions)]
@@ -670,9 +670,10 @@ pub(crate) fn setup<A: App>() {
                 "<link rel=\"stylesheet\" href=\"/_app/app.css?v={v}\">"
             ));
         }
-        let version = env!("CARGO_PKG_VERSION");
-        s.push_str(&format!(
-            "<script defer src=\"/_app/wisp.js?v={version}\"></script>"
+        s.push_str(concat!(
+            "<script defer src=\"/_app/wisp.js?v=",
+            env!("WISP_RUNTIME_V"),
+            "\"></script>"
         ));
         if let Some(port) = dev::events_port() {
             s.push_str(&format!(

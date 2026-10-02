@@ -179,6 +179,20 @@ pub fn client_ts(root: &Path) -> Result<String, String> {
     .map(|(_, ts)| ts)
 }
 
+/// The `?v=` of the browser runtime (`/_app/wisp.js`, `/_app/live.js`):
+/// the version and a hash of both files, so a changed runtime has a new
+/// address and no browser keeps an old one from its cache.
+pub fn runtime_version() -> &'static str {
+    static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    V.get_or_init(|| {
+        let js = concat!(
+            include_str!("../../wisp/src/client/wisp.js"),
+            include_str!("../../wisp/src/client/live.js")
+        );
+        format!("{}-{:08x}", env!("CARGO_PKG_VERSION"), fnv1a(js.as_bytes()) as u32)
+    })
+}
+
 /// FNV-1a, 64-bit. Used for shape and asset hashes, not for security.
 pub const fn fnv1a(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
