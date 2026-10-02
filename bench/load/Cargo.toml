@@ -5,5 +5,9 @@ edition = "2024"
 publish = false
 description = "Closed-loop HTTP/1.1 load generator for comparing Wisp with other stacks"
 
+[dependencies]
+# Only `real`'s many connections: a runtime per load thread.
+tokio = { workspace = true }
+
 [lints]
 workspace = true

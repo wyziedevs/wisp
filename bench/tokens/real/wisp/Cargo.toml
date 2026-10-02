@@ -1,0 +1,15 @@
+[package]
+name = "tokens-real-wisp"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "The Wisp side of bench/tokens/real: auth, CRUD, uploads, live updates and a component, counted by wisp-tokens"
+
+[dependencies]
+wisp = { workspace = true }
+
+[build-dependencies]
+wisp-build = { workspace = true }
+
+[lints]
+workspace = true

@@ -17,7 +17,8 @@ and load (below).
 cargo run -r -p bench-run -- [-c 64] [-d 10] [-w 5] [--rounds 1]
     [--pipeline 1] [--group fast,popular,top|all] [--only wisp,actix]
     [--paths fortunes] [--no-build] [--csv results.csv]
-    [--suite benchmarker]
+    [--suite benchmarker|real] [--think 1.0] [--max-users 50000]
+    [--slo-ms 100] [--tests users,churn,...] [--soak 60]
 ```
 
 Runs on Linux and Windows. Needs Rust; a server whose toolchain (the .NET 10
@@ -109,6 +110,29 @@ cached and baked pages are paths of their own: see `app/` below).
   default; `--pipeline 16` sends 16 at once instead, timing each response
   from the first byte of its batch. It records latency in a log-linear
   histogram and counts only requests that complete in the measured window.
+
+The practice routes, which stress what real apps do, on Wisp, Express,
+Fastify, Bun, SvelteKit, Next.js, ASP.NET Core, Go's net/http, Actix and Axum,
+each written the way its framework's docs would:
+
+- `GET /wait`: waits 20 ms without holding a thread (a database call's
+  stand-in), then `200 {"ok":true}`.
+- `POST /echo`: body `{"name","email","age","tags"}`, valid when name is 1 to
+  50 characters, email has an `@`, age 0 to 150 and tags at most 10. Valid:
+  `200` with the same four fields in that order. Invalid or unparsable:
+  `422 {"errors":["name",...]}` in the order name, email, age, tags (`["body"]`
+  for a body that does not parse).
+- `POST /upload`: a body of any type up to 8 MiB, answered `200 text/plain`
+  with its byte count; larger is a `413`.
+- `GET /list`: 1000 objects `{"id":i,"name":"user i","email":"user{i}@example.com",
+  "active":i%3!=0}` built and serialized per request.
+- `GET /static/app.js`: `static/app.js` (about 100 KB) from the framework's
+  own static-file facility with its default cache headers. Wisp, SvelteKit
+  and Next.js serve from their own `static`/`public` folder, so each holds a
+  copy; Next.js's standalone build needs `public` copied beside `server.js`
+  (its docs say so), and SvelteKit needs `BODY_SIZE_LIMIT=8M` at launch.
+- `GET /ws`: a WebSocket that echoes each message. Not on SvelteKit and
+  Next.js, which have none built in.
 
 `bench-run` builds everything in release mode and runs each server alone,
 pinned to half of the CPU cores, with the load generator on the other half
@@ -240,6 +264,97 @@ What differs:
 - **Durations** in the Linux test script: 2 s a route after a 2 s warmup,
   for Wisp, the fast group and their top ten (`--group fast,top`), to keep
   it near 7 minutes. Run it with the defaults for their 15 s and 5 s.
+
+## Real traffic suite
+
+Peak closed-loop req/s is how fast a server goes with 64 connections that
+never pause. Real traffic is many more connections, each mostly idle, apps
+that wait on databases, take JSON and uploads, hold WebSockets, meet bad
+clients and get restarted. `--suite real` measures that on Wisp and every
+popular or fast server (on Windows, those that run there), each started
+once (`--tests` picks some). They run in the order users, churn, slow,
+ws, wait, echo, list, static, upload, abuse, soak, shutdown: the
+WebSockets' memory is read before uploads swell a garbage-collected heap.
+Three tables come out, traffic, app work and robustness, with Wisp's rank
+on every figure.
+
+Traffic, on `/page`, `/json` and `/fortunes`, which every server answers:
+
+- **Users**: each user is a keep-alive connection sending a request every
+  `--think` seconds (1 by default, ±50%, uniform), whether or not the last
+  answer was late: `/page` half the time, `/json` 30%, `/fortunes` 20%.
+  Latency runs from when each request was due, so a server that falls
+  behind is charged for the wait (no coordinated omission). From 500 users,
+  doubling while a step passes, then two bisections (about 1.19x apart): a
+  step is 2 s for new users to connect (spread over a second), then `-d`
+  seconds measured, and passes when p99 is within 100 ms (`--slo-ms`), at
+  most 0.1% of requests fail and at least 99% of those due are answered.
+  Reported: the most users that passed, p99, the server's CPU % (of its
+  CPUs) and memory there, KB per user (memory over idle, per user: what
+  holding open WebSockets or idle browsers costs), then twice as many
+  users, to see whether it degrades (still serves most, slower) or
+  collapses. A user at one request a second is a heavy one: a visitor
+  loading a page every 10 to 30 s puts 10 to 30 times fewer requests on
+  it, so the real count of such visitors is that many times higher. If the
+  load generator itself sends more than 10 ms late (p99), the ramp stops:
+  the server serves at least that many ("load-limited").
+- **Churn**: 64 closed loops on `/json`, each request on a new connection
+  with `connection: close`, as clients without keep-alive, health checks
+  and some proxies send: connections a second, and CPU per connection.
+- **Slow**: 2,000 slowloris clients each sending a request head a byte
+  every 500 ms, beside 64 normal closed-loop connections on `/page`: their
+  rate as a share of the same load alone (measured just before), their
+  p99, and how many slow clients the server cut off (cutting them is
+  good).
+
+App work, on the practice routes above (n/a where a server has none: a
+404, or an answer off the contract, when each is checked first):
+
+- **Wait**: 1,000 closed-loop connections on `/wait`: 50,000 req/s is
+  ideal, less means a waiting handler holds up others. req/s, p50, p99.
+  On Windows a 20 ms timer fires on the 15.6 ms clock tick, after about
+  31 ms, so about 32,000 is ideal there.
+- **Echo**: 64 connections posting a valid 180-byte body to `/echo`, after
+  an invalid one must get a 4xx: req/s and CPU per request.
+- **Upload**: 32 connections posting 1 MiB to `/upload`: MB/s and the most
+  memory seen (sampled every 100 ms), after a 9 MiB body must get a 413 or
+  a closed connection, and `/json` must still answer.
+- **List**: 64 connections on `/list` (1,000 rows of JSON): req/s, CPU.
+- **Static**: 64 connections on `/static/app.js` (100,253 bytes, checked).
+- **WS**: 10,000 idle WebSockets on `/ws` (KB each, from memory), then 64
+  of them echoing a 32-byte text message closed loop: messages/s and p99.
+
+Robustness:
+
+- **Abuse**: a garbage request line, a 64 KB header, a 1 MB header, a bad
+  chunked body and a request without a host, each on its own connection
+  with 2 s for an answer; a 4xx or a close handles it (and any answer to
+  the 64 KB header, which is within some servers' limits). Then `/json`
+  must answer 200 within a second. "n/5 handled", and what failed.
+- **Soak**: users at half the most that passed (1,000 if the users test did
+  not run) for `--soak` seconds (60; 0 skips), memory sampled every 5 s:
+  first against last, "grows" past 20%.
+- **Shutdown** (Linux): SIGTERM to the server during 64 connections on
+  `/wait`: how many requests sent before it failed (0 is graceful), and ms
+  until it exited (killed at 10 s). Last, since it stops the server.
+
+Server CPU is counted in cycles on Windows: its CPU time is charged per
+15.6 ms clock tick to whatever thread is running then, so a server that
+wakes briefly between ticks, as under a light load, showed next to none.
+
+The load runs on a tokio runtime per load CPU; on Linux its connections
+come from 127.0.0.2 to 127.0.0.255 so that 50,000 of them do not run out of
+ports, and the runner raises its open-file limit to the hard limit (warning
+and capping the users if that is under twice the users plus 1,000).
+
+```
+cargo run -r -p bench-run -- --suite real [-d 10] [--think 1.0]
+    [--max-users 50000] [--slo-ms 100] [--soak 60] [--only wisp,fastify]
+    [--tests users,churn,slow,wait,echo,upload,list,static,ws,abuse,soak,shutdown]
+    [--csv FILE]
+```
+
+`--csv` appends a line per server, test and figure.
 
 ## Results on Linux
 
