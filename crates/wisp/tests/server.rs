@@ -495,10 +495,11 @@ fn malformed_requests_are_refused_and_the_server_carries_on() {
     // Not a path, or not a method: refused, but the request was framed, so the connection stays.
     let mut wire = connect();
     assert_eq!(wire.ask("GET * HTTP/1.1\r\nhost: lab\r\n\r\n").status, 400);
+    // The absolute form a proxy sends is its path, on its host (RFC 9112 §3.2.2).
     assert_eq!(
-        wire.ask("GET http://example.com/ HTTP/1.1\r\nhost: lab\r\n\r\n")
-            .status,
-        400
+        wire.ask("GET http://example.com/q?s=abs HTTP/1.1\r\nhost: lab\r\n\r\n")
+            .text(),
+        "s=abs|5|abs"
     );
     assert_eq!(wire.ask(&get("/q?s=still")).text(), "s=still|5|still");
     // Heads that never end, one byte past the 16 KB limit: the server has read all of it when it
@@ -509,14 +510,16 @@ fn malformed_requests_are_refused_and_the_server_carries_on() {
         431
     );
     assert_eq!(once(endless("GET /").as_bytes()).status, 431);
-    let many: String = (0..100).map(|i| format!("x-{i}: 1\r\n")).collect();
+    let many: String = (0..101).map(|i| format!("x-{i}: 1\r\n")).collect();
     assert_eq!(
         once(format!("GET / HTTP/1.1\r\n{many}\r\n").as_bytes()).status,
         431
     );
     let sixty_four: String = (0..64).map(|i| format!("x-{i}: 1\r\n")).collect();
     assert_eq!(
-        wire_head(&format!("GET /hello HTTP/1.1\r\n{sixty_four}\r\n")),
+        wire_head(&format!(
+            "GET /hello HTTP/1.1\r\nhost: lab\r\n{sixty_four}\r\n"
+        )),
         200
     );
     assert_eq!(wire_get("/q?s=alive").text(), "s=alive|5|alive");

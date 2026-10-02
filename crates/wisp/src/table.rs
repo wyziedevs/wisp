@@ -17,8 +17,8 @@ use std::fmt;
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 /// Rows under ids from 1 up (or random ones), kept in order of their ids.
-/// Reads share the lock; a change has it alone. A lock whose holder
-/// panicked leaves the rows as they were.
+/// Reads share the lock; a change has it alone. After a change that
+/// panicked, a saved table reads its rows again from its store.
 pub struct Table<T> {
     rows: RwLock<Rows<T>>,
     /// Where a saved table keeps its rows; `None` keeps them in memory.
@@ -188,18 +188,32 @@ impl<T> Table<T> {
     /// The rows, locked for reading, read from the store the first time.
     pub(crate) fn read(&self) -> RwLockReadGuard<'_, Rows<T>> {
         loop {
-            let rows = self.rows.read().unwrap_or_else(|e| e.into_inner());
-            if !matches!(rows.state, State::Unread) {
+            // Poisoned: `write` mends it first.
+            if let Ok(rows) = self.rows.read()
+                && !matches!(rows.state, State::Unread)
+            {
                 return rows;
             }
-            drop(rows);
             drop(self.write());
         }
     }
 
     /// The rows, locked for a change, read from the store the first time.
+    /// After a change that panicked (an `update` whose closure did), a
+    /// saved table reads its rows again, as the store has them: the one
+    /// in memory may be half changed, and never saved.
     pub(crate) fn write(&self) -> RwLockWriteGuard<'_, Rows<T>> {
-        let mut rows = self.rows.write().unwrap_or_else(|e| e.into_inner());
+        let mut rows = self.rows.write().unwrap_or_else(|e| {
+            self.rows.clear_poison();
+            let mut rows = e.into_inner();
+            if let State::Stored(store) = rows.state {
+                rows.map.clear();
+                rows.last = 0;
+                // A store that fails here panics again, poisoned again.
+                self.load(&mut rows, Some(store));
+            }
+            rows
+        });
         if matches!(rows.state, State::Unread) {
             self.load(&mut rows, store::current());
         }
@@ -298,6 +312,40 @@ impl<T> Table<T> {
                 e.detail()
             );
         }
+    }
+
+    /// Saves rows just put in the table, as `(id, json)`, all or none. When
+    /// the store fails, the table is read again from it, which takes them
+    /// out, and the error is the request's 500.
+    pub(crate) fn save_many(&self, rows: &mut Rows<T>, new: &[(u64, String)]) -> Result {
+        let (State::Stored(store), Some(saved)) = (rows.state, &self.saved) else {
+            return Ok(());
+        };
+        let kept = match new {
+            [(id, json)] => store.save(saved.name, *id, Some(json)),
+            _ => store.save_many(saved.name, new),
+        };
+        kept.map_err(|e| {
+            rows.map.clear();
+            rows.last = 0;
+            // A store that fails here too panics, and `write` reads it again.
+            self.load(rows, Some(store));
+            crate::Error::new(
+                500,
+                format!(
+                    "could not save {} rows of table `{}`: {}",
+                    new.len(),
+                    saved.name,
+                    e.detail()
+                ),
+            )
+        })
+    }
+
+    /// Reads a saved table's rows from `store` now, for a test.
+    #[cfg(test)]
+    pub(crate) fn load_from(&self, store: &'static dyn Store) {
+        self.load(&mut self.rows.write().unwrap(), Some(store));
     }
 
     /// Keeps `value` under a new id, which it returns.
@@ -399,6 +447,97 @@ impl<T: Clone> Table<T> {
             })
             .collect()
     }
+
+    /// The page of rows the request's `?page=N` asks for (the first when it
+    /// asks for none), `per` a page, newest (highest id) first: `let posts =
+    /// POSTS.page(cx, 10);`, then `{#each posts as post}` and
+    /// `{#if let Some(href) = posts.next}<a {href}>Older</a>{/if}`. Only
+    /// that page's rows are copied.
+    pub fn page(&self, cx: &crate::Cx, per: usize) -> Page<T> {
+        let per = per.max(1);
+        let number = cx.query_or("page", 1usize).max(1);
+        let skip = (number - 1).saturating_mul(per);
+        let rows = self.read();
+        let page = rows
+            .map
+            .iter()
+            .rev()
+            .skip(skip)
+            .take(per)
+            .map(|(&id, v)| Row {
+                id,
+                value: v.clone(),
+            })
+            .collect();
+        let more = rows.map.len() > skip.saturating_add(per);
+        drop(rows);
+        Page {
+            rows: page,
+            number,
+            prev: (number > 1).then(|| page_href(cx, number - 1)),
+            next: more.then(|| page_href(cx, number + 1)),
+        }
+    }
+}
+
+/// One page of a table's rows, from [`Table::page`]. It reads as its rows
+/// (`{#each posts as post}`, `posts.len()`), and has links to the pages
+/// on either side: `None` at the ends.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Page<T> {
+    pub rows: Vec<Row<T>>,
+    /// Which page it is, from 1.
+    pub number: usize,
+    /// `?page=N` of the page before (newer rows), keeping the rest of the
+    /// query.
+    pub prev: Option<String>,
+    /// `?page=N` of the page after (older rows).
+    pub next: Option<String>,
+}
+
+impl<T> std::ops::Deref for Page<T> {
+    type Target = [Row<T>];
+    fn deref(&self) -> &[Row<T>] {
+        &self.rows
+    }
+}
+
+impl<'a, T> IntoIterator for &'a Page<T> {
+    type Item = &'a Row<T>;
+    type IntoIter = std::slice::Iter<'a, Row<T>>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.rows.iter()
+    }
+}
+
+impl<T: Json> Json for Page<T> {
+    fn json(&self, out: &mut String) {
+        out.push_str("{\"rows\":");
+        self.rows.json(out);
+        out.push_str(",\"number\":");
+        self.number.json(out);
+        out.push_str(",\"prev\":");
+        self.prev.json(out);
+        out.push_str(",\"next\":");
+        self.next.json(out);
+        out.push('}');
+    }
+}
+
+/// `?page=n` with the rest of the request's query as it was sent (but an
+/// action's `/name`). Relative to the page, so no path is echoed back.
+fn page_href(cx: &crate::Cx, n: usize) -> String {
+    let mut href = String::from("?");
+    for part in cx.query_string().split('&') {
+        if part.is_empty() || part.starts_with('/') || part == "page" || part.starts_with("page=") {
+            continue;
+        }
+        href.push_str(part);
+        href.push('&');
+    }
+    href.push_str("page=");
+    href.push_str(&n.to_string());
+    href
 }
 
 impl<T> Default for Table<T> {
@@ -471,6 +610,48 @@ mod tests {
         }
     }
 
+    #[test]
+    fn pages_newest_first() {
+        let t: Table<u32> = Table::new();
+        for n in 1..=5 {
+            t.add(n);
+        }
+        let page = |q: &str| {
+            t.page(
+                &crate::Cx::for_test(&format!("GET /p{q} HTTP/1.1\r\n\r\n"), &[]),
+                2,
+            )
+        };
+        let ids = |p: &Page<u32>| p.iter().map(|r| r.id).collect::<Vec<_>>();
+        let first = page("");
+        assert_eq!((ids(&first), first.number), (vec![5, 4], 1));
+        assert_eq!(
+            (first.prev.as_deref(), first.next.as_deref()),
+            (None, Some("?page=2"))
+        );
+        let second = page("?q=a+b&page=2&x");
+        assert_eq!(ids(&second), [3, 2]);
+        assert_eq!(second.prev.as_deref(), Some("?q=a+b&x&page=1"));
+        assert_eq!(second.next.as_deref(), Some("?q=a+b&x&page=3"));
+        let last = page("?/add&page=3");
+        assert_eq!((ids(&last), last.next), (vec![1], None));
+        assert_eq!(last.prev.as_deref(), Some("?page=2"));
+        let past = page("?page=9");
+        assert!(past.is_empty() && past.next.is_none());
+        for bad in ["?page=0", "?page=x", "?page=-1"] {
+            assert_eq!(page(bad).number, 1, "{bad}");
+        }
+        let mut n = 0;
+        for row in &first {
+            n += row.value;
+        }
+        assert_eq!(n, 9);
+        assert_eq!(
+            json::to_json(&page("?page=3")),
+            r#"{"rows":[{"id":1,"value":1}],"number":3,"prev":"?page=2","next":null}"#
+        );
+    }
+
     /// A store in memory, as a database of the app's own would be.
     struct Mem(Mutex<Vec<(String, u64, Option<String>)>>);
 
@@ -540,6 +721,17 @@ mod tests {
             other.load(&mut other.rows.write().unwrap(), Some(mem))
         }));
         assert!(twice.is_err(), "two tables of one name");
+
+        // A change that panicked half way: what is saved, not what it left.
+        let half = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            again.update(1, |s| {
+                s.push('?');
+                panic!("half way")
+            })
+        }));
+        assert!(half.is_err());
+        assert_eq!(again.with(1, String::clone).as_deref(), Some("a!"));
+        assert_eq!(again.add("d".into()), 4);
 
         let random: Table<String> = Table::rest(None, true);
         let id = random.add("x".into());

@@ -363,15 +363,44 @@ impl Parser<'_> {
 pub struct Problems {
     at: String,
     list: Vec<(String, String)>,
+    /// The text of `list`.
+    bytes: usize,
+    /// Reading a form, whose values are all text: a number or `bool` may
+    /// be text, a blank field is missing, and one value is a list of one.
+    form: bool,
 }
 
+/// The most problems one answer lists, and about the most bytes of them.
+const MOST: usize = 100;
+const MOST_BYTES: usize = 16 * 1024;
+
 impl Problems {
-    /// Notes `message` about the value being read.
+    /// For reading an object built from a form (see `input::whole`).
+    pub(crate) fn form() -> Problems {
+        Problems {
+            form: true,
+            ..Problems::default()
+        }
+    }
+
+    /// Every problem, by field, as one 422.
+    pub(crate) fn into_error(self) -> Error {
+        Error::invalid_fields(self.list)
+    }
+
+    /// Notes `message` about the value being read. Past `MOST` problems, or
+    /// `MOST_BYTES` of them, the rest are not noted: a body of a million
+    /// bad items is answered with the first, not a million messages.
     pub fn add(&mut self, message: impl Into<String>) {
+        if self.list.len() >= MOST || self.bytes > MOST_BYTES {
+            return;
+        }
         let at = if self.at.is_empty() { "body" } else { &self.at };
         // One message per place: the first says enough.
         if !self.list.iter().any(|(a, _)| a == at) {
-            self.list.push((at.to_string(), message.into()));
+            let message = message.into();
+            self.bytes += at.len() + message.len();
+            self.list.push((at.to_string(), message));
         }
     }
 
@@ -413,7 +442,13 @@ impl Problems {
     /// The field `name` of an object: absent is `T::missing()`, which is a
     /// problem for anything but an `Option`.
     pub fn field<T: FromJson>(&mut self, members: &[(String, Value)], name: &str) -> Option<T> {
-        match members.iter().rev().find(|(k, _)| k == name) {
+        let blank = |v: &Value| matches!(v, Value::String(s) if s.trim().is_empty());
+        // A form's blank field is one left out: required, or `None`.
+        let found = members
+            .iter()
+            .rev()
+            .find(|(k, v)| k == name && !(self.form && blank(v)));
+        match found {
             Some((_, v)) => self.read(name, v),
             None => T::missing().or_else(|| {
                 self.read::<Missing>(name, &Value::Null);
@@ -525,6 +560,8 @@ impl FromJson for bool {
     fn from_json(v: &Value, p: &mut Problems) -> Option<bool> {
         match v {
             Value::Bool(b) => Some(*b),
+            // A checkbox, as `input::flag` reads one.
+            Value::String(s) if p.form => Some(!matches!(s.as_str(), "false" | "off" | "0")),
             other => expected(p, "true or false", other),
         }
     }
@@ -548,12 +585,15 @@ macro_rules! integers {
     ($($t:ty)*) => {$(
         impl FromJson for $t {
             fn from_json(v: &Value, p: &mut Problems) -> Option<$t> {
-                let Value::Number(n) = v else {
-                    return expected(p, "a number", v);
+                let n = match v {
+                    Value::Number(n) => n.as_str(),
+                    Value::String(s) if p.form => s.trim(),
+                    _ => return expected(p, "a number", v),
                 };
                 let parsed = n.parse().ok();
                 if parsed.is_none() {
-                    if n.contains(['.', 'e', 'E']) {
+                    let digits = n.strip_prefix(['-', '+']).unwrap_or(n);
+                    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
                         p.add("expected a whole number");
                     } else {
                         p.add(format!("must be from {} to {}", <$t>::MIN, <$t>::MAX));
@@ -575,6 +615,10 @@ macro_rules! floats {
                     // Grammar-checked text always parses; a huge one is infinite.
                     Value::Number(n) => n.parse().ok().filter(|f: &$t| f.is_finite()).or_else(|| {
                         p.add("is too large");
+                        None
+                    }),
+                    Value::String(s) if p.form => s.trim().parse().ok().filter(|f: &$t| f.is_finite()).or_else(|| {
+                        p.add("expected a number");
                         None
                     }),
                     other => expected(p, "a number", other),
@@ -607,8 +651,11 @@ impl<T: FromJson> FromJson for Box<T> {
 
 impl<T: FromJson> FromJson for Vec<T> {
     fn from_json(v: &Value, p: &mut Problems) -> Option<Vec<T>> {
-        let Value::Array(items) = v else {
-            return expected(p, "an array", v);
+        let items = match v {
+            Value::Array(items) => items.as_slice(),
+            // A form's field sent once.
+            Value::String(_) if p.form => std::slice::from_ref(v),
+            _ => return expected(p, "an array", v),
         };
         // Every item is read, so each bad one is reported.
         let mut out = Vec::with_capacity(items.len());
@@ -750,16 +797,25 @@ pub mod check {
         (n > max).then(|| format!("must have at most {}", plural(max, unit)))
     }
 
-    /// An address with one `@`, something before it, and a dot in a domain
-    /// after it: what a form can check. Only an email that arrives proves one.
+    /// An address as `<input type="email">` takes one, so the server never
+    /// refuses what a browser sent: WHATWG's "valid email address". Before
+    /// the `@`, letters, digits and ``.!#$%&'*+/=?^_`{|}~-``; after it,
+    /// labels between dots, each letters, digits and `-` but not at either
+    /// end (`a@b` is one). A label may also hold non-ASCII letters and be
+    /// longer than 63, as Firefox sends them (it checks the punycode).
+    /// Only an email that arrives proves an address.
     pub fn email(v: &impl Text) -> Option<String> {
         let s = v.text()?;
+        let user_byte = |b: u8| b.is_ascii_alphanumeric() || b"!#$%&'*+/=?^_`{|}~.-".contains(&b);
+        let label_end = |b: &u8| b.is_ascii_alphanumeric() || *b >= 0x80;
+        let label = |l: &str| {
+            let b = l.as_bytes();
+            b.first().is_some_and(label_end)
+                && b.last().is_some_and(label_end)
+                && b.iter().all(|c| label_end(c) || *c == b'-')
+        };
         let ok = s.split_once('@').is_some_and(|(user, domain)| {
-            !user.is_empty()
-                && !domain.contains('@')
-                && domain.split('.').count() >= 2
-                && domain.split('.').all(|part| !part.is_empty())
-                && !s.contains(char::is_whitespace)
+            !user.is_empty() && user.bytes().all(user_byte) && domain.split('.').all(label)
         });
         (!ok).then(|| "must be an email address".to_string())
     }
@@ -926,6 +982,18 @@ mod tests {
     }
 
     #[test]
+    fn a_flood_of_problems_is_cut_short() {
+        // Each problem was checked against every one before it: 300,000
+        // bad items took minutes, and the answer was megabytes.
+        let many = format!("[{}1]", "1,".repeat(300_000));
+        let e = read::<Vec<String>>(&many).unwrap_err();
+        assert_eq!((e.status(), e.fields().len()), (422, MOST));
+        let long = format!("{{\"{}\":[1,1,1]}}", "k".repeat(100_000));
+        let e = read::<BTreeMap<String, Vec<String>>>(&long).unwrap_err();
+        assert_eq!(e.fields().len(), 1, "past the bytes, no more");
+    }
+
+    #[test]
     fn fields_and_checks() {
         let v = parse("{\"a\": {\"b\": 1}, \"n\": 5}").unwrap();
         let mut p = Problems::default();
@@ -954,11 +1022,47 @@ mod tests {
             Some("must have at most 1 item")
         );
         assert_eq!(check::min_len(&None::<String>, 1), None);
-        for good in ["a@b.co", "first.last+tag@mail.example.org"] {
+        // What `<input type="email">` takes, and only that (but Firefox's
+        // Unicode and long labels).
+        let long = format!("a@{}.com", "b".repeat(70));
+        for good in [
+            "a@b.co",
+            "a@b",
+            "first.last+tag@mail.example.org",
+            ".a..b.@c",
+            "!#$%&'*+/=?^_`{|}~-@x",
+            "a@1.2.3.4",
+            "a@a-b--c.d",
+            "a@xn--bcher-kva.de",
+            "a@bücher.de",
+            &long,
+        ] {
             assert_eq!(check::email(&good.to_string()), None, "{good}");
         }
         for bad in [
-            "", "a", "@b.co", "a@b", "a@b.", "a@@b.co", "a b@c.de", "a@.co",
+            "",
+            "a",
+            "@b.co",
+            "a@",
+            "a@b.",
+            "a@.b",
+            "a@b..c",
+            "a@-b",
+            "a@b-",
+            "a@b-.c",
+            "a@@b.co",
+            "a@b@c",
+            "a b@c.de",
+            "a@b c",
+            " a@b",
+            "a@b\n",
+            "a\"b@c",
+            "(a)@b",
+            "a,b@c",
+            "ü@b",
+            "a@b_c",
+            "a@[1.2.3.4]",
+            "a@b:80",
         ] {
             assert!(check::email(&bad.to_string()).is_some(), "{bad}");
         }

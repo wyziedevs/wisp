@@ -82,7 +82,7 @@ fn every_rule_says_what_is_wrong_by_field() {
             vec!["email: must be an email address"],
         ),
         (
-            GOOD.replace("ada@example.com", "a@b"),
+            GOOD.replace("ada@example.com", "a@b."),
             vec!["email: must be an email address"],
         ),
         (GOOD.replace("36", "17"), vec!["age: must be at least 18"]),
@@ -107,6 +107,9 @@ fn every_rule_says_what_is_wrong_by_field() {
             "{got:?} for {body}"
         );
     }
+    // An address as browsers take one (WHATWG): the domain needs no dot.
+    let dotless = GOOD.replace("ada@example.com", "a@b");
+    assert!(says(&dotless).is_empty(), "{dotless}");
     // Every problem at once, not the first.
     let all = says(r#"{"name":"","email":"x","age":1,"tags":[]}"#);
     assert_eq!(all.len(), 4, "{all:?}");
