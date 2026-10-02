@@ -6,6 +6,9 @@
 use std::path::Path;
 
 fn main() {
+    // The `?v=` the runtime is linked by: wisp-build writes the same one
+    // into the modules it generates.
+    println!("cargo:rustc-env=WISP_RUNTIME_V={}", wisp_build::runtime_version());
     let out = std::env::var("OUT_DIR").expect("cargo sets OUT_DIR");
     for name in ["wisp.js", "live.js"] {
         let src = Path::new("src/client").join(name);

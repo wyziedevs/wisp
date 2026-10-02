@@ -1318,8 +1318,8 @@ pub mod rt {
     };
     pub use crate::json::to_json as js_of;
     pub use crate::live::{
-        Js, js_attr, js_attrs, js_text, json, live, live_end, live_how, live_route, same_version,
-        tag_name,
+        Js, RUNTIME_VERSION, js_attr, js_attrs, js_text, json, live, live_end, live_how, live_route,
+        same_version, tag_name,
     };
     use crate::{Cx, Error, Out, Response};
 

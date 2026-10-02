@@ -478,7 +478,7 @@ fn browser_code() {
     }
     let runtime = format!(
         "<script type=\"module\" src=\"/_app/live.js?v={}\"></script>",
-        env!("CARGO_PKG_VERSION")
+        wisp::rt::RUNTIME_VERSION
     );
     assert!(page.contains(&format!("{runtime}\n</body>")), "{page}");
 
@@ -493,7 +493,7 @@ fn browser_code() {
         Some("public, max-age=31536000, immutable")
     );
     let js = body(&module);
-    assert!(js.starts_with(&format!("import {{ define }} from \"/_app/live.js?v={}\";\ndefine(\"{page_id}\", function (__wisp_p, __wisp_h) {{ const {{", env!("CARGO_PKG_VERSION"))), "{js}");
+    assert!(js.starts_with(&format!("import {{ define }} from \"/_app/live.js?v={}\";\ndefine(\"{page_id}\", function (__wisp_p, __wisp_h) {{ const {{", wisp::rt::RUNTIME_VERSION)), "{js}");
     assert!(
         js.contains("const { data } = __wisp_props(__wisp_p, [\"data\"]);"),
         "{js}"
@@ -526,7 +526,7 @@ fn browser_code() {
     assert!(body(&s.request("GET", comp_url, "", b"")).contains("define(\""));
     let live = s.request(
         "GET",
-        &format!("/_app/live.js?v={}", env!("CARGO_PKG_VERSION")),
+        &format!("/_app/live.js?v={}", wisp::rt::RUNTIME_VERSION),
         "",
         b"",
     );
@@ -566,7 +566,7 @@ fn module_url(page: &str, n: usize) -> String {
 #[test]
 fn client_parity() {
     let s = start();
-    let v = env!("CARGO_PKG_VERSION");
+    let v = wisp::rt::RUNTIME_VERSION;
 
     // `{:expr}`: an anchor, what the server knows of it (a server value's
     // path, or a script variable set to a literal), and an end. A live
@@ -765,7 +765,7 @@ fn spreads_resets_and_rust_reads_of_props() {
 #[test]
 fn islands_and_runes() {
     let s = start();
-    let v = env!("CARGO_PKG_VERSION");
+    let v = wisp::rt::RUNTIME_VERSION;
     // Every instance is an island: the page is painted whole, and nothing
     // loads until an island's moment comes (wisp.js wakes them). A
     // `client:none` one sends neither its values nor its module.

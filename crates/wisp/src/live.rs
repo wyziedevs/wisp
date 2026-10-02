@@ -125,7 +125,7 @@ impl Live {
         if self.modules.iter().any(|m| m.1) {
             s.push_str(concat!(
                 "<script type=\"module\" src=\"/_app/live.js?v=",
-                env!("CARGO_PKG_VERSION"),
+                env!("WISP_RUNTIME_V"),
                 "\"></script>"
             ));
         }
@@ -507,10 +507,14 @@ fn unescape(json: &str) -> Cow<'_, str> {
     Cow::Owned(s)
 }
 
-/// Whether `build`, the version of wisp-build that generated an app's code,
-/// is this crate's: modules import the runtime by its version.
+/// The `?v=` of `/_app/wisp.js` and `/_app/live.js`: the version and a hash
+/// of both, from `wisp_build::runtime_version`.
+pub const RUNTIME_VERSION: &str = env!("WISP_RUNTIME_V");
+
+/// Whether `build`, the runtime version wisp-build generated an app's code
+/// for, is this crate's: modules import the runtime by it.
 pub const fn same_version(build: &str) -> bool {
-    let (a, b) = (build.as_bytes(), env!("CARGO_PKG_VERSION").as_bytes());
+    let (a, b) = (build.as_bytes(), RUNTIME_VERSION.as_bytes());
     if a.len() != b.len() {
         return false;
     }
@@ -940,7 +944,7 @@ mod tests {
 
     #[test]
     fn versions() {
-        assert!(same_version(env!("CARGO_PKG_VERSION")));
+        assert!(same_version(RUNTIME_VERSION));
         assert!(!same_version("0.0.0-other"));
     }
 
@@ -982,7 +986,7 @@ mod tests {
         );
         assert!(tail.ends_with(concat!(
             "<script type=\"module\" src=\"/_app/live.js?v=",
-            env!("CARGO_PKG_VERSION"),
+            env!("WISP_RUNTIME_V"),
             "\"></script>"
         )));
         out.live.clear();
