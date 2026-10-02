@@ -875,14 +875,20 @@ fn take_buffers(peer: SocketAddr) -> Box<Buffers> {
 /// `Cx` as it was answered.
 #[cfg(not(target_arch = "wasm32"))]
 fn give_buffers(mut b: Box<Buffers>) {
-    b.cx.wire.buf.clear();
-    b.wbuf.clear();
-    trim_buffers(&mut b);
+    reset_buffers(&mut b);
     POOL.with_borrow_mut(|p| {
         if p.len() < POOLED {
             p.push(b);
         }
     });
+}
+
+/// `b` emptied of what came and what went, for its next request.
+#[cfg(not(target_arch = "wasm32"))]
+fn reset_buffers(b: &mut Buffers) {
+    b.cx.wire.buf.clear();
+    b.wbuf.clear();
+    trim_buffers(b);
 }
 
 /// What one large request or response grew `b` to goes; the read buffer
@@ -904,7 +910,7 @@ fn trim_buffers(b: &mut Buffers) {
 /// What the epoll driver received for a connection and leaves to its
 /// future (see [`on_driver`]): the buffers, how much of `cx.wire.buf` is
 /// answered, and the request after that when the driver got that far with
-/// it.
+/// it (see [`Ahead`]).
 pub(crate) struct Handed {
     held: Holding,
     at: usize,
@@ -924,6 +930,11 @@ enum Holding {
 type Deciding = std::pin::Pin<Box<dyn Future<Output = ()> + Send>>;
 
 impl Handed {
+    #[cfg(target_os = "linux")]
+    fn new(held: Holding, at: usize, ahead: Option<Ahead>) -> Handed {
+        Handed { held, at, ahead }
+    }
+
     /// What is still to send, which the driver sends before it hands over.
     /// A request still deciding has the answers before it: they go with
     /// its own.
@@ -938,22 +949,11 @@ impl Handed {
 
 /// A request [`on_driver`] parsed but leaves to the connection's future,
 /// whole: `parse` is not run on it again, which would read a chunked body
-/// it already moved over its framing.
-struct Ahead {
-    req: Req,
-    stage: Stage,
-}
-
-/// How far the driver got with a request it hands on.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-enum Stage {
-    Parsed,
-    /// Routed too: its params are in `cx`.
-    Routed(Option<usize>),
-    /// Decided too: its reply is in `reply` (a stream, a WebSocket), or is
-    /// still being decided (`Holding::Deciding`).
-    Decided,
-}
+/// it already moved over its framing. Its route is in `routed` once the
+/// driver found it (its params in `cx`). And whether it is decided too:
+/// its reply is in `reply` (a stream, a WebSocket), or is still being
+/// decided (`Holding::Deciding`).
+type Ahead = (Req, bool);
 
 /// Whether some route of `A` answers without waiting, so [`on_driver`] can help.
 #[cfg(target_os = "linux")]
@@ -1027,9 +1027,7 @@ thread_local! {
 /// `b` back to [`DRIVER`].
 #[cfg(target_os = "linux")]
 fn park(mut b: Box<Buffers>) {
-    b.cx.wire.buf.clear();
-    b.wbuf.clear();
-    trim_buffers(&mut b);
+    reset_buffers(&mut b);
     DRIVER.set(Some(b));
 }
 
@@ -1040,19 +1038,16 @@ fn park(mut b: Box<Buffers>) {
 fn answer_whole<A: App>(mut b: Box<Buffers>) -> Result<Box<Buffers>, Handed> {
     let mut at = 0;
     while at < b.cx.wire.buf.len() && b.wbuf.len() < KEEP_CAPACITY {
-        let Parsed::Request(req) = parse::<A>(&mut b.cx, at, true) else {
+        let Parsed::Request(mut req) = parse::<A>(&mut b.cx, at, true) else {
             break;
         };
-        let hand = move |held, stage| {
-            let ahead = Some(Ahead { req, stage });
-            Err(Handed { held, at, ahead })
-        };
         if !policy::keeps_open(req.keep_alive, stopping()) {
-            return hand(Holding::Ready(b), Stage::Parsed);
+            return Err(Handed::new(Holding::Ready(b), at, Some((req, false))));
         }
         let route = req.routed.unwrap_or_else(|| route::<A>(&mut b.cx));
+        req.routed = Some(route);
         if !route.map_or(A::NOT_FOUND_NOW, |r| A::ROUTES[r].now) {
-            return hand(Holding::Ready(b), Stage::Routed(route));
+            return Err(Handed::new(Holding::Ready(b), at, Some((req, false))));
         }
         let job = match route.is_some_and(|r| A::ROUTES[r].sync & b.cx.method.bit() != 0) {
             true => {
@@ -1064,11 +1059,11 @@ fn answer_whole<A: App>(mut b: Box<Buffers>) -> Result<Box<Buffers>, Handed> {
         if let Some(job) = job {
             b = match at_once::<A>(b, job) {
                 Ok(b) => b,
-                Err(f) => return hand(Holding::Deciding(f), Stage::Decided),
+                Err(f) => return Err(Handed::new(Holding::Deciding(f), at, Some((req, true)))),
             };
         }
         if matches!(b.reply.body, Body::Stream(_) | Body::WebSocket(_)) {
-            return hand(Holding::Ready(b), Stage::Decided);
+            return Err(Handed::new(Holding::Ready(b), at, Some((req, true))));
         }
         let Buffers {
             cx,
@@ -1088,12 +1083,7 @@ fn answer_whole<A: App>(mut b: Box<Buffers>) -> Result<Box<Buffers>, Handed> {
         at += req.len;
     }
     if at < b.cx.wire.buf.len() {
-        let held = Holding::Ready(b);
-        return Err(Handed {
-            held,
-            at,
-            ahead: None,
-        });
+        return Err(Handed::new(Holding::Ready(b), at, None));
     }
     Ok(b)
 }
@@ -1260,9 +1250,9 @@ async fn requests<A: App>(mut stream: Conn, peer: SocketAddr, held: &mut Option<
         let mut close = false;
         let mut refused = false;
         while used < b.cx.wire.buf.len() {
-            let (parsed, stage) = match ahead.take() {
-                Some(a) => (Parsed::Request(a.req), a.stage),
-                None => (parse::<A>(&mut b.cx, used, true), Stage::Parsed),
+            let (parsed, decided) = match ahead.take() {
+                Some((req, decided)) => (Parsed::Request(req), decided),
+                None => (parse::<A>(&mut b.cx, used, true), false),
             };
             let Buffers {
                 cx,
@@ -1273,10 +1263,8 @@ async fn requests<A: App>(mut stream: Conn, peer: SocketAddr, held: &mut Option<
             match parsed {
                 Parsed::Request(req) => {
                     let keep_alive = policy::keeps_open(req.keep_alive, stopping());
-                    match stage {
-                        Stage::Parsed => decide::<A>(cx, out, reply, req.routed).await,
-                        Stage::Routed(route) => decide::<A>(cx, out, reply, Some(route)).await,
-                        Stage::Decided => {}
+                    if !decided {
+                        decide::<A>(cx, out, reply, req.routed).await;
                     }
                     // Only as a 101: a hook may have answered otherwise.
                     let upgrade = reply.take_websocket().filter(|_| reply.status == 101);
