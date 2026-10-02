@@ -20,10 +20,13 @@
 <button id="add" on:click="todos = [...todos, { id: todos.length + 1, text: 'new', done: false }]">Add</button>
 <button id="flip" on:click="todos = todos.map((t) => ({ ...t, done: !t.done }))">Flip</button>
 <a id="to-params" href="/a2/params/one">Params</a>
+<div id="menu" :hidden="!open">menu</div><details id="more" :open="open" :hidden="shown > 1">x</details>
 
 <script>
   let todos = data.todos
   let title = data.title
+  let open = false
+  let shown = 0
   function first({ data }) {
     return data
   }

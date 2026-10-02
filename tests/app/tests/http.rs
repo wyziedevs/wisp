@@ -195,6 +195,76 @@ fn uploads() {
 }
 
 #[test]
+fn image_uploads_raise_the_body_limit() {
+    // `/me` takes a 64 KB picture: its limit is the usual one plus that.
+    let s = start_with(&[("WISP_BODY_LIMIT", "16KB")]);
+    let upload = |target: &str, size: usize| {
+        let mut b = b"--XX\r\ncontent-disposition: form-data; name=\"avatar\"; filename=\"a.gif\"\r\n\r\nGIF89a".to_vec();
+        b.resize(size, 0);
+        b.extend_from_slice(b"\r\n--XX--\r\n");
+        let ct = "content-type: multipart/form-data; boundary=XX\r\n";
+        status(&s.request("POST", target, ct, &b))
+    };
+    assert_eq!(
+        upload("/me?/avatar", 60 * 1024),
+        303,
+        "taken, and sent to sign in"
+    );
+    assert_eq!(
+        upload("/join?/join", 60 * 1024),
+        413,
+        "a page without uploads"
+    );
+    assert_eq!(upload("/me?/avatar", 100 * 1024), 413);
+}
+
+/// A password hash runs off the worker: with one worker, a page asked for
+/// while a sign-up hashes is answered first. A sign-out everywhere ends the
+/// sessions made before it, and still does after a restart.
+#[test]
+fn hashes_leave_the_worker_free_and_sign_outs_last() {
+    let dir = Temp::new("sessions");
+    let env = [("WISP_THREADS", "1"), ("WISP_DATA", dir.to_str().unwrap())];
+    let session = {
+        let s = start_with(&env);
+        let port = s.port;
+        let joining = std::thread::spawn(move || {
+            let form = b"name=ada&password=correct+horse";
+            let mut c = connect(port);
+            let head = format!(
+                "POST /join?/join HTTP/1.1\r\nhost: x\r\n{FORM}content-length: {}\r\nconnection: close\r\n\r\n",
+                form.len()
+            );
+            c.write_all(&[head.as_bytes(), form].concat()).unwrap();
+            let mut out = String::new();
+            c.read_to_string(&mut out).unwrap();
+            (out, std::time::Instant::now())
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        let home = s.request("GET", "/", "", b"");
+        let answered = std::time::Instant::now();
+        let (joined, hashed) = joining.join().unwrap();
+        assert_eq!(status(&home), 200);
+        assert_eq!(status(&joined), 303, "{joined}");
+        assert!(answered < hashed, "the page waited for the hash");
+
+        let set = header(&joined, "set-cookie").unwrap();
+        let session = format!("cookie: {}\r\n", set.split(';').next().unwrap());
+        assert_eq!(status(&s.request("GET", "/me", &session, b"")), 200);
+        let ended = s.request("POST", "/me?/everywhere", &format!("{FORM}{session}"), b"");
+        assert_eq!(status(&ended), 303, "{ended}");
+        assert_eq!(status(&s.request("GET", "/me", &session, b"")), 303);
+        session
+    };
+    let s = start_with(&env);
+    let me = s.request("GET", "/me", &session, b"");
+    assert_eq!(
+        (status(&me), header(&me, "location")),
+        (303, Some("/login"))
+    );
+}
+
+#[test]
 fn body_limits_are_per_route() {
     let s = start();
     let big = vec![b'a'; 100 * 1024];
@@ -242,6 +312,21 @@ fn chunked_request_bodies() {
     assert_eq!(status(&gzip), 501);
     let old = s.send(b"POST /echo HTTP/1.0\r\ntransfer-encoding: chunked\r\n\r\n0\r\n\r\n");
     assert_eq!(status(&old), 400);
+}
+
+/// Pipelined in one packet, a route that waits (`/compat` loads with
+/// `async fn`) between two that do not: on Linux's epoll the driver answers
+/// the first, and the connection's task the rest, in order.
+#[test]
+fn pipelined_requests_that_wait_and_do_not() {
+    let s = start();
+    let r = s.send(b"GET / HTTP/1.1\r\nhost: x\r\n\r\nGET /compat?who=ann HTTP/1.1\r\nhost: x\r\n\r\nGET /t/id HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n");
+    let at = |part: &str| r.find(part).unwrap_or_else(|| panic!("{part} in {r}"));
+    assert_eq!(r.matches("HTTP/1.1 200 OK").count(), 3, "{r}");
+    assert!(
+        at("hello from init") < at("ann") && at("ann") < r.rfind("HTTP/1.1 200").unwrap(),
+        "{r}"
+    );
 }
 
 #[test]
@@ -422,7 +507,8 @@ fn browser_code() {
         page.contains("<button data-w=\"0.1\">Menu</button>"),
         "{page}"
     );
-    assert!(page.contains("<ul hidden data-w=\"0.2\">"), "{page}");
+    // `:hidden="!open"`, with `let open = false`: hidden from the start.
+    assert!(page.contains("<ul data-w=\"0.2\" hidden>"), "{page}");
     assert!(page.contains("<input data-w=\"0.4\">"), "{page}");
     // A Rust loop's values that a directive reads, as HTML-escaped JSON.
     assert!(page.contains("<li data-w=\"0.3\" data-wl=\"{&quot;item&quot;:{&quot;name&quot;:&quot;tea&quot;}}\">0: tea</li>"), "{page}");
@@ -434,7 +520,7 @@ fn browser_code() {
     );
     assert!(
         page.contains("<button data-w=\"1.0\">More</button>")
-            && page.contains("<div hidden data-w=\"1.1\">Menu</div>"),
+            && page.contains("<div data-w=\"1.1\" hidden>Menu</div>"),
         "{page}"
     );
     // The client script is not in the page.
@@ -777,10 +863,10 @@ fn islands_and_runes() {
     let json = &page[page.find("id=\"wisp-live\">").expect("instances")..];
     assert!(
         json.contains("\"i\":[[0,\"t")
-            && json.contains(",-1,\"i\",{}],[1,")
-            && json.contains(",-1,\"m(min-width: 1px)\",{}],[2,")
-            && json.contains(",-1,\"x\",{\"value\":0,\"step\":1}],[4,")
-            && json.contains(",-1,\"v\",{}]]}"),
+            && json.contains(",-1,{},\"i\"],[1,")
+            && json.contains(",-1,{},\"m(min-width: 1px)\"],[2,")
+            && json.contains(",-1,{\"value\":0,\"step\":1},\"x\"],[4,")
+            && json.contains(",-1,{},\"v\"]]}"),
         "{json}"
     );
     assert!(!json.contains("[3,"), "{json}");
@@ -861,6 +947,15 @@ fn first_paint() {
     has("<span class=\"label\"><template data-w=\"0\"></template>one<!----></span>");
     has(
         "<template data-wslot></template><!--[--><i class=\"slot\"><template data-w=\"13\"></template>1<!----></i><!--]-->",
+    );
+    // A boolean attribute the browser sets from a literal script value is
+    // there from the start; one the server cannot work out is left to it.
+    has("<div id=\"menu\" data-w=\"");
+    assert!(page.contains("\" hidden>menu</div>"), "{page}");
+    assert!(page.contains("<details id=\"more\" data-w=\""), "{page}");
+    assert!(
+        !page.contains("\" open>x</details>") && !page.contains("hidden>x</details>"),
+        "{page}"
     );
     // `data` in an arrow's or a function's parameters is not the page's:
     // only the fields the page reads are sent.

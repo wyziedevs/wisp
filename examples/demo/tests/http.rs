@@ -172,9 +172,16 @@ fn malformed_requests_are_refused() {
         );
         assert_eq!(header(&r, "connection"), Some("close"));
     }
-    for target in ["*", "http://example.com/"] {
-        assert_eq!(status(&s.request("GET", target, "", "")), 400, "{target}");
+    assert_eq!(status(&s.request("GET", "*", "", "")), 400);
+    // The absolute form a proxy sends is its path (RFC 9112 §3.2.2).
+    for target in [
+        "http://example.com/",
+        "HTTP://example.com",
+        "https://x:8/about",
+    ] {
+        assert_eq!(status(&s.request("GET", target, "", "")), 200, "{target}");
     }
+    assert_eq!(status(&s.request("GET", "ftp://x/", "", "")), 400);
     assert_eq!(
         status(&s.send(b"GET /\xff HTTP/1.1\r\nconnection: close\r\n\r\n")),
         400
@@ -183,7 +190,7 @@ fn malformed_requests_are_refused() {
 
     let big = format!("GET / HTTP/1.1\r\nx-big: {}\r\n\r\n", "a".repeat(20_000));
     assert_eq!(status(&s.send(big.as_bytes())), 431);
-    let many: String = (0..100).map(|i| format!("x-{i}: 1\r\n")).collect();
+    let many: String = (0..101).map(|i| format!("x-{i}: 1\r\n")).collect();
     assert_eq!(
         status(&s.send(format!("GET / HTTP/1.1\r\n{many}\r\n").as_bytes())),
         431

@@ -149,6 +149,28 @@ fn both_backends_send_the_same_bytes() {
 }
 
 #[test]
+fn a_request_the_driver_leaves_is_not_parsed_twice() {
+    // A connection that waits between requests has its next ones answered on
+    // the epoll driver, which leaves a request that closes the connection to
+    // the future. Its chunked body, moved over its framing by the driver's
+    // parse, must not be read as framing again (it was: a 413).
+    for env in BACKENDS {
+        let s = common::start(env);
+        let mut c = BufReader::new(connect(s.port));
+        c.get_mut().write_all(GET).unwrap();
+        read_answer(&mut c);
+        std::thread::sleep(Duration::from_millis(50));
+        c.get_mut()
+            .write_all(b"POST /echo HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\n\r\nhelloPOST /echo HTTP/1.1\r\nhost: x\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n3\r\nabc\r\n0\r\n\r\n")
+            .unwrap();
+        let mut all = String::new();
+        c.read_to_string(&mut all).unwrap();
+        assert!(all.ends_with("\r\n\r\n3:abc"), "{all}");
+        assert_eq!(all.matches("HTTP/1.1 200").count(), 2, "{all}");
+    }
+}
+
+#[test]
 fn pipelined_requests_come_back_in_order_and_the_connection_stays() {
     for env in BACKENDS {
         let s = common::start(env);
@@ -531,6 +553,46 @@ fn open_files(s: &Server) -> usize {
         .count()
 }
 
+/// The process's open files: descriptor and what it is.
+fn files(s: &Server) -> Vec<(String, String)> {
+    let mut all: Vec<(String, String)> = std::fs::read_dir(format!("/proc/{}/fd", s.child.id()))
+        .unwrap()
+        .flatten()
+        .map(|f| {
+            let what = std::fs::read_link(f.path())
+                .map_or_else(|e| e.to_string(), |p| p.display().to_string());
+            (f.file_name().to_string_lossy().into_owned(), what)
+        })
+        .collect();
+    all.sort();
+    all
+}
+
+/// The files open now that were not `before`, and for a socket its line in
+/// the kernel's tables (TCP, Unix): which file was left, and what it is.
+fn new_files(s: &Server, before: &[(String, String)]) -> String {
+    let mut out = String::new();
+    for (fd, what) in files(s).into_iter().filter(|f| !before.contains(f)) {
+        out += &format!("fd {fd}: {what}\n");
+        let Some(inode) = what
+            .strip_prefix("socket:[")
+            .and_then(|w| w.strip_suffix(']'))
+        else {
+            continue;
+        };
+        for table in ["tcp", "tcp6", "unix", "udp"] {
+            let rows = std::fs::read_to_string(format!("/proc/{}/net/{table}", s.child.id()))
+                .unwrap_or_default();
+            for row in rows.lines() {
+                if row.split_whitespace().any(|w| w == inode) {
+                    out += &format!("  {table}: {}\n", row.trim());
+                }
+            }
+        }
+    }
+    out
+}
+
 #[test]
 fn every_way_a_connection_can_end_gives_its_descriptor_back() {
     for env in BACKENDS {
@@ -544,20 +606,23 @@ fn descriptors_come_back_on(env: &[(&str, &str)]) {
     warm.get_mut().write_all(GET).unwrap();
     read_answer(&mut warm);
     drop(warm);
-    let settle = |s: &Server, want: usize| {
+    let settle = |s: &Server, want: &[(String, String)]| {
         for _ in 0..1000 {
-            if open_files(s) <= want {
+            if open_files(s) <= want.len() {
                 return;
             }
             std::thread::sleep(Duration::from_millis(5));
         }
         panic!(
-            "{} files open, {want} before: a connection was not closed",
-            open_files(s)
+            "{} files open, {} before: a connection was not closed
+{}",
+            open_files(s),
+            want.len(),
+            new_files(s, want)
         );
     };
-    settle(&s, open_files(&s));
-    let before = open_files(&s);
+    settle(&s, &files(&s));
+    let before = files(&s);
 
     for i in 0..120 {
         let mut c = connect(s.port);
@@ -594,7 +659,7 @@ fn descriptors_come_back_on(env: &[(&str, &str)]) {
             }
         }
     }
-    settle(&s, before);
+    settle(&s, &before);
     // And it still serves.
     let mut c = BufReader::new(connect(s.port));
     c.get_mut().write_all(GET).unwrap();
