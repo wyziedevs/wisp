@@ -12,6 +12,8 @@
 use crate::template::{raw_str_start, skip_char, skip_raw_str, skip_str};
 pub use crate::ty::last_segment;
 use crate::ty::{first_arg, is_ident, is_word, option_inner};
+pub use wisp_shared::rust::awaits;
+use wisp_shared::rust::{skip_block_comment, skip_literal, skip_space};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FnItem {
@@ -443,10 +445,8 @@ fn fields(src: &str, i: usize) -> Params {
     let (mut depth, mut start, mut j) = (0i32, open + 1, open + 1);
     while j < b.len() {
         match b[j] {
-            b'/' if b.get(j + 1) == Some(&b'/') => j = skip_space(b, j) - 1,
-            b'/' if b.get(j + 1) == Some(&b'*') => j = skip_block_comment(b, j),
-            b'"' => j = skip_str(b, j),
-            b'\'' => j = skip_char(b, j),
+            // Strings (raw ones too), chars and comments.
+            b'/' | b'"' | b'\'' | b'r' if skip_literal(b, j) != j => j = skip_literal(b, j),
             b'(' | b'[' | b'{' | b'<' => depth += 1,
             b'>' if b[j - 1] == b'-' => {}
             b')' | b']' | b'>' => depth -= 1,
@@ -658,25 +658,6 @@ fn block_end(b: &[u8], open: usize) -> usize {
     b.len()
 }
 
-/// If a literal or comment starts at `i`, the index of its last byte;
-/// otherwise `i`.
-fn skip_literal(b: &[u8], i: usize) -> usize {
-    match b[i] {
-        b'"' => skip_str(b, i),
-        b'\'' => skip_char(b, i),
-        b'r' if raw_str_start(b, i).is_some() => skip_raw_str(b, i),
-        b'/' if b.get(i + 1) == Some(&b'/') => {
-            let mut j = i;
-            while j + 1 < b.len() && b[j + 1] != b'\n' {
-                j += 1;
-            }
-            j
-        }
-        b'/' if b.get(i + 1) == Some(&b'*') => skip_block_comment(b, i),
-        _ => i,
-    }
-}
-
 /// Whether the identifier `name` appears in `b` as code (not in a literal,
 /// a comment, or as part of a longer name or a path after `.`/`::`).
 fn uses_ident(b: &[u8], name: &[u8]) -> bool {
@@ -819,22 +800,6 @@ pub fn let_names(stmts: &str) -> Vec<String> {
         i += 1;
     }
     out
-}
-
-/// Whether the expression `code` awaits: `.await` outside its literals.
-pub fn awaits(code: &str) -> bool {
-    let b = code.as_bytes();
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'.' {
-            let at = skip_space(b, i + 1);
-            if b[at..].starts_with(b"await") && b.get(at + 5).is_none_or(|&c| !is_word(c)) {
-                return true;
-            }
-        }
-        i = skip_literal(b, i) + 1;
-    }
-    false
 }
 
 /// Whether statements `code` may wait: they `.await`, or call a macro,
@@ -1000,51 +965,12 @@ fn strip_comments(s: &str) -> String {
     out
 }
 
-/// The index of the first byte at or after `i` that is not whitespace or
-/// in a comment.
-fn skip_space(b: &[u8], mut i: usize) -> usize {
-    while i < b.len() {
-        if b[i].is_ascii_whitespace() {
-            i += 1;
-        } else if b[i..].starts_with(b"//") {
-            while i < b.len() && b[i] != b'\n' {
-                i += 1;
-            }
-        } else if b[i..].starts_with(b"/*") {
-            // An unclosed comment runs to the end.
-            i = (skip_block_comment(b, i) + 1).min(b.len());
-        } else {
-            break;
-        }
-    }
-    i
-}
-
 /// The end of the identifier starting at `i` (`i` itself if there is none).
 pub(crate) fn ident_end(b: &[u8], mut i: usize) -> usize {
     while i < b.len() && is_word(b[i]) {
         i += 1;
     }
     i
-}
-
-fn skip_block_comment(b: &[u8], mut i: usize) -> usize {
-    let mut depth = 0;
-    while i + 1 < b.len() {
-        if b[i] == b'/' && b[i + 1] == b'*' {
-            depth += 1;
-            i += 2;
-        } else if b[i] == b'*' && b[i + 1] == b'/' {
-            depth -= 1;
-            i += 2;
-            if depth == 0 {
-                return i - 1;
-            }
-        } else {
-            i += 1;
-        }
-    }
-    b.len()
 }
 
 /// Where the file's leading `//!` docs and `#![…]` attributes end (0 if it
@@ -1115,7 +1041,7 @@ fn matching_bracket(b: &[u8], open: usize) -> Option<usize> {
                     return Some(i);
                 }
             }
-            b'"' => i = skip_str(b, i),
+            b'"' | b'r' => i = skip_literal(b, i),
             _ => {}
         }
         i += 1;
@@ -1347,7 +1273,7 @@ mod tests {
  /// one, two
  pub a: Vec<(u8, u8)>,
  #[x(a, b)] pub b: String,
- pub(crate) c: u8,
+ #[doc = r#\"a\", }\"#] pub(crate) c: u8,
  d: u8,
  pub e: fn(u8) -> u8,
  // pub f: u8,

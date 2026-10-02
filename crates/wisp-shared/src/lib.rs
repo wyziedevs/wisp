@@ -9,6 +9,8 @@
 pub mod contexts;
 pub mod protocol;
 pub mod rng;
+pub mod rules;
+pub mod rust;
 pub mod sha256;
 
 /// The browser runtime as written: `wisp.js`, which every page links (form

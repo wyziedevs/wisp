@@ -25,10 +25,7 @@ pub fn squeeze(t: &str) -> String {
     out
 }
 
-/// A byte of an identifier (not its first, which is no digit).
-pub const fn is_word(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
-}
+pub use wisp_shared::rust::is_word;
 
 /// A plain identifier: `slug`, `_x`, `r2`; not `r#type`, `2a` or ``.
 pub fn is_ident(s: &str) -> bool {
