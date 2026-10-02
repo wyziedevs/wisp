@@ -23,6 +23,9 @@ use crate::{FromJson, Json, Response, Value};
 use std::fmt;
 use std::sync::Arc;
 
+/// What is wrong with a file sent as an image that is not one.
+pub(crate) const NOT_AN_IMAGE: &str = "must be a PNG, JPEG, GIF, WebP or AVIF image";
+
 /// A PNG, JPEG, GIF, WebP or AVIF image. Cloning it shares the bytes.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Image {
@@ -139,7 +142,7 @@ impl FromJson for Image {
             Image::new(bytes)
         });
         if image.is_none() {
-            p.add("must be a PNG, JPEG, GIF, WebP or AVIF image, as a data: URL");
+            p.add(format!("{NOT_AN_IMAGE}, as a data: URL"));
         }
         image
     }

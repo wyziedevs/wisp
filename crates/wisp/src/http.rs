@@ -2343,7 +2343,7 @@ fn not_modified(cx: &Cx, res: &crate::Response) -> bool {
 /// compares (`W/"x"` is `"x"`), or is `*`: the client has it, a 304.
 pub(crate) fn fresh(cx: &Cx, etag: &str) -> bool {
     cx.header("if-none-match")
-        .is_some_and(|h| crate::rest::names(h, etag))
+        .is_some_and(|h| crate::rest::names::<true>(h, etag))
 }
 
 /// A redirect. Headers set before it (a login cookie) still apply.
@@ -2429,7 +2429,7 @@ fn error_reply(
 /// Whether an error goes back as JSON rather than an error page: a request
 /// under `/api`, one that sent JSON, one that asks for JSON and not HTML,
 /// or one to a `+server.rs` endpoint from anything but a browser page.
-fn wants_json(cx: &Cx) -> bool {
+pub(crate) fn wants_json(cx: &Cx) -> bool {
     let path = cx.path();
     path == "/api"
         || path.starts_with("/api/")

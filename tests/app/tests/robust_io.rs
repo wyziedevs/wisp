@@ -5,8 +5,7 @@
 mod common;
 
 use common::*;
-use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::io::{BufReader, Read, Write};
 use std::time::Duration;
 
 /// The server's private memory, in KB.
@@ -47,28 +46,21 @@ fn idle_connections_hold_no_buffers() {
     // each held them in a read that had nothing to read: tokio on Windows
     // says every new socket is readable, and the epoll tries every new one.)
     let server = start(&[("WISP_IO", "epoll")]);
-    let mut warm = connect(server.port);
+    let mut warm = BufReader::new(connect(server.port));
     let get = format!("GET / HTTP/1.1\r\nhost: 127.0.0.1:{}\r\n\r\n", server.port);
-    let answered = |c: &mut TcpStream| {
-        let mut got = Vec::new();
-        let mut buf = [0; 4096];
-        while !got.windows(4).any(|w| w == b"\r\n\r\n") {
-            let n = c.read(&mut buf).unwrap();
-            assert!(n > 0, "closed");
-            got.extend_from_slice(&buf[..n]);
-        }
-    };
-    warm.write_all(get.as_bytes()).unwrap();
-    answered(&mut warm);
+    warm.get_mut().write_all(get.as_bytes()).unwrap();
+    read_answer(&mut warm);
     std::thread::sleep(Duration::from_millis(300));
     let before = memory_kb(server.child.id());
     let n = 800;
-    let mut conns: Vec<TcpStream> = (0..n).map(|_| connect(server.port)).collect();
+    let mut conns: Vec<_> = (0..n)
+        .map(|_| BufReader::new(connect(server.port)))
+        .collect();
     for c in &mut conns {
-        c.write_all(get.as_bytes()).unwrap();
+        c.get_mut().write_all(get.as_bytes()).unwrap();
     }
     for c in &mut conns {
-        answered(c);
+        read_answer(c);
     }
     std::thread::sleep(Duration::from_millis(500));
     let per = (memory_kb(server.child.id()).saturating_sub(before)) * 1024 / n;
@@ -88,6 +80,9 @@ fn a_refusal_arrives_while_the_client_still_sends() {
         );
         c.write_all(head.as_bytes()).unwrap();
         let mut w = c.try_clone().unwrap();
+        // A server that stops reading leaves the writer stuck: it gives up.
+        w.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+        c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         let writer = std::thread::spawn(move || {
             let chunk = [b'x'; 16 * 1024];
             for _ in 0..64 {

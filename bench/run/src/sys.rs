@@ -131,9 +131,9 @@ mod imp {
 
     /// Asks `child` to stop, as systemd, Docker and Kubernetes do: SIGTERM
     /// to it alone (a process manager passes it on to its workers).
-    pub fn terminate(child: &Child) -> bool {
+    pub fn terminate(child: &Child) {
         // SAFETY: a signal to a process this one started.
-        unsafe { libc::kill(child.id() as i32, libc::SIGTERM) == 0 }
+        unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
     }
 
     /// `pid` and every process under it.
@@ -291,11 +291,6 @@ mod imp {
             .args(["/T", "/F", "/PID", &child.id().to_string()])
             .output();
         let _ = child.wait();
-    }
-
-    /// Windows has no SIGTERM: a console app gets Ctrl+C or nothing.
-    pub fn terminate(_: &Child) -> bool {
-        false
     }
 
     /// `pid` and every process under it.
