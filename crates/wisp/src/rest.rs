@@ -377,11 +377,20 @@ pub(crate) fn etag(body: impl AsRef<[u8]>) -> String {
     tag
 }
 
-/// Whether `header` (`if-match` or `if-none-match`) names `tag`.
+/// Whether `if-none-match` names `tag`: weakly, so `W/"x"` is `"x"`.
 pub(crate) fn names(header: &str, tag: &str) -> bool {
     header
         .split(',')
         .map(|t| t.trim().trim_start_matches("W/"))
+        .any(|t| t == "*" || t == tag)
+}
+
+/// Whether `if-match` names `tag`: strongly (RFC 9110 13.1.1), so a weak
+/// `W/"x"` names nothing, as it promises no byte is the same.
+fn names_strongly(header: &str, tag: &str) -> bool {
+    header
+        .split(',')
+        .map(str::trim)
         .any(|t| t == "*" || t == tag)
 }
 
@@ -405,10 +414,18 @@ fn check_match<T: Json>(cx: &Cx, id: u64, v: &T, json: Option<&str>) -> Result {
         Some(j) => splice(&mut now, id, j),
         None => row_json(&mut now, id, v),
     }
-    if names(want, &etag(&now)) {
+    if names_strongly(want, &etag(&now)) {
         return Ok(());
     }
     Err(Error::new(412, "The row has changed since it was read").with_code("changed"))
+}
+
+/// Whether a list is asked for a row per line (`accept:
+/// application/x-ndjson`) rather than as a JSON array. What `CACHE` keeps
+/// of a list is kept apart by it (see `bake::cached_by_accept`).
+pub(crate) fn lines(cx: &Cx) -> bool {
+    cx.header("accept")
+        .is_some_and(|a| a.contains("application/x-ndjson"))
 }
 
 /// `GET /notes`: the rows that pass the filters, sorted and paged as the
@@ -416,11 +433,11 @@ fn check_match<T: Json>(cx: &Cx, id: u64, v: &T, json: Option<&str>) -> Result {
 /// `link`. `accept: application/x-ndjson` gets a row per line.
 pub fn list<T: Resource>(cx: &mut Cx, _: &Hooks<T>) -> Result<Response> {
     guard::<T>(cx)?;
+    // JSON or NDJSON by `accept`: caches keep the two apart.
+    cx.put("vary", Cow::Borrowed("accept"));
     let cx = &*cx;
     let view = view::<T>(cx, true)?;
-    let lines = cx
-        .header("accept")
-        .is_some_and(|a| a.contains("application/x-ndjson"));
+    let lines = lines(cx);
     let (open, sep, close) = if lines {
         ("", "\n", "\n")
     } else {
@@ -626,10 +643,11 @@ pub fn create<T: Resource>(cx: &mut Cx, hooks: &Hooks<T>) -> Result<Response> {
     let mut made = Vec::with_capacity(values.len());
     for (v, json) in values {
         let id = table.next_id(&mut rows);
-        table.save(&mut rows, id, Some(&json));
         rows.map.insert(id, v);
         made.push((id, json));
     }
+    // All or none: a store that fails takes them out again.
+    table.save_many(&mut rows, &made)?;
     drop(rows);
     let mut out = String::with_capacity(made.iter().map(|(_, j)| j.len() + 24).sum::<usize>() + 2);
     out.push_str(if many { "[" } else { "" });
@@ -708,8 +726,10 @@ pub fn patch<T: Resource>(cx: &mut Cx, hooks: &Hooks<T>) -> Result<Response> {
     let Ok(Value::Object(mut members)) = json::parse(&was) else {
         return Err(Error::new(500, "The row is not a JSON object"));
     };
+    // Only the type's fields: the rest would be ignored, and a body of
+    // many other names would be a search of the row's for each.
     for (k, x) in sent {
-        if k == "id" {
+        if k == "id" || !T::FIELDS.iter().any(|(f, _)| *f == k) {
             continue;
         }
         match members.iter_mut().find(|(m, _)| *m == k) {
@@ -786,5 +806,94 @@ mod tests {
         );
         assert!(names(&format!("\"x\", W/{t}"), &t));
         assert!(names("*", &t) && !names("\"x\"", &t));
+        assert!(names_strongly(&format!("\"x\", {t}"), &t) && names_strongly("*", &t));
+        assert!(!names_strongly(&format!("W/{t}"), &t), "if-match is strong");
+    }
+
+    struct Item(String);
+
+    impl Json for Item {
+        fn json(&self, out: &mut String) {
+            self.0.json(out);
+        }
+    }
+
+    impl FromJson for Item {
+        fn from_json(v: &Value, p: &mut json::Problems) -> Option<Item> {
+            String::from_json(v, p).map(Item)
+        }
+    }
+
+    static ITEMS: Table<Item> = Table::rest(Some("rest_bulk_all_or_none"), false);
+
+    impl Resource for Item {
+        const FIELDS: &'static [(&'static str, Kind)] = &[];
+        fn table() -> &'static Table<Item> {
+            &ITEMS
+        }
+        fn field(&self, _: &str, _: &mut String) -> bool {
+            false
+        }
+    }
+
+    /// A store that fails its third save, as a database that lost its
+    /// connection part way would, and keeps the rest as a log.
+    #[derive(Default)]
+    struct Flaky {
+        saves: std::sync::atomic::AtomicUsize,
+        log: std::sync::Mutex<Vec<(u64, Option<String>)>>,
+    }
+
+    impl crate::Store for Flaky {
+        fn load(&self, _: &str) -> Result<Vec<(u64, String)>> {
+            let mut rows = std::collections::BTreeMap::new();
+            for (id, json) in self.log.lock().unwrap().iter() {
+                match json {
+                    Some(j) => rows.insert(*id, j.clone()),
+                    None => rows.remove(id),
+                };
+            }
+            Ok(rows.into_iter().collect())
+        }
+
+        fn save(&self, _: &str, id: u64, json: Option<&str>) -> Result {
+            if self
+                .saves
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                == 2
+            {
+                return Err(Error::new(500, "connection lost"));
+            }
+            self.log
+                .lock()
+                .unwrap()
+                .push((id, json.map(str::to_string)));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_bulk_create_is_all_or_none() {
+        let flaky: &'static Flaky = Box::leak(Box::new(Flaky::default()));
+        ITEMS.load_from(flaky);
+        let body = r#"["a","b","c"]"#;
+        let raw = format!(
+            "POST /items HTTP/1.1\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut cx = Cx::for_test(&raw, &[]);
+        let Err(err) = create::<Item>(&mut cx, &Hooks::NONE) else {
+            panic!("a store that failed answered 201");
+        };
+        assert_eq!(err.status(), 500);
+        assert!(
+            crate::Store::load(flaky, "").unwrap().is_empty(),
+            "the two saved are removed again"
+        );
+        assert_eq!(ITEMS.len(), 0, "and none are in memory");
+        let mut cx = Cx::for_test(&raw, &[]);
+        assert_eq!(create::<Item>(&mut cx, &Hooks::NONE).unwrap().status, 201);
+        assert_eq!(crate::Store::load(flaky, "").unwrap().len(), 3);
+        assert_eq!(ITEMS.len(), 3);
     }
 }

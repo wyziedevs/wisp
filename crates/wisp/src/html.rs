@@ -1,64 +1,8 @@
-//! HTML escaping. Every `{expr}` in a template ends up here.
+//! What a template's holes write: every `{expr}` ends up here, escaped by
+//! `contexts.rs`.
 
+use crate::contexts::escape;
 use std::fmt::{self, Display, Write};
-
-/// Appends `s` with `& < > " '` escaped: safe in text and in quoted attributes.
-pub fn escape(out: &mut String, s: &str) {
-    let bytes = s.as_bytes();
-    let mut done = 0; // `s[..done]` is in `out` already
-    // 16 bytes at a time. The loop has no branch or early exit, so it
-    // compiles to a few vector compares, and a chunk with nothing to escape
-    // (the usual case) is skipped without looking at its bytes one by one:
-    // 3.5x the speed of a byte loop on plain text.
-    let (chunks, rest) = bytes.as_chunks::<16>();
-    for (n, chunk) in chunks.iter().enumerate() {
-        if hit(chunk) {
-            escape_bytes(out, s, &mut done, n * 16, n * 16 + 16);
-        }
-    }
-    // The last few bytes, tested as the last 16 (which overlap the chunk
-    // before) when there are that many: a clean tail is not looked at one
-    // byte at a time either.
-    if !rest.is_empty() && bytes.last_chunk().is_none_or(hit) {
-        escape_bytes(out, s, &mut done, bytes.len() - rest.len(), bytes.len());
-    }
-    out.push_str(&s[done..]);
-}
-
-#[inline(always)]
-fn hit(chunk: &[u8; 16]) -> bool {
-    let mut hit = 0u8;
-    for &b in chunk {
-        hit |= special(b) as u8;
-    }
-    hit != 0
-}
-
-/// `& ' < > "` in three compares: `&` and `'` differ only in bit 0, `<` and
-/// `>` only in bit 1.
-#[inline(always)]
-fn special(b: u8) -> bool {
-    ((b | 1) == b'\'') | ((b | 2) == b'>') | (b == b'"')
-}
-
-/// Escapes `s[from..to]`, appending what precedes each escaped byte first.
-#[inline(always)]
-fn escape_bytes(out: &mut String, s: &str, done: &mut usize, from: usize, to: usize) {
-    for (i, &b) in s.as_bytes()[from..to].iter().enumerate() {
-        let replacement = match b {
-            b'&' => "&amp;",
-            b'<' => "&lt;",
-            b'>' => "&gt;",
-            b'"' => "&quot;",
-            b'\'' => "&#39;",
-            _ => continue,
-        };
-        // Escaped bytes are ASCII, so `from + i` is a char boundary.
-        out.push_str(&s[*done..from + i]);
-        out.push_str(replacement);
-        *done = from + i + 1;
-    }
-}
 
 /// Adapter so any `Display` value is escaped as it is formatted, without an
 /// intermediate `String`.
@@ -244,123 +188,9 @@ pub fn raw<T: Display + ?Sized>(out: &mut String, value: &T) {
     let _ = write!(out, "{value}");
 }
 
-/// Ends the value of a URL attribute (`href`, `src`, `action`...) that
-/// began at `out[start..]` and whose scheme an expression chose. A value
-/// that would run script when followed is replaced, as React and Angular
-/// do, so `href={link}` is safe whatever `link` holds.
-pub fn guard_url(out: &mut String, start: usize) {
-    if runs_script(&out[start..]) {
-        out.truncate(start);
-        out.push_str("about:invalid#blocked");
-    }
-}
-
-/// Reads `url` (escaped, as it stands in the page) the way a browser does:
-/// leading spaces and controls dropped, tabs and newlines ignored, the
-/// scheme being what comes before a `:` if every byte before it can be in
-/// one. A character reference the browser would decode there counts as
-/// script, except the ones `escape` writes, none of which can be in a
-/// scheme.
-fn runs_script(url: &str) -> bool {
-    let mut scheme = [0u8; 10];
-    let mut n = 0;
-    let b = url.trim_start_matches(|c: char| c <= ' ').as_bytes();
-    for (i, &c) in b.iter().enumerate() {
-        match c {
-            b'\t' | b'\n' | b'\r' => {}
-            b':' => return matches!(&scheme[..n], b"javascript" | b"vbscript"),
-            b'&' => {
-                let escaped = ["amp;", "lt;", "gt;", "quot;", "#39;"]
-                    .iter()
-                    .any(|e| b[i + 1..].starts_with(e.as_bytes()));
-                return !escaped;
-            }
-            _ if c.is_ascii_alphabetic()
-                || (n > 0 && (c.is_ascii_digit() || matches!(c, b'+' | b'-' | b'.'))) =>
-            {
-                if n == scheme.len() {
-                    return false; // longer than any scheme that runs script
-                }
-                scheme[n] = c.to_ascii_lowercase();
-                n += 1;
-            }
-            _ => return false, // not a scheme's byte: a relative URL
-        }
-    }
-    false
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn escapes() {
-        let mut s = String::new();
-        escape(&mut s, r#"<a href="x">Tom & 'Jerry'</a> ünïcödé"#);
-        assert_eq!(
-            s,
-            "&lt;a href=&quot;x&quot;&gt;Tom &amp; &#39;Jerry&#39;&lt;/a&gt; ünïcödé"
-        );
-
-        // Escapes on both sides of the 16-byte chunk edges, and none at all.
-        for (input, want) in [
-            ("", ""),
-            ("0123456789abcde<", "0123456789abcde&lt;"),
-            ("0123456789abcdef<", "0123456789abcdef&lt;"),
-            (
-                "<123456789abcdef0123456789abcdef>",
-                "&lt;123456789abcdef0123456789abcdef&gt;",
-            ),
-            (
-                "ünïcödé ünïcödé ünïcödé & ünïcödé",
-                "ünïcödé ünïcödé ünïcödé &amp; ünïcödé",
-            ),
-            (
-                "nothing to escape in this long line at all",
-                "nothing to escape in this long line at all",
-            ),
-        ] {
-            let mut s = String::new();
-            escape(&mut s, input);
-            assert_eq!(s, want, "{input}");
-        }
-    }
-
-    /// Every ASCII character and some longer ones, at every place of texts
-    /// 0 to 40 bytes long (whole chunks, the overlapping last 16, the tail),
-    /// alone and with a `&` at the end, against a character at a time.
-    #[test]
-    fn escapes_as_a_char_loop_would() {
-        let slow = |s: &str| -> String {
-            s.chars()
-                .map(|c| match c {
-                    '&' => "&amp;".to_string(),
-                    '<' => "&lt;".to_string(),
-                    '>' => "&gt;".to_string(),
-                    '"' => "&quot;".to_string(),
-                    '\'' => "&#39;".to_string(),
-                    c => c.to_string(),
-                })
-                .collect()
-        };
-        let chars = (0..128u8)
-            .map(char::from)
-            .chain(['é', '€', '😀', '\u{2028}']);
-        for c in chars {
-            for len in 0..=40 {
-                for at in 0..len {
-                    let mut s: String = (0..len).map(|k| if k == at { c } else { 'a' }).collect();
-                    for _ in 0..2 {
-                        let mut out = String::new();
-                        escape(&mut out, &s);
-                        assert_eq!(out, slow(&s), "{s:?}");
-                        s.push('&');
-                    }
-                }
-            }
-        }
-    }
 
     #[test]
     #[allow(clippy::needless_borrow)] // The `&` is what lets a template pick `Direct` or `Formatted`.
@@ -390,41 +220,6 @@ mod tests {
             s,
             "a&lt;b&amp;&amp;4242-9-9223372036854775808184467440737095516150true&quot;1.5&lt;shown&gt;"
         );
-    }
-
-    #[test]
-    fn urls_that_run_script_are_blocked() {
-        for bad in [
-            "javascript:alert(1)",
-            "JavaScript:alert(1)",
-            " \x01javascript:x",
-            "java\tscript:x",
-            "java\nscript:x",
-            "vbscript:x",
-            "javascript&#58;x",
-            "javascript&colon;x",
-        ] {
-            let mut s = String::from("<a href=\"");
-            let start = s.len();
-            s.push_str(bad);
-            guard_url(&mut s, start);
-            assert_eq!(s, "<a href=\"about:invalid#blocked", "{bad:?}");
-        }
-        for good in [
-            "https://x.com/a?b=javascript:c",
-            "/javascript:x",
-            "mailto:a@b.c",
-            "don&#39;t:x",
-            "a&amp;b",
-            "",
-            "#top",
-            "1javascript:x",
-            "javascripts:x",
-        ] {
-            let mut s = String::from(good);
-            guard_url(&mut s, 0);
-            assert_eq!(s, good);
-        }
     }
 
     #[test]
