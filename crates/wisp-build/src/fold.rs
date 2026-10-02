@@ -9,7 +9,7 @@
 //! to literal defaults); `{#if}` on those. Anything else is left to run.
 
 use crate::contexts::runs_script;
-use crate::template::{IS, Node, PropDecl, PropValue, Template};
+use crate::template::{Node, PropDecl, PropValue, Template};
 use crate::ty;
 
 /// A value known at build time.
@@ -75,35 +75,16 @@ pub fn literal(src: &str) -> Option<Lit> {
         .find(|c: char| !c.is_ascii_digit() && c != '_')
         .unwrap_or(digits.len());
     let (number, suffix) = digits.split_at(end);
-    let suffixes = [
-        "", "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize",
-    ];
-    if !number.starts_with(|c: char| c.is_ascii_digit()) || !suffixes.contains(&suffix) {
+    // No suffix is an `i32`; one that is no integer type's is no literal.
+    let range = ty::int_range(if suffix.is_empty() { "i32" } else { suffix })?;
+    if !number.starts_with(|c: char| c.is_ascii_digit()) {
         return None;
     }
     let n: i128 = number.replace('_', "").parse().ok()?;
     let n = if minus { -n } else { n };
     // One that does not fit its type (`300u8`, `-1u32`, past `i32` with no
     // suffix) is left for rustc to refuse.
-    fits_int(n, if suffix.is_empty() { "i32" } else { suffix }).then_some(Lit::Int(n))
-}
-
-/// Whether integer type `ty` holds `n`. `usize` may be 32 bits (wasm).
-fn fits_int(n: i128, ty: &str) -> bool {
-    let (lo, hi) = match ty {
-        "u8" => (0, u8::MAX.into()),
-        "u16" => (0, u16::MAX.into()),
-        "u32" | "usize" => (0, u32::MAX.into()),
-        "u64" => (0, u64::MAX.into()),
-        "u128" => (0, i128::MAX),
-        "i8" => (i8::MIN.into(), i8::MAX.into()),
-        "i16" => (i16::MIN.into(), i16::MAX.into()),
-        "i32" | "isize" => (i32::MIN.into(), i32::MAX.into()),
-        "i64" => (i64::MIN.into(), i64::MAX.into()),
-        "i128" => (i128::MIN, i128::MAX),
-        _ => return false,
-    };
-    (lo..=hi).contains(&n)
+    range.contains(&n).then_some(Lit::Int(n))
 }
 
 /// `s` escaped for text and quoted attributes: the runtime's `escape`.
@@ -233,8 +214,7 @@ impl Fold<'_> {
                         self.nodes(own, t, env, doc, head, slot)?;
                     }
                 }
-                Node::Chosen { own: None, .. } | Node::Problem { .. } => {}
-                Node::Bool { code, .. } if code.src.starts_with(IS) => {}
+                Node::Chosen { own: None, .. } | Node::Problem { .. } | Node::Selected(_) => {}
                 Node::Bool {
                     name,
                     code,
@@ -308,7 +288,9 @@ fn fits(v: &Lit, ty: &str) -> bool {
     (ty.starts_with("impl ") && ty.ends_with("Display"))
         || match v {
             Lit::Str(_) => ty::is_text(ty),
-            Lit::Int(n) => fits_int(*n, ty::last_segment(ty::unref(ty).trim())),
+            Lit::Int(n) => {
+                ty::int_range(ty::last_segment(ty::unref(ty).trim())).is_some_and(|r| r.contains(n))
+            }
             Lit::Bool(_) => ty == "bool",
         }
 }

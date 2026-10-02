@@ -119,6 +119,25 @@ pub fn scalar(t: &str) -> Scalar {
     }
 }
 
+/// The values integer type `t` (a name alone: `u8`) holds; `None` for
+/// another type. `usize` may be 32 bits (wasm).
+pub fn int_range(t: &str) -> Option<std::ops::RangeInclusive<i128>> {
+    let (lo, hi) = match t {
+        "u8" => (0, u8::MAX.into()),
+        "u16" => (0, u16::MAX.into()),
+        "u32" | "usize" => (0, u32::MAX.into()),
+        "u64" => (0, u64::MAX.into()),
+        "u128" => (0, i128::MAX),
+        "i8" => (i8::MIN.into(), i8::MAX.into()),
+        "i16" => (i16::MIN.into(), i16::MAX.into()),
+        "i32" | "isize" => (i32::MIN.into(), i32::MAX.into()),
+        "i64" => (i64::MIN.into(), i64::MAX.into()),
+        "i128" => (i128::MIN, i128::MAX),
+        _ => return None,
+    };
+    Some(lo..=hi)
+}
+
 /// An integer type.
 pub fn is_integer(t: &str) -> bool {
     matches!(scalar(t), Scalar::Unsigned | Scalar::Signed)

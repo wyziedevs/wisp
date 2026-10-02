@@ -121,6 +121,9 @@ pub enum Node {
         own: Option<String>,
         line: u32,
     },
+    /// ` selected` on an `<option>` whose value (the code of a `&str`) is
+    /// its `<select>`'s choice, `__wisp_sel` (see `Chosen`).
+    Selected(Code),
     /// What was wrong with field `name`, when the action refused it:
     /// `<small class="problem">…</small>`. After a kept field (`auto`),
     /// unless the file shows it itself: `{cx.problem("x")}` is one.
@@ -1461,11 +1464,8 @@ impl Parser<'_> {
             // `<meta http-equiv="refresh" content="0;url=…">` goes to its URL,
             // which no guard checks: its `content` stays static.
             if self.tag == "meta" {
-                let refresh = (self.tag_seen.iter()).any(|(a, v)| {
-                    a == "http-equiv"
-                        && v.as_deref()
-                            .is_some_and(|v| v.trim().eq_ignore_ascii_case("refresh"))
-                });
+                let refresh = (self.seen("http-equiv").flatten())
+                    .is_some_and(|v| v.trim().eq_ignore_ascii_case("refresh"));
                 let refreshes = |a: &str| holds_script("meta", a) == Some(Held::Refresh);
                 let dynamic = (self.tag_seen.iter()).any(|(a, v)| refreshes(a) && v.is_none())
                     || (self.directives.iter()).any(|d| d.kind == Dir::Attr && refreshes(&d.name));
@@ -1575,18 +1575,19 @@ impl Parser<'_> {
     /// what was wrong (`Node::Problem`), unless the file shows that field's
     /// problem itself. A password or file is not sent back; its problem is.
     fn form_defaults(&mut self) -> Result<(), Error> {
-        let seen = |n: &str| self.tag_seen.iter().find(|(a, _)| a == n);
         let mut method = false;
         if self.tag == "form" {
             let action = self.attr_prefix(self.tag_pos, "action");
             let to_action = action.and_then(|v| v.strip_prefix("?/"));
-            let to_default = seen("action").is_none()
-                && seen("method")
-                    .and_then(|(_, v)| v.as_deref())
+            let to_default = self.seen("action").is_none()
+                && self
+                    .seen("method")
+                    .flatten()
                     .is_some_and(|m| m.eq_ignore_ascii_case("post"));
-            method = to_action.is_some() && seen("method").is_none();
-            let gets = seen("method")
-                .and_then(|(_, v)| v.as_deref())
+            method = to_action.is_some() && self.seen("method").is_none();
+            let gets = self
+                .seen("method")
+                .flatten()
                 .is_some_and(|m| !m.eq_ignore_ascii_case("post"));
             let posts = match to_action {
                 Some(_) if gets => None,
@@ -1598,7 +1599,7 @@ impl Parser<'_> {
         // A button that posts to another action skips this form's browser
         // checks: they are this form's action's, not that one's.
         let novalidate = matches!(self.tag.as_str(), "button" | "input")
-            && seen("formnovalidate").is_none()
+            && self.seen("formnovalidate").is_none()
             && (self.attr_prefix(self.tag_pos, "formaction"))
                 .and_then(|v| v.strip_prefix("?/"))
                 .is_some_and(|v| {
@@ -1612,8 +1613,9 @@ impl Parser<'_> {
                 .frames
                 .iter()
                 .any(|f| matches!(f, Frame::Client { .. }));
-        let typed = seen("type")
-            .and_then(|(_, v)| v.as_deref())
+        let typed = self
+            .seen("type")
+            .flatten()
             .unwrap_or("")
             .to_ascii_lowercase();
         // Whether it is sent back, and whether its problem is shown.
@@ -1632,12 +1634,13 @@ impl Parser<'_> {
             .directives
             .iter()
             .any(|d| d.name == "value" || d.kind == Dir::Spread);
-        let name = seen("name")
-            .and_then(|(_, v)| v.clone())
-            .filter(|_| problem && self.forms.iter().any(Option::is_some) && !in_browser && !bound);
+        let name =
+            self.seen("name").flatten().map(String::from).filter(|_| {
+                problem && self.forms.iter().any(Option::is_some) && !in_browser && !bound
+            });
         let chosen = self.tag == "option"
             && !in_browser
-            && seen("selected").is_none()
+            && self.seen("selected").is_none()
             && self.keep.as_ref().is_some_and(|k| !k.textarea);
         if !method && name.is_none() && !chosen && !novalidate {
             return Ok(());
@@ -1662,11 +1665,7 @@ impl Parser<'_> {
             let field =
                 (self.fields.iter()).find(|f| Some(f.action.as_str()) == action && f.name == name);
             if let Some(f) = field {
-                let has = |a: &str| {
-                    self.tag_seen.iter().any(|(n, _)| n == a)
-                        || self.directives.iter().any(|d| d.name == a)
-                };
-                let attrs = f.native.attrs(&self.tag, &typed, &has);
+                let attrs = f.native.attrs(&self.tag, &typed, &|a| self.has(a));
                 self.text.push_str(&attrs);
             }
             if self.tag == "input" {
@@ -1732,8 +1731,8 @@ impl Parser<'_> {
             return Some(format!("&({})", code.src));
         }
         let lit = |s: &str| format!("{:?}", decode(s));
-        match self.tag_seen.iter().find(|(a, _)| a == "value") {
-            Some((_, Some(v))) => {
+        match self.seen("value") {
+            Some(Some(v)) => {
                 let v = lit(v);
                 // Its text is cut out, from the space before it, when no
                 // node has come since: else it is left as written.
@@ -1768,7 +1767,7 @@ impl Parser<'_> {
         let at = self.value_attr();
         // `value="…"` written as text moves into the node; one that cannot
         // is left as it is, never written twice.
-        let text = at.is_none() && self.tag_seen.iter().any(|(a, _)| a == "value");
+        let text = at.is_none() && self.seen("value").is_some();
         let lit = text.then(|| self.own_value(true));
         let value = Node::Attr {
             name: "value".into(),
@@ -1850,17 +1849,8 @@ impl Parser<'_> {
             return Ok(());
         };
         let line = self.line_of(self.tag_pos);
-        self.push_node(
-            self.tag_pos,
-            Node::Bool {
-                name: "selected".into(),
-                code: Code {
-                    src: format!("{IS}{value})"),
-                    line,
-                },
-                class: false,
-            },
-        )
+        let src = value;
+        self.push_node(self.tag_pos, Node::Selected(Code { src, line }))
     }
 
     /// The end tag of a `<textarea>` or `<select>` starts at `pos`: a kept
@@ -2060,7 +2050,7 @@ impl Parser<'_> {
             match (how.as_str(), value) {
                 ("", None) => return Ok(()), // client:load, as without it
                 (ISLAND_MEDIA, Some(q)) if !q.src.is_empty() => {
-                    name = format!("{ISLAND_MEDIA}{}", q.src);
+                    name = island(ISLAND_MEDIA, &q.src);
                 }
                 (ISLAND_MEDIA, _) => {
                     return Err(self.err(
@@ -2810,6 +2800,19 @@ impl Parser<'_> {
         holds_script(self.spread_tag(), name).filter(|&h| h != Held::Refresh)
     }
 
+    /// Attribute `name` of the tag being scanned, if it has it: with its
+    /// value when that is plain text.
+    fn seen(&self, name: &str) -> Option<Option<&str>> {
+        (self.tag_seen.iter())
+            .find(|(a, _)| a == name)
+            .map(|(_, v)| v.as_deref())
+    }
+
+    /// The tag has attribute `name`, as text or as a directive.
+    fn has(&self, name: &str) -> bool {
+        self.seen(name).is_some() || self.directives.iter().any(|d| d.name == name)
+    }
+
     /// A live value may go on this attribute here.
     fn check_live_attr(&self, open: usize) -> Result<(), Error> {
         if self.frames.len() != self.tag_frames {
@@ -3389,10 +3392,6 @@ impl Parser<'_> {
     }
 }
 
-/// An `<option>`'s `selected={…}`, by its `<select>`'s choice
-/// (`Node::Chosen`).
-pub const IS: &str = "::wisp::rt::is(&__wisp_sel, ";
-
 /// Text of the page as the browser reads it: character references
 /// decoded (the ones `escape` writes, `&apos;`, `&nbsp;` and numeric ones);
 /// any other `&` stays.
@@ -3625,6 +3624,12 @@ pub fn how(start: &str) -> Option<&'static str> {
         "media" => ISLAND_MEDIA,
         _ => return None,
     })
+}
+
+/// A record's `how` for an island that starts by `how` (see `how`): with
+/// `media`'s query after it.
+pub fn island(how: &str, query: &str) -> String {
+    format!("{how}{query}")
 }
 
 const KEY_NAMES: [&str; 14] = [
@@ -3997,6 +4002,10 @@ fn shape(nodes: &[Node], out: &mut Vec<u8>) {
             Node::Text(_) => out.push(b'T'),
             Node::Expr(c) => {
                 out.push(b'E');
+                code(out, c);
+            }
+            Node::Selected(c) => {
+                out.push(b's');
                 code(out, c);
             }
             Node::UrlStart { prefix } => {
@@ -4773,6 +4782,7 @@ mod tests {
                     Node::Text(i) => t.chunks[*i].clone(),
                     Node::Attr { name, code, .. } => format!("[{name}={}]", code.src),
                     Node::Bool { name, code, .. } => format!("[+{name}?{}]", code.src),
+                    Node::Selected(c) => format!("[+selected?{}]", c.src),
                     Node::Expr(c) => format!("{{{}}}", c.src),
                     Node::Const(c) => format!("{{@const {}}}", c.src),
                     Node::Problem { name, .. } => format!("<problem {name}>"),
@@ -4894,8 +4904,8 @@ mod tests {
             ),
             format!(
                 "<form method=\"post\"><select name=\"k\"{{chosen k|post.kind}}>\
-                 <option value=\"a&amp;b\"[+selected?{IS}\"a&b\")]>A</option>{{each ks}}<option[value=k.id][+selected?{IS}&(k.id))]>{{k.name}}</option>{{/each}}\
-                 <option[+selected?{IS}\"c d\")]>\nc  d </option><option>{{e}}</option></select><problem k></form>"
+                 <option value=\"a&amp;b\"[+selected?\"a&b\"]>A</option>{{each ks}}<option[value=k.id][+selected?&(k.id)]>{{k.name}}</option>{{/each}}\
+                 <option[+selected?\"c d\"]>\nc  d </option><option>{{e}}</option></select><problem k></form>"
             )
         );
         // A password or a file is never sent back; its problem is shown.
