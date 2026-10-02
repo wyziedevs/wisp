@@ -438,12 +438,8 @@ fn streams_end_properly_on(env: &[(&str, &str)]) {
     c.get_mut()
         .write_all(b"GET /t/forever HTTP/1.1\r\nhost: x\r\n\r\n")
         .unwrap();
+    read_head(&mut c);
     let mut line = String::new();
-    while line != "\r\n" {
-        line.clear();
-        c.read_line(&mut line).unwrap();
-    }
-    line.clear();
     c.read_line(&mut line).unwrap(); // the size of the first chunk
     assert!(usize::from_str_radix(line.trim(), 16).is_ok(), "{line:?}");
     signal(&s, "TERM");

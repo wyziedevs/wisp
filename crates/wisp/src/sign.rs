@@ -11,6 +11,7 @@ use crate::cx::hex_digit;
 use std::cell::RefCell;
 use std::path::Path;
 use std::sync::OnceLock;
+pub(crate) use wisp_shared::base64::{decode as unbase64, encode as base64};
 use wisp_shared::sha256::{Sha256, compress_words, sha256};
 
 /// The signature of cookie `name` holding `value`.
@@ -215,53 +216,6 @@ fn seed() -> [u8; 32] {
     h.finish()
 }
 
-/// `bytes` as base64 onto `out`: URL-safe and unpadded when `url`, else
-/// standard and padded.
-pub(crate) fn base64(out: &mut String, bytes: &[u8], url: bool) {
-    let abc: &[u8; 64] = if url {
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-    } else {
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-    };
-    for group in bytes.chunks(3) {
-        let n = group
-            .iter()
-            .enumerate()
-            .fold(0u32, |n, (i, &b)| n | (b as u32) << (16 - 8 * i));
-        for k in 0..4 {
-            if k <= group.len() {
-                out.push(abc[(n >> (18 - 6 * k) & 63) as usize] as char);
-            } else if !url {
-                out.push('=');
-            }
-        }
-    }
-}
-
-/// Base64, standard or URL-safe, padded or not, decoded into `out`: how
-/// many bytes, or `None` for anything else or more than fits.
-pub(crate) fn unbase64(s: &str, out: &mut [u8]) -> Option<usize> {
-    let (mut bits, mut n, mut len) = (0u32, 0, 0);
-    for b in s.trim_end_matches('=').bytes() {
-        let v = match b {
-            b'A'..=b'Z' => b - b'A',
-            b'a'..=b'z' => b - b'a' + 26,
-            b'0'..=b'9' => b - b'0' + 52,
-            b'+' | b'-' => 62,
-            b'/' | b'_' => 63,
-            _ => return None,
-        };
-        bits = bits << 6 | v as u32;
-        n += 6;
-        if n >= 8 {
-            n -= 8;
-            *out.get_mut(len)? = (bits >> n) as u8;
-            len += 1;
-        }
-    }
-    (n < 6).then_some(len)
-}
-
 /// HMAC-SHA256 of `message` under `key`, for checking a webhook's
 /// signature by hand: `wisp::hex(&wisp::hmac_sha256(secret, body))`.
 pub fn hmac_sha256(key: impl AsRef<[u8]>, message: impl AsRef<[u8]>) -> [u8; 32] {
@@ -409,35 +363,6 @@ mod tests {
         );
     }
 
-    fn b64(bytes: &[u8], url: bool) -> String {
-        let mut s = String::new();
-        base64(&mut s, bytes, url);
-        s
-    }
-
-    #[test]
-    fn base64_both_ways() {
-        for (bytes, url, std) in [
-            (&b""[..], "", ""),
-            (b"f", "Zg", "Zg=="),
-            (b"fo", "Zm8", "Zm8="),
-            (b"foo", "Zm9v", "Zm9v"),
-            (b"foob", "Zm9vYg", "Zm9vYg=="),
-            (&[0xfb, 0xff], "-_8", "+/8="),
-        ] {
-            assert_eq!(
-                (b64(bytes, true), b64(bytes, false)),
-                (url.into(), std.into())
-            );
-            for text in [url, std] {
-                let mut out = [0; 8];
-                let n = unbase64(text, &mut out).unwrap();
-                assert_eq!(&out[..n], bytes);
-            }
-        }
-        assert_eq!(b64(&[0; 32], true).len(), 43);
-    }
-
     #[test]
     fn webhook_signatures() {
         // GitHub's documented example.
@@ -467,7 +392,8 @@ mod tests {
         );
         assert!(cx("x-other", &github).need_signature(var, "x-sig").is_err());
         for url in [false, true] {
-            let b64 = b64(&mac, url);
+            let mut b64 = String::new();
+            base64(&mut b64, &mac, url);
             assert!(cx("x-sig", &b64).need_signature(var, "x-sig").is_ok());
         }
         let t = crate::unix_now();
