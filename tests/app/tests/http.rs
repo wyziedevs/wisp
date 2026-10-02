@@ -7,7 +7,7 @@ mod common;
 #[path = "../../../tests/shared/ws.rs"]
 mod ws;
 
-use common::{Server, Temp, body, connect, header, status};
+use common::{MULTIPART, SECRET, Server, Temp, body, connect, header, multipart, status};
 use std::io::{Read, Write};
 use std::time::Duration;
 
@@ -141,33 +141,21 @@ fn signed_cookies_sign_in() {
     }
 }
 
-/// A multipart body with a title and, if given, a file.
-fn multipart(file: Option<(&str, &[u8])>) -> (String, Vec<u8>) {
-    let mut b =
-        b"--XX\r\ncontent-disposition: form-data; name=\"title\"\r\n\r\nMy cat\r\n".to_vec();
-    if let Some((name, bytes)) = file {
-        b.extend_from_slice(format!("--XX\r\ncontent-disposition: form-data; name=\"photo\"; filename=\"{name}\"\r\ncontent-type: image/png\r\n\r\n").as_bytes());
-        b.extend_from_slice(bytes);
-        b.extend_from_slice(b"\r\n");
-    }
-    b.extend_from_slice(b"--XX--\r\n");
-    (
-        "content-type: multipart/form-data; boundary=XX\r\n".into(),
-        b,
-    )
-}
-
 #[test]
 fn uploads() {
     let s = start();
+    let ct = format!("content-type: {MULTIPART}\r\n");
     let photo = vec![7u8; 2 * 1024 * 1024]; // over the default 1 MB, under the route's 4 MB
-    let (ct, b) = multipart(Some(("cat.png", &photo)));
+    let b = multipart(&[
+        ("title", None, b"My cat"),
+        ("photo", Some("cat.png"), &photo),
+    ]);
     let r = s.request("POST", "/upload", &ct, &b);
     assert_eq!(status(&r), 200, "{}", &r[..r.len().min(300)]);
     assert!(r.contains("cat.png: 2097152 bytes of image/png"), "{r}");
 
     // No file: the action says so with a 422, and the page keeps the title.
-    let (ct, b) = multipart(None);
+    let b = multipart(&[("title", None, b"My cat")]);
     let r = s.request("POST", "/upload", &ct, &b);
     assert_eq!(status(&r), 422);
     assert!(
@@ -198,12 +186,12 @@ fn uploads() {
 fn image_uploads_raise_the_body_limit() {
     // `/me` takes a 64 KB picture: its limit is the usual one plus that.
     let s = start_with(&[("WISP_BODY_LIMIT", "16KB")]);
+    let ct = format!("content-type: {MULTIPART}\r\n");
     let upload = |target: &str, size: usize| {
-        let mut b = b"--XX\r\ncontent-disposition: form-data; name=\"avatar\"; filename=\"a.gif\"\r\n\r\nGIF89a".to_vec();
-        b.resize(size, 0);
-        b.extend_from_slice(b"\r\n--XX--\r\n");
-        let ct = "content-type: multipart/form-data; boundary=XX\r\n";
-        status(&s.request("POST", target, ct, &b))
+        let mut gif = b"GIF89a".to_vec();
+        gif.resize(size, 0);
+        let b = multipart(&[("avatar", Some("a.gif"), &gif)]);
+        status(&s.request("POST", target, &ct, &b))
     };
     assert_eq!(
         upload("/me?/avatar", 60 * 1024),
@@ -227,23 +215,16 @@ fn hashes_leave_the_worker_free_and_sign_outs_last() {
     let env = [("WISP_THREADS", "1"), ("WISP_DATA", dir.to_str().unwrap())];
     let session = {
         let s = start_with(&env);
-        let port = s.port;
-        let joining = std::thread::spawn(move || {
-            let form = b"name=ada&password=correct+horse";
-            let mut c = connect(port);
-            let head = format!(
-                "POST /join?/join HTTP/1.1\r\nhost: x\r\n{FORM}content-length: {}\r\nconnection: close\r\n\r\n",
-                form.len()
-            );
-            c.write_all(&[head.as_bytes(), form].concat()).unwrap();
-            let mut out = String::new();
-            c.read_to_string(&mut out).unwrap();
-            (out, std::time::Instant::now())
+        let (home, answered, (joined, hashed)) = std::thread::scope(|t| {
+            let joining = t.spawn(|| {
+                let form = b"name=ada&password=correct+horse";
+                let out = s.request("POST", "/join?/join", FORM, form);
+                (out, std::time::Instant::now())
+            });
+            std::thread::sleep(Duration::from_millis(50));
+            let home = s.request("GET", "/", "", b"");
+            (home, std::time::Instant::now(), joining.join().unwrap())
         });
-        std::thread::sleep(Duration::from_millis(50));
-        let home = s.request("GET", "/", "", b"");
-        let answered = std::time::Instant::now();
-        let (joined, hashed) = joining.join().unwrap();
         assert_eq!(status(&home), 200);
         assert_eq!(status(&joined), 303, "{joined}");
         assert!(answered < hashed, "the page waited for the hash");
@@ -1162,4 +1143,47 @@ fn long_form_route_files() {
     // Docs, `#![…]`, explicit imports and `pub` are all still allowed.
     assert!(body(&s.request("GET", "/compat?who=you", "", b"")).contains("hi you"));
     assert_eq!(status(&s.request("GET", "/compat", "", b"")), 400);
+}
+
+/// A second secret, for signed cookies across a change of `WISP_SECRET`.
+const NEW: &str = "fedcba9876543210fedcba9876543210";
+
+/// The `user=…` cookie the login form sets.
+fn sign_in(secret: &str) -> String {
+    let s = start_with(&[("WISP_SECRET", secret)]);
+    let r = s.request("POST", "/login", FORM, b"name=ada");
+    let set = header(&r, "set-cookie").unwrap_or_else(|| panic!("no cookie in {r}"));
+    set.split(';').next().unwrap().to_string()
+}
+
+/// The status of `/admin`, which only a signed-in visitor sees.
+fn admin(env: &[(&str, &str)], cookie: &str) -> u16 {
+    let s = start_with(env);
+    status(&s.request("GET", "/admin", &format!("cookie: {cookie}\r\n"), b""))
+}
+
+/// With the old secret in `WISP_SECRET_OLD`, cookies it signed still hold;
+/// without, they do not.
+#[test]
+fn an_old_secret_keeps_cookies_it_signed() {
+    let cookie = sign_in(SECRET);
+    assert!(cookie.starts_with("user="), "{cookie}");
+    assert_eq!(admin(&[("WISP_SECRET", SECRET)], &cookie), 200);
+    let both = [("WISP_SECRET", NEW), ("WISP_SECRET_OLD", SECRET)];
+    assert_eq!(admin(&both, &cookie), 200);
+    assert_eq!(admin(&[("WISP_SECRET", NEW)], &cookie), 303, "signed out");
+    // A cookie the new secret signs holds with it alone, as always.
+    assert_eq!(admin(&both, &sign_in(NEW)), 200);
+}
+
+/// An old secret too short to be safe stops the server, as a short
+/// `WISP_SECRET` does.
+#[test]
+fn a_short_old_secret_stops_the_server() {
+    let out = common::command(&[("WISP_SECRET_OLD", "short")])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(said.contains("WISP_SECRET_OLD is 5 characters"), "{said}");
 }
