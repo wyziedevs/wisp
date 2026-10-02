@@ -14,7 +14,7 @@
 //! Every connection closes with a reset (linger 0), so growing, shrinking
 //! and ending leave no TIME_WAIT behind to run the ports out.
 
-use super::{Histogram, Report, Response, get_request, parse};
+use super::{BLOCK, Histogram, Report, Response, get_request, parse};
 use std::cell::{Cell, RefCell};
 use std::future::{Future, poll_fn};
 use std::io;
@@ -83,34 +83,29 @@ fn pick(mut tenth: u64) -> usize {
 pub struct Step {
     pub users: usize,
     pub scheduled: u64,
-    pub ok: u64,
-    pub non_2xx: u64,
-    pub errors: u64,
-    /// From each request's due time to the end of its response, in µs.
-    pub latency: Histogram,
     /// How late the load sent the requests it was waiting to send, in µs:
     /// its own lag, not the server's.
     pub late: Histogram,
+    /// What came of them, latency from each request's due time.
+    pub r: Report,
 }
 
 impl Step {
     /// Whether the server kept up: p99 within `slo_us`, at most 0.1% of the
     /// requests failed, and at least 99% of those due were answered.
     pub fn passes(&self, slo_us: u64) -> bool {
-        let answered = self.ok + self.non_2xx;
+        let r = &self.r;
+        let answered = r.ok + r.non_2xx;
         self.scheduled > 0
-            && self.latency.percentile(0.99) <= slo_us
-            && (self.errors + self.non_2xx) * 1000 <= self.scheduled
+            && r.latency.percentile(0.99) <= slo_us
+            && (r.errors + r.non_2xx) * 1000 <= self.scheduled
             && answered * 100 >= self.scheduled * 99
     }
 
     fn merge(&mut self, o: &Step) {
         self.scheduled += o.scheduled;
-        self.ok += o.ok;
-        self.non_2xx += o.non_2xx;
-        self.errors += o.errors;
-        self.latency.merge(&o.latency);
         self.late.merge(&o.late);
+        self.r.merge(&o.r);
     }
 }
 
@@ -331,15 +326,8 @@ async fn user(
         }
         done = now();
         if counts(sh.window.load(Relaxed), this, done) {
-            let mut step = local.step.borrow_mut();
-            match r {
-                Some(r) if (200..300).contains(&r.status) => {
-                    step.ok += 1;
-                    step.latency.record(done - this);
-                }
-                Some(_) => step.non_2xx += 1,
-                None => step.errors += 1,
-            }
+            let took = Duration::from_micros(done - this);
+            record(&mut local.step.borrow_mut().r, r, took);
         }
     }
     local.live.set(local.live.get() - 1);
@@ -376,23 +364,13 @@ pub fn churn(
     time: Duration,
 ) -> Report {
     let end = Instant::now() + time;
-    let threads = threads.max(1);
-    let mut total = Report {
-        seconds: time.as_secs_f64(),
-        ..Report::default()
-    };
-    let reports = spread(threads, |t| async move {
-        let request: Rc<[u8]> = request.as_bytes().into();
-        let mut set = JoinSet::new();
-        for n in (t..connections).step_by(threads) {
-            set.spawn_local(churn_loop(addr, n, request.clone(), end));
-        }
-        sum(set).await
-    });
-    for r in &reports {
-        total.merge(r);
-    }
-    total
+    loops(
+        request.as_bytes(),
+        connections,
+        threads,
+        time,
+        |n, request| churn_loop(addr, n, request, end),
+    )
 }
 
 async fn churn_loop(addr: SocketAddr, n: usize, request: Rc<[u8]>, end: Instant) -> Report {
@@ -436,8 +414,9 @@ async fn closed(s: &TcpStream) {
 /// `connections` keep-alive closed loops of `request` (head and body) for
 /// `warmup + time`, as `run` does but on a few threads, so a thousand
 /// connections cost no thousand threads. Counts the requests sent in
-/// `time`, waiting for the last of them (`TIMEOUT` at most): a server told
-/// to stop when `time` ends fails those it drops.
+/// `time`, waiting for the last of them (`TIMEOUT` at most), and connects
+/// refused apart: a server told to stop in `time` fails those it drops,
+/// then refuses the rest once it stops listening.
 pub fn closed_loop(
     addr: SocketAddr,
     request: &[u8],
@@ -448,46 +427,80 @@ pub fn closed_loop(
 ) -> Report {
     let start = Instant::now() + warmup;
     let end = start + time;
+    loops(request, connections, threads, time, |n, request| {
+        keep_alive_loop(addr, n, request, start, end)
+    })
+}
+
+async fn keep_alive_loop(
+    addr: SocketAddr,
+    n: usize,
+    request: Rc<[u8]>,
+    start: Instant,
+    end: Instant,
+) -> Report {
+    let mut report = Report::default();
+    let mut conn = None;
+    let mut deadline = Deadline::new();
+    let mut buf = Vec::new();
+    loop {
+        let sent = Instant::now();
+        if sent >= end {
+            return report;
+        }
+        if conn.is_none() {
+            let c = deadline.within(async { Some(connect(addr, n).await) });
+            match c.await {
+                Some(Ok(s)) => conn = Some(s),
+                c => {
+                    let refused =
+                        matches!(c, Some(Err(e)) if e.kind() == io::ErrorKind::ConnectionRefused);
+                    if sent >= start {
+                        report.refused += u64::from(refused);
+                        report.errors += u64::from(!refused);
+                    }
+                    // Refused connects fail at once: no spinning on them.
+                    sleep(Duration::from_millis(10)).await;
+                    continue;
+                }
+            }
+        }
+        let r = deadline
+            .within(exchange(&mut conn, addr, n, &request, &mut buf))
+            .await;
+        if r.as_ref().is_none_or(|r| r.close) {
+            conn = None;
+        }
+        if sent >= start {
+            record(&mut report, r, sent.elapsed());
+        }
+    }
+}
+
+/// `connections` tasks of `task(n, request)`, the `n`th on load thread
+/// `n % threads`, and the sum of their reports over `time`.
+fn loops<F: Future<Output = Report> + 'static>(
+    request: &[u8],
+    connections: usize,
+    threads: usize,
+    time: Duration,
+    task: impl Fn(usize, Rc<[u8]>) -> F + Sync,
+) -> Report {
     let threads = threads.max(1);
+    let task = &task;
     let mut total = Report {
         seconds: time.as_secs_f64(),
         ..Report::default()
     };
-    let reports = spread(threads, |t| async move {
+    for r in spread(threads, |t| async move {
         let request: Rc<[u8]> = request.into();
         let mut set = JoinSet::new();
         for n in (t..connections).step_by(threads) {
-            let request = request.clone();
-            set.spawn_local(async move {
-                let mut report = Report::default();
-                let mut conn = None;
-                let mut deadline = Deadline::new();
-                let mut buf = Vec::new();
-                loop {
-                    let sent = Instant::now();
-                    if sent >= end {
-                        return report;
-                    }
-                    let r = deadline
-                        .within(exchange(&mut conn, addr, n, &request, &mut buf))
-                        .await;
-                    if r.as_ref().is_none_or(|r| r.close) {
-                        conn = None;
-                    }
-                    if r.is_none() {
-                        // Refused connects fail at once: no spinning on them.
-                        sleep(Duration::from_millis(10)).await;
-                    }
-                    if sent >= start {
-                        record(&mut report, r, sent.elapsed());
-                    }
-                }
-            });
+            set.spawn_local(task(n, request.clone()));
         }
         sum(set).await
-    });
-    for r in &reports {
-        total.merge(r);
+    }) {
+        total.merge(&r);
     }
     total
 }
@@ -842,11 +855,6 @@ async fn connect(addr: SocketAddr, n: usize) -> io::Result<TcpStream> {
     s.connect(addr).await
 }
 
-thread_local! {
-    /// What a read lands in, for what only counts or drops the bytes.
-    static BLOCK: RefCell<Vec<u8>> = RefCell::new(vec![0; 64 * 1024]);
-}
-
 /// Reads one response into `buf` (the caller's, kept between its requests:
 /// it grows to one response and no more). Bytes past the response are
 /// dropped: nothing is pipelined here.
@@ -943,12 +951,15 @@ mod tests {
         let step = |scheduled, ok, non_2xx, errors, us: &[u64]| {
             let mut s = Step {
                 scheduled,
-                ok,
-                non_2xx,
-                errors,
+                r: Report {
+                    ok,
+                    non_2xx,
+                    errors,
+                    ..Report::default()
+                },
                 ..Step::default()
             };
-            us.iter().for_each(|&v| s.latency.record(v));
+            us.iter().for_each(|&v| s.r.latency.record(v));
             s
         };
         let fast = [1_000; 100];

@@ -128,8 +128,9 @@ each written the way its framework's docs would:
   "active":i%3!=0}` built and serialized per request.
 - `GET /static/app.js`: `static/app.js` (about 100 KB) from the framework's
   own static-file facility with its default cache headers. Wisp, SvelteKit
-  and Next.js serve from their own `static`/`public` folder, so each holds a
-  copy; Next.js's standalone build needs `public` copied beside `server.js`
+  and Next.js serve only from their own `static`/`public` folder, so
+  bench-run copies it there before building them (the copies are not
+  tracked); Next.js's standalone build needs `public` copied beside `server.js`
   (its docs say so), and SvelteKit needs `BODY_SIZE_LIMIT=8M` at launch.
 - `GET /ws`: a WebSocket that echoes each message. Not on SvelteKit and
   Next.js, which have none built in.
@@ -296,8 +297,10 @@ Traffic, on `/page`, `/json` and `/fortunes`, which every server answers:
   collapses. A user at one request a second is a heavy one: a visitor
   loading a page every 10 to 30 s puts 10 to 30 times fewer requests on
   it, so the real count of such visitors is that many times higher. If the
-  load generator itself sends more than 10 ms late (p99), the ramp stops:
-  the server serves at least that many ("load-limited").
+  load generator itself sends more than 10 ms late (p99), the ramp stops
+  and the twice-as-many step is skipped; if no step had failed by then,
+  the server serves at least the most that passed ("load-limited"), else
+  its own limit was found anyway.
 - **Churn**: 64 closed loops on `/json`, each request on a new connection
   with `connection: close`, as clients without keep-alive, health checks
   and some proxies send: connections a second, and CPU per connection.
@@ -320,7 +323,7 @@ App work, on the practice routes above (n/a where a server has none: a
   memory seen (sampled every 100 ms), after a 9 MiB body must get a 413 or
   a closed connection, and `/json` must still answer.
 - **List**: 64 connections on `/list` (1,000 rows of JSON): req/s, CPU.
-- **Static**: 64 connections on `/static/app.js` (100,253 bytes, checked).
+- **Static**: 64 connections on `/static/app.js` (100,253 bytes, checked against `static/app.js`).
 - **WS**: 10,000 idle WebSockets on `/ws` (KB each, from memory), then 64
   of them echoing a 32-byte text message closed loop: messages/s and p99.
 
@@ -334,9 +337,11 @@ Robustness:
 - **Soak**: users at half the most that passed (1,000 if the users test did
   not run) for `--soak` seconds (60; 0 skips), memory sampled every 5 s:
   first against last, "grows" past 20%.
-- **Shutdown** (Linux): SIGTERM to the server during 64 connections on
-  `/wait`: how many requests sent before it failed (0 is graceful), and ms
-  until it exited (killed at 10 s). Last, since it stops the server.
+- **Shutdown** (Linux): 64 connections on `/wait` for 3 s, and SIGTERM to
+  the server a second in, while they are still sending: how many requests
+  failed (0 is graceful; a connect refused once the server stopped
+  listening is expected, not counted), and ms until it exited (killed at
+  10 s). Last, since it stops the server.
 
 Server CPU is counted in cycles on Windows: its CPU time is charged per
 15.6 ms clock tick to whatever thread is running then, so a server that

@@ -19,3 +19,8 @@ bun.lock
 /dart/server.exe
 /dart/.dart_tool/
 /dart/pubspec.lock
+# Copies of static/app.js that bench-run puts where a server serves only
+# its own folder.
+/app/static/
+/node/sveltekit/static/
+/node/nextjs/public/

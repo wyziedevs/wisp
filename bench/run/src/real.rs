@@ -56,57 +56,157 @@ const UPLOADS: usize = 32;
 const SOCKETS: usize = 10_000;
 /// Before each closed loop on an app route.
 const WARMUP: Duration = Duration::from_secs(1);
-/// `/static/app.js`'s length.
-const APP_JS: usize = 100_253;
+/// What `/static/app.js` must send.
+const APP_JS: &[u8] = include_bytes!("../../static/app.js");
 /// A valid `/echo` body, 170 bytes, and one with every field wrong.
 const ECHO: &str = r#"{"name":"Ada Lovelace","email":"ada.lovelace@example.com","age":36,"tags":["mathematics","analytical-engine","poetry","notes","bernoulli","computing","babbage","london"]}"#;
 const ECHO_BAD: &str = r#"{"name":"","email":"nope","age":200,"tags":[]}"#;
 
-/// One server's results: `None` where a test did not run (or the server
-/// was gone by then), `Some(None)` where the server lacks the route.
-#[derive(Default)]
+/// One server's results, a value per `FIGURES`: `None` where its test did
+/// not run (or the server was gone by then), `Some(None)` where the server
+/// lacks the route.
 pub struct Row {
     server: &'static str,
-    users: Option<Crowd>,
-    /// Connections a second, and CPU µs each.
-    churn: Option<(f64, f64)>,
-    /// The normal connections' rate beside the slow clients as % of theirs
-    /// alone, their p99, and how many slow clients the server cut off.
-    slow: Option<(f64, u64, usize)>,
-    /// req/s, p50, p99.
-    wait: Option<Option<(f64, u64, u64)>>,
-    /// req/s, CPU µs per request.
-    echo: Option<Option<(f64, f64)>>,
-    /// MB/s in, and the most resident MB while uploading.
-    upload: Option<Option<(f64, f64)>>,
-    list: Option<Option<(f64, f64)>>,
-    static_file: Option<Option<f64>>,
-    /// KB per idle socket, echoes a second, p99.
-    ws: Option<Option<(f64, f64, u64)>>,
-    /// Malformed requests handled, and what went wrong.
-    abuse: Option<(usize, Vec<String>)>,
-    /// Resident MB at the first and the last sample.
-    soak: Option<Option<(f64, f64)>>,
-    /// Requests in flight that failed, and ms until it exited.
-    shutdown: Option<Option<(u64, u64)>>,
+    values: Vec<Option<Option<f64>>>,
+    /// What the abuse test found wrong.
+    abused: Vec<String>,
 }
 
-/// The users test's results.
-#[derive(Clone, Copy)]
-struct Crowd {
-    /// The most users that passed, 0 if none did.
-    users: usize,
-    /// The load generator fell behind first: the server serves at least
-    /// `users`.
-    limited: bool,
-    /// At `users`: p99 in µs, CPU % of the server's CPUs, resident MB, and
-    /// KB per user over the server idle.
-    p99: u64,
-    cpu: f64,
-    mb: f64,
-    kb_per_user: f64,
-    /// At twice `users`: % of the requests due that were served, and p99.
-    over: Option<(f64, u64)>,
+impl Row {
+    /// Sets `test`'s figures, in `FIGURES`' order; `None` for n/a.
+    fn put(&mut self, test: &str, values: Option<Vec<Option<f64>>>) {
+        let mut values = values.map(Vec::into_iter);
+        for (f, v) in FIGURES.iter().zip(&mut self.values) {
+            if f.test == test {
+                *v = match &mut values {
+                    None => Some(None),
+                    Some(vs) => vs.next().flatten().map(Some),
+                };
+            }
+        }
+    }
+
+    fn get(&self, test: &str, name: &str) -> Option<f64> {
+        let i = FIGURES
+            .iter()
+            .position(|f| f.test == test && f.name == name)?;
+        self.values[i].flatten()
+    }
+}
+
+/// A figure of a test: its name in the CSV, its heading in the table, how
+/// a cell shows it, and how Wisp ranks on it.
+struct Figure {
+    test: &'static str,
+    name: &'static str,
+    head: &'static str,
+    show: fn(f64) -> String,
+    rank: Rank,
+}
+
+enum Rank {
+    No,
+    /// More is better: the rank line's name and unit.
+    High(&'static str, &'static str),
+    /// Less is better.
+    Low(&'static str, &'static str),
+}
+
+const fn fig(
+    test: &'static str,
+    name: &'static str,
+    head: &'static str,
+    show: fn(f64) -> String,
+    rank: Rank,
+) -> Figure {
+    Figure {
+        test,
+        name,
+        head,
+        show,
+        rank,
+    }
+}
+
+use Rank::{High, Low, No};
+
+/// Every figure, each test's together in the order its function returns
+/// them. Latencies are in ms.
+#[rustfmt::skip]
+const FIGURES: &[Figure] = &[
+    fig("users", "users", "Users", count, High("real users", " users")),
+    fig("users", "load-limited", "Load-limited", yes, No),
+    fig("users", "p99 ms", "p99", millis, No),
+    fig("users", "cpu %", "CPU %", one, No),
+    fig("users", "MB", "MB", whole, No),
+    fig("users", "KB per user", "KB/user", one, Low("real memory per user", "KB")),
+    fig("users", "2x served %", "2×: served", percent, No),
+    fig("users", "2x p99 ms", "2×: p99", millis, No),
+    fig("churn", "conn/s", "Churn conn/s", count, High("real churn", " conn/s")),
+    fig("churn", "cpu us", "Churn µs", one, Low("real churn CPU per connection", "µs")),
+    fig("slow", "kept %", "Slow: kept", percent, High("real slow clients", "% kept")),
+    fig("slow", "p99 ms", "Slow p99", millis, No),
+    fig("slow", "cut", "Slow cut", |v| format!("{v} of {}", thousands(SLOW_CLIENTS as u64)), No),
+    fig("wait", "req/s", "Wait req/s", count, High("real wait", " req/s")),
+    fig("wait", "p50 ms", "Wait p50", millis, No),
+    fig("wait", "p99 ms", "Wait p99", millis, Low("real wait p99", "ms")),
+    fig("echo", "req/s", "Echo req/s", count, High("real echo", " req/s")),
+    fig("echo", "cpu us", "Echo µs", one, Low("real echo CPU per request", "µs")),
+    fig("upload", "MB/s", "Upload MB/s", count, High("real upload", " MB/s")),
+    fig("upload", "peak MB", "Upload peak MB", whole, Low("real upload peak memory", "MB")),
+    fig("list", "req/s", "List req/s", count, High("real list", " req/s")),
+    fig("list", "cpu us", "List µs", one, Low("real list CPU per request", "µs")),
+    fig("static", "req/s", "Static req/s", count, High("real static", " req/s")),
+    fig("ws", "KB per socket", "WS KB/socket", one, Low("real memory per WebSocket", "KB")),
+    fig("ws", "msgs/s", "WS msgs/s", count, High("real ws echo", " msgs/s")),
+    fig("ws", "p99 ms", "WS p99", millis, No),
+    fig("abuse", "handled", "Abuse", |v| format!("{v}/5"), High("real abuse handled", " of 5")),
+    fig("soak", "first MB", "Soak first MB", whole, No),
+    fig("soak", "last MB", "Soak last MB", whole, No),
+    fig("soak", "drift %", "Soak drift", |v| format!("{v:+.0}%{}", if grows(v) { " grows" } else { "" }), Low("real soak drift", "%")),
+    fig("shutdown", "failed", "Shutdown failed", count, Low("real shutdown failures", "")),
+    fig("shutdown", "exit ms", "Shutdown ms", |v| if v >= 10_000.0 { "killed at 10 s".into() } else { count(v) }, Low("real shutdown time", "ms")),
+];
+
+/// The tests in each table: traffic, app work, robustness.
+const TABLES: [&[&str]; 3] = [
+    &["users", "churn", "slow"],
+    &["wait", "echo", "upload", "list", "static", "ws"],
+    &["abuse", "soak", "shutdown"],
+];
+
+fn count(v: f64) -> String {
+    thousands(v as u64)
+}
+
+fn one(v: f64) -> String {
+    format!("{v:.1}")
+}
+
+fn whole(v: f64) -> String {
+    format!("{v:.0}")
+}
+
+fn percent(v: f64) -> String {
+    format!("{v:.0}%")
+}
+
+fn millis(v: f64) -> String {
+    ms((v * 1000.0).round() as u64)
+}
+
+fn yes(v: f64) -> String {
+    (if v > 0.0 { "yes" } else { "no" }).into()
+}
+
+/// µs in ms.
+fn in_ms(us: u64) -> f64 {
+    us as f64 / 1000.0
+}
+
+/// A test's figures, every one of them there.
+fn all<const N: usize>(v: [f64; N]) -> Vec<Option<f64>> {
+    v.map(Some).into()
 }
 
 /// One step of users, measured.
@@ -249,25 +349,33 @@ pub fn measure(
     announce(s, start_ms, cx.tree.len());
     let mut row = Row {
         server: s.name,
-        ..Row::default()
+        values: vec![None; FIGURES.len()],
+        abused: Vec::new(),
     };
     for &test in TESTS.iter().filter(|t| runs(opt, t)) {
         match test {
             "users" => match users(&cx, child) {
-                Ok(c) => row.users = Some(c),
+                Ok(v) => row.put(test, Some(v)),
                 Err(e) => println!("  users: {e}"),
             },
-            "churn" => row.churn = Some(churn(&cx)),
-            "slow" => row.slow = Some(slow(&cx)),
-            "wait" => row.wait = Some(na(test, wait(&cx))),
-            "echo" => row.echo = Some(na(test, echo(&cx))),
-            "upload" => row.upload = Some(na(test, upload(&cx))),
-            "list" => row.list = Some(na(test, list(&cx))),
-            "static" => row.static_file = Some(na(test, static_file(&cx))),
-            "ws" => row.ws = Some(na(test, ws(&cx))),
-            "abuse" => row.abuse = Some(abuse(&cx, child)),
-            "soak" => row.soak = Some(na(test, soak(&cx, row.users.map(|c| c.users)))),
-            "shutdown" => row.shutdown = Some(na(test, shutdown(&cx, child))),
+            "churn" => row.put(test, Some(all(churn(&cx)))),
+            "slow" => row.put(test, Some(all(slow(&cx)))),
+            "wait" => row.put(test, na(test, wait(&cx))),
+            "echo" => row.put(test, na(test, echo(&cx))),
+            "upload" => row.put(test, na(test, upload(&cx))),
+            "list" => row.put(test, na(test, list(&cx))),
+            "static" => row.put(test, na(test, static_file(&cx))),
+            "ws" => row.put(test, na(test, ws(&cx))),
+            "abuse" => {
+                let (handled, failed) = abuse(&cx, child);
+                row.abused = failed;
+                row.put(test, Some(all([handled as f64])));
+            }
+            "soak" => row.put(test, na(test, soak(&cx, row.get("users", "users")))),
+            #[cfg(target_os = "linux")]
+            "shutdown" => row.put(test, na(test, shutdown(&cx, child))),
+            #[cfg(windows)]
+            "shutdown" => row.put(test, na::<2>(test, Err("no SIGTERM on Windows".into()))),
             _ => unreachable!("TESTS"),
         }
         if test != "shutdown"
@@ -280,53 +388,55 @@ pub fn measure(
     Ok(row)
 }
 
-/// What a test on a route some servers lack found: n/a, with why, if it
-/// could not run.
-fn na<T>(test: &str, r: Result<T, String>) -> Option<T> {
-    r.map_err(|e| println!("  {test}: n/a ({e})")).ok()
+/// A test's figures, or n/a, with why, if it could not run (on a route
+/// some servers lack).
+fn na<const N: usize>(test: &str, r: Result<[f64; N], String>) -> Option<Vec<Option<f64>>> {
+    r.map(all).map_err(|e| println!("  {test}: n/a ({e})")).ok()
 }
 
 /// Users, from 500 up while they pass, then twice the most that did.
-fn users(cx: &Ctx, child: &mut Child) -> Result<Crowd, String> {
+fn users(cx: &Ctx, child: &mut Child) -> Result<Vec<Option<f64>>, String> {
     let idle = cx.rss();
     let users = Users::start(cx.addr, cx.threads, cx.opt.think);
     let mut ramp = Ramp::new(cx.opt.max_users);
     let mut n = ramp.first();
     let mut best: Option<Measured> = None;
-    let mut limited = false;
-    loop {
+    let late = loop {
         let m = step(&users, n, child, cx)?;
         let (pass, late) = (m.pass, m.late > LATE_US);
         if pass && best.as_ref().is_none_or(|b| n > b.users) {
             best = Some(m);
         }
         if late {
-            limited = true;
-            break;
+            break true;
         }
         match ramp.next(n, pass) {
             Some(next) => n = next,
-            None => break,
+            None => break false,
         }
-    }
-    // Past the limit, unless the load was the limit.
+    };
+    // The load was the limit only if it fell behind before any step failed:
+    // past a failure the server's own limit is found, whatever the load did.
+    let limited = late && ramp.fail.is_none();
+    // Past the limit, unless the load fell behind.
     let over = match &best {
-        Some(b) if !limited => {
+        Some(b) if !late => {
             let m = step(&users, 2 * b.users, child, cx)?;
-            Some((m.served, m.p99))
+            Some((m.served, in_ms(m.p99)))
         }
         _ => None,
     };
-    let (users, p99, cpu, rss) = best.map_or((0, 0, 0.0, idle), |b| (b.users, b.p99, b.cpu, b.rss));
-    Ok(Crowd {
-        users,
-        limited,
-        p99,
-        cpu,
-        mb: rss as f64 / (1 << 20) as f64,
-        kb_per_user: rss.saturating_sub(idle) as f64 / 1024.0 / users.max(1) as f64,
-        over,
-    })
+    let b = best.as_ref();
+    Ok(vec![
+        Some(b.map_or(0, |b| b.users) as f64),
+        Some(f64::from(u8::from(limited))),
+        b.map(|b| in_ms(b.p99)),
+        b.map(|b| b.cpu),
+        b.map(|b| b.rss as f64 / (1 << 20) as f64),
+        b.map(|b| b.rss.saturating_sub(idle) as f64 / 1024.0 / b.users as f64),
+        over.map(|o| o.0),
+        over.map(|o| o.1),
+    ])
 }
 
 /// `n` users, settled, then measured, and a line on it.
@@ -334,7 +444,7 @@ fn step(users: &Users, n: usize, child: &mut Child, cx: &Ctx) -> Result<Measured
     users.resize(n, SETTLE);
     let before = sys::cpu_times(&cx.tree);
     let wall = Instant::now();
-    let r: Step = users.measure(cx.opt.duration);
+    let s: Step = users.measure(cx.opt.duration);
     let (cpu, _) = cpu_used(&before, &sys::cpu_times(&cx.tree));
     let cpu = cpu / wall.elapsed().as_secs_f64() / cx.cpus as f64 * 100.0;
     if let Ok(Some(status)) = child.try_wait() {
@@ -342,10 +452,10 @@ fn step(users: &Users, n: usize, child: &mut Child, cx: &Ctx) -> Result<Measured
     }
     let m = Measured {
         users: n,
-        pass: r.passes(cx.opt.slo_ms * 1000),
-        p99: r.latency.percentile(0.99),
-        late: r.late.percentile(0.99),
-        served: r.ok as f64 / r.scheduled.max(1) as f64 * 100.0,
+        pass: s.passes(cx.opt.slo_ms * 1000),
+        p99: s.r.latency.percentile(0.99),
+        late: s.late.percentile(0.99),
+        served: s.r.ok as f64 / s.scheduled.max(1) as f64 * 100.0,
         cpu,
         rss: cx.rss(),
     };
@@ -364,12 +474,12 @@ fn step(users: &Users, n: usize, child: &mut Child, cx: &Ctx) -> Result<Measured
         } else {
             "fail"
         },
-        failures(r.non_2xx + r.errors)
+        failures(s.r.non_2xx + s.r.errors)
     );
     Ok(m)
 }
 
-fn churn(cx: &Ctx) -> (f64, f64) {
+fn churn(cx: &Ctx) -> [f64; 2] {
     let close = format!(
         "GET /json HTTP/1.1\r\nhost: {}\r\naccept: */*\r\nconnection: close\r\n\r\n",
         cx.addr
@@ -384,10 +494,10 @@ fn churn(cx: &Ctx) -> (f64, f64) {
         ms(r.latency.percentile(0.99)),
         failures(r.non_2xx + r.errors)
     );
-    (r.rps(), us)
+    [r.rps(), us]
 }
 
-fn slow(cx: &Ctx) -> (f64, u64, usize) {
+fn slow(cx: &Ctx) -> [f64; 3] {
     let page = cx.get("/page");
     let d = cx.opt.duration;
     let alone = wisp_load::run(cx.addr, &page, CONNECTIONS, 1, WARMUP, d);
@@ -410,10 +520,10 @@ fn slow(cx: &Ctx) -> (f64, u64, usize) {
         ms(alone.latency.percentile(0.99)),
         failures(beside.non_2xx + beside.errors)
     );
-    (kept, p99, cut)
+    [kept, in_ms(p99), cut as f64]
 }
 
-fn wait(cx: &Ctx) -> Result<(f64, u64, u64), String> {
+fn wait(cx: &Ctx) -> Result<[f64; 3], String> {
     let request = cx.get("/wait");
     cx.check(&request, |status, body| {
         status == 200 && contains(body, "ok")
@@ -428,10 +538,10 @@ fn wait(cx: &Ctx) -> Result<(f64, u64, u64), String> {
         ms(p99),
         failures(r.non_2xx + r.errors)
     );
-    Ok((r.rps(), p50, p99))
+    Ok([r.rps(), in_ms(p50), in_ms(p99)])
 }
 
-fn echo(cx: &Ctx) -> Result<(f64, f64), String> {
+fn echo(cx: &Ctx) -> Result<[f64; 2], String> {
     let json = "application/json";
     cx.check(&cx.post("/echo", json, ECHO_BAD), |status, _| {
         (400..500).contains(&status) && status != 404
@@ -446,10 +556,10 @@ fn echo(cx: &Ctx) -> Result<(f64, f64), String> {
         r.rps(),
         failures(r.non_2xx + r.errors)
     );
-    Ok((r.rps(), us))
+    Ok([r.rps(), us])
 }
 
-fn upload(cx: &Ctx) -> Result<(f64, f64), String> {
+fn upload(cx: &Ctx) -> Result<[f64; 2], String> {
     let kind = "application/octet-stream";
     let big = cx.post("/upload", kind, &"x".repeat(9 << 20));
     match wisp_load::raw(cx.addr, big.as_bytes(), Duration::from_secs(5)) {
@@ -471,10 +581,10 @@ fn upload(cx: &Ctx) -> Result<(f64, f64), String> {
         "  upload: {mbs:.0} MB/s in 1 MiB bodies at {UPLOADS} connections, {peak:.0} MB at most; 9 MiB refused{}",
         failures(r.non_2xx + r.errors)
     );
-    Ok((mbs, peak))
+    Ok([mbs, peak])
 }
 
-fn list(cx: &Ctx) -> Result<(f64, f64), String> {
+fn list(cx: &Ctx) -> Result<[f64; 2], String> {
     let request = cx.get("/list");
     cx.check(&request, |status, body| {
         status == 200 && contains(body, "user999@example.com")
@@ -485,14 +595,12 @@ fn list(cx: &Ctx) -> Result<(f64, f64), String> {
         r.rps(),
         failures(r.non_2xx + r.errors)
     );
-    Ok((r.rps(), us))
+    Ok([r.rps(), us])
 }
 
-fn static_file(cx: &Ctx) -> Result<f64, String> {
+fn static_file(cx: &Ctx) -> Result<[f64; 1], String> {
     let request = cx.get("/static/app.js");
-    cx.check(&request, |status, body| {
-        status == 200 && body.len() == APP_JS
-    })?;
+    cx.check(&request, |status, body| status == 200 && body == APP_JS)?;
     let (r, us) = cx.load(request.as_bytes(), CONNECTIONS);
     println!(
         "  static: {:.0} req/s ({:.0} MB/s), {us:.1} µs CPU each{}",
@@ -500,10 +608,10 @@ fn static_file(cx: &Ctx) -> Result<f64, String> {
         r.bytes as f64 / r.seconds / 1e6,
         failures(r.non_2xx + r.errors)
     );
-    Ok(r.rps())
+    Ok([r.rps()])
 }
 
-fn ws(cx: &Ctx) -> Result<(f64, f64, u64), String> {
+fn ws(cx: &Ctx) -> Result<[f64; 3], String> {
     wisp_load::ws_check(cx.addr, "/ws")?;
     let before = cx.rss();
     let mut open = 0;
@@ -529,7 +637,7 @@ fn ws(cx: &Ctx) -> Result<(f64, f64, u64), String> {
         ms(p99),
         failures(r.echo.non_2xx + r.echo.errors)
     );
-    Ok((kb, r.echo.rps(), p99))
+    Ok([kb, r.echo.rps(), in_ms(p99)])
 }
 
 /// A malformed request: its name, its bytes, and whether an answer
@@ -605,18 +713,18 @@ fn abuse(cx: &Ctx, child: &mut Child) -> (usize, Vec<String>) {
 
 /// Users at half the most that passed (or 1,000, if the users test did not
 /// run) for `--soak`, resident memory sampled every 5 s.
-fn soak(cx: &Ctx, most: Option<usize>) -> Result<(f64, f64), String> {
+fn soak(cx: &Ctx, most: Option<f64>) -> Result<[f64; 3], String> {
     if cx.opt.soak.is_zero() {
         return Err("--soak 0".into());
     }
-    let n = most.map_or(1000, |m| m / 2);
+    let n = most.map_or(1000, |m| m as usize / 2);
     if n == 0 {
         return Err("no users passed".into());
     }
     let users = Users::start(cx.addr, cx.threads, cx.opt.think);
     users.resize(n, SETTLE);
     let mut samples = Vec::new();
-    let r = std::thread::scope(|s| {
+    let step = std::thread::scope(|s| {
         let h = s.spawn(|| users.measure(cx.opt.soak));
         let t = Instant::now();
         while t.elapsed() <= cx.opt.soak {
@@ -626,17 +734,18 @@ fn soak(cx: &Ctx, most: Option<usize>) -> Result<(f64, f64), String> {
         h.join().expect("soak users")
     });
     let (first, last) = (samples[0], samples[samples.len() - 1]);
+    let (d, r) = (drift(first, last), &step.r);
     println!(
         "  soak: {} users for {} s: {first:.0} → {last:.0} MB ({:+.0}%{}), p99 {}, served {:.1}%{}",
         thousands(n as u64),
         cx.opt.soak.as_secs(),
-        drift(first, last),
-        if grows(first, last) { ", grows" } else { "" },
+        d,
+        if grows(d) { ", grows" } else { "" },
         ms(r.latency.percentile(0.99)),
-        r.ok as f64 / r.scheduled.max(1) as f64 * 100.0,
+        r.ok as f64 / step.scheduled.max(1) as f64 * 100.0,
         failures(r.non_2xx + r.errors)
     );
-    Ok((first, last))
+    Ok([first, last, d])
 }
 
 /// Growth from `first` to `last`, in %.
@@ -644,25 +753,24 @@ fn drift(first: f64, last: f64) -> f64 {
     (last / first.max(1e-9) - 1.0) * 100.0
 }
 
-/// Memory that grew by more than a fifth over the soak.
-fn grows(first: f64, last: f64) -> bool {
-    drift(first, last) > 20.0
+/// Memory that grew by more than a fifth over the soak, by its `drift`.
+fn grows(drift: f64) -> bool {
+    drift > 20.0
 }
 
-/// SIGTERM after a second of 64 connections on `/wait`: how many requests
-/// sent before it failed, and how long the server took to exit (10 s at
-/// most, then it is killed). Last, as it stops the server.
-fn shutdown(cx: &Ctx, child: &mut Child) -> Result<(u64, u64), String> {
-    if cfg!(windows) {
-        return Err("no SIGTERM on Windows".into());
-    }
+/// SIGTERM a second into 3 s of 64 connections on `/wait`, while they are
+/// still sending: how many requests failed (a connect refused once the
+/// server stopped listening is not one), and how long the server took to
+/// exit (10 s at most, then it is killed). Last, as it stops the server.
+#[cfg(target_os = "linux")]
+fn shutdown(cx: &Ctx, child: &mut Child) -> Result<[f64; 2], String> {
     let request = cx.get("/wait");
     cx.check(&request, |status, _| status == 200)?;
     let (r, exit_ms) = std::thread::scope(|s| {
         let (addr, threads) = (cx.addr, cx.threads);
         let request = request.as_bytes();
         let load = s.spawn(move || {
-            wisp_load::closed_loop(addr, request, CONNECTIONS, threads, WARMUP, WARMUP)
+            wisp_load::closed_loop(addr, request, CONNECTIONS, threads, WARMUP, 3 * WARMUP)
         });
         std::thread::sleep(2 * WARMUP);
         sys::terminate(child);
@@ -676,15 +784,16 @@ fn shutdown(cx: &Ctx, child: &mut Child) -> Result<(u64, u64), String> {
     });
     let failed = r.non_2xx + r.errors;
     println!(
-        "  shutdown: {failed} of {} requests in flight failed, exited {} after SIGTERM",
+        "  shutdown: {failed} of {} requests failed, SIGTERM a second into them ({} connects refused after); exited {}",
         r.ok + failed,
+        r.refused,
         if exit_ms >= 10_000 {
             "never (killed at 10 s)".to_string()
         } else {
-            format!("{exit_ms} ms")
+            format!("{exit_ms} ms after")
         }
     );
-    Ok((failed, exit_ms))
+    Ok([failed as f64, exit_ms as f64])
 }
 
 fn contains(body: &[u8], text: &str) -> bool {
@@ -755,334 +864,66 @@ fn cell<T: Copy>(v: Option<Option<T>>, show: impl Fn(T) -> String) -> String {
     }
 }
 
-/// A table column: its heading, the test it shows, and its cell per row.
-type Column<'a> = (String, &'static str, Box<dyn Fn(&Row) -> String + 'a>);
-
-/// `columns` of the tests that ran, as a Markdown table of `rows`.
-fn table(rows: &[&Row], opt: &Options, columns: Vec<Column>) {
-    let columns: Vec<Column> = columns.into_iter().filter(|c| runs(opt, c.1)).collect();
-    if columns.is_empty() {
-        return;
-    }
-    let mut lines = vec![
-        std::iter::once("Server".to_string())
-            .chain(columns.iter().map(|c| c.0.clone()))
-            .collect::<Vec<_>>(),
-    ];
-    for r in rows {
-        let name = if r.server == "Wisp" {
-            "**Wisp**".to_string()
-        } else {
-            r.server.to_string()
-        };
-        lines.push(
-            std::iter::once(name)
-                .chain(columns.iter().map(|c| (c.2)(r)))
-                .collect(),
-        );
-    }
-    println!();
-    print_markdown(&lines, &[0]);
-}
-
 /// The results as three Markdown tables (traffic, app work, robustness),
-/// then where Wisp ranks on each figure.
+/// each sorted by its first figure, then where Wisp ranks on each figure.
 pub fn print(rows: &[Row], opt: &Options) {
-    let by = |f: fn(&Row) -> f64| {
+    for tests in TABLES {
+        let columns: Vec<usize> = (0..FIGURES.len())
+            .filter(|&i| {
+                let f = &FIGURES[i];
+                tests.contains(&f.test) && runs(opt, f.test)
+            })
+            .collect();
+        let Some(&first) = columns.first() else {
+            continue;
+        };
         let mut order: Vec<&Row> = rows.iter().collect();
-        order.sort_by(|a, b| f(b).total_cmp(&f(a)));
-        order
-    };
-    let users = |r: &Row| r.users.map(Some);
-    table(
-        &by(|r| r.users.map_or(-1.0, |c| c.users as f64)),
-        opt,
-        vec![
-            (
-                format!("Users (p99 ≤ {} ms)", opt.slo_ms),
-                "users",
-                Box::new(move |r| {
-                    cell(users(r), |c| {
-                        let n = thousands(c.users as u64);
-                        if c.limited {
-                            format!("≥ {n} (load-limited)")
-                        } else {
-                            n
-                        }
-                    })
-                }),
-            ),
-            (
-                "p99".into(),
-                "users",
-                Box::new(move |r| cell(users(r), |c| ms(c.p99))),
-            ),
-            (
-                "CPU %".into(),
-                "users",
-                Box::new(move |r| cell(users(r), |c| format!("{:.1}", c.cpu))),
-            ),
-            (
-                "MB".into(),
-                "users",
-                Box::new(move |r| cell(users(r), |c| format!("{:.0}", c.mb))),
-            ),
-            (
-                "KB/user".into(),
-                "users",
-                Box::new(move |r| cell(users(r), |c| format!("{:.1}", c.kb_per_user))),
-            ),
-            (
-                "2×: served, p99".into(),
-                "users",
-                Box::new(move |r| {
-                    cell(users(r).map(|c| c.and_then(|c| c.over)), |(served, p99)| {
-                        format!("{served:.0}%, {}", ms(p99))
-                    })
-                }),
-            ),
-            (
-                "Churn conn/s".into(),
-                "churn",
-                Box::new(|r| cell(r.churn.map(Some), |(c, _)| thousands(c as u64))),
-            ),
-            (
-                "Churn µs".into(),
-                "churn",
-                Box::new(|r| cell(r.churn.map(Some), |(_, us)| format!("{us:.1}"))),
-            ),
-            (
-                "Slow: kept, p99".into(),
-                "slow",
-                Box::new(|r| {
-                    cell(r.slow.map(Some), |(kept, p99, _)| {
-                        format!("{kept:.0}%, {}", ms(p99))
-                    })
-                }),
-            ),
-            (
-                "Slow cut".into(),
-                "slow",
-                Box::new(|r| {
-                    cell(r.slow.map(Some), |(_, _, cut)| {
-                        format!("{cut} of {}", thousands(SLOW_CLIENTS as u64))
-                    })
-                }),
-            ),
-        ],
-    );
-    let rate = |v: f64| thousands(v as u64);
-    table(
-        &by(|r| r.echo.flatten().map_or(-1.0, |e| e.0)),
-        opt,
-        vec![
-            (
-                "Wait req/s".into(),
-                "wait",
-                Box::new(move |r| cell(r.wait, |w| rate(w.0))),
-            ),
-            (
-                "Wait p50, p99".into(),
-                "wait",
-                Box::new(|r| cell(r.wait, |w| format!("{}, {}", ms(w.1), ms(w.2)))),
-            ),
-            (
-                "Echo req/s".into(),
-                "echo",
-                Box::new(move |r| cell(r.echo, |e| rate(e.0))),
-            ),
-            (
-                "Echo µs".into(),
-                "echo",
-                Box::new(|r| cell(r.echo, |e| format!("{:.1}", e.1))),
-            ),
-            (
-                "Upload MB/s".into(),
-                "upload",
-                Box::new(move |r| cell(r.upload, |u| rate(u.0))),
-            ),
-            (
-                "Upload peak MB".into(),
-                "upload",
-                Box::new(|r| cell(r.upload, |u| format!("{:.0}", u.1))),
-            ),
-            (
-                "List req/s".into(),
-                "list",
-                Box::new(move |r| cell(r.list, |l| rate(l.0))),
-            ),
-            (
-                "List µs".into(),
-                "list",
-                Box::new(|r| cell(r.list, |l| format!("{:.1}", l.1))),
-            ),
-            (
-                "Static req/s".into(),
-                "static",
-                Box::new(move |r| cell(r.static_file, rate)),
-            ),
-            (
-                "WS KB/socket".into(),
-                "ws",
-                Box::new(|r| cell(r.ws, |w| format!("{:.1}", w.0))),
-            ),
-            (
-                "WS msgs/s, p99".into(),
-                "ws",
-                Box::new(move |r| cell(r.ws, |w| format!("{}, {}", rate(w.1), ms(w.2)))),
-            ),
-        ],
-    );
-    table(
-        &by(|r| {
-            let handled = r.abuse.as_ref().map_or(0, |a| a.0) as f64;
-            let drift = r.soak.flatten().map_or(0.0, |(f, l)| drift(f, l));
-            handled * 1000.0 - drift
-        }),
-        opt,
-        vec![
-            (
-                "Abuse".into(),
-                "abuse",
-                Box::new(|r| {
-                    cell(r.abuse.as_ref().map(|a| Some(a.0)), |handled| {
-                        format!("{handled}/5")
-                    })
-                }),
-            ),
-            (
-                "Abuse failures".into(),
-                "abuse",
-                Box::new(|r| match &r.abuse {
-                    Some((_, f)) if !f.is_empty() => f.join("; "),
-                    Some(_) => "none".into(),
-                    None => "-".into(),
-                }),
-            ),
-            (
-                "Soak MB".into(),
-                "soak",
-                Box::new(|r| cell(r.soak, |(f, l)| format!("{f:.0} → {l:.0}"))),
-            ),
-            (
-                "Soak drift".into(),
-                "soak",
-                Box::new(|r| {
-                    cell(r.soak, |(f, l)| {
-                        let grew = if grows(f, l) { " grows" } else { "" };
-                        format!("{:+.0}%{grew}", drift(f, l))
-                    })
-                }),
-            ),
-            (
-                "Shutdown failed".into(),
-                "shutdown",
-                Box::new(|r| cell(r.shutdown, |s| s.0.to_string())),
-            ),
-            (
-                "Shutdown ms".into(),
-                "shutdown",
-                Box::new(|r| {
-                    cell(r.shutdown, |s| {
-                        if s.1 >= 10_000 {
-                            "killed at 10 s".into()
-                        } else {
-                            thousands(s.1)
-                        }
-                    })
-                }),
-            ),
-        ],
-    );
+        let key = |r: &Row| r.values[first].flatten().unwrap_or(-1.0);
+        order.sort_by(|a, b| key(b).total_cmp(&key(a)));
+        let head = columns.iter().map(|&i| FIGURES[i].head.to_string());
+        let mut lines = vec![std::iter::once("Server".to_string()).chain(head).collect()];
+        for r in order {
+            let name = if r.server == "Wisp" {
+                "**Wisp**".to_string()
+            } else {
+                r.server.to_string()
+            };
+            let cells = columns.iter().map(|&i| cell(r.values[i], FIGURES[i].show));
+            lines.push(std::iter::once(name).chain(cells).collect::<Vec<_>>());
+        }
+        println!();
+        print_markdown(&lines, &[0]);
+    }
+    for r in rows.iter().filter(|r| !r.abused.is_empty()) {
+        println!("{} abuse failures: {}", r.server, r.abused.join("; "));
+    }
     println!(
-        "\nUsers each send a request every {:.1} s (±50%); the most whose p99, timed from when each request was due, stays within {} ms. n/a: no such route. -: not run.\n",
+        "\nUsers each send a request every {:.1} s (±50%); the most whose p99, timed from when each request was due, stays within {} ms; load-limited: the load fell behind first, so the server serves at least that many. n/a: no such route. -: not run.\n",
         opt.think.as_secs_f64(),
         opt.slo_ms
     );
 
     // Where Wisp ranks on each figure: more is better, then less.
-    type Figure = fn(&Row) -> Option<f64>;
-    let high: [(&str, &str, &str, Figure); 10] = [
-        ("users", "real users", " users", |r| {
-            r.users.map(|c| c.users as f64)
-        }),
-        ("churn", "real churn", " conn/s", |r| r.churn.map(|c| c.0)),
-        ("slow", "real slow clients", "% kept", |r| {
-            r.slow.map(|s| s.0.round())
-        }),
-        ("wait", "real wait", " req/s", |r| {
-            r.wait.flatten().map(|w| w.0)
-        }),
-        ("echo", "real echo", " req/s", |r| {
-            r.echo.flatten().map(|e| e.0)
-        }),
-        ("upload", "real upload", " MB/s", |r| {
-            r.upload.flatten().map(|u| u.0)
-        }),
-        ("list", "real list", " req/s", |r| {
-            r.list.flatten().map(|l| l.0)
-        }),
-        ("static", "real static", " req/s", |r| {
-            r.static_file.flatten()
-        }),
-        ("ws", "real ws echo", " msgs/s", |r| {
-            r.ws.flatten().map(|w| w.1)
-        }),
-        ("abuse", "real abuse handled", " of 5", |r| {
-            r.abuse.as_ref().map(|a| a.0 as f64)
-        }),
-    ];
-    for (test, tag, unit, f) in high {
-        if runs(opt, test) {
+    for high in [true, false] {
+        for (i, f) in FIGURES
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| runs(opt, f.test))
+        {
             let mut all: Vec<(&str, f64)> = rows
                 .iter()
-                .filter_map(|r| Some((r.server, f(r)?)))
+                .filter_map(|r| Some((r.server, r.values[i].flatten()?)))
                 .collect();
-            all.sort_by(|a, b| b.1.total_cmp(&a.1));
-            rank_high(tag, &all, unit);
-        }
-    }
-    let low: [(&str, &str, &str, Figure); 10] = [
-        ("users", "real memory per user", "KB", |r| {
-            r.users.filter(|c| c.users > 0).map(|c| c.kb_per_user)
-        }),
-        ("churn", "real churn CPU per connection", "µs", |r| {
-            r.churn.map(|c| c.1)
-        }),
-        ("wait", "real wait p99", "ms", |r| {
-            r.wait.flatten().map(|w| w.2 as f64 / 1000.0)
-        }),
-        ("echo", "real echo CPU per request", "µs", |r| {
-            r.echo.flatten().map(|e| e.1)
-        }),
-        ("upload", "real upload peak memory", "MB", |r| {
-            r.upload.flatten().map(|u| u.1)
-        }),
-        ("list", "real list CPU per request", "µs", |r| {
-            r.list.flatten().map(|l| l.1)
-        }),
-        ("ws", "real memory per WebSocket", "KB", |r| {
-            r.ws.flatten().map(|w| w.0)
-        }),
-        ("soak", "real soak drift", "%", |r| {
-            r.soak.flatten().map(|(f, l)| drift(f, l))
-        }),
-        ("shutdown", "real shutdown failures", "", |r| {
-            r.shutdown.flatten().map(|s| s.0 as f64)
-        }),
-        ("shutdown", "real shutdown time", "ms", |r| {
-            r.shutdown.flatten().map(|s| s.1 as f64)
-        }),
-    ];
-    for (test, tag, unit, f) in low {
-        if runs(opt, test) {
-            let all = rows
-                .iter()
-                .filter_map(|r| Some((r.server, f(r)?)))
-                .collect();
-            rank_low(tag, all, |v| {
-                format!("{v:.1} {unit}").trim_end().to_string()
-            });
+            match f.rank {
+                High(tag, unit) if high => {
+                    all.sort_by(|a, b| b.1.total_cmp(&a.1));
+                    rank_high(tag, &all, unit);
+                }
+                Low(tag, unit) if !high => rank_low(tag, all, |v| {
+                    format!("{v:.1} {unit}").trim_end().to_string()
+                }),
+                _ => {}
+            }
         }
     }
 }
@@ -1095,63 +936,10 @@ pub fn write_csv(file: &Path, rows: &[Row]) {
         text.push_str("server,test,figure,value\n");
     }
     for r in rows {
-        let mut put = |test: &str, figure: &str, v: f64| {
-            text.push_str(&format!("{},{test},{figure},{v}\n", r.server));
-        };
-        if let Some(c) = r.users {
-            put("users", "users", c.users as f64);
-            put("users", "load-limited", f64::from(u8::from(c.limited)));
-            put("users", "p99 us", c.p99 as f64);
-            put("users", "cpu %", c.cpu);
-            put("users", "MB", c.mb);
-            put("users", "KB per user", c.kb_per_user);
-            if let Some((served, p99)) = c.over {
-                put("users", "2x served %", served);
-                put("users", "2x p99 us", p99 as f64);
+        for (f, v) in FIGURES.iter().zip(&r.values) {
+            if let Some(Some(v)) = v {
+                text.push_str(&format!("{},{},{},{v}\n", r.server, f.test, f.name));
             }
-        }
-        if let Some((rps, us)) = r.churn {
-            put("churn", "conn/s", rps);
-            put("churn", "cpu us", us);
-        }
-        if let Some((kept, p99, cut)) = r.slow {
-            put("slow", "kept %", kept);
-            put("slow", "p99 us", p99 as f64);
-            put("slow", "cut", cut as f64);
-        }
-        if let Some((rps, p50, p99)) = r.wait.flatten() {
-            put("wait", "req/s", rps);
-            put("wait", "p50 us", p50 as f64);
-            put("wait", "p99 us", p99 as f64);
-        }
-        for (test, v) in [("echo", r.echo), ("list", r.list)] {
-            if let Some((rps, us)) = v.flatten() {
-                put(test, "req/s", rps);
-                put(test, "cpu us", us);
-            }
-        }
-        if let Some((mbs, peak)) = r.upload.flatten() {
-            put("upload", "MB/s", mbs);
-            put("upload", "peak MB", peak);
-        }
-        if let Some(rps) = r.static_file.flatten() {
-            put("static", "req/s", rps);
-        }
-        if let Some((kb, msgs, p99)) = r.ws.flatten() {
-            put("ws", "KB per socket", kb);
-            put("ws", "msgs/s", msgs);
-            put("ws", "p99 us", p99 as f64);
-        }
-        if let Some((handled, _)) = &r.abuse {
-            put("abuse", "handled", *handled as f64);
-        }
-        if let Some((first, last)) = r.soak.flatten() {
-            put("soak", "first MB", first);
-            put("soak", "last MB", last);
-        }
-        if let Some((failed, exit_ms)) = r.shutdown.flatten() {
-            put("shutdown", "failed", failed as f64);
-            put("shutdown", "exit ms", exit_ms as f64);
         }
     }
     std::fs::OpenOptions::new()
@@ -1213,8 +1001,8 @@ mod tests {
 
     #[test]
     fn soak_growth() {
-        assert!(!grows(100.0, 120.0));
-        assert!(grows(100.0, 121.0));
+        assert!(!grows(drift(100.0, 120.0)));
+        assert!(grows(drift(100.0, 121.0)));
         assert_eq!(drift(200.0, 150.0), -25.0);
         assert_eq!(cell(Some(None::<u8>), |v| v.to_string()), "n/a");
         assert_eq!(cell(None::<Option<u8>>, |v| v.to_string()), "-");
