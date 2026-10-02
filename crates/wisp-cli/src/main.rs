@@ -9,6 +9,8 @@ mod events;
 mod new;
 mod sha256;
 mod targets;
+#[cfg(test)]
+mod template_files;
 mod term;
 
 use std::path::Path;
@@ -88,7 +90,15 @@ fn usage() -> String {
 }
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // `std::env::args` panics on an argument that is not UTF-8.
+    let args: Result<Vec<String>, _> = std::env::args_os()
+        .skip(1)
+        .map(|a| a.into_string())
+        .collect();
+    let Ok(args) = args else {
+        term::failed("An argument is not valid UTF-8.\nUse names made of ordinary text.");
+        return ExitCode::FAILURE;
+    };
     let result = match args.first().map(String::as_str) {
         Some("new") => new::run(&args[1..]),
         Some("dev") => {
@@ -181,30 +191,21 @@ fn build_options(args: &[String]) -> Result<BuildOptions, String> {
                 o.client = true;
             }
             "--out" | "-o" => {
-                let out = args.next().ok_or_else(|| {
-                    format!(
-                        "{arg} needs a folder.
-{usage}"
-                    )
-                })?;
+                let out = args
+                    .next()
+                    .ok_or_else(|| format!("{arg} needs a folder.\n{usage}"))?;
                 o.out = Some(out.clone());
             }
             _ if arg.starts_with("--out=") => o.out = Some(arg["--out=".len()..].to_string()),
             _ if arg.starts_with('-') => {
-                return Err(format!(
-                    "There is no option {arg}.
-{usage}"
-                ));
+                return Err(format!("There is no option {arg}.\n{usage}"));
             }
-            _ => {
-                return Err(format!(
-                    "Unexpected {arg}.
-{usage}"
-                ));
-            }
+            _ => return Err(format!("Unexpected {arg}.\n{usage}")),
         }
     }
-    let wrong = if o.target.is_some() && (o.static_site || o.docker) {
+    let wrong = if o.out.as_deref() == Some("") {
+        Some("--out needs a folder.")
+    } else if o.target.is_some() && (o.static_site || o.docker) {
         Some("--target <host> goes alone, without --static or --docker.")
     } else if o.client && (o.static_site || o.docker || o.target.is_some()) {
         Some("--client ts goes alone, with --out <file> if you like.")
@@ -216,10 +217,7 @@ fn build_options(args: &[String]) -> Result<BuildOptions, String> {
         None
     };
     if let Some(wrong) = wrong {
-        return Err(format!(
-            "{wrong}
-{usage}"
-        ));
+        return Err(format!("{wrong}\n{usage}"));
     }
     Ok(o)
 }
@@ -283,7 +281,11 @@ fn build(root: &Path, o: &BuildOptions) -> Result<(), String> {
     }
     if let Some(host) = &o.target {
         let out = o.out.clone().unwrap_or_else(|| format!("dist/{host}"));
+        deploy::check_out(root, Path::new(&out))?;
         return targets::build(root, host, Path::new(&out));
+    }
+    if o.static_site {
+        deploy::check_out(root, Path::new(o.out.as_deref().unwrap_or("dist")))?;
     }
     if o.docker {
         css::build(root)?;

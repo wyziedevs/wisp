@@ -77,14 +77,15 @@ pub fn watch(root: &Path) -> Result<Option<Watcher>, String> {
         return Ok(None);
     };
     let bin = tailwind()?;
-    let mut child = Command::new(bin)
+    make_wisp_dir(root)?;
+    let mut child = Command::new(&bin)
         .args(["-i", "src/app.css", "-o", ".wisp/app.css", "--watch"])
         .current_dir(root)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Could not start Tailwind: {e}."))?;
+        .map_err(|e| tailwind_failed("start", &bin, &e))?;
     // Tailwind reports every build on stderr; `wisp dev` already says when
     // the styles change, so only its errors get through.
     let stderr = child.stderr.take().expect("stderr is piped");
@@ -111,16 +112,31 @@ pub fn build(root: &Path) -> Result<(), String> {
         let _ = fs::remove_file(built);
         return Ok(());
     };
-    let status = Command::new(tailwind()?)
+    let bin = tailwind()?;
+    make_wisp_dir(root)?;
+    let status = Command::new(&bin)
         .args(["-i", "src/app.css", "-o", ".wisp/app.css", "--minify"])
         .current_dir(root)
         .status()
-        .map_err(|e| format!("Could not run Tailwind: {e}."))?;
+        .map_err(|e| tailwind_failed("run", &bin, &e))?;
     if status.success() {
         Ok(())
     } else {
         Err("Tailwind could not build the CSS.\nIts errors are above.".into())
     }
+}
+
+/// Tailwind writes its output into `.wisp/`, which a fresh checkout lacks.
+fn make_wisp_dir(root: &Path) -> Result<(), String> {
+    let dir = root.join(".wisp");
+    fs::create_dir_all(&dir).map_err(|e| format!("Could not create {}: {e}.", dir.display()))
+}
+
+fn tailwind_failed(what: &str, bin: &Path, e: &std::io::Error) -> String {
+    format!(
+        "Could not {what} Tailwind ({}): {e}.\nDelete that file to download it again, or set WISP_TAILWIND to a tailwindcss binary.",
+        bin.display()
+    )
 }
 
 /// Downloads Tailwind now rather than on the first `wisp dev`.
@@ -160,22 +176,30 @@ fn tailwind() -> Result<PathBuf, String> {
     let url = format!(
         "https://github.com/tailwindlabs/tailwindcss/releases/download/{TAILWIND_VERSION}/{asset}"
     );
-    let partial = bin.with_extension("download");
+    // The process id keeps two `wisp` commands from writing one file.
+    let mut partial = bin.clone().into_os_string();
+    partial.push(format!(".{}.download", std::process::id()));
+    let partial = PathBuf::from(partial);
     crate::term::step(&format!(
         "Downloading Tailwind {TAILWIND_VERSION} from {url}. This happens once."
     ));
     // curl ships with Windows 10+, macOS and every Linux distribution.
     let status = Command::new("curl")
-        .args(["-fL", "--progress-bar", "-o"])
+        .args(["-fL", "--progress-bar", "--connect-timeout", "30", "--retry", "2", "-o"])
         .arg(&partial)
         .arg(&url)
         .status()
-        .map_err(|e| format!("Could not run curl: {e}."))?;
+        .map_err(|e| {
+            format!("Could not run curl: {e}.\nInstall curl, or set WISP_TAILWIND to a tailwindcss binary.")
+        })?;
     if !status.success() {
         let _ = fs::remove_file(&partial);
-        return Err(format!("Could not download Tailwind.\nTried {url}."));
+        return Err(format!(
+            "Could not download Tailwind.\nTried {url}. Check the network, or set WISP_TAILWIND to a tailwindcss binary."
+        ));
     }
-    let bytes = fs::read(&partial).map_err(|e| e.to_string())?;
+    let io = |e: std::io::Error| format!("{}: {e}.", partial.display());
+    let bytes = fs::read(&partial).map_err(io)?;
     let got = sha256::hex_digest(&bytes);
     if got != *sha {
         let _ = fs::remove_file(&partial);
@@ -186,9 +210,18 @@ fn tailwind() -> Result<PathBuf, String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&partial, fs::Permissions::from_mode(0o755))
-            .map_err(|e| e.to_string())?;
+        fs::set_permissions(&partial, fs::Permissions::from_mode(0o755)).map_err(io)?;
     }
-    fs::rename(&partial, &bin).map_err(|e| e.to_string())?;
+    // Another `wisp` may have finished first; its copy is the same file.
+    if let Err(e) = fs::rename(&partial, &bin)
+        && !bin.exists()
+    {
+        let _ = fs::remove_file(&partial);
+        return Err(format!(
+            "Could not install Tailwind to {}: {e}.",
+            bin.display()
+        ));
+    }
+    let _ = fs::remove_file(&partial);
     Ok(bin)
 }
