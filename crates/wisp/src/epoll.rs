@@ -774,11 +774,17 @@ impl Sock {
     /// a future that waits again after a wakeup with nothing behind it
     /// keeps that.
     pub(crate) async fn readable_by(&mut self, deadline: u64) -> io::Result<()> {
-        with(|w| {
-            let e = &mut w.conns[self.id];
-            e.deadline = e.deadline.max(deadline);
-        });
-        poll_fn(|cx| with(|w| w.readable(self.id, cx))).await
+        let mut first = true;
+        poll_fn(|cx| {
+            with(|w| {
+                if std::mem::take(&mut first) {
+                    let e = &mut w.conns[self.id];
+                    e.deadline = e.deadline.max(deadline);
+                }
+                w.readable(self.id, cx)
+            })
+        })
+        .await
     }
 
     /// Sends all of `buf` and leaves it empty. What the socket has no room
