@@ -7,7 +7,6 @@
 //! masked), puts fragmented messages back together, answers pings, echoes
 //! a close, checks text is UTF-8, and refuses a message larger than the
 //! route's body limit. No extensions (compression) are offered.
-#![cfg_attr(target_arch = "wasm32", allow(dead_code))]
 
 use crate::{Cx, Error, Gone, Method, Response, Result};
 use std::borrow::Cow;
@@ -67,7 +66,10 @@ type Handler =
     Box<dyn FnOnce(WebSocket) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> + Send>;
 
 /// What a [`Response::websocket`] runs once the connection is upgraded.
-pub struct Upgrade(pub(crate) Handler);
+pub struct Upgrade(
+    // The edge build answers an upgrade 501 without running it.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))] pub(crate) Handler,
+);
 
 impl Response {
     /// Upgrades the request to a WebSocket and runs `handler` with it; the
@@ -113,7 +115,7 @@ pub(crate) fn handshake(cx: &Cx) -> Result<String> {
         })
     };
     if cx.method != Method::Get
-        || !cx.http11
+        || !cx.wire.http11
         || !has("upgrade", "websocket")
         || !has("connection", "upgrade")
     {
@@ -203,169 +205,183 @@ fn compress(state: &mut [u32; 5], block: &[u8; 64]) {
     }
 }
 
-const CONTINUATION: u8 = 0;
-const TEXT: u8 = 1;
-const BINARY: u8 = 2;
-const CLOSE: u8 = 8;
-const PING: u8 = 9;
-const PONG: u8 = 10;
+/// The frame codec, for the built-in server alone.
+#[cfg(not(target_arch = "wasm32"))]
+use codec::*;
 
-/// Close codes (RFC 6455 §7.4.1).
-const NORMAL: u16 = 1000;
-const GOING_AWAY: u16 = 1001;
-const PROTOCOL_ERROR: u16 = 1002;
-const NOT_UTF8: u16 = 1007;
-const TOO_BIG: u16 = 1009;
-const SERVER_ERROR: u16 = 1011;
+#[cfg(not(target_arch = "wasm32"))]
+mod codec {
+    use super::Message;
 
-/// A frame from the server: final, unmasked.
-fn frame(w: &mut Vec<u8>, op: u8, payload: &[u8]) {
-    w.push(0x80 | op);
-    match payload.len() {
-        n @ 0..126 => w.push(n as u8),
-        n @ 126..=0xffff => {
-            w.push(126);
-            w.extend_from_slice(&(n as u16).to_be_bytes());
+    pub(super) const CONTINUATION: u8 = 0;
+    pub(super) const TEXT: u8 = 1;
+    pub(super) const BINARY: u8 = 2;
+    pub(super) const CLOSE: u8 = 8;
+    pub(super) const PING: u8 = 9;
+    pub(super) const PONG: u8 = 10;
+
+    /// Close codes (RFC 6455 §7.4.1).
+    pub(super) const NORMAL: u16 = 1000;
+    pub(super) const GOING_AWAY: u16 = 1001;
+    pub(super) const PROTOCOL_ERROR: u16 = 1002;
+    pub(super) const NOT_UTF8: u16 = 1007;
+    pub(super) const TOO_BIG: u16 = 1009;
+    pub(super) const SERVER_ERROR: u16 = 1011;
+
+    /// A frame from the server: final, unmasked.
+    pub(super) fn frame(w: &mut Vec<u8>, op: u8, payload: &[u8]) {
+        w.push(0x80 | op);
+        match payload.len() {
+            n @ 0..126 => w.push(n as u8),
+            n @ 126..=0xffff => {
+                w.push(126);
+                w.extend_from_slice(&(n as u16).to_be_bytes());
+            }
+            n => {
+                w.push(127);
+                w.extend_from_slice(&(n as u64).to_be_bytes());
+            }
         }
-        n => {
-            w.push(127);
-            w.extend_from_slice(&(n as u64).to_be_bytes());
+        w.extend_from_slice(payload);
+    }
+
+    /// A frame parsed in place; it ends where its payload does.
+    pub(super) struct Frame {
+        fin: bool,
+        op: u8,
+        payload: std::ops::Range<usize>,
+    }
+
+    /// One frame from the client at the start of `b`, unmasked in place.
+    /// `Ok(None)` wants more bytes; `Err` is the close code to fail the
+    /// connection with.
+    pub(super) fn parse(b: &mut [u8], limit: usize) -> std::result::Result<Option<Frame>, u16> {
+        if b.len() < 2 {
+            return Ok(None);
         }
+        let (fin, op) = (b[0] & 0x80 != 0, b[0] & 0x0f);
+        if b[0] & 0x70 != 0
+            || !matches!(op, CONTINUATION | TEXT | BINARY | CLOSE | PING | PONG)
+            || b[1] & 0x80 == 0
+        {
+            return Err(PROTOCOL_ERROR); // extension bits, unknown opcode, or unmasked
+        }
+        let (len, at) = match b[1] & 0x7f {
+            n @ 0..126 => (n as u64, 2),
+            126 if b.len() >= 4 => (u16::from_be_bytes([b[2], b[3]]) as u64, 4),
+            127 if b.len() >= 10 => (u64::from_be_bytes(b[2..10].try_into().unwrap()), 10),
+            _ => return Ok(None),
+        };
+        if len >> 63 != 0 || (op >= CLOSE && (!fin || len > 125)) {
+            return Err(PROTOCOL_ERROR);
+        }
+        if len > limit as u64 {
+            return Err(TOO_BIG);
+        }
+        let start: usize = at + 4;
+        let end = start.saturating_add(len as usize);
+        if b.len() < end {
+            return Ok(None);
+        }
+        let mask = [b[at], b[at + 1], b[at + 2], b[at + 3]];
+        for (i, byte) in b[start..end].iter_mut().enumerate() {
+            *byte ^= mask[i & 3];
+        }
+        Ok(Some(Frame {
+            fin,
+            op,
+            payload: start..end,
+        }))
     }
-    w.extend_from_slice(payload);
-}
 
-/// A frame parsed in place; it ends where its payload does.
-struct Frame {
-    fin: bool,
-    op: u8,
-    payload: std::ops::Range<usize>,
-}
+    /// What the client sent, a frame at a time.
+    pub(super) enum Event {
+        Message(Message),
+        Ping(Vec<u8>),
+        /// The client closed; the payload to echo.
+        Close(Vec<u8>),
+        /// The client broke the protocol; the code to close with.
+        Fail(u16),
+    }
 
-/// One frame from the client at the start of `b`, unmasked in place.
-/// `Ok(None)` wants more bytes; `Err` is the close code to fail the
-/// connection with.
-fn parse(b: &mut [u8], limit: usize) -> std::result::Result<Option<Frame>, u16> {
-    if b.len() < 2 {
-        return Ok(None);
+    /// Bytes from the client, turned into [`Event`]s.
+    pub(super) struct Inbox {
+        pub(super) buf: Vec<u8>,
+        /// Where the unparsed bytes in `buf` start; the rest is dropped only
+        /// when more must be read, so many small frames cost no copying.
+        pub(super) at: usize,
+        /// A fragmented message so far: its opcode and data.
+        pub(super) partial: Option<(u8, Vec<u8>)>,
+        pub(super) limit: usize,
     }
-    let (fin, op) = (b[0] & 0x80 != 0, b[0] & 0x0f);
-    if b[0] & 0x70 != 0
-        || !matches!(op, CONTINUATION | TEXT | BINARY | CLOSE | PING | PONG)
-        || b[1] & 0x80 == 0
-    {
-        return Err(PROTOCOL_ERROR); // extension bits, unknown opcode, or unmasked
-    }
-    let (len, at) = match b[1] & 0x7f {
-        n @ 0..126 => (n as u64, 2),
-        126 if b.len() >= 4 => (u16::from_be_bytes([b[2], b[3]]) as u64, 4),
-        127 if b.len() >= 10 => (u64::from_be_bytes(b[2..10].try_into().unwrap()), 10),
-        _ => return Ok(None),
-    };
-    if len >> 63 != 0 || (op >= CLOSE && (!fin || len > 125)) {
-        return Err(PROTOCOL_ERROR);
-    }
-    if len > limit as u64 {
-        return Err(TOO_BIG);
-    }
-    let start: usize = at + 4;
-    let end = start.saturating_add(len as usize);
-    if b.len() < end {
-        return Ok(None);
-    }
-    let mask = [b[at], b[at + 1], b[at + 2], b[at + 3]];
-    for (i, byte) in b[start..end].iter_mut().enumerate() {
-        *byte ^= mask[i & 3];
-    }
-    Ok(Some(Frame {
-        fin,
-        op,
-        payload: start..end,
-    }))
-}
 
-/// What the client sent, a frame at a time.
-enum Event {
-    Message(Message),
-    Ping(Vec<u8>),
-    /// The client closed; the payload to echo.
-    Close(Vec<u8>),
-    /// The client broke the protocol; the code to close with.
-    Fail(u16),
-}
-
-/// Bytes from the client, turned into [`Event`]s.
-struct Inbox {
-    buf: Vec<u8>,
-    /// Where the unparsed bytes in `buf` start; the rest is dropped only
-    /// when more must be read, so many small frames cost no copying.
-    at: usize,
-    /// A fragmented message so far: its opcode and data.
-    partial: Option<(u8, Vec<u8>)>,
-    limit: usize,
-}
-
-impl Inbox {
-    /// The next event in `buf`, or `None` until more bytes come.
-    fn next(&mut self) -> Option<Event> {
-        loop {
-            let Frame { fin, op, payload } = match parse(&mut self.buf[self.at..], self.limit) {
-                Ok(Some(f)) => f,
-                Ok(None) => {
-                    self.buf.drain(..self.at);
-                    self.at = 0;
-                    return None;
-                }
-                Err(code) => return Some(Event::Fail(code)),
-            };
-            let data = self.buf[self.at + payload.start..self.at + payload.end].to_vec();
-            self.at += payload.end;
-            let (op, data) = match (op, self.partial.take()) {
-                (PING, partial) => {
-                    self.partial = partial;
-                    return Some(Event::Ping(data));
-                }
-                (PONG, partial) => {
-                    self.partial = partial;
+    impl Inbox {
+        /// The next event in `buf`, or `None` until more bytes come.
+        pub(super) fn next(&mut self) -> Option<Event> {
+            loop {
+                let Frame { fin, op, payload } = match parse(&mut self.buf[self.at..], self.limit) {
+                    Ok(Some(f)) => f,
+                    Ok(None) => {
+                        self.buf.drain(..self.at);
+                        self.at = 0;
+                        // What one large message grew it to goes once it is read.
+                        let keep = crate::policy::KEEP_CAPACITY;
+                        if self.buf.capacity() > keep && self.buf.len() <= keep / 2 {
+                            self.buf.shrink_to(keep);
+                        }
+                        return None;
+                    }
+                    Err(code) => return Some(Event::Fail(code)),
+                };
+                let data = self.buf[self.at + payload.start..self.at + payload.end].to_vec();
+                self.at += payload.end;
+                let (op, data) = match (op, self.partial.take()) {
+                    (PING, partial) => {
+                        self.partial = partial;
+                        return Some(Event::Ping(data));
+                    }
+                    (PONG, partial) => {
+                        self.partial = partial;
+                        continue;
+                    }
+                    (CLOSE, _) => {
+                        // No payload, or a code a peer may send and UTF-8 text.
+                        let ok = match *data {
+                            [] => true,
+                            [a, b, ref reason @ ..] => {
+                                matches!(u16::from_be_bytes([a, b]), 1000..=1003 | 1007..=1014 | 3000..=4999)
+                                    && std::str::from_utf8(reason).is_ok()
+                            }
+                            _ => false,
+                        };
+                        return Some(if ok {
+                            Event::Close(data)
+                        } else {
+                            Event::Fail(PROTOCOL_ERROR)
+                        });
+                    }
+                    (CONTINUATION, Some((first, mut so_far))) => {
+                        if so_far.len() + data.len() > self.limit {
+                            return Some(Event::Fail(TOO_BIG));
+                        }
+                        so_far.extend_from_slice(&data);
+                        (first, so_far)
+                    }
+                    (TEXT | BINARY, None) => (op, data),
+                    _ => return Some(Event::Fail(PROTOCOL_ERROR)), // out of order
+                };
+                if !fin {
+                    self.partial = Some((op, data));
                     continue;
                 }
-                (CLOSE, _) => {
-                    // No payload, or a code a peer may send and UTF-8 text.
-                    let ok = match *data {
-                        [] => true,
-                        [a, b, ref reason @ ..] => {
-                            matches!(u16::from_be_bytes([a, b]), 1000..=1003 | 1007..=1014 | 3000..=4999)
-                                && std::str::from_utf8(reason).is_ok()
-                        }
-                        _ => false,
-                    };
-                    return Some(if ok {
-                        Event::Close(data)
-                    } else {
-                        Event::Fail(PROTOCOL_ERROR)
-                    });
-                }
-                (CONTINUATION, Some((first, mut so_far))) => {
-                    if so_far.len() + data.len() > self.limit {
-                        return Some(Event::Fail(TOO_BIG));
-                    }
-                    so_far.extend_from_slice(&data);
-                    (first, so_far)
-                }
-                (TEXT | BINARY, None) => (op, data),
-                _ => return Some(Event::Fail(PROTOCOL_ERROR)), // out of order
-            };
-            if !fin {
-                self.partial = Some((op, data));
-                continue;
+                return Some(match op {
+                    TEXT => match String::from_utf8(data) {
+                        Ok(t) => Event::Message(Message::Text(t)),
+                        Err(_) => Event::Fail(NOT_UTF8),
+                    },
+                    _ => Event::Message(Message::Binary(data)),
+                });
             }
-            return Some(match op {
-                TEXT => match String::from_utf8(data) {
-                    Ok(t) => Event::Message(Message::Text(t)),
-                    Err(_) => Event::Fail(NOT_UTF8),
-                },
-                _ => Event::Message(Message::Binary(data)),
-            });
         }
     }
 }
@@ -530,6 +546,9 @@ mod native {
             buf.clear();
             frame(buf, op, payload);
             let sent = http::write(half, buf).await;
+            if !crate::policy::kept(buf.capacity()) {
+                *buf = Vec::new();
+            }
             if op == CLOSE || sent.is_err() {
                 self.closed.store(true, Ordering::Relaxed);
             }
@@ -683,6 +702,14 @@ mod tests {
         assert!(matches!(&got[1], Event::Message(Message::Text(t)) if t == "Hello"));
         assert!(matches!(&got[2], Event::Message(Message::Binary(b)) if b.len() == 300));
         assert_eq!(got.len(), 3);
+    }
+
+    #[test]
+    fn a_large_message_leaves_no_large_buffer() {
+        let mut i = inbox(client(true, BINARY, &[7; 300_000]), 1 << 20);
+        assert!(matches!(i.next(), Some(Event::Message(Message::Binary(b))) if b.len() == 300_000));
+        assert!(i.next().is_none());
+        assert!(i.buf.capacity() <= crate::policy::KEEP_CAPACITY);
     }
 
     #[test]

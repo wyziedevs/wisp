@@ -29,7 +29,7 @@
 //! for. Each block says why it holds.
 #![allow(unsafe_code)]
 
-use crate::http;
+use crate::{http, policy};
 use std::cell::RefCell;
 use std::future::poll_fn;
 use std::io;
@@ -55,7 +55,7 @@ const BUFS: usize = 256;
 const BUF_SIZE: usize = 4096;
 /// Received bytes a connection has not read, past which receiving pauses
 /// until it does: the rest waits in the socket, and TCP slows the client.
-const INBOX_LIMIT: usize = http::KEEP_CAPACITY;
+const INBOX_LIMIT: usize = policy::KEEP_CAPACITY;
 
 // The kernel's ABI (linux/io_uring.h): the part used here.
 const SETUP_CQSIZE: u32 = 1 << 3;
@@ -565,18 +565,19 @@ struct Entry {
     close: Option<RawFd>,
 }
 
-impl Entry {
-    fn wait(&mut self, cx: &Context) {
-        if !self.waker.as_ref().is_some_and(|w| w.will_wake(cx.waker())) {
-            self.waker = Some(cx.waker().clone());
-        }
+/// `waker` is `cx`'s from now on, cloned only when it changed. For the
+/// ring's and the epoll's entries.
+pub(crate) fn wait(waker: &mut Option<Waker>, cx: &Context) {
+    if !waker.as_ref().is_some_and(|w| w.will_wake(cx.waker())) {
+        *waker = Some(cx.waker().clone());
     }
+}
 
-    fn result(errno: i32) -> io::Result<()> {
-        match errno {
-            0 => Ok(()),
-            e => Err(io::Error::from_raw_os_error(e)),
-        }
+/// A connection's calls after `errno`, 0 for none.
+pub(crate) fn result(errno: i32) -> io::Result<()> {
+    match errno {
+        0 => Ok(()),
+        e => Err(io::Error::from_raw_os_error(e)),
     }
 }
 
@@ -763,9 +764,7 @@ impl Worker {
         e.sending = false;
         e.timed_out = false;
         e.out.clear();
-        if e.out.capacity() > http::KEEP_CAPACITY {
-            e.out.shrink_to(http::KEEP_CAPACITY);
-        }
+        policy::trim(&mut e.out, policy::KEEP_CAPACITY);
         self.sending -= 1;
         // A failure is for a task waiting to receive too: its `read` fails.
         if e.wants_send || (e.failed != 0 && e.wants_recv) {
@@ -787,7 +786,7 @@ impl Worker {
         self.checked = now;
         for id in 0..self.conns.len() {
             let e = &mut self.conns[id];
-            if e.sending && !e.timed_out && now >= e.since + http::WRITE_TIMEOUT.as_secs() {
+            if e.sending && !e.timed_out && policy::stalled(now, e.since) {
                 e.timed_out = true;
                 self.cancel(id, true);
             }
@@ -901,19 +900,17 @@ impl Worker {
             let n = e.inbox.len();
             buf.extend_from_slice(&e.inbox);
             e.inbox.clear();
-            if e.inbox.capacity() > INBOX_LIMIT {
-                e.inbox.shrink_to(BUF_SIZE);
-            }
+            policy::trim(&mut e.inbox, BUF_SIZE);
             if std::mem::take(&mut e.paused) {
                 self.arm(id);
             }
             return Poll::Ready(Ok(n));
         }
         match e.ended {
-            Some(errno) => Poll::Ready(Entry::result(errno).map(|()| 0)),
+            Some(errno) => Poll::Ready(result(errno).map(|()| 0)),
             None => {
                 e.wants_recv = true;
-                e.wait(cx);
+                wait(&mut e.waker, cx);
                 Poll::Pending
             }
         }
@@ -935,10 +932,10 @@ impl Worker {
         let e = &mut self.conns[id];
         if e.sending {
             e.wants_send = true;
-            e.wait(cx);
+            wait(&mut e.waker, cx);
             return Poll::Pending;
         }
-        Poll::Ready(Entry::result(e.failed))
+        Poll::Ready(result(e.failed))
     }
 
     /// Stops receiving for good, and once the kernel is done, moves what
@@ -952,11 +949,11 @@ impl Worker {
             }
             let e = &mut self.conns[id];
             e.wants_recv = true;
-            e.wait(cx);
+            wait(&mut e.waker, cx);
             return Poll::Pending;
         }
         early.append(&mut e.inbox);
-        Poll::Ready(Entry::result(e.ended.unwrap_or(0)))
+        Poll::Ready(result(e.ended.unwrap_or(0)))
     }
 
     fn close(&mut self, id: usize, fd: Option<RawFd>) {
@@ -967,6 +964,17 @@ impl Worker {
         }
         self.release(id);
     }
+}
+
+/// Sends under way on this thread's worker, which a stopping server waits
+/// for: a response handed to the driver is not yet sent.
+pub(crate) fn sending() -> usize {
+    WORKER
+        .try_with(|w| {
+            w.try_borrow()
+                .map_or(0, |w| w.as_ref().map_or(0, |w| w.sending))
+        })
+        .unwrap_or(0)
 }
 
 /// A connection on its worker's ring. Like the task that holds it, it stays
@@ -1206,7 +1214,12 @@ pub(crate) async fn yield_once() {
 /// `accepted` (which starts its task), and turns the ring whenever a
 /// connection queued something or the kernel has completions. Stops
 /// accepting once the server is stopping; runs until the process ends.
-pub(crate) async fn serve(mut ring: Ring, listener: TcpListener, accepted: fn(TcpStream)) {
+pub(crate) async fn serve(
+    mut ring: Ring,
+    listener: TcpListener,
+    accepted: fn(TcpStream),
+    ready: std::sync::mpsc::Sender<()>,
+) {
     if let Err(e) = register::<()>(&ring.fd, REGISTER_ENABLE_RINGS, None, 0) {
         crate::fail(&format!("io_uring stopped working: {e}"));
     }
@@ -1219,6 +1232,7 @@ pub(crate) async fn serve(mut ring: Ring, listener: TcpListener, accepted: fn(Tc
     };
     WORKER.set(Some(Worker::new(ring, listener.as_raw_fd())));
     with(Worker::accept);
+    let _ = ready.send(());
     let mut listener = Some(listener);
     let mut stop = std::pin::pin!(http::stopped());
     let mut timer = std::pin::pin!(tokio::time::sleep(Duration::ZERO));
@@ -1305,6 +1319,138 @@ pub(crate) async fn serve(mut ring: Ring, listener: TcpListener, accepted: fn(Tc
     }
 }
 
+/// The tests of a `Sock` that hold for the ring and the epoll alike, run
+/// in both their test modules: `$server` starts a worker of that kind that
+/// serves each connection with the function it is given, or is `None`
+/// where this kernel has none.
+#[cfg(test)]
+macro_rules! socket_tests {
+    ($server:expr) => {
+        fn echo(s: TcpStream) {
+            let mut sock = Sock::new(s);
+            tokio::spawn(async move {
+                let mut buf = Vec::new();
+                while let Ok(n) = sock.read(&mut buf).await
+                    && n > 0
+                    && sock.write(&mut buf).await.is_ok()
+                {}
+                sock.shutdown().await;
+            });
+        }
+
+        fn pattern(n: usize) -> Vec<u8> {
+            (0..n).map(|i| (i % 251) as u8).collect()
+        }
+
+        fn connect(addr: SocketAddr) -> std::net::TcpStream {
+            let c = std::net::TcpStream::connect(addr).unwrap();
+            c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            c
+        }
+
+        #[test]
+        fn echoes_megabytes_in_order() {
+            // More than the socket buffers (and the ring's inbox limit) hold
+            // at once: partial sends finished by the driver, receives that
+            // wait for them, paused receives, buffers running out.
+            let Some(addr) = ($server)(echo) else {
+                return;
+            };
+            let sent = pattern(8 << 20);
+            let mut c = connect(addr);
+            let mut w = c.try_clone().unwrap();
+            let data = sent.clone();
+            let writer = std::thread::spawn(move || {
+                w.write_all(&data).unwrap();
+                w.shutdown(Shutdown::Write).unwrap();
+            });
+            let mut got = Vec::new();
+            c.read_to_end(&mut got).unwrap();
+            writer.join().unwrap();
+            assert!(got == sent, "{} bytes back of {}", got.len(), sent.len());
+        }
+
+        #[test]
+        fn many_connections_at_once() {
+            // More than one epoll turn's events (256), within the default
+            // 1024 descriptors.
+            let Some(addr) = ($server)(echo) else {
+                return;
+            };
+            let mut conns: Vec<_> = (0..300).map(|_| connect(addr)).collect();
+            for round in 0..3u8 {
+                for (i, c) in conns.iter_mut().enumerate() {
+                    c.write_all(format!("{round}:{i};").as_bytes()).unwrap();
+                }
+                for (i, c) in conns.iter_mut().enumerate() {
+                    let want = format!("{round}:{i};");
+                    let mut got = vec![0; want.len()];
+                    c.read_exact(&mut got).unwrap();
+                    assert_eq!(got, want.as_bytes());
+                }
+            }
+        }
+
+        #[test]
+        fn a_response_outlives_its_socket() {
+            // Queued or sent in part, then the socket dropped at once: all of
+            // it still arrives, then the end.
+            fn answer(s: TcpStream) {
+                let mut sock = Sock::new(s);
+                tokio::spawn(async move {
+                    let mut buf = pattern(4 << 20);
+                    let _ = sock.write(&mut buf).await;
+                });
+            }
+            let Some(addr) = ($server)(answer) else {
+                return;
+            };
+            let mut c = connect(addr);
+            std::thread::sleep(Duration::from_millis(200));
+            let mut got = Vec::new();
+            c.read_to_end(&mut got).unwrap();
+            assert!(got == pattern(4 << 20), "{} bytes", got.len());
+        }
+
+        #[test]
+        fn a_socket_goes_to_tokio_with_what_came() {
+            fn handover(s: TcpStream) {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut sock = Sock::new(s);
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    while buf.len() < 5 {
+                        sock.read(&mut buf).await.unwrap();
+                    }
+                    sock.write(&mut b"ok".to_vec()).await.unwrap();
+                    // What comes now lands in the ring's inbox, or waits in
+                    // the epoll's socket.
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    let (mut tcp, mut early) = sock.into_tcp(buf.split_off(5)).await.unwrap();
+                    while early.len() < 6 {
+                        tcp.read_buf(&mut early).await.unwrap();
+                    }
+                    tcp.write_all(&early).await.unwrap();
+                });
+            }
+            let Some(addr) = ($server)(handover) else {
+                return;
+            };
+            let mut c = connect(addr);
+            c.write_all(b"hello").unwrap();
+            let mut ok = [0; 2];
+            c.read_exact(&mut ok).unwrap();
+            assert_eq!(&ok, b"ok");
+            c.write_all(b"world!").unwrap();
+            let mut back = [0; 6];
+            c.read_exact(&mut back).unwrap();
+            assert_eq!(&back, b"world!");
+        }
+    };
+}
+#[cfg(test)]
+pub(crate) use socket_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1322,34 +1468,14 @@ mod tests {
                 .build()
                 .unwrap();
             rt.block_on(async move {
-                tokio::spawn(serve(ring, listener, each));
+                tokio::spawn(serve(ring, listener, each, std::sync::mpsc::channel().0));
                 std::future::pending::<()>().await
             });
         });
         Some(addr)
     }
 
-    fn echo(s: TcpStream) {
-        let mut sock = Sock::new(s);
-        tokio::spawn(async move {
-            let mut buf = Vec::new();
-            while let Ok(n) = sock.read(&mut buf).await
-                && n > 0
-                && sock.write(&mut buf).await.is_ok()
-            {}
-            sock.shutdown().await;
-        });
-    }
-
-    fn pattern(n: usize) -> Vec<u8> {
-        (0..n).map(|i| (i % 251) as u8).collect()
-    }
-
-    fn connect(addr: SocketAddr) -> std::net::TcpStream {
-        let c = std::net::TcpStream::connect(addr).unwrap();
-        c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-        c
-    }
+    socket_tests!(server);
 
     #[test]
     fn the_check_passes_where_the_kernel_takes_a_ring() {
@@ -1371,100 +1497,5 @@ mod tests {
         let a = listen("127.0.0.1:0".parse().unwrap()).unwrap();
         let b = listen(a.local_addr().unwrap()).unwrap();
         assert_eq!(a.local_addr().unwrap(), b.local_addr().unwrap());
-    }
-
-    #[test]
-    fn echoes_megabytes_in_order() {
-        // More than the socket buffers and the inbox limit hold at once:
-        // partial sends, paused receives, buffers running out.
-        let Some(addr) = server(echo) else {
-            return;
-        };
-        let sent = pattern(8 << 20);
-        let mut c = connect(addr);
-        let mut w = c.try_clone().unwrap();
-        let data = sent.clone();
-        let writer = std::thread::spawn(move || {
-            w.write_all(&data).unwrap();
-            w.shutdown(Shutdown::Write).unwrap();
-        });
-        let mut got = Vec::new();
-        c.read_to_end(&mut got).unwrap();
-        writer.join().unwrap();
-        assert!(got == sent, "{} bytes back of {}", got.len(), sent.len());
-    }
-
-    #[test]
-    fn many_connections_at_once() {
-        let Some(addr) = server(echo) else {
-            return;
-        };
-        let mut conns: Vec<_> = (0..300).map(|_| connect(addr)).collect();
-        for round in 0..3u8 {
-            for (i, c) in conns.iter_mut().enumerate() {
-                c.write_all(format!("{round}:{i};").as_bytes()).unwrap();
-            }
-            for (i, c) in conns.iter_mut().enumerate() {
-                let want = format!("{round}:{i};");
-                let mut got = vec![0; want.len()];
-                c.read_exact(&mut got).unwrap();
-                assert_eq!(got, want.as_bytes());
-            }
-        }
-    }
-
-    #[test]
-    fn a_response_outlives_its_socket() {
-        // Queued, then the socket dropped at once: all of it still arrives,
-        // then the end.
-        fn answer(s: TcpStream) {
-            let mut sock = Sock::new(s);
-            tokio::spawn(async move {
-                let mut buf = pattern(4 << 20);
-                let _ = sock.write(&mut buf).await;
-            });
-        }
-        let Some(addr) = server(answer) else {
-            return;
-        };
-        let mut c = connect(addr);
-        std::thread::sleep(Duration::from_millis(200));
-        let mut got = Vec::new();
-        c.read_to_end(&mut got).unwrap();
-        assert!(got == pattern(4 << 20), "{} bytes", got.len());
-    }
-
-    #[test]
-    fn a_socket_goes_to_tokio_with_what_came() {
-        fn handover(s: TcpStream) {
-            use tokio::io::{AsyncReadExt, AsyncWriteExt};
-            let mut sock = Sock::new(s);
-            tokio::spawn(async move {
-                let mut buf = Vec::new();
-                while buf.len() < 5 {
-                    sock.read(&mut buf).await.unwrap();
-                }
-                sock.write(&mut b"ok".to_vec()).await.unwrap();
-                // What comes now lands in the ring's inbox.
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                let (mut tcp, mut early) = sock.into_tcp(Vec::new()).await.unwrap();
-                while early.len() < 6 {
-                    tcp.read_buf(&mut early).await.unwrap();
-                }
-                tcp.write_all(&early).await.unwrap();
-            });
-        }
-        let Some(addr) = server(handover) else {
-            return;
-        };
-        let mut c = connect(addr);
-        c.write_all(b"hello").unwrap();
-        let mut ok = [0; 2];
-        c.read_exact(&mut ok).unwrap();
-        assert_eq!(&ok, b"ok");
-        c.write_all(b"world!").unwrap();
-        let mut back = [0; 6];
-        c.read_exact(&mut back).unwrap();
-        assert_eq!(&back, b"world!");
     }
 }

@@ -77,7 +77,7 @@ impl Made {
 /// templates change without a build) or `before` set a status. `false`:
 /// render it.
 pub fn baked(cx: &Cx, out: &mut Out, page: &'static Baked) -> bool {
-    if crate::settings().dev || cx.status != 200 {
+    if crate::settings().dev || cx.status() != 200 {
         return false;
     }
     out.made = Some(Made::Baked(page));
@@ -160,8 +160,8 @@ impl Store {
     }
 
     /// The response kept for `cx`, while it is fresh.
-    fn get(&mut self, cx: &Cx, now: u64) -> Option<Arc<Kept>> {
-        let k = self.kept.get(key(&mut self.key, cx))?;
+    fn get<const ACCEPT: bool>(&mut self, cx: &Cx, now: u64) -> Option<Arc<Kept>> {
+        let k = self.kept.get(key::<ACCEPT>(&mut self.key, cx))?;
         (k.until > now).then(|| k.clone())
     }
 
@@ -181,8 +181,10 @@ impl Store {
     }
 }
 
-/// The key of `cx` in `buf`: `Host`, a NUL, then the path and query.
-fn key<'k>(buf: &'k mut Vec<u8>, cx: &Cx) -> &'k [u8] {
+/// The key of `cx` in `buf`: `Host`, a NUL, then the path and query; and
+/// with `ACCEPT` (a route whose answer varies by `accept`), a NUL and what
+/// it asks for: `n` for NDJSON, `j` for JSON.
+fn key<'k, const ACCEPT: bool>(buf: &'k mut Vec<u8>, cx: &Cx) -> &'k [u8] {
     buf.clear();
     buf.extend_from_slice(cx.header("host").unwrap_or("").as_bytes());
     buf.push(0);
@@ -190,6 +192,14 @@ fn key<'k>(buf: &'k mut Vec<u8>, cx: &Cx) -> &'k [u8] {
     if !cx.query_string().is_empty() {
         buf.push(b'?');
         buf.extend_from_slice(cx.query_string().as_bytes());
+    }
+    if ACCEPT {
+        let asked: &[u8] = if crate::rest::lines(cx) {
+            b"\0n"
+        } else {
+            b"\0j"
+        };
+        buf.extend_from_slice(asked);
     }
     buf
 }
@@ -225,11 +235,25 @@ fn personal(name: &str, value: &str) -> bool {
 /// A `CACHE` route's GET: answered with the response this worker keeps for
 /// it, when it has a fresh one. `false`: render it (then [`keep`]).
 pub fn cached(cx: &Cx, out: &mut Out, public: bool) -> bool {
+    lookup::<false>(cx, out, public)
+}
+
+/// [`cached`] for a route whose answer varies by `accept` (a
+/// `#[derive(Rest)]` list: JSON or NDJSON), which keeps each apart. The
+/// build picks it for those routes alone.
+pub fn cached_by_accept(cx: &Cx, out: &mut Out, public: bool) -> bool {
+    lookup::<true>(cx, out, public)
+}
+
+#[inline(always)]
+fn lookup<const ACCEPT: bool>(cx: &Cx, out: &mut Out, public: bool) -> bool {
     if !shared(cx, public) {
         return false;
     }
     let now = crate::http::now();
-    out.made = STORE.with_borrow_mut(|s| s.get(cx, now)).map(Made::Kept);
+    out.made = STORE
+        .with_borrow_mut(|s| s.get::<ACCEPT>(cx, now))
+        .map(Made::Kept);
     out.made.is_some()
 }
 
@@ -238,14 +262,20 @@ pub fn cached(cx: &Cx, out: &mut Out, public: bool) -> bool {
 /// header that makes it personal. Headers the route set are kept with it;
 /// those of the `before` hook, which runs every time, are not.
 pub fn keep<A: App>(cx: &mut Cx, out: &mut Out, secs: u32, public: bool) {
-    if secs == 0 || cx.status != 200 || out.made.is_some() || !shared(cx, public) {
+    store::<A, false>(cx, out, secs, public);
+}
+
+/// [`keep`] for a route [`cached_by_accept`] answers.
+pub fn keep_by_accept<A: App>(cx: &mut Cx, out: &mut Out, secs: u32, public: bool) {
+    store::<A, true>(cx, out, secs, public);
+}
+
+#[inline(always)]
+fn store<A: App, const ACCEPT: bool>(cx: &mut Cx, out: &mut Out, secs: u32, public: bool) {
+    if secs == 0 || cx.status() != 200 || out.made.is_some() || !shared(cx, public) {
         return;
     }
-    let own = cx.kept_headers..cx.out_headers.len();
-    if cx.out_headers[own.clone()]
-        .iter()
-        .any(|(n, v)| personal(n, v))
-    {
+    if cx.page_headers().iter().any(|(n, v)| personal(n, v)) {
         return;
     }
     let mut head = Vec::with_capacity(256);
@@ -274,7 +304,7 @@ pub fn keep<A: App>(cx: &mut Cx, out: &mut Out, secs: u32, public: bool) {
             return;
         }
     };
-    for (n, v) in cx.out_headers.drain(own) {
+    for (n, v) in cx.take_page_headers() {
         line(&mut head, &n, &v);
     }
     // An endpoint's own ETag (a REST row's) stands; any other gets one.
@@ -299,7 +329,7 @@ pub fn keep<A: App>(cx: &mut Cx, out: &mut Out, secs: u32, public: bool) {
         until: now + u64::from(secs),
     });
     STORE.with_borrow_mut(|s| {
-        let key = key(&mut s.key, cx).into();
+        let key = key::<ACCEPT>(&mut s.key, cx).into();
         s.insert(key, kept.clone(), now);
     });
     out.made = Some(Made::Kept(kept));
@@ -407,7 +437,17 @@ mod tests {
     #[test]
     fn keys_and_what_is_never_kept() {
         let mut buf = Vec::new();
-        assert_eq!(key(&mut buf, &cx(&[("host", "a.test")])), b"a.test\0/p?q=1");
+        assert_eq!(
+            key::<false>(&mut buf, &cx(&[("host", "a.test")])),
+            b"a.test\0/p?q=1"
+        );
+        // A list's JSON and NDJSON are kept apart.
+        let json = key::<true>(&mut buf, &cx(&[("accept", "application/json")])).to_vec();
+        let lines = key::<true>(&mut buf, &cx(&[("accept", "application/x-ndjson")])).to_vec();
+        assert_eq!(
+            (&json[..], &lines[..]),
+            (&b"\0/p?q=1\0j"[..], &b"\0/p?q=1\0n"[..])
+        );
         assert!(personal("Set-Cookie", "a=1"));
         assert!(personal("cache-control", "private, max-age=0"));
         assert!(personal("Cache-Control", "no-store"));
@@ -438,8 +478,9 @@ mod tests {
         assert_eq!(s.bytes, 41 + 51);
 
         let mut buf = Vec::new();
-        let at = key(&mut buf, &one).to_vec();
+        let at = key::<false>(&mut buf, &one).to_vec();
         s.insert(at.into(), kept(1, 10), 0);
-        assert!(s.get(&one, 9).is_some() && s.get(&one, 10).is_none());
+        assert!(s.get::<false>(&one, 9).is_some() && s.get::<false>(&one, 10).is_none());
+        assert!(s.get::<true>(&one, 9).is_none());
     }
 }
