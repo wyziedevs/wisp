@@ -14,7 +14,7 @@ fn leave() {
 
 #[action]
 fn everywhere() {
-    wisp::sign_out_everywhere(cx.signed_in()?);
+    wisp::sign_out_everywhere(cx.signed_in()?)?;
     redirect("/")
 }
 

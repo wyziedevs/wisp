@@ -332,7 +332,10 @@ impl<T> Table<T> {
     /// Reads a saved table's rows again from its store, for rows another
     /// instance of the app changes there: a stored row the one in memory
     /// lacks, or one `newer(in memory, stored)` says is newer, replaces it.
-    /// The store is read under the read lock, so no save runs meanwhile.
+    /// For a table whose rows only grow newer and are never removed: the
+    /// store is read unlocked, so a save meanwhile leaves memory ahead of
+    /// what was read, which then changes nothing. The write lock is taken
+    /// only for a row that does change, and briefly.
     pub(crate) fn refresh(&self, newer: fn(&T, &T) -> bool) -> Result {
         let unread = self
             .rows
@@ -343,15 +346,19 @@ impl<T> Table<T> {
             drop(self.write());
             return Ok(());
         }
-        let rows = self.read();
-        let (State::Stored(store), Some(saved)) = (rows.state, &self.saved) else {
+        let (State::Stored(store), Some(saved)) = (self.read().state, &self.saved) else {
             return Ok(());
         };
         let kept = store.load(saved.name)?;
-        drop(rows);
         let mut fresh = Vec::with_capacity(kept.len());
         for (id, json) in kept.into_iter().filter(|(id, _)| *id != 0) {
             fresh.push((id, (saved.read)(json.as_bytes())?));
+        }
+        let rows = self.read();
+        fresh.retain(|(id, v)| rows.map.get(id).is_none_or(|old| newer(old, v)));
+        drop(rows);
+        if fresh.is_empty() {
+            return Ok(());
         }
         let mut rows = self.write();
         for (id, v) in fresh {
@@ -368,9 +375,12 @@ impl<T> Table<T> {
     }
 
     /// Panics with a store's error, which is the request's 500: for the
-    /// calls that answer with a value, not a `Result`.
-    fn kept<R>(r: Result<R>) -> R {
-        r.unwrap_or_else(|e| panic!("{}", e.message()))
+    /// calls that answer with a value, not a `Result`. `rows` is unlocked
+    /// first, so the lock is not poisoned (`keep` had the table read
+    /// again on next use).
+    fn failed(rows: RwLockWriteGuard<'_, Rows<T>>, e: crate::Error) -> ! {
+        drop(rows);
+        panic!("{}", e.message())
     }
 
     /// Reads a saved table's rows from `store` now, for a test.
@@ -384,7 +394,9 @@ impl<T> Table<T> {
         let mut rows = self.write();
         let id = self.next_id(&mut rows);
         let json = self.encode(&rows, &value);
-        Self::kept(self.save(&mut rows, id, Some(&json)));
+        if let Err(e) = self.save(&mut rows, id, Some(&json)) {
+            Self::failed(rows, e);
+        }
         rows.map.insert(id, value);
         id
     }
@@ -405,7 +417,11 @@ impl<T> Table<T> {
 
     /// Takes the row out; `None` when there is none.
     pub fn remove(&self, id: u64) -> Option<T> {
-        Self::kept(self.delete(&mut self.write(), id))
+        let mut rows = self.write();
+        match self.delete(&mut rows, id) {
+            Ok(v) => v,
+            Err(e) => Self::failed(rows, e),
+        }
     }
 
     /// Changes the row in place: `NOTES.update(id, |n| n.done = true)`.
@@ -414,7 +430,9 @@ impl<T> Table<T> {
         let mut rows = self.write();
         let r = f(rows.map.get_mut(&id)?);
         let json = self.encode(&rows, &rows.map[&id]);
-        Self::kept(self.save(&mut rows, id, Some(&json)));
+        if let Err(e) = self.save(&mut rows, id, Some(&json)) {
+            Self::failed(rows, e);
+        }
         Some(r)
     }
 
@@ -715,6 +733,7 @@ mod tests {
         let failed =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| t.add("fail".into())));
         assert!(failed.is_err());
+        assert!(!t.rows.is_poisoned(), "unlocked before the panic");
         assert!(
             matches!(
                 t.rows.read().unwrap_or_else(|e| e.into_inner()).state,
