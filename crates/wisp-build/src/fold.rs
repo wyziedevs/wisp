@@ -94,6 +94,26 @@ pub fn escape(s: &str) -> String {
     out
 }
 
+/// `src` when it is `if COND { A } else { B }` of two literals: `COND`, and
+/// what each writes, escaped. A condition with a literal or a block in it
+/// is left to run.
+pub fn either(src: &str) -> Option<(&str, String, String)> {
+    let rest = src.trim().strip_prefix("if ")?;
+    let open = rest.find('{')?;
+    let cond = rest[..open].trim();
+    if cond.is_empty() || cond.contains(['"', '\'', '}']) {
+        return None;
+    }
+    let close = open + rest[open..].find('}')?;
+    let yes = literal(&rest[open + 1..close])?;
+    let other = rest[close + 1..]
+        .trim_start()
+        .strip_prefix("else")?
+        .trim_start();
+    let no = literal(other.strip_prefix('{')?.strip_suffix('}')?)?;
+    Some((cond, escape(&yes.text()), escape(&no.text())))
+}
+
 /// Names bound to values known at build time: a component's props.
 type Env = [(String, Lit)];
 
@@ -343,6 +363,35 @@ mod tests {
             escape("<a href=\"x\">'&'</a>"),
             "&lt;a href=&quot;x&quot;&gt;&#39;&amp;&#39;&lt;/a&gt;"
         );
+    }
+
+    #[test]
+    fn either_of_two_literals() {
+        let two = |c: &'static str, a: &str, b: &str| Some((c, a.to_string(), b.to_string()));
+        for (src, want) in [
+            (
+                "if p.active { \"on\" } else { \"off\" }",
+                two("p.active", "on", "off"),
+            ),
+            ("if !x {\"a<\"} else {1}", two("!x", "a&lt;", "1")),
+            (
+                "if let Some(_) = y { \"a\" } else { \"\" }",
+                two("let Some(_) = y", "a", ""),
+            ),
+        ] {
+            assert_eq!(either(src), want, "{src}");
+        }
+        for src in [
+            "if x { \"a\" } else if y { \"b\" } else { \"c\" }",
+            "if x { a } else { \"b\" }",
+            "if x { \"a}\" } else { \"b\" }",
+            "if s == \"x\" { \"a\" } else { \"b\" }",
+            "if x { \"a\" } else { \"b\" }.len()",
+            "if { \"a\" } else { \"b\" }",
+            "x",
+        ] {
+            assert_eq!(either(src), None, "{src}");
+        }
     }
 
     /// The runs a release build writes out: text and literal holes, with
