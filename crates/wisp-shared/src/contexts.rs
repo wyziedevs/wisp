@@ -171,9 +171,80 @@ pub fn guard_attr(out: &mut String, name: &str, start: usize) {
     }
 }
 
+/// What an attribute holds that escaping does not make safe, so that no
+/// value an expression chose may go in it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Held {
+    /// `on…`: script.
+    Event,
+    /// `srcdoc`: a whole HTML document.
+    Document,
+    /// A URL that may run script without being a URL attribute: an SVG
+    /// `<animate>`/`<set>`'s `to from values by` (which can set an `href`),
+    /// a `<meta>`'s `http-equiv` (which can make its `content` a refresh).
+    Url,
+    /// A `<meta>`'s `content`: a URL when its `http-equiv` is refresh.
+    Refresh,
+}
+
+/// What attribute `name` of a `tag` holds that escaping does not make safe,
+/// both in any case. A `tag` of "" is one the browser's code chooses: any
+/// tag at all. Templates refuse expressions in these; spreads leave them
+/// out (extra.js's `held` is the same rule, held to it by the tests).
+pub fn holds_script(tag: &str, name: &str) -> Option<Held> {
+    let n = name.as_bytes();
+    let is = |t: &str| tag.is_empty() || tag.eq_ignore_ascii_case(t);
+    let any = |list: &[&str]| list.iter().any(|a| a.eq_ignore_ascii_case(name));
+    if n.len() >= 2 && n[..2].eq_ignore_ascii_case(b"on") {
+        Some(Held::Event)
+    } else if name.eq_ignore_ascii_case("srcdoc") {
+        Some(Held::Document)
+    } else if ((is("animate") || is("set")) && any(&["to", "from", "values", "by"]))
+        || (is("meta") && name.eq_ignore_ascii_case("http-equiv"))
+    {
+        Some(Held::Url)
+    } else if is("meta") && name.eq_ignore_ascii_case("content") {
+        Some(Held::Refresh)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Attributes and whether a spread may set them, on a tag.
+    const HELD: &[(&str, &str, bool)] = &[
+        ("a", "onclick", true),
+        ("a", "ONCLICK", true),
+        ("a", "OnMouseOver", true),
+        ("iframe", "srcdoc", true),
+        ("iframe", "SRCDOC", true),
+        ("set", "to", true),
+        ("SET", "TO", true),
+        ("animate", "values", true),
+        ("animate", "by", true),
+        ("animate", "from", true),
+        ("meta", "content", true),
+        ("meta", "HTTP-EQUIV", true),
+        ("", "to", true),
+        ("", "content", true),
+        ("a", "to", false),
+        ("div", "content", false),
+        ("a", "href", false),
+        ("a", "title", false),
+        ("a", "o", false),
+        ("a", "data-on", false),
+        ("animate", "attributeName", false),
+    ];
+
+    #[test]
+    fn script_attributes_are_held_in_any_case() {
+        for &(tag, name, held) in HELD {
+            assert_eq!(holds_script(tag, name).is_some(), held, "<{tag} {name}>");
+        }
+    }
 
     /// URLs as a value holds them, and whether they run script when
     /// followed. Every side checks them: `guard_url` once `escape`d,
@@ -378,12 +449,12 @@ mod tests {
         ));
         p.push_str("let CUR;\n");
         p.push_str("const watch = (sc, a, L, f) => f(CUR, true);\n");
-        p.push_str(slice(&extra, "X.spread = ", "\n};\n"));
+        p.push_str(slice(&extra, "const held = ", "\n};\n"));
         p.push_str("\n};\n");
         p.push_str(slice(&wisp, "  const script = ", "\n"));
         p.push_str(
             "\nconst enc = (s) => (s === undefined ? '-' : [...s].map((c) => c.codePointAt(0)).join(','));\n\
-             const el = () => { const e = { at: {}, setAttribute: (n, v) => (e.at[n] = String(v)), \
+             const el = (localName) => { const e = { localName, at: {}, setAttribute: (n, v) => (e.at[n] = String(v)), \
              removeAttribute: (n) => delete e.at[n], addEventListener() {}, removeEventListener() {} }; return e; };\n\
              function check(name, url) {\n\
                const a = el(); attr(url, true, a, name);\n\
@@ -406,10 +477,15 @@ mod tests {
         list(&mut p, &mut URLS.iter().map(|u| u.0));
         p.push_str(") check(n, u);\nfor (const u of ");
         list(&mut p, &mut URLS.iter().map(|u| u.0));
-        p.push_str(
-            ") out.push(String(script(new URL(u, 'https://a.b/'))));\n\
-             console.log(out.join('\\n'));\n",
-        );
+        p.push_str(") out.push(String(script(new URL(u, 'https://a.b/'))));\n");
+        for &(tag, name, _) in HELD {
+            let (tag, name) = (js(tag), js(name));
+            p.push_str(&format!(
+                "{{ const e = el({tag}); CUR = {{ [{name}]: 'x' }}; \
+                 X.spread(null, null, e, null, false, []); out.push(e.at[{name}] === undefined); }}\n"
+            ));
+        }
+        p.push_str("console.log(out.join('\\n'));\n");
         let run = std::process::Command::new("node").args(["-e", &p]).output();
         let Ok(run) = run else {
             return; // no Node here
@@ -439,6 +515,9 @@ mod tests {
         }
         for &(url, script) in URLS {
             assert_eq!(lines.next(), Some(tf(script)), "redirect {url:?}");
+        }
+        for &(tag, name, held) in HELD {
+            assert_eq!(lines.next(), Some(tf(held)), "spread <{tag} {name}>");
         }
         assert_eq!(lines.next(), None);
     }

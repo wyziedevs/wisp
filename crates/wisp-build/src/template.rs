@@ -13,7 +13,7 @@
 //! and a `Node::Live` marks where the element's `data-w` goes. Their
 //! JavaScript is part of the shape, since it is compiled into the binary.
 
-use crate::contexts::{Scheme, is_url_attr, scheme};
+use crate::contexts::{Held, Scheme, holds_script, is_url_attr, scheme};
 use crate::protocol::{
     ISLAND_IDLE, ISLAND_INTERACTION, ISLAND_MEDIA, ISLAND_NONE, ISLAND_VISIBLE, ON_FLAGS,
 };
@@ -1448,8 +1448,9 @@ impl Parser<'_> {
                         && v.as_deref()
                             .is_some_and(|v| v.trim().eq_ignore_ascii_case("refresh"))
                 });
-                let dynamic = (self.tag_seen.iter()).any(|(a, v)| a == "content" && v.is_none())
-                    || self.directives.iter().any(|d| d.name == "content");
+                let refreshes = |a: &str| holds_script("meta", a) == Some(Held::Refresh);
+                let dynamic = (self.tag_seen.iter()).any(|(a, v)| refreshes(a) && v.is_none())
+                    || (self.directives.iter()).any(|d| d.kind == Dir::Attr && refreshes(&d.name));
                 if refresh && dynamic {
                     return Err(self.err(self.tag_pos, "no expressions in the `content` of a refresh: it is a URL that may run script; redirect from the server instead".into()));
                 }
@@ -1937,6 +1938,12 @@ impl Parser<'_> {
         let mut value = self.directive_value(raw)?;
         let (kind, mut name, mut mods) =
             directive_parts(raw, &self.tag).map_err(|m| self.err(start, m))?;
+        if kind == Dir::Attr && self.held(&name).is_some() {
+            return Err(self.err(
+                start,
+                format!("no `{raw}`: its value can run script; for events use on:click=\"…\""),
+            ));
+        }
         // `bind:value`, `class:open`, `style:color` alone: the variable of
         // that name.
         if value.is_none()
@@ -2687,15 +2694,21 @@ impl Parser<'_> {
         Ok(())
     }
 
-    /// The attribute is one whose value can be a URL that runs script
-    /// without being a URL attribute: an SVG animation's values, which can
-    /// set an `href` (`<set attributeName="href" to="javascript:…">`), and
-    /// a `<meta>`'s `http-equiv`, which can make its `content` a refresh to
-    /// one (see `tag_close`).
-    fn hidden_url(&self) -> bool {
-        (matches!(self.tag.as_str(), "animate" | "set")
-            && matches!(self.attr.as_str(), "to" | "from" | "values" | "by"))
-            || (self.tag == "meta" && self.attr == "http-equiv")
+    /// The tag as `contexts::holds_script` takes it: "" (any) for a
+    /// `<wisp:element>`, whose tag the browser's code chooses.
+    fn spread_tag(&self) -> &str {
+        if self.tag == "wisp:element" {
+            ""
+        } else {
+            &self.tag
+        }
+    }
+
+    /// What attribute `name` here holds that escaping does not make safe.
+    /// A `<meta>`'s `content` is refused only in a refresh, which
+    /// `tag_close` sees whole.
+    fn held(&self, name: &str) -> Option<Held> {
+        holds_script(self.spread_tag(), name).filter(|&h| h != Held::Refresh)
     }
 
     /// A live value may go on this attribute here.
@@ -2703,11 +2716,7 @@ impl Parser<'_> {
         if self.frames.len() != self.tag_frames {
             return Err(self.err(open, "a {:…} value cannot be inside a {#…} block; put the condition in its JavaScript instead".into()));
         }
-        if self.attr.starts_with("on")
-            || self.attr == "srcdoc"
-            || self.attr.is_empty()
-            || self.hidden_url()
-        {
+        if self.attr.is_empty() || self.held(&self.attr).is_some() {
             return Err(self.err(
                 open,
                 format!(
@@ -2838,7 +2847,9 @@ impl Parser<'_> {
                         let (line, col) = (self.line_of(open), self.col_of(open));
                         self.directives.push(Directive {
                             kind: Dir::Spread,
-                            name: String::new(),
+                            // Its tag, for the keys it leaves out: none
+                            // (any) when the browser's code chooses it.
+                            name: self.spread_tag().into(),
                             mods: Vec::new(),
                             value: Some(Code {
                                 src: js[3..].trim().to_string(),
@@ -2917,27 +2928,36 @@ impl Parser<'_> {
                     "inside a tag, expressions must be attribute values: name={expr}, or {name} for name={name}".into(),
                 ));
             }
-            self.attr = t.to_string();
-            self.typed |= matches!(t, "type" | "src" | "nomodule");
+            // Lowercase, as the browser reads it: `{ONCLICK}` is `onclick`.
+            self.attr = t.to_ascii_lowercase();
+            self.typed |= matches!(self.attr.as_str(), "type" | "src" | "nomodule");
             self.tag_seen.push((self.attr.clone(), None));
             self.text.push_str(t);
             self.text.push('=');
             self.last = b'=';
         }
-        if self.ctx != Ctx::Text && self.attr.starts_with("on") {
-            return Err(self.err(
-                open,
-                format!(
-                    "no expressions in event handler attributes like `{}`; use data-* attributes",
-                    self.attr
-                ),
-            ));
-        }
-        if self.ctx != Ctx::Text && self.attr == "srcdoc" {
-            return Err(self.err(open, "no expressions in `srcdoc`: its value is a whole HTML document, where escaping for an attribute is not enough".into()));
-        }
-        if self.ctx != Ctx::Text && self.hidden_url() {
-            return Err(self.err(open, format!("no expressions in the `{}` of a <{}>: it can hold a URL that runs script, which escaping does not stop", self.attr, self.tag)));
+        let held = if self.ctx == Ctx::Text {
+            None
+        } else {
+            self.held(&self.attr)
+        };
+        match held {
+            Some(Held::Event) => {
+                return Err(self.err(
+                    open,
+                    format!(
+                        "no expressions in event handler attributes like `{}`; use data-* attributes",
+                        self.attr
+                    ),
+                ));
+            }
+            Some(Held::Document) => {
+                return Err(self.err(open, "no expressions in `srcdoc`: its value is a whole HTML document, where escaping for an attribute is not enough".into()));
+            }
+            Some(_) => {
+                return Err(self.err(open, format!("no expressions in the `{}` of a <{}>: it can hold a URL that runs script, which escaping does not stop", self.attr, self.tag)));
+            }
+            None => {}
         }
         let unquoted = self.ctx == Ctx::Tag;
         if unquoted {
@@ -4239,6 +4259,24 @@ mod tests {
         assert!(err("<p><{x}></p>").contains("tag's name"));
         assert!(err("<p></{x}></p>").contains("tag's name"));
         assert!(err("<iframe srcdoc={x}>").contains("srcdoc"));
+        // In any case, and as `{name}` for `name={name}`.
+        assert!(err("<a ONCLICK={x}>").contains("event handler"));
+        assert!(err("<a {ONCLICK}>").contains("event handler"));
+        assert!(err("<a {OnMouseOver}>").contains("event handler"));
+        assert!(err("<iframe {SRCDOC}>").contains("srcdoc"));
+        assert!(err("<iframe SrcDoc={x}>").contains("srcdoc"));
+        assert!(err("<svg><SET {TO} /></svg>").contains("`to`"));
+        assert!(err(r#"<meta {CONTENT} HTTP-EQUIV="refresh">"#).contains("refresh"));
+        // Browser values too: `:attr`, `attr={:…}`, in any case.
+        assert!(err(r#"<a :ONCLICK="x">"#).contains("run script"));
+        assert!(err(r#"<iframe :srcdoc="x">"#).contains("run script"));
+        assert!(err(r#"<svg><set :to="x" /></svg>"#).contains("run script"));
+        assert!(err(r#"<meta http-equiv="refresh" :CONTENT="x">"#).contains("refresh"));
+        assert!(err("<a OnClick={:x}>").contains("no {:…}"));
+        assert!(parse(r#"<meta name="description" :content="x">"#).is_ok());
+        // A spread knows its tag, for the keys it leaves out (`js_attrs`).
+        let t = parse("<META {:...a}>").unwrap();
+        assert_eq!(t.groups[0].directives[0].name, "meta");
         assert!(err(r#"<a href="javascript:go('{x}')">"#).contains("runs script"));
         assert!(err(r#"<a href=" JavaScript:{x}">"#).contains("runs script"));
         assert!(err(r#"<a href="java&#115;cript:{x}">"#).contains("character reference"));

@@ -3716,8 +3716,8 @@ impl Gen {
                 self.line(
                     ind,
                     &format!(
-                        "::wisp::rt::js_attrs(&mut {buf}, {v}); // {}:{}",
-                        cx.rel, d.line
+                        "::wisp::rt::js_attrs(&mut {buf}, {:?}, {v}); // {}:{}",
+                        d.name, cx.rel, d.line
                     ),
                 );
             }
