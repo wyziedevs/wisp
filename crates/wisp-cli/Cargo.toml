@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 wisp-build.workspace = true
+wisp-shared.workspace = true
 
 [lints]
 workspace = true

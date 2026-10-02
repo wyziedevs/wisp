@@ -48,20 +48,8 @@ fn seed(n: u64) -> u64 {
     n ^ s.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1
 }
 
-/// xorshift64*: the same edits on every run.
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
-    }
-    fn below(&mut self, n: usize) -> usize {
-        (self.next() % n.max(1) as u64) as usize
-    }
-}
+/// The same edits on every run.
+use wisp_shared::rng::Rng;
 
 const BITS: &[&str] = &[
     "{",

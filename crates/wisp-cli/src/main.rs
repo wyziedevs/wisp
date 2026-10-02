@@ -7,7 +7,6 @@ mod deploy;
 mod dev;
 mod events;
 mod new;
-mod sha256;
 mod targets;
 #[cfg(test)]
 mod template_files;

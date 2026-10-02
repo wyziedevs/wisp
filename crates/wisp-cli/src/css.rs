@@ -2,10 +2,11 @@
 //! CLI builds it into `.wisp/app.css`; otherwise `src/app.css` is served as
 //! written and there is nothing to run.
 
-use crate::{sha256, term};
+use crate::term;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use wisp_shared::sha256::{hex, sha256};
 
 pub const TAILWIND_VERSION: &str = "v4.3.3";
 
@@ -200,7 +201,7 @@ fn tailwind() -> Result<PathBuf, String> {
     }
     let io = |e: std::io::Error| format!("{}: {e}.", partial.display());
     let bytes = fs::read(&partial).map_err(io)?;
-    let got = sha256::hex_digest(&bytes);
+    let got = hex(&sha256(&[&bytes]));
     if got != *sha {
         let _ = fs::remove_file(&partial);
         return Err(format!(

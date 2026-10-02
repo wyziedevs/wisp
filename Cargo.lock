@@ -219,6 +219,7 @@ name = "wisp-cli"
 version = "0.1.0"
 dependencies = [
  "wisp-build",
+ "wisp-shared",
 ]
 
 [[package]]
