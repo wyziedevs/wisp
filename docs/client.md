@@ -112,7 +112,7 @@ inside a block, misspelled) is a build error at its line.
 
 ```html
 <input bind:value="query" on:keydown.enter="search" on:keydown.escape="query = ''">
-<ul :hidden="!open" transition:slide hidden>…</ul>
+<ul :hidden="!open" transition:slide>…</ul>
 <div class:dark="theme === 'dark'" style:--hue="hue"></div>
 ```
 
@@ -281,8 +281,10 @@ rendered on the server with `{@render chip(x)}`.
 
 ### First paint
 
-When the server knows what a block, a component or a `{:…}` shows, it
-renders it into the page: people see it before the JavaScript loads, and
+When the server knows what a block, a component, a `{:…}` or a boolean
+attribute directive (`:hidden="!open"` with `let open = false`) shows, it
+renders it into the page (so no static `hidden` is needed next to it):
+people see it before the JavaScript loads, and
 without JavaScript at all. The browser then takes those nodes over (no
 flicker, nothing drawn twice) and keeps them live. The server knows:
 

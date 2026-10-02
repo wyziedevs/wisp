@@ -70,9 +70,9 @@ Block rules:
   `return redirect("/x")`, `return error(404, "Gone")` work.
 - Route params are locals: `slug: String`, `[id=int]` → `id: u64`,
   `[[lang]]` → `Option<String>`. Works even with no block: `<h1>{slug}</h1>`.
-- No `use` lines needed: prelude = `Cx Response Result Error Email Json FromJson
-  Rest Cookie Method Value Shared Table Row RateLimit OrStatus action error
-  invalid redirect`.
+- No `use` lines needed: prelude = `Cx Response Result Error Email Image Json
+  FromJson Rest Cookie Method Value Shared Table Row RateLimit OrStatus KB MB
+  action error invalid redirect`.
   `Result` alone = `Result<()>`.
 - Layout blocks: statements are sync, `cx: &Cx`, no `.await`/`?`.
 - `const CACHE: u32 = 60;` (page or `+server.rs`): each worker keeps a GET's
@@ -101,21 +101,38 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
 
 - No `->`: the action returns `Result`, so it may use `?`, `return
   error(..)`, `return;`, and end in `redirect(..)`/`invalid(..)` or `;`.
+  No `async` either: a body with `.await` makes it async.
 
 - `<form action="?/like">` posts to it (`method="post"` is added);
   `<form method="post">` with no `action` → `#[action] fn default`. `<button action="?/rm&id={x.id}">x</button>`
   outside a form is a one-button form.
 - Params by name: route param, then form, then query. `T` required (400
-  missing; sent but not a `T` → 422 by field, like `invalid`), `Option<T>`
+  missing or a body that isn't JSON; sent but not a `T` → 422 by field,
+  like `invalid`), `Option<T>`
   missing/blank → None, `bool` checkbox, `Vec<T>` repeated, `&str` ok,
-  `Email` checked address. Returns nothing/`Result`, or
-  `Response`/`Option<Response>` to send instead of the page.
+  `Email` (what `<input type=email>` takes), a `#[derive(FromJson)]`/`Rest` struct
+  (`fn default(post: Post)`: its fields by name, its `#[validate]`s; blank
+  = missing). Returns nothing/`Result`, or `Response`/`Option<Response>`
+  to send instead of the page.
+- Uploads: `#[validate(max_size = 1 * MB)] avatar: Image` (`Option<Image>`
+  may be empty) in a form with `enctype="multipart/form-data"`. Only PNG,
+  JPEG, GIF, WebP, AVIF by their bytes (not SVG); else 422 by field. The
+  body limit grows by `max_size` itself: no `BODY_LIMIT`. Store it in a
+  table field (`avatar: Option<Image>`), serve it with
+  `fn get(id: u64) -> Option<Image> { USERS.get(id)?.value.avatar }` in
+  `avatars/[id=int]/+server.rs` (type, ETag/304, `no-cache`).
 - `#[validate(len = 1..=100)] text: String` (also `min max min_len max_len
-  email`), or `return invalid("field", "msg")` → page re-renders as 422; each
-  text `<input name>` of an action form (`?/x`, or `method="post"`) shows
-  what was sent again and, after it, `<small class="problem">msg</small>`.
-  Write `{cx.problem("field")}` anywhere to place them yourself (then none
-  are added in that file). Other errors → error page.
+  email`), or `return invalid("field", "msg")` → page re-renders as 422
+  listing every failing field. Its inputs get the browser's own checks
+  that match (`required`, `minlength`, `type="email"`, `min`/`max` on
+  `type="number"`, a `pattern` for the most length); the server still
+  checks all. Each named `<input>`, `<textarea>`, `<select>` of an
+  action form (`?/x`, or `method="post"`) shows what was sent again, else its own value (`value={post.title}`,
+  `<textarea name="body">{post.body}</textarea>`, `<select name="kind"
+  value={post.kind}>` selects that option), and after it `<small
+  class="problem">msg</small>` (passwords/files: the problem, never the
+  value). `{cx.problem("field")}` puts that field's `<small>` there instead.
+  Other errors → error page.
 - Same-origin checked. Works without JS; wisp.js morphs the page in place.
 
 ## Templates (Rust on the server)
@@ -137,7 +154,9 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
 | `<slot />` or `{@render children()}` | layout/component slot |
 | `cx` | the request (`&Cx`) in pages, layouts, error pages |
 
-Holes can't go in `on*` attrs, tag names, `javascript:` URLs. `<script>` and
+Holes can't go in `on*` attrs, tag names, `javascript:` URLs, SVG
+`<animate>`/`<set>` `to`/`from`/`values`/`by`, or `<meta http-equiv>`/refresh
+`content`. `<script>` and
 `<style>` contents are not parsed for holes.
 
 ## Components (`src/components/Name.wisp`)
@@ -171,7 +190,8 @@ anywhere declares it (state), so a live search needs no script:
 
 Directives: `on:click="f"` (modifiers `.prevent .stop .once .self .window
 .document .outside .debounce.300ms .enter .escape .ctrl`…), `bind:value="q"`,
-`bind:checked`, `bind:this="el"`, `:attr="js"`, `:text="js"`,
+`bind:checked`, `bind:this="el"`, `:attr="js"` (`:hidden="!open"` with
+`let open = false` is rendered hidden: no static `hidden`), `:text="js"`,
 `class:x="js"`, `style:--x="js"`, `transition:fade|slide|scale|fly`,
 `use:action="arg"`, `animate:flip`. Client blocks: `{:#if}…{:/if}`,
 `{:#each items as it, i (it.id)}…{:/each}`, `{:@render s(x)}`. Runes:
@@ -227,12 +247,40 @@ name as for actions. Returns: value (`#[derive(Json)]`) → 200 JSON; nothing �
 JSON requests are JSON `{"status","code","error","errors"}` (`code`:
 `not_found` `invalid`…, or `Error::new(409, "x").with_code("taken")`);
 `accept: application/problem+json` or `WISP_PROBLEM_JSON=on` → RFC 9457.
-POST with `Idempotency-Key` replays the first answer. Webhooks:
+POST with `Idempotency-Key` replays the first answer (per cookie). Webhooks:
 `cx.need_signature("GITHUB_SECRET", "x-hub-signature-256")?` (hex, base64,
 Stripe). Big lists: `Response::ndjson(|out| async move { out.line(&x).await?; Ok(()) })`.
 Versions are folders (`api/v1`). `const BODY_LIMIT: usize = 20 * wisp::MB;`.
 OpenAPI at `/_wisp/docs`; TypeScript client at `/_wisp/client.ts` or
 `wisp build --client ts`.
+## Members
+
+```rust
+static USERS: Table<User> = Table::saved("users");   // User { name, hash: String, .. }
+
+#[action]
+fn join(name: String, #[validate(min_len = 8)] password: String) {
+    let id = USERS.add(User { name, hash: wisp::password::hash(&password).await });
+    cx.sign_in(id);                     // signed cookie, 30 days, a new one
+    redirect("/me")
+}
+#[action]
+fn login(name: String, password: String) {
+    let Some(user) = USERS.find(|u| u.name == name) else { return invalid("name", "No such name"); };
+    if !wisp::password::verify(&password, &user.hash).await { return invalid("password", "Wrong password"); }
+    cx.sign_in(user.id);
+    redirect("/me")
+}
+let me = cx.user(&USERS)?;              // a members' page: Row<User>, or 303 to /login
+```
+`cx.signed_in()?` is the id alone; `.ok()` asks without redirecting;
+`cx.sign_out()`; `wisp::sign_out_everywhere(id)` ends all of `id`'s
+sessions, stolen ones too (saved). Endpoints/JSON clients get 401. Sign-in
+page elsewhere: `wisp::sign_in_page("/enter")` in `init`. Hashes are
+PBKDF2-SHA256, 600,000 rounds (~0.2 s of a core, on purpose, off the
+worker: `.await` them). `wisp::password::outdated(&hash)` → rehash at
+sign-in. Rotate the secret: new `WISP_SECRET`, old one in `WISP_SECRET_OLD`.
+
 ## hooks.rs
 
 ```rust
@@ -258,7 +306,8 @@ Any other `pub fn` in hooks.rs is an error. `pub` types there are
   writes() need_signature(env, header)
   basic_auth() cookie(n)
   cookie_or(n, d) set_cookie(n, v) delete_cookie(n) signed_cookie(n)
-  set_signed_cookie(n, v) flash(msg) flashed() set(v) get::<T>() take::<T>()
+  set_signed_cookie(n, v) sign_in(id) sign_out() signed_in() user(&TABLE)
+  flash(msg) flashed() set(v) get::<T>() take::<T>()
   fail(status, v) set_status(s) set_header(n, v) client_ip() cors(o)
   method`.
 - Errors: `error(404, "msg")`, `redirect("/x")`, `invalid("f", "msg")` return
@@ -269,7 +318,9 @@ Any other `pub fn` in hooks.rs is an error. `pub` types there are
   websocket` + `.with_status(s) .with_header(n, v)`.
 - State: `Table<T>` (`Table::new()` memory, `Table::saved("name")` survives
   restarts; `add(v)→id get(id) all() find(f) filter(f) update(id, f)
-  remove(id) len()`, rows are `Row { id, value }` that read as the value),
+  remove(id) len()`, rows are `Row { id, value }` that read as the value;
+  `page(cx, 10)`: `?page=N`'s rows newest first, `{#each posts as p}`,
+  `{#if let Some(href) = posts.next}<a {href}>Older</a>{/if}`, also `prev`),
   `Shared<T>` (`.lock()`), `wisp::provide(v)` / `wisp::state::<T>()`,
   `wisp::env("K")`, `wisp::env_or("K", d)`, `wisp::spawn`, `wisp::every`,
   `wisp::channel("x").send/subscribe/connect`, `fn get() -> Response {
