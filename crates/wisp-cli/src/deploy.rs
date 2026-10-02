@@ -5,12 +5,19 @@ use crate::term;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// Refuses an `--out` that is the app's own folder or inside `src/` or
-/// `static/`: exporting there would write over the app's files, or copy
-/// `static/` into itself.
+/// Where `wisp build --static` (and `--target`, in a folder per host)
+/// writes, without `--out`.
+pub const DEFAULT_OUT: &str = "dist";
+
+/// Refuses an `--out` that is the app's own folder, one it is inside, or
+/// inside `src/` or `static/`: exporting there would write over the app's
+/// files, or copy `static/` into itself.
 pub fn check_out(root: &Path, out: &Path) -> Result<(), String> {
     let (root, out) = (resolved(root), resolved(out));
-    if out == root || out.starts_with(root.join("src")) || out.starts_with(root.join("static")) {
+    if root.starts_with(&out)
+        || out.starts_with(root.join("src"))
+        || out.starts_with(root.join("static"))
+    {
         return Err(format!(
             "{} is part of the app.\nPick another folder with --out, like dist.",
             out.display()
@@ -41,6 +48,7 @@ fn resolved(path: &Path) -> PathBuf {
 /// Runs the built app in export mode, which writes its pages and the files
 /// they use into `out` (see `wisp::export`), then adds `static/`.
 pub fn static_site(root: &Path, exe: &Path, out: &Path) -> Result<(), String> {
+    check_out(root, out)?;
     term::step(&format!("Exporting to {}", out.display()));
     let mut child = Command::new(exe)
         .env("WISP_EXPORT", out)
@@ -201,6 +209,8 @@ mod tests {
         std::fs::create_dir_all(root.join("static")).unwrap();
         for bad in [
             ".",
+            "..",
+            "../..",
             "src",
             "static",
             "static/public",

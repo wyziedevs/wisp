@@ -109,7 +109,7 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
   missing or a body that isn't JSON; sent but not a `T` → 422 by field,
   like `invalid`), `Option<T>`
   missing/blank → None, `bool` checkbox, `Vec<T>` repeated, `&str` ok,
-  `Email` (what `<input type=email>` takes), a `#[derive(FromJson)]`/`Rest` struct
+  `Email` (what `<input type=email>` takes), a `#[derive(FromJson)]`/`Rest` struct (the page's or `src/*.rs`'s)
   (`fn default(post: Post)`: its fields by name, its `#[validate]`s; blank
   = missing). Returns nothing/`Result`, or `Response`/`Option<Response>`
   to send instead of the page.
@@ -125,10 +125,12 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
   listing every failing field. Its inputs get the browser's own checks
   that match (`required`, `minlength`, `type="email"`, `min`/`max` on
   `type="number"`, a `pattern` for the most length); the server still
-  checks all. Each named `<input>`, `<textarea>`, `<select>` of an
-  action form (`?/x`, or `method="post"`) shows what was sent again, else its own value (`value={post.title}`,
+  checks all; a button with `formaction="?/other"` skips them
+  (`formnovalidate`). Each named `<input>`, `<textarea>`, `<select>` of an
+  action form (`?/x`, or `method="post"`) shows what was sent again, else
+  its own value (`value={post.title}` or `value="x"`,
   `<textarea name="body">{post.body}</textarea>`, `<select name="kind"
-  value={post.kind}>` selects that option), and after it `<small
+  value={post.kind}>` selects the option of that value, or text), and after it `<small
   class="problem">msg</small>` (passwords/files: the problem, never the
   value). `{cx.problem("field")}` puts that field's `<small>` there instead.
   Other errors → error page.
@@ -155,8 +157,8 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
 
 Holes can't go in `on*` attrs, tag names, `javascript:` URLs, SVG
 `<animate>`/`<set>` `to`/`from`/`values`/`by`, or `<meta http-equiv>`/refresh
-`content`. `<script>` and
-`<style>` contents are not parsed for holes.
+`content`, in any case; nor can `{:…}`/`:attr`, and `{:...obj}` leaves
+those keys out. `<script>` and `<style>` contents are not parsed for holes.
 
 ## Components (`src/components/Name.wisp`)
 

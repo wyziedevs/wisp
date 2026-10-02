@@ -764,11 +764,14 @@ pub(crate) fn setup<A: App>() {
         let mut s = String::new();
         if let Some(v) = A::CSS {
             s.push_str(&format!(
-                "<link rel=\"stylesheet\" href=\"/_app/app.css?v={v}\">"
+                "<link rel=\"stylesheet\" href=\"{}?v={v}\">",
+                crate::protocol::APP_CSS_PATH
             ));
         }
         s.push_str(concat!(
-            "<script defer src=\"/_app/wisp.js?v=",
+            "<script defer src=\"",
+            wisp_shared::app_path!("wisp.js"),
+            "?v=",
             env!("WISP_RUNTIME_V"),
             "\"></script>"
         ));
@@ -2668,8 +2671,8 @@ fn internal<A: App>(cx: &Cx, path: &str, reply: &mut Reply) -> bool {
     let dev = get && s.dev;
     let docs = get && s.api_docs && !A::openapi().is_empty();
     let (body, ext, etag): (&'static [u8], _, _) = match path {
-        "/_app/wisp.js" if get => (CLIENT_JS, "js", Some(CLIENT_JS_ETAG)),
-        "/_app/live.js" if get => (LIVE_JS, "js", Some(CLIENT_JS_ETAG)),
+        crate::protocol::WISP_JS_PATH if get => (CLIENT_JS, "js", Some(CLIENT_JS_ETAG)),
+        crate::protocol::LIVE_JS_PATH if get => (LIVE_JS, "js", Some(CLIENT_JS_ETAG)),
         "/_app/wisp-dev.js" if dev => (DEV_JS, "js", None),
         "/_app/wisp-ui.css" if dev => (UI_CSS.as_bytes(), "css", None),
         "/_app/wisp-dialog.css" if dev => (DIALOG_CSS, "css", None),
@@ -2693,7 +2696,7 @@ fn internal<A: App>(cx: &Cx, path: &str, reply: &mut Reply) -> bool {
 fn file<A: App>(cx: &Cx, path: &str, route: Option<usize>, reply: &mut Reply) -> bool {
     let routed = route.is_some();
     // Compiled in, in dev too: a change to one is a rebuild anyway.
-    if path.starts_with("/_app/c/")
+    if path.starts_with(crate::protocol::MODULES)
         && let Some(m) = A::client_module(path)
     {
         send_file(
@@ -2707,7 +2710,7 @@ fn file<A: App>(cx: &Cx, path: &str, route: Option<usize>, reply: &mut Reply) ->
     }
     if crate::settings().dev {
         // A page's path goes to the disk only if `static/` had a file there.
-        if path != "/_app/app.css"
+        if path != crate::protocol::APP_CSS_PATH
             && routed
             && !dev::listed(A::ROOT, &decode(path.as_bytes(), false))
         {

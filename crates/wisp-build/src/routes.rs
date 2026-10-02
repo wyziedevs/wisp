@@ -14,6 +14,16 @@ pub enum Seg {
     Rest(String),
 }
 
+impl Seg {
+    /// The parameter it gives, if it gives one.
+    pub fn param(&self) -> Option<&str> {
+        match self {
+            Seg::Static(_) => None,
+            Seg::Param(n, _) | Seg::Optional(n, _) | Seg::Rest(n) => Some(n),
+        }
+    }
+}
+
 /// A `+layout.wisp` (and optional `+layout.rs`).
 #[derive(Debug)]
 pub struct Layout {
@@ -82,13 +92,7 @@ impl Route {
     }
 
     pub fn params(&self) -> Vec<&str> {
-        self.segs
-            .iter()
-            .filter_map(|s| match s {
-                Seg::Static(_) => None,
-                Seg::Param(n, _) | Seg::Optional(n, _) | Seg::Rest(n) => Some(n.as_str()),
-            })
-            .collect()
+        self.segs.iter().filter_map(Seg::param).collect()
     }
 
     /// Every concrete pattern this route matches: optional segments expand
@@ -456,7 +460,7 @@ fn server_shape(file: &Path, segs: &[Seg]) -> (bool, Option<Option<String>>) {
 }
 
 /// `None` for `(group)` directories, which do not appear in the URL.
-fn parse_segment(name: &str) -> Result<Option<Seg>, String> {
+pub(crate) fn parse_segment(name: &str) -> Result<Option<Seg>, String> {
     let ident = |s: &str| -> Result<String, String> {
         if !crate::ty::is_ident(s) {
             return Err(format!("`{s}` is not a valid parameter name"));

@@ -427,11 +427,7 @@ type Snapshot = HashMap<String, (SystemTime, u64, u64)>;
 fn stamp(path: &Path, m: SystemTime, len: u64) -> (SystemTime, u64, u64) {
     let fresh = len < 1 << 20 && m.elapsed().is_ok_and(|age| age.as_secs() < 3);
     let hash = match fresh.then(|| fs::read(path)) {
-        Some(Ok(text)) => {
-            text.iter().fold(0xcbf29ce484222325u64, |h, &b| {
-                (h ^ b as u64).wrapping_mul(0x100000001b3)
-            }) | 1
-        }
+        Some(Ok(text)) => wisp_build::fnv1a(&text) | 1,
         _ => 0,
     };
     (m, len, hash)

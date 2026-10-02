@@ -249,6 +249,12 @@ fn crate_name(root: &Path) -> Result<String, String> {
         }
         "test" => "It is the name of Rust's built-in test library.",
         "con" | "prn" | "aux" | "nul" => "Windows does not allow a file with that name.",
+        n if n.len() == 4
+            && (n.starts_with("com") || n.starts_with("lpt"))
+            && matches!(n.as_bytes()[3], b'1'..=b'9') =>
+        {
+            "Windows does not allow a file with that name."
+        }
         n if KEYWORDS.contains(&n) => "It is a Rust keyword.",
         "wisp" | "wisp-build" | "wisp-macros" | "wisp-shared" | "wisp-cli" => {
             "Wisp's own crates are called that."
@@ -314,23 +320,26 @@ fn write(root: &Path, crate_name: &str, template: Template, tailwind: bool) -> R
         Template::Minimal => MINIMAL,
         Template::Api => API,
     };
-    let common = [
-        ("Cargo.toml", cargo_toml.as_str()),
-        (".gitignore", "/target\n/.wisp\n/data\n"),
+    let common: [(&str, &[u8]); 2] = [
+        ("Cargo.toml", cargo_toml.as_bytes()),
+        (".gitignore", b"/target\n/.wisp\n/data\n"),
     ];
-    for (rel, text) in common.iter().chain(files) {
+    for &(rel, bytes) in common.iter().chain(files) {
         let path = root.join(rel);
         fs::create_dir_all(path.parent().expect("files are inside the app"))
             .map_err(|e| format!("Could not create {}: {e}.", root.display()))?;
-        let text = if tailwind && *rel == "src/app.css" {
-            with_tailwind(text)
-        } else {
-            text.to_string()
+        let css;
+        let bytes = match std::str::from_utf8(bytes) {
+            Ok(text) if tailwind && rel == "src/app.css" => {
+                css = with_tailwind(text);
+                css.as_bytes()
+            }
+            _ => bytes,
         };
         // `create_new`: a file that appeared since the folder was found empty
         // is someone's, and stays as it is.
         fs::File::create_new(&path)
-            .and_then(|mut f| f.write_all(text.as_bytes()))
+            .and_then(|mut f| f.write_all(bytes))
             .map_err(|e| format!("Could not write {}: {e}.", path.display()))?;
     }
     Ok(())
@@ -454,6 +463,8 @@ mod tests {
             "Self",
             "type",
             "NUL",
+            "com1",
+            "LPT9",
             "con",
         ] {
             assert!(crate_name(Path::new(taken)).is_err(), "{taken}");
@@ -519,16 +530,12 @@ mod tests {
             crate::template_files::TEMPLATES.iter().zip(tables)
         {
             assert_eq!(*name, table_name);
-            let found = crate::template_files::files(layers, base);
+            let found = crate::template_files::files(layers, base).unwrap();
             let embedded: Vec<&str> = table.iter().map(|(rel, _)| *rel).collect();
             let wanted: Vec<&str> = found.keys().map(String::as_str).collect();
             assert_eq!(embedded, wanted, "{name}");
-            for (rel, text) in table {
-                assert_eq!(
-                    *text,
-                    fs::read_to_string(&found[*rel]).unwrap(),
-                    "{name} {rel}"
-                );
+            for (rel, bytes) in table {
+                assert_eq!(*bytes, fs::read(&found[*rel]).unwrap(), "{name} {rel}");
             }
             for (rel, _) in table {
                 assert!(
@@ -537,7 +544,7 @@ mod tests {
                 );
             }
         }
-        let paths = |t: &[(&'static str, &'static str)]| t.iter().map(|f| f.0).collect::<Vec<_>>();
+        let paths = |t: &[(&'static str, &'static [u8])]| t.iter().map(|f| f.0).collect::<Vec<_>>();
         assert!(paths(DEMO).contains(&"src/routes/wisple/words.txt"));
         assert!(paths(API).contains(&"build.rs") && paths(API).contains(&"src/tests.rs"));
         assert_eq!(
