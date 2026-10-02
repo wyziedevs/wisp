@@ -864,7 +864,12 @@ fn give_buffers(mut b: Box<Buffers>) {
     if !policy::kept(b.out.body.capacity()) {
         b.out = Out::default();
     }
-    b.reply = Reply::default();
+    // Its headers keep their room (as `Reply::set` keeps it), unless many.
+    (b.reply.status, b.reply.body) = (200, Body::Static(b""));
+    b.reply.headers.clear();
+    if b.reply.headers.capacity() > 16 {
+        b.reply.headers = Vec::new();
+    }
     POOL.with_borrow_mut(|p| {
         if p.len() < POOLED {
             p.push(b);
@@ -1315,6 +1320,7 @@ async fn linger(
 /// Parses the request starting at `cx.wire.buf[at..]` and, if it is complete,
 /// records it in `cx` as spans.
 fn parse<A: App>(cx: &mut Cx, at: usize) -> Parsed {
+    use crate::swar;
     cx.reset();
     cx.wire.headers.clear();
     let head = match fast_head(&cx.wire.buf, at, &mut cx.wire.headers) {
@@ -1335,39 +1341,47 @@ fn parse<A: App>(cx: &mut Cx, at: usize) -> Parsed {
     let mut keep_alive = head.http11;
     let mut expect_continue = false;
     for &(name, value) in &cx.wire.headers {
-        // Only these five matter here; their lengths tell most others apart
-        // without comparing a byte.
-        if !matches!(name.len, 4 | 6 | 10 | 14 | 17) {
-            continue;
-        }
-        let (name, value) = (&buf[name.range()], &buf[value.range()]);
-        if name.eq_ignore_ascii_case(b"host") {
-            hosts += 1;
-        } else if name.eq_ignore_ascii_case(b"content-length") {
-            // Strict: digits only, and repeated headers must agree (smuggling).
-            match (parse_decimal(value), content_length) {
-                (Some(n), None) => content_length = Some(n),
-                (Some(n), Some(m)) if n == m => {}
-                _ => return Parsed::Invalid(400),
-            }
-        } else if name.eq_ignore_ascii_case(b"transfer-encoding") {
-            // Only `chunked`, alone: gzip and the like are for a proxy.
-            if !value.trim_ascii().eq_ignore_ascii_case(b"chunked") {
-                return Parsed::Invalid(501);
-            }
-            transfer_encodings += 1;
-        } else if name.eq_ignore_ascii_case(b"connection") {
-            for token in value.split(|&b| b == b',').map(<[u8]>::trim_ascii) {
-                if token.eq_ignore_ascii_case(b"close") {
-                    keep_alive = false;
-                } else if token.eq_ignore_ascii_case(b"keep-alive") {
-                    keep_alive = true;
+        // Only these five matter here, and their lengths tell them apart:
+        // one comparison a header at most.
+        let is = |lower: &[u8]| swar::eq_lower(&buf[name.range()], lower);
+        let value = || &buf[value.range()];
+        match name.len {
+            4 if is(b"host") => hosts += 1,
+            14 if is(b"content-length") => {
+                // Strict: digits only, and repeated headers must agree (smuggling).
+                match (parse_decimal(value()), content_length) {
+                    (Some(n), None) => content_length = Some(n),
+                    (Some(n), Some(m)) if n == m => {}
+                    _ => return Parsed::Invalid(400),
                 }
             }
-        } else if name.eq_ignore_ascii_case(b"expect") {
+            17 if is(b"transfer-encoding") => {
+                // Only `chunked`, alone: gzip and the like are for a proxy.
+                if !swar::eq_lower(value().trim_ascii(), b"chunked") {
+                    return Parsed::Invalid(501);
+                }
+                transfer_encodings += 1;
+            }
+            // One token, the usual case, before splitting the list.
+            10 if is(b"connection") => match value().trim_ascii() {
+                v if swar::eq_lower(v, b"keep-alive") => keep_alive = true,
+                v if swar::eq_lower(v, b"close") => keep_alive = false,
+                v => {
+                    for token in v.split(|&b| b == b',').map(<[u8]>::trim_ascii) {
+                        if swar::eq_lower(token, b"close") {
+                            keep_alive = false;
+                        } else if swar::eq_lower(token, b"keep-alive") {
+                            keep_alive = true;
+                        }
+                    }
+                }
+            },
             // Never to HTTP/1.0, which has no such answer (RFC 9110 §10.1.1).
-            expect_continue =
-                head.http11 && value.trim_ascii().eq_ignore_ascii_case(b"100-continue");
+            6 if is(b"expect") => {
+                expect_continue =
+                    head.http11 && swar::eq_lower(value().trim_ascii(), b"100-continue");
+            }
+            _ => {}
         }
     }
     let chunked = transfer_encodings > 0;
@@ -1527,8 +1541,21 @@ fn fast_head(buf: &[u8], at: usize, headers: &mut Vec<(Span, Span)>) -> Option<H
                 http11,
             });
         }
+        // The name: letters, digits and `-` eight at a time, any other
+        // `tchar` one at a time.
         let name = i;
-        while b.get(i).is_some_and(|&c| TOKEN[usize::from(c)]) {
+        loop {
+            if i + 8 <= b.len() {
+                let miss = swar::not_name(swar::word(b, i));
+                if miss == 0 {
+                    i += 8;
+                    continue;
+                }
+                i += swar::first(miss);
+            }
+            if !b.get(i).is_some_and(|&c| TOKEN[usize::from(c)]) {
+                break;
+            }
             i += 1;
         }
         if i == name || b.get(i) != Some(&b':') {
@@ -1543,21 +1570,23 @@ fn fast_head(buf: &[u8], at: usize, headers: &mut Vec<(Span, Span)>) -> Option<H
         // bytes of 0x80 and up; any other control stops it.
         let value = i;
         loop {
-            if let Some(chunk) = b.get(i..i + 16) {
-                let mut stop = 0u8;
-                for &c in chunk {
-                    stop |= ((c < 0x20) | (c == 0x7f)) as u8;
-                }
-                if stop == 0 {
-                    i += 16;
-                    continue;
-                }
-            }
             if i + 8 <= b.len() {
                 let x = swar::word(b, i);
                 let stop = swar::below(x, 0x20) | swar::eq(x, 0x7f);
                 if stop == 0 {
                     i += 8;
+                    // Past eight, a long value (a cookie, a user agent):
+                    // sixteen at a time.
+                    while let Some(chunk) = b.get(i..i + 16) {
+                        let mut stop = 0u8;
+                        for &c in chunk {
+                            stop |= ((c < 0x20) | (c == 0x7f)) as u8;
+                        }
+                        if stop != 0 {
+                            break;
+                        }
+                        i += 16;
+                    }
                     continue;
                 }
                 i += swar::first(stop);
@@ -2097,6 +2126,8 @@ async fn decide_inner<A: App>(
     let started = timed().then(Instant::now);
     let method = cx.method;
 
+    // Routed first (it only matches), so the path is read once.
+    let route = routed.unwrap_or_else(|| route::<A>(cx));
     let path = cx.path();
     if !path.starts_with('/') {
         return reply.set_plain(400, "Bad Request");
@@ -2121,10 +2152,7 @@ async fn decide_inner<A: App>(
         return;
     }
 
-    let route = routed.unwrap_or_else(|| route::<A>(cx));
-    if matches!(method, Method::Get | Method::Head)
-        && file::<A>(cx, cx.path(), route.is_some(), reply)
-    {
+    if matches!(method, Method::Get | Method::Head) && file::<A>(cx, path, route.is_some(), reply) {
         return;
     }
     out.clear();
@@ -2375,9 +2403,9 @@ fn serialize<A: App>(
         // HTTP/1.0 closes after each response unless told otherwise.
         w.extend_from_slice(b"connection: keep-alive\r\n");
     }
-    for (name, value) in &reply.headers {
-        if !framing(name, head_only) {
-            header(w, name, value);
+    for h in &reply.headers {
+        if !framing(&h.0, head_only) {
+            header(w, h);
         }
     }
     w.extend_from_slice(b"\r\n");
@@ -2685,10 +2713,26 @@ async fn pump(
 
 /// A header the app set with a line break or NUL in it (through `Response`'s
 /// public fields, which nothing checks) would split the response: it is
-/// left out.
-fn header(w: &mut Vec<u8>, name: &str, value: &str) {
-    if !valid_header(name, value) {
-        return;
+/// left out. A pair of `'static` strings (the code's own, as
+/// `content-type: text/plain` is) is checked once a thread while it repeats:
+/// such a string never changes, so its address and length say it is the same.
+fn header(w: &mut Vec<u8>, (name, value): &(Cow<'static, str>, Cow<'static, str>)) {
+    thread_local! {
+        static VALID: Cell<[usize; 4]> = const { Cell::new([0; 4]) };
+    }
+    let key = match (name, value) {
+        (Cow::Borrowed(n), Cow::Borrowed(v)) => {
+            Some([n.as_ptr() as usize, n.len(), v.as_ptr() as usize, v.len()])
+        }
+        _ => None,
+    };
+    if key.is_none_or(|k| VALID.get() != k) {
+        if !valid_header(name, value) {
+            return;
+        }
+        if let Some(k) = key {
+            VALID.set(k);
+        }
     }
     w.extend_from_slice(name.as_bytes());
     w.extend_from_slice(b": ");
@@ -3012,11 +3056,15 @@ mod tests {
     #[test]
     fn headers_that_would_split_a_response_are_left_out() {
         let mut w = Vec::new();
-        header(&mut w, "x-a", "1");
-        header(&mut w, "x-b", "2\r\nset-cookie: x=1");
-        header(&mut w, "x-c\n", "3");
-        header(&mut w, "x-d", "4\0");
-        assert_eq!(w, b"x-a: 1\r\n");
+        let mut put = |n: &'static str, v: &'static str| {
+            header(&mut w, &(n.into(), v.into())); // checked, then known
+            header(&mut w, &(n.into(), v.to_string().into())); // checked
+        };
+        put("x-a", "1");
+        put("x-b", "2\r\nset-cookie: x=1");
+        put("x-c\n", "3");
+        put("x-d", "4\0");
+        assert_eq!(w, b"x-a: 1\r\nx-a: 1\r\n");
     }
 
     #[test]

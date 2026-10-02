@@ -174,8 +174,9 @@ impl Cx {
 
     /// Clears per-request state; request spans are set by the parser.
     pub(crate) fn reset(&mut self) {
+        // Only the route's own are ever set (`set_params`).
+        self.decoded[..self.names.len()].fill(None);
         self.names = &[];
-        self.decoded.iter_mut().for_each(|d| *d = None);
         self.status = 200;
         self.out_headers.clear();
         self.kept_headers = 0;
@@ -206,10 +207,13 @@ impl Cx {
         debug_assert!(names.len() <= MAX_PARAMS);
         self.names = names;
         self.params = spans;
+        // The spans are of the path, a `str`: only an escape makes one owned.
         for (span, decoded) in spans.iter().zip(&mut self.decoded).take(names.len()) {
-            if let Cow::Owned(s) = decode(&self.wire.buf[span.range()], false) {
-                *decoded = Some(s);
-            }
+            let raw = &self.wire.buf[span.range()];
+            *decoded = match raw.contains(&b'%') {
+                true => Some(decode(raw, false).into_owned()),
+                false => None,
+            };
         }
     }
 
