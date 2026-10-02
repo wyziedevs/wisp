@@ -93,12 +93,19 @@ pub(crate) enum Start {
 
 /// A key whose first request is being answered. Dropped unfinished (the
 /// request failed past its handler, or its connection went), it is freed.
-pub(crate) struct Key(u64);
+pub(crate) struct Key {
+    seq: u64,
+    /// Its answer is kept: dropped, it stays.
+    kept: bool,
+}
 
 impl Drop for Key {
     fn drop(&mut self) {
+        if self.kept {
+            return;
+        }
         let mut keys = KEPT.lock();
-        if let Some(id) = keys.id(self.0) {
+        if let Some(id) = keys.id(self.seq) {
             keys.remove(id);
         }
     }
@@ -108,7 +115,7 @@ impl Key {
     /// Keeps `reply`, with the headers the handler `set`, for the requests
     /// that come again with this key, or frees the key when the answer is
     /// not one to repeat.
-    pub(crate) fn finish(self, reply: &Reply, set: &[(Cow<'static, str>, Cow<'static, str>)]) {
+    pub(crate) fn finish(mut self, reply: &Reply, set: &[(Cow<'static, str>, Cow<'static, str>)]) {
         let body = match &reply.body {
             Body::Bytes(b) => Some(&b[..]),
             Body::Static(b) => Some(*b),
@@ -123,7 +130,7 @@ impl Key {
             .collect();
         let answer = Arc::new((reply.status, headers, body.into()));
         let mut keys = KEPT.lock();
-        if let Some(id) = keys.id(self.0)
+        if let Some(id) = keys.id(self.seq)
             && let Some(k) = keys.map.get_mut(&id)
         {
             k.reply = Some(answer);
@@ -131,7 +138,7 @@ impl Key {
             keys.trim(crate::unix_now());
         }
         drop(keys);
-        std::mem::forget(self); // kept, not freed
+        self.kept = true;
     }
 }
 
@@ -201,7 +208,7 @@ pub(crate) fn start(cx: &Cx) -> Start {
             reply: None,
         },
     );
-    Start::Fresh(Key(seq))
+    Start::Fresh(Key { seq, kept: false })
 }
 
 #[cfg(test)]

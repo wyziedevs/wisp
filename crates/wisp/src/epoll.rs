@@ -39,7 +39,7 @@
 //! why it holds.
 #![allow(unsafe_code)]
 
-use crate::uring::{owned, result, wait, yield_once};
+use crate::uring::{owned, result, token, untoken, wait, yield_once};
 use crate::{http, policy};
 use std::cell::RefCell;
 use std::future::{Future, poll_fn};
@@ -71,18 +71,6 @@ const ENDED: u32 = (libc::EPOLLRDHUP | libc::EPOLLHUP | libc::EPOLLERR) as u32;
 
 /// A connection's future, as `spawn` keeps it in its entry.
 type Serve = Pin<Box<dyn Future<Output = ()>>>;
-
-/// The events' `u64` for connection `id` in generation `generation` of its
-/// entry: an event taken in the turn that closed a connection cannot reach
-/// the next one in the same entry.
-fn token(id: usize, generation: u32) -> u64 {
-    (u64::from(generation) << 32) | id as u64
-}
-
-/// The entry and generation of a `token`.
-fn untoken(t: u64) -> (usize, u32) {
-    (t as u32 as usize, (t >> 32) as u32)
-}
 
 /// The error of the call that just failed.
 fn errno() -> i32 {
