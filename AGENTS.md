@@ -302,7 +302,8 @@ fn before(cx: &mut Cx) -> Result<Option<Response>> {
 }
 ```
 Any other `pub fn` in hooks.rs is an error. `pub` types there are
-`crate::hooks::T`.
+`crate::hooks::T`. Keep `before` sync: an `async fn before`
+takes the no-wait fast path off every route.
 
 ## API
 
