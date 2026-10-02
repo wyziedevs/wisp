@@ -872,7 +872,10 @@ and `.wisp-*` classes, so they never touch an app's own CSS.
   connection is a task, but when its socket brings a request, the driver
   polls the connection's future itself, with the task's waker: a request
   whose handler does not wait is received, answered and sent without the
-  scheduler, and one that waits wakes the task as usual. Receive
+  scheduler, and one that waits wakes the task as usual. Which routes
+  never wait is worked out at build; an `async fn before` in hooks.rs
+  runs before every route, so it takes the fast path off all of them:
+  keep it sync. Receive
   deadlines and stalled sends are one pass a second over the worker's
   connections, not a timer each.
   `WISP_IO=epoll` asks for that. Other systems accept on the main thread
