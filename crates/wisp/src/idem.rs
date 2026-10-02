@@ -145,7 +145,7 @@ pub(crate) fn start(cx: &Cx) -> Start {
     if cx.method != Method::Post {
         return Start::Skip;
     }
-    let Some(key) = cx.header("idempotency-key") else {
+    let Some(key) = cx.known(crate::cx::Known::IdempotencyKey) else {
         return Start::Skip;
     };
     if key.is_empty() || key.len() > 255 {

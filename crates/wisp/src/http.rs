@@ -13,7 +13,7 @@
 //! needs, and leaves the server out.
 #![cfg_attr(target_arch = "wasm32", allow(dead_code, unused_imports))]
 
-use crate::cx::{Cx, Method, Span, decode, hex_digit, valid_header};
+use crate::cx::{Cx, Known, Method, Span, decode, hex_digit, valid_header};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::policy::READ_CAPACITY;
 use crate::policy::{self, KEEP_CAPACITY, WRITE_TIMEOUT};
@@ -1049,10 +1049,19 @@ fn answer_whole<A: App>(mut b: Box<Buffers>) -> Result<Box<Buffers>, Handed> {
         if !route.map_or(A::NOT_FOUND_NOW, |r| A::ROUTES[r].now) {
             return hand(Holding::Ready(b), Stage::Routed(route));
         }
-        b = match at_once::<A>(b, route) {
-            Ok(b) => b,
-            Err(f) => return hand(Holding::Deciding(f), Stage::Decided),
+        let job = match route.is_some_and(|r| A::ROUTES[r].sync & b.cx.method.bit() != 0) {
+            true => {
+                let Buffers { cx, out, reply, .. } = &mut *b;
+                decide_now::<A>(cx, out, reply, route)
+            }
+            false => Some(Job::Decide(route)),
         };
+        if let Some(job) = job {
+            b = match at_once::<A>(b, job) {
+                Ok(b) => b,
+                Err(f) => return hand(Holding::Deciding(f), Stage::Decided),
+            };
+        }
         if matches!(b.reply.body, Body::Stream(_) | Body::WebSocket(_)) {
             return hand(Holding::Ready(b), Stage::Decided);
         }
@@ -1088,8 +1097,8 @@ fn answer_whole<A: App>(mut b: Box<Buffers>) -> Result<Box<Buffers>, Handed> {
 thread_local! {
     /// The decider of [`on_driver`]'s requests on this thread, for its app.
     static DECIDER: Cell<Option<(std::any::TypeId, Deciding)>> = const { Cell::new(None) };
-    /// A request for the decider, and its route.
-    static INBOX: Cell<Option<(Box<Buffers>, Option<usize>)>> = const { Cell::new(None) };
+    /// A request for the decider, and what is left to do for it.
+    static INBOX: Cell<Option<(Box<Buffers>, Job)>> = const { Cell::new(None) };
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1107,27 +1116,88 @@ thread_local! {
 #[cfg(target_os = "linux")]
 async fn decider<A: App>() {
     loop {
-        let (mut b, route) =
+        let (mut b, job) =
             std::future::poll_fn(|_| INBOX.take().map_or(Poll::Pending, Poll::Ready)).await;
         {
             let Buffers { cx, out, reply, .. } = &mut *b;
-            decide::<A>(cx, out, reply, Some(route)).await;
+            match job {
+                Job::Decide(route) => decide::<A>(cx, out, reply, Some(route)).await,
+                Job::Page(f) => {
+                    render_error::<A>(f.route, cx, out, f.page).await;
+                    answered(cx, reply, f.started, f.failure);
+                    tag(cx, reply);
+                }
+            }
         }
         OUTBOX.set(Some(b));
     }
+}
+
+/// What the decider is to do for a request.
+#[cfg(target_os = "linux")]
+enum Job {
+    /// All of [`decide`], routed to this.
+    Decide(Option<usize>),
+    /// The error page of what [`decide_now`] decided.
+    Page(Failed),
+}
+
+/// A request [`decide_now`] decided but for its error page, which is
+/// rendered in a future: an error page may wait.
+#[cfg(target_os = "linux")]
+struct Failed {
+    route: Option<usize>,
+    page: (u16, Cow<'static, str>),
+    failure: Option<String>,
+    started: Option<Instant>,
+}
+
+/// [`decide`], for an arm of the request's route that [`App::handle_now`]
+/// answers: with no future, unless for an error page. What is left for the
+/// decider, if anything: all of it when the arm turns out to have no sync
+/// form, as nothing was done that `decide` does not do again.
+#[cfg(target_os = "linux")]
+fn decide_now<A: App>(
+    cx: &mut Cx,
+    out: &mut Out,
+    reply: &mut Reply,
+    route: Option<usize>,
+) -> Option<Job> {
+    if crate::settings().request_id {
+        cx.request_id();
+    }
+    if !before_routes::<A>(cx, route, reply) {
+        let started = timed().then(Instant::now);
+        out.clear();
+        let Some(result) = catch_now(|| A::handle_now(route, cx, out)) else {
+            return Some(Job::Decide(route));
+        };
+        let (failure, page) = settle(cx, out, reply, result);
+        if let Some(page) = page {
+            return Some(Job::Page(Failed {
+                route,
+                page,
+                failure,
+                started,
+            }));
+        }
+        answered(cx, reply, started, failure);
+    }
+    tag(cx, reply);
+    None
 }
 
 /// Decides the request in `b`, routed to `route`, on this thread's
 /// decider: its buffers when that is done at once, else the decider, still
 /// deciding it (see [`decided`]).
 #[cfg(target_os = "linux")]
-fn at_once<A: App>(b: Box<Buffers>, route: Option<usize>) -> Result<Box<Buffers>, Deciding> {
+fn at_once<A: App>(b: Box<Buffers>, job: Job) -> Result<Box<Buffers>, Deciding> {
     let app = std::any::TypeId::of::<A>();
     let mut d = match DECIDER.take() {
         Some((of, d)) if of == app => d,
         _ => Box::pin(decider::<A>()),
     };
-    INBOX.set(Some((b, route)));
+    INBOX.set(Some((b, job)));
     // Taken out meanwhile: one that panics is dropped, not polled again.
     let _ = d
         .as_mut()
@@ -1407,11 +1477,12 @@ fn parse<A: App>(cx: &mut Cx, at: usize, on_wire: bool) -> Parsed {
     let mut hosts = 0;
     let mut keep_alive = head.http11;
     let mut expect_continue = false;
-    for &(name, value) in &cx.wire.headers {
+    cx.wire.knows = 0;
+    for &(name, span) in &cx.wire.headers {
         // Only these five matter here, and their lengths tell them apart:
         // one comparison a header at most.
         let is = |lower: &[u8]| swar::eq_lower(&buf[name.range()], lower);
-        let value = || &buf[value.range()];
+        let value = || &buf[span.range()];
         match name.len {
             4 if is(b"host") => hosts += 1,
             14 if is(b"content-length") => {
@@ -1448,7 +1519,14 @@ fn parse<A: App>(cx: &mut Cx, at: usize, on_wire: bool) -> Parsed {
                 expect_continue =
                     head.http11 && swar::eq_lower(value().trim_ascii(), b"100-continue");
             }
-            _ => {}
+            _ => {
+                if let Some(k) = Known::of(&buf[name.range()])
+                    && cx.wire.knows & 1 << k == 0
+                {
+                    cx.wire.knows |= 1 << k;
+                    cx.wire.known[k] = span;
+                }
+            }
         }
     }
     let chunked = transfer_encodings > 0;
@@ -2181,18 +2259,33 @@ async fn decide<A: App>(
         let started = timed().then(Instant::now);
         out.clear();
         let result = catch_made(|| A::handle(route, cx, out)).await;
-        let failure = match answer_of(cx, out, reply, result) {
-            Ok(()) => None,
-            Err(e) => {
-                let (failure, page) = error_reply(cx, out, reply, e);
-                if let Some(page) = page {
-                    render_error::<A>(route, cx, out, page).await;
-                }
-                failure
-            }
-        };
+        let (failure, page) = settle(cx, out, reply, result);
+        if let Some(page) = page {
+            render_error::<A>(route, cx, out, page).await;
+        }
         answered(cx, reply, started, failure);
     }
+    tag(cx, reply);
+}
+
+/// The reply to what the handler did, `result` ([`answer_of`]), or to its
+/// error ([`error_reply`]): what went wrong, for the log, and the error
+/// page to render, if any.
+#[allow(clippy::type_complexity)]
+fn settle(
+    cx: &mut Cx,
+    out: &mut Out,
+    reply: &mut Reply,
+    result: crate::Result<()>,
+) -> (Option<String>, Option<(u16, Cow<'static, str>)>) {
+    match answer_of(cx, out, reply, result) {
+        Ok(()) => (None, None),
+        Err(e) => error_reply(cx, out, reply, e),
+    }
+}
+
+/// The reply's `x-request-id`, when the request has an id.
+fn tag(cx: &Cx, reply: &mut Reply) {
     if let Some(id) = cx.id() {
         reply
             .headers
@@ -2203,18 +2296,19 @@ async fn decide<A: App>(
 /// What is answered before the routes: a path that is not one, Wisp's own
 /// files, a trailing slash, the app's files. Whether it was.
 fn before_routes<A: App>(cx: &Cx, route: Option<usize>, reply: &mut Reply) -> bool {
-    let path = cx.path();
-    if !path.starts_with('/') {
+    // Its bytes: only a few of these need it as a `str`.
+    let raw = cx.raw_path();
+    if raw.first() != Some(&b'/') {
         reply.set_plain(400, "Bad Request");
         return true;
     }
-    if internal::<A>(cx, path, reply) {
+    if raw.starts_with(b"/_") && internal::<A>(cx, cx.path(), reply) {
         return true;
     }
-    if path.len() > 1 && path.ends_with('/') {
+    if raw.len() > 1 && raw.ends_with(b"/") {
         // One leading slash: `//evil.example/` would send the browser to
         // another site (and so would `/\evil.example/`).
-        let trimmed = path.trim_matches(['/', '\\']);
+        let trimmed = cx.path().trim_matches(['/', '\\']);
         let query = cx.query_string();
         let location = if query.is_empty() {
             format!("/{trimmed}")
@@ -2227,7 +2321,7 @@ fn before_routes<A: App>(cx: &Cx, route: Option<usize>, reply: &mut Reply) -> bo
             .push((Cow::Borrowed("location"), Cow::Owned(location)));
         return true;
     }
-    matches!(cx.method, Method::Get | Method::Head) && file::<A>(cx, path, route, reply)
+    matches!(cx.method, Method::Get | Method::Head) && file::<A>(cx, raw, route, reply)
 }
 
 /// The reply to what the handler did, `result`: its response, page or
@@ -2321,6 +2415,10 @@ fn route<A: App>(cx: &mut Cx) -> Option<usize> {
     let (id, raw) = A::route(cx.path())?;
     // Only the route's own: most have none.
     let names = A::ROUTES[id].params;
+    if names.is_empty() {
+        cx.clear_params();
+        return Some(id);
+    }
     let mut params = [Span::default(); crate::cx::MAX_PARAMS];
     for (p, s) in params.iter_mut().zip(raw).take(names.len()) {
         *p = Span::of(&cx.wire.buf, s.as_bytes());
@@ -2342,7 +2440,7 @@ fn not_modified(cx: &Cx, res: &crate::Response) -> bool {
 /// Whether the request's `if-none-match` names `etag`, weakly as a GET
 /// compares (`W/"x"` is `"x"`), or is `*`: the client has it, a 304.
 pub(crate) fn fresh(cx: &Cx, etag: &str) -> bool {
-    cx.header("if-none-match")
+    cx.known(Known::IfNoneMatch)
         .is_some_and(|h| crate::rest::names::<true>(h, etag))
 }
 
@@ -2407,7 +2505,7 @@ fn error_reply(
     let page = if wants_json(cx) {
         let problem = crate::settings().problem_json
             || cx
-                .header("accept")
+                .known(Known::Accept)
                 .is_some_and(|a| a.contains("application/problem+json"));
         let body = e.json(&message, problem).into_bytes();
         let kind = match problem {
@@ -2435,7 +2533,10 @@ pub(crate) fn wants_json(cx: &Cx) -> bool {
         || path.starts_with("/api/")
         || crate::input::is_json(cx)
         || crate::input::asks_json(cx)
-        || (cx.api() && !cx.header("accept").is_some_and(|a| a.contains("text/html")))
+        || (cx.api()
+            && !cx
+                .known(Known::Accept)
+                .is_some_and(|a| a.contains("text/html")))
 }
 
 /// Whether `name` is framing, which the host writes itself: an app's own
@@ -2641,23 +2742,42 @@ async fn catch_made<F: Future<Output = crate::Result<()>>>(
         if let Some(began) = began {
             BLOCKED.set(BLOCKED.get().max(began.elapsed()));
         }
-        match polled {
-            Ok(poll) => poll,
-            Err(panic) => {
-                let msg = panic
-                    .downcast_ref::<&str>()
-                    .map(|s| s.to_string())
-                    .or_else(|| panic.downcast_ref::<String>().cloned())
-                    .unwrap_or_else(|| "panic".into());
-                let msg = match PANICKED_AT.take() {
-                    Some(at) => format!("panic at {at}: {msg}"),
-                    None => format!("panic: {msg}"),
-                };
-                Poll::Ready(Err(Error::new(500, msg)))
-            }
-        }
+        polled.unwrap_or_else(|panic| Poll::Ready(Err(panicked(panic))))
     })
     .await
+}
+
+/// [`catch`] of a sync [`App::handle_now`]: `None` when it answered
+/// nothing.
+#[cfg(target_os = "linux")]
+fn catch_now(f: impl FnOnce() -> crate::Result<bool>) -> Option<crate::Result<()>> {
+    let began = timed().then(Instant::now);
+    IN_HANDLER.set(true);
+    let ran = catch_unwind(AssertUnwindSafe(f));
+    IN_HANDLER.set(false);
+    if let Some(began) = began {
+        BLOCKED.set(BLOCKED.get().max(began.elapsed()));
+    }
+    match ran {
+        Ok(Ok(true)) => Some(Ok(())),
+        Ok(Ok(false)) => None,
+        Ok(Err(e)) => Some(Err(e)),
+        Err(panic) => Some(Err(panicked(panic))),
+    }
+}
+
+/// The 500 of a handler's `panic`, saying where it was.
+fn panicked(panic: Box<dyn std::any::Any + Send>) -> Error {
+    let msg = panic
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "panic".into());
+    let msg = match PANICKED_AT.take() {
+        Some(at) => format!("panic at {at}: {msg}"),
+        None => format!("panic: {msg}"),
+    };
+    Error::new(500, msg)
 }
 
 /// Wisp's own addresses: the browser runtime, the API docs and, in dev,
@@ -2693,11 +2813,11 @@ fn internal<A: App>(cx: &Cx, path: &str, reply: &mut Reply) -> bool {
 /// The app's files: templates' browser modules, then its assets, embedded
 /// or, in dev, read from `static/`. `route`: the route the path matches.
 /// `false` if the path is not a file.
-fn file<A: App>(cx: &Cx, path: &str, route: Option<usize>, reply: &mut Reply) -> bool {
+fn file<A: App>(cx: &Cx, raw: &[u8], route: Option<usize>, reply: &mut Reply) -> bool {
     let routed = route.is_some();
     // Compiled in, in dev too: a change to one is a rebuild anyway.
-    if path.starts_with(crate::protocol::MODULES)
-        && let Some(m) = A::client_module(path)
+    if raw.starts_with(crate::protocol::MODULES.as_bytes())
+        && let Some(m) = A::client_module(cx.path())
     {
         send_file(
             reply,
@@ -2709,6 +2829,7 @@ fn file<A: App>(cx: &Cx, path: &str, route: Option<usize>, reply: &mut Reply) ->
         return true;
     }
     if crate::settings().dev {
+        let path = cx.path();
         // A page's path goes to the disk only if `static/` had a file there.
         if path != crate::protocol::APP_CSS_PATH
             && routed
@@ -2726,7 +2847,7 @@ fn file<A: App>(cx: &Cx, path: &str, route: Option<usize>, reply: &mut Reply) ->
     if route.is_some_and(|r| !A::ROUTES[r].files) {
         return false;
     }
-    let Some(a) = A::asset(path) else {
+    let Some(a) = A::asset(cx.path()) else {
         return false;
     };
     send_file(reply, cx, Body::Static(a.body), a.ext, Some(a.etag));
@@ -4074,6 +4195,101 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
         assert_eq!(ask(&["/now", "/now"]), "now now");
         assert_eq!(ask(&["/wait"]), "waited");
+    }
+
+    /// Routes whose GET the build made sync: `/sync` (0), which
+    /// `handle_now` answers; `/later` (1), which it turns out not to, so
+    /// `handle` does; `/boom` (2), which panics; `/gone` (3), which fails
+    /// to its error page, rendered in the decider.
+    #[cfg(target_os = "linux")]
+    struct Plain;
+
+    #[cfg(target_os = "linux")]
+    impl App for Plain {
+        const ROOT: &'static str = ".";
+        const CSS: Option<&'static str> = None;
+        const ROUTES: &'static [crate::rt::RouteFacts] = &[const {
+            crate::rt::RouteFacts {
+                now: true,
+                sync: Method::Get.bit(),
+                ..crate::rt::RouteFacts::new(&[])
+            }
+        }; 4];
+        const TEMPLATES: &'static [(&'static str, u64)] = &[];
+
+        fn route(path: &str) -> Option<(usize, [&str; 8])> {
+            let id = ["/sync", "/later", "/boom", "/gone"]
+                .iter()
+                .position(|p| *p == path)?;
+            Some((id, [""; 8]))
+        }
+
+        fn shell() -> [&'static str; 3] {
+            ["", "", ""]
+        }
+
+        fn asset(_: &str) -> Option<&'static crate::Asset> {
+            None
+        }
+
+        async fn init() -> crate::Result<()> {
+            Ok(())
+        }
+
+        async fn handle(_: Option<usize>, _: &mut Cx, out: &mut Out) -> crate::Result<()> {
+            crate::rt::respond(out, crate::Response::text("later"));
+            Ok(())
+        }
+
+        async fn error(
+            _: Option<usize>,
+            _: &mut Cx,
+            out: &mut Out,
+            _: u16,
+            _: &str,
+        ) -> crate::Result<()> {
+            out.body.push_str("page");
+            Ok(())
+        }
+
+        fn handle_now(route: Option<usize>, _: &mut Cx, out: &mut Out) -> crate::Result<bool> {
+            match route {
+                Some(0) => crate::rt::respond(out, crate::Response::text("sync")),
+                Some(2) => panic!("boom"),
+                Some(3) => return Err(Error::new(410, "Gone")),
+                _ => return Ok(false),
+            }
+            Ok(true)
+        }
+    }
+
+    /// The driver answers sync arms with no future, falls back to `handle`
+    /// for one that has none, turns a panic into a 500, and has the decider
+    /// render an error page: all in order, none handed on.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sync_arms_are_answered_without_a_future() {
+        start_clock();
+        let mut b = Box::new(buffers());
+        let paths = ["/sync", "/later", "/boom", "/gone", "/sync"];
+        let wire =
+            paths.map(|p| format!("GET {p} HTTP/1.1\r\nhost: a\r\naccept: text/html\r\n\r\n"));
+        b.cx.wire.buf.extend_from_slice(wire.concat().as_bytes());
+        let Ok(b) = answer_whole::<Plain>(b) else {
+            panic!("handed on");
+        };
+        let text = String::from_utf8_lossy(&b.wbuf);
+        let statuses: Vec<&str> = text.split("HTTP/1.1 ").skip(1).map(|r| &r[..3]).collect();
+        assert_eq!(statuses, ["200", "200", "500", "410", "200"], "{text}");
+        let bodies: Vec<&str> = (text.split("\r\n\r\n").skip(1))
+            .map(|r| r.split("HTTP/1.1").next().unwrap())
+            .collect();
+        // A page's head may have tags other tests set (`HEAD_TAGS`).
+        let ends = ["sync", "later", "page", "page", "sync"];
+        assert!(
+            bodies.iter().zip(ends).all(|(b, e)| b.ends_with(e)),
+            "{text}"
+        );
     }
 
     #[test]

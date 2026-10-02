@@ -47,6 +47,8 @@ pub struct Kept {
 pub enum Made {
     Baked(&'static Baked),
     Kept(Arc<Kept>),
+    /// A 204, of a handler that returns nothing.
+    NoContent,
 }
 
 impl Made {
@@ -55,6 +57,7 @@ impl Made {
         match self {
             Made::Baked(b) => b.head.as_bytes(),
             Made::Kept(k) => &k.wire[..k.head],
+            Made::NoContent => b"HTTP/1.1 204 No Content\r\n",
         }
     }
 
@@ -62,13 +65,7 @@ impl Made {
         match self {
             Made::Baked(b) => b.body.as_bytes(),
             Made::Kept(k) => &k.wire[k.head..],
-        }
-    }
-
-    fn etag(&self) -> &str {
-        match self {
-            Made::Baked(b) => b.etag,
-            Made::Kept(k) => &k.etag,
+            Made::NoContent => b"",
         }
     }
 }
@@ -89,7 +86,16 @@ pub fn baked(cx: &Cx, out: &mut Out, page: &'static Baked) -> bool {
 /// else its bytes.
 pub(crate) fn reply(cx: &Cx, made: Made, reply: &mut Reply) {
     reply.headers.clear();
-    if !crate::http::fresh(cx, made.etag()) {
+    let fresh = match &made {
+        Made::Baked(b) => crate::http::fresh(cx, b.etag),
+        Made::Kept(k) => crate::http::fresh(cx, &k.etag),
+        // As bytes, which an `Idempotency-Key` keeps.
+        Made::NoContent => {
+            (reply.status, reply.body) = (204, Body::Static(b""));
+            return;
+        }
+    };
+    if !fresh {
         reply.status = 200;
         reply.body = Body::Made(made);
         return;
@@ -104,6 +110,7 @@ pub(crate) fn reply(cx: &Cx, made: Made, reply: &mut Reply) {
         Made::Kept(k) => reply.headers.extend(
             headers(&k.wire[..k.head]).filter(|(n, _)| !n.eq_ignore_ascii_case("content-type")),
         ),
+        Made::NoContent => {}
     }
 }
 
@@ -117,6 +124,7 @@ pub(crate) fn unpack(reply: &mut Reply) {
     reply.body = match made {
         Made::Baked(b) => Body::Static(b.body.as_bytes()),
         Made::Kept(k) => Body::Bytes(k.wire[k.head..].to_vec()),
+        Made::NoContent => Body::Static(b""),
     };
 }
 

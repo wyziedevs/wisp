@@ -61,6 +61,12 @@ impl Method {
         }
     }
 
+    /// Its bit in a set of methods, a `u8`.
+    #[doc(hidden)]
+    pub const fn bit(self) -> u8 {
+        1 << self as u8
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Method::Get => "GET",
@@ -102,6 +108,52 @@ impl Span {
     }
 }
 
+/// Headers the parser marks as it reads them, so the framework reads each
+/// without a search: by index in [`Wire::known`].
+#[derive(Clone, Copy)]
+pub(crate) enum Known {
+    IdempotencyKey,
+    IfNoneMatch,
+    ContentType,
+    Accept,
+    WispError,
+    Origin,
+    SecFetchSite,
+}
+
+/// How many [`Known`] there are.
+pub(crate) const KNOWN: usize = 7;
+
+impl Known {
+    /// Their names, lowercase, in order.
+    const NAMES: [&'static str; KNOWN] = [
+        "idempotency-key",
+        "if-none-match",
+        "content-type",
+        "accept",
+        crate::protocol::HEADER_ERROR,
+        "origin",
+        "sec-fetch-site",
+    ];
+
+    /// The index of the known header `name` (in any case), if it is one:
+    /// its length, and at most its first byte, tell which it may be.
+    #[inline(never)]
+    pub(crate) fn of(name: &[u8]) -> Option<usize> {
+        let k = match (name.len(), name.first().map(|c| c | 0x20)) {
+            (15, _) => Known::IdempotencyKey,
+            (13, _) => Known::IfNoneMatch,
+            (12, Some(b'c')) => Known::ContentType,
+            (12, _) => Known::WispError,
+            (6, Some(b'a')) => Known::Accept,
+            (6, _) => Known::Origin,
+            (14, _) => Known::SecFetchSite,
+            _ => return None,
+        } as usize;
+        crate::swar::eq_lower(name, Known::NAMES[k].as_bytes()).then_some(k)
+    }
+}
+
 /// The request as it came over the wire: the connection's read buffer and
 /// spans into it. The parser in `http.rs` writes it; `Cx`'s methods read it.
 pub(crate) struct Wire {
@@ -111,6 +163,10 @@ pub(crate) struct Wire {
     pub query: Span,
     pub body: Span,
     pub headers: Vec<(Span, Span)>,
+    /// The value of the first of each [`Known`] header, where its bit in
+    /// `knows` is set.
+    pub known: [Span; KNOWN],
+    pub knows: u8,
     /// HTTP/1.1 rather than 1.0, which cannot take a chunked response.
     pub http11: bool,
     pub peer: SocketAddr,
@@ -158,6 +214,8 @@ impl Cx {
                 query: Span::default(),
                 body: Span::default(),
                 headers: Vec::with_capacity(16),
+                known: [Span::default(); KNOWN],
+                knows: 0,
                 http11: true,
                 peer,
             },
@@ -182,9 +240,7 @@ impl Cx {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn reset(&mut self) {
         self.idem = None;
-        // Only the route's own are ever set (`set_params`).
-        self.decoded[..self.names.len()].fill(None);
-        self.names = &[];
+        self.clear_params();
         self.status = 200;
         self.out_headers.clear();
         self.kept_headers = 0;
@@ -211,6 +267,13 @@ impl Cx {
         matches!(self.json.get(), Some(None))
     }
 
+    /// No route params, as a route with none has.
+    pub(crate) fn clear_params(&mut self) {
+        // Only the route's own are ever set (`set_params`).
+        self.decoded[..self.names.len()].fill(None);
+        self.names = &[];
+    }
+
     pub(crate) fn set_params(&mut self, names: &'static [&'static str], spans: [Span; MAX_PARAMS]) {
         debug_assert!(names.len() <= MAX_PARAMS);
         self.names = names;
@@ -233,6 +296,11 @@ impl Cx {
     /// The URL path, as sent (not percent-decoded).
     pub fn path(&self) -> &str {
         self.str(self.wire.path)
+    }
+
+    /// [`Cx::path`] as its bytes, which reading is free.
+    pub(crate) fn raw_path(&self) -> &[u8] {
+        &self.wire.buf[self.wire.path.range()]
     }
 
     /// The raw query string, without the `?`.
@@ -312,13 +380,21 @@ impl Cx {
     /// The form the request carries, urlencoded or multipart (which is how
     /// forms send files: [`Form::file`]). Empty for any other body.
     pub fn form(&self) -> Form<'_> {
-        Form::new(self.header("content-type"), self.body())
+        Form::new(self.known(Known::ContentType), self.body())
     }
 
     /// The request body as sent, whatever its type: JSON for
     /// `serde_json::from_slice(cx.body())`, say.
     pub fn body(&self) -> &[u8] {
         &self.wire.buf[self.wire.body.range()]
+    }
+
+    /// [`Cx::header`] of a [`Known`] header, with no search.
+    pub(crate) fn known(&self, k: Known) -> Option<&str> {
+        if self.wire.knows & 1 << k as usize == 0 {
+            return None;
+        }
+        std::str::from_utf8(&self.wire.buf[self.wire.known[k as usize].range()]).ok()
     }
 
     /// Request header by case-insensitive name. Non-UTF-8 values are `None`.
@@ -340,7 +416,7 @@ impl Cx {
     /// The body's media type, its `content-type` without parameters:
     /// `application/json`. Empty when it has none.
     pub(crate) fn mime(&self) -> &str {
-        let t = self.header("content-type").unwrap_or("");
+        let t = self.known(Known::ContentType).unwrap_or("");
         t.split(';').next().unwrap_or("").trim()
     }
 
@@ -822,6 +898,12 @@ impl Cx {
         for l in lines {
             let (n, v) = l.split_once(": ").unwrap();
             cx.wire.headers.push((at(n), at(v)));
+            if let Some(k) = Known::of(n.as_bytes())
+                && cx.wire.knows & 1 << k == 0
+            {
+                cx.wire.knows |= 1 << k;
+                cx.wire.known[k] = at(v);
+            }
         }
         let mut spans = [Span::default(); MAX_PARAMS];
         for (span, (_, value)) in spans.iter_mut().zip(params) {
