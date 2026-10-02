@@ -1781,7 +1781,9 @@ impl Parser<'_> {
         if textarea && self.frames.len() == k.frames {
             self.flush()?;
             let line = self.line_of(pos);
-            let own = Some(self.list().split_off(k.at));
+            // (A `{:else}` inside it moved on to a list of its own.)
+            let list = self.list();
+            let own = Some(list.split_off(k.at.min(list.len())));
             let sent = self.alone(Node::Expr(Code {
                 src: "__k".into(),
                 line,

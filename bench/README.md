@@ -314,7 +314,7 @@ App work, on the practice routes above (n/a where a server has none: a
   ideal, less means a waiting handler holds up others. req/s, p50, p99.
   On Windows a 20 ms timer fires on the 15.6 ms clock tick, after about
   31 ms, so about 32,000 is ideal there.
-- **Echo**: 64 connections posting a valid 180-byte body to `/echo`, after
+- **Echo**: 64 connections posting a valid 170-byte body to `/echo`, after
   an invalid one must get a 4xx: req/s and CPU per request.
 - **Upload**: 32 connections posting 1 MiB to `/upload`: MB/s and the most
   memory seen (sampled every 100 ms), after a 9 MiB body must get a 413 or

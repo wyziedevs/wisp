@@ -264,7 +264,7 @@ pub fn image(cx: &Cx, name: &str) -> Result<Option<crate::Image>> {
     }
 }
 
-/// An email address, checked as it is read:`#[action] fn join(email:
+/// An email address, checked as it is read: `#[action] fn join(email:
 /// Email)` gets one, or the page shows again with "must be an email
 /// address" by the input. Reads as the `&str` it holds.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
