@@ -42,7 +42,7 @@ fn find<'a>(cx: &'a Cx, name: &str) -> Option<(Cow<'a, str>, From)> {
 
 /// Whether the client asks for JSON rather than a page, by its `Accept`.
 pub(crate) fn asks_json(cx: &Cx) -> bool {
-    let accept = cx.header("accept").unwrap_or("");
+    let accept = cx.known(crate::cx::Known::Accept).unwrap_or("");
     accept.contains("json") && !accept.contains("text/html")
 }
 
@@ -105,7 +105,7 @@ fn json_values<'a>(cx: &'a Cx, name: &str) -> impl Iterator<Item = Cow<'a, str>>
 /// `body: T`: the request's JSON body read as a `T` (see
 /// [`crate::from_json`]). A body sent as another type is a 415.
 pub fn body<T: FromJson>(cx: &Cx) -> Result<T> {
-    if cx.header("content-type").is_some() && !is_json(cx) {
+    if cx.known(crate::cx::Known::ContentType).is_some() && !is_json(cx) {
         return Err(Error::new(
             415,
             "Expected a JSON body, sent with Content-Type: application/json",

@@ -263,14 +263,47 @@ fn shim(f: &FnItem, kind: Shim) -> Result<String, String> {
              {lets}Ok(::wisp::rt_traits::Answer::answer({call})) }}"
         ),
         // Most particular first: see `wisp::rt_traits::ret`.
-        Shim::Endpoint => format!(
-            "pub async fn {name}(cx: &mut ::wisp::Cx) -> ::wisp::Result<::wisp::Response> {{ \
-             use ::wisp::rt_traits::ret::*; {lets}(&&&Ret::new({call})).respond() }}"
-        ),
+        // A sync one has a sync twin, `{name}_now`, for `App::handle_now`,
+        // on a line of its own: `call_mod` leaves out those it does not use.
+        // One that returns nothing answers nothing: the arm sends a 204.
+        Shim::Endpoint => {
+            let (body, ret) = match returns_nothing(f) {
+                true => (format!("{lets}{call}; Ok(()) }}"), "()"),
+                false => (
+                    format!(
+                        "use ::wisp::rt_traits::ret::*; {lets}(&&&Ret::new({call})).respond() }}"
+                    ),
+                    "::wisp::Response",
+                ),
+            };
+            let now = match f.is_async {
+                true => String::new(),
+                false => format!(
+                    "\npub fn {name}_now(cx: &mut ::wisp::Cx) -> ::wisp::Result<{ret}> {{ {body}"
+                ),
+            };
+            format!(
+                "pub async fn {name}(cx: &mut ::wisp::Cx) -> ::wisp::Result<{ret}> {{ {body}{now}"
+            )
+        }
         Shim::Init => {
             format!("pub async fn init() -> ::wisp::Result<()> {{ let () = {call}; Ok(()) }}")
         }
     })
+}
+
+/// Whether `f` returns nothing (no `->`, or `-> ()`): its answer is a 204.
+fn returns_nothing(f: &FnItem) -> bool {
+    f.returns.is_empty() || f.returns == "()"
+}
+
+/// What an arm of `handle` does to answer with handler `h` of module `m`,
+/// its shim called as `call` (`get(cx).await`, `get_now(cx)`).
+fn serve(m: &str, h: &Handler, call: &str) -> String {
+    match h.empty {
+        true => format!("{m}::__call::{call}?; ::wisp::rt::no_content(__o);"),
+        false => format!("::wisp::rt::respond(__o, {m}::__call::{call}?);"),
+    }
 }
 
 /// `: T` on the `let` of an input read as `owned` (in `how`: `{}`, or
@@ -1423,15 +1456,20 @@ impl Gen {
         for m in &p.mods {
             self.user_mod(m, &p.rel(&m.file), "super::*")?;
             if !m.tables.is_empty() {
-                self.call_mod(m);
+                self.call_mod(m, &[]);
             }
             self.line(0, "}");
         }
         self.line(0, "}");
         self.line(0, "");
+        // The sync twins `handle_now` calls, as `module::shim`.
+        let twins: Vec<String> = (p.model.routes.iter())
+            .flat_map(|r| now_arms(p, r))
+            .map(|(s, h)| format!("{}::{}", s.module, h.shim))
+            .collect();
         for m in p.hooks.iter().chain(&p.user_mods) {
             self.user_mod(m, &p.rel(&m.file), "super::__mods::*")?;
-            self.call_mod(m);
+            self.call_mod(m, &twins);
             for (t, c) in p.templates.iter().zip(&web.clients) {
                 if t.user.as_ref().is_some_and(|(u, _)| *u == m.name) {
                     self.template(t, &p.comps, c.as_ref());
@@ -1772,6 +1810,7 @@ impl Gen {
         self.line(0, "");
 
         self.handle(p, &baked);
+        self.handle_now(p);
         self.error(p);
         self.line(0, "}");
         Ok(client)
@@ -2009,10 +2048,19 @@ impl Gen {
             // An embedded file at one of its paths is served before it.
             let files = (assets.files.iter())
                 .any(|(url, ..)| r.expansions().iter().any(|e| may_match(e, url)));
+            let sync: Vec<String> = (now_arms(p, route).iter())
+                .flat_map(|(_, h)| method_of(h).1.split(" | "))
+                .map(|v| format!("::wisp::Method::{v}.bit()"))
+                .collect();
+            let sync = if sync.is_empty() {
+                "0".into()
+            } else {
+                sync.join(" | ")
+            };
             self.line(
                 2,
                 &format!(
-                    "::wisp::rt::RouteFacts {{ params: &[{}], body_limit: {}, uploads: {}, now: {}, files: {files}, error: {} }}, // {}",
+                    "::wisp::rt::RouteFacts {{ params: &[{}], body_limit: {}, uploads: {}, now: {}, sync: {sync}, files: {files}, error: {} }}, // {}",
                     names.join(", "),
                     some(limit),
                     some(uploads),
@@ -2141,7 +2189,7 @@ impl Gen {
                 if !actions.is_empty() {
                     self.line(3, &format!("({i}, Post) => {{"));
                     self.line(4, "::wisp::rt::check_origin(cx)?;");
-                    self.line(4, IDEMPOTENT);
+                    self.line(4, &idempotent("()"));
                     self.line(4, "match cx.action() {");
                     // `invalid(field, ..)` shows the page again, as a 422, with
                     // what is wrong for `cx.problem(field)`.
@@ -2167,8 +2215,7 @@ impl Gen {
                 }
             }
             for (s, h) in (r.server.iter()).flat_map(|s| s.handlers.iter().map(move |h| (s, h))) {
-                let (_, variants, allowed) =
-                    METHODS.iter().find(|(n, _, _)| *n == h.op.method).unwrap();
+                let (_, variants, allowed) = method_of(h);
                 let m = &s.module;
                 let mut before = match s.before {
                     true => answer(&format!("{m}::__call::before")) + " ",
@@ -2177,12 +2224,9 @@ impl Gen {
                 if h.op.method == "post" {
                     // After `before`'s `if … { … }`, a `;`: not an `else if`.
                     let sep = if before.is_empty() { "" } else { "; " };
-                    before = format!("{}{sep}{IDEMPOTENT} ", before.trim_end());
+                    before = format!("{}{sep}{} ", before.trim_end(), idempotent("()"));
                 }
-                let mut serve = format!(
-                    "::wisp::rt::respond(__o, {m}::__call::{}(cx).await?);",
-                    h.shim
-                );
+                let mut serve = serve(m, h, &format!("{}(cx).await", h.shim));
                 if h.op.method == "get" {
                     serve = kept(serve);
                 }
@@ -2212,6 +2256,48 @@ impl Gen {
             );
         }
         self.line(3, "_ => Err(::wisp::Error::new(404, \"Not Found\")),");
+        self.line(2, "}");
+        self.line(1, "}");
+        self.line(0, "");
+    }
+
+    /// `handle`'s arms that are sync (see `now_arms`), as plain code:
+    /// `Ok(false)` for any other, which `handle` answers.
+    fn handle_now(&mut self, p: &Project) {
+        let arms: Vec<(usize, &model::Route)> = (p.model.routes.iter().enumerate())
+            .filter(|(_, r)| !now_arms(p, r).is_empty())
+            .collect();
+        if arms.is_empty() {
+            return;
+        }
+        self.line(1, "fn handle_now(route: Option<usize>, cx: &mut ::wisp::Cx, __o: &mut ::wisp::Out) -> ::wisp::Result<bool> {");
+        self.line(2, "use ::wisp::Method::*;");
+        self.line(2, "let Some(route) = route else { return Ok(false) };");
+        self.line(2, "match (route, cx.method) {");
+        for (i, r) in arms {
+            for (s, h) in now_arms(p, r) {
+                let before = match h.op.method == "post" {
+                    true => idempotent("true") + " ",
+                    false => String::new(),
+                };
+                let mut serve = serve(&s.module, h, &format!("{}_now(cx)", h.shim));
+                if let (Some(c), "get") = (&r.cache, h.op.method) {
+                    let (m, public, by) = (&c.module, c.public, r.by_accept());
+                    serve = format!(
+                        "if ::wisp::rt::cached::<{by}>(cx, __o, {public}) {{ return Ok(true); }} {serve} \
+                         ::wisp::rt::keep::<Self, {by}>(cx, __o, {m}::__call::CACHE, {public});"
+                    );
+                }
+                self.line(
+                    3,
+                    &format!(
+                        "({i}, {}) => {{ ::wisp::rt::hooked(cx); ::wisp::rt::endpoint(cx); {before}{serve} Ok(true) }}",
+                        method_of(h).1
+                    ),
+                );
+            }
+        }
+        self.line(3, "_ => Ok(false),");
         self.line(2, "}");
         self.line(1, "}");
         self.line(0, "");
@@ -2330,6 +2416,8 @@ fn server_handlers(
             member,
             op: Op::of(method, f),
             by_accept: false,
+            sync: !f.is_async,
+            empty: returns_nothing(f),
         });
     }
     if let Some(ty) = rest_type(items) {
@@ -2404,6 +2492,8 @@ fn server_handlers(
                 member,
                 op,
                 by_accept,
+                sync: false,
+                empty: false,
             });
         }
     }
@@ -2527,7 +2617,26 @@ fn may_match(exp: &[&Seg], url: &str) -> bool {
 
 /// The statement in a POST's arm of `handle`, once its hooks passed, that
 /// answers a request whose `Idempotency-Key` was answered before.
-const IDEMPOTENT: &str = "if ::wisp::rt::idempotent(cx, __o) { return Ok(()); }";
+/// The statement that answers a POST its `Idempotency-Key` answered
+/// before, returning `Ok(done)`.
+fn idempotent(done: &str) -> String {
+    format!("if ::wisp::rt::idempotent(cx, __o) {{ return Ok({done}); }}")
+}
+
+/// The method `h` answers: its name, its `Method` variants, and its `Allow` names.
+fn method_of(h: &Handler) -> &'static (&'static str, &'static str, &'static str) {
+    METHODS.iter().find(|(n, _, _)| *n == h.op.method).unwrap()
+}
+
+/// The arms of route `r` that `App::handle_now` answers without a future:
+/// the `+server.rs` handlers with a sync twin (`Handler::sync`), on a route
+/// that never waits, with no `before` hook of the app's or the file's.
+fn now_arms<'a>(p: &Project, r: &'a model::Route) -> Vec<(&'a model::Server, &'a Handler)> {
+    let now = !p.has_hook("before") && !p.model.route_waits(r);
+    (r.server.iter().filter(|s| now && !s.before))
+        .flat_map(|s| s.handlers.iter().filter(|h| h.sync).map(move |h| (s, h)))
+        .collect()
+}
 
 /// The statement in `handle` that runs an `Answer` shim (an action or
 /// `before`): a `Response` it hands back is sent instead of the page.
@@ -3051,7 +3160,7 @@ impl Gen {
 
     /// The `__call` module of `m`, inside its module: where the generated
     /// code calls its functions.
-    fn call_mod(&mut self, m: &UserMod) {
+    fn call_mod(&mut self, m: &UserMod, twins: &[String]) {
         self.line(1, "#[doc(hidden)]");
         self.line(1, "#[allow(unused_variables, clippy::all)]");
         self.line(1, "pub mod __call {");
@@ -3060,7 +3169,16 @@ impl Gen {
         self.line(2, "#[allow(unused_imports)]");
         self.line(2, "use super::*;");
         for s in m.calls() {
-            self.line(2, &s);
+            for line in s.lines() {
+                let twin = (line.strip_prefix("pub fn "))
+                    .and_then(|l| l.split_once("_now(cx: &mut ::wisp::Cx)"));
+                if let Some((name, _)) = twin
+                    && !twins.contains(&format!("{}::{name}", m.name))
+                {
+                    continue;
+                }
+                self.line(2, line);
+            }
         }
         self.line(1, "}");
     }
@@ -6480,7 +6598,17 @@ mod tests {
             "(0, Get | Head) => { ::wisp::rt::endpoint(cx); if ::wisp::rt::cached::<false>(cx, __o, true) { return Ok(()); } \
              ::wisp::rt::respond(__o, server_0::__call::get(cx).await?); ::wisp::rt::keep::<Self, false>(cx, __o, server_0::__call::CACHE, true); Ok(()) }",
             "(0, Post) => { ::wisp::rt::endpoint(cx); if ::wisp::rt::idempotent(cx, __o) { return Ok(()); } \
-             ::wisp::rt::respond(__o, server_0::__call::post(cx).await?); Ok(()) }",
+             server_0::__call::post(cx).await?; ::wisp::rt::no_content(__o); Ok(()) }",
+            // The same, sync, with no future: what `handle_now` answers.
+            "now: true, sync: ::wisp::Method::Get.bit() | ::wisp::Method::Head.bit() | ::wisp::Method::Post.bit(),",
+            "(0, Get | Head) => { ::wisp::rt::hooked(cx); ::wisp::rt::endpoint(cx); \
+             if ::wisp::rt::cached::<false>(cx, __o, true) { return Ok(true); } \
+             ::wisp::rt::respond(__o, server_0::__call::get_now(cx)?); \
+             ::wisp::rt::keep::<Self, false>(cx, __o, server_0::__call::CACHE, true); Ok(true) }",
+            "(0, Post) => { ::wisp::rt::hooked(cx); ::wisp::rt::endpoint(cx); \
+             if ::wisp::rt::idempotent(cx, __o) { return Ok(true); } \
+             server_0::__call::post_now(cx)?; ::wisp::rt::no_content(__o); Ok(true) }",
+            "pub fn post_now(cx: &mut ::wisp::Cx) -> ::wisp::Result<()> { super::post(); Ok(()) }",
         ] {
             assert!(code.contains(want), "{want}\n{code}");
         }
@@ -6679,7 +6807,7 @@ mod tests {
         ];
         let code = app("inputs", &files).unwrap();
         for want in [
-            "let __a0 = ::wisp::rt::input::body(cx)?; (&&&Ret::new(super::put(__a0))).respond()",
+            "let __a0 = ::wisp::rt::input::body(cx)?; super::put(__a0); Ok(())",
             "let __a0 = ::wisp::rt_traits::FromInput::get(cx, \"body\")?;",
             "(0, Options) => { ::wisp::rt::respond(__o, ::wisp::rt::options(\"GET, HEAD, POST, DELETE, PUT, PATCH, OPTIONS\")); Ok(()) }",
             "let __a0 = ::wisp::rt::input::read(&mut __p, ::wisp::rt_traits::FromInput::get(cx, \"id\"))?; \
@@ -6691,9 +6819,8 @@ mod tests {
              let __a3 = ::wisp::rt::input::read(&mut __p, ::wisp::rt_traits::FromInput::get(cx, \"on\"))?; \
              let (Some(__a1), Some(__a2), Some(__a3), true) = (__a1, __a2, __a3, __p.is_empty()) else { return ::wisp::rt::input::refused(__p); }; \
              Ok(::wisp::rt_traits::Answer::answer(super::add(cx, &__a1, __a2, __a3).await?))",
-            "let __a0 = ::wisp::rt_traits::FromInput::get(cx, \"name\")?; (&&&Ret::new(super::post(__a0))).respond()",
+            "let __a0 = ::wisp::rt_traits::FromInput::get(cx, \"name\")?; super::post(__a0); Ok(())",
             "(&&&Ret::new(super::get(__a0))).respond()",
-            "(&&&Ret::new(super::post(__a0))).respond()",
             "(&&&Ret::new(super::delete())).respond()",
         ] {
             assert!(code.contains(want), "{want}\n{code}");

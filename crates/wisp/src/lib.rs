@@ -666,6 +666,13 @@ pub trait App: 'static {
         status: u16,
         message: &str,
     ) -> impl Future<Output = Result<()>> + Send;
+    /// What [`App::handle`] does, for the arms the build made plain code
+    /// ([`rt::RouteFacts::sync`]): `Ok(false)` for any other, having done
+    /// nothing.
+    fn handle_now(route: Option<usize>, cx: &mut Cx, out: &mut Out) -> Result<bool> {
+        let _ = (route, cx, out);
+        Ok(false)
+    }
 }
 
 /// Where a request's output goes: HTML for the head and body of the shell,
@@ -1387,6 +1394,9 @@ pub mod rt {
         /// nothing. The server then answers it as it receives it, without
         /// a task's round trip.
         pub now: bool,
+        /// The methods ([`crate::Method::bit`]) whose arm
+        /// [`crate::App::handle_now`] answers, with no future at all.
+        pub sync: u8,
         /// A file the binary embeds may be at one of its paths, and is
         /// served instead: else a GET to it skips looking.
         pub files: bool,
@@ -1402,6 +1412,7 @@ pub mod rt {
                 body_limit: None,
                 uploads: None,
                 now: false,
+                sync: 0,
                 files: true,
                 error: None,
             }
@@ -1542,6 +1553,11 @@ pub mod rt {
         out.response = Some(r);
     }
 
+    /// The answer of a handler that returns nothing: a 204.
+    pub fn no_content(out: &mut Out) {
+        out.made = Some(crate::bake::Made::NoContent);
+    }
+
     /// A POST the hooks let through, with an `Idempotency-Key`: true when
     /// its answer is decided already, the first one again or a refusal, in
     /// `out`; else it is answered as usual, and that answer kept.
@@ -1562,7 +1578,7 @@ pub mod rt {
     /// A 500 when the GET of a page is live.js asking for its error page
     /// (`x-wisp-error`): its browser code failed while starting.
     pub fn browser_ok(cx: &Cx) -> crate::Result<()> {
-        if cx.method == crate::Method::Get && cx.header(crate::protocol::HEADER_ERROR).is_some() {
+        if cx.method == crate::Method::Get && cx.known(crate::cx::Known::WispError).is_some() {
             return Err(Error::new(500, "Something went wrong in the browser"));
         }
         Ok(())
@@ -1588,8 +1604,8 @@ pub mod rt {
     /// sibling one, `same-site`) is refused too: an older browser, or a
     /// privacy setting, may leave `Origin` out.
     pub fn check_origin(cx: &Cx) -> crate::Result<()> {
-        let Some(origin) = cx.header("origin") else {
-            let site = cx.header("sec-fetch-site").unwrap_or("none");
+        let Some(origin) = cx.known(crate::cx::Known::Origin) else {
+            let site = cx.known(crate::cx::Known::SecFetchSite).unwrap_or("none");
             if site.eq_ignore_ascii_case("same-origin") || site.eq_ignore_ascii_case("none") {
                 return Ok(());
             }

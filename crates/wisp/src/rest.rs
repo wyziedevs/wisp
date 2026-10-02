@@ -423,7 +423,7 @@ fn check_match<T: Json>(cx: &Cx, id: u64, v: &T, json: Option<&str>) -> Result {
 /// application/x-ndjson`) rather than as a JSON array. What `CACHE` keeps
 /// of a list is kept apart by it (see `bake::cached`).
 pub(crate) fn lines(cx: &Cx) -> bool {
-    cx.header("accept")
+    cx.known(crate::cx::Known::Accept)
         .is_some_and(|a| a.contains("application/x-ndjson"))
 }
 

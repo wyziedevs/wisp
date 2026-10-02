@@ -114,6 +114,10 @@ pub struct Handler {
     /// Its answer depends on the request's `accept` (a `#[derive(Rest)]`
     /// list is JSON or NDJSON), besides its path and query.
     pub by_accept: bool,
+    /// Its shim has a sync twin, `{shim}_now`.
+    pub sync: bool,
+    /// It returns nothing, and its shim `()`: the answer is a 204.
+    pub empty: bool,
 }
 
 /// A route's `CACHE` (or `CACHE_PUBLIC`).
