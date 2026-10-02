@@ -3366,7 +3366,7 @@ impl Gen {
                 self.code_line(ind, &format!("let {};", code.src), &code, cx);
             }
             Node::Problem { .. } if !cx.has_cx => {}
-            Node::Problem { name, line } => {
+            Node::Problem { name, line, .. } => {
                 let code = Code {
                     src: format!("::wisp::rt::problem(cx, {name:?})"),
                     line: *line,

@@ -125,10 +125,12 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
   listing every failing field. Its inputs get the browser's own checks
   that match (`required`, `minlength`, `type="email"`, `min`/`max` on
   `type="number"`, a `pattern` for the most length); the server still
-  checks all. Each named `<input>`, `<textarea>`, `<select>` of an
-  action form (`?/x`, or `method="post"`) shows what was sent again, else its own value (`value={post.title}`,
+  checks all; a button with `formaction="?/other"` skips them
+  (`formnovalidate`). Each named `<input>`, `<textarea>`, `<select>` of an
+  action form (`?/x`, or `method="post"`) shows what was sent again, else
+  its own value (`value={post.title}` or `value="x"`,
   `<textarea name="body">{post.body}</textarea>`, `<select name="kind"
-  value={post.kind}>` selects that option), and after it `<small
+  value={post.kind}>` selects the option of that value, or text), and after it `<small
   class="problem">msg</small>` (passwords/files: the problem, never the
   value). `{cx.problem("field")}` puts that field's `<small>` there instead.
   Other errors → error page.
