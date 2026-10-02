@@ -19,7 +19,8 @@ pub struct FnItem {
     pub action: bool,
     /// `pub`, in any form.
     pub public: bool,
-    /// `async fn`: the call is awaited.
+    /// `async fn`, or an action whose body `.await`s (`#[action]` makes it
+    /// `async`): the call is awaited.
     pub is_async: bool,
     /// Every parameter, as its pattern and its type: `("slug", "String")`.
     pub params: Vec<(String, String)>,
@@ -375,8 +376,13 @@ pub fn scan(src: &str) -> Result<Items, String> {
                                 && !takes_cx
                                 && b.get(body) == Some(&b'{')
                                 && uses_ident(&b[body..block_end(b, body)], b"cx");
-                            // `#[action]` makes one without `->` return `Result`.
+                            // `#[action]` makes one without `->` return `Result`,
+                            // and one that awaits `async`.
                             let fallible = fallible || (action && returns.is_empty());
+                            is_async = is_async
+                                || (action
+                                    && b.get(body) == Some(&b'{')
+                                    && awaits(&src[body..block_end(b, body)]));
                             items.fns.push(FnItem {
                                 name,
                                 action,
@@ -600,6 +606,7 @@ fn signature(src: &str, mut i: usize) -> (Params, bool, String, usize) {
         }
         i += 1;
     }
+    let i = i.min(b.len());
     let returns = ret.map_or("", |r| {
         let t = &src[r..i];
         // Up to a `where` clause.
@@ -817,6 +824,66 @@ pub fn awaits(code: &str) -> bool {
     false
 }
 
+/// Whether statements `code` may wait: they `.await`, or call a macro,
+/// which may expand to an await (`join!`, `select!`, one of the app's),
+/// but for std's that cannot. A doubt is a yes: see `codegen`'s `now`.
+pub fn may_wait(code: &str) -> bool {
+    const PLAIN: [&[u8]; 32] = [
+        b"assert",
+        b"assert_eq",
+        b"assert_ne",
+        b"cfg",
+        b"column",
+        b"concat",
+        b"dbg",
+        b"debug_assert",
+        b"debug_assert_eq",
+        b"debug_assert_ne",
+        b"env",
+        b"eprint",
+        b"eprintln",
+        b"file",
+        b"format",
+        b"format_args",
+        b"include_bytes",
+        b"include_str",
+        b"line",
+        b"matches",
+        b"module_path",
+        b"option_env",
+        b"panic",
+        b"print",
+        b"println",
+        b"stringify",
+        b"todo",
+        b"unimplemented",
+        b"unreachable",
+        b"vec",
+        b"write",
+        b"writeln",
+    ];
+    if awaits(code) {
+        return true;
+    }
+    let b = code.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i].is_ascii_alphabetic() || b[i] == b'_' {
+            let end = ident_end(b, i);
+            let bang = b.get(end) == Some(&b'!') && b.get(end + 1) != Some(&b'=');
+            // Any path is a doubt (`tokio::join!`), even `std::vec!`.
+            let path = b[..i].ends_with(b"::");
+            if bang && (path || !PLAIN.contains(&&b[i..end])) {
+                return true;
+            }
+            i = end;
+            continue;
+        }
+        i = skip_literal(b, i) + 1;
+    }
+    false
+}
+
 /// If an item starts at `i` (after any comments, attributes and `pub`),
 /// the index just past its end.
 fn item_at(b: &[u8], mut i: usize) -> Option<usize> {
@@ -931,7 +998,8 @@ fn skip_space(b: &[u8], mut i: usize) -> usize {
                 i += 1;
             }
         } else if b[i..].starts_with(b"/*") {
-            i = skip_block_comment(b, i) + 1;
+            // An unclosed comment runs to the end.
+            i = (skip_block_comment(b, i) + 1).min(b.len());
         } else {
             break;
         }
@@ -985,7 +1053,7 @@ pub fn inner_end(src: &str) -> usize {
             }
         } else if rest.starts_with("/*") && !rest.starts_with("/**") {
             let doc = rest.starts_with("/*!");
-            i = skip_block_comment(b, i) + 1;
+            i = (skip_block_comment(b, i) + 1).min(b.len());
             if doc {
                 end = i;
             }
@@ -1126,6 +1194,17 @@ mod tests {
                 ("after_const".into(), true, false, false),
             ]
         );
+    }
+
+    #[test]
+    fn actions_that_await_are_async() {
+        let src = "#[action] fn a() { let h = hash(&p).await; }
+                   #[action] fn b() { let s = \"x.await\"; }
+                   fn c() { f().await }
+                   #[action] async fn d() {}";
+        let fs = top_level_fns(src);
+        let got: Vec<bool> = fs.iter().map(|f| f.is_async).collect();
+        assert_eq!(got, [true, false, false, true]);
     }
 
     #[test]
@@ -1469,6 +1548,39 @@ fn a() {}"
         assert!(super::awaits("f(x). await ?"));
         assert!(!super::awaits("\"a.await\""));
         assert!(!super::awaits("x.awaited"));
+        assert!(super::awaits(
+            "f(x)./* c */
+ await"
+        ));
+    }
+
+    #[test]
+    fn statements_that_may_wait() {
+        let wait = super::may_wait;
+        assert!(wait("let a = db::a().await;"));
+        assert!(wait(
+            "let a = f()
+    .await?;"
+        ));
+        assert!(wait("let (a, b) = tokio::join!(f(), g());"));
+        assert!(wait("let a = join!(f(), g());"));
+        assert!(wait("let a = get!(f());"));
+        assert!(wait("let v = std::vec![1];"));
+        assert!(!wait(
+            "let a = format!(\"{}\", 1); let v = vec![1]; assert!(a != \"\");"
+        ));
+        assert!(!wait("let a = x!=y; let s = \"join!(a)\"; // get!(x)"));
+        assert!(!wait("let a = f(); /* x.await */"));
+    }
+
+    #[test]
+    fn unclosed_literals_and_comments_end_the_text() {
+        // Found by the fuzz tests: each panicked past the end.
+        assert_eq!(super::inner_end("/*! a"), 5);
+        assert_eq!(super::inner_end("/*"), 0);
+        assert!(!super::awaits("x./* a"));
+        assert!(super::scan("fn t()->'\\").is_ok());
+        assert!(super::scan("fn r->'\\").is_ok());
     }
 
     #[test]

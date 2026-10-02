@@ -2197,7 +2197,7 @@ mod tests {
             "a+ +b- -c;1 .x;`a ${b} c`"
         );
         // The runtime's extra half, as release builds serve it.
-        let src = include_str!("extra.js");
+        let src = wisp_shared::EXTRA_JS;
         let texts =
             |s: &str| -> Vec<String> { tokens(s).iter().map(|t| t.text(s).to_string()).collect() };
         assert_eq!(texts(src), texts(&minify(src)));

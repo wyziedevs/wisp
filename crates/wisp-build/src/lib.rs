@@ -5,13 +5,19 @@
 mod codegen;
 mod fold;
 mod js;
+mod model;
 mod openapi;
 pub mod routes;
-mod rules;
+pub mod rules;
 pub mod rust_scan;
 mod shell;
 pub mod template;
 mod ty;
+
+// The runtime's HTML context rules (escaping, URL attributes and the
+// schemes that run script) and live-page wire protocol: what a build folds
+// and writes and what the runtime does are one code.
+use wisp_shared::{contexts, protocol};
 
 /// JavaScript without comments and needless whitespace, its names
 /// shortened: the browser runtime as release builds serve it (`wisp`'s
@@ -70,7 +76,9 @@ pub fn uses_tailwind(css: &str) -> bool {
     css.contains("@import \"tailwindcss\"") || css.contains("@import 'tailwindcss'")
 }
 
-/// A JSON (and JavaScript) string literal.
+/// A JSON (and JavaScript) string literal, for files of their own (a
+/// module, the OpenAPI document) and values the server writes escaped:
+/// not for inside a `<script>`, as `<` stays.
 pub(crate) fn json_str(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
@@ -80,6 +88,9 @@ pub(crate) fn json_str(s: &str) -> String {
             '\\' => out.push_str("\\\\"),
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
+            // Older JavaScript took these for line ends, inside strings too.
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
             c if c < ' ' => out.push_str(&format!("\\u{:04x}", c as u32)),
             c => out.push(c),
         }
@@ -97,7 +108,12 @@ pub fn hot_chunks(root: &Path, rel: &str) -> Result<(Vec<String>, u64), String> 
         let parts = shell::split(&src).map_err(|e| format!("{rel}: {e}"))?;
         return Ok((parts.to_vec(), shell::SHAPE));
     }
-    let (t, _) = parse_wisp(&src).map_err(|e| format!("{rel}:{e}"))?;
+    // A page's `+page.rs` gives its forms' fields their attributes, as in
+    // the build.
+    let rs = rel
+        .strip_suffix("+page.wisp")
+        .and_then(|dir| read_source(&root.join(dir).join("+page.rs")).ok());
+    let (t, _) = parse_page(&src, rs.as_deref(), rel).map_err(|e| format!("{rel}:{e}"))?;
     Ok((t.chunks, t.shape))
 }
 
@@ -106,8 +122,32 @@ pub fn hot_chunks(root: &Path, rel: &str) -> Result<(Vec<String>, u64), String> 
 /// Rust is on its line in the file). The block's text is part of the shape:
 /// changing it means compiling again. Errors are `line:col: msg`.
 pub fn parse_wisp(src: &str) -> Result<(template::Template, Option<String>), String> {
+    parse_page(src, None, "")
+}
+
+/// A `.wisp` file parsed as [`parse_wisp`] does, the fields of its action
+/// forms given the attributes the browser checks them by
+/// ([`rules::fields`]), from its block or its `+page.rs` (`rs`). `rel` is
+/// its path: a field its `[param]` folders fill comes from the route.
+pub fn parse_page(
+    src: &str,
+    rs: Option<&str>,
+    rel: &str,
+) -> Result<(template::Template, Option<String>), String> {
     let (rust, markup) = split_front(src)?;
-    let mut t = template::parse(&markup).map_err(|e| e.to_string())?;
+    // What does not scan has no fields: the build says what is wrong.
+    let items = match (&rust, rs) {
+        (Some(block), _) => rust_scan::scan(&rust_scan::split_items(block).0),
+        (None, Some(rs)) => rust_scan::scan(rs),
+        (None, None) => Ok(rust_scan::Items::default()),
+    };
+    let params: Vec<&str> = (rel.split('/'))
+        .filter_map(|d| d.strip_prefix('['))
+        .map(|d| d.trim_matches(['[', ']', '.']))
+        .map(|d| d.split('=').next().unwrap_or(d))
+        .collect();
+    let fields = items.map_or_else(|_| Vec::new(), |i| rules::fields(&i, &params));
+    let mut t = template::parse_with(&markup, &fields).map_err(|e| e.to_string())?;
     if let Some(r) = &rust {
         t.shape ^= fnv1a(r.as_bytes()).rotate_left(1);
     }
@@ -185,11 +225,12 @@ pub fn client_ts(root: &Path) -> Result<String, String> {
 pub fn runtime_version() -> &'static str {
     static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     V.get_or_init(|| {
-        let js = concat!(
-            include_str!("../../wisp/src/client/wisp.js"),
-            include_str!("../../wisp/src/client/live.js")
-        );
-        format!("{}-{:08x}", env!("CARGO_PKG_VERSION"), fnv1a(js.as_bytes()) as u32)
+        let js = [wisp_shared::WISP_JS, wisp_shared::LIVE_JS].concat();
+        format!(
+            "{}-{:08x}",
+            env!("CARGO_PKG_VERSION"),
+            fnv1a(js.as_bytes()) as u32
+        )
     })
 }
 

@@ -28,7 +28,8 @@ pub fn split(src: &str) -> Result<[String; 3], String> {
         Ok(at)
     };
     let (head, body) = (one(src, "%wisp.head%")?, one(src, "%wisp.body%")?);
-    if body < head {
+    // After it whole: `%wisp.head%wisp.body%` shares a `%`.
+    if body < head + "%wisp.head%".len() {
         return Err("%wisp.head% must come before %wisp.body%".into());
     }
     Ok([
@@ -55,5 +56,6 @@ mod tests {
         assert!(split("<html>%wisp.body%</html>").is_err());
         assert!(split("%wisp.body%%wisp.head%").is_err());
         assert!(split("%wisp.head%%wisp.head%%wisp.body%").is_err());
+        assert!(split("%wisp.head%wisp.body%").is_err());
     }
 }
