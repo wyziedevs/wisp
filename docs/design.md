@@ -659,7 +659,8 @@ share, a thread reads it again every 30 s and the higher count of each id
 wins, so a sign-out on one instance holds on all within that. Log files
 are each instance's own. A store that cannot be read leaves sessions as
 they were rather than failing them, says why, and is tried again;
-`sign_out_everywhere` then fails, saying why.
+`sign_out_everywhere` then returns its `Err`, saying why: a security
+action fails as a value, never by a panic.
 
 Passwords are kept as `wisp::password::hash(&password).await?`, checked with
 `wisp::password::check(&typed, hash).await?` (`hash` an `Option<&str>`:

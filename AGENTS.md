@@ -276,7 +276,7 @@ fn login(name: String, password: String) {
 let me = cx.user(&USERS)?;              // a members' page: Row<User>, or 303 to /login
 ```
 `cx.signed_in()?` is the id alone; `.ok()` asks without redirecting;
-`cx.sign_out()`; `wisp::sign_out_everywhere(id)` ends all of `id`'s
+`cx.sign_out()`; `wisp::sign_out_everywhere(id)?` ends all of `id`'s
 sessions, stolen ones too (saved; read at start; with a shared
 `wisp::store` other instances see it within 30 s, log files are per
 instance). Endpoints/JSON clients get 401. Sign-in page elsewhere:

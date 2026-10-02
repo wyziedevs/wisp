@@ -56,17 +56,22 @@ pub fn sign_in_page(path: &'static str) {
 /// `cx.sign_in(id)` after it starts a new one. Kept in the app's store, so
 /// it holds after a restart; a server reads it at its first session, so
 /// other instances of the app see it when they next start. `id` is a row
-/// id (from 1). A store that fails is the request's 500, as for any table.
-pub fn sign_out_everywhere(id: u64) {
-    assert!(id != 0, "sign_out_everywhere takes a row id, from 1");
+/// id (from 1). A store that fails is an `Err` (a 500 through `?`), and
+/// nothing is ended: say so rather than that it was.
+pub fn sign_out_everywhere(id: u64) -> Result {
+    if id == 0 {
+        return Err(Error::new(
+            500,
+            "sign_out_everywhere takes a row id, from 1",
+        ));
+    }
     let mut rows = SIGN_OUTS.write();
     let count = rows.map.get(&id).map_or(1, |n| n + 1);
-    if let Err(e) = SIGN_OUTS.save(&mut rows, id, Some(&count.to_string())) {
-        panic!("{}", e.message());
-    }
+    SIGN_OUTS.save(&mut rows, id, Some(&count.to_string()))?;
     rows.map.insert(id, count);
     drop(rows);
     ANY.store(true, Ordering::Release);
+    Ok(())
 }
 
 /// Reads the sign-outs when the server starts, once `init` has set the
@@ -101,9 +106,7 @@ fn reread() {
     });
     match read {
         Ok(Ok(any)) => {
-            if any {
-                ANY.store(true, Ordering::Release);
-            }
+            ANY.fetch_or(any, Ordering::Release);
         }
         Ok(Err(e)) => log(&e.detail()),
         Err(_) => log("see the panic above"),
@@ -260,7 +263,7 @@ mod tests {
         other.sign_in(78);
         assert_eq!(again(&first, "").signed_in().unwrap(), 77);
 
-        sign_out_everywhere(77);
+        sign_out_everywhere(77).unwrap();
         assert!(again(&first, "").signed_in().is_err(), "a stolen copy too");
         assert_eq!(again(&other, "").signed_in().unwrap(), 78, "others stay");
 
@@ -269,9 +272,9 @@ mod tests {
         next.sign_in(77);
         let kept = again(&next, "");
         assert_eq!(kept.signed_in().unwrap(), 77);
-        sign_out_everywhere(77);
+        sign_out_everywhere(77).unwrap();
         assert!(again(&next, "").signed_in().is_err());
-        assert!(std::panic::catch_unwind(|| sign_out_everywhere(0)).is_err());
+        assert!(sign_out_everywhere(0).is_err());
     }
 
     /// Signing in replaces whatever session the visitor came with, so one

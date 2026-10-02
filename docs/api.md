@@ -454,14 +454,15 @@ answer from it. To allow it on some paths only:
   browser. The id rides in a signed cookie for 30 days; a visitor can read
   it but cannot forge it (see [design.md](design.md#cookies)). Each
   `sign_in` sets a new session, whatever the visitor came with.
-- **Ending every session:** `wisp::sign_out_everywhere(id)` (after a
+- **Ending every session:** `wisp::sign_out_everywhere(id)?` (after a
   password change, a lost phone, from an admin page) ends every session
   of `id` made before it, on every device, a stolen cookie's too;
   `cx.sign_in(id)` after it starts a fresh one. It counts the id's
   sign-outs in the saved table `wisp_sign_outs` (the app's store, so it
   holds after a restart), and sessions made after carry the count. Until
   an app calls it, reading a session looks nothing up. Another instance
-  of the app sharing the store sees it when it next starts.
+  of the app sharing the store sees it when it next starts. A store that
+  fails is its `Err` (a 500 through `?`): nothing was ended.
 - **Guards** go in `before`: in `src/hooks.rs` it runs before every route,
   in a `+server.rs` before each of its handlers. It can stop a request with
   an error, and hand what it found to the route with `cx.set`:
