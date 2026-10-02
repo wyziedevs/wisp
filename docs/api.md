@@ -219,10 +219,26 @@ On the edge (`wisp build --target cloudflare` and the like) each instance
 has its own memory, so tables there are caches: keep data in D1 or KV
 through `wisp::edge::fetch` in handlers of your own.
 
+A `POST` of an array is all or none: the rows go to the store's
+`save_many(table, &[(id, json)])` (the log files write them in one append),
+and when it fails the request is a 500 and neither the store nor memory
+keeps any. By default `save_many` saves each in turn and removes those
+before one that fails; a database does better with one transaction.
+
 A table of a page's own is saved the same way:
 `static TODOS: Table<Todo> = Table::saved("todos");`. A field added to a
 saved type later must be an `Option`, a `Vec` or a `bool`, so the rows saved
-before it still read.
+before it still read. An `Image` field is kept as a `data:` URL.
+
+`POSTS.page(cx, 10)` is the page of rows the request's `?page=N` asks for,
+newest (highest id) first, copying only those rows. It reads as its rows
+and has `number`, and `prev`/`next` hrefs (`?page=2`, the rest of the query
+kept; `None` at the ends):
+
+```html
+{#each posts as post}<p>{post.title}</p>{/each}
+{#if let Some(href) = posts.next}<a {href}>Older</a>{/if}
+```
 ## Handlers for a folder and its `[id]`
 
 One file serves a collection and its members. A handler with a parameter
@@ -261,6 +277,9 @@ So `fn put(id: u64, title: String, done: bool)` takes a form post and
 | a `Content-Type` other than JSON           | 415 |
 | no body, for `body: Option<T>`             | `None` |
 
+Parameters read by name from a JSON body answer the same: its 400 when it
+is not JSON, else 422 by field.
+
 (A `body` whose type is a string is still a form field called `body`.)
 
 `#[derive(FromJson)]` reads a struct from an object of its fields. An
@@ -280,7 +299,7 @@ Checks go on fields:
 | `max = 100`     | at most                                  | numbers |
 | `min_len = 1`   | at least so many characters, or items    | strings, lists |
 | `max_len = 200` | at most so many                          | strings, lists |
-| `email`         | one `@`, a dot in the domain, no spaces  | strings |
+| `email`         | what `<input type="email">` takes (`a@b` too) | strings |
 
 A field that is `None` passes; whether it may be left out is its type's
 business. A check the derive does not know is a build error that lists the
@@ -423,9 +442,25 @@ answer from it. To allow it on some paths only:
   `cx.bearer()` is the token itself; compare secrets with
   `wisp::secure_eq(token, key)`.
 - **Basic auth:** `cx.basic_auth()` is `(user, password)`.
-- **Sessions:** `cx.set_signed_cookie("user", id)` when someone signs in, and
-  `cx.signed_cookie("user")` on every request after; a visitor can read it
-  but cannot forge it (see [design.md](design.md#cookies)).
+- **Sessions:** `cx.sign_in(id)` when a password checks
+  (`wisp::password::verify(&typed, &user.hash).await`, with hashes from
+  `wisp::password::hash(&password).await`; both run on threads kept for
+  hashing, so the worker serves other requests meanwhile), then `let id =
+  cx.signed_in()?;` or `let user = cx.user(&USERS)?;` where only members
+  may go: signed out, a page sends the visitor to `/login` (303;
+  `wisp::sign_in_page("/x")` in `init` names another) and an endpoint or
+  JSON client gets a 401 (`signed_out`). `cx.sign_out()` ends it on this
+  browser. The id rides in a signed cookie for 30 days; a visitor can read
+  it but cannot forge it (see [design.md](design.md#cookies)). Each
+  `sign_in` sets a new session, whatever the visitor came with.
+- **Ending every session:** `wisp::sign_out_everywhere(id)` (after a
+  password change, a lost phone, from an admin page) ends every session
+  of `id` made before it, on every device, a stolen cookie's too;
+  `cx.sign_in(id)` after it starts a fresh one. It counts the id's
+  sign-outs in the saved table `wisp_sign_outs` (the app's store, so it
+  holds after a restart), and sessions made after carry the count. Until
+  an app calls it, reading a session looks nothing up. Another instance
+  of the app sharing the store sees it when it next starts.
 - **Guards** go in `before`: in `src/hooks.rs` it runs before every route,
   in a `+server.rs` before each of its handlers. It can stop a request with
   an error, and hand what it found to the route with `cx.set`:
@@ -501,7 +536,8 @@ fn init() {
 }
 ```
 
-`wisp::every` runs until the server stops, never two at once.
+`wisp::every` runs until the server stops, never two at once; a run that
+panics is reported and the next one starts on time.
 `wisp::spawn` runs one task. For work that must survive a restart, keep a
 queue in the database and have `every` take from it.
 
