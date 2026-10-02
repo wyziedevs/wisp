@@ -3076,7 +3076,7 @@ fn borrow_place(expr: &str, locals: &[String]) -> String {
 /// `Option<Cow<str>>`, which is never there without the request, `cx`.
 fn kept(name: &str, has_cx: bool) -> String {
     match has_cx {
-        true => format!("::wisp::rt::kept(cx, {name:?})"),
+        true => format!("::wisp::rt::kept(cx, __refused, {name:?})"),
         false => "None::<::std::borrow::Cow<'static, str>>".into(),
     }
 }
@@ -3384,7 +3384,13 @@ impl Gen {
                 .map(|(s, _)| rust_scan::let_names(s))
                 .unwrap_or_default(),
         };
+        let at = self.out.len();
         self.nodes(&t.t.nodes, 2, &mut cx);
+        // Its form's fields read what an action refused: once a render.
+        if self.out[at..].contains("__refused") {
+            self.out
+                .insert_str(at, "        let __refused = ::wisp::rt::refused(cx);\n");
+        }
         if client.is_some() {
             self.line(2, "::wisp::rt::live_end(__o);");
         }
@@ -3492,6 +3498,17 @@ impl Gen {
             ),
             Node::Attr { name, code, url } => {
                 let push = |s: &str| format!("{buf}.push_str({});", lit(s));
+                // `{if c { "a" } else { "b" }}`: both written at build time.
+                if let Some((cond, yes, no)) = fold::either(&code.src)
+                    && !(*url
+                        && (crate::contexts::runs_script(&yes)
+                            || crate::contexts::runs_script(&no)))
+                {
+                    let (yes, no) = (format!(" {name}=\"{yes}\""), format!(" {name}=\"{no}\""));
+                    let line = format!("if {cond} {{ {} }} else {{ {} }}", push(&yes), push(&no));
+                    self.code_line(ind, &line, code, cx);
+                    return;
+                }
                 self.code_line(
                     ind,
                     &format!(
@@ -3587,15 +3604,10 @@ impl Gen {
             Node::Problem { .. } if !cx.has_cx => {}
             Node::Problem { name, line, .. } => {
                 let code = Code {
-                    src: format!("::wisp::rt::problem(cx, {name:?})"),
+                    src: format!("::wisp::rt::problem(&mut {buf}, __refused, {name:?})"),
                     line: *line,
                 };
-                self.code_line(
-                    ind,
-                    &format!("::wisp::rt::html(&mut {buf}, &({}));", code.src),
-                    &code,
-                    cx,
-                );
+                self.code_line(ind, &format!("{};", code.src), &code, cx);
             }
             Node::Render if cx.paint => {
                 self.line(
@@ -6883,6 +6895,25 @@ pub fn load() -> Data { todo!() }",
             "{code}"
         );
         assert!(code.contains("guard_url"), "{code}");
+        // One of two literals is written whole, escaped, at build time; a
+        // URL that would run script is left to the runtime's guard.
+        let page = (
+            "src/routes/+page.wisp",
+            "<p class={if on { \"a&\" } else { \"b\" }}>x</p><a href={if on { \"javascript:x\" } else { \"/\" }}>y</a>",
+        );
+        let rs = (
+            "src/routes/+page.rs",
+            "pub struct Data { pub on: bool }\npub fn load() -> Data { todo!() }",
+        );
+        let code = app("either", &[page, rs]).unwrap();
+        assert!(
+            code.contains(r#"if on { __o.body.push_str(" class=\"a&amp;\""); } else { __o.body.push_str(" class=\"b\""); }"#),
+            "{code}"
+        );
+        assert!(
+            code.contains("(&::wisp::rt::Attr(&(if on { \"javascript:x\" }"),
+            "{code}"
+        );
     }
 
     #[test]

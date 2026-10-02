@@ -1469,9 +1469,19 @@ pub mod rt {
 
     /// What the form sent for `name`, when an action refused it: an
     /// `<input name="x">` in a `<form action="?/…">` shows it again.
-    pub fn kept<'a>(cx: &'a Cx, name: &str) -> Option<std::borrow::Cow<'a, str>> {
-        cx.get::<Error>()?;
+    pub fn kept<'a>(
+        cx: &'a Cx,
+        refused: Option<&Error>,
+        name: &str,
+    ) -> Option<std::borrow::Cow<'a, str>> {
+        refused?;
         cx.input(name)
+    }
+
+    /// What an action refused, if it did: read once a render, for its
+    /// form's fields (`kept`, `problem`).
+    pub fn refused(cx: &Cx) -> Option<&Error> {
+        cx.get::<Error>()
     }
 
     /// What a `<select>` chooses its option by (see `chosen`): text from
@@ -1533,20 +1543,13 @@ pub mod rt {
 
     /// What was wrong with `name`, after its `<input>` in an action's form:
     /// `<small class="problem">…</small>`, or nothing.
-    pub fn problem<'a>(cx: &'a Cx, name: &str) -> Problem<'a> {
-        Problem(cx.problem(name))
-    }
-
-    pub struct Problem<'a>(Option<&'a str>);
-
-    impl std::fmt::Display for Problem<'_> {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            let Some(p) = self.0 else { return Ok(()) };
-            let mut s = String::from("<small class=\"problem\">");
-            escape(&mut s, p);
-            s.push_str("</small>");
-            f.write_str(&s)
-        }
+    pub fn problem(out: &mut String, refused: Option<&Error>, name: &str) {
+        let Some((_, p)) = refused.and_then(|e| e.fields().iter().find(|(f, _)| f == name)) else {
+            return;
+        };
+        out.push_str("<small class=\"problem\">");
+        escape(out, p);
+        out.push_str("</small>");
     }
 
     pub fn respond(out: &mut Out, r: Response) {
