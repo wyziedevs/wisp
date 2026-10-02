@@ -179,9 +179,16 @@ X.tag = (sc, inst, el, bs, L, quiet) => {
   });
 };
 
+// What an attribute holds that escaping does not make safe, in any case:
+// on*, srcdoc, an <animate>/<set>'s to from values by, a <meta>'s
+// http-equiv and content; a tag of '' is any (`contexts::holds_script`).
+const held = (tag, k) =>
+  /^(on|srcdoc$)/i.test(k) || (/^(animate|set|)$/i.test(tag) && /^(to|from|values|by)$/i.test(k)) || (/^(meta|)$/i.test(tag) && /^(http-equiv|content)$/i.test(k));
+
 // {:...attrs}: each key an attribute, set as `attr={:…}` sets it (a URL
 // that would run script is blocked), a function under on* a listener. Any
-// other on* is left out, as the server's first paint leaves it.
+// other held key (see above) is left out, as the server's first paint
+// leaves it.
 X.spread = (sc, inst, el, L, quiet, [, a]) => {
   let had = {};
   watch(sc, a, L, (v, first) => {
@@ -189,7 +196,7 @@ X.spread = (sc, inst, el, L, quiet, [, a]) => {
     for (const k in had) if (!(k in v)) k.startsWith('on') ? el.removeEventListener(k.slice(2), had[k]) : el.removeAttribute(k);
     for (const k in v) {
       const x = v[k];
-      if (!k.startsWith('on')) attr(x, first, el, k, sc);
+      if (!k.startsWith('on')) held(el.localName, k) || attr(x, first, el, k, sc);
       else if (had[k] !== x) {
         if (typeof had[k] == 'function') el.removeEventListener(k.slice(2), had[k]);
         if (typeof x == 'function') el.addEventListener(k.slice(2), x);

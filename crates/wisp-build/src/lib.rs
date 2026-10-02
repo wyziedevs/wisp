@@ -108,12 +108,27 @@ pub fn hot_chunks(root: &Path, rel: &str) -> Result<(Vec<String>, u64), String> 
         let parts = shell::split(&src).map_err(|e| format!("{rel}: {e}"))?;
         return Ok((parts.to_vec(), shell::SHAPE));
     }
-    // A page's `+page.rs` gives its forms' fields their attributes, as in
-    // the build.
+    let (rust, markup) = split_front(&src).map_err(|e| format!("{rel}:{e}"))?;
+    // A page's forms' fields get their attributes, as in the build: from
+    // its block or its `+page.rs`, its route's params and the app's types.
     let rs = rel
         .strip_suffix("+page.wisp")
         .and_then(|dir| read_source(&root.join(dir).join("+page.rs")).ok());
-    let (t, _) = parse_page(&src, rs.as_deref(), rel).map_err(|e| format!("{rel}:{e}"))?;
+    let items = match (&rust, rs) {
+        (Some(block), _) => rust_scan::scan(&rust_scan::split_items(block).0),
+        (None, Some(rs)) => rust_scan::scan(&rs),
+        (None, None) => Ok(rust_scan::Items::default()),
+    };
+    let segs: Vec<routes::Seg> = (rel.split('/'))
+        .filter_map(|d| routes::parse_segment(d).ok().flatten())
+        .collect();
+    let params: Vec<&str> = segs.iter().filter_map(routes::Seg::param).collect();
+    // What does not scan has no fields: the build says what is wrong.
+    let fields = items.map_or_else(
+        |_| Vec::new(),
+        |i| rules::fields(&i, &params, &shared_types(root)),
+    );
+    let (t, _) = parse_markup(&markup, rust, &fields).map_err(|e| format!("{rel}:{e}"))?;
     Ok((t.chunks, t.shape))
 }
 
@@ -122,36 +137,39 @@ pub fn hot_chunks(root: &Path, rel: &str) -> Result<(Vec<String>, u64), String> 
 /// Rust is on its line in the file). The block's text is part of the shape:
 /// changing it means compiling again. Errors are `line:col: msg`.
 pub fn parse_wisp(src: &str) -> Result<(template::Template, Option<String>), String> {
-    parse_page(src, None, "")
+    let (rust, markup) = split_front(src)?;
+    parse_markup(&markup, rust, &[])
 }
 
-/// A `.wisp` file parsed as [`parse_wisp`] does, the fields of its action
-/// forms given the attributes the browser checks them by
-/// ([`rules::fields`]), from its block or its `+page.rs` (`rs`). `rel` is
-/// its path: a field its `[param]` folders fill comes from the route.
-pub fn parse_page(
-    src: &str,
-    rs: Option<&str>,
-    rel: &str,
+/// The markup of a `.wisp` file `split_front` split, parsed: the fields of
+/// its action forms given the attributes the browser checks them by
+/// ([`rules::fields`]), the Rust of its block in its shape.
+pub(crate) fn parse_markup(
+    markup: &str,
+    rust: Option<String>,
+    fields: &[rules::Field],
 ) -> Result<(template::Template, Option<String>), String> {
-    let (rust, markup) = split_front(src)?;
-    // What does not scan has no fields: the build says what is wrong.
-    let items = match (&rust, rs) {
-        (Some(block), _) => rust_scan::scan(&rust_scan::split_items(block).0),
-        (None, Some(rs)) => rust_scan::scan(rs),
-        (None, None) => Ok(rust_scan::Items::default()),
-    };
-    let params: Vec<&str> = (rel.split('/'))
-        .filter_map(|d| d.strip_prefix('['))
-        .map(|d| d.trim_matches(['[', ']', '.']))
-        .map(|d| d.split('=').next().unwrap_or(d))
-        .collect();
-    let fields = items.map_or_else(|_| Vec::new(), |i| rules::fields(&i, &params));
-    let mut t = template::parse_with(&markup, &fields).map_err(|e| e.to_string())?;
+    let mut t = template::parse_with(markup, fields).map_err(|e| e.to_string())?;
     if let Some(r) = &rust {
         t.shape ^= fnv1a(r.as_bytes()).rotate_left(1);
     }
     Ok((t, rust))
+}
+
+/// The types the app's own modules (`src/*.rs`) define, in name order (so
+/// that the first of two of one name is the same on every machine); a
+/// file that does not scan is skipped. Endpoints and forms name them.
+pub(crate) fn shared_types(root: &Path) -> Vec<rust_scan::TypeItem> {
+    let mut files: Vec<PathBuf> = (fs::read_dir(root.join("src")).into_iter().flatten())
+        .flatten()
+        .map(|e| e.path())
+        .filter(|f| f.extension().is_some_and(|e| e == "rs"))
+        .collect();
+    files.sort();
+    (files.iter())
+        .filter_map(|f| rust_scan::scan(&read_source(f).ok()?).ok())
+        .flat_map(|items| items.types)
+        .collect()
 }
 
 /// Splits off the `---` block of Rust a page or layout may start with:
@@ -165,7 +183,7 @@ pub fn parse_page(
 ///
 /// Both halves keep the file's lines: the Rust with the markup blanked, the
 /// markup with the block's lines left empty.
-fn split_front(src: &str) -> Result<(Option<String>, String), String> {
+pub(crate) fn split_front(src: &str) -> Result<(Option<String>, String), String> {
     let lines: Vec<&str> = src.split('\n').collect();
     let Some(open) = lines.iter().position(|l| !l.trim().is_empty()) else {
         return Ok((None, src.to_string()));

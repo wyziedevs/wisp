@@ -12,8 +12,8 @@ use crate::json_str as js_str;
 use crate::model::{self, Handler, Model};
 use crate::openapi::Op;
 use crate::protocol::{
-    COPY_END, COPY_START, GROUP_ATTR, ISLAND_MEDIA, LOOP_ATTR, ON_FLAGS, ON_PLACED, ON_ROOT,
-    SLOT_ATTR,
+    APP_CSS_PATH, COPY_END, COPY_START, EXTRA_JS_PATH, GROUP_ATTR, ISLAND_MEDIA, LIVE_JS_PATH,
+    LOOP_ATTR, MODULES, ON_FLAGS, ON_PLACED, ON_ROOT, SLOT_ATTR, WISP_JS_PATH,
 };
 use crate::routes::Seg;
 use crate::rust_scan::{self, FnItem, Returns};
@@ -213,10 +213,7 @@ fn shim(f: &FnItem, kind: Shim) -> Result<String, String> {
         read.push((name, v, get, owned));
         args.push(arg);
     }
-    if let Some((p, _)) = f.checks.iter().find(|(p, _)| {
-        let p = p.trim_start_matches("mut ").trim();
-        !read.iter().any(|(n, ..)| *n == p)
-    }) {
+    if let Some((p, _)) = (f.checks.iter()).find(|(p, _)| !read.iter().any(|(n, ..)| n == p)) {
         return Err(format!(
             "{}: `#[validate]` is on `{p}`, which is not read from the request",
             f.line
@@ -225,27 +222,19 @@ fn shim(f: &FnItem, kind: Shim) -> Result<String, String> {
     let mut lets = String::new();
     if let ([(_, v, get, owned)], true) = (read.as_slice(), f.checks.is_empty()) {
         // One input, nothing to check: its error is the answer.
-        let ty = if owned.is_empty() {
-            String::new()
-        } else {
-            format!(": {owned}")
-        };
+        let ty = annotation(owned, "{}");
         lets = format!("let {v}{ty} = {get}?; ");
     } else if !read.is_empty() {
         // Each input is read, and checked, before any answer: every one
         // that does not pass is listed in one 422.
         lets.push_str("let mut __p = ::wisp::json::Problems::default(); ");
         for (name, v, get, owned) in &read {
-            let ty = if owned.is_empty() {
-                String::new()
-            } else {
-                format!(": Option<{owned}>")
-            };
+            let ty = annotation(owned, "Option<{}>");
             lets.push_str(&format!(
                 "let {v}{ty} = ::wisp::rt::input::read(&mut __p, {get})?; "
             ));
             for (p, rules) in &f.checks {
-                if p.trim_start_matches("mut ").trim() == *name {
+                if p == name {
                     lets.push_str(&checks(name, v, rules).map_err(|e| format!("{}: {e}", f.line))?);
                 }
             }
@@ -288,6 +277,15 @@ fn shim(f: &FnItem, kind: Shim) -> Result<String, String> {
     })
 }
 
+/// `: T` on the `let` of an input read as `owned` (in `how`: `{}`, or
+/// `Option<{}>`) when the call borrows it; nothing when it takes it as read.
+fn annotation(owned: &str, how: &str) -> String {
+    match owned {
+        "" => String::new(),
+        t => format!(": {}", how.replace("{}", t)),
+    }
+}
+
 /// The code a shim runs after reading the input `name` into `v` (an
 /// `Option`, `None` when it did not pass), for its `#[validate(rules)]`:
 /// the first rule that fails is its problem, and the page shows again as a
@@ -307,18 +305,11 @@ fn upload_sizes(fns: &[FnItem]) -> Result<Option<String>, String> {
     let mut sum = String::new();
     for f in fns.iter().filter(|f| f.action) {
         for (p, rules) in &f.checks {
-            let p = p.trim_start_matches("mut ").trim();
-            let rules = rules::parse(rules).map_err(|e| format!("{}: {e}", f.line))?;
+            let ty = (f.params.iter())
+                .find(|(n, _)| n == p)
+                .map_or("", |(_, t)| t.as_str());
+            let rules = rules::validate(rules, p, ty).map_err(|e| format!("{}: {e}", f.line))?;
             if let Some(size) = rules.max_size {
-                let ty = (f.params.iter())
-                    .find(|(n, _)| n.trim_start_matches("mut ").trim() == p)
-                    .map_or("", |(_, t)| t.as_str());
-                if ty::last_segment(ty::option_inner(ty).unwrap_or(ty)) != "Image" {
-                    return Err(format!(
-                        "{}: `max_size` is for an upload, and `{p}` is a `{ty}`: make it an `Image` (or `Option<Image>`)",
-                        f.line
-                    ));
-                }
                 let _ = write!(sum, " + ({size}) as usize");
             }
         }
@@ -493,6 +484,8 @@ struct Project<'a> {
     hooks: Option<UserMod>,
     /// The app's own modules (`src/notes.rs`).
     mods: Vec<UserMod>,
+    /// The types of `src/*.rs`, which endpoints and action forms may name.
+    shared: Vec<rust_scan::TypeItem>,
 }
 
 /// The browser's half: the modules of templates (by template), and the
@@ -523,6 +516,7 @@ impl<'a> Project<'a> {
             model: Model::default(),
             hooks: None,
             mods: Vec::new(),
+            shared: crate::shared_types(root),
         })
     }
 
@@ -551,26 +545,31 @@ impl<'a> Project<'a> {
         crate::read_source(p).map_err(|e| format!("{}: {e}", p.display()))
     }
 
-    /// A page, layout or error page: everything but a component. With the
-    /// Rust of its `---` block, if it has one, and its whole source. A
-    /// page's `+page.rs` is `rs`.
-    fn parse(
+    /// A layout or error page: with the Rust of its `---` block, if it has
+    /// one.
+    fn parse(&self, p: &Path) -> Result<(Template, Option<String>), String> {
+        let (front, markup) =
+            crate::split_front(&self.read(p)?).map_err(|e| format!("{}:{e}", self.rel(p)))?;
+        self.markup(p, &markup, front, &[])
+    }
+
+    /// The markup of `p`, its action forms' `fields` given the browser's
+    /// checks: everything but a component.
+    fn markup(
         &self,
         p: &Path,
-        rs: Option<PathBuf>,
-    ) -> Result<(Template, Option<String>, String), String> {
-        let src = self.read(p)?;
-        let rs = rs.map(|f| self.read(&f)).transpose()?;
-        let rel = self.rel(p);
-        let (t, rust) =
-            crate::parse_page(&src, rs.as_deref(), &rel).map_err(|e| format!("{rel}:{e}"))?;
+        markup: &str,
+        front: Option<String>,
+        fields: &[rules::Field],
+    ) -> Result<(Template, Option<String>), String> {
+        let at = |e: String| format!("{}:{e}", self.rel(p));
+        let (t, rust) = crate::parse_markup(markup, front, fields).map_err(at)?;
         if let Some((_, line)) = t.props {
-            return Err(format!(
-                "{}:{line}: only components, in src/components, take props",
-                self.rel(p)
-            ));
+            return Err(at(format!(
+                "{line}: only components, in src/components, take props"
+            )));
         }
-        Ok((t, rust, src))
+        Ok((t, rust))
     }
 
     /// A `+layout.rs`, `+page.rs` or `+server.rs`.
@@ -749,7 +748,7 @@ impl<'a> Project<'a> {
         for i in 0..self.tree.layouts.len() {
             let dir = self.tree.layouts[i].dir.clone();
             let file = dir.join("+layout.wisp");
-            let (t, front, _) = self.parse(&file, None)?;
+            let (t, front) = self.parse(&file)?;
             if let Some(line) = first_await(&t.nodes) {
                 return Err(format!(
                     "{}:{line}: a layout renders without waiting, so its markup cannot `.await`; await in the page's markup or `---` block",
@@ -822,7 +821,7 @@ impl<'a> Project<'a> {
                 self.model.root_error = Some(i);
             }
             let file = dir.join("+error.wisp");
-            let (t, front, _) = self.parse(&file, None)?;
+            let (t, front) = self.parse(&file)?;
             check_no_children(&t, &self.rel(&file))?;
             if front.is_some() {
                 return Err(format!(
@@ -938,9 +937,14 @@ impl<'a> Project<'a> {
         let r = &self.tree.routes[i];
         let (dir, page_rs, page_js) = (r.dir.clone(), r.page_rs, r.page_js);
         let file = dir.join("+page.wisp");
-        let (mut t, front, src) = self.parse(&file, page_rs.then(|| dir.join("+page.rs")))?;
+        // Its Rust first: its actions' fields get the browser's checks.
+        let src = self.read(&file)?;
+        let (front, markup) =
+            crate::split_front(&src).map_err(|e| format!("{}:{e}", self.rel(&file)))?;
+        let mut lg = self.logic(page_rs.then(|| dir.join("+page.rs")), &file, front.clone())?;
+        let fields = rules::fields(&lg.items, &self.tree.routes[i].params(), &self.shared);
+        let (mut t, _) = self.markup(&file, &markup, front, &fields)?;
         check_no_children(&t, &self.rel(&file))?;
-        let mut lg = self.logic(page_rs.then(|| dir.join("+page.rs")), &file, front)?;
         // `.await` in the markup: statements, after the block's own.
         let mut lets = Vec::new();
         hoist_awaits(&mut t.nodes, &mut lets).map_err(|e| format!("{}:{e}", self.rel(&file)))?;
@@ -1083,7 +1087,7 @@ impl<'a> Project<'a> {
                 if sf.limit {
                     set_once(
                         &mut route.body_limit,
-                        sf.module.clone(),
+                        sf.server.module.clone(),
                         "BODY_LIMIT",
                         page_file,
                     )
@@ -1091,7 +1095,7 @@ impl<'a> Project<'a> {
                 }
                 if let Some(public) = sf.cache {
                     let cache = model::Cache {
-                        module: sf.module.clone(),
+                        module: sf.server.module.clone(),
                         public,
                         by_accept: false,
                     };
@@ -1119,16 +1123,18 @@ impl<'a> Project<'a> {
                     file: file.clone(),
                     limit: route.body_limit.as_ref() == Some(&module),
                     cache,
-                    module,
-                    handlers,
-                    before,
-                    types: items.types,
-                    waits,
+                    server: model::Server {
+                        module,
+                        handlers,
+                        before,
+                        types: items.types.into(),
+                        waits,
+                    },
                 });
                 servers.len() - 1
             }
         };
-        let sf = &servers[k];
+        let sf = &servers[k].server;
         let handlers: Vec<model::Handler> = (sf.handlers.iter())
             .filter(|h| h.member == member)
             .cloned()
@@ -1223,7 +1229,7 @@ impl<'a> Project<'a> {
             let source = if self.release { js::runtime(&src) } else { src };
             let hash = format!("{:016x}", fnv1a(source.as_bytes()));
             JsFile {
-                path: "/_app/c/extra.js".into(),
+                path: EXTRA_JS_PATH.into(),
                 hash,
                 source,
             }
@@ -1244,7 +1250,7 @@ impl<'a> Project<'a> {
         let mut js_files: Vec<JsFile> = lib_src
             .iter()
             .map(|(p, src)| JsFile {
-                path: format!("/_app/c/lib/{p}"),
+                path: format!("{MODULES}lib/{p}"),
                 hash: lib_hash.clone(),
                 source: lib_file(src, Some(p.rfind('/').map_or("", |i| &p[..i]))),
             })
@@ -1262,7 +1268,7 @@ impl<'a> Project<'a> {
                 Some(f) => {
                     let source = lib_file(&self.read(f)?, None);
                     let hash = format!("{:016x}", fnv1a(source.as_bytes()));
-                    let path = format!("/_app/c/t{}.load.js", t.id);
+                    let path = format!("{MODULES}t{}.load.js", t.id);
                     let url = format!("{path}?v={hash}");
                     js_files.push(JsFile { path, hash, source });
                     Some(url)
@@ -1316,7 +1322,7 @@ impl<'a> Project<'a> {
             let url = |ci: usize| {
                 c.uses
                     .contains(&ci)
-                    .then(|| format!("/_app/c/t{}.js?v={}", self.templates[ci].id, finals[ci]))
+                    .then(|| format!("{MODULES}t{}.js?v={}", self.templates[ci].id, finals[ci]))
             };
             c.source = link_comps(&c.source, url);
             c.hash.clone_from(&finals[k]);
@@ -1344,12 +1350,12 @@ impl<'a> Project<'a> {
         if let Some(v) = css {
             let _ = write!(
                 tags,
-                "<link rel=\"stylesheet\" href=\"/_app/app.css?v={v}\">"
+                "<link rel=\"stylesheet\" href=\"{APP_CSS_PATH}?v={v}\">"
             );
         }
         let _ = write!(
             tags,
-            "<script defer src=\"/_app/wisp.js?v={}\"></script>",
+            "<script defer src=\"{WISP_JS_PATH}?v={}\"></script>",
             crate::runtime_version()
         );
         let [s0, s1, s2] = &self.shell;
@@ -1565,7 +1571,7 @@ impl Gen {
             return Ok(Assets { css_hash, files });
         }
         if let (Some(f), Some(h)) = (&css, &css_hash) {
-            files.push(("/_app/app.css".into(), f.clone(), h.clone()));
+            files.push((APP_CSS_PATH.into(), f.clone(), h.clone()));
         }
         let static_dir = p.root.join("static");
         if static_dir.is_dir() {
@@ -2030,28 +2036,14 @@ impl Gen {
     /// endpoints; the client comes back.
     fn api(&mut self, p: &Project) -> Result<String, String> {
         // Types an endpoint names but does not define may be in the app's own
-        // modules (`src/models.rs`); a file that does not scan is skipped.
-        // In name order, so that the first of two types of one name is the
-        // same on every machine.
-        let mut shared = Vec::new();
-        let mut files: Vec<PathBuf> = (fs::read_dir(p.root.join("src")).into_iter().flatten())
-            .flatten()
-            .map(|e| e.path())
-            .collect();
-        files.sort();
-        for f in files {
-            if f.extension().is_some_and(|e| e == "rs")
-                && let Ok(items) = p.read(&f).and_then(|s| rust_scan::scan(&s))
-            {
-                shared.extend(items.types);
-            }
-        }
+        // modules (`src/models.rs`).
+        let shared = &p.shared;
         let types: Vec<(&crate::routes::Route, Vec<Op>, Vec<rust_scan::TypeItem>)> =
             (p.tree.routes.iter().zip(&p.model.routes))
                 .filter_map(|(route, r)| {
                     let server = r.server.as_ref()?;
                     let ops = server.handlers.iter().map(|h| h.op.clone()).collect();
-                    let types = server.types.iter().chain(&shared).cloned().collect();
+                    let types = server.types.iter().chain(shared).cloned().collect();
                     Some((route, ops, types))
                 })
                 .collect();
@@ -2271,17 +2263,12 @@ struct Assets {
 /// A `+server.rs`, which serves its route, its `/[id]`, or both.
 struct ServerFile {
     file: PathBuf,
-    module: String,
-    handlers: Vec<Handler>,
-    /// It has `fn before`, which runs before each of its handlers.
-    before: bool,
     /// It sets `BODY_LIMIT`.
     limit: bool,
     /// It sets `CACHE` (`false`) or `CACHE_PUBLIC` (`true`).
     cache: Option<bool>,
-    types: Vec<rust_scan::TypeItem>,
-    /// It has an `async fn`.
-    waits: bool,
+    /// All it serves: each of its routes takes its own handlers of it.
+    server: model::Server,
 }
 
 /// The handlers of a `+server.rs` whose route is `segs`, their shims added
@@ -3433,6 +3420,15 @@ impl Gen {
                 code,
                 cx,
             ),
+            Node::Selected(code) => self.code_line(
+                ind,
+                &format!(
+                    "if ::wisp::rt::is(&__wisp_sel, {}) {{ {buf}.push_str(\" selected\"); }}",
+                    code.src
+                ),
+                code,
+                cx,
+            ),
             Node::Const(code) => self.code_line(ind, &format!("let {};", code.src), code, cx),
             Node::Kept {
                 name,
@@ -3472,7 +3468,7 @@ impl Gen {
                 self.code_line(ind, &format!("let {};", code.src), &code, cx);
             }
             Node::Problem { .. } if !cx.has_cx => {}
-            Node::Problem { name, line } => {
+            Node::Problem { name, line, .. } => {
                 let code = Code {
                     src: format!("::wisp::rt::problem(cx, {name:?})"),
                     line: *line,
@@ -3745,7 +3741,7 @@ impl Gen {
             let how = template::how(p.name.strip_prefix("client:")?)?;
             match &p.value {
                 _ if how.is_empty() => None,
-                PropValue::Text(q) if how == ISLAND_MEDIA => Some(format!("{how}{q}")),
+                PropValue::Text(q) if how == ISLAND_MEDIA => Some(template::island(how, q)),
                 _ if how == ISLAND_MEDIA => None,
                 _ => Some(how.to_string()),
             }
@@ -3822,8 +3818,8 @@ impl Gen {
                 self.line(
                     ind,
                     &format!(
-                        "::wisp::rt::js_attrs(&mut {buf}, {v}); // {}:{}",
-                        cx.rel, d.line
+                        "::wisp::rt::js_attrs(&mut {buf}, {:?}, {v}); // {}:{}",
+                        d.name, cx.rel, d.line
                     ),
                 );
             }
@@ -4400,7 +4396,7 @@ struct Client {
 
 impl Client {
     fn path(&self) -> String {
-        format!("/_app/c/{}.js", self.id)
+        format!("{MODULES}{}.js", self.id)
     }
 }
 
@@ -4926,7 +4922,7 @@ fn module_source(m: &Module) -> String {
     let mut s = String::new();
     let _ = writeln!(
         s,
-        "import {{ define }} from \"/_app/live.js?v={}\";",
+        "import {{ define }} from \"{LIVE_JS_PATH}?v={}\";",
         crate::runtime_version()
     );
     for url in m.imports {
@@ -5024,7 +5020,7 @@ fn module_source(m: &Module) -> String {
 /// (a full URL) stays as written.
 fn resolve_spec(spec: &str, lib_hash: &str, base: Option<&str>) -> Option<String> {
     if spec == "wisp" {
-        return Some(format!("/_app/live.js?v={}", crate::runtime_version()));
+        return Some(format!("{LIVE_JS_PATH}?v={}", crate::runtime_version()));
     }
     let rel = if let Some(p) = spec.strip_prefix("$lib/") {
         p.to_string()
@@ -5042,7 +5038,7 @@ fn resolve_spec(spec: &str, lib_hash: &str, base: Option<&str>) -> Option<String
         }
         parts.join("/")
     };
-    Some(format!("/_app/c/lib/{rel}?v={lib_hash}"))
+    Some(format!("{MODULES}lib/{rel}?v={lib_hash}"))
 }
 
 /// `src` with the module names of its imports (`import … from '…'`,

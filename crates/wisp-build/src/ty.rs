@@ -25,10 +25,7 @@ pub fn squeeze(t: &str) -> String {
     out
 }
 
-/// A byte of an identifier (not its first, which is no digit).
-pub const fn is_word(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
-}
+pub use wisp_shared::rust::is_word;
 
 /// A plain identifier: `slug`, `_x`, `r2`; not `r#type`, `2a` or ``.
 pub fn is_ident(s: &str) -> bool {
@@ -120,6 +117,25 @@ pub fn scalar(t: &str) -> Scalar {
         "String" | "str" | "Cow" => Scalar::Text,
         _ => Scalar::Other,
     }
+}
+
+/// The values integer type `t` (a name alone: `u8`) holds; `None` for
+/// another type. `usize` may be 32 bits (wasm).
+pub fn int_range(t: &str) -> Option<std::ops::RangeInclusive<i128>> {
+    let (lo, hi) = match t {
+        "u8" => (0, u8::MAX.into()),
+        "u16" => (0, u16::MAX.into()),
+        "u32" | "usize" => (0, u32::MAX.into()),
+        "u64" => (0, u64::MAX.into()),
+        "u128" => (0, i128::MAX),
+        "i8" => (i8::MIN.into(), i8::MAX.into()),
+        "i16" => (i16::MIN.into(), i16::MAX.into()),
+        "i32" | "isize" => (i32::MIN.into(), i32::MAX.into()),
+        "i64" => (i64::MIN.into(), i64::MAX.into()),
+        "i128" => (i128::MIN, i128::MAX),
+        _ => return None,
+    };
+    Some(lo..=hi)
 }
 
 /// An integer type.

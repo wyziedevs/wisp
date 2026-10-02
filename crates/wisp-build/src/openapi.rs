@@ -430,9 +430,7 @@ fn constrain(schema: &mut J, rules: &str, t: &str) {
     };
     // Written as JSON writes a number: Rust's `5.`, `1_0` or `inf` are not.
     let mut add = |key: &str, n: &str| {
-        if let Ok(x) = n.parse::<f64>()
-            && x.is_finite()
-        {
+        if let Some(x) = rules::plain(n) {
             schema.set(key, J::Num(x.to_string()));
         }
     };
@@ -582,15 +580,14 @@ const TS_TAKEN: [&str; 24] = [
 /// One entry of the object `client` returns.
 fn method(e: &Endpoint, op: &Op, decls: &mut Vec<(String, String)>) -> String {
     let mut args = Vec::new();
-    // The path as text, and as the inside of a template literal (which a
-    // parameter makes it): a folder may be named with a backtick or a `$`.
-    let (mut path, mut tpl) = (String::new(), String::new());
+    // The path as the inside of a template literal, which a parameter
+    // makes it: a folder may be named with a backtick or a `$`. Without
+    // one it is the route's pattern.
+    let mut tpl = String::new();
     let mut dynamic = false;
     for s in &e.route.segs {
         match s {
             Seg::Static(n) => {
-                path.push('/');
-                path.push_str(n);
                 tpl.push('/');
                 for c in n.chars() {
                     if matches!(c, '`' | '\\' | '$') {
@@ -617,10 +614,9 @@ fn method(e: &Endpoint, op: &Op, decls: &mut Vec<(String, String)>) -> String {
             }
         }
     }
-    let path = match (path.is_empty(), dynamic) {
-        (true, _) => "\"/\"".to_string(),
-        (false, true) => format!("`{tpl}`"),
-        (false, false) => q(&path),
+    let path = match dynamic {
+        true => format!("`{tpl}`"),
+        false => q(&e.route.pattern()),
     };
     let mut fields = Vec::new();
     let mut query = Vec::new();
@@ -786,8 +782,7 @@ fn declare(
 /// `None`, an empty list and `false` are read for it, and a
 /// `#[derive(Rest)]` type's `created_at` and `updated_at` are Wisp's.
 fn may_leave_out(ty: &TypeItem, name: &str, t: &str) -> bool {
-    may_omit(t)
-        || (ty.derives.iter().any(|d| d == "Rest") && matches!(name, "created_at" | "updated_at"))
+    may_omit(t) || ty.set_by_wisp(name)
 }
 
 /// A request body's type. A struct of the file with members a request may

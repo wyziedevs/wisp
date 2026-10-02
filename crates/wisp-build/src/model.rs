@@ -89,8 +89,9 @@ pub struct Server {
     pub handlers: Vec<Handler>,
     /// It has `fn before`, which runs before each of its handlers.
     pub before: bool,
-    /// The types it defines, for the OpenAPI document.
-    pub types: Vec<TypeItem>,
+    /// The types it defines, for the OpenAPI document: one copy, which
+    /// each route it serves shares.
+    pub types: std::rc::Rc<[TypeItem]>,
     /// It has an `async fn`.
     pub waits: bool,
 }

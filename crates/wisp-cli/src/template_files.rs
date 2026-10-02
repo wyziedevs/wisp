@@ -94,7 +94,7 @@ pub fn refresh(from: &Path, to: &Path) -> io::Result<()> {
 pub fn read_all(dir: &Path) -> io::Result<BTreeMap<String, Vec<u8>>> {
     let mut paths = Vec::new();
     if dir.is_dir() {
-        walk(dir, "", &mut paths);
+        walk(dir, "", &mut paths)?;
     }
     let mut all = BTreeMap::new();
     for rel in paths {
@@ -107,23 +107,23 @@ pub fn read_all(dir: &Path) -> io::Result<BTreeMap<String, Vec<u8>>> {
 /// The template's files, by path in the app, sorted. Not in a template: what
 /// a new app makes itself (Cargo.toml, .gitignore), what is built or
 /// downloaded (target, node_modules, dot folders, data), and tests.
-pub fn files(layers: &[Layer], base: &Path) -> BTreeMap<String, PathBuf> {
+pub fn files(layers: &[Layer], base: &Path) -> io::Result<BTreeMap<String, PathBuf>> {
     let mut found = BTreeMap::new();
     for (dir, keep) in layers {
         let root = root(dir, base);
         let mut paths = Vec::new();
-        walk(&root, "", &mut paths);
+        walk(&root, "", &mut paths)?;
         for rel in paths.into_iter().filter(|p| keep(p)) {
             found.insert(rel.clone(), root.join(&rel));
         }
     }
-    found
+    Ok(found)
 }
 
-fn walk(dir: &Path, rel: &str, out: &mut Vec<String>) {
-    let entries = fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
-    for entry in entries {
-        let entry = entry.unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+fn walk(dir: &Path, rel: &str, out: &mut Vec<String>) -> io::Result<()> {
+    let at = |e: io::Error| io::Error::new(e.kind(), format!("{}: {e}", dir.display()));
+    for entry in fs::read_dir(dir).map_err(at)? {
+        let entry = entry.map_err(at)?;
         let name = entry.file_name().to_string_lossy().into_owned();
         let top = rel.is_empty();
         let skip = name.starts_with('.')
@@ -135,9 +135,10 @@ fn walk(dir: &Path, rel: &str, out: &mut Vec<String>) {
         }
         let path = if top { name } else { format!("{rel}/{name}") };
         if entry.file_type().is_ok_and(|t| t.is_dir()) {
-            walk(&entry.path(), &path, out);
+            walk(&entry.path(), &path, out)?;
         } else {
             out.push(path);
         }
     }
+    Ok(())
 }

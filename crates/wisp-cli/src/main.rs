@@ -7,13 +7,12 @@ mod deploy;
 mod dev;
 mod events;
 mod new;
-mod sha256;
 mod targets;
 #[cfg(test)]
 mod template_files;
 mod term;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
@@ -279,13 +278,14 @@ fn build(root: &Path, o: &BuildOptions) -> Result<(), String> {
         );
         return Ok(());
     }
+    // `--out`, else `dist` (`dist/<host>` for a host's build).
+    let out = |host: Option<&str>| match (&o.out, host) {
+        (Some(out), _) => PathBuf::from(out),
+        (None, Some(host)) => PathBuf::from(format!("{}/{host}", deploy::DEFAULT_OUT)),
+        (None, None) => PathBuf::from(deploy::DEFAULT_OUT),
+    };
     if let Some(host) = &o.target {
-        let out = o.out.clone().unwrap_or_else(|| format!("dist/{host}"));
-        deploy::check_out(root, Path::new(&out))?;
-        return targets::build(root, host, Path::new(&out));
-    }
-    if o.static_site {
-        deploy::check_out(root, Path::new(o.out.as_deref().unwrap_or("dist")))?;
+        return targets::build(root, host, &out(Some(host)));
     }
     if o.docker {
         css::build(root)?;
@@ -318,7 +318,7 @@ The compiler's errors are above.",
         ))
     ));
     if o.static_site {
-        return deploy::static_site(root, &exe, Path::new(o.out.as_deref().unwrap_or("dist")));
+        return deploy::static_site(root, &exe, &out(None));
     }
     println!("    One file with the CSS and static files inside. Copy it to a server and run it.");
     Ok(())

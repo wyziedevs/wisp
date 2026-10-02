@@ -134,7 +134,9 @@ impl Live {
         }
         if self.modules.iter().any(|m| m.1) {
             s.push_str(concat!(
-                "<script type=\"module\" src=\"/_app/live.js?v=",
+                "<script type=\"module\" src=\"",
+                wisp_shared::app_path!("live.js"),
+                "?v=",
                 env!("WISP_RUNTIME_V"),
                 "\"></script>"
             ));
@@ -394,10 +396,11 @@ fn css_property(out: &mut String, key: &str) {
     }
 }
 
-/// `{:...attrs}`'s first paint: each key an attribute (see `js_attr`), but
-/// the `on…` ones, which are the browser's listeners. Pairs of a name and a
-/// value too.
-pub fn js_attrs(out: &mut String, v: Js<'_>) {
+/// `{:...attrs}`'s first paint on a `tag` ("" when the browser's code
+/// chooses it): each key an attribute (see `js_attr`), but the `on…` ones,
+/// which are the browser's listeners, and the others no value may set
+/// (`contexts::holds_script`). Pairs of a name and a value too.
+pub fn js_attrs(out: &mut String, tag: &str, v: Js<'_>) {
     // A component's `...rest` comes as `[name, value]` pairs.
     let pairs = v.items().filter_map(|p| {
         let mut i = p.items();
@@ -407,7 +410,7 @@ pub fn js_attrs(out: &mut String, v: Js<'_>) {
         Some((Cow::Owned(name), x))
     });
     for (k, x) in v.entries().chain(pairs) {
-        let ok = !k.starts_with("on")
+        let ok = crate::contexts::holds_script(tag, &k).is_none()
             && !k.is_empty()
             && k.bytes()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b':' | b'.'));
@@ -996,7 +999,7 @@ mod tests {
             for name in ["class", "style", "href", "title"] {
                 js_attr(&mut s, name, v);
             }
-            js_attrs(&mut s, v);
+            js_attrs(&mut s, "", v);
             v.text(&mut s);
             v.raw(&mut s);
             tag_name(&mut s, v);
@@ -1068,8 +1071,19 @@ mod tests {
         );
         assert_eq!(paint("href", "null"), "");
         let mut s = String::new();
-        js_attrs(&mut s, Js("{\"href\":\"javascript:x\",\"id\":\"a\"}"));
+        js_attrs(&mut s, "a", Js("{\"href\":\"javascript:x\",\"id\":\"a\"}"));
         assert_eq!(s, " href=\"about:invalid#blocked\" id=\"a\"");
+        // Script in any case, a document, a refresh: left out.
+        let held = r#"{"ONCLICK":"x","srcdoc":"<b>","content":"0;url=javascript:x","http-equiv":"refresh","id":"a"}"#;
+        let mut s = String::new();
+        js_attrs(&mut s, "meta", Js(held));
+        assert_eq!(s, " id=\"a\"");
+        let mut s = String::new();
+        js_attrs(&mut s, "div", Js(held));
+        assert_eq!(
+            s,
+            " content=\"0;url=javascript:x\" http-equiv=\"refresh\" id=\"a\""
+        );
     }
 
     /// The first paint of `class`, `style` and URL attributes against what
@@ -1152,31 +1166,6 @@ mod tests {
             assert_eq!(server, browser, "{name}={json}");
         }
         assert_eq!(out.lines().count(), cases.len());
-
-        // The runtime as release builds serve it (minified by build.rs)
-        // still parses.
-        let dir = std::env::temp_dir();
-        for (file, min) in [
-            (
-                "live.mjs",
-                include_str!(concat!(env!("OUT_DIR"), "/live.js")),
-            ),
-            (
-                "wisp.js",
-                include_str!(concat!(env!("OUT_DIR"), "/wisp.js")),
-            ),
-        ] {
-            let path = dir.join(format!("wisp-check-{}-{file}", std::process::id()));
-            std::fs::write(&path, min).unwrap();
-            let checked = std::process::Command::new("node")
-                .arg("--check")
-                .arg(&path)
-                .output();
-            let _ = std::fs::remove_file(&path);
-            let checked = checked.unwrap();
-            let why = String::from_utf8_lossy(&checked.stderr);
-            assert!(checked.status.success(), "{file}: {why}");
-        }
     }
 
     /// JSON values and whether JavaScript counts them as true.

@@ -1,11 +1,17 @@
 //! What Wisp's runtime (`wisp`), its compiler (`wisp-build`) and the
 //! browser must agree on, in one crate both depend on: where a value lands
 //! in a page and how it is escaped there (`contexts`), the marks and
-//! headers of a live page (`protocol`), and the browser runtime itself.
-//! `std` only, so the compiler stays small to build.
+//! headers of a live page (`protocol`), and the browser runtime itself;
+//! and what more than one of them needs: SHA-256 (`sha256`), the seeded
+//! generator of the property tests (`rng`). `std` only, so the compiler
+//! stays small to build.
 
 pub mod contexts;
 pub mod protocol;
+pub mod rng;
+pub mod rules;
+pub mod rust;
+pub mod sha256;
 
 /// The browser runtime as written: `wisp.js`, which every page links (form
 /// actions, links that morph the page in place), and `live.js`, linked by a
