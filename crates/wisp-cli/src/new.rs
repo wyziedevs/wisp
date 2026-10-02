@@ -418,13 +418,19 @@ const API: [(&str, &str); 8] = [
 ];
 
 const MINIMAL: [(&str, &str); 3] = [
-    ("src/routes/+layout.wisp", "<main>\n  <slot />\n</main>\n"),
+    ("src/routes/+layout.wisp", "<main>
+  <slot />
+</main>
+"),
     (
         "src/routes/+page.wisp",
         r#"<title>Home</title>
 
 <h1>Welcome to Wisp</h1>
 <p>Edit <code>src/routes/+page.wisp</code> and save to see it change.</p>
+<p class="actions">
+  <a class="button primary" href="https://github.com/wyziedevs/wisp">Read the docs</a>
+</p>
 "#,
     ),
     (
@@ -433,80 +439,14 @@ const MINIMAL: [(&str, &str); 3] = [
 
 <h1>{status}</h1>
 <p>{message}</p>
-<p><a href="/">Go to the Home Page</a></p>
+<p class="actions"><a class="button" href="/">Back to the Home Page</a></p>
 "#,
     ),
 ];
 
-const MINIMAL_CSS: &str = r#"/*
- * The app's styles. Every color and font is a token here; the rules below
- * only name them. Light by default, dark when the system is.
- */
-
-:root {
-  --paper: #f4f4f4;
-  --ink: #141414;
-  --ink-muted: #565656;
-  --accent: #7456d6;
-
-  --font-sans: "Open Sans Variable", "Open Sans", "Segoe UI Variable", "Segoe UI", -apple-system,
-    BlinkMacSystemFont, system-ui, sans-serif;
-  --font-mono: "Cascadia Code", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-
-  color-scheme: light;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --paper: #141414;
-    --ink: #fafafa;
-    --ink-muted: #a8a8a8;
-    --accent: #9f8ce7;
-
-    color-scheme: dark;
-  }
-}
-
-body {
-  margin: 0;
-  background: var(--paper);
-  color: var(--ink);
-  font: 400 1rem/1.5 var(--font-sans);
-}
-
-main {
-  max-width: 42rem;
-  margin: 0 auto;
-  padding: 4rem 1rem;
-}
-
-h1 {
-  margin: 0 0 0.5rem;
-  font-size: 1.5rem;
-  font-weight: 600;
-  line-height: 2rem;
-  letter-spacing: -0.025em;
-}
-
-p {
-  margin: 0 0 1rem;
-  color: var(--ink-muted);
-}
-
-a {
-  color: var(--accent);
-  text-underline-offset: 0.2em;
-}
-
-code {
-  font: 0.875em var(--font-mono);
-}
-
-:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-"#;
+// The minimal template is styled as examples/axum is: the demo's design, one
+// centered column.
+const MINIMAL_CSS: &str = include_str!("../../../examples/axum/src/app.css");
 
 const CARGO_TOML: &str = r#"[package]
 name = "{name}"
