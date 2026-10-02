@@ -377,27 +377,29 @@ pub(crate) fn etag(body: impl AsRef<[u8]>) -> String {
     tag
 }
 
-/// Whether `if-none-match` names `tag`: weakly, so `W/"x"` is `"x"`.
-pub(crate) fn names(header: &str, tag: &str) -> bool {
+/// Whether an `if-none-match` (`WEAK`, so `W/"x"` is `"x"`) or `if-match`
+/// (strong, RFC 9110 13.1.1: a weak `W/"x"` names nothing, as it promises
+/// no byte is the same) header names `tag`.
+pub(crate) fn names<const WEAK: bool>(header: &str, tag: &str) -> bool {
     header
         .split(',')
-        .map(|t| t.trim().trim_start_matches("W/"))
-        .any(|t| t == "*" || t == tag)
-}
-
-/// Whether `if-match` names `tag`: strongly (RFC 9110 13.1.1), so a weak
-/// `W/"x"` names nothing, as it promises no byte is the same.
-fn names_strongly(header: &str, tag: &str) -> bool {
-    header
-        .split(',')
-        .map(str::trim)
+        .map(|t| {
+            if WEAK {
+                t.trim().trim_start_matches("W/")
+            } else {
+                t.trim()
+            }
+        })
         .any(|t| t == "*" || t == tag)
 }
 
 /// 200 with the JSON and its ETag, or 304 when the client has it.
 fn tagged(cx: &Cx, body: String) -> Response {
     let tag = etag(&body);
-    if cx.header("if-none-match").is_some_and(|h| names(h, &tag)) {
+    if cx
+        .header("if-none-match")
+        .is_some_and(|h| names::<true>(h, &tag))
+    {
         return Response::empty(304).with_header("etag", tag);
     }
     Response::json(body).with_header("etag", tag)
@@ -414,7 +416,7 @@ fn check_match<T: Json>(cx: &Cx, id: u64, v: &T, json: Option<&str>) -> Result {
         Some(j) => splice(&mut now, id, j),
         None => row_json(&mut now, id, v),
     }
-    if names_strongly(want, &etag(&now)) {
+    if names::<false>(want, &etag(&now)) {
         return Ok(());
     }
     Err(Error::new(412, "The row has changed since it was read").with_code("changed"))
@@ -422,7 +424,7 @@ fn check_match<T: Json>(cx: &Cx, id: u64, v: &T, json: Option<&str>) -> Result {
 
 /// Whether a list is asked for a row per line (`accept:
 /// application/x-ndjson`) rather than as a JSON array. What `CACHE` keeps
-/// of a list is kept apart by it (see `bake::cached_by_accept`).
+/// of a list is kept apart by it (see `bake::cached`).
 pub(crate) fn lines(cx: &Cx) -> bool {
     cx.header("accept")
         .is_some_and(|a| a.contains("application/x-ndjson"))
@@ -535,19 +537,7 @@ pub fn list<T: Resource>(cx: &mut Cx, _: &Hooks<T>) -> Result<Response> {
 
 /// `<…?after=5&limit=20>; rel="next"`: the query with the page moved on.
 fn next(cx: &Cx, view: &View, last: Option<u64>, shown: usize) -> String {
-    let keep: Vec<String> = cx
-        .query_string()
-        .split('&')
-        .filter(|p| {
-            let k = p.split('=').next().unwrap_or("");
-            !p.is_empty() && k != "after" && k != "offset"
-        })
-        .map(str::to_string)
-        .collect();
-    let mut q = keep.join("&");
-    if !q.is_empty() {
-        q.push('&');
-    }
+    let mut q = cx.query_without(&["after", "offset"]);
     // In id order the last row shown is the cursor; sorted, the count is.
     match (view.sort.is_empty(), last) {
         (true, Some(id)) => q.push_str(&format!("after={id}")),
@@ -702,7 +692,7 @@ fn replace<T: Resource>(
     check_match(cx, id, old, was)?;
     v.stamp(Some(old));
     let json = json::to_json(&v);
-    table.save(&mut rows, id, Some(&json));
+    table.save(&mut rows, id, Some(&json))?;
     rows.map.insert(id, v);
     drop(rows);
     let mut out = String::with_capacity(json.len() + 24);
@@ -763,7 +753,7 @@ pub fn delete<T: Resource>(cx: &mut Cx, hooks: &Hooks<T>) -> Result<Response> {
     let view = view::<T>(cx, false)?;
     let mut rows = table.write();
     check_match(cx, id, one(&rows, id, &view)?, None)?;
-    table.delete(&mut rows, id);
+    table.delete(&mut rows, id)?;
     drop(rows);
     if let (Some(h), Some(row)) = (hooks.after_delete, &row) {
         h(cx, row)?;
@@ -804,10 +794,10 @@ mod tests {
             hash(&[b"a", b"bc"]),
             "and each part's"
         );
-        assert!(names(&format!("\"x\", W/{t}"), &t));
-        assert!(names("*", &t) && !names("\"x\"", &t));
-        assert!(names_strongly(&format!("\"x\", {t}"), &t) && names_strongly("*", &t));
-        assert!(!names_strongly(&format!("W/{t}"), &t), "if-match is strong");
+        assert!(names::<true>(&format!("\"x\", W/{t}"), &t));
+        assert!(names::<true>("*", &t) && !names::<true>("\"x\"", &t));
+        assert!(names::<false>(&format!("\"x\", {t}"), &t) && names::<false>("*", &t));
+        assert!(!names::<false>(&format!("W/{t}"), &t), "if-match is strong");
     }
 
     struct Item(String);

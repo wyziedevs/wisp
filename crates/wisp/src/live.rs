@@ -62,12 +62,11 @@ pub(crate) struct Live {
     modules: Vec<(&'static ClientModule, bool)>,
     /// `[0,"t3",-1,{…}],[1,"t5",0,{…},"v"]`: id, module, the instance it
     /// renders inside (for context), its server values, and how an island
-    /// starts. The last record is left open (see `unclosed`).
+    /// starts. The last record is left open: its blob is the caller's to
+    /// write after `live`, and its `how` comes after the blob, so it is
+    /// closed, with `last_how` if any, by the next `live` or by `tail`.
     instances: String,
-    /// The last record's blob is the caller's to write after `live`, and
-    /// its `how` comes after the blob: so the record is closed, with its
-    /// `how` if any, by the next `live` or by `tail`.
-    unclosed: Option<Option<&'static str>>,
+    last_how: Option<&'static str>,
     /// The instances rendering now, innermost last, and when each starts.
     open: Vec<(u32, Start)>,
     /// `,"r":"/post/[slug]","p":{"slug":"x"}` for a page with a `+page.js`.
@@ -95,7 +94,7 @@ impl Live {
         self.count = 0;
         self.modules.clear();
         self.instances.clear();
-        self.unclosed = None;
+        self.last_how = None;
         self.open.clear();
         self.route.clear();
         self.next = None;
@@ -118,7 +117,7 @@ impl Live {
         }
         s.push_str(LIVE_RECORDS);
         s.push_str(&self.instances);
-        close(s, self.unclosed);
+        close(s, self.last_how);
         s.push(']');
         s.push_str(&self.route);
         s.push_str(LIVE_CLOSE);
@@ -166,19 +165,18 @@ pub fn live<'a>(out: &'a mut Out, module: &'static ClientModule) -> (u32, &'a mu
         Some(m) => m.1 |= start == Start::Now,
         None => l.modules.push((module, start == Start::Now)),
     }
-    if l.unclosed.is_some() {
-        close(&mut l.instances, l.unclosed);
+    if !l.instances.is_empty() {
+        close(&mut l.instances, l.last_how);
         l.instances.push(',');
     }
-    l.unclosed = Some(how);
+    l.last_how = how;
     let parent = parent.map_or(-1, |p| p.0 as i64);
     let _ = write!(l.instances, "[{i},\"{}\",{parent},", module.id);
     (i, &mut l.instances)
 }
 
-/// Closes the open record, if there is one: its `how`, then `]`.
-fn close(s: &mut String, unclosed: Option<Option<&'static str>>) {
-    let Some(how) = unclosed else { return };
+/// Closes the open record: its `how`, then `]`.
+fn close(s: &mut String, how: Option<&'static str>) {
     if let Some(how) = how {
         s.push(',');
         string(s, how);
@@ -566,8 +564,6 @@ pub const fn same_version(build: &str) -> bool {
 /// 2.5x (short) to 7x (long) the speed of a loop over the characters.
 fn string(out: &mut String, s: &str) {
     use crate::swar::{below, eq, word};
-    use script_escape as escape;
-    use script_special as special;
     out.push('"');
     let b = s.as_bytes();
     let mut done = 0; // `s[..done]` is in `out` already
@@ -575,10 +571,10 @@ fn string(out: &mut String, s: &str) {
     for chunk in b.as_chunks::<16>().0 {
         let mut hit = 0u8;
         for &c in chunk {
-            hit |= special(c) as u8;
+            hit |= script_special(c) as u8;
         }
         if hit != 0 {
-            escape(out, s, &mut done, i, i + 16);
+            script_escape(out, s, &mut done, i, i + 16);
         }
         i += 16;
     }
@@ -590,11 +586,11 @@ fn string(out: &mut String, s: &str) {
             | eq(x, b'\\')
             | eq(x, 0xe2);
         if hit != 0 {
-            escape(out, s, &mut done, i, i + 8);
+            script_escape(out, s, &mut done, i, i + 8);
         }
         i += 8;
     }
-    escape(out, s, &mut done, i, b.len());
+    script_escape(out, s, &mut done, i, b.len());
     out.push_str(&s[done..]);
     out.push('"');
 }

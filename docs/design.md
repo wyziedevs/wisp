@@ -652,12 +652,20 @@ up the id's sign-outs in the saved table `wisp_sign_outs`, and a session
 made after carries the count (`id.time.count`; none while it is 0), so
 every older one no longer matches. Reading a session looks the count up
 in memory, and not at all while no one has ever signed out everywhere (an
-atomic flag says so). The table is read once, at the first session; a
-store that cannot be read then leaves sessions unchecked rather than
-failing them, and `sign_out_everywhere` fails, saying why.
+atomic flag says so). The table is read when the server starts (not at
+all while it has no log file, so an app that never signs anyone out makes
+none); with the app's own store (`wisp::store`), which instances can
+share, a thread reads it again every 30 s and the higher count of each id
+wins, so a sign-out on one instance holds on all within that. Log files
+are each instance's own. A store that cannot be read leaves sessions as
+they were rather than failing them, says why, and is tried again;
+`sign_out_everywhere` then fails, saying why.
 
-Passwords are kept as `wisp::password::hash(&password).await`, checked with
-`wisp::password::verify(&typed, &user.hash).await`: PBKDF2-HMAC-SHA256 on the same
+Passwords are kept as `wisp::password::hash(&password).await?`, checked with
+`wisp::password::check(&typed, hash).await?` (`hash` an `Option<&str>`:
+`None` for no such user hashes a stand-in, as slow, so the time does not
+say which names exist; a full hashing queue, about 3 s of work, is a 503
+with `retry-after`): PBKDF2-HMAC-SHA256 on the same
 HMAC, 600,000 rounds (OWASP), a random 16-byte salt, written as
 `$pbkdf2-sha256$i=600000$salt$key` so the count can be raised later and old
 hashes still check; `wisp::password::outdated(&hash)` says when one was made

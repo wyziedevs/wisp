@@ -259,26 +259,30 @@ static USERS: Table<User> = Table::saved("users");   // User { name, hash: Strin
 
 #[action]
 fn join(name: String, #[validate(min_len = 8)] password: String) {
-    let id = USERS.add(User { name, hash: wisp::password::hash(&password).await });
+    let id = USERS.add(User { name, hash: wisp::password::hash(&password).await? });
     cx.sign_in(id);                     // signed cookie, 30 days, a new one
     redirect("/me")
 }
 #[action]
 fn login(name: String, password: String) {
-    let Some(user) = USERS.find(|u| u.name == name) else { return invalid("name", "No such name"); };
-    if !wisp::password::verify(&password, &user.hash).await { return invalid("password", "Wrong password"); }
-    cx.sign_in(user.id);
+    let user = USERS.find(|u| u.name == name);
+    let hash = user.as_ref().map(|u| u.hash.as_str());  // None: as slow, so names stay secret
+    if !wisp::password::check(&password, hash).await? { return invalid("password", "Wrong name or password"); }
+    cx.sign_in(user.unwrap().id);
     redirect("/me")
 }
 let me = cx.user(&USERS)?;              // a members' page: Row<User>, or 303 to /login
 ```
 `cx.signed_in()?` is the id alone; `.ok()` asks without redirecting;
 `cx.sign_out()`; `wisp::sign_out_everywhere(id)` ends all of `id`'s
-sessions, stolen ones too (saved). Endpoints/JSON clients get 401. Sign-in
-page elsewhere: `wisp::sign_in_page("/enter")` in `init`. Hashes are
-PBKDF2-SHA256, 600,000 rounds (~0.2 s of a core, on purpose, off the
-worker: `.await` them). `wisp::password::outdated(&hash)` → rehash at
-sign-in. Rotate the secret: new `WISP_SECRET`, old one in `WISP_SECRET_OLD`.
+sessions, stolen ones too (saved; read at start; with a shared
+`wisp::store` other instances see it within 30 s, log files are per
+instance). Endpoints/JSON clients get 401. Sign-in page elsewhere:
+`wisp::sign_in_page("/enter")` in `init`. Hashes are PBKDF2-SHA256,
+600,000 rounds (~0.2 s of a core, on purpose, off the worker: `.await?`
+them; 503 + `retry-after` when ~3 s are queued). `wisp::password::outdated(&hash)` → rehash at
+sign-in. Rotate the secret: new `WISP_SECRET`, old one in `WISP_SECRET_OLD`
+for 30 days (sessions' life; 400 for other signed cookies), then drop it.
 
 ## hooks.rs
 

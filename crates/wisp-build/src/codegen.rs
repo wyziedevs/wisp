@@ -2044,10 +2044,10 @@ impl Gen {
             let kept = |serve: String| match &r.cache {
                 Some(c) => {
                     let (m, public) = (&c.module, c.public);
-                    let by = if c.by_accept { "_by_accept" } else { "" };
+                    let by = c.by_accept;
                     format!(
-                        "if ::wisp::rt::cached{by}(cx, __o, {public}) {{ return Ok(()); }} {serve} \
-                         ::wisp::rt::keep{by}::<Self>(cx, __o, {m}::__call::CACHE, {public});"
+                        "if ::wisp::rt::cached::<{by}>(cx, __o, {public}) {{ return Ok(()); }} {serve} \
+                         ::wisp::rt::keep::<Self, {by}>(cx, __o, {m}::__call::CACHE, {public});"
                     )
                 }
                 None => serve,
@@ -6345,8 +6345,8 @@ mod tests {
         let code = app("cache-ok", &[page]).unwrap();
         for want in [
             "pub const CACHE: u32 = super::CACHE;",
-            "(0, Get | Head) => { if ::wisp::rt::cached(cx, __o, false) { return Ok(()); } serve_page_0(cx, __o).await?; \
-             ::wisp::rt::keep::<Self>(cx, __o, page_0::__call::CACHE, false); Ok(()) },",
+            "(0, Get | Head) => { if ::wisp::rt::cached::<false>(cx, __o, false) { return Ok(()); } serve_page_0(cx, __o).await?; \
+             ::wisp::rt::keep::<Self, false>(cx, __o, page_0::__call::CACHE, false); Ok(()) },",
         ] {
             assert!(code.contains(want), "{want}\n{code}");
         }
@@ -6359,8 +6359,8 @@ mod tests {
         let code = app("cache-server", &[server]).unwrap();
         for want in [
             "pub const CACHE: u32 = super::CACHE_PUBLIC;",
-            "(0, Get | Head) => { ::wisp::rt::endpoint(cx); if ::wisp::rt::cached(cx, __o, true) { return Ok(()); } \
-             ::wisp::rt::respond(__o, server_0::__call::get(cx).await?); ::wisp::rt::keep::<Self>(cx, __o, server_0::__call::CACHE, true); Ok(()) }",
+            "(0, Get | Head) => { ::wisp::rt::endpoint(cx); if ::wisp::rt::cached::<false>(cx, __o, true) { return Ok(()); } \
+             ::wisp::rt::respond(__o, server_0::__call::get(cx).await?); ::wisp::rt::keep::<Self, false>(cx, __o, server_0::__call::CACHE, true); Ok(()) }",
             "(0, Post) => { ::wisp::rt::endpoint(cx); ::wisp::rt::respond(__o, server_0::__call::post(cx).await?); Ok(()) }",
         ] {
             assert!(code.contains(want), "{want}\n{code}");
@@ -6430,10 +6430,10 @@ mod tests {
         );
         let code = app("cache-accept", &rest).unwrap();
         for want in [
-            "(0, Get | Head) => { ::wisp::rt::endpoint(cx); if ::wisp::rt::cached_by_accept(cx, __o, false) { return Ok(()); } \
+            "(0, Get | Head) => { ::wisp::rt::endpoint(cx); if ::wisp::rt::cached::<true>(cx, __o, false) { return Ok(()); } \
              ::wisp::rt::respond(__o, server_0::__call::__rest_list(cx).await?); \
-             ::wisp::rt::keep_by_accept::<Self>(cx, __o, server_0::__call::CACHE, false); Ok(()) }",
-            "(1, Get | Head) => { ::wisp::rt::endpoint(cx); if ::wisp::rt::cached(cx, __o, false) {",
+             ::wisp::rt::keep::<Self, true>(cx, __o, server_0::__call::CACHE, false); Ok(()) }",
+            "(1, Get | Head) => { ::wisp::rt::endpoint(cx); if ::wisp::rt::cached::<false>(cx, __o, false) {",
         ] {
             assert!(code.contains(want), "{want}\n{code}");
         }

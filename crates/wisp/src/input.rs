@@ -224,7 +224,13 @@ pub fn refused<T>(problems: crate::json::Problems) -> Result<T> {
 /// `name: bool`: a checkbox, `true` when it was sent with any value but
 /// `false`, `off` or `0`.
 pub fn flag(cx: &Cx, name: &str) -> bool {
-    find(cx, name).is_some_and(|(v, _)| !matches!(&*v, "false" | "off" | "0"))
+    find(cx, name).is_some_and(|(v, _)| on(&v))
+}
+
+/// Whether a checkbox's (or a switch's) value is on: anything but `false`,
+/// `off` or `0`.
+pub(crate) fn on(v: &str) -> bool {
+    !matches!(v, "false" | "off" | "0")
 }
 
 /// `name: Vec<T>`: every value sent under the name, such as a group of
@@ -257,10 +263,7 @@ pub fn image(cx: &Cx, name: &str) -> Result<Option<crate::Image>> {
     };
     match crate::Image::new(file.bytes) {
         Some(image) => Ok(Some(image)),
-        None => Err(Error::invalid(
-            name,
-            "must be a PNG, JPEG, GIF, WebP or AVIF image",
-        )),
+        None => Err(Error::invalid(name, crate::image::NOT_AN_IMAGE)),
     }
 }
 

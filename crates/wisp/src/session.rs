@@ -10,25 +10,31 @@
 //! `wisp::sign_out_everywhere(id)` ends every session of `id` made before
 //! it, a stolen cookie's too: it counts up the id's sign-outs in a saved
 //! table, and a session made after carries the count (`id.time.count`).
-//! Until an app calls it, a session is read with nothing looked up.
+//! The table is read when the server starts; until it has a row, a session
+//! is read with nothing looked up. With the app's own store
+//! (`wisp::store`), which several instances can share, each reads it again
+//! every 30 s, so a sign-out on one holds on all within that. The log
+//! files are each instance's own.
 
 use crate::cx::CookieOptions;
-use crate::{Cx, Error, Result, Row, Table, unix_now};
+use crate::{Cx, Error, Result, Row, Table, store, unix_now};
 use std::sync::RwLock;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 const COOKIE: &str = "session";
+const TABLE: &str = "wisp_sign_outs";
 
 /// How many times each id has signed out everywhere, by id, saved.
-static SIGN_OUTS: Table<u64> = Table::saved("wisp_sign_outs");
+static SIGN_OUTS: Table<u64> = Table::saved(TABLE);
 
-/// Whether [`SIGN_OUTS`] has any row: until one does, reading a session
-/// looks nothing up. `UNKNOWN` before it is first read.
-static ANY: AtomicU8 = AtomicU8::new(UNKNOWN);
-const UNKNOWN: u8 = 0;
-const NONE: u8 = 1;
-const SOME: u8 = 2;
+/// Whether [`SIGN_OUTS`] has any row: until it does, reading a session
+/// looks nothing up.
+static ANY: AtomicBool = AtomicBool::new(false);
+
+/// How often a shared store's sign-outs are read again.
+#[cfg(not(target_arch = "wasm32"))]
+const REREAD: Duration = Duration::from_secs(30);
 
 /// How long a sign-in lasts.
 const DAYS: u64 = 30;
@@ -55,30 +61,66 @@ pub fn sign_out_everywhere(id: u64) {
     assert!(id != 0, "sign_out_everywhere takes a row id, from 1");
     let mut rows = SIGN_OUTS.write();
     let count = rows.map.get(&id).map_or(1, |n| n + 1);
-    SIGN_OUTS.save(&mut rows, id, Some(&count.to_string()));
+    if let Err(e) = SIGN_OUTS.save(&mut rows, id, Some(&count.to_string())) {
+        panic!("{}", e.message());
+    }
     rows.map.insert(id, count);
     drop(rows);
-    ANY.store(SOME, Ordering::Release);
+    ANY.store(true, Ordering::Release);
+}
+
+/// Reads the sign-outs when the server starts, once `init` has set the
+/// store, and again every 30 s from a store of the app's own, off the
+/// requests' threads.
+pub(crate) fn ready() {
+    reread();
+    #[cfg(not(target_arch = "wasm32"))]
+    if store::custom().is_some() {
+        let _ = std::thread::Builder::new()
+            .name("wisp-sign-outs".into())
+            .spawn(|| {
+                loop {
+                    std::thread::sleep(REREAD);
+                    reread();
+                }
+            });
+    }
+}
+
+/// Reads the sign-outs from the store; a count there above the one here
+/// (another instance's sign-out) wins. No log file means none: no folder
+/// is made for an app that never signs anyone out. A store that cannot be
+/// read leaves sessions as they were, says why, and is tried again.
+fn reread() {
+    if !store::holds(TABLE) {
+        return;
+    }
+    let read = std::panic::catch_unwind(|| {
+        SIGN_OUTS.refresh(|now, stored| stored > now)?;
+        Ok::<_, Error>(!SIGN_OUTS.is_empty())
+    });
+    match read {
+        Ok(Ok(any)) => {
+            if any {
+                ANY.store(true, Ordering::Release);
+            }
+        }
+        Ok(Err(e)) => log(&e.detail()),
+        Err(_) => log("see the panic above"),
+    }
+}
+
+fn log(why: &str) {
+    crate::http::log(format_args!(
+        "wisp: could not read who signed out everywhere ({why}); sessions hold as before until it can"
+    ));
 }
 
 /// How many times `id` has signed out everywhere: what its sessions must
 /// carry. No lookup while no one ever has.
 fn sign_outs(id: u64) -> u64 {
-    match ANY.load(Ordering::Acquire) {
-        NONE => return 0,
-        UNKNOWN => {
-            // A store that cannot be read (a read-only folder, say) leaves
-            // sessions as they were before sign-outs, rather than failing
-            // each one; `sign_out_everywhere` then fails, saying why.
-            let read = std::panic::catch_unwind(|| SIGN_OUTS.is_empty());
-            let any = if read.unwrap_or(true) { NONE } else { SOME };
-            // A sign-out meanwhile has said SOME, which stays.
-            let _ = ANY.compare_exchange(UNKNOWN, any, Ordering::AcqRel, Ordering::Acquire);
-            if any == NONE {
-                return 0;
-            }
-        }
-        _ => {}
+    if !ANY.load(Ordering::Acquire) {
+        return 0;
     }
     SIGN_OUTS.with(id, |n| *n).unwrap_or(0)
 }
@@ -137,7 +179,7 @@ impl Cx {
     }
 
     fn signed_out(&self) -> Error {
-        if self.api() || crate::input::asks_json(self) {
+        if crate::http::wants_json(self) {
             return Error::new(401, "Sign in first").with_code("signed_out");
         }
         let page = *SIGN_IN_PAGE.read().unwrap_or_else(|e| e.into_inner());

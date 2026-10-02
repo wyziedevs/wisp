@@ -443,8 +443,9 @@ answer from it. To allow it on some paths only:
   `wisp::secure_eq(token, key)`.
 - **Basic auth:** `cx.basic_auth()` is `(user, password)`.
 - **Sessions:** `cx.sign_in(id)` when a password checks
-  (`wisp::password::verify(&typed, &user.hash).await`, with hashes from
-  `wisp::password::hash(&password).await`; both run on threads kept for
+  (`wisp::password::check(&typed, user_hash).await?`, `None` for no such
+  user, as slow; with hashes from `wisp::password::hash(&password).await?`;
+  both run on threads kept for
   hashing, so the worker serves other requests meanwhile), then `let id =
   cx.signed_in()?;` or `let user = cx.user(&USERS)?;` where only members
   may go: signed out, a page sends the visitor to `/login` (303;

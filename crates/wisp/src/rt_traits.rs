@@ -355,7 +355,7 @@ mod tests {
         let svg = post(b"<svg onload=\"alert(1)\"/>");
         assert_eq!(
             problem(FromInput::get(&svg, "pic")),
-            "must be a PNG, JPEG, GIF, WebP or AVIF image"
+            crate::image::NOT_AN_IMAGE
         );
         let maybe: Result<Option<Image>> = FromInput::get(&svg, "pic");
         assert_eq!(maybe.unwrap_err().status(), 422);

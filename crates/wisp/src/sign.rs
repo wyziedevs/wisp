@@ -13,17 +13,21 @@ use std::sync::OnceLock;
 
 /// The signature of cookie `name` holding `value`.
 pub(crate) fn cookie_mac(name: &str, value: &str) -> [u8; 32] {
-    key().sign(&[name.as_bytes(), b"=", value.as_bytes()])
+    mac(key(), name, value)
+}
+
+fn mac(k: &Hmac, name: &str, value: &str) -> [u8; 32] {
+    k.sign(&[name.as_bytes(), b"=", value.as_bytes()])
 }
 
 /// Whether `mac` is the signature of cookie `name` holding `value`, in time
 /// that does not depend on where they differ. One `WISP_SECRET_OLD` signed
 /// holds too, so a new secret does not sign everyone out at once.
-pub(crate) fn verify_cookie(name: &str, value: &str, mac: &str) -> bool {
+pub(crate) fn verify_cookie(name: &str, value: &str, sent: &str) -> bool {
     [Some(key()), old_key()]
         .into_iter()
         .flatten()
-        .any(|k| same_mac(mac, &k.sign(&[name.as_bytes(), b"=", value.as_bytes()])))
+        .any(|k| same_mac(sent, &mac(k, name, value)))
 }
 
 /// Whether `sent`, in hex or base64 (either alphabet, padded or not), is
@@ -66,8 +70,10 @@ fn key() -> &'static Hmac {
 }
 
 /// `WISP_SECRET_OLD`: the secret before `WISP_SECRET`, which signatures are
-/// still checked with (nothing is signed with it). Kept as long as cookies
-/// it signed should last: 30 days for a sign-in.
+/// still checked with (nothing is signed with it). Keep it as long as the
+/// cookies it signed last, then remove it: 30 days for a sign-in (a
+/// session's age is in its value, so it ends then whatever signed it), 400
+/// days for `set_signed_cookie`'s own.
 fn old_key() -> Option<&'static Hmac> {
     static OLD: OnceLock<Option<Hmac>> = OnceLock::new();
     OLD.get_or_init(|| {
