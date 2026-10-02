@@ -275,10 +275,8 @@ struct Options {
     build: bool,
     csv: Option<PathBuf>,
     extra: Vec<Server>,
-    /// `--suite benchmarker`: the-benchmarker's routes and load, not ours.
-    suite: bool,
-    /// `--suite real`; the others below are its.
-    real: bool,
+    /// What runs; `think` to `soak` are `Suite::Real`'s.
+    suite: Suite,
     think: Duration,
     max_users: usize,
     slo_ms: u64,
@@ -288,6 +286,16 @@ struct Options {
     /// In the suite, zrk's threads (one per load CPU, as their harness gives
     /// it) when zrk is installed; else wisp-load sends the load.
     zrk: Option<usize>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Suite {
+    /// Our routes, closed loop: each server's peak.
+    Peak,
+    /// `--suite benchmarker`: the-benchmarker's routes and load, not ours.
+    Benchmarker,
+    /// `--suite real`: see real.rs.
+    Real,
 }
 
 /// One server on one path (a route, in the suite) at one level, one round.
@@ -312,7 +320,7 @@ struct Row {
 fn main() {
     let mut opt = options();
     let (server_cpus, load_cpus) = sys::split_cpus();
-    if opt.real {
+    if opt.suite == Suite::Real {
         // A user is a connection here and one in the server.
         if let Some(limit) = sys::raise_open_files() {
             let need = 2 * opt.max_users as u64 + 1000;
@@ -328,7 +336,7 @@ fn main() {
         }
         sys::fine_timers();
     }
-    opt.zrk = (opt.suite && installed("zrk")).then_some(load_cpus.len());
+    opt.zrk = (opt.suite == Suite::Benchmarker && installed("zrk")).then_some(load_cpus.len());
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()
@@ -339,7 +347,7 @@ fn main() {
         .iter()
         .filter(|s| {
             s.tags & opt.group != 0
-                && (opt.suite || s.tags & THEIRS == 0)
+                && (opt.suite == Suite::Benchmarker || s.tags & THEIRS == 0)
                 && picked(&opt.only, s.name)
         })
         .collect();
@@ -380,9 +388,9 @@ fn main() {
         opt.rounds,
         if opt.rounds == 1 { "" } else { "s" }
     );
-    if opt.real {
+    if opt.suite == Suite::Real {
         real::announce_suite(&opt, &server_cpus, &load_cpus);
-    } else if opt.suite {
+    } else if opt.suite == Suite::Benchmarker {
         let levels: Vec<String> = opt.connections.iter().map(usize::to_string).collect();
         println!(
             "the-benchmarker suite: servers on CPUs {}, load on {} ({}); {} connections; {}s warmup of GET / at 50, then {}s a route; {rounds}",
@@ -412,14 +420,18 @@ fn main() {
     let mut real_rows = Vec::new();
     for round in 1..=opt.rounds {
         for (i, s) in servers.iter().enumerate() {
-            let all: &[&str] = if opt.suite {
+            let all: &[&str] = if opt.suite == Suite::Benchmarker {
                 &ROUTES.map(|(route, _)| route)
             } else if s.bin == Bin::Other {
                 &["/plaintext"]
             } else {
                 &["/plaintext", "/fortunes", "/json", "/page"]
             };
-            let extra = if opt.suite { &[][..] } else { s.extra };
+            let extra = if opt.suite == Suite::Benchmarker {
+                &[][..]
+            } else {
+                s.extra
+            };
             let paths: Vec<&'static str> = all
                 .iter()
                 .chain(extra)
@@ -438,7 +450,15 @@ fn main() {
                     "port {port} is taken: is another benchmark running? Stop it first."
                 ));
             }
-            let mut child = match start(s, &repo, &bench, port, &threads, &server_cpus, opt.suite) {
+            let mut child = match start(
+                s,
+                &repo,
+                &bench,
+                port,
+                &threads,
+                &server_cpus,
+                opt.suite == Suite::Benchmarker,
+            ) {
                 Ok(child) => child,
                 Err(e) => {
                     println!("{}: {e}", s.name);
@@ -447,7 +467,7 @@ fn main() {
             };
             let size = deploy_size(s, &repo, &bench);
             let cpus = server_cpus.len();
-            if opt.real {
+            if opt.suite == Suite::Real {
                 match real::measure(s, &mut child, addr, &opt, cpus, load_cpus.len()) {
                     Ok(row) => real_rows.push(row),
                     Err(e) => println!("{}: {e}", s.name),
@@ -455,7 +475,7 @@ fn main() {
                 sys::kill(&mut child);
                 continue;
             }
-            let measured = if opt.suite {
+            let measured = if opt.suite == Suite::Benchmarker {
                 suite(s, &mut child, addr, &paths, &opt, cpus, size)
             } else {
                 measure(s, &mut child, addr, &paths, &opt, cpus, size)
@@ -471,7 +491,7 @@ fn main() {
         }
     }
 
-    if opt.real {
+    if opt.suite == Suite::Real {
         if let Some(file) = &opt.csv {
             real::write_csv(file, &real_rows);
         }
@@ -483,7 +503,7 @@ fn main() {
         write_csv(file, &rows, opt.pipeline);
     }
     println!();
-    if opt.suite {
+    if opt.suite == Suite::Benchmarker {
         print_suite(&rows, &opt.connections, server_cpus.len());
     } else {
         print_table(&rows, opt.connections[0], opt.pipeline);
@@ -503,8 +523,7 @@ fn options() -> Options {
         build: true,
         csv: None,
         extra: Vec::new(),
-        suite: false,
-        real: false,
+        suite: Suite::Peak,
         think: Duration::from_secs(1),
         max_users: 50_000,
         slo_ms: 100,
@@ -551,8 +570,8 @@ fn options() -> Options {
                     .fold(0, |all, g| all | g)
             }
             "--suite" => match value().as_str() {
-                "benchmarker" => opt.suite = true,
-                "real" => opt.real = true,
+                "benchmarker" => opt.suite = Suite::Benchmarker,
+                "real" => opt.suite = Suite::Real,
                 other => die(&format!("--suite: benchmarker or real, not {other}")),
             },
             "--think" => {
@@ -611,22 +630,26 @@ fn options() -> Options {
     }
     // the-benchmarker's .env: 15 s a route at 64, 256 and 512 connections.
     if opt.connections.is_empty() {
-        opt.connections = if opt.suite {
+        opt.connections = if opt.suite == Suite::Benchmarker {
             vec![64, 256, 512]
         } else {
             vec![64]
         };
     }
     if opt.duration.is_zero() {
-        opt.duration = Duration::from_secs(if opt.suite { 15 } else { 10 });
+        opt.duration = Duration::from_secs(if opt.suite == Suite::Benchmarker {
+            15
+        } else {
+            10
+        });
     }
-    if opt.suite && opt.pipeline > 1 {
+    if opt.suite == Suite::Benchmarker && opt.pipeline > 1 {
         die("--suite benchmarker loads closed loop; --pipeline does not apply");
     }
-    if opt.real && (opt.pipeline > 1 || opt.rounds > 1) {
+    if opt.suite == Suite::Real && (opt.pipeline > 1 || opt.rounds > 1) {
         die("--suite real runs once, closed loop or open; --pipeline and --rounds do not apply");
     }
-    if !opt.suite && opt.connections.len() > 1 {
+    if opt.suite != Suite::Benchmarker && opt.connections.len() > 1 {
         die("-c takes one level, or a list with --suite benchmarker");
     }
     opt
@@ -746,9 +769,12 @@ fn build(repo: &Path, bench: &Path, servers: &mut Vec<&Server>) {
     for u in units {
         let node = bench.join("node").join(u);
         let ok = match u {
-            "wisp" => run(Command::new("cargo")
-                .args(["build", "--release", "-q", "-p", "wisp-bench"])
-                .current_dir(repo)),
+            "wisp" => {
+                app_js(bench, "app/static/static")
+                    && run(Command::new("cargo")
+                        .args(["build", "--release", "-q", "-p", "wisp-bench"])
+                        .current_dir(repo))
+            }
             "rust" => run(Command::new("cargo")
                 .args(["build", "--release", "-q"])
                 .current_dir(bench.join("rust"))),
@@ -810,7 +836,9 @@ fn build(repo: &Path, bench: &Path, servers: &mut Vec<&Server>) {
                         .current_dir(&node))
                 };
                 let built = matches!(u, "sveltekit" | "nextjs");
-                (installed_since(&node)
+                let public = if u == "nextjs" { "public" } else { "static" };
+                (!built || app_js(bench, &format!("node/{u}/{public}/static")))
+                    && (installed_since(&node)
                     || npm(&["install", "--no-audit", "--no-fund", "--loglevel=error"]))
                     && (!built || npm(&["run", "build", "--silent"]))
                     // The standalone build serves `public/` only from beside
@@ -835,6 +863,25 @@ fn build(repo: &Path, bench: &Path, servers: &mut Vec<&Server>) {
         }
         ok
     });
+}
+
+/// Puts `static/app.js` in `bench/dir`, for a server that serves only its
+/// own folder; rewritten only when it differs, so the build that embeds it
+/// does not rerun for nothing.
+fn app_js(bench: &Path, dir: &str) -> bool {
+    let (from, dir) = (bench.join("static/app.js"), bench.join(dir));
+    let to = dir.join("app.js");
+    let put = || -> std::io::Result<()> {
+        let js = std::fs::read(&from)?;
+        if std::fs::read(&to).ok().as_ref() != Some(&js) {
+            std::fs::create_dir_all(&dir)?;
+            std::fs::write(&to, js)?;
+        }
+        Ok(())
+    };
+    put()
+        .map_err(|e| println!("  copying {}: {e}", to.display()))
+        .is_ok()
 }
 
 /// Copies every file under `from` to the same place under `to`.

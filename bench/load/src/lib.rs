@@ -34,6 +34,8 @@ pub struct Report {
     pub ok: u64,
     pub non_2xx: u64,
     pub errors: u64,
+    /// Connects refused, apart from `errors`: counted by `closed_loop` only.
+    pub refused: u64,
     /// Bytes on the wire, heads included.
     pub bytes: u64,
     pub latency: Histogram,
@@ -50,6 +52,7 @@ impl Report {
         self.ok += o.ok;
         self.non_2xx += o.non_2xx;
         self.errors += o.errors;
+        self.refused += o.refused;
         self.bytes += o.bytes;
         self.latency.merge(&o.latency);
     }
@@ -258,13 +261,15 @@ fn parse(buf: &[u8]) -> Option<Option<Response>> {
     }))
 }
 
-/// Reads into a block of this thread's, zeroed once, then appends what came:
-/// zeroing `buf`'s spare room for every read cost a 64 KB memset per
-/// response, on the cores the load shares.
+thread_local! {
+    /// What a read lands in, zeroed once: zeroing a buffer's spare room for
+    /// every read cost a 64 KB memset per response, on the cores the load
+    /// shares.
+    static BLOCK: std::cell::RefCell<Vec<u8>> = std::cell::RefCell::new(vec![0; 64 * 1024]);
+}
+
+/// Reads into `BLOCK`, then appends what came.
 fn fill(s: &mut TcpStream, buf: &mut Vec<u8>) -> Option<()> {
-    thread_local! {
-        static BLOCK: std::cell::RefCell<Vec<u8>> = std::cell::RefCell::new(vec![0; 64 * 1024]);
-    }
     BLOCK.with_borrow_mut(|block| match s.read(block) {
         Ok(n) if n > 0 => {
             buf.extend_from_slice(&block[..n]);
