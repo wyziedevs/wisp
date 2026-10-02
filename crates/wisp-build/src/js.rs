@@ -2049,24 +2049,7 @@ mod tests {
         assert_eq!(each("if in xs"), None);
     }
 
-    /// Deterministic pseudo-random numbers: xorshift64.
-    pub(crate) struct Rng(pub u64);
-
-    impl Rng {
-        pub fn next(&mut self) -> u64 {
-            self.0 ^= self.0 << 13;
-            self.0 ^= self.0 >> 7;
-            self.0 ^= self.0 << 17;
-            self.0
-        }
-
-        /// Text of `n` pieces picked from `from`.
-        pub fn text(&mut self, from: &[&str], n: usize) -> String {
-            (0..n)
-                .map(|_| from[self.next() as usize % from.len()])
-                .collect()
-        }
-    }
+    use wisp_shared::rng::Rng;
 
     const PIECES: &[&str] = &[
         "let ",
@@ -2155,7 +2138,7 @@ mod tests {
             stores: vec!["cart".into()],
         };
         for round in 0..4000 {
-            let src = rng.text(PIECES, 1 + round % 40);
+            let src = rng.pieces(PIECES, 1 + round % 40);
             let t = tokens(&src);
             assert!(
                 t.iter().all(|k| k.start < k.end && k.end <= src.len()),
