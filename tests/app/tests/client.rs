@@ -221,7 +221,13 @@ fn rest_resources_filter_sort_page_and_hook() {
         "{}",
         refused.text()
     );
-    assert_eq!(app.get("/tasks").header("x-total-count"), Some("3"));
+    let list = app.get("/tasks");
+    assert_eq!(list.header("x-total-count"), Some("3"));
+    assert_eq!(
+        list.header("vary"),
+        Some("accept"),
+        "JSON or NDJSON by accept"
+    );
 
     assert_eq!(titles(&app.get("/tasks?done=true")), ["Milk"]);
     assert_eq!(titles(&app.get("/tasks?points.gte=2")), ["Tea", "Eggs"]);
@@ -416,7 +422,9 @@ fn action_forms_post_check_and_keep_input() {
     let html = long.text();
     assert_eq!(long.status, 422);
     assert!(
-        html.contains("<input name=\"text\" value=\"far &lt;too&gt; long\">"),
+        html.contains(
+            "<input name=\"text\" required minlength=\"1\" pattern=\"[\\s\\S]{0,10}\" value=\"far &lt;too&gt; long\">"
+        ),
         "{html}"
     );
     assert!(
@@ -424,7 +432,9 @@ fn action_forms_post_check_and_keep_input() {
         "{html}"
     );
     assert!(
-        html.contains("<p class=\"problem\">must have at most 10 characters</p>"),
+        html.contains(
+            "<p class=\"problem\"><small class=\"problem\">must have at most 10 characters</small></p>"
+        ),
         "{html}"
     );
     assert!(
@@ -442,5 +452,148 @@ fn action_forms_post_check_and_keep_input() {
         gone.status == 200 && !gone.text().contains("<li>"),
         "{}",
         gone.text()
+    );
+}
+
+/// A multipart post of one file, as a browser sends `<input type="file">`.
+fn upload(target: &str, field: &str, bytes: &[u8]) -> Request {
+    let mut req = Request::new("POST", target);
+    req.header("content-type", "multipart/form-data; boundary=XX");
+    let head = format!(
+        "--XX\r\ncontent-disposition: form-data; name=\"{field}\"; filename=\"a\"\r\ncontent-type: image/png\r\n\r\n"
+    );
+    req.body = [head.as_bytes(), bytes, b"\r\n--XX--\r\n"].concat();
+    req
+}
+
+#[test]
+fn members_sign_in_and_upload_a_picture() {
+    let mut app = client::<Site>();
+    // Signed out, a members' page sends the visitor to sign in.
+    let away = app.get("/me");
+    assert_eq!(
+        (away.status, away.header("location")),
+        (303, Some("/login"))
+    );
+    // The browser checks first what it can (the server checks it all);
+    // `join` awaits without `async`, which `#[action]` adds.
+    let page = app.get("/join").text().to_string();
+    assert!(
+        page.contains("<input type=\"password\" name=\"password\" required minlength=\"8\">"),
+        "{page}"
+    );
+    let short = app.post_form("/join?/join", &[("name", "ada"), ("password", "short")]);
+    assert_eq!(short.status, 422);
+
+    let joined = app.post_form(
+        "/join?/join",
+        &[("name", "ada"), ("password", "correct horse")],
+    );
+    assert_eq!(
+        (joined.status, joined.header("location")),
+        (303, Some("/me"))
+    );
+    assert!(app.cookie("session").is_some());
+    let me = app.get("/me");
+    assert!(
+        me.status == 200 && me.text().contains("<h1>ada</h1>"),
+        "{}",
+        me.text()
+    );
+    assert!(!me.text().contains("<img"));
+
+    // An image is taken; the page shows it, and its address serves it.
+    let gif = b"GIF89a\x01\0\x01\0\0\0\0;";
+    let r = app.send(upload("/me?/avatar", "avatar", gif));
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert!(r.text().contains("<img src=\"/avatars/1\""), "{}", r.text());
+    let pic = app.get("/avatars/1");
+    assert_eq!((pic.status, pic.bytes()), (200, &gif[..]));
+    assert_eq!(pic.header("content-type"), Some("image/gif"));
+    assert_eq!(pic.header("cache-control"), Some("no-cache"));
+    let etag = pic.header("etag").unwrap().to_string();
+    app.header("if-none-match", &etag);
+    let again = app.get("/avatars/1");
+    assert_eq!((again.status, again.bytes().len()), (304, 0));
+    assert_eq!(app.get("/avatars/2").status, 404);
+
+    // Not an image, or too big: the page again, the problem by the field.
+    let svg = app.send(upload(
+        "/me?/avatar",
+        "avatar",
+        b"<svg onload=\"alert(1)\"/>",
+    ));
+    assert_eq!(svg.status, 422);
+    assert!(
+        svg.text()
+            .contains("must be a PNG, JPEG, GIF, WebP or AVIF image"),
+        "{}",
+        svg.text()
+    );
+    let big = [&gif[..], &[0; 64 * 1024]].concat();
+    let big = app.send(upload("/me?/avatar", "avatar", &big));
+    assert_eq!(big.status, 422);
+    assert!(
+        big.text().contains("must be at most 64 KB"),
+        "{}",
+        big.text()
+    );
+    let none = app.send(upload("/me?/avatar", "other", gif));
+    assert!(none.status == 422 && none.text().contains("choose an image"));
+    assert_eq!(app.get("/avatars/1").bytes(), gif, "kept as it was");
+
+    // Out, and in again with the password.
+    let left = app.post_form("/me?/leave", &[]);
+    assert_eq!(left.header("location"), Some("/"));
+    assert!(app.cookie("session").is_none());
+    assert_eq!(app.get("/me").status, 303);
+    let wrong = app.post_form("/join?/enter", &[("name", "ada"), ("password", "horse")]);
+    assert_eq!(wrong.status, 422);
+    assert!(wrong.text().contains("Wrong password"), "{}", wrong.text());
+    let back = app.post_form(
+        "/join?/enter",
+        &[("name", "ada"), ("password", "correct horse")],
+    );
+    assert_eq!(back.header("location"), Some("/me"));
+    assert_eq!(app.get("/me").status, 200);
+
+    // Signed out everywhere: the session it still sends, as a copy kept by
+    // someone else would be, is nobody, and signing in again holds.
+    let ended = app.post_form("/me?/everywhere", &[]);
+    assert_eq!(ended.header("location"), Some("/"));
+    assert!(app.cookie("session").is_some());
+    assert_eq!(app.get("/me").status, 303);
+    let back = app.post_form(
+        "/join?/enter",
+        &[("name", "ada"), ("password", "correct horse")],
+    );
+    assert_eq!(back.header("location"), Some("/me"));
+    assert_eq!(app.get("/me").status, 200);
+}
+
+#[test]
+fn pages_of_rows() {
+    let mut app = client::<Site>();
+    for text in ["one", "two", "three"] {
+        app.post_form("/feed?/add", &[("text", text)]);
+    }
+    let html = app.get("/feed").text().to_string();
+    assert!(
+        html.contains("<p>three</p>") && html.contains("<p>two</p>"),
+        "{html}"
+    );
+    assert!(
+        !html.contains("<p>one</p>") && !html.contains("Newer"),
+        "{html}"
+    );
+    assert!(html.contains("<a href=\"?page=2\">Older</a>"), "{html}");
+    let html = app.get("/feed?page=2").text().to_string();
+    assert!(
+        html.contains("<p>one</p>") && !html.contains("<p>two</p>"),
+        "{html}"
+    );
+    assert!(
+        html.contains("<a href=\"?page=1\">Newer</a>") && !html.contains("Older"),
+        "{html}"
     );
 }
