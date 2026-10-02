@@ -89,10 +89,7 @@ pub fn baked(cx: &Cx, out: &mut Out, page: &'static Baked) -> bool {
 /// else its bytes.
 pub(crate) fn reply(cx: &Cx, made: Made, reply: &mut Reply) {
     reply.headers.clear();
-    if !cx
-        .header("if-none-match")
-        .is_some_and(|h| crate::rest::names::<true>(h, made.etag()))
-    {
+    if !crate::http::fresh(cx, made.etag()) {
         reply.status = 200;
         reply.body = Body::Made(made);
         return;

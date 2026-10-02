@@ -396,10 +396,7 @@ pub(crate) fn names<const WEAK: bool>(header: &str, tag: &str) -> bool {
 /// 200 with the JSON and its ETag, or 304 when the client has it.
 fn tagged(cx: &Cx, body: String) -> Response {
     let tag = etag(&body);
-    if cx
-        .header("if-none-match")
-        .is_some_and(|h| names::<true>(h, &tag))
-    {
+    if crate::http::fresh(cx, &tag) {
         return Response::empty(304).with_header("etag", tag);
     }
     Response::json(body).with_header("etag", tag)
