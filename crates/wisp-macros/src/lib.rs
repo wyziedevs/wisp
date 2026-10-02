@@ -517,6 +517,59 @@ fn from_json(item: TokenStream) -> Result<TokenStream, Error> {
 fn from_json_with(item: TokenStream, stamped: &[&str]) -> Result<TokenStream, Error> {
     let (name, shape) = read_type(item.clone(), "FromJson")?;
     let bare = |id: &str| id.strip_prefix("r#").unwrap_or(id).to_string();
+    // Straight from the text, for a struct of named fields (not a stamped
+    // one): each key once, in a single pass, then the checks. Anything
+    // else leaves it to `from_json` (see `wisp::json::Direct`).
+    let direct = match (&shape, stamped.is_empty()) {
+        (Shape::Named(_), true) => {
+            let fields = named_fields(&item)?;
+            let key = |f: &Field| format!("{:?}", bare(&f.name.to_string()));
+            let mut slots = String::new();
+            let mut arms = String::new();
+            let mut take = String::new();
+            let mut build = String::new();
+            for (k, f) in fields.iter().enumerate() {
+                let ty = &f.ty;
+                slots.push_str(&format!(
+                    "let mut __f{k}: ::std::option::Option<{ty}> = ::std::option::Option::None;"
+                ));
+                arms.push_str(&format!(
+                    "{} if __f{k}.is_none() => __f{k} = ::std::option::Option::Some(<{ty} as ::wisp::FromJson>::read(__d)?),",
+                    key(f)
+                ));
+                take.push_str(&format!(
+                    "let __f{k} = match __f{k} {{ ::std::option::Option::Some(v) => v, ::std::option::Option::None => <{ty} as ::wisp::FromJson>::missing()? }};"
+                ));
+                for call in &f.checks {
+                    take.push_str(&format!(
+                        "{{ let __x = &__f{k}; if ({call}).is_some() {{ return ::std::option::Option::None; }} }}"
+                    ));
+                }
+                build.push_str(&format!("{}: __f{k},", f.name));
+            }
+            // A key twice: the last counts, which `from_json` works out.
+            let twice: Vec<String> = fields.iter().map(key).collect();
+            if !twice.is_empty() {
+                arms.push_str(&format!(
+                    "{} => return ::std::option::Option::None,",
+                    twice.join(" | ")
+                ));
+            }
+            format!(
+                "fn read(__d: &mut ::wisp::json::Direct) -> ::std::option::Option<Self> {{
+                    {slots}
+                    __d.object()?;
+                    let mut __first = true;
+                    while let ::std::option::Option::Some(__k) = __d.key(&mut __first)? {{
+                        match __k {{ {arms} _ => __d.skip()?, }}
+                    }}
+                    {take}
+                    ::std::option::Option::Some({name} {{ {build} }})
+                }}"
+            )
+        }
+        _ => String::new(),
+    };
     let body = match &shape {
         Shape::Named(_) => {
             let mut body = parse("let __m = __p.object(__v)?;");
@@ -599,6 +652,7 @@ fn from_json_with(item: TokenStream, stamped: &[&str]) -> Result<TokenStream, Er
             fn from_json(__v: &::wisp::Value, __p: &mut ::wisp::json::Problems) -> ::std::option::Option<Self> {{
                 __wisp_write
             }}
+            {direct}
         }}
         {fields}"
     ));

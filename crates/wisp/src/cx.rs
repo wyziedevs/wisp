@@ -417,7 +417,7 @@ impl Cx {
     /// `application/json`. Empty when it has none.
     pub(crate) fn mime(&self) -> &str {
         let t = self.known(Known::ContentType).unwrap_or("");
-        t.split(';').next().unwrap_or("").trim()
+        t[..t.bytes().position(|b| b == b';').unwrap_or(t.len())].trim()
     }
 
     /// The first value of a header each proxy adds to, such as

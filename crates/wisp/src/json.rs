@@ -357,6 +357,204 @@ impl Parser<'_> {
     }
 }
 
+/// JSON text read straight into a type ([`FromJson::read`]), with no
+/// [`Value`] between: the usual body, its strings without escapes, read
+/// once. What it does not read so (an escape, a key twice, a value that is
+/// not its type's, a check that fails) it leaves: `None`, and the body is
+/// read through a `Value` as ever, which says what is wrong. So what it
+/// reads is what that reads, by the same grammar.
+#[doc(hidden)]
+pub struct Direct<'a> {
+    s: &'a str,
+    b: &'a [u8],
+    i: usize,
+    depth: u32,
+}
+
+impl<'a> Direct<'a> {
+    /// `text` as one `T`, all of it.
+    fn whole<T: FromJson>(text: &'a str) -> Option<T> {
+        let mut d = Direct {
+            s: text,
+            b: text.as_bytes(),
+            i: 0,
+            depth: 0,
+        };
+        let v = T::read(&mut d)?;
+        d.space();
+        (d.i == d.b.len()).then_some(v)
+    }
+
+    fn space(&mut self) {
+        while self.i < self.b.len() && matches!(self.b[self.i], b' ' | b'\t' | b'\n' | b'\r') {
+            self.i += 1;
+        }
+    }
+
+    /// Past `byte`, after any space, if it is next.
+    fn eat(&mut self, byte: u8) -> bool {
+        self.space();
+        let found = self.b.get(self.i) == Some(&byte);
+        self.i += found as usize;
+        found
+    }
+
+    /// Past `word` (`null`, `true`, `false`), if it is next.
+    fn word(&mut self, word: &[u8]) -> bool {
+        self.space();
+        let found = self.b[self.i..].starts_with(word);
+        self.i += found as usize * word.len();
+        found
+    }
+
+    pub fn null(&mut self) -> bool {
+        self.word(b"null")
+    }
+
+    pub fn boolean(&mut self) -> Option<bool> {
+        if self.word(b"true") {
+            Some(true)
+        } else {
+            self.word(b"false").then_some(false)
+        }
+    }
+
+    /// A string with no escape, as it is in the text.
+    pub fn string(&mut self) -> Option<&'a str> {
+        if !self.eat(b'"') {
+            return None;
+        }
+        use crate::swar;
+        let start = self.i;
+        // To its quote, an escape or a control byte, eight bytes at a time.
+        loop {
+            if self.i + 8 > self.b.len() {
+                let plain = |b: &u8| *b != b'"' && *b != b'\\' && *b >= 0x20;
+                while self.b.get(self.i).is_some_and(plain) {
+                    self.i += 1;
+                }
+                break;
+            }
+            let x = swar::word(self.b, self.i);
+            let stop = swar::eq(x, b'"') | swar::eq(x, b'\\') | swar::below(x, 0x20);
+            if stop != 0 {
+                self.i += swar::first(stop);
+                break;
+            }
+            self.i += 8;
+        }
+        // Only ASCII ends it, so a character boundary.
+        (self.b.get(self.i) == Some(&b'"')).then(|| {
+            self.i += 1;
+            &self.s[start..self.i - 1]
+        })
+    }
+
+    /// A number's text, by `Parser::number`'s grammar.
+    pub fn number(&mut self) -> Option<&'a str> {
+        self.space();
+        let start = self.i;
+        let digits = |d: &mut Direct| {
+            let from = d.i;
+            while d.b.get(d.i).is_some_and(u8::is_ascii_digit) {
+                d.i += 1;
+            }
+            d.i > from
+        };
+        self.i += (self.b.get(self.i) == Some(&b'-')) as usize;
+        if self.b.get(self.i) == Some(&b'0') {
+            self.i += 1;
+        } else if !digits(self) {
+            return None;
+        }
+        if self.b.get(self.i) == Some(&b'.') {
+            self.i += 1;
+            if !digits(self) {
+                return None;
+            }
+        }
+        if matches!(self.b.get(self.i), Some(b'e' | b'E')) {
+            self.i += 1;
+            if matches!(self.b.get(self.i), Some(b'+' | b'-')) {
+                self.i += 1;
+            }
+            if !digits(self) {
+                return None;
+            }
+        }
+        if (self.b.get(self.i)).is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'.') {
+            return None;
+        }
+        Some(&self.s[start..self.i])
+    }
+
+    /// Into an array or object, at its `open`: no deeper than `DEPTH`.
+    fn open(&mut self, open: u8) -> Option<()> {
+        self.depth += 1;
+        (self.depth <= DEPTH && self.eat(open)).then_some(())
+    }
+
+    /// Past `close` or `,` after the first, in an array or object: whether
+    /// there is another item (`first`: none yet).
+    fn more(&mut self, first: &mut bool, close: u8) -> Option<bool> {
+        if self.eat(close) {
+            self.depth -= 1;
+            return Some(false);
+        }
+        if !std::mem::take(first) && !self.eat(b',') {
+            return None;
+        }
+        Some(true)
+    }
+
+    pub fn array(&mut self) -> Option<()> {
+        self.open(b'[')
+    }
+
+    /// Whether the array has another item, which comes next.
+    pub fn item(&mut self, first: &mut bool) -> Option<bool> {
+        self.more(first, b']')
+    }
+
+    pub fn object(&mut self) -> Option<()> {
+        self.open(b'{')
+    }
+
+    /// The object's next key, its value next; `Some(None)` at its end.
+    pub fn key(&mut self, first: &mut bool) -> Option<Option<&'a str>> {
+        if !self.more(first, b'}')? {
+            return Some(None);
+        }
+        let key = self.string()?;
+        self.eat(b':').then_some(Some(key))
+    }
+
+    /// Past a value of any kind, which no field takes.
+    pub fn skip(&mut self) -> Option<()> {
+        self.space();
+        let mut first = true;
+        match self.b.get(self.i)? {
+            b'"' => self.string().map(drop),
+            b'-' | b'0'..=b'9' => self.number().map(drop),
+            b'[' => {
+                self.array()?;
+                while self.item(&mut first)? {
+                    self.skip()?;
+                }
+                Some(())
+            }
+            b'{' => {
+                self.object()?;
+                while self.key(&mut first)?.is_some() {
+                    self.skip()?;
+                }
+                Some(())
+            }
+            _ => (self.null() || self.boolean().is_some()).then_some(()),
+        }
+    }
+}
+
 /// What went wrong while reading a value, by where: `title`,
 /// `author.name`, `tags[2]` (`body` for the value itself).
 #[derive(Debug, Default)]
@@ -506,6 +704,14 @@ pub trait FromJson: Sized {
     fn missing() -> Option<Self> {
         None
     }
+
+    /// Reads itself straight from JSON text (see [`Direct`]); `None`
+    /// leaves it to [`FromJson::from_json`], through a [`Value`].
+    #[doc(hidden)]
+    fn read(d: &mut Direct) -> Option<Self> {
+        let _ = d;
+        None
+    }
 }
 
 /// Reads a JSON body into a `T`. Text that is not JSON is a 400 that says
@@ -515,6 +721,9 @@ pub fn from_json<T: FromJson>(body: &[u8]) -> crate::Result<T> {
     let text = std::str::from_utf8(body).map_err(|_| Error::new(400, "The body is not UTF-8"))?;
     if text.trim().is_empty() {
         return T::missing().ok_or_else(|| Error::new(400, "Expected a JSON body"));
+    }
+    if let Some(v) = Direct::whole(text) {
+        return Ok(v);
     }
     let value = parse(text).map_err(|e| Error::new(400, format!("Invalid JSON: {e}")))?;
     from_value(&value)
@@ -554,6 +763,10 @@ impl FromJson for String {
             other => expected(p, "a string", other),
         }
     }
+
+    fn read(d: &mut Direct) -> Option<String> {
+        d.string().map(String::from)
+    }
 }
 
 impl FromJson for bool {
@@ -570,6 +783,10 @@ impl FromJson for bool {
     fn missing() -> Option<bool> {
         Some(false)
     }
+
+    fn read(d: &mut Direct) -> Option<bool> {
+        d.boolean()
+    }
 }
 
 impl FromJson for () {
@@ -578,6 +795,10 @@ impl FromJson for () {
             Value::Null => Some(()),
             other => expected(p, "null", other),
         }
+    }
+
+    fn read(d: &mut Direct) -> Option<()> {
+        d.null().then_some(())
     }
 }
 
@@ -600,6 +821,10 @@ macro_rules! integers {
                     }
                 }
                 parsed
+            }
+
+            fn read(d: &mut Direct) -> Option<$t> {
+                d.number()?.parse().ok()
             }
         }
     )*};
@@ -624,6 +849,10 @@ macro_rules! floats {
                     other => expected(p, "a number", other),
                 }
             }
+
+            fn read(d: &mut Direct) -> Option<$t> {
+                d.number()?.parse().ok().filter(|f: &$t| f.is_finite())
+            }
         }
     )*};
 }
@@ -641,11 +870,22 @@ impl<T: FromJson> FromJson for Option<T> {
     fn missing() -> Option<Option<T>> {
         Some(None)
     }
+
+    fn read(d: &mut Direct) -> Option<Option<T>> {
+        match d.null() {
+            true => Some(None),
+            false => T::read(d).map(Some),
+        }
+    }
 }
 
 impl<T: FromJson> FromJson for Box<T> {
     fn from_json(v: &Value, p: &mut Problems) -> Option<Box<T>> {
         T::from_json(v, p).map(Box::new)
+    }
+
+    fn read(d: &mut Direct) -> Option<Box<T>> {
+        T::read(d).map(Box::new)
     }
 }
 
@@ -673,6 +913,15 @@ impl<T: FromJson> FromJson for Vec<T> {
     /// Left out is empty, as a form's repeated field sent no times is.
     fn missing() -> Option<Vec<T>> {
         Some(Vec::new())
+    }
+
+    fn read(d: &mut Direct) -> Option<Vec<T>> {
+        d.array()?;
+        let (mut out, mut first) = (Vec::new(), true);
+        while d.item(&mut first)? {
+            out.push(T::read(d)?);
+        }
+        Some(out)
     }
 }
 
