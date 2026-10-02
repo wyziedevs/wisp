@@ -17,9 +17,13 @@ pub(crate) fn cookie_mac(name: &str, value: &str) -> [u8; 32] {
 }
 
 /// Whether `mac` is the signature of cookie `name` holding `value`, in time
-/// that does not depend on where they differ.
+/// that does not depend on where they differ. One `WISP_SECRET_OLD` signed
+/// holds too, so a new secret does not sign everyone out at once.
 pub(crate) fn verify_cookie(name: &str, value: &str, mac: &str) -> bool {
-    same_mac(mac, &cookie_mac(name, value))
+    [Some(key()), old_key()]
+        .into_iter()
+        .flatten()
+        .any(|k| same_mac(mac, &k.sign(&[name.as_bytes(), b"=", value.as_bytes()])))
 }
 
 /// Whether `sent`, in hex or base64 (either alphabet, padded or not), is
@@ -59,6 +63,18 @@ fn key() -> &'static Hmac {
              (`openssl rand -hex 32` makes one), the same on every server of the app"
         )
     })
+}
+
+/// `WISP_SECRET_OLD`: the secret before `WISP_SECRET`, which signatures are
+/// still checked with (nothing is signed with it). Kept as long as cookies
+/// it signed should last: 30 days for a sign-in.
+fn old_key() -> Option<&'static Hmac> {
+    static OLD: OnceLock<Option<Hmac>> = OnceLock::new();
+    OLD.get_or_init(|| {
+        let old = crate::settings().old_secret.as_ref()?;
+        Some(Hmac::new(old.as_bytes()))
+    })
+    .as_ref()
 }
 
 fn dev_key() -> Vec<u8> {
@@ -141,23 +157,54 @@ pub(crate) fn random<const N: usize>() -> [u8; N] {
     out
 }
 
-/// `N` unpredictable bytes. std seeds every `RandomState` from the OS's
-/// random source (once per thread, then steps it); SipHash of those keys
-/// cannot be told from random by anyone who does not have them.
+/// `N` unpredictable bytes: HMAC-SHA256 of a counter, under a key each
+/// thread takes once from the OS's random source (see `seed`). HMAC is a
+/// PRF: without the key, its output cannot be told from random, nor one
+/// output guessed from others. About half a microsecond per 32 bytes.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn random<const N: usize>() -> [u8; N] {
+    thread_local! {
+        static RNG: RefCell<(Hmac, u64)> = RefCell::new((Hmac::new(&seed()), 0));
+    }
+    let mut out = [0u8; N];
+    RNG.with_borrow_mut(|(key, n)| {
+        for chunk in out.chunks_mut(32) {
+            *n += 1;
+            chunk.copy_from_slice(&key.sign(&[&n.to_le_bytes()])[..chunk.len()]);
+        }
+    });
+    out
+}
+
+/// A key for `random`: 32 bytes of `/dev/urandom` where there is one, and
+/// std's per-thread hash keys, which std takes from the OS's random source
+/// on every platform (128 bits, read here through SipHash, the only way
+/// without `unsafe`), hashed together. Either alone would do; a missing
+/// `/dev/urandom` (a bare chroot) leaves the other.
+#[cfg(not(target_arch = "wasm32"))]
+fn seed() -> [u8; 32] {
     use std::hash::{BuildHasher, Hasher};
+    let mut h = Sha256::new();
+    #[cfg(unix)]
+    {
+        let mut os = [0u8; 32];
+        let read = std::fs::File::open("/dev/urandom")
+            .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut os));
+        if read.is_ok() {
+            h.update(&os);
+        }
+    }
+    let keys = std::collections::hash_map::RandomState::new();
+    for i in 0..4u64 {
+        let mut s = keys.build_hasher();
+        s.write_u64(i);
+        h.update(&s.finish().to_le_bytes());
+    }
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
-    let mut out = [0u8; N];
-    for (i, chunk) in out.chunks_mut(8).enumerate() {
-        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-        h.write_usize(i);
-        h.write_u128(nanos);
-        chunk.copy_from_slice(&h.finish().to_le_bytes()[..chunk.len()]);
-    }
-    out
+    h.update(&nanos.to_le_bytes());
+    h.finish()
 }
 
 /// `bytes` as base64 onto `out`: URL-safe and unpadded when `url`, else
@@ -301,6 +348,41 @@ impl Hmac {
     }
 }
 
+/// PBKDF2-HMAC-SHA256 (RFC 8018 §5.2) of `password` and `salt`: the first
+/// 32 bytes of the key, all [`crate::password`] keeps. Each round is two
+/// compressions: the key's padded blocks are hashed once, up front, and a
+/// round's input (32 bytes, then SHA-256's padding for a message of 96)
+/// fills exactly one block, kept as words, so nothing is copied, padded or
+/// allocated in the loop.
+pub(crate) fn pbkdf2(password: &[u8], salt: &[u8], rounds: u32) -> [u8; 32] {
+    let key = Hmac::new(password);
+    let first = key.sign(&[salt, &1u32.to_be_bytes()]);
+    let mut u = [0u32; 8];
+    for (w, b) in u.iter_mut().zip(first.as_chunks::<4>().0) {
+        *w = u32::from_be_bytes(*b);
+    }
+    let mut sum = u;
+    let mut block = [0u32; 16];
+    block[8] = 0x8000_0000;
+    block[15] = (64 + 32) * 8;
+    for _ in 1..rounds {
+        block[..8].copy_from_slice(&u);
+        let mut inner = key.inner.state;
+        compress_words(&mut inner, &block);
+        block[..8].copy_from_slice(&inner);
+        u = key.outer.state;
+        compress_words(&mut u, &block);
+        for (s, x) in sum.iter_mut().zip(u) {
+            *s ^= x;
+        }
+    }
+    let mut out = [0u8; 32];
+    for (o, s) in out.as_chunks_mut::<4>().0.iter_mut().zip(sum) {
+        *o = s.to_be_bytes();
+    }
+    out
+}
+
 fn sha256(parts: &[&[u8]]) -> [u8; 32] {
     let mut h = Sha256::new();
     for p in parts {
@@ -399,10 +481,17 @@ impl Sha256 {
 
 /// SHA-256's compression of one block into `state`.
 fn compress(state: &mut [u32; 8], block: &[u8; 64]) {
-    let mut w = [0u32; 64];
-    for (i, word) in block.chunks(4).enumerate() {
-        w[i] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
+    let mut words = [0u32; 16];
+    for (w, b) in words.iter_mut().zip(block.as_chunks::<4>().0) {
+        *w = u32::from_be_bytes(*b);
     }
+    compress_words(state, &words);
+}
+
+/// [`compress`] of a block already read as big-endian words.
+fn compress_words(state: &mut [u32; 8], block: &[u32; 16]) {
+    let mut w = [0u32; 64];
+    w[..16].copy_from_slice(block);
     for i in 16..64 {
         let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
         let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
@@ -557,7 +646,109 @@ mod tests {
     }
 
     #[test]
+    fn pbkdf2_vectors() {
+        // RFC 7914 §11 (the first 32 bytes of its 64), and the RFC 6070
+        // inputs with SHA-256.
+        for (password, salt, rounds, key) in [
+            (
+                &b"passwd"[..],
+                &b"salt"[..],
+                1,
+                "55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc",
+            ),
+            (
+                b"password",
+                b"salt",
+                1,
+                "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b",
+            ),
+            (
+                b"password",
+                b"salt",
+                2,
+                "ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43",
+            ),
+            (
+                b"password",
+                b"salt",
+                4096,
+                "c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a",
+            ),
+            (
+                b"Password",
+                b"NaCl",
+                80000,
+                "4ddcd8f60b98be21830cee5ef22701f9641a4418d04c0414aeff08876b34ab56",
+            ),
+        ] {
+            assert_eq!(hex(&pbkdf2(password, salt, rounds)), key, "{rounds}");
+        }
+        // A password longer than a block is hashed first, as HMAC's key.
+        let long = [b'p'; 100];
+        let key = Hmac::new(&long);
+        let mut u = key.sign(&[b"s", &1u32.to_be_bytes()]);
+        let mut by_hand = u;
+        for _ in 1..3 {
+            u = key.sign(&[&u]);
+            by_hand.iter_mut().zip(u).for_each(|(s, x)| *s ^= x);
+        }
+        assert_eq!(pbkdf2(&long, b"s", 3), by_hand);
+    }
+
+    #[test]
     fn random_bytes_differ() {
         assert_ne!(random::<32>(), random::<32>());
+        // Longer than one HMAC, and across threads, which key their own.
+        let long = random::<80>();
+        assert_ne!(long[..32], long[32..64]);
+        let other = std::thread::spawn(random::<32>).join().unwrap();
+        assert_ne!(other, random::<32>());
+        // Roughly half the bits set, over many bytes: no stuck output.
+        let ones: u32 = (0..64)
+            .flat_map(|_| random::<32>())
+            .map(u8::count_ones)
+            .sum();
+        assert!((7_700..8_700).contains(&ones), "{ones} of 16384");
+    }
+
+    /// A signature from the secret before (`WISP_SECRET_OLD`) holds; one
+    /// from any other key does not.
+    #[test]
+    fn signatures_by_hand_and_by_other_keys() {
+        let mut mac = String::new();
+        base64(&mut mac, &cookie_mac("user", "42"), true);
+        assert!(verify_cookie("user", "42", &mac));
+        assert!(!verify_cookie("user", "43", &mac));
+        assert!(!verify_cookie("users", "42", &mac), "the name is signed");
+        let mut other = String::new();
+        base64(&mut other, &hmac_sha256([7u8; 32], "user=42"), true);
+        assert!(!verify_cookie("user", "42", &other));
+    }
+
+    /// Hostile signatures and webhook headers: never a panic, never a match.
+    #[test]
+    fn mangled_signatures_never_pass() {
+        use crate::fuzz::{Rng, mutate};
+        let mut rng = Rng::new(31);
+        let mut good = String::new();
+        base64(&mut good, &cookie_mac("session", "1.2"), true);
+        for _ in 0..20_000 {
+            let mut b = good.clone().into_bytes();
+            mutate(&mut rng, &mut b);
+            let Ok(sent) = String::from_utf8(b) else {
+                continue;
+            };
+            let mut back = [0u8; 32];
+            let decoded = unbase64(&sent, &mut back);
+            if decoded == Some(32) && back == cookie_mac("session", "1.2") {
+                continue; // `=` padding added, or the other alphabet: the same bytes
+            }
+            assert!(!verify_cookie("session", "1.2", &sent), "{sent:?}");
+            if !sent.contains(['\r', '\n']) {
+                let head = format!("POST / HTTP/1.1\r\nx-sig: {sent}\r\n\r\nbody");
+                let cx = crate::Cx::for_test(&head, &[]);
+                assert!(cx.need_signature("CARGO_PKG_NAME", "x-sig").is_err());
+            }
+        }
     }
 }
