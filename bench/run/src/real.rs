@@ -58,7 +58,7 @@ const SOCKETS: usize = 10_000;
 const WARMUP: Duration = Duration::from_secs(1);
 /// `/static/app.js`'s length.
 const APP_JS: usize = 100_253;
-/// A valid `/echo` body, about 200 bytes, and one with every field wrong.
+/// A valid `/echo` body, 170 bytes, and one with every field wrong.
 const ECHO: &str = r#"{"name":"Ada Lovelace","email":"ada.lovelace@example.com","age":36,"tags":["mathematics","analytical-engine","poetry","notes","bernoulli","computing","babbage","london"]}"#;
 const ECHO_BAD: &str = r#"{"name":"","email":"nope","age":200,"tags":[]}"#;
 

@@ -2871,7 +2871,6 @@ fn borrow_place(expr: &str, locals: &[String]) -> String {
     }
 }
 
-/// `let PAT = EXPR` with EXPR borrowed when it is a place.
 /// What an action refused was sent as, for its form's field `name`: an
 /// `Option<Cow<str>>`, which is never there without the request, `cx`.
 fn kept(name: &str, has_cx: bool) -> String {
@@ -2881,6 +2880,7 @@ fn kept(name: &str, has_cx: bool) -> String {
     }
 }
 
+/// `let PAT = EXPR` with EXPR borrowed when it is a place.
 fn if_condition(cond: &str, locals: &[String]) -> String {
     let Some(rest) = cond
         .strip_prefix("let")

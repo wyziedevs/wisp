@@ -6,8 +6,7 @@ compiled to Rust, form actions, optional browser reactivity, one binary.
 **Design rule (non-negotiable), in order:** 1. ultra fast, 2. cheap (fewest
 tokens to write app code: AI writes most code), 3. durable (every fast path
 proven at startup with a fallback; nothing after startup can take the process
-down), 4. flexible. Developer happiness last. Wisp is the framework for the
-AI age. Wisp code:
+down), 4. flexible. Developer happiness last. Wisp code:
 Carmack style, minimal deps, no `unsafe` (but the Linux io_uring and epoll
 drivers, `uring.rs` and `epoll.rs`, and the edge exports), no dead code,
 zero warnings.
