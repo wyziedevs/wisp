@@ -97,14 +97,18 @@ fn ctl(epoll: RawFd, op: libc::c_int, fd: RawFd, events: u32, data: u64) -> io::
 }
 
 /// Receives onto the end of `buf`, into the room it has: the bytes, 0 at
-/// the end of the stream, or the errno.
+/// the end of the stream, or the errno. The system calls here are made
+/// straight, as `recv(2)` and `send(2)` make them but without libc's
+/// thread-cancellation bookkeeping around each, which Wisp never uses.
 fn recv(fd: RawFd, buf: &mut Vec<u8>) -> Result<usize, i32> {
     let room = buf.spare_capacity_mut();
     let (at, len) = (room.as_mut_ptr(), room.len());
+    let none = std::ptr::null_mut::<libc::c_void>();
     loop {
-        // SAFETY: recv(2) writes at most `len` bytes at `at`, the vector's
-        // room, which nothing else refers to during the call.
-        let n = unsafe { libc::recv(fd, at.cast(), len, 0) };
+        // SAFETY: recvfrom(2) writes at most `len` bytes at `at`, the
+        // vector's room, which nothing else refers to during the call; no
+        // address is asked for.
+        let n = unsafe { libc::syscall(libc::SYS_recvfrom, fd, at, len, 0, none, none) } as isize;
         if n >= 0 {
             // SAFETY: the kernel wrote the first `n` bytes of the room.
             unsafe { buf.set_len(buf.len() + n as usize) };
@@ -120,9 +124,12 @@ fn recv(fd: RawFd, buf: &mut Vec<u8>) -> Result<usize, i32> {
 /// Sends what of `buf` the socket takes: how much, or the errno.
 fn send(fd: RawFd, buf: &[u8]) -> Result<usize, i32> {
     loop {
-        // SAFETY: send(2) reads `buf`, alive for the call. MSG_NOSIGNAL: a
-        // peer gone is EPIPE, not SIGPIPE.
-        let n = unsafe { libc::send(fd, buf.as_ptr().cast(), buf.len(), libc::MSG_NOSIGNAL) };
+        // SAFETY: sendto(2) reads `buf`, alive for the call, to no address.
+        // MSG_NOSIGNAL: a peer gone is EPIPE, not SIGPIPE.
+        let (at, flags) = (buf.as_ptr(), libc::MSG_NOSIGNAL);
+        let none = std::ptr::null::<libc::c_void>();
+        let n =
+            unsafe { libc::syscall(libc::SYS_sendto, fd, at, buf.len(), flags, none, 0) } as isize;
         match n {
             1.. => return Ok(n as usize),
             0 => return Err(libc::EPIPE),
@@ -229,8 +236,8 @@ fn with<R>(f: impl FnOnce(&mut Worker) -> R) -> R {
 
 impl Worker {
     /// One `epoll_wait`, without waiting: hands out the events that came.
-    /// True when it took all it could, so more may wait.
-    fn turn(&mut self) -> bool {
+    /// How many it took.
+    fn turn(&mut self) -> usize {
         self.events.clear();
         // SAFETY: epoll_wait(2) writes at most EVENTS events into the
         // vector's room, which has that many.
@@ -244,7 +251,7 @@ impl Worker {
         };
         if n < 0 {
             match errno() {
-                libc::EINTR => return true,
+                libc::EINTR => return 1,
                 e => crate::fail(&format!(
                     "epoll stopped working: {}",
                     io::Error::from_raw_os_error(e)
@@ -261,7 +268,7 @@ impl Worker {
         if http::seconds() != self.checked {
             self.tick();
         }
-        n as usize == EVENTS
+        n as usize
     }
 
     fn event(&mut self, data: u64, events: u32) {
@@ -895,12 +902,12 @@ pub(crate) async fn serve(
         if retry.is_some_and(|t| t <= Instant::now()) {
             retry = None;
         }
-        let full = with(|w| {
-            let full = w.turn();
+        let took = with(|w| {
+            let took = w.turn();
             acceptable |= std::mem::take(&mut w.acceptable);
             std::mem::swap(&mut ready, &mut w.ready);
             std::mem::swap(&mut fast, &mut w.fast);
-            full
+            took
         });
         if let Some(now) = now {
             for &token in &fast {
@@ -936,9 +943,14 @@ pub(crate) async fn serve(
                 }
             }
         }
-        if full {
-            // More events wait: the tasks woken go first, so a busy epoll
-            // never starves the worker's other tasks.
+        if took > 0 {
+            // Events came, so more likely wait: the next turn is ours again
+            // after the tasks woken, so a busy epoll never starves them, and
+            // tokio turns its own epoll (which waits on ours) only now and
+            // then rather than once a turn. A turn that takes none waits.
+            if http::stopping() {
+                (listener, retry) = (None, None); // refuses new connections at once
+            }
             yield_once().await;
             continue;
         }
