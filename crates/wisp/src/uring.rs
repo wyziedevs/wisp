@@ -185,11 +185,22 @@ struct BufReg {
     resv: [u64; 3],
 }
 
-/// The `user_data` of connection `id`'s receive or send, in generation
-/// `generation` of its entry: a cancel queued for an old connection cannot
-/// reach the next one in the same entry.
+/// The `u64` a completion or event carries for `slot` (a connection's
+/// entry, here with its receive or send) in generation `generation` of the
+/// entry: one taken in the turn that closed a connection cannot reach the
+/// next one in the same entry. The epoll driver's too.
+pub(crate) fn token(slot: usize, generation: u32) -> u64 {
+    (u64::from(generation) << 32) | slot as u64
+}
+
+/// The slot and generation of a `token`.
+pub(crate) fn untoken(t: u64) -> (usize, u32) {
+    (t as u32 as usize, (t >> 32) as u32)
+}
+
+/// The `user_data` of connection `id`'s receive or send.
 fn op(id: usize, generation: u32, send: bool) -> u64 {
-    (u64::from(generation) << 32) | ((id as u64) << 1) | u64::from(send)
+    token((id << 1) | usize::from(send), generation)
 }
 
 /// The descriptor a call returned, or its error.
@@ -691,9 +702,10 @@ impl Worker {
                 }
             }
             ud => {
-                let id = ((ud as u32) >> 1) as usize;
-                debug_assert_eq!(self.conns[id].generation, (ud >> 32) as u32);
-                if ud & 1 == 0 {
+                let (slot, generation) = untoken(ud);
+                let id = slot >> 1;
+                debug_assert_eq!(self.conns[id].generation, generation);
+                if slot & 1 == 0 {
                     self.received(id, c);
                 } else {
                     self.sent(id, c.res);

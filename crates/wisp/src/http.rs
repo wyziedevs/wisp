@@ -17,7 +17,7 @@ use crate::cx::{Cx, Known, Method, Span, decode, hex_digit, valid_header};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::policy::READ_CAPACITY;
 use crate::policy::{self, KEEP_CAPACITY, WRITE_TIMEOUT};
-use crate::{App, Error, Out, dev, rt};
+use crate::{App, Error, Out, dev, rt, swar};
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::future::Future;
@@ -1455,7 +1455,6 @@ async fn linger(
 /// server, where HTTP/1.1 must name its host (RFC 9112 §3.2); a request
 /// from another host (`Cx::from_request`) may have none.
 fn parse<A: App>(cx: &mut Cx, at: usize, on_wire: bool) -> Parsed {
-    use crate::swar;
     cx.wire.headers.clear();
     let head = match fast_head(&cx.wire.buf, at, &mut cx.wire.headers) {
         Some(head) => head,
@@ -1633,7 +1632,6 @@ const TOKEN: [bool; 256] = {
 /// `None` for anything else, which [`slow_head`] (httparse) then reads,
 /// or refuses: what this reads, httparse reads the same.
 fn fast_head(buf: &[u8], at: usize, headers: &mut Vec<(Span, Span)>) -> Option<Head> {
-    use crate::swar;
     let b = &buf[..buf.len().min(at + MAX_HEAD)];
     let mut i = at;
     let method = if b.get(i..i + 4) == Some(b"GET ") {
@@ -2204,12 +2202,12 @@ impl Cx {
         body: &[u8],
         peer: SocketAddr,
     ) -> Result<Cx, u16> {
-        // What would end a line or a field here would let one request pass
-        // for two.
-        let bad = |s: &[u8]| s.iter().any(|&b| b == b'\r' || b == b'\n' || b == 0);
+        // A control byte (but a value's tab) would end a line or a field
+        // here, and let one request pass for two.
+        let bad = |s: &[u8]| s.iter().any(|&b| swar::is_control(b) && b != b'\t');
         if method.is_empty()
             || !method.bytes().all(|b| b.is_ascii_alphabetic())
-            || target.bytes().any(|b| b <= b' ' || b == 0x7f)
+            || !swar::none(target.as_bytes(), |x| swar::control(x) | swar::eq(x, b' '))
         {
             return Err(400);
         }
