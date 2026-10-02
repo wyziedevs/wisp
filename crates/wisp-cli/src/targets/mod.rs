@@ -146,20 +146,8 @@ fn layout(host: &str, package: &str, wasm: Vec<u8>, has_static: bool) -> Result<
 
 /// Standard base64 with padding, for the wasm inlined into Netlify's bundle.
 fn base64(bytes: &[u8]) -> String {
-    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for c in bytes.chunks(3) {
-        let n = (c[0] as u32) << 16
-            | (*c.get(1).unwrap_or(&0) as u32) << 8
-            | *c.get(2).unwrap_or(&0) as u32;
-        for i in 0..4 {
-            out.push(if i <= c.len() {
-                ABC[(n >> (18 - 6 * i) & 63) as usize] as char
-            } else {
-                '='
-            });
-        }
-    }
+    wisp_shared::base64::encode(&mut out, bytes, false);
     out
 }
 
@@ -228,21 +216,6 @@ listens on $PORT. Set WISP_SECRET under Variables.
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn base64_matches_rfc_4648() {
-        for (plain, coded) in [
-            ("", ""),
-            ("f", "Zg=="),
-            ("fo", "Zm8="),
-            ("foo", "Zm9v"),
-            ("foob", "Zm9vYg=="),
-            ("fooba", "Zm9vYmE="),
-            ("foobar", "Zm9vYmFy"),
-        ] {
-            assert_eq!(base64(plain.as_bytes()), coded);
-        }
-    }
 
     #[test]
     fn every_host_has_its_entry_and_the_app() {
