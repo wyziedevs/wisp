@@ -12,8 +12,8 @@ use crate::json_str as js_str;
 use crate::model::{self, Handler, Model};
 use crate::openapi::Op;
 use crate::protocol::{
-    COPY_END, COPY_START, GROUP_ATTR, HEADER_ERROR, ISLAND_MEDIA, LOOP_ATTR, ON_FLAGS, ON_PLACED,
-    ON_ROOT, SLOT_ATTR,
+    COPY_END, COPY_START, GROUP_ATTR, ISLAND_MEDIA, LOOP_ATTR, ON_FLAGS, ON_PLACED, ON_ROOT,
+    SLOT_ATTR,
 };
 use crate::routes::Seg;
 use crate::rust_scan::{self, FnItem, Returns};
@@ -1643,7 +1643,7 @@ impl Gen {
         );
         let css = css.map_or("None".into(), |v| format!("Some({})", lit(v)));
         self.line(1, &format!("const CSS: Option<&'static str> = {css};"));
-        self.routes(p);
+        self.routes(p, assets);
         // Template 0 is the shell.
         let shell = [format!(
             "({}, 0x{:016x})",
@@ -1774,11 +1774,13 @@ impl Gen {
         Ok(client)
     }
 
-    /// The router. A path with no parameter in it is matched whole, by its
-    /// length and then its bytes: no other arm that matches the same path
-    /// comes before it (see `routes::priority`). The rest are one
-    /// slice-pattern match on the path's segments, most specific arm first,
-    /// their parameters slices of the path.
+    /// The router. A path with no parameter in it is matched whole: by its
+    /// length, then by a byte that tells the paths of that length apart,
+    /// then by all of it; no other arm that matches the same path comes
+    /// before it (see `routes::priority`). The rest are tried in turn, most
+    /// specific arm first, each walking the path from its start with byte
+    /// prefixes, their parameters slices of it. An arm with a `[...rest]`
+    /// matches the path's segments with a slice pattern.
     fn router(&mut self, p: &Project) {
         let tree = &p.tree;
         let (whole, parts): (Vec<_>, Vec<_>) = tree
@@ -1812,21 +1814,57 @@ impl Gen {
                 .collect();
             paths.sort_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(&b.0)));
             let (open, found) = match parts.is_empty() {
-                true => ("", "Some((@, [\"\"; ::wisp::rt::MAX_PARAMS]))"),
-                false => ("let whole = ", "Some(@)"),
+                true => ("", "(@, [\"\"; ::wisp::rt::MAX_PARAMS])"),
+                false => ("let whole = ", "@"),
             };
-            self.line(2, &format!("{open}match (path.len(), path) {{"));
-            for (s, id) in &paths {
-                self.line(
-                    3,
-                    &format!(
-                        "({}, {}) => {}, // {}",
-                        s.len(),
-                        lit(s),
-                        found.replace('@', &id.to_string()),
-                        tree.routes[*id].pattern()
-                    ),
-                );
+            let arm = |s: &str, id: usize| {
+                format!(
+                    "(path == {}).then_some({}), // {}",
+                    lit(s),
+                    found.replace('@', &id.to_string()),
+                    tree.routes[id].pattern()
+                )
+            };
+            self.line(2, &format!("{open}match path.len() {{"));
+            let mut at = 0;
+            while at < paths.len() {
+                let len = paths[at].0.len();
+                let n = paths[at..]
+                    .iter()
+                    .take_while(|(s, _)| s.len() == len)
+                    .count();
+                let bucket = &paths[at..at + n];
+                at += n;
+                // A byte where each path of the length has its own.
+                let tells = (0..len).find(|&i| {
+                    let mut b: Vec<u8> = bucket.iter().map(|(s, _)| s.as_bytes()[i]).collect();
+                    b.sort_unstable();
+                    b.windows(2).all(|w| w[0] != w[1])
+                });
+                match tells {
+                    _ if n == 1 => {
+                        let (s, id) = &bucket[0];
+                        self.line(3, &format!("{len} => {}", arm(s, *id)));
+                    }
+                    Some(i) => {
+                        self.line(3, &format!("{len} => match path.as_bytes()[{i}] {{"));
+                        for (s, id) in bucket {
+                            self.line(4, &format!("{} => {}", s.as_bytes()[i], arm(s, *id)));
+                        }
+                        self.line(4, "_ => None,");
+                        self.line(3, "},");
+                    }
+                    None => {
+                        self.line(3, &format!("{len} => match path {{"));
+                        for (s, id) in bucket {
+                            let found = found.replace('@', &id.to_string());
+                            let pattern = tree.routes[*id].pattern();
+                            self.line(4, &format!("{} => Some({found}), // {pattern}", lit(s)));
+                        }
+                        self.line(4, "_ => None,");
+                        self.line(3, "},");
+                    }
+                }
             }
             self.line(3, "_ => None,");
             if parts.is_empty() {
@@ -1843,71 +1881,108 @@ impl Gen {
             self.line(0, "");
             return;
         }
-        // Room for the deepest arm, as a deeper path matches none: the
-        // array is set on every call.
-        let depth = match parts
-            .iter()
-            .any(|(exp, _)| exp.iter().any(|s| matches!(s, Seg::Rest(_))))
-        {
-            true => "::wisp::rt::MAX_SEGS".to_string(),
-            false => parts
-                .iter()
-                .map(|(exp, _)| exp.len())
-                .max()
-                .unwrap_or(0)
-                .to_string(),
-        };
         self.line(2, "const E: &str = \"\";");
-        self.line(2, &format!("let mut segs = [\"\"; {depth}];"));
-        self.line(2, "Some(match ::wisp::rt::split(path, &mut segs)? {");
-        for (exp, id) in parts {
+        // What follows the path's first `/`; a path without one matches none.
+        self.line(2, "let r0 = path.strip_prefix('/')?;");
+        for (a, (exp, id)) in parts.into_iter().enumerate() {
             let r = &tree.routes[id];
             let names = r.params();
             let mut values = vec!["E".to_string(); crate::routes::MAX_PARAMS];
-            let mut pat = Vec::new();
+            let rest = exp.iter().any(|s| matches!(s, Seg::Rest(_)));
             // A matcher is a guard, so a segment it refuses goes on to the next arm.
             let mut guards = Vec::new();
-            for (k, seg) in exp.iter().enumerate() {
-                match seg {
-                    Seg::Static(s) => pat.push(lit(&encode_path(s))),
-                    Seg::Param(n, m) | Seg::Optional(n, m) => {
-                        pat.push(format!("p{k}"));
-                        values[names.iter().position(|x| x == n).unwrap()] = format!("*p{k}");
-                        let decoded = format!("&::wisp::rt::decode(p{k}.as_bytes(), false)");
-                        match tree.matchers.iter().find(|(x, _)| Some(x) == m.as_ref()) {
-                            Some((m, Some(_))) => {
-                                guards.push(format!("param_{m}::__call::matches({decoded})"))
-                            }
-                            // `int`: digits that fit a u64, so `parse().unwrap()` holds.
-                            Some(_) => guards.push(format!(
-                                "p{k}.bytes().all(|b| b.is_ascii_digit()) && p{k}.parse::<u64>().is_ok()"
-                            )),
-                            None => {}
+            let mut guard = |k: usize, m: &Option<String>| {
+                let decoded = format!("&::wisp::rt::decode(p{k}.as_bytes(), false)");
+                match tree.matchers.iter().find(|(x, _)| Some(x) == m.as_ref()) {
+                    Some((m, Some(_))) => {
+                        guards.push(format!("param_{m}::__call::matches({decoded})"))
+                    }
+                    // `int`: digits that fit a u64, so `parse().unwrap()` holds.
+                    Some(_) => guards.push(format!(
+                        "p{k}.bytes().all(|b| b.is_ascii_digit()) && p{k}.parse::<u64>().is_ok()"
+                    )),
+                    None => {}
+                }
+            };
+            let (end, pattern) = (
+                format!("return Some(({id}, [@]));"),
+                format!("// {}", r.pattern()),
+            );
+            if rest {
+                // The slice pattern of the path's segments, as deep as any.
+                let mut pat = Vec::new();
+                for (k, seg) in exp.iter().enumerate() {
+                    match seg {
+                        Seg::Static(s) => pat.push(lit(&encode_path(s))),
+                        Seg::Param(n, m) | Seg::Optional(n, m) => {
+                            pat.push(format!("p{k}"));
+                            values[names.iter().position(|x| x == n).unwrap()] = format!("*p{k}");
+                            guard(k, m);
+                        }
+                        Seg::Rest(n) => {
+                            pat.push(format!("p{k} @ .."));
+                            values[names.iter().position(|x| x == n).unwrap()] =
+                                format!("::wisp::rt::rest(path, p{k})");
                         }
                     }
-                    Seg::Rest(n) => {
-                        pat.push(format!("p{k} @ .."));
-                        values[names.iter().position(|x| x == n).unwrap()] =
-                            format!("::wisp::rt::rest(path, p{k})");
+                }
+                let guards: String = guards.iter().map(|g| format!(" && {g}")).collect();
+                self.line(2, "{");
+                self.line(3, "let mut segs = [\"\"; ::wisp::rt::MAX_SEGS];");
+                self.line(
+                    3,
+                    &format!(
+                        "if let Some([{}]) = ::wisp::rt::split(path, &mut segs){guards} {{ {} }} {pattern}",
+                        pat.join(", "),
+                        end.replace('@', &values.join(", "))
+                    ),
+                );
+                self.line(2, "}");
+                continue;
+            }
+            // Each segment in turn from `r`, what follows a `/`: the
+            // static ones run together into one prefix.
+            let mut steps = Vec::new();
+            let mut prefix = String::new();
+            let last = exp.len() - 1;
+            for (k, seg) in exp.iter().enumerate() {
+                match seg {
+                    Seg::Static(s) if k < last => prefix.push_str(&(encode_path(s) + "/")),
+                    Seg::Static(s) => {
+                        prefix.push_str(&encode_path(s));
+                        steps.push(format!("if r != {} {{ break 'a{a}; }}", lit(&prefix)));
+                        prefix.clear();
                     }
+                    Seg::Param(n, m) | Seg::Optional(n, m) => {
+                        if !prefix.is_empty() {
+                            steps.push(format!(
+                                "let Some(r) = r.strip_prefix({}) else {{ break 'a{a}; }};",
+                                lit(&prefix)
+                            ));
+                            prefix.clear();
+                        }
+                        let after = if k < last { "Some(r)" } else { "None" };
+                        steps.push(format!(
+                            "let (p{k}, {after}) = ::wisp::rt::seg(r) else {{ break 'a{a}; }};"
+                        ));
+                        values[names.iter().position(|x| x == n).unwrap()] = format!("p{k}");
+                        guard(k, m);
+                    }
+                    Seg::Rest(_) => unreachable!("arms with one are matched above"),
                 }
             }
-            let guard = match guards.is_empty() {
-                true => String::new(),
-                false => format!(" if {}", guards.join(" && ")),
-            };
-            self.line(
-                3,
-                &format!(
-                    "[{}]{guard} => ({id}, [{}]), // {}",
-                    pat.join(", "),
-                    values.join(", "),
-                    r.pattern()
-                ),
-            );
+            for g in &guards {
+                steps.push(format!("if !({g}) {{ break 'a{a}; }}"));
+            }
+            self.line(2, &format!("'a{a}: {{ {pattern}"));
+            self.line(3, "let r = r0;");
+            for s in steps {
+                self.line(3, &s);
+            }
+            self.line(3, &end.replace('@', &values.join(", ")));
+            self.line(2, "}");
         }
-        self.line(3, "_ => return None,");
-        self.line(2, "})");
+        self.line(2, "None");
         self.line(1, "}");
         self.line(0, "");
     }
@@ -1919,7 +1994,7 @@ impl Gen {
     /// model says the route cannot (`model::Route::waits`). Every doubt
     /// counts as waiting: a route wrongly `now` would fail its request
     /// (see `wisp::http::on_driver`).
-    fn routes(&mut self, p: &Project) {
+    fn routes(&mut self, p: &Project, assets: &Assets) {
         let m = &p.model;
         let before = p.hooks.as_ref().is_some_and(|h| h.waits);
         self.line(1, "const ROUTES: &'static [::wisp::rt::RouteFacts] = &[");
@@ -1928,10 +2003,13 @@ impl Gen {
             let limit = (route.body_limit.as_ref()).map(|m| format!("{m}::__call::BODY_LIMIT"));
             let uploads = (route.uploads.as_ref()).map(|m| format!("{m}::__call::UPLOADS"));
             let some = |x: Option<String>| x.map_or("None".into(), |x| format!("Some({x})"));
+            // An embedded file at one of its paths is served before it.
+            let files = (assets.files.iter())
+                .any(|(url, ..)| r.expansions().iter().any(|e| may_match(e, url)));
             self.line(
                 2,
                 &format!(
-                    "::wisp::rt::RouteFacts {{ params: &[{}], body_limit: {}, uploads: {}, now: {}, error: {} }}, // {}",
+                    "::wisp::rt::RouteFacts {{ params: &[{}], body_limit: {}, uploads: {}, now: {}, files: {files}, error: {} }}, // {}",
                     names.join(", "),
                     some(limit),
                     some(uploads),
@@ -2031,9 +2109,6 @@ impl Gen {
             2,
             "let Some(route) = route else { return Err(::wisp::Error::new(404, \"Not Found\")) };",
         );
-        // live.js asks for the route's error page this way when browser code
-        // fails while starting (see `boundary` in live.js).
-        self.line(2, &format!("if cx.method == Get && cx.header({}).is_some() {{ return Err(::wisp::Error::new(500, \"Something went wrong in the browser\")) }}", lit(HEADER_ERROR)));
         self.line(2, "match (route, cx.method) {");
         for (i, r) in p.model.routes.iter().enumerate() {
             let mut allow: Vec<&str> = Vec::new();
@@ -2065,12 +2140,19 @@ impl Gen {
                     }
                     None => format!("serve_page_{i}(cx, __o).await"),
                 };
-                self.line(3, &format!("({i}, Get | Head) => {get},"));
+                // live.js asks for the page's error page this way when its
+                // browser code fails while starting (see `boundary` in
+                // live.js): only pages have any.
+                self.line(
+                    3,
+                    &format!("({i}, Get | Head) => {{ ::wisp::rt::browser_ok(cx)?; {get} }},"),
+                );
                 allow.extend(["GET", "HEAD"]);
                 let actions: Vec<&FnItem> = page.actions().collect();
                 if !actions.is_empty() {
                     self.line(3, &format!("({i}, Post) => {{"));
                     self.line(4, "::wisp::rt::check_origin(cx)?;");
+                    self.line(4, IDEMPOTENT);
                     self.line(4, "match cx.action() {");
                     // `invalid(field, ..)` shows the page again, as a 422, with
                     // what is wrong for `cx.problem(field)`.
@@ -2099,10 +2181,15 @@ impl Gen {
                 let (_, variants, allowed) =
                     METHODS.iter().find(|(n, _, _)| *n == h.op.method).unwrap();
                 let m = &s.module;
-                let before = match s.before {
+                let mut before = match s.before {
                     true => answer(&format!("{m}::__call::before")) + " ",
                     false => String::new(),
                 };
+                if h.op.method == "post" {
+                    // After `before`'s `if … { … }`, a `;`: not an `else if`.
+                    let sep = if before.is_empty() { "" } else { "; " };
+                    before = format!("{}{sep}{IDEMPOTENT} ", before.trim_end());
+                }
                 let mut serve = format!(
                     "::wisp::rt::respond(__o, {m}::__call::{}(cx).await?);",
                     h.shim
@@ -2438,6 +2525,25 @@ const METHODS: [(&str, &str, &str); 5] = [
     ("patch", "Patch", "PATCH"),
     ("delete", "Delete", "DELETE"),
 ];
+
+/// Whether the path `url` (`/a/b.png`, encoded) may be one the route arm
+/// `exp` matches: by its segments, a parameter any but an empty one (a
+/// matcher's, any), a `[...rest]` anything.
+fn may_match(exp: &[&Seg], url: &str) -> bool {
+    if exp.iter().any(|s| matches!(s, Seg::Rest(_))) {
+        return true;
+    }
+    let segs: Vec<&str> = url.trim_start_matches('/').split('/').collect();
+    segs.len() == exp.len()
+        && exp.iter().zip(&segs).all(|(e, s)| match e {
+            Seg::Static(x) => encode_path(x) == *s,
+            _ => !s.is_empty(),
+        })
+}
+
+/// The statement in a POST's arm of `handle`, once its hooks passed, that
+/// answers a request whose `Idempotency-Key` was answered before.
+const IDEMPOTENT: &str = "if ::wisp::rt::idempotent(cx, __o) { return Ok(()); }";
 
 /// The statement in `handle` that runs an `Answer` shim (an action or
 /// `before`): a `Response` it hands back is sent instead of the page.
@@ -5647,6 +5753,23 @@ mod tests {
     }
 
     #[test]
+    fn a_route_knows_whether_a_file_may_be_at_its_paths() {
+        let s = |x: &str| Seg::Static(x.into());
+        let (user, param, rest) = (
+            s("user"),
+            Seg::Param("id".into(), None),
+            Seg::Rest("r".into()),
+        );
+        assert!(may_match(&[&user, &param], "/user/a.png"));
+        assert!(!may_match(&[&user, &param], "/static/app.js"));
+        assert!(!may_match(&[&user, &param], "/user/a/b.png"));
+        assert!(!may_match(&[&user], "/user/a.png"));
+        assert!(may_match(&[&s("a b")], "/a%20b"));
+        assert!(may_match(&[&user, &rest], "/x.css"));
+        assert!(!may_match(&[], "/x.css"));
+    }
+
+    #[test]
     fn routes_that_never_wait_are_answered_now() {
         let files = [
             ("src/routes/+page.wisp", "<p>hi</p>"),
@@ -6320,7 +6443,7 @@ mod tests {
                 "static BAKED_0: ::wisp::rt::Baked = ::wisp::rt::Baked::new(\"HTTP/1.1 200 OK\\r\\ncontent-type: text/html; charset=utf-8\\r\\netag: {etag}\\r\\ncontent-length: {}\\r\\n\", \"{doc}\", \"{etag}\"); // /",
                 doc.replace("\\\"", "\"").len()
             ),
-            "(0, Get | Head) => if ::wisp::rt::baked(cx, __o, &BAKED_0) { Ok(()) } else { serve_page_0(cx, __o).await },".into(),
+            "(0, Get | Head) => { ::wisp::rt::browser_ok(cx)?; if ::wisp::rt::baked(cx, __o, &BAKED_0) { Ok(()) } else { serve_page_0(cx, __o).await } },".into(),
             // The action's post renders as before.
             "(0, Post) => {".into(),
         ] {
@@ -6345,8 +6468,8 @@ mod tests {
         let code = app("cache-ok", &[page]).unwrap();
         for want in [
             "pub const CACHE: u32 = super::CACHE;",
-            "(0, Get | Head) => { if ::wisp::rt::cached(cx, __o, false) { return Ok(()); } serve_page_0(cx, __o).await?; \
-             ::wisp::rt::keep::<Self>(cx, __o, page_0::__call::CACHE, false); Ok(()) },",
+            "(0, Get | Head) => { ::wisp::rt::browser_ok(cx)?; { if ::wisp::rt::cached(cx, __o, false) { return Ok(()); } \
+             serve_page_0(cx, __o).await?; ::wisp::rt::keep::<Self>(cx, __o, page_0::__call::CACHE, false); Ok(()) } },",
         ] {
             assert!(code.contains(want), "{want}\n{code}");
         }
@@ -6361,7 +6484,8 @@ mod tests {
             "pub const CACHE: u32 = super::CACHE_PUBLIC;",
             "(0, Get | Head) => { ::wisp::rt::endpoint(cx); if ::wisp::rt::cached(cx, __o, true) { return Ok(()); } \
              ::wisp::rt::respond(__o, server_0::__call::get(cx).await?); ::wisp::rt::keep::<Self>(cx, __o, server_0::__call::CACHE, true); Ok(()) }",
-            "(0, Post) => { ::wisp::rt::endpoint(cx); ::wisp::rt::respond(__o, server_0::__call::post(cx).await?); Ok(()) }",
+            "(0, Post) => { ::wisp::rt::endpoint(cx); if ::wisp::rt::idempotent(cx, __o) { return Ok(()); } \
+             ::wisp::rt::respond(__o, server_0::__call::post(cx).await?); Ok(()) }",
         ] {
             assert!(code.contains(want), "{want}\n{code}");
         }
@@ -6460,23 +6584,38 @@ mod tests {
         ];
         let code = app("router", &files).unwrap();
         for want in [
-            "let whole = match (path.len(), path) {",
-            "(1, \"/\") => Some(0), // /",
-            "(6, \"/about\") => Some(1), // /about",
-            "(9, \"/blog/new\") => Some(2), // /blog/new",
-            "let mut segs = [\"\"; 2];",
-            "[\"blog\", p1] => (3, [*p1, E, E, E, E, E, E, E]), // /blog/[slug]",
+            "let whole = match path.len() {",
+            "1 => (path == \"/\").then_some(0), // /",
+            "6 => (path == \"/about\").then_some(1), // /about",
+            "9 => (path == \"/blog/new\").then_some(2), // /blog/new",
+            "let Some(r) = r.strip_prefix(\"blog/\") else { break 'a0; };",
+            "let (p1, None) = ::wisp::rt::seg(r) else { break 'a0; };",
+            "return Some((3, [p1, E, E, E, E, E, E, E]));",
         ] {
             assert!(code.contains(want), "{want}\n{code}");
         }
+        assert!(!code.contains("::wisp::rt::split"), "{code}");
         let code = app("router-flat", &files[..2]).unwrap();
         assert!(
             code.contains(
-                "(6, \"/about\") => Some((1, [\"\"; ::wisp::rt::MAX_PARAMS])), // /about"
+                "6 => (path == \"/about\").then_some((1, [\"\"; ::wisp::rt::MAX_PARAMS])), // /about"
             ),
             "{code}"
         );
-        assert!(!code.contains("::wisp::rt::split"), "{code}");
+        // Paths of one length, told apart by a byte, then compared whole.
+        let five = [
+            ("src/routes/echo/+server.rs", "fn get() {}"),
+            ("src/routes/json/+server.rs", "fn get() {}"),
+            ("src/routes/user/[id]/+server.rs", "fn get(id: String) {}"),
+        ];
+        let code = app("router-bytes", &five).unwrap();
+        for want in [
+            "5 => match path.as_bytes()[1] {",
+            "101 => (path == \"/echo\").then_some(0), // /echo",
+            "let Some(r) = r.strip_prefix(\"user/\") else { break 'a0; };",
+        ] {
+            assert!(code.contains(want), "{want}\n{code}");
+        }
         let rest = [("src/routes/docs/[...path]/+page.wisp", "{path}")];
         let code = app("router-rest", &rest).unwrap();
         assert!(

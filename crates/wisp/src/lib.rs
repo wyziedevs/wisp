@@ -1385,6 +1385,9 @@ pub mod rt {
         /// nothing. The server then answers it as it receives it, without
         /// a task's round trip.
         pub now: bool,
+        /// A file the binary embeds may be at one of its paths, and is
+        /// served instead: else a GET to it skips looking.
+        pub files: bool,
         /// Its nearest `+error.wisp`, by the app's own numbering.
         pub error: Option<usize>,
     }
@@ -1397,6 +1400,7 @@ pub mod rt {
                 body_limit: None,
                 uploads: None,
                 now: false,
+                files: true,
                 error: None,
             }
         }
@@ -1425,6 +1429,17 @@ pub mod rt {
         live_route, same_version, tag_name,
     };
     use crate::{Cx, Error, Out, Response};
+
+    /// The segment at the start of `r`, a path after one of its `/`s, and
+    /// the path after the `/` that ends it, if one does: how the router
+    /// walks a path.
+    #[inline(always)]
+    pub fn seg(r: &str) -> (&str, Option<&str>) {
+        match r.bytes().position(|b| b == b'/') {
+            Some(i) => (&r[..i], Some(&r[i + 1..])),
+            None => (r, None),
+        }
+    }
 
     /// The text of a `[...rest]` match: from its first segment to the end of
     /// the path, still percent-encoded. Segments are slices of `path`.
@@ -1523,6 +1538,32 @@ pub mod rt {
 
     pub fn respond(out: &mut Out, r: Response) {
         out.response = Some(r);
+    }
+
+    /// A POST the hooks let through, with an `Idempotency-Key`: true when
+    /// its answer is decided already, the first one again or a refusal, in
+    /// `out`; else it is answered as usual, and that answer kept.
+    pub fn idempotent(cx: &mut Cx, out: &mut Out) -> bool {
+        match crate::idem::start(cx) {
+            crate::idem::Start::Skip => false,
+            crate::idem::Start::Fresh(key) => {
+                cx.idem = Some(key);
+                false
+            }
+            crate::idem::Start::Answered(r) => {
+                respond(out, r);
+                true
+            }
+        }
+    }
+
+    /// A 500 when the GET of a page is live.js asking for its error page
+    /// (`x-wisp-error`): its browser code failed while starting.
+    pub fn browser_ok(cx: &Cx) -> crate::Result<()> {
+        if cx.method == crate::Method::Get && cx.header(crate::protocol::HEADER_ERROR).is_some() {
+            return Err(Error::new(500, "Something went wrong in the browser"));
+        }
+        Ok(())
     }
 
     /// The request is routed to a `+server.rs` endpoint: its errors are JSON.

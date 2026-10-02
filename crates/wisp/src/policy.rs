@@ -27,7 +27,34 @@ pub(crate) const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 /// so memory per idle connection stays bounded.
 pub(crate) const KEEP_CAPACITY: usize = 64 * 1024;
 /// What a read buffer that grew past `KEEP_CAPACITY` shrinks to.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) const READ_CAPACITY: usize = 8 * 1024;
+/// After a refused request, how long what the client still sends is read
+/// and dropped, and how much of it at most (see `http::linger`).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) const LINGER: Duration = Duration::from_secs(2);
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) const LINGER_BYTES: usize = 1024 * 1024;
+/// A body's room is reserved this far ahead of what came at most: a large
+/// `content-length` alone is not a reason to allocate.
+#[cfg(not(target_arch = "wasm32"))]
+const READ_AHEAD: usize = 1024 * 1024;
+
+/// The room to reserve for a request of `need` bytes (0 when unknown) with
+/// `have` in.
+#[cfg(not(target_arch = "wasm32"))]
+#[inline]
+pub(crate) fn read_ahead(need: usize, have: usize) -> usize {
+    need.saturating_sub(have).clamp(4096, READ_AHEAD)
+}
+
+/// Whether a reply's header list of `capacity`, now empty, is kept: a few
+/// headers keep their room, many go.
+#[cfg(not(target_arch = "wasm32"))]
+#[inline]
+pub(crate) fn kept_headers(capacity: usize) -> bool {
+    capacity <= 16
+}
 
 /// When a connection waiting for its next request at `now` is closed.
 #[cfg(not(target_arch = "wasm32"))]
@@ -147,6 +174,14 @@ mod tests {
         assert!(continues(true, false));
         assert!(!continues(true, true));
         assert!(!continues(false, false));
+    }
+
+    #[test]
+    fn a_body_is_read_ahead_within_bounds() {
+        assert_eq!(read_ahead(0, 0), 4096);
+        assert_eq!(read_ahead(100_000, 10_000), 90_000);
+        assert_eq!(read_ahead(1 << 30, 0), READ_AHEAD);
+        assert!(kept_headers(16) && !kept_headers(17));
     }
 
     #[test]

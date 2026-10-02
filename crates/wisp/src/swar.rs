@@ -62,6 +62,29 @@ pub fn above(x: u64, n: u8) -> u64 {
     (x.wrapping_add(LO * (127 - n) as u64) | x) & HI
 }
 
+/// Control bytes, which end a header value: below 0x20, and DEL.
+#[inline(always)]
+pub fn control(x: u64) -> u64 {
+    below(x, 0x20) | eq(x, 0x7f)
+}
+
+/// [`control`] for one byte.
+#[inline(always)]
+pub fn is_control(c: u8) -> bool {
+    c < 0x20 || c == 0x7f
+}
+
+/// Whether any of sixteen bytes is [`control`]: byte by byte, which the
+/// compiler makes one vector compare.
+#[inline(always)]
+pub fn any_control(chunk: &[u8]) -> bool {
+    let mut stop = 0u8;
+    for &c in chunk {
+        stop |= is_control(c) as u8;
+    }
+    stop != 0
+}
+
 /// Whether `test` matches no byte of `b`. Past eight bytes, the last word
 /// overlaps the one before; below, the bytes are padded with `a`, which
 /// `test` must not match.
@@ -123,8 +146,9 @@ mod tests {
     #[test]
     fn tests_match_byte_by_byte() {
         type Test = (fn(u64) -> u64, fn(u8) -> bool);
-        let tests: [Test; 7] = [
+        let tests: [Test; 8] = [
             (not_name, |b| !(b.is_ascii_alphanumeric() || b == b'-')),
+            (control, is_control),
             (|x| eq(x, 0), |b| b == 0),
             (|x| eq(x, b'"'), |b| b == b'"'),
             (|x| eq(x, 0xff), |b| b == 0xff),
