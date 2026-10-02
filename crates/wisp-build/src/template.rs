@@ -624,8 +624,8 @@ struct Parser<'a> {
     /// none goes after their inputs.
     shown: Vec<String>,
     /// The tag's `value` attribute as text: the chunk count when it was
-    /// written, and where it starts and ends in `text` (see `own_value`).
-    value_at: Option<(usize, usize, usize)>,
+    /// written, and where it starts in `text` (see `value_ends`).
+    value_at: Option<(usize, usize)>,
     /// The length of the current list when the tag being scanned began:
     /// the nodes of its attributes are after it.
     tag_nodes: usize,
@@ -718,11 +718,11 @@ impl Parser<'_> {
                             self.tag_seen.push((self.attr.clone(), None));
                             if self.attr == "value" {
                                 let at = self.text.len() - raw.len();
-                                self.value_at = Some((self.chunks.len(), at, at));
+                                self.value_at = Some((self.chunks.len(), at));
                             }
                         } else if let Some(a) = self.tag_seen.last_mut() {
                             a.1 = Some(self.src[start..self.i].to_string());
-                            self.value_ends();
+                            self.value_ends()?;
                         }
                         self.last = b'a';
                     }
@@ -740,7 +740,7 @@ impl Parser<'_> {
                             self.write_classes()?;
                         }
                         self.push_byte(c);
-                        self.value_ends();
+                        self.value_ends()?;
                         self.ctx = Ctx::Tag;
                         self.last = b'a';
                     }
@@ -1607,12 +1607,7 @@ impl Parser<'_> {
                     (self.forms.last())
                         .is_some_and(|f| f.as_ref().is_some_and(|f| *f != to || to.is_empty()))
                 });
-        let in_browser = !self.templates.is_empty()
-            || !self.rendering.is_empty()
-            || self
-                .frames
-                .iter()
-                .any(|f| matches!(f, Frame::Client { .. }));
+        let in_browser = self.in_browser();
         let typed = self
             .seen("type")
             .flatten()
@@ -1710,44 +1705,55 @@ impl Parser<'_> {
         (from..list.len()).find(|&k| matches!(&list[k], Node::Attr { name, .. } if name == "value"))
     }
 
-    /// The `value` attribute just ended: where, if it is written as text.
-    fn value_ends(&mut self) {
-        if self.attr == "value"
-            && let Some((chunks, _, end)) = &mut self.value_at
-            && *chunks == self.chunks.len()
-        {
-            *end = self.text.len();
+    /// Whether what is being scanned is markup the browser renders too.
+    fn in_browser(&self) -> bool {
+        !self.templates.is_empty()
+            || !self.rendering.is_empty()
+            || (self.frames.iter()).any(|f| matches!(f, Frame::Client { .. }))
+    }
+
+    /// An attribute just ended. A server `<input>`'s `value` written as
+    /// plain text becomes its node, as `value={"text"}` would (decoded, as
+    /// the browser sends it), so a kept field has its own value as one
+    /// with `value={expr}` has; a build writes the same bytes for it.
+    fn value_ends(&mut self) -> Result<(), Error> {
+        if self.attr != "value" {
+            return Ok(());
         }
+        let Some((chunks, at)) = self.value_at.take() else {
+            return Ok(());
+        };
+        let plain = chunks == self.chunks.len() && self.tag == "input" && !self.closing;
+        let Some(Some(v)) = self.seen("value").filter(|_| plain && !self.in_browser()) else {
+            return Ok(());
+        };
+        let src = format!("{:?}", decode(v));
+        let line = self.line_of(self.tag_pos);
+        self.text.truncate(self.text[..at].trim_end().len());
+        let (name, code) = ("value".into(), Code { src, line });
+        self.push_node(
+            self.tag_pos,
+            Node::Attr {
+                name,
+                code,
+                url: false,
+            },
+        )
     }
 
     /// The tag's own value, the one rule of every kept field: its
-    /// `value={expr}`'s code, else its `value="text"` as a string literal
+    /// `value={expr}`'s code (or an input's `value="text"`, which became
+    /// one), else an option's `value="text"` as a string literal
     /// (entity-decoded, as the browser sends it), else, for an
-    /// `<option>`, its text when that is plain. The text is taken out of
-    /// the tag when `take` is set: it is the `own` of a `Node::Kept`.
-    fn own_value(&mut self, take: bool) -> Option<String> {
+    /// `<option>`, its text when that is plain.
+    fn own_value(&mut self) -> Option<String> {
         let at = self.value_attr();
         if let Some(Node::Attr { code, .. }) = at.map(|k| &self.list()[k]) {
             return Some(format!("&({})", code.src));
         }
         let lit = |s: &str| format!("{:?}", decode(s));
         match self.seen("value") {
-            Some(Some(v)) => {
-                let v = lit(v);
-                // Its text is cut out, from the space before it, when no
-                // node has come since: else it is left as written.
-                match self.value_at {
-                    Some((chunks, at, end)) if chunks == self.chunks.len() && end > at => {
-                        if take {
-                            let at = self.text[..at].trim_end().len();
-                            self.text.replace_range(at..end, "");
-                        }
-                        Some(v)
-                    }
-                    _ if !take => Some(v),
-                    _ => None,
-                }
-            }
+            Some(Some(v)) => Some(lit(v)),
             Some(_) => None,
             // An option's text, if no `{` or tag comes before its end.
             None if self.tag == "option" => {
@@ -1765,10 +1771,11 @@ impl Parser<'_> {
     fn keep_value(&mut self, name: &str) -> Result<(), Error> {
         let line = self.line_of(self.tag_pos);
         let at = self.value_attr();
-        // `value="…"` written as text moves into the node; one that cannot
-        // is left as it is, never written twice.
-        let text = at.is_none() && self.seen("value").is_some();
-        let lit = text.then(|| self.own_value(true));
+        // A `value` not in one piece (`value="a{b}"`) would be lost.
+        if at.is_none() && self.seen("value").is_some() {
+            let why = "a field that shows what was sent again takes value=\"text\" or value={expr}";
+            return Err(self.err(self.tag_pos, why.into()));
+        }
         let value = Node::Attr {
             name: "value".into(),
             code: Code {
@@ -1791,30 +1798,15 @@ impl Parser<'_> {
                 };
                 Ok(())
             }
-            None => {
-                let own = match lit {
-                    Some(Some(src)) => {
-                        let code = Code { src, line };
-                        let value = "value".into();
-                        Some(self.alone(Node::Attr {
-                            name: value,
-                            code,
-                            url: false,
-                        }))
-                    }
-                    Some(None) => return Ok(()),
-                    None => None,
-                };
-                self.push_node(
-                    self.tag_pos,
-                    Node::Kept {
-                        name,
-                        sent,
-                        own,
-                        line,
-                    },
-                )
-            }
+            None => self.push_node(
+                self.tag_pos,
+                Node::Kept {
+                    name,
+                    sent,
+                    own: None,
+                    line,
+                },
+            ),
         }
     }
 
@@ -1845,7 +1837,7 @@ impl Parser<'_> {
     /// An `<option>` of such a `<select>`: `selected` when its value (see
     /// `own_value`) is the one chosen.
     fn choose_option(&mut self) -> Result<(), Error> {
-        let Some(value) = self.own_value(false) else {
+        let Some(value) = self.own_value() else {
             return Ok(());
         };
         let line = self.line_of(self.tag_pos);
@@ -4874,16 +4866,20 @@ mod tests {
             forms("<form method=\"post\"><input name=\"t\" value={post.title}></form>"),
             "<form method=\"post\"><input name=\"t\"{kept t:[value=__k]|[value=post.title]}><problem t></form>"
         );
-        // A value written as text too, decoded; one a node follows stays.
+        // A value written as text too, decoded, wherever it is in the tag;
+        // one not in one piece is an error, never a value lost.
         assert_eq!(
             forms(
                 "<form method=\"post\"><input value=\"a&amp;b\" name=\"t\"><input value=x name=u>\
                  <input value=\"y\" name=\"v\" title={t}></form>"
             ),
-            "<form method=\"post\"><input name=\"t\"{kept t:[value=__k]|[value=\"a&b\"]}><problem t>\
-             <input name=u{kept u:[value=__k]|[value=\"x\"]}><problem u>\
-             <input value=\"y\" name=\"v\"[title=t]><problem v></form>"
+            "<form method=\"post\"><input{kept t:[value=__k]|[value=\"a&b\"]} name=\"t\"><problem t>\
+             <input{kept u:[value=__k]|[value=\"x\"]} name=u><problem u>\
+             <input{kept v:[value=__k]|[value=\"y\"]} name=\"v\"[title=t]><problem v></form>"
         );
+        let e =
+            parse("<form method=\"post\"><input name=\"t\" value=\"a{b}\"></form>").unwrap_err();
+        assert!(e.msg.contains("value={expr}"), "{}", e.msg);
         // A textarea's content likewise, its problem after it.
         let t = parse("<form method=\"post\"><textarea name=\"b\">{post.body}</textarea></form>")
             .unwrap();

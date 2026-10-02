@@ -128,7 +128,7 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
   checks all; a button with `formaction="?/other"` skips them
   (`formnovalidate`). Each named `<input>`, `<textarea>`, `<select>` of an
   action form (`?/x`, or `method="post"`) shows what was sent again, else
-  its own value (`value={post.title}` or `value="x"`,
+  its own value (`value={post.title}` or `value="x"`, not `value="a{b}"`,
   `<textarea name="body">{post.body}</textarea>`, `<select name="kind"
   value={post.kind}>` selects the option of that value, or text), and after it `<small
   class="problem">msg</small>` (passwords/files: the problem, never the

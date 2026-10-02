@@ -526,8 +526,10 @@ rules (`wisp::rt::input::whole`). A value that does not pass, or `return
 invalid("text", "…")`, shows the page again as a 422. There each named
 `<input>`, `<textarea>` and `<select>` of the form (one posting to `?/name`,
 or a `method="post"` one posting to `default`) shows what was sent
-(`wisp::rt::kept`) instead of its own value (`value={post.title}`, the
-textarea's content, a select's `value={post.kind}`, which marks the
+(`wisp::rt::kept`) instead of its own value (`value={post.title}`, or
+`value="text"`, which becomes the same node as it is read, so it holds
+wherever it is in the tag; one with a hole in it, `value="a{b}"`, is a
+build error, never a value dropped; the textarea's content, a select's `value={post.kind}`, which marks the
 option with that value `selected`), followed by what was wrong with it,
 `<small class="problem">…</small>` (`wisp::rt::problem`); a password or
 file shows its problem but is never sent back; checkboxes, radios and
