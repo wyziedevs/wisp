@@ -2,7 +2,6 @@
 //! `cx.cors("*")?` for pages on other sites that call the app.
 
 use crate::{Cx, Error, Result, Row, Table};
-use std::borrow::Cow;
 
 impl Cx {
     /// The member of `table` signed in, if `allowed` of it: `let admin =
@@ -40,13 +39,10 @@ impl Cx {
     /// request from a site not allowed gets no CORS headers, so its
     /// browser does not hand it the answer.
     pub fn cors(&mut self, origins: &str) -> Result {
-        let Some(preflight) = self.cors_preflight(origins) else {
-            return Ok(());
-        };
-        for (name, value) in preflight.headers {
-            self.put(name, Cow::Owned(value));
+        match self.cors_preflight(origins) {
+            Some(status) => Err(Error::raw(status, "".into())),
+            None => Ok(()),
         }
-        Err(Error::raw(preflight.status, "".into()))
     }
 }
 
