@@ -101,7 +101,7 @@ fn pages_hooks_and_errors() {
         (missing.status, missing.header("x-app")),
         (404, Some("test"))
     );
-    assert!(missing.text().contains("There is nothing at this address."));
+    assert!(missing.text().contains("<p>Not Found</p>"));
 
     let slash = app.get("/login/?a=1");
     assert_eq!(
