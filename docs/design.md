@@ -980,6 +980,9 @@ The built-in server is one front end. `respond` decides an answer as a
 - `wisp::prepare::<A>()` runs `init` and sets what a request needs.
 - `wisp::handle::<A>(Request) -> Reply` answers one request in process.
 - `wisp::test::client::<A>()` is `handle` with cookies, for tests.
+- `wisp::test::browser::<A>()` (feature `browser`) is the built-in server on
+  a free port, driven in headless Chrome or Edge over the DevTools protocol
+  by a small blocking WebSocket client (`crates/wisp/src/test/browser.rs`).
 - `wisp::tower::service::<A>()` (feature `tower`) is a `tower::Service`.
 - `wisp build --static` runs `handle` for each page and writes files.
 - `wisp build --target` compiles the same code to WebAssembly

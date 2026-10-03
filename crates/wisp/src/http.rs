@@ -711,11 +711,15 @@ pub(crate) async fn write(stream: &mut (impl AsyncWriteExt + Unpin), buf: &[u8])
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) async fn serve<A: App>(addr: SocketAddr) -> io::Result<()> {
     crate::prepare::<A>().await?;
-    let listener = TcpListener::from_std({
-        let l = bind(addr)?;
-        l.set_nonblocking(true)?;
-        l
-    })?;
+    serve_on::<A>(bind(addr)?).await
+}
+
+/// [`serve`] on a socket already bound, once [`crate::prepare`] has run:
+/// `wisp::test::browser` binds port 0 to learn its port first.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) async fn serve_on<A: App>(listener: std::net::TcpListener) -> io::Result<()> {
+    listener.set_nonblocking(true)?;
+    let listener = TcpListener::from_std(listener)?;
     started(listener.local_addr()?);
     let max = crate::settings().max_conns;
     loop {

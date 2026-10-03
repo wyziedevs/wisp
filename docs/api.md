@@ -692,6 +692,42 @@ only (`if-match`, `idempotency-key`), `send(Request)` for anything else, and
 tests, so each test process starts empty. The API template keeps its tests
 in `src/tests.rs`, run by `cargo test`.
 
+### In a browser
+
+With the `browser` feature (new apps have it; `cargo test --features
+browser`), a test drives the app in a real headless Chrome or Edge, over the
+DevTools protocol: no Node, no WebDriver, no extra crate.
+
+```rust
+#[test]
+fn counter() {
+    let mut b = wisp::browser!(App); // the app on a free port, and a browser
+    b.goto("/");
+    b.click("text=Plus one");
+    assert_eq!(b.text("output"), "1");
+}
+```
+
+- Methods: `goto(path) click(sel) hover(sel) fill(sel, text) press(key)
+  text(sel) attr(sel, name) count(sel) wait(sel) eval(js) -> Value url()
+  screenshot(path) timeout(d)`.
+- Selectors are CSS, or `text=Plus one`: the innermost element whose text,
+  `aria-label` or `title` contains it, ignoring case.
+- Actions wait for their element (there, visible, enabled, not covered),
+  then for the page to settle (no fetch or navigation under way, the DOM
+  still for two frames), so a read after a click sees what the click did.
+  A wait over 5 s (`b.timeout(..)`) fails with the page's address and DOM.
+- The browser is `$WISP_BROWSER`, or Chrome, Edge, Chromium or Brave where
+  they install. With none, `wisp::browser!` returns: the test passes,
+  skipped, with a message, so CI without a browser stays green.
+- Dropped, the browser closes and its temporary profile goes; if the test
+  process is killed, a watchdog shell ends the browser. `--no-sandbox` on
+  Linux, for CI containers running as root.
+- `wisp::test::browser::<App>()` is the same, as an `Option<Browser>`.
+
+The demo template's `src/tests.rs` has examples: the counter, Casper's eyes
+following the pointer, and typing a Wisple guess.
+
 ## Where it runs
 
 Everything here works in the binary, Docker, Lambda and under the `tower`

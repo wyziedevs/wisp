@@ -9,3 +9,8 @@ wisp.workspace = true
 
 [build-dependencies]
 wisp-build.workspace = true
+
+# `cargo test -p demo --features browser`: src/tests.rs in a headless
+# Chrome or Edge (skipped where there is none).
+[features]
+browser = ["wisp/browser"]

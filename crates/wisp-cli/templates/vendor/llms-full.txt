@@ -342,6 +342,13 @@ takes the no-wait fast path off every route.
   &[("text", "hi")]) bearer(t) header(n, v) post_json put_json patch_json
   delete cookie(n)`, `.status`, `.json::<T>()`; cookies kept; tables are in
   memory.
+- Browser test (`cargo test --features browser`, headless Chrome/Edge;
+  passes, skipped, without one): `let mut b = wisp::browser!(App);
+  b.goto("/"); b.click("text=Plus one"); assert_eq!(b.text("output"), "1");`
+  also `hover fill(sel, t) press("Enter") attr(sel, n) count wait
+  eval(js) -> Value url screenshot(path)`. Selectors: CSS or `text=…`
+  (text, aria-label or title). Actions wait for the element and for the
+  page to settle (5 s, `b.timeout(d)`): no sleeps needed.
 
 ## Gotchas
 
@@ -1361,6 +1368,9 @@ The built-in server is one front end. `respond` decides an answer as a
 - `wisp::prepare::<A>()` runs `init` and sets what a request needs.
 - `wisp::handle::<A>(Request) -> Reply` answers one request in process.
 - `wisp::test::client::<A>()` is `handle` with cookies, for tests.
+- `wisp::test::browser::<A>()` (feature `browser`) is the built-in server on
+  a free port, driven in headless Chrome or Edge over the DevTools protocol
+  by a small blocking WebSocket client (`crates/wisp/src/test/browser.rs`).
 - `wisp::tower::service::<A>()` (feature `tower`) is a `tower::Service`.
 - `wisp build --static` runs `handle` for each page and writes files.
 - `wisp build --target` compiles the same code to WebAssembly
@@ -2955,6 +2965,42 @@ only (`if-match`, `idempotency-key`), `send(Request)` for anything else, and
 `next_chunk` to read events as they are sent. Tables stay in memory in
 tests, so each test process starts empty. The API template keeps its tests
 in `src/tests.rs`, run by `cargo test`.
+
+### In a browser
+
+With the `browser` feature (new apps have it; `cargo test --features
+browser`), a test drives the app in a real headless Chrome or Edge, over the
+DevTools protocol: no Node, no WebDriver, no extra crate.
+
+```rust
+#[test]
+fn counter() {
+    let mut b = wisp::browser!(App); // the app on a free port, and a browser
+    b.goto("/");
+    b.click("text=Plus one");
+    assert_eq!(b.text("output"), "1");
+}
+```
+
+- Methods: `goto(path) click(sel) hover(sel) fill(sel, text) press(key)
+  text(sel) attr(sel, name) count(sel) wait(sel) eval(js) -> Value url()
+  screenshot(path) timeout(d)`.
+- Selectors are CSS, or `text=Plus one`: the innermost element whose text,
+  `aria-label` or `title` contains it, ignoring case.
+- Actions wait for their element (there, visible, enabled, not covered),
+  then for the page to settle (no fetch or navigation under way, the DOM
+  still for two frames), so a read after a click sees what the click did.
+  A wait over 5 s (`b.timeout(..)`) fails with the page's address and DOM.
+- The browser is `$WISP_BROWSER`, or Chrome, Edge, Chromium or Brave where
+  they install. With none, `wisp::browser!` returns: the test passes,
+  skipped, with a message, so CI without a browser stays green.
+- Dropped, the browser closes and its temporary profile goes; if the test
+  process is killed, a watchdog shell ends the browser. `--no-sandbox` on
+  Linux, for CI containers running as root.
+- `wisp::test::browser::<App>()` is the same, as an `Option<Browser>`.
+
+The demo template's `src/tests.rs` has examples: the counter, Casper's eyes
+following the pointer, and typing a Wisple guess.
 
 ## Where it runs
 
