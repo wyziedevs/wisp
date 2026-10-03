@@ -187,6 +187,11 @@ impl Upload {
     /// by spaces (`"pdf csv"`, any case); `""` takes any. Another is a 422 on
     /// `file`. A file of no bytes is refused too.
     pub fn new(file: &crate::File, types: &str) -> Result<Upload> {
+        Upload::field(file, types, "file")
+    }
+
+    /// [`Upload::new`], a problem shown by the input `field`.
+    pub(crate) fn field(file: &crate::File, types: &str, field: &str) -> Result<Upload> {
         let ext = file.name.rsplit_once('.').map_or("", |(_, e)| e);
         if !types.is_empty()
             && !types
@@ -194,10 +199,10 @@ impl Upload {
                 .any(|t| t.eq_ignore_ascii_case(ext))
         {
             let all: Vec<_> = types.split_whitespace().collect();
-            return crate::invalid("file", format!("must be {}", all.join(", ")));
+            return crate::invalid(field, format!("must be {}", all.join(", ")));
         }
         if file.bytes.is_empty() {
-            return crate::invalid("file", "is empty");
+            return crate::invalid(field, "is empty");
         }
         Ok(Upload {
             hash: put(file.bytes)?,
