@@ -31,7 +31,8 @@
 //! its server values and, for an island, how it starts (`ISLAND_*`). The
 //! optional part last, both scripts read a record by place, with nothing
 //! to work out. `r` and `p` are the route id and parameters of a page with
-//! a `+page.js`.
+//! a `+page.js`. `t` holds the messages the page's scripts show, by key,
+//! in the request's locale.
 
 /// Opens the instance list, up to the first module of `m`: the scripts
 /// find it by its id.
@@ -42,6 +43,9 @@ pub const LIVE_RECORDS: &str = "},\"i\":[";
 pub const LIVE_ROUTE: &str = ",\"r\":";
 /// Between the route id and its parameters.
 pub const LIVE_PARAMS: &str = ",\"p\":{";
+/// Before the messages the page's scripts show (`t('key')`): an object
+/// of them by key.
+pub const LIVE_TEXTS: &str = ",\"t\":{";
 /// Closes the instance list.
 pub const LIVE_CLOSE: &str = "}</script>";
 
@@ -101,12 +105,29 @@ pub const MODULES: &str = app_path!("c/");
 /// A release build's npm modules, from `.wisp/npm`: each path names its
 /// package's version, so it never changes.
 pub const NPM_MODULES: &str = app_path!("c/npm/");
+/// Templates' images: a release build's by content hash (immutable), a dev
+/// build's `src/lib` ones under `lib/`.
+pub const IMAGES: &str = app_path!("img/");
 /// The browser runtime: wisp.js, live.js and live.js's less used half.
 pub const WISP_JS_PATH: &str = app_path!("wisp.js");
 pub const LIVE_JS_PATH: &str = app_path!("live.js");
 pub const EXTRA_JS_PATH: &str = app_path!("c/extra.js");
+/// `#[remote]` functions: each is served at this and its hash, and
+/// browser code calls them through the module at `REMOTE_JS_PATH`.
+pub const REMOTE: &str = app_path!("r/");
+pub const REMOTE_JS_PATH: &str = app_path!("c/remote.js");
+/// Components built as custom elements: `el/x-card.js`, and what they run.
+pub const ELEMENTS: &str = app_path!("c/el/");
+pub const ELEMENT_JS_PATH: &str = app_path!("c/el.js");
+/// An app's service worker and web app manifest, at the root so the
+/// worker's scope is the whole site.
+pub const SERVICE_WORKER_PATH: &str = "/service-worker.js";
+pub const MANIFEST_PATH: &str = "/manifest.webmanifest";
 /// The app's CSS (`src/app.css`, or what Tailwind built of it).
 pub const APP_CSS_PATH: &str = app_path!("app.css");
+/// A dev build's scoped `<style>`s, from the project root: served after
+/// the app's CSS at `APP_CSS_PATH` (a release build embeds both).
+pub const SCOPED_CSS: &str = ".wisp/scoped.css";
 
 #[cfg(test)]
 mod tests {
@@ -129,6 +150,7 @@ mod tests {
             format!("{ON_ROOT} for an event the root handles"),
             format!("b & {ON_PLACED_JS}"),
             "i.map(([I, id, P, blob, how]) =>".into(),
+            format!("{} = {{}}", &LIVE_TEXTS[2..3]),
         ];
         let in_wisp = [
             format!("getElementById({})", q(LIVE_ID)),

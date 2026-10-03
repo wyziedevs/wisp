@@ -1,0 +1,7 @@
+*.obj
+*.lib
+*.exp
+*.dll
+*.so
+*.dylib
+*.wasm

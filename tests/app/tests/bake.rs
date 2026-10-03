@@ -114,10 +114,69 @@ fn cache_public_keeps_for_every_request() {
     }
 }
 
+/// `const PRERENDER: bool = true;`, before `wisp build` renders it into
+/// the binary: the first render is kept for good, for every request.
+#[test]
+fn a_prerendered_page_renders_once() {
+    let s = server();
+    let first = get(&s, "/prerendered", "");
+    assert!(first.contains("<p>render 0</p>"), "{first}");
+    for headers in ["", "cookie: a=1\r\n", "authorization: Bearer x\r\n"] {
+        assert_eq!(
+            body(&get(&s, "/prerendered", headers)),
+            body(&first),
+            "{headers}"
+        );
+    }
+    let etag = header(&first, "etag").expect("an etag");
+    let again = get(&s, "/prerendered", &format!("if-none-match: {etag}\r\n"));
+    assert_eq!((status(&again), body(&again)), (304, ""));
+}
+
 #[test]
 fn dev_mode_keeps_nothing() {
     let s = start(&[("WISP_DEV", "on"), ("WISP_THREADS", "1")]);
     assert!(get(&s, "/cached", "").contains("render 0"));
     assert!(get(&s, "/cached", "").contains("render 1"));
     assert_eq!(header(&get(&s, "/baked", ""), "etag"), None, "rendered");
+}
+
+/// Pages carry the policy: rendered, baked and kept alike, with the hash
+/// of each inline script the app writes and what `init` changed. Dev mode
+/// adds esm.sh, for npm modules; endpoints get none.
+#[test]
+fn pages_carry_the_content_security_policy() {
+    let s = server();
+    let page = get(&s, "/csp", "");
+    let policy = header(&page, "content-security-policy").expect("a policy");
+    assert!(
+        policy.starts_with("default-src 'self'; script-src 'self' 'sha256-"),
+        "{policy}"
+    );
+    // `printf 'document.title = "ran"' | openssl dgst -sha256 -binary | base64`
+    let hash = " 'sha256-i8NQMUzpim5Tk3+GzgA/+tCZSay6b48zbjIG0IpKqww='";
+    assert!(policy.contains(hash), "{policy}");
+    assert!(
+        policy.contains("; img-src 'self' https://img.example; ")
+            && policy.ends_with("; base-uri 'self'; form-action 'self'; frame-ancestors 'self'"),
+        "{policy}"
+    );
+    assert!(!policy.contains("esm.sh"), "{policy}");
+    assert!(header(&page, "etag").is_some(), "baked");
+    for path in ["/cached", "/cached", "/login", "/nope"] {
+        let other = get(&s, path, "");
+        assert_eq!(
+            header(&other, "content-security-policy"),
+            Some(policy),
+            "{path}"
+        );
+    }
+    assert_eq!(
+        header(&get(&s, "/kept", ""), "content-security-policy"),
+        None
+    );
+    let dev = start(&[("WISP_DEV", "on")]);
+    let page = get(&dev, "/csp", "");
+    let policy = header(&page, "content-security-policy").unwrap();
+    assert!(policy.contains("https://esm.sh"), "{policy}");
 }

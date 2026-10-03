@@ -1,10 +1,10 @@
 <head>
-  <title>How to play Wisple</title>
-  <meta name="description" content="How to play Wisple">
+  <title>How to Play Wisple</title>
+  <meta name="description" content="How to Play Wisple">
 </head>
 
 <div class="text-column">
-  <h1>How to play Wisple</h1>
+  <h1>How to Play Wisple</h1>
 
   <p>Wisple is a clone of <a href="https://www.nytimes.com/games/wordle/index.html" title="Wordle">Wordle</a>, the word guessing game. To win, guess the secret five-letter word in six tries or fewer.</p>
 
@@ -21,7 +21,7 @@
   <p class="visually-hidden">An example guess, "ghost".</p>
   <p><strong>G</strong> is in the word, in the right place. <strong>O</strong> is in the word, in another place. <strong>H</strong>, <strong>S</strong> and <strong>T</strong> are not in the word at all.</p>
 
-  <p>The keyboard keeps score, so you can see which letters you have ruled out. Your game is saved in a cookie, so it is still here if you close the tab.</p>
+  <br/>
 
-  <p><a class="button primary" href="/wisple" title="Play Wisple">Play</a></p>
+  <p style="text-align: center"><a class="button primary" href="/wisple" title="Back to Wisple">Back to Wisple</a></p>
 </div>

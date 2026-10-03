@@ -20,6 +20,8 @@ use wisp_shared::rust::{skip_block_comment, skip_literal, skip_space};
 pub struct FnItem {
     pub name: String,
     pub action: bool,
+    /// `#[remote]`: browser code calls it (`#[remote(get)]`: by GET).
+    pub remote: Option<Remote>,
     /// `pub`, in any form.
     pub public: bool,
     /// `async fn`, or an action whose body `.await`s (`#[action]` makes it
@@ -40,6 +42,15 @@ pub struct FnItem {
     /// `#[validate(len = 1..=100)] text: String`: each parameter's rules,
     /// as (parameter, what is inside `validate(…)`).
     pub checks: Vec<(String, String)>,
+}
+
+/// How browser code calls a `#[remote]` function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Remote {
+    /// `#[remote]`: a POST with the arguments as JSON.
+    Post,
+    /// `#[remote(get)]`: a GET with them in the query, which may be cached.
+    Get,
 }
 
 /// A top-level `struct`, `enum`, `union` or `type`.
@@ -72,6 +83,8 @@ pub struct ConstItem {
     pub line: usize,
     /// A `static`, not a `const`: one value for the whole program.
     pub is_static: bool,
+    /// Its value as written, after the `=`.
+    pub value: String,
 }
 
 /// What a function hands back, as far as the generated call cares.
@@ -112,6 +125,12 @@ impl Items {
 
     pub fn constant(&self, name: &str) -> Option<&ConstItem> {
         self.consts.iter().find(|c| c.name == name)
+    }
+
+    /// A page the browser draws: `const SSR: bool = false;`. (The build
+    /// checks such a flag is a `bool` literal; see `codegen::flag`.)
+    pub fn drawn(&self) -> bool {
+        self.constant("SSR").is_some_and(|c| c.value == "false")
     }
 
     /// The tables the file keeps, which load when the app starts: each
@@ -259,6 +278,7 @@ pub fn scan(src: &str) -> Result<Items, String> {
     let line = |at: usize| src[..at].matches('\n').count() + 1;
     // Seen since the last item ended.
     let mut action = false;
+    let mut remote = None;
     let mut is_async = false;
     let mut public = false;
     let mut derives: Vec<String> = Vec::new();
@@ -312,6 +332,19 @@ pub fn scan(src: &str) -> Result<Items, String> {
                         ));
                     }
                     action |= marks_action;
+                    if path.rsplit("::").next() == Some("remote") {
+                        if depth > 0 {
+                            return Err(format!(
+                                "{}: #[remote] marks a top-level function; this one is inside a block, where it does nothing",
+                                line(i)
+                            ));
+                        }
+                        let args = src[j + 1..end].split_once('(').map_or("", |(_, a)| a);
+                        remote = Some(match args.trim_end_matches(')').trim() {
+                            "get" => Remote::Get,
+                            _ => Remote::Post,
+                        });
+                    }
                     // `#[model]` derives these.
                     if depth == 0 && path.rsplit("::").next() == Some("model") {
                         derives.extend(["Json", "FromJson", "Clone"].map(String::from));
@@ -332,12 +365,12 @@ pub fn scan(src: &str) -> Result<Items, String> {
             b'}' => {
                 depth = depth.saturating_sub(1);
                 if depth == 0 {
-                    (action, is_async, public) = (false, false, false);
+                    (action, is_async, public, remote) = (false, false, false, None);
                     derives.clear();
                 }
             }
             b';' if depth == 0 => {
-                (action, is_async, public) = (false, false, false);
+                (action, is_async, public, remote) = (false, false, false, None);
                 derives.clear();
             }
             _ if c.is_ascii_alphabetic() || c == b'_' => {
@@ -366,11 +399,17 @@ pub fn scan(src: &str) -> Result<Items, String> {
                                     .to_string(),
                                 None => String::new(),
                             };
+                            let rest = &src[after..];
+                            let value = (rest.find(['=', ';']))
+                                .filter(|&e| rest.as_bytes()[e] == b'=')
+                                .map(|e| &rest[e + 1..])
+                                .map_or("", |v| v[..v.find(';').unwrap_or(v.len())].trim());
                             items.consts.push(ConstItem {
                                 name: name.to_string(),
                                 ty,
                                 line: line(at),
                                 is_static: word == "static",
+                                value: value.to_string(),
                             });
                         }
                     }
@@ -387,20 +426,23 @@ pub fn scan(src: &str) -> Result<Items, String> {
                             let ((params, checks), fallible, returns, body) = signature(src, i);
                             let line = line(name_start);
                             let takes_cx = params.iter().any(|(p, t)| p == "cx" || is_cx(t));
-                            let implicit_cx = action
+                            // `#[remote]` makes its function as `#[action]` does.
+                            let marked = action || remote.is_some();
+                            let implicit_cx = marked
                                 && !takes_cx
                                 && b.get(body) == Some(&b'{')
                                 && uses_ident(&b[body..block_end(b, body)], b"cx");
                             // `#[action]` makes one without `->` return `Result`,
                             // and one that awaits `async`.
-                            let fallible = fallible || (action && returns.is_empty());
+                            let fallible = fallible || (marked && returns.is_empty());
                             is_async = is_async
-                                || (action
+                                || (marked
                                     && b.get(body) == Some(&b'{')
                                     && awaits(&src[body..block_end(b, body)]));
                             items.fns.push(FnItem {
                                 name,
                                 action,
+                                remote,
                                 public,
                                 is_async,
                                 params,
@@ -410,7 +452,7 @@ pub fn scan(src: &str) -> Result<Items, String> {
                                 implicit_cx,
                                 checks,
                             });
-                            (action, is_async, public) = (false, false, false);
+                            (action, is_async, public, remote) = (false, false, false, None);
                             derives.clear();
                         } else {
                             let (fields, rules) = if word == "struct" {
@@ -1547,6 +1589,31 @@ fn a() {}"
         );
         let implicit: Vec<bool> = fns.iter().map(|f| f.implicit_cx).collect();
         assert_eq!(implicit, [true, false, false, false, true]);
+    }
+
+    #[test]
+    fn remote_functions_are_made_as_actions() {
+        let fns = top_level_fns(
+            "#[remote] fn a(id: u64) -> u64 { id }\n#[wisp::remote(get)] fn b() { cx.x(); }\n\
+             #[remote( get )] fn c() { x().await; }\nfn d() {}",
+        );
+        let kinds: Vec<Option<Remote>> = fns.iter().map(|f| f.remote).collect();
+        assert_eq!(
+            kinds,
+            [
+                Some(Remote::Post),
+                Some(Remote::Get),
+                Some(Remote::Get),
+                None
+            ]
+        );
+        assert!(!fns[0].fallible && fns[1].fallible && fns[1].implicit_cx);
+        assert!(fns[2].is_async && !fns[2].action);
+        let err = scan("mod m {\n    #[remote]\n    fn a() {}\n}").unwrap_err();
+        assert!(
+            err.starts_with("2: #[remote] marks a top-level function"),
+            "{err}"
+        );
     }
 
     #[test]

@@ -25,6 +25,31 @@ fn main() {
             }
         }
     }
+    // The AI reference apps get (`wisp new`, `wisp update-docs`, `wisp
+    // mcp`): the repository's AGENTS.md, less its part for work on Wisp,
+    // and llms-full.txt (that and docs/).
+    let repo = template_files::repo(&base);
+    if let Ok(agents) = template_files::read_text(&repo.join("AGENTS.md")) {
+        println!(
+            "cargo:rerun-if-changed={}",
+            repo.join("AGENTS.md").display()
+        );
+        for doc in template_files::DOCS {
+            let path = repo.join(format!("docs/{doc}.md"));
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+        let vendor = template_files::vendor(&base);
+        let files = [
+            ("AGENTS.md", Ok(template_files::app_agents(&agents))),
+            ("llms-full.txt", template_files::llms_full(&repo)),
+        ];
+        for (file, text) in files {
+            let to = vendor.join(file);
+            if let Err(e) = text.and_then(|t| template_files::write_if_changed(&to, &t)) {
+                println!("cargo:warning=Could not write {}: {e}", to.display());
+            }
+        }
+    }
     let mut out = String::new();
     for (name, layers) in template_files::TEMPLATES {
         out.push_str(&format!("const {name}: &[(&str, &[u8])] = &[\n"));

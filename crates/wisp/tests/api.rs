@@ -609,12 +609,10 @@ fn the_built_in_error_page_escapes_what_it_shows() {
     assert!(html.contains("class=\"wisp-error\""), "{html}");
     assert!(html.contains("<title>Not Found</title>"), "{html}");
     assert!(html.contains("gone"));
-    assert!(html.contains("404 · GET /default-error?a=&lt;script&gt;alert(1)&lt;/script&gt;"));
     assert!(!html.contains("<script>alert"), "{html}");
-    assert!(html.contains("Go to the Home Page"));
     assert!(
-        !html.contains("Try Again"),
-        "a 4xx is an answer, not a failure"
+        !html.contains("href="),
+        "the page is the status alone: {html}"
     );
 }
 

@@ -1,0 +1,77 @@
+{
+  "Page": {
+    "prefix": "page",
+    "description": "A page: a --- block whose statements load, then markup",
+    "body": ["---", "let ${1:items} = ${2:ITEMS.all()};", "---", "<title>${3:Title}</title>", "", "$0"]
+  },
+  "Layout": {
+    "prefix": "layout",
+    "description": "A +layout.wisp: wraps the pages below it",
+    "body": ["<nav>", "  <a href=\"/\">${1:Home}</a>", "</nav>", "<main>", "  <slot />", "</main>$0"]
+  },
+  "Component": {
+    "prefix": "component",
+    "description": "A component in src/components: typed props, then markup",
+    "body": ["{@props ${1:title}: ${2:&str}}", "<${3:div}>", "  <h2>{${1:title}}</h2>", "  {@render children()}", "</${3:div}>$0"]
+  },
+  "Action": {
+    "prefix": "action",
+    "description": "A form action in the --- block: <form action=\"?/name\">",
+    "body": ["#[action]", "fn ${1:add}(${2:text}: ${3:String}) {", "    $0", "}"]
+  },
+  "Action form": {
+    "prefix": "form",
+    "description": "A form that posts to an action",
+    "body": ["<form action=\"?/${1:add}\">", "  <input name=\"${2:text}\">", "  <button>${3:Add}</button>", "</form>$0"]
+  },
+  "Block": {
+    "prefix": "---",
+    "description": "The page's Rust block",
+    "body": ["---", "$0", "---"]
+  },
+  "Script": {
+    "prefix": "script",
+    "description": "Browser code: top-level lets are state",
+    "body": ["<script>", "  let ${1:count} = ${2:0}", "  $0", "</script>"]
+  },
+  "Style": {
+    "prefix": "style",
+    "description": "Styles",
+    "body": ["<style>", "  ${1:.a} {", "    $0", "  }", "</style>"]
+  },
+  "If": {
+    "prefix": "if",
+    "description": "{#if c}…{/if}; `if let Some(x) = y` works",
+    "body": ["{#if ${1:cond}}", "  $0", "{/if}"]
+  },
+  "If else": {
+    "prefix": "ifelse",
+    "description": "{#if c}…{:else}…{/if}",
+    "body": ["{#if ${1:cond}}", "  $2", "{:else}", "  $0", "{/if}"]
+  },
+  "Each": {
+    "prefix": "each",
+    "description": "{#each list as item}…{:else}…{/each}",
+    "body": ["{#each ${1:items} as ${2:item}}", "  $0", "{:else}", "  ${3:None yet.}", "{/each}"]
+  },
+  "Match": {
+    "prefix": "match",
+    "description": "{#match e}{:case P}…{/match}",
+    "body": ["{#match ${1:value}}", "{:case ${2:pattern}}", "  $0", "{/match}"]
+  },
+  "Snippet": {
+    "prefix": "snippet",
+    "description": "{#snippet row(a)}…{/snippet}, shown with {@render row(x)}",
+    "body": ["{#snippet ${1:row}(${2:item})}", "  $0", "{/snippet}"]
+  },
+  "Client if": {
+    "prefix": ":if",
+    "description": "{:#if js}…{:/if}: kept up to date in the browser",
+    "body": ["{:#if ${1:open}}", "  $0", "{:/if}"]
+  },
+  "Client each": {
+    "prefix": ":each",
+    "description": "{:#each items as it (it.id)}…{:/each}: a keyed list in the browser",
+    "body": ["{:#each ${1:items} as ${2:it} (${2:it}.id)}", "  $0", "{:/each}"]
+  }
+}

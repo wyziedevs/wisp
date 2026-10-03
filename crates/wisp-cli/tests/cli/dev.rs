@@ -312,6 +312,19 @@ data: 2 errors. The first is in src/hooks.rs, line 2.",
     );
     assert_eq!(get(&addr, "/about").0, 200);
 
+    // The server's `wisp::env` reads `.env`, again when it changes; a line
+    // that is not `KEY=value` is a warning.
+    write(
+        &app,
+        "src/routes/about/+page.wisp",
+        "<h1>{wisp::env(\"GREETING\").unwrap_or_default()}</h1>\n",
+    );
+    dev.wait_for("Rebuilt at http://");
+    write(&app, ".env", "GREETING=hello\nnot a line\n");
+    dev.wait_for(".env line 2 is not KEY=value, so it is skipped");
+    addr = address(&dev.wait_for("Rebuilt at http://"));
+    assert!(get(&addr, "/about").1.contains("<h1>hello</h1>"));
+
     // With its terminal gone it exits, and its app is not left on the port.
     dev.hang_up(&app);
     assert_stopped(&addr);

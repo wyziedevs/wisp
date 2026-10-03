@@ -4,6 +4,53 @@
 use crate::common::{fails, page_fails};
 
 #[test]
+fn custom_elements() {
+    const HOME: (&str, &str) = ("src/routes/+page.wisp", "x");
+    fails(&[
+        (
+            "element in a page",
+            &[("src/routes/+page.wisp", "\n{@element \"x-page\"}\n<p>x</p>")],
+            &["src/routes/+page.wisp:2: {@element} is for components"],
+        ),
+        (
+            "server code in an element",
+            &[
+                (
+                    "src/components/Card.wisp",
+                    "{@element \"x-card\"}\n{@props title: &str}\n<p>{title}</p>",
+                ),
+                HOME,
+            ],
+            &[
+                "src/components/Card.wisp:1: <x-card> is drawn by the browser, but its markup has server code",
+            ],
+        ),
+        (
+            "a default the browser cannot know",
+            &[
+                (
+                    "src/components/Card.wisp",
+                    "{@element \"x-card\"}\n{@props n: u32 = 1 + 1}\n<p>{:n}</p>",
+                ),
+                HOME,
+            ],
+            &[
+                "src/components/Card.wisp:1: <x-card>'s prop `n` has a default the browser cannot know (`1 + 1`)",
+            ],
+        ),
+        (
+            "one tag twice",
+            &[
+                ("src/components/Ann.wisp", "{@element \"x-card\"}\n<p>a</p>"),
+                ("src/components/Bob.wisp", "{@element \"x-card\"}\n<p>b</p>"),
+                HOME,
+            ],
+            &["src/components/Bob.wisp:1: <x-card> is the element of another component too"],
+        ),
+    ]);
+}
+
+#[test]
 fn elements_and_head() {
     page_fails(&[
         (

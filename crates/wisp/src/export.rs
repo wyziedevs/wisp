@@ -10,6 +10,18 @@
 //! `pub fn entries() -> Vec<...>` in `+page.rs`: a `String` per `[param]`,
 //! or a tuple of them for several, in the order they appear in the path.
 //! For `[[optional]]` and `[...rest]`, an empty string leaves it out.
+//!
+//! `wisp build` runs it with `WISP_PRERENDER=dir` too, when a page has
+//! `const PRERENDER: bool = true;`: [`prerender`] writes those pages for
+//! the build that follows to embed.
+//!
+//! `wisp build --spa` (`WISP_SPA=1`) also serves static hosts' fallback,
+//! `index.html`, which they answer a path they have no file for with: a
+//! page the browser draws (`const SSR: bool = false;`) whose route has
+//! parameters and no `entries` is written once, each parameter `0`, to
+//! `_app/spa/N.html`, and `index.html` lists those as `#wisp-spa`. wisp.js
+//! then fetches the one whose route fits the address, and draws it with
+//! that address's parameters.
 
 use crate::{App, Request, handle};
 use std::collections::BTreeSet;
@@ -28,6 +40,13 @@ pub struct ExportRoute {
     pub server: bool,
     /// The values of the route's parameters for each page, from `entries`.
     pub entries: Option<fn() -> Vec<Vec<String>>>,
+    /// `/sitemap.xml` lists it: outside any `(private)` group, without a
+    /// robots `noindex` meta.
+    pub indexed: bool,
+    /// The server renders the page: no `const SSR: bool = false;`.
+    pub ssr: bool,
+    /// `const PRERENDER: bool = true;`: `wisp build` renders it.
+    pub prerender: bool,
 }
 
 /// What `entries` returns a `Vec` of.
@@ -59,18 +78,56 @@ impl<A: Into<String>, B: Into<String>, C: Into<String>> Entry for (A, B, C) {
     }
 }
 
+/// `job` on a runtime of this thread's, as `wisp build` runs the app.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn run<A: App>(dir: &str) -> io::Result<()> {
+pub(crate) fn run(job: impl std::future::Future<Output = io::Result<()>>) -> io::Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(export::<A>(Path::new(dir)))
+    runtime.block_on(job)
 }
 
-/// Writes the app's pages, and the files they use, under `dir`.
-pub async fn export<A: App>(dir: &Path) -> io::Result<()> {
+/// For `wisp build`: the pages with `const PRERENDER: bool = true;`, each
+/// rendered once into `dir` as `N.html`, and `index.tsv` a line for each:
+/// its route's pattern, its path and its file, tab apart. The build that
+/// follows embeds them (see `wisp_build`'s `prerendered`).
+pub async fn prerender<A: App>(dir: &Path) -> io::Result<()> {
+    crate::prepare::<A>().await?;
+    fs::create_dir_all(dir)?;
+    let mut index = String::new();
+    for r in A::export_routes().into_iter().filter(|r| r.prerender) {
+        let paths = match paths(&r) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("warn {e}");
+                continue;
+            }
+        };
+        for segs in paths {
+            let url = url(&segs);
+            let reply = handle::<A>(Request::new("GET", &url)).await;
+            if reply.status != 200 {
+                println!(
+                    "warn {url} answered {}, so it is not prerendered",
+                    reply.status
+                );
+                continue;
+            }
+            let file = format!("{}.html", index.lines().count());
+            write(dir, &file, reply.bytes())?;
+            index.push_str(&format!("{}\t{url}\t{file}\n", r.pattern));
+        }
+    }
+    fs::write(dir.join("index.tsv"), index)
+}
+
+/// Writes the app's pages, and the files they use, under `dir`; with
+/// `spa`, the fallback too (see the module's notes).
+pub async fn export<A: App>(dir: &Path, spa: bool) -> io::Result<()> {
     crate::prepare::<A>().await?;
     let mut assets = BTreeSet::new();
+    // Pattern and file of each page the fallback draws.
+    let mut drawn: Vec<(&str, String)> = Vec::new();
     for r in A::export_routes() {
         if r.server {
             println!(
@@ -89,6 +146,26 @@ pub async fn export<A: App>(dir: &Path) -> io::Result<()> {
         }
         let paths = match paths(&r) {
             Ok(p) => p,
+            Err(_) if spa && !r.ssr && r.entries.is_none() => {
+                let n = r.pattern.split('/').filter(|s| s.starts_with('[')).count();
+                let url = segments(r.pattern, &vec!["0".to_string(); n]).map(|s| url(&s));
+                let reply = match url {
+                    Some(url) => handle::<A>(Request::new("GET", &url)).await,
+                    None => continue,
+                };
+                if reply.status != 200 {
+                    println!(
+                        "warn {} answered {} with its parameters 0, so --spa cannot draw it",
+                        r.pattern, reply.status
+                    );
+                    continue;
+                }
+                let file = format!("_app/spa/{}.html", drawn.len());
+                find_assets(reply.text(), &mut assets);
+                write(dir, &file, reply.bytes())?;
+                drawn.push((r.pattern, format!("/{file}")));
+                continue;
+            }
             Err(e) => {
                 println!("warn {e}");
                 continue;
@@ -114,20 +191,96 @@ pub async fn export<A: App>(dir: &Path) -> io::Result<()> {
         find_assets(missing.text(), &mut assets);
         write(dir, "404.html", missing.bytes())?;
     }
-    for path in assets {
+    // A static host has no request host: the sitemap needs `SITE_URL`.
+    if std::env::var_os("SITE_URL").is_some_and(|s| !s.is_empty()) {
+        for f in ["sitemap.xml", "robots.txt"] {
+            let reply = handle::<A>(Request::new("GET", &format!("/{f}"))).await;
+            if reply.status == 200 {
+                write(dir, f, reply.bytes())?;
+            }
+        }
+    }
+    if !drawn.is_empty() {
+        // The home page, or with none the error page, carries the list.
+        let html = fs::read_to_string(dir.join("index.html"))
+            .unwrap_or_else(|_| missing.text().to_string());
+        let list = format!(
+            "<script type=\"application/json\" id=\"wisp-spa\">{}</script>",
+            crate::json::to_json(&drawn).replace('<', "\\u003c")
+        );
+        let at = html.rfind("</body>").unwrap_or(html.len());
+        write(
+            dir,
+            "index.html",
+            [&html[..at], &list, &html[at..]].concat().as_bytes(),
+        )?;
+    }
+    // The service worker and manifest, and custom elements' modules, which
+    // no page names.
+    for path in [
+        crate::protocol::SERVICE_WORKER_PATH,
+        crate::protocol::MANIFEST_PATH,
+    ]
+    .iter()
+    .filter(|_| A::PWA.is_some())
+    {
+        let reply = handle::<A>(Request::new("GET", path)).await;
+        if reply.status == 200 {
+            find_assets(reply.text(), &mut assets); // the icons, the files kept
+            write(dir, &path[1..], reply.bytes())?;
+        }
+    }
+    for tag in A::ELEMENTS {
+        assets.insert(format!("{}{tag}.js", crate::protocol::ELEMENTS));
+    }
+    // A module brings what it imports, and its source map when it has one
+    // (`wisp build --sourcemap`).
+    let mut done = BTreeSet::new();
+    while let Some(path) = assets.pop_first() {
+        if !done.insert(path.clone()) {
+            continue;
+        }
         let Some(rel) = crate::http::safe_relative_path(&path) else {
             continue;
         };
         let reply = handle::<A>(Request::new("GET", &path)).await;
-        if reply.status == 200 {
+        if reply.status != 200 {
+            continue;
+        }
+        if !path.ends_with(".js") {
             write(dir, &rel, reply.bytes())?;
+            continue;
+        }
+        let js = reply.text();
+        find_assets(js, &mut assets);
+        let Some((code, map)) = source_map(js) else {
+            write(dir, &rel, reply.bytes())?;
+            continue;
+        };
+        let at = rel.rfind('/').map_or(0, |i| i + 1);
+        let found = handle::<A>(Request::new("GET", &format!("/{}{map}", &rel[..at]))).await;
+        if found.status == 200 {
+            write(dir, &format!("{}{map}", &rel[..at]), found.bytes())?;
+            write(dir, &rel, reply.bytes())?;
+        } else {
+            // No map to point at: the module without the line.
+            write(dir, &rel, code.as_bytes())?;
         }
     }
     Ok(())
 }
 
+/// A module's code before its `//# sourceMappingURL=` line, and the map's
+/// file beside it that the line names.
+fn source_map(js: &str) -> Option<(&str, &str)> {
+    let (code, tail) = js.rsplit_once("//# sourceMappingURL=")?;
+    let map = tail.lines().next()?.trim();
+    let plain = !map.is_empty() && !map.contains([':', '/', '?', '\\']) && !map.starts_with('.');
+    plain.then_some((code, map))
+}
+
 /// The pages a route makes, as path segments.
-fn paths(r: &ExportRoute) -> Result<Vec<Vec<String>>, String> {
+pub(crate) fn paths(r: &ExportRoute) -> Result<Vec<Vec<String>>, String> {
     let params: Vec<&str> = r
         .pattern
         .split('/')
@@ -186,7 +339,7 @@ fn segments(pattern: &str, values: &[String]) -> Option<Vec<String>> {
 }
 
 /// The address to ask for: `/blog/hello%20world`.
-fn url(segs: &[String]) -> String {
+pub(crate) fn url(segs: &[String]) -> String {
     if segs.is_empty() {
         return "/".into();
     }
@@ -248,7 +401,10 @@ mod tests {
             page: true,
             actions: false,
             server: false,
+            indexed: true,
             entries,
+            ssr: true,
+            prerender: false,
         }
     }
 
@@ -326,6 +482,18 @@ mod tests {
                 .unwrap_err()
                 .contains("does not fit")
         );
+    }
+
+    #[test]
+    fn source_maps_beside_their_module() {
+        assert_eq!(
+            source_map("let a = 1\n//# sourceMappingURL=t3.js.map\n"),
+            Some(("let a = 1\n", "t3.js.map"))
+        );
+        assert_eq!(source_map("let a = 1\n"), None);
+        for odd in ["https://x/t.map", "../t.map", "data:x", ""] {
+            assert_eq!(source_map(&format!("//# sourceMappingURL={odd}")), None);
+        }
     }
 
     #[test]

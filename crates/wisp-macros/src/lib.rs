@@ -25,6 +25,27 @@ pub fn action(attr: TokenStream, item: TokenStream) -> TokenStream {
     implicit_cx(item)
 }
 
+/// `#[remote]` (or `#[remote(get)]`) marks a function browser code calls as
+/// `await name(args)`: `wisp-build` finds it and serves it at
+/// `/_app/r/<hash>`. The function is made as an action's is.
+#[proc_macro_attribute]
+pub fn remote(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let args: Vec<TokenTree> = attr.into_iter().collect();
+    match args.as_slice() {
+        [] => {}
+        [TokenTree::Ident(i)] if i.to_string() == "get" => {}
+        [first, ..] => {
+            let mut out = error(
+                "#[remote] takes nothing, or `get`: #[remote(get)]",
+                first.span(),
+            );
+            out.extend(item);
+            return out;
+        }
+    }
+    implicit_cx(item)
+}
+
 /// A parameter list without its `#[validate(...)]` attributes, which
 /// `wisp-build` reads to check the input before the call.
 fn without_rules(params: TokenStream) -> Vec<TokenTree> {
@@ -592,7 +613,72 @@ fn json(item: TokenStream) -> Result<TokenStream, Error> {
             }}
         }}"
     ));
-    Ok(fill(template, &body, &TokenStream::new()))
+    let mut out = fill(template, &body, &TokenStream::new());
+    out.extend(parse(&ts(&name.to_string(), &shape)));
+    Ok(out)
+}
+
+/// `wisp::ts::Ts`, which only `wisp check --types` builds have: the type's
+/// TypeScript by its name, `interface Note { title: string; }`. Closures
+/// read the fields, so the compiler names their types.
+fn ts(name: &str, shape: &Shape) -> String {
+    let bare = |id: &str| id.strip_prefix("r#").unwrap_or(id).to_string();
+    // A field whose type has no TypeScript is `unknown`.
+    let field = |f: &str| format!("&(&&::wisp::ts::field(|s: &{name}| &s.{f})).ts(d)");
+    // A `s.push_str(…);` for each piece: text, or a field's type.
+    let mut body = String::new();
+    let mut push = |code: String| body.push_str(&format!("s.push_str({code});"));
+    let text = |t: &str| format!("{t:?}");
+    match shape {
+        Shape::Named(fields) => {
+            push(text(&format!("interface {name} {{")));
+            for f in fields {
+                push(text(&format!(" {}: ", bare(&f.to_string()))));
+                push(field(&f.to_string()));
+                push(text(";"));
+            }
+            push(text(" }"));
+        }
+        Shape::Tuple(fields) => {
+            let many = fields.len() > 1;
+            push(text(&format!(
+                "type {name} = {}",
+                if many { "[" } else { "" }
+            )));
+            for k in 0..fields.len() {
+                if k > 0 {
+                    push(text(", "));
+                }
+                push(field(&k.to_string()));
+            }
+            push(text(if many { "];" } else { ";" }));
+        }
+        Shape::Unit => push(text(&format!("type {name} = null;"))),
+        Shape::Enum(variants) => {
+            let names: Vec<String> = variants
+                .iter()
+                .map(|v| format!("\"{}\"", bare(v)))
+                .collect();
+            push(text(&format!("type {name} = {};", names.join(" | "))));
+        }
+    }
+    let object = matches!(shape, Shape::Named(_));
+    format!(
+        "::wisp::__ts! {{
+            impl ::wisp::ts::Ts for {name} {{
+                type Static = {name};
+                const OBJECT: bool = {object};
+                fn ts(d: &mut ::wisp::ts::Decls) -> ::std::string::String {{
+                    use ::wisp::ts::{{ViaAny as _, ViaTs as _}};
+                    d.named({name:?}, |d| {{
+                        let mut s = ::std::string::String::new();
+                        {body}
+                        s
+                    }})
+                }}
+            }}
+        }}"
+    )
 }
 
 fn from_json(item: TokenStream) -> Result<TokenStream, Error> {

@@ -421,8 +421,9 @@ For pages on other sites to call the API from the browser:
 
 ```rust
 // src/hooks.rs
-fn before(cx: &mut Cx) -> Option<Response> {
-    cx.cors("*")
+fn before(cx: &mut Cx) -> Result {
+    cx.cors("*")?;                    // a preflight is the Err that `?` returns
+    Ok(())
 }
 ```
 
@@ -431,7 +432,7 @@ fn before(cx: &mut Cx) -> Option<Response> {
 cookies. It answers the browser's preflight itself, and a request from a
 site that is not allowed gets no CORS headers, so its browser keeps the
 answer from it. To allow it on some paths only:
-`if cx.path().starts_with("/api/") { return cx.cors("*") }`.
+`if cx.path().starts_with("/api/") { cx.cors("*")?; }`.
 
 ## Auth
 
@@ -560,9 +561,13 @@ when its database is gone.
 
 ## Configuration
 
-`wisp::env("KEY")` reads a variable (the process's on a server, the
-worker's on the edge), and `wisp::env_or("WORKERS", 4)` parses one, with a
-default. Read settings once in `init` and share them:
+`wisp::env("KEY")` reads a variable (the process's on a server, else
+`.env`'s in its working directory; the worker's on the edge, which reads
+no `.env`), and `wisp::env_or("WORKERS", 4)` parses one, with a default.
+`.env` is read once, at start (Wisp's own settings, such as `PORT`, too);
+the process's environment wins over it, and a line that is not
+`KEY=value` is skipped with a warning. `wisp dev` restarts the app when it
+changes. Read settings once in `init` and share them:
 
 ```rust
 pub struct Config {
@@ -692,6 +697,42 @@ only (`if-match`, `idempotency-key`), `send(Request)` for anything else, and
 `next_chunk` to read events as they are sent. Tables stay in memory in
 tests, so each test process starts empty. The API template keeps its tests
 in `src/tests.rs`, run by `cargo test`.
+
+### In a browser
+
+With the `browser` feature (new apps have it; `cargo test --features
+browser`), a test drives the app in a real headless Chrome or Edge, over the
+DevTools protocol: no Node, no WebDriver, no extra crate.
+
+```rust
+#[test]
+fn counter() {
+    let mut b = wisp::browser!(App); // the app on a free port, and a browser
+    b.goto("/");
+    b.click("text=Plus One");
+    assert_eq!(b.text("output"), "1");
+}
+```
+
+- Methods: `goto(path) click(sel) hover(sel) fill(sel, text) press(key)
+  text(sel) attr(sel, name) count(sel) wait(sel) eval(js) -> Value url()
+  screenshot(path) timeout(d)`.
+- Selectors are CSS, or `text=Plus One`: the innermost element whose text,
+  `aria-label` or `title` contains it, ignoring case.
+- Actions wait for their element (there, visible, enabled, not covered),
+  then for the page to settle (no fetch or navigation under way, the DOM
+  still for two frames), so a read after a click sees what the click did.
+  A wait over 5 s (`b.timeout(..)`) fails with the page's address and DOM.
+- The browser is `$WISP_BROWSER`, or Chrome, Edge, Chromium or Brave where
+  they install. With none, `wisp::browser!` returns: the test passes,
+  skipped, with a message, so CI without a browser stays green.
+- Dropped, the browser closes and its temporary profile goes; if the test
+  process is killed, a watchdog shell ends the browser. `--no-sandbox` on
+  Linux, for CI containers running as root.
+- `wisp::test::browser::<App>()` is the same, as an `Option<Browser>`.
+
+The demo template's `src/tests.rs` has examples: the counter, Casper's eyes
+following the pointer, and typing a Wisple guess.
 
 ## Where it runs
 

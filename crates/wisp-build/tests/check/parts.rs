@@ -40,14 +40,14 @@ fn sources_are_read_as_text() {
 #[test]
 fn a_wisp_file_splits_into_rust_and_markup() {
     // No block: all markup.
-    let (t, rust) = parse_wisp("<p>{a}</p>").unwrap();
+    let (t, rust) = parse_wisp("<p>{a}</p>", "x.wisp").unwrap();
     assert!(rust.is_none());
     assert_eq!(t.chunks.concat(), "<p></p>");
 
     // The block's Rust keeps its line; the markup is blanked, and the other
     // way round, so every line is on its own line in the file.
     let src = "\n\n---\nlet a = 1;\nlet b = 2;\n---\n<p>{a}{b}</p>";
-    let (t, rust) = parse_wisp(src).unwrap();
+    let (t, rust) = parse_wisp(src, "x.wisp").unwrap();
     assert_eq!(rust.as_deref(), Some("\n\n\nlet a = 1;\nlet b = 2;\n\n"));
     assert_eq!(t.chunks.concat(), "<p></p>");
     let Some(template::Node::Expr(a)) = t
@@ -64,16 +64,16 @@ fn a_wisp_file_splits_into_rust_and_markup() {
     );
 
     // A `---` that is not the first line is markup.
-    let (t, rust) = parse_wisp("<hr>\n---\n<hr>").unwrap();
+    let (t, rust) = parse_wisp("<hr>\n---\n<hr>", "x.wisp").unwrap();
     assert!(rust.is_none());
     assert!(t.chunks.concat().contains("---"));
     // A lone block is a page with no markup.
-    let (t, rust) = parse_wisp("---\nlet a = 1;\n---").unwrap();
+    let (t, rust) = parse_wisp("---\nlet a = 1;\n---", "x.wisp").unwrap();
     assert_eq!(rust.as_deref(), Some("\nlet a = 1;\n"));
     assert!(t.nodes.iter().all(|n| matches!(n, template::Node::Text(_))));
     // CRLF was read as LF by now; a block's fence may have spaces around it.
     assert!(
-        parse_wisp("  ---  \nlet a = 1;\n\t---\t\n{a}")
+        parse_wisp("  ---  \nlet a = 1;\n\t---\t\n{a}", "x.wisp")
             .unwrap()
             .1
             .is_some()
@@ -81,16 +81,16 @@ fn a_wisp_file_splits_into_rust_and_markup() {
 
     // Errors say `line:col: message`, in the file's lines.
     assert_eq!(
-        parse_wisp("\n---\nlet a = 1;\n").unwrap_err(),
+        parse_wisp("\n---\nlet a = 1;\n", "x.wisp").unwrap_err(),
         "2:1: this `---` starts a block of Rust, which needs a `---` line after it"
     );
-    let e = parse_wisp("---\nlet a = 1;\n---\n<p>\n{#if x}\n</p>").unwrap_err();
+    let e = parse_wisp("---\nlet a = 1;\n---\n<p>\n{#if x}\n</p>", "x.wisp").unwrap_err();
     assert!(e.starts_with("5:1: "), "{e}");
 }
 
 #[test]
 fn the_shape_is_what_a_running_build_cannot_change() {
-    let shape = |src: &str| parse_wisp(src).unwrap().0.shape;
+    let shape = |src: &str| parse_wisp(src, "x.wisp").unwrap().0.shape;
     // Text is not part of it; structure and code are.
     assert_eq!(
         shape("<h1>Hello {name}</h1>"),
@@ -121,25 +121,25 @@ fn hot_reload_takes_new_chunks_of_the_same_shape() {
         ),
         ("src/routes/bad/+page.wisp", "\n<p>{#if x}</p>"),
     ]);
-    let (chunks, shape) = hot_chunks(p.root(), "src/routes/+page.wisp").unwrap();
+    let (chunks, shape, _) = hot_chunks(p.root(), "src/routes/+page.wisp").unwrap();
     assert_eq!(chunks.concat(), "<h1>Hello </h1>");
     fs::write(
         p.root().join("src/routes/+page.wisp"),
         "<h2>Bye {name}</h2>\r\n",
     )
     .unwrap();
-    let (chunks2, shape2) = hot_chunks(p.root(), "src/routes/+page.wisp").unwrap();
+    let (chunks2, shape2, _) = hot_chunks(p.root(), "src/routes/+page.wisp").unwrap();
     assert_eq!(shape, shape2);
     assert_eq!(chunks2.concat(), "<h2>Bye </h2>");
 
-    let (c, _) = hot_chunks(p.root(), "src/components/Card.wisp").unwrap();
+    let (c, _, _) = hot_chunks(p.root(), "src/components/Card.wisp").unwrap();
     assert_eq!(c.concat(), "<b></b>");
 
     // The shell: text, head, text, body, text. Its shape is fixed.
-    let (parts, shape) = hot_chunks(p.root(), "src/app.html").unwrap();
+    let (parts, shape, _) = hot_chunks(p.root(), "src/app.html").unwrap();
     assert_eq!(parts, ["<html>", "<body>", "</body></html>"]);
     fs::write(p.root().join("src/app.html"), "<x>%wisp.head%%wisp.body%").unwrap();
-    let (parts, again) = hot_chunks(p.root(), "src/app.html").unwrap();
+    let (parts, again, _) = hot_chunks(p.root(), "src/app.html").unwrap();
     assert_eq!((parts.len(), shape), (3, again));
 
     // Errors name the file, and a template's carry `line:col`.
@@ -245,6 +245,23 @@ fn the_minified_runtime_parses() {
         let why = String::from_utf8_lossy(&checked.stderr);
         assert!(checked.status.success(), "{file}: {why}");
     }
+}
+
+/// The devtools' hooks in live.js are for debug builds only: the release
+/// runtime has none of them, and the marks pair up.
+#[test]
+fn release_runtime_has_no_dev_hooks() {
+    let live = wisp_shared::LIVE_JS;
+    assert!(live.contains("__wisp_dev"), "the hooks are there in dev");
+    assert!(!minify_js(live).contains("__wisp_dev"));
+    assert_eq!(
+        live.matches("// dev{").count(),
+        live.matches("// }dev").count()
+    );
+    assert_eq!(
+        minify_js("let a = 1\n// dev{\nlet b = a\n// }dev\nexport { a }\n"),
+        minify_js("let a = 1\nexport { a }\n")
+    );
 }
 
 /// What the browser runtime is served as: names it binds are shortened,
@@ -676,7 +693,7 @@ fn a_package_import_needs_the_package() {
     );
     let p = Project::new(&[page, lib, json]);
     assert_eq!(
-        wisp_build::check(p.root()).unwrap(),
+        wisp_build::check(p.root()).unwrap().0,
         [
             "/canvas-confetti@1.9.3/x?target=es2022",
             "/canvas-confetti@1.9.3?target=es2022"

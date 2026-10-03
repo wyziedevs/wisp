@@ -50,8 +50,31 @@ let later = new Map(); // islands waiting for hydrate(): instance -> its record
 let woken = new Set(); // instances hydrate() was called for
 let ready = Promise.resolve(); // the last start's boot
 let current = null; // the instance whose script is running, for context()
+// dev{
+// What the devtools overlay (wisp-devtools.js) reads. Release builds of
+// this file have none of the lines from a `dev{` mark to its `}dev`.
+// A dev module's script ends with state(file, its signals, their lines).
+const devs = new Set();
+globalThis.__wisp_dev = {
+  route: () => route,
+  live() {
+    for (const i of devs) if (i.sc.dead) devs.delete(i);
+    return [...devs];
+  },
+  stores: [], // [signal, where it was made (a stack)]
+  state(file, st, lines) {
+    if (current) devs.add(Object.assign(current, { file, st, lines }));
+  },
+  // Set by wisp-dev.js: why the modules `wisp dev` rebuilt swap whole, if
+  // they do.
+  full: '',
+};
+// }dev
 
 export function define(id, fn, opts) {
+  // dev{
+  if (hot(id, { fn, ...opts })) return;
+  // }dev
   defs.set(id, { fn, ...opts });
 }
 
@@ -367,6 +390,9 @@ function sub(get, f) {
 // module to share it between files.
 export function store(value) {
   const s = new Sig(value, 1);
+  // dev{
+  __wisp_dev.stores.push([s, new Error().stack]);
+  // }dev
   return {
     get value() {
       return s.v;
@@ -387,11 +413,34 @@ export const persisted = (key, initial) => X.persisted(key, initial);
 // A value worked out from others, read as `total.value` like a store's.
 export function derived(f) {
   const m = new Memo(f);
+  // dev{
+  __wisp_dev.stores.push([m, new Error().stack]);
+  // }dev
   return { get value() { return m.v; }, subscribe: (g) => sub(() => m.v, g) };
 }
 
-export const page = store({ url: new URL(location.href), status: 200, form: undefined });
+// `state` is the history entry's, from pushState: kept on a reload only
+// at the address it was made on.
+const hs = () => history.state?.s || {};
+export const page = store({
+  url: new URL(location.href),
+  status: 200,
+  form: undefined,
+  state: history.state?.p == location.href.split('#')[0] ? hs() : {},
+});
 export const navigating = store(null);
+
+// Shallow routing: a history entry with this state (`page.value.state`),
+// at `url` if given, and no navigation; back and forward bring it back
+// with no request (wisp.js keeps the history).
+export const pushState = (url, state) => shallow(url, state);
+export const replaceState = (url, state) => shallow(url, state, 1);
+function shallow(url, state = {}, replace) {
+  send('wisp:push', { url: String(url ?? ''), state, replace });
+  popped();
+}
+const popped = () => (page.value = { ...page.value, url: new URL(location.href), state: hs() });
+document.addEventListener('wisp:pop', popped);
 
 // Client navigation, done by wisp.js: to `url`, or the current page again.
 export function goto(url, opts = {}) {
@@ -406,6 +455,28 @@ export function invalidate() {
 // text has the query in it, whatever the case; an empty query matches all.
 export const matches = (text, q) =>
   String(text ?? '').toLowerCase().includes(String(q ?? '').trim().toLowerCase());
+
+// A translation: `t('cart.items', n)`, which the build makes
+// `__wisp_t('cart.items', { count: n })`. The page sends the messages its
+// scripts show (`t` in #wisp-live), in its locale: text, ['name'] for a
+// value, ['n', { one: [...], other: [...] }] for a plural (CLDR's, as
+// Intl has them for <html lang>).
+const texts = {};
+const plurals = {};
+const say = (m, a) =>
+  typeof m == 'string'
+    ? m
+    : m
+        .map((p) => {
+          if (typeof p == 'string') return p;
+          const v = a?.[p[0]];
+          if (p.length == 1) return v ?? '';
+          const lang = document.documentElement.lang || 'en';
+          const c = p[1];
+          return say(c['=' + v] || c[(plurals[lang] ||= new Intl.PluralRules(lang)).select(+v || 0)] || c.other, a);
+        })
+        .join('');
+export const __wisp_t = (key, a) => (key in texts ? say(texts[key], a) : key);
 
 // A context of its own: `const [getUser, setUser] = context()`, in a lib
 // module or a script. Set in a component's script, got in its own or a
@@ -517,7 +588,8 @@ function start() {
   const my = ++gen;
   const json = document.getElementById('wisp-live');
   // Parsed by wisp.js already, if it is there; ours to change now.
-  const { m = {}, i = [], r = null, p = {} } = json ? json.__j || JSON.parse(json.textContent) : {};
+  const { m = {}, i = [], r = null, p = {}, t = {} } = json ? json.__j || JSON.parse(json.textContent) : {};
+  Object.assign(texts, t);
   if (json) json.__j = null;
   route = { id: r, params: p };
   const at = {};
@@ -595,6 +667,7 @@ function begin(rec) {
     live.push(inst);
     bindAll(inst, mine);
     if (inst.s) loadThen(def, blob, my, (b) => inst.s(b));
+    if (inst.snap) X.snap(inst);
   } else if (def.load) {
     // Its +page.js loads first: the page's elements wait unbound.
     waiting[I] = [];
@@ -624,12 +697,17 @@ export function hydrate(I) {
   const g = gen;
   return ready.then(async () => {
     if (g !== gen) return;
-    // One inside an island that waits still: it starts with that one.
+    // One inside an island that waits still (a server component between
+    // them or not) wakes that one, and starts with it.
     woken.add(I);
-    const rec = later.get(I);
-    if (!rec) return;
-    later.delete(I);
     const { list, at, m, waiting } = cur;
+    const rec = later.get(I);
+    if (!rec) {
+      let y = at[I];
+      while (y && !later.has(y.I)) y = at[y.P];
+      return y && hydrate(y.I);
+    }
+    later.delete(I);
     await need(list.filter((x) => { for (let y = x; y; y = at[y.P]) if (y === rec) return true; }), m);
     if (g !== gen) return;
     const next = waiting[I];
@@ -660,10 +738,15 @@ function script(inst, blob) {
   const prev = current;
   current = inst;
   try {
-    inst.g = untrack(() => inst.def.fn(blob, helpers(inst))).g;
+    ({ g: inst.g, snap: inst.snap } = untrack(() => inst.def.fn(blob, helpers(inst))));
   } finally {
     current = prev;
   }
+  if (inst.snap) X.snap(inst);
+  // dev{
+  made.add(inst);
+  if (inst.slot) give(inst, carry.get(inst.def.file)?.shift());
+  // }dev
 }
 
 // A script that throws while starting shows the route's error page.
@@ -738,6 +821,9 @@ const shared = {
   goto,
   invalidate,
   matches,
+  pushState,
+  replaceState,
+  __wisp_t,
   page,
   navigating,
   context,
@@ -1017,10 +1103,12 @@ const css = (v) =>
 
 
 // The root's listener for delegated events: the handlers of each element
-// from the target up, as if on each, until one stops the event.
+// from the target up, as if on each, until one stops the event. From
+// inside a shadow root (a custom element's) the root sees its host: the
+// walk starts at the real target, and goes on from a shadow root to its host.
 const rooted = new Set();
 function delegate(e) {
-  for (let n = e.target; n; n = n.parentNode) {
+  for (let n = e.target.shadowRoot ? e.composedPath()[0] : e.target; n; n = n.parentNode || n.host) {
     const hs = n.__on;
     if (!hs) continue;
     for (const [type, f, sc, L] of hs) {
@@ -1342,6 +1430,165 @@ const X = {
 };
 export const __wisp = X;
 
+// dev{
+// ---- hot swap (`wisp dev`) ----------------------------------------------------
+//
+// A module of a file that is in the page already, loaded again with new
+// code, is swapped in place: each instance of its old version runs the new
+// script, gets the old one's state back by name (what it no longer declares
+// is dropped), and its elements are bound again. One that another's code
+// renders (a component the browser draws) is made again by that one, its
+// state carried over the same way, in the order they were made. Focus, the
+// selection and what fields hold stay. It is swapped whole instead, as a
+// new module is, when the reason is given (`wisp dev` says, or its script
+// runs code at its top level that may not be safe to run twice, or its
+// props changed), and the page loads again if the swap throws.
+const made = new Set(); // instances a script ran for, in order
+const carry = new Map(); // file -> the state of instances to make again, in order
+let told = ''; // the reason logged last, said once
+
+function hot(id, def) {
+  const old = defs.get(id);
+  if (!old || old.file !== def.file) return false;
+  const same = (k) => String(old[k]) == String(def[k]);
+  if (same('fn') && same('html') && same('load')) return true;
+  for (const i of made) if (i.sc.dead) made.delete(i);
+  const why = __wisp_dev.full || (def.effect && `${def.file}:${def.effect} runs code at its top level that may not be safe to run twice`);
+  if (why) return whole(id, old, def, why);
+  // A start under way (a morph after a rebuild) binds the elements itself.
+  const starting = gen !== cur.my;
+  try {
+    const keep = fields();
+    const insts = [...made].filter((i) => i.def === old);
+    defs.set(id, def);
+    for (const i of insts) if (live.includes(i) && !again(i, def, starting)) return whole(id, old, def, `${def.file}: its props changed`);
+    for (const r of roots(insts)) stash(r), rebind(r, starting);
+    (starting ? ready : Promise.resolve()).then(tick).then(() => {
+      carry.clear();
+      refill(keep);
+    });
+  } catch (e) {
+    console.error(e);
+    location.reload();
+  }
+  return true;
+}
+
+// As a new module: the page's instances of it start afresh, and those
+// another's code renders are made again.
+function whole(id, old, def, why) {
+  defs.set(id, def);
+  const msg = `wisp dev: swapped whole, as ${why}`;
+  if (told != msg) console.info((told = msg));
+  setTimeout(() => (told = ''));
+  const starting = gen !== cur.my;
+  for (const r of roots([...made].filter((i) => i.def === old))) rebind(r, starting);
+  if (!starting) queueMicrotask(() => send('wisp:update'));
+  return true;
+}
+
+// Instance o made again from def in its place, with its state; false, with
+// o left as it was, when its props are not the same names.
+function again(o, def, starting) {
+  const b = {};
+  for (const k in o.P) if (k != '__rest') b[k] = o.P[k].x;
+  Object.assign(b, o.P?.__rest?.x);
+  const n = instance(def, o.id, o.el, o.parent, o.depth);
+  Object.assign(n, { I: o.I, events: o.events });
+  script(n, b);
+  if (Object.keys(n.P || {}).join() != Object.keys(o.P || {}).join()) {
+    end(n.sc);
+    return false;
+  }
+  give(n, take(o));
+  stash(o);
+  const els = [...o.recs].map((r) => r.el);
+  destroy(o);
+  live[live.indexOf(o)] = n;
+  if (cur.byI?.[o.I] === o) cur.byI[o.I] = n;
+  for (const i of made) if (i.parent === o) i.parent = n;
+  if (!starting) attach(n, els);
+  return true;
+}
+
+// The instances of the page (not another's code) that render these.
+function roots(insts) {
+  const out = new Set();
+  for (let i of insts) {
+    if (i.sc.dead || live.includes(i)) continue;
+    while (i && !live.includes(i)) i = i.parent;
+    if (i) out.add(i);
+  }
+  return out;
+}
+
+// Its elements bound again: what its code renders is made again.
+function rebind(r, starting) {
+  const els = [...r.recs].map((x) => x.el);
+  for (const x of r.recs) stopRec(x);
+  if (!starting) attach(r, els);
+}
+
+function attach(n, els) {
+  const mine = els.filter((el) => {
+    el.__d = el.getAttribute('data-w');
+    el.__l = el.getAttribute('data-wl');
+    return el.__d?.startsWith(n.I + '.');
+  });
+  bindAll(n, mine);
+}
+
+// The state of what o's code renders, for when it is made again.
+function stash(o) {
+  for (const i of made) {
+    let p = i.parent;
+    while (p && p !== o) p = p.parent;
+    if (p && i.slot && !i.sc.dead) carry.set(i.def.file, [...(carry.get(i.def.file) || []), take(i)]);
+  }
+}
+
+const take = (i) => {
+  const s = {};
+  for (const k in i.st) if (i.st[k] instanceof Sig) s[k] = i.st[k].x;
+  return s;
+};
+
+function give(i, s) {
+  for (const k in s) if (i.st?.[k] instanceof Sig) i.st[k].v = s[k];
+}
+
+// What each field holds and where focus is, by place in the page: an
+// element made again gets them back.
+function fields() {
+  const at = (el) => {
+    const p = [];
+    for (; el.parentElement; el = el.parentElement) p.unshift([...el.parentElement.children].indexOf(el));
+    return p;
+  };
+  const a = document.activeElement;
+  return {
+    f: [...document.querySelectorAll('input, textarea, select')].map((el) => [at(el), el, el.value, el.checked]),
+    a: a && a !== document.body && [at(a), a, a.selectionStart, a.selectionEnd, a.selectionDirection],
+  };
+}
+
+function refill({ f, a }) {
+  const at = (p) => p.reduce((el, k) => el?.children[k], document.documentElement);
+  for (const [p, el, value, checked] of f) {
+    const now = at(p);
+    if (!now || now === el || now.localName != el.localName || now.type != el.type || el.type == 'file') continue;
+    if (now.value !== value) now.value = value;
+    now.checked = checked;
+  }
+  const now = a && (a[1].isConnected ? a[1] : at(a[0]));
+  if (!now || document.activeElement === now) return;
+  now.focus({ preventScroll: true });
+  try {
+    now.setSelectionRange?.(a[2], a[3], a[4]);
+  } catch {}
+}
+// }dev
+
 // ---- navigation -------------------------------------------------------------
 
 document.addEventListener('wisp:navigate', (e) => {
@@ -1349,7 +1596,7 @@ document.addEventListener('wisp:navigate', (e) => {
   navigating.value = { from: new URL(e.detail.from), to: new URL(e.detail.to, location.href) };
 });
 document.addEventListener('wisp:update', (e) => {
-  page.value = { ...page.value, url: new URL(location.href), status: e.detail?.status ?? 200 };
+  page.value = { ...page.value, url: new URL(location.href), status: e.detail?.status ?? 200, state: hs() };
   navigating.value = null;
   start();
 });

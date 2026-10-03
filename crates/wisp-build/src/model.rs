@@ -50,6 +50,9 @@ pub struct Route {
     /// bytes), which raise the body limit.
     pub uploads: Option<String>,
     pub cache: Option<Cache>,
+    /// `/sitemap.xml` lists it: a page outside any `(private)` group,
+    /// without a `<meta name="robots" content="noindex">`.
+    pub indexed: bool,
 }
 
 impl Route {
@@ -73,6 +76,10 @@ pub struct Page {
     pub fns: Vec<FnItem>,
     /// Its statements may wait, or its Rust has an `async fn`.
     pub waits: bool,
+    /// The browser draws it: `const SSR: bool = false;`.
+    pub drawn: bool,
+    /// `wisp build` renders it: `const PRERENDER: bool = true;`.
+    pub prerender: bool,
 }
 
 impl Page {

@@ -22,10 +22,14 @@ mod cache;
 #[cfg(not(target_arch = "wasm32"))]
 mod channel;
 mod compress;
+mod content;
+mod csp;
 mod cx;
 mod dev;
 #[cfg(target_arch = "wasm32")]
 pub mod edge;
+#[cfg(target_arch = "wasm32")]
+mod edge_store;
 #[cfg(target_os = "linux")]
 mod epoll;
 mod export;
@@ -39,6 +43,7 @@ mod headers;
 mod health;
 mod html;
 mod http;
+mod i18n;
 mod idem;
 mod image;
 mod input;
@@ -46,19 +51,25 @@ mod input;
 mod jobs;
 pub mod json;
 #[cfg(not(target_arch = "wasm32"))]
+mod lambda;
+#[cfg(not(target_arch = "wasm32"))]
 mod limit;
 mod live;
 mod mail;
 pub mod oauth;
+mod obs;
 mod otel;
 pub mod password;
 mod policy;
+mod pwa;
 mod range;
 #[cfg(not(target_arch = "wasm32"))]
 mod relay;
+mod remote;
 mod rest;
 #[doc(hidden)]
 pub mod rt_traits;
+mod seo;
 #[cfg(test)]
 mod serve_tests;
 mod session;
@@ -73,22 +84,29 @@ mod token;
 pub mod totp;
 #[cfg(feature = "tower")]
 pub mod tower;
+#[cfg(feature = "types")]
+pub mod ts;
 #[cfg(target_os = "linux")]
 mod uring;
+#[cfg(debug_assertions)]
+mod workshop;
 mod ws;
 
 pub use blob::{Blobs, Upload, blobs};
 pub use cache::{cache, uncache};
 #[cfg(not(target_arch = "wasm32"))]
 pub use channel::{Channel, Subscription, channel};
+pub use content::{MdPage, pages};
+pub use csp::{csp, csp_off};
 pub use cx::{CookieOptions, Cx, Method, SameSite};
 #[cfg(target_arch = "wasm32")]
 pub use edge::fetch;
-pub use export::{Entry, ExportRoute, export};
+pub use export::{Entry, ExportRoute, export, prerender};
 #[cfg(not(target_arch = "wasm32"))]
 pub use fetch::fetch;
 pub use form::{File, Form};
-pub use http::{Body, Reply, Request, handle};
+pub use http::{Body, Reply, Request, TrailingSlash, handle, trailing_slash};
+pub use i18n::{default_locale, locales, localize};
 pub use image::Image;
 pub use input::Email;
 #[cfg(not(target_arch = "wasm32"))]
@@ -98,6 +116,8 @@ pub use json::{FromJson, Value, from_json, to_json};
 pub use limit::RateLimit;
 pub use live::{ClientModule, Json};
 pub use mail::mail;
+pub use otel::{SpanGuard, span, traceparent};
+pub use pwa::app_manifest;
 #[cfg(not(target_arch = "wasm32"))]
 pub use relay::{Deliver, Relay, relay};
 pub use rest::Resource;
@@ -106,7 +126,7 @@ pub use sign::{hex, hmac_sha256};
 pub use store::{Changes, Store, store};
 pub use table::{Page, Row, Table};
 pub use token::{token, untoken};
-pub use wisp_macros::{Cookie, FromJson, Json, Rest, action, model};
+pub use wisp_macros::{Cookie, FromJson, Json, Rest, action, model, remote};
 pub use ws::{Message, WebSocket};
 
 use std::any::{Any, TypeId};
@@ -126,10 +146,12 @@ pub type Result<T = (), E = Error> = std::result::Result<T, E>;
 pub mod prelude {
     #[cfg(not(target_arch = "wasm32"))]
     pub use crate::RateLimit;
+    /// For `wisp::trailing_slash(Always)` in `init`.
+    pub use crate::TrailingSlash::{Always, Ignore, Never};
     pub use crate::{
         Cookie, CookieOptions, Cx, Email, Error, FromJson, Image, Json, KB, MB, Method, OrStatus,
         Response, Rest, Result, Row, SameSite, Shared, Table, Value, action, error, invalid, model,
-        redirect,
+        redirect, remote,
     };
 }
 
@@ -172,6 +194,22 @@ macro_rules! main {
     };
 }
 
+/// What `#[derive(Json)]` adds for `wisp check --types` (the `types`
+/// feature): nothing in any other build.
+#[doc(hidden)]
+#[cfg(feature = "types")]
+#[macro_export]
+macro_rules! __ts {
+    ($($t:tt)*) => { $($t)* };
+}
+
+#[doc(hidden)]
+#[cfg(not(feature = "types"))]
+#[macro_export]
+macro_rules! __ts {
+    ($($t:tt)*) => {};
+}
+
 /// Includes the code `wisp-build` generated and brings `App` into scope,
 /// for a `main` of your own: `wisp::app!(); fn main() { setup(); wisp::run::<App>(); }`.
 /// `src/hooks.rs` is `crate::hooks`, so routes can use what it defines, and
@@ -208,9 +246,27 @@ macro_rules! app {
 /// the like) the host serves: this gets the app ready and returns.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run<A: App>() {
+    // `wisp check --types` builds the app to print its scripts' server
+    // values' types, and runs nothing else.
+    #[cfg(feature = "types")]
+    if std::env::var_os("WISP_TYPES").is_some() {
+        return print!("{{{}}}", A::types());
+    }
     // `wisp build --static` runs the app this way, to write its pages out.
     if let Some(dir) = setting::<String>("WISP_EXPORT", "a folder") {
-        return export::run::<A>(&dir).unwrap_or_else(|e| fail(&e.to_string()));
+        let spa = std::env::var_os("WISP_SPA").is_some_and(|v| v == "1");
+        let job = export::export::<A>(std::path::Path::new(&dir), spa);
+        return export::run(job).unwrap_or_else(|e| fail(&e.to_string()));
+    }
+    // `wisp build` runs it so for pages with `const PRERENDER: bool = true;`.
+    if let Some(dir) = setting::<String>("WISP_PRERENDER", "a folder") {
+        let job = export::prerender::<A>(std::path::Path::new(&dir));
+        return export::run(job).unwrap_or_else(|e| fail(&e.to_string()));
+    }
+    // On AWS Lambda (`wisp build --target lambda`), its runtime API hands
+    // out the requests.
+    if let Some(api) = lambda_api() {
+        return lambda::run::<A>(&api);
     }
     let addr = address();
     let threads = match setting("WISP_THREADS", "a number of threads above 0") {
@@ -226,9 +282,18 @@ pub fn run<A: App>() {
     }
     let served = http::run::<A>(addr, threads);
     store::files::flush();
+    obs::flush();
     if let Err(e) = served {
         fail(&e.to_string());
     }
+}
+
+/// `AWS_LAMBDA_RUNTIME_API`, which Lambda sets and nothing else does.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn lambda_api() -> Option<String> {
+    std::env::var("AWS_LAMBDA_RUNTIME_API")
+        .ok()
+        .filter(|a| !a.is_empty())
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -256,6 +321,11 @@ pub async fn prepare<A: App>() -> std::io::Result<()> {
         std::io::Error::other(format!("init in src/hooks.rs failed: {}", e.detail()))
     })?;
     session::ready();
+    csp::ready(
+        A::SCRIPT_HASHES,
+        A::PWA.is_some_and(|p| !p.worker.is_empty()),
+    );
+    content::ready(A::PAGES);
     Ok(())
 }
 
@@ -299,13 +369,51 @@ pub fn state<T: Send + Sync + 'static>() -> &'static T {
 }
 
 /// A variable from the host's environment, such as an API key: the
-/// process's environment on a server, the worker's variables and secrets
-/// on an edge host.
+/// process's environment on a server, else `.env` in its working
+/// directory (read once, at start); the worker's variables and secrets on
+/// an edge host, which has no `.env`.
 pub fn env(key: &str) -> Option<String> {
     #[cfg(not(target_arch = "wasm32"))]
-    return std::env::var(key).ok();
+    return var(key, dotenv());
     #[cfg(target_arch = "wasm32")]
     return edge::env(key);
+}
+
+/// `key` from the process's environment, else from `file`'s lines.
+#[cfg(not(target_arch = "wasm32"))]
+fn var(key: &str, file: &[(String, String)]) -> Option<String> {
+    match std::env::var(key) {
+        Ok(v) => Some(v),
+        Err(std::env::VarError::NotUnicode(v)) => Some(v.to_string_lossy().into_owned()),
+        Err(std::env::VarError::NotPresent) => {
+            file.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
+        }
+    }
+}
+
+/// The variables of `.env` in the working directory, read once: the first
+/// setting `run` reads reads it. A line that is not `KEY=value` is skipped,
+/// with a warning; no file is none.
+#[cfg(not(target_arch = "wasm32"))]
+fn dotenv() -> &'static [(String, String)] {
+    static VARS: OnceLock<Vec<(String, String)>> = OnceLock::new();
+    VARS.get_or_init(|| {
+        let text = match std::fs::read_to_string(".env") {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+            Err(e) => {
+                http::log(format_args!("wisp: .env is not read: {e}"));
+                return Vec::new();
+            }
+        };
+        let (vars, bad) = wisp_shared::dotenv::parse(&text);
+        for n in bad {
+            http::log(format_args!(
+                "wisp: .env line {n} is not KEY=value, so it is skipped"
+            ));
+        }
+        vars
+    })
 }
 
 /// Runs `task` in the background: work that outlives its request. On the
@@ -514,12 +622,9 @@ pub fn address() -> SocketAddr {
 /// is not a `T` ends the process, so a typo is never silently replaced by a
 /// default.
 fn setting<T: FromStr>(name: &str, what: &str) -> Option<T> {
-    #[cfg(not(target_arch = "wasm32"))]
-    let value = std::env::var_os(name)?;
-    #[cfg(target_arch = "wasm32")]
-    let value = std::ffi::OsString::from(edge::env(name)?);
-    match value.to_str().map(|v| v.trim().parse()) {
-        Some(Ok(v)) => Some(v),
+    let value = env(name)?;
+    match value.trim().parse() {
+        Ok(v) => Some(v),
         _ => fail(&format!("{name} is {value:?}, which is not {what}")),
     }
 }
@@ -568,8 +673,7 @@ pub(crate) struct Settings {
     pub request_id: bool,
     /// `WISP_SECURE_HEADERS`: `nosniff` and `referrer-policy` on pages (`on`).
     pub secure_headers: bool,
-    /// Handlers are timed, for the dev log and the traces: `dev`, or an
-    /// OTLP endpoint is set.
+    /// Handlers are timed, for the dev log: `dev`, but not in the edge build.
     pub timed: bool,
     /// `WISP_HANDLER_TIMEOUT`, in milliseconds (0 for none).
     pub timeout_ms: u64,
@@ -626,7 +730,7 @@ pub(crate) fn settings() -> &'static Settings {
         let secure_headers = switch("WISP_SECURE_HEADERS", true);
         // `WISP_HSTS`: `strict-transport-security` on every answer (`off`).
         headers::HSTS_ON.store(switch("WISP_HSTS", false), std::sync::atomic::Ordering::Relaxed);
-        let timed = cfg!(not(target_arch = "wasm32")) && (dev || otel::wanted());
+        let timed = cfg!(not(target_arch = "wasm32")) && dev;
         let timeout_ms = setting::<u64>("WISP_HANDLER_TIMEOUT", "a number of seconds").map_or(0, |s| s.saturating_mul(1000));
         Settings {
             dev, body_limit, origin, client_ip_header, secret, old_secret, api_docs, request_id, problem_json, secure_headers, timed, timeout_ms,
@@ -668,11 +772,24 @@ pub trait App: 'static {
     const ROOT: &'static str;
     /// Hash of the built CSS, `"dev"` in dev builds, `None` without CSS.
     const CSS: Option<&'static str>;
+    /// `'sha256-…'` of every inline script the templates and shell run,
+    /// which the Content-Security-Policy allows (see `csp`).
+    const SCRIPT_HASHES: &'static [&'static str] = &[];
+    /// The Markdown pages, for [`pages`].
+    const PAGES: &'static [MdPage] = &[];
+    /// The tags of the components built as custom elements (`{@element
+    /// "x-card"}`), which other sites load: with any, the browser modules
+    /// allow any origin.
+    const ELEMENTS: &'static [&'static str] = &[];
+    /// The service worker and web app manifest, if the app has either.
+    const PWA: Option<rt::Pwa> = None;
     /// What the build knows of each route, by route id.
     const ROUTES: &'static [rt::RouteFacts];
     /// [`rt::RouteFacts::now`] for a request no route matched, which the
     /// root error page answers.
     const NOT_FOUND_NOW: bool = false;
+    /// The locales of `src/locales/*.json`, by file name, sorted.
+    const LOCALES: &'static [&'static str] = &[];
     /// `(path, shape)` per template id, for dev hot swapping.
     const TEMPLATES: &'static [(&'static str, u64)];
 
@@ -695,6 +812,17 @@ pub trait App: 'static {
     /// `/_wisp/client.ts`; empty without any.
     fn client_ts() -> &'static str {
         ""
+    }
+    /// Dev builds: the components and their stories, for the workshop at
+    /// `/_wisp/components`.
+    fn workshop() -> &'static [rt::Shelf] {
+        &[]
+    }
+    /// `wisp check --types`: the TypeScript of each value a script reads
+    /// of a block, by file (see `ts`), as the members of a JSON object.
+    #[cfg(feature = "types")]
+    fn types() -> String {
+        String::new()
     }
     /// Every route, for `wisp build --static`.
     fn export_routes() -> Vec<ExportRoute> {
@@ -737,6 +865,12 @@ pub struct Out {
     made: Option<bake::Made>,
     /// The template instances with browser code the page rendered.
     live: live::Live,
+    /// The request's locale, by index into [`locales`]: what `t(…)` in a
+    /// template reads.
+    #[doc(hidden)]
+    pub lang: u8,
+    /// The request, while logs, metrics or traces watch it.
+    obs: Option<obs::Pending>,
 }
 
 impl Out {
@@ -746,6 +880,7 @@ impl Out {
         self.response = None;
         self.made = None;
         self.live.clear();
+        self.lang = 0;
     }
 }
 
@@ -1368,11 +1503,18 @@ impl<T, E: fmt::Display> OrStatus<T> for std::result::Result<T, E> {
 /// Support for generated code. Not a stable API.
 #[doc(hidden)]
 pub mod rt {
+    pub use crate::i18n::{Arg, Case, Count, Msg, Part, Tr};
+
+    /// The request's locale, by index: for `Out::lang`.
+    #[inline]
+    pub fn pick_locale(cx: &crate::Cx) -> u8 {
+        crate::i18n::pick(cx)
+    }
     pub use crate::bake::{Baked, baked, cached, keep};
     pub use crate::cx::{
         BadCookie, CookieReader, CookieWriter, MAX_PARAMS, MAX_SEGS, decode, split,
     };
-    pub use crate::dev::chunk;
+    pub use crate::dev::{chunk, marks};
     /// A `#[derive(Rest)]` type's handlers and hooks (see `rest.rs`).
     pub mod rest {
         pub use crate::rest::{Hooks, Kind, create, delete, get, list, patch, put};
@@ -1433,6 +1575,61 @@ pub mod rt {
             None => Some(T::now()),
         }
     }
+    /// A component in the workshop at `/_wisp/components` (dev builds).
+    pub struct Shelf {
+        pub name: &'static str,
+        pub file: &'static str,
+        pub props: &'static [ShelfProp],
+        /// From its `Name.stories.wisp`, or the default story.
+        pub stories: &'static [Story],
+        /// Why it has no story, when it has none.
+        pub note: &'static str,
+    }
+
+    pub struct ShelfProp {
+        pub name: &'static str,
+        pub ty: &'static str,
+        /// How the workshop edits it, if it can.
+        pub control: Option<Control>,
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub enum Control {
+        Text,
+        Number,
+        Check,
+    }
+
+    pub struct Story {
+        pub name: &'static str,
+        pub slug: &'static str,
+        /// Where it is: its stories file, or for the default story the
+        /// component's.
+        pub file: &'static str,
+        pub line: u32,
+        /// The props' first values, where the story writes literals.
+        pub values: &'static [(&'static str, &'static str)],
+        /// Renders it, its simple props from the query.
+        pub render: fn(&mut crate::Out, &crate::Cx),
+    }
+
+    /// The app's service worker and web app manifest ([`crate::App::PWA`]),
+    /// as the build made them.
+    pub struct Pwa {
+        /// `/service-worker.js`, or "".
+        pub worker: &'static str,
+        pub worker_etag: &'static str,
+        /// `/manifest.webmanifest`: `None` when `init` gives it
+        /// ([`crate::app_manifest`]), "" without one.
+        pub manifest: Option<&'static str>,
+        pub manifest_etag: &'static str,
+        /// `static/`'s icons, which a manifest from `init` gets.
+        pub icons: &'static str,
+        /// What every page's head gets: the manifest's link, the script
+        /// that registers the worker.
+        pub head: &'static str,
+    }
+
     /// What the build knows of a route: one row per route id in
     /// [`crate::App::ROUTES`], so no fact can drift from the others.
     pub struct RouteFacts {
@@ -1457,6 +1654,11 @@ pub mod rt {
         pub files: bool,
         /// Its nearest `+error.wisp`, by the app's own numbering.
         pub error: Option<usize>,
+        /// It has a page, whose address [`crate::trailing_slash`] decides.
+        pub page: bool,
+        /// Its path as the route folder spells it, `/blog/[slug]`: what
+        /// logs, metrics and traces name it by.
+        pub pattern: &'static str,
     }
 
     impl RouteFacts {
@@ -1470,6 +1672,8 @@ pub mod rt {
                 sync: 0,
                 files: true,
                 error: None,
+                page: false,
+                pattern: "",
             }
         }
 
@@ -1483,6 +1687,11 @@ pub mod rt {
             };
             Some((self.body_limit.unwrap_or(usual)).max(usual.saturating_add(uploads)))
         }
+    }
+
+    /// `#[remote]` functions' arguments and answers (see `remote.rs`).
+    pub mod remote {
+        pub use crate::remote::{args, get, members};
     }
 
     /// A handler's parameters, read by name (see `input.rs`).
@@ -1708,67 +1917,48 @@ pub mod rt {
         Error::new(405, "Method Not Allowed").with_header("allow", allow)
     }
 
-    /// Used when no `+error.wisp` applies, or when rendering one failed. It
-    /// says what happened, what it means or what to do, and the status with
-    /// the request as the reference line. It brings its own styles
-    /// (`client/ui.css`), since the app's own CSS may not exist yet.
-    pub fn default_error(cx: &Cx, out: &mut Out, status: u16, message: &str) {
+    /// Used when no `+error.wisp` applies, or when rendering one failed: the
+    /// status and one line, centered, with its own few styles (the app's CSS
+    /// may not exist yet). The line is the status's name unless the error
+    /// says something more specific.
+    pub fn default_error(_cx: &Cx, out: &mut Out, status: u16, message: &str) {
         let title = crate::http::title(status);
+        let line = if message.is_empty() || message == crate::http::sentence(status) {
+            title
+        } else {
+            message
+        };
         out.head.push_str("<title>");
         text(&mut out.head, title);
         out.head.push_str("</title><style>");
-        out.head.push_str(crate::http::UI_CSS);
+        out.head.push_str(ERROR_CSS);
         out.head.push_str("</style>");
-
-        // A 5xx failed; it wears the failure glyph. A 4xx is an answer about
-        // the request and stays gray.
         out.body.push_str("<main class=\"wisp-error\"><h1>");
-        if status >= 500 {
-            out.body.push_str(FAILED_ICON);
-        }
-        text(&mut out.body, title);
-        out.body.push_str("</h1><p>");
-        text(&mut out.body, message);
-        out.body.push_str("</p><p class=\"wisp-ref\">");
         text(&mut out.body, &status);
-        out.body.push_str(" · ");
-        text(&mut out.body, cx.method.as_str());
-        out.body.push(' ');
-        text(&mut out.body, cx.path());
-        if !cx.query_string().is_empty() {
-            out.body.push('?');
-            text(&mut out.body, cx.query_string());
-        }
-        out.body.push_str("</p><div class=\"wisp-actions\">");
-        // The same address again is worth a try when the server failed at
-        // something that may pass; a post is not repeated behind a link.
-        if status >= 500 && matches!(cx.method, crate::Method::Get | crate::Method::Head) {
-            out.body
-                .push_str("<a class=\"wisp-button wisp-primary\" href=\"");
-            crate::contexts::escape(&mut out.body, cx.path());
-            if !cx.query_string().is_empty() {
-                out.body.push('?');
-                crate::contexts::escape(&mut out.body, cx.query_string());
-            }
-            out.body.push_str(
-                "\">Try Again</a><a class=\"wisp-button\" href=\"/\">Go to the Home Page</a>",
-            );
-        } else {
-            out.body.push_str(
-                "<a class=\"wisp-button wisp-primary\" href=\"/\">Go to the Home Page</a>",
-            );
-        }
-        out.body.push_str("</div></main>");
+        out.body.push_str("</h1><p>");
+        text(&mut out.body, line);
+        out.body.push_str("</p></main>");
     }
 
-    /// The failure glyph, shared with the build error dialog.
-    const FAILED_ICON: &str = "<svg viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" aria-hidden=\"true\">\
-<circle cx=\"8\" cy=\"8\" r=\"6.25\"/><path d=\"M8 4.75v3.75\" stroke-linecap=\"round\"/>\
-<circle cx=\"8\" cy=\"11\" r=\".75\" fill=\"currentColor\" stroke=\"none\"/></svg>";
+    const ERROR_CSS: &str = "body{margin:0;color-scheme:light dark;font:400 0.875rem/1.5 system-ui,sans-serif}.wisp-error{display:flex;align-items:center;justify-content:center;gap:1.25rem;min-height:100vh;padding:0 1rem;box-sizing:border-box}.wisp-error h1{margin:0;padding-right:1.25rem;border-right:1px solid color-mix(in srgb,currentColor 30%,transparent);font-size:1.5rem;font-weight:500}.wisp-error p{margin:0;overflow-wrap:anywhere}";
 }
 
 #[cfg(test)]
 mod tests {
+    /// `.env` fills in what the process's environment lacks, never more.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn env_file_fills_in() {
+        let file = [("WISP_TEST_ONLY_IN_FILE", "file"), ("PATH", "file")]
+            .map(|(k, v)| (k.to_string(), v.to_string()));
+        assert_eq!(
+            super::var("WISP_TEST_ONLY_IN_FILE", &file).as_deref(),
+            Some("file")
+        );
+        assert!(super::var("PATH", &file).is_some_and(|p| p != "file"));
+        assert_eq!(super::var("WISP_TEST_NOWHERE", &file), None);
+    }
+
     /// Every number to 100 000, each power of ten and its neighbours, and
     /// the ends of the range, against `Display`, written where asked.
     #[test]

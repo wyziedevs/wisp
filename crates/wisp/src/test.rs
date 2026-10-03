@@ -12,6 +12,9 @@
 //!
 //! Requests go through [`crate::handle`], the same path the server takes.
 //! The client keeps the cookies responses set, as a browser would.
+//!
+//! With the `browser` feature, [`browser`] drives the app in a real
+//! headless Chrome or Edge instead: `let mut b = wisp::browser!(App);`.
 
 mod ws;
 
@@ -19,6 +22,30 @@ pub use ws::TestSocket;
 
 use crate::{App, Body, Reply, Request};
 use std::marker::PhantomData;
+
+#[cfg(feature = "browser")]
+mod browser;
+#[cfg(feature = "browser")]
+pub use browser::{Browser, browser};
+
+/// The app in a headless browser, for a test: [`browser`]'s [`Browser`],
+/// or, with no Chrome or Edge installed, a return from the test (which
+/// then passes, having said why on stderr).
+///
+/// ```ignore
+/// let mut b = wisp::browser!(App);
+/// b.goto("/");
+/// ```
+#[cfg(feature = "browser")]
+#[macro_export]
+macro_rules! browser {
+    ($app:ty) => {
+        match $crate::test::browser::<$app>() {
+            Some(b) => b,
+            None => return,
+        }
+    };
+}
 
 impl Reply {
     /// Where a redirect goes: `assert_eq!(r.location(), Some("/login"))`.

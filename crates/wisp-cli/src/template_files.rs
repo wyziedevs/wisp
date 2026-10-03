@@ -22,7 +22,7 @@ pub type Layer = (&'static str, fn(&str) -> bool);
 /// the same path. The demo and the API are the examples of those names, so
 /// the two can never drift. The minimal template is the demo's shell (main,
 /// build script, app.html, static files) in the axum example's styles, with
-/// pages of its own.
+/// pages of its own (and none of the demo's tests of its pages).
 pub const TEMPLATES: [(&str, &[Layer]); 3] = [
     ("DEMO", &[("demo", all)]),
     ("API", &[("api", all)]),
@@ -41,7 +41,7 @@ fn all(_: &str) -> bool {
 }
 
 fn not_pages(path: &str) -> bool {
-    !path.starts_with("src/routes/") && path != "src/app.css"
+    !path.starts_with("src/routes/") && path != "src/app.css" && path != "src/tests.rs"
 }
 
 fn only_css(path: &str) -> bool {
@@ -141,4 +141,63 @@ fn walk(dir: &Path, rel: &str, out: &mut Vec<String>) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// The repository's root, where AGENTS.md, docs and llms-full.txt are.
+pub fn repo(base: &Path) -> PathBuf {
+    base.join("../..")
+}
+
+/// The docs `llms-full.txt` holds after AGENTS.md, in order.
+pub const DOCS: [&str; 5] = ["design", "client", "api", "deploy", "embed"];
+
+/// A text file with `\r\n` as `\n`, as a checkout on Windows may have it.
+pub fn read_text(path: &Path) -> io::Result<String> {
+    Ok(fs::read_to_string(path)?.replace("\r\n", "\n"))
+}
+
+/// The app's AGENTS.md: the repository's, less what is between
+/// `<!-- repo` and `<!-- /repo -->` (rules for work on Wisp itself), and
+/// the line after which the app's own notes go (`new::END`).
+pub fn app_agents(text: &str) -> String {
+    let mut out = reference(text);
+    out.push_str("\n<!-- End of the Wisp reference. Notes for this app go below; wisp update-docs keeps them. -->\n");
+    out
+}
+
+fn reference(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut keep = true;
+    for line in text.split_inclusive('\n') {
+        if line.starts_with("<!-- repo") {
+            keep = false;
+        } else if line.starts_with("<!-- /repo") {
+            keep = true;
+        } else if keep {
+            out.push_str(line);
+        }
+    }
+    out
+}
+
+/// `llms-full.txt`: the app's AGENTS.md, then each of [`DOCS`], one file.
+pub fn llms_full(repo: &Path) -> io::Result<String> {
+    let mut out = reference(&read_text(&repo.join("AGENTS.md"))?);
+    for doc in DOCS {
+        out.push_str(&format!("\n\n<!-- docs/{doc}.md -->\n\n"));
+        out.push_str(read_text(&repo.join(format!("docs/{doc}.md")))?.trim_end());
+        out.push('\n');
+    }
+    Ok(out)
+}
+
+/// Writes `text` to `path` unless it is there already.
+pub fn write_if_changed(path: &Path, text: &str) -> io::Result<()> {
+    if fs::read(path).ok().as_deref() == Some(text.as_bytes()) {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, text)
 }

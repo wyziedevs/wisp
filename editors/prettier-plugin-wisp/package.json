@@ -1,0 +1,16 @@
+{
+  "name": "prettier-plugin-wisp",
+  "version": "0.1.0",
+  "description": "Prettier formats Wisp .wisp files through `wisp fmt`.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wyziedevs/wisp",
+    "directory": "editors/prettier-plugin-wisp"
+  },
+  "keywords": ["prettier", "prettier-plugin", "wisp"],
+  "type": "module",
+  "exports": "./index.js",
+  "files": ["index.js"],
+  "peerDependencies": { "prettier": "^3.0.0" }
+}

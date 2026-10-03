@@ -45,6 +45,33 @@ fn saved_tables_survive_a_crash() {
     assert!(dir.join("note.log").exists());
 }
 
+/// A page's `<style>` is its own: its elements get its class, a
+/// component's do not, and the CSS is in `/_app/app.css`.
+#[test]
+fn scoped_styles() {
+    let s = start();
+    let page = s.request("GET", "/styled", "", b"");
+    let at = page.find("<h1 class=\"").expect("a class") + 11;
+    let class = &page[at..at + 8];
+    assert!(class.starts_with("w-"), "{page}");
+    assert!(
+        page.contains(&format!("<p class=\"lead {class}\">")),
+        "{page}"
+    );
+    assert!(page.contains("<span class=\"badge\">kept</span>"), "{page}");
+    assert!(
+        page.contains("<link rel=\"stylesheet\" href=\"/_app/app.css?v="),
+        "{page}"
+    );
+    assert!(!page.contains("<style"), "{page}");
+    let css = body(&s.request("GET", "/_app/app.css", "", b"")).to_string();
+    assert!(
+        css.contains(&format!("h1.{class}, .lead.{class} {{")),
+        "{css}"
+    );
+    assert!(css.contains("\n  body {\n    margin: 0"), "{css}");
+}
+
 #[test]
 fn hooks_and_state() {
     let s = start();
@@ -573,9 +600,17 @@ fn browser_code() {
         js.contains("[\"each\", () => (notes), [\"note\", \"n\"], null]"),
         "{js}"
     );
+    // In dev it names its source map, served beside it, which names the file.
     assert!(
-        js.ends_with("//# sourceURL=wisp:///src/routes/live/+page.wisp\n"),
+        js.ends_with(&format!("//# sourceMappingURL={page_id}.js.map\n")),
         "{js}"
+    );
+    let map = s.request("GET", &format!("/_app/c/{page_id}.js.map"), "", b"");
+    assert_eq!(header(&map, "content-type"), Some("application/json"));
+    assert!(
+        body(&map).contains("\"sources\":[\"wisp:///src/routes/live/+page.wisp\"]"),
+        "{}",
+        body(&map)
     );
     // The script keeps its line numbers: `let open` is on line 14 of the
     // file. It is state: a signal.
@@ -748,7 +783,7 @@ fn client_parity() {
         .and_then(|r| r.split('"').next())
         .expect("the load module")
         .to_string();
-    assert!(js.contains("{ load: __wisp_u.load }"), "{js}");
+    assert!(js.contains("{ load: __wisp_u.load"), "{js}");
     assert!(body(&s.request("GET", &url, "", b"")).contains("export async function load"));
 
     // Browser code that fails to start asks for the route's error page.
@@ -947,7 +982,10 @@ fn first_paint() {
     let tree = js
         .lines()
         .filter_map(|l| l.strip_prefix("import \"")?.strip_suffix("\";"))
-        .find(|u| body(&s.request("GET", u, "", b"")).contains("Tree.wisp"))
+        .find(|u| {
+            let map = format!("{}.map", &u[..u.find('?').unwrap()]);
+            body(&s.request("GET", &map, "", b"")).contains("Tree.wisp")
+        })
         .expect("the tree's module")
         .to_string();
     let src = body(&s.request("GET", &tree, "", b"")).to_string();

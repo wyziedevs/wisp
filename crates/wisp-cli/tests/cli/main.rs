@@ -10,6 +10,7 @@ mod check;
 mod dev;
 mod errors;
 mod help;
+mod mcp;
 mod new;
 
 use std::fs;
