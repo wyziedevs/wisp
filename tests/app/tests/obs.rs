@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{Server, command, header, status};
+use common::{Server, body, command, header, start, status};
 use std::io::{BufRead, BufReader};
 use std::process::{ChildStdout, Stdio};
 use wisp::Value;
@@ -37,6 +37,54 @@ fn number(v: &Value, key: &str) -> i64 {
     v.get(key)
         .and_then(Value::as_i64)
         .unwrap_or_else(|| panic!("{key} in {v:?}"))
+}
+
+#[test]
+fn metrics_need_the_key_and_count_each_route() {
+    let s = start(&[("METRICS_KEY", "sesame-123"), ("WISP_DEV", "off")]);
+    for path in ["/post/a", "/post/b", "/no/such/page"] {
+        s.request("GET", path, "", b"");
+    }
+    let open = s.request("GET", "/_wisp/metrics", "", b"");
+    assert_eq!(status(&open), 401, "{open}");
+    assert_eq!(header(&open, "www-authenticate"), Some("Bearer"));
+    let wrong = s.request(
+        "GET",
+        "/_wisp/metrics",
+        "authorization: Bearer nope\r\n",
+        b"",
+    );
+    assert_eq!(status(&wrong), 401);
+
+    let auth = "authorization: Bearer sesame-123\r\n";
+    let page = s.request("GET", "/_wisp/metrics", auth, b"");
+    assert_eq!(status(&page), 200, "{page}");
+    assert!(
+        header(&page, "content-type")
+            .unwrap()
+            .starts_with("text/plain; version=0.0.4")
+    );
+    let text = body(&page);
+    for want in [
+        "wisp_requests_total{route=\"/post/[slug]\",status=\"2xx\"} 2\n",
+        "wisp_requests_total{route=\"\",status=\"4xx\"} 3\n", // the 404 and the 401s
+        "wisp_request_duration_seconds_count{route=\"/post/[slug]\"} 2\n",
+        "wisp_request_duration_seconds_bucket{route=\"/post/[slug]\",le=\"+Inf\"} 2\n",
+        "wisp_requests_in_flight 1\n", // this one
+        "wisp_uptime_seconds ",
+    ] {
+        assert!(text.contains(want), "{want}\n{text}");
+    }
+    if cfg!(target_os = "linux") {
+        assert!(text.contains("process_resident_memory_bytes "), "{text}");
+    }
+
+    // Without the key there is nothing there.
+    let off = start(&[("WISP_DEV", "off")]);
+    assert_eq!(
+        status(&off.request("GET", "/_wisp/metrics", auth, b"")),
+        404
+    );
 }
 
 #[test]

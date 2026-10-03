@@ -135,6 +135,29 @@ the client's `x-request-id` if it sent one, and is answered with it. A
 streamed response is logged when its head is sent. `WISP_LOG=off` (the
 default) writes nothing.
 
+`METRICS_KEY` serves `/_wisp/metrics` in Prometheus' text format, to a
+scraper that sends `Authorization: Bearer <METRICS_KEY>` (anything else
+gets a 401; unset, the path is a 404):
+
+```yaml
+scrape_configs:
+  - job_name: my-app
+    metrics_path: /_wisp/metrics
+    authorization: { credentials: <METRICS_KEY> }
+    static_configs: [{ targets: ["my-app:3000"] }]
+```
+
+| Metric | |
+|---|---|
+| `wisp_requests_total{route, status}` | counter, by status class (`2xx`); `route=""` when none matched |
+| `wisp_request_duration_seconds{route}` | histogram, buckets 1 ms to 10 s |
+| `wisp_requests_in_flight` | gauge |
+| `wisp_uptime_seconds` | gauge |
+| `process_resident_memory_bytes` | gauge, Linux only |
+
+The counters are atomics, one row per route made at start: counting
+takes no lock and allocates nothing.
+
 ## Edge and serverless: `--target`
 
 ```sh

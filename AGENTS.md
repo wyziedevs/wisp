@@ -507,7 +507,10 @@ takes the no-wait fast path off every route.
 
 `WISP_LOG=json`: one line per request on stdout, `{"time","method","route"
 (`/blog/[slug]`, or null),"path" (no query),"status","ms","bytes","id","ip"}`;
-every request then gets an `x-request-id`.
+every request then gets an `x-request-id`. `METRICS_KEY=k`:
+`/_wisp/metrics` (Prometheus, `Authorization: Bearer k`; 404 unset):
+`wisp_requests_total{route,status="2xx"}`, `wisp_request_duration_seconds`
+histogram per route, `wisp_requests_in_flight`, `wisp_uptime_seconds`.
 
 ## Gotchas
 

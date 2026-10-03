@@ -1,14 +1,17 @@
 //! What the server tells an operator about its requests, each part off
 //! until its variable is set: `WISP_LOG=json`, a JSON line a request on
-//! stdout. With none set, [`OBS`] stays empty and a request pays one load
-//! of it.
+//! stdout; `METRICS_KEY`, Prometheus text at `/_wisp/metrics`. With none
+//! set, [`OBS`] stays empty and a request pays one load of it.
 
 use crate::Cx;
+use crate::http::{Body, Reply};
 use crate::rt::RouteFacts;
+use std::borrow::Cow;
 use std::io::Write;
 use std::net::IpAddr;
 use std::sync::OnceLock;
-use std::time::{Instant, SystemTime};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering::Relaxed};
+use std::time::{Duration, Instant, SystemTime};
 
 /// What is on, read from the environment once, at start. Empty when
 /// nothing is.
@@ -17,8 +20,11 @@ static OBS: OnceLock<Obs> = OnceLock::new();
 struct Obs {
     /// `WISP_LOG=json`.
     json: bool,
+    /// `METRICS_KEY`.
+    metrics: Option<Metrics>,
     /// The app's routes, for their patterns.
     routes: &'static [RouteFacts],
+    started: Instant,
 }
 
 /// Reads the settings, once; a bad one stops the server at start. The
@@ -35,8 +41,17 @@ pub(crate) fn init(routes: &'static [RouteFacts]) {
             Some(v) if v.is_empty() || v.eq_ignore_ascii_case("off") => false,
             Some(v) => crate::fail(&format!("WISP_LOG is {v:?}, which is not json or off")),
         };
-        if json {
-            let _ = OBS.set(Obs { json, routes });
+        let metrics = crate::setting::<String>("METRICS_KEY", "a key")
+            .filter(|k| !k.is_empty())
+            .map(|key| Metrics::new(key, routes.len()));
+        if json || metrics.is_some() {
+            let started = Instant::now();
+            let _ = OBS.set(Obs {
+                json,
+                metrics,
+                routes,
+                started,
+            });
         }
     });
 }
@@ -70,22 +85,29 @@ pub(crate) fn finish(p: Pending, status: u16, bytes: usize) {
 impl Obs {
     #[inline(never)]
     fn begin(&self, cx: &Cx, route: Option<usize>) -> Pending {
+        if let Some(m) = &self.metrics {
+            m.in_flight.fetch_add(1, Relaxed);
+        }
+        // Metrics alone take nothing that allocates.
+        let (path, id) = match self.json {
+            true => (cx.path().to_owned(), cx.request_id().to_owned()),
+            false => (String::new(), String::new()),
+        };
         Pending {
             started: Instant::now(),
             route,
             method: cx.method.as_str(),
             ip: cx.client_ip(),
-            path: cx.path().to_owned(),
-            id: if self.json {
-                cx.request_id().to_owned()
-            } else {
-                String::new()
-            },
+            path,
+            id,
         }
     }
 
     #[inline(never)]
     fn finish(&self, p: Pending, status: u16, bytes: usize) {
+        if let Some(m) = &self.metrics {
+            m.record(p.route, status, p.started.elapsed());
+        }
         if self.json {
             let route = p.route.and_then(|r| self.routes.get(r)).map(|r| r.pattern);
             let line = line(&p, route, status, bytes, unix_millis());
@@ -93,6 +115,177 @@ impl Obs {
             let _ = std::io::stdout().lock().write_all(line.as_bytes());
         }
     }
+}
+
+impl Drop for Pending {
+    /// No longer in flight, answered or not (its connection gone).
+    fn drop(&mut self) {
+        if let Some(m) = OBS.get().and_then(|o| o.metrics.as_ref()) {
+            m.in_flight.fetch_sub(1, Relaxed);
+        }
+    }
+}
+
+/// Upper bounds of the latency histogram's buckets, in microseconds:
+/// Prometheus' usual ones, 1 ms to 10 s.
+const BUCKETS: [u64; 13] = [
+    1_000, 2_500, 5_000, 10_000, 25_000, 50_000, 100_000, 250_000, 500_000, 1_000_000, 2_500_000,
+    5_000_000, 10_000_000,
+];
+
+/// `METRICS_KEY`'s counters: a row a route, made at start from the route
+/// table, and one for requests no route matched. Atomics only, added to
+/// with no lock.
+struct Metrics {
+    key: String,
+    rows: Box<[Row]>,
+    in_flight: AtomicI64,
+}
+
+/// One route's counts, on cache lines of its own: threads answering
+/// other routes never write them.
+#[derive(Default)]
+#[repr(align(64))]
+struct Row {
+    /// By status class, 1xx to 5xx.
+    classes: [AtomicU64; 5],
+    /// By bucket, each request in one (made cumulative when served); one
+    /// slower than the last is in none.
+    buckets: [AtomicU64; BUCKETS.len()],
+    micros: AtomicU64,
+}
+
+impl Metrics {
+    fn new(key: String, routes: usize) -> Metrics {
+        Metrics {
+            key,
+            rows: (0..=routes).map(|_| Row::default()).collect(),
+            in_flight: AtomicI64::new(0),
+        }
+    }
+
+    fn record(&self, route: Option<usize>, status: u16, took: Duration) {
+        let last = self.rows.len() - 1;
+        let row = &self.rows[route.map_or(last, |r| r.min(last))];
+        let class = usize::from(status / 100).clamp(1, 5) - 1;
+        row.classes[class].fetch_add(1, Relaxed);
+        let micros = u64::try_from(took.as_micros()).unwrap_or(u64::MAX);
+        if let Some(b) = BUCKETS.iter().position(|&le| micros <= le) {
+            row.buckets[b].fetch_add(1, Relaxed);
+        }
+        row.micros.fetch_add(micros, Relaxed);
+    }
+
+    /// The Prometheus text: each route that had requests (`""` for none
+    /// matched), then the process.
+    fn render(&self, routes: &[RouteFacts], up: Duration, rss: Option<u64>) -> String {
+        use std::fmt::Write;
+        let mut s = String::with_capacity(4096);
+        let mut rows = Vec::new();
+        for (i, row) in self.rows.iter().enumerate() {
+            let total: u64 = row.classes.iter().map(|c| c.load(Relaxed)).sum();
+            if total > 0 {
+                rows.push((label(routes.get(i).map_or("", |r| r.pattern)), row, total));
+            }
+        }
+        s.push_str("# HELP wisp_requests_total Requests answered, by route and status class.\n");
+        s.push_str("# TYPE wisp_requests_total counter\n");
+        for (route, row, _) in &rows {
+            for (k, c) in row.classes.iter().enumerate() {
+                let n = c.load(Relaxed);
+                if n > 0 {
+                    let class = k + 1;
+                    let _ = writeln!(
+                        s,
+                        "wisp_requests_total{{route=\"{route}\",status=\"{class}xx\"}} {n}"
+                    );
+                }
+            }
+        }
+        s.push_str("# HELP wisp_request_duration_seconds Time to answer, by route.\n");
+        s.push_str("# TYPE wisp_request_duration_seconds histogram\n");
+        let series = "wisp_request_duration_seconds";
+        for (route, row, total) in &rows {
+            let mut below = 0;
+            for (le, b) in BUCKETS.iter().zip(&row.buckets) {
+                below += b.load(Relaxed);
+                let le = *le as f64 / 1e6;
+                let _ = writeln!(
+                    s,
+                    "{series}_bucket{{route=\"{route}\",le=\"{le}\"}} {below}"
+                );
+            }
+            let sum = row.micros.load(Relaxed) as f64 / 1e6;
+            let _ = writeln!(
+                s,
+                "{series}_bucket{{route=\"{route}\",le=\"+Inf\"}} {total}\n\
+                 {series}_sum{{route=\"{route}\"}} {sum}\n\
+                 {series}_count{{route=\"{route}\"}} {total}"
+            );
+        }
+        let _ = writeln!(
+            s,
+            "# HELP wisp_requests_in_flight Requests being answered.\n\
+             # TYPE wisp_requests_in_flight gauge\n\
+             wisp_requests_in_flight {}\n\
+             # HELP wisp_uptime_seconds Seconds since the server started.\n\
+             # TYPE wisp_uptime_seconds gauge\n\
+             wisp_uptime_seconds {:.3}",
+            self.in_flight.load(Relaxed),
+            up.as_secs_f64()
+        );
+        if let Some(rss) = rss {
+            let _ = writeln!(
+                s,
+                "# HELP process_resident_memory_bytes Resident memory size in bytes.\n\
+                 # TYPE process_resident_memory_bytes gauge\n\
+                 process_resident_memory_bytes {rss}"
+            );
+        }
+        s
+    }
+}
+
+/// `v` as a label value, with `\`, `"` and newlines escaped.
+fn label(v: &str) -> Cow<'_, str> {
+    if !v.contains(['\\', '"', '\n']) {
+        return Cow::Borrowed(v);
+    }
+    let v = v.replace('\\', "\\\\").replace('"', "\\\"");
+    Cow::Owned(v.replace('\n', "\\n"))
+}
+
+/// The process's resident memory, where reading it is cheap (Linux's
+/// `/proc`).
+fn rss() -> Option<u64> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find_map(|l| l.strip_prefix("VmRSS:"))?;
+    let kb: u64 = line.trim().strip_suffix("kB")?.trim().parse().ok()?;
+    Some(kb * 1024)
+}
+
+/// `GET /_wisp/metrics` when `METRICS_KEY` is set (else `false`: the
+/// path is the app's, a 404): the metrics for `Authorization: Bearer
+/// <key>`, a 401 for anything else.
+pub(crate) fn serve(cx: &Cx, reply: &mut Reply) -> bool {
+    let Some((o, m)) = OBS.get().and_then(|o| Some((o, o.metrics.as_ref()?))) else {
+        return false;
+    };
+    if !crate::secure_eq(cx.bearer().unwrap_or(""), &m.key) {
+        reply.set_plain(401, "Unauthorized");
+        let bearer = (Cow::Borrowed("www-authenticate"), Cow::Borrowed("Bearer"));
+        reply.headers.push(bearer);
+        return true;
+    }
+    let text = m.render(o.routes, o.started.elapsed(), rss());
+    let kind = "text/plain; version=0.0.4; charset=utf-8";
+    reply.set(200, kind, Body::Bytes(text.into_bytes()));
+    let fresh = (Cow::Borrowed("cache-control"), Cow::Borrowed("no-store"));
+    reply.headers.push(fresh);
+    true
 }
 
 /// Milliseconds since 1970, by the wall clock.
@@ -149,6 +342,52 @@ mod tests {
             path: path.into(),
             id: "ab\"c".into(),
         }
+    }
+
+    #[test]
+    fn metrics_count_by_route_class_and_bucket() {
+        const ROUTES: [RouteFacts; 2] = [
+            RouteFacts {
+                pattern: "/",
+                ..RouteFacts::new(&[])
+            },
+            RouteFacts {
+                pattern: "/a\"b",
+                ..RouteFacts::new(&[])
+            },
+        ];
+        let m = Metrics::new("k".into(), ROUTES.len());
+        let ms = Duration::from_millis;
+        m.record(Some(0), 200, ms(0));
+        m.record(Some(0), 304, ms(3));
+        m.record(Some(0), 503, ms(20_000));
+        m.record(None, 404, ms(1));
+        m.record(Some(99), 999, ms(1)); // another app's id: counted, not out of bounds
+        let text = m.render(&ROUTES, Duration::from_secs(2), Some(4096));
+        for want in [
+            "wisp_requests_total{route=\"/\",status=\"2xx\"} 1\n",
+            "wisp_requests_total{route=\"/\",status=\"3xx\"} 1\n",
+            "wisp_requests_total{route=\"/\",status=\"5xx\"} 1\n",
+            "wisp_requests_total{route=\"\",status=\"4xx\"} 1\n",
+            "wisp_requests_total{route=\"\",status=\"5xx\"} 1\n",
+            "wisp_request_duration_seconds_bucket{route=\"/\",le=\"0.001\"} 1\n",
+            "wisp_request_duration_seconds_bucket{route=\"/\",le=\"0.0025\"} 1\n",
+            "wisp_request_duration_seconds_bucket{route=\"/\",le=\"0.005\"} 2\n",
+            "wisp_request_duration_seconds_bucket{route=\"/\",le=\"10\"} 2\n",
+            "wisp_request_duration_seconds_bucket{route=\"/\",le=\"+Inf\"} 3\n",
+            "wisp_request_duration_seconds_sum{route=\"/\"} 20.003\n",
+            "wisp_request_duration_seconds_count{route=\"/\"} 3\n",
+            "wisp_requests_in_flight 0\n",
+            "wisp_uptime_seconds 2.000\n",
+            "process_resident_memory_bytes 4096\n",
+        ] {
+            assert!(text.contains(want), "{want}\n{text}");
+        }
+        assert!(
+            !text.contains("a\"b"),
+            "a route with no requests is left out"
+        );
+        assert_eq!(label("/a\"b\\\n"), "/a\\\"b\\\\\\n");
     }
 
     #[test]
