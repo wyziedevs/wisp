@@ -16,6 +16,7 @@
 use wisp_shared::{contexts, protocol};
 
 mod bake;
+mod cache;
 pub mod blob;
 #[cfg(not(target_arch = "wasm32"))]
 mod channel;
@@ -60,6 +61,7 @@ mod ws;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use blob::{Blobs, Upload, blobs};
+pub use cache::{cache, uncache};
 pub use channel::{Channel, Subscription, channel};
 pub use cx::{CookieOptions, Cx, Method, SameSite};
 pub use export::{Entry, ExportRoute, export};
