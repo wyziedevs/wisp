@@ -4,6 +4,7 @@
 
 mod a11y;
 mod codegen;
+pub mod csp;
 pub mod fmt;
 mod fold;
 pub mod ide;
@@ -133,7 +134,8 @@ pub fn hot_chunks(root: &Path, rel: &str) -> Result<(Vec<String>, u64, Vec<Strin
     let src = read_source(&root.join(rel)).map_err(|e| format!("{rel}: {e}"))?;
     if rel == "src/app.html" {
         let parts = shell::split(&src).map_err(|e| format!("{rel}: {e}"))?;
-        return Ok((parts.to_vec(), shell::SHAPE, Vec::new()));
+        let shape = shell::shape(&parts);
+        return Ok((parts.to_vec(), shape, Vec::new()));
     }
     let (rust, markup) = split_front(&src).map_err(|e| format!("{rel}:{e}"))?;
     // A page's forms' fields get their attributes, as in the build: from

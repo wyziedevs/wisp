@@ -326,6 +326,11 @@ fn before(cx: &mut Cx) -> Result<Option<Response>> {
     Ok(None)
 }
 ```
+Pages get a `content-security-policy` (`'self'`, inline template scripts
+by build-time hash, `img-src 'self' data: https:`, inline styles ok; dev
+adds esm.sh). `wisp::csp("img-src 'self' https://cdn.x")` in `init`
+replaces that directive (or adds one); `wisp::csp_off()` sends none.
+`onclick="…"` and scripts in `{@html}` don't run: use `on:click` or a file.
 Any other `pub fn` in hooks.rs is an error. `pub` types there are
 `crate::hooks::T`. Keep `before` sync: an `async fn before`
 takes the no-wait fast path off every route.

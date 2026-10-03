@@ -6,6 +6,7 @@ pub struct User(pub String);
 
 fn init() {
     wisp::provide(Greeting("hello from init"));
+    wisp::csp("img-src 'self' https://img.example");
 }
 
 fn before(cx: &mut Cx) -> Result<Option<Response>> {

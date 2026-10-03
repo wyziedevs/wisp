@@ -316,6 +316,11 @@ fn before(cx: &mut Cx) -> Result<Option<Response>> {
     Ok(None)
 }
 ```
+Pages get a `content-security-policy` (`'self'`, inline template scripts
+by build-time hash, `img-src 'self' data: https:`, inline styles ok; dev
+adds esm.sh). `wisp::csp("img-src 'self' https://cdn.x")` in `init`
+replaces that directive (or adds one); `wisp::csp_off()` sends none.
+`onclick="…"` and scripts in `{@html}` don't run: use `on:click` or a file.
 Any other `pub fn` in hooks.rs is an error. `pub` types there are
 `crate::hooks::T`. Keep `before` sync: an `async fn before`
 takes the no-wait fast path off every route.
@@ -1742,6 +1747,7 @@ Follow-up: cheap Rust checks inside the `---` block (rust-analyzer covers
   past it a new one gets a 503 and is closed before it costs a task.
 - URL attributes whose scheme an expression decides are checked where they
   end; `javascript:` never reaches a page (see Templates).
+- Pages and error pages carry a `content-security-policy` (see below).
 - `examples/demo/tests/http.rs` runs the demo's binary and sends it
   malformed, oversized, smuggling and cross-site requests, path traversal
   attempts and junk cookies, and checks every answer and that the server
@@ -1749,6 +1755,37 @@ Follow-up: cheap Rust checks inside the `---` block (rust-analyzer covers
   (hooks, state, components, uploads, signed cookies, chunked bodies, body
   limits, streamed responses), and its `tests/http.rs` checks each on the
   wire.
+
+### Content Security Policy
+
+Every page and error page (rendered, baked or kept by `CACHE`) gets:
+
+```
+content-security-policy: default-src 'self'; script-src 'self' 'sha256-…';
+  style-src 'self' 'unsafe-inline'; img-src 'self' data: https:;
+  connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'
+```
+
+- Wisp's own scripts are files (`wisp.js`, `live.js`, modules under
+  `/_app/c/`); its JSON data block runs nothing. The only inline scripts
+  are the app's (`<script defer>…</script>` in a template, or in
+  `src/app.html`), and no hole can go in one, so the build hashes each
+  and `script-src` lists the hashes. No nonce: the header is one string
+  made after `init`, so a page costs one more header line, a baked or
+  `CACHE` page stays bytes made before, and the scripts wisp.js runs after
+  a navigation pass (a nonce would be the first page's). An inline script
+  edited in dev takes a build, for its hash.
+- Dev mode adds `https://esm.sh` (npm modules) to `script-src` and
+  `connect-src`, and `wisp dev`'s reload events to `connect-src`.
+- `wisp::csp("img-src 'self' https://cdn.example; font-src https://f.example")`
+  in `init`: each directive replaces the default one of its name, or is
+  added; `script-src` keeps the hashes (unless it has `'unsafe-inline'`,
+  which a hash would turn off). `wisp::csp_off()` sends none, for an app
+  that sets its own.
+- Not covered: endpoints and `Response::html` (not pages), `/_wisp/docs`,
+  and `wisp build --static`, whose files have no headers (the host sets
+  them). A script put in by `{@html}` or an `onclick="…"` attribute does
+  not run; use a file, or `on:click`.
 
 ## v0 non-goals
 

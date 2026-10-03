@@ -69,7 +69,7 @@ fn scoped_styles() {
         css.contains(&format!("h1.{class}, .lead.{class} {{")),
         "{css}"
     );
-    assert!(css.contains("body { margin: 0 }"), "{css}");
+    assert!(css.contains("\n  body {\n    margin: 0"), "{css}");
 }
 
 #[test]

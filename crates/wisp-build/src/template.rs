@@ -286,6 +286,8 @@ pub struct Template {
     pub style: Option<String>,
     /// Its accessibility warnings.
     pub lints: Vec<crate::a11y::Lint>,
+    /// `'sha256-…'` of each inline script that runs (see `csp`).
+    pub hashes: Vec<String>,
 }
 
 impl Template {
@@ -333,6 +335,7 @@ fn parse_as(src: &str, fields: &[Field], scope: Option<&str>) -> Result<Template
         scoped: false,
         style: None,
         a11y: Default::default(),
+        hashes: Vec::new(),
         b: src.as_bytes(),
         i: 0,
         ctx: Ctx::Text,
@@ -405,6 +408,11 @@ fn parse_as(src: &str, fields: &[Field], scope: Option<&str>) -> Result<Template
             .as_bytes(),
         );
     }
+    // An inline script is allowed by its hash, which the build sends.
+    for x in &p.hashes {
+        h.extend_from_slice(x.as_bytes());
+        h.push(0);
+    }
     // Browser code is compiled into the binary as a module, so changing it
     // takes a build.
     if let Some(s) = &p.script {
@@ -454,6 +462,7 @@ fn parse_as(src: &str, fields: &[Field], scope: Option<&str>) -> Result<Template
         groups: p.groups,
         style: p.style,
         lints: p.a11y.lints,
+        hashes: p.hashes,
     })
 }
 
@@ -659,6 +668,8 @@ struct Parser<'a> {
     scoped: bool,
     style: Option<String>,
     a11y: crate::a11y::Checker,
+    /// The hashes of the inline scripts that run, for the CSP.
+    hashes: Vec<String>,
 }
 
 /// A `<textarea>` or `<select>` of an action's form, till its end tag:
@@ -1613,6 +1624,12 @@ impl Parser<'_> {
                     .windows(close.len())
                     .position(|w| w.eq_ignore_ascii_case(close.as_bytes()))
                     .ok_or_else(|| self.err(self.tag_pos, format!("unclosed <{}>", self.tag)))?;
+                // A script that runs is allowed by its hash (see `csp`).
+                if self.tag == "script"
+                    && crate::csp::runs(self.seen("src").is_some(), self.seen("type").flatten())
+                {
+                    self.hashes.push(crate::csp::hash(&hay[..n]));
+                }
                 self.text.push_str(&hay[..n]);
                 self.i += n;
             }
@@ -4799,6 +4816,11 @@ mod tests {
             text(&t, &t.nodes[0]),
             r#"<script src="/x.js"></script><script type="application/ld+json">{}</script><SCRIPT defer type="module">go()</SCRIPT>"#
         );
+        // The one that runs is allowed by its hash, which a change to it
+        // changes, and the shape with it.
+        assert_eq!(t.hashes, [crate::csp::hash("go()")]);
+        let other = parse(r#"<script src="/x.js"></script><script type="application/ld+json">{}</script><SCRIPT defer>stop()</SCRIPT>"#).unwrap();
+        assert_ne!(t.shape, other.shape);
     }
 
     #[test]

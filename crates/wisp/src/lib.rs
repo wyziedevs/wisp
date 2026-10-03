@@ -18,6 +18,7 @@ use wisp_shared::{contexts, protocol};
 mod bake;
 #[cfg(not(target_arch = "wasm32"))]
 mod channel;
+mod csp;
 mod cx;
 mod dev;
 #[cfg(target_arch = "wasm32")]
@@ -63,6 +64,7 @@ mod ws;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use channel::{Channel, Subscription, channel};
+pub use csp::{csp, csp_off};
 pub use cx::{CookieOptions, Cx, Method, SameSite};
 pub use export::{Entry, ExportRoute, export};
 pub use form::{File, Form};
@@ -237,6 +239,7 @@ pub async fn prepare<A: App>() -> std::io::Result<()> {
         std::io::Error::other(format!("init in src/hooks.rs failed: {}", e.detail()))
     })?;
     session::ready();
+    csp::ready(A::SCRIPT_HASHES);
     Ok(())
 }
 
@@ -637,6 +640,9 @@ pub trait App: 'static {
     const ROOT: &'static str;
     /// Hash of the built CSS, `"dev"` in dev builds, `None` without CSS.
     const CSS: Option<&'static str>;
+    /// `'sha256-…'` of every inline script the templates and shell run,
+    /// which the Content-Security-Policy allows (see `csp`).
+    const SCRIPT_HASHES: &'static [&'static str] = &[];
     /// What the build knows of each route, by route id.
     const ROUTES: &'static [rt::RouteFacts];
     /// [`rt::RouteFacts::now`] for a request no route matched, which the

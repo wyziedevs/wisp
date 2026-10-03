@@ -3,6 +3,10 @@
 <Badge label="kept" />
 
 <style>
-  h1, .lead { color: rebeccapurple }
-  :global(body) { margin: 0 }
+  h1, .lead {
+    color: rebeccapurple
+  }
+  :global(body) {
+    margin: 0
+  }
 </style>

@@ -102,6 +102,12 @@ fn pages_files_and_redirects() {
         !home.contains("casper.getBoundingClientRect"),
         "the client script is a module of its own, not in the page"
     );
+    // Its scripts are all files of its own origin, which the policy allows.
+    let policy = header(&home, "content-security-policy").expect("a policy");
+    assert!(
+        policy.starts_with("default-src 'self'; script-src 'self'"),
+        "{policy}"
+    );
 
     let head = s.request("HEAD", "/", "", "");
     assert_eq!(status(&head), 200);
