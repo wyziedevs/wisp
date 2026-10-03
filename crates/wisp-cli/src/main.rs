@@ -6,7 +6,9 @@ mod css;
 mod deploy;
 mod dev;
 mod events;
+mod net;
 mod new;
+mod npm;
 mod targets;
 #[cfg(test)]
 mod template_files;
@@ -17,7 +19,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 /// `wisp --help`: each command or option, and what it does.
-const COMMANDS: [(&str, &str); 8] = [
+const COMMANDS: [(&str, &str); 10] = [
     (
         "wisp new [name]",
         "Create an app. It asks a few questions; the options below answer them.",
@@ -49,6 +51,14 @@ const COMMANDS: [(&str, &str); 8] = [
     (
         "wisp check",
         "Check routes and templates without compiling.",
+    ),
+    (
+        "wisp add <pkg>[@version]",
+        "Add an npm package to package.json, for import x from 'pkg'. No Node needed.",
+    ),
+    (
+        "wisp remove <pkg>",
+        "Take an npm package out of package.json.",
     ),
 ];
 
@@ -111,6 +121,8 @@ fn main() -> ExitCode {
             .and_then(|root| {
                 wisp_build::check(root).map(|()| term::done("Routes and templates are valid."))
             }),
+        Some("add") => project().and_then(|root| npm::add(root, &args[1..])),
+        Some("remove") => project().and_then(|root| npm::remove(root, &args[1..])),
         Some("-h" | "--help" | "help") | None => {
             print!("{}", usage());
             Ok(())
@@ -289,6 +301,7 @@ fn build(root: &Path, o: &BuildOptions) -> Result<(), String> {
     }
     if o.docker {
         css::build(root)?;
+        npm::vendor(root)?;
         deploy::docker(
             root,
             &cargo::package_name(root).ok_or("Cargo.toml has no package name.")?,
@@ -300,6 +313,7 @@ fn build(root: &Path, o: &BuildOptions) -> Result<(), String> {
     }
     wisp_build::check(root)?;
     css::build(root)?;
+    npm::vendor(root)?;
     let started = Instant::now();
     term::step("Building for release");
     let b = cargo::build(root, true, false);

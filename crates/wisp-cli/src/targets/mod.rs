@@ -3,7 +3,7 @@
 //! deploys as it is: `app.wasm`, a small entry shim over the shared
 //! `bridge.mjs`, the host's config and the static files for its CDN.
 
-use crate::{cargo, css, deploy, term};
+use crate::{cargo, css, deploy, npm, term};
 use std::path::Path;
 use std::time::Instant;
 
@@ -46,6 +46,7 @@ pub fn build(root: &Path, host: &str, out: &Path) -> Result<(), String> {
     }
     wisp_build::check(root)?;
     css::build(root)?;
+    npm::vendor(root)?;
     let started = Instant::now();
     term::step(&format!("Building for {host} (WebAssembly)"));
     let b = cargo::build_for(root, true, false, Some(WASM_TARGET));

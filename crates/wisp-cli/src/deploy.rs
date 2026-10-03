@@ -151,12 +151,14 @@ CMD [\"server\"]
     )
 }
 
-/// `.wisp/app.css` is the built CSS, which the image's build needs.
+/// `.wisp/app.css` is the built CSS and `.wisp/npm` the npm packages,
+/// which the image's build needs.
 const DOCKERIGNORE: &str = "target
 .git
 node_modules
 .wisp/*
 !.wisp/app.css
+!.wisp/npm
 dist
 data
 Dockerfile
