@@ -474,6 +474,10 @@
           "named": true
         },
         {
+          "type": "client_hole",
+          "named": true
+        },
+        {
           "type": "hole",
           "named": true
         }

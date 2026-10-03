@@ -142,3 +142,29 @@ Empty script
       (tag_name))
     (end_tag
       (tag_name))))
+
+================================================================================
+Client block closed as a server block, client hole in a value
+================================================================================
+
+<p class="card {:mood}">{:#if open}a{/if}</p>
+
+--------------------------------------------------------------------------------
+
+(document
+  (start_tag
+    (tag_name)
+    (attribute
+      (attribute_name)
+      (quoted_attribute_value
+        (attribute_value)
+        (client_hole
+          (code)))))
+  (client_block
+    (block_start
+      (block_open)
+      (code))
+    (text)
+    (block_end))
+  (end_tag
+    (tag_name)))
