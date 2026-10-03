@@ -10,7 +10,9 @@
 //! `protocol.rs` for the format.
 
 use crate::Out;
-use crate::protocol::{ISLAND_NONE, LIVE_CLOSE, LIVE_OPEN, LIVE_PARAMS, LIVE_RECORDS, LIVE_ROUTE};
+use crate::protocol::{
+    ISLAND_NONE, LIVE_CLOSE, LIVE_OPEN, LIVE_PARAMS, LIVE_RECORDS, LIVE_ROUTE, LIVE_TEXTS,
+};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
@@ -51,6 +53,9 @@ pub struct ClientModule {
     /// A module it imports that the page preloads with it (the runtime's
     /// less used half, `/_app/c/extra.js?v=…`), or "".
     pub preload: &'static str,
+    /// The messages its `t('key')` calls show, per key: `"key":message`
+    /// as JSON, in each locale.
+    pub texts: &'static [&'static [&'static str]],
 }
 
 /// The instances a response rendered, kept in its `Out`.
@@ -105,7 +110,7 @@ impl Live {
     /// page preloaded, and the runtime that starts them, if any does (an
     /// island's wake-up is in wisp.js, which loads the runtime itself).
     /// Written onto `s`; nothing otherwise.
-    pub(crate) fn tail(&self, s: &mut String) {
+    pub(crate) fn tail(&self, s: &mut String, lang: u8) {
         if self.instances.is_empty() {
             return;
         }
@@ -120,6 +125,20 @@ impl Live {
         close(s, self.last_how);
         s.push(']');
         s.push_str(&self.route);
+        // The messages their scripts show, in the request's locale, each
+        // once.
+        let mut sent: Vec<&[&str]> = Vec::new();
+        for t in self.modules.iter().flat_map(|(m, _)| m.texts) {
+            if sent.iter().any(|x| std::ptr::eq(*x, *t)) {
+                continue;
+            }
+            s.push_str(if sent.is_empty() { LIVE_TEXTS } else { "," });
+            s.push_str(t.get(lang as usize).or(t.first()).copied().unwrap_or(""));
+            sent.push(t);
+        }
+        if !sent.is_empty() {
+            s.push('}');
+        }
         s.push_str(LIVE_CLOSE);
         let mut extra = "";
         for (m, _) in self.modules.iter().filter(|m| m.1) {
@@ -869,7 +888,7 @@ mod tests {
 
     fn tail_of(out: &Out) -> String {
         let mut s = String::new();
-        out.live.tail(&mut s);
+        out.live.tail(&mut s, 0);
         s
     }
 
@@ -1255,6 +1274,7 @@ mod tests {
             etag: "\"1\"",
             source: "",
             preload: "",
+            texts: &[],
         };
         static B: ClientModule = ClientModule {
             id: "t2",
@@ -1263,6 +1283,7 @@ mod tests {
             etag: "\"2\"",
             source: "",
             preload: "",
+            texts: &[],
         };
         let mut out = Out::default();
         assert_eq!(tail_of(&out), "");

@@ -649,6 +649,47 @@ A snippet is markup a file renders more than once, or gives to a component:
   JavaScript, and the body uses its parameters in `{:…}` (see
   [client.md](client.md)).
 
+### Translations
+
+One JSON file per locale in `src/locales`, flat or nested keys:
+
+```json
+{ "cart": { "title": "Your cart",
+            "items": "{count, plural, =0 {No items} one {# item} other {# items}}" },
+  "hi": "Hello, {name}!" }
+```
+
+```html
+<h1>{t("cart.title")}</h1>
+<p>{t("cart.items", count)} {t("hi", name = user.name)}</p>
+<button on:click="n++">{:t('cart.items', n)}</button>
+```
+
+- Messages are ICU's subset: `{name}`, and `{n, plural, …}` with `=N`
+  cases and the locale's CLDR ones (`one`, `few`, …; `other` required, `#`
+  is the count). `'{'` is a brace, `''` an apostrophe. A plural counts by
+  a whole number.
+- Values: one, for a message with one placeholder; else by name
+  (`name = expr`, or a variable of that name alone). In a script, one, or
+  an object: `t('hi', { name })`.
+- Checked at build, each at its file and line: a key missing from any
+  locale, a placeholder one locale has and another lacks, a case the
+  language has not, an unknown key, values that do not match.
+- Compiled to an index: `t("cart.title")` is a `&'static str` from a table
+  per locale (it can be a `&str` prop), with values it writes as it is
+  displayed. No lookup by key at run time.
+- The locale: the route's `[[lang=locale]]` (a built-in matcher of the
+  app's locales), then the `lang` cookie, then `Accept-Language`, then the
+  default (the first file, or `wisp::default_locale("fr")?` in `init`).
+  `cx.locale()` says it, `<html lang>` is set to it, and a `CACHE`d page is
+  kept per locale.
+- A page's scripts get only the messages they use, in its locale, with
+  the page; their plurals follow `Intl.PluralRules`. `src/lib` modules
+  cannot call `t`: pass them the text.
+- Switchers: `{#each wisp::locales().iter() as l}<a
+  href={wisp::localize(cx.path(), l)}>{l}</a>{/each}` (`/fr/about` →
+  `/en/about`).
+
 ### Actions and `wisp.js`
 
 `<form action="?/like">` posts to the `like` action: an `action` that starts

@@ -764,6 +764,7 @@ fn started(addr: SocketAddr) {
 pub(crate) fn setup<A: App>() {
     install_panic_hook();
     let _ = crate::sign::ROOT.set(A::ROOT);
+    crate::i18n::ready(A::LOCALES);
     if crate::settings().dev {
         dev::listed(A::ROOT, "/"); // lists `static/` now, not in the first request
     }
@@ -2685,11 +2686,17 @@ fn serialize<A: App>(
 /// The parts of a page, in order: the shell around the tags for
 /// `%wisp.head%`, the page's head, and its body, which its browser code
 /// ends. Once a page.
-pub(crate) fn page<A: App>(out: &mut Out) -> [&str; 6] {
-    out.live.tail(&mut out.body);
+pub(crate) fn page<A: App>(out: &mut Out) -> [&str; 8] {
+    out.live.tail(&mut out.body, out.lang);
     let [s0, s1, s2] = A::shell();
     let tags = HEAD_TAGS.get().map_or("", String::as_str);
-    [s0, tags, &out.head, s1, &out.body, s2]
+    // `<html lang="…">` says the request's locale, in an app with some.
+    let lang = A::LOCALES.get(out.lang as usize).copied().unwrap_or("");
+    let (a, b) = match crate::i18n::lang_value(s0).filter(|_| !lang.is_empty()) {
+        Some((at, end)) => ((&s0[..at], lang), &s0[end..]),
+        None => ((s0, ""), ""),
+    };
+    [a.0, a.1, b, tags, &out.head, s1, &out.body, s2]
 }
 
 thread_local! {

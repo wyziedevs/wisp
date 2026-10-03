@@ -34,6 +34,7 @@ mod form;
 mod fuzz;
 mod html;
 mod http;
+mod i18n;
 mod idem;
 mod image;
 mod input;
@@ -74,6 +75,7 @@ pub use cx::{CookieOptions, Cx, Method, SameSite};
 pub use export::{Entry, ExportRoute, export};
 pub use form::{File, Form};
 pub use http::{Body, Reply, Request, handle};
+pub use i18n::{default_locale, locales, localize};
 pub use image::Image;
 pub use input::Email;
 pub use json::{FromJson, Value, from_json, to_json};
@@ -713,6 +715,8 @@ pub trait App: 'static {
     /// [`rt::RouteFacts::now`] for a request no route matched, which the
     /// root error page answers.
     const NOT_FOUND_NOW: bool = false;
+    /// The locales of `src/locales/*.json`, by file name, sorted.
+    const LOCALES: &'static [&'static str] = &[];
     /// `(path, shape)` per template id, for dev hot swapping.
     const TEMPLATES: &'static [(&'static str, u64)];
 
@@ -788,6 +792,10 @@ pub struct Out {
     made: Option<bake::Made>,
     /// The template instances with browser code the page rendered.
     live: live::Live,
+    /// The request's locale, by index into [`locales`]: what `t(…)` in a
+    /// template reads.
+    #[doc(hidden)]
+    pub lang: u8,
 }
 
 impl Out {
@@ -797,6 +805,7 @@ impl Out {
         self.response = None;
         self.made = None;
         self.live.clear();
+        self.lang = 0;
     }
 }
 
@@ -1414,6 +1423,13 @@ impl<T, E: fmt::Display> OrStatus<T> for std::result::Result<T, E> {
 /// Support for generated code. Not a stable API.
 #[doc(hidden)]
 pub mod rt {
+    pub use crate::i18n::{Arg, Case, Count, Msg, Part, Tr};
+
+    /// The request's locale, by index: for `Out::lang`.
+    #[inline]
+    pub fn pick_locale(cx: &crate::Cx) -> u8 {
+        crate::i18n::pick(cx)
+    }
     pub use crate::bake::{Baked, baked, cached, keep};
     pub use crate::cx::{
         BadCookie, CookieReader, CookieWriter, MAX_PARAMS, MAX_SEGS, decode, split,

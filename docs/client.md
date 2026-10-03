@@ -164,6 +164,15 @@ PUBLIC_API_URL=https://api.example.com
   one at a time. A variable or parameter of your own named `env` is just
   that.
 
+## Translations
+
+`t('cart.items', n)` in a script or directive shows a message of
+`src/locales` (see [design.md](design.md#translations)), with no import.
+The key is checked at build; the page sends the messages its scripts use,
+in its locale, and nothing else. Several values go in an object:
+`t('hi', { name, count: n })`. A `t` of your own is just that; `src/lib`
+code cannot call it (pass it the text).
+
 ## Directives
 
 | Syntax | Meaning |

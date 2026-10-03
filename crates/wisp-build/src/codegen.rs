@@ -20,7 +20,7 @@ use crate::protocol::{
 use crate::routes::Seg;
 use crate::rust_scan::{self, FnItem, Returns};
 use crate::template::{self, Code, Dir, Directive, Node, PropDecl, PropValue, Template};
-use crate::{fnv1a, fold, image, js, rules, shell, sourcemap, stories, ty};
+use crate::{fnv1a, fold, i18n, image, js, rules, shell, sourcemap, stories, ty};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -96,6 +96,8 @@ struct Tpl {
     /// a `let` per route parameter they or the markup name.
     stmts: Option<(String, Vec<String>)>,
     t: Template,
+    /// Its markup calls `t("key")`, which reads the request's locale.
+    i18n: bool,
 }
 
 impl Tpl {
@@ -423,6 +425,82 @@ fn hoist_awaits(nodes: &mut [Node], out: &mut Vec<(String, u32)>) -> Result<(), 
     Ok(())
 }
 
+/// Calls `f` with each Rust expression of `nodes`' (not `{:case}`
+/// patterns), inside blocks and children too.
+fn for_each_code(
+    nodes: &mut [Node],
+    f: &mut dyn FnMut(&mut Code) -> Result<(), String>,
+) -> Result<(), String> {
+    fn all<'a>(
+        bs: impl Iterator<Item = &'a mut Vec<Node>>,
+        f: &mut dyn FnMut(&mut Code) -> Result<(), String>,
+    ) -> Result<(), String> {
+        bs.into_iter().try_for_each(|b| for_each_code(b, f))
+    }
+    for n in nodes {
+        match n {
+            Node::Expr(c) | Node::Html(c) | Node::Const(c) | Node::Selected(c) => f(c)?,
+            Node::Attr { code, .. } | Node::Bool { code, .. } => f(code)?,
+            Node::RenderSnippet { args, .. } => f(args)?,
+            Node::Snippet { body, .. } | Node::Head(body) => for_each_code(body, f)?,
+            Node::Kept { sent, own, .. } => {
+                for_each_code(sent, f)?;
+                all(own.iter_mut(), f)?;
+            }
+            Node::Chosen {
+                own: Some(own),
+                line,
+                ..
+            } => {
+                let mut c = Code {
+                    src: std::mem::take(own),
+                    line: *line,
+                };
+                let r = f(&mut c);
+                *own = c.src;
+                r?;
+            }
+            Node::If {
+                branches,
+                otherwise,
+            } => {
+                for (c, b) in branches {
+                    f(c)?;
+                    for_each_code(b, f)?;
+                }
+                all(otherwise.iter_mut(), f)?;
+            }
+            Node::Each {
+                iter,
+                body,
+                otherwise,
+                ..
+            } => {
+                f(iter)?;
+                for_each_code(body, f)?;
+                all(otherwise.iter_mut(), f)?;
+            }
+            Node::Match { scrutinee, arms } => {
+                f(scrutinee)?;
+                all(arms.iter_mut().map(|(_, b)| b), f)?;
+            }
+            Node::Component {
+                props, children, ..
+            } => {
+                for p in props {
+                    if let PropValue::Expr(c) = &mut p.value {
+                        f(c)?;
+                    }
+                }
+                all(children.iter_mut(), f)?;
+            }
+            Node::Client(branches) => all(branches.iter_mut().map(|(_, b)| b), f)?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// The line of the first markup expression in `nodes` that awaits.
 fn first_await(nodes: &[Node]) -> Option<u32> {
     let code = |c: &Code| rust_scan::awaits(&c.src).then_some(c.line);
@@ -554,6 +632,12 @@ pub fn hot(input: &Input) -> Result<Hot, String> {
             || l.starts_with("static BAKED_")
             || l.contains("::wisp::ClientModule = ::wisp::ClientModule {")
         {
+            // But the messages a module's script shows, which the binary
+            // sends with the page.
+            if let Some(at) = l.rfind(", texts: &[") {
+                rust.extend_from_slice(&l.as_bytes()[at..]);
+                rust.push(b'\n');
+            }
             continue;
         }
         rust.extend_from_slice(without_note(line).as_bytes());
@@ -807,6 +891,7 @@ declare function replaceState(url: string | URL, state?: any): void;
 declare const page: { value: { url: URL; status: number; form: any; state: any } };
 declare const navigating: { value: { from: URL; to: URL } | null };
 declare const env: { readonly [name: `PUBLIC_${string}`]: string };
+declare function t(key: string, values?: any): string;
 declare module 'wisp' {
   export interface Store<T> {
     value: T;
@@ -899,6 +984,9 @@ struct Project<'a> {
     /// The Markdown pages, by route pattern, with their front matter: what
     /// `wisp::pages` lists.
     md_pages: Vec<(String, Vec<(String, String)>)>,
+    /// `src/locales`, and per key whether a template's `t("key")` uses it.
+    i18n: Option<i18n::Locales>,
+    t_used: Vec<bool>,
 }
 
 /// The browser's half: the modules of templates (by template), and the
@@ -939,7 +1027,14 @@ impl<'a> Project<'a> {
             true => crate::read_source(&shell_path).map_err(|e| format!("src/app.html: {e}"))?,
             false => shell::DEFAULT.to_string(),
         };
-        let shell = shell::split(&shell_src).map_err(|e| format!("src/app.html: {e}"))?;
+        let mut shell = shell::split(&shell_src).map_err(|e| format!("src/app.html: {e}"))?;
+        let i18n = i18n::load(root)?;
+        // `<html lang>` says each request's locale: a shell without one
+        // gets one to say it in (the first locale, in a baked page).
+        if let Some(l) = &i18n {
+            shell[0] = i18n::with_lang(&shell[0], &l.names[0]);
+        }
+        let t_used = vec![false; i18n.as_ref().map_or(0, i18n::Locales::key_count)];
         Ok(Project {
             root,
             release: input.release,
@@ -957,6 +1052,8 @@ impl<'a> Project<'a> {
             shelves: Vec::new(),
             env: crate::public_env(root),
             md_pages: Vec::new(),
+            i18n,
+            t_used,
         })
     }
 
@@ -972,7 +1069,33 @@ impl<'a> Project<'a> {
             p.stories()?;
         }
         p.app_files()?;
+        p.translate()?;
         Ok(p)
+    }
+
+    /// Each template's `t("key", …)` calls, checked and compiled (see
+    /// `i18n`).
+    fn translate(&mut self) -> Result<(), String> {
+        let Some(l) = &self.i18n else {
+            return Ok(());
+        };
+        for t in &mut self.templates {
+            let rel = &t.rel;
+            let mut found = false;
+            for_each_code(&mut t.t.nodes, &mut |c: &mut Code| {
+                if !c.src.contains('t') {
+                    return Ok(());
+                }
+                let src = l
+                    .rust(&c.src, &mut self.t_used)
+                    .map_err(|e| format!("{rel}:{}: {e}", c.line))?;
+                found |= src != c.src;
+                c.src = src;
+                Ok(())
+            })?;
+            t.i18n = found;
+        }
+        Ok(())
     }
 
     /// `p` from the project root, `/`-separated: how errors name a file.
@@ -1127,6 +1250,7 @@ impl<'a> Project<'a> {
             load_js: None,
             stmts: None,
             t,
+            i18n: false,
         });
         self.templates.last_mut().expect("just pushed")
     }
@@ -1729,6 +1853,12 @@ impl<'a> Project<'a> {
     fn app_files(&mut self) -> Result<(), String> {
         (self.hooks, self.before_waits) = hooks(self.root)?;
         for (m, file) in &self.tree.matchers {
+            if m == "locale" && file.is_none() && self.i18n.is_none() {
+                return Err(
+                    "src/routes: `[[lang=locale]]` matches the app's locales, and it has none: add src/locales/en.json"
+                        .into(),
+                );
+            }
             let Some(file) = file else { continue };
             let at = |e: String| format!("{}:{e}", self.rel(file));
             let items = rust_scan::scan(&self.read(file)?).map_err(at)?;
@@ -1814,28 +1944,39 @@ impl<'a> Project<'a> {
         // its lines stay). With maps, it ends naming its map, served at
         // `path.map`.
         let maps = self.maps;
-        let lib_file =
-            |src: &str, dir: Option<&str>, rel: &str, path: &str, files: &mut Vec<JsFile>| {
-                let code = javascript(src, rel)?;
-                let code = js::public_env(&code, &|n| var(&self.env, n))
+        let lib_file = |src: &str,
+                        dir: Option<&str>,
+                        rel: &str,
+                        path: &str,
+                        files: &mut Vec<JsFile>| {
+            let code = javascript(src, rel)?;
+            let code = js::public_env(&code, &|n| var(&self.env, n))
+                .map_err(|(off, msg)| format!("{rel}:{}: {msg}", place(src, off)))?;
+            // A page sends the messages its own scripts show.
+            if self.i18n.is_some() {
+                let no = |_: &str| {
+                    Err("t('…') shows a message in a .wisp file's script or markup; pass the text to this file from there".to_string())
+                };
+                js::translate(&code, &no)
                     .map_err(|(off, msg)| format!("{rel}:{}: {msg}", place(src, off)))?;
-                let mut s =
-                    rewrite_specifiers(&code, &specs, dir).map_err(|e| format!("{rel}: {e}"))?;
-                let mut added = 0;
-                if js::tokens(&code)
-                    .iter()
-                    .any(|t| !t.member && t.text(&code) == "persisted")
-                {
-                    s.push_str(&format!("\nimport {};\n", js_str(&extra_url)));
-                    added = 2;
-                }
-                if maps {
-                    let name = path.rsplit('/').next().unwrap_or(path);
-                    s.push_str(&sourcemap::comment(name));
-                    files.push(map_file(path, name, rel, src, &sourcemap::same(src, added)));
-                }
-                Ok::<_, String>(s)
-            };
+            }
+            let mut s =
+                rewrite_specifiers(&code, &specs, dir).map_err(|e| format!("{rel}: {e}"))?;
+            let mut added = 0;
+            if js::tokens(&code)
+                .iter()
+                .any(|t| !t.member && t.text(&code) == "persisted")
+            {
+                s.push_str(&format!("\nimport {};\n", js_str(&extra_url)));
+                added = 2;
+            }
+            if maps {
+                let name = path.rsplit('/').next().unwrap_or(path);
+                s.push_str(&sourcemap::comment(name));
+                files.push(map_file(path, name, rel, src, &sourcemap::same(src, added)));
+            }
+            Ok::<_, String>(s)
+        };
         let mut js_files = Vec::with_capacity(lib_src.len());
         for (p, src) in &lib_src {
             let dir = p.rfind('/').map_or("", |i| &p[..i]);
@@ -1891,6 +2032,7 @@ impl<'a> Project<'a> {
                 release: self.release,
                 maps: self.maps,
                 env: &self.env,
+                i18n: self.i18n.as_ref(),
                 extra: &extra_url,
             };
             let c = client(t, &cx)?;
@@ -2070,6 +2212,15 @@ impl Gen {
         }
         self.line(0, "}");
         self.line(0, "");
+        // The messages of `t("key")`: of templates, and sent to scripts.
+        if let Some(l) = &p.i18n {
+            let mut sent = vec![false; p.t_used.len()];
+            for k in web.clients.iter().flatten().flat_map(|c| &c.texts) {
+                sent[*k] = true;
+            }
+            self.out.push_str(&l.tables(&p.t_used, &sent));
+            self.line(0, "");
+        }
         // The sync twins `handle_now` calls, as `module::shim`.
         let twins: Vec<String> = (p.model.routes.iter())
             .flat_map(|r| now_arms(p, r))
@@ -2111,7 +2262,7 @@ impl Gen {
                 None => (format!("{}?v={}", f.path, f.hash), lit(&f.source)),
             };
             self.line(0, &format!(
-                "static __WISP_JS_{i}: ::wisp::ClientModule = ::wisp::ClientModule {{ id: {}, path: {}, url: {}, etag: {}, source: {source}, preload: \"\" }};",
+                "static __WISP_JS_{i}: ::wisp::ClientModule = ::wisp::ClientModule {{ id: {}, path: {}, url: {}, etag: {}, source: {source}, preload: \"\", texts: &[] }};",
                 lit(&f.path),
                 lit(&f.path),
                 lit(&url),
@@ -2138,6 +2289,9 @@ impl Gen {
             let page = &p.templates[pg.tpl];
             self.line(0, "#[allow(unused_variables)]");
             self.line(0, &format!("async fn serve_page_{i}(cx: &mut ::wisp::Cx, __o: &mut ::wisp::Out) -> ::wisp::Result<()> {{"));
+            if p.i18n.is_some() {
+                self.line(1, "__o.lang = ::wisp::rt::pick_locale(cx);");
+            }
             for l in route.layouts.iter().filter(layout_load) {
                 self.line(
                     1,
@@ -2368,6 +2522,16 @@ impl Gen {
                 tpls.join(", ")
             ),
         );
+        if let Some(l) = &p.i18n {
+            let names: Vec<String> = l.names.iter().map(|n| lit(n)).collect();
+            self.line(
+                1,
+                &format!(
+                    "const LOCALES: &'static [&'static str] = &[{}];",
+                    names.join(", ")
+                ),
+            );
+        }
         self.line(0, "");
         self.router(p);
         let client = self.api(p)?;
@@ -2613,6 +2777,15 @@ impl Gen {
                 match tree.matchers.iter().find(|(x, _)| Some(x) == m.as_ref()) {
                     Some((m, Some(_))) => {
                         guards.push(format!("param_{m}::__call::matches({decoded})"))
+                    }
+                    // `locale`: one of `src/locales`.
+                    Some((m, None)) if m == "locale" => {
+                        let names = p.i18n.as_ref().map_or(&[][..], |l| &l.names[..]);
+                        let alts: Vec<String> = names.iter().map(|n| lit(n)).collect();
+                        guards.push(match alts.is_empty() {
+                            true => "false".into(),
+                            false => format!("matches!(p{k}, {})", alts.join(" | ")),
+                        })
                     }
                     // `int`: digits that fit a u64, so `parse().unwrap()` holds.
                     Some(_) => guards.push(format!(
@@ -3034,6 +3207,9 @@ impl Gen {
     fn error(&mut self, p: &Project) {
         let m = &p.model;
         self.line(1, "async fn error(route: Option<usize>, cx: &mut ::wisp::Cx, __o: &mut ::wisp::Out, status: u16, message: &str) -> ::wisp::Result<()> {");
+        if p.i18n.is_some() {
+            self.line(2, "__o.lang = ::wisp::rt::pick_locale(cx);");
+        }
         if m.errors.is_empty() {
             self.line(2, "let _ = route;");
             self.line(2, "::wisp::rt::default_error(cx, __o, status, message);");
@@ -4050,6 +4226,15 @@ impl Gen {
         } else {
             self.line(1, "use super::__mods::*;");
         }
+        // The messages its `t("key")` calls read (see `i18n`).
+        if t.i18n || client.is_some_and(|c| !c.texts.is_empty()) {
+            let up = if t.user.is_some() {
+                "super::super"
+            } else {
+                "super"
+            };
+            self.line(1, &format!("use {up}::__i18n as __wisp_i18n;"));
+        }
         if !self.release {
             let chunks: Vec<String> = t.t.chunks.iter().map(|c| lit(c)).collect();
             // Named so that no name in the app's code can collide with them.
@@ -4067,13 +4252,14 @@ impl Gen {
         if let Some(c) = client {
             let (path, url) = (c.path(), format!("{}?v={}", c.path(), c.hash));
             self.line(1, &format!(
-                "pub static __WISP_CLIENT: ::wisp::ClientModule = ::wisp::ClientModule {{ id: {}, path: {}, url: {}, etag: {}, source: {}, preload: {} }};",
+                "pub static __WISP_CLIENT: ::wisp::ClientModule = ::wisp::ClientModule {{ id: {}, path: {}, url: {}, etag: {}, source: {}, preload: {}, texts: &[{}] }};",
                 lit(&c.id),
                 lit(&path),
                 lit(&url),
                 lit(&format!("\"{}\"", c.hash)),
                 lit(&c.source),
-                lit(c.extra.as_deref().unwrap_or(""))
+                lit(c.extra.as_deref().unwrap_or("")),
+                c.texts.iter().map(|k| format!("&__wisp_i18n::J{k}")).collect::<Vec<_>>().join(", ")
             ));
         }
         // A load hands its `Data` over; statements are in the render itself.
@@ -4113,6 +4299,9 @@ impl Gen {
         match &t.t.props {
             Some((_, line)) => self.line(1, &format!("{sig} {{ // {}:{line}", t.rel)),
             None => self.line(1, &format!("{sig} {{")),
+        }
+        if t.i18n {
+            self.line(2, "let __wisp_l: u8 = __o.lang;");
         }
         // `data.count` is also `count`: `Copy` fields by value, the rest by
         // reference. A local of the same name shadows it.
@@ -4242,6 +4431,9 @@ impl Gen {
         if let Some(c) = client.filter(|c| c.paints) {
             self.line(1, "pub fn paint(__o: &mut ::wisp::Out, __p: &[::wisp::rt::Js<'_>], children: &dyn Fn(&mut ::wisp::Out), __wisp_d: u32) {");
             self.line(2, "if __wisp_d > 32 { return; }");
+            if t.i18n {
+                self.line(2, "let __wisp_l: u8 = __o.lang;");
+            }
             self.line(2, &format!("__o.body.push_str({});", lit(COPY_START)));
             let env: Vec<(String, Pv)> =
                 t.t.props
@@ -5399,6 +5591,8 @@ struct Client {
     lines: Vec<sourcemap::Line>,
     /// Of `source`, for the module's URL.
     hash: String,
+    /// The keys its `t('key')` calls show, by index (see `i18n`).
+    texts: Vec<usize>,
     /// The instance's server values: a JSON object.
     blob: Vec<Piece>,
     /// Per group: the loop values its directives read (a JSON object), or
@@ -5442,7 +5636,7 @@ struct JsFile {
 /// no import for them.
 const HELPERS: &str = "tick, untrack, setTimeout, setInterval, requestAnimationFrame, addEventListener, listen, onMount, onDestroy, effect, watch, \
                        derived, store, persisted, emit, setContext, getContext, goto, invalidate, matches, page, navigating, enhance, \
-                       pushState, replaceState, context, portal,__wisp_s, __wisp_r, __wisp_d, __wisp_e, __wisp_ep, __wisp_snap, __wisp_props, __wisp_eq";
+                       pushState, replaceState, context, portal,__wisp_s, __wisp_r, __wisp_d, __wisp_e, __wisp_ep, __wisp_snap, __wisp_props, __wisp_eq, __wisp_t";
 
 /// What `client` needs to know beyond the template.
 struct ClientCx<'a> {
@@ -5459,6 +5653,8 @@ struct ClientCx<'a> {
     maps: bool,
     /// The `PUBLIC_*` variables.
     env: &'a [(String, String)],
+    /// `src/locales`, for `t('key')`.
+    i18n: Option<&'a i18n::Locales>,
     /// The URL of the runtime's less used half (`extra.js`).
     extra: &'a str,
 }
@@ -5877,14 +6073,22 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
         snap: snap.as_deref(),
     };
     let (source, lines) = module_source(&m).map_err(|e| format!("{}: {e}", t.rel))?;
-    let mut source = js::public_env(&source, &|n| var(cx.env, n)).map_err(|(off, msg)| {
-        // At the line of the file the module's line came from.
+    // At the line of the file the module's line came from.
+    let at = |source: &str, (off, msg): (usize, String)| {
         let k = source[..off].matches('\n').count();
         match lines.get(k).copied().flatten() {
             Some((line, _)) => format!("{}:{}: {msg}", t.rel, line + 1),
             None => format!("{}: {msg}", t.rel),
         }
-    })?;
+    };
+    let mut source = js::public_env(&source, &|n| var(cx.env, n)).map_err(|e| at(&source, e))?;
+    let mut texts = Vec::new();
+    if let Some(l) = cx.i18n {
+        let args = |k: &str| l.args(k).ok_or_else(|| l.unknown(k));
+        let (code, keys) = js::translate(&source, &args).map_err(|e| at(&source, e))?;
+        texts = keys.iter().filter_map(|k| l.key(k)).collect();
+        source = code;
+    }
     if cx.maps {
         source.push_str(&sourcemap::comment(&format!("{id}.js")));
     } else {
@@ -5929,6 +6133,7 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
         source,
         lines,
         hash,
+        texts,
         blob,
         locals,
         uses,
@@ -8135,6 +8340,7 @@ pub fn load() -> Data { todo!() }";
             load_js: None,
             stmts: None,
             t: template::parse(src).unwrap(),
+            i18n: false,
         };
         // The script's bare imports are the app's npm packages.
         let deps = vec![("a".into(), "1".into()), ("b".into(), "2".into())];
@@ -8152,6 +8358,7 @@ pub fn load() -> Data { todo!() }";
             release: false,
             maps: true,
             env: &[],
+            i18n: None,
             extra: "/_app/c/extra.js",
         };
         client(&t, &cx).map(|c| c.expect("the page has browser code"))
@@ -8217,6 +8424,68 @@ pub fn load() -> Data { todo!() }";
         )
         .unwrap();
         assert!(code.contains("let a: number = 1"), "{code}");
+    }
+
+    #[test]
+    fn translations_are_checked_and_compiled() {
+        let page = "<h1>{t(\"title\")}</h1>\n<p>{t(\"items\", n)}</p>\n<Card />\n<b>{:t('items', k)}</b>\n<script>\n  let k = 1\n</script>";
+        let files = [
+            ("src/routes/[[lang=locale]]/+page.wisp", page),
+            ("src/components/Card.wisp", "<i>{t(\"title\")}</i>"),
+            (
+                "src/locales/en.json",
+                "{\"title\": \"Hi\", \"items\": \"{count, plural, one {# item} other {# items}}\", \"unused\": \"x\"}",
+            ),
+            (
+                "src/locales/fr.json",
+                "{\"title\": \"Salut\", \"items\": \"{count, plural, one {# article} other {# articles}}\", \"unused\": \"y\"}",
+            ),
+        ];
+        let code = app("i18n", &files).unwrap();
+        for want in [
+            "const LOCALES: &'static [&'static str] = &[\"en\", \"fr\"];",
+            "pub static K1: [&str; 2] = [\"Hi\", \"Salut\"]; // title",
+            "__wisp_i18n::K1[__wisp_l as usize]",
+            "::wisp::rt::Count::count(&(n))",
+            "pub static J0: [&str; 2]",
+            "texts: &[&__wisp_i18n::J0]",
+            "__o.lang = ::wisp::rt::pick_locale(cx);",
+            "matches!(p0, \"en\" | \"fr\")",
+            "let __wisp_l: u8 = __o.lang;",
+        ] {
+            assert!(code.contains(want), "{want}: {code}");
+        }
+        // Keys no template uses are checked, not compiled.
+        assert!(!code.contains("// unused") && !code.contains("pub static J2"));
+        // An unknown key, at its line; values that do not match.
+        let bad = |page: &str| {
+            let mut f = files;
+            f[0].1 = page;
+            app("i18n-bad", &f).unwrap_err()
+        };
+        assert_eq!(
+            bad("<p>\n{t(\"nope\")}</p>"),
+            "src/routes/[[lang=locale]]/+page.wisp:2: no \"nope\" in src/locales/en.json: add it to every locale"
+        );
+        assert!(bad("{t(\"items\")}").ends_with("\"items\" needs {count}: it has {count}"));
+        assert!(
+            bad("<b>{:t('nope')}</b>\n<script>\n</script>")
+                .starts_with("src/routes/[[lang=locale]]/+page.wisp:1: no \"nope\""),
+        );
+        // Browser modules get the text from a page's script.
+        let mut lib = files.to_vec();
+        lib.push(("src/lib/x.js", "export const x = () =>\n  t('title')\n"));
+        assert!(
+            app("i18n-lib", &lib)
+                .unwrap_err()
+                .starts_with("src/lib/x.js:2:3: t('…') shows a message in a .wisp file's script")
+        );
+        // `[[lang=locale]]` needs locales.
+        let err = app(
+            "i18n-none",
+            &[("src/routes/[[lang=locale]]/+page.wisp", "<p>x</p>")],
+        );
+        assert!(err.unwrap_err().contains("add src/locales/en.json"));
     }
 
     #[test]

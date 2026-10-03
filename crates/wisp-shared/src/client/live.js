@@ -456,6 +456,28 @@ export function invalidate() {
 export const matches = (text, q) =>
   String(text ?? '').toLowerCase().includes(String(q ?? '').trim().toLowerCase());
 
+// A translation: `t('cart.items', n)`, which the build makes
+// `__wisp_t('cart.items', { count: n })`. The page sends the messages its
+// scripts show (`t` in #wisp-live), in its locale: text, ['name'] for a
+// value, ['n', { one: [...], other: [...] }] for a plural (CLDR's, as
+// Intl has them for <html lang>).
+const texts = {};
+const plurals = {};
+const say = (m, a) =>
+  typeof m == 'string'
+    ? m
+    : m
+        .map((p) => {
+          if (typeof p == 'string') return p;
+          const v = a?.[p[0]];
+          if (p.length == 1) return v ?? '';
+          const lang = document.documentElement.lang || 'en';
+          const c = p[1];
+          return say(c['=' + v] || c[(plurals[lang] ||= new Intl.PluralRules(lang)).select(+v || 0)] || c.other, a);
+        })
+        .join('');
+export const __wisp_t = (key, a) => (key in texts ? say(texts[key], a) : key);
+
 // A context of its own: `const [getUser, setUser] = context()`, in a lib
 // module or a script. Set in a component's script, got in its own or a
 // descendant's, as they start.
@@ -566,7 +588,8 @@ function start() {
   const my = ++gen;
   const json = document.getElementById('wisp-live');
   // Parsed by wisp.js already, if it is there; ours to change now.
-  const { m = {}, i = [], r = null, p = {} } = json ? json.__j || JSON.parse(json.textContent) : {};
+  const { m = {}, i = [], r = null, p = {}, t = {} } = json ? json.__j || JSON.parse(json.textContent) : {};
+  Object.assign(texts, t);
   if (json) json.__j = null;
   route = { id: r, params: p };
   const at = {};
@@ -800,6 +823,7 @@ const shared = {
   matches,
   pushState,
   replaceState,
+  __wisp_t,
   page,
   navigating,
   context,

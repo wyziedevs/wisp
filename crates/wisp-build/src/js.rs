@@ -1812,6 +1812,121 @@ pub fn public_env(
     Ok(apply(src, edits))
 }
 
+/// `src` with each `t('key', …)`, where `t` is no name of its own, as
+/// `__wisp_t("key", { name: value })`: a translation, whose message the
+/// page sends with it. `args(key)` is the key's placeholders, or the error
+/// for a key no locale has. The values are one, for a message with one
+/// placeholder, or an object literal naming each. Errors are at their
+/// offset. Also the keys it uses.
+pub fn translate(
+    src: &str,
+    args: &dyn Fn(&str) -> Result<Vec<String>, String>,
+) -> Result<(String, Vec<String>), (usize, String)> {
+    if !src.contains("t(") && !src.contains("t (") {
+        return Ok((src.to_string(), Vec::new()));
+    }
+    let t = tokens(src);
+    let mut top: Vec<String> = declarations(src).into_iter().map(|(n, _)| n).collect();
+    top.extend(import_names(src, &imports(src)));
+    if top.iter().any(|n| n == "t") {
+        return Ok((src.to_string(), Vec::new()));
+    }
+    let own = bound(src, &t);
+    let (mut edits, mut keys) = (Vec::new(), Vec::new());
+    for (k, tok) in t.iter().enumerate() {
+        let call = t.get(k + 1).is_some_and(|n| n.is(src, Kind::Punct, "("));
+        if tok.kind != Kind::Ident
+            || tok.member
+            || tok.key
+            || own[k]
+            || !call
+            || tok.text(src) != "t"
+        {
+            continue;
+        }
+        let err = |msg: String| (tok.start, msg);
+        let end = close(&t, k + 1);
+        let alone = k + 3 == end || t.get(k + 3).is_some_and(|n| n.is(src, Kind::Punct, ","));
+        let key = t
+            .get(k + 2)
+            .filter(|n| n.kind == Kind::String && k + 2 < end && alone);
+        let name = key
+            .map(|n| n.text(src))
+            .map(|s| &s[1..s.len().saturating_sub(1).max(1)]);
+        let Some(name) = name.filter(|n| !n.contains('\\')) else {
+            return Err(err(
+                "t(…)'s first argument is the key, a string: t('cart.title')".into(),
+            ));
+        };
+        let want = args(name).map_err(err)?;
+        // The values, as token ranges, split at the call's own commas.
+        let depth = t[k + 1].depth + 1;
+        let mut values: Vec<(usize, usize)> = Vec::new();
+        let mut j = k + 3;
+        while j < end && t[j].is(src, Kind::Punct, ",") {
+            let from = j + 1;
+            j = from;
+            while j < end && !(t[j].depth == depth && t[j].is(src, Kind::Punct, ",")) {
+                j += 1;
+            }
+            if from < j {
+                values.push((from, j));
+            }
+        }
+        let has = |w: &[String]| {
+            let v: Vec<String> = w.iter().map(|n| format!("{{{n}}}")).collect();
+            match v.is_empty() {
+                true => "it has no placeholders".to_string(),
+                false => format!("it has {}", v.join(" ")),
+            }
+        };
+        let object = values.first().filter(|&&(a, b)| {
+            values.len() == 1 && t[a].is(src, Kind::Punct, "{") && close(&t, a) == b - 1
+        });
+        if let Some(&(a, b)) = object {
+            let mut named: Vec<&str> = Vec::new();
+            for i in a + 1..b - 1 {
+                let n = &t[i];
+                let near = |d: isize, s: &str| t[(i as isize + d) as usize].is(src, Kind::Punct, s);
+                if n.depth != t[a].depth + 1 {
+                    continue;
+                }
+                if n.is(src, Kind::Punct, "...") {
+                    return Err(err(
+                        "t(…)'s values are named one by one: { count: n }".into()
+                    ));
+                }
+                let short = n.kind == Kind::Ident
+                    && (near(-1, "{") || near(-1, ","))
+                    && (near(1, ",") || near(1, "}"));
+                if n.key || short {
+                    named.push(n.text(src));
+                }
+            }
+            if let Some(n) = named.iter().find(|n| !want.iter().any(|w| w == *n)) {
+                return Err(err(format!("'{name}' has no {{{n}}}: {}", has(&want))));
+            }
+            if let Some(w) = want.iter().find(|w| !named.contains(&w.as_str())) {
+                return Err(err(format!("'{name}' needs {{{w}}}: {}", has(&want))));
+            }
+        } else if values.len() == 1 && want.len() == 1 {
+            let (a, b) = values[0];
+            edits.push((t[a].start, t[a].start, format!("{{ {}: (", want[0])));
+            edits.push((t[b - 1].end, t[b - 1].end, ")}".to_string()));
+        } else if !values.is_empty() || !want.is_empty() {
+            return Err(err(format!(
+                "name the values of '{name}': t('{name}', {{ count: n }}): {}",
+                has(&want)
+            )));
+        }
+        edits.push((tok.start, tok.end, "__wisp_t".to_string()));
+        if !keys.iter().any(|k| k == name) {
+            keys.push(name.to_string());
+        }
+    }
+    Ok((apply(src, edits), keys))
+}
+
 /// `src` with each range replaced by spaces, its line breaks kept, so the
 /// rest keeps its line numbers.
 pub fn blank(src: &str, ranges: &[(usize, usize)]) -> String {
@@ -3098,6 +3213,46 @@ mod tests {
         same(
             strip("function g(): { a: number; b(): void } {\n  return { a: 1, b() {} }\n}"),
             "function g() { return { a: 1, b() {} } }",
+        );
+    }
+
+    #[test]
+    fn translations_are_named() {
+        let args = |k: &str| match k {
+            "title" => Ok(vec![]),
+            "items" => Ok(vec!["count".to_string()]),
+            "hi" => Ok(vec!["name".to_string(), "n".to_string()]),
+            _ => Err(format!("no \"{k}\"")),
+        };
+        let tr = |src: &str| translate(src, &args);
+        assert_eq!(
+            tr("let a = t('title') + t(\"items\", cart.length)\nf(t('hi', { name: x, n }))"),
+            Ok((
+                "let a = __wisp_t('title') + __wisp_t(\"items\", { count: (cart.length)})\nf(__wisp_t('hi', { name: x, n }))".into(),
+                vec!["title".into(), "items".into(), "hi".into()]
+            ))
+        );
+        // A `t` of the code's own is its own.
+        for own in [
+            "let t = (x) => x; t('a')",
+            "function f(t) { t('a') }",
+            "o.t('a')",
+        ] {
+            assert_eq!(tr(own), Ok((own.into(), vec![])), "{own}");
+        }
+        let err = |src: &str| tr(src).unwrap_err();
+        assert_eq!(err("x;\nt('nope')"), (3, "no \"nope\"".into()));
+        assert!(err("t(key)").1.contains("the key, a string"));
+        assert!(err("t('a' + b)").1.contains("the key, a string"));
+        assert!(err("t('hi', a, b)").1.contains("name the values of 'hi'"));
+        assert!(err("t('items')").1.contains("name the values"));
+        assert_eq!(
+            err("t('hi', { name })").1,
+            "'hi' needs {n}: it has {name} {n}"
+        );
+        assert_eq!(
+            err("t('items', { c: 1 })").1,
+            "'items' has no {c}: it has {count}"
         );
     }
 
