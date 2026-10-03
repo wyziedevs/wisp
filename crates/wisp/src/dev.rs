@@ -80,6 +80,95 @@ pub(crate) fn endpoint<A: App>(
     }
 }
 
+/// `POST /_wisp/dev/open`, body `file\nline` (`file` from the project
+/// root, `/`-separated): opens the project's file at that line, for the
+/// devtools and the workshop. Only a loopback peer that sends `x-wisp-dev`
+/// is answered: a page of another site cannot send that header without
+/// asking first (CORS), and is never told yes, so no site can open files.
+#[cfg(debug_assertions)]
+pub(crate) fn open(root: &str, cx: &crate::Cx) -> (u16, &'static str) {
+    if !cx.peer().ip().is_loopback() || cx.header("x-wisp-dev").is_none() {
+        return (404, "Not Found");
+    }
+    let Ok(body) = std::str::from_utf8(cx.body()) else {
+        return (400, "body is not UTF-8");
+    };
+    let (file, line) = body.split_once('\n').unwrap_or((body, "1"));
+    let line: u32 = line.trim().parse().unwrap_or(1).max(1);
+    let file = file.trim();
+    if !crate::http::stays_inside(file) {
+        return (400, "not a file of the project");
+    }
+    let path = Path::new(root).join(file);
+    if !path.is_file() {
+        return (404, "no such file");
+    }
+    match open_in_editor(&path, line) {
+        true => (200, "opened"),
+        false => (500, "no editor found: set WISP_EDITOR, such as `code`"),
+    }
+}
+
+/// Opens `path` at `line`: in `$WISP_EDITOR` or `$EDITOR` (one that draws
+/// a window: a terminal one has no terminal here), else VS Code's `code
+/// -g`, else whatever the system opens the file with.
+#[cfg(debug_assertions)]
+fn open_in_editor(path: &Path, line: u32) -> bool {
+    use std::process::{Command, Stdio};
+    let spawned = |mut c: Command| {
+        c.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        match c.spawn() {
+            // Waited for off the request, so it leaves no zombie behind.
+            Ok(mut child) => {
+                let _ = std::thread::Builder::new().spawn(move || child.wait());
+                true
+            }
+            Err(_) => false,
+        }
+    };
+    let at = format!("{}:{line}", path.display());
+    let editor = std::env::var("WISP_EDITOR")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_default();
+    let mut words = editor.split_whitespace();
+    if let Some(program) = words.next() {
+        let name = Path::new(program)
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        const TERMINAL: [&str; 11] = [
+            "vi", "vim", "nvim", "nano", "emacs", "micro", "kak", "hx", "helix", "ed", "joe",
+        ];
+        if !TERMINAL.contains(&name.as_str()) {
+            let mut c = Command::new(program);
+            c.args(words);
+            match name.as_str() {
+                "code" | "code-insiders" | "codium" | "cursor" | "windsurf" => c.arg("-g").arg(&at),
+                _ => c.arg(&at),
+            };
+            if spawned(c) {
+                return true;
+            }
+        }
+    }
+    let code = if cfg!(windows) { "code.cmd" } else { "code" };
+    let mut c = Command::new(code);
+    c.arg("-g").arg(&at);
+    if spawned(c) {
+        return true;
+    }
+    let system = match () {
+        _ if cfg!(windows) => "explorer",
+        _ if cfg!(target_os = "macos") => "open",
+        _ => "xdg-open",
+    };
+    let mut c = Command::new(system);
+    c.arg(path);
+    spawned(c)
+}
+
 /// Body: `path\nshape-hex\ncount\n` then per chunk `byte-length\n<bytes>`.
 /// Refused unless the shape matches the compiled template exactly.
 fn swap<A: App>(body: &[u8]) -> Result<(), &'static str> {

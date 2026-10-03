@@ -102,7 +102,8 @@ pub fn run(root: &Path, port: u16) -> Result<(), String> {
         let (mut css, mut full) = (false, false);
         for (rel, kind) in &changed {
             if rel.ends_with(".wisp") || rel == "src/app.html" {
-                if *kind == Change::Modified {
+                // A stories file is a template per story: only a build splits it.
+                if *kind == Change::Modified && !rel.ends_with(".stories.wisp") {
                     templates.push(rel.as_str())
                 } else {
                     rebuild_needed = true

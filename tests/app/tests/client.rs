@@ -8,6 +8,73 @@ use wisp::test::client;
 use wisp::{Body, Request, Value};
 use wisp_test_app::Site;
 
+/// The component workshop (dev builds): every component, stories from
+/// `Card.stories.wisp` rendered by the server with their props from the
+/// query, a default story for a component that needs nothing, and a note
+/// for one that needs a story.
+#[test]
+fn the_workshop_renders_stories() {
+    let mut app = client::<Site>();
+    let index = app.get("/_wisp/components");
+    if !cfg!(debug_assertions) {
+        assert_eq!(index.status, 404, "dev builds only");
+        return;
+    }
+    let text = index.text();
+    assert!(
+        text.contains("src/components/Card.wisp") && text.contains("2 stories"),
+        "{text}"
+    );
+    let page = app.get("/_wisp/components/Card/featured?title=Mint");
+    let text = page.text();
+    assert!(
+        text.contains("name=\"title\" data-set value=\"Mint\""),
+        "{text}"
+    );
+    assert!(text.contains("name=\"featured\" checked"), "{text}");
+    assert!(
+        text.contains("/_wisp/components/Card/featured/frame?title=Mint"),
+        "{text}"
+    );
+    let frame = app.get("/_wisp/components/Card/featured/frame");
+    let text = frame.text();
+    assert!(
+        text.contains("<h2>Tea ★</h2>")
+            && text.contains("3 items")
+            && text.contains("A pot for two."),
+        "{text}"
+    );
+    assert!(
+        text.contains("/_app/wisp.js?v="),
+        "in the app's shell: {text}"
+    );
+    let text = app
+        .get("/_wisp/components/Card/featured/frame?title=Mint&featured=false&count=9")
+        .text()
+        .to_string();
+    assert!(
+        text.contains("<h2>Mint</h2>") && text.contains("9 items"),
+        "{text}"
+    );
+    let text = app
+        .get("/_wisp/components/Card/empty/frame")
+        .text()
+        .to_string();
+    assert!(
+        text.contains("<h2>Nothing yet</h2>") && text.contains("0 items"),
+        "{text}"
+    );
+    let text = app
+        .get("/_wisp/components/Tally/default/frame")
+        .text()
+        .to_string();
+    assert!(text.contains("class=\"tally\""), "{text}");
+    let text = app.get("/_wisp/components/Table").text().to_string();
+    assert!(text.contains("Add Table.stories.wisp beside it"), "{text}");
+    assert_eq!(app.get("/_wisp/components/Card/nope").status, 404);
+    assert_eq!(app.get("/_wisp/components/Nope/frame/x/y").status, 404);
+}
+
 #[test]
 fn pages_hooks_and_errors() {
     let mut app = client::<Site>();

@@ -66,6 +66,9 @@ const LIVE_JS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/live.js"));
 /// and linked only by debug builds, so none of it ships in a release
 /// binary's pages.
 const DEV_JS: &[u8] = include_bytes!("client/wisp-dev.js");
+/// The devtools overlay (`Alt+Shift+W`): debug builds only.
+#[cfg(debug_assertions)]
+const DEVTOOLS_JS: &[u8] = include_bytes!("client/wisp-devtools.js");
 /// Also inlined into the fallback error page (`rt::default_error`).
 pub(crate) const UI_CSS: &str = include_str!("client/ui.css");
 const DIALOG_CSS: &[u8] = include_bytes!("client/dialog.css");
@@ -783,6 +786,9 @@ pub(crate) fn setup<A: App>() {
             s.push_str(&format!(
                 "<script defer src=\"/_app/wisp-dev.js\" data-port=\"{port}\"></script>"
             ));
+            if cfg!(debug_assertions) {
+                s.push_str("<script defer src=\"/_app/wisp-devtools.js\"></script>");
+            }
         }
         s
     });
@@ -1161,7 +1167,7 @@ fn decide_now<A: App>(
     if crate::settings().request_id {
         cx.request_id();
     }
-    if !before_routes::<A>(cx, route, reply) {
+    if !before_routes::<A>(cx, route, out, reply) {
         let started = timed().then(Instant::now);
         out.clear();
         let Some(result) = catch_now(|| A::handle_now(route, cx, out)) else {
@@ -2254,7 +2260,7 @@ async fn decide<A: App>(
     }
     // Routed first (it only matches), so the path is read once.
     let route = routed.unwrap_or_else(|| route::<A>(cx));
-    if !before_routes::<A>(cx, route, reply) {
+    if !before_routes::<A>(cx, route, out, reply) {
         let started = timed().then(Instant::now);
         out.clear();
         let result = catch_made(|| A::handle(route, cx, out)).await;
@@ -2294,14 +2300,14 @@ fn tag(cx: &Cx, reply: &mut Reply) {
 
 /// What is answered before the routes: a path that is not one, Wisp's own
 /// files, a trailing slash, the app's files. Whether it was.
-fn before_routes<A: App>(cx: &Cx, route: Option<usize>, reply: &mut Reply) -> bool {
+fn before_routes<A: App>(cx: &Cx, route: Option<usize>, out: &mut Out, reply: &mut Reply) -> bool {
     // Its bytes: only a few of these need it as a `str`.
     let raw = cx.raw_path();
     if raw.first() != Some(&b'/') {
         reply.set_plain(400, "Bad Request");
         return true;
     }
-    if raw.starts_with(b"/_") && internal::<A>(cx, cx.path(), reply) {
+    if raw.starts_with(b"/_") && internal::<A>(cx, cx.path(), out, reply) {
         return true;
     }
     if raw.len() > 1 && raw.ends_with(b"/") {
@@ -2780,8 +2786,10 @@ fn panicked(panic: Box<dyn std::any::Any + Send>) -> Error {
 }
 
 /// Wisp's own addresses: the browser runtime, the API docs and, in dev,
-/// the dev tools. `false` for any other path.
-fn internal<A: App>(cx: &Cx, path: &str, reply: &mut Reply) -> bool {
+/// the dev tools. `false` for any other path. `out`: where the component
+/// workshop renders a story, in debug builds.
+#[cfg_attr(not(debug_assertions), allow(unused_variables))]
+fn internal<A: App>(cx: &Cx, path: &str, out: &mut Out, reply: &mut Reply) -> bool {
     if !path.starts_with("/_") {
         return false;
     }
@@ -2798,6 +2806,28 @@ fn internal<A: App>(cx: &Cx, path: &str, reply: &mut Reply) -> bool {
         "/_wisp/openapi.json" if docs => (A::openapi().as_bytes(), "json", None),
         "/_wisp/client.ts" if docs => (A::client_ts().as_bytes(), "txt", None),
         "/_wisp/docs" if docs => (api_docs(), "html", None),
+        #[cfg(debug_assertions)]
+        "/_app/wisp-devtools.js" if dev => (DEVTOOLS_JS, "js", None),
+        #[cfg(debug_assertions)]
+        _ if dev && path.starts_with("/_wisp/components") => {
+            use crate::workshop::Answer;
+            match crate::workshop::answer::<A>(cx, out) {
+                Answer::Page(html) => reply.set(
+                    200,
+                    "text/html; charset=utf-8",
+                    Body::Bytes(html.into_bytes()),
+                ),
+                Answer::Frame => reply.set(200, "text/html; charset=utf-8", Body::Page),
+                Answer::Missing => reply.set_plain(404, "Not Found"),
+            }
+            return true;
+        }
+        #[cfg(debug_assertions)]
+        "/_wisp/dev/open" if s.dev && cx.method == Method::Post => {
+            let (status, msg) = dev::open(A::ROOT, cx);
+            reply.set_plain(status, msg);
+            return true;
+        }
         _ if s.dev && path.starts_with("/_wisp/") => {
             let (status, msg) = dev::endpoint::<A>(cx.method, path, cx.body(), cx.peer());
             reply.set_plain(status, msg);

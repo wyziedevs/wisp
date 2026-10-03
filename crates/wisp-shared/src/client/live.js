@@ -50,6 +50,23 @@ let later = new Map(); // islands waiting for hydrate(): instance -> its record
 let woken = new Set(); // instances hydrate() was called for
 let ready = Promise.resolve(); // the last start's boot
 let current = null; // the instance whose script is running, for context()
+// dev{
+// What the devtools overlay (wisp-devtools.js) reads. Release builds of
+// this file have none of the lines from a `dev{` mark to its `}dev`.
+// A dev module's script ends with state(file, its signals, their lines).
+const devs = new Set();
+globalThis.__wisp_dev = {
+  route: () => route,
+  live() {
+    for (const i of devs) if (i.sc.dead) devs.delete(i);
+    return [...devs];
+  },
+  stores: [], // [signal, where it was made (a stack)]
+  state(file, st, lines) {
+    if (current) devs.add(Object.assign(current, { file, st, lines }));
+  },
+};
+// }dev
 
 export function define(id, fn, opts) {
   defs.set(id, { fn, ...opts });
@@ -367,6 +384,9 @@ function sub(get, f) {
 // module to share it between files.
 export function store(value) {
   const s = new Sig(value, 1);
+  // dev{
+  __wisp_dev.stores.push([s, new Error().stack]);
+  // }dev
   return {
     get value() {
       return s.v;
@@ -387,6 +407,9 @@ export const persisted = (key, initial) => X.persisted(key, initial);
 // A value worked out from others, read as `total.value` like a store's.
 export function derived(f) {
   const m = new Memo(f);
+  // dev{
+  __wisp_dev.stores.push([m, new Error().stack]);
+  // }dev
   return { get value() { return m.v; }, subscribe: (g) => sub(() => m.v, g) };
 }
 

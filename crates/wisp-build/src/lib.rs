@@ -15,6 +15,7 @@ pub mod routes;
 pub mod rules;
 pub mod rust_scan;
 mod shell;
+mod stories;
 pub mod template;
 mod ty;
 
