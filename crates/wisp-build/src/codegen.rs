@@ -1470,10 +1470,17 @@ impl<'a> Project<'a> {
         code.push_str(&crate::read_source(&p.with_file_name(rs)).unwrap_or_default());
         for (ident, table) in &self.lives {
             let url = format!("/_wisp/live/{table}");
-            if names(&code, ident) && !markup.contains(&url) {
-                markup
-                    .to_mut()
-                    .push_str(&format!("\n<script>listen('{url}', invalidate)</script>\n"));
+            if !names(&code, ident) || markup.contains(&url) {
+                continue;
+            }
+            let call = format!("listen('{url}', invalidate);");
+            // A file has one client script: into it, at its end and on its
+            // last line, so no line of the file moves.
+            let end = (markup.find("<script>"))
+                .and_then(|open| Some(open + markup[open..].find("</script>")?));
+            match end {
+                Some(at) => markup.to_mut().insert_str(at, &format!(";{call}")),
+                None => (markup.to_mut()).push_str(&format!("\n<script>{call}</script>\n")),
             }
         }
         markup
@@ -8852,6 +8859,17 @@ let n = KEPT.len();
         );
         let code = app("live-other", &[db, other]).unwrap();
         assert!(!code.contains("/_wisp/live/"), "{code}");
+        // A page with browser code of its own listens too.
+        let scripted = (
+            "src/routes/+page.wisp",
+            "---
+let n = POSTS.len();
+---
+<p>{n}</p>
+<script>let k = 1;</script>",
+        );
+        let code = app("live-script", &[db, scripted]).unwrap();
+        assert!(code.contains("/_wisp/live/posts"), "{code}");
     }
 
     #[test]
