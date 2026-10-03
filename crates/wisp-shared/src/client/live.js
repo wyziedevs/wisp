@@ -653,12 +653,17 @@ export function hydrate(I) {
   const g = gen;
   return ready.then(async () => {
     if (g !== gen) return;
-    // One inside an island that waits still: it starts with that one.
+    // One inside an island that waits still (a server component between
+    // them or not) wakes that one, and starts with it.
     woken.add(I);
-    const rec = later.get(I);
-    if (!rec) return;
-    later.delete(I);
     const { list, at, m, waiting } = cur;
+    const rec = later.get(I);
+    if (!rec) {
+      let y = at[I];
+      while (y && !later.has(y.I)) y = at[y.P];
+      return y && hydrate(y.I);
+    }
+    later.delete(I);
     await need(list.filter((x) => { for (let y = x; y; y = at[y.P]) if (y === rec) return true; }), m);
     if (g !== gen) return;
     const next = waiting[I];

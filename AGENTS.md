@@ -225,6 +225,8 @@ npm: `wisp add canvas-confetti`, then `import confetti from 'canvas-confetti'`
 (esm.sh in dev; `wisp build` puts it in the binary, no CDN; one not in package.json
 is a build error).
 Islands: `<Chart client:visible|idle|interaction|media="(…)"|none />`.
+Server components: one with no browser code ships no JS; islands and server
+components nest in any order (an inner island wakes a waiting outer one).
 TypeScript: `<script lang="ts">`, `src/lib/*.ts`, `+page.ts`. Types are
 stripped (spaces, so lines and columns hold), as Node's strip-types does:
 `enum`, a `namespace` with values and parameter properties are build errors
