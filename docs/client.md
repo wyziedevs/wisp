@@ -553,6 +553,45 @@ Only `Panel`'s and `Chart`'s modules load. An inner island wakes at its own
 moment, and wakes the island around it that still waits (its parent, for
 `getContext`); what has no `client:*` waits with the island around it.
 
+## React, Vue, Svelte and Preact components
+
+A component from npm, drawn by its own framework, is an `<Island>`:
+
+```sh
+wisp add react react-dom react-switch     # the framework first, then the component
+```
+
+```html
+<Island of="react:react-switch" client:visible
+  props={:{ checked: on, onChange: (v) => (on = v) }} />
+<p>{:on ? 'On' : 'Off'}</p>
+
+<script>
+  let on = false
+</script>
+```
+
+- `of="framework:module"`: `react`, `preact`, `vue` or `svelte`, then the
+  module, whose default export is the component; `#Name` picks a named
+  one: `of="react:recharts#LineChart"`. A `$lib` file works too:
+  `of="react:$lib/Chart.js#Chart"`.
+- `props={:…}` is a browser value: it reads state and holds callbacks, and
+  the component draws again when what it reads changes. `props={rows}` is
+  Rust instead, sent as JSON once.
+- `client:visible`, `client:idle` and the rest wait as for any island;
+  without one it starts with the page. Children are shown until it starts
+  (`<Island …>Loading…</Island>`). Other attributes (`class`, `id`) go on
+  the `<div>` it is drawn in, which page morphs leave alone.
+- The framework is added first: `wisp add react react-dom` (`wisp add
+  preact`, `wisp add vue`, `wisp add svelte`). It loads only on the pages
+  with an island of it, from esm.sh in dev and from the binary after `wisp
+  build`, like any npm package; one not in `package.json` is a build
+  error. Every package gets the app's version of each framework, so a
+  library and the page share one copy of React (its hooks need that).
+- The mount for each framework is a few lines added to the page's module:
+  React's `createRoot`, Preact's `render`, Vue's `createApp` and Svelte's
+  `mount`. A Svelte package must ship compiled JavaScript.
+
 ## Speed
 
 The runtime is two files: `live.js` (about 9 KB compressed), and

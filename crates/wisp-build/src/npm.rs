@@ -23,11 +23,28 @@ pub(crate) struct Npm {
     deps: Vec<(String, String)>,
     /// A release build: `.wisp/npm`, which the imports load.
     vendor: Option<PathBuf>,
+    /// `&deps=react@19.1.0,…`: the app's versions of the UI frameworks
+    /// (`SINGLE`), for every other package, so all share one copy of each.
+    pins: String,
 }
+
+/// Packages that break as two copies (React's hooks, Vue's reactivity):
+/// another package's import of one loads the app's version, not the
+/// latest its range allows.
+const SINGLE: [&str; 5] = ["preact", "react", "react-dom", "svelte", "vue"];
 
 impl Npm {
     pub(crate) fn new(deps: Vec<(String, String)>, vendor: Option<PathBuf>) -> Npm {
-        Npm { deps, vendor }
+        let pins: Vec<String> = deps
+            .iter()
+            .filter(|(n, _)| SINGLE.contains(&n.as_str()))
+            .map(|(n, v)| format!("{n}@{v}"))
+            .collect();
+        let pins = match pins.is_empty() {
+            true => String::new(),
+            false => format!("&deps={}", pins.join(",")),
+        };
+        Npm { deps, vendor, pins }
     }
 
     /// The URL a bare import loads; an error for a package package.json
@@ -39,7 +56,14 @@ impl Npm {
                 "`{spec}` is not one of the app's packages (package.json); `wisp add {pkg}` adds it"
             ));
         };
-        let path = esm_path(pkg, ver, sub);
+        // A framework's own build stays plain: that is the copy the
+        // others' builds import.
+        let pins = if SINGLE.contains(&pkg) {
+            ""
+        } else {
+            &self.pins
+        };
+        let path = esm_path(pkg, ver, sub) + pins;
         let Some(dir) = &self.vendor else {
             return Ok(format!("{ESM}{path}"));
         };
@@ -449,6 +473,16 @@ mod tests {
         );
         let err = dev.url("left-pad").unwrap_err();
         assert!(err.contains("wisp add left-pad"), "{err}");
+        let pin = |n: &str| (n.to_string(), "19.1.0".to_string());
+        let react = Npm::new(vec![pin("react"), pin("react-dom"), pin("x")], None);
+        assert_eq!(
+            react.url("x").unwrap(),
+            "https://esm.sh/x@19.1.0?target=es2022&deps=react@19.1.0,react-dom@19.1.0"
+        );
+        assert_eq!(
+            react.url("react-dom/client").unwrap(),
+            "https://esm.sh/react-dom@19.1.0/client?target=es2022"
+        );
     }
 
     #[test]
