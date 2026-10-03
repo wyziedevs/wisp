@@ -5483,6 +5483,29 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
         }
         None => original,
     };
+    // `export const snapshot = { capture, restore }`: state kept with the
+    // history entry (extra.js). Its `export` blanked, it is a declaration.
+    let mut snap = false;
+    let exported;
+    let src = {
+        let t = js::tokens(src);
+        let word = |k: usize| t.get(k).map(|x: &js::Token| x.text(src));
+        let mut spans = Vec::new();
+        for k in
+            (0..t.len()).filter(|&k| t[k].depth == 0 && !t[k].member && word(k) == Some("export"))
+        {
+            if !(matches!(word(k + 1), Some("const" | "let")) && word(k + 2) == Some("snapshot")) {
+                return Err(script_err((
+                    t[k].start,
+                    "a script exports only `export const snapshot = { capture, restore }`".into(),
+                )));
+            }
+            snap = true;
+            spans.push((t[k].start, t[k].end));
+        }
+        exported = js::blank(src, &spans);
+        exported.as_str()
+    };
     let declared = js::declarations(src);
     let imported = js::import_names(src, &js::imports(src));
     // A name a page's script declares is the script's, as a name its Rust
@@ -5673,6 +5696,11 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
                 .map_err(|(_, msg)| format!("{}:{}: {msg}", t.rel, g.line))?;
         }
     }
+    // The snapshot as the script reads it (a `let` is a signal).
+    let snap = snap
+        .then(|| js::rewrite("snapshot", &reactive))
+        .transpose()
+        .map_err(script_err)?;
     // A dev module hands the devtools its file, its state's signals and
     // the line each is declared on.
     let dev = (!cx.release).then(|| {
@@ -5724,7 +5752,8 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
         group_lines: &tt.groups.iter().map(|g| g.line).collect::<Vec<_>>(),
         imports: &imports,
         load: cx.load.as_deref(),
-        extra: (tt.groups.iter().flat_map(|g| &g.directives).any(is_extra)
+        extra: (snap.is_some()
+            || tt.groups.iter().flat_map(|g| &g.directives).any(is_extra)
             || std::iter::once(runs.as_str())
                 .chain(groups.iter().flatten().map(String::as_str))
                 .any(|c| {
@@ -5742,6 +5771,7 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
         dev: dev.as_deref(),
         file: (!cx.release).then_some(t.rel.as_str()),
         effect,
+        snap: snap.as_deref(),
     };
     let (source, lines) = module_source(&m).map_err(|e| format!("{}: {e}", t.rel))?;
     let mut source = js::public_env(&source, &|n| var(cx.env, n)).map_err(|(off, msg)| {
@@ -5893,6 +5923,8 @@ struct Module<'a> {
     /// place, and the line of a top-level statement that keeps it from that.
     file: Option<&'a str>,
     effect: Option<u32>,
+    /// `export const snapshot`, as the script reads it.
+    snap: Option<&'a str>,
 }
 
 /// The module's text, and where each of its lines came from in the file
@@ -6007,7 +6039,11 @@ fn module_source(m: &Module) -> Result<(String, Vec<sourcemap::Line>), String> {
         let _ = writeln!(s, "  [{}],", g.join(", "));
         upto(&s, &mut map, &|k| Some((line - 1 + k, 0)));
     }
-    s.push_str("] };\n} } }");
+    s.push(']');
+    if let Some(x) = m.snap {
+        let _ = write!(s, ", snap: {x}");
+    }
+    s.push_str(" };\n} } }");
     let mut opts = Vec::new();
     if let Some(h) = m.html {
         opts.push(format!("html: {}", js_str(h)));
@@ -8283,6 +8319,27 @@ pub fn load() -> Data { todo!() }";
             "if ::wisp::rt::marks() { __o.body.push_str(\"<!--w:src/routes/+page.wisp-->\"); }";
         assert!(build("marks", &page, false).unwrap().contains(mark));
         assert!(!build("marks", &page, true).unwrap().contains("marks()"));
+    }
+
+    #[test]
+    fn a_script_exports_its_snapshot_alone() {
+        let src = "<p>{:n}</p>\n<script>\n  let n = 0\n  export const snapshot = { capture: () => n, restore: (v) => (n = v) }\n</script>";
+        let c = page_client(src, true).unwrap();
+        assert!(
+            c.source
+                .contains("\n         const snapshot = { capture: () => n.v,"),
+            "{}",
+            c.source
+        );
+        assert!(c.source.contains("], snap: snapshot };"), "{}", c.source);
+        assert!(c.extra.is_some(), "extra.js keeps snapshots");
+        let Err(err) = page_client("<script>\n  export let x = 1\n</script>", true) else {
+            panic!("exports x");
+        };
+        assert!(
+            err.contains(":2:3: a script exports only `export const snapshot"),
+            "{err}"
+        );
     }
 
     #[test]

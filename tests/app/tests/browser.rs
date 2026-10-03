@@ -22,7 +22,10 @@ fn shallow_routing() {
     assert_eq!(b.text("output"), "2");
     b.click("#three");
     assert_eq!(b.text("output"), "3");
-    assert!(b.url().ends_with("?tab=2"), "replaceState('') keeps the URL");
+    assert!(
+        b.url().ends_with("?tab=2"),
+        "replaceState('') keeps the URL"
+    );
     b.eval("history.back()");
     assert_eq!(b.text("output"), "1");
     b.eval("history.forward()");
@@ -35,6 +38,43 @@ fn shallow_routing() {
     b.eval("history.back()");
     assert_eq!(b.text("output"), "3");
     assert_ne!(b.text("#n"), n);
+}
+
+/// Snapshots: fields, and a script's `export const snapshot`, come back
+/// with their history entry, by back and by a reload; passwords and
+/// `autocomplete="off"` never do.
+#[test]
+fn snapshots() {
+    let mut b = wisp::browser!(Site);
+    b.goto("/a2/snap");
+    for (sel, text) in [
+        ("#text", "kept"),
+        ("#secret", "pw"),
+        ("#off", "no"),
+        ("#note", "hi"),
+    ] {
+        b.fill(sel, text);
+    }
+    b.click("#box");
+    b.eval("pick.value = 'b'");
+    b.click("#more");
+    b.click("#more");
+    assert_eq!(b.text("#more"), "More 2");
+    let fields =
+        "[text.value, secret.value, off.value, box.checked, pick.value, note.value].join()";
+    let want = "kept,,,true,b,hi";
+
+    b.click("#away");
+    assert_eq!(b.text("h1"), "Islands");
+    b.eval("history.back()");
+    assert_eq!(b.text("h1"), "Snap");
+    assert_eq!(b.eval(fields).as_str(), Some(want));
+    assert_eq!(b.text("#more"), "More 2");
+
+    b.eval("document.body.dataset.old = 1; location.reload()");
+    b.wait("body:not([data-old]) #more");
+    assert_eq!(b.eval(fields).as_str(), Some(want));
+    assert_eq!(b.text("#more"), "More 2");
 }
 
 /// An island in a server component (no script: no JS) in an island, as

@@ -29,7 +29,8 @@
   // alone what scripts added.
   let served = [...document.head.children];
 
-  function swap(html, status = 200) {
+  // `back`: the history entry whose snapshot goes back in (a pop).
+  function swap(html, status = 200, back) {
     const doc = new DOMParser().parseFromString(html, 'text/html');
     if (doc.title) document.title = doc.title;
     const next = [...doc.head.children];
@@ -53,6 +54,7 @@
       s.text = old.text;
       old.replaceWith(s);
     }
+    back ? restore(back) : (pend = null);
     wake(); // before the update: live.js takes the page's JSON over there
     send('wisp:update', { status });
   }
@@ -91,7 +93,10 @@
 
   let nav = 0; // the latest navigation; an older one that finishes late is dropped
   const pre = new Map(); // url -> [when, response promise], from hovering
-  addEventListener('pagehide', () => (history.scrollRestoration = 'auto'));
+  addEventListener('pagehide', () => {
+    save(entry);
+    history.scrollRestoration = 'auto';
+  });
   addEventListener('pageshow', () => (history.scrollRestoration = 'manual'));
 
   // A link this script follows.
@@ -135,11 +140,10 @@
     if (!isHtml(res)) return location.assign(url); // a file: the browser shows or saves it
     const html = await res.text();
     if (my !== nav) return;
-    if (how.pop);
-    else if (how.replace) history.replaceState({}, '', url);
-    else history.pushState({}, '', url);
+    if (how.replace) history.replaceState({ k: (entry = id()) }, '', url);
+    else if (!how.pop) push(url);
     const show = () => {
-      swap(html, res.status);
+      swap(html, res.status, how.pop && entry);
       const at = how.pop && history.state;
       if (at) scrollTo(at.x || 0, at.y || 0);
       else if (url.hash) document.getElementById(decodeURIComponent(url.hash.slice(1)))?.scrollIntoView();
@@ -192,14 +196,71 @@
   // Back/forward across entries we pushed: show that URL's page. An entry
   // pushState made on the page shown (`p`) needs no request.
   addEventListener('popstate', () => {
+    save(entry);
+    entry = mark();
     if ((history.state?.p ?? key(location.href)) !== shown) go(location.href, { pop: true });
-    else send('wisp:pop');
+    else restore(entry), send('wisp:pop');
   });
   // pushState(url, state) and replaceState in a script (live.js).
   document.addEventListener('wisp:push', (e) => {
     const { url, state: s, replace } = e.detail;
-    history[replace ? 'replaceState' : 'pushState']({ ...(replace && history.state), p: shown, s }, '', url);
+    if (replace) history.replaceState({ ...history.state, p: shown, s }, '', url);
+    else push(url, { p: shown, s });
   });
+
+  // ---- snapshots ------------------------------------------------------------
+
+  // What a history entry's fields hold where the visitor changed them (not
+  // passwords, files, hidden fields or autocomplete="off"), and what scripts'
+  // `snapshot.capture()` gave (extra.js), kept in sessionStorage by the
+  // entry's key `k`: back, forward and a reload put them back.
+  const id = () => Math.random().toString(36).slice(2);
+  let entry = history.state?.k;
+  let pend = null; // scripts' snapshots for the entry shown (extra.js asks)
+  function mark() {
+    let k = history.state?.k;
+    if (!k) history.replaceState({ ...history.state, k: (k = id()) }, '');
+    return k;
+  }
+  function push(url, state) {
+    save(entry);
+    history.pushState({ ...state, k: (entry = id()) }, '', url);
+  }
+  const fields = () => [...document.querySelectorAll('input,textarea,select')];
+  const off = (el) => /^(password|file|hidden|submit|button|reset|image)$/.test(el.type) || el.closest('[autocomplete=off]');
+  const box = (el) => /^(checkbox|radio)$/.test(el.type);
+  function save(k) {
+    const d = { f: [], s: {} };
+    pend = null;
+    fields().forEach((el, i) => {
+      const o = el.options && [...el.options];
+      if (off(el) || !(o ? o.some((x) => x.selected != x.defaultSelected) : box(el) ? el.checked != el.defaultChecked : el.value != el.defaultValue)) return;
+      d.f.push([i, el.name + el.type, o ? o.filter((x) => x.selected).map((x) => x.value) : box(el) ? el.checked : el.value]);
+    });
+    send('wisp:capture', d);
+    try {
+      if (d.f.length || Object.keys(d.s).length) sessionStorage.setItem('wisp:' + k, JSON.stringify(d));
+      else sessionStorage.removeItem('wisp:' + k);
+    } catch {}
+  }
+  function restore(k) {
+    let d;
+    try {
+      d = JSON.parse(sessionStorage.getItem('wisp:' + k));
+    } catch {}
+    pend = d?.s;
+    const all = fields();
+    for (const [i, name, v] of d?.f || []) {
+      const el = all[i];
+      if (!el || el.name + el.type != name || off(el)) continue;
+      if (el.options) for (const o of el.options) o.selected = v.includes(o.value);
+      else if (box(el)) el.checked = v;
+      else el.value = v;
+      el.dispatchEvent(new Event(el.options || box(el) ? 'change' : 'input', { bubbles: true }));
+    }
+  }
+  document.addEventListener('wisp:restore', (e) => (e.detail.s = pend));
+  entry ? restore(entry) : (entry = mark());
 
   document.addEventListener('wisp:goto', (e) => go(e.detail.url, e.detail).finally(e.detail.done));
   document.addEventListener('wisp:refresh', (e) => refresh().finally(e.detail?.done));
@@ -378,7 +439,7 @@
         // Another page: navigate there. The same one: fetch it below.
         if (to.origin !== location.origin || to.pathname !== location.pathname) res = null;
         else {
-          history.pushState(null, '', to);
+          push(to);
           scrollTo(0, 0);
           if (!res.redirected) res = await fetch(to, { headers });
         }
