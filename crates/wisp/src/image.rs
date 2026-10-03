@@ -80,7 +80,7 @@ impl Image {
 }
 
 /// The kind of image `b` is, by its first bytes.
-fn sniff(b: &[u8]) -> Option<&'static str> {
+pub(crate) fn sniff(b: &[u8]) -> Option<&'static str> {
     if b.starts_with(b"\x89PNG\r\n\x1a\n") {
         return Some("image/png");
     }
