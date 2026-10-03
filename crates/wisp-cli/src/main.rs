@@ -19,13 +19,14 @@ mod targets;
 mod template_files;
 mod term;
 mod types;
+mod ui;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
 /// `wisp --help`: each command or option, and what it does.
-const COMMANDS: [(&str, &str); 19] = [
+const COMMANDS: [(&str, &str); 21] = [
     (
         "wisp new [name]",
         "Create an app. It asks a few questions; the options below answer them.",
@@ -90,6 +91,11 @@ const COMMANDS: [(&str, &str); 19] = [
         "wisp remove <pkg>",
         "Take an npm package out of package.json.",
     ),
+    (
+        "wisp ui add <name…> [--force]",
+        "Copy accessible components (button, dialog, tabs…) into src/components, yours to change.",
+    ),
+    ("wisp ui list", "Name the components wisp ui add has."),
     (
         "wisp lsp",
         "Run the language server for editors, over stdio (editors/README.md: setup per editor).",
@@ -170,6 +176,7 @@ fn main() -> ExitCode {
         Some("fmt") => fmt::run(&args[1..]),
         Some("add") => project().and_then(|root| npm::add(root, &args[1..])),
         Some("remove") => project().and_then(|root| npm::remove(root, &args[1..])),
+        Some("ui") => ui::run(project, &args[1..]),
         Some("lsp") => no_options("lsp", &args[1..]).and_then(|()| lsp::run()),
         Some("update-docs") => no_options("update-docs", &args[1..])
             .and_then(|()| project())
