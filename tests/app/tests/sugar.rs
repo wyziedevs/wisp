@@ -76,3 +76,15 @@ fn an_upload_param_keeps_any_file() {
     let none = app.post_form("/t/docs?/add", &[]);
     assert_eq!(none.status, 422);
 }
+
+#[test]
+fn a_layout_can_be_for_members() {
+    let mut app = client::<Site>();
+    // `const SIGNED_IN: bool = true;` in the layout: pages and actions.
+    assert_eq!(app.get("/t/members").status, 303);
+    assert_eq!(app.post_form("/t/members?/poke", &[]).status, 303);
+    assert_eq!(app.post_form("/t/members?/poke", &[]).location(), Some("/login".into()));
+    app.sign_in(1);
+    assert_eq!(app.get("/t/members").status, 200);
+    assert_eq!(app.post_form("/t/members?/poke", &[]).location(), Some("/t/members".into()));
+}
