@@ -48,6 +48,7 @@ mod policy;
 mod rest;
 #[doc(hidden)]
 pub mod rt_traits;
+mod seo;
 mod session;
 mod sign;
 mod store;

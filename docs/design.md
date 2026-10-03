@@ -156,6 +156,18 @@ top-level `_app` or `_wisp` directory, which Wisp's own files use; a
 `(group)` that is not exactly one name in parentheses; a route deeper than
 32 segments. Editors' swap and backup files are skipped.
 
+`/sitemap.xml` and `/robots.txt` are made from the route tree, at no cost
+to other requests: they are answered only for a GET that no route and no
+file matched. The sitemap lists each page whose addresses are known (no
+parameters, or `entries()`, as for `--static`; optional ones left out),
+leaving out pages in a `(private)` group and pages whose markup has `<meta
+name="robots" content="noindex">` (a Markdown page's `noindex: true`).
+Addresses start with `SITE_URL` (env), else the request's scheme and host
+(`x-forwarded-proto`, else https, http for localhost). `robots.txt` allows
+everything and names the sitemap. A file of the same name in `static/`, or
+a route, is served instead. `wisp build --static` writes both when
+`SITE_URL` is set.
+
 ### Markdown pages
 
 `+page.md`, and each `x.md` in a route folder (a page at `x`), is turned

@@ -74,6 +74,7 @@ impl App for Lab {
             actions: false,
             server: false,
             entries,
+            indexed: true,
         };
         vec![
             page("/hello", None),

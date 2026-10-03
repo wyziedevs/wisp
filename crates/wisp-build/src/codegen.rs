@@ -1463,6 +1463,9 @@ impl<'a> Project<'a> {
                 body_limit: None,
                 uploads: None,
                 cache: None,
+                indexed: r.page
+                    && !(r.dir.strip_prefix(self.root).unwrap_or(&r.dir).components())
+                        .any(|c| c.as_os_str() == "(private)"),
             };
             if r.page {
                 self.page(i, &mut route)?;
@@ -1490,6 +1493,7 @@ impl<'a> Project<'a> {
             }
             None => self.read(&file)?,
         };
+        route.indexed &= !noindex(&src);
         let (front, markup) =
             crate::split_front(&src).map_err(|e| format!("{}:{e}", self.rel(&file)))?;
         let mut lg = self.logic(page_rs.then(|| dir.join("+page.rs")), &file, front.clone())?;
@@ -2464,10 +2468,11 @@ impl Gen {
                 None => "None".into(),
             };
             self.line(3, &format!(
-                "::wisp::ExportRoute {{ pattern: {}, page: {}, actions: {actions}, server: {}, entries: {entries} }},",
+                "::wisp::ExportRoute {{ pattern: {}, page: {}, actions: {actions}, server: {}, entries: {entries}, indexed: {} }},",
                 lit(&r.pattern),
                 page.is_some(),
-                r.server.is_some()
+                r.server.is_some(),
+                r.indexed
             ));
         }
         self.line(2, "]");
@@ -3553,6 +3558,16 @@ fn md_order(pages: &[(String, Vec<(String, String)>)]) -> Vec<&(String, Vec<(Str
             .then_with(|| a.0.cmp(&b.0))
     });
     out
+}
+
+/// The markup has `<meta name="robots" content="noindex">` (any case,
+/// any order): the sitemap leaves the page out.
+fn noindex(markup: &str) -> bool {
+    let lower = markup.to_ascii_lowercase();
+    lower.split("<meta").skip(1).any(|m| {
+        let tag = &m[..m.find('>').unwrap_or(m.len())];
+        tag.contains("robots") && tag.contains("noindex")
+    })
 }
 
 fn check_no_children(t: &Template, rel: &str) -> Result<(), String> {
@@ -7538,6 +7553,26 @@ mod tests {
             wrong.contains("+page.wisp:3: `max_size` is for an upload, and `pic` is a `String`"),
             "{wrong}"
         );
+    }
+
+    #[test]
+    fn noindex_pages_and_private_groups_leave_the_sitemap() {
+        assert!(noindex("<META content='NOINDEX, follow' name=robots>"));
+        assert!(!noindex(
+            "<meta name=\"description\" content=\"noindex\"> robots"
+        ));
+        let files = [
+            ("src/routes/+page.wisp", "x"),
+            ("src/routes/(private)/a/+page.wisp", "x"),
+            ("src/routes/b.md", "---\nnoindex: true\n---\nx"),
+        ];
+        let code = app("sitemap", &files).unwrap();
+        for (pattern, indexed) in [("/", true), ("/a", false), ("/b", false)] {
+            let want = format!(
+                "pattern: {pattern:?}, page: true, actions: false, server: false, entries: None, indexed: {indexed} }}"
+            );
+            assert!(code.contains(&want), "{want}\n{code}");
+        }
     }
 
     #[test]
