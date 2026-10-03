@@ -505,7 +505,9 @@ impl Server {
                     ));
                 }
                 // Later starts keep this port, waiting for the old app to let go.
-                self.port = at.port();
+                if self.port != 0 {
+                    self.port = at.port();
+                }
                 self.tries = 0;
                 self.addr = Some(at);
                 Ok(())

@@ -366,7 +366,7 @@ p { margin: 0 }
 }
 
 #[test]
-fn an_app_that_cannot_listen_is_reported_and_dev_keeps_watching() {
+fn a_taken_port_moves_dev_to_the_next_one() {
     let cwd = Dir::new("dev-busy");
     let app = pinned_app(&cwd, "dev-busy", &["-t", "minimal"]);
     // A port somebody else holds.
@@ -375,27 +375,17 @@ fn an_app_that_cannot_listen_is_reported_and_dev_keeps_watching() {
     let host = Path::new("127.0.0.1");
     let mut dev = Dev::start(&app, &["-p", &port], &[("HOST", host)]);
 
-    // The address is known and shown before the app is built.
-    let banner = dev.wait_for("Ctrl+C to stop");
-    assert!(
-        banner.contains(&format!("http://127.0.0.1:{port}")),
-        "{banner}"
-    );
-    let e = dev.wait_for("✗");
-    has(&e, &["The app stopped while starting"]);
-    dev.wait_for("a port already in use is the usual cause.");
-
-    // Freeing the port and saving starts it.
+    // The port is taken, so the app moves on to the next free one, and
+    // dev says so and uses the real address.
+    let line = dev.wait_for("is in use, using");
+    let next: u16 = line.rsplit(' ').next().unwrap().trim().parse().unwrap();
+    assert!(next > taken.local_addr().unwrap().port(), "{line}");
+    let at = format!("127.0.0.1:{next}");
+    let ready = dev.wait_for(" at http://");
+    assert_eq!(address(&ready), at, "{ready}");
+    let (status, _) = get(&at, "/");
+    assert_eq!(status, 200);
     drop(taken);
-    write(
-        &app,
-        "src/routes/+page.wisp",
-        "<h1>Now</h1>
-",
-    );
-    dev.wait_for("Rebuilt");
-    let (status, body) = get(&format!("127.0.0.1:{port}"), "/");
-    assert!(status == 200 && body.contains("<h1>Now</h1>"), "{body}");
     dev.hang_up(&app);
-    assert_stopped(&format!("127.0.0.1:{port}"));
+    assert_stopped(&at);
 }
