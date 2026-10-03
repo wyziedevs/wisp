@@ -17,6 +17,8 @@ zero warnings.
 src/main.rs                 wisp::main!();   (generated; leave it)
 src/app.html                shell with %wisp.head% %wisp.body% (optional)
 src/app.css                 served at /_app/app.css; Tailwind if it imports it
+src/app.scss                Sass instead (standalone); postcss.config.* adds PostCSS (npx)
+package.json                npm packages: `wisp add canvas-confetti`, no Node
 src/hooks.rs                fn init() once; fn before(cx) every request
 src/NAME.rs                 any module, no `mod` line: `NAME::f()` everywhere
 src/components/Card.wisp    <Card title={x}>…</Card>
@@ -199,6 +201,9 @@ Directives: `on:click="f"` (modifiers `.prevent .stop .once .self .window
 `$state $state.raw $derived $effect $props $bindable $inspect`. Helpers (no
 import): `onMount onDestroy effect watch tick listen goto invalidate matches`.
 Stores in `src/lib`: `import { store, persisted, derived } from 'wisp'`.
+npm: `wisp add canvas-confetti`, then `import confetti from 'canvas-confetti'`
+(esm.sh in dev; `wisp build` puts it in the binary, no CDN; one not in package.json
+is a build error).
 Islands: `<Chart client:visible|idle|interaction|media="(…)"|none />`.
 Server values sent to JS must `#[derive(Json)]`. Full: docs/client.md.
 
@@ -361,6 +366,6 @@ takes the no-wait fast path off every route.
 
 `wisp new app` · `wisp dev` (hot reload) · `wisp check` · `wisp build`
 (`--static`, `--docker`, `--target cloudflare|deno|vercel|netlify|node`,
-`--client ts`).
+`--client ts`) · `wisp add pkg[@ver]` · `wisp remove pkg`.
 Docs: README.md, docs/design.md, docs/client.md, docs/api.md,
 docs/deploy.md, docs/embed.md, docs/tokens.md.
