@@ -2,7 +2,7 @@
 #[model]
 pub struct User {
     email: Email,
-    hash: String,
+    password: Password,
     avatar: Option<Image>,
 }
 
@@ -14,4 +14,6 @@ pub struct Post {
 }
 
 pub static USERS: Table<User> = Table::saved();
-pub static POSTS: Table<Post> = Table::saved();
+pub static POSTS: Table<Post> = Table::saved()
+// @feature live
+    .live();

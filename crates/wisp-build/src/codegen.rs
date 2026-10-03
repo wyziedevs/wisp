@@ -175,9 +175,10 @@ impl UserMod {
 
     /// Whether it has a shim for the function `name`.
     fn has(&self, name: &str) -> bool {
-        self.shims
-            .iter()
-            .any(|s| s.starts_with(&format!("pub async fn {name}(")))
+        self.shims.iter().any(|s| {
+            s.starts_with(&format!("pub async fn {name}("))
+                || s.starts_with(&format!("pub fn {name}("))
+        })
     }
 }
 
@@ -191,6 +192,13 @@ struct Logic {
     inline: Option<String>,
     /// The block's statements.
     stmts: Option<String>,
+}
+
+/// Whether `ident` is in `code` as a name of its own.
+fn names(code: &str, ident: &str) -> bool {
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    code.match_indices(ident)
+        .any(|(i, _)| !code[..i].ends_with(word) && !code[i + ident.len()..].starts_with(word))
 }
 
 /// A `#[remote]` function: browser code's `await name(args)`.
@@ -1168,6 +1176,8 @@ struct Project<'a> {
     mods: Vec<UserMod>,
     /// The types of `src/*.rs`, which endpoints and action forms may name.
     shared: Vec<rust_scan::TypeItem>,
+    /// The `.live()` tables (static, channel) a page reading one listens to.
+    lives: Vec<(String, String)>,
     /// The component workshop (dev builds): a shelf per component.
     shelves: Vec<Shelf>,
     /// The `PUBLIC_*` variables, for browser code's `env.PUBLIC_X`.
@@ -1243,6 +1253,7 @@ impl<'a> Project<'a> {
             before_waits: false,
             mods: Vec::new(),
             shared: crate::shared_types(root),
+            lives: crate::live_tables(root),
             shelves: Vec::new(),
             env: crate::public_env(root),
             md_pages: Vec::new(),
@@ -1420,6 +1431,7 @@ impl<'a> Project<'a> {
     ) -> Result<(Template, Option<String>), String> {
         let at = |e: String| format!("{}:{e}", self.rel(p));
         let markup = image::rewrite(markup, self.root, self.release).map_err(at)?;
+        let markup = self.listen_live(p, front.as_deref(), markup);
         let (t, rust) =
             crate::parse_markup(&markup, front, fields, &self.rel(p), drawn).map_err(at)?;
         if let Some((_, line)) = t.props {
@@ -1428,6 +1440,36 @@ impl<'a> Project<'a> {
             )));
         }
         Ok((t, rust))
+    }
+
+    /// The markup of a page or layout, with a `<script>` that listens to each
+    /// `.live()` table its Rust names (`POSTS`), and refreshes the page when
+    /// one changes: the page's own `---` block, or the `+page.rs` beside it.
+    fn listen_live<'x>(
+        &self,
+        p: &Path,
+        front: Option<&str>,
+        mut markup: std::borrow::Cow<'x, str>,
+    ) -> std::borrow::Cow<'x, str> {
+        let rs = match p.file_name().and_then(|n| n.to_str()) {
+            Some("+page.wisp") => "+page.rs",
+            Some("+layout.wisp") => "+layout.rs",
+            _ => return markup,
+        };
+        if self.lives.is_empty() {
+            return markup;
+        }
+        let mut code = front.unwrap_or_default().to_string();
+        code.push_str(&crate::read_source(&p.with_file_name(rs)).unwrap_or_default());
+        for (ident, table) in &self.lives {
+            let url = format!("/_wisp/live/{table}");
+            if names(&code, ident) && !markup.contains(&url) {
+                markup
+                    .to_mut()
+                    .push_str(&format!("\n<script>listen('{url}', invalidate)</script>\n"));
+            }
+        }
+        markup
     }
 
     /// A `+layout.rs`, `+page.rs` or `+server.rs`.
@@ -3684,6 +3726,23 @@ impl Gen {
         if !mentions_slash(p.root) {
             self.line(1, "const TRAILING_SLASH: bool = false;");
         }
+        // `after` and `report` in `src/hooks.rs`: the server calls them only
+        // when these say so (consts, so an app without them has no check).
+        for name in ["after", "report"] {
+            if p.has_hook(name) {
+                self.line(1, &format!("const {}: bool = true;", name.to_uppercase()));
+                let (sig, args) = match name {
+                    "after" => ("reply: &mut ::wisp::Reply", "cx, reply"),
+                    _ => ("err: &::wisp::Error", "cx, err"),
+                };
+                self.line(
+                    1,
+                    &format!(
+                        "fn {name}(cx: &mut ::wisp::Cx, {sig}) {{ hooks::__call::{name}({args}) }}"
+                    ),
+                );
+            }
+        }
     }
 
     /// The OpenAPI document and TypeScript client of the `+server.rs`
@@ -4565,9 +4624,32 @@ fn hooks(root: &Path) -> Result<(Option<UserMod>, bool), String> {
                 check_before(f).map_err(at)?;
                 shims.push(shim(f, Shim::Answer).map_err(|e| format!("src/hooks.rs:{e}"))?);
             }
+            // Plain functions, which the server calls itself when they are there.
+            "after" | "report" => {
+                let after = f.name == "after";
+                let ty = if after { "Reply" } else { "Error" };
+                if f.params.len() != 2
+                    || !rust_scan::is_cx(&f.params[0].1)
+                    || !f.params[1].1.contains(ty)
+                    || f.is_async
+                {
+                    return Err(at(match after {
+                        true => "`after` is `fn after(cx: &mut Cx, reply: &mut Reply)`: sync, and runs on every reply".into(),
+                        false => "`report` is `fn report(cx: &mut Cx, err: &Error)`: sync, and runs on every 5xx".into(),
+                    }));
+                }
+                let (sig, call) = match after {
+                    true => ("reply: &mut ::wisp::Reply", "cx, reply"),
+                    false => ("err: &::wisp::Error", "cx, err"),
+                };
+                let name = &f.name;
+                shims.push(format!(
+                    "pub fn {name}(cx: &mut ::wisp::Cx, {sig}) {{ super::{name}({call}) }}"
+                ));
+            }
             name if f.public => {
                 return Err(at(format!(
-                    "`{name}` is not a hook: src/hooks.rs has `init` and `before`. Make it private if it is a helper."
+                    "`{name}` is not a hook: src/hooks.rs has `init`, `before`, `after` and `report`. Make it private if it is a helper."
                 )));
             }
             _ => {}
@@ -8726,6 +8808,78 @@ mod tests {
             )
             .contains("a component takes")
         );
+    }
+
+    #[test]
+    fn a_page_reading_a_live_table_listens_to_it() {
+        let db = (
+            "src/db.rs",
+            "#[model]
+pub struct P { t: String }
+pub static POSTS: Table<P> = Table::saved().live();
+pub static KEPT: Table<P> = Table::saved();",
+        );
+        let reads = (
+            "src/routes/+page.wisp",
+            "---
+let n = POSTS.len();
+---
+<p>{n}</p>",
+        );
+        let code = app("live-page", &[db, reads]).unwrap();
+        assert!(
+            code.contains("listen('/_wisp/live/posts', invalidate)"),
+            "{code}"
+        );
+        let other = (
+            "src/routes/+page.wisp",
+            "---
+let n = KEPT.len();
+---
+<p>{n}</p>",
+        );
+        let code = app("live-other", &[db, other]).unwrap();
+        assert!(!code.contains("/_wisp/live/"), "{code}");
+    }
+
+    #[test]
+    fn after_and_report_cost_nothing_unless_defined() {
+        let page = ("src/routes/+page.wisp", "x");
+        let hooks = |src: &'static str| ("src/hooks.rs", src);
+        let none = app("no-after", &[page, hooks("fn init() {}")]).unwrap();
+        assert!(
+            !none.contains("AFTER") && !none.contains("REPORT"),
+            "{none}"
+        );
+        let code = app(
+            "after",
+            &[
+                page,
+                hooks(
+                    "fn after(cx: &mut Cx, reply: &mut Reply) {}
+fn report(cx: &mut Cx, err: &Error) {}",
+                ),
+            ],
+        )
+        .unwrap();
+        for want in [
+            "const AFTER: bool = true;",
+            "const REPORT: bool = true;",
+            "pub fn after(cx: &mut ::wisp::Cx, reply: &mut ::wisp::Reply) { super::after(cx, reply) }",
+            "fn report(cx: &mut ::wisp::Cx, err: &::wisp::Error) { hooks::__call::report(cx, err) }",
+        ] {
+            assert!(
+                code.contains(want),
+                "{want}
+{code}"
+            );
+        }
+        let err = |src| app("after-err", &[page, hooks(src)]).unwrap_err();
+        assert!(
+            err("fn after(cx: &mut Cx) {}")
+                .contains("`after` is `fn after(cx: &mut Cx, reply: &mut Reply)`")
+        );
+        assert!(err("async fn report(cx: &mut Cx, err: &Error) {}").contains("`report` is"));
     }
 
     #[test]

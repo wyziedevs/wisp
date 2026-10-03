@@ -546,7 +546,9 @@ fn hooks() {
         (
             "a public function that is not a hook",
             &hooks("\npub fn befor(cx: &mut Cx) {}"),
-            &["src/hooks.rs:2: `befor` is not a hook: src/hooks.rs has `init` and `before`"],
+            &[
+                "src/hooks.rs:2: `befor` is not a hook: src/hooks.rs has `init`, `before`, `after` and `report`",
+            ],
         ),
         (
             "a late inner attribute",

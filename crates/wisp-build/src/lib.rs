@@ -357,6 +357,24 @@ pub(crate) fn shared_types(root: &Path) -> Vec<rust_scan::TypeItem> {
         .collect()
 }
 
+/// The `.live()` tables of `src/*.rs`: (static, channel), see
+/// `Items::live_tables`.
+pub(crate) fn live_tables(root: &Path) -> Vec<(String, String)> {
+    let mut files: Vec<PathBuf> = (fs::read_dir(root.join("src")).into_iter().flatten())
+        .flatten()
+        .map(|e| e.path())
+        .filter(|f| f.extension().is_some_and(|e| e == "rs"))
+        .collect();
+    files.sort();
+    (files.iter())
+        .filter_map(|f| {
+            let src = read_source(f).ok()?;
+            rust_scan::scan(&rust_scan::name_saved(&src).unwrap_or(src)).ok()
+        })
+        .flat_map(|items| items.live_tables())
+        .collect()
+}
+
 /// Splits off the `---` block of Rust a page or layout may start with:
 ///
 /// ```text

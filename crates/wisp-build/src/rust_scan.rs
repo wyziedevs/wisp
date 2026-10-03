@@ -150,6 +150,20 @@ impl Items {
         statics.chain(rest).collect()
     }
 
+    /// The `.live()` tables the file keeps, as (their static's name, their
+    /// name in the store, which is their channel): `static POSTS:
+    /// Table<Post> = Table::saved("posts").live();`.
+    pub fn live_tables(&self) -> Vec<(String, String)> {
+        let live = |c: &&ConstItem| c.is_static && last_segment(&c.ty) == "Table";
+        (self.consts.iter().filter(live))
+            .filter(|c| c.value.contains(".live()"))
+            .filter_map(|c| {
+                let name = c.value.split("saved(\"").nth(1)?.split('"').next()?;
+                Some((c.name.clone(), name.to_string()))
+            })
+            .collect()
+    }
+
     /// The `#[derive(Config)]` types, which read the environment at start.
     pub fn configs(&self) -> Vec<String> {
         let has = |t: &&TypeItem| t.derives.iter().any(|d| d == "Config");
