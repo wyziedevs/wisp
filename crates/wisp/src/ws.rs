@@ -102,9 +102,36 @@ impl Response {
             .push((Cow::Borrowed("upgrade"), "websocket".into()));
         res.headers
             .push((Cow::Borrowed("connection"), "upgrade".into()));
-        res.upgrade = Some(Upgrade(Box::new(move |ws| Box::pin(handler(ws)))));
+        res.upgrade = Some(Upgrade(captured(Box::new(move |ws| Box::pin(handler(ws))))));
         res
     }
+}
+
+thread_local! {
+    /// Armed by the test client: the handler of the next
+    /// [`Response::websocket`] on this thread, which `handle`'s 501 would drop.
+    static CAPTURE: std::cell::RefCell<Option<Option<Handler>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// `h`, unless the test client waits for one: it keeps `h` and the response
+/// carries a handler that does nothing, so the handshake is still checked.
+fn captured(h: Handler) -> Handler {
+    CAPTURE.with(|c| match c.borrow_mut().as_mut() {
+        Some(slot) if slot.is_none() => {
+            *slot = Some(h);
+            Box::new(|_| Box::pin(async { Ok(()) }) as _)
+        }
+        _ => h,
+    })
+}
+
+/// The test client's: the handler the next request makes, if it makes one.
+pub(crate) fn capture<R>(run: impl FnOnce() -> R) -> (R, Option<Upgrade>) {
+    CAPTURE.with(|c| *c.borrow_mut() = Some(None));
+    let r = run();
+    let h = CAPTURE.with(|c| c.borrow_mut().take()).flatten();
+    (r, h.map(Upgrade))
 }
 
 /// Checks a request to upgrade and returns its `sec-websocket-accept`.

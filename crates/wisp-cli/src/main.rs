@@ -9,6 +9,8 @@ mod events;
 mod net;
 mod new;
 mod npm;
+mod routes_cmd;
+mod scaffold;
 mod targets;
 #[cfg(test)]
 mod template_files;
@@ -19,7 +21,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 /// `wisp --help`: each command or option, and what it does.
-const COMMANDS: [(&str, &str); 10] = [
+const COMMANDS: [(&str, &str); 13] = [
     (
         "wisp new [name]",
         "Create an app. It asks a few questions; the options below answer them.",
@@ -51,6 +53,15 @@ const COMMANDS: [(&str, &str); 10] = [
     (
         "wisp check",
         "Check routes and templates without compiling.",
+    ),
+    ("wisp routes", "List each route's methods, URL and file."),
+    (
+        "wisp new-route <path> [page|server|rest]",
+        "Write a page, an endpoint or a REST resource at a URL.",
+    ),
+    (
+        "wisp deploy init fly|render|railway [--force]",
+        "Write that host's config (and a Dockerfile if there is none).",
     ),
     (
         "wisp add <pkg>[@version]",
@@ -121,6 +132,9 @@ fn main() -> ExitCode {
             .and_then(|root| {
                 wisp_build::check(root).map(|_| term::done("Routes and templates are valid."))
             }),
+        Some("routes") => project().and_then(|root| routes_cmd::list(root, &args[1..])),
+        Some("new-route") => project().and_then(|root| routes_cmd::new_route(root, &args[1..])),
+        Some("deploy") => project().and_then(|root| scaffold::deploy(root, &args[1..])),
         Some("add") => project().and_then(|root| npm::add(root, &args[1..])),
         Some("remove") => project().and_then(|root| npm::remove(root, &args[1..])),
         // Not in --help: how `wisp dev` runs a tool that must end with it.
