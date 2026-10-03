@@ -177,7 +177,12 @@ fn a_page_header_the_app_set_is_sent_once() {
 
 #[test]
 fn a_blob_is_served_whole_in_part_and_not_again() {
-    let hash = crate::blob::put(b"0123456789").unwrap();
+    let file = crate::File {
+        name: "a.txt".into(),
+        content_type: "text/plain",
+        bytes: b"0123456789",
+    };
+    let hash = crate::Upload::new(&file, "").unwrap().hash;
     let path = format!("{}{hash}", crate::blob::PREFIX);
     let with = |method: &str, h: &[(&str, &str)]| {
         let mut req = Request::new(method, &path);

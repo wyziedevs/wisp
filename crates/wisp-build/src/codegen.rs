@@ -249,6 +249,7 @@ fn shim(f: &FnItem, kind: Shim) -> Result<String, String> {
     // Each input as (its name in the call, what reads it, its owned type
     // when the call borrows it).
     let mut read = Vec::new();
+    let mut keep = String::new();
     let mut inputs = f.inputs()?.into_iter();
     for (_, ty) in &f.params {
         if rust_scan::is_cx(ty) {
@@ -269,6 +270,9 @@ fn shim(f: &FnItem, kind: Shim) -> Result<String, String> {
         } else {
             (get, "", v.clone())
         };
+        if rules::is_blob(ty) {
+            keep += &format!("::wisp::rt_traits::Keep::keep(&{v}, cx, {})?; ", lit(name));
+        }
         read.push((name, v, get, owned));
         args.push(arg);
     }
@@ -312,6 +316,9 @@ fn shim(f: &FnItem, kind: Shim) -> Result<String, String> {
             names.join(", ")
         ));
     }
+    // An `Upload` is kept only now, all inputs passed: a refused form
+    // leaves no file behind.
+    lets.push_str(&keep);
     let call = format!(
         "super::{}({}){}{}",
         f.name,
@@ -9676,6 +9683,16 @@ mod tests {
                 .unwrap_err()
                 .contains("or a `Response` to send instead of the page")
         );
+    }
+
+    #[test]
+    fn an_upload_is_kept_once_all_inputs_pass() {
+        let rs = "\n#[action] fn add(doc: Option<Upload>, #[validate(max = 5)] n: u8) {}";
+        let files = [("src/routes/+page.wisp", "x"), ("src/routes/+page.rs", rs)];
+        let code = app("keep", &files).unwrap();
+        let want = "else { return ::wisp::rt::input::refused(__p); }; \
+                    ::wisp::rt_traits::Keep::keep(&__a0, cx, \"doc\")?; ";
+        assert!(code.contains(want), "{code}");
     }
 
     #[test]

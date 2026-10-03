@@ -139,12 +139,10 @@ fn current() -> &'static dyn Blobs {
     }
 }
 
-/// Keeps `bytes` and returns their hash (SHA-256, hex): the same bytes are
-/// kept once.
-pub fn put(bytes: &[u8]) -> Result<String> {
-    let hash = crate::hex(&wisp_shared::sha256::sha256(&[bytes]));
-    current().put(&hash, bytes)?;
-    Ok(hash)
+/// Where `bytes` are kept: their SHA-256, hex, so the same bytes are kept
+/// once.
+fn hash(bytes: &[u8]) -> String {
+    crate::hex(&wisp_shared::sha256::sha256(&[bytes]))
 }
 
 /// The bytes kept under `hash`; `None` when there are none, or `hash` is not
@@ -187,11 +185,15 @@ impl Upload {
     /// by spaces (`"pdf csv"`, any case); `""` takes any. Another is a 422 on
     /// `file`. A file of no bytes is refused too.
     pub fn new(file: &crate::File, types: &str) -> Result<Upload> {
-        Upload::field(file, types, "file")
+        let upload = Upload::checked(file, types, "file")?;
+        upload.store(file)?;
+        Ok(upload)
     }
 
-    /// [`Upload::new`], a problem shown by the input `field`.
-    pub(crate) fn field(file: &crate::File, types: &str, field: &str) -> Result<Upload> {
+    /// [`Upload::new`] but not kept yet, a problem shown by the input
+    /// `field`: an action's `Upload` is kept (`rt_traits::Keep`) only once all
+    /// its inputs pass, so a refused form leaves no file behind.
+    pub(crate) fn checked(file: &crate::File, types: &str, field: &str) -> Result<Upload> {
         let ext = file.name.rsplit_once('.').map_or("", |(_, e)| e);
         if !types.is_empty()
             && !types
@@ -205,11 +207,16 @@ impl Upload {
             return crate::invalid(field, "is empty");
         }
         Ok(Upload {
-            hash: put(file.bytes)?,
+            hash: hash(file.bytes),
             name: file.name.to_string(),
             kind: file.content_type.to_string(),
             size: file.bytes.len(),
         })
+    }
+
+    /// Keeps `file`, the one this was [`Upload::checked`] from.
+    pub(crate) fn store(&self, file: &crate::File) -> Result {
+        current().put(&self.hash, file.bytes)
     }
 
     /// Where it is served: `/_wisp/blob/<hash>`.
