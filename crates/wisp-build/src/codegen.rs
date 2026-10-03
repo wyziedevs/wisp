@@ -696,6 +696,7 @@ impl<'a> Project<'a> {
                     .unwrap_or_default()
             ));
         }
+        let code = rust_scan::mark_default(&code).unwrap_or(code);
         let (items_src, stmts) = rust_scan::split_items(&code);
         let at = |e: String| format!("{}:{e}", self.rel(wisp));
         let items = rust_scan::scan(&items_src).map_err(at)?;
@@ -6526,7 +6527,10 @@ mod tests {
     #[test]
     fn db_items_are_in_every_route_file() {
         let db = ("src/db.rs", "pub fn items() -> Vec<u8> { vec![] }");
-        let page = ("src/routes/+page.wisp", "---\nlet n = items().len();\n---\n{n}");
+        let page = (
+            "src/routes/+page.wisp",
+            "---\nlet n = items().len();\n---\n{n}",
+        );
         let bare = ("src/routes/a/+page.wisp", "{#each items() as i}{i}{/each}");
         let code = app("db-glob", &[db, page, bare]).unwrap();
         let globs = code.matches("use super::__mods::db::*;").count();

@@ -304,6 +304,35 @@ impl std::fmt::Display for Error {
     }
 }
 
+/// `{@pager posts}` as the links to the pages either side of a
+/// `Page` (`posts.prev`, `posts.next`), written out
+/// on its line. `None` when there is none.
+fn pagers(src: &str) -> Option<String> {
+    let (mut out, mut from) = (String::new(), 0);
+    while let Some(at) = src[from..].find("{@pager") {
+        let open = from + at;
+        let arg = open + 7;
+        let end = hole_end(src.as_bytes(), arg)?;
+        let page = src[arg..end].trim();
+        let simple = page
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b':'));
+        let page = if simple {
+            page.to_string()
+        } else {
+            format!("({page})")
+        };
+        out.push_str(&src[from..open]);
+        for (side, text) in [("prev", "Newer"), ("next", "Older")] {
+            out.push_str(&format!(
+                "{{#if let Some(href) = &{page}.{side}}}<a {{href}}>{text}</a>{{/if}}"
+            ));
+        }
+        from = end + 1;
+    }
+    (from > 0).then(|| out + &src[from..])
+}
+
 /// `<form action="?/add" fields>` with a labelled `<input>` for each
 /// parameter of that action written in (`rules::input_type` gives its
 /// `type`), all on the tag's line, so the lines of the file stay where they
@@ -417,6 +446,8 @@ pub fn parse(src: &str) -> Result<Template, Error> {
 pub fn parse_with(src: &str, fields: &[Field]) -> Result<Template, Error> {
     let written = form_fields(src, fields)?;
     let src = written.as_deref().unwrap_or(src);
+    let paged = pagers(src);
+    let src = paged.as_deref().unwrap_or(src);
     let mut p = Parser {
         src,
         fields,
@@ -3974,7 +4005,8 @@ fn snippet_type(ty: &str) -> String {
     }
 }
 
-/// `title: &str, size: u8 = 2` → the props a component declares.
+/// `title: &str, size: u8 = 2` → the props a component declares. A prop
+/// with no type is a `&str`: `title`, `title = "x"`.
 fn parse_props(arg: &str) -> Result<Vec<PropDecl>, String> {
     let mut out: Vec<PropDecl> = Vec::new();
     for part in split_top(arg, b',') {
@@ -3982,9 +4014,13 @@ fn parse_props(arg: &str) -> Result<Vec<PropDecl>, String> {
         if part.is_empty() {
             continue; // a trailing comma
         }
-        let (name, rest) = part
-            .split_once(':')
-            .ok_or_else(|| format!("expected `name: Type` in {{@props …}}, found `{part}`"))?;
+        let (name, rest) = match part.split_once(':') {
+            Some((n, r)) => (n, r.to_string()),
+            None => match part.split_once('=') {
+                Some((n, d)) => (n, format!("&str = {d}")),
+                None => (part, "&str".to_string()),
+            },
+        };
         let name = name.trim();
         if !is_ident(name) {
             return Err(format!("`{name}` is not a name for a prop"));
@@ -3994,7 +4030,7 @@ fn parse_props(arg: &str) -> Result<Vec<PropDecl>, String> {
                 "`{name}` is a name Wisp uses; call the prop something else"
             ));
         }
-        let (ty, default) = match split_top(rest, b'=').as_slice() {
+        let (ty, default) = match split_top(&rest, b'=').as_slice() {
             [ty] => (ty.trim(), None),
             [ty, default] if !default.trim().is_empty() => {
                 (ty.trim(), Some(default.trim().to_string()))
@@ -4379,6 +4415,24 @@ mod tests {
         );
         assert_eq!(*line, 1);
         assert_eq!(text(&t, &t.nodes[0]), "<h2>");
+        // No type: a `&str`.
+        let bare = parse("{@props title, sub = \"x\", n: u8}")
+            .unwrap()
+            .props
+            .unwrap()
+            .0;
+        let bare: Vec<_> = bare
+            .iter()
+            .map(|d| (d.name.as_str(), d.ty.as_str(), d.default.as_deref()))
+            .collect();
+        assert_eq!(
+            bare,
+            [
+                ("title", "&str", None),
+                ("sub", "&str", Some("\"x\"")),
+                ("n", "u8", None)
+            ]
+        );
         let f = parse("{@props f: &dyn Fn(u8) -> u8}")
             .unwrap()
             .props
@@ -4388,7 +4442,7 @@ mod tests {
 
         let err = |src: &str| parse(src).unwrap_err().msg;
         assert!(err("{@props}").contains("lists the component's props"));
-        assert!(err("{@props a}").contains("expected `name: Type`"));
+        assert!(err("{@props a b}").contains("not a name for a prop"));
         assert!(err("{@props a: u8, a: u8}").contains("declared twice"));
         assert!(err("{@props children: u8}").contains("a name Wisp uses"));
         assert!(err("{@props a: u8}{@props b: u8}").contains("once"));
@@ -4931,6 +4985,26 @@ mod tests {
         let default = [field("default", "q", "String")];
         let post = form_fields("<form method=\"post\" fields></form>", &default);
         assert!(post.unwrap().unwrap().contains("<input name=\"q\">"));
+    }
+
+    #[test]
+    fn a_pager_is_the_links_either_side() {
+        let got = pagers("<p>x</p>{@pager posts}\n{@pager db::all(cx).page}!").unwrap();
+        let link = |p: &str, side: &str, text: &str| {
+            format!("{{#if let Some(href) = &{p}.{side}}}<a {{href}}>{text}</a>{{/if}}")
+        };
+        let want = format!(
+            "<p>x</p>{}{}\n{}{}!",
+            link("posts", "prev", "Newer"),
+            link("posts", "next", "Older"),
+            link("(db::all(cx).page)", "prev", "Newer"),
+            link("(db::all(cx).page)", "next", "Older"),
+        );
+        assert_eq!(got, want);
+        assert_eq!(pagers("<p>no pager</p>"), None);
+        let t = parse("{@pager posts}").unwrap();
+        let text = t.chunks.concat();
+        assert!(text.contains("Newer") && text.contains("Older"), "{text}");
     }
 
     #[test]
