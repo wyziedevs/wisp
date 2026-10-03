@@ -200,6 +200,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "wisp-agents-snippets"
+version = "0.1.0"
+dependencies = [
+ "wisp",
+ "wisp-build",
+]
+
+[[package]]
 name = "wisp-bench"
 version = "0.0.0"
 dependencies = [
