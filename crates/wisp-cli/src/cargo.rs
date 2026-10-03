@@ -6,7 +6,7 @@
 //! error the compiler found in generated code that came from a template is
 //! told against the template's own line, which is the one to fix.
 
-use crate::term;
+use crate::{git_head, term};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use wisp_shared::json::{self, Json};
@@ -23,12 +23,11 @@ pub struct Build {
 
 /// The version of the `wisp` crate the app is locked to, from its Cargo.lock.
 fn locked_wisp(lock: &str) -> Option<&str> {
-    let (_, rest) = lock.split_once(
-        "name = \"wisp\"
-",
-    )?;
-    rest.lines()
+    let mut lines = lock.lines();
+    lines.find(|l| l.trim_end() == "name = \"wisp\"")?;
+    lines
         .next()?
+        .trim_end()
         .strip_prefix("version = \"")?
         .strip_suffix('"')
 }
@@ -38,19 +37,92 @@ fn triple(v: &str) -> Option<[u32; 3]> {
     Some([it.next()??, it.next()??, it.next()??])
 }
 
-/// Warns, once, when this CLI is older than the `wisp` the app is locked to:
-/// its templates and checks may not know that wisp. Never fails the command.
-pub fn warn_if_stale(root: &Path) {
-    let Ok(lock) = std::fs::read_to_string(root.join("Cargo.lock")) else {
-        return;
-    };
-    let ours = env!("CARGO_PKG_VERSION");
-    if let Some(app) = locked_wisp(&lock)
-        && triple(app) > triple(ours)
+/// The `path` of the app's `wisp` dependency, as its Cargo.toml writes it
+/// (`wisp = { path = "../wisp/crates/wisp" }`, or under `[dependencies.wisp]`).
+fn wisp_path(toml: &str) -> Option<&str> {
+    let mut section = "";
+    for line in toml.lines().map(str::trim) {
+        if let Some(head) = line.strip_prefix('[') {
+            section = head.trim_end_matches(']').trim();
+            continue;
+        }
+        let own = matches!(
+            section,
+            "dependencies.wisp" | "dev-dependencies.wisp" | "build-dependencies.wisp"
+        );
+        let deps = matches!(
+            section,
+            "dependencies" | "dev-dependencies" | "build-dependencies"
+        );
+        let value = if own {
+            Some(line)
+        } else if deps {
+            line.strip_prefix("wisp")
+                .and_then(|r| r.trim_start().strip_prefix('='))
+        } else {
+            None
+        };
+        if let Some(path) = value.and_then(path_value) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// `x` in `path = "x"`, wherever in `s`.
+fn path_value(s: &str) -> Option<&str> {
+    let mut from = 0;
+    while let Some(i) = s[from..].find("path") {
+        let at = from + i;
+        from = at + 4;
+        let word = s[..at]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '-' || c == '_');
+        if word {
+            continue;
+        }
+        let value = s[from..].trim_start().strip_prefix('=')?.trim_start();
+        let quote = value.chars().next().filter(|&c| c == '"' || c == '\'')?;
+        return value[1..].split(quote).next();
+    }
+    None
+}
+
+/// The commit of the framework checkout the app's `wisp` path dependency is
+/// in, from the files of that repository.
+fn path_commit(root: &Path) -> Option<String> {
+    let toml = std::fs::read_to_string(root.join("Cargo.toml")).ok()?;
+    let dep = root.join(wisp_path(&toml)?).canonicalize().ok()?;
+    let repo = dep.ancestors().find(|d| d.join(".git").exists())?;
+    git_head::read(repo).map(|(commit, _)| commit)
+}
+
+/// What to say when this CLI is older than the `wisp` the app uses, if it
+/// is: by version for a locked one, by commit for one used by path (both
+/// say 0.1.0 there). `commit` is this CLI's, empty when unknown.
+fn stale(root: &Path, version: &str, commit: &str) -> Option<String> {
+    let lock = std::fs::read_to_string(root.join("Cargo.lock")).ok();
+    if let Some(app) = lock.as_deref().and_then(locked_wisp)
+        && triple(app) > triple(version)
     {
-        term::warn(&format!(
-            "This CLI is older than the app's wisp ({ours} vs {app}); run cargo install --path crates/wisp-cli"
+        return Some(format!(
+            "This CLI is older than the app's wisp ({version} vs {app}); run cargo install --path crates/wisp-cli"
         ));
+    }
+    let app = path_commit(root).filter(|app| !commit.is_empty() && app != commit)?;
+    Some(format!(
+        "This CLI was built from wisp {}, the app uses {}; run cargo install --path crates/wisp-cli",
+        &commit[..7.min(commit.len())],
+        &app[..7.min(app.len())],
+    ))
+}
+
+/// Warns, once, when the app's wisp is not the one this CLI came from: its
+/// templates and checks may not know it. Never fails the command.
+pub fn warn_if_stale(root: &Path) {
+    if let Some(msg) = stale(root, env!("CARGO_PKG_VERSION"), env!("WISP_CLI_COMMIT")) {
+        term::warn(&msg);
     }
 }
 
@@ -454,21 +526,58 @@ mod tests {
 
     #[test]
     fn stale_cli() {
-        let lock = "[[package]]
-name = \"wisp\"
-version = \"0.2.1\"
-";
+        let lock = "[[package]]\nname = \"wisp\"\nversion = \"0.2.1\"\n";
         assert_eq!(locked_wisp(lock), Some("0.2.1"));
+        assert_eq!(locked_wisp(&lock.replace('\n', "\r\n")), Some("0.2.1"));
         assert!(triple("0.2.1") > triple("0.1.0"));
         assert!(triple("0.10.0") > triple("0.9.9"));
         assert_eq!(
-            locked_wisp(
-                "name = \"wisp-build\"
-version = \"9.0.0\"
-"
-            ),
+            locked_wisp("name = \"wisp-build\"\nversion = \"9.0.0\"\n"),
             None
         );
+        assert_eq!(locked_wisp("name = \"wisp\""), None);
+    }
+
+    #[test]
+    fn finds_the_wisp_path_dependency() {
+        let dep = "[package]\nname = \"a\"\n\n[dependencies]\nwisp-build = { path = \"no\" }\nwisp = { version = \"0.1\", path = \"../w/crates/wisp\", features = [] }\n";
+        assert_eq!(wisp_path(dep), Some("../w/crates/wisp"));
+        let table = "[dependencies.wisp]\nfeatures = []\npath = '../w'\n";
+        assert_eq!(wisp_path(table), Some("../w"));
+        assert_eq!(wisp_path("[dependencies]\nwisp = \"0.1\"\n"), None);
+        assert_eq!(wisp_path("[dependencies]\nwisp.workspace = true\n"), None);
+        assert_eq!(
+            wisp_path("[dependencies]\nwisp = { git = \"x\", subpath = \"y\" }\n"),
+            None
+        );
+        assert_eq!(wisp_path("[package]\nwisp = { path = \"no\" }\n"), None);
+    }
+
+    #[test]
+    fn a_path_dependency_on_another_commit_is_told() {
+        const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let dir = std::env::temp_dir().join(format!("wisp-stale-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (app, git) = (dir.join("app"), dir.join("wisp/.git"));
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::create_dir_all(dir.join("wisp/crates/wisp")).unwrap();
+        std::fs::create_dir_all(&git).unwrap();
+        std::fs::write(git.join("HEAD"), format!("{A}\n")).unwrap();
+        let toml = "[dependencies]\nwisp = { path = \"../wisp/crates/wisp\" }\n";
+        std::fs::write(app.join("Cargo.toml"), toml).unwrap();
+        // Same commit, an unknown one of ours, or nothing to compare: quiet.
+        assert_eq!(stale(&app, "0.1.0", A), None);
+        assert_eq!(stale(&app, "0.1.0", ""), None);
+        let told = stale(&app, "0.1.0", B).unwrap();
+        assert!(
+            told.contains("bbbbbbb") && told.contains("aaaaaaa"),
+            "{told}"
+        );
+        std::fs::write(git.join("HEAD"), "garbage").unwrap();
+        assert_eq!(stale(&app, "0.1.0", B), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(stale(&app, "0.1.0", B), None);
     }
 
     #[test]

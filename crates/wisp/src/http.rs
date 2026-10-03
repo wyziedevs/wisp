@@ -755,10 +755,7 @@ fn started(addr: SocketAddr) {
     start_clock();
     dev::exit_with_parent();
     // `wisp dev` waits for this exact line to know the app is ready.
-    let line = format!(
-        "wisp: listening on http://{addr}
-"
-    );
+    let line = format!("wisp: listening on http://{addr}\n");
     let mut stdout = io::stdout().lock();
     let _ = stdout
         .write_all(line.as_bytes())
@@ -813,13 +810,9 @@ pub(crate) fn log(line: std::fmt::Arguments) {
     crate::edge::log(&line.to_string());
     #[cfg(not(target_arch = "wasm32"))]
     // One `write_all`, so a line is never split or interleaved with another.
-    let _ = io::stderr().lock().write_all(
-        format!(
-            "{line}
-"
-        )
-        .as_bytes(),
-    );
+    let _ = io::stderr()
+        .lock()
+        .write_all(format!("{line}\n").as_bytes());
 }
 
 /// A client that gave up before we accepted is routine. Anything else (out
