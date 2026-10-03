@@ -8985,6 +8985,21 @@ mod tests {
         );
         let code = app("guard-page", &[page]).unwrap();
         assert!(code.contains("page_0::__call::__guard(cx)?;"), "{code}");
+        // In hooks.rs, with a `before` of its own or without.
+        let hooks = |src| {
+            app(
+                "guard-hooks",
+                &[("src/routes/+page.wisp", "x"), ("src/hooks.rs", src)],
+            )
+        };
+        for src in [
+            "const CORS: &str = \"*\";",
+            "const CORS: &str = \"*\";\nfn before(cx: &mut Cx) {}",
+        ] {
+            let code = hooks(src).unwrap();
+            assert!(code.contains("{ cx.cors(super::CORS)?; "), "{code}");
+            assert!(code.contains("hooks::__call::before(cx)"), "{code}");
+        }
         let err = app(
             "guard-ty",
             &[(
