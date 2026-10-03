@@ -40,8 +40,9 @@ pub(crate) fn add(reply: &mut Reply) {
 fn push(reply: &mut Reply) {
     let mut m = MODE.load(Ordering::Relaxed);
     if m & UNSET != 0 {
-        m = u8::from(crate::switch("WISP_SECURE_HEADERS", true)) * PAGES
-            | u8::from(crate::switch("WISP_HSTS", false)) * HSTS;
+        let pages = u8::from(crate::switch("WISP_SECURE_HEADERS", true));
+        let hsts = u8::from(crate::switch("WISP_HSTS", false));
+        m = pages * PAGES + hsts * HSTS;
         MODE.store(m, Ordering::Relaxed);
     }
     if reply.status < 200 {
