@@ -394,3 +394,11 @@ upgrading Wisp) · `wisp mcp` (tools for AI agents: `wisp_docs(topic)`,
 Claude Code: `claude mcp add wisp -- wisp mcp`). More: `wisp_docs`, or
 https://raw.githubusercontent.com/wyziedevs/wisp/main/llms-full.txt (this
 file and every doc).
+Under `wisp dev` (debug builds only): `Alt+Shift+W` opens the devtools
+(components, editable `$state`, props, stores, route, timings, open in
+editor via `$WISP_EDITOR`/`$EDITOR`/`code -g`); `/_wisp/components` is the
+component workshop: `src/components/Card.stories.wisp` holds
+`{#story "Featured"}<Card featured title="x" />{/story}` blocks, each
+rendered on its own page with controls for its `&str`/`String`, number
+and `bool` props; a component without one gets a default story when all
+its required props are of those types. Release builds ignore story files.

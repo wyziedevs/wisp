@@ -1530,10 +1530,27 @@ pub fn minify(src: &str) -> String {
     out
 }
 
-/// The runtime's own files as release builds serve them: `mangle`d, then
-/// `minify`d.
+/// The runtime's own files as release builds serve them: without their
+/// dev-only lines, `mangle`d, then `minify`d.
 pub fn runtime(src: &str) -> String {
-    minify(&mangle(src))
+    minify(&mangle(&strip_dev(src)))
+}
+
+/// `src` without the lines from each `// dev{` line to the next `// }dev`
+/// line, both included: what the runtime keeps for the devtools, which
+/// debug builds serve as written and release builds never have.
+pub fn strip_dev(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut dev = false;
+    for line in src.split_inclusive('\n') {
+        match line.trim() {
+            "// dev{" => dev = true,
+            "// }dev" => dev = false,
+            _ if !dev => out.push_str(line),
+            _ => {}
+        }
+    }
+    out
 }
 
 /// `src` with the names it binds shortened, for the runtime's own files:

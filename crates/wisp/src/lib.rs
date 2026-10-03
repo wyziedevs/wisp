@@ -57,6 +57,8 @@ pub mod test;
 pub mod tower;
 #[cfg(target_os = "linux")]
 mod uring;
+#[cfg(debug_assertions)]
+mod workshop;
 mod ws;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -662,6 +664,11 @@ pub trait App: 'static {
     /// `/_wisp/client.ts`; empty without any.
     fn client_ts() -> &'static str {
         ""
+    }
+    /// Dev builds: the components and their stories, for the workshop at
+    /// `/_wisp/components`.
+    fn workshop() -> &'static [rt::Shelf] {
+        &[]
     }
     /// Every route, for `wisp build --static`.
     fn export_routes() -> Vec<ExportRoute> {
@@ -1395,6 +1402,44 @@ pub mod rt {
             None => Some(T::now()),
         }
     }
+    /// A component in the workshop at `/_wisp/components` (dev builds).
+    pub struct Shelf {
+        pub name: &'static str,
+        pub file: &'static str,
+        pub props: &'static [ShelfProp],
+        /// From its `Name.stories.wisp`, or the default story.
+        pub stories: &'static [Story],
+        /// Why it has no story, when it has none.
+        pub note: &'static str,
+    }
+
+    pub struct ShelfProp {
+        pub name: &'static str,
+        pub ty: &'static str,
+        /// How the workshop edits it, if it can.
+        pub control: Option<Control>,
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub enum Control {
+        Text,
+        Number,
+        Check,
+    }
+
+    pub struct Story {
+        pub name: &'static str,
+        pub slug: &'static str,
+        /// Where it is: its stories file, or for the default story the
+        /// component's.
+        pub file: &'static str,
+        pub line: u32,
+        /// The props' first values, where the story writes literals.
+        pub values: &'static [(&'static str, &'static str)],
+        /// Renders it, its simple props from the query.
+        pub render: fn(&mut crate::Out, &crate::Cx),
+    }
+
     /// What the build knows of a route: one row per route id in
     /// [`crate::App::ROUTES`], so no fact can drift from the others.
     pub struct RouteFacts {

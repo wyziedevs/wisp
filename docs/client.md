@@ -556,6 +556,54 @@ An error thrown while a client script starts, or in `+page.js`, shows the
 nearest `+error.wisp`, as a server error would. Errors inside handlers show in
 the console with the `.wisp` file and line.
 
+## Devtools and the component workshop
+
+Both are for `wisp dev` alone: a release build has neither, and its
+`live.js` is byte for byte what it was without them.
+
+**Devtools.** Press `Alt+Shift+W` on any page. A panel opens over it, with
+no browser extension:
+
+- **Components:** the tree of instances running in the browser. Pick one
+  to see its props and its state, live. Numbers, text and booleans are
+  edited in place, anything else as JSON; the page redraws as it would for
+  its own code. A `$derived` value only shows. `line 12` opens the file at
+  the line that declares it.
+- **Stores:** each store and `derived` value, named by the line that made
+  it (`export const cart = store([])` is `cart`), editable the same way.
+- **Route:** the URL, the route and its parameters (sent to pages with a
+  `+page.js`), and the server values each page and layout reads.
+- **Timings:** the last navigation or action: the whole time, the wait for
+  the server, the download, and the morph and redraw.
+
+"Open" sends the file to your editor: `$WISP_EDITOR` or `$EDITOR` (one
+with a window; `code`, `cursor` and `codium` get `-g file:line`), else
+VS Code's `code -g`, else what the system opens the file with. Only
+`localhost` can ask.
+
+A page with no browser code has no runtime to read: the panel shows its
+URL and timings.
+
+**Workshop.** `/_wisp/components` lists every component. Beside
+`Card.wisp`, a `Card.stories.wisp` holds named examples:
+
+```html
+{#story "Featured"}
+  <Card featured title="Tea" count={3}>A pot for two.</Card>
+{/story}
+
+{#story "Empty"}<Card title="Nothing yet" />{/story}
+```
+
+Each story renders on the server, in the app's own shell and CSS, at
+`/_wisp/components/Card/featured`. Beside it are controls for the props of
+types `&str`, `String`, numbers and `bool`: a text field, a number field
+or a checkbox, which render it again as you change them (the URL keeps
+them, `?title=Mint`). A component with no stories file gets a "Default"
+story from its props' defaults, when every prop it requires is one of
+those types; the others say what they need. Saving a stories file
+rebuilds; release builds and routing never read them.
+
 ## Limits
 
 - The first paint leaves out what it cannot work out (see

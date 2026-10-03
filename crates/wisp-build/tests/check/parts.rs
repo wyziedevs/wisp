@@ -247,6 +247,23 @@ fn the_minified_runtime_parses() {
     }
 }
 
+/// The devtools' hooks in live.js are for debug builds only: the release
+/// runtime has none of them, and the marks pair up.
+#[test]
+fn release_runtime_has_no_dev_hooks() {
+    let live = wisp_shared::LIVE_JS;
+    assert!(live.contains("__wisp_dev"), "the hooks are there in dev");
+    assert!(!minify_js(live).contains("__wisp_dev"));
+    assert_eq!(
+        live.matches("// dev{").count(),
+        live.matches("// }dev").count()
+    );
+    assert_eq!(
+        minify_js("let a = 1\n// dev{\nlet b = a\n// }dev\nexport { a }\n"),
+        minify_js("let a = 1\nexport { a }\n")
+    );
+}
+
 /// What the browser runtime is served as: names it binds are shortened,
 /// what it does not (exports, globals, properties) is not.
 #[test]
