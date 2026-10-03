@@ -2983,6 +2983,7 @@ struct Streamed {
 
 /// Writes `reply` as HTTP/1.1 and leaves it empty. A streamed body is
 /// returned for the connection to send as it comes.
+#[inline(never)]
 fn serialize<A: App, const OBS: bool>(
     w: &mut Vec<u8>,
     reply: &mut Reply,
@@ -3298,6 +3299,7 @@ fn internal<A: App>(cx: &Cx, path: &str, reply: &mut Reply) -> bool {
 /// The app's files: templates' browser modules, then its assets, embedded
 /// or, in dev, read from `static/`. `route`: the route the path matches.
 /// `false` if the path is not a file.
+#[inline(always)]
 fn file<A: App>(cx: &Cx, raw: &[u8], route: Option<usize>, reply: &mut Reply) -> bool {
     let routed = route.is_some();
     // The service worker and the manifest, of an app with either.
@@ -3516,6 +3518,7 @@ async fn pump(
 /// `content-type: text/plain` is) is checked once a thread while it is one
 /// of the last few such pairs: such a string never changes, so its address
 /// and length say it is the same.
+#[inline(always)]
 fn header(w: &mut Vec<u8>, (name, value): &(Cow<'static, str>, Cow<'static, str>)) {
     /// The pairs a thread keeps checked: a response's few static headers.
     const KEPT: usize = 4;
@@ -3651,6 +3654,7 @@ thread_local! {
 /// `content-length`, when the response has a `length`, and `date`, in one
 /// piece: the digits are written right to left, ending where the date
 /// line, kept formatted, begins.
+#[inline(always)]
 fn length_and_date(w: &mut Vec<u8>, length: Option<usize>) {
     const PREFIX: &[u8] = b"content-length: ";
     const LENGTH_LINE: usize = PREFIX.len() + 20 + 2;
@@ -3665,6 +3669,7 @@ fn length_and_date(w: &mut Vec<u8>, length: Option<usize>) {
     w.extend_from_slice(&head[start..]);
 }
 
+#[inline(always)]
 fn date_line() -> [u8; DATE_LINE] {
     let now = NOW.load(Ordering::Relaxed);
     DATE.with(|c| {
@@ -3723,6 +3728,7 @@ macro_rules! statuses {
         }
 
         /// `HTTP/1.1 200 OK\r\n`; `None` for a status not named here.
+        #[inline(always)]
         fn status_line(status: u16) -> Option<&'static [u8]> {
             Some(match status {
                 $($code => concat!("HTTP/1.1 ", $code, " ", $reason, "\r\n").as_bytes(),)*
