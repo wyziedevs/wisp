@@ -10,17 +10,8 @@
 use crate::Error;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::OnceLock;
 use std::task::Context;
 use std::time::Duration;
-
-/// The limit in milliseconds, 0 for none.
-fn limit() -> u64 {
-    static MS: OnceLock<u64> = OnceLock::new();
-    *MS.get_or_init(|| {
-        crate::setting::<u64>("WISP_HANDLER_TIMEOUT", "a number of seconds").map_or(0, |s| s * 1000)
-    })
-}
 
 /// The deadline of one handler.
 pub(crate) struct Late {
@@ -30,11 +21,8 @@ pub(crate) struct Late {
 }
 
 impl Late {
-    pub(crate) fn new() -> Late {
-        Late::within(limit())
-    }
-
-    fn within(ms: u64) -> Late {
+    /// A deadline of `ms` milliseconds, 0 for none (`Settings::timeout_ms`).
+    pub(crate) fn within(ms: u64) -> Late {
         Late {
             ms,
             #[cfg(not(target_arch = "wasm32"))]

@@ -4,16 +4,21 @@
 //! https (by the proxy in front); `WISP_SECURE_HEADERS=off` leaves all of
 //! it out.
 //!
-//! Where a page is made is where it gets them ([`page`], `Response::html`),
-//! so an answer that is not a page pays nothing. HSTS rides with the
-//! request-id check at the start of a request, which a server with neither
-//! on does not enter.
+//! Where a page is made is where it gets them ([`page`], [`missing`]), so
+//! an answer that is not a page pays one check of its content type. HSTS is
+//! added to the reply last, as it is tagged ([`hsts`]), so every answer has
+//! it, Wisp's own files and redirects too.
 
 use crate::cx::Cx;
+use crate::http::Reply;
 use std::borrow::Cow;
+use std::sync::atomic::AtomicBool;
 
 pub(crate) const NOSNIFF: (&str, &str) = ("x-content-type-options", "nosniff");
 pub(crate) const REFERRER: (&str, &str) = ("referrer-policy", "strict-origin-when-cross-origin");
+/// `WISP_HSTS`, kept where a reply reads it in one load: every
+/// answer is tagged, and a settings read is more than a load.
+pub(crate) static HSTS_ON: AtomicBool = AtomicBool::new(false);
 const HSTS: (&str, &str) = (
     "strict-transport-security",
     "max-age=31536000; includeSubDomains",
@@ -30,11 +35,28 @@ pub(crate) fn page(cx: &mut Cx) {
     }
 }
 
-/// HSTS, unless the app set its own: once, as the request starts.
+/// The page headers neither `cx` nor `own`, a response's, has set.
+pub(crate) fn missing<'a>(
+    cx: &'a Cx,
+    own: &'a [(Cow<'static, str>, String)],
+) -> impl Iterator<Item = (&'static str, &'static str)> + 'a {
+    let on = crate::settings().secure_headers;
+    [NOSNIFF, REFERRER].into_iter().filter(move |&(name, _)| {
+        on && !cx.has_out(name) && !own.iter().any(|(n, _)| n.eq_ignore_ascii_case(name))
+    })
+}
+
+/// HSTS, unless the reply has the app's own.
 #[cold]
-pub(crate) fn hsts(cx: &mut Cx) {
-    if !cx.has_out(HSTS.0) {
-        cx.put(HSTS.0, Cow::Borrowed(HSTS.1));
+pub(crate) fn hsts(reply: &mut Reply) {
+    if !reply
+        .headers
+        .iter()
+        .any(|(n, _)| n.eq_ignore_ascii_case(HSTS.0))
+    {
+        reply
+            .headers
+            .push((Cow::Borrowed(HSTS.0), Cow::Borrowed(HSTS.1)));
     }
 }
 
@@ -62,15 +84,29 @@ mod tests {
     }
 
     #[test]
-    fn hsts_gives_way_to_the_apps() {
+    fn missing_ones_only() {
         let mut a = cx();
-        a.set_header("strict-transport-security", "max-age=1");
-        hsts(&mut a);
-        assert_eq!(a.out_headers().len(), 1);
-        let mut b = cx();
-        hsts(&mut b);
-        b.set_header("strict-transport-security", "max-age=1");
-        assert_eq!(b.out_headers().len(), 1);
-        assert_eq!(b.out_headers()[0].1, "max-age=1");
+        a.set_header("referrer-policy", "no-referrer");
+        let own = vec![(
+            Cow::Borrowed("X-Content-Type-Options"),
+            "nosniff".to_string(),
+        )];
+        assert_eq!(missing(&a, &own).count(), 0);
+        assert_eq!(missing(&a, &[]).count(), 1);
+        assert_eq!(missing(&cx(), &[]).count(), 2);
+    }
+
+    #[test]
+    fn hsts_gives_way_to_the_apps() {
+        let mut reply = Reply::default();
+        reply.headers.push((
+            Cow::Borrowed("Strict-Transport-Security"),
+            Cow::Borrowed("max-age=1"),
+        ));
+        hsts(&mut reply);
+        assert_eq!(reply.headers.len(), 1);
+        let mut reply = Reply::default();
+        hsts(&mut reply);
+        assert_eq!(reply.headers.len(), 1);
     }
 }

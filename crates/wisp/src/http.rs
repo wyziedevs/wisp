@@ -1155,13 +1155,14 @@ fn decide_now<A: App>(
     reply: &mut Reply,
     route: Option<usize>,
 ) -> Option<Job> {
-    if crate::settings().extras {
-        extras(cx);
+    if crate::settings().request_id {
+        cx.request_id();
     }
     if !before_routes::<A>(cx, route, reply) {
-        let started = timed().then(Instant::now);
+        let timed = crate::settings().timed;
+        let started = timed.then(Instant::now);
         out.clear();
-        let Some(result) = catch_now(|| A::handle_now(route, cx, out)) else {
+        let Some(result) = catch_now(timed, || A::handle_now(route, cx, out)) else {
             return Some(Job::Decide(route));
         };
         let (failure, page) = settle(cx, out, reply, result);
@@ -2434,18 +2435,6 @@ impl Cx {
     }
 }
 
-/// What a server with `WISP_REQUEST_ID` or `WISP_HSTS` on does as a request
-/// starts.
-#[cold]
-fn extras(cx: &mut Cx) {
-    if crate::settings().request_id {
-        cx.request_id();
-    }
-    if crate::settings().hsts {
-        crate::headers::hsts(cx);
-    }
-}
-
 /// Decides the response to the request in `cx`: Wisp's own files, the
 /// app's, routing, hooks, redirects, error pages. Writes nothing; see
 /// [`serialize`]. Gives it `x-request-id` when the request has an id
@@ -2461,13 +2450,13 @@ async fn decide<A: App>(
     reply: &mut Reply,
     routed: Option<Option<usize>>,
 ) {
-    if crate::settings().extras {
-        extras(cx);
+    if crate::settings().request_id {
+        cx.request_id();
     }
     // Routed first (it only matches), so the path is read once.
     let route = routed.unwrap_or_else(|| route::<A>(cx));
     if !before_routes::<A>(cx, route, reply) {
-        let started = timed().then(Instant::now);
+        let started = crate::settings().timed.then(Instant::now);
         out.clear();
         let result = catch_made(|| A::handle(route, cx, out)).await;
         let (failure, page) = settle(cx, out, reply, result);
@@ -2487,6 +2476,14 @@ fn put(cx: &Cx, reply: &mut Reply, mut res: crate::Response) {
     }
     reply.status = res.status;
     reply.headers.clear();
+    // A page gets its security headers here, unless the app set them.
+    if res.page {
+        for (name, value) in crate::headers::missing(cx, &res.headers) {
+            reply
+                .headers
+                .push((Cow::Borrowed(name), Cow::Borrowed(value)));
+        }
+    }
     if !res.content_type.is_empty() {
         reply
             .headers
@@ -2518,12 +2515,16 @@ fn settle(
     }
 }
 
-/// The reply's `x-request-id`, when the request has an id.
+/// The reply's `x-request-id`, when the request has an id, and its HSTS
+/// (`WISP_HSTS=on`): the last thing every answer gets.
 fn tag(cx: &Cx, reply: &mut Reply) {
     if let Some(id) = cx.id() {
         reply
             .headers
             .push((Cow::Borrowed("x-request-id"), Cow::Owned(id.to_string())));
+    }
+    if crate::headers::HSTS_ON.load(std::sync::atomic::Ordering::Relaxed) {
+        crate::headers::hsts(reply);
     }
 }
 
@@ -2613,20 +2614,22 @@ fn answered(cx: &mut Cx, reply: &mut Reply, started: Option<Instant>, failure: O
     let method = cx.method.as_str();
     if let Some(started) = started {
         crate::otel::span(cx, reply.status, started.elapsed());
+        if crate::settings().dev {
+            let blocked = Some(BLOCKED.replace(Duration::ZERO)).filter(|&b| b >= BLOCKING);
+            let (path, id) = (cx.path(), cx.id());
+            dev::log_request(
+                method,
+                path,
+                reply.status,
+                started.elapsed(),
+                failure.as_deref(),
+                blocked,
+                id,
+            );
+            return;
+        }
     }
-    if let Some(started) = started.filter(|_| crate::settings().dev) {
-        let blocked = Some(BLOCKED.replace(Duration::ZERO)).filter(|&b| b >= BLOCKING);
-        let (path, id) = (cx.path(), cx.id());
-        dev::log_request(
-            method,
-            path,
-            reply.status,
-            started.elapsed(),
-            failure.as_deref(),
-            blocked,
-            id,
-        );
-    } else if let Some(f) = failure {
+    if let Some(f) = failure {
         let id = cx.id().map_or(String::new(), |id| format!(" [{id}]"));
         log(format_args!(
             "wisp: {} {method} {}{id}: {f}",
@@ -2942,12 +2945,6 @@ fn short_path(file: &str) -> String {
     }
 }
 
-/// Whether handlers are timed, for the dev log: in dev, but not in the
-/// edge build, which has no clock to read.
-fn timed() -> bool {
-    (crate::settings().dev || crate::otel::on()) && cfg!(not(target_arch = "wasm32"))
-}
-
 /// Runs a handler future, turning a panic into a 500 so one bad request
 /// cannot take the connection (or anything else) down with it.
 pub(crate) async fn catch<F: Future<Output = crate::Result<()>>>(f: F) -> crate::Result<()> {
@@ -2961,8 +2958,11 @@ async fn catch_made<F: Future<Output = crate::Result<()>>>(
     make: impl FnOnce() -> F,
 ) -> crate::Result<()> {
     let mut f = std::pin::pin!(make());
-    let timed = timed();
-    let mut late = crate::timeout::Late::new();
+    let settings = crate::settings();
+    let (timed, mut late) = (
+        settings.timed,
+        crate::timeout::Late::within(settings.timeout_ms),
+    );
     std::future::poll_fn(move |cx| {
         let began = timed.then(Instant::now);
         IN_HANDLER.set(true);
@@ -2983,8 +2983,8 @@ async fn catch_made<F: Future<Output = crate::Result<()>>>(
 /// [`catch`] of a sync [`App::handle_now`]: `None` when it answered
 /// nothing.
 #[cfg(target_os = "linux")]
-fn catch_now(f: impl FnOnce() -> crate::Result<bool>) -> Option<crate::Result<()>> {
-    let began = timed().then(Instant::now);
+fn catch_now(timed: bool, f: impl FnOnce() -> crate::Result<bool>) -> Option<crate::Result<()>> {
+    let began = timed.then(Instant::now);
     IN_HANDLER.set(true);
     let ran = catch_unwind(AssertUnwindSafe(f));
     IN_HANDLER.set(false);
@@ -3120,12 +3120,10 @@ fn send_file(reply: &mut Reply, cx: &Cx, body: Body, ext: &str, etag: Option<&'s
     } else {
         reply.set(200, mime(ext), body);
         if ext.starts_with("htm") && crate::settings().secure_headers {
-            for (name, value) in [crate::headers::NOSNIFF, crate::headers::REFERRER] {
-                if !cx.has_out(name) {
-                    reply
-                        .headers
-                        .push((Cow::Borrowed(name), Cow::Borrowed(value)));
-                }
+            for (name, value) in crate::headers::missing(cx, &[]) {
+                reply
+                    .headers
+                    .push((Cow::Borrowed(name), Cow::Borrowed(value)));
             }
         }
         if !crate::range::apply(cx, reply, etag) {

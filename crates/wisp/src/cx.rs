@@ -591,11 +591,6 @@ impl Cx {
             valid_header(&name, &value),
             "invalid header {name:?}: {value:?}"
         );
-        // HSTS rides in from the start of the request: the app's replaces it.
-        if name.eq_ignore_ascii_case("strict-transport-security") {
-            self.out_headers
-                .retain(|(n, _)| !n.eq_ignore_ascii_case(&name));
-        }
         self.out_headers.push((name, Cow::Owned(value)));
     }
 
