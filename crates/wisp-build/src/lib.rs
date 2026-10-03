@@ -399,6 +399,19 @@ pub fn check(root: &Path) -> Result<(Vec<String>, Vec<String>), String> {
     })
 }
 
+pub use codegen::{Hot, HotTemplate};
+
+/// For `wisp dev`: the app as its dev build compiles it, as far as a
+/// running dev build can take it without a compile, and its accessibility
+/// warnings. Errors as [`check`]'s.
+pub fn hot(root: &Path) -> Result<Hot, String> {
+    codegen::hot(&codegen::Input {
+        root,
+        release: false,
+        maps: true,
+    })
+}
+
 /// For `wisp check --types`: the files `.wisp/types` holds for `tsc`, by
 /// path there (see the CLI's `types.rs`).
 pub fn types(root: &Path) -> Result<Vec<(String, String)>, String> {

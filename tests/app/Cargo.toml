@@ -14,6 +14,8 @@ wisp.workspace = true
 # build too (`wisp build --target cloudflare`); only the tests use tokio.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tokio.workspace = true
+# `tests/hot.rs`: a template's new text, as `wisp dev` makes it.
+wisp-build.workspace = true
 
 [build-dependencies]
 wisp-build.workspace = true
@@ -24,3 +26,5 @@ workspace = true
 [features]
 # `tests/tower.rs`: the app as a tower service.
 tower = ["wisp/tower"]
+# `tests/hot.rs`: `wisp dev`'s hot swaps in a headless Chrome or Edge.
+browser = ["wisp/browser"]

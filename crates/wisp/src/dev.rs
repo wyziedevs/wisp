@@ -17,9 +17,16 @@ use std::time::Duration;
 /// True once any template has been swapped; keeps `chunk` to one atomic
 /// load until the first hot swap.
 static SWAPPED_ANY: AtomicBool = AtomicBool::new(false);
-/// (template id, its static text). Swapped text is leaked: a few KB per
-/// save, and the dev server restarts on every Rust rebuild anyway.
-static SWAPPED: RwLock<Vec<(usize, Vec<&'static str>)>> = RwLock::new(Vec::new());
+/// (template id, its shape now, its static text). Swapped text is leaked:
+/// a few KB per save, and the dev server restarts on every Rust rebuild
+/// anyway.
+type Swapped = Vec<(usize, u64, Vec<&'static str>)>;
+static SWAPPED: RwLock<Swapped> = RwLock::new(Vec::new());
+/// Browser modules `wisp dev` swapped in: (path, URL, source), leaked the
+/// same way, and whether there is any.
+type Modules = Vec<(String, &'static str, &'static str)>;
+static MODULES: RwLock<Modules> = RwLock::new(Vec::new());
+static MODULES_ANY: AtomicBool = AtomicBool::new(false);
 
 /// Static text `i` of template `t`: the hot-swapped version if there is one.
 #[inline]
@@ -30,9 +37,48 @@ pub fn chunk(t: usize, i: usize, compiled: &'static str) -> &'static str {
     let swapped = SWAPPED.read().unwrap_or_else(|e| e.into_inner());
     swapped
         .iter()
-        .find(|(id, _)| *id == t)
-        .and_then(|(_, c)| c.get(i).copied())
+        .find(|(id, ..)| *id == t)
+        .and_then(|(_, _, c)| c.get(i).copied())
         .unwrap_or(compiled)
+}
+
+/// Whether templates mark what they render (`<!--w:file-->` … `<!--/w:file-->`),
+/// for `wisp dev` to morph one file's part alone: under `wisp dev`, and in
+/// browser tests, which swap as it does.
+pub fn marks() -> bool {
+    static MARKS: OnceLock<bool> = OnceLock::new();
+    MARKED.load(Ordering::Relaxed) || *MARKS.get_or_init(|| events_port().is_some())
+}
+static MARKED: AtomicBool = AtomicBool::new(false);
+
+/// Templates mark what they render from now on (see [`marks`]).
+#[cfg(feature = "browser")]
+pub(crate) fn mark() {
+    MARKED.store(true, Ordering::Relaxed);
+}
+
+/// The source `wisp dev` swapped in for the module at `path`, if any.
+#[cfg(debug_assertions)]
+pub(crate) fn module(path: &str) -> Option<&'static str> {
+    if !MODULES_ANY.load(Ordering::Acquire) {
+        return None;
+    }
+    let modules = MODULES.read().unwrap_or_else(|e| e.into_inner());
+    modules.iter().find(|m| m.0 == path).map(|m| m.2)
+}
+
+/// The URL pages name module `m` by: the swapped-in one's, in a debug
+/// build, so a reload loads that and not the old one a cache keeps.
+#[inline]
+pub(crate) fn url(m: &'static crate::ClientModule) -> &'static str {
+    #[cfg(debug_assertions)]
+    if MODULES_ANY.load(Ordering::Acquire) {
+        let modules = MODULES.read().unwrap_or_else(|e| e.into_inner());
+        if let Some(swapped) = modules.iter().find(|s| s.0 == m.path) {
+            return swapped.1;
+        }
+    }
+    m.url
 }
 
 /// Port of `wisp dev`'s event stream, if this process was started by it.
@@ -73,6 +119,10 @@ pub(crate) fn endpoint<A: App>(
     }
     match (method, path) {
         (Method::Post, "/_wisp/dev/swap") => match swap::<A>(body) {
+            Ok(()) => (200, "swapped"),
+            Err(e) => (409, e),
+        },
+        (Method::Post, "/_wisp/dev/module") => match swap_module::<A>(body) {
             Ok(()) => (200, "swapped"),
             Err(e) => (409, e),
         },
@@ -169,25 +219,31 @@ fn open_in_editor(path: &Path, line: u32) -> bool {
     spawned(c)
 }
 
+fn line<'a>(rest: &mut &'a str) -> Result<&'a str, &'static str> {
+    let (l, r) = rest.split_once('\n').ok_or("truncated request")?;
+    *rest = r;
+    Ok(l)
+}
+
 /// Body: `path\nshape-hex\ncount\n` then per chunk `byte-length\n<bytes>`.
-/// Refused unless the shape matches the compiled template exactly.
+/// Refused unless the shape matches the template's exactly: the compiled
+/// one's, or the last swap's. `old-hex>new-hex` gives it a new shape:
+/// `wisp dev` found that only browser code changed with it, which a
+/// compile would not change the program for (see `wisp_build::hot`).
 fn swap<A: App>(body: &[u8]) -> Result<(), &'static str> {
-    fn line<'a>(rest: &mut &'a str) -> Result<&'a str, &'static str> {
-        let (l, r) = rest.split_once('\n').ok_or("truncated request")?;
-        *rest = r;
-        Ok(l)
-    }
+    let hex = |s: &str| u64::from_str_radix(s, 16).map_err(|_| "bad shape");
     let mut rest = std::str::from_utf8(body).map_err(|_| "body is not UTF-8")?;
     let path = line(&mut rest)?;
-    let shape = u64::from_str_radix(line(&mut rest)?, 16).map_err(|_| "bad shape")?;
+    let shapes = line(&mut rest)?;
+    let (from, to) = match shapes.split_once('>') {
+        Some((a, b)) => (hex(a)?, hex(b)?),
+        None => (hex(shapes)?, hex(shapes)?),
+    };
     let count: usize = line(&mut rest)?.parse().map_err(|_| "bad count")?;
     let id = A::TEMPLATES
         .iter()
         .position(|(p, _)| *p == path)
         .ok_or("unknown template")?;
-    if A::TEMPLATES[id].1 != shape {
-        return Err("template shape changed; rebuild needed");
-    }
     // Each chunk takes a line at least: a count past that is a lie, and
     // reserving it could abort the process.
     let mut chunks = Vec::with_capacity(count.min(rest.len()));
@@ -202,11 +258,45 @@ fn swap<A: App>(body: &[u8]) -> Result<(), &'static str> {
     }
 
     let mut swapped = SWAPPED.write().unwrap_or_else(|e| e.into_inner());
-    match swapped.iter_mut().find(|(t, _)| *t == id) {
-        Some(entry) => entry.1 = chunks,
-        None => swapped.push((id, chunks)),
+    let at = swapped.iter().position(|s| s.0 == id);
+    if at.map_or(A::TEMPLATES[id].1, |k| swapped[k].1) != from {
+        return Err("template shape changed; rebuild needed");
+    }
+    match at {
+        Some(k) => swapped[k] = (id, to, chunks),
+        None => swapped.push((id, to, chunks)),
     }
     SWAPPED_ANY.store(true, Ordering::Release);
+    Ok(())
+}
+
+/// Body: `path\nurl\nruntime-version\n` then the module's source. Only a
+/// module the app serves can be swapped, made by the Wisp the app was (the
+/// runtime it imports is the app's), and `url` must be `path?v=…`. A page
+/// then names it by `url`, and `path` serves the source.
+fn swap_module<A: App>(body: &[u8]) -> Result<(), &'static str> {
+    let mut rest = std::str::from_utf8(body).map_err(|_| "body is not UTF-8")?;
+    let path = line(&mut rest)?;
+    let url = line(&mut rest)?;
+    if line(&mut rest)? != crate::live::RUNTIME_VERSION {
+        return Err("made by another version of Wisp; rebuild needed");
+    }
+    if A::client_module(path).is_none() {
+        return Err("unknown module");
+    }
+    // Pages write it inside JSON and an attribute as it is.
+    let version = url.strip_prefix(path).and_then(|v| v.strip_prefix("?v="));
+    if !version.is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_alphanumeric())) {
+        return Err("bad url");
+    }
+    let url: &'static str = Box::leak(url.to_owned().into_boxed_str());
+    let source: &'static str = Box::leak(rest.to_owned().into_boxed_str());
+    let mut modules = MODULES.write().unwrap_or_else(|e| e.into_inner());
+    match modules.iter_mut().find(|m| m.0 == path) {
+        Some(m) => (m.1, m.2) = (url, source),
+        None => modules.push((path.to_owned(), url, source)),
+    }
+    MODULES_ANY.store(true, Ordering::Release);
     Ok(())
 }
 
@@ -377,12 +467,55 @@ mod tests {
             endpoint::<Fuzz>(Method::Post, "/_wisp/dev/swap", body.as_bytes(), stranger).0,
             404
         );
+        // A new shape, given with the one it replaces; then only that one
+        // is taken.
+        let to = format!("{path}\n{shape:x}>def\n0\n");
+        assert_eq!(swap::<Fuzz>(to.as_bytes()), Ok(()));
+        assert!(
+            swap::<Fuzz>(body.as_bytes()).is_err(),
+            "the old shape is gone"
+        );
+        let back = format!("{path}\ndef>{shape:x}\n0\n");
+        assert_eq!(swap::<Fuzz>(back.as_bytes()), Ok(()));
         let good = format!("{path}\n{shape:x}\n2\n5\nhello3\nabc").into_bytes();
         let mut rng = Rng::new(17);
         for _ in 0..20_000 {
             let mut b = good.clone();
             mutate(&mut rng, &mut b);
             let _ = swap::<Fuzz>(&b);
+        }
+    }
+
+    /// A module is swapped in only where the app serves one, under a
+    /// `?v=` URL that pages can write as it is; then pages name it by that.
+    #[test]
+    fn swaps_modules_the_app_serves() {
+        use crate::fuzz::MODULE;
+        assert_eq!(url(&MODULE), MODULE.url);
+        let v = crate::live::RUNTIME_VERSION;
+        let refused = [
+            format!("/_app/c/t9.js\n/_app/c/t9.js?v=2\n{v}\nx"),
+            format!("/_app/c/fuzz.js\n/_app/c/fuzz.js\n{v}\nx"),
+            format!("/_app/c/fuzz.js\n/_app/c/fuzz.js?v=\"><script>\n{v}\nx"),
+            format!("/_app/c/fuzz.js\n/other.js?v=2\n{v}\nx"),
+            "/_app/c/fuzz.js\n/_app/c/fuzz.js?v=2\n0.0.1-other\nx".into(),
+            "/_app/c/fuzz.js".into(),
+        ];
+        for body in &refused {
+            assert!(swap_module::<Fuzz>(body.as_bytes()).is_err(), "{body}");
+        }
+        let body = format!("/_app/c/fuzz.js\n/_app/c/fuzz.js?v=2\n{v}\ndefine(\"fuzz\", 2);");
+        assert_eq!(swap_module::<Fuzz>(body.as_bytes()), Ok(()));
+        #[cfg(debug_assertions)]
+        {
+            assert_eq!(url(&MODULE), "/_app/c/fuzz.js?v=2");
+            assert_eq!(module(MODULE.path), Some("define(\"fuzz\", 2);"));
+        }
+        let mut rng = Rng::new(5);
+        for _ in 0..5_000 {
+            let mut b = body.as_bytes().to_vec();
+            mutate(&mut rng, &mut b);
+            let _ = swap_module::<Fuzz>(&b);
         }
     }
 }

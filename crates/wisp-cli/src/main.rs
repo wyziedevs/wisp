@@ -24,7 +24,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 /// `wisp --help`: each command or option, and what it does.
-const COMMANDS: [(&str, &str); 18] = [
+const COMMANDS: [(&str, &str); 19] = [
     (
         "wisp new [name]",
         "Create an app. It asks a few questions; the options below answer them.",
@@ -64,6 +64,10 @@ const COMMANDS: [(&str, &str); 18] = [
     (
         "wisp check [--types]",
         "Check routes and templates without compiling; --types runs tsc on TypeScript too.",
+    ),
+    (
+        "wisp test [--browser] [args]",
+        "Run the app's tests (cargo test args); --browser runs browser tests too.",
     ),
     (
         "wisp fmt [paths]",
@@ -161,6 +165,7 @@ fn main() -> ExitCode {
             fmt::warn_unformatted(root);
             if types { types::check(root) } else { Ok(()) }
         }),
+        Some("test") => project().and_then(|root| test(root, &args[1..])),
         Some("fmt") => fmt::run(&args[1..]),
         Some("add") => project().and_then(|root| npm::add(root, &args[1..])),
         Some("remove") => project().and_then(|root| npm::remove(root, &args[1..])),
@@ -186,6 +191,35 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `wisp test [--browser] [args]`: `cargo test` with the args, and with
+/// `--features browser` for `--browser`; fails as it does.
+fn test(root: &Path, args: &[String]) -> Result<(), String> {
+    let status = std::process::Command::new("cargo")
+        .current_dir(root)
+        .args(test_args(args))
+        .status()
+        .map_err(|e| format!("Could not run cargo: {e}.\nInstall Rust from https://rustup.rs."))?;
+    match status.success() {
+        true => Ok(()),
+        false => Err("Tests failed.".into()),
+    }
+}
+
+/// `cargo`'s arguments for `wisp test`'s: `--browser` (before a `--`)
+/// becomes `--features browser`.
+fn test_args(args: &[String]) -> Vec<String> {
+    let mut out = vec!["test".to_string()];
+    let mut ours = true;
+    for a in args {
+        ours &= a != "--";
+        match ours && a == "--browser" {
+            true => out.extend(["--features".into(), "browser".into()]),
+            false => out.push(a.clone()),
+        }
+    }
+    out
 }
 
 /// `wisp dev`'s one option: `--port <n>`, `--port=<n>` or `-p <n>`.
@@ -447,6 +481,20 @@ mod tests {
 
     fn port(s: &str) -> Result<u16, String> {
         dev_port(&s.split_whitespace().map(String::from).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn test_is_cargo_test() {
+        let args = |s: &str| {
+            test_args(&s.split_whitespace().map(String::from).collect::<Vec<_>>()).join(" ")
+        };
+        assert_eq!(args(""), "test");
+        assert_eq!(args("--browser"), "test --features browser");
+        assert_eq!(
+            args("counter --browser -- --nocapture"),
+            "test counter --features browser -- --nocapture"
+        );
+        assert_eq!(args("-- --browser"), "test -- --browser");
     }
 
     #[test]

@@ -257,6 +257,74 @@
     }
   }
 
+  // dev{
+  // `wisp dev`, after a template's text changed: the page again, morphed in
+  // only between that file's marks (<!--w:file--> and <!--/w:file-->, which
+  // templates write under `wisp dev`), so the rest of the page is left as
+  // it is. Marks that differ from the page's, or are not siblings, mean the
+  // whole page instead.
+  document.addEventListener('wisp:region', async (e) => {
+    const { files, done } = e.detail;
+    try {
+      const res = await fetch(location.href, { headers });
+      const to = redirect(res);
+      if (to) return void (await go(to, { replace: true }));
+      const html = await res.text();
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      const marks = (root) => {
+        const out = [];
+        const w = document.createTreeWalker(root, NodeFilter.SHOW_COMMENT);
+        while (w.nextNode()) if (/^\/?w:/.test(w.currentNode.data)) out.push(w.currentNode);
+        return out;
+      };
+      const [old, now] = [marks(document.body), marks(doc.body)];
+      const ok = old.length == now.length && old.every((m, k) => m.data == now[k].data);
+      if (!ok) return swap(html, res.status);
+      for (let k = 0; k < old.length; k++) {
+        if (!files.includes(old[k].data.slice(2))) continue;
+        // Its end: the next of its file at the same depth.
+        let d = 0, j = k;
+        for (; j < old.length; j++) {
+          if (old[j].data.slice(old[j].data.indexOf(':') + 1) != old[k].data.slice(2)) continue;
+          d += old[j].data[0] == '/' ? -1 : 1;
+          if (!d) break;
+        }
+        const [a, b, c, z] = [old[k], old[j], now[k], now[j]];
+        if (!b || a.parentNode !== b.parentNode || c.parentNode !== z.parentNode) return swap(html, res.status);
+        let cur = a.nextSibling;
+        const skip = () => {
+          while (cur !== b && cur.__w) cur = cur.nextSibling;
+        };
+        skip();
+        for (let n = c.nextSibling; n !== z; ) {
+          const next = n.nextSibling;
+          if (cur !== b && same(cur, n)) {
+            morph(cur, n);
+            cur = cur.nextSibling;
+            skip();
+          } else b.parentNode.insertBefore(n, cur);
+          n = next;
+        }
+        while (cur !== b) {
+          const gone = cur;
+          cur = cur.nextSibling;
+          skip();
+          gone.remove();
+        }
+        k = j;
+      }
+      if (doc.title) document.title = doc.title;
+      const json = doc.getElementById('wisp-live');
+      const mine = document.getElementById('wisp-live');
+      if (json && mine) mine.textContent = json.textContent;
+      wake();
+      send('wisp:update', { status: res.status });
+    } finally {
+      done?.();
+    }
+  });
+  // }dev
+
   // ---- forms ----------------------------------------------------------------
 
   // A field named `action`, `reset` or `submit` hides the form's property of

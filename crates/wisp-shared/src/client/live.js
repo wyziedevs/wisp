@@ -65,10 +65,16 @@ globalThis.__wisp_dev = {
   state(file, st, lines) {
     if (current) devs.add(Object.assign(current, { file, st, lines }));
   },
+  // Set by wisp-dev.js: why the modules `wisp dev` rebuilt swap whole, if
+  // they do.
+  full: '',
 };
 // }dev
 
 export function define(id, fn, opts) {
+  // dev{
+  if (hot(id, { fn, ...opts })) return;
+  // }dev
   defs.set(id, { fn, ...opts });
 }
 
@@ -687,6 +693,10 @@ function script(inst, blob) {
   } finally {
     current = prev;
   }
+  // dev{
+  made.add(inst);
+  if (inst.slot) give(inst, carry.get(inst.def.file)?.shift());
+  // }dev
 }
 
 // A script that throws while starting shows the route's error page.
@@ -1364,6 +1374,165 @@ const X = {
   waiting: 0,
 };
 export const __wisp = X;
+
+// dev{
+// ---- hot swap (`wisp dev`) ----------------------------------------------------
+//
+// A module of a file that is in the page already, loaded again with new
+// code, is swapped in place: each instance of its old version runs the new
+// script, gets the old one's state back by name (what it no longer declares
+// is dropped), and its elements are bound again. One that another's code
+// renders (a component the browser draws) is made again by that one, its
+// state carried over the same way, in the order they were made. Focus, the
+// selection and what fields hold stay. It is swapped whole instead, as a
+// new module is, when the reason is given (`wisp dev` says, or its script
+// runs code at its top level that may not be safe to run twice, or its
+// props changed), and the page loads again if the swap throws.
+const made = new Set(); // instances a script ran for, in order
+const carry = new Map(); // file -> the state of instances to make again, in order
+let told = ''; // the reason logged last, said once
+
+function hot(id, def) {
+  const old = defs.get(id);
+  if (!old || old.file !== def.file) return false;
+  const same = (k) => String(old[k]) == String(def[k]);
+  if (same('fn') && same('html') && same('load')) return true;
+  for (const i of made) if (i.sc.dead) made.delete(i);
+  const why = __wisp_dev.full || (def.effect && `${def.file}:${def.effect} runs code at its top level that may not be safe to run twice`);
+  if (why) return whole(id, old, def, why);
+  // A start under way (a morph after a rebuild) binds the elements itself.
+  const starting = gen !== cur.my;
+  try {
+    const keep = fields();
+    const insts = [...made].filter((i) => i.def === old);
+    defs.set(id, def);
+    for (const i of insts) if (live.includes(i) && !again(i, def, starting)) return whole(id, old, def, `${def.file}: its props changed`);
+    for (const r of roots(insts)) stash(r), rebind(r, starting);
+    (starting ? ready : Promise.resolve()).then(tick).then(() => {
+      carry.clear();
+      refill(keep);
+    });
+  } catch (e) {
+    console.error(e);
+    location.reload();
+  }
+  return true;
+}
+
+// As a new module: the page's instances of it start afresh, and those
+// another's code renders are made again.
+function whole(id, old, def, why) {
+  defs.set(id, def);
+  const msg = `wisp dev: swapped whole, as ${why}`;
+  if (told != msg) console.info((told = msg));
+  setTimeout(() => (told = ''));
+  const starting = gen !== cur.my;
+  for (const r of roots([...made].filter((i) => i.def === old))) rebind(r, starting);
+  if (!starting) queueMicrotask(() => send('wisp:update'));
+  return true;
+}
+
+// Instance o made again from def in its place, with its state; false, with
+// o left as it was, when its props are not the same names.
+function again(o, def, starting) {
+  const b = {};
+  for (const k in o.P) if (k != '__rest') b[k] = o.P[k].x;
+  Object.assign(b, o.P?.__rest?.x);
+  const n = instance(def, o.id, o.el, o.parent, o.depth);
+  Object.assign(n, { I: o.I, events: o.events });
+  script(n, b);
+  if (Object.keys(n.P || {}).join() != Object.keys(o.P || {}).join()) {
+    end(n.sc);
+    return false;
+  }
+  give(n, take(o));
+  stash(o);
+  const els = [...o.recs].map((r) => r.el);
+  destroy(o);
+  live[live.indexOf(o)] = n;
+  if (cur.byI?.[o.I] === o) cur.byI[o.I] = n;
+  for (const i of made) if (i.parent === o) i.parent = n;
+  if (!starting) attach(n, els);
+  return true;
+}
+
+// The instances of the page (not another's code) that render these.
+function roots(insts) {
+  const out = new Set();
+  for (let i of insts) {
+    if (i.sc.dead || live.includes(i)) continue;
+    while (i && !live.includes(i)) i = i.parent;
+    if (i) out.add(i);
+  }
+  return out;
+}
+
+// Its elements bound again: what its code renders is made again.
+function rebind(r, starting) {
+  const els = [...r.recs].map((x) => x.el);
+  for (const x of r.recs) stopRec(x);
+  if (!starting) attach(r, els);
+}
+
+function attach(n, els) {
+  const mine = els.filter((el) => {
+    el.__d = el.getAttribute('data-w');
+    el.__l = el.getAttribute('data-wl');
+    return el.__d?.startsWith(n.I + '.');
+  });
+  bindAll(n, mine);
+}
+
+// The state of what o's code renders, for when it is made again.
+function stash(o) {
+  for (const i of made) {
+    let p = i.parent;
+    while (p && p !== o) p = p.parent;
+    if (p && i.slot && !i.sc.dead) carry.set(i.def.file, [...(carry.get(i.def.file) || []), take(i)]);
+  }
+}
+
+const take = (i) => {
+  const s = {};
+  for (const k in i.st) if (i.st[k] instanceof Sig) s[k] = i.st[k].x;
+  return s;
+};
+
+function give(i, s) {
+  for (const k in s) if (i.st?.[k] instanceof Sig) i.st[k].v = s[k];
+}
+
+// What each field holds and where focus is, by place in the page: an
+// element made again gets them back.
+function fields() {
+  const at = (el) => {
+    const p = [];
+    for (; el.parentElement; el = el.parentElement) p.unshift([...el.parentElement.children].indexOf(el));
+    return p;
+  };
+  const a = document.activeElement;
+  return {
+    f: [...document.querySelectorAll('input, textarea, select')].map((el) => [at(el), el, el.value, el.checked]),
+    a: a && a !== document.body && [at(a), a, a.selectionStart, a.selectionEnd, a.selectionDirection],
+  };
+}
+
+function refill({ f, a }) {
+  const at = (p) => p.reduce((el, k) => el?.children[k], document.documentElement);
+  for (const [p, el, value, checked] of f) {
+    const now = at(p);
+    if (!now || now === el || now.localName != el.localName || now.type != el.type || el.type == 'file') continue;
+    if (now.value !== value) now.value = value;
+    now.checked = checked;
+  }
+  const now = a && (a[1].isConnected ? a[1] : at(a[0]));
+  if (!now || document.activeElement === now) return;
+  now.focus({ preventScroll: true });
+  try {
+    now.setSelectionRange?.(a[2], a[3], a[4]);
+  } catch {}
+}
+// }dev
 
 // ---- navigation -------------------------------------------------------------
 

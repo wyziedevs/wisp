@@ -1050,6 +1050,76 @@ pub fn import_names(src: &str, spans: &[(usize, usize)]) -> Vec<String> {
     out
 }
 
+/// Where the first top-level statement of a script starts that does more
+/// than declare its names, call a helper that ends with the instance
+/// (`$effect`, `onMount`, `setInterval`...), log, or change what it
+/// declared: a call of its own or another function, `if`, `for`, `new`, a
+/// write to `window`... Running such a script twice (`wisp dev` swapping
+/// it in place) could do that twice, so it is swapped whole instead. Errs
+/// on the side of whole.
+pub fn top_effect(src: &str) -> Option<usize> {
+    const SAFE: [&str; 21] = [
+        "let",
+        "const",
+        "var",
+        "function",
+        "class",
+        "async",
+        "import",
+        "export",
+        "$effect",
+        "$inspect",
+        "onMount",
+        "onDestroy",
+        "effect",
+        "watch",
+        "setContext",
+        "setTimeout",
+        "setInterval",
+        "requestAnimationFrame",
+        "addEventListener",
+        "listen",
+        "console",
+    ];
+    let t = tokens(src);
+    let own: Vec<String> = declarations(src).into_iter().map(|(n, _)| n).collect();
+    let imported = imports(src);
+    let ends_value = |p: &Token| {
+        matches!(
+            p.kind,
+            Kind::Ident | Kind::Number | Kind::String | Kind::Regex | Kind::Template
+        ) || matches!(p.text(src), ")" | "]" | "}")
+    };
+    for k in 0..t.len() {
+        let tok = t[k];
+        if tok.depth != 0 || imported.iter().any(|&(a, b)| (a..b).contains(&tok.start)) {
+            continue;
+        }
+        let starts = match k.checked_sub(1).map(|p| t[p]) {
+            None => true,
+            Some(p) if p.depth != 0 => false,
+            // After a line break, a `(` or `[` goes on with the line before.
+            Some(p) => {
+                p.text(src) == ";"
+                    || ((p.text(src) == "}" || (tok.newline && ends_value(&p)))
+                        && tok.kind != Kind::Punct)
+            }
+        };
+        if !starts || tok.is(src, Kind::Punct, ";") {
+            continue;
+        }
+        let w = tok.text(src);
+        let next = t.get(k + 1).map(|n| n.text(src));
+        let safe = tok.kind == Kind::String
+            || (tok.kind == Kind::Ident
+                && (SAFE.contains(&w) || (own.iter().any(|n| n == w) && next != Some("("))));
+        if !safe {
+            return Some(tok.start);
+        }
+    }
+    None
+}
+
 /// Replaces byte ranges of `src`. An insertion is an empty range, and goes
 /// before a replacement that starts where it is.
 fn apply(src: &str, mut edits: Vec<(usize, usize, String)>) -> String {
@@ -2778,6 +2848,35 @@ mod tests {
 
     fn kinds(src: &str) -> Vec<(Kind, &str)> {
         tokens(src).iter().map(|t| (t.kind, t.text(src))).collect()
+    }
+
+    /// Declarations, helpers that end with the instance, logs and writes
+    /// to its own names run twice safely; anything else is found.
+    #[test]
+    fn top_effects() {
+        let safe = [
+            "let n = $state(0)\nconst big = $derived(n > 5)",
+            "import x from 'y'\nfunction f() { start() }\nclass A {}",
+            "$effect(() => { start() })\n$effect.pre(() => {})\nonMount(() => go())",
+            "let n = 0, items = []\nitems.push(1)\nn = 2; n++\nconsole.log(n)",
+            "import {\n  a } from 'a'\nimport b from 'b'\nlet c = a",
+            "let f = () => {\n  start()\n}, g = 1\nsetInterval(tick, 10)",
+            "'use strict'\nlet a = b\n  .c()\n  + d",
+        ];
+        for s in safe {
+            assert_eq!(top_effect(s), None, "{s}");
+        }
+        let found = [
+            ("let n = 0\nstart()", "start()"),
+            ("function go() {}\ngo()", "go()"),
+            ("let n = 0; if (n) n++", "if (n) n++"),
+            ("window.x = 1", "window.x = 1"),
+            ("let a = 1\nnew Thing()", "new Thing()"),
+            ("let a = 1;\n(async () => {})()", "(async () => {})()"),
+        ];
+        for (s, at) in found {
+            assert_eq!(top_effect(s).map(|o| &s[o..]), Some(at), "{s}");
+        }
     }
 
     fn roots(src: &str) -> Vec<String> {

@@ -783,7 +783,7 @@ fn client_parity() {
         .and_then(|r| r.split('"').next())
         .expect("the load module")
         .to_string();
-    assert!(js.contains("{ load: __wisp_u.load }"), "{js}");
+    assert!(js.contains("{ load: __wisp_u.load"), "{js}");
     assert!(body(&s.request("GET", &url, "", b"")).contains("export async function load"));
 
     // Browser code that fails to start asks for the route's error page.
