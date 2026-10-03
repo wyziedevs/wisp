@@ -226,11 +226,11 @@ fn chrome(
 }
 
 const CSS: &str = r#"
-body { display: grid; grid-template-columns: 14rem 1fr; min-height: 100vh; margin: 0; background: var(--wisp-paper); color: var(--wisp-ink); font: 400 0.875rem/1.25rem var(--wisp-sans); }
+body { display: grid; grid-template-columns: 14rem 1fr; min-height: 100vh; margin: 0; background: radial-gradient(56rem 28rem at 50% -6rem, var(--wisp-glow), transparent 70%) no-repeat, var(--wisp-paper); color: var(--wisp-ink); font: 400 0.875rem/1.25rem var(--wisp-sans); }
 nav { padding: 1.25rem 0.75rem; border-right: 1px solid var(--wisp-line); background: var(--wisp-panel); }
 nav ul { margin: 0; padding: 0; list-style: none; }
 nav ul ul { margin: 0.125rem 0 0.25rem 0.75rem; padding-left: 0.5rem; border-left: 1px solid var(--wisp-line); }
-nav a { display: block; padding: 0.375rem 0.625rem; border-radius: 0.375rem; color: var(--wisp-slate); text-decoration: none; }
+nav a { display: block; padding: 0.375rem 0.625rem; border-radius: var(--wisp-radius); color: var(--wisp-slate); text-decoration: none; }
 nav a:hover { background: var(--wisp-inset); color: var(--wisp-ink); }
 nav a.on, nav a[aria-current] { color: var(--wisp-ink); font-weight: 600; }
 nav a[aria-current] { background: var(--wisp-inset); box-shadow: inset 2px 0 var(--wisp-accent); }
@@ -248,20 +248,20 @@ header { margin-bottom: 1.25rem; }
 code { font: 400 0.8125rem/1.25rem var(--wisp-mono); }
 .empty { color: var(--wisp-slate); }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); gap: 0.75rem; margin: 0; padding: 0; list-style: none; }
-.cards a { display: grid; gap: 0.25rem; padding: 1rem; border: 1px solid var(--wisp-line); border-radius: 0.5rem; background: var(--wisp-panel); box-shadow: var(--wisp-raised); color: inherit; text-decoration: none; transition: border-color 250ms var(--wisp-change); }
+.cards a { display: grid; gap: 0.25rem; padding: 1rem; border: 1px solid var(--wisp-line); border-radius: var(--wisp-radius); background: var(--wisp-panel); box-shadow: var(--wisp-raised); color: inherit; text-decoration: none; transition: border-color 250ms var(--wisp-change); }
 .cards a:hover { border-color: var(--wisp-accent-edge); }
 .cards b { font-size: 1rem; font-weight: 600; }
 .cards code, .cards small { color: var(--wisp-ash); }
 .cards span { color: var(--wisp-slate); overflow-wrap: anywhere; }
 .split { display: grid; grid-template-columns: 1fr 18rem; gap: 1rem; align-items: start; }
-.stage { border: 1px solid var(--wisp-line); border-radius: 0.5rem; background: var(--wisp-panel); box-shadow: var(--wisp-raised); overflow: hidden; }
-.stage iframe { display: block; width: 100%; height: 70vh; border: 0; resize: vertical; background: #fff; }
-.props { padding: 1rem; border: 1px solid var(--wisp-line); border-radius: 0.5rem; background: var(--wisp-panel); box-shadow: var(--wisp-raised); }
+.stage { border: 1px solid var(--wisp-line); border-radius: var(--wisp-radius); background: var(--wisp-panel); box-shadow: var(--wisp-raised); overflow: hidden; }
+.stage iframe { display: block; width: 100%; height: 70vh; border: 0; resize: vertical; background: var(--wisp-paper); }
+.props { padding: 1rem; border: 1px solid var(--wisp-line); border-radius: var(--wisp-radius); background: var(--wisp-panel); box-shadow: var(--wisp-raised); }
 .props label { display: grid; gap: 0.25rem; margin: 0 0 0.75rem; }
 .props label span { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; font: 500 0.8125rem/1.25rem var(--wisp-mono); }
 .props small { color: var(--wisp-ash); font-weight: 400; overflow-wrap: anywhere; }
 .props em { color: var(--wisp-ash); font-style: normal; }
-.props input:not([type=checkbox]) { box-sizing: border-box; width: 100%; padding: 0.375rem 0.625rem; border: 1px solid var(--wisp-line); border-radius: 0.375rem; background: var(--wisp-inset); color: var(--wisp-ink); font: 400 0.8125rem/1.25rem var(--wisp-mono); }
+.props input:not([type=checkbox]) { box-sizing: border-box; width: 100%; padding: 0.375rem 0.625rem; border: 1px solid var(--wisp-line); border-radius: var(--wisp-radius); background: var(--wisp-inset); color: var(--wisp-ink); font: 400 0.8125rem/1.25rem var(--wisp-mono); }
 .props input[type=checkbox] { justify-self: start; width: 1rem; height: 1rem; margin: 0; accent-color: var(--wisp-accent); }
 @media (max-width: 52rem) { body { grid-template-columns: 1fr; } nav { border-right: 0; border-bottom: 1px solid var(--wisp-line); } .split { grid-template-columns: 1fr; } main { padding: 1rem; } }
 "#;

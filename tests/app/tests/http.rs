@@ -787,7 +787,12 @@ fn client_parity() {
     assert!(body(&s.request("GET", &url, "", b"")).contains("export async function load"));
 
     // Browser code that fails to start asks for the route's error page.
-    let err = s.request("GET", "/a2/holes", "x-wisp-error: 1\r\n", b"");
+    let err = s.request(
+        "GET",
+        "/a2/holes",
+        "x-wisp-error: 1\r\naccept: text/html\r\n",
+        b"",
+    );
     assert_eq!(status(&err), 500);
     assert!(err.contains("<h1 id=\"err\">Error 500</h1>"), "{err}");
 }

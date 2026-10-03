@@ -270,8 +270,12 @@ fn get(id: u64) -> Option<Note> { db::find(id) }      // `id` → /api/notes/[id
 
 `body: T` = the JSON body (422 with `errors` by field); other params by name
 as for actions. Returns: a `#[model]`/`Json` value → 200; nothing → 204;
-`Response`; `Option<T>` (None → 404). Endpoint and `/api` errors are JSON
-`{"status","code","error","errors"}` (`Error::new(409, "x").with_code("taken")`).
+`Response`; `Option<T>` (None → 404). Errors are JSON
+`{"status","code","error","errors"}` (`Error::new(409, "x").with_code("taken")`)
+for endpoints (and unmatched paths under a prefix of only endpoints), `/api`,
+apps with no page, and clients preferring JSON to HTML or sending no `Accept`
+(unless navigating); `error` = your message, else the status name. Else the
+`+error.wisp`, else a dark default page (`wisp dev`: also request, detail, home link).
 `const BODY_LIMIT: usize = 20 * wisp::MB;`. Rows live in `WISP_DATA` log
 files; `wisp::store(MyDb)` in `init` uses any DB; edge: env
 `WISP_STORE=d1:DB|deno-kv|libsql://…`.
@@ -1514,18 +1518,20 @@ and link, so none of it ships in production pages.
 ### Built-in UI
 
 Wisp draws a few things of its own, all from one design system: Kinetrix's
-roles and values (light and dark, following the system), with Wisp violet
-(`#7456d6` light, `#896ce0` dark) as the one accent, only on what is
-interactive. One-pixel hairlines, two shadow steps, one type scale, and one
-focus ring. The styles live in `crates/wisp/src/client/ui.css` (tokens,
-buttons) and `dialog.css` (dev only), all `--wisp-*` tokens
+roles and values (dark, as the demo site), with Wisp violet (`#896ce0`) as
+the one accent, only on what is interactive. One-pixel hairlines, two shadow steps, one type scale, and one
+focus ring. The styles live in `crates/wisp/src/client/tokens.css` (the one
+source of the tokens), `ui.css` (buttons), `error.css` and `dialog.css` (dev
+only), all `--wisp-*` tokens
 and `.wisp-*` classes, so they never touch an app's own CSS.
 
-- **The error page**, for apps without a `+error.wisp`: the status and one
-  line, centered (`404 | Not Found`). The line is the status's name, or the
-  error's own message when it says more. No links or buttons; an app that
-  wants them writes a `+error.wisp`. Its few styles come inlined, since the
-  app's own CSS may not exist yet.
+- **The error page**, for apps without a `+error.wisp`: laid out as the demo's
+  own, the status and one line, centered, on the dark tokens. The line is the
+  status's name, or the error's own message when it says more. No links or
+  buttons; an app that wants them writes a `+error.wisp`. Under `wisp dev` it
+  also has the status's name, the request, what caused a 5xx and a link home.
+  Its styles come inlined, since the app's own CSS may not exist yet. Errors
+  for endpoints and API clients are JSON instead (see docs/api.md).
 - **The build error dialog** in dev: a title and one sentence saying where to
   look (`src/routes/+page.rs, line 7. Save a fix and the page updates.`), then
   the error text in a code block with a Copy control. It lives in a shadow
@@ -3460,9 +3466,11 @@ sends any value with the status you give it (`.with_status(202)`).
 
 ## Errors are JSON
 
-An error on a request under `/api`, or one that sent JSON, or one whose
-`Accept` asks for JSON and not HTML, is answered as JSON instead of an error
-page:
+An error is answered as JSON instead of an error page when the request
+targets an endpoint (a `+server.rs`, or an unmatched path under a first
+segment that has endpoints and no pages), or is under `/api`, or sent JSON,
+or prefers JSON to HTML by its `Accept`, or has no `Accept` and is not a
+browser navigating. An app with no pages at all always answers in JSON:
 
 ```json
 {"status": 422, "code": "invalid", "error": "title: must have at least 1 character",
@@ -3475,8 +3483,10 @@ to match on: the status's (`bad_request`, `unauthorized`, `forbidden`,
 `too_large`, `unsupported_media_type`, `invalid`, `rate_limited`,
 `internal`, `unavailable`...), or one of your own:
 `Err(Error::new(409, "That email is taken").with_code("email_taken"))`.
-A `+server.rs` answers every other client in JSON too, whatever its path;
-only a browser page (whose `accept` has `text/html`) gets the error page.
+`error` is the message you gave, else the status's name (`Not Found`).
+Every other client gets the app's `+error.wisp`, or Wisp's own page: dark,
+the status and a line, and under `wisp dev` also the request, what failed
+and a link home.
 
 A client whose `accept` asks for `application/problem+json`, or every
 client with `WISP_PROBLEM_JSON=on`, gets RFC 9457's form instead:

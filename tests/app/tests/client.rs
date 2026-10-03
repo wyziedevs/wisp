@@ -101,7 +101,18 @@ fn pages_hooks_and_errors() {
         (missing.status, missing.header("x-app")),
         (404, Some("test"))
     );
-    assert!(missing.text().contains("<p>Not Found</p>"));
+    assert!(missing.text().contains("Not Found"));
+    // Where only endpoints are, even a browser's miss is JSON.
+    let gone = app.get("/tasks/1/nothing/here");
+    assert_eq!(
+        (gone.status, gone.header("content-type")),
+        (404, Some("application/json"))
+    );
+    assert!(
+        gone.text().contains(r#""error":"Not Found""#),
+        "{}",
+        gone.text()
+    );
 
     let slash = app.get("/login/?a=1");
     assert_eq!(

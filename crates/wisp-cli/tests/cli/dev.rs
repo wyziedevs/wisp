@@ -103,7 +103,7 @@ fn get(addr: &str, path: &str) -> (u16, String) {
     s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     write!(
         s,
-        "GET {path} HTTP/1.1\r\nhost: {addr}\r\nconnection: close\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nhost: {addr}\r\naccept: text/html\r\nconnection: close\r\n\r\n"
     )
     .unwrap();
     let mut text = String::new();

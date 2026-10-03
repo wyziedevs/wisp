@@ -270,8 +270,12 @@ fn get(id: u64) -> Option<Note> { db::find(id) }      // `id` → /api/notes/[id
 
 `body: T` = the JSON body (422 with `errors` by field); other params by name
 as for actions. Returns: a `#[model]`/`Json` value → 200; nothing → 204;
-`Response`; `Option<T>` (None → 404). Endpoint and `/api` errors are JSON
-`{"status","code","error","errors"}` (`Error::new(409, "x").with_code("taken")`).
+`Response`; `Option<T>` (None → 404). Errors are JSON
+`{"status","code","error","errors"}` (`Error::new(409, "x").with_code("taken")`)
+for endpoints (and unmatched paths under a prefix of only endpoints), `/api`,
+apps with no page, and clients preferring JSON to HTML or sending no `Accept`
+(unless navigating); `error` = your message, else the status name. Else the
+`+error.wisp`, else a dark default page (`wisp dev`: also request, detail, home link).
 `const BODY_LIMIT: usize = 20 * wisp::MB;`. Rows live in `WISP_DATA` log
 files; `wisp::store(MyDb)` in `init` uses any DB; edge: env
 `WISP_STORE=d1:DB|deno-kv|libsql://…`.

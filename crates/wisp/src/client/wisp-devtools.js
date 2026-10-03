@@ -311,13 +311,13 @@
     header { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0.5rem 0.5rem 1rem; border-bottom: 1px solid var(--wisp-line); }
     header b { font-weight: 600; letter-spacing: -0.01em; }
     nav { display: flex; flex: 1; gap: 0.125rem; }
-    [role=tab] { padding: 0.25rem 0.5rem; border: 0; border-radius: 0.375rem; background: none; color: var(--wisp-slate); font: 500 0.75rem/1rem var(--wisp-sans); cursor: pointer; }
+    [role=tab] { padding: 0.25rem 0.5rem; border: 0; border-radius: var(--wisp-radius); background: none; color: var(--wisp-slate); font: 500 0.75rem/1rem var(--wisp-sans); cursor: pointer; }
     [role=tab]:hover { background: var(--wisp-inset); color: var(--wisp-ink); }
     [role=tab][aria-selected=true] { background: var(--wisp-inset); color: var(--wisp-ink); box-shadow: inset 0 -2px var(--wisp-accent); }
     .body { flex: 1; overflow: auto; padding: 0.75rem 1rem 1rem; }
     .tree ul { margin: 0; padding: 0 0 0 0.75rem; list-style: none; }
     .tree > ul { padding: 0; }
-    .node { display: block; width: 100%; padding: 0.25rem 0.5rem; border: 0; border-radius: 0.375rem; background: none; color: var(--wisp-ink); font: 500 0.8125rem/1.25rem var(--wisp-mono); text-align: left; cursor: pointer; }
+    .node { display: block; width: 100%; padding: 0.25rem 0.5rem; border: 0; border-radius: var(--wisp-radius); background: none; color: var(--wisp-ink); font: 500 0.8125rem/1.25rem var(--wisp-mono); text-align: left; cursor: pointer; }
     .node:hover { background: var(--wisp-inset); }
     .node[aria-current=true] { background: var(--wisp-inset); box-shadow: inset 2px 0 var(--wisp-accent); }
     .details { margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--wisp-line); }
@@ -329,7 +329,7 @@
     .key small { color: var(--wisp-ash); }
     .key .link { margin-left: 0.375rem; }
     code { overflow-wrap: anywhere; font: 400 0.75rem/1rem var(--wisp-mono); }
-    input { box-sizing: border-box; width: 100%; min-width: 0; padding: 0.1875rem 0.5rem; border: 1px solid var(--wisp-line); border-radius: 0.375rem; background: var(--wisp-inset); color: var(--wisp-ink); font: 400 0.75rem/1.25rem var(--wisp-mono); }
+    input { box-sizing: border-box; width: 100%; min-width: 0; padding: 0.1875rem 0.5rem; border: 1px solid var(--wisp-line); border-radius: var(--wisp-radius); background: var(--wisp-inset); color: var(--wisp-ink); font: 400 0.75rem/1.25rem var(--wisp-mono); }
     input[type=checkbox] { justify-self: start; width: 1rem; height: 1rem; accent-color: var(--wisp-accent); }
     input:disabled { opacity: 0.7; }
     input.bad { border-color: var(--wisp-danger); }

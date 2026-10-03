@@ -89,7 +89,7 @@ pub(crate) fn run(job: impl std::future::Future<Output = io::Result<()>>) -> io:
 
 /// The page at `url`, whole: one with `{#await}` streams its answers after
 /// it, which are waited for here, so the file has them.
-async fn page<A: App>(url: &str) -> crate::Reply {
+async fn fetch_page<A: App>(url: &str) -> crate::Reply {
     let mut reply = handle::<A>(Request::new("GET", url)).await;
     if let crate::Body::Stream(rx) = &mut reply.body {
         let mut all = Vec::new();
@@ -119,7 +119,7 @@ pub async fn prerender<A: App>(dir: &Path) -> io::Result<()> {
         };
         for segs in paths {
             let url = url(&segs);
-            let reply = page::<A>(&url).await;
+            let reply = fetch_page::<A>(&url).await;
             if reply.status != 200 {
                 println!(
                     "warn {url} answered {}, so it is not prerendered",
@@ -164,7 +164,7 @@ pub async fn export<A: App>(dir: &Path, spa: bool) -> io::Result<()> {
                 let n = r.pattern.split('/').filter(|s| s.starts_with('[')).count();
                 let url = segments(r.pattern, &vec!["0".to_string(); n]).map(|s| url(&s));
                 let reply = match url {
-                    Some(url) => page::<A>(&url).await,
+                    Some(url) => fetch_page::<A>(&url).await,
                     None => continue,
                 };
                 if reply.status != 200 {
@@ -187,7 +187,7 @@ pub async fn export<A: App>(dir: &Path, spa: bool) -> io::Result<()> {
         };
         for segs in paths {
             let url = url(&segs);
-            let reply = page::<A>(&url).await;
+            let reply = fetch_page::<A>(&url).await;
             if reply.status != 200 {
                 println!(
                     "warn {url} answered {}, so it is not exported",
@@ -200,7 +200,7 @@ pub async fn export<A: App>(dir: &Path, spa: bool) -> io::Result<()> {
         }
     }
     // What hosts such as GitHub Pages show for a missing page.
-    let missing = handle::<A>(Request::new("GET", "/_wisp_missing")).await;
+    let missing = handle::<A>(page("/_wisp_missing")).await;
     if missing.status == 404 {
         find_assets(missing.text(), &mut assets);
         write(dir, "404.html", missing.bytes())?;
@@ -208,7 +208,7 @@ pub async fn export<A: App>(dir: &Path, spa: bool) -> io::Result<()> {
     // A static host has no request host: the sitemap needs `SITE_URL`.
     if std::env::var_os("SITE_URL").is_some_and(|s| !s.is_empty()) {
         for f in ["sitemap.xml", "robots.txt"] {
-            let reply = handle::<A>(Request::new("GET", &format!("/{f}"))).await;
+            let reply = handle::<A>(page(&format!("/{f}"))).await;
             if reply.status == 200 {
                 write(dir, f, reply.bytes())?;
             }
@@ -238,7 +238,7 @@ pub async fn export<A: App>(dir: &Path, spa: bool) -> io::Result<()> {
     .iter()
     .filter(|_| A::PWA.is_some())
     {
-        let reply = handle::<A>(Request::new("GET", path)).await;
+        let reply = handle::<A>(page(path)).await;
         if reply.status == 200 {
             find_assets(reply.text(), &mut assets); // the icons, the files kept
             write(dir, &path[1..], reply.bytes())?;
@@ -257,7 +257,7 @@ pub async fn export<A: App>(dir: &Path, spa: bool) -> io::Result<()> {
         let Some(rel) = crate::http::safe_relative_path(&path) else {
             continue;
         };
-        let reply = handle::<A>(Request::new("GET", &path)).await;
+        let reply = handle::<A>(page(&path)).await;
         if reply.status != 200 {
             continue;
         }
@@ -272,7 +272,7 @@ pub async fn export<A: App>(dir: &Path, spa: bool) -> io::Result<()> {
             continue;
         };
         let at = rel.rfind('/').map_or(0, |i| i + 1);
-        let found = handle::<A>(Request::new("GET", &format!("/{}{map}", &rel[..at]))).await;
+        let found = handle::<A>(page(&format!("/{}{map}", &rel[..at]))).await;
         if found.status == 200 {
             write(dir, &format!("{}{map}", &rel[..at]), found.bytes())?;
             write(dir, &rel, reply.bytes())?;
@@ -282,6 +282,13 @@ pub async fn export<A: App>(dir: &Path, spa: bool) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// A GET as a browser makes it, so an error is a page, as the host shows it.
+fn page(target: &str) -> Request {
+    let mut req = Request::new("GET", target);
+    req.header("accept", "text/html");
+    req
 }
 
 /// A module's code before its `//# sourceMappingURL=` line, and the map's

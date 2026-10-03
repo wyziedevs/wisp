@@ -3878,6 +3878,41 @@ impl Gen {
         if !before && !m.root_waits() && p.remotes.is_empty() {
             self.line(1, "const NOT_FOUND_NOW: bool = true;");
         }
+        // Where only endpoints are, an unmatched path's error is JSON too.
+        let ends = |r: &model::Route| {
+            r.page.is_none() && r.server.as_ref().is_some_and(|s| !s.handlers.is_empty())
+        };
+        if p.remotes.is_empty() && !m.routes.is_empty() && m.routes.iter().all(ends) {
+            self.line(1, "const API_ONLY: bool = true;");
+        } else {
+            let first = |r: &model::Route| {
+                let seg = r.pattern.trim_start_matches('/').split('/').next();
+                seg.filter(|s| !s.is_empty() && !s.starts_with(['[', '*']))
+                    .map(str::to_string)
+            };
+            let mut prefixes: Vec<String> = Vec::new();
+            for r in &m.routes {
+                if let Some(s) = first(r)
+                    && ends(r)
+                    && m.routes
+                        .iter()
+                        .all(|o| first(o) != Some(s.clone()) || ends(o))
+                    && !prefixes.contains(&s)
+                {
+                    prefixes.push(s);
+                }
+            }
+            if !prefixes.is_empty() {
+                let list: Vec<String> = prefixes.iter().map(|s| lit(s)).collect();
+                self.line(
+                    1,
+                    &format!(
+                        "const API_PREFIXES: &'static [&'static str] = &[{}];",
+                        list.join(", ")
+                    ),
+                );
+            }
+        }
         // No source file of the app (tests too) names `trailing_slash`: no
         // request looks.
         if !mentions_slash(p.root) {
@@ -9242,6 +9277,37 @@ fn report(cx: &mut Cx, err: &Error) {}",
                 .unwrap_err()
                 .contains("already has an `id`")
         );
+    }
+
+    #[test]
+    fn an_error_where_only_endpoints_are_is_json() {
+        let get = "pub fn get() -> u8 { 1 }";
+        let page = ("src/routes/+page.wisp", "x");
+        let api = |p| (p, get);
+        // Endpoints and pages: the first segments with endpoints alone.
+        let code = app(
+            "api-prefix",
+            &[
+                page,
+                api("src/routes/api/+server.rs"),
+                api("src/routes/api/[id]/+server.rs"),
+                api("src/routes/hook/+server.rs"),
+                ("src/routes/hook/docs/+page.wisp", "y"),
+            ],
+        )
+        .unwrap();
+        assert!(
+            code.contains("const API_PREFIXES: &'static [&'static str] = &[\"api\"];"),
+            "{code}"
+        );
+        assert!(!code.contains("API_ONLY"), "{code}");
+        // No page at all.
+        let code = app("api-only", &[api("src/routes/a/+server.rs")]).unwrap();
+        assert!(code.contains("const API_ONLY: bool = true;"), "{code}");
+        assert!(!code.contains("API_PREFIXES"), "{code}");
+        // Pages alone: no check.
+        let code = app("no-api", &[page]).unwrap();
+        assert!(!code.contains("API_"), "{code}");
     }
 
     #[test]

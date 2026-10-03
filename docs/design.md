@@ -1104,18 +1104,20 @@ and link, so none of it ships in production pages.
 ### Built-in UI
 
 Wisp draws a few things of its own, all from one design system: Kinetrix's
-roles and values (light and dark, following the system), with Wisp violet
-(`#7456d6` light, `#896ce0` dark) as the one accent, only on what is
-interactive. One-pixel hairlines, two shadow steps, one type scale, and one
-focus ring. The styles live in `crates/wisp/src/client/ui.css` (tokens,
-buttons) and `dialog.css` (dev only), all `--wisp-*` tokens
+roles and values (dark, as the demo site), with Wisp violet (`#896ce0`) as
+the one accent, only on what is interactive. One-pixel hairlines, two shadow steps, one type scale, and one
+focus ring. The styles live in `crates/wisp/src/client/tokens.css` (the one
+source of the tokens), `ui.css` (buttons), `error.css` and `dialog.css` (dev
+only), all `--wisp-*` tokens
 and `.wisp-*` classes, so they never touch an app's own CSS.
 
-- **The error page**, for apps without a `+error.wisp`: the status and one
-  line, centered (`404 | Not Found`). The line is the status's name, or the
-  error's own message when it says more. No links or buttons; an app that
-  wants them writes a `+error.wisp`. Its few styles come inlined, since the
-  app's own CSS may not exist yet.
+- **The error page**, for apps without a `+error.wisp`: laid out as the demo's
+  own, the status and one line, centered, on the dark tokens. The line is the
+  status's name, or the error's own message when it says more. No links or
+  buttons; an app that wants them writes a `+error.wisp`. Under `wisp dev` it
+  also has the status's name, the request, what caused a 5xx and a link home.
+  Its styles come inlined, since the app's own CSS may not exist yet. Errors
+  for endpoints and API clients are JSON instead (see docs/api.md).
 - **The build error dialog** in dev: a title and one sentence saying where to
   look (`src/routes/+page.rs, line 7. Save a fix and the page updates.`), then
   the error text in a code block with a Copy control. It lives in a shadow

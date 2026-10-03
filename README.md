@@ -65,7 +65,7 @@ The `---` block is Rust that runs for each request, `{name}` is rendered on the 
 - The compiler infers types, so apps write fewer of them.
 
 **Rendering**
-- Server-side rendering, with streamed responses and `{:#await}` blocks.
+- Server-side rendering, with streamed responses and server-streamed `{#await}` blocks.
 - Prerendered pages in a server build, `wisp build --static` and `--spa`.
 
 **Data and forms**
