@@ -920,6 +920,55 @@ the file. A release build has none (no cost), unless built with
 `wisp build --sourcemap`; `--static --sourcemap` writes the maps beside
 the modules.
 
+## Installable and offline (PWA)
+
+One file each, and nothing for an app with neither: no tag, no route.
+
+```json
+// src/manifest.json
+{ "name": "Notes", "theme_color": "#7c3aed", "offline": true }
+```
+
+- It is served at `/manifest.webmanifest`, which every page links. What it
+  leaves out is filled in: `short_name` (or `name`) from the other,
+  `start_url` `/`, `display` `standalone`, and `icons`: each
+  `static/icon*.png`, its size read from the file, and `static/icon*.svg`
+  of any size. One `static/icon.png` is enough: `wisp build` also writes it
+  at 192 and 512 px as WebP (the sizes browsers ask for to install), with
+  the pinned cwebp the images use, into `/_app/img/`. Make it 512 px or
+  more; it is never made larger. Without cwebp the build warns and lists
+  the PNG alone.
+- Made at startup instead (from the environment, say):
+  `wisp::app_manifest(r#"{"name": "Notes"}"#)?;` in `init`. The build sees
+  the call in `src/hooks.rs` and links it.
+- `"offline": true` adds Wisp's service worker. At install it keeps `/`,
+  the browser files and `static/`; a versioned file then comes from what
+  it kept; a page comes from the network and is kept, and offline it is
+  the kept page or a short offline page (503). A new build is a new
+  version: the old cache goes.
+
+Your own worker replaces Wisp's:
+
+```js
+// src/service-worker.js (or .ts)
+import { build, files, version } from 'wisp/sw'
+
+const cache = `app-${version}`
+self.addEventListener('install', (e) => {
+  e.waitUntil(caches.open(cache).then((c) => c.addAll([...build, ...files])))
+})
+```
+
+- `build` is the URLs of the browser files, as pages ask for them (CSS,
+  runtime, modules; versioned, so they never change), `files` those of
+  `static/`, and `version` a hash of both. In dev both lists are empty.
+- It is served at `/service-worker.js` (scope `/`, revalidated by its
+  ETag) and every page registers it. It runs as a classic script, so it
+  imports only `'wisp/sw'`; `env.PUBLIC_X` works. Any other import is a
+  build error.
+- The page's `content-security-policy` gets `worker-src 'self'`, and the
+  hash of the script that registers it.
+
 ## Hot reload that keeps state
 
 Save a `.wisp` file under `wisp dev` and the page changes in place, in

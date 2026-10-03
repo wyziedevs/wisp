@@ -31,6 +31,8 @@ src/components/Card.wisp    <Card title={x}>…</Card>
 src/lib/*.js (or .ts)       browser modules, `import … from '$lib/x.js'` (or `'$lib/x'`)
 src/params/word.rs          fn matches(s: &str) -> bool, for [x=word]
 src/locales/en.json         messages, fr.json etc.: {t("key")} (see Translations)
+src/manifest.json           web app manifest, linked: {"name": "Notes", "offline": true}
+src/service-worker.js       registered for you (or .ts): import { build, files, version } from 'wisp/sw'
 src/routes/…/+page.wisp     page: optional `---` Rust block, then markup
 src/routes/…/+layout.wisp   wraps pages below; must <slot /> (or {@render children()})
 src/routes/…/+error.wisp    error page; has `status`, `message`, `cx`
@@ -337,6 +339,14 @@ origin check and `before` apply. Errors reject with an `Error` of
 `#[remote(get)]`: a GET, each argument JSON in the query, ETag/304. A name
 is the app's once and not a JS global or helper (build error).
 Server values sent to JS must `#[derive(Json)]`. Full: docs/client.md.
+PWA: `src/manifest.json` (or `wisp::app_manifest(json)?` in `init`) is
+served at `/manifest.webmanifest` with `start_url`, `display`, and `icons`:
+`static/icon*.png`/`.svg` as they are, and one `static/icon.png` (512 px+)
+also at 192 and 512 px by `wisp build`'s cwebp. `"offline": true` there adds Wisp's
+service worker: shell, browser files and `static/` kept, pages from the
+network, offline the kept page or an offline page. `src/service-worker.js`
+is yours instead: a classic script, it imports only `'wisp/sw'` (empty
+lists in dev). Pages register it; the CSP gets `worker-src 'self'`.
 
 ## Endpoints (`+server.rs`)
 

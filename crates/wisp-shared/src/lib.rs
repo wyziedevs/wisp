@@ -10,6 +10,7 @@ pub mod base64;
 pub mod contexts;
 pub mod dotenv;
 pub mod json;
+pub mod manifest;
 pub mod plural;
 pub mod protocol;
 pub mod rng;

@@ -215,6 +215,24 @@ pub async fn export<A: App>(dir: &Path, spa: bool) -> io::Result<()> {
             [&html[..at], &list, &html[at..]].concat().as_bytes(),
         )?;
     }
+    // The service worker and manifest, and custom elements' modules, which
+    // no page names.
+    for path in [
+        crate::protocol::SERVICE_WORKER_PATH,
+        crate::protocol::MANIFEST_PATH,
+    ]
+    .iter()
+    .filter(|_| A::PWA.is_some())
+    {
+        let reply = handle::<A>(Request::new("GET", path)).await;
+        if reply.status == 200 {
+            find_assets(reply.text(), &mut assets); // the icons, the files kept
+            write(dir, &path[1..], reply.bytes())?;
+        }
+    }
+    for tag in A::ELEMENTS {
+        assets.insert(format!("{}{tag}.js", crate::protocol::ELEMENTS));
+    }
     // A module brings what it imports, and its source map when it has one
     // (`wisp build --sourcemap`).
     let mut done = BTreeSet::new();

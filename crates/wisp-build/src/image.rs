@@ -23,6 +23,27 @@ pub const DIR: &str = ".wisp/img";
 /// The widths written, each at most the image's own.
 const WIDTHS: [u32; 3] = [640, 1280, 1920];
 
+/// The app's icon, which `wisp build` also writes at `ICON_WIDTHS` (never
+/// wider than it) for the web app manifest's `icons` (see `pwa`).
+pub const ICON: &str = "static/icon.png";
+const ICON_WIDTHS: [u32; 2] = [192, 512];
+
+/// The icon's size, and its WebP widths with their files' names in `DIR`,
+/// when the app has an icon and a manifest to show it.
+pub fn icon(root: &Path) -> Option<(Size, Vec<(u32, String)>)> {
+    if !crate::has_manifest(root) {
+        return None;
+    }
+    let bytes = fs::read(root.join(ICON)).ok()?;
+    let size = size(&bytes).filter(|s| !s.turned)?;
+    let hash = hash(&bytes);
+    let widths = (ICON_WIDTHS.iter())
+        .filter(|&&w| w <= size.width)
+        .map(|&w| (w, webp_name(&hash, w)))
+        .collect();
+    Some((size, widths))
+}
+
 /// The attribute that keeps a tag as written.
 const RAW: &str = "data-wisp-raw";
 

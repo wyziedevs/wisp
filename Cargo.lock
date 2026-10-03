@@ -306,6 +306,7 @@ dependencies = [
 name = "wisp-test-platform"
 version = "0.1.0"
 dependencies = [
+ "tokio",
  "wisp",
  "wisp-build",
 ]

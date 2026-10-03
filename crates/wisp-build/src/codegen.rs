@@ -2645,13 +2645,62 @@ impl<'a> Project<'a> {
         Ok(())
     }
 
+    /// The service worker and manifest (`pwa`), if the app has either. A
+    /// release build's worker lists its browser files (but the custom
+    /// elements', for other sites) and `static/`'s, by the URLs pages use;
+    /// `css` is `App::CSS`.
+    fn pwa(
+        &self,
+        web: &Web,
+        assets: &Assets,
+        css: Option<&str>,
+    ) -> Result<Option<crate::pwa::Pwa>, String> {
+        let mut build = Vec::new();
+        let mut files = Vec::new();
+        if self.release {
+            build.extend(css.map(|v| format!("{APP_CSS_PATH}?v={v}")));
+            let v = crate::runtime_version();
+            build.push(format!("{WISP_JS_PATH}?v={v}"));
+            if web.clients.iter().any(Option::is_some) {
+                build.push(format!("{LIVE_JS_PATH}?v={v}"));
+            }
+            build.extend(
+                (web.clients.iter().flatten()).map(|c| format!("{}?v={}", c.path(), c.hash)),
+            );
+            for f in &web.js_files {
+                if f.path.ends_with(".map") || f.path.starts_with(ELEMENTS) {
+                    continue;
+                }
+                build.push(match f.file {
+                    Some(_) => f.path.clone(),
+                    None => format!("{}?v={}", f.path, f.hash),
+                });
+            }
+            // The images' widths are built files too; the rest is `static/`.
+            for (url, _, etag) in assets.files.iter().filter(|f| f.0 != APP_CSS_PATH) {
+                match url.starts_with(IMAGES) {
+                    true => build.push(url.clone()),
+                    false => files.push((url.clone(), etag.clone())),
+                }
+            }
+        }
+        let hooks = self.root.join("src").join("hooks.rs");
+        crate::pwa::build(&crate::pwa::Input {
+            root: self.root,
+            build,
+            files,
+            runtime_manifest: crate::read_source(&hooks).is_ok_and(|s| s.contains("app_manifest(")),
+            env: &self.env,
+        })
+    }
+
     /// Per route, its page when it is the same for every request, whole, as
     /// it is sent: the shell with the head tags `setup` in wisp's http.rs
     /// makes out of dev mode (`css` is `App::CSS`), the page's head and its
     /// body. That is a page and layouts with no Rust that reads anything (a
     /// load, statements, a `+page.js`) and markup the build can write out
-    /// (see `fold`).
-    fn baked(&self, css: Option<&str>) -> Vec<Option<String>> {
+    /// (see `fold`). `pwa`: the service worker's and manifest's tags.
+    fn baked(&self, css: Option<&str>, pwa: &str) -> Vec<Option<String>> {
         let comp = |name: &str| {
             let k = self.comps.iter().position(|c| c.name == name)?;
             let c = &self.comps[k];
@@ -2670,7 +2719,7 @@ impl<'a> Project<'a> {
         }
         let _ = write!(
             tags,
-            "<script defer src=\"{WISP_JS_PATH}?v={}\"></script>",
+            "<script defer src=\"{WISP_JS_PATH}?v={}\"></script>{pwa}",
             crate::runtime_version()
         );
         let [s0, s1, s2] = &self.shell;
@@ -3020,8 +3069,10 @@ impl Gen {
             Some(_) => Some("dev"),
             None => None,
         };
+        let pwa = p.pwa(web, assets, css)?;
+        let pwa = pwa.as_ref();
         // Pages the same for every request, with their response heads.
-        let baked = p.baked(css);
+        let baked = p.baked(css, pwa.map_or("", |w| w.head.as_str()));
         for (i, doc) in baked.iter().enumerate() {
             let Some(doc) = doc else { continue };
             let etag = format!("\"{:016x}\"", fnv1a(doc.as_bytes()));
@@ -3060,10 +3111,33 @@ impl Gen {
         );
         let css = css.map_or("None".into(), |v| format!("Some({})", lit(v)));
         self.line(1, &format!("const CSS: Option<&'static str> = {css};"));
-        if web.js_files.iter().any(|f| f.path.starts_with(ELEMENTS)) {
-            self.line(1, "const ELEMENTS: bool = true;");
+        let tags: Vec<String> = (p.templates.iter())
+            .filter_map(|t| Some(lit(&t.t.element.as_ref()?.0)))
+            .collect();
+        if !tags.is_empty() {
+            self.line(
+                1,
+                &format!(
+                    "const ELEMENTS: &'static [&'static str] = &[{}];",
+                    tags.join(", ")
+                ),
+            );
+        }
+        if let Some(w) = pwa {
+            let etag = |s: &str| lit(&format!("\"{:016x}\"", fnv1a(s.as_bytes())));
+            let manifest = w.manifest.as_deref();
+            self.line(1, &format!(
+                "const PWA: Option<::wisp::rt::Pwa> = Some(::wisp::rt::Pwa {{ worker: {}, worker_etag: {}, manifest: {}, manifest_etag: {}, icons: {}, head: {} }});",
+                lit(&w.worker),
+                etag(&w.worker),
+                manifest.map_or("None".into(), |m| format!("Some({})", lit(m))),
+                etag(manifest.unwrap_or("")),
+                lit(&w.icons),
+                lit(&w.head),
+            ));
         }
         let mut hashes = shell::hashes(&p.shell);
+        hashes.extend(pwa.and_then(|w| w.hash.clone()));
         hashes.extend(p.templates.iter().flat_map(|t| t.t.hashes.iter().cloned()));
         hashes.sort_unstable();
         hashes.dedup();
@@ -4687,6 +4761,14 @@ fn images(root: &Path, files: &mut Vec<(String, PathBuf, String)>) {
                 let etag = n.trim_end_matches(".webp").to_string();
                 add(format!("{IMAGES}{n}"), dir.join(n), etag);
             }
+        }
+    }
+    // The icon's widths, for the manifest.
+    for (_, n) in image::icon(root).map(|i| i.1).unwrap_or_default() {
+        let url = format!("{IMAGES}{n}");
+        if dir.join(&n).is_file() && !files.iter().any(|f| f.0 == url) {
+            let etag = n.trim_end_matches(".webp").to_string();
+            files.push((url, dir.join(n), etag));
         }
     }
 }
