@@ -12,6 +12,12 @@ pub fn is_upload(ty: &str) -> bool {
     matches!(upload_kind(ty), "Image" | "Upload")
 }
 
+/// An `Upload` (or `Option<Upload>`): kept as a blob once the action's
+/// inputs all pass.
+pub fn is_blob(ty: &str) -> bool {
+    upload_kind(ty) == "Upload"
+}
+
 fn upload_kind(ty: &str) -> &str {
     ty::last_segment(ty::option_inner(ty).unwrap_or(ty))
 }
@@ -47,7 +53,7 @@ pub fn native(ty: &str, rules: &[Rule], whole: bool) -> Native {
     }
     n.email = last == "Email";
     n.upload = is_upload(t);
-    n.blob = upload_kind(t) == "Upload";
+    n.blob = is_blob(t);
     for r in rules {
         r.native(&mut n, text, number);
     }

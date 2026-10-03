@@ -94,7 +94,7 @@ impl FromInput<Upload> for Option<Image> {
 impl FromInput<Upload> for crate::Upload {
     fn get(cx: &Cx, name: &str) -> Result<crate::Upload> {
         match cx.form().file(name) {
-            Some(file) => crate::Upload::field(&file, "", name),
+            Some(file) => crate::Upload::checked(&file, "", name),
             None => Err(crate::Error::invalid(name, "choose a file")),
         }
     }
@@ -104,9 +104,31 @@ impl FromInput<Upload> for crate::Upload {
 impl FromInput<Upload> for Option<crate::Upload> {
     fn get(cx: &Cx, name: &str) -> Result<Option<crate::Upload>> {
         match cx.form().file(name) {
-            Some(file) => crate::Upload::field(&file, "", name).map(Some),
+            Some(file) => crate::Upload::checked(&file, "", name).map(Some),
             None => Ok(None),
         }
+    }
+}
+
+/// An action's `Upload` (or `Option<Upload>`) parameter, kept once all its
+/// inputs passed: before, a form refused for another field would leave the
+/// file behind.
+pub trait Keep {
+    fn keep(&self, cx: &Cx, name: &str) -> Result<()>;
+}
+
+impl Keep for crate::Upload {
+    fn keep(&self, cx: &Cx, name: &str) -> Result<()> {
+        match cx.form().file(name) {
+            Some(file) => self.store(&file),
+            None => Ok(()),
+        }
+    }
+}
+
+impl Keep for Option<crate::Upload> {
+    fn keep(&self, cx: &Cx, name: &str) -> Result<()> {
+        self.as_ref().map_or(Ok(()), |u| Keep::keep(u, cx, name))
     }
 }
 
