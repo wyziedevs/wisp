@@ -871,8 +871,29 @@ fn from_json_with(item: TokenStream, stamped: &[&str]) -> Result<TokenStream, Er
             );
         }
     }
+    // A field that holds a `Password` is sealed as the row enters a table.
+    let mut seals = String::new();
+    if let Shape::Named(_) = &shape {
+        let all = named_fields(&item)?;
+        let on = |f: &Field| format!("<{} as ::wisp::FromJson>::SEALS", f.ty);
+        let any: String = all.iter().map(|f| format!("|| {}", on(f))).collect();
+        let each: String = all
+            .iter()
+            .map(|f| {
+                format!(
+                    "if {} {{ ::wisp::FromJson::seal(&mut self.{}, __hash); }}",
+                    on(f),
+                    f.name
+                )
+            })
+            .collect();
+        seals = format!(
+            "const SEALS: bool = false {any}; fn seal(&mut self, __hash: bool) {{ {each} }}"
+        );
+    }
     let template = parse(&format!(
         "impl ::wisp::FromJson for {name} {{
+            {seals}
             fn from_json(__v: &::wisp::Value, __p: &mut ::wisp::json::Problems) -> ::std::option::Option<Self> {{
                 __wisp_write
             }}

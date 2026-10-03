@@ -722,3 +722,76 @@ fn unique_and_password_fields() {
     );
     assert!(kept().contains("$pbkdf2-sha256$") && !kept().contains(r#"":"pw""#));
 }
+
+#[wisp::model]
+struct Login {
+    #[unique]
+    email: wisp::Email,
+    password: wisp::Password,
+    #[json(default)]
+    note: String,
+}
+
+static LOGINS: wisp::Table<Login> = wisp::Table::saved("logins");
+
+fn login_row(email: &str, password: &str) -> Login {
+    from_json::<Login>(format!(r#"{{"email":"{email}","password":"{password}"}}"#).as_bytes())
+        .unwrap()
+}
+
+/// Text typed that looks like a hash is a password: hashed, not kept as
+/// the hash it resembles.
+#[test]
+fn a_typed_hash_is_a_password() {
+    wisp::store(&KEPT);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    let look = rt.block_on(wisp::password::hash("secret")).unwrap();
+    let typed = login_row("look@x.io", &look);
+    assert!(!typed.password.hashed());
+    let id = LOGINS.add(typed);
+    let kept = LOGINS.get(id).unwrap().value.password;
+    assert!(kept.hashed() && kept.as_str() != look);
+    let check = |p: &wisp::Password, s: &str| rt.block_on(wisp::Password::check(Some(p), s));
+    assert!(check(&kept, &look).unwrap());
+    assert!(!check(&kept, "secret").unwrap());
+}
+
+/// A plain `Password` added to a table is hashed once as it enters; later
+/// writes and the admin's views do not hash it again.
+#[test]
+fn a_direct_add_is_hashed_once() {
+    wisp::store(&KEPT);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    let id = LOGINS.add(login_row("once@x.io", "hunter22"));
+    let first = LOGINS.get(id).unwrap().value.password;
+    assert!(first.hashed() && first.as_str().starts_with("$pbkdf2-sha256$"));
+    let t = std::time::Instant::now();
+    LOGINS.update(id, |l| l.note = "hi".into());
+    LOGINS.update(id, |l| l.note = "again".into());
+    let mut same = LOGINS.get(id).unwrap().value;
+    assert!(
+        t.elapsed() < std::time::Duration::from_millis(100),
+        "rehashed"
+    );
+    assert!(same.password == first);
+    // A whole row put back (admin, or `set`) keeps its hash.
+    same.note = "set".into();
+    LOGINS.set(id, same);
+    assert!(LOGINS.get(id).unwrap().value.password == first);
+    // A new password set in `update` is hashed, once.
+    LOGINS.update(id, |l| {
+        l.password = wisp::Password::Plain("new pass 1".into())
+    });
+    let second = LOGINS.get(id).unwrap().value.password;
+    assert!(second.hashed() && second != first);
+    assert!(
+        rt.block_on(wisp::Password::check(Some(&second), "new pass 1"))
+            .unwrap()
+    );
+}

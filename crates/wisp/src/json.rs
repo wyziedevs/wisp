@@ -747,6 +747,17 @@ pub trait FromJson: Sized {
     #[doc(hidden)]
     #[allow(clippy::type_complexity)]
     const UNIQUE: Option<(&'static str, fn(&Self) -> &str)> = None;
+
+    /// Whether [`FromJson::seal`] does anything: a `Password` is in it.
+    #[doc(hidden)]
+    const SEALS: bool = false;
+
+    /// Run by a table on a row as it enters (`hash`), or as it is read from
+    /// the store: a `Password` read as text becomes its hash.
+    #[doc(hidden)]
+    fn seal(&mut self, hash: bool) {
+        let _ = hash;
+    }
 }
 
 /// Reads a JSON body into a `T`. Text that is not JSON is a 400 that says
@@ -906,6 +917,14 @@ impl<T: FromJson> FromJson for Option<T> {
         Some(None)
     }
 
+    const SEALS: bool = T::SEALS;
+
+    fn seal(&mut self, hash: bool) {
+        if let Some(v) = self {
+            v.seal(hash);
+        }
+    }
+
     fn read(d: &mut Direct) -> Option<Option<T>> {
         match d.null() {
             true => Some(None),
@@ -917,6 +936,12 @@ impl<T: FromJson> FromJson for Option<T> {
 impl<T: FromJson> FromJson for Box<T> {
     fn from_json(v: &Value, p: &mut Problems) -> Option<Box<T>> {
         T::from_json(v, p).map(Box::new)
+    }
+
+    const SEALS: bool = T::SEALS;
+
+    fn seal(&mut self, hash: bool) {
+        (**self).seal(hash);
     }
 
     fn read(d: &mut Direct) -> Option<Box<T>> {
@@ -943,6 +968,12 @@ impl<T: FromJson> FromJson for Vec<T> {
             }
         }
         ok.then_some(out)
+    }
+
+    const SEALS: bool = T::SEALS;
+
+    fn seal(&mut self, hash: bool) {
+        self.iter_mut().for_each(|v| v.seal(hash));
     }
 
     /// Left out is empty, as a form's repeated field sent no times is.
