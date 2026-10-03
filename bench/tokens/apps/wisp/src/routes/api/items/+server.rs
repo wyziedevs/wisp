@@ -1,4 +1,4 @@
 // @feature api
-async fn get() -> Vec<db::Item> {
-    db::items().await
+async fn get() -> Vec<Item> {
+    items().await
 }

@@ -1,6 +1,6 @@
 ---
 // @feature search
-let items = db::items().await;
+let items = items().await;
 ---
 <title>Search</title>
 <input bind:value="q" placeholder="Search">

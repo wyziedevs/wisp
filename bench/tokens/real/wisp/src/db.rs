@@ -1,17 +1,17 @@
 // @feature data
-#[derive(Json, FromJson, Clone)]
+#[model]
 pub struct User {
-    pub email: Email,
-    pub hash: String,
-    pub avatar: Option<Image>,
+    email: Email,
+    hash: String,
+    avatar: Option<Image>,
 }
 
-#[derive(Json, FromJson, Clone)]
+#[model]
 pub struct Post {
     #[validate(len = 1..=100)]
-    pub title: String,
-    pub body: String,
+    title: String,
+    body: String,
 }
 
-pub static USERS: Table<User> = Table::saved("users");
-pub static POSTS: Table<Post> = Table::saved("posts");
+pub static USERS: Table<User> = Table::saved();
+pub static POSTS: Table<Post> = Table::saved();
