@@ -835,3 +835,23 @@ fn server_components_ship_no_js() {
     // Each Ping waits for itself, inside its Panel island.
     assert_eq!(json.matches(",{},\"v\"]").count(), 3, "{json}");
 }
+
+/// `const SSR: bool = false;`: the server sends the page's head, its
+/// markup as a template it does not paint, and its data; the browser
+/// draws it.
+#[test]
+fn a_page_without_server_rendering_sends_its_data() {
+    let mut app = client::<Site>();
+    let page = app.get("/drawn");
+    let text = page.text();
+    assert_eq!(page.status, 200, "{text}");
+    assert!(text.contains("<title>Drawn Tea</title>"), "{text}");
+    assert!(text.contains("<template data-w=\""), "{text}");
+    // Nothing painted: no copy after the template.
+    assert!(!text.contains("<!--[-->"), "{text}");
+    let data = &text[text.find("id=\"wisp-live\"").expect("a live page")..];
+    assert!(
+        data.contains("\"Tea\"") && data.contains("[1,2,3]"),
+        "{data}"
+    );
+}

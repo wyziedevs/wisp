@@ -12,7 +12,7 @@ fn writes_pages_and_assets() {
         .enable_all()
         .build()
         .unwrap();
-    runtime.block_on(wisp::export::<Site>(&dir)).unwrap();
+    runtime.block_on(wisp::export::<Site>(&dir, false)).unwrap();
 
     let read =
         |p: &str| std::fs::read_to_string(dir.join(p)).unwrap_or_else(|e| panic!("{p}: {e}"));

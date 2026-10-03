@@ -210,7 +210,8 @@ pub fn run<A: App>() {
     }
     // `wisp build --static` runs the app this way, to write its pages out.
     if let Some(dir) = setting::<String>("WISP_EXPORT", "a folder") {
-        return export::run::<A>(&dir).unwrap_or_else(|e| fail(&e.to_string()));
+        let spa = std::env::var_os("WISP_SPA").is_some_and(|v| v == "1");
+        return export::run::<A>(&dir, spa).unwrap_or_else(|e| fail(&e.to_string()));
     }
     // On AWS Lambda (`wisp build --target lambda`), its runtime API hands
     // out the requests.

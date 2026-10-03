@@ -75,6 +75,7 @@ impl App for Lab {
             server: false,
             entries,
             indexed: true,
+            ssr: true,
         };
         vec![
             page("/hello", None),
@@ -93,6 +94,10 @@ impl App for Lab {
             ExportRoute {
                 actions: true,
                 ..page("/status", None)
+            },
+            ExportRoute {
+                ssr: false,
+                ..page("/drawn/[id]", None)
             },
             ExportRoute {
                 server: true,
@@ -395,6 +400,10 @@ async fn lab(cx: &mut Cx, out: &mut Out) -> Result<()> {
         #[cfg(feature = "tower")]
         _ if path.starts_with("/proxy/") => {
             send(out, wisp::tower::call(&mut behind::Inner, cx).await?)
+        }
+        _ if path.starts_with("/drawn/") => {
+            out.body.push_str(&format!("<p>drawn {}</p>", &path[7..]));
+            Ok(())
         }
         _ if path.starts_with("/item/") => {
             let echo = format!("item {} {}", cx.param("id"), cx.body().len());

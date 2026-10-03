@@ -82,6 +82,8 @@ pub struct ConstItem {
     pub line: usize,
     /// A `static`, not a `const`: one value for the whole program.
     pub is_static: bool,
+    /// Its value as written, after the `=`.
+    pub value: String,
 }
 
 /// What a function hands back, as far as the generated call cares.
@@ -122,6 +124,12 @@ impl Items {
 
     pub fn constant(&self, name: &str) -> Option<&ConstItem> {
         self.consts.iter().find(|c| c.name == name)
+    }
+
+    /// A page the browser draws: `const SSR: bool = false;`. (The build
+    /// checks such a flag is a `bool` literal; see `codegen::flag`.)
+    pub fn drawn(&self) -> bool {
+        self.constant("SSR").is_some_and(|c| c.value == "false")
     }
 
     /// The tables the file keeps, which load when the app starts: each
@@ -386,11 +394,17 @@ pub fn scan(src: &str) -> Result<Items, String> {
                                     .to_string(),
                                 None => String::new(),
                             };
+                            let rest = &src[after..];
+                            let value = (rest.find(['=', ';']))
+                                .filter(|&e| rest.as_bytes()[e] == b'=')
+                                .map(|e| &rest[e + 1..])
+                                .map_or("", |v| v[..v.find(';').unwrap_or(v.len())].trim());
                             items.consts.push(ConstItem {
                                 name: name.to_string(),
                                 ty,
                                 line: line(at),
                                 is_static: word == "static",
+                                value: value.to_string(),
                             });
                         }
                     }

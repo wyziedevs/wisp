@@ -1310,21 +1310,24 @@ impl<'a> Project<'a> {
     fn parse(&self, p: &Path) -> Result<(Template, Option<String>), String> {
         let (front, markup) =
             crate::split_front(&self.read(p)?).map_err(|e| format!("{}:{e}", self.rel(p)))?;
-        self.markup(p, &markup, front, &[])
+        self.markup(p, &markup, front, &[], false)
     }
 
     /// The markup of `p`, its action forms' `fields` given the browser's
-    /// checks: everything but a component.
+    /// checks: everything but a component. `drawn`: a page the browser
+    /// draws.
     fn markup(
         &self,
         p: &Path,
         markup: &str,
         front: Option<String>,
         fields: &[rules::Field],
+        drawn: bool,
     ) -> Result<(Template, Option<String>), String> {
         let at = |e: String| format!("{}:{e}", self.rel(p));
         let markup = image::rewrite(markup, self.root, self.release).map_err(at)?;
-        let (t, rust) = crate::parse_markup(&markup, front, fields, &self.rel(p)).map_err(at)?;
+        let (t, rust) =
+            crate::parse_markup(&markup, front, fields, &self.rel(p), drawn).map_err(at)?;
         if let Some((_, line)) = t.props {
             return Err(at(format!(
                 "{line}: only components, in src/components, take props"
@@ -1462,7 +1465,7 @@ impl<'a> Project<'a> {
             let at = |e: String| format!("{rel}:{e}");
             let (rust, markup) = crate::split_front(&self.read(&file)?).map_err(at)?;
             let markup = image::rewrite(&markup, self.root, self.release).map_err(at)?;
-            let (mut t, rust) = crate::parse_markup(&markup, rust, &[], &rel).map_err(at)?;
+            let (mut t, rust) = crate::parse_markup(&markup, rust, &[], &rel, false).map_err(at)?;
             if rust.is_some() {
                 return Err(format!(
                     "{rel}: a component takes what it shows as {{@props …}}; a `---` block of Rust is for pages and layouts"
@@ -1557,7 +1560,7 @@ impl<'a> Project<'a> {
                 note: String::new(),
             };
             for s in list {
-                let (mut t, _) = crate::parse_markup(&s.markup, None, &[], &rel)
+                let (mut t, _) = crate::parse_markup(&s.markup, None, &[], &rel, false)
                     .map_err(|e| format!("{rel}:{e}"))?;
                 let values = stories::wire(&mut t.nodes, &name, &decls, fill);
                 let module = format!("tpl_story_{}", self.templates.len());
@@ -1618,6 +1621,12 @@ impl<'a> Project<'a> {
             {
                 return Err(format!(
                     "{where_}:{}: a layout's `{}` does nothing; set it in the page or +server.rs whose responses it keeps",
+                    c.line, c.name
+                ));
+            }
+            if let Some(c) = lg.items.constant("SSR") {
+                return Err(format!(
+                    "{where_}:{}: a layout's `{}` does nothing; set it in each page it is for",
                     c.line, c.name
                 ));
             }
@@ -1698,6 +1707,34 @@ impl<'a> Project<'a> {
         set_once(&mut route.body_limit, module, "BODY_LIMIT", page).map_err(|e| at(&e))?;
         shims.push("pub const BODY_LIMIT: usize = super::BODY_LIMIT;".into());
         Ok(())
+    }
+
+    /// A page's `const NAME: bool = true;` (or `false`), checked: a `bool`
+    /// literal, which the build reads. The shim keeps it used.
+    fn flag(
+        &self,
+        items: &rust_scan::Items,
+        name: &str,
+        file: &Path,
+        shims: &mut Vec<String>,
+    ) -> Result<Option<bool>, String> {
+        let Some(c) = items.constant(name) else {
+            return Ok(None);
+        };
+        let value = match c.value.as_str() {
+            "true" => Some(true),
+            "false" => Some(false),
+            _ => None,
+        };
+        let (Some(value), "bool", false) = (value, c.ty.as_str(), c.is_static) else {
+            return Err(format!(
+                "{}:{}: the build reads `{name}`: write `const {name}: bool = true;` or `false`, as a literal",
+                self.rel(file),
+                c.line
+            ));
+        };
+        shims.push(format!("const _: bool = super::{name};"));
+        Ok(Some(value))
     }
 
     /// A route's `CACHE` (or `CACHE_PUBLIC`), checked: a `u32`, one of the
@@ -1787,7 +1824,10 @@ impl<'a> Project<'a> {
             crate::split_front(&src).map_err(|e| format!("{}:{e}", self.rel(&file)))?;
         let mut lg = self.logic(page_rs.then(|| dir.join("+page.rs")), &file, front.clone())?;
         let fields = rules::fields(&lg.items, &self.tree.routes[i].params(), &self.shared);
-        let (mut t, _) = self.markup(&file, &markup, front, &fields)?;
+        let rs = lg.file.clone().unwrap_or_else(|| dir.join("+page.rs"));
+        let mut shims = Vec::new();
+        let drawn = self.flag(&lg.items, "SSR", &rs, &mut shims)? == Some(false);
+        let (mut t, _) = self.markup(&file, &markup, front, &fields, drawn)?;
         check_no_children(&t, &self.rel(&file))?;
         // `.await` in the markup: statements, after the block's own.
         let mut lets = Vec::new();
@@ -1800,8 +1840,6 @@ impl<'a> Project<'a> {
             ));
         }
         lg.stmts = with_lets(lg.stmts, &lets);
-        let rs = lg.file.clone().unwrap_or_else(|| dir.join("+page.rs"));
-        let mut shims = Vec::new();
         // The page comes first: nothing set these before it.
         self.body_limit(route, &lg.items, &rs, format!("page_{i}"), "", &mut shims)?;
         self.cache(route, &lg.items, &rs, format!("page_{i}"), "", &mut shims)?;
@@ -1933,6 +1971,7 @@ impl<'a> Project<'a> {
             tpl: self.templates.len() - 1,
             fns,
             waits,
+            drawn,
         });
         Ok(())
     }
@@ -2966,8 +3005,9 @@ impl Gen {
                 Some(pg) => format!("Some({}::__call::entries)", pg.module),
                 None => "None".into(),
             };
+            let ssr = !page.is_some_and(|pg| pg.drawn);
             self.line(3, &format!(
-                "::wisp::ExportRoute {{ pattern: {}, page: {}, actions: {actions}, server: {}, entries: {entries}, indexed: {} }},",
+                "::wisp::ExportRoute {{ pattern: {}, page: {}, actions: {actions}, server: {}, entries: {entries}, indexed: {}, ssr: {ssr} }},",
                 lit(&r.pattern),
                 page.is_some(),
                 r.server.is_some(),
@@ -5433,6 +5473,10 @@ impl Gen {
             self.nodes(body, ind, cx);
             cx.inert = inert;
             self.line(ind, &push("</template>"));
+            // A page the browser draws: nothing painted, whatever is known.
+            if tpl.drawn == Some(*group) {
+                continue;
+            }
             let g = &tpl.groups[*group];
             let d = &g.directives[0];
             let js = d.value.as_ref().map_or("", |v| v.src.as_str());
@@ -8396,6 +8440,57 @@ mod tests {
             assert!(code.contains(&want), "{want}\n{code}");
         }
         assert_eq!(code.matches("static BAKED_").count(), 1, "{code}");
+    }
+
+    #[test]
+    fn pages_without_server_rendering() {
+        // The markup is one client block the server does not paint; the
+        // head is the server's.
+        let code = app(
+            "drawn",
+            &[(
+                "src/routes/+page.wisp",
+                "---\nconst SSR: bool = false;\nlet n = 1;\n---\n<title>{n}</title><p>{:n}</p>",
+            )],
+        )
+        .unwrap();
+        assert!(code.contains("const _: bool = super::SSR;"), "{code}");
+        assert!(
+            !code.contains("COPY") && !code.contains("<!--[-->"),
+            "{code}"
+        );
+        for (name, page, want) in [
+            (
+                "drawn-rust",
+                "---\nconst SSR: bool = false;\nlet n = 1;\n---\n<p>\n{n}</p>",
+                "+page.wisp:6:1: this page has `const SSR: bool = false;`",
+            ),
+            (
+                "drawn-flag",
+                "---\nconst SSR: bool = 1 > 2;\n---\nx",
+                "the build reads `SSR`",
+            ),
+            (
+                "drawn-type",
+                "---\nstatic SSR: bool = false;\n---\nx",
+                "the build reads `SSR`",
+            ),
+        ] {
+            let err = app(name, &[("src/routes/+page.wisp", page)]).unwrap_err();
+            assert!(err.contains(want), "{name}: {err}");
+        }
+        let err = app(
+            "drawn-layout",
+            &[
+                ("src/routes/+page.wisp", "x"),
+                (
+                    "src/routes/+layout.wisp",
+                    "---\nconst SSR: bool = false;\n---\n<slot />",
+                ),
+            ],
+        )
+        .unwrap_err();
+        assert!(err.contains("a layout's `SSR` does nothing"), "{err}");
     }
 
     #[test]

@@ -76,6 +76,8 @@ pub struct Page {
     pub fns: Vec<FnItem>,
     /// Its statements may wait, or its Rust has an `async fn`.
     pub waits: bool,
+    /// The browser draws it: `const SSR: bool = false;`.
+    pub drawn: bool,
 }
 
 impl Page {

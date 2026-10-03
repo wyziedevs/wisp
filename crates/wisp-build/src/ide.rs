@@ -36,7 +36,11 @@ pub fn check_file(rel: &str, src: &str, comps: Option<&[Component]>) -> Option<D
         Err(e) => return fail(e),
     };
     let block = rust.clone();
-    let (t, _) = match crate::parse_markup(&markup, rust, &[], rel) {
+    let drawn = rel.ends_with("+page.wisp")
+        && (rust.as_deref())
+            .and_then(|r| crate::rust_scan::scan(&crate::rust_scan::split_items(r).0).ok())
+            .is_some_and(|i| i.drawn());
+    let (t, _) = match crate::parse_markup(&markup, rust, &[], rel, drawn) {
         Ok(x) => x,
         Err(e) => return fail(e),
     };

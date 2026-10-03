@@ -90,6 +90,7 @@ mod tests {
             server: false,
             entries: None,
             indexed,
+            ssr: true,
         }
     }
 
