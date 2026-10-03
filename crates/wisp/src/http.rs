@@ -1085,7 +1085,7 @@ fn answer_whole<A: App>(mut b: Box<Buffers>) -> Result<Box<Buffers>, Handed> {
             out,
             reply,
         } = &mut *b;
-        serialize::<A>(
+        serialize::<A, false>(
             wbuf,
             reply,
             out,
@@ -1276,7 +1276,7 @@ async fn requests<A: App>(mut stream: Conn, peer: SocketAddr, held: &mut Option<
                     }
                     // Only as a 101: a hook may have answered otherwise.
                     let upgrade = reply.take_websocket().filter(|_| reply.status == 101);
-                    let streamed = serialize::<A>(
+                    let streamed = serialize::<A, true>(
                         wbuf,
                         reply,
                         out,
@@ -1361,7 +1361,7 @@ async fn requests<A: App>(mut stream: Conn, peer: SocketAddr, held: &mut Option<
                 }
                 Parsed::Invalid(status) => {
                     reply.set_plain(status, reason(status));
-                    serialize::<A>(wbuf, reply, out, true, false, false);
+                    serialize::<A, true>(wbuf, reply, out, true, false, false);
                     (close, refused) = (true, true);
                     break;
                 }
@@ -2624,36 +2624,50 @@ fn before_routes<A: App>(cx: &Cx, route: Option<usize>, reply: &mut Reply) -> bo
     if raw.starts_with(b"/_") && internal::<A>(cx, cx.path(), reply) {
         return true;
     }
-    if raw.len() > 1 && raw.ends_with(b"/") {
-        if route.is_none() || slash() == TrailingSlash::Never {
-            slash_redirect(cx, reply, false);
+    // No route: the fallbacks, out of the way of the ones that have one.
+    let Some(r) = route else {
+        return unrouted::<A>(cx, raw, reply);
+    };
+    if raw.len() > 1 {
+        if raw.ends_with(b"/") {
+            if slash() == TrailingSlash::Never {
+                slash_redirect(cx, reply, false);
+                return true;
+            }
+        } else if A::TRAILING_SLASH
+            && A::ROUTES[r].page
+            && matches!(cx.method, Method::Get | Method::Head)
+            && slash() == TrailingSlash::Always
+            && !cx
+                .path()
+                .rsplit('/')
+                .next()
+                .is_some_and(|last| last.contains('.'))
+        {
+            slash_redirect(cx, reply, true);
             return true;
         }
-    } else if raw.len() > 1
-        && slash() == TrailingSlash::Always
-        && matches!(cx.method, Method::Get | Method::Head)
-        && route.is_some_and(|r| A::ROUTES[r].page)
-        && !cx
-            .path()
-            .rsplit('/')
-            .next()
-            .is_some_and(|last| last.contains('.'))
-    {
-        slash_redirect(cx, reply, true);
+    }
+    matches!(cx.method, Method::Get | Method::Head) && file::<A>(cx, raw, route, reply)
+}
+
+/// [`before_routes`] of a path no route matches: a trailing slash is
+/// redirected from, then the app's files, and `/sitemap.xml` and
+/// `/robots.txt` when no file is there. Cold: only a miss gets here.
+#[cold]
+#[inline(never)]
+fn unrouted<A: App>(cx: &Cx, raw: &[u8], reply: &mut Reply) -> bool {
+    if raw.len() > 1 && raw.ends_with(b"/") {
+        slash_redirect(cx, reply, false);
         return true;
     }
     if !matches!(cx.method, Method::Get | Method::Head) {
         return false;
     }
-    if file::<A>(cx, raw, route, reply) {
+    if file::<A>(cx, raw, None, reply) {
         return true;
     }
-    // `/sitemap.xml` and `/robots.txt`, when no route or file is there.
-    let Some((body, mime)) = route
-        .is_none()
-        .then(|| crate::seo::answer::<A>(cx))
-        .flatten()
-    else {
+    let Some((body, mime)) = crate::seo::answer::<A>(cx) else {
         return false;
     };
     reply.set(200, mime, Body::Bytes(body));
@@ -2969,7 +2983,7 @@ struct Streamed {
 
 /// Writes `reply` as HTTP/1.1 and leaves it empty. A streamed body is
 /// returned for the connection to send as it comes.
-fn serialize<A: App>(
+fn serialize<A: App, const OBS: bool>(
     w: &mut Vec<u8>,
     reply: &mut Reply,
     out: &mut Out,
@@ -2988,7 +3002,7 @@ fn serialize<A: App>(
         Some(parts) => parts.iter().map(|p| p.len()).sum(),
         None => reply.bytes().len(),
     };
-    if out.obs.is_some() {
+    if OBS && out.obs.is_some() {
         let sent = if head_only || bodiless || stream {
             0
         } else {
@@ -4277,7 +4291,14 @@ mod tests {
                     check_parsed(&cx, 0, len);
                     rt.block_on(decide::<Fuzz>(&mut cx, &mut out, &mut reply, None));
                     w.clear();
-                    serialize::<Fuzz>(&mut w, &mut reply, &mut out, cx.wire.http11, true, false);
+                    serialize::<Fuzz, true>(
+                        &mut w,
+                        &mut reply,
+                        &mut out,
+                        cx.wire.http11,
+                        true,
+                        false,
+                    );
                     assert!(w.starts_with(b"HTTP/1.1 "));
                 }
                 Parsed::Partial { need, .. } => assert!(need <= MAX_HEAD + MAX_BODY),
@@ -4434,7 +4455,7 @@ mod tests {
         for (n, v) in [("content-length", "99"), ("Transfer-Encoding", "chunked")] {
             reply.headers.push((Cow::Borrowed(n), Cow::Borrowed(v)));
         }
-        serialize::<Fuzz>(&mut w, &mut reply, &mut out, false, true, false);
+        serialize::<Fuzz, true>(&mut w, &mut reply, &mut out, false, true, false);
         let text = String::from_utf8(w).unwrap().to_ascii_lowercase();
         assert!(text.contains("content-length: 2\r\n") && text.contains("connection: keep-alive"));
         assert!(!text.contains("99") && !text.contains("chunked"), "{text}");
@@ -4619,7 +4640,7 @@ mod tests {
         ready(decide::<Bench>(&mut b.cx, &mut b.out, &mut b.reply, None));
         b.wbuf.clear();
         let head = b.cx.method == Method::Head;
-        serialize::<Bench>(
+        serialize::<Bench, true>(
             &mut b.wbuf,
             &mut b.reply,
             &mut b.out,
