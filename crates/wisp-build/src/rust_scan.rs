@@ -741,6 +741,29 @@ pub fn split_items(code: &str) -> (String, String) {
     (keep(true), keep(false))
 }
 
+/// A `---` block's `fn default`, when it is the only one and the block has
+/// no `#[action]`, is the page's default action: the block with `#[action]`
+/// put before it, on its line, or `None` when that is not so. One that
+/// returns data is a function of the page's own, not an action.
+pub fn mark_default(code: &str) -> Option<String> {
+    let items = scan(&split_items(code).0).ok()?;
+    if items.fns.iter().any(|f| f.action) {
+        return None;
+    }
+    let mut lone = items.fns.iter().filter(|f| f.name == "default");
+    let f = lone.next().filter(|_| lone.next().is_none())?;
+    if !(f.returns.is_empty() || f.fallible || f.returns_kind() != Returns::Other) {
+        return None;
+    }
+    let line: usize = code
+        .split_inclusive('\n')
+        .take(f.line - 1)
+        .map(str::len)
+        .sum();
+    let at = code.len() - code[line..].trim_start_matches([' ', '\t']).len();
+    Some(format!("{}#[action] {}", &code[..at], &code[at..]))
+}
+
 /// The names the top-level `let`s of `stmts` bind: `let (a, mut b) = …`
 /// binds `a` and `b`.
 pub fn let_names(stmts: &str) -> Vec<String> {
@@ -1663,6 +1686,22 @@ fn a() {}"
         assert_eq!(bind_user(src, Some("db::USERS")), Ok(Some(want.into())));
         assert_eq!(bind_user("cx.user(&T)", None), Ok(None));
         assert!(bind_user(src, None).unwrap_err().contains("wisp::users"));
+    }
+
+    #[test]
+    fn a_lone_default_is_an_action() {
+        let marked = |c| mark_default(c);
+        assert_eq!(
+            marked("let a = 1;\n    pub async fn default(x: u8) {}\n").as_deref(),
+            Some("let a = 1;\n    #[action] pub async fn default(x: u8) {}\n")
+        );
+        assert!(marked("fn default() -> Result {}").is_some());
+        // Not when another says which are the actions, there are two, or it gives data.
+        assert_eq!(marked("#[action] fn a() {}\nfn default() {}"), None);
+        assert_eq!(marked("fn default() {}\nasync fn default() {}"), None);
+        assert_eq!(marked("fn default() -> u32 { 1 }"), None);
+        assert_eq!(marked("fn other() {}"), None);
+        assert_eq!(marked("#[action]\nfn default() {}"), None);
     }
 
     #[test]
