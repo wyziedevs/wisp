@@ -217,7 +217,9 @@ fn shim(f: &FnItem, kind: Shim) -> Result<String, String> {
         ));
     }
     let mut lets = String::new();
-    if let ([(_, v, get, owned)], true) = (read.as_slice(), f.checks.is_empty()) {
+    let nothing_to_check =
+        f.checks.is_empty() && !f.params.iter().any(|(p, _)| unsized_upload(f, p));
+    if let ([(_, v, get, owned)], true) = (read.as_slice(), nothing_to_check) {
         // One input, nothing to check: its error is the answer.
         let ty = annotation(owned, "{}");
         lets = format!("let {v}{ty} = {get}?; ");
@@ -6558,6 +6560,16 @@ mod tests {
                 r#"<form action=\"?/a\" method=\"post\" enctype=\"multipart/form-data\">"#
             ),
             "{code}"
+        );
+        // Alone, too: not "one input, nothing to check".
+        let one = app(
+            "size-one",
+            &[page("---\n#[action]\nfn a(img: Image) {}\n---\nx")],
+        )
+        .unwrap();
+        assert!(
+            one.contains("max_size(__v, (::wisp::MAX_SIZE) as usize)"),
+            "{one}"
         );
         let own = "---\n#[action]\nfn a(#[validate(max_size = 3 * MB)] img: Image) {}\n---\nx";
         let code = app("size-own", &[page(own)]).unwrap();

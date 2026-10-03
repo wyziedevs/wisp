@@ -27,13 +27,13 @@ fn form() {
     // wrong with it, after the input.
     assert!(
         page.contains(
-            "<input name=\"name\" required minlength=\"1\" pattern=\"[\\s\\S]{0,50}\" value=\"Ann\">\n"
+            "<label>Name <input name=\"name\" required minlength=\"1\" pattern=\"[\\s\\S]{0,50}\" value=\"Ann\"></label>"
         ),
         "{page}"
     );
     assert!(
         page.contains(
-            "<input name=\"email\" type=\"email\" required value=\"ann\"><small class=\"problem\">"
+            "<label>Email <input name=\"email\" type=\"email\" required value=\"ann\"><small class=\"problem\">"
         ),
         "{page}"
     );

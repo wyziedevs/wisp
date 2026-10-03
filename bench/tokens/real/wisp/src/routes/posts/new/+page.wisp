@@ -1,8 +1,8 @@
 ---
 // @feature crud
 #[action]
-fn default(post: db::Post) {
-    db::POSTS.add(post);
+fn default(post: Post) {
+    POSTS.add(post);
     // @feature live
     wisp::channel("posts").send("new");
     // @feature crud

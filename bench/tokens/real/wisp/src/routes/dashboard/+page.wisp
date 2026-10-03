@@ -6,7 +6,7 @@ fn logout() {
     redirect("/login")
 }
 
-let user = cx.user(&db::USERS)?;
+let user = cx.user(&USERS)?;
 ---
 <title>Dashboard</title>
 <p>Signed in as {user.email}</p>
