@@ -24,3 +24,17 @@ fn before(cx: &mut Cx) -> Result<Option<Response>> {
     }
     Ok(None)
 }
+
+/// How many 5xx `report` has seen.
+static REPORTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn report(cx: &mut Cx, err: &Error) {
+    let _ = (cx, err);
+    REPORTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Every reply says how many 5xx were reported before it.
+fn after(_cx: &mut Cx, reply: &mut Reply) {
+    let n = REPORTS.load(std::sync::atomic::Ordering::Relaxed);
+    reply.headers.push(("x-reports".into(), format!("{n} so far").into()));
+}

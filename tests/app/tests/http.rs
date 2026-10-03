@@ -1225,3 +1225,13 @@ fn a_short_old_secret_stops_the_server() {
     let said = String::from_utf8_lossy(&out.stderr);
     assert!(said.contains("WISP_SECRET_OLD is 5 characters"), "{said}");
 }
+
+#[test]
+fn after_and_report_hooks() {
+    let s = start();
+    let home = s.request("GET", "/", "", b"");
+    assert_eq!(header(&home, "x-reports"), Some("0 so far"), "{home}");
+    assert_eq!(status(&s.request("GET", "/boom", "", b"")), 500);
+    let after = s.request("GET", "/nope", "", b"");
+    assert_eq!(header(&after, "x-reports"), Some("1 so far"), "{after}");
+}

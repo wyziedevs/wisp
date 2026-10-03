@@ -3,9 +3,6 @@
 #[action]
 fn default(post: Post) {
     POSTS.add(post);
-    // @feature live
-    wisp::channel("posts").send("new");
-    // @feature crud
     redirect("/posts")
 }
 ---

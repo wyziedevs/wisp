@@ -1141,7 +1141,7 @@ async fn decider<A: App>() {
                 Job::Page(f) => {
                     render_error::<A>(f.route, cx, out, f.page).await;
                     answered(cx, reply, f.started, f.failure);
-                    tag(cx, reply);
+                    tag::<A>(cx, reply);
                 }
             }
         }
@@ -1189,7 +1189,7 @@ fn decide_now<A: App>(
         let Some(result) = catch_now(timed, || A::handle_now(route, cx, out)) else {
             return Some(Job::Decide(route));
         };
-        let (failure, page) = settle(cx, out, reply, result);
+        let (failure, page) = settle::<A>(cx, out, reply, result);
         if let Some(page) = page {
             return Some(Job::Page(Failed {
                 route,
@@ -1200,7 +1200,7 @@ fn decide_now<A: App>(
         }
         answered(cx, reply, started, failure);
     }
-    tag(cx, reply);
+    tag::<A>(cx, reply);
     None
 }
 
@@ -2516,13 +2516,13 @@ async fn decide<A: App>(
             crate::obs::hand(&out.obs);
         }
         let result = catch_made(|| A::handle(route, cx, out)).await;
-        let (failure, page) = settle(cx, out, reply, result);
+        let (failure, page) = settle::<A>(cx, out, reply, result);
         if let Some(page) = page {
             render_error::<A>(route, cx, out, page).await;
         }
         answered(cx, reply, started, failure);
     }
-    tag(cx, reply);
+    tag::<A>(cx, reply);
 }
 
 /// Writes `res`, a handler's response, into `reply`.
@@ -2560,7 +2560,7 @@ fn put(cx: &Cx, reply: &mut Reply, mut res: crate::Response) {
 /// error ([`error_reply`]): what went wrong, for the log, and the error
 /// page to render, if any.
 #[allow(clippy::type_complexity)]
-fn settle(
+fn settle<A: App>(
     cx: &mut Cx,
     out: &mut Out,
     reply: &mut Reply,
@@ -2568,13 +2568,20 @@ fn settle(
 ) -> (Option<String>, Option<(u16, Cow<'static, str>)>) {
     match answer_of(cx, out, reply, result) {
         Ok(()) => (None, None),
-        Err(e) => error_reply(cx, out, reply, e),
+        Err(e) => {
+            // A const: no code at all unless `hooks.rs` has `report`.
+            if A::REPORT && e.status >= 500 {
+                A::report(cx, &e);
+            }
+            error_reply(cx, out, reply, e)
+        }
     }
 }
 
 /// The reply's `x-request-id`, when the request has an id, and its HSTS
-/// (`WISP_HSTS=on`): the last thing every answer gets.
-fn tag(cx: &Cx, reply: &mut Reply) {
+/// (`WISP_HSTS=on`), then `after` when the app has one: the last thing every
+/// answer gets.
+fn tag<A: App>(cx: &mut Cx, reply: &mut Reply) {
     if let Some(id) = cx.id() {
         reply
             .headers
@@ -2582,6 +2589,9 @@ fn tag(cx: &Cx, reply: &mut Reply) {
     }
     if crate::headers::HSTS_ON.load(std::sync::atomic::Ordering::Relaxed) {
         crate::headers::hsts(reply);
+    }
+    if A::AFTER {
+        A::after(cx, reply);
     }
 }
 
@@ -3280,6 +3290,14 @@ fn internal<A: App>(cx: &Cx, path: &str, reply: &mut Reply) -> bool {
             return true;
         }
         "/_wisp/metrics" if get && crate::obs::serve(cx, reply) => return true,
+        // What a page that reads a `.live()` table listens to.
+        _ if get && path.starts_with("/_wisp/live/") => {
+            let Some(res) = crate::table::live_events(&path["/_wisp/live/".len()..]) else {
+                return false;
+            };
+            put(cx, reply, res);
+            return true;
+        }
         #[cfg(debug_assertions)]
         "/_app/wisp-devtools.js" if dev => (DEVTOOLS_JS, "js", None),
         #[cfg(debug_assertions)]

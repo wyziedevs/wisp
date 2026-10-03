@@ -19,5 +19,3 @@ let posts = POSTS.page(cx, 10);
   </Details>
 {/each}
 {@pager posts}
-<!-- @feature live -->
-<script>listen('/posts/events', invalidate)</script>

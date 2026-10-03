@@ -79,7 +79,11 @@ fn auth() {
     let row = crate::db::USERS
         .find(|u| &*u.email == "ann@example.com")
         .unwrap();
-    assert!(row.hash.starts_with("$pbkdf2-sha256$"), "{}", row.hash);
+    assert!(
+        row.password.as_str().starts_with("$pbkdf2-sha256$"),
+        "{}",
+        row.password.as_str()
+    );
 
     let taken = app.post_form(
         "/signup",
@@ -109,7 +113,7 @@ fn auth() {
 #[test]
 fn posts_crud_live_and_component() {
     let mut app = client::<App>();
-    let mut events = app.get("/posts/events");
+    let mut events = app.get("/_wisp/live/posts");
     assert_eq!(events.header("content-type"), Some("text/event-stream"));
 
     // Validation: a 422 that shows the problems and keeps what was typed.
@@ -145,11 +149,11 @@ fn posts_crud_live_and_component() {
     }
     // Live: each created post is an event for the open lists.
     let chunk = String::from_utf8(app.next_chunk(&mut events).unwrap()).unwrap();
-    assert_eq!(chunk, "data: new\n\n");
+    assert_eq!(chunk, "data: change\n\n");
     let list = app.get("/posts").text().to_string();
     let scripts = modules(&mut app, &list);
     assert!(
-        scripts.contains("listen('/posts/events', invalidate)"),
+        scripts.contains("listen('/_wisp/live/posts', invalidate)"),
         "{scripts}"
     );
 

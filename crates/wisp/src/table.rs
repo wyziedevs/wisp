@@ -227,6 +227,26 @@ impl<T: Send + Sync> crate::admin::Admin for Table<T> {
     }
 }
 
+/// The names of the `.live()` tables `ready` has seen: what `/_wisp/live/NAME`
+/// serves, which the pages reading them listen to.
+static LIVE: Shared<Vec<&'static str>> = Shared::new(Vec::new());
+
+/// The event stream of the live table `name`: a message for each change.
+/// `None` for any other name, so no other channel can be listened to.
+pub(crate) fn live_events(name: &str) -> Option<crate::Response> {
+    // The edge build has no channels.
+    #[cfg(target_arch = "wasm32")]
+    return {
+        let _ = name;
+        None
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let found = LIVE.lock().iter().copied().find(|n| *n == name)?;
+        Some(crate::channel(found).events())
+    }
+}
+
 /// Every table `ready` has seen, for `test::fresh`.
 static EVERY: Shared<Vec<&'static dyn Wipe>> = Shared::new(Vec::new());
 
@@ -356,12 +376,15 @@ impl<T> Table<T> {
         let saved = match name {
             Some(name) => Some(Saved {
                 name,
-                write: <T as Json>::json,
+                write: crate::password::stored::<T>,
                 read: crate::json::from_json::<T>,
             }),
             None => None,
         };
-        Table::make(saved, random)
+        let mut table = Table::make(saved, random);
+        // `#[unique]` on a field of the row type.
+        table.unique = T::UNIQUE;
+        table
     }
 
     /// The rows, locked for reading, read from the store the first time.
@@ -418,6 +441,9 @@ impl<T> Table<T> {
         }
         every.push(self);
         drop(every);
+        if let (true, Some(saved)) = (self.live, &self.saved) {
+            LIVE.lock().push(saved.name);
+        }
         if self.saved.is_none() || !matches!(self.read().state, State::Stored(_)) {
             return;
         }
