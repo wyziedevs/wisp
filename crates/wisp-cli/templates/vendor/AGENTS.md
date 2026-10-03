@@ -75,7 +75,7 @@ Block rules:
   `[[lang]]` → `Option<String>`. Works even with no block: `<h1>{slug}</h1>`.
 - No `use` lines needed: prelude = `Cx Response Result Error Email Image Json
   FromJson Rest Cookie Method Value Shared Table Row RateLimit OrStatus KB MB
-  action remote error invalid redirect`.
+  action remote error invalid redirect Always Never Ignore`.
   `Result` alone = `Result<()>`.
 - Layout blocks: statements are sync, `cx: &Cx`, no `.await`/`?`.
 - `const CACHE: u32 = 60;` (page or `+server.rs`): each worker keeps a GET's
@@ -424,6 +424,9 @@ Pages get a `content-security-policy` (`'self'`, inline template scripts
 by build-time hash, `img-src 'self' data: https:`, inline styles ok; dev
 adds esm.sh). `wisp::csp("img-src 'self' https://cdn.x")` in `init`
 replaces that directive (or adds one); `wisp::csp_off()` sends none.
+`wisp::trailing_slash(Always)` in `init`: pages are `/about/`, `/about` gets
+a 308 there (`Never`, the default, the other way; `Ignore` serves both;
+endpoints and files as asked). A literal `href` of the other form warns.
 `onclick="…"` and scripts in `{@html}` don't run: use `on:click` or a file.
 Any other `pub fn` in hooks.rs is an error. `pub` types there are
 `crate::hooks::T`. Keep `before` sync: an `async fn before`

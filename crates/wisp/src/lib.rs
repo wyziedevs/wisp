@@ -75,7 +75,7 @@ pub use csp::{csp, csp_off};
 pub use cx::{CookieOptions, Cx, Method, SameSite};
 pub use export::{Entry, ExportRoute, export, prerender};
 pub use form::{File, Form};
-pub use http::{Body, Reply, Request, handle};
+pub use http::{Body, Reply, Request, TrailingSlash, handle, trailing_slash};
 pub use i18n::{default_locale, locales, localize};
 pub use image::Image;
 pub use input::Email;
@@ -108,6 +108,8 @@ pub type Result<T = (), E = Error> = std::result::Result<T, E>;
 pub mod prelude {
     #[cfg(not(target_arch = "wasm32"))]
     pub use crate::RateLimit;
+    /// For `wisp::trailing_slash(Always)` in `init`.
+    pub use crate::TrailingSlash::{Always, Ignore, Never};
     pub use crate::{
         Cookie, CookieOptions, Cx, Email, Error, FromJson, Image, Json, KB, MB, Method, OrStatus,
         Response, Rest, Result, Row, SameSite, Shared, Table, Value, action, error, invalid,
@@ -1565,6 +1567,8 @@ pub mod rt {
         pub files: bool,
         /// Its nearest `+error.wisp`, by the app's own numbering.
         pub error: Option<usize>,
+        /// It has a page, whose address [`crate::trailing_slash`] decides.
+        pub page: bool,
     }
 
     impl RouteFacts {
@@ -1578,6 +1582,7 @@ pub mod rt {
                 sync: 0,
                 files: true,
                 error: None,
+                page: false,
             }
         }
 

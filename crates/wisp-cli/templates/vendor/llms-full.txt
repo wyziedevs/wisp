@@ -75,7 +75,7 @@ Block rules:
   `[[lang]]` → `Option<String>`. Works even with no block: `<h1>{slug}</h1>`.
 - No `use` lines needed: prelude = `Cx Response Result Error Email Image Json
   FromJson Rest Cookie Method Value Shared Table Row RateLimit OrStatus KB MB
-  action remote error invalid redirect`.
+  action remote error invalid redirect Always Never Ignore`.
   `Result` alone = `Result<()>`.
 - Layout blocks: statements are sync, `cx: &Cx`, no `.await`/`?`.
 - `const CACHE: u32 = 60;` (page or `+server.rs`): each worker keeps a GET's
@@ -424,6 +424,9 @@ Pages get a `content-security-policy` (`'self'`, inline template scripts
 by build-time hash, `img-src 'self' data: https:`, inline styles ok; dev
 adds esm.sh). `wisp::csp("img-src 'self' https://cdn.x")` in `init`
 replaces that directive (or adds one); `wisp::csp_off()` sends none.
+`wisp::trailing_slash(Always)` in `init`: pages are `/about/`, `/about` gets
+a 308 there (`Never`, the default, the other way; `Ignore` serves both;
+endpoints and files as asked). A literal `href` of the other form warns.
 `onclick="…"` and scripts in `{@html}` don't run: use `on:click` or a file.
 Any other `pub fn` in hooks.rs is an error. `pub` types there are
 `crate::hooks::T`. Keep `before` sync: an `async fn before`
@@ -737,6 +740,14 @@ Text, and a component:
   `get("date")`) of a folder's Markdown pages, newest `date` first, for an
   index page: `{#each wisp::pages("blog") as p}<a href={p.path}>{p.title}</a>{/each}`.
   It is a `static` slice the build wrote: no I/O, no allocation.
+
+Trailing slash: a page's address is `/about` and `/about/` gets a 308 to
+it, the query kept. `wisp::trailing_slash(Always)` in `init` turns that
+round (`/about` → `/about/`, for GET and HEAD of pages; endpoints and
+paths with a `.` in their last segment are left as asked), and `Ignore`
+serves both. The other form is matched only after its own path matched
+no route, so the default costs nothing. The build warns of a literal
+`href="/…"` in a template that the setting would redirect.
 
 ### Page logic
 
@@ -2932,6 +2943,26 @@ Wisp already has (`fetch`, `goto`), is a build error. A name the script
 declares itself, or a server value of the page, is that instead.
 `wisp check --types` types each (`declare function user(id: number):
 Promise<User>`). An app without any serves nothing more and pays nothing.
+
+## Server rendering off
+
+```html
+---
+const SSR: bool = false;
+let items = db::items().await;
+---
+<title>Items</title>
+{:#each items as item (item.id)}<p>{:item.name}</p>{:/each}
+```
+
+The server runs the page's statements and sends its layouts, its `<head>`,
+the markup as a `<template>` it does not paint, and the values the markup
+names; the browser draws the page. Its markup is browser code, as in a
+component the browser draws: `{…}`, `{#if}`, `{#each}` or a component given
+`{…}` is a build error (in `<title>` and `<head>` Rust is fine). For a page
+whose look depends on the browser (its size, `localStorage`), or that
+`+page.js` fills. `wisp build --spa` serves such pages from a static host
+(see deploy.md).
 
 ## Errors
 
