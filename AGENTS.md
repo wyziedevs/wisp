@@ -267,6 +267,10 @@ no-wait fast path off every route.
   Test: `let mut app = wisp::test::client::<App>(); app.get("/").text()`,
   `app.post_form/post_json/delete`, `.json::<T>()`.
 
+- Serve extras (docs/serve.md): embedded files gzip + `Range`; pages get
+  `nosniff` and `referrer-policy` (`WISP_HSTS=on`, `WISP_SECURE_HEADERS=off`);
+  `/_wisp/health`; `WISP_HANDLER_TIMEOUT=secs` → 503; `OTEL_EXPORTER_OTLP_ENDPOINT`.
+
 ## Gotchas
 
 - `Err(error(..))` is wrong: `error()` already returns the `Result`.
