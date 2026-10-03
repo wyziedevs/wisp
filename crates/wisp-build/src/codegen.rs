@@ -721,55 +721,96 @@ fn first_await(nodes: &[Node]) -> Option<u32> {
     })
 }
 
-/// Whether `nodes` have an `{#await}`, in blocks and children too.
-fn awaits_in(nodes: &[Node]) -> bool {
-    nodes.iter().any(|n| match n {
-        Node::Await { .. } => true,
+/// The lists of nodes right inside `n`: a block's branches, children, an
+/// await's pending markup and branches.
+fn inside(n: &Node) -> Vec<&Vec<Node>> {
+    match n {
         Node::If {
             branches,
             otherwise,
-        } => branches
-            .iter()
-            .map(|(_, b)| b)
-            .chain(otherwise)
-            .any(|b| awaits_in(b)),
+        } => branches.iter().map(|(_, b)| b).chain(otherwise).collect(),
         Node::Each {
             body, otherwise, ..
-        } => awaits_in(body) || otherwise.as_deref().is_some_and(awaits_in),
-        Node::Match { arms, .. } => arms.iter().any(|(_, b)| awaits_in(b)),
-        Node::Kept { sent, own, .. } => awaits_in(sent) || own.as_deref().is_some_and(awaits_in),
-        Node::Component { children, .. } => children.as_deref().is_some_and(awaits_in),
-        _ => false,
-    })
-}
-
-/// Whether an `{#await}`'s branches in `nodes` (all of them, `inside` one)
-/// have browser code.
-fn browser_in_await(nodes: &[Node], inside: bool) -> bool {
-    fn any<'a>(mut bs: impl Iterator<Item = &'a Vec<Node>>, inside: bool) -> bool {
-        bs.any(|b| browser_in_await(b, inside))
-    }
-    nodes.iter().any(|n| match n {
-        Node::Live { .. } | Node::Hole { .. } | Node::Tag { .. } | Node::Client(_) => inside,
+        } => std::iter::once(body).chain(otherwise).collect(),
+        Node::Match { arms, .. } => arms.iter().map(|(_, b)| b).collect(),
+        Node::Kept { sent, own, .. } => std::iter::once(sent).chain(own).collect(),
+        Node::Component { children, .. } => children.iter().collect(),
         Node::Await {
             pending,
             then,
             catch,
             ..
-        } => {
-            browser_in_await(pending, inside) || any(then.iter().chain(catch).map(|(_, b)| b), true)
+        } => std::iter::once(pending)
+            .chain(then.iter().chain(catch).map(|(_, b)| b))
+            .collect(),
+        Node::Snippet { body, .. } | Node::Head(body) => vec![body],
+        Node::Client(branches) => branches.iter().map(|(_, b)| b).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The `{#await}`s in `nodes`, in blocks and children too.
+fn awaits_of(nodes: &[Node]) -> Vec<&Node> {
+    let mut out = Vec::new();
+    for n in nodes {
+        if matches!(n, Node::Await { .. }) {
+            out.push(n);
         }
-        Node::If {
-            branches,
-            otherwise,
-        } => any(branches.iter().map(|(_, b)| b).chain(otherwise), inside),
-        Node::Each {
-            body, otherwise, ..
-        } => any(std::iter::once(body).chain(otherwise), inside),
-        Node::Match { arms, .. } => any(arms.iter().map(|(_, b)| b), inside),
-        Node::Kept { sent, own, .. } => any(std::iter::once(sent).chain(own), inside),
-        Node::Component { children, .. } => any(children.iter(), inside),
-        _ => false,
+        for list in inside(n) {
+            out.extend(awaits_of(list));
+        }
+    }
+    out
+}
+
+/// Whether `nodes` have an `{#await}`.
+fn awaits_in(nodes: &[Node]) -> bool {
+    !awaits_of(nodes).is_empty()
+}
+
+/// Whether `nodes` have browser code of their template's own: `{:x}`,
+/// `on:`, a browser block (a component's is its own).
+fn has_browser(nodes: &[Node]) -> bool {
+    nodes.iter().any(|n| {
+        matches!(
+            n,
+            Node::Live { .. } | Node::Hole { .. } | Node::Tag { .. } | Node::Client(_)
+        ) || inside(n).into_iter().any(|b| has_browser(b))
+    })
+}
+
+/// A page's `{#await}` whose `{:then}` or `{:catch}` cannot render after
+/// the page: the line of its future, and why.
+fn bad_await(nodes: &[Node]) -> Option<(u32, &'static str)> {
+    awaits_of(nodes).into_iter().find_map(|n| {
+        let Node::Await {
+            future,
+            then,
+            catch,
+            ..
+        } = n
+        else {
+            return None;
+        };
+        let mut branches: Vec<Node> = then.iter().chain(catch).flat_map(|(_, b)| b.clone()).collect();
+        if has_browser(&branches) {
+            return Some((
+                future.line,
+                "an `{#await}`'s `{:then}` and `{:catch}` are rendered after the page, without its browser code: \
+                 no `{:x}`, `on:`, `bind:` or browser blocks of the page's in them. A component with its own script works there; \
+                 or put the page's browser code around the block",
+            ));
+        }
+        let mut cx = false;
+        let _ = for_each_code(&mut branches, &mut |c| {
+            cx |= names_word(&c.src, "cx");
+            Ok(())
+        });
+        cx.then_some((
+            future.line,
+            "an `{#await}`'s `{:then}` and `{:catch}` are rendered after the request, so they have no `cx`: \
+             read what they need before, and give it to the future (`stats(cx.param(\"id\").to_string())`)",
+        ))
     })
 }
 
@@ -2245,18 +2286,16 @@ impl<'a> Project<'a> {
     /// A page with `{#await}` (`t`, of `file`), checked: not kept whole by
     /// `CACHE`, no browser code in its branches.
     fn streamed(&self, file: &Path, t: &Template, items: &rust_scan::Items) -> Result<(), String> {
-        let at = |msg: &str| Err(format!("{}: {msg}", self.rel(file)));
+        let rel = self.rel(file);
         if items.constant("CACHE").is_some() {
-            return at(
-                "a page with `{#await}` is streamed as its answers come, and `CACHE` keeps a whole answer: drop one",
-            );
+            return Err(format!(
+                "{rel}: a page with `{{#await}}` is streamed as its answers come, and `CACHE` keeps a whole answer: drop one"
+            ));
         }
-        if browser_in_await(&t.nodes, false) {
-            return at(
-                "an `{#await}`'s `{:then}` and `{:catch}` are sent after the page, so they have no browser code (`{:x}`, `on:`, `bind:`); put it around the block",
-            );
+        match bad_await(&t.nodes) {
+            Some((line, msg)) => Err(format!("{rel}:{line}: {msg}")),
+            None => Ok(()),
         }
-        Ok(())
     }
 
     /// A page with `const PRERENDER: bool = true;`, checked: it reads
@@ -3108,7 +3147,7 @@ impl Gen {
             self.line(0, "#[allow(unused_variables)]");
             self.line(0, &format!("async fn serve_page_{i}(cx: &mut ::wisp::Cx, __o: &mut ::wisp::Out) -> ::wisp::Result<()> {{"));
             if pg.streams {
-                self.line(1, "::wisp::rt::await_begin(__o);");
+                self.line(1, "let __aw = ::wisp::rt::Awaits::begin();");
             }
             if p.i18n.is_some() {
                 self.line(1, "__o.lang = ::wisp::rt::pick_locale(cx);");
@@ -3155,7 +3194,7 @@ impl Gen {
                 self.line(1, &format!("{};", p.wrap_layouts(&route.layouts, inner)));
             }
             if pg.streams {
-                self.line(1, "::wisp::rt::await_finish::<App>(cx, __o);");
+                self.line(1, "__aw.finish::<App>(cx, __o);");
             }
             if pg.streams || page.stmts.is_none() {
                 self.line(1, "Ok(())");
@@ -5814,6 +5853,9 @@ impl Gen {
         self.code_line(ind + 1, &call, future, cx);
         self.line(ind + 2, "let __r = match __v { Some(__v) => (&&&::wisp::rt::Settled::new(__v)).settle(), None => Err(::wisp::rt::failed()) };");
         self.line(ind + 2, "match __r {");
+        // Rendered after the request, as a component is: a form's fields
+        // write their own values (`Node::Kept`), and no problems.
+        let has_cx = std::mem::replace(&mut cx.has_cx, false);
         for (how, branch) in [("Ok", then), ("Err", catch)] {
             match branch {
                 Some((pat, body)) => {
@@ -5825,6 +5867,7 @@ impl Gen {
                 None => self.line(ind + 3, "Err(_) => ::wisp::rt::await_failed(__o),"),
             }
         }
+        cx.has_cx = has_cx;
         self.line(ind + 2, "}");
         self.line(ind + 1, "});");
         self.nodes(pending, ind + 1, cx);

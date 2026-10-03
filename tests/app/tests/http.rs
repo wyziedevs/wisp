@@ -1288,4 +1288,34 @@ fn awaits_stream_after_the_page() {
     assert!(
         header(&whole, "content-length").is_some() && header(&whole, "transfer-encoding").is_none()
     );
+    // An answer's components: their instances numbered on from the page's,
+    // in its div; a form field writes its own value.
+    let e = &tail[at(4)..];
+    let e = &e[..e.find("</div><script>").unwrap()];
+    assert!(
+        e.contains("<button class=\"tally\" data-w=\"1.0\">")
+            && e.contains("<button class=\"step\" data-w=\"2.0\">")
+            && e.contains("value=\"ann\"")
+            && e.contains("<script type=\"application/json\" data-wisp-live>{\"m\":{")
+            && e.contains("\"i\":[[1,\"t"),
+        "{e}"
+    );
+    // gzip as a client asks, with `vary` either way.
+    assert_eq!(header(&r, "vary"), Some("accept-encoding"));
+    let gz = s.request("GET", "/await", "accept-encoding: gzip\r\n", b"");
+    assert_eq!(header(&gz, "content-encoding"), Some("gzip"), "{gz}");
+}
+
+/// An answer waits no longer than `WISP_HANDLER_TIMEOUT`: then it is its
+/// failure, and the response ends.
+#[test]
+fn an_await_gives_up_with_the_handler_timeout() {
+    let s = start_with(&[("WISP_HANDLER_TIMEOUT", "1")]);
+    let r = s.request("GET", "/await/slow/30000", "", b"");
+    assert!(
+        r.contains("<p role=\"alert\">Something went wrong</p>"),
+        "{r}"
+    );
+    let quick = s.request("GET", "/await/slow/0", "", b"");
+    assert!(quick.contains("<p id=\"s\">Done</p>"), "{quick}");
 }

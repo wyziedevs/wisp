@@ -3,6 +3,9 @@
 //! compressed once (the first time a client that takes gzip asks) and the
 //! copy is sent from then on. Pages and API answers are made per request
 //! and stay as they are: a proxy or CDN in front compresses those better.
+//! A streamed page (`{#await}`, see `tail.rs`) is the exception, since a
+//! proxy may hold a stream back to compress it: it is compressed a piece at
+//! a time ([`Stream`]), each piece flushed so the browser shows it at once.
 //!
 //! The compressor is fixed-Huffman deflate with a hash-chain matcher: a
 //! little under a dense dynamic one, no dependency, no tables to ship.
@@ -28,7 +31,7 @@ pub(crate) fn apply(cx: &Cx, reply: &mut Reply) {
     reply
         .headers
         .push((Cow::Borrowed("vary"), Cow::Borrowed("accept-encoding")));
-    if !cx.header("accept-encoding").is_some_and(takes_gzip) {
+    if !wanted(cx) {
         return;
     }
     if let Some(gz) = copy(body) {
@@ -37,6 +40,11 @@ pub(crate) fn apply(cx: &Cx, reply: &mut Reply) {
             .headers
             .push((Cow::Borrowed("content-encoding"), Cow::Borrowed("gzip")));
     }
+}
+
+/// Whether the request takes gzip.
+pub(crate) fn wanted(cx: &Cx) -> bool {
+    cx.header("accept-encoding").is_some_and(takes_gzip)
 }
 
 /// Whether a `content-type` is worth compressing.
@@ -77,21 +85,71 @@ fn copy(body: &'static [u8]) -> Option<&'static [u8]> {
     *made.write().ok()?.entry(key).or_insert(gz)
 }
 
+/// A gzip file's header: deflate, no name, no time, unknown system.
+const HEADER: [u8; 10] = [0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff];
+
 /// `data` as a gzip file.
 pub(crate) fn gzip(data: &[u8]) -> Vec<u8> {
-    let mut w = Bits {
-        out: Vec::with_capacity(data.len() / 3 + 32),
-        acc: 0,
-        n: 0,
-    };
-    w.out
-        .extend_from_slice(&[0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff]);
-    deflate(data, &mut w);
+    let mut w = Bits::new(data.len());
+    w.out.extend_from_slice(&HEADER);
+    deflate(data, &mut w, true);
     w.put(0, 7); // pad to a byte
     let mut out = w.out;
     out.extend_from_slice(&crc32(data).to_le_bytes());
     out.extend_from_slice(&(data.len() as u32).to_le_bytes());
     out
+}
+
+/// A gzip file made a piece at a time: each piece is a block of its own
+/// and a sync flush (an empty stored block), so what came so far decodes
+/// whole; `end` closes the file. Matches reach back within a piece only.
+pub(crate) struct Stream {
+    crc: u32,
+    len: u32,
+    started: bool,
+}
+
+impl Stream {
+    pub(crate) fn new() -> Stream {
+        Stream {
+            crc: !0,
+            len: 0,
+            started: false,
+        }
+    }
+
+    pub(crate) fn piece(&mut self, data: &[u8]) -> Vec<u8> {
+        let mut w = self.start(data.len());
+        deflate(data, &mut w, false);
+        w.put(0, 3); // not the last, stored
+        if w.n > 0 {
+            w.put(0, 8 - w.n); // to the byte
+        }
+        w.out.extend_from_slice(&[0, 0, 0xff, 0xff]); // empty
+        self.crc = crc_add(self.crc, data);
+        self.len = self.len.wrapping_add(data.len() as u32);
+        w.out
+    }
+
+    pub(crate) fn end(mut self) -> Vec<u8> {
+        let mut w = self.start(0);
+        w.put(1, 1); // the last block
+        w.put(1, 2); // fixed codes
+        w.symbol(256);
+        w.put(0, 7); // pad to a byte
+        w.out.extend_from_slice(&(!self.crc).to_le_bytes());
+        w.out.extend_from_slice(&self.len.to_le_bytes());
+        w.out
+    }
+
+    fn start(&mut self, len: usize) -> Bits {
+        let mut w = Bits::new(len);
+        if !self.started {
+            self.started = true;
+            w.out.extend_from_slice(&HEADER);
+        }
+        w
+    }
 }
 
 struct Bits {
@@ -101,6 +159,14 @@ struct Bits {
 }
 
 impl Bits {
+    fn new(len: usize) -> Bits {
+        Bits {
+            out: Vec::with_capacity(len / 3 + 32),
+            acc: 0,
+            n: 0,
+        }
+    }
+
     /// `bits` of `v`, low bit first.
     fn put(&mut self, v: u32, bits: u32) {
         self.acc |= (v as u64) << self.n;
@@ -204,10 +270,10 @@ impl Chains {
     }
 }
 
-/// One final block of fixed Huffman codes: literals and (length, distance)
-/// matches.
-fn deflate(d: &[u8], w: &mut Bits) {
-    w.put(1, 1); // the last block
+/// One block of fixed Huffman codes, the `last` or not: literals and
+/// (length, distance) matches.
+fn deflate(d: &[u8], w: &mut Bits, last: bool) {
+    w.put(last.into(), 1);
     w.put(1, 2); // fixed codes
     let mut chains = Chains {
         head: vec![0; HASH],
@@ -237,6 +303,12 @@ fn deflate(d: &[u8], w: &mut Bits) {
 }
 
 fn crc32(data: &[u8]) -> u32 {
+    !crc_add(!0, data)
+}
+
+/// The CRC-32 register `c` after `data` (not inverted: start at `!0`, and
+/// invert the end).
+fn crc_add(c: u32, data: &[u8]) -> u32 {
     const TABLE: [u32; 256] = {
         let mut t = [0; 256];
         let mut n = 0;
@@ -256,70 +328,95 @@ fn crc32(data: &[u8]) -> u32 {
         }
         t
     };
-    !data
-        .iter()
-        .fold(!0, |c, &b| TABLE[(c as u8 ^ b) as usize] ^ (c >> 8))
+    data.iter()
+        .fold(c, |c, &b| TABLE[(c as u8 ^ b) as usize] ^ (c >> 8))
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
 
-    /// A reference decoder for the fixed-Huffman block `gzip` writes: the
-    /// tests do not trust the compressor to check itself.
+    /// A reference decoder for the gzip files this writes (fixed-Huffman
+    /// and stored blocks): the tests do not trust the compressor to check
+    /// itself.
     pub(crate) fn inflate(gz: &[u8]) -> Vec<u8> {
+        let (out, last) = blocks(&gz[..gz.len() - 8]);
+        assert!(last, "ends with the last block");
+        out
+    }
+
+    /// What the blocks of a gzip file's start `gz` decode to, as far as it
+    /// goes (a stream cut after a sync flush), and whether the last came.
+    pub(crate) fn blocks(gz: &[u8]) -> (Vec<u8>, bool) {
         assert_eq!(&gz[..3], &[0x1f, 0x8b, 8]);
-        let body = &gz[10..gz.len() - 8];
+        let body = &gz[10..];
         let mut pos = 0;
-        let mut bit = |n: u32| {
+        let bit = |pos: &mut usize, n: u32| {
             let mut v = 0;
             for k in 0..n {
-                let b = (body[pos / 8] >> (pos % 8)) & 1;
+                let b = (body[*pos / 8] >> (*pos % 8)) & 1;
                 v |= u32::from(b) << k;
-                pos += 1;
+                *pos += 1;
             }
             v
         };
-        assert_eq!(bit(3), 0b011); // last block, fixed codes
         let mut out: Vec<u8> = Vec::new();
-        loop {
-            // Codes come high bit first: 7 bits, then more as the range says.
-            let mut code = 0;
-            for _ in 0..7 {
-                code = code << 1 | bit(1);
-            }
-            let sym = if code <= 0b0010111 {
-                code + 256
-            } else {
-                code = code << 1 | bit(1);
-                if (0x30..=0xbf).contains(&code) {
-                    code - 0x30
-                } else if (0xc0..=0xc7).contains(&code) {
-                    code - 0xc0 + 280
-                } else {
-                    code = code << 1 | bit(1);
-                    code - 0x190 + 144
-                }
-            };
-            match sym {
-                256 => break,
-                0..=255 => out.push(sym as u8),
-                s => {
-                    let l = (s - 257) as usize;
-                    let len = LEN_BASE[l] as usize + bit(LEN_EXTRA[l].into()) as usize;
-                    let mut c = 0;
-                    for _ in 0..5 {
-                        c = c << 1 | bit(1);
-                    }
-                    let dist = DIST_BASE[c as usize] as usize
-                        + bit(DIST_EXTRA[c as usize].into()) as usize;
+        while pos + 3 <= body.len() * 8 {
+            let last = bit(&mut pos, 1) == 1;
+            match bit(&mut pos, 2) {
+                0 => {
+                    pos = pos.div_ceil(8) * 8;
+                    let (len, nlen) = (bit(&mut pos, 16), bit(&mut pos, 16));
+                    assert_eq!(len ^ 0xffff, nlen);
                     for _ in 0..len {
-                        out.push(out[out.len() - dist]);
+                        out.push(bit(&mut pos, 8) as u8);
                     }
                 }
+                1 => loop {
+                    // Codes come high bit first: 7 bits, then more as the range says.
+                    let mut code = 0;
+                    for _ in 0..7 {
+                        code = code << 1 | bit(&mut pos, 1);
+                    }
+                    let sym = if code <= 0b0010111 {
+                        code + 256
+                    } else {
+                        code = code << 1 | bit(&mut pos, 1);
+                        if (0x30..=0xbf).contains(&code) {
+                            code - 0x30
+                        } else if (0xc0..=0xc7).contains(&code) {
+                            code - 0xc0 + 280
+                        } else {
+                            code = code << 1 | bit(&mut pos, 1);
+                            code - 0x190 + 144
+                        }
+                    };
+                    match sym {
+                        256 => break,
+                        0..=255 => out.push(sym as u8),
+                        s => {
+                            let l = (s - 257) as usize;
+                            let len =
+                                LEN_BASE[l] as usize + bit(&mut pos, LEN_EXTRA[l].into()) as usize;
+                            let mut c = 0;
+                            for _ in 0..5 {
+                                c = c << 1 | bit(&mut pos, 1);
+                            }
+                            let dist = DIST_BASE[c as usize] as usize
+                                + bit(&mut pos, DIST_EXTRA[c as usize].into()) as usize;
+                            for _ in 0..len {
+                                out.push(out[out.len() - dist]);
+                            }
+                        }
+                    }
+                },
+                t => panic!("block type {t}"),
+            }
+            if last {
+                return (out, true);
             }
         }
-        out
+        (out, false)
     }
 
     fn round(data: &[u8]) -> usize {
@@ -329,6 +426,23 @@ pub(crate) mod tests {
         assert_eq!(&gz[n - 8..n - 4], &crc32(data).to_le_bytes());
         assert_eq!(&gz[n - 4..], &(data.len() as u32).to_le_bytes());
         n
+    }
+
+    #[test]
+    fn a_stream_decodes_after_each_piece() {
+        let (a, b) = (b"<p>pending</p>".repeat(30), b"<p>answer</p>".repeat(5));
+        let mut z = Stream::new();
+        let first = z.piece(&a);
+        assert_eq!(blocks(&first), (a.clone(), false));
+        let mut all = first;
+        all.extend(z.piece(&b));
+        all.extend(z.piece(b""));
+        all.extend(z.end());
+        let whole = [a.as_slice(), &b].concat();
+        assert_eq!(inflate(&all), whole);
+        let n = all.len();
+        assert_eq!(&all[n - 8..n - 4], &crc32(&whole).to_le_bytes());
+        assert_eq!(&all[n - 4..], &(whole.len() as u32).to_le_bytes());
     }
 
     #[test]

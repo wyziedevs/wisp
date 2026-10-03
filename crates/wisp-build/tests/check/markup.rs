@@ -236,7 +236,7 @@ fn blocks_and_tags() {
 #[test]
 fn server_awaits() {
     const F: &str = "{#await async { 1 }}";
-    let cases: [(&str, String, &[&str]); 9] = [
+    let cases: [(&str, String, &[&str]); 10] = [
         (
             "two thens",
             format!("{F}{{:then}}a{{:then}}b{{/await}}"),
@@ -276,7 +276,15 @@ fn server_awaits() {
         (
             "browser code in a branch",
             format!("{F}{{:then v}}<p>{{:n}}</p>{{/await}}<script>let n = 1</script>"),
-            &["they have no browser code"],
+            &["src/routes/+page.wisp:1: ", "without its browser code"],
+        ),
+        (
+            "cx in a branch",
+            format!(
+                "
+{F}{{:then v}}<p>{{cx.path()}}</p>{{/await}}"
+            ),
+            &["src/routes/+page.wisp:2: ", "so they have no `cx`"],
         ),
     ];
     page_fails(

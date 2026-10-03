@@ -1,24 +1,121 @@
 //! `{#await future}` in a page. The page goes out whole, each await's
 //! pending markup in place; the response stays open and each answer
 //! follows as it comes, after the page (see `protocol::AWAIT_JS`). Only a
-//! page with an `{#await}` calls any of this: the build decides, so every
-//! other page is answered as it always was.
+//! page with an `{#await}` calls any of this, decided at build: no other
+//! page, nor `Out`, holds anything of it.
+//!
+//! The answers a render defers wait in a thread-local list from its
+//! `defer`s to its `finish`: a page's markup renders without awaiting, so
+//! no other request's render comes between them on the thread. [`Awaits`],
+//! which each such page holds, empties the list when it ends, so a render
+//! that panicked part way leaves nothing behind for the next.
 
+use crate::compress::Stream;
+use crate::live::{Live, Start};
 use crate::{App, Cx, Gone, Out, Response, Sender};
 use std::borrow::Cow;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::fmt::Display;
 use std::future::{Future, poll_fn};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::{Pin, pin};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use std::task::{Context, Poll};
-use wisp_shared::protocol::{AWAIT_ANSWER, AWAIT_JS, AWAIT_OPEN};
+use wisp_shared::protocol::{AWAIT_ANSWER, AWAIT_JS, AWAIT_LIVE_OPEN, AWAIT_OPEN};
 
 /// An await's answer, made: its HTML, framed for the page.
-pub(crate) type Tail = Pin<Box<dyn Future<Output = String> + Send>>;
+type Tail = Pin<Box<dyn Future<Output = String> + Send>>;
 
 /// What an `{#await}` with no `{:catch}` shows when its future fails.
 const FAILED: &str = "<p role=\"alert\">Something went wrong</p>";
+
+/// The render's deferred answers, and the number its answers' browser
+/// code instances start from (the page's count, once it has rendered).
+#[derive(Default)]
+struct Pending {
+    tails: Vec<Tail>,
+    ids: Option<Arc<AtomicU32>>,
+}
+
+thread_local! {
+    static PENDING: RefCell<Pending> = RefCell::default();
+}
+
+/// Held by a page with `{#await}` while it is served: `finish` sends what
+/// its render deferred; dropped, it forgets what is left.
+pub struct Awaits(());
+
+impl Awaits {
+    pub fn begin() -> Awaits {
+        Awaits(())
+    }
+
+    /// After the page rendered: with answers to come, it goes out as the
+    /// first chunk of a streamed response, the answers after it; with none
+    /// (each await in a branch not taken), as any page does.
+    pub fn finish<A: App>(self, cx: &Cx, out: &mut Out) {
+        let Pending { tails, ids } = PENDING.with_borrow_mut(std::mem::take);
+        if tails.is_empty() {
+            return;
+        }
+        if let Some(ids) = ids {
+            ids.store(out.live.count(), Relaxed);
+        }
+        let page = crate::http::page::<A>(out).concat();
+        let gzip = crate::compress::wanted(cx);
+        let mut res = Response::stream("text/html; charset=utf-8", move |tx| async move {
+            let mut pipe = Pipe {
+                tx: &tx,
+                z: gzip.then(Stream::new),
+            };
+            pipe.send(page.as_bytes()).await?;
+            answers(tails, &mut pipe).await?;
+            pipe.end().await
+        });
+        res.status = cx.status();
+        res.page = true;
+        let h = &mut res.headers;
+        if let Some(policy) = crate::csp::header() {
+            h.push((Cow::Borrowed("content-security-policy"), policy.into()));
+        }
+        // As a compressed file is: the answer depends on `accept-encoding`.
+        h.push((Cow::Borrowed("vary"), "accept-encoding".into()));
+        if gzip {
+            h.push((Cow::Borrowed("content-encoding"), "gzip".into()));
+        }
+        out.response = Some(res);
+    }
+}
+
+impl Drop for Awaits {
+    fn drop(&mut self) {
+        PENDING.with_borrow_mut(|p| *p = Pending::default());
+    }
+}
+
+/// Where a streamed page goes: to the client, a gzip piece at a time when
+/// it takes gzip, each flushed (see `compress::Stream`).
+struct Pipe<'a> {
+    tx: &'a Sender,
+    z: Option<Stream>,
+}
+
+impl Pipe<'_> {
+    async fn send(&mut self, s: &[u8]) -> Result<(), Gone> {
+        match self.z.as_mut() {
+            Some(z) => self.tx.send(z.piece(s)).await,
+            None => self.tx.send(s).await,
+        }
+    }
+
+    async fn end(self) -> Result<(), Gone> {
+        match self.z {
+            Some(z) => self.tx.send(z.end()).await,
+            None => Ok(()),
+        }
+    }
+}
 
 /// A future whose panic is `None`, so one await cannot take the response
 /// (or the worker) down. Polled no more once it is ready.
@@ -35,69 +132,74 @@ impl<F: Future> Future for Unwind<F> {
     }
 }
 
-/// Forgets what a render that failed part way left (a page starts with
-/// none).
-pub fn begin(out: &mut Out) {
-    out.tails.clear();
+/// `future`, or `None` once `WISP_HANDLER_TIMEOUT` has passed: an answer
+/// waits no longer than a handler may.
+async fn within<F: Future>(future: F) -> Option<F::Output> {
+    let ms = crate::settings().timeout_ms;
+    #[cfg(not(target_arch = "wasm32"))]
+    if ms > 0 {
+        let ms = std::time::Duration::from_millis(ms);
+        return tokio::time::timeout(ms, future).await.ok();
+    }
+    let _ = ms;
+    Some(future.await)
 }
 
 /// `{#await future}`: opens its pending markup, and keeps `then`, which
-/// renders the answer, `None` if the future panicked, once it comes.
+/// renders the answer, `None` if the future failed to finish (it panicked,
+/// or took too long), once it comes.
 pub fn defer<F, T>(out: &mut Out, future: F, then: T)
 where
     F: Future + Send + 'static,
     T: FnOnce(&mut Out, Option<F::Output>) + Send + 'static,
 {
-    let (k, lang) = (out.tails.len(), out.lang);
+    let (lang, around) = (out.lang, out.live.around());
+    let (k, ids) = PENDING.with_borrow_mut(|p| {
+        let ids = p.ids.get_or_insert_with(Default::default).clone();
+        (p.tails.len(), ids)
+    });
     out.body.push_str(AWAIT_OPEN);
     out.body.push_str(&k.to_string());
     out.body.push_str("\">");
-    out.tails.push(Box::pin(async move {
-        let v = Unwind(Box::pin(future)).await;
-        let mut o = Out {
-            lang,
-            ..Out::default()
-        };
-        let done = catch_unwind(AssertUnwindSafe(|| then(&mut o, v))).is_ok();
-        let html = if done { o.body.as_str() } else { FAILED };
-        let k = k.to_string();
-        [
-            AWAIT_ANSWER,
-            &k,
-            "\">",
-            html,
-            "</div><script>",
-            AWAIT_JS,
-            "</script>",
-        ]
-        .concat()
-    }));
+    let tail: Tail = Box::pin(async move {
+        let v = within(Unwind(Box::pin(future))).await.flatten();
+        answer(k, lang, around, &ids, |o| then(o, v))
+    });
+    PENDING.with_borrow_mut(|p| p.tails.push(tail));
 }
 
-/// After the page rendered: with awaits, it goes out as the first chunk of
-/// a streamed response, their answers after it; with none (each in a
-/// branch not taken), as any page does.
-pub fn finish<A: App>(cx: &Cx, out: &mut Out) {
-    if out.tails.is_empty() {
-        return;
+/// The answer of await `k`, as `render` writes it, framed: its instances
+/// are numbered on from `ids`, which it moves on.
+fn answer(
+    k: usize,
+    lang: u8,
+    around: Option<(u32, Start)>,
+    ids: &AtomicU32,
+    render: impl FnOnce(&mut Out),
+) -> String {
+    let mut o = Out {
+        lang,
+        live: Live::after(ids.load(Relaxed), around),
+        ..Out::default()
+    };
+    let done = catch_unwind(AssertUnwindSafe(|| render(&mut o))).is_ok();
+    let mut s = format!("{AWAIT_ANSWER}{k}\">");
+    if done {
+        ids.store(o.live.count(), Relaxed);
+        s.push_str(&o.body);
+        o.live.write(&mut s, lang, AWAIT_LIVE_OPEN);
+    } else {
+        s.push_str(FAILED);
     }
-    let tails = std::mem::take(&mut out.tails);
-    let page = crate::http::page::<A>(out).concat();
-    let mut res = Response::stream("text/html; charset=utf-8", move |tx| async move {
-        tx.send(page).await?;
-        answers(tails, &tx).await
-    });
-    res.status = cx.status();
-    res.page = true;
-    if let Some(policy) = crate::csp::header() {
-        res.headers
-            .push((Cow::Borrowed("content-security-policy"), policy.into()));
+    for part in ["</div><script>", AWAIT_JS, "</script>"] {
+        s.push_str(part);
     }
-    out.response = Some(res);
+    s
 }
 
 /// Sends each answer as it comes, until all have, or the client is gone.
-async fn answers(mut tails: Vec<Tail>, tx: &Sender) -> Result<(), Gone> {
+async fn answers(mut tails: Vec<Tail>, pipe: &mut Pipe<'_>) -> Result<(), Gone> {
+    let tx = pipe.tx;
     let mut gone = pin!(tx.0.closed());
     while !tails.is_empty() {
         let next = poll_fn(|cx| {
@@ -113,7 +215,7 @@ async fn answers(mut tails: Vec<Tail>, tx: &Sender) -> Result<(), Gone> {
             Poll::Pending
         });
         match next.await {
-            Some(html) => tx.send(html).await?,
+            Some(html) => pipe.send(html.as_bytes()).await?,
             None => return Err(Gone),
         }
     }
@@ -177,7 +279,26 @@ pub fn failed_html(out: &mut Out) {
     out.body.push_str(FAILED);
 }
 
-/// The error a `{:catch e}` gets when the future panicked.
+/// The error a `{:catch e}` gets when the future did not finish.
 pub fn failed() -> String {
     "Something went wrong".into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A render that stopped before `finish` (it panicked, or its request
+    /// was dropped) leaves nothing for the next page on the thread.
+    #[test]
+    fn a_render_that_stopped_leaves_nothing() {
+        let mut out = Out::default();
+        {
+            let _awaits = Awaits::begin();
+            defer(&mut out, async {}, |_, _| {});
+            PENDING.with_borrow(|p| assert_eq!(p.tails.len(), 1));
+        }
+        PENDING.with_borrow(|p| assert!(p.tails.is_empty() && p.ids.is_none()));
+        assert_eq!(out.body, "<wisp-await id=\"wisp-await-0\">");
+    }
 }

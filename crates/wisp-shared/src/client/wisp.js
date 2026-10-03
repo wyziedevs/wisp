@@ -31,13 +31,7 @@
 
   // `back`: the history entry whose snapshot goes back in (a pop).
   function swap(html, status = 200, back) {
-    const doc = new DOMParser().parseFromString(html, 'text/html');
-    // `{#await}` answers, streamed after the page: each in its place.
-    for (const d of doc.querySelectorAll('[data-wisp-await]')) {
-      doc.getElementById('wisp-await-' + d.dataset.wispAwait)?.replaceWith(...d.childNodes);
-      d.nextElementSibling?.remove();
-      d.remove();
-    }
+    const doc = answers(new DOMParser().parseFromString(html, 'text/html'));
     if (doc.title) document.title = doc.title;
     const next = [...doc.head.children];
     served = served.filter((n) => {
@@ -63,6 +57,28 @@
     back ? restore(back) : (pend = null);
     wake(); // before the update: live.js takes the page's JSON over there
     send('wisp:update', { status });
+  }
+
+  // `{#await}` answers, streamed after a page: each in its place, its
+  // instances added to the page's, as protocol.rs's AWAIT_JS does in a page
+  // loaded whole. Its script goes, so it does not run again.
+  function answers(doc) {
+    for (const d of doc.querySelectorAll('[data-wisp-await]')) {
+      const j = d.querySelector('[data-wisp-live]');
+      const L = doc.getElementById('wisp-live');
+      if (j && L) {
+        const [a, b] = [L, j].map((s) => JSON.parse(s.text));
+        Object.assign(a.m, b.m);
+        a.i.push(...b.i);
+        a.t = { ...a.t, ...b.t };
+        L.text = JSON.stringify(a);
+        j.remove();
+      } else if (j) (j.id = 'wisp-live'), doc.body.append(j);
+      doc.getElementById('wisp-await-' + d.dataset.wispAwait)?.replaceWith(...d.childNodes);
+      d.nextElementSibling?.remove();
+      d.remove();
+    }
+    return doc;
   }
 
   const send = (type, detail, at = document) => {
@@ -402,7 +418,7 @@
       const to = redirect(res);
       if (to) return void (await go(to, { replace: true }));
       const html = await res.text();
-      const doc = new DOMParser().parseFromString(html, 'text/html');
+      const doc = answers(new DOMParser().parseFromString(html, 'text/html'));
       const marks = (root) => {
         const out = [];
         const w = document.createTreeWalker(root, NodeFilter.SHOW_COMMENT);

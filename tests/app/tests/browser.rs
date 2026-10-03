@@ -99,25 +99,37 @@ fn islands_inside_server_components_inside_islands() {
     assert_eq!(b.text("#lazy .tally"), "1");
 }
 
-/// `{#await}`: each answer takes its pending markup's place, on a load and
-/// on a navigation wisp.js makes.
+/// `{#await}`: each answer takes its pending markup's place, and its
+/// components start, on a load and on a navigation wisp.js makes.
 #[test]
 fn awaits_answer_in_place() {
     let mut b = wisp::browser!(Site);
     let placed =
         "[...document.querySelectorAll('h1 ~ p, #c > p')].map((p) => p.id || p.textContent).join()";
     let want = "a,b,Something went wrong,d,end";
+    let left =
+        "wisp-await, [data-wisp-await], [data-wisp-live], body > script:not([src]):not([type])";
+    // Components in an answer start with the page's: each its own.
+    let live = |b: &mut wisp::test::Browser| {
+        b.click("#e .tally");
+        b.click("#e .tally");
+        assert_eq!(b.text("#e .tally"), "2");
+        b.click("#top .tally");
+        assert_eq!(b.text("#top .tally"), "1");
+        assert_eq!(b.text("#e .tally"), "2");
+        b.click("#e .step"); // an island, started when idle
+        assert_eq!(b.text("#e .step"), "6");
+    };
     b.goto("/await");
     assert_eq!(b.text("#a"), "Got 7");
     assert_eq!(b.eval(placed).as_str(), Some(want));
-    assert_eq!(
-        b.count("wisp-await, [data-wisp-await], body > script:not([src])"),
-        0
-    );
+    assert_eq!(b.count(left), 0);
+    live(&mut b);
     b.goto("/await/plain");
     assert_eq!(b.text("#w"), "later");
     b.click("#go");
     assert_eq!(b.text("#a"), "Got 7");
     assert_eq!(b.eval(placed).as_str(), Some(want));
-    assert_eq!(b.count("wisp-await, [data-wisp-await]"), 0);
+    assert_eq!(b.count(left), 0);
+    live(&mut b);
 }

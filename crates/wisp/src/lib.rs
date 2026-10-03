@@ -891,8 +891,6 @@ pub struct Out {
     pub lang: u8,
     /// The request, while logs, metrics or traces watch it.
     obs: Option<obs::Pending>,
-    /// A page's `{#await}` answers still to come (see `tail`).
-    tails: Vec<tail::Tail>,
 }
 
 impl Out {
@@ -1528,8 +1526,7 @@ pub mod rt {
     pub use crate::envconf::{config, config_error, config_opt};
     pub use crate::i18n::{Arg, Case, Count, Msg, Part, Tr};
     pub use crate::tail::{
-        AnyResult, Settled, Value, WispResult, begin as await_begin, defer, failed,
-        failed_html as await_failed, finish as await_finish,
+        AnyResult, Awaits, Settled, Value, WispResult, defer, failed, failed_html as await_failed,
     };
     pub use crate::timeout::within;
 

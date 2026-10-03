@@ -178,10 +178,13 @@ checked across locales at build. Locale: `[[lang=locale]]`, cookie `lang`,
 the page goes out at once; each answer follows in the same response as it
 comes, moved in place (no JS: at the end). `f` is a future (not awaited),
 `Send + 'static`: no `cx` or borrowed locals in it or its branches. `v` is a
-`Result`'s `Ok` or the value; `e` the error's text; no `{:catch}` or a
-panic → "Something went wrong". Not in layouts, components, `<head>`,
-attributes; no browser code in branches; not with `CACHE`. A page without
-one is answered as ever.
+`Result`'s `Ok` or the value; `e` the error's text; no `{:catch}`, a
+panic or `WISP_HANDLER_TIMEOUT` → "Something went wrong". Components in
+branches start like the page's (islands too); the page's own `{:x}`/`on:`
+and `cx` can't go in branches; form fields there show their own values.
+gzip when the client takes it, flushed per answer. Not in layouts,
+components, `<head>`, attributes; not with `CACHE`. A page without one is
+answered as ever.
 
 Holes can't go in `on*` attrs, tag names, `javascript:` URLs, SVG animation
 values or `<meta http-equiv>`; `<script>`/`<style>` bodies have none.
