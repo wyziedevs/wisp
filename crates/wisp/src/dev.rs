@@ -372,10 +372,10 @@ fn color() -> bool {
 /// comes from `static/`.
 pub(crate) fn read_file(root: &str, path: &str) -> Option<(Vec<u8>, String)> {
     let root = Path::new(root);
-    if path == crate::protocol::APP_CSS_PATH {
+    if path == crate::protocol::route::APP_CSS_PATH {
         return app_css(root).map(|css| (css, "css".into()));
     }
-    let lib = (path.strip_prefix(crate::protocol::IMAGES)).and_then(|p| p.strip_prefix("lib"));
+    let lib = (path.strip_prefix(crate::protocol::route::IMAGES)).and_then(|p| p.strip_prefix("lib"));
     let file = match lib {
         Some(rest) => root
             .join("src")

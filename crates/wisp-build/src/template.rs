@@ -511,6 +511,56 @@ pub fn parse_with(
     class: &str,
     drawn: bool,
 ) -> Result<Template, Error> {
+    let mut t = parse_class(src, fields, class, drawn)?;
+    // A const: without a base path, the template as it is.
+    if !crate::protocol::BASE.is_empty() {
+        for chunk in &mut t.chunks {
+            if let Some(based) = under_base(chunk, crate::protocol::BASE) {
+                *chunk = based;
+            }
+        }
+    }
+    Ok(t)
+}
+
+/// `html` with each `href="/x"` (also `src`, `action`, `poster`,
+/// `formaction`, in either quote) under `base`: `href="/app/x"`. A value
+/// that is not a path of the site (`//host`, `https:`, `#a`, `x/y`) or is
+/// already under `base` is left; `None` when nothing changes.
+pub(crate) fn under_base(html: &str, base: &str) -> Option<String> {
+    const NAMES: [&str; 5] = ["href", "src", "action", "poster", "formaction"];
+    let b = html.as_bytes();
+    let mut out = String::new();
+    let mut done = 0;
+    for at in html.match_indices('=').map(|(i, _)| i) {
+        let (q, slash, next) = (b.get(at + 1), b.get(at + 2), b.get(at + 3));
+        if !matches!(q, Some(b'"' | b'\'')) || slash != Some(&b'/') || next == Some(&b'/') {
+            continue;
+        }
+        let name_at = html[..at]
+            .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+            .map_or(0, |i| i + 1);
+        let boundary = name_at == 0 || b[name_at - 1].is_ascii_whitespace();
+        let value = &html[at + 2..];
+        let own = value.strip_prefix(base).is_some_and(|r| r.starts_with(['/', '"', '\'', '?', '#']));
+        if boundary && !own && NAMES.iter().any(|n| html[name_at..at].eq_ignore_ascii_case(n)) {
+            out.push_str(&html[done..at + 2]);
+            out.push_str(base);
+            done = at + 2;
+        }
+    }
+    (done > 0).then(|| {
+        out.push_str(&html[done..]);
+        out
+    })
+}
+
+fn parse_class(
+    src: &str,
+    fields: &[Field],
+    class: &str,
+    drawn: bool,
+) -> Result<Template, Error> {
     let expanded = crate::island::expand(src)?;
     let src = expanded.as_deref().unwrap_or(src);
     let styled = (src.as_bytes().windows(6)).any(|w| w.eq_ignore_ascii_case(b"<style"));

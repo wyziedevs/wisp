@@ -490,6 +490,9 @@ pub fn client_ts(root: &Path) -> Result<String, String> {
     .map(|(_, ts)| ts)
 }
 
+/// The base path the app is served under (`WISP_BASE`), empty for none.
+pub const BASE: &str = protocol::BASE;
+
 /// The `?v=` of the browser runtime (`/_app/wisp.js`, `/_app/live.js`):
 /// the version and a hash of both files, so a changed runtime has a new
 /// address and no browser keeps an old one from its cache.

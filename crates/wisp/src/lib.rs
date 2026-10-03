@@ -1441,6 +1441,12 @@ impl Error {
             (300..=308).contains(&status),
             "redirect status must be 3xx, got {status}"
         );
+        // A path of the app's own is under its base path, when it has one.
+        let location = location.into();
+        let location = match crate::protocol::BASE.is_empty() {
+            true => location,
+            false => crate::protocol::based(&location).into_owned(),
+        };
         Error::raw(status, Cow::Borrowed("")).with_header("location", location)
     }
 

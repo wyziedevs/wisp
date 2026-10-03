@@ -13,6 +13,8 @@ fn main() {
         "cargo:rustc-env=WISP_RUNTIME_V={}",
         wisp_build::runtime_version()
     );
+    // The base path the app is served under (see `protocol::BASE`).
+    println!("cargo:rustc-env=WISP_BASE={}", wisp_build::BASE);
     // What `http.rs` serves by: `cfg(debug_assertions)`, the files as written.
     if std::env::var_os("CARGO_CFG_DEBUG_ASSERTIONS").is_some() {
         return;

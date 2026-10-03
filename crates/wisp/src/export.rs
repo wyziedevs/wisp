@@ -254,7 +254,7 @@ pub async fn export<A: App>(dir: &Path, spa: bool) -> io::Result<()> {
         if !done.insert(path.clone()) {
             continue;
         }
-        let Some(rel) = crate::http::safe_relative_path(&path) else {
+        let Some(rel) = crate::http::safe_relative_path(crate::protocol::unbased(&path)) else {
             continue;
         };
         let reply = handle::<A>(page(&path)).await;

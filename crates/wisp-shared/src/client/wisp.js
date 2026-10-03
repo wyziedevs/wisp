@@ -232,9 +232,6 @@
     );
   }
 
-  // The build this page is of (`<meta name="wisp-build">`, release builds).
-  const build = document.querySelector('meta[name=wisp-build]')?.content;
-  const stale = (html) => build && !html.includes(`name="wisp-build" content="${build}"`);
   async function go(url, how = {}) {
     url = new URL(url, location.href);
     if (script(url)) return; // goto(text from a visitor) runs nothing
@@ -260,7 +257,6 @@
     if (my !== nav) return;
     if (!isHtml(res)) return location.assign(url); // a file: the browser shows or saves it
     let html = await res.text();
-    if (stale(html)) return location.assign(url); // another build: its scripts are not ours
     html = (await drawn(html, url)) || html;
     if (my !== nav) return;
     if (how.replace) history.replaceState({ k: (entry = id()) }, '', url);

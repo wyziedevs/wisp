@@ -191,7 +191,8 @@ impl Live {
         if self.modules.iter().any(|m| m.1) {
             s.push_str(concat!(
                 "<script type=\"module\" src=\"",
-                wisp_shared::app_path!("live.js"),
+                env!("WISP_BASE"),
+                "/_app/live.js",
                 "?v=",
                 env!("WISP_RUNTIME_V"),
                 "\"></script>"

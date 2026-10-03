@@ -104,12 +104,43 @@ pub const AWAIT_ANSWER: &str = "<div data-wisp-await=\"";
 pub const AWAIT_LIVE_OPEN: &str = "<script type=\"application/json\" data-wisp-live>{\"m\":{";
 pub const AWAIT_JS: &str = "(s=>{let d=s.previousElementSibling,j=d.querySelector('[data-wisp-live]'),L=document.getElementById('wisp-live'),a,b,x=document.getElementById('wisp-await-'+d.dataset.wispAwait);if(j){j.remove();if(L){a=JSON.parse(L.text);b=JSON.parse(j.text);Object.assign(a.m,b.m);a.i.push(...b.i);a.t={...a.t,...b.t};L.text=JSON.stringify(a)}else j.id='wisp-live',document.body.append(j)}x&&x.replaceWith(...d.childNodes);d.remove();s.remove()})(document.currentScript)";
 
-/// `/_app/<file>`, where Wisp serves its own files, as a literal: for a
-/// `concat!` that builds a tag once, at compile time.
-#[macro_export]
+/// The path the app is served under (`WISP_BASE=/app` at build time): empty
+/// for none, else a `/` first and none last. Every URL Wisp writes starts
+/// with it (the `/_app/...` ones below, links in templates, redirects, typed
+/// routes) and every request path loses it at parse (`wisp`'s `http.rs`), so
+/// routes, `cx.path()` and what is served by path never see it. A const: an
+/// app without one runs no code for it.
+pub const BASE: &str = env!("WISP_BASE");
+
+/// `path` without [`BASE`] (a path under it, or `path` as it is).
+pub fn unbased(path: &str) -> &str {
+    without(BASE, path)
+}
+
+/// `path` under [`BASE`]: a path with a `/` first (not `//`, another site's)
+/// gets it; any other (`https://x`, `#a`, `?b`, `a/b`) is as it is.
+pub fn based(path: &str) -> std::borrow::Cow<'_, str> {
+    with(BASE, path)
+}
+
+fn without<'a>(base: &str, path: &'a str) -> &'a str {
+    path.strip_prefix(base).filter(|p| p.starts_with('/')).unwrap_or(path)
+}
+
+fn with<'a>(base: &str, path: &'a str) -> std::borrow::Cow<'a, str> {
+    match !base.is_empty() && path.starts_with('/') && !path.starts_with("//") {
+        true => format!("{base}{path}").into(),
+        false => path.into(),
+    }
+}
+
+/// `/_app/<file>` under [`BASE`], where Wisp serves its own files, as a
+/// literal: for a `concat!` that builds a tag once, at compile time.
+/// `crate::route::` is the same without the base, what a request path is
+/// matched with.
 macro_rules! app_path {
     ($file:literal) => {
-        concat!("/_app/", $file)
+        concat!(env!("WISP_BASE"), "/_app/", $file)
     };
 }
 
@@ -134,6 +165,18 @@ pub const REMOTE_JS_PATH: &str = app_path!("c/remote.js");
 /// Components built as custom elements: `el/x-card.js`, and what they run.
 pub const ELEMENTS: &str = app_path!("c/el/");
 pub const ELEMENT_JS_PATH: &str = app_path!("c/el.js");
+/// The same paths without [`BASE`]: what a request is matched by, its
+/// base already taken off.
+pub mod route {
+    pub const APP_CSS_PATH: &str = "/_app/app.css";
+    pub const WISP_JS_PATH: &str = "/_app/wisp.js";
+    pub const LIVE_JS_PATH: &str = "/_app/live.js";
+    pub const MODULES: &str = "/_app/c/";
+    pub const NPM_MODULES: &str = "/_app/c/npm/";
+    pub const IMAGES: &str = "/_app/img/";
+    pub const ELEMENTS: &str = "/_app/c/el/";
+}
+
 /// An app's service worker and web app manifest, at the root so the
 /// worker's scope is the whole site.
 pub const SERVICE_WORKER_PATH: &str = "/service-worker.js";
@@ -147,6 +190,21 @@ pub const SCOPED_CSS: &str = ".wisp/scoped.css";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paths_go_under_a_base_and_come_out_of_it() {
+        assert_eq!(with("/app", "/x?a=1"), "/app/x?a=1");
+        for same in ["//evil.example", "https://x.io", "#a", "?b", "a/b", ""] {
+            assert_eq!(with("/app", same), same);
+        }
+        assert_eq!(with("", "/x"), "/x");
+        assert_eq!(without("/app", "/app/x"), "/x");
+        assert_eq!(without("/app", "/apple"), "/apple");
+        assert_eq!(without("/app", "/x"), "/x");
+        assert_eq!(without("", "/x"), "/x");
+        // What this build was made for says the same of its own.
+        assert_eq!(unbased(&based("/a")), "/a");
+    }
 
     /// Each name as the browser runtime spells it, at the places it reads it.
     #[test]

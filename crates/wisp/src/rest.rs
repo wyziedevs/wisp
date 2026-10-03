@@ -651,7 +651,12 @@ pub fn create<T: Resource>(cx: &mut Cx, hooks: &Hooks<T>) -> Result<Response> {
         out.push(']');
         return Ok(Response::json(out).with_status(201));
     }
-    let at = format!("{}/{}", cx.path().trim_end_matches('/'), made[0].0);
+    let at = format!(
+        "{}{}/{}",
+        crate::protocol::BASE,
+        cx.path().trim_end_matches('/'),
+        made[0].0
+    );
     Ok(tagged(cx, out).with_status(201).with_header("location", at))
 }
 

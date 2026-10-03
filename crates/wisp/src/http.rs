@@ -814,7 +814,8 @@ pub(crate) fn setup<A: App>() {
         }
         s.push_str(concat!(
             "<script defer src=\"",
-            wisp_shared::app_path!("wisp.js"),
+            env!("WISP_BASE"),
+            "/_app/wisp.js",
             "?v=",
             env!("WISP_RUNTIME_V"),
             "\"></script>"
@@ -1536,6 +1537,10 @@ fn parse<A: App>(cx: &mut Cx, at: usize, on_wire: bool) -> Parsed {
     cx.method = head.method;
     cx.wire.http11 = head.http11;
     cx.wire.path = head.path;
+    // A const: without a base path (`WISP_BASE`) this is no code at all.
+    if !crate::protocol::BASE.is_empty() {
+        cx.wire.path = under_base(&cx.wire.buf, head.path);
+    }
     cx.wire.query = head.query;
     // A body's limit is its route's: the request is routed for it now, once.
     let body_start = at + head.len;
@@ -2842,6 +2847,33 @@ fn answered(cx: &mut Cx, reply: &mut Reply, started: Option<Instant>, failure: O
     }
 }
 
+/// `path` (a span of `buf`) without the base path: the same when it is not
+/// under it. `/app` alone is `/app/`'s, `/`: the one `/` of the request
+/// line that is not in the target, the one of `HTTP/1.1`.
+#[cold]
+#[inline(never)]
+fn under_base(buf: &[u8], path: Span) -> Span {
+    under(crate::protocol::BASE.as_bytes(), buf, path)
+}
+
+fn under(base: &[u8], buf: &[u8], path: Span) -> Span {
+    let bytes = &buf[path.range()];
+    match bytes.strip_prefix(base) {
+        Some(rest) if rest.first() == Some(&b'/') => Span {
+            start: path.start + base.len() as u32,
+            len: path.len - base.len() as u32,
+        },
+        Some([]) => buf[path.range().end..]
+            .iter()
+            .position(|&b| b == b'/')
+            .map_or(path, |i| Span {
+                start: (path.range().end + i) as u32,
+                len: 1,
+            }),
+        _ => path,
+    }
+}
+
 /// The route of the request in `cx`, which gets its params: the matched
 /// parameters as spans, so `cx` can be handed out mutably.
 fn route<A: App>(cx: &mut Cx) -> Option<usize> {
@@ -2927,9 +2959,10 @@ fn slash_redirect(cx: &Cx, reply: &mut Reply, trailing: bool) {
         ""
     };
     let query = cx.query_string();
+    let base = crate::protocol::BASE;
     let location = match query.is_empty() {
-        true => format!("/{trimmed}{end}"),
-        false => format!("/{trimmed}{end}?{query}"),
+        true => format!("{base}/{trimmed}{end}"),
+        false => format!("{base}/{trimmed}{end}?{query}"),
     };
     reply.set_plain(308, "");
     reply
@@ -3389,8 +3422,8 @@ fn internal<A: App>(cx: &Cx, path: &str, reply: &mut Reply) -> bool {
     let dev = get && s.dev;
     let docs = get && s.api_docs && !A::openapi().is_empty();
     let (body, ext, etag): (&'static [u8], _, _) = match path {
-        crate::protocol::WISP_JS_PATH if get => (CLIENT_JS, "js", Some(CLIENT_JS_ETAG)),
-        crate::protocol::LIVE_JS_PATH if get => (LIVE_JS, "js", Some(CLIENT_JS_ETAG)),
+        crate::protocol::route::WISP_JS_PATH if get => (CLIENT_JS, "js", Some(CLIENT_JS_ETAG)),
+        crate::protocol::route::LIVE_JS_PATH if get => (LIVE_JS, "js", Some(CLIENT_JS_ETAG)),
         "/_app/wisp-dev.js" if dev => (DEV_JS, "js", None),
         "/_app/wisp-ui.css" if dev => (UI_CSS.as_bytes(), "css", None),
         "/_app/wisp-dialog.css" if dev => (DIALOG_CSS, "css", None),
@@ -3445,7 +3478,7 @@ fn internal<A: App>(cx: &Cx, path: &str, reply: &mut Reply) -> bool {
         _ => return false,
     };
     send_file(reply, cx, Body::Static(body), ext, etag);
-    if !A::ELEMENTS.is_empty() && path == crate::protocol::LIVE_JS_PATH {
+    if !A::ELEMENTS.is_empty() && path == crate::protocol::route::LIVE_JS_PATH {
         any_origin(reply);
     }
     true
@@ -3478,7 +3511,7 @@ fn file<A: App>(cx: &Cx, raw: &[u8], route: Option<usize>, reply: &mut Reply) ->
     }
     // One `wisp dev` swapped in, never cached: its URL names its version.
     #[cfg(debug_assertions)]
-    if raw.starts_with(crate::protocol::MODULES.as_bytes())
+    if raw.starts_with(crate::protocol::route::MODULES.as_bytes())
         && let Some(source) = dev::module(cx.path())
     {
         let ext = if cx.path().ends_with(".map") {
@@ -3490,7 +3523,7 @@ fn file<A: App>(cx: &Cx, raw: &[u8], route: Option<usize>, reply: &mut Reply) ->
         return true;
     }
     // Compiled in, in dev too: what `wisp dev` cannot swap is a rebuild.
-    if raw.starts_with(crate::protocol::MODULES.as_bytes())
+    if raw.starts_with(crate::protocol::route::MODULES.as_bytes())
         && let Some(m) = A::client_module(cx.path())
     {
         // A module's source map (`t3.js.map`) is JSON.
@@ -3514,8 +3547,8 @@ fn file<A: App>(cx: &Cx, raw: &[u8], route: Option<usize>, reply: &mut Reply) ->
     if crate::settings().dev {
         let path = cx.path();
         // A page's path goes to the disk only if `static/` had a file there.
-        if path != crate::protocol::APP_CSS_PATH
-            && !path.starts_with(crate::protocol::IMAGES)
+        if path != crate::protocol::route::APP_CSS_PATH
+            && !path.starts_with(crate::protocol::route::IMAGES)
             && routed
             && !dev::listed(A::ROOT, &decode(path.as_bytes(), false))
         {
@@ -3555,8 +3588,8 @@ fn send_file(reply: &mut Reply, cx: &Cx, body: Body, ext: &str, etag: Option<&'s
         None => "no-store",
         Some(_)
             if cx.query_string().split('&').any(|kv| kv.starts_with("v="))
-                || cx.path().starts_with(crate::protocol::NPM_MODULES)
-                || cx.path().starts_with(crate::protocol::IMAGES) =>
+                || cx.path().starts_with(crate::protocol::route::NPM_MODULES)
+                || cx.path().starts_with(crate::protocol::route::IMAGES) =>
         {
             "public, max-age=31536000, immutable"
         }

@@ -120,7 +120,7 @@ fn robots(base: &str) -> String {
 }
 
 /// `https://example.com`: `SITE_URL` without its last `/`, else the
-/// request's scheme and host; `None` with neither.
+/// request's scheme and host (and base path); `None` with neither.
 fn base(cx: &Cx) -> Option<String> {
     if let Ok(site) = std::env::var("SITE_URL")
         && !site.is_empty()
@@ -140,7 +140,7 @@ fn base(cx: &Cx) -> Option<String> {
         _ if local => "http",
         _ => "https",
     };
-    Some(format!("{scheme}://{host}"))
+    Some(format!("{scheme}://{host}{}", crate::protocol::BASE))
 }
 
 /// The sitemap of `routes`' indexed pages, each address once, in order;

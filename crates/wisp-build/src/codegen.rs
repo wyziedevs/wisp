@@ -1398,6 +1398,14 @@ impl<'a> Project<'a> {
         if let Some(l) = &i18n {
             shell[0] = i18n::with_lang(&shell[0], &l.names[0]);
         }
+        // The links of the shell are under the base path, as a template's are.
+        if !crate::protocol::BASE.is_empty() {
+            for part in &mut shell {
+                if let Some(based) = template::under_base(part, crate::protocol::BASE) {
+                    *part = based;
+                }
+            }
+        }
         let t_used = vec![false; i18n.as_ref().map_or(0, i18n::Locales::key_count)];
         Ok(Project {
             root,
@@ -3209,7 +3217,7 @@ impl Gen {
             self.line(0, &format!(
                 "static __WISP_JS_{i}: ::wisp::ClientModule = ::wisp::ClientModule {{ id: {}, path: {}, url: {}, etag: {}, source: {source}, preload: &[], texts: &[] }};",
                 lit(&f.path),
-                lit(&f.path),
+                lit(crate::protocol::unbased(&f.path)),
                 lit(&url),
                 lit(&format!("\"{}\"", f.hash)),
             ));
@@ -3606,7 +3614,7 @@ impl Gen {
             by_url.sort_unstable();
             let table: Vec<String> = by_url
                 .iter()
-                .map(|(url, i)| format!("({}, &ASSET_{i})", lit(url)))
+                .map(|(url, i)| format!("({}, &ASSET_{i})", lit(crate::protocol::unbased(url))))
                 .collect();
             self.line(
                 2,
@@ -3642,11 +3650,18 @@ impl Gen {
             for (t, c) in modules {
                 self.line(
                     3,
-                    &format!("{} => Some(&{}::__WISP_CLIENT),", lit(&c.path()), t.path()),
+                    &format!(
+                        "{} => Some(&{}::__WISP_CLIENT),",
+                        lit(crate::protocol::unbased(&c.path())),
+                        t.path()
+                    ),
                 );
             }
             for (i, f) in web.js_files.iter().enumerate() {
-                self.line(3, &format!("{} => Some(&__WISP_JS_{i}),", lit(&f.path)));
+                self.line(
+                    3,
+                    &format!("{} => Some(&__WISP_JS_{i}),", lit(crate::protocol::unbased(&f.path))),
+                );
             }
             self.line(3, "_ => None,");
             self.line(2, "}");
@@ -5658,7 +5673,7 @@ impl Gen {
             self.line(1, &format!(
                 "pub static __WISP_CLIENT: ::wisp::ClientModule = ::wisp::ClientModule {{ id: {}, path: {}, url: {}, etag: {}, source: {}, preload: {}, texts: &[{}] }};",
                 lit(&c.id),
-                lit(&path),
+                lit(crate::protocol::unbased(&path)),
                 lit(&url),
                 lit(&format!("\"{}\"", c.hash)),
                 lit(&c.source),
@@ -8510,7 +8525,7 @@ fn typed_routes(routes: &[crate::routes::Route]) -> String {
         }
         taken.push(name.clone());
         let mut args = Vec::new();
-        let mut body = String::from("let mut s = String::new();");
+        let mut body = format!("let mut s = String::from({});", lit(crate::protocol::BASE));
         for seg in &r.segs {
             match seg {
                 Seg::Static(n) => body.push_str(&format!(" s.push_str({});", lit(&format!("/{n}")))),
