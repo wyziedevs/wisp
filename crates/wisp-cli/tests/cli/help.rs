@@ -22,6 +22,8 @@ fn help_lists_every_command_and_new_option() {
                 "cloudflare, deno, vercel, netlify or node",
                 "wisp build --client ts [--out client.ts]",
                 "wisp check",
+                "wisp update-docs",
+                "wisp mcp",
                 "Options for wisp new",
                 "--template demo|minimal|api",
                 "also --api",

@@ -76,11 +76,12 @@ crates/wisp        runtime: HTTP server, Cx, escaping, assets, dev hooks
 crates/wisp-build  compiler: route scan, .wisp parser, codegen (used from build.rs)
 crates/wisp-shared what runtime, compiler and browser agree on: contexts.rs, protocol.rs, client/*.js
 crates/wisp-macros #[action], #[derive(Cookie)], #[derive(Json)] and #[derive(FromJson)] (proc macros; no deps but wisp-build, for `#[validate]`'s rules)
-crates/wisp-cli    `wisp new | dev | build | check | lsp`; deploy targets
+crates/wisp-cli    `wisp new | dev | build | check | lsp | mcp | update-docs`; deploy targets
 editors/vscode     VS Code extension: .wisp grammar, starts `wisp lsp`
 examples/demo      the demo app, which is also `wisp new`'s demo template
 examples/api       a JSON API, which is also `wisp new --api`
 tests/app          an app that uses every feature, and the tests that run it
+tests/agents       every Rust and HTML snippet of AGENTS.md, compiled
 bench/             the same app in other stacks, load generator, runner (bench-run)
 ```
 
@@ -1090,6 +1091,43 @@ copies them into `crates/wisp-cli/templates/vendor` whenever they are there
 and differ (a build in the repo refreshes it; commit the result), and a build
 without them reads that copy. With Tailwind, the template's styles go in `@layer base`
 after the import, so utility classes still win over them.
+
+### AI agents
+
+Every app is written with AGENTS.md, the whole reference in one short page,
+and a pointer to it for each agent that reads a file of its own:
+`CLAUDE.md`, `.github/copilot-instructions.md` and `.cursor/rules/wisp.mdc`.
+The app's AGENTS.md is the repository's (embedded at build time through
+the vendor copy, so it never drifts) less its part for work on Wisp, and
+ends with a line after which the app's own notes go. `wisp update-docs`
+brings it up to the installed Wisp, keeping those notes, and writes any
+pointer file that is missing (one that is there is the app's).
+
+Every Rust and HTML snippet in AGENTS.md is in `tests/agents`, an app in
+the workspace, so building the workspace compiles them; its test fails
+when one is missing there. `llms.txt` (llmstxt.org) links the docs, and
+`llms-full.txt` is AGENTS.md and the docs in one file, written by a
+wisp-cli test that fails when it was stale.
+
+`wisp mcp` is a Model Context Protocol server over stdio (JSON-RPC 2.0, a
+message a line, `wisp_shared::json`), for the app in the current folder:
+
+| Tool | Answers |
+|---|---|
+| `wisp_docs(topic)` | the AGENTS.md or docs sections about the topic; no topic lists them |
+| `wisp_check()` | `{"ok":true}` or `{"ok":false,"errors":[{file,line,col,message}]}` |
+| `wisp_routes()` | each route's pattern, folder, params, page, actions and endpoints |
+| `wisp_components()` | each component's name, file and props (type, default) |
+| `wisp_new_route(path, kind)` | writes `+page.wisp` (default), `+layout.wisp`, `+error.wisp` or `+server.rs`; never overwrites |
+
+Setup, in the app's folder:
+
+- Claude Code: `claude mcp add wisp -- wisp mcp`
+- Cursor: `.cursor/mcp.json` with
+  `{"mcpServers":{"wisp":{"command":"wisp","args":["mcp"]}}}`
+- VS Code: `code --add-mcp '{"name":"wisp","command":"wisp","args":["mcp"]}'`,
+  or `.vscode/mcp.json` with
+  `{"servers":{"wisp":{"type":"stdio","command":"wisp","args":["mcp"]}}}`
 
 ## Dev loop
 

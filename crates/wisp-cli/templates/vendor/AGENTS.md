@@ -3,16 +3,6 @@
 Wisp is a fast, fun web framework for Rust. File routes, `.wisp` templates
 compiled to Rust, form actions, optional browser reactivity, one binary.
 
-<!-- repo: this part is for work on Wisp itself; `wisp new` leaves it out -->
-**Design rule (non-negotiable), in order:** 1. ultra fast, 2. cheap (fewest
-tokens to write app code: AI writes most code), 3. durable (every fast path
-proven at startup with a fallback; nothing after startup can take the process
-down), 4. flexible. Developer happiness last. Wisp code:
-Carmack style, minimal deps, no `unsafe` (but the Linux io_uring and epoll
-drivers, `uring.rs` and `epoll.rs`, and the edge exports), no dead code,
-zero warnings. Apps get this file without this part (`wisp new`, `wisp
-update-docs`); `llms-full.txt` is made from it and docs/ by a test.
-<!-- /repo -->
 
 ## Files
 
@@ -375,13 +365,13 @@ takes the no-wait fast path off every route.
 
 ## Commands
 
-`wisp new app` · `wisp dev` (hot reload) · `wisp check` · `wisp fmt [paths]`
-(`--check`; markup, `---` via rustfmt, scripts, styles) · `wisp build`
+`wisp new app` · `wisp dev` (hot reload) · `wisp check` · `wisp build`
 (`--static`, `--docker`, `--target cloudflare|deno|vercel|netlify|node`,
-`--client ts`) · `wisp add pkg[@ver]` · `wisp remove pkg` · `wisp lsp` (language
-server; VS Code: editors/vscode) · `wisp update-docs` (this file, after
-upgrading Wisp) · `wisp mcp` (tools for AI agents: `wisp_docs(topic)`,
-`wisp_check`, `wisp_routes`, `wisp_components`, `wisp_new_route(path, kind)`;
-Claude Code: `claude mcp add wisp -- wisp mcp`). More: `wisp_docs`, or
-https://raw.githubusercontent.com/wyziedevs/wisp/main/llms-full.txt (this
-file and every doc).
+`--client ts`) · `wisp add pkg[@ver]` · `wisp remove pkg` · `wisp
+update-docs` (this file, after upgrading Wisp) · `wisp mcp` (tools for AI
+agents: `wisp_docs(topic)`, `wisp_check`, `wisp_routes`, `wisp_components`,
+`wisp_new_route(path, kind)`; Claude Code: `claude mcp add wisp -- wisp mcp`).
+More: `wisp_docs`, or https://raw.githubusercontent.com/wyziedevs/wisp/main/llms-full.txt
+(this file and every doc).
+
+<!-- End of the Wisp reference. Notes for this app go below; wisp update-docs keeps them. -->

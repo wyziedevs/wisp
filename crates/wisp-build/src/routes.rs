@@ -460,7 +460,7 @@ fn server_shape(file: &Path, segs: &[Seg]) -> (bool, Option<Option<String>>) {
 }
 
 /// `None` for `(group)` directories, which do not appear in the URL.
-pub(crate) fn parse_segment(name: &str) -> Result<Option<Seg>, String> {
+pub fn parse_segment(name: &str) -> Result<Option<Seg>, String> {
     let ident = |s: &str| -> Result<String, String> {
         if !crate::ty::is_ident(s) {
             return Err(format!("`{s}` is not a valid parameter name"));

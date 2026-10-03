@@ -324,7 +324,14 @@ fn write(root: &Path, crate_name: &str, template: Template, tailwind: bool) -> R
         ("Cargo.toml", cargo_toml.as_bytes()),
         (".gitignore", b"/target\n/.wisp\n/data\n"),
     ];
-    for &(rel, bytes) in common.iter().chain(files) {
+    let agents = AGENT_FILES
+        .iter()
+        .map(|(rel, text)| (*rel, text.as_bytes()));
+    for (rel, bytes) in common
+        .into_iter()
+        .chain(agents)
+        .chain(files.iter().copied())
+    {
         let path = root.join(rel);
         fs::create_dir_all(path.parent().expect("files are inside the app"))
             .map_err(|e| format!("Could not create {}: {e}.", root.display()))?;
@@ -341,6 +348,71 @@ fn write(root: &Path, crate_name: &str, template: Template, tailwind: bool) -> R
         fs::File::create_new(&path)
             .and_then(|mut f| f.write_all(bytes))
             .map_err(|e| format!("Could not write {}: {e}.", path.display()))?;
+    }
+    Ok(())
+}
+
+/// The Wisp reference for AI agents (the repository's AGENTS.md, less its
+/// part for work on Wisp itself), and a file for each agent that reads
+/// its own, pointing to it.
+pub const AGENTS_MD: &str = include_str!("../templates/vendor/AGENTS.md");
+const AGENT_FILES: [(&str, &str); 4] = [
+    ("AGENTS.md", AGENTS_MD),
+    ("CLAUDE.md", "Read @AGENTS.md: the whole Wisp reference.\n"),
+    (
+        ".github/copilot-instructions.md",
+        "Read AGENTS.md, at the app's root: the whole Wisp reference.\n",
+    ),
+    (
+        ".cursor/rules/wisp.mdc",
+        "---\ndescription: The Wisp reference\nalwaysApply: true\n---\nRead @AGENTS.md: the whole Wisp reference.\n",
+    ),
+];
+
+/// The last line of the reference in an app's AGENTS.md: what follows it
+/// is the app's own, and `wisp update-docs` keeps it.
+const END: &str = "<!-- End of the Wisp reference. Notes for this app go below; wisp update-docs keeps them. -->\n";
+
+/// `wisp update-docs`: AGENTS.md becomes this Wisp's reference, keeping
+/// the app's notes after it, and a pointer file that is missing is
+/// written. One that is there is the app's.
+pub fn update_docs(root: &Path) -> Result<(), String> {
+    let path = root.join("AGENTS.md");
+    let notes = match fs::read_to_string(&path) {
+        Ok(old) => match old.split_once(END.trim_end()) {
+            Some((_, notes)) => notes.trim_start_matches(['\r', '\n']).to_string(),
+            None => {
+                return Err(
+                    "AGENTS.md has no end-of-reference line, so its own notes could be lost.\nMove them to another file, delete AGENTS.md, and run wisp update-docs again."
+                        .into(),
+                );
+            }
+        },
+        Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("Could not read AGENTS.md: {e}.")),
+    };
+    let mut wrote = Vec::new();
+    for (rel, text) in AGENT_FILES {
+        let path = root.join(rel);
+        let text = if rel == "AGENTS.md" {
+            format!("{AGENTS_MD}{notes}")
+        } else if path.exists() {
+            continue;
+        } else {
+            text.to_string()
+        };
+        if fs::read_to_string(&path).is_ok_and(|old| old == text) {
+            continue;
+        }
+        fs::create_dir_all(path.parent().expect("files are inside the app"))
+            .and_then(|()| fs::write(&path, text))
+            .map_err(|e| format!("Could not write {rel}: {e}."))?;
+        wrote.push(rel);
+    }
+    if wrote.is_empty() {
+        term::done("The agent files are up to date.");
+    } else {
+        term::done(&format!("Wrote {}.", wrote.join(", ")));
     }
     Ok(())
 }
@@ -518,6 +590,33 @@ mod tests {
         refresh(&from, &to).unwrap();
         assert_eq!(read_all(&to).unwrap(), read_all(&from).unwrap());
         fs::remove_dir_all(tmp).unwrap();
+    }
+
+    /// The AI reference apps get and `wisp mcp` serves is the repository's
+    /// AGENTS.md and docs as they are now, and so is llms-full.txt: a stale
+    /// one is written again, and the test fails until it is committed.
+    #[test]
+    fn ai_reference_is_the_repositorys() {
+        use crate::template_files::{
+            app_agents, llms_full, read_text, repo, vendor, write_if_changed,
+        };
+        let base = Path::new(env!("CARGO_MANIFEST_DIR"));
+        assert!(AGENTS_MD.ends_with(END));
+        let Ok(agents) = read_text(&repo(base).join("AGENTS.md")) else {
+            return;
+        };
+        assert!(
+            AGENTS_MD == app_agents(&agents),
+            "templates/vendor/AGENTS.md is stale"
+        );
+        assert!(!AGENTS_MD.contains("<!-- repo") && !AGENTS_MD.contains("Carmack"));
+        let full = llms_full(&repo(base)).unwrap();
+        assert!(full == read_text(&vendor(base).join("llms-full.txt")).unwrap());
+        let path = repo(base).join("llms-full.txt");
+        if read_text(&path).ok().as_deref() != Some(full.as_str()) {
+            write_if_changed(&path, &full).unwrap();
+            panic!("llms-full.txt was stale; it is written again now: commit it");
+        }
     }
 
     /// A template is exactly its folders' files: one added there reaches new

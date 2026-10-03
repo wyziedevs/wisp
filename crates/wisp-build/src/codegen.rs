@@ -3067,7 +3067,9 @@ fn css_source(root: &Path) -> Result<Option<PathBuf>, String> {
     }
     if src.exists() {
         let text = crate::read_source(&src).map_err(|e| format!("{}: {e}", src.display()))?;
-        if crate::uses_tailwind(&text) {
+        // A warning for Cargo, so only in a build script: `wisp mcp` and
+        // `wisp lsp` speak a protocol on stdout.
+        if crate::uses_tailwind(&text) && std::env::var_os("OUT_DIR").is_some() {
             println!(
                 "cargo::warning=src/app.css uses Tailwind but .wisp/app.css is missing; run `wisp dev` or `wisp build`"
             );
@@ -3099,7 +3101,7 @@ fn hash_files(files: &[PathBuf]) -> Vec<Result<String, String>> {
     })
 }
 
-fn list_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+pub(crate) fn list_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
     for e in fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
         let p = e.map_err(|e| e.to_string())?.path();
         if p.is_dir() {
