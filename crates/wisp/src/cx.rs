@@ -82,7 +82,7 @@ impl Method {
 }
 
 /// A byte range of `Cx::buf`.
-#[derive(Clone, Copy, Default, Debug)]
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
 pub(crate) struct Span {
     pub start: u32,
     pub len: u32,
@@ -110,7 +110,7 @@ impl Span {
 
 /// Headers the parser marks as it reads them, so the framework reads each
 /// without a search: by index in [`Wire::known`].
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum Known {
     IdempotencyKey,
     IfNoneMatch,
@@ -123,36 +123,6 @@ pub(crate) enum Known {
 
 /// How many [`Known`] there are.
 pub(crate) const KNOWN: usize = 7;
-
-impl Known {
-    /// Their names, lowercase, in order.
-    const NAMES: [&'static str; KNOWN] = [
-        "idempotency-key",
-        "if-none-match",
-        "content-type",
-        "accept",
-        crate::protocol::HEADER_ERROR,
-        "origin",
-        "sec-fetch-site",
-    ];
-
-    /// The index of the known header `name` (in any case), if it is one:
-    /// its length, and at most its first byte, tell which it may be.
-    #[inline(never)]
-    pub(crate) fn of(name: &[u8]) -> Option<usize> {
-        let k = match (name.len(), name.first().map(|c| c | 0x20)) {
-            (15, _) => Known::IdempotencyKey,
-            (13, _) => Known::IfNoneMatch,
-            (12, Some(b'c')) => Known::ContentType,
-            (12, _) => Known::WispError,
-            (6, Some(b'a')) => Known::Accept,
-            (6, _) => Known::Origin,
-            (14, _) => Known::SecFetchSite,
-            _ => return None,
-        } as usize;
-        crate::swar::eq_lower(name, Known::NAMES[k].as_bytes()).then_some(k)
-    }
-}
 
 /// The request as it came over the wire: the connection's read buffer and
 /// spans into it. The parser in `http.rs` writes it; `Cx`'s methods read it.
@@ -898,11 +868,11 @@ impl Cx {
         for l in lines {
             let (n, v) = l.split_once(": ").unwrap();
             cx.wire.headers.push((at(n), at(v)));
-            if let Some(k) = Known::of(n.as_bytes())
-                && cx.wire.knows & 1 << k == 0
+            if let crate::http::Name::Known(k) = crate::http::header_name(n.as_bytes(), 0, n.len())
+                && cx.wire.knows & 1 << k as u8 == 0
             {
-                cx.wire.knows |= 1 << k;
-                cx.wire.known[k] = at(v);
+                cx.wire.knows |= 1 << k as u8;
+                cx.wire.known[k as usize] = at(v);
             }
         }
         let mut spans = [Span::default(); MAX_PARAMS];
