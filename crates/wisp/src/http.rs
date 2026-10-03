@@ -2560,7 +2560,25 @@ fn put(cx: &Cx, reply: &mut Reply, mut res: crate::Response) {
 /// error ([`error_reply`]): what went wrong, for the log, and the error
 /// page to render, if any.
 #[allow(clippy::type_complexity)]
+#[inline(always)]
 fn settle<A: App>(
+    cx: &mut Cx,
+    out: &mut Out,
+    reply: &mut Reply,
+    result: crate::Result<()>,
+) -> (Option<String>, Option<(u16, Cow<'static, str>)>) {
+    // A const: without `report` in `hooks.rs`, exactly the plain call.
+    if A::REPORT
+        && let Err(e) = &result
+        && e.status >= 500
+    {
+        A::report(cx, e);
+    }
+    settle_plain(cx, out, reply, result)
+}
+
+#[allow(clippy::type_complexity)]
+fn settle_plain(
     cx: &mut Cx,
     out: &mut Out,
     reply: &mut Reply,
@@ -2568,20 +2586,24 @@ fn settle<A: App>(
 ) -> (Option<String>, Option<(u16, Cow<'static, str>)>) {
     match answer_of(cx, out, reply, result) {
         Ok(()) => (None, None),
-        Err(e) => {
-            // A const: no code at all unless `hooks.rs` has `report`.
-            if A::REPORT && e.status >= 500 {
-                A::report(cx, &e);
-            }
-            error_reply(cx, out, reply, e)
-        }
+        Err(e) => error_reply(cx, out, reply, e),
+    }
+}
+
+/// [`tag_plain`], then `after` when the app has one: the last thing every
+/// answer gets.
+#[inline(always)]
+fn tag<A: App>(cx: &mut Cx, reply: &mut Reply) {
+    tag_plain(cx, reply);
+    // A const: no code at all unless `hooks.rs` has `after`.
+    if A::AFTER {
+        A::after(cx, reply);
     }
 }
 
 /// The reply's `x-request-id`, when the request has an id, and its HSTS
-/// (`WISP_HSTS=on`), then `after` when the app has one: the last thing every
-/// answer gets.
-fn tag<A: App>(cx: &mut Cx, reply: &mut Reply) {
+/// (`WISP_HSTS=on`).
+fn tag_plain(cx: &Cx, reply: &mut Reply) {
     if let Some(id) = cx.id() {
         reply
             .headers
@@ -2589,9 +2611,6 @@ fn tag<A: App>(cx: &mut Cx, reply: &mut Reply) {
     }
     if crate::headers::HSTS_ON.load(std::sync::atomic::Ordering::Relaxed) {
         crate::headers::hsts(reply);
-    }
-    if A::AFTER {
-        A::after(cx, reply);
     }
 }
 
@@ -3248,7 +3267,9 @@ fn panicked(panic: Box<dyn std::any::Any + Send>) -> Error {
 
 /// Wisp's own addresses: the browser runtime, the API docs and, in dev,
 /// the dev tools. `false` for any other path.
+/// Out of line: its arms must not cost the routes that never reach it.
 #[cfg_attr(not(debug_assertions), allow(unused_variables))]
+#[inline(never)]
 fn internal<A: App>(cx: &Cx, path: &str, reply: &mut Reply) -> bool {
     if !path.starts_with("/_") {
         return false;
