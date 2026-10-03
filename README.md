@@ -128,11 +128,11 @@ The same five features (a list page, a validated form, a JSON endpoint, a layout
 
 | Stack | Tokens | vs Wisp |
 |---|---:|---:|
-| **Wisp** | **494** | 1.0x |
-| SvelteKit | 928 | 1.9x |
-| Next.js | 934 | 1.9x |
-| Axum + askama | 1330 | 2.7x |
-| Actix + tera | 1457 | 2.9x |
+| **Wisp** | **462** | 1.0x |
+| SvelteKit | 928 | 2.0x |
+| Next.js | 934 | 2.0x |
+| Axum + askama | 1330 | 2.9x |
+| Actix + tera | 1457 | 3.2x |
 
 ## Commands
 

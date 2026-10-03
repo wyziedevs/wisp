@@ -500,14 +500,14 @@ that each feature works.
 
 | Stack | list | form | api | layout | search | data | setup | total | chars / 4 | files |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| **Wisp** | 60 | 118 | 35 | 60 | 106 | 115 | 0 | **494** | 298 | 6 |
+| **Wisp** | 58 | 94 | 31 | 60 | 104 | 115 | 0 | **462** | 281 | 6 |
 | SvelteKit | 128 | 396 | 57 | 83 | 192 | 72 | 0 | 928 | 596 | 9 |
 | Next.js | 107 | 363 | 44 | 108 | 241 | 71 | 0 | 934 | 674 | 8 |
 | Axum + askama | 145 | 455 | 29 | 104 | 217 | 123 | 257 | 1330 | 924 | 7 |
 | Actix + tera | 164 | 519 | 46 | 104 | 237 | 123 | 264 | 1457 | 994 | 7 |
 
-SvelteKit and Next.js take 1.9x Wisp's tokens, Axum and Actix 2.7x and
-2.9x. The estimate and what changed to get here:
+SvelteKit and Next.js take 2.0x Wisp's tokens, Axum and Actix 2.9x and
+3.2x. The estimate and what changed to get here:
 [docs/tokens.md](../docs/tokens.md).
 
 ## Caveats
