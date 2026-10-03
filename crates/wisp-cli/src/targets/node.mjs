@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url';
 import { wisp } from './bridge.mjs';
 
 const none = new Uint8Array();
-const app = wisp(await WebAssembly.compile(readFileSync(new URL('./app.wasm', import.meta.url))), process.env);
+const app = wisp(await WebAssembly.compile(readFileSync(new URL('./app.wasm', import.meta.url))), process.env, send);
 
 // The most of a request body read before the app sees it: WISP_BODY_LIMIT
 // (`1048576`, `512KB`, `10MB`, `1GB`), 1 MB by default, as the app's own
@@ -24,7 +24,48 @@ function tooLarge(req, res) {
   res.end('Payload Too Large', () => req.destroy());
 }
 
-export default async function handler(req, res) {
+// The answer to `app.direct`, no web Response in between: the head's
+// header array goes to Node as it is, the body is copied out of the app's
+// memory (a socket may hold it past this call, and the memory moves on).
+function send(res, h, body) {
+  const m = res.req.method;
+  let out = h.headers;
+  if (body instanceof Uint8Array && h.status >= 200 && h.status !== 204 && h.status !== 304) {
+    // A whole body gets a length, so Node writes it in one piece, not chunked.
+    // `h.sized` is the head's array with a length slot, filled in here.
+    h.sized ??= out.some((k, i) => !(i & 1) && k.toLowerCase() === 'content-length') ? out : [...out, 'content-length', 0];
+    out = h.sized;
+    if (out !== h.headers) out[out.length - 1] = body.length;
+  }
+  res.writeHead(h.status, out);
+  if (body instanceof Uint8Array) {
+    if (m === 'HEAD' || h.status < 200 || h.status === 204 || h.status === 304) return res.end();
+    return body.length < 4096 ? res.end(latin1.call(body, 0, body.length), 'latin1') : res.end(Buffer.from(body));
+  }
+  if (m === 'HEAD') return body.cancel().finally(() => res.end());
+  res.flushHeaders();
+  pipeline(Readable.fromWeb(body), res).catch(() => {});
+}
+
+// A small body as a latin1 string, byte for byte: Node writes a string with
+// the head in one piece, where a Buffer goes out as a second chunk.
+const latin1 = Buffer.prototype.latin1Slice;
+
+// A request with no body to read: neither content-length nor transfer-encoding.
+function bodiless(raw) {
+  for (let i = 0; i < raw.length; i += 2) {
+    const k = raw[i];
+    if ((k.length === 14 || k.length === 17) && /^(content-length|transfer-encoding)$/i.test(k)) return false;
+  }
+  return true;
+}
+
+export default function handler(req, res) {
+  if (!req.rawBody && bodiless(req.rawHeaders) && app.direct(req.method, req.url, req.socket?.remoteAddress ?? '', req.rawHeaders, res)) return;
+  return slow(req, res);
+}
+
+async function slow(req, res) {
   let body = req.rawBody; // Firebase and Google Cloud have read it already
   if (!body && !req.headers['content-length'] && !req.headers['transfer-encoding']) body = none; // most GETs
   if (!body) {

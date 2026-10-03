@@ -541,7 +541,7 @@ mod tests {
             "wisp_pull",
             "main",
         ] {
-            assert!(BRIDGE.contains(&format!("exports.{export}(")), "{export}");
+            assert!(BRIDGE.contains(&format!("exports.{export}")), "{export}");
         }
     }
 }
