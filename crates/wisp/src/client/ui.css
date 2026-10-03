@@ -104,3 +104,15 @@
     transition-duration: 1ms !important;
   }
 }
+
+/* Fingers: every button is at least 44px where the pointer is coarse. */
+@media (pointer: coarse) {
+  .wisp-button,
+  .wisp-button.wisp-small {
+    min-height: var(--wisp-touch);
+  }
+
+  .wisp-button.wisp-icon {
+    min-width: var(--wisp-touch);
+  }
+}

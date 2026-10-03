@@ -37,6 +37,7 @@ body {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
+  min-height: 100dvh;
   margin: 0;
   background: radial-gradient(56rem 28rem at 50% -6rem, var(--glow), transparent 70%) no-repeat, var(--paper);
   color: var(--ink);

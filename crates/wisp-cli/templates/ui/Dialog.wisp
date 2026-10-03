@@ -20,6 +20,11 @@
     font: 600 0.9375rem/1 var(--font-sans, system-ui, sans-serif);
     cursor: pointer;
   }
+  @media (pointer: coarse) {
+    button {
+      min-height: 2.75rem;
+    }
+  }
   button:hover {
     border-color: var(--line-strong, #6f6f6f);
     background: var(--panel-hover, #2e2e2e);

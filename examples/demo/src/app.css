@@ -26,6 +26,8 @@
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
   --change: 200ms;
+  --step-2: clamp(1.5rem, 1.2rem + 1.5vw, 2rem);
+  --touch: 2.75rem;
 
   color-scheme: dark;
 }
@@ -38,6 +40,7 @@
 
 body {
   min-height: 100vh;
+  min-height: 100dvh;
   margin: 0;
   background: radial-gradient(56rem 28rem at 50% -6rem, var(--glow), transparent 70%) no-repeat, var(--paper);
   color: var(--ink);
@@ -53,7 +56,7 @@ pre {
 }
 
 h1 {
-  font-size: 2rem;
+  font-size: var(--step-2);
   font-weight: 700;
   line-height: 1.15;
   letter-spacing: -0.02em;
@@ -150,6 +153,7 @@ pre code {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
+  min-height: 100dvh;
 }
 
 main {
@@ -159,11 +163,12 @@ main {
   width: 100%;
   max-width: 64rem;
   margin: 0 auto;
-  padding: 1rem;
+  /* Clear of a notch (viewport-fit=cover in app.html). */
+  padding: 1rem max(1rem, env(safe-area-inset-right)) 1rem max(1rem, env(safe-area-inset-left));
 }
 
 footer {
-  padding: 1rem 1rem 1.5rem;
+  padding: 1rem 1rem max(1.5rem, env(safe-area-inset-bottom));
   color: var(--ink-subtle);
   font-size: 0.8125rem;
   text-align: center;
@@ -187,6 +192,8 @@ footer {
 .site-header {
   display: flex;
   justify-content: space-between;
+  padding-top: env(safe-area-inset-top);
+  padding-inline: env(safe-area-inset-left) env(safe-area-inset-right);
 }
 
 .corner {
@@ -770,6 +777,13 @@ nav a[aria-current="page"]::before {
 
 .error p {
   color: var(--ink-muted);
+}
+
+/* Fingers: 44px at least where the pointer is coarse. */
+@media (pointer: coarse) {
+  .button {
+    min-height: var(--touch);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

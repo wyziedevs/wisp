@@ -4,6 +4,7 @@
 
 body {
   min-height: 100vh;
+  min-height: 100dvh;
   margin: 0;
   background: radial-gradient(56rem 28rem at 50% -6rem, var(--wisp-glow), transparent 70%) no-repeat, var(--wisp-paper);
   color: var(--wisp-ink);
@@ -20,6 +21,7 @@ body {
   width: 100%;
   max-width: var(--wisp-column);
   min-height: 100vh;
+  min-height: 100dvh;
   margin: 0 auto;
   padding: 1rem;
   text-align: center;

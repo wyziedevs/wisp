@@ -28,6 +28,18 @@
   --wisp-radius: 0.375rem;
   --wisp-backdrop: rgb(0 0 0 / 0.5);
   --wisp-column: 42rem;
+  /* Fluid type and space: each grows with the viewport between two sizes, no
+     breakpoints. Steps 0 to 3 are text, s to xl gaps and padding. */
+  --wisp-step-0: clamp(0.875rem, 0.84rem + 0.18vw, 1rem);
+  --wisp-step-1: clamp(1rem, 0.95rem + 0.25vw, 1.125rem);
+  --wisp-step-2: clamp(1.25rem, 1.1rem + 0.75vw, 1.75rem);
+  --wisp-step-3: clamp(1.75rem, 1.3rem + 2.2vw, 3rem);
+  --wisp-space-s: clamp(0.5rem, 0.45rem + 0.25vw, 0.75rem);
+  --wisp-space-m: clamp(1rem, 0.9rem + 0.5vw, 1.5rem);
+  --wisp-space-l: clamp(1.5rem, 1.3rem + 1vw, 2.5rem);
+  --wisp-space-xl: clamp(2.5rem, 2rem + 2.5vw, 4.5rem);
+  /* A finger needs 44px. */
+  --wisp-touch: 2.75rem;
 
   --wisp-raised: 0 1px 2px rgb(0 0 0 / 0.22), 0 6px 16px -4px rgb(0 0 0 / 0.17);
   --wisp-overlay: 0 16px 40px rgb(0 0 0 / 0.3), 0 4px 12px rgb(0 0 0 / 0.23);
