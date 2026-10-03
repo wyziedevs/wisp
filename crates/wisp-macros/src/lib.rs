@@ -202,6 +202,68 @@ fn names(s: &TokenStream, idents: &[&str]) -> bool {
     false
 }
 
+/// `#[model]` on a struct: `Json`, `FromJson` and `Clone` derived, and each
+/// field `pub`, so it is a table's row type, an action's input and a
+/// template's value at once. Not with its own `derive(Clone)`.
+#[proc_macro_attribute]
+pub fn model(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let mut out = match attr.into_iter().next() {
+        Some(first) => error("#[model] takes no arguments", first.span()),
+        None => TokenStream::new(),
+    };
+    out.extend(parse(
+        "#[derive(::wisp::Json, ::wisp::FromJson, ::std::clone::Clone)]",
+    ));
+    let tokens: Vec<TokenTree> = item.into_iter().collect();
+    let named = tokens
+        .iter()
+        .any(|t| matches!(t, TokenTree::Ident(i) if i.to_string() == "struct"))
+        && matches!(tokens.last(), Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Brace);
+    let last = tokens.len().wrapping_sub(1);
+    for (k, t) in tokens.into_iter().enumerate() {
+        match t {
+            TokenTree::Group(g) if named && k == last => {
+                let mut group = Group::new(Delimiter::Brace, public(g.stream()));
+                group.set_span(g.span());
+                out.extend([TokenTree::from(group)]);
+            }
+            t => out.extend([t]),
+        }
+    }
+    out
+}
+
+/// A struct's fields with `pub` before each that has no visibility.
+fn public(fields: TokenStream) -> TokenStream {
+    let (mut out, mut start, mut angle, mut prev) = (Vec::new(), true, 0i32, ' ');
+    let mut it = fields.into_iter();
+    while let Some(t) = it.next() {
+        // Attributes and doc comments come first: `#` and its `[…]`.
+        if start && matches!(&t, TokenTree::Punct(p) if p.as_char() == '#') {
+            out.push(t);
+            out.extend(it.next());
+            continue;
+        }
+        let c = match &t {
+            TokenTree::Punct(p) => p.as_char(),
+            _ => ' ',
+        };
+        if start && !matches!(&t, TokenTree::Ident(i) if i.to_string() == "pub") {
+            out.extend(parse("pub"));
+        }
+        start = false;
+        match c {
+            '<' => angle += 1,
+            '>' if prev != '-' => angle -= 1,
+            ',' if angle <= 0 => start = true,
+            _ => {}
+        }
+        prev = c;
+        out.push(t);
+    }
+    out.into_iter().collect()
+}
+
 /// Implements `Display` and `FromStr` for a struct whose fields do, or for
 /// an enum without fields, in a form a cookie can hold: the fields in order,
 /// separated by `|`, each escaped (`42|cranesloth|pi`); a variant's name.

@@ -3201,7 +3201,7 @@ impl Gen {
     /// Opens `pub mod NAME {` with an app file in it: its own `//!` docs
     /// and `#![…]` attributes first (only possible with the file written
     /// into the module), `use {glob};`, the file (included, so errors point
-    /// at it, unless it has inner attributes; a `---` block's items line by
+    /// at it, unless it has inner attributes or a `Table::saved()` to name; a `---` block's items line by
     /// line, each marked with its line), then the prelude.
     fn user_mod(&mut self, m: &UserMod, rel: &str, glob: &str) -> Result<(), String> {
         self.line(0, &format!("pub mod {} {{", m.name));
@@ -3216,11 +3216,13 @@ impl Gen {
         }
         self.line(1, "#[allow(unused_imports)]");
         self.line(1, &format!("use {glob};"));
+        let named = rust_scan::name_saved(&src[top..]);
+        let code = named.as_deref().unwrap_or(&src[top..]);
         if m.inline.is_some() {
             let first = src[..top].matches('\n').count() + 1;
-            self.rust_lines(1, &src[top..], first, rel);
-        } else if top > 0 {
-            self.out.push_str(&src[top..]);
+            self.rust_lines(1, code, first, rel);
+        } else if top > 0 || named.is_some() {
+            self.out.push_str(code);
             self.out.push('\n');
         } else {
             self.line(1, &format!("include!({});", lit(&m.file.to_string_lossy())));

@@ -12,6 +12,7 @@
 use crate::template::{raw_str_start, skip_char, skip_raw_str, skip_str};
 pub use crate::ty::last_segment;
 use crate::ty::{first_arg, is_ident, is_word, option_inner};
+use std::fmt::Write;
 pub use wisp_shared::rust::awaits;
 use wisp_shared::rust::{skip_block_comment, skip_literal, skip_space};
 
@@ -311,6 +312,10 @@ pub fn scan(src: &str) -> Result<Items, String> {
                         ));
                     }
                     action |= marks_action;
+                    // `#[model]` derives these.
+                    if depth == 0 && path.rsplit("::").next() == Some("model") {
+                        derives.extend(["Json", "FromJson", "Clone"].map(String::from));
+                    }
                     if depth == 0 && path.rsplit("::").next() == Some("derive") {
                         let args = src[j + 1..end].split_once('(').map_or("", |(_, a)| a);
                         derives.extend(
@@ -946,6 +951,39 @@ pub fn line_ends_in_code(code: &str) -> Vec<bool> {
     out
 }
 
+/// `src` with each `static NAME: … = Table::saved();` named for its static,
+/// `Table::saved("name")` (`USERS` is "users"), or `None` if there is none.
+/// The text keeps its lines.
+pub fn name_saved(src: &str) -> Option<String> {
+    let b = src.as_bytes();
+    let (mut out, mut from, mut name, mut i) = (String::new(), 0, String::new(), 0);
+    while i < b.len() {
+        if b[i] == b';' {
+            name.clear();
+        }
+        if !(b[i].is_ascii_alphabetic() || b[i] == b'_') {
+            i = skip_literal(b, i) + 1;
+            continue;
+        }
+        let end = ident_end(b, i);
+        match &src[i..end] {
+            "static" => {
+                let at = skip_space(b, end);
+                name = src[at..ident_end(b, at)].to_ascii_lowercase();
+            }
+            "Table" if !name.is_empty() && src[end..].starts_with("::saved()") => {
+                out.push_str(&src[from..end + 7]);
+                let _ = write!(out, "({name:?})");
+                from = end + 9;
+            }
+            _ => {}
+        }
+        i = end;
+    }
+    out.push_str(&src[from..]);
+    (from > 0).then_some(out)
+}
+
 /// `s` with its comments blanked out.
 fn strip_comments(s: &str) -> String {
     let b = s.as_bytes();
@@ -1557,5 +1595,20 @@ fn a() {}"
                 .contains("needs one, like `id: u64`")
         );
         assert!(!takes_cx(&f[3]));
+    }
+
+    #[test]
+    fn saved_tables_are_named_for_their_statics() {
+        let src = "static USERS: Table<U> = Table::saved();\n// Table::saved()\nlet s = \"Table::saved()\";\npub static Post_Items: wisp::Table<P> = Table::saved();\nstatic OLD: Table<U> = Table::saved(\"old\");";
+        let want = "static USERS: Table<U> = Table::saved(\"users\");\n// Table::saved()\nlet s = \"Table::saved()\";\npub static Post_Items: wisp::Table<P> = Table::saved(\"post_items\");\nstatic OLD: Table<U> = Table::saved(\"old\");";
+        assert_eq!(name_saved(src).as_deref(), Some(want));
+        assert_eq!(name_saved("static A: Table<U> = Table::new();"), None);
+        assert_eq!(name_saved("let t = Table::saved();"), None);
+    }
+
+    #[test]
+    fn model_derives_what_actions_read() {
+        let items = scan("#[model]\nstruct Post { title: String }").unwrap();
+        assert_eq!(items.types[0].derives, ["Json", "FromJson", "Clone"]);
     }
 }
