@@ -18,7 +18,7 @@ fn everywhere() {
     redirect("/")
 }
 
-let me = cx.user(&PEOPLE)?;
+let me = cx.user()?;
 ---
 <h1>{me.name}</h1>
 {#if me.avatar.is_some()}

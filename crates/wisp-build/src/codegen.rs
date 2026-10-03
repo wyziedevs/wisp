@@ -499,6 +499,7 @@ fn generate_web(input: &Input) -> Result<(String, String, Web), String> {
     let mut g = Gen {
         out: String::new(),
         release: input.release,
+        users: None,
     };
     g.modules(&p, &web)?;
     g.servers(&p);
@@ -1515,8 +1516,13 @@ impl Gen {
             lit(crate::runtime_version())
         ));
         self.line(0, "");
-        if p.hooks.is_none() {
-            self.line(0, "pub mod hooks {}");
+        match &p.hooks {
+            None => self.line(0, "pub mod hooks {}"),
+            Some(h) => {
+                let rel = p.rel(&h.file);
+                let src = crate::read_source(&h.file).map_err(|e| format!("{rel}: {e}"))?;
+                self.users = rust_scan::users_table(&src).map_err(|e| format!("{rel}: {e}"))?;
+            }
         }
         // Modules of the app's own (`src/notes.rs`), reachable by name from
         // every route file and as `crate::notes` (see `wisp::app!`).
@@ -1541,7 +1547,7 @@ impl Gen {
             self.call_mod(m, &twins);
             for (t, c) in p.templates.iter().zip(&web.clients) {
                 if t.user.as_ref().is_some_and(|(u, _)| *u == m.name) {
-                    self.template(t, &p.comps, c.as_ref());
+                    self.template(t, &p.comps, c.as_ref())?;
                 }
             }
             self.line(0, "}");
@@ -1581,7 +1587,7 @@ impl Gen {
         }
         for (t, c) in p.templates.iter().zip(&web.clients) {
             if t.user.is_none() {
-                self.template(t, &p.comps, c.as_ref());
+                self.template(t, &p.comps, c.as_ref())?;
             }
         }
         Ok(())
@@ -3187,6 +3193,8 @@ fn if_condition(cond: &str, locals: &[String]) -> String {
 struct Gen {
     out: String,
     release: bool,
+    /// The users table `init` names (`db::USERS`), which `cx.user()` reads.
+    users: Option<String>,
 }
 
 impl Gen {
@@ -3217,12 +3225,15 @@ impl Gen {
         self.line(1, "#[allow(unused_imports)]");
         self.line(1, &format!("use {glob};"));
         let named = rust_scan::name_saved(&src[top..]);
-        let code = named.as_deref().unwrap_or(&src[top..]);
+        let tail = named.as_deref().unwrap_or(&src[top..]);
         if m.inline.is_some() {
             let first = src[..top].matches('\n').count() + 1;
-            self.rust_lines(1, code, first, rel);
+            self.rust_lines(1, tail, first, rel)?;
+        } else if let Some(code) = self.bound(tail, rel)? {
+            self.out.push_str(&code);
+            self.out.push('\n');
         } else if top > 0 || named.is_some() {
-            self.out.push_str(code);
+            self.out.push_str(tail);
             self.out.push('\n');
         } else {
             self.line(1, &format!("include!({});", lit(&m.file.to_string_lossy())));
@@ -3264,7 +3275,15 @@ impl Gen {
     /// each line marked with where it is (`// file.wisp:7`) so that rustc's
     /// errors are told against the file. Blank lines are left out, and a
     /// line inside a string is written as it is.
-    fn rust_lines(&mut self, ind: usize, code: &str, first: usize, rel: &str) {
+    fn rust_lines(
+        &mut self,
+        ind: usize,
+        code: &str,
+        first: usize,
+        rel: &str,
+    ) -> Result<(), String> {
+        let bound = self.bound(code, rel)?;
+        let code = bound.as_deref().unwrap_or(code);
         let ends = rust_scan::line_ends_in_code(code);
         let mut inside = false;
         for (k, l) in code.split('\n').enumerate() {
@@ -3284,9 +3303,15 @@ impl Gen {
             self.out.push('\n');
             inside = !safe;
         }
+        Ok(())
     }
 
-    fn template(&mut self, t: &Tpl, comps: &[Comp], client: Option<&Client>) {
+    /// `code` with its `cx.user()`s given the users table, if it has any.
+    fn bound(&self, code: &str, rel: &str) -> Result<Option<String>, String> {
+        rust_scan::bind_user(code, self.users.as_deref()).map_err(|e| format!("{rel}: {e}"))
+    }
+
+    fn template(&mut self, t: &Tpl, comps: &[Comp], client: Option<&Client>) -> Result<(), String> {
         self.line(0, &format!("// {}", t.rel));
         self.line(0, "#[doc(hidden)]");
         self.line(0, "#[allow(unused_imports, unused_variables, unused_mut, unused_parens, unused_braces, unused_macros, dead_code, clippy::all)]");
@@ -3382,7 +3407,7 @@ impl Gen {
             for b in binds {
                 self.line(2, b);
             }
-            self.rust_lines(2, stmts, 1, &t.rel);
+            self.rust_lines(2, stmts, 1, &t.rel)?;
             if t.kind == Kind::Page {
                 self.line(2, "let cx: &::wisp::Cx = cx;");
                 self.line(2, "__wrap(__o, cx, &|__o: &mut ::wisp::Out| {");
@@ -3505,6 +3530,7 @@ impl Gen {
         }
         self.line(0, "}");
         self.line(0, "");
+        Ok(())
     }
 
     /// Writes `pieces`, JSON with Rust values in it, to `buf` (a `&mut String`).
@@ -6460,6 +6486,18 @@ mod tests {
         }
         assert_eq!(code.matches("::__call::__ready();").count(), 3, "{code}");
         assert!(!code.contains("C.ready()"), "{code}");
+    }
+
+    #[test]
+    fn cx_user_needs_the_users_table() {
+        let page = ("src/routes/+page.wisp", "---\nlet me = cx.user()?;\n---\nx");
+        let err = app("user-none", &[page]).unwrap_err();
+        assert!(err.contains("wisp::users(&db::USERS)"), "{err}");
+        let hooks = ("src/hooks.rs", "fn init() { wisp::users(&db::USERS); }");
+        let db = ("src/db.rs", "pub static USERS: Table<u8> = Table::saved();");
+        let code = app("user-some", &[page, hooks, db]).unwrap();
+        assert!(code.contains("cx.user(&db::USERS)?"), "{code}");
+        assert!(code.contains("Table::saved(\"users\")"), "{code}");
     }
 
     #[test]

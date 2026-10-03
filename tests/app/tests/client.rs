@@ -558,6 +558,13 @@ fn members_sign_in_and_upload_a_picture() {
     let nobody = app.post_form("/join?/enter", &[("name", "bob"), ("password", "horse")]);
     assert_eq!(nobody.status, 422);
     assert!(nobody.text().contains("Wrong name or password"));
+    // A name taken is the one thing sign-up says no to.
+    let twice = app.post_form(
+        "/join?/join",
+        &[("name", "ada"), ("password", "another one")],
+    );
+    assert_eq!(twice.status, 422);
+    assert!(twice.text().contains("Already signed up"));
     let back = app.post_form(
         "/join?/enter",
         &[("name", "ada"), ("password", "correct horse")],

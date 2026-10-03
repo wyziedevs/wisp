@@ -6,6 +6,7 @@ pub struct User(pub String);
 
 fn init() {
     wisp::provide(Greeting("hello from init"));
+    wisp::users(&people::PEOPLE);
 }
 
 fn before(cx: &mut Cx) -> Result<Option<Response>> {
