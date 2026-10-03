@@ -7,6 +7,7 @@ mod codegen;
 pub mod csp;
 pub mod fmt;
 mod fold;
+mod i18n;
 pub mod ide;
 pub mod image;
 pub mod inspect;

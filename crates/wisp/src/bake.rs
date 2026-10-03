@@ -195,7 +195,8 @@ impl Store {
 
 /// The key of `cx` in `buf`: `Host`, a NUL, then the path and query; and
 /// with `ACCEPT` (a route whose answer varies by `accept`), a NUL and what
-/// it asks for: `n` for NDJSON, `j` for JSON.
+/// it asks for: `n` for NDJSON, `j` for JSON; in an app with locales, a
+/// NUL, `l` and the request's locale.
 fn key<'k, const ACCEPT: bool>(buf: &'k mut Vec<u8>, cx: &Cx) -> &'k [u8] {
     buf.clear();
     buf.extend_from_slice(cx.header("host").unwrap_or("").as_bytes());
@@ -212,6 +213,10 @@ fn key<'k, const ACCEPT: bool>(buf: &'k mut Vec<u8>, cx: &Cx) -> &'k [u8] {
             b"\0j"
         };
         buf.extend_from_slice(asked);
+    }
+    // A page in another locale is another answer.
+    if !crate::locales().is_empty() {
+        buf.extend_from_slice(&[0, b'l', crate::i18n::pick(cx)]);
     }
     buf
 }

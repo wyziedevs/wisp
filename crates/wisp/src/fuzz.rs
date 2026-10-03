@@ -51,6 +51,7 @@ pub static MODULE: crate::ClientModule = crate::ClientModule {
     etag: "\"1\"",
     source: "define(\"fuzz\", () => ({ g: [] }));",
     preload: "",
+    texts: &[],
 };
 
 impl App for Fuzz {

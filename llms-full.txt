@@ -19,6 +19,7 @@ src/NAME.rs                 any module, no `mod` line: `NAME::f()` everywhere
 src/components/Card.wisp    <Card title={x}>…</Card>
 src/lib/*.js (or .ts)       browser modules, `import … from '$lib/x.js'` (or `'$lib/x'`)
 src/params/word.rs          fn matches(s: &str) -> bool, for [x=word]
+src/locales/en.json         messages, fr.json etc.: {t("key")} (see Translations)
 src/routes/…/+page.wisp     page: optional `---` Rust block, then markup
 src/routes/…/+layout.wisp   wraps pages below; must <slot /> (or {@render children()})
 src/routes/…/+error.wisp    error page; has `status`, `message`, `cx`
@@ -29,8 +30,8 @@ static/…                    served at /
 ```
 
 Folders: `blog` static, `[slug]` param, `[[lang]]` optional, `[...rest]`
-rest, `[id=int]` digits only (u64), `[x=word]` custom matcher, `(group)` not
-in URL. `+page.rs`/`+layout.rs` still work instead of a block (not both).
+rest, `[id=int]` digits only (u64), `[x=word]` custom matcher,
+`[[lang=locale]]` one of `src/locales`, `(group)` not in URL. `+page.rs`/`+layout.rs` still work instead of a block (not both).
 `/sitemap.xml` (pages without params, or with `entries()`; not `(private)`
 groups or `<meta name="robots" content="noindex">` pages; host from env
 `SITE_URL`, else the request) and `/robots.txt` pointing to it are made;
@@ -175,6 +176,16 @@ shift). `wisp build` adds WebP at up to 3 widths (by a pinned cwebp,
 `$WISP_CWEBP`; none → a warning, the original), cached by hash in
 `.wisp/img`, as `srcset`, `sizes="100vw"`, `loading="lazy"`,
 `decoding="async"`. Attributes you write stay; `data-wisp-raw` opts out.
+
+Translations: `src/locales/en.json` (`{"cart": {"items": "{count, plural,
+=0 {No items} one {# item} other {# items}}"}, "hi": "Hello, {name}!"}`),
+`fr.json`…; `{t("cart.items", count)}`, `{t("hi", name = user.name)}` (or
+`name` alone); in scripts `t('cart.items', n)`, `t('hi', { name })`, no
+import. Keys, placeholders and plural cases are checked across locales at
+build. Locale: `[[lang=locale]]`, then cookie `lang`, then
+`Accept-Language`, then the first (or `wisp::default_locale("fr")?` in
+`init`); `cx.locale()`, `<html lang>` follow. Switcher:
+`wisp::locales()`, `wisp::localize(cx.path(), "fr")`.
 
 Holes can't go in `on*` attrs, tag names, `javascript:` URLs, SVG
 `<animate>`/`<set>` `to`/`from`/`values`/`by`, or `<meta http-equiv>`/refresh
@@ -388,7 +399,7 @@ takes the no-wait fast path off every route.
 - `cx`: `path() param(n) query(n) query_or(n, d) input(n) problem(n) form()
   .get/.file/.files body() header(n) header_or(n, d) bearer() need_bearer(env)
   writes() need_signature(env, header)
-  basic_auth() cookie(n)
+  basic_auth() locale() cookie(n)
   cookie_or(n, d) set_cookie(n, v) delete_cookie(n) signed_cookie(n)
   set_signed_cookie(n, v) sign_in(id) sign_out() signed_in() user(&TABLE)
   flash(msg) flashed() set(v) get::<T>() take::<T>()
@@ -1128,6 +1139,47 @@ A snippet is markup a file renders more than once, or gives to a component:
 - `{:@render row(x)}` has the browser draw it: the arguments are
   JavaScript, and the body uses its parameters in `{:…}` (see
   [client.md](client.md)).
+
+### Translations
+
+One JSON file per locale in `src/locales`, flat or nested keys:
+
+```json
+{ "cart": { "title": "Your cart",
+            "items": "{count, plural, =0 {No items} one {# item} other {# items}}" },
+  "hi": "Hello, {name}!" }
+```
+
+```html
+<h1>{t("cart.title")}</h1>
+<p>{t("cart.items", count)} {t("hi", name = user.name)}</p>
+<button on:click="n++">{:t('cart.items', n)}</button>
+```
+
+- Messages are ICU's subset: `{name}`, and `{n, plural, …}` with `=N`
+  cases and the locale's CLDR ones (`one`, `few`, …; `other` required, `#`
+  is the count). `'{'` is a brace, `''` an apostrophe. A plural counts by
+  a whole number.
+- Values: one, for a message with one placeholder; else by name
+  (`name = expr`, or a variable of that name alone). In a script, one, or
+  an object: `t('hi', { name })`.
+- Checked at build, each at its file and line: a key missing from any
+  locale, a placeholder one locale has and another lacks, a case the
+  language has not, an unknown key, values that do not match.
+- Compiled to an index: `t("cart.title")` is a `&'static str` from a table
+  per locale (it can be a `&str` prop), with values it writes as it is
+  displayed. No lookup by key at run time.
+- The locale: the route's `[[lang=locale]]` (a built-in matcher of the
+  app's locales), then the `lang` cookie, then `Accept-Language`, then the
+  default (the first file, or `wisp::default_locale("fr")?` in `init`).
+  `cx.locale()` says it, `<html lang>` is set to it, and a `CACHE`d page is
+  kept per locale.
+- A page's scripts get only the messages they use, in its locale, with
+  the page; their plurals follow `Intl.PluralRules`. `src/lib` modules
+  cannot call `t`: pass them the text.
+- Switchers: `{#each wisp::locales().iter() as l}<a
+  href={wisp::localize(cx.path(), l)}>{l}</a>{/each}` (`/fr/about` →
+  `/en/about`).
 
 ### Actions and `wisp.js`
 
@@ -2121,6 +2173,15 @@ PUBLIC_API_URL=https://api.example.com
 - `env` read whole, or `env[name]`, is an error too: names are filled in
   one at a time. A variable or parameter of your own named `env` is just
   that.
+
+## Translations
+
+`t('cart.items', n)` in a script or directive shows a message of
+`src/locales` (see [design.md](design.md#translations)), with no import.
+The key is checked at build; the page sends the messages its scripts use,
+in its locale, and nothing else. Several values go in an object:
+`t('hi', { name, count: n })`. A `t` of your own is just that; `src/lib`
+code cannot call it (pass it the text).
 
 ## Directives
 

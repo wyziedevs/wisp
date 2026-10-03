@@ -162,17 +162,23 @@ pub fn scan(routes_dir: &Path) -> Result<Tree, String> {
             }
         }
         for seg in &r.segs {
-            let (Seg::Param(_, Some(m)) | Seg::Optional(_, Some(m))) = seg else {
+            let (Seg::Param(n, Some(m)) | Seg::Optional(n, Some(m))) = seg else {
                 continue;
             };
+            if m == "locale" && n != "lang" {
+                return Err(format!(
+                    "{}: the locale's parameter is `lang`: [[lang=locale]]",
+                    show(&r.dir)
+                ));
+            }
             if matchers.iter().any(|(n, _)| n == m) {
                 continue;
             }
             let file = routes_dir.with_file_name("params").join(format!("{m}.rs"));
             let file = file.is_file().then_some(file);
-            if file.is_none() && m != "int" {
+            if file.is_none() && m != "int" && m != "locale" {
                 return Err(format!(
-                    "{}: no param matcher `{m}`: add src/params/{m}.rs with `fn matches(s: &str) -> bool` (`int` is built in)",
+                    "{}: no param matcher `{m}`: add src/params/{m}.rs with `fn matches(s: &str) -> bool` (`int` and `locale` are built in)",
                     show(&r.dir)
                 ));
             }

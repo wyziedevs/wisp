@@ -31,7 +31,8 @@
 //! its server values and, for an island, how it starts (`ISLAND_*`). The
 //! optional part last, both scripts read a record by place, with nothing
 //! to work out. `r` and `p` are the route id and parameters of a page with
-//! a `+page.js`.
+//! a `+page.js`. `t` holds the messages the page's scripts show, by key,
+//! in the request's locale.
 
 /// Opens the instance list, up to the first module of `m`: the scripts
 /// find it by its id.
@@ -42,6 +43,9 @@ pub const LIVE_RECORDS: &str = "},\"i\":[";
 pub const LIVE_ROUTE: &str = ",\"r\":";
 /// Between the route id and its parameters.
 pub const LIVE_PARAMS: &str = ",\"p\":{";
+/// Before the messages the page's scripts show (`t('key')`): an object
+/// of them by key.
+pub const LIVE_TEXTS: &str = ",\"t\":{";
 /// Closes the instance list.
 pub const LIVE_CLOSE: &str = "}</script>";
 
@@ -135,6 +139,7 @@ mod tests {
             format!("{ON_ROOT} for an event the root handles"),
             format!("b & {ON_PLACED_JS}"),
             "i.map(([I, id, P, blob, how]) =>".into(),
+            format!("{} = {{}}", &LIVE_TEXTS[2..3]),
         ];
         let in_wisp = [
             format!("getElementById({})", q(LIVE_ID)),

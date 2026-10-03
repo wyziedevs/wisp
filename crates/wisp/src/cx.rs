@@ -579,6 +579,17 @@ impl Cx {
         parsed_or(self.cookie(name), default)
     }
 
+    /// The request's locale, one of [`crate::locales`]: the route's
+    /// `[[lang=locale]]`, else the `lang` cookie, else the best of
+    /// `Accept-Language`, else the default ([`crate::default_locale`]).
+    /// `""` in an app without `src/locales`.
+    pub fn locale(&self) -> &'static str {
+        let list = crate::locales();
+        list.get(crate::i18n::pick(self) as usize)
+            .copied()
+            .unwrap_or("")
+    }
+
     /// A cookie set with [`Cx::set_signed_cookie`], if its signature holds.
     /// A visitor can read it but cannot make one up or change it, so it can
     /// say who is signed in. Anything else of that name is `None`.
