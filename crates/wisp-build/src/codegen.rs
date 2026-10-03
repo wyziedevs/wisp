@@ -1900,12 +1900,26 @@ impl Gen {
         );
         let css = css.map_or("None".into(), |v| format!("Some({})", lit(v)));
         self.line(1, &format!("const CSS: Option<&'static str> = {css};"));
+        let mut hashes = shell::hashes(&p.shell);
+        hashes.extend(p.templates.iter().flat_map(|t| t.t.hashes.iter().cloned()));
+        hashes.sort_unstable();
+        hashes.dedup();
+        if !hashes.is_empty() {
+            let all: Vec<String> = hashes.iter().map(|h| lit(h)).collect();
+            self.line(
+                1,
+                &format!(
+                    "const SCRIPT_HASHES: &'static [&'static str] = &[{}];",
+                    all.join(", ")
+                ),
+            );
+        }
         self.routes(p, assets);
         // Template 0 is the shell.
         let shell = [format!(
             "({}, 0x{:016x})",
             lit("src/app.html"),
-            shell::SHAPE
+            shell::shape(&p.shell)
         )];
         let tpls: Vec<String> = shell
             .into_iter()

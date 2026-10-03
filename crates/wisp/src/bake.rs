@@ -96,6 +96,13 @@ pub(crate) fn reply(cx: &Cx, made: Made, reply: &mut Reply) {
         }
     };
     if !fresh {
+        // A kept page has its policy in its head already.
+        if let (Made::Baked(_), Some(policy)) = (&made, crate::csp::header()) {
+            reply.headers.push((
+                Cow::Borrowed("content-security-policy"),
+                Cow::Borrowed(policy),
+            ));
+        }
         reply.status = 200;
         reply.body = Body::Made(made);
         return;
@@ -272,6 +279,9 @@ pub fn keep<A: App, const ACCEPT: bool>(cx: &mut Cx, out: &mut Out, secs: u32, p
     let body = match out.response.take() {
         None => {
             line(&mut head, "content-type", "text/html; charset=utf-8");
+            if let Some(policy) = crate::csp::header() {
+                line(&mut head, "content-security-policy", policy);
+            }
             crate::http::page::<A>(out).concat().into_bytes()
         }
         Some(r)

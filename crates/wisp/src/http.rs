@@ -2052,6 +2052,14 @@ impl Reply {
         self.headers.clear();
         self.headers
             .push((Cow::Borrowed("content-type"), Cow::Borrowed(content_type)));
+        if matches!(body, Body::Page)
+            && let Some(policy) = crate::csp::header()
+        {
+            self.headers.push((
+                Cow::Borrowed("content-security-policy"),
+                Cow::Borrowed(policy),
+            ));
+        }
         self.body = body;
     }
 
