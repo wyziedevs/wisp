@@ -20,7 +20,7 @@
   margin: 0;
   padding: 0 0.75rem;
   border: 1px solid var(--wisp-line);
-  border-radius: 0.375rem;
+  border-radius: var(--wisp-radius);
   background: var(--wisp-panel);
   box-shadow: var(--wisp-raised);
   color: var(--wisp-ink);
