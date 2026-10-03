@@ -8,6 +8,73 @@ use wisp::test::client;
 use wisp::{Body, Request, Value};
 use wisp_test_app::Site;
 
+/// The component workshop (dev builds): every component, stories from
+/// `Card.stories.wisp` rendered by the server with their props from the
+/// query, a default story for a component that needs nothing, and a note
+/// for one that needs a story.
+#[test]
+fn the_workshop_renders_stories() {
+    let mut app = client::<Site>();
+    let index = app.get("/_wisp/components");
+    if !cfg!(debug_assertions) {
+        assert_eq!(index.status, 404, "dev builds only");
+        return;
+    }
+    let text = index.text();
+    assert!(
+        text.contains("src/components/Card.wisp") && text.contains("2 stories"),
+        "{text}"
+    );
+    let page = app.get("/_wisp/components/Card/featured?title=Mint");
+    let text = page.text();
+    assert!(
+        text.contains("name=\"title\" data-set value=\"Mint\""),
+        "{text}"
+    );
+    assert!(text.contains("name=\"featured\" checked"), "{text}");
+    assert!(
+        text.contains("/_wisp/components/Card/featured/frame?title=Mint"),
+        "{text}"
+    );
+    let frame = app.get("/_wisp/components/Card/featured/frame");
+    let text = frame.text();
+    assert!(
+        text.contains("<h2>Tea ★</h2>")
+            && text.contains("3 items")
+            && text.contains("A pot for two."),
+        "{text}"
+    );
+    assert!(
+        text.contains("/_app/wisp.js?v="),
+        "in the app's shell: {text}"
+    );
+    let text = app
+        .get("/_wisp/components/Card/featured/frame?title=Mint&featured=false&count=9")
+        .text()
+        .to_string();
+    assert!(
+        text.contains("<h2>Mint</h2>") && text.contains("9 items"),
+        "{text}"
+    );
+    let text = app
+        .get("/_wisp/components/Card/empty/frame")
+        .text()
+        .to_string();
+    assert!(
+        text.contains("<h2>Nothing yet</h2>") && text.contains("0 items"),
+        "{text}"
+    );
+    let text = app
+        .get("/_wisp/components/Tally/default/frame")
+        .text()
+        .to_string();
+    assert!(text.contains("class=\"tally\""), "{text}");
+    let text = app.get("/_wisp/components/Table").text().to_string();
+    assert!(text.contains("Add Table.stories.wisp beside it"), "{text}");
+    assert_eq!(app.get("/_wisp/components/Card/nope").status, 404);
+    assert_eq!(app.get("/_wisp/components/Nope/frame/x/y").status, 404);
+}
+
 #[test]
 fn pages_hooks_and_errors() {
     let mut app = client::<Site>();
@@ -34,7 +101,7 @@ fn pages_hooks_and_errors() {
         (missing.status, missing.header("x-app")),
         (404, Some("test"))
     );
-    assert!(missing.text().contains("There is nothing at this address."));
+    assert!(missing.text().contains("<p>Not Found</p>"));
 
     let slash = app.get("/login/?a=1");
     assert_eq!(
@@ -709,4 +776,96 @@ fn one_visitor_never_gets_another_visitors_answer() {
     let again = app.post_json("/users/42/items", body);
     assert_eq!(again.header("idempotent-replayed"), Some("true"));
     assert_eq!(again.text(), ann.text());
+}
+
+/// pushState and replaceState need no import: every module gets them from
+/// live.js, which sends them to wisp.js, which keeps the history.
+#[test]
+fn shallow_routing_helpers() {
+    let mut app = client::<Site>();
+    let page = app.get("/a2/shallow").text().to_string();
+    let at = page.find("/_app/c/t").expect("a module");
+    let url = &page[at..at + page[at..].find('"').unwrap()];
+    let module = app.get(url).text().to_string();
+    assert!(
+        module.contains("pushState('?tab=2', { tab: 2 })"),
+        "{module}"
+    );
+    assert!(module.contains("pushState, replaceState, "), "{module}");
+    let at = page.find("/_app/live.js").expect("the runtime");
+    let live = app
+        .get(&page[at..at + page[at..].find('"').unwrap()])
+        .text()
+        .to_string();
+    assert!(live.contains("export const pushState") && live.contains("'wisp:push'"));
+    let wisp = app.get("/_app/wisp.js").text().to_string();
+    assert!(wisp.contains("'wisp:push'") && wisp.contains("'wisp:pop'"));
+}
+
+/// Snapshots: wisp.js keeps fields per history entry; a script's
+/// `export const snapshot` is handed to extra.js, which its module imports.
+#[test]
+fn snapshots_are_kept_per_entry() {
+    let mut app = client::<Site>();
+    let wisp = app.get("/_app/wisp.js").text().to_string();
+    assert!(wisp.contains("sessionStorage") && wisp.contains("[autocomplete=off]"));
+    let page = app.get("/a2/snap").text().to_string();
+    let at = page.find("/_app/c/t").expect("a module");
+    let module = app
+        .get(&page[at..at + page[at..].find('"').unwrap()])
+        .text()
+        .to_string();
+    assert!(
+        module.contains("], snap: snapshot };") && module.contains("/_app/c/extra.js"),
+        "{module}"
+    );
+    // A page without one pays nothing for it.
+    let page = app.get("/a2/shallow").text().to_string();
+    let at = page.find("/_app/c/t").expect("a module");
+    let module = app
+        .get(&page[at..at + page[at..].find('"').unwrap()])
+        .text()
+        .to_string();
+    assert!(
+        !module.contains("snap:") && !module.contains("extra.js"),
+        "{module}"
+    );
+}
+
+/// Server components: `Plain` has no browser code, so the page names no
+/// module for it, though islands sit around and inside it.
+#[test]
+fn server_components_ship_no_js() {
+    let mut app = client::<Site>();
+    let page = app.get("/a2/server").text().to_string();
+    assert!(page.contains("<p>slotted</p>") && page.contains("<p>direct</p>"));
+    let json = &page[page.find("id=\"wisp-live\">").expect("instances")..];
+    let map = &json[..json.find("},\"i\"").unwrap()];
+    assert_eq!(
+        map.matches("/_app/c/t").count(),
+        3,
+        "Panel, Ping, Tally: {map}"
+    );
+    // Each Ping waits for itself, inside its Panel island.
+    assert_eq!(json.matches(",{},\"v\"]").count(), 3, "{json}");
+}
+
+/// `const SSR: bool = false;`: the server sends the page's head, its
+/// markup as a template it does not paint, and its data; the browser
+/// draws it.
+#[test]
+fn a_page_without_server_rendering_sends_its_data() {
+    let mut app = client::<Site>();
+    let page = app.get("/drawn");
+    let text = page.text();
+    assert_eq!(page.status, 200, "{text}");
+    assert!(text.contains("<title>Drawn Tea</title>"), "{text}");
+    assert!(text.contains("<template data-w=\""), "{text}");
+    // Nothing painted: no copy after the template.
+    assert!(!text.contains("<!--[-->"), "{text}");
+    let data = &text[text.find("id=\"wisp-live\"").expect("a live page")..];
+    assert!(
+        data.contains("\"Tea\"") && data.contains("[1,2,3]"),
+        "{data}"
+    );
 }

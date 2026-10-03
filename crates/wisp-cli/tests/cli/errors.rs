@@ -68,7 +68,7 @@ fn target_error_lists_the_hosts() {
     );
     has(
         &o.err,
-        &["cloudflare, deno, vercel, netlify, node, static and docker."],
+        &["cloudflare, deno, vercel, netlify, node, bun, lambda, native, static and docker."],
     );
 }
 
@@ -89,12 +89,12 @@ fn dev_arguments() {
 }
 
 #[test]
-fn check_takes_no_options() {
+fn check_takes_only_types() {
     let cwd = Dir::new("check-args");
     fail(
         &cwd,
         &["check", "--fix"],
-        "Unexpected --fix.\n    wisp check takes no options.",
+        "Unexpected --fix.\n    wisp check takes --types, to check TypeScript with tsc.",
     );
 }
 

@@ -66,7 +66,10 @@ const LIVE_JS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/live.js"));
 /// and linked only by debug builds, so none of it ships in a release
 /// binary's pages.
 const DEV_JS: &[u8] = include_bytes!("client/wisp-dev.js");
-/// Also inlined into the fallback error page (`rt::default_error`).
+/// The devtools overlay (`Alt+Shift+W`): debug builds only.
+#[cfg(debug_assertions)]
+const DEVTOOLS_JS: &[u8] = include_bytes!("client/wisp-devtools.js");
+/// Also inlined into the API docs page and the workshop.
 pub(crate) const UI_CSS: &str = include_str!("client/ui.css");
 const DIALOG_CSS: &[u8] = include_bytes!("client/dialog.css");
 
@@ -711,11 +714,15 @@ pub(crate) async fn write(stream: &mut (impl AsyncWriteExt + Unpin), buf: &[u8])
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) async fn serve<A: App>(addr: SocketAddr) -> io::Result<()> {
     crate::prepare::<A>().await?;
-    let listener = TcpListener::from_std({
-        let l = bind(addr)?;
-        l.set_nonblocking(true)?;
-        l
-    })?;
+    serve_on::<A>(bind(addr)?).await
+}
+
+/// [`serve`] on a socket already bound, once [`crate::prepare`] has run:
+/// `wisp::test::browser` binds port 0 to learn its port first.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) async fn serve_on<A: App>(listener: std::net::TcpListener) -> io::Result<()> {
+    listener.set_nonblocking(true)?;
+    let listener = TcpListener::from_std(listener)?;
     started(listener.local_addr()?);
     let max = crate::settings().max_conns;
     loop {
@@ -756,8 +763,9 @@ fn started(addr: SocketAddr) {
 /// the built-in server. Cheap to call again.
 pub(crate) fn setup<A: App>() {
     install_panic_hook();
-    crate::otel::init();
+    crate::obs::init(A::ROUTES);
     let _ = crate::sign::ROOT.set(A::ROOT);
+    crate::i18n::ready(A::LOCALES);
     if crate::settings().dev {
         dev::listed(A::ROOT, "/"); // lists `static/` now, not in the first request
     }
@@ -776,10 +784,17 @@ pub(crate) fn setup<A: App>() {
             env!("WISP_RUNTIME_V"),
             "\"></script>"
         ));
+        if let Some(p) = A::PWA {
+            s.push_str(p.head);
+            crate::pwa::icons(p.icons);
+        }
         if let Some(port) = dev::events_port() {
             s.push_str(&format!(
                 "<script defer src=\"/_app/wisp-dev.js\" data-port=\"{port}\"></script>"
             ));
+            if cfg!(debug_assertions) {
+                s.push_str("<script defer src=\"/_app/wisp-devtools.js\"></script>");
+            }
         }
         s
     });
@@ -1117,7 +1132,7 @@ async fn decider<A: App>() {
                 Job::Page(f) => {
                     render_error::<A>(f.route, cx, out, f.page).await;
                     answered(cx, reply, f.started, f.failure);
-                    tag(cx, reply);
+                    tag(cx, out, reply);
                 }
             }
         }
@@ -1158,10 +1173,16 @@ fn decide_now<A: App>(
     if crate::settings().request_id {
         cx.request_id();
     }
-    if !before_routes::<A>(cx, route, reply) {
+    if crate::obs::on() {
+        crate::obs::begin(cx, route, &mut out.obs);
+    }
+    if !before_routes::<A>(cx, route, out, reply) {
         let timed = crate::settings().timed;
         let started = timed.then(Instant::now);
         out.clear();
+        if out.obs.is_some() {
+            crate::obs::hand(&out.obs);
+        }
         let Some(result) = catch_now(timed, || A::handle_now(route, cx, out)) else {
             return Some(Job::Decide(route));
         };
@@ -1176,7 +1197,7 @@ fn decide_now<A: App>(
         }
         answered(cx, reply, started, failure);
     }
-    tag(cx, reply);
+    tag(cx, out, reply);
     None
 }
 
@@ -2037,7 +2058,7 @@ const MAX_BODY: usize = 1 << 31;
 /// `WISP_BODY_LIMIT`, and at most `MAX_BODY`. Only requests with a body
 /// look it up.
 pub(crate) fn body_limit<A: App>(path: &str) -> usize {
-    let route = path.starts_with('/').then(|| A::route(path)).flatten();
+    let route = path.starts_with('/').then(|| find::<A>(path)).flatten();
     limit_of::<A>(route.map(|(id, _)| id))
 }
 
@@ -2242,15 +2263,23 @@ impl Reply {
 
     /// Starts over as a response of `content_type`. The headers keep their
     /// capacity, so a connection's `Reply` allocates nothing once warm.
-    fn set(&mut self, status: u16, content_type: &'static str, body: Body) {
+    pub(crate) fn set(&mut self, status: u16, content_type: &'static str, body: Body) {
         self.status = status;
         self.headers.clear();
         self.headers
             .push((Cow::Borrowed("content-type"), Cow::Borrowed(content_type)));
+        if matches!(body, Body::Page)
+            && let Some(policy) = crate::csp::header()
+        {
+            self.headers.push((
+                Cow::Borrowed("content-security-policy"),
+                Cow::Borrowed(policy),
+            ));
+        }
         self.body = body;
     }
 
-    fn set_plain(&mut self, status: u16, text: &'static str) {
+    pub(crate) fn set_plain(&mut self, status: u16, text: &'static str) {
         self.set(
             status,
             "text/plain; charset=utf-8",
@@ -2394,6 +2423,9 @@ pub(crate) async fn answer<A: App>(mut cx: Cx, upgrade: &mut Option<crate::ws::U
                 .push((Cow::Borrowed("content-length"), Cow::Owned(len.to_string())));
         }
     }
+    if out.obs.is_some() {
+        crate::obs::finish(&mut out.obs, reply.status, reply.bytes().len());
+    }
     reply
 }
 
@@ -2470,9 +2502,15 @@ async fn decide<A: App>(
     }
     // Routed first (it only matches), so the path is read once.
     let route = routed.unwrap_or_else(|| route::<A>(cx));
-    if !before_routes::<A>(cx, route, reply) {
+    if crate::obs::on() {
+        crate::obs::begin(cx, route, &mut out.obs);
+    }
+    if !before_routes::<A>(cx, route, out, reply) {
         let started = crate::settings().timed.then(Instant::now);
         out.clear();
+        if out.obs.is_some() {
+            crate::obs::hand(&out.obs);
+        }
         let result = catch_made(|| A::handle(route, cx, out)).await;
         let (failure, page) = settle(cx, out, reply, result);
         if let Some(page) = page {
@@ -2480,7 +2518,7 @@ async fn decide<A: App>(
         }
         answered(cx, reply, started, failure);
     }
-    tag(cx, reply);
+    tag(cx, out, reply);
 }
 
 /// Writes `res`, a handler's response, into `reply`.
@@ -2530,13 +2568,17 @@ fn settle(
     }
 }
 
-/// The reply's `x-request-id`, when the request has an id, and its HSTS
-/// (`WISP_HSTS=on`): the last thing every answer gets.
-fn tag(cx: &Cx, reply: &mut Reply) {
+/// The reply's `x-request-id`, when the request has an id, its
+/// `traceparent`, with traces on, and its HSTS (`WISP_HSTS=on`): the last
+/// thing every answer gets.
+fn tag(cx: &Cx, out: &Out, reply: &mut Reply) {
     if let Some(id) = cx.id() {
         reply
             .headers
             .push((Cow::Borrowed("x-request-id"), Cow::Owned(id.to_string())));
+    }
+    if out.obs.is_some() {
+        crate::obs::tag(&out.obs, reply);
     }
     if crate::headers::HSTS_ON.load(std::sync::atomic::Ordering::Relaxed) {
         crate::headers::hsts(reply);
@@ -2545,33 +2587,50 @@ fn tag(cx: &Cx, reply: &mut Reply) {
 
 /// What is answered before the routes: a path that is not one, Wisp's own
 /// files, a trailing slash, the app's files. Whether it was.
-fn before_routes<A: App>(cx: &Cx, route: Option<usize>, reply: &mut Reply) -> bool {
+fn before_routes<A: App>(cx: &Cx, route: Option<usize>, out: &mut Out, reply: &mut Reply) -> bool {
     // Its bytes: only a few of these need it as a `str`.
     let raw = cx.raw_path();
     if raw.first() != Some(&b'/') {
         reply.set_plain(400, "Bad Request");
         return true;
     }
-    if raw.starts_with(b"/_") && internal::<A>(cx, cx.path(), reply) {
+    if raw.starts_with(b"/_") && internal::<A>(cx, cx.path(), out, reply) {
         return true;
     }
     if raw.len() > 1 && raw.ends_with(b"/") {
-        // One leading slash: `//evil.example/` would send the browser to
-        // another site (and so would `/\evil.example/`).
-        let trimmed = cx.path().trim_matches(['/', '\\']);
-        let query = cx.query_string();
-        let location = if query.is_empty() {
-            format!("/{trimmed}")
-        } else {
-            format!("/{trimmed}?{query}")
-        };
-        reply.set_plain(308, "");
-        reply
-            .headers
-            .push((Cow::Borrowed("location"), Cow::Owned(location)));
+        if route.is_none() || slash() == TrailingSlash::Never {
+            slash_redirect(cx, reply, false);
+            return true;
+        }
+    } else if raw.len() > 1
+        && slash() == TrailingSlash::Always
+        && matches!(cx.method, Method::Get | Method::Head)
+        && route.is_some_and(|r| A::ROUTES[r].page)
+        && !cx
+            .path()
+            .rsplit('/')
+            .next()
+            .is_some_and(|last| last.contains('.'))
+    {
+        slash_redirect(cx, reply, true);
         return true;
     }
-    matches!(cx.method, Method::Get | Method::Head) && file::<A>(cx, raw, route, reply)
+    if !matches!(cx.method, Method::Get | Method::Head) {
+        return false;
+    }
+    if file::<A>(cx, raw, route, reply) {
+        return true;
+    }
+    // `/sitemap.xml` and `/robots.txt`, when no route or file is there.
+    let Some((body, mime)) = route
+        .is_none()
+        .then(|| crate::seo::answer::<A>(cx))
+        .flatten()
+    else {
+        return false;
+    };
+    reply.set(200, mime, Body::Bytes(body));
+    true
 }
 
 /// The reply to what the handler did, `result`: its response, page or
@@ -2628,23 +2687,18 @@ fn answered(cx: &mut Cx, reply: &mut Reply, started: Option<Instant>, failure: O
     cx.send_headers(&mut reply.headers);
     let method = cx.method.as_str();
     if let Some(started) = started {
-        crate::otel::span(cx, reply.status, started.elapsed());
-        if crate::settings().dev {
-            let blocked = Some(BLOCKED.replace(Duration::ZERO)).filter(|&b| b >= BLOCKING);
-            let (path, id) = (cx.path(), cx.id());
-            dev::log_request(
-                method,
-                path,
-                reply.status,
-                started.elapsed(),
-                failure.as_deref(),
-                blocked,
-                id,
-            );
-            return;
-        }
-    }
-    if let Some(f) = failure {
+        let blocked = Some(BLOCKED.replace(Duration::ZERO)).filter(|&b| b >= BLOCKING);
+        let (path, id) = (cx.path(), cx.id());
+        dev::log_request(
+            method,
+            path,
+            reply.status,
+            started.elapsed(),
+            failure.as_deref(),
+            blocked,
+            id,
+        );
+    } else if let Some(f) = failure {
         let id = cx.id().map_or(String::new(), |id| format!(" [{id}]"));
         log(format_args!(
             "wisp: {} {method} {}{id}: {f}",
@@ -2657,7 +2711,7 @@ fn answered(cx: &mut Cx, reply: &mut Reply, started: Option<Instant>, failure: O
 /// The route of the request in `cx`, which gets its params: the matched
 /// parameters as spans, so `cx` can be handed out mutably.
 fn route<A: App>(cx: &mut Cx) -> Option<usize> {
-    let (id, raw) = A::route(cx.path())?;
+    let (id, raw) = find::<A>(cx.path())?;
     // Only the route's own: most have none.
     let names = A::ROUTES[id].params;
     if names.is_empty() {
@@ -2670,6 +2724,69 @@ fn route<A: App>(cx: &mut Cx) -> Option<usize> {
     }
     cx.set_params(names, &params[..names.len()]);
     Some(id)
+}
+
+/// The route of `path`, and its parameters. A path that ends in `/` is
+/// its route's without it too, when [`trailing_slash`] serves it: looked
+/// for only when the path itself matches nothing.
+fn find<A: App>(path: &str) -> Option<(usize, [&str; crate::cx::MAX_PARAMS])> {
+    match A::route(path) {
+        None if path.len() > 1 && path.ends_with('/') && slash() != TrailingSlash::Never => {
+            A::route(&path[..path.len() - 1])
+        }
+        found => found,
+    }
+}
+
+/// How a page's address ends, which `wisp::trailing_slash` sets in
+/// `init`. The other form gets a 308 to it; endpoints and files are left
+/// as they are asked for, but a path ending in `/` that is no route's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrailingSlash {
+    /// `/about/`.
+    Always,
+    /// `/about`, the default.
+    Never,
+    /// Either, served as it is asked for.
+    Ignore,
+}
+
+static SLASH: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(1);
+
+/// `wisp::trailing_slash(Always)` in `init`: pages' addresses end in `/`,
+/// and `/about` gets a 308 to `/about/`. `Never` is the default; `Ignore`
+/// serves both. The build warns of a literal `href` of the other form.
+pub fn trailing_slash(how: TrailingSlash) {
+    SLASH.store(how as u8, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) fn slash() -> TrailingSlash {
+    match SLASH.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => TrailingSlash::Always,
+        2 => TrailingSlash::Ignore,
+        _ => TrailingSlash::Never,
+    }
+}
+
+/// A 308 to `cx`'s path with one leading slash, and a trailing one when
+/// `trailing`, its query kept: `//evil.example/` would send the browser to
+/// another site (and so would `/\evil.example/`).
+fn slash_redirect(cx: &Cx, reply: &mut Reply, trailing: bool) {
+    let trimmed = cx.path().trim_matches(['/', '\\']);
+    let end = if trailing && !trimmed.is_empty() {
+        "/"
+    } else {
+        ""
+    };
+    let query = cx.query_string();
+    let location = match query.is_empty() {
+        true => format!("/{trimmed}{end}"),
+        false => format!("/{trimmed}{end}?{query}"),
+    };
+    reply.set_plain(308, "");
+    reply
+        .headers
+        .push((Cow::Borrowed("location"), Cow::Owned(location)));
 }
 
 /// Whether `res`, a 200 to a GET or HEAD with an `etag` (an [`crate::Image`],
@@ -2830,11 +2947,20 @@ fn serialize<A: App>(
     // HTTP/1.0 has no chunks: a streamed body ends with the connection.
     let chunked = stream && http11;
     let keep_alive = keep_alive && (!stream || chunked || head_only);
-    let parts = matches!(reply.body, Body::Page).then(|| page::<A>(out));
+    let page = matches!(reply.body, Body::Page);
+    let parts = page.then(|| parts::<A>(&out.live, out.lang, &out.head, &mut out.body));
     let len = match &parts {
         Some(parts) => parts.iter().map(|p| p.len()).sum(),
         None => reply.bytes().len(),
     };
+    if out.obs.is_some() {
+        let sent = if head_only || bodiless || stream {
+            0
+        } else {
+            len
+        };
+        crate::obs::finish(&mut out.obs, reply.status, sent);
+    }
 
     // See `framing`.
     let own_length = head_only && reply.header("content-length").is_some();
@@ -2903,11 +3029,30 @@ fn serialize<A: App>(
 /// The parts of a page, in order: the shell around the tags for
 /// `%wisp.head%`, the page's head, and its body, which its browser code
 /// ends. Once a page.
-pub(crate) fn page<A: App>(out: &mut Out) -> [&str; 6] {
-    out.live.tail(&mut out.body);
+pub(crate) fn page<A: App>(out: &mut Out) -> [&str; 8] {
+    parts::<A>(&out.live, out.lang, &out.head, &mut out.body)
+}
+
+/// [`page`] of an `Out`'s fields, leaving the others free.
+fn parts<'a, A: App>(
+    live: &crate::live::Live,
+    lang: u8,
+    head: &'a str,
+    body: &'a mut String,
+) -> [&'a str; 8] {
+    live.tail(body, lang);
     let [s0, s1, s2] = A::shell();
     let tags = HEAD_TAGS.get().map_or("", String::as_str);
-    [s0, tags, &out.head, s1, &out.body, s2]
+    // `<html lang="…">` says the request's locale, in an app with some.
+    let lang = A::LOCALES.get(lang as usize).copied().unwrap_or("");
+    let (a, b) = match (!lang.is_empty())
+        .then(|| crate::i18n::lang_value(s0))
+        .flatten()
+    {
+        Some((at, end)) => ((&s0[..at], lang), &s0[end..]),
+        None => ((s0, ""), ""),
+    };
+    [a.0, a.1, b, tags, head, s1, body, s2]
 }
 
 thread_local! {
@@ -2978,11 +3123,17 @@ async fn catch_made<F: Future<Output = crate::Result<()>>>(
         settings.timed,
         crate::timeout::Late::within(settings.timeout_ms),
     );
+    // The request's span, current while it is polled.
+    let trace = crate::otel::adopt();
     std::future::poll_fn(move |cx| {
         let began = timed.then(Instant::now);
+        let was = trace.map(crate::otel::enter);
         IN_HANDLER.set(true);
         let polled = catch_unwind(AssertUnwindSafe(|| f.as_mut().poll(cx)));
         IN_HANDLER.set(false);
+        if let Some(was) = was {
+            crate::otel::leave(was);
+        }
         if let Some(began) = began {
             BLOCKED.set(BLOCKED.get().max(began.elapsed()));
         }
@@ -3000,9 +3151,13 @@ async fn catch_made<F: Future<Output = crate::Result<()>>>(
 #[cfg(target_os = "linux")]
 fn catch_now(timed: bool, f: impl FnOnce() -> crate::Result<bool>) -> Option<crate::Result<()>> {
     let began = timed.then(Instant::now);
+    let was = crate::otel::adopt().map(crate::otel::enter);
     IN_HANDLER.set(true);
     let ran = catch_unwind(AssertUnwindSafe(f));
     IN_HANDLER.set(false);
+    if let Some(was) = was {
+        crate::otel::leave(was);
+    }
     if let Some(began) = began {
         BLOCKED.set(BLOCKED.get().max(began.elapsed()));
     }
@@ -3029,8 +3184,10 @@ fn panicked(panic: Box<dyn std::any::Any + Send>) -> Error {
 }
 
 /// Wisp's own addresses: the browser runtime, the API docs and, in dev,
-/// the dev tools. `false` for any other path.
-fn internal<A: App>(cx: &Cx, path: &str, reply: &mut Reply) -> bool {
+/// the dev tools. `false` for any other path. `out`: where the component
+/// workshop renders a story, in debug builds.
+#[cfg_attr(not(debug_assertions), allow(unused_variables))]
+fn internal<A: App>(cx: &Cx, path: &str, out: &mut Out, reply: &mut Reply) -> bool {
     if !path.starts_with("/_") {
         return false;
     }
@@ -3070,6 +3227,29 @@ fn internal<A: App>(cx: &Cx, path: &str, reply: &mut Reply) -> bool {
             }
             return true;
         }
+        "/_wisp/metrics" if get && crate::obs::serve(cx, reply) => return true,
+        #[cfg(debug_assertions)]
+        "/_app/wisp-devtools.js" if dev => (DEVTOOLS_JS, "js", None),
+        #[cfg(debug_assertions)]
+        _ if dev && path.starts_with("/_wisp/components") => {
+            use crate::workshop::Answer;
+            match crate::workshop::answer::<A>(cx, out) {
+                Answer::Page(html) => reply.set(
+                    200,
+                    "text/html; charset=utf-8",
+                    Body::Bytes(html.into_bytes()),
+                ),
+                Answer::Frame => reply.set(200, "text/html; charset=utf-8", Body::Page),
+                Answer::Missing => reply.set_plain(404, "Not Found"),
+            }
+            return true;
+        }
+        #[cfg(debug_assertions)]
+        "/_wisp/dev/open" if s.dev && cx.method == Method::Post => {
+            let (status, msg) = dev::open(A::ROOT, cx);
+            reply.set_plain(status, msg);
+            return true;
+        }
         _ if s.dev && path.starts_with("/_wisp/") => {
             let (status, msg) = dev::endpoint::<A>(cx.method, path, cx.body(), cx.peer());
             reply.set_plain(status, msg);
@@ -3078,6 +3258,9 @@ fn internal<A: App>(cx: &Cx, path: &str, reply: &mut Reply) -> bool {
         _ => return false,
     };
     send_file(reply, cx, Body::Static(body), ext, etag);
+    if !A::ELEMENTS.is_empty() && path == crate::protocol::LIVE_JS_PATH {
+        any_origin(reply);
+    }
     true
 }
 
@@ -3086,23 +3269,65 @@ fn internal<A: App>(cx: &Cx, path: &str, reply: &mut Reply) -> bool {
 /// `false` if the path is not a file.
 fn file<A: App>(cx: &Cx, raw: &[u8], route: Option<usize>, reply: &mut Reply) -> bool {
     let routed = route.is_some();
-    // Compiled in, in dev too: a change to one is a rebuild anyway.
+    // The service worker and the manifest, of an app with either.
+    if let Some(p) = A::PWA {
+        use crate::protocol::{MANIFEST_PATH, SERVICE_WORKER_PATH};
+        let got = match cx.path() {
+            SERVICE_WORKER_PATH if !p.worker.is_empty() => {
+                Some((p.worker, "js", Some(p.worker_etag)))
+            }
+            MANIFEST_PATH => match p.manifest {
+                Some("") => None,
+                Some(m) => Some((m, "webmanifest", Some(p.manifest_etag))),
+                None => crate::pwa::manifest().map(|m| (m, "webmanifest", None)),
+            },
+            _ => None,
+        };
+        if let Some((body, ext, etag)) = got {
+            send_file(reply, cx, Body::Static(body.as_bytes()), ext, etag);
+            return true;
+        }
+    }
+    // One `wisp dev` swapped in, never cached: its URL names its version.
+    #[cfg(debug_assertions)]
+    if raw.starts_with(crate::protocol::MODULES.as_bytes())
+        && let Some(source) = dev::module(cx.path())
+    {
+        let ext = if cx.path().ends_with(".map") {
+            "json"
+        } else {
+            "js"
+        };
+        send_file(reply, cx, Body::Static(source.as_bytes()), ext, None);
+        return true;
+    }
+    // Compiled in, in dev too: what `wisp dev` cannot swap is a rebuild.
     if raw.starts_with(crate::protocol::MODULES.as_bytes())
         && let Some(m) = A::client_module(cx.path())
     {
+        // A module's source map (`t3.js.map`) is JSON.
+        let ext = if m.path.ends_with(".map") {
+            "json"
+        } else {
+            "js"
+        };
         send_file(
             reply,
             cx,
             Body::Static(m.source.as_bytes()),
-            "js",
+            ext,
             Some(m.etag),
         );
+        if !A::ELEMENTS.is_empty() {
+            any_origin(reply);
+        }
         return true;
     }
     if crate::settings().dev {
         let path = cx.path();
         // A page's path goes to the disk only if `static/` had a file there.
         if path != crate::protocol::APP_CSS_PATH
+            && !path.starts_with(crate::protocol::IMAGES)
             && routed
             && !dev::listed(A::ROOT, &decode(path.as_bytes(), false))
         {
@@ -3125,15 +3350,25 @@ fn file<A: App>(cx: &Cx, raw: &[u8], route: Option<usize>, reply: &mut Reply) ->
     true
 }
 
+/// Lets a page of any site load this module: a custom element's
+/// (`App::ELEMENTS`), and what it imports.
+fn any_origin(reply: &mut Reply) {
+    reply.headers.push((
+        Cow::Borrowed("access-control-allow-origin"),
+        Cow::Borrowed("*"),
+    ));
+}
+
 /// A file, cached by its `etag` (forever when the address is versioned:
-/// with `?v=`, or an npm module's, whose path names the package's version),
-/// or never without one.
+/// with `?v=`, or an npm module's or an image's, whose path names its
+/// version or hash), or never without one.
 fn send_file(reply: &mut Reply, cx: &Cx, body: Body, ext: &str, etag: Option<&'static str>) {
     let cache = match etag {
         None => "no-store",
         Some(_)
             if cx.query_string().split('&').any(|kv| kv.starts_with("v="))
-                || cx.path().starts_with(crate::protocol::NPM_MODULES) =>
+                || cx.path().starts_with(crate::protocol::NPM_MODULES)
+                || cx.path().starts_with(crate::protocol::IMAGES) =>
         {
             "public, max-age=31536000, immutable"
         }
@@ -4391,24 +4626,29 @@ mod tests {
     /// a page of escaped rows, HEAD or GET, with no allocation: its
     /// buffers, `Cx`, headers and response bodies are all reused. Measured
     /// as a release server runs, with dev mode off: in a child process, when
-    /// this one has it on.
+    /// this one has it on, and in another with `METRICS_KEY` set, whose
+    /// counting allocates nothing either.
 
     #[test]
     fn warm_requests_allocate_nothing() {
         if crate::settings().dev {
             let name = "http::tests::warm_requests_allocate_nothing";
-            let child = std::process::Command::new(std::env::current_exe().unwrap())
-                .args([name, "--exact", "--nocapture"])
-                .env("WISP_DEV", "off")
-                .output()
-                .unwrap();
-            let said = String::from_utf8_lossy(&child.stdout);
-            assert!(
-                child.status.success() && said.contains("1 passed"),
-                "{said}"
-            );
+            for metrics in ["", "key"] {
+                let child = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([name, "--exact", "--nocapture"])
+                    .env("WISP_DEV", "off")
+                    .env("METRICS_KEY", metrics)
+                    .output()
+                    .unwrap();
+                let said = String::from_utf8_lossy(&child.stdout);
+                assert!(
+                    child.status.success() && said.contains("1 passed"),
+                    "{said}"
+                );
+            }
             return;
         }
+        crate::obs::init(Bench::ROUTES);
         let mut b = buffers();
         for (method, path, answered) in [
             ("GET", "/plaintext", &b"Hello, World!"[..]),

@@ -8,19 +8,58 @@ mod temp;
 use common::Lab;
 use temp::Temp;
 
-fn export() -> (Temp, std::io::Result<()>) {
-    let dir = Temp::new("export");
+fn export(spa: bool) -> (Temp, std::io::Result<()>) {
+    let dir = Temp::new(if spa { "export-spa" } else { "export" });
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
-    let done = runtime.block_on(wisp::export::<Lab>(&dir));
+    let done = runtime.block_on(wisp::export::<Lab>(&dir, spa));
     (dir, done)
+}
+
+/// `wisp build`'s prerender run: the `PRERENDER` pages alone, each a file,
+/// and the index the build reads them by.
+#[test]
+fn prerendered_pages_are_written_for_the_build() {
+    let dir = Temp::new("prerender");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(wisp::prerender::<Lab>(&dir)).unwrap();
+    let read =
+        |p: &str| std::fs::read_to_string(dir.join(p)).unwrap_or_else(|e| panic!("{p}: {e}"));
+    assert_eq!(read("index.tsv"), "/hello\t/hello\t0.html\n");
+    assert!(read("0.html").contains("<h1>hello</h1>"));
+    assert!(!dir.join("1.html").exists());
+}
+
+/// `--spa`: a page the browser draws whose route has parameters and no
+/// `entries` is written once, and the fallback, `index.html`, lists it.
+#[test]
+fn the_spa_fallback_lists_the_pages_the_browser_draws() {
+    let (dir, done) = export(true);
+    done.unwrap();
+    let read =
+        |p: &str| std::fs::read_to_string(dir.join(p)).unwrap_or_else(|e| panic!("{p}: {e}"));
+    assert!(read("_app/spa/0.html").contains("<p>drawn 0</p>"));
+    let index = read("index.html");
+    assert!(
+        index.contains(
+            "<script type=\"application/json\" id=\"wisp-spa\">[[\"/drawn/[id]\",\"/_app/spa/0.html\"]]</script></body>"
+        ),
+        "{index}"
+    );
+    // Without --spa, it is not written.
+    let (plain, done) = export(false);
+    done.unwrap();
+    assert!(!plain.join("_app/spa").exists() && !plain.join("index.html").exists());
 }
 
 #[test]
 fn every_page_is_written_where_a_static_host_serves_it() {
-    let (dir, done) = export();
+    let (dir, done) = export(false);
     done.unwrap();
     let read =
         |p: &str| std::fs::read_to_string(dir.join(p)).unwrap_or_else(|e| panic!("{p}: {e}"));
@@ -58,6 +97,6 @@ fn a_folder_that_cannot_be_written_is_an_error() {
         .enable_all()
         .build()
         .unwrap();
-    let done = runtime.block_on(wisp::export::<Lab>(&file));
+    let done = runtime.block_on(wisp::export::<Lab>(&file, false));
     assert!(done.is_err());
 }

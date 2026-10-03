@@ -6,8 +6,6 @@
 
 <p align="center">A fast, fun web framework for Rust.</p>
 
----
-
 Wisp builds web apps from files: a folder is a URL, and its `+page.wisp` is the page, markup after a short block of the Rust that loads data and handles forms. The whole app, styles and static files included, compiles into one small binary.
 
 - **Few tokens.** Apps are short to write, for people and for AI: pages and APIs take fewer tokens in Wisp than in SvelteKit, Next.js, Nuxt, Axum, FastAPI or Rails: 39% fewer than the next best, in all ([docs/tokens.md](docs/tokens.md)). [AGENTS.md](AGENTS.md) is the whole reference on one page.
@@ -145,6 +143,7 @@ The same five features (a list page, a validated form, a JSON endpoint, a layout
 | `wisp build --docker` | Write a Dockerfile                          |
 | `wisp build --target <host>` | Build for Cloudflare, Deno, Vercel, Netlify or Node |
 | `wisp check` | Check routes and templates without compiling         |
+| `wisp fmt`   | Format `.wisp` files (`--check` to only check)       |
 
 ## Deploy
 
@@ -162,7 +161,8 @@ wisp build --target cloudflare    # or deno, vercel, netlify, node
 | GitHub Pages, GitLab Pages | `--static` |
 | Cloudflare, Deno Deploy, Vercel, Netlify | `--target` |
 | AWS Amplify, Firebase, Azure Static Web Apps, Stormkit, Zeabur | `--target node` |
-| AWS Lambda | `tower` feature |
+| AWS Lambda | `--target lambda` |
+| Bun | `--target bun` |
 
 Commands per host, and what the edge can't do, are in [docs/deploy.md](docs/deploy.md).
 
@@ -183,7 +183,7 @@ On a server-rendered HTML benchmark on Linux, Wisp serves 13% more requests than
 
 ## Documentation
 
-- [AGENTS.md](AGENTS.md): everything on one page, for coding agents (and people in a hurry).
+- [AGENTS.md](AGENTS.md): everything on one page, for coding agents (and people in a hurry). Every app gets it; `wisp mcp` serves it and the docs to agents (`claude mcp add wisp -- wisp mcp`; Cursor and VS Code in [docs/design.md](docs/design.md#ai-agents)).
 - [docs/design.md](docs/design.md): the template language, routing, actions, the runtime and the dev server.
 - [docs/tokens.md](docs/tokens.md): what the same apps cost in tokens here and in other frameworks.
 - [docs/client.md](docs/client.md): scripts, directives, components, stores, the router.

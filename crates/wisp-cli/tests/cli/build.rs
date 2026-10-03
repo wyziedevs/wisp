@@ -219,6 +219,41 @@ fn release_build_and_static_export() {
     assert!(app.join("warned/form/index.html").is_file());
     assert!(!app.join("warned/ping").exists() && !app.join("warned/[slug]").exists());
 
+    // Browser modules come with what they import; with --sourcemap, with
+    // their maps, and without it, with no line naming one.
+    write(
+        &app,
+        "src/lib/twice.js",
+        "export const twice = (n) => n * 2\n",
+    );
+    write(
+        &app,
+        "src/routes/count/+page.wisp",
+        "<p>{:n}</p>\n<script>\n  import { twice } from '$lib/twice.js'\n  let n = twice(2)\n</script>\n",
+    );
+    for (out, maps) in [("plain", false), ("mapped", true)] {
+        let mut args = vec!["build", "--static", "--out", out];
+        if maps {
+            args.push("--sourcemap");
+        }
+        let o = wisp(&app, &args);
+        assert!(o.ok, "{}", o.err);
+        let files = tree(&app.join(out));
+        let js: Vec<&String> = files.iter().filter(|f| f.ends_with(".js")).collect();
+        assert!(js.iter().any(|f| f.contains("twice")), "{files:?}");
+        for f in js {
+            let text = read(&app.join(out), f);
+            let named = text.contains("//# sourceMappingURL=");
+            let map = files.contains(&format!("{f}.map"));
+            assert_eq!(named, map, "{out}/{f}");
+            assert!(
+                !maps || f.ends_with("wisp.js") || f.ends_with("live.js") || map,
+                "{out}/{f}"
+            );
+        }
+        assert_eq!(files.iter().any(|f| f.ends_with(".map")), maps, "{files:?}");
+    }
+
     // A folder that cannot be written is a failed export.
     write(&app, "blocked", "a file, not a folder");
     let o = fail(
@@ -500,4 +535,146 @@ fn each_host_gets_its_folder() {
     assert!(app.join("v2/.vercel/output/static").is_dir());
     build(&["--target", "netlify", "--out", "n2"]);
     assert!(app.join("n2/public").is_dir());
+}
+
+#[test]
+fn the_icon_is_sized_for_the_manifest() {
+    let cwd = Dir::new("icon");
+    let app = pinned_app(&cwd, "pwa", &["-t", "minimal"]);
+    let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+    png.extend(600u32.to_be_bytes());
+    png.extend(600u32.to_be_bytes());
+    png.extend([8, 6, 0, 0, 0]);
+    fs::write(app.join("static/icon.png"), &png).unwrap();
+    write(&app, "src/manifest.json", "{\"name\": \"Pics\"}");
+    let tool = fake_cwebp(&cwd);
+    let o = wisp_env(
+        &app,
+        &["build", "--static", "--out=out"],
+        &[("WISP_CWEBP", &tool)],
+    );
+    assert!(o.ok, "{}", o.err);
+    has(&o.out, &["Encoding 2 WebP images into .wisp/img"]);
+    let h = wisp_build::image::hash(&png);
+    has(
+        &read(&app, "out/manifest.webmanifest"),
+        &[&format!(
+            "\"icons\":[{{\"src\":\"/icon.png\",\"sizes\":\"600x600\",\"type\":\"image/png\"}},\
+             {{\"src\":\"/_app/img/{h}-192.webp\",\"sizes\":\"192x192\",\"type\":\"image/webp\"}},\
+             {{\"src\":\"/_app/img/{h}-512.webp\",\"sizes\":\"512x512\",\"type\":\"image/webp\"}}]"
+        )],
+    );
+    let files = tree(&app.join("out"));
+    for f in [
+        format!("_app/img/{h}-192.webp"),
+        format!("_app/img/{h}-512.webp"),
+    ] {
+        assert!(files.contains(&f), "{f} in {files:?}");
+    }
+    has(
+        &read(&app, "out/index.html"),
+        &["<link rel=\"manifest\" href=\"/manifest.webmanifest\">"],
+    );
+}
+
+/// A stand-in for cwebp that writes its `-o` file.
+fn fake_cwebp(dir: &Path) -> std::path::PathBuf {
+    let (name, script) = if cfg!(windows) {
+        (
+            "cwebp.cmd",
+            "@echo off\r\n:next\r\nif \"%~1\"==\"-o\" (echo webp>\"%~2\"& exit /b 0)\r\nshift\r\nif not \"%~1\"==\"\" goto next\r\nexit /b 1\r\n",
+        )
+    } else {
+        (
+            "cwebp.sh",
+            "#!/bin/sh\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = -o ]; then echo webp > \"$2\"; exit 0; fi\n  shift\ndone\nexit 1\n",
+        )
+    };
+    let path = dir.join(name);
+    fs::write(&path, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    path
+}
+
+#[test]
+fn images_get_webp_widths_and_their_size() {
+    use wisp_build::image::hash;
+    let cwd = Dir::new("images");
+    let app = pinned_app(&cwd, "pics", &["-t", "minimal"]);
+    // Headers are all the build reads; the stand-in "encodes" any file.
+    let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+    png.extend(1500u32.to_be_bytes());
+    png.extend(300u32.to_be_bytes());
+    png.extend([8, 2, 0, 0, 0]);
+    let jpg = [
+        0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0, 48, 0, 64, 1, 1, 0x11, 0, 0xff, 0xd9,
+    ];
+    fs::create_dir_all(app.join("src/lib")).unwrap();
+    fs::write(app.join("src/lib/cat.png"), &png).unwrap();
+    fs::write(app.join("static/dog.jpg"), jpg).unwrap();
+    write(
+        &app,
+        "src/routes/pics/+page.wisp",
+        "<img src=\"$lib/cat.png\" alt=\"Cat\">\n<img src=\"/dog.jpg\" alt=\"Dog\" loading=\"eager\">\n",
+    );
+    let tool = fake_cwebp(&cwd);
+    let build = |tool: &Path| {
+        wisp_env(
+            &app,
+            &["build", "--static", "--out=out"],
+            &[("WISP_CWEBP", tool)],
+        )
+    };
+    let o = build(&tool);
+    assert!(o.ok, "{}", o.err);
+    has(&o.out, &["Encoding 4 WebP images into .wisp/img"]);
+    let (cat, dog) = (hash(&png), hash(&jpg));
+    has(
+        &read(&app, "out/pics/index.html"),
+        &[
+            &format!(
+                "<img src=\"/_app/img/{cat}.png\" alt=\"Cat\" width=\"1500\" height=\"300\" \
+                 srcset=\"/_app/img/{cat}-640.webp 640w, /_app/img/{cat}-1280.webp 1280w, /_app/img/{cat}-1500.webp 1500w\" \
+                 sizes=\"100vw\" loading=\"lazy\" decoding=\"async\">"
+            ),
+            &format!(
+                "<img src=\"/dog.jpg\" alt=\"Dog\" loading=\"eager\" width=\"64\" height=\"48\" \
+                 srcset=\"/_app/img/{dog}-64.webp 64w\" sizes=\"100vw\" decoding=\"async\">"
+            ),
+        ],
+    );
+    let files = tree(&app.join("out"));
+    for f in [
+        format!("_app/img/{cat}.png"),
+        format!("_app/img/{cat}-640.webp"),
+        format!("_app/img/{cat}-1500.webp"),
+        format!("_app/img/{dog}-64.webp"),
+        "dog.jpg".into(),
+    ] {
+        assert!(files.contains(&f), "{f} in {files:?}");
+    }
+    assert_eq!(tree(&app.join(".wisp/img")).len(), 4);
+
+    // A second build encodes nothing.
+    let o = build(&tool);
+    assert!(o.ok, "{}", o.err);
+    assert!(!o.out.contains("Encoding"), "{}", o.out);
+
+    // Without cwebp the build warns, and serves the original, sized.
+    fs::remove_dir_all(app.join(".wisp/img")).unwrap();
+    let o = build(&cwd.join("no-such-cwebp"));
+    assert!(o.ok, "{}", o.err);
+    has(&o.out, &["4 of 4 WebP images could not be written"]);
+    let page = read(&app, "out/pics/index.html");
+    has(
+        &page,
+        &[&format!(
+            "<img src=\"/_app/img/{cat}.png\" alt=\"Cat\" width=\"1500\" height=\"300\" loading=\"lazy\" decoding=\"async\">"
+        )],
+    );
+    assert!(!page.contains("srcset"), "{page}");
 }

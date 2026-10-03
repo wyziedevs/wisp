@@ -36,9 +36,12 @@ pub struct Route {
     pub dir: PathBuf,
     pub segs: Vec<Seg>,
     pub page: bool,
+    /// The page is Markdown: this `+page.md` or `x.md`.
+    pub md: Option<PathBuf>,
     pub page_rs: bool,
-    /// A `+page.js` whose `load` runs in the browser.
-    pub page_js: bool,
+    /// A `+page.js` (or `+page.ts`) whose `load` runs in the browser: its
+    /// name.
+    pub page_js: Option<&'static str>,
     pub server: bool,
     /// The `/[id]` its directory's `+server.rs` also serves: handlers that
     /// take an `id` the directory does not give, or a `#[derive(Rest)]`'s.
@@ -159,17 +162,23 @@ pub fn scan(routes_dir: &Path) -> Result<Tree, String> {
             }
         }
         for seg in &r.segs {
-            let (Seg::Param(_, Some(m)) | Seg::Optional(_, Some(m))) = seg else {
+            let (Seg::Param(n, Some(m)) | Seg::Optional(n, Some(m))) = seg else {
                 continue;
             };
+            if m == "locale" && n != "lang" {
+                return Err(format!(
+                    "{}: the locale's parameter is `lang`: [[lang=locale]]",
+                    show(&r.dir)
+                ));
+            }
             if matchers.iter().any(|(n, _)| n == m) {
                 continue;
             }
             let file = routes_dir.with_file_name("params").join(format!("{m}.rs"));
             let file = file.is_file().then_some(file);
-            if file.is_none() && m != "int" {
+            if file.is_none() && m != "int" && m != "locale" {
                 return Err(format!(
-                    "{}: no param matcher `{m}`: add src/params/{m}.rs with `fn matches(s: &str) -> bool` (`int` is built in)",
+                    "{}: no param matcher `{m}`: add src/params/{m}.rs with `fn matches(s: &str) -> bool` (`int` and `locale` are built in)",
                     show(&r.dir)
                 ));
             }
@@ -270,6 +279,8 @@ fn walk(
     let show = |p: &Path| show(root, p);
     let mut files = Vec::new();
     let mut dirs = Vec::new();
+    // `x.md`: a Markdown page at `x`.
+    let mut mds = Vec::new();
     for e in fs::read_dir(dir).map_err(|e| format!("{}: {e}", show(dir)))? {
         let e = e.map_err(|e| format!("{}: {e}", show(dir)))?;
         let name = e.file_name().to_string_lossy().into_owned();
@@ -280,6 +291,16 @@ fn walk(
             dirs.push(name);
         } else if name.starts_with('+') {
             files.push(name);
+        } else if let Some(stem) = name.strip_suffix(".md") {
+            match parse_segment(stem) {
+                Ok(Some(Seg::Static(_))) => mds.push(name),
+                _ => {
+                    return Err(format!(
+                        "{}: a Markdown page's name is its URL segment: letters, digits, `-`, `_`, `.`",
+                        show(&dir.join(&name))
+                    ));
+                }
+            }
         } else if name.ends_with(".wisp")
             || matches!(name.as_str(), "page.rs" | "layout.rs" | "server.rs")
         {
@@ -292,13 +313,16 @@ fn walk(
     }
     files.sort();
     dirs.sort();
+    mds.sort();
 
     let has = |f: &str| files.iter().any(|x| x == f);
     for f in &files {
-        const KNOWN: [&str; 7] = [
+        const KNOWN: [&str; 9] = [
             "+page.wisp",
             "+page.rs",
             "+page.js",
+            "+page.ts",
+            "+page.md",
             "+layout.wisp",
             "+layout.rs",
             "+error.wisp",
@@ -312,15 +336,27 @@ fn walk(
             ));
         }
     }
+    if has("+page.md") && has("+page.wisp") {
+        return Err(format!(
+            "{}: +page.md and +page.wisp are one page; keep one",
+            show(dir)
+        ));
+    }
     if has("+page.rs") && !has("+page.wisp") {
         return Err(format!(
             "{}: +page.rs needs a +page.wisp next to it",
             show(dir)
         ));
     }
-    if has("+page.js") && !has("+page.wisp") {
+    let page_js = ["+page.js", "+page.ts"].into_iter().find(|f| has(f));
+    if let Some(f) = page_js
+        && !has("+page.wisp")
+    {
+        return Err(format!("{}: {f} needs a +page.wisp next to it", show(dir)));
+    }
+    if has("+page.js") && has("+page.ts") {
         return Err(format!(
-            "{}: +page.js needs a +page.wisp next to it",
+            "{}: +page.js and +page.ts are one file; keep one",
             show(dir)
         ));
     }
@@ -351,13 +387,15 @@ fn walk(
         true => server_shape(&dir.join("+server.rs"), segs),
         false => (false, None),
     };
-    if has("+page.wisp") || collection {
+    let page_md = has("+page.md").then(|| dir.join("+page.md"));
+    if has("+page.wisp") || page_md.is_some() || collection {
         tree.routes.push(Route {
             dir: dir.to_path_buf(),
             segs: segs.clone(),
-            page: has("+page.wisp"),
+            page: has("+page.wisp") || page_md.is_some(),
+            md: page_md,
             page_rs: has("+page.rs"),
-            page_js: has("+page.js"),
+            page_js,
             server: collection,
             member: false,
             layouts: layouts.clone(),
@@ -371,10 +409,34 @@ fn walk(
             dir: dir.to_path_buf(),
             segs,
             page: false,
+            md: None,
             page_rs: false,
-            page_js: false,
+            page_js: None,
             server: true,
             member: true,
+            layouts: layouts.clone(),
+            error,
+        });
+    }
+    for name in mds {
+        let stem = &name[..name.len() - 3];
+        if segs.is_empty() && (stem == "_app" || stem == "_wisp") {
+            return Err(format!(
+                "{}: /{stem} is reserved for Wisp's own files; choose another name",
+                show(&dir.join(&name))
+            ));
+        }
+        let mut segs = segs.clone();
+        segs.push(Seg::Static(stem.to_string()));
+        tree.routes.push(Route {
+            dir: dir.to_path_buf(),
+            segs,
+            page: true,
+            md: Some(dir.join(&name)),
+            page_rs: false,
+            page_js: None,
+            server: false,
+            member: false,
             layouts: layouts.clone(),
             error,
         });
@@ -460,7 +522,7 @@ fn server_shape(file: &Path, segs: &[Seg]) -> (bool, Option<Option<String>>) {
 }
 
 /// `None` for `(group)` directories, which do not appear in the URL.
-pub(crate) fn parse_segment(name: &str) -> Result<Option<Seg>, String> {
+pub fn parse_segment(name: &str) -> Result<Option<Seg>, String> {
     let ident = |s: &str| -> Result<String, String> {
         if !crate::ty::is_ident(s) {
             return Err(format!("`{s}` is not a valid parameter name"));
@@ -744,6 +806,39 @@ fn get(id: u64) {}",
             assert!(err.contains(want), "{file}: {err}");
             fs::remove_dir_all(&root).unwrap();
         }
+
+        // Markdown: `+page.md`, and a page per `x.md`.
+        let root = tmp("md");
+        touch(&root, "blog/+page.md");
+        touch(&root, "blog/hello.md");
+        touch(&root, "(private)/notes.md");
+        let t = scan(&root).unwrap();
+        let pats: Vec<_> = t
+            .routes
+            .iter()
+            .map(|r| (r.pattern(), r.md.is_some()))
+            .collect();
+        assert_eq!(
+            pats,
+            [
+                ("/blog".into(), true),
+                ("/blog/hello".into(), true),
+                ("/notes".into(), true)
+            ]
+        );
+        touch(&root, "blog/hello/+page.wisp");
+        assert!(scan(&root).unwrap_err().contains("match the same URLs"));
+        touch(&root, "blog/+page.wisp");
+        assert!(
+            scan(&root)
+                .unwrap_err()
+                .contains("+page.md and +page.wisp are one page")
+        );
+        fs::remove_dir_all(&root).unwrap();
+        let root = tmp("md-name");
+        touch(&root, "[x].md");
+        assert!(scan(&root).unwrap_err().contains("Markdown page's name"));
+        fs::remove_dir_all(&root).unwrap();
 
         // Editors' files beside the real ones are not route files.
         let root = tmp("editor");

@@ -3,13 +3,16 @@
 //! in a page and how it is escaped there (`contexts`), the marks and
 //! headers of a live page (`protocol`), and the browser runtime itself;
 //! and what more than one of them needs: SHA-256 (`sha256`), base64
-//! (`base64`), JSON (`json`), the seeded generator of the property tests (`rng`). `std` only, so the compiler
+//! (`base64`), JSON (`json`), `.env` files (`dotenv`), plural rules (`plural`), the seeded generator of the property tests (`rng`). `std` only, so the compiler
 //! stays small to build.
 
 pub mod base64;
 pub mod contexts;
+pub mod dotenv;
 pub mod json;
+pub mod manifest;
 pub mod pattern;
+pub mod plural;
 pub mod protocol;
 pub mod rng;
 pub mod rules;
@@ -25,3 +28,7 @@ pub const LIVE_JS: &str = include_str!("client/live.js");
 /// The less used half of live.js (`/_app/c/extra.js`), which a generated
 /// module imports when it uses it: `wisp-build` writes it out.
 pub const EXTRA_JS: &str = include_str!("client/extra.js");
+/// What a component built as a custom element (`{@element "x-card"}`)
+/// runs (`/_app/c/el.js`), which its module (`/_app/c/el/x-card.js`)
+/// imports: `wisp-build` writes it out.
+pub const ELEMENT_JS: &str = include_str!("client/element.js");

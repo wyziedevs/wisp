@@ -1,0 +1,12 @@
+name = "Wisp"
+grammar = "wisp"
+path_suffixes = ["wisp"]
+block_comment = ["<!-- ", " -->"]
+tab_size = 2
+brackets = [
+  { start = "{", end = "}", close = true, newline = true },
+  { start = "<", end = ">", close = false, newline = true, not_in = ["string", "comment"] },
+  { start = "(", end = ")", close = true, newline = true },
+  { start = "[", end = "]", close = true, newline = true },
+  { start = "\"", end = "\"", close = true, newline = false, not_in = ["string", "comment"] },
+]

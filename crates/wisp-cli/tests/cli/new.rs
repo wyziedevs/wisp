@@ -5,8 +5,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const MINIMAL: [&str; 10] = [
+const MINIMAL: [&str; 14] = [
+    ".cursor/rules/wisp.mdc",
+    ".github/copilot-instructions.md",
     ".gitignore",
+    "AGENTS.md",
+    "CLAUDE.md",
     "Cargo.toml",
     "build.rs",
     "src/app.css",
@@ -104,13 +108,88 @@ fn minimal_writes_these_files() {
         &["{status}", "{message}"],
     );
     assert!(!read(&app, "src/app.css").contains("tailwindcss"));
+
+    // The reference for AI agents: the repository's, less its part for
+    // work on Wisp, and a pointer to it for each agent.
+    let agents = read(&app, "AGENTS.md");
+    has(
+        &agents,
+        &["## Actions (form posts)", "wisp update-docs keeps them"],
+    );
+    assert!(!agents.contains("Carmack"));
+    for rel in &AGENT_FILES[1..] {
+        has(&read(&app, rel), &["AGENTS.md"]);
+    }
 }
+
+#[test]
+fn update_docs_keeps_the_apps_notes() {
+    let cwd = Dir::new("update-docs");
+    let app = new_app(&cwd, "app", &["--template", "minimal"]);
+    let fresh = read(&app, "AGENTS.md");
+    write(
+        &app,
+        "AGENTS.md",
+        &fresh.replace("## Actions", "## Old").replace(
+            "keeps them. -->
+",
+            "keeps them. -->
+Use tabs.
+",
+        ),
+    );
+    write(
+        &app,
+        "CLAUDE.md",
+        "Mine.
+",
+    );
+    fs::remove_file(app.join(".cursor/rules/wisp.mdc")).unwrap();
+    let o = wisp(&app, &["update-docs"]);
+    assert!(o.ok, "{}", o.err);
+    has(&o.out, &["Wrote AGENTS.md, .cursor/rules/wisp.mdc."]);
+    assert_eq!(
+        read(&app, "AGENTS.md"),
+        format!(
+            "{fresh}Use tabs.
+"
+        )
+    );
+    assert_eq!(
+        read(&app, "CLAUDE.md"),
+        "Mine.
+"
+    );
+    has(&wisp(&app, &["update-docs"]).out, &["up to date"]);
+    // Without the line that ends the reference, its notes could be lost.
+    write(
+        &app,
+        "AGENTS.md",
+        "My notes.
+",
+    );
+    let o = wisp(&app, &["update-docs"]);
+    assert!(!o.ok && o.err.contains("end-of-reference"), "{}", o.err);
+    assert_eq!(
+        read(&app, "AGENTS.md"),
+        "My notes.
+"
+    );
+}
+
+/// The files for AI agents every app gets.
+const AGENT_FILES: [&str; 4] = [
+    "AGENTS.md",
+    "CLAUDE.md",
+    ".github/copilot-instructions.md",
+    ".cursor/rules/wisp.mdc",
+];
 
 /// Every file except the ones a template generates is the example's own.
 fn assert_is_example(app: &Path, example: &str, generated: &[&str]) {
     let example = repo().join("examples").join(example);
     for rel in tree(app) {
-        if !generated.contains(&rel.as_str()) {
+        if !generated.contains(&rel.as_str()) && !AGENT_FILES.contains(&rel.as_str()) {
             assert_eq!(read(app, &rel), read(&example, &rel), "{rel}");
         }
     }

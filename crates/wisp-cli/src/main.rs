@@ -2,10 +2,15 @@
 
 mod ask;
 mod cargo;
+mod ci;
 mod css;
 mod deploy;
 mod dev;
 mod events;
+mod fmt;
+mod images;
+mod lsp;
+mod mcp;
 mod net;
 mod new;
 mod npm;
@@ -15,13 +20,15 @@ mod targets;
 #[cfg(test)]
 mod template_files;
 mod term;
+mod types;
+mod ui;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
 /// `wisp --help`: each command or option, and what it does.
-const COMMANDS: [(&str, &str); 13] = [
+const COMMANDS: [(&str, &str); 25] = [
     (
         "wisp new [name]",
         "Create an app. It asks a few questions; the options below answer them.",
@@ -32,11 +39,19 @@ const COMMANDS: [(&str, &str); 13] = [
     ),
     (
         "wisp build",
-        "Build one release binary with the CSS and static files inside.",
+        "Build one release binary with the CSS and static files inside (in a host's CI: for that host).",
+    ),
+    (
+        "wisp build --sourcemap",
+        "The same, with source maps for browser code, as wisp dev serves.",
     ),
     (
         "wisp build --static [--out dist]",
         "Write the pages as plain files, for any static host.",
+    ),
+    (
+        "wisp build --spa [--out dist]",
+        "The same, and index.html draws the SSR = false pages it could not write.",
     ),
     (
         "wisp build --docker [--force]",
@@ -44,15 +59,35 @@ const COMMANDS: [(&str, &str); 13] = [
     ),
     (
         "wisp build --target <host> [--out dist/<host>]",
-        "Write a folder ready to deploy to cloudflare, deno, vercel, netlify or node.",
+        "Write a folder for cloudflare, deno, vercel, netlify, node, bun or lambda.",
     ),
     (
         "wisp build --client ts [--out client.ts]",
         "Write a typed TypeScript client of the app's +server.rs endpoints.",
     ),
     (
-        "wisp check",
-        "Check routes and templates without compiling.",
+        "wisp deploy init <host> [--force]",
+        "Write a GitHub Actions workflow that deploys to the host on each push.",
+    ),
+    (
+        "wisp check [--types]",
+        "Check routes and templates without compiling; --types runs tsc on TypeScript too.",
+    ),
+    (
+        "wisp test [--browser] [args]",
+        "Run the app's tests (cargo test args); --browser runs browser tests too.",
+    ),
+    (
+        "wisp fmt [paths]",
+        "Format .wisp files: markup, the --- block (rustfmt), scripts and styles.",
+    ),
+    (
+        "wisp fmt --check",
+        "Name the .wisp files that are not formatted, and fail if any are.",
+    ),
+    (
+        "wisp fmt --stdin [path]",
+        "Format stdin to stdout, as the file at path (for editors and Prettier).",
     ),
     ("wisp routes", "List each route's methods, URL and file."),
     (
@@ -70,6 +105,23 @@ const COMMANDS: [(&str, &str); 13] = [
     (
         "wisp remove <pkg>",
         "Take an npm package out of package.json.",
+    ),
+    (
+        "wisp ui add <name…> [--force]",
+        "Copy accessible components (button, dialog, tabs…) into src/components, yours to change.",
+    ),
+    ("wisp ui list", "Name the components wisp ui add has."),
+    (
+        "wisp lsp",
+        "Run the language server for editors, over stdio (editors/README.md: setup per editor).",
+    ),
+    (
+        "wisp update-docs",
+        "Bring AGENTS.md, the reference for AI agents, up to this Wisp.",
+    ),
+    (
+        "wisp mcp",
+        "Serve docs, routes, components and checks to AI agents (MCP, stdio).",
     ),
 ];
 
@@ -127,16 +179,29 @@ fn main() -> ExitCode {
         Some("build") => {
             build_options(&args[1..]).and_then(|o| project().and_then(|root| build(root, &o)))
         }
-        Some("check") => no_options("check", &args[1..])
-            .and_then(|()| project())
-            .and_then(|root| {
-                wisp_build::check(root).map(|_| term::done("Routes and templates are valid."))
-            }),
+        Some("deploy") => project().and_then(|root| match args.get(2).map(String::as_str) {
+            Some("fly" | "render" | "railway") => scaffold::deploy(root, &args[1..]),
+            _ => ci::run(root, &args[1..]),
+        }),
         Some("routes") => project().and_then(|root| routes_cmd::list(root, &args[1..])),
         Some("new-route") => project().and_then(|root| routes_cmd::new_route(root, &args[1..])),
-        Some("deploy") => project().and_then(|root| scaffold::deploy(root, &args[1..])),
+        Some("check") => check_types(&args[1..]).and_then(|types| {
+            let root = project()?;
+            check(root)?;
+            term::done("Routes and templates are valid.");
+            fmt::warn_unformatted(root);
+            if types { types::check(root) } else { Ok(()) }
+        }),
+        Some("test") => project().and_then(|root| test(root, &args[1..])),
+        Some("fmt") => fmt::run(&args[1..]),
         Some("add") => project().and_then(|root| npm::add(root, &args[1..])),
         Some("remove") => project().and_then(|root| npm::remove(root, &args[1..])),
+        Some("ui") => ui::run(project, &args[1..]),
+        Some("lsp") => no_options("lsp", &args[1..]).and_then(|()| lsp::run()),
+        Some("update-docs") => no_options("update-docs", &args[1..])
+            .and_then(|()| project())
+            .and_then(new::update_docs),
+        Some("mcp") => no_options("mcp", &args[1..]).and_then(|()| mcp::run()),
         // Not in --help: how `wisp dev` runs a tool that must end with it.
         Some("__child") => css::child(&args[1..]),
         Some("-h" | "--help" | "help") | None => {
@@ -154,6 +219,35 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `wisp test [--browser] [args]`: `cargo test` with the args, and with
+/// `--features browser` for `--browser`; fails as it does.
+fn test(root: &Path, args: &[String]) -> Result<(), String> {
+    let status = std::process::Command::new("cargo")
+        .current_dir(root)
+        .args(test_args(args))
+        .status()
+        .map_err(|e| format!("Could not run cargo: {e}.\nInstall Rust from https://rustup.rs."))?;
+    match status.success() {
+        true => Ok(()),
+        false => Err("Tests failed.".into()),
+    }
+}
+
+/// `cargo`'s arguments for `wisp test`'s: `--browser` (before a `--`)
+/// becomes `--features browser`.
+fn test_args(args: &[String]) -> Vec<String> {
+    let mut out = vec!["test".to_string()];
+    let mut ours = true;
+    for a in args {
+        ours &= a != "--";
+        match ours && a == "--browser" {
+            true => out.extend(["--features".into(), "browser".into()]),
+            false => out.push(a.clone()),
+        }
+    }
+    out
 }
 
 /// `wisp dev`'s one option: `--port <n>`, `--port=<n>` or `-p <n>`.
@@ -183,23 +277,29 @@ fn dev_port(args: &[String]) -> Result<u16, String> {
 #[derive(Debug, Default, PartialEq)]
 struct BuildOptions {
     static_site: bool,
+    /// `--spa`: `--static`, with `index.html` the fallback that draws the
+    /// pages the browser draws (`SSR = false`) for any parameters.
+    spa: bool,
     docker: bool,
     force: bool,
     out: Option<String>,
-    /// `--target <host>`, an edge or Node host (`static` and `docker` set
-    /// the flags above).
+    /// `--target <host>`, an edge, Node or Lambda host, or `native` (`static`
+    /// and `docker` set the flags above).
     target: Option<String>,
     /// `--client ts`: write the TypeScript client of the app's endpoints.
     client: bool,
+    /// `--sourcemap`: source maps for the browser modules, as in dev.
+    sourcemap: bool,
 }
 
 fn build_options(args: &[String]) -> Result<BuildOptions, String> {
-    let usage = "wisp build takes --static [--out <folder>], --docker [--force], --target <host> [--out <folder>] and --client ts [--out <file>].";
+    let usage = "wisp build takes --static or --spa [--out <folder>], --docker [--force], --target <host> [--out <folder>], --client ts [--out <file>] and --sourcemap.";
     let mut o = BuildOptions::default();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--static" => o.static_site = true,
+            "--spa" => (o.static_site, o.spa) = (true, true),
             "--target" | "-t" => {
                 let host = args
                     .next()
@@ -209,6 +309,7 @@ fn build_options(args: &[String]) -> Result<BuildOptions, String> {
             _ if arg.starts_with("--target=") => target(&mut o, &arg["--target=".len()..])?,
             "--docker" => o.docker = true,
             "--force" => o.force = true,
+            "--sourcemap" => o.sourcemap = true,
             "--client" | "--client=ts" => {
                 if arg == "--client" && args.next().map(String::as_str) != Some("ts") {
                     return Err(format!(
@@ -236,8 +337,14 @@ fn build_options(args: &[String]) -> Result<BuildOptions, String> {
         Some("--target <host> goes alone, without --static or --docker.")
     } else if o.client && (o.static_site || o.docker || o.target.is_some()) {
         Some("--client ts goes alone, with --out <file> if you like.")
-    } else if o.out.is_some() && !o.static_site && o.target.is_none() && !o.client {
+    } else if o.out.is_some()
+        && !o.static_site
+        && o.target.as_deref().is_none_or(|t| t == "native")
+        && !o.client
+    {
         Some("--out goes with --static, --target or --client.")
+    } else if o.sourcemap && (o.client || o.target.is_some()) {
+        Some("--sourcemap goes with a binary build, or --static.")
     } else if o.force && !o.docker {
         Some("--force goes with --docker.")
     } else {
@@ -254,10 +361,12 @@ fn target(o: &mut BuildOptions, host: &str) -> Result<(), String> {
     match host {
         "static" => o.static_site = true,
         "docker" => o.docker = true,
-        _ if targets::HOSTS.contains(&host) => o.target = Some(host.to_string()),
+        _ if host == "native" || targets::HOSTS.contains(&host) => {
+            o.target = Some(host.to_string());
+        }
         _ => {
             return Err(format!(
-                "There is no target {host}.\nThe targets are {}, static and docker.",
+                "There is no target {host}.\nThe targets are {}, native, static and docker.",
                 targets::HOSTS.join(", ")
             ));
         }
@@ -272,6 +381,26 @@ fn no_options(command: &str, args: &[String]) -> Result<(), String> {
         )),
         None => Ok(()),
     }
+}
+
+/// `wisp check`'s one option, `--types`.
+fn check_types(args: &[String]) -> Result<bool, String> {
+    match args {
+        [] => Ok(false),
+        [t] if t == "--types" => Ok(true),
+        [arg, ..] => Err(format!(
+            "Unexpected {arg}.\nwisp check takes --types, to check TypeScript with tsc."
+        )),
+    }
+}
+
+/// `wisp_build::check`, its warnings said: the npm modules imported.
+fn check(root: &Path) -> Result<Vec<String>, String> {
+    let (imports, warnings) = wisp_build::check(root)?;
+    for w in &warnings {
+        term::warn(w);
+    }
+    Ok(imports)
 }
 
 /// `dir` and the folders above it, made if missing.
@@ -316,11 +445,28 @@ fn build(root: &Path, o: &BuildOptions) -> Result<(), String> {
         (None, Some(host)) => PathBuf::from(format!("{}/{host}", deploy::DEFAULT_OUT)),
         (None, None) => PathBuf::from(deploy::DEFAULT_OUT),
     };
-    if let Some(host) = &o.target {
-        return targets::build(root, host, &out(Some(host)));
+    // In a host's CI, a plain `wisp build` builds for that host.
+    let found = match (&o.target, o.static_site || o.docker) {
+        (None, false) => targets::detect(|k| std::env::var(k).ok()),
+        _ => None,
+    };
+    if let Some((var, host)) = found {
+        term::step(&format!("{var} is set, so this builds for {host}"));
+        println!("    wisp build --target native builds the plain binary instead.");
     }
-    let imports = wisp_build::check(root)?;
+    if let Some(host) = o.target.as_deref().or(found.map(|f| f.1)) {
+        // Vercel's build reads `.vercel/output` from the app's folder.
+        let out = match (found, host) {
+            (Some(_), "vercel") if o.out.is_none() => PathBuf::from("."),
+            _ => out(Some(host)),
+        };
+        if host != "native" {
+            return targets::build(root, host, &out);
+        }
+    }
+    let imports = check(root)?;
     css::build(root)?;
+    images::build(root);
     npm::vendor(root, &imports)?;
     if o.docker {
         deploy::docker(
@@ -334,7 +480,13 @@ fn build(root: &Path, o: &BuildOptions) -> Result<(), String> {
     }
     let started = Instant::now();
     term::step("Building for release");
-    let b = cargo::build(root, true, false);
+    // `--sourcemap`: build.rs writes the browser modules' maps.
+    let maps: &[(&str, &str)] = if o.sourcemap {
+        &[("WISP_SOURCEMAP", "1")]
+    } else {
+        &[]
+    };
+    let b = cargo::build_for(root, true, false, &[], maps);
     let exe = b.exe.filter(|_| b.ok).ok_or(
         "The build failed.
 The compiler's errors are above.",
@@ -350,7 +502,11 @@ The compiler's errors are above.",
         ))
     ));
     if o.static_site {
-        return deploy::static_site(root, &exe, &out(None));
+        return deploy::static_site(root, &exe, &out(None), o.spa);
+    }
+    // `const PRERENDER: bool = true;` pages: rendered now, then built in.
+    if deploy::prerenders(root) {
+        deploy::prerender(root, &exe, maps)?;
     }
     println!("    One file with the CSS and static files inside. Copy it to a server and run it.");
     Ok(())
@@ -362,6 +518,20 @@ mod tests {
 
     fn port(s: &str) -> Result<u16, String> {
         dev_port(&s.split_whitespace().map(String::from).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn test_is_cargo_test() {
+        let args = |s: &str| {
+            test_args(&s.split_whitespace().map(String::from).collect::<Vec<_>>()).join(" ")
+        };
+        assert_eq!(args(""), "test");
+        assert_eq!(args("--browser"), "test --features browser");
+        assert_eq!(
+            args("counter --browser -- --nocapture"),
+            "test counter --features browser -- --nocapture"
+        );
+        assert_eq!(args("-- --browser"), "test -- --browser");
     }
 
     #[test]
@@ -381,6 +551,10 @@ mod tests {
         assert!(opts("--docker --force").unwrap().force);
         assert!(opts("--client ts --out web/api.ts").unwrap().client);
         assert!(opts("--client=ts").unwrap().client);
+        assert!(opts("--sourcemap --static").unwrap().sourcemap);
+        let spa = opts("--spa --out site").unwrap();
+        assert!(spa.spa && spa.static_site && spa.out.as_deref() == Some("site"));
+        assert!(opts("--sourcemap --client ts").is_err());
         for bad in ["--client", "--client js", "--client ts --static"] {
             assert!(opts(bad).is_err(), "{bad}");
         }
@@ -403,7 +577,11 @@ mod tests {
         );
         assert!(opts("-t static").unwrap().static_site);
         assert!(opts("--target docker").unwrap().docker);
+        assert_eq!(opts("-t native").unwrap().target.as_deref(), Some("native"));
+        assert_eq!(opts("-t lambda").unwrap().target.as_deref(), Some("lambda"));
         for bad in [
+            "-t native --out x",
+            "-t native --static",
             "--target",
             "--target heroku",
             "--target=",

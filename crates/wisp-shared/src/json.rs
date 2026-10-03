@@ -1,6 +1,7 @@
 //! Just enough JSON for the CLI and the compiler: cargo's messages,
-//! package.json, the npm registry's answers. Numbers are kept as written
-//! and members in their order, so a document can be written back the same.
+//! package.json, the npm registry's answers, `wisp mcp`'s messages.
+//! Numbers are kept as written and members in their order, so a document
+//! can be written back the same.
 
 #[derive(Debug, PartialEq)]
 pub enum Json {
@@ -40,6 +41,55 @@ impl Json {
             _ => [].iter(),
         }
     }
+}
+
+/// The value as compact JSON, as `parse` reads it back.
+impl std::fmt::Display for Json {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Json::Null => f.write_str("null"),
+            Json::Bool(b) => write!(f, "{b}"),
+            Json::Num(n) => f.write_str(n),
+            Json::Str(s) => write_str(f, s),
+            Json::Arr(items) => {
+                f.write_str("[")?;
+                for (i, v) in items.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(",")?;
+                    }
+                    write!(f, "{v}")?;
+                }
+                f.write_str("]")
+            }
+            Json::Obj(members) => {
+                f.write_str("{")?;
+                for (i, (k, v)) in members.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(",")?;
+                    }
+                    write_str(f, k)?;
+                    write!(f, ":{v}")?;
+                }
+                f.write_str("}")
+            }
+        }
+    }
+}
+
+fn write_str(f: &mut std::fmt::Formatter, s: &str) -> std::fmt::Result {
+    f.write_str("\"")?;
+    for c in s.chars() {
+        match c {
+            '"' => f.write_str("\\\"")?,
+            '\\' => f.write_str("\\\\")?,
+            '\n' => f.write_str("\\n")?,
+            '\r' => f.write_str("\\r")?,
+            '\t' => f.write_str("\\t")?,
+            c if c < ' ' => write!(f, "\\u{:04x}", c as u32)?,
+            c => write!(f, "{c}")?,
+        }
+    }
+    f.write_str("\"")
 }
 
 /// `text` if it is one JSON value, with nothing after it but whitespace.
@@ -250,5 +300,7 @@ mod tests {
             assert!(parse(bad).is_err(), "{bad}");
         }
         assert_eq!(parse("{\n\"a\" 1}").unwrap_err(), "line 2: expected `:`");
+        let text = r#"{"a":[1,-1.5e3,true,null],"s":"é\"\\\n\u0001"}"#;
+        assert_eq!(parse(text).unwrap().to_string(), text);
     }
 }

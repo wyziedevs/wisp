@@ -226,13 +226,16 @@ pub struct Group {
     pub line: u32,
 }
 
-/// The file's client script: its bare `<script>`, as written.
+/// The file's client script: its bare `<script>`, as written (or its
+/// `<script lang="ts">`, its types blanked out).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Script {
     pub src: String,
     /// Where its text starts.
     pub line: u32,
     pub col: u32,
+    /// A `lang="ts"` script's text as written, for `wisp check --types`.
+    pub ts: Option<String>,
 }
 
 /// A prop given to a component: `name={expr}`, `name="text"` or `name`.
@@ -262,6 +265,39 @@ pub enum PropValue {
     },
 }
 
+/// The tag of `{@element "x-card"}`: a valid custom element name (lower
+/// case, a letter first, a `-` in it, not one HTML keeps).
+fn element_name(arg: &str) -> Result<String, String> {
+    let arg = arg.trim();
+    let Some(tag) = arg.strip_prefix('"').and_then(|a| a.strip_suffix('"')) else {
+        return Err(format!(
+            "{{@element \"x-card\"}} names its tag in quotes, found `{arg}`"
+        ));
+    };
+    let ok = tag.starts_with(|c: char| c.is_ascii_lowercase())
+        && tag.contains('-')
+        && (tag.bytes()).all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'.' | b'_')
+        })
+        && !matches!(
+            tag,
+            "annotation-xml"
+                | "color-profile"
+                | "font-face"
+                | "font-face-src"
+                | "font-face-uri"
+                | "font-face-format"
+                | "font-face-name"
+                | "missing-glyph"
+        );
+    if !ok {
+        return Err(format!(
+            "`{tag}` is not a custom element name: lower case, a letter first and a `-` in it, as `x-card`"
+        ));
+    }
+    Ok(tag.to_string())
+}
+
 /// A prop a component declares: `{@props title: &str, size: u8 = 2}`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PropDecl {
@@ -279,9 +315,22 @@ pub struct Template {
     pub uses_children: bool,
     /// `{@props …}`, which only a component has, and its line.
     pub props: Option<(Vec<PropDecl>, u32)>,
+    /// `{@element "x-card"}`: the custom element a component is also built
+    /// as, and its line.
+    pub element: Option<(String, u32)>,
     /// Browser code: the client script and every element's directives.
     pub script: Option<Script>,
     pub groups: Vec<Group>,
+    /// Its bare `<style>`s, scoped: CSS for `/_app/app.css`.
+    pub style: Option<String>,
+    /// Its accessibility warnings.
+    pub lints: Vec<crate::a11y::Lint>,
+    /// `'sha256-…'` of each inline script that runs (see `csp`).
+    pub hashes: Vec<String>,
+    /// A page with `const SSR: bool = false;`: the group of the client
+    /// block its markup (but its `<head>`) is wrapped in, which the server
+    /// never paints, so the browser draws the page from its data.
+    pub drawn: Option<usize>,
 }
 
 impl Template {
@@ -440,12 +489,36 @@ fn form_fields(src: &str, fields: &[Field]) -> Result<Option<String>, Error> {
 }
 
 pub fn parse(src: &str) -> Result<Template, Error> {
-    parse_with(src, &[])
+    parse_with(src, &[], "w-t", false)
 }
 
-/// A page's template, whose action forms' `fields` get the attributes the
-/// browser checks them by (`rules::Native`).
-pub fn parse_with(src: &str, fields: &[Field]) -> Result<Template, Error> {
+/// A template, whose action forms' `fields` get the attributes the browser
+/// checks them by (`rules::Native`). With a scoped `<style>`, every element
+/// gets `class` (see `style`). `<Island>`s are made plain first (see
+/// `island`). `drawn`: a page with `const SSR: bool = false;`, which the
+/// browser draws (see [`Template::drawn`]).
+pub fn parse_with(
+    src: &str,
+    fields: &[Field],
+    class: &str,
+    drawn: bool,
+) -> Result<Template, Error> {
+    let expanded = crate::island::expand(src)?;
+    let src = expanded.as_deref().unwrap_or(src);
+    let styled = (src.as_bytes().windows(6)).any(|w| w.eq_ignore_ascii_case(b"<style"));
+    let t = parse_as(src, fields, styled.then_some(class), drawn)?;
+    if styled && t.style.is_none() {
+        return parse_as(src, fields, None, drawn);
+    }
+    Ok(t)
+}
+
+fn parse_as(
+    src: &str,
+    fields: &[Field],
+    scope: Option<&str>,
+    drawn: bool,
+) -> Result<Template, Error> {
     let written = form_fields(src, fields)?;
     let src = written.as_deref().unwrap_or(src);
     let paged = pagers(src);
@@ -453,6 +526,13 @@ pub fn parse_with(src: &str, fields: &[Field]) -> Result<Template, Error> {
     let mut p = Parser {
         src,
         fields,
+        drawn,
+        scope,
+        scope_tag: false,
+        scoped: false,
+        style: None,
+        a11y: Default::default(),
+        hashes: Vec::new(),
         b: src.as_bytes(),
         i: 0,
         ctx: Ctx::Text,
@@ -473,6 +553,7 @@ pub fn parse_with(src: &str, fields: &[Field]) -> Result<Template, Error> {
         opened: Vec::new(),
         uses_children: false,
         props: None,
+        element: None,
         line_starts: std::iter::once(0)
             .chain(src.match_indices('\n').map(|(i, _)| i + 1))
             .collect(),
@@ -481,7 +562,12 @@ pub fn parse_with(src: &str, fields: &[Field]) -> Result<Template, Error> {
         tag_attrs: false,
         directives: Vec::new(),
         tag_classes: Vec::new(),
-        templates: Vec::new(),
+        // A drawn page's markup is all one client block's.
+        templates: if drawn {
+            vec![Some(Vec::new())]
+        } else {
+            Vec::new()
+        },
         script: None,
         groups: Vec::new(),
         end: src.len(),
@@ -511,6 +597,7 @@ pub fn parse_with(src: &str, fields: &[Field]) -> Result<Template, Error> {
     if let Some(&Node::Text(last)) = p.root.last() {
         p.chunks[last] = p.chunks[last].trim_end().to_string();
     }
+    let drawn = drawn.then(|| p.draw()).transpose()?;
 
     let mut h = Vec::new();
     shape(&p.root, &mut h);
@@ -524,6 +611,14 @@ pub fn parse_with(src: &str, fields: &[Field]) -> Result<Template, Error> {
             )
             .as_bytes(),
         );
+    }
+    if let Some((tag, _)) = &p.element {
+        h.extend_from_slice(format!("E{tag}\0").as_bytes());
+    }
+    // An inline script is allowed by its hash, which the build sends.
+    for x in &p.hashes {
+        h.extend_from_slice(x.as_bytes());
+        h.push(0);
     }
     // Browser code is compiled into the binary as a module, so changing it
     // takes a build.
@@ -570,8 +665,13 @@ pub fn parse_with(src: &str, fields: &[Field]) -> Result<Template, Error> {
         chunks: p.chunks,
         uses_children: p.uses_children,
         props: p.props,
+        element: p.element,
         script: p.script,
         groups: p.groups,
+        style: p.style,
+        lints: p.a11y.lints,
+        hashes: p.hashes,
+        drawn,
     })
 }
 
@@ -689,6 +789,8 @@ struct Parser<'a> {
     src: &'a str,
     /// The fields of the page's actions the browser can check.
     fields: &'a [Field],
+    /// A page the browser draws: its markup is parsed as a client block's.
+    drawn: bool,
     b: &'a [u8],
     i: usize,
     ctx: Ctx,
@@ -719,6 +821,7 @@ struct Parser<'a> {
     opened: Vec<Opened>,
     uses_children: bool,
     props: Option<(Vec<PropDecl>, u32)>,
+    element: Option<(String, u32)>,
     line_starts: Vec<usize>,
     /// Where the tag being scanned starts in `text`, how many blocks were
     /// open at its start, and whether it has any attribute (or hole).
@@ -770,6 +873,15 @@ struct Parser<'a> {
     tag_nodes: usize,
     /// The `<textarea>` or `<select>` of an action's form that is open.
     keep: Option<Keep>,
+    /// The file's class, when it has a scoped `<style>`; whether the tag
+    /// being scanned gets it and still needs it; the scoped CSS so far.
+    scope: Option<&'a str>,
+    scope_tag: bool,
+    scoped: bool,
+    style: Option<String>,
+    a11y: crate::a11y::Checker,
+    /// The hashes of the inline scripts that run, for the CSP.
+    hashes: Vec<String>,
 }
 
 /// A `<textarea>` or `<select>` of an action's form, till its end tag:
@@ -813,7 +925,10 @@ impl Parser<'_> {
                     b'{' => self.hole()?,
                     b'<' => self.tag_open()?,
                     _ if is_ws(c) => self.whitespace(),
-                    _ => self.copy_until(|c| c == b'{' || c == b'<' || is_ws(c)),
+                    _ => {
+                        self.copy_until(|c| c == b'{' || c == b'<' || is_ws(c));
+                        self.a11y.content(false);
+                    }
                 },
                 Ctx::Tag => match c {
                     b'{' => self.hole()?,
@@ -876,6 +991,7 @@ impl Parser<'_> {
                         }
                         self.end_value(self.i)?;
                         if self.attr == "class" {
+                            self.write_scope(true);
                             self.write_classes()?;
                         }
                         self.push_byte(c);
@@ -1122,6 +1238,8 @@ impl Parser<'_> {
                 None => return Err(self.err(start, "unclosed <!-- comment".into())),
             };
             self.i = start + 4 + n;
+            let line = self.line_of(self.i - 1);
+            self.a11y.comment(&body[..n.saturating_sub(3)], line);
             return Ok(());
         }
         let closing = rest.first() == Some(&b'/');
@@ -1239,6 +1357,14 @@ impl Parser<'_> {
         } else {
             self.server_classes(end)
         };
+        // What the file's scoped `<style>` may style: its elements, not
+        // what goes in the head.
+        self.scoped = self.scope.is_some()
+            && !closing
+            && !UNSCOPED.contains(&name.as_str())
+            && (!name.starts_with("wisp:") || name == "wisp:element")
+            && !self.frames.iter().any(|f| matches!(f, Frame::Head { .. }));
+        self.scope_tag = self.scoped;
         // `<wisp:window on:resize="…" />` and the like: a `<template>` whose
         // directives go on the window; `<wisp:element this="tag">`, an
         // element whose tag the browser sets.
@@ -1314,6 +1440,9 @@ impl Parser<'_> {
             j
         };
         let mut j = skip_ws(name_end);
+        if !closing {
+            self.a11y.content(true);
+        }
         if closing {
             if b.get(j) != Some(&b'>') {
                 return Err(self.err(start, format!("</{name}> takes nothing but its name")));
@@ -1588,8 +1717,18 @@ impl Parser<'_> {
     }
 
     fn tag_close(&mut self) -> Result<(), Error> {
-        if self.tag == "script" && !self.closing && !self.tag_attrs {
-            return self.client_script();
+        // `<script lang="ts">` is the client script too, in TypeScript.
+        let ts = self.tag_seen.len() == 1
+            && self.directives.is_empty()
+            && self
+                .seen("lang")
+                .flatten()
+                .is_some_and(|l| l.eq_ignore_ascii_case("ts"));
+        if self.tag == "script" && !self.closing && (!self.tag_attrs || ts) {
+            return self.client_script(ts);
+        }
+        if self.tag == "style" && !self.closing && !self.tag_attrs {
+            return self.scoped_style();
         }
         // Any other inline `<script>` is a module: it has a scope of its
         // own, so its top-level names need no `(() => { ... })()` around
@@ -1600,6 +1739,10 @@ impl Parser<'_> {
         }
         if !self.closing {
             self.form_defaults()?;
+            if !self.tag.starts_with("wisp:") {
+                let line = self.line_of(self.tag_pos);
+                (self.a11y).element(&self.tag, line, &self.tag_seen, &self.directives);
+            }
             // `<meta http-equiv="refresh" content="0;url=…">` goes to its URL,
             // which no guard checks: its `content` stays static.
             if self.tag == "meta" {
@@ -1612,7 +1755,7 @@ impl Parser<'_> {
                     return Err(self.err(self.tag_pos, "no expressions in the `content` of a refresh: it is a URL that may run script; redirect from the server instead".into()));
                 }
             }
-            if !self.tag_classes.is_empty() {
+            if !self.tag_classes.is_empty() || self.scoped {
                 // No `class` attribute to put them in: write one.
                 let slash = self.last == b'/' && self.text.ends_with('/');
                 if slash {
@@ -1620,6 +1763,7 @@ impl Parser<'_> {
                     self.text.truncate(self.text.trim_end().len());
                 }
                 self.text.push_str(" class=\"");
+                self.write_scope(false);
                 self.write_classes()?;
                 self.text.push('"');
                 if slash {
@@ -1663,6 +1807,7 @@ impl Parser<'_> {
             }
         }
         if self.closing {
+            self.a11y.end(&self.tag);
             match self.tag.as_str() {
                 "template" => {
                     self.templates.pop();
@@ -1698,6 +1843,12 @@ impl Parser<'_> {
                     .windows(close.len())
                     .position(|w| w.eq_ignore_ascii_case(close.as_bytes()))
                     .ok_or_else(|| self.err(self.tag_pos, format!("unclosed <{}>", self.tag)))?;
+                // A script that runs is allowed by its hash (see `csp`).
+                if self.tag == "script"
+                    && crate::csp::runs(self.seen("src").is_some(), self.seen("type").flatten())
+                {
+                    self.hashes.push(crate::csp::hash(&hay[..n]));
+                }
                 self.text.push_str(&hay[..n]);
                 self.i += n;
             }
@@ -1850,6 +2001,76 @@ impl Parser<'_> {
         let from = self.tag_nodes;
         let list = self.list();
         (from..list.len()).find(|&k| matches!(&list[k], Node::Attr { name, .. } if name == "value"))
+    }
+
+    /// At the file's top level: outside blocks, `<template>`s and heads
+    /// (a drawn page's own client block is its top level).
+    fn top(&self) -> bool {
+        self.frames.is_empty() && self.templates.len() == usize::from(self.drawn)
+    }
+
+    /// A drawn page's markup, once parsed: its root but its `<head>`s,
+    /// which the server still writes, in a client block of a group whose
+    /// test is `true`. Rust there (`{x}`, `{#if}`, a component the server
+    /// renders) is an error: the server does not render this page.
+    fn draw(&mut self) -> Result<usize, Error> {
+        let (mut heads, mut body) = (Vec::new(), Vec::new());
+        for n in std::mem::take(&mut self.root) {
+            let before = match body.last() {
+                Some(&Node::Text(j)) => Some(j),
+                _ => None,
+            };
+            match (n, before) {
+                (n @ Node::Head(_), _) => heads.push(n),
+                // Two texts meet where a head was: one node.
+                (Node::Text(k), Some(j)) => {
+                    let tail = std::mem::take(&mut self.chunks[k]);
+                    self.chunks[j].push_str(&tail);
+                }
+                (n, _) => body.push(n),
+            }
+        }
+        if let Some(line) = server_line(&body) {
+            return Err(Error {
+                line,
+                col: 1,
+                msg: "this page has `const SSR: bool = false;`, so the browser draws it and its markup is browser code: \
+                      `{…}`, `{#if}`, `{#each}` and components given `{…}` are Rust. Write `{:…}`, `{:#if}`, \
+                      `{:#each}` and `name={:…}` (Rust in its <title> or <head> is fine)"
+                    .into(),
+            });
+        }
+        let group = self.groups.len();
+        self.groups.push(Group {
+            directives: vec![Directive {
+                kind: Dir::If,
+                name: String::new(),
+                mods: Vec::new(),
+                value: Some(Code {
+                    src: "true".into(),
+                    line: 1,
+                }),
+                key: None,
+                props: Vec::new(),
+                line: 1,
+                col: 1,
+            }],
+            locals: Vec::new(),
+            nested: false,
+            line: 1,
+        });
+        let chunks = &mut self.chunks;
+        let mut text = || {
+            chunks.push(String::new());
+            Node::Text(chunks.len() - 1)
+        };
+        let mut root = vec![text()];
+        for h in heads {
+            root.extend([h, text()]);
+        }
+        root.extend([Node::Client(vec![(group, body)]), text()]);
+        self.root = root;
+        Ok(group)
     }
 
     /// Whether what is being scanned is markup the browser renders too.
@@ -2099,12 +2320,13 @@ impl Parser<'_> {
 
     // ---- browser code -----------------------------------------------------
 
-    /// A `<script>` without attributes is the file's client script. It
-    /// leaves the HTML: the build makes it a module, which runs once for
-    /// each rendered copy of this file (see `codegen`).
-    fn client_script(&mut self) -> Result<(), Error> {
+    /// A `<script>` without attributes (or with `lang="ts"` alone) is the
+    /// file's client script. It leaves the HTML: the build makes it a
+    /// module, which runs once for each rendered copy of this file (see
+    /// `codegen`).
+    fn client_script(&mut self, ts: bool) -> Result<(), Error> {
         let at = self.tag_pos;
-        if !self.frames.is_empty() || !self.templates.is_empty() {
+        if !self.top() {
             return Err(self.err(
                 at,
                 "a <script> without attributes is this file's client script, which goes at the top level, outside blocks, \
@@ -2131,10 +2353,19 @@ impl Parser<'_> {
             .position(|w| w.eq_ignore_ascii_case(b"</script"))
             .ok_or_else(|| self.err(at, "unclosed <script>".into()))?;
         let end = hay[n..].find('>').map_or(hay.len(), |e| n + e + 1);
+        // TypeScript's types go here, as spaces: the rest of the build, and
+        // the browser, see JavaScript at the same lines and columns.
+        let written = &hay[..n];
+        let src = if ts {
+            crate::js::strip_types(written).map_err(|(off, msg)| self.err(body + off, msg))?
+        } else {
+            written.to_string()
+        };
         self.script = Some(Script {
-            src: hay[..n].to_string(),
+            src,
             line: self.line_of(body),
             col: self.col_of(body),
+            ts: ts.then(|| written.to_string()),
         });
         self.i = body + end;
         self.ctx = Ctx::Text;
@@ -2332,11 +2563,68 @@ impl Parser<'_> {
         Ok(())
     }
 
+    /// The file's class, once, into the `class` value being written (after
+    /// what is in it already, `after`).
+    fn write_scope(&mut self, after: bool) {
+        if let Some(class) = self.scope.filter(|_| std::mem::take(&mut self.scoped)) {
+            if after {
+                self.text.push(' ');
+            }
+            self.text.push_str(class);
+        }
+    }
+
+    /// A `<style>` without attributes is scoped to this file: it leaves the
+    /// HTML, its selectors get the file's class (`style::scope`), and the
+    /// build adds it to `/_app/app.css`.
+    fn scoped_style(&mut self) -> Result<(), Error> {
+        let at = self.tag_pos;
+        if !self.top() {
+            return Err(self.err(
+                at,
+                "a <style> without attributes is scoped to this file and goes at the top level, outside blocks, \
+                 <template> and <wisp:head>. For CSS that is not scoped, write <style global>"
+                    .into(),
+            ));
+        }
+        self.text.truncate(self.tag_text);
+        let body = self.i + 1;
+        let hay = &self.src[body..];
+        let n = (hay.as_bytes().windows(7))
+            .position(|w| w.eq_ignore_ascii_case(b"</style"))
+            .ok_or_else(|| self.err(at, "unclosed <style>".into()))?;
+        let end = hay[n..].find('>').map_or(hay.len(), |e| n + e + 1);
+        let css = match self.scope {
+            Some(class) => crate::style::scope(&hay[..n], class)
+                .map_err(|(off, msg)| self.err(body + off, msg))?,
+            None => hay[..n].to_string(),
+        };
+        let all = self.style.get_or_insert_with(String::new);
+        if !all.is_empty() {
+            all.push('\n');
+        }
+        all.push_str(&css);
+        self.i = body + end;
+        self.ctx = Ctx::Text;
+        Ok(())
+    }
+
     /// The tag being closed, if it has directives, gets a `Live` node just
     /// before its `>` (or `/>`). A `<template>` also starts or ends the
     /// names its `each` gives the elements inside it.
     fn live_element(&mut self) -> Result<(), Error> {
         let mut directives = std::mem::take(&mut self.directives);
+        // A `class` the browser sets keeps the file's.
+        if let Some(class) = self.scope.filter(|_| self.scope_tag) {
+            let sets_class = |d: &&mut Directive| d.kind == Dir::Attr && d.name == "class";
+            for v in directives
+                .iter_mut()
+                .filter(sets_class)
+                .filter_map(|d| d.value.as_mut())
+            {
+                v.src = format!("`${{({}) ?? ''}} {class}`", v.src);
+            }
+        }
         // Where the rest go, when they start, and the tag come first: the
         // runtime reads them before the others.
         directives.sort_by_key(|d| !matches!(d.kind, Dir::At | Dir::Wait | Dir::Tag));
@@ -2980,6 +3268,9 @@ impl Parser<'_> {
             )
         })?;
         self.i = end + 1;
+        if self.ctx == Ctx::Text {
+            self.a11y.content(false);
+        }
         let t = self.src[open + 1..end].trim();
         if has_line_comment(t) {
             return Err(self.err(open, "no // comments inside {…}: the code after it would be commented out too. Use /* … */".into()));
@@ -3232,7 +3523,7 @@ impl Parser<'_> {
         // A whole attribute value: `None` leaves the attribute out.
         // (`name = {x}` with spaces cannot be taken back, and is written as text.)
         if unquoted
-            && (self.attr != "class" || self.tag_classes.is_empty())
+            && (self.attr != "class" || (self.tag_classes.is_empty() && !self.scoped))
             && self.unwrite_attr_name(open).is_ok()
         {
             let name = self.attr.clone();
@@ -3265,6 +3556,9 @@ impl Parser<'_> {
         self.push_node(open, Node::Expr(code(t)))?;
         if unquoted {
             self.end_value(open)?;
+            if self.attr == "class" {
+                self.write_scope(true);
+            }
             self.write_classes()?;
             self.text.push('"');
         }
@@ -3430,6 +3724,22 @@ impl Parser<'_> {
             }
             let decls = parse_props(arg).map_err(|m| self.err(open, m))?;
             self.props = Some((decls, self.line_of(open)));
+            self.skip_standalone(open);
+            return Ok(());
+        }
+        if kw == "element" {
+            if self.ctx != Ctx::Text || !self.frames.is_empty() {
+                return Err(self.err(
+                    open,
+                    "{@element \"x-card\"} goes at the top of a component, outside any tag or block"
+                        .into(),
+                ));
+            }
+            if self.element.is_some() {
+                return Err(self.err(open, "a component is one custom element".into()));
+            }
+            let tag = element_name(arg).map_err(|m| self.err(open, m))?;
+            self.element = Some((tag, self.line_of(open)));
             self.skip_standalone(open);
             return Ok(());
         }
@@ -3845,6 +4155,12 @@ fn has_line_comment(code: &str) -> bool {
     false
 }
 
+/// Tags a scoped `<style>` leaves be: the document's own, what only goes
+/// in its head, and those that show nothing of their own.
+const UNSCOPED: [&str; 10] = [
+    "html", "head", "body", "title", "meta", "link", "base", "script", "style", "template",
+];
+
 /// HTML's boolean attributes: present means on, whatever the value.
 pub(crate) const BOOLEAN_ATTRS: [&str; 25] = [
     "allowfullscreen",
@@ -3947,6 +4263,26 @@ pub fn client_renderable(nodes: &[Node]) -> bool {
         | Node::Snippet { .. } => true,
         Node::Client(branches) => branches.iter().all(|(_, b)| client_renderable(b)),
         _ => false,
+    })
+}
+
+/// The line of the first Rust in `nodes` that the server would run, if
+/// any: what [`client_renderable`] refuses.
+fn server_line(nodes: &[Node]) -> Option<u32> {
+    nodes.iter().find_map(|n| match n {
+        Node::Client(branches) => branches.iter().find_map(|(_, b)| server_line(b)),
+        _ if client_renderable(std::slice::from_ref(n)) => None,
+        Node::Expr(c) | Node::Html(c) | Node::Const(c) | Node::Selected(c) => Some(c.line),
+        Node::Bool { code, .. } | Node::Attr { code, .. } => Some(code.line),
+        Node::RenderSnippet { args, .. } => Some(args.line),
+        Node::If { branches, .. } => branches.first().map(|(c, _)| c.line),
+        Node::Each { iter, .. } => Some(iter.line),
+        Node::Match { scrutinee, .. } => Some(scrutinee.line),
+        Node::Component { line, .. }
+        | Node::Kept { line, .. }
+        | Node::Chosen { line, .. }
+        | Node::Problem { line, .. } => Some(*line),
+        _ => Some(1),
     })
 }
 
@@ -4116,7 +4452,7 @@ pub(crate) fn for_each_top(s: &str, mut f: impl FnMut(usize)) {
 
 /// Index of the `}` closing a hole that starts at `i`, skipping nested braces
 /// and Rust string/char literals.
-fn hole_end(b: &[u8], mut i: usize) -> Option<usize> {
+pub(crate) fn hole_end(b: &[u8], mut i: usize) -> Option<usize> {
     let mut depth = 0u32;
     while i < b.len() {
         match b[i] {
@@ -4452,6 +4788,24 @@ mod tests {
     }
 
     #[test]
+    fn element_tag() {
+        let t = parse("{@element \"x-card\"}\n{@props title: &str}\n<b>{:title}</b>").unwrap();
+        assert_eq!(t.element, Some(("x-card".into(), 1)));
+        assert_eq!(text(&t, &t.nodes[0]), "<b>");
+        let other = parse("{@element \"y-card\"}\n{@props title: &str}\n<b>{:title}</b>").unwrap();
+        assert_ne!(t.shape, other.shape);
+
+        let err = |src: &str| parse(src).unwrap_err().msg;
+        assert!(err("{@element x-card}").contains("in quotes"));
+        for bad in ["card", "X-card", "1-card", "x card", "font-face"] {
+            let e = err(&format!("{{@element \"{bad}\"}}"));
+            assert!(e.contains("not a custom element name"), "{bad}: {e}");
+        }
+        assert!(err("{@element \"a-b\"}{@element \"a-c\"}").contains("one custom element"));
+        assert!(err("{#if x}{@element \"a-b\"}{/if}").contains("at the top"));
+    }
+
+    #[test]
     fn component_errors() {
         let err = |src: &str| parse(src).unwrap_err().msg;
         assert!(
@@ -4646,14 +5000,45 @@ mod tests {
     #[test]
     fn script_style_comment_are_raw() {
         let t = parse(
-            "<style>a { color: red }</style><script defer>if (a) { b() }</script><!-- {x} -->done",
+            "<style global>a { color: red }</style><script defer>if (a) { b() }</script><!-- {x} -->done",
         )
         .unwrap();
         assert_eq!(t.nodes.len(), 1);
+        assert_eq!(t.style, None);
         assert_eq!(
             text(&t, &t.nodes[0]),
-            "<style>a { color: red }</style><script defer type=\"module\">if (a) { b() }</script>done"
+            "<style global>a { color: red }</style><script defer type=\"module\">if (a) { b() }</script>done"
         );
+    }
+
+    #[test]
+    fn a_bare_style_is_scoped() {
+        let (html, t) = flat(
+            "<h1>Hi</h1>\n<p class=\"a\" class:on={x}>x</p><img src=\"x.png\" />\
+             <b class={c}>b</b><title>T</title>\n<STYLE>\n  h1, p::after { color: red }\n</STYLE>",
+        );
+        assert_eq!(
+            t.style.as_deref(),
+            Some("h1.w-t, p.w-t::after { color: red }")
+        );
+        assert_eq!(
+            html,
+            "<h1 class=\"w-t\">Hi</h1>\n<p class=\"a w-t?\">x</p><img src=\"x.png\" class=\"w-t\"/>\
+             <b class=\"? w-t\">b</b>?"
+        );
+        // A class the browser sets keeps it too.
+        let (html, t) = flat("<p class=\"a {:b}\">x</p><style>p {}</style>");
+        assert_eq!(html, "<p class=\"a  w-t\"[0]>x</p>");
+        let v = &t.groups[0].directives[0].value.as_ref().unwrap().src;
+        assert_eq!(v, "`${(`a ${(b) ?? ''}`) ?? ''} w-t`");
+        // Without one, nothing changes; with one in a block, it is an error.
+        let (html, t) = flat("<h1>Hi</h1><style media=\"print\">h1 {}</style>");
+        assert_eq!(html, "<h1>Hi</h1><style media=\"print\">h1 {}</style>");
+        assert_eq!(t.style, None);
+        let e = parse("{#if a}<style>p {}</style>{/if}").unwrap_err();
+        assert!(e.msg.contains("<style global>"), "{}", e.msg);
+        let e = parse("<p>x</p>\n<style>\np { color: red }\n@import 'x';\n</style>").unwrap_err();
+        assert_eq!((e.line, e.msg.contains("@import")), (4, true));
     }
 
     #[test]
@@ -4666,7 +5051,8 @@ mod tests {
             Some(Script {
                 src: "\n  let a = '</p>' // {x}\n".into(),
                 line: 3,
-                col: 9
+                col: 9,
+                ts: None
             })
         );
         assert!(t.is_live());
@@ -4815,6 +5201,11 @@ mod tests {
             text(&t, &t.nodes[0]),
             r#"<script src="/x.js"></script><script type="application/ld+json">{}</script><SCRIPT defer type="module">go()</SCRIPT>"#
         );
+        // The one that runs is allowed by its hash, which a change to it
+        // changes, and the shape with it.
+        assert_eq!(t.hashes, [crate::csp::hash("go()")]);
+        let other = parse(r#"<script src="/x.js"></script><script type="application/ld+json">{}</script><SCRIPT defer>stop()</SCRIPT>"#).unwrap();
+        assert_ne!(t.shape, other.shape);
     }
 
     #[test]
@@ -4979,7 +5370,13 @@ mod tests {
         );
         // The inputs are an action form's: the browser's checks, what was
         // typed, the problem, and a multipart form.
-        let t = parse_with("<form action=\"?/join\" fields></form>", &fields).unwrap();
+        let t = parse_with(
+            "<form action=\"?/join\" fields></form>",
+            &fields,
+            "w-t",
+            false,
+        )
+        .unwrap();
         let html: String = t.chunks.concat();
         for want in [
             "<form action=\"?/join\" method=\"post\" enctype=\"multipart/form-data\">",

@@ -16,7 +16,22 @@ pub const DEFAULT: &str = "<!doctype html>
 ";
 
 /// Every valid shell has the same shape: text, head, text, body, text.
-pub const SHAPE: u64 = fnv1a(b"wisp-shell-v1");
+const SHAPE: u64 = fnv1a(b"wisp-shell-v1");
+
+/// The shell's shape: [`SHAPE`], but for the inline scripts it runs, whose
+/// hashes are built in (see `csp`): a change to one takes a build.
+pub fn shape(parts: &[String; 3]) -> u64 {
+    SHAPE ^ fnv1a(hashes(parts).concat().as_bytes())
+}
+
+/// The hashes of the inline scripts the shell runs.
+pub fn hashes(parts: &[String; 3]) -> Vec<String> {
+    let mut out = Vec::new();
+    for p in parts {
+        crate::csp::in_html(p, &mut out);
+    }
+    out
+}
 
 /// Splits the shell around `%wisp.head%` and `%wisp.body%`.
 pub fn split(src: &str) -> Result<[String; 3], String> {
@@ -49,6 +64,15 @@ mod tests {
         assert!(a.ends_with("initial-scale=1\">\n"));
         assert_eq!(b, "\n</head>\n<body>\n");
         assert_eq!(c, "\n</body>\n</html>\n");
+    }
+
+    #[test]
+    fn its_inline_scripts_are_part_of_its_shape() {
+        let parts = split(DEFAULT).unwrap();
+        assert!(hashes(&parts).is_empty());
+        let theme = split("<script>dark()</script>%wisp.head%%wisp.body%").unwrap();
+        assert_eq!(hashes(&theme), [crate::csp::hash("dark()")]);
+        assert_ne!(shape(&parts), shape(&theme));
     }
 
     #[test]

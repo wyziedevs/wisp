@@ -1,0 +1,6 @@
+{
+  "i18n.title": "Votre panier",
+  "i18n.items": "{count, plural, =0 {Aucun article} one {# article} other {# articles}}",
+  "i18n.hello": "Bonjour, {name} !",
+  "i18n.added": "{count, plural, one {Un ajouté} other {# ajoutés}}"
+}

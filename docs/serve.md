@@ -23,9 +23,5 @@ All on the built-in server; each costs nothing for what does not use it.
   that is still waiting then, and answers 503. It is checked when the
   handler waits; one that blocks its thread without awaiting cannot be
   stopped by anything.
-- **OpenTelemetry**: `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318`
-  (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` for the whole address) sends one
-  server span per request, as OTLP/HTTP JSON in batches from its own thread.
-  `OTEL_SERVICE_NAME` names the service (default `wisp`); an incoming
-  `traceparent` is continued. Plain http only (a collector beside the app);
-  spans the collector cannot take are dropped, never waited for.
+- **OpenTelemetry**: `OTEL_EXPORTER_OTLP_ENDPOINT`, with the logs and metrics:
+  see deploy.md.

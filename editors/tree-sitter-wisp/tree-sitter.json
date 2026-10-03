@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "wisp",
+      "camelcase": "Wisp",
+      "scope": "text.html.wisp",
+      "path": ".",
+      "file-types": ["wisp"],
+      "highlights": "queries/highlights.scm",
+      "injections": "queries/injections.scm",
+      "injection-regex": "^wisp$"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Wisp .wisp templates: HTML with Rust and JavaScript",
+    "links": { "repository": "https://github.com/wyziedevs/wisp" }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "i18n": {
+    "title": "Your cart",
+    "items": "{count, plural, =0 {No items} one {# item} other {# items}}",
+    "hello": "Hello, {name}!",
+    "added": "Added {count, plural, one {one} other {#}}"
+  }
+}

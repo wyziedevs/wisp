@@ -97,6 +97,13 @@ pub(crate) fn reply(cx: &Cx, made: Made, reply: &mut Reply) {
         }
     };
     if !fresh {
+        // A kept page has its policy in its head already.
+        if let (Made::Baked(_), Some(policy)) = (&made, crate::csp::header()) {
+            reply.headers.push((
+                Cow::Borrowed("content-security-policy"),
+                Cow::Borrowed(policy),
+            ));
+        }
         reply.status = 200;
         reply.body = Body::Made(made);
         return;
@@ -246,7 +253,8 @@ impl Store {
 
 /// The key of `cx` in `buf`: `Host`, a NUL, then the path and query; and
 /// with `ACCEPT` (a route whose answer varies by `accept`), a NUL and what
-/// it asks for: `n` for NDJSON, `j` for JSON.
+/// it asks for: `n` for NDJSON, `j` for JSON; in an app with locales, a
+/// NUL, `l` and the request's locale.
 fn key<'k, const ACCEPT: bool>(buf: &'k mut Vec<u8>, cx: &Cx) -> &'k [u8] {
     buf.clear();
     buf.extend_from_slice(cx.header("host").unwrap_or("").as_bytes());
@@ -263,6 +271,10 @@ fn key<'k, const ACCEPT: bool>(buf: &'k mut Vec<u8>, cx: &Cx) -> &'k [u8] {
             b"\0j"
         };
         buf.extend_from_slice(asked);
+    }
+    // A page in another locale is another answer.
+    if !crate::locales().is_empty() {
+        buf.extend_from_slice(&[0, b'l', crate::i18n::pick(cx)]);
     }
     buf
 }
@@ -330,6 +342,9 @@ pub fn keep<A: App, const ACCEPT: bool>(cx: &mut Cx, out: &mut Out, secs: u32, p
     let body = match out.response.take() {
         None => {
             line(&mut head, "content-type", "text/html; charset=utf-8");
+            if let Some(policy) = crate::csp::header() {
+                line(&mut head, "content-security-policy", policy);
+            }
             crate::headers::page(cx);
             crate::http::page::<A>(out).concat().into_bytes()
         }

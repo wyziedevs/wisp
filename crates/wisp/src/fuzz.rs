@@ -37,12 +37,22 @@ pub fn mutate(rng: &mut Rng, b: &mut Vec<u8>) {
 
 /// Routes: `/` (index 0), `/small` (1), which takes bodies of at most
 /// `SMALL` bytes, and `/p/[x]` (2). One template, `TEMPLATE`, for the dev
-/// endpoint to swap.
+/// endpoint to swap, and one browser module, `MODULE`.
 pub struct Fuzz;
 
 pub const SMALL: usize = 64;
 
 pub const TEMPLATE: (&str, u64) = ("src/routes/+page.wisp", 0xabc);
+
+pub static MODULE: crate::ClientModule = crate::ClientModule {
+    id: "fuzz",
+    path: "/_app/c/fuzz.js",
+    url: "/_app/c/fuzz.js?v=1",
+    etag: "\"1\"",
+    source: "define(\"fuzz\", () => ({ g: [] }));",
+    preload: &[],
+    texts: &[],
+};
 
 impl App for Fuzz {
     const ROOT: &'static str = ".";
@@ -73,6 +83,10 @@ impl App for Fuzz {
 
     fn asset(_: &str) -> Option<&'static Asset> {
         None
+    }
+
+    fn client_module(path: &str) -> Option<&'static crate::ClientModule> {
+        (path == MODULE.path).then_some(&MODULE)
     }
 
     async fn init() -> crate::Result<()> {

@@ -22,7 +22,8 @@ This document is the contract for v0. When code and doc disagree, fix one of the
    Routes compile to one `match`. Buffers are reused per connection. No boxing,
    no dynamic dispatch, no allocation on the hot path after warm-up.
 3. **Minimal dependencies.** The runtime depends on `tokio` and `httparse`. The
-   build crate and CLI depend on nothing but std. Every new dependency needs a
+   build crate and CLI depend on nothing but std (and `pulldown-cmark`, for
+   Markdown pages at build time). Every new dependency needs a
    written reason in this file.
 4. **Boring code.** Plain functions and plain data. Abstractions only where they
    remove more code than they add. Invariants are asserted, not assumed.
@@ -46,6 +47,7 @@ This document is the contract for v0. When code and doc disagree, fix one of the
 | tokio       | wisp           | Async runtime; the entire DB/client ecosystem assumes it.          |
 | httparse    | wisp           | Zero-dep, fuzzed HTTP/1.x header parser (the one hyper uses).      |
 | bytes, http, http-body, tower-service | wisp, feature `tower` only | The vocabulary types of the tower ecosystem, so Wisp can be a service. Off by default. |
+| pulldown-cmark | wisp-build | Markdown pages, rendered at build time. CommonMark has many edge cases; this parser is compliant, among the fastest, and only its HTML writer is on. The runtime gets nothing. |
 
 Deliberately *not* used by default: hyper, axum, tower, serde, a TOML parser, `notify`,
 a proc-macro stack (`syn`/`quote`). Things we write ourselves instead: the
@@ -76,10 +78,12 @@ crates/wisp        runtime: HTTP server, Cx, escaping, assets, dev hooks
 crates/wisp-build  compiler: route scan, .wisp parser, codegen (used from build.rs)
 crates/wisp-shared what runtime, compiler and browser agree on: contexts.rs, protocol.rs, client/*.js
 crates/wisp-macros #[action], #[derive(Cookie)], #[derive(Json)] and #[derive(FromJson)] (proc macros; no deps but wisp-build, for `#[validate]`'s rules)
-crates/wisp-cli    `wisp new | dev | build | check`; deploy targets
+crates/wisp-cli    `wisp new | dev | build | check | lsp | mcp | update-docs`; deploy targets
+editors/           VS Code and Zed extensions, tree-sitter grammar, Prettier plugin; README per editor
 examples/demo      the demo app, which is also `wisp new`'s demo template
 examples/api       a JSON API, which is also `wisp new --api`
 tests/app          an app that uses every feature, and the tests that run it
+tests/agents       every Rust and HTML snippet of AGENTS.md, compiled
 bench/             the same app in other stacks, load generator, runner (bench-run)
 ```
 
@@ -116,6 +120,7 @@ Directory names are URL segments. Files that start with `+` are route files.
 | File           | Meaning                                                           |
 |----------------|-------------------------------------------------------------------|
 | `+page.wisp`   | The page at this path: markup, after an optional `---` block of Rust. |
+| `+page.md`     | A Markdown page instead (see below); so is each `x.md`, at `x`. |
 | `+page.rs`     | Optional, instead of the block: `load` and `#[action]` functions. |
 | `+layout.wisp` | Wraps this page and every page below it. `<slot />` or `{@render children()}`. |
 | `+layout.rs`   | Optional, instead of a block: `load` for the layout.              |
@@ -150,6 +155,67 @@ under `src/routes` without its `+`, which would otherwise be ignored; a
 top-level `_app` or `_wisp` directory, which Wisp's own files use; a
 `(group)` that is not exactly one name in parentheses; a route deeper than
 32 segments. Editors' swap and backup files are skipped.
+
+`/sitemap.xml` and `/robots.txt` are made from the route tree, at no cost
+to other requests: they are answered only for a GET that no route and no
+file matched. The sitemap lists each page whose addresses are known (no
+parameters, or `entries()`, as for `--static`; optional ones left out),
+leaving out pages in a `(private)` group and pages whose markup has `<meta
+name="robots" content="noindex">` (a Markdown page's `noindex: true`).
+Addresses start with `SITE_URL` (env), else the request's scheme and host
+(`x-forwarded-proto`, else https, http for localhost). `robots.txt` allows
+everything and names the sitemap. A file of the same name in `static/`, or
+a route, is served instead. `wisp build --static` writes both when
+`SITE_URL` is set.
+
+### Markdown pages
+
+`+page.md`, and each `x.md` in a route folder (a page at `x`), is turned
+into markup at build time by `pulldown-cmark` (CommonMark, tables,
+strikethrough, task lists, footnotes), then compiled like a `.wisp` page:
+the folder's layouts wrap it, and with no Rust in it, it is baked.
+
+```markdown
+---
+title: Hello
+layout: Post
+date: 2026-10-01
+---
+Text, and a component:
+
+<Card title="x">
+
+**Markdown** inside, between blank lines.
+
+</Card>
+```
+
+- Front matter is `name: value` lines (quotes optional). `title` (else the
+  first `# heading`) is the `<title>`. `layout` names a component in
+  `src/components` that shows the page as its children; it gets each field
+  its `{@props}` declare (`&str`/`String`, `bool`, a number, `Option` of
+  one). A field it requires that the page lacks, or a value of the wrong
+  type, is a build error. `noindex: true` adds `<meta name="robots"
+  content="noindex">`.
+- `{`/`}` in text and code are written as `&#123;`/`&#125;`, so no hole
+  comes from them; raw HTML (components) is the template's own.
+- Fenced code is highlighted at build time by a small highlighter in
+  `wisp-build` (rust, js/ts, html, css, json, bash): `<span
+  class="hl-k|s|c|n|t|a">` (keyword, string, comment, number, type or tag,
+  attribute) in `<pre><code class="language-x">`. The app's CSS colors
+  them; other languages keep the class, unhighlighted.
+- `wisp::pages("blog")` gives the `MdPage`s (`path`, `title`,
+  `get("date")`) of a folder's Markdown pages, newest `date` first, for an
+  index page: `{#each wisp::pages("blog") as p}<a href={p.path}>{p.title}</a>{/each}`.
+  It is a `static` slice the build wrote: no I/O, no allocation.
+
+Trailing slash: a page's address is `/about` and `/about/` gets a 308 to
+it, the query kept. `wisp::trailing_slash(Always)` in `init` turns that
+round (`/about` → `/about/`, for GET and HEAD of pages; endpoints and
+paths with a `.` in their last segment are left as asked), and `Ignore`
+serves both. The other form is matched only after its own path matched
+no route, so the default costs nothing. The build warns of a literal
+`href="/…"` in a template that the setting would redirect.
 
 ### Page logic
 
@@ -471,6 +537,127 @@ its file: `Card.wisp` is `<Card>`. It declares what it takes at the top:
 Components can also be drawn by the browser (inside client blocks, or with
 `{:…}` props, `bind:` and `on:`); see [client.md](client.md).
 
+### A component kit: `wisp ui add`
+
+```sh
+wisp ui list                     # what there is
+wisp ui add button dialog tabs   # into src/components, with stories
+```
+
+`wisp ui add` copies components into `src/components`: the source is in the
+CLI, the copy is the app's, to change as it likes. A file already there is
+the app's and stays; `--force` writes over it. Each comes with a
+`Name.stories.wisp` for the workshop at `/_wisp/components`.
+
+| Component | Use | Browser code |
+|---|---|---|
+| `Button` | `<Button variant="secondary" kind="submit">Save</Button>`; `href` makes it a link | none |
+| `Badge` | `<Badge tone="success">Paid</Badge>` | none |
+| `Card` | `<Card title="Tea">…</Card>` | none |
+| `Input`, `Textarea` | `<Input label="Email" name="email" kind="email" hint="…" problem={p} />` | none |
+| `Checkbox`, `Switch` | `<Switch label="Dark" name="dark" checked />` (a checkbox, `role="switch"`) | none |
+| `Select` | `<Select label="Drink" name="drink"><option>Tea</option></Select>` (native) | none |
+| `Accordion` | `<Accordion title="Q" group="faq">A</Accordion>` (`<details name>`) | none |
+| `Dialog` | `<Dialog id="d" title="Sure?" trigger="Delete">…</Dialog>` (`<dialog>`, `commandfor`) | none |
+| `Menu` | `<Menu id="m" label="Actions"><button role="menuitem">Edit</button></Menu>` (popover) | arrow keys |
+| `Tabs` | `<Tabs id="t" labels={["A", "B"]}><div>…</div><div>…</div></Tabs>` | arrow keys |
+| `Tooltip` | `<Tooltip id="tip" text="Saves it"><button>Save</button></Tooltip>` | `aria-describedby`, Escape |
+| `Toast` | `<Toast message={flash.unwrap_or_default()} />` in the layout; scripts send `dispatchEvent(new CustomEvent('toast', { detail: 'Saved' }))` | the list |
+
+- Props are typed, as any component's. Styles are scoped and read the
+  demo's tokens with fallbacks (`var(--accent, #896ce0)`, `--panel`,
+  `--line`, `--ink`, `--radius`…), so an app's `:root` restyles them all;
+  `--danger`, `--success` and `--warning` are read the same way.
+- Native elements first (`<dialog>`, `popover`, `<details>`, `<select>`,
+  checkboxes): the browser's keyboard, focus and screen reader support,
+  and no JavaScript for ten of the fourteen. The rest follow the WAI-ARIA
+  patterns. A test builds all of them with no accessibility warnings.
+
+### Scoped styles
+
+```html
+<h1>Hi</h1>
+<style>
+  h1, .lead { color: rebeccapurple }
+  :global(body) { margin: 0 }
+</style>
+```
+
+- A `<style>` without attributes in a page, layout or component is that
+  file's: every element it writes gets `class="w-xxxxxx"` (six letters or
+  digits from a hash of its path), and each selector gets `.w-xxxxxx` on its
+  last compound that is not `:global(…)`, before any pseudo-class or
+  pseudo-element: `.card p:hover` → `.card p.w-xxxxxx:hover`. Ancestors
+  may come from anywhere (a layout, `<html class="dark">`); the element
+  styled is this file's. A component's elements are its own, not the page's.
+- `:global(x)` is `x`, unscoped. A `<style>` with any attribute
+  (`<style global>`, `media="print"`) is copied as written. `@media`,
+  `@supports`, `@container`, `@layer` and nesting (`&:hover`, `h2 {}` in a
+  rule) are scoped inside; `@keyframes`, `@font-face` and their names stay
+  global. `@import` is a build error: it goes in `src/app.css`.
+- It goes at the top level (not in a block, `<template>` or `<head>`), and
+  a file may have several. The class is not put on `<html>`, `<head>`,
+  `<body>`, `<title>`, `<meta>`, `<link>`, `<base>`, `<script>`, `<style>`
+  or `<template>`; a `class` the browser sets (`class={:x}`) keeps it.
+- The CSS is appended to `/_app/app.css`, after the app's own: no other
+  request. A release build embeds it; a dev build reads it from
+  `.wisp/scoped.css`, which `wisp dev` rewrites on a template save and the
+  browser swaps in like any CSS change, no compile.
+- Cost: the class's bytes on each element, nothing at run time.
+
+### Accessibility warnings
+
+The parser lints each template as it reads it. `wisp check`, `wisp dev`
+(on each build and template swap) and `wisp build` print them as
+warnings (`! src/routes/+page.wisp:4: <img> has no alt: … (a11y-img-alt)`);
+a plain `cargo build` prints them as `cargo::warning`s. They never stop a
+build.
+
+| Name | Warns about |
+|---|---|
+| `img-alt` | `<img>` without `alt` (`alt=""` is fine: decorative) |
+| `click-events` | `on:click` on an element that is not interactive (nor a custom element, `<sl-button>`), without both a `role` and a key handler (`on:keydown`) |
+| `label-control` | `<label>` with no `for` and no control inside |
+| `anchor-href` | `<a>` without `href`, or `href="#"` |
+| `autofocus` | `autofocus` |
+| `heading-order` | a heading more than one level below the one before it in the file |
+| `button-name` | `<button>` with no text, `aria-label`, `aria-labelledby` or `title` |
+| `tabindex` | `tabindex` above 0 |
+| `aria-attr` | an `aria-*` name that ARIA does not have |
+
+`<!-- wisp-ignore a11y-img-alt -->` on the line before an element silences
+that lint there (several names may follow). A value set by an expression
+(`alt={x}`, `:alt="x"`, `{...attrs}`) counts as set. The examples have none.
+
+### Images
+
+`<img src="$lib/photo.jpg" alt="…">` (a file of `src/lib`) or
+`src="/photo.jpg"` (one of `static/`), a JPEG, PNG or WebP with a quoted
+`src`, is filled in by the compiler before it parses the template (in
+`wisp-build/src/image.rs`, on the same lines):
+
+- Always: `width` and `height` from the file's header (a small reader for
+  the three formats, EXIF orientation included; no image crate), unless
+  the tag sets either. The page does not shift as images load.
+- `wisp build`: each image is written as WebP at up to three widths (640,
+  1280, 1920, never wider than it) into `.wisp/img/<hash>-<w>.webp`, by a
+  pinned cwebp (libwebp 1.6.0, downloaded once to `~/.wisp/bin` and checked
+  by SHA-256, as Tailwind is; `$WISP_CWEBP` overrides it). The names are
+  the content's hash, so a second build encodes nothing. The release build
+  embeds them, a `src/lib` original too, served under `/_app/img/` as
+  immutable, and adds `srcset`, `sizes="100vw"`, `loading="lazy"` and
+  `decoding="async"`. An attribute the tag has stays as written.
+- Durable: without cwebp (no network, no build for the platform, a failed
+  encode) the build warns, and the tag gets no `srcset`: the original is
+  served, sized. A JPEG whose EXIF turns it gets no WebP (cwebp would not
+  turn it). A `$lib/` file that is not there is a build error.
+- Dev serves the original (`/_app/img/lib/photo.jpg` from `src/lib`),
+  adding only `width` and `height`: nothing to encode on a save.
+- `<img data-wisp-raw …>` stays as written (a `$lib/` src still gets its
+  URL). A `src` with a hole, or another site's, is left alone.
+- Cost: none for an app without local images; a header read per image per
+  build.
+
 ### Snippets
 
 A snippet is markup a file renders more than once, or gives to a component:
@@ -505,6 +692,47 @@ A snippet is markup a file renders more than once, or gives to a component:
 - `{:@render row(x)}` has the browser draw it: the arguments are
   JavaScript, and the body uses its parameters in `{:…}` (see
   [client.md](client.md)).
+
+### Translations
+
+One JSON file per locale in `src/locales`, flat or nested keys:
+
+```json
+{ "cart": { "title": "Your cart",
+            "items": "{count, plural, =0 {No items} one {# item} other {# items}}" },
+  "hi": "Hello, {name}!" }
+```
+
+```html
+<h1>{t("cart.title")}</h1>
+<p>{t("cart.items", count)} {t("hi", name = user.name)}</p>
+<button on:click="n++">{:t('cart.items', n)}</button>
+```
+
+- Messages are ICU's subset: `{name}`, and `{n, plural, …}` with `=N`
+  cases and the locale's CLDR ones (`one`, `few`, …; `other` required, `#`
+  is the count). `'{'` is a brace, `''` an apostrophe. A plural counts by
+  a whole number.
+- Values: one, for a message with one placeholder; else by name
+  (`name = expr`, or a variable of that name alone). In a script, one, or
+  an object: `t('hi', { name })`.
+- Checked at build, each at its file and line: a key missing from any
+  locale, a placeholder one locale has and another lacks, a case the
+  language has not, an unknown key, values that do not match.
+- Compiled to an index: `t("cart.title")` is a `&'static str` from a table
+  per locale (it can be a `&str` prop), with values it writes as it is
+  displayed. No lookup by key at run time.
+- The locale: the route's `[[lang=locale]]` (a built-in matcher of the
+  app's locales), then the `lang` cookie, then `Accept-Language`, then the
+  default (the first file, or `wisp::default_locale("fr")?` in `init`).
+  `cx.locale()` says it, `<html lang>` is set to it, and a `CACHE`d page is
+  kept per locale.
+- A page's scripts get only the messages they use, in its locale, with
+  the page; their plurals follow `Intl.PluralRules`. `src/lib` modules
+  cannot call `t`: pass them the text.
+- Switchers: `{#each wisp::locales().iter() as l}<a
+  href={wisp::localize(cx.path(), l)}>{l}</a>{/each}` (`/fr/about` →
+  `/en/about`).
 
 ### Actions and `wisp.js`
 
@@ -821,15 +1049,13 @@ roles and values (light and dark, following the system), with Wisp violet
 (`#7456d6` light, `#896ce0` dark) as the one accent, only on what is
 interactive. One-pixel hairlines, two shadow steps, one type scale, and one
 focus ring. The styles live in `crates/wisp/src/client/ui.css` (tokens,
-buttons, the error page) and `dialog.css` (dev only), all `--wisp-*` tokens
+buttons) and `dialog.css` (dev only), all `--wisp-*` tokens
 and `.wisp-*` classes, so they never touch an app's own CSS.
 
-- **The error page**, for apps without a `+error.wisp`. It is told in three
-  parts: what happened (the status's name), what it means or what to do (the
-  error's message, or a sentence about the status when the message says no
-  more than its name), and the status with the request (`404 · GET
-  /nope?x=1`) as the reference line. A 5xx carries the failure glyph and a
-  Try Again button; a 4xx stays gray. Its styles come inlined, since the
+- **The error page**, for apps without a `+error.wisp`: the status and one
+  line, centered (`404 | Not Found`). The line is the status's name, or the
+  error's own message when it says more. No links or buttons; an app that
+  wants them writes a `+error.wisp`. Its few styles come inlined, since the
   app's own CSS may not exist yet.
 - **The build error dialog** in dev: a title and one sentence saying where to
   look (`src/routes/+page.rs, line 7. Save a fix and the page updates.`), then
@@ -985,6 +1211,9 @@ The built-in server is one front end. `respond` decides an answer as a
 - `wisp::prepare::<A>()` runs `init` and sets what a request needs.
 - `wisp::handle::<A>(Request) -> Reply` answers one request in process.
 - `wisp::test::client::<A>()` is `handle` with cookies, for tests.
+- `wisp::test::browser::<A>()` (feature `browser`) is the built-in server on
+  a free port, driven in headless Chrome or Edge over the DevTools protocol
+  by a small blocking WebSocket client (`crates/wisp/src/test/browser.rs`).
 - `wisp::tower::service::<A>()` (feature `tower`) is a `tower::Service`.
 - `wisp build --static` runs `handle` for each page and writes files.
 - `wisp build --target` compiles the same code to WebAssembly
@@ -1097,6 +1326,43 @@ and differ (a build in the repo refreshes it; commit the result), and a build
 without them reads that copy. With Tailwind, the template's styles go in `@layer base`
 after the import, so utility classes still win over them.
 
+### AI agents
+
+Every app is written with AGENTS.md, the whole reference in one short page,
+and a pointer to it for each agent that reads a file of its own:
+`CLAUDE.md`, `.github/copilot-instructions.md` and `.cursor/rules/wisp.mdc`.
+The app's AGENTS.md is the repository's (embedded at build time through
+the vendor copy, so it never drifts) less its part for work on Wisp, and
+ends with a line after which the app's own notes go. `wisp update-docs`
+brings it up to the installed Wisp, keeping those notes, and writes any
+pointer file that is missing (one that is there is the app's).
+
+Every Rust and HTML snippet in AGENTS.md is in `tests/agents`, an app in
+the workspace, so building the workspace compiles them; its test fails
+when one is missing there. `llms.txt` (llmstxt.org) links the docs, and
+`llms-full.txt` is AGENTS.md and the docs in one file, written by a
+wisp-cli test that fails when it was stale.
+
+`wisp mcp` is a Model Context Protocol server over stdio (JSON-RPC 2.0, a
+message a line, `wisp_shared::json`), for the app in the current folder:
+
+| Tool | Answers |
+|---|---|
+| `wisp_docs(topic)` | the AGENTS.md or docs sections about the topic; no topic lists them |
+| `wisp_check()` | `{"ok":true}` or `{"ok":false,"errors":[{file,line,col,message}]}` |
+| `wisp_routes()` | each route's pattern, folder, params, page, actions and endpoints |
+| `wisp_components()` | each component's name, file and props (type, default) |
+| `wisp_new_route(path, kind)` | writes `+page.wisp` (default), `+layout.wisp`, `+error.wisp` or `+server.rs`; never overwrites |
+
+Setup, in the app's folder:
+
+- Claude Code: `claude mcp add wisp -- wisp mcp`
+- Cursor: `.cursor/mcp.json` with
+  `{"mcpServers":{"wisp":{"command":"wisp","args":["mcp"]}}}`
+- VS Code: `code --add-mcp '{"name":"wisp","command":"wisp","args":["mcp"]}'`,
+  or `.vscode/mcp.json` with
+  `{"servers":{"wisp":{"type":"stdio","command":"wisp","args":["mcp"]}}}`
+
 ## Dev loop
 
 `wisp dev` is one std-only process:
@@ -1168,6 +1434,56 @@ Measured on the demo (Windows, Ryzen 7800X3D): a text edit is swapped in under
 1 ms and served about 85 ms after the save (mostly the 50 ms poll); an
 expression or `.rs` edit rebuilds and restarts in 0.3 s.
 
+`wisp fmt [paths]` formats `.wisp` files (`--check` lists the unformatted
+and fails; `wisp check` warns of them): the element tree and template blocks
+two spaces a level, attribute values double-quoted, a start tag that begins
+its line on one line or, past 100 columns, an attribute a line; the `---`
+block through rustfmt inside a wrapper fn, with the edition of the nearest
+`Cargo.toml` (the workspace's when inherited; 2024 without one), as
+`cargo fmt` would; `<script>`
+re-indented only; `<style>` a declaration a line when it has no strings,
+comments or `url(`. Text, holes, `<pre>` and `<textarea>` are never touched.
+Markup that does not balance, or that would not parse to the same template,
+is left as written; formatting twice equals formatting once.
+`wisp fmt --stdin [path]` formats stdin to stdout (`path` for the edition),
+for editors and `editors/prettier-plugin-wisp`.
+
+### Editors
+
+`wisp lsp` is a language server over stdio, in the CLI: JSON-RPC framed by
+hand, `wisp_shared::json` for parsing, no new dependency. Each file's app is
+the nearest folder above it with `Cargo.toml` and `build.rs`.
+
+- Problems: on open and every change, the buffer goes through the build's own
+  parser and checks (`wisp_build::ide::check_file`: `---` block, template,
+  component props against `src/components` as last read). On open and save,
+  the whole app is checked from disk as `wisp check` does, and its problem
+  shows in its file, open or not. One problem per file, as the compiler stops
+  at the first. A panic in a request is answered as an error; the server
+  goes on.
+- Hover: a component's `{@props}`, a prop's type and default, directive and
+  block docs, a route param's type.
+- Go to definition: `<Card>` → its file, `'$lib/x.js'` → `src/lib/x.js`, a
+  literal `href="/x"` → the route's `+page.wisp` (or `+page.rs`, `+server.rs`).
+- Completion: components (with their required props), props, directives,
+  `on:` events and modifiers, `{#…}` / `{:#…}` blocks, route paths in `href`.
+- Formatting: `fmt.rs` on the buffer, answered as one edit of the whole
+  text (none when it is formatted).
+
+`editors/vscode` is a small extension: a TextMate grammar (HTML; Rust in the
+block and `{…}`; JavaScript in `<script>`, directive values and `{:…}`; CSS in
+`<style>`), snippets, format on save, **Wisp: Restart server**, and a client
+(`vscode-languageclient`) that starts `wisp lsp`.
+
+`editors/tree-sitter-wisp` is a tree-sitter grammar with the same embedding
+through injections, no external scanner: flat tags (markup that does not
+balance still parses), nested template blocks, code left whole. Neovim,
+Helix and Zed (`editors/zed`) use it; `editors/README.md` has each editor's
+setup, JetBrains, Sublime and Emacs included.
+
+Follow-up: cheap Rust checks inside the `---` block (rust-analyzer covers
+`.rs` files only).
+
 ## Security
 
 - Escaping by default; `{@html}` is the only raw output. Component props are
@@ -1191,6 +1507,7 @@ expression or `.rs` edit rebuilds and restarts in 0.3 s.
   past it a new one gets a 503 and is closed before it costs a task.
 - URL attributes whose scheme an expression decides are checked where they
   end; `javascript:` never reaches a page (see Templates).
+- Pages and error pages carry a `content-security-policy` (see below).
 - `examples/demo/tests/http.rs` runs the demo's binary and sends it
   malformed, oversized, smuggling and cross-site requests, path traversal
   attempts and junk cookies, and checks every answer and that the server
@@ -1199,9 +1516,40 @@ expression or `.rs` edit rebuilds and restarts in 0.3 s.
   limits, streamed responses), and its `tests/http.rs` checks each on the
   wire.
 
+### Content Security Policy
+
+Every page and error page (rendered, baked or kept by `CACHE`) gets:
+
+```
+content-security-policy: default-src 'self'; script-src 'self' 'sha256-…';
+  style-src 'self' 'unsafe-inline'; img-src 'self' data: https:;
+  connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'
+```
+
+- Wisp's own scripts are files (`wisp.js`, `live.js`, modules under
+  `/_app/c/`); its JSON data block runs nothing. The only inline scripts
+  are the app's (`<script defer>…</script>` in a template, or in
+  `src/app.html`), and no hole can go in one, so the build hashes each
+  and `script-src` lists the hashes. No nonce: the header is one string
+  made after `init`, so a page costs one more header line, a baked or
+  `CACHE` page stays bytes made before, and the scripts wisp.js runs after
+  a navigation pass (a nonce would be the first page's). An inline script
+  edited in dev takes a build, for its hash.
+- Dev mode adds `https://esm.sh` (npm modules) to `script-src` and
+  `connect-src`, and `wisp dev`'s reload events to `connect-src`.
+- `wisp::csp("img-src 'self' https://cdn.example; font-src https://f.example")`
+  in `init`: each directive replaces the default one of its name, or is
+  added; `script-src` keeps the hashes (unless it has `'unsafe-inline'`,
+  which a hash would turn off). `wisp::csp_off()` sends none, for an app
+  that sets its own.
+- Not covered: endpoints and `Response::html` (not pages), `/_wisp/docs`,
+  and `wisp build --static`, whose files have no headers (the host sets
+  them). A script put in by `{@html}` or an `onclick="…"` attribute does
+  not run; use a file, or `on:click`.
+
 ## v0 non-goals
 
-ORM, auth, background jobs, i18n, HTTP/2 in process, Windows services.
+ORM, auth, background jobs, HTTP/2 in process, Windows services.
 Each is either a library users pick or a later version. A job runner can be
 started from `init` with `wisp::spawn`.
 

@@ -1,0 +1,21 @@
+# React components from npm as islands, in a real browser:
+# `cargo test -p wisp-islands --features browser` (needs esm.sh; skipped
+# where there is no Chrome or Edge). Its own app, since its npm packages
+# would make every release build of another download them.
+[package]
+name = "wisp-islands"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+wisp.workspace = true
+
+[build-dependencies]
+wisp-build.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+browser = ["wisp/browser"]

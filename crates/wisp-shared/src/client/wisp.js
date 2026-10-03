@@ -15,7 +15,8 @@
 // Events on the document: `wisp:navigate` before a navigation, `wisp:update`
 // after each morph (live.js restarts browser code on it). Dispatching
 // `wisp:refresh` morphs in the current URL's page again (`wisp dev` does it
-// after every rebuild), `wisp:goto` navigates. A form gets `wisp:submit`
+// after every rebuild), `wisp:goto` navigates, `wisp:push` adds a history
+// entry with state on the page shown (`wisp:pop` when one comes back). A form gets `wisp:submit`
 // (cancelable) before it is sent and `wisp:result` after. An element with
 // `data-wisp-keep` is left as it is, for a widget that owns its own DOM.
 // Nodes that browser code made (marked __w) are left too.
@@ -28,7 +29,8 @@
   // alone what scripts added.
   let served = [...document.head.children];
 
-  function swap(html, status = 200) {
+  // `back`: the history entry whose snapshot goes back in (a pop).
+  function swap(html, status = 200, back) {
     const doc = new DOMParser().parseFromString(html, 'text/html');
     if (doc.title) document.title = doc.title;
     const next = [...doc.head.children];
@@ -52,6 +54,7 @@
       s.text = old.text;
       old.replaceWith(s);
     }
+    back ? restore(back) : (pend = null);
     wake(); // before the update: live.js takes the page's JSON over there
     send('wisp:update', { status });
   }
@@ -83,14 +86,73 @@
     const res = await fetch(location.href, { headers: { ...headers, ...extra } });
     const to = redirect(res);
     if (to) return go(to, { replace: true });
-    swap(await res.text(), res.status);
+    const html = await res.text();
+    swap((await drawn(html, location)) || html, res.status);
+  }
+
+  // ---- static hosts (`wisp build --spa`) -----------------------------------
+
+  // A static host answers a path it has no file for with index.html, whose
+  // #wisp-spa lists the pages the browser draws: [route, file]. The page of
+  // the route that fits `url` comes in its place, given the address's
+  // parameters. Else null.
+  async function drawn(html, url) {
+    const list = /<script type="application\/json" id="wisp-spa">([^<]*)<\/script>/.exec(html);
+    if (!list) return null;
+    for (const [route, file] of JSON.parse(list[1])) {
+      const p = fit(route, url.pathname);
+      if (!p) continue;
+      const res = await fetch(file);
+      if (!res.ok) return null;
+      const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
+      const json = doc.getElementById('wisp-live');
+      if (json) json.textContent = JSON.stringify({ ...JSON.parse(json.textContent), r: route, p }).replace(/</g, '\\u003c');
+      return '<!doctype html>' + doc.documentElement.outerHTML;
+    }
+    return null;
+  }
+
+  // The parameters of `path` when it fits `route` (`/blog/[slug]`), else null.
+  function fit(route, path) {
+    let got;
+    try {
+      got = path.split('/').filter(Boolean).map(decodeURIComponent);
+    } catch {
+      return null;
+    }
+    const p = {};
+    let i = 0;
+    for (const s of route.split('/').filter(Boolean)) {
+      const m = /^\[(\[)?(\.\.\.)?([^\]=]+)(?:=(\w+))?\]\]?$/.exec(s);
+      if (!m) {
+        if (got[i++] !== s) return null;
+        continue;
+      }
+      const [, opt, rest, name, kind] = m;
+      if (rest) {
+        p[name] = got.slice(i).join('/');
+        i = got.length;
+        continue;
+      }
+      const v = got[i];
+      if (v === undefined || (kind === 'int' && !/^\d+$/.test(v))) {
+        if (opt) continue;
+        return null;
+      }
+      p[name] = v;
+      i++;
+    }
+    return i === got.length ? p : null;
   }
 
   // ---- navigation -----------------------------------------------------------
 
   let nav = 0; // the latest navigation; an older one that finishes late is dropped
   const pre = new Map(); // url -> [when, response promise], from hovering
-  addEventListener('pagehide', () => (history.scrollRestoration = 'auto'));
+  addEventListener('pagehide', () => {
+    save(entry);
+    history.scrollRestoration = 'auto';
+  });
   addEventListener('pageshow', () => (history.scrollRestoration = 'manual'));
 
   // A link this script follows.
@@ -132,13 +194,13 @@
     }
     if (my !== nav) return;
     if (!isHtml(res)) return location.assign(url); // a file: the browser shows or saves it
-    const html = await res.text();
+    let html = await res.text();
+    html = (await drawn(html, url)) || html;
     if (my !== nav) return;
-    if (how.pop);
-    else if (how.replace) history.replaceState({}, '', url);
-    else history.pushState({}, '', url);
+    if (how.replace) history.replaceState({ k: (entry = id()) }, '', url);
+    else if (!how.pop) push(url);
     const show = () => {
-      swap(html, res.status);
+      swap(html, res.status, how.pop && entry);
       const at = how.pop && history.state;
       if (at) scrollTo(at.x || 0, at.y || 0);
       else if (url.hash) document.getElementById(decodeURIComponent(url.hash.slice(1)))?.scrollIntoView();
@@ -188,10 +250,74 @@
   });
   document.addEventListener('touchstart', (e) => preload(link(e)), { passive: true });
 
-  // Back/forward across entries we pushed: show that URL's page.
+  // Back/forward across entries we pushed: show that URL's page. An entry
+  // pushState made on the page shown (`p`) needs no request.
   addEventListener('popstate', () => {
-    if (key(location.href) !== shown) go(location.href, { pop: true });
+    save(entry);
+    entry = mark();
+    if ((history.state?.p ?? key(location.href)) !== shown) go(location.href, { pop: true });
+    else restore(entry), send('wisp:pop');
   });
+  // pushState(url, state) and replaceState in a script (live.js).
+  document.addEventListener('wisp:push', (e) => {
+    const { url, state: s, replace } = e.detail;
+    if (replace) history.replaceState({ ...history.state, p: shown, s }, '', url);
+    else push(url, { p: shown, s });
+  });
+
+  // ---- snapshots ------------------------------------------------------------
+
+  // What a history entry's fields hold where the visitor changed them (not
+  // passwords, files, hidden fields or autocomplete="off"), and what scripts'
+  // `snapshot.capture()` gave (extra.js), kept in sessionStorage by the
+  // entry's key `k`: back, forward and a reload put them back.
+  const id = () => Math.random().toString(36).slice(2);
+  let entry = history.state?.k;
+  let pend = null; // scripts' snapshots for the entry shown (extra.js asks)
+  function mark() {
+    let k = history.state?.k;
+    if (!k) history.replaceState({ ...history.state, k: (k = id()) }, '');
+    return k;
+  }
+  function push(url, state) {
+    save(entry);
+    history.pushState({ ...state, k: (entry = id()) }, '', url);
+  }
+  const fields = () => [...document.querySelectorAll('input,textarea,select')];
+  const off = (el) => /^(password|file|hidden|submit|button|reset|image)$/.test(el.type) || el.closest('[autocomplete=off]');
+  const box = (el) => /^(checkbox|radio)$/.test(el.type);
+  function save(k) {
+    const d = { f: [], s: {} };
+    pend = null;
+    fields().forEach((el, i) => {
+      const o = el.options && [...el.options];
+      if (off(el) || !(o ? o.some((x) => x.selected != x.defaultSelected) : box(el) ? el.checked != el.defaultChecked : el.value != el.defaultValue)) return;
+      d.f.push([i, el.name + el.type, o ? o.filter((x) => x.selected).map((x) => x.value) : box(el) ? el.checked : el.value]);
+    });
+    send('wisp:capture', d);
+    try {
+      if (d.f.length || Object.keys(d.s).length) sessionStorage.setItem('wisp:' + k, JSON.stringify(d));
+      else sessionStorage.removeItem('wisp:' + k);
+    } catch {}
+  }
+  function restore(k) {
+    let d;
+    try {
+      d = JSON.parse(sessionStorage.getItem('wisp:' + k));
+    } catch {}
+    pend = d?.s;
+    const all = fields();
+    for (const [i, name, v] of d?.f || []) {
+      const el = all[i];
+      if (!el || el.name + el.type != name || off(el)) continue;
+      if (el.options) for (const o of el.options) o.selected = v.includes(o.value);
+      else if (box(el)) el.checked = v;
+      else el.value = v;
+      el.dispatchEvent(new Event(el.options || box(el) ? 'change' : 'input', { bubbles: true }));
+    }
+  }
+  document.addEventListener('wisp:restore', (e) => (e.detail.s = pend));
+  entry ? restore(entry) : (entry = mark());
 
   document.addEventListener('wisp:goto', (e) => go(e.detail.url, e.detail).finally(e.detail.done));
   document.addEventListener('wisp:refresh', (e) => refresh().finally(e.detail?.done));
@@ -257,6 +383,74 @@
     }
   }
 
+  // dev{
+  // `wisp dev`, after a template's text changed: the page again, morphed in
+  // only between that file's marks (<!--w:file--> and <!--/w:file-->, which
+  // templates write under `wisp dev`), so the rest of the page is left as
+  // it is. Marks that differ from the page's, or are not siblings, mean the
+  // whole page instead.
+  document.addEventListener('wisp:region', async (e) => {
+    const { files, done } = e.detail;
+    try {
+      const res = await fetch(location.href, { headers });
+      const to = redirect(res);
+      if (to) return void (await go(to, { replace: true }));
+      const html = await res.text();
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      const marks = (root) => {
+        const out = [];
+        const w = document.createTreeWalker(root, NodeFilter.SHOW_COMMENT);
+        while (w.nextNode()) if (/^\/?w:/.test(w.currentNode.data)) out.push(w.currentNode);
+        return out;
+      };
+      const [old, now] = [marks(document.body), marks(doc.body)];
+      const ok = old.length == now.length && old.every((m, k) => m.data == now[k].data);
+      if (!ok) return swap(html, res.status);
+      for (let k = 0; k < old.length; k++) {
+        if (!files.includes(old[k].data.slice(2))) continue;
+        // Its end: the next of its file at the same depth.
+        let d = 0, j = k;
+        for (; j < old.length; j++) {
+          if (old[j].data.slice(old[j].data.indexOf(':') + 1) != old[k].data.slice(2)) continue;
+          d += old[j].data[0] == '/' ? -1 : 1;
+          if (!d) break;
+        }
+        const [a, b, c, z] = [old[k], old[j], now[k], now[j]];
+        if (!b || a.parentNode !== b.parentNode || c.parentNode !== z.parentNode) return swap(html, res.status);
+        let cur = a.nextSibling;
+        const skip = () => {
+          while (cur !== b && cur.__w) cur = cur.nextSibling;
+        };
+        skip();
+        for (let n = c.nextSibling; n !== z; ) {
+          const next = n.nextSibling;
+          if (cur !== b && same(cur, n)) {
+            morph(cur, n);
+            cur = cur.nextSibling;
+            skip();
+          } else b.parentNode.insertBefore(n, cur);
+          n = next;
+        }
+        while (cur !== b) {
+          const gone = cur;
+          cur = cur.nextSibling;
+          skip();
+          gone.remove();
+        }
+        k = j;
+      }
+      if (doc.title) document.title = doc.title;
+      const json = doc.getElementById('wisp-live');
+      const mine = document.getElementById('wisp-live');
+      if (json && mine) mine.textContent = json.textContent;
+      wake();
+      send('wisp:update', { status: res.status });
+    } finally {
+      done?.();
+    }
+  });
+  // }dev
+
   // ---- forms ----------------------------------------------------------------
 
   // A field named `action`, `reset` or `submit` hides the form's property of
@@ -302,7 +496,7 @@
         // Another page: navigate there. The same one: fetch it below.
         if (to.origin !== location.origin || to.pathname !== location.pathname) res = null;
         else {
-          history.pushState(null, '', to);
+          push(to);
           scrollTo(0, 0);
           if (!res.redirected) res = await fetch(to, { headers });
         }
@@ -414,4 +608,7 @@
     }
   }
   wake();
+  // Opened at a path the host answered with index.html: that path's page.
+  if (document.getElementById('wisp-spa'))
+    drawn(document.documentElement.outerHTML, location).then((html) => html && swap(html));
 })();
