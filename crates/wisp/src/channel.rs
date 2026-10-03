@@ -18,7 +18,8 @@ const BACKLOG: usize = 256;
 
 /// The channels by name, and how many there may be before the next sweep.
 struct Channels {
-    all: BTreeMap<Box<str>, broadcast::Sender<Arc<str>>>,
+    /// By name, which the channels share (the relay is told it).
+    all: BTreeMap<Arc<str>, broadcast::Sender<Arc<str>>>,
     sweep_at: usize,
 }
 
@@ -80,25 +81,26 @@ pub fn channel(name: &str) -> Channel {
 
 /// The channel called `name`, from `CHANNELS`.
 fn shared(name: &str) -> Channel {
-    if let Some(tx) = CHANNELS
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .all
-        .get(name)
-    {
-        return Channel(tx.clone(), name.into());
+    let found = CHANNELS.read().unwrap_or_else(|e| e.into_inner());
+    if let Some((name, tx)) = found.all.get_key_value(name) {
+        return Channel(tx.clone(), name.clone());
     }
+    drop(found);
     let mut c = CHANNELS.write().unwrap_or_else(|e| e.into_inner());
     if c.all.len() >= c.sweep_at && !c.all.contains_key(name) {
         c.all
             .retain(|_, tx| tx.strong_count() > 1 || tx.receiver_count() > 0);
         c.sweep_at = (2 * c.all.len()).max(SWEEP_AT);
     }
+    let name: Arc<str> = c
+        .all
+        .get_key_value(name)
+        .map_or_else(|| name.into(), |(k, _)| k.clone());
     let tx = c
         .all
-        .entry(name.into())
+        .entry(name.clone())
         .or_insert_with(|| broadcast::channel(BACKLOG).0);
-    Channel(tx.clone(), name.into())
+    Channel(tx.clone(), name)
 }
 
 /// A channel from [`channel`]. Cloning it is cheap; clones are the same
