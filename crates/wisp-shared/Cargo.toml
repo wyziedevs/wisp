@@ -1,0 +1,11 @@
+[package]
+name = "wisp-shared"
+description = "What Wisp's runtime, compiler and browser code agree on: HTML context rules, the live-page wire protocol, the browser runtime."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true

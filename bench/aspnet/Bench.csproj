@@ -8,4 +8,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
+  <!-- The static file every server serves, from bench/static, at /static/app.js. -->
+  <ItemGroup>
+    <Content Include="../static/app.js" Link="wwwroot/static/app.js" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

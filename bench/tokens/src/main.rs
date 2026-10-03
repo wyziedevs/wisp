@@ -1,5 +1,7 @@
-//! `cargo run -p wisp-tokens`: what the same five features cost in tokens in
-//! each app under `apps/`, as Markdown tables.
+//! `cargo run -p wisp-tokens`: what the same features cost in tokens in each
+//! app of a suite, as Markdown tables: five small ones in each app under
+//! `apps/`, then five of a real app (auth, CRUD, uploads, live updates, a
+//! component) in each under `real/`.
 //!
 //! A file is counted when it has a `@feature NAME` line (in any comment
 //! syntax); that line is not counted, and the lines after it, up to the next
@@ -20,15 +22,47 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const APPS: [(&str, &str); 5] = [
-    ("wisp", "**Wisp**"),
-    ("sveltekit", "SvelteKit"),
-    ("nextjs", "Next.js"),
-    ("axum", "Axum + askama"),
-    ("actix", "Actix + tera"),
-];
+/// A folder of apps, one per stack, the first Wisp's, and the features
+/// their `@feature` markers may name.
+struct Suite {
+    heading: &'static str,
+    dir: &'static str,
+    apps: &'static [(&'static str, &'static str)],
+    features: &'static [&'static str],
+}
 
-const FEATURES: [&str; 7] = ["list", "form", "api", "layout", "search", "data", "setup"];
+const SUITES: [Suite; 2] = [
+    Suite {
+        heading: "Estimated tokens by feature:",
+        dir: "apps",
+        apps: &[
+            ("wisp", "**Wisp**"),
+            ("sveltekit", "SvelteKit"),
+            ("nextjs", "Next.js"),
+            ("axum", "Axum + askama"),
+            ("actix", "Actix + tera"),
+        ],
+        features: &["list", "form", "api", "layout", "search", "data", "setup"],
+    },
+    Suite {
+        heading: "Estimated tokens by feature, a real app (bench/tokens/real):",
+        dir: "real",
+        apps: &[
+            ("wisp", "**Wisp**"),
+            ("sveltekit", "SvelteKit"),
+            ("nextjs", "Next.js"),
+        ],
+        features: &[
+            "auth",
+            "crud",
+            "upload",
+            "live",
+            "component",
+            "data",
+            "setup",
+        ],
+    },
+];
 
 const OPERATORS: [&str; 28] = [
     "<!--", "-->", "===", "!==", "...", "..=", "::", "->", "=>", "==", "!=", "</", "/>", "{{",
@@ -45,14 +79,24 @@ struct Count {
 }
 
 fn main() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("apps");
+    for (i, suite) in SUITES.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        table(suite);
+    }
+}
+
+fn table(suite: &Suite) {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(suite.dir);
+    let features = suite.features;
     let mut rows = Vec::new();
-    for (dir, name) in APPS {
+    for &(dir, name) in suite.apps {
         let app = root.join(dir);
         let mut files = Vec::new();
         walk(&app, &mut files);
         files.sort();
-        let mut per = [Count::default(); FEATURES.len()];
+        let mut per = vec![Count::default(); features.len()];
         let mut counted = 0;
         for file in &files {
             let Ok(text) = fs::read_to_string(file) else {
@@ -63,21 +107,21 @@ fn main() {
                 .unwrap()
                 .to_string_lossy()
                 .replace('\\', "/");
-            if count_file(&rel, &text, &mut per) {
+            if count_file(&rel, &text, features, &mut per) {
                 counted += 1;
             }
         }
         rows.push((name, per, counted));
     }
 
-    println!("Estimated tokens by feature:\n");
+    println!("{}\n", suite.heading);
     print!("| Stack |");
-    for f in FEATURES {
+    for f in features {
         print!(" {f} |");
     }
     println!(" total | chars / 4 | files |");
     print!("|---|");
-    for _ in 0..FEATURES.len() + 3 {
+    for _ in 0..features.len() + 3 {
         print!("---:|");
     }
     println!();
@@ -119,16 +163,17 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Adds one file to `per`; false when it has no marker.
-fn count_file(path: &str, text: &str, per: &mut [Count; FEATURES.len()]) -> bool {
+/// Adds one file to `per`, a count for each of `features`; false when it
+/// has no marker.
+fn count_file(path: &str, text: &str, features: &[&str], per: &mut [Count]) -> bool {
     let mut current = None;
     let mut pending = String::new();
     let mut first = None;
     for line in text.lines() {
         let marker = if let Some(at) = line.find("@feature ") {
             let name = line[at + 9..].split_whitespace().next().unwrap_or("");
-            let Some(i) = FEATURES.iter().position(|f| *f == name) else {
-                panic!("{path}: unknown feature {name:?}; known: {FEATURES:?}");
+            let Some(i) = features.iter().position(|f| *f == name) else {
+                panic!("{path}: unknown feature {name:?}; known: {features:?}");
             };
             first.get_or_insert(i);
             Some(i)
@@ -242,16 +287,18 @@ mod tests {
 
     #[test]
     fn markers() {
-        let mut per = [Count::default(); FEATURES.len()];
+        let features = SUITES[0].features;
+        let mut per = vec![Count::default(); features.len()];
         let text = "---\n// @feature list\nlet a = 1;\n// @feature data\nb\n";
-        assert!(count_file("x", text, &mut per));
+        assert!(count_file("x", text, features, &mut per));
         assert_eq!(per[0].tokens, tokens("---\nlet a = 1;") + tokens("x"));
         assert_eq!(per[5].tokens, 1);
-        assert!(!count_file("y", "fn main() {}", &mut per));
-        let mut per = [Count::default(); FEATURES.len()];
+        assert!(!count_file("y", "fn main() {}", features, &mut per));
+        let mut per = vec![Count::default(); features.len()];
         assert!(count_file(
             "",
             "# @feature setup\na = 1\n# @generated\nb = 2\n",
+            features,
             &mut per
         ));
         assert_eq!(per[6].tokens, 3);

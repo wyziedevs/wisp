@@ -3,7 +3,7 @@
 //! deploys as it is: `app.wasm`, a small entry shim over the shared
 //! `bridge.mjs`, the host's config and the static files for its CDN.
 
-use crate::{cargo, css, deploy, term};
+use crate::{cargo, css, deploy, npm, term};
 use std::path::Path;
 use std::time::Instant;
 
@@ -27,10 +27,13 @@ struct Layout {
 }
 
 pub fn build(root: &Path, host: &str, out: &Path) -> Result<(), String> {
+    crate::deploy::check_out(root, out)?;
     let sysroot = std::process::Command::new("rustc")
         .args(["--print", "sysroot"])
         .output()
-        .map_err(|e| format!("Could not run rustc: {e}."))?;
+        .map_err(|e| {
+            format!("Could not run rustc: {e}.\nInstall Rust from https://rustup.rs, and open a new terminal.")
+        })?;
     let sysroot = String::from_utf8_lossy(&sysroot.stdout).trim().to_string();
     if !Path::new(&sysroot)
         .join("lib/rustlib")
@@ -41,8 +44,9 @@ pub fn build(root: &Path, host: &str, out: &Path) -> Result<(), String> {
             "The {host} build needs Rust's WebAssembly target.\nInstall it with rustup target add {WASM_TARGET}, then run this again."
         ));
     }
-    wisp_build::check(root)?;
+    let imports = wisp_build::check(root)?;
     css::build(root)?;
+    npm::vendor(root, &imports)?;
     let started = Instant::now();
     term::step(&format!("Building for {host} (WebAssembly)"));
     let b = cargo::build_for(root, true, false, Some(WASM_TARGET));
@@ -143,20 +147,8 @@ fn layout(host: &str, package: &str, wasm: Vec<u8>, has_static: bool) -> Result<
 
 /// Standard base64 with padding, for the wasm inlined into Netlify's bundle.
 fn base64(bytes: &[u8]) -> String {
-    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for c in bytes.chunks(3) {
-        let n = (c[0] as u32) << 16
-            | (*c.get(1).unwrap_or(&0) as u32) << 8
-            | *c.get(2).unwrap_or(&0) as u32;
-        for i in 0..4 {
-            out.push(if i <= c.len() {
-                ABC[(n >> (18 - 6 * i) & 63) as usize] as char
-            } else {
-                '='
-            });
-        }
-    }
+    wisp_shared::base64::encode(&mut out, bytes, false);
     out
 }
 
@@ -225,21 +217,6 @@ listens on $PORT. Set WISP_SECRET under Variables.
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn base64_matches_rfc_4648() {
-        for (plain, coded) in [
-            ("", ""),
-            ("f", "Zg=="),
-            ("fo", "Zm8="),
-            ("foo", "Zm9v"),
-            ("foob", "Zm9vYg=="),
-            ("fooba", "Zm9vYmE="),
-            ("foobar", "Zm9vYmFy"),
-        ] {
-            assert_eq!(base64(plain.as_bytes()), coded);
-        }
-    }
 
     #[test]
     fn every_host_has_its_entry_and_the_app() {

@@ -5,7 +5,10 @@
 //!
 //! - `.wisp` / `app.html` text edits: hot swap into the running app, no
 //!   compile. If the template's shape changed, fall through to a rebuild.
-//! - CSS output: tell browsers to swap the stylesheet.
+//! - CSS output: tell browsers to swap the stylesheet (a CSS tool's input
+//!   is its watcher's; a new `src/app.scss` or `postcss.config.*` changes
+//!   the watchers).
+//! - package.json: rebuild, for the npm packages' versions.
 //! - `static/`: tell browsers to reload.
 //! - anything else (Rust, Cargo.toml, new/removed routes): rebuild, restart,
 //!   and let browsers morph to the new page.
@@ -32,8 +35,10 @@ const SETTLE: Duration = Duration::from_millis(20);
 const SETTLE_MAX: Duration = Duration::from_secs(1);
 
 pub fn run(root: &Path, port: u16) -> Result<(), String> {
-    let events = Events::start().map_err(|e| format!("Could not start the reload server: {e}."))?;
-    let _tailwind = css::watch(root)?;
+    let events =
+        Events::start(port).map_err(|e| format!("Could not start the reload server: {e}."))?;
+    let mut style = css::detect(root);
+    let mut watchers = css::watch(root, &style)?;
     let mut app = Server {
         root: root.to_path_buf(),
         port,
@@ -76,6 +81,18 @@ pub fn run(root: &Path, port: u16) -> Result<(), String> {
         }
         let changed = diff(&files, &now);
         files = now;
+        // What builds the CSS changed: new watchers, which build it first.
+        if changed.iter().any(|(rel, _)| css::decides(rel)) {
+            let now = css::detect(root);
+            if now != style {
+                drop(std::mem::take(&mut watchers));
+                style = now;
+                match css::watch(root, &style) {
+                    Ok(w) => watchers = w,
+                    Err(e) => term::failed(&e),
+                }
+            }
+        }
         let started = Instant::now();
         let names: Vec<_> = changed.iter().map(|(p, _)| p.as_str()).collect();
         let names = names.join(", ");
@@ -90,12 +107,10 @@ pub fn run(root: &Path, port: u16) -> Result<(), String> {
                 } else {
                     rebuild_needed = true
                 }
-            } else if rel == ".wisp/app.css"
-                || (rel == "src/app.css" && matches!(css::detect(root), css::Css::Plain))
-            {
+            } else if rel == ".wisp/app.css" || (rel == "src/app.css" && style.plain()) {
                 css = true;
-            } else if rel == "src/app.css" {
-                // Tailwind is watching it and will write .wisp/app.css.
+            } else if style.owns(rel) || css::POSTCSS_CONFIGS.contains(&rel.as_str()) {
+                // A CSS watcher reads it and will write .wisp/app.css.
             } else if rel.starts_with("static/") {
                 full = true;
             } else {
@@ -187,6 +202,9 @@ fn rebuild(app: &mut Server, events: &Events, root: &Path, first: bool) {
                 }
                 _ => term::done(&format!("{what} {took}")),
             }
+            if let Some(a) = app.addr {
+                events.allow(a);
+            }
             events.send("reload", "");
         }
         Err(e) => {
@@ -272,8 +290,7 @@ struct Server {
 impl Server {
     fn restart(&mut self, exe: &Path) -> Result<(), String> {
         let dir = self.root.join(".wisp").join("run");
-        fs::create_dir_all(&dir)
-            .map_err(|e| format!("Could not create {}: {e}.", dir.display()))?;
+        crate::make_dir(&dir)?;
         self.slot ^= 1;
         let copy = dir.join(format!("app-{}{}", self.slot, std::env::consts::EXE_SUFFIX));
         fs::copy(exe, &copy).map_err(|e| format!("Could not copy {}: {e}.", exe.display()))?;
@@ -414,9 +431,22 @@ enum Change {
     Removed,
 }
 
-type Snapshot = HashMap<String, SystemTime>;
+/// A file's mtime, size, and, for a small one saved in the last seconds, a
+/// hash of its text (0 otherwise).
+type Snapshot = HashMap<String, (SystemTime, u64, u64)>;
 
-/// Every watched file (relative, `/`-separated) and its mtime.
+/// A save of the same size inside the file system's clock tick changes
+/// neither mtime nor size; so a small file that was just saved is hashed.
+fn stamp(path: &Path, m: SystemTime, len: u64) -> (SystemTime, u64, u64) {
+    let fresh = len < 1 << 20 && m.elapsed().is_ok_and(|age| age.as_secs() < 3);
+    let hash = match fresh.then(|| fs::read(path)) {
+        Some(Ok(text)) => wisp_build::fnv1a(&text) | 1,
+        _ => 0,
+    };
+    (m, len, hash)
+}
+
+/// Every watched file (relative, `/`-separated) with its `stamp`.
 fn scan(root: &Path) -> Snapshot {
     fn walk(root: &Path, dir: &Path, out: &mut Snapshot) {
         let Ok(entries) = fs::read_dir(dir) else {
@@ -435,16 +465,19 @@ fn scan(root: &Path) -> Snapshot {
                     .unwrap_or(&path)
                     .to_string_lossy()
                     .replace('\\', "/");
-                out.insert(rel, m);
+                out.insert(rel, stamp(&path, m, meta.len()));
             }
         }
     }
     let mut out = Snapshot::new();
     walk(root, &root.join("src"), &mut out);
     walk(root, &root.join("static"), &mut out);
-    for f in ["Cargo.toml", "build.rs", ".wisp/app.css"] {
-        if let Ok(m) = fs::metadata(root.join(f)).and_then(|m| m.modified()) {
-            out.insert(f.to_string(), m);
+    let top = ["Cargo.toml", "build.rs", ".wisp/app.css", "package.json"];
+    for f in top.iter().chain(&css::POSTCSS_CONFIGS) {
+        if let Ok(meta) = fs::metadata(root.join(f))
+            && let Ok(m) = meta.modified()
+        {
+            out.insert(f.to_string(), stamp(&root.join(f), m, meta.len()));
         }
     }
     out
@@ -467,7 +500,9 @@ fn diff(old: &Snapshot, new: &Snapshot) -> Vec<(String, Change)> {
         .iter()
         .filter_map(|(p, t)| match old.get(p) {
             None => Some((p.clone(), Change::Added)),
-            Some(o) if o != t => Some((p.clone(), Change::Modified)),
+            Some(o) if o.0 != t.0 || o.1 != t.1 || (o.2 != t.2 && o.2 != 0 && t.2 != 0) => {
+                Some((p.clone(), Change::Modified))
+            }
             Some(_) => None,
         })
         .collect();

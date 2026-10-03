@@ -1,4 +1,6 @@
+using System.Net.WebSockets;
 using System.Text.Encodings.Web;
+using System.Text.Json;
 using System.Text.Unicode;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.Extensions.WebEncoders;
@@ -14,7 +16,11 @@ builder.Services.AddRazorComponents();
 // Wisp's output and TechEmpower's configuration.
 builder.Services.Configure<WebEncoderOptions>(o => o.TextEncoderSettings = new TextEncoderSettings(UnicodeRanges.All));
 
+builder.WebHost.ConfigureKestrel(o => o.Limits.MaxRequestBodySize = 8 * 1024 * 1024);
+
 var app = builder.Build();
+app.UseStaticFiles(); // wwwroot/static/app.js, linked from ../static in Bench.csproj
+app.UseWebSockets();
 app.MapGet("/plaintext", () => "Hello, World!");
 app.MapGet("/json", () => new Message("Hello, World!"));
 app.MapRazorPages(); // /fortunes and /page
@@ -23,9 +29,56 @@ app.MapGet("/fortunes-blazor", () => new RazorComponentResult<FortunesPage>(new 
 app.MapGet("/", () => { });
 app.MapGet("user/{id}", (string id) => id);
 app.MapPost("user", () => { });
+// The practice routes (README): a wait, a validated body, an upload, a list
+// and a WebSocket; the static file is above.
+app.MapGet("/wait", async () =>
+{
+    await Task.Delay(20);
+    return new Done(true);
+});
+app.MapPost("/echo", async (HttpRequest req) =>
+{
+    Echo? echo;
+    try { echo = await req.ReadFromJsonAsync<Echo>(); }
+    catch (JsonException) { echo = null; }
+    if (echo is null) return Results.Json(new { errors = new[] { "body" } }, statusCode: 422);
+    var errors = new List<string>();
+    if (echo.Name is not { Length: >= 1 and <= 50 }) errors.Add("name");
+    if (echo.Email?.Contains('@') != true) errors.Add("email");
+    if (echo.Age is < 0 or > 150) errors.Add("age");
+    if (echo.Tags is not { Length: <= 10 }) errors.Add("tags");
+    return errors.Count > 0 ? Results.Json(new { errors }, statusCode: 422) : Results.Json(echo);
+});
+app.MapPost("/upload", async (HttpRequest req) =>
+{
+    long bytes = 0;
+    var buffer = new byte[81920];
+    int n;
+    while ((n = await req.Body.ReadAsync(buffer)) > 0) bytes += n;
+    return Results.Text(bytes.ToString());
+});
+app.MapGet("/list", () => Enumerable.Range(0, 1000).Select(i => new User(i, $"user {i}", $"user{i}@example.com", i % 3 != 0)));
+app.Map("/ws", async (HttpContext ctx) =>
+{
+    if (!ctx.WebSockets.IsWebSocketRequest) return Results.StatusCode(400);
+    using var ws = await ctx.WebSockets.AcceptWebSocketAsync();
+    var buffer = new byte[4096];
+    var got = await ws.ReceiveAsync(buffer, CancellationToken.None);
+    while (!got.CloseStatus.HasValue)
+    {
+        await ws.SendAsync(buffer.AsMemory(0, got.Count), got.MessageType, got.EndOfMessage, CancellationToken.None);
+        got = await ws.ReceiveAsync(buffer, CancellationToken.None);
+    }
+    await ws.CloseAsync(got.CloseStatus.Value, got.CloseStatusDescription, CancellationToken.None);
+    return Results.Empty;
+});
 app.Run();
 
 public sealed record Message(string message);
+
+public sealed record Done(bool ok);
+public sealed record Echo(string? Name, string? Email, int Age, string[]? Tags);
+public sealed record User(int Id, string Name, string Email, bool Active);
 
 // /page: 50 rows built per request, a name to escape, a class chosen by a boolean.
 public sealed record Person(int Id, string Name, int Score, bool Active)

@@ -1,94 +1,108 @@
-//! `#[validate(…)]`, as the build reads it off an action's parameter (to
-//! check the input before the call) and off a field (for the limits in the
-//! OpenAPI document). `#[derive(FromJson)]` reads the same rules from its
-//! tokens; the checks themselves are `wisp::json::check`'s.
+//! `#[validate(…)]` (`wisp_shared::rules`) as the build uses it: the
+//! attributes the browser checks a form's field by, from the field's type
+//! and rules, and the fields of a page's actions.
 
-/// One rule, with its value as written (`""` for `email`).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Rule<'a> {
-    pub key: Key,
-    pub value: &'a str,
+use crate::rust_scan::{Items, TypeItem};
+use crate::ty::{self, Scalar};
+pub use wisp_shared::rules::{Key, Native, Rule, Validate, parse, plain, rule};
+
+/// An upload's type: `Image`, or `Option<Image>`.
+pub fn is_upload(ty: &str) -> bool {
+    ty::last_segment(ty::option_inner(ty).unwrap_or(ty)) == "Image"
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Key {
-    Min,
-    Max,
-    MinLen,
-    MaxLen,
-    /// A range: `1..=100`, `..10`, `3..`.
-    Len,
-    Email,
-}
-
-/// The rules inside `validate(…)`, or what is wrong with them.
-pub fn parse(rules: &str) -> Result<Vec<Rule<'_>>, String> {
-    let mut out = Vec::new();
-    for rule in rules.split(',').map(str::trim).filter(|r| !r.is_empty()) {
-        let (name, value) = match rule.split_once('=') {
-            Some((k, v)) => (k.trim(), Some(v.trim())),
-            None => (rule, None),
-        };
-        let key = match name {
-            "min" => Key::Min,
-            "max" => Key::Max,
-            "min_len" => Key::MinLen,
-            "max_len" => Key::MaxLen,
-            "len" => Key::Len,
-            "email" => Key::Email,
-            _ => {
-                return Err(format!(
-                    "#[validate] has no `{name}`: it takes len, min, max, min_len, max_len and email"
-                ));
-            }
-        };
-        let value = match (key, value) {
-            (Key::Email, None) => "",
-            (Key::Email, Some(_)) => return Err("`email` takes no value".into()),
-            (_, None) => return Err(format!("`{name}` needs a value: `{name} = 1`")),
-            (Key::Len, Some(v)) if !v.contains("..") => {
-                return Err(format!(
-                    "`len = {v}` needs a range, such as `len = 1..=100`"
-                ));
-            }
-            (Key::Len, Some(v)) if v.trim_start_matches(['.', '=']).trim().is_empty() => {
-                return Err("`len = ..` needs a bound, such as `len = 1..=100`".into());
-            }
-            (_, Some(v)) => v,
-        };
-        out.push(Rule { key, value });
+/// The `#[validate(rules)]` of parameter `name` of type `ty`, or what is
+/// wrong with it: `max_size` is an upload's alone.
+pub fn validate(rules: &str, name: &str, ty: &str) -> Result<Validate, String> {
+    let v = parse(rules)?;
+    if v.max_size.is_some() && !is_upload(ty) {
+        return Err(format!(
+            "`max_size` is for an upload, and `{name}` is a `{ty}`: make it an `Image` (or `Option<Image>`)"
+        ));
     }
-    Ok(out)
+    Ok(v)
 }
 
-impl Rule<'_> {
-    /// The call of `wisp::json::check` that checks the value `v` (a
-    /// reference) by this rule: `Some(problem)` when it does not pass.
-    pub fn check(&self, v: &str) -> String {
-        let x = self.value;
-        match self.key {
-            Key::Min => format!("::wisp::json::check::min({v}, ({x}) as f64)"),
-            Key::Max => format!("::wisp::json::check::max({v}, ({x}) as f64)"),
-            Key::MinLen => format!("::wisp::json::check::min_len({v}, {x})"),
-            Key::MaxLen => format!("::wisp::json::check::max_len({v}, {x})"),
-            Key::Len => format!("::wisp::rt_traits::len({v}, {x})"),
-            Key::Email => format!("::wisp::json::check::email({v})"),
+/// For a field of type `ty` with `rules`; `whole` for a struct's field
+/// (`fn default(post: Post)`), whose blank is missing.
+pub fn native(ty: &str, rules: &[Rule], whole: bool) -> Native {
+    let (optional, t) = match ty::option_inner(ty) {
+        Some(inner) => (true, inner),
+        None => (false, ty),
+    };
+    let last = ty::last_segment(ty::unref(t));
+    let text = ty::is_text(t);
+    let number = matches!(
+        ty::scalar(t),
+        Scalar::Unsigned | Scalar::Signed | Scalar::Float
+    );
+    let mut n = Native::default();
+    if !text && !number && last != "Email" && !is_upload(t) {
+        return n;
+    }
+    n.email = last == "Email";
+    for r in rules {
+        r.native(&mut n, text, number);
+    }
+    let blank_refused = whole || !text || n.email || n.min_len.is_some_and(|l| l > 0);
+    n.required = !optional && blank_refused;
+    n
+}
+
+/// A field of a form that posts to `action`, which reads it as `name`.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Field {
+    pub action: String,
+    pub name: String,
+    pub native: Native,
+}
+
+/// The fields of the actions in `items` the browser can check: each
+/// parameter, and each field of a struct that one reads whole (`fn
+/// default(post: Post)`), which the file defines or the app's `shared`
+/// modules do. None that is a route parameter in `params`: the route, not
+/// the form, gives that.
+pub fn fields(items: &Items, params: &[&str], shared: &[TypeItem]) -> Vec<Field> {
+    let mut out = Vec::new();
+    let mut push = |action: &str, name: String, native: Native| {
+        if native != Native::default() && !params.contains(&name.as_str()) {
+            out.push(Field {
+                action: action.to_string(),
+                name,
+                native,
+            });
+        }
+    };
+    for f in items.fns.iter().filter(|f| f.action) {
+        for (p, t) in &f.params {
+            let whole = items.types.iter().chain(shared).find(|s| {
+                s.name == ty::last_segment(t)
+                    && s.derives.iter().any(|d| d == "FromJson" || d == "Rest")
+            });
+            if let Some(s) = whole {
+                for (name, ft) in &s.fields {
+                    let name = name.strip_prefix("r#").unwrap_or(name);
+                    if s.set_by_wisp(name) {
+                        continue;
+                    }
+                    let rules = (s.rules.iter().filter(|(n, _)| n == name))
+                        .flat_map(|(_, r)| parse(r).unwrap_or_default().rules)
+                        .collect::<Vec<_>>();
+                    push(&f.name, name.to_string(), native(ft, &rules, true));
+                }
+                continue;
+            }
+            // `body: T` is the whole JSON body, not a field.
+            if p == "body" && !ty::is_maybe_text(t) {
+                continue;
+            }
+            let rules = (f.checks.iter().filter(|(c, _)| c == p))
+                .flat_map(|(_, r)| parse(r).unwrap_or_default().rules)
+                .collect::<Vec<_>>();
+            push(&f.name, p.clone(), native(t, &rules, false));
         }
     }
-
-    /// The least and most length `len = …` allows, when they are plain
-    /// numbers: `1..=100` → (1, 100), `..10` → (None, 9).
-    pub fn len_bounds(&self) -> (Option<u64>, Option<u64>) {
-        let x: String = self.value.split_whitespace().collect();
-        let Some((lo, hi)) = x.split_once("..") else {
-            return (None, None);
-        };
-        let hi = match hi.strip_prefix('=') {
-            Some(h) => h.parse().ok(),
-            None => hi.parse::<u64>().ok().map(|h| h.saturating_sub(1)),
-        };
-        (lo.parse().ok(), hi)
-    }
+    out
 }
 
 #[cfg(test)]
@@ -96,40 +110,97 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rules_are_read() {
-        let r = parse("len = 1..=100, email, min = -2").unwrap();
-        assert_eq!(
-            r[0],
-            Rule {
-                key: Key::Len,
-                value: "1..=100"
-            }
-        );
-        assert_eq!(
-            r[1],
-            Rule {
-                key: Key::Email,
-                value: ""
-            }
-        );
-        assert_eq!(r[0].len_bounds(), (Some(1), Some(100)));
-        assert_eq!(
-            parse("len = ..10").unwrap()[0].len_bounds(),
-            (None, Some(9))
-        );
-        assert_eq!(parse("len = N..").unwrap()[0].len_bounds(), (None, None));
-        assert_eq!(
-            r[2].check("&x"),
-            "::wisp::json::check::min(&x, (-2) as f64)"
-        );
-        for (bad, why) in [
-            ("size = 1", "has no `size`"),
-            ("len = 5", "needs a range"),
-            ("len = ..", "needs a bound"),
-            ("min", "needs a value"),
-            ("email = 1", "takes no value"),
+    fn browsers_check_what_the_server_refuses() {
+        // (field: `type | rules`, a struct's when it starts `struct `; tag
+        // and its type; the attributes it gets)
+        for (field, tag, want) in [
+            // Blank text is taken unless a rule refuses it.
+            ("String |", "input", ""),
+            (
+                "String | min_len = 8",
+                "input password",
+                " required minlength=\"8\"",
+            ),
+            (
+                "String | max_len = 5",
+                "input",
+                " pattern=\"[\\s\\S]{0,5}\"",
+            ),
+            (
+                "String | len = 1..=100",
+                "input",
+                " required minlength=\"1\" pattern=\"[\\s\\S]{0,100}\"",
+            ),
+            ("String | len = 1..=100", "textarea", " required"),
+            ("Option<String> | len = 1..", "input", " minlength=\"1\""),
+            ("String | email", "input", " type=\"email\" required"),
+            ("String | email", "input text", " required"),
+            ("Option<Email> |", "input", " type=\"email\""),
+            ("Email |", "input", " type=\"email\" required"),
+            // A struct's blank field is missing.
+            ("struct String |", "input", " required"),
+            ("struct Option<String> |", "input", ""),
+            (
+                "u32 | min = 1, max = 10",
+                "input number",
+                " required min=\"1\" max=\"10\"",
+            ),
+            ("f64 | min = 0.5", "input number", " required"),
+            ("u32 | min = 1", "input", " required"),
+            ("u32 | min = LOW", "input number", " required"),
+            ("Image | max_size = 1 * MB", "input file", " required"),
+            ("Option<Image> |", "input file", ""),
+            ("String | min_len = 1", "select", " required"),
+            ("bool |", "input checkbox", ""),
+            ("Vec<String> | len = 1..", "select", ""),
+            ("char |", "input", ""),
         ] {
-            assert!(parse(bad).unwrap_err().contains(why), "{bad}");
+            let (whole, field) = match field.strip_prefix("struct ") {
+                Some(f) => (true, f),
+                None => (false, field),
+            };
+            let (ty, rules) = field.split_once('|').unwrap();
+            let (tag, kind) = tag.split_once(' ').unwrap_or((tag, ""));
+            let n = native(ty.trim(), &parse(rules).unwrap().rules, whole);
+            assert_eq!(n.attrs(tag, kind, &|_| false), want, "{field} {tag}");
         }
+        // What the tag says stays: no second `type`, `required` or `min`.
+        let n = native("u32", &parse("min = 1").unwrap().rules, false);
+        assert_eq!(n.attrs("input", "number", &|a| a == "value"), " required");
+        let n = native("String", &parse("email").unwrap().rules, false);
+        assert_eq!(n.attrs("input", "", &|a| a == "type"), " required");
+        assert_eq!(n.attrs("select", "", &|a| a == "multiple"), "");
+    }
+
+    #[test]
+    fn fields_of_actions() {
+        let items = crate::rust_scan::scan(
+            "#[derive(FromJson)] struct Post { #[validate(len = 1..=9)] title: String, note: Option<String>, done: bool }\n\
+             #[action] fn add(#[validate(min_len = 2)] text: String, slug: String, n: Option<u8>) {}\n\
+             #[action] fn default(post: Post) {}\n\
+             #[action] fn save(mut note: models::Note) {}\n\
+             fn helper(x: Email) {}",
+        )
+        .unwrap();
+        // A type of the app's own modules too (`src/models.rs`).
+        let shared = crate::rust_scan::scan(
+            "#[derive(Rest)] pub struct Note { #[validate(min = 1)] stars: u8, created_at: String }",
+        )
+        .unwrap()
+        .types;
+        let got: Vec<(String, String, bool)> = fields(&items, &["slug"], &shared)
+            .into_iter()
+            .map(|f| (f.action, f.name, f.native.required))
+            .collect();
+        let want = [
+            ("add", "text", true),
+            ("default", "title", true),
+            ("save", "stars", true),
+        ];
+        let want: Vec<(String, String, bool)> = want
+            .iter()
+            .map(|&(a, n, r)| (a.into(), n.into(), r))
+            .collect();
+        assert_eq!(got, want);
     }
 }

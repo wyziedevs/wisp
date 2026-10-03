@@ -4,12 +4,13 @@
 //! the binary with its response head.
 //!
 //! Only what the runtime would write byte for byte: literals as `Display`
-//! writes them (strings, integers, `true`, `false`), escaped as
-//! `wisp::rt::escape` does; a component's props given as literals (or left
+//! writes them (strings, integers, `true`, `false`), escaped by the
+//! runtime's own `contexts.rs`; a component's props given as literals (or left
 //! to literal defaults); `{#if}` on those. Anything else is left to run.
 
-use crate::template::{KEPT, Node, PROBLEM, PropDecl, PropValue, Template};
-use crate::ty::{self, Scalar};
+use crate::contexts::runs_script;
+use crate::template::{Node, PropDecl, PropValue, Template};
+use crate::ty;
 
 /// A value known at build time.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -74,30 +75,43 @@ pub fn literal(src: &str) -> Option<Lit> {
         .find(|c: char| !c.is_ascii_digit() && c != '_')
         .unwrap_or(digits.len());
     let (number, suffix) = digits.split_at(end);
-    let suffixes = [
-        "", "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize",
-    ];
-    if !number.starts_with(|c: char| c.is_ascii_digit()) || !suffixes.contains(&suffix) {
+    // No suffix is an `i32`; one that is no integer type's is no literal.
+    let range = ty::int_range(if suffix.is_empty() { "i32" } else { suffix })?;
+    if !number.starts_with(|c: char| c.is_ascii_digit()) {
         return None;
     }
     let n: i128 = number.replace('_', "").parse().ok()?;
-    Some(Lit::Int(if minus { -n } else { n }))
+    let n = if minus { -n } else { n };
+    // One that does not fit its type (`300u8`, `-1u32`, past `i32` with no
+    // suffix) is left for rustc to refuse.
+    range.contains(&n).then_some(Lit::Int(n))
 }
 
-/// `s` escaped for text and quoted attributes, as the runtime does.
+/// `s` escaped for text and quoted attributes: the runtime's `escape`.
 pub fn escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            c => out.push(c),
-        }
-    }
+    crate::contexts::escape(&mut out, s);
     out
+}
+
+/// `src` when it is `if COND { A } else { B }` of two literals: `COND`, and
+/// what each writes, escaped. A condition with a literal or a block in it
+/// is left to run.
+pub fn either(src: &str) -> Option<(&str, String, String)> {
+    let rest = src.trim().strip_prefix("if ")?;
+    let open = rest.find('{')?;
+    let cond = rest[..open].trim();
+    if cond.is_empty() || cond.contains(['"', '\'', '}']) {
+        return None;
+    }
+    let close = open + rest[open..].find('}')?;
+    let yes = literal(&rest[open + 1..close])?;
+    let other = rest[close + 1..]
+        .trim_start()
+        .strip_prefix("else")?
+        .trim_start();
+    let no = literal(other.strip_prefix('{')?.strip_suffix('}')?)?;
+    Some((cond, escape(&yes.text()), escape(&no.text())))
 }
 
 /// Names bound to values known at build time: a component's props.
@@ -120,13 +134,6 @@ fn condition(src: &str, env: &Env) -> Option<bool> {
     }
 }
 
-/// A URL attribute's value (escaped) that `wisp::rt::guard_url` would
-/// leave as it is: with neither a scheme's `:` nor a character reference,
-/// it cannot run script. Anything else is left for the runtime to check.
-fn plain_url(escaped: &str) -> bool {
-    !escaped.contains([':', '&'])
-}
-
 /// What node `n` of `t` writes, when that is known at build time with no
 /// names bound: text, and holes of literals.
 pub fn fixed(n: &Node, t: &Template) -> Option<String> {
@@ -140,7 +147,7 @@ fn fixed_in(n: &Node, t: &Template, env: &Env) -> Option<String> {
         Node::Html(c) => value(&c.src, env)?.text(),
         Node::Attr { name, code, url } => {
             let v = escape(&value(&code.src, env)?.text());
-            if *url && !plain_url(&v) {
+            if *url && runs_script(&v) {
                 return None;
             }
             format!(" {name}=\"{v}\"")
@@ -217,8 +224,17 @@ impl Fold<'_> {
                 Node::Head(body) => self.nodes(body, t, env, doc, true, slot)?,
                 Node::Render => slot(doc)?,
                 Node::UrlStart { prefix } => url = out.len().saturating_sub(prefix.len()),
-                Node::UrlEnd if !plain_url(&out[url..]) => return None,
+                Node::UrlEnd if runs_script(&out[url..]) => return None,
                 Node::UrlEnd => {}
+                // What an action refused, which a GET (all that is baked)
+                // never has: an input's value sent again, a select's choice
+                // by it, and its problem. The input's own value is written.
+                Node::Kept { own, .. } => {
+                    if let Some(own) = own {
+                        self.nodes(own, t, env, doc, head, slot)?;
+                    }
+                }
+                Node::Chosen { own: None, .. } | Node::Problem { .. } | Node::Selected(_) => {}
                 Node::Bool {
                     name,
                     code,
@@ -278,10 +294,6 @@ impl Fold<'_> {
                     };
                     self.nodes(&ct.nodes, ct, &own, doc, head, &kids)?;
                 }
-                // What an action refused, which a GET (all that is baked)
-                // never has: an input's value sent again, and its problem.
-                Node::Attr { code, .. } if code.src.starts_with(KEPT) => {}
-                Node::Html(c) if c.src.starts_with(PROBLEM) => {}
                 n => out.push_str(&fixed_in(n, t, env)?),
             }
         }
@@ -296,7 +308,9 @@ fn fits(v: &Lit, ty: &str) -> bool {
     (ty.starts_with("impl ") && ty.ends_with("Display"))
         || match v {
             Lit::Str(_) => ty::is_text(ty),
-            Lit::Int(_) => matches!(ty::scalar(ty::unref(ty)), Scalar::Unsigned | Scalar::Signed),
+            Lit::Int(n) => {
+                ty::int_range(ty::last_segment(ty::unref(ty).trim())).is_some_and(|r| r.contains(n))
+            }
             Lit::Bool(_) => ty == "bool",
         }
 }
@@ -317,6 +331,8 @@ mod tests {
             ("-7i64", Some(Lit::Int(-7))),
             ("1_000u32", Some(Lit::Int(1000))),
             ("007", Some(Lit::Int(7))),
+            ("255u8", Some(Lit::Int(255))),
+            ("-2147483648", Some(Lit::Int(-2147483648))),
             ("true", Some(Lit::Bool(true))),
             ("false", Some(Lit::Bool(false))),
         ] {
@@ -335,6 +351,11 @@ mod tests {
             "'c'",
             "4u7",
             "340282366920938463463374607431768211456",
+            // Not of their type: rustc says so, not the page.
+            "300u8",
+            "-1u32",
+            "2147483648",
+            "-129i8",
         ] {
             assert_eq!(literal(src), None, "{src}");
         }
@@ -342,6 +363,35 @@ mod tests {
             escape("<a href=\"x\">'&'</a>"),
             "&lt;a href=&quot;x&quot;&gt;&#39;&amp;&#39;&lt;/a&gt;"
         );
+    }
+
+    #[test]
+    fn either_of_two_literals() {
+        let two = |c: &'static str, a: &str, b: &str| Some((c, a.to_string(), b.to_string()));
+        for (src, want) in [
+            (
+                "if p.active { \"on\" } else { \"off\" }",
+                two("p.active", "on", "off"),
+            ),
+            ("if !x {\"a<\"} else {1}", two("!x", "a&lt;", "1")),
+            (
+                "if let Some(_) = y { \"a\" } else { \"\" }",
+                two("let Some(_) = y", "a", ""),
+            ),
+        ] {
+            assert_eq!(either(src), want, "{src}");
+        }
+        for src in [
+            "if x { \"a\" } else if y { \"b\" } else { \"c\" }",
+            "if x { a } else { \"b\" }",
+            "if x { \"a}\" } else { \"b\" }",
+            "if s == \"x\" { \"a\" } else { \"b\" }",
+            "if x { \"a\" } else { \"b\" }.len()",
+            "if { \"a\" } else { \"b\" }",
+            "x",
+        ] {
+            assert_eq!(either(src), None, "{src}");
+        }
     }
 
     /// The runs a release build writes out: text and literal holes, with
@@ -421,6 +471,25 @@ mod tests {
                     "<p>{:n}</p><script>let n = 1</script>{@render children()}",
                     "x"
                 ],
+                &[]
+            )
+            .is_none()
+        );
+
+        // An action's form: a GET never has what it refused, so its inputs
+        // show their own values, and their problems nothing.
+        let form = "<form method=\"post\"><input name=\"a\"><input name=\"b\" value={\"v\"}>\
+                    <textarea name=\"t\">hi</textarea><select name=\"s\"><option value=\"x\">X</option></select>\
+                    {cx.problem(\"a\")}</form>";
+        assert_eq!(
+            page(&[form], &[]).unwrap().body,
+            "<form method=\"post\"><input name=\"a\"><input name=\"b\" value=\"v\"><textarea name=\"t\">hi</textarea>\
+             <select name=\"s\"><option value=\"x\">X</option></select></form>"
+        );
+        // A select chosen by a value of its own is read at run time.
+        assert!(
+            page(
+                &["<form method=\"post\"><select name=\"s\" value={\"x\"}></select></form>"],
                 &[]
             )
             .is_none()

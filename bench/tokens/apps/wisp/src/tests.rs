@@ -23,13 +23,18 @@ fn form() {
     let bad = app.post_form("/contact", &[("name", "Ann"), ("email", "ann")]);
     assert_eq!(bad.status, 422);
     let page = bad.text().to_string();
-    // What was sent, and what was wrong with it, after the input.
+    // The browser's own checks from the rules, what was sent, and what was
+    // wrong with it, after the input.
     assert!(
-        page.contains("<input name=\"name\" value=\"Ann\">\n"),
+        page.contains(
+            "<input name=\"name\" required minlength=\"1\" pattern=\"[\\s\\S]{0,50}\" value=\"Ann\">\n"
+        ),
         "{page}"
     );
     assert!(
-        page.contains("<input name=\"email\" value=\"ann\"><small class=\"problem\">"),
+        page.contains(
+            "<input name=\"email\" type=\"email\" required value=\"ann\"><small class=\"problem\">"
+        ),
         "{page}"
     );
     assert_eq!(

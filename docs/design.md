@@ -74,7 +74,8 @@ mailer, an HTTP client.
 ```
 crates/wisp        runtime: HTTP server, Cx, escaping, assets, dev hooks
 crates/wisp-build  compiler: route scan, .wisp parser, codegen (used from build.rs)
-crates/wisp-macros #[action], #[derive(Cookie)], #[derive(Json)] and #[derive(FromJson)] (proc macros, no deps)
+crates/wisp-shared what runtime, compiler and browser agree on: contexts.rs, protocol.rs, client/*.js
+crates/wisp-macros #[action], #[derive(Cookie)], #[derive(Json)] and #[derive(FromJson)] (proc macros; no deps but wisp-build, for `#[validate]`'s rules)
 crates/wisp-cli    `wisp new | dev | build | check`; deploy targets
 examples/demo      the demo app, which is also `wisp new`'s demo template
 examples/api       a JSON API, which is also `wisp new --api`
@@ -91,6 +92,9 @@ my-app/
   src/main.rs         wisp::main!();
   src/app.html        document shell with %wisp.head% and %wisp.body%
   src/app.css         optional; Tailwind if it contains @import "tailwindcss"
+  src/app.scss        optional; Sass, instead of src/app.css
+  postcss.config.*    optional; PostCSS (node) after either, or on src/app.css
+  package.json        optional; npm packages (`wisp add`), for bare imports
   src/hooks.rs        optional; `init` at start, `before` every request
   src/components/...  optional; Card.wisp is <Card>
   src/routes/...      pages
@@ -225,8 +229,10 @@ async fn load(slug: String) -> Result<Data> {
 - Every other parameter is an input, read from the request by its name: a
   route parameter of that name first, then the form a POST, PUT or PATCH
   sends, then the URL's query. The type says how. `T` must be there and be
-  a `T` (any `FromStr`): missing or not one is a 400 that says which field,
-  and a route parameter that is not one is a 404. `Option<T>` is `None` when
+  a `T` (any `FromStr`): missing is a 400 that says which field (a 422 by
+  it from a JSON body, and a body that is not JSON a 400 that says where),
+  sent but not a `T` a 422 by the field (a 400 from the query), and a route
+  parameter that is not one a 404. `Option<T>` is `None` when
   it is missing or blank, `bool` is a checkbox (sent at all, and not
   `false`, `off` or `0`), `Vec<T>` is every value of a repeated field, and
   `&str` borrows a `String`. So `fn load(slug: String)`,
@@ -259,8 +265,8 @@ async fn load(slug: String) -> Result<Data> {
   (see [Actions](#actions-and-wispjs)); a parameter whose type does not
   parse (`email: Email`, `age: u8`) is the same 422 by field; an action
   written without `->` returns `Result`, so it may end in `redirect(..)`;
-  `cx.problem(field)` and
-  `cx.input(field)` are the same for markup that places them itself. (Any
+  `{cx.problem(field)}` places one field's message elsewhere, and
+  `cx.input(field)` reads what was sent. (Any
   other error from an action shows the error page.)
 
   ```html
@@ -401,7 +407,10 @@ where escaping is not enough:
   after it can make it a tag;
 - a URL attribute (`href`, `src`, `action`, `formaction`, ...) whose static
   start is a `javascript:` or `vbscript:` URL, or hides its scheme behind a
-  character reference;
+  character reference (for `{:…}` browser values too);
+- places a URL hides in: `to`, `from`, `values` and `by` of an SVG
+  `<animate>` or `<set>` (which can set an `href`), a `<meta>`'s
+  `http-equiv`, and the `content` of a `<meta http-equiv="refresh">`;
 - `//` comments inside a hole, which would comment out the generated code
   after them.
 
@@ -409,7 +418,11 @@ When an expression decides a URL attribute's scheme (`href={link}`,
 `src="{base}/x.png"`), the value is checked where it ends
 (`wisp::rt::guard_url`) and one that would run script becomes
 `about:invalid#blocked`, as React and Angular do. A static start that fixes
-the scheme (`/p/{id}`, `https://…`, `?q=…`) costs nothing.
+the scheme (`/p/{id}`, `https://…`, `?q=…`) costs nothing. These rules
+(escaping, which attributes hold URLs, which schemes run script) live in
+one file, `crates/wisp-shared/src/contexts.rs`, in a crate both `wisp` and
+`wisp-build` depend on: the runtime renders by it, the compiler folds and
+checks by it, and its tests hold the browser runtime to the same cases.
 
 A block must begin and end in the same place (in text, inside one tag, in
 one attribute value), and so must each branch: otherwise one branch could
@@ -506,19 +519,50 @@ so `id` above is the action's `id: u64`.
 
 An action checks its input on its parameters, as a `FromJson` field does:
 `#[action] fn add(#[validate(len = 1..=100)] text: String)` (and `min`,
-`max`, `min_len`, `max_len`, `email`). A value that does not pass, or
-`return invalid("text", "…")`, shows the page again as a 422. There every
-text `<input name="…">` of the form (one posting to `?/name`, or a
-`method="post"` one posting to `default`) without a `value` of its own
-shows what was sent (`wisp::rt::kept`), followed by what was wrong with it,
-`<small class="problem">…</small>` (`wisp::rt::problem`); passwords, files,
-checkboxes, radios and hidden inputs are left alone, and so are the inputs
-of a component, which has no request. A file that writes `cx.problem(…)`
-anywhere places the messages itself (`{cx.problem("text")}` is the message,
-and nothing while there is none), and gets none added. A GET never has
-either, so they do not stop a page from being baked. Flow:
+`max`, `min_len`, `max_len`, `email`). Every parameter is read and checked
+before the answer, so one 422 lists each that does not pass, by field
+(`wisp::rt::input::read`), from a form or a JSON body. A parameter may be a
+struct with `#[derive(FromJson)]` or `Rest` (`fn default(post: Post)`): its
+fields are read by name, from the form (text read by the field's type, a
+blank field missing) or a JSON body, and checked by its own `#[validate]`
+rules (`wisp::rt::input::whole`). A value that does not pass, or `return
+invalid("text", "…")`, shows the page again as a 422. There each named
+`<input>`, `<textarea>` and `<select>` of the form (one posting to `?/name`,
+or a `method="post"` one posting to `default`) shows what was sent
+(`wisp::rt::kept`) instead of its own value (`value={post.title}`, or
+`value="text"`, which becomes the same node as it is read, so it holds
+wherever it is in the tag; one with a hole in it, `value="a{b}"`, is a
+build error, never a value dropped; the textarea's content, a select's `value={post.kind}`, which marks the
+option with that value `selected`), followed by what was wrong with it,
+`<small class="problem">…</small>` (`wisp::rt::problem`); a password or
+file shows its problem but is never sent back; checkboxes, radios and
+hidden inputs are left alone, and so are the inputs of a component, which
+has no request. A file that writes `cx.problem("text")` places that
+field's message itself (`{cx.problem("text")}` is the same `<small>`, and
+nothing while there is none), and gets none added for it. A GET never has
+either, and takes an `if` on `cx`'s locals (none) per input, so they do
+not stop a page from being baked.
 
-1. Same-origin check: if `Origin` is present it must match `Host` (403 otherwise).
+The browser checks first what it can, from the same rules
+(`wisp_build::rules::Native`): a page's form field that an action of the
+page reads gets, as static text, the attributes whose check is one the
+server makes too, so the browser never stops what the server would take:
+`required` where blank is refused (a struct's field, a number, an
+`Email`, an `Image`, text whose rules refuse it), `type="email"` (the
+server's check is WHATWG's), `minlength` (UTF-16 units are never fewer
+than characters), the most length as `pattern="[\s\S]{0,N}"` (`maxlength`
+would count an emoji twice), and `min`/`max` on a `type="number"` input.
+A textarea gets only `required` (its line breaks are sent as two
+characters). The server still checks everything.
+
+An action's body that has `.await` makes it `async` (`#[action]` adds the
+word and the build awaits the call), so `async` is never written there.
+
+Flow:
+
+1. Same-origin check: if `Origin` is present it must match `Host` (403
+   otherwise); without it, a `Sec-Fetch-Site` other than `same-origin` or
+   `none` is a 403 too. A client that sends neither (curl) is let through.
 2. The action runs. `redirect("/…")` → 303. Other errors → error page. For
    `wisp.js` (its requests carry `x-wisp`) a redirect is a 200 with
    `x-wisp-location`, and the script goes there itself: fetch would follow it
@@ -556,6 +600,19 @@ type says nothing the bytes do not. Text fields read the same either way.
 Uploads are held in memory, so a route that takes large ones raises its own
 `BODY_LIMIT` rather than the whole app's.
 
+A picture is an action parameter: `#[validate(max_size = 1 * MB)] avatar:
+Image` (or `Option<Image>`, which may be left empty). Its kind is what its
+first bytes say, never what the browser claimed: PNG, JPEG, GIF, WebP or
+AVIF. Anything else, SVG included (it can carry script), and a file over
+`max_size`, show the page again as a 422 with the problem by the field. The
+build adds each action's `max_size` to the page's body limit, so no
+`BODY_LIMIT` is written for it. An `Image` shares its bytes when cloned, is
+kept in a saved table as a `data:` URL (its JSON), and is a response as
+itself: `fn get(id: u64) -> Option<Image> { USERS.get(id)?.value.avatar }`
+in `avatars/[id=int]/+server.rs` sends its bytes and type with an ETag
+(304 when the browser has them), `no-cache` and `nosniff`. Any response
+with an `etag` answers a matching `if-none-match` GET with a 304.
+
 To serve saved files back, `async fn get(name: String) -> Result<Response> {
 Response::file_in("uploads", &name).await }` in a `[...name]/+server.rs`
 reads one from the directory without blocking, typed by its extension.
@@ -578,7 +635,56 @@ is the value only if the signature holds, so a visitor can read it but not
 make one up, change it, or move it to another cookie's name. That is enough
 to say who is signed in. A release build without `WISP_SECRET` fails the
 request that signs or checks one, saying to set it; dev builds keep a secret
-in `.wisp/secret` so sessions survive restarts.
+in `.wisp/secret` so sessions survive restarts. To change the secret without
+signing everyone out, move the old one to `WISP_SECRET_OLD`: signatures it
+made still hold (nothing new is signed with it) until it is removed, 30 days
+on for sign-ins.
+
+Signing in is built on that. `cx.sign_in(id)` (a row id of the app's users)
+sets the signed cookie `session` to the id and the time, for 30 days;
+`cx.signed_in()?` is the id, and signed out (or 30 days on) it is the error
+that sends the visitor to sign in: a 303 to `/login`, or a 401 for a JSON
+client. `cx.user(&USERS)?` is the row itself, the same way. A members' page
+starts with `let me = cx.user(&USERS)?;`; `cx.signed_in().ok()` asks without
+sending anyone anywhere; `cx.sign_out()` ends it. The page at `/login` is
+the convention; `wisp::sign_in_page("/enter")` in `init` names another.
+`sign_in` always sets a new session, so one planted on a visitor before
+they sign in never becomes theirs.
+
+A signed session is valid wherever it is sent, so `cx.sign_out()` cannot
+end a copy someone stole. `wisp::sign_out_everywhere(id)` can: it counts
+up the id's sign-outs in the saved table `wisp_sign_outs`, and a session
+made after carries the count (`id.time.count`; none while it is 0), so
+every older one no longer matches. Reading a session looks the count up
+in memory, and not at all while no one has ever signed out everywhere (an
+atomic flag says so). The table is read when the server starts (not at
+all while it has no log file, so an app that never signs anyone out makes
+none); with the app's own store (`wisp::store`), which instances can
+share, a thread reads it again every 30 s and the higher count of each id
+wins, so a sign-out on one instance holds on all within that. Log files
+are each instance's own. A store that cannot be read leaves sessions as
+they were rather than failing them, says why, and is tried again;
+`sign_out_everywhere` then returns its `Err`, saying why: a security
+action fails as a value, never by a panic.
+
+Passwords are kept as `wisp::password::hash(&password).await?`, checked with
+`wisp::password::check(&typed, hash).await?` (`hash` an `Option<&str>`:
+`None` for no such user hashes a stand-in, as slow, so the time does not
+say which names exist; a full hashing queue, about 3 s of work counted in
+rounds, so hashes planted with many cannot make the wait longer, is a 503
+with `retry-after`; that keeps the machine answering through a flood, and
+a `RateLimit` on the sign-in action is what stops one): PBKDF2-HMAC-SHA256 on the same
+HMAC, 600,000 rounds (OWASP), a random 16-byte salt, written as
+`$pbkdf2-sha256$i=600000$salt$key` so the count can be raised later and old
+hashes still check; `wisp::password::outdated(&hash)` says when one was made
+with fewer rounds, to hash again once the password checks. A stored hash
+naming more than 10,000,000 rounds is refused rather than computed. The key's padded blocks are hashed once and each round
+is two SHA-256 compressions of one fixed-shape block, with no allocation:
+a hash is a fraction of a second of one core, on purpose. It runs on a
+thread kept for hashing (one per two cores, started with the first hash),
+never the worker's: a worker held for 0.2 s would stall every connection
+on its core, and a flood of sign-ins takes at most half the machine. The
+edge build, which has no threads, hashes in place.
 
 `cx.set_cookie_with(name, value, CookieOptions { … })` takes the rest: a
 `max_age` (`None` ends it with the browser), `script_readable`, `same_site`
@@ -769,7 +875,10 @@ and `.wisp-*` classes, so they never touch an app's own CSS.
   connection is a task, but when its socket brings a request, the driver
   polls the connection's future itself, with the task's waker: a request
   whose handler does not wait is received, answered and sent without the
-  scheduler, and one that waits wakes the task as usual. Receive
+  scheduler, and one that waits wakes the task as usual. Which routes
+  never wait is worked out at build; an `async fn before` in hooks.rs
+  runs before every route, so it takes the fast path off all of them:
+  keep it sync. Receive
   deadlines and stalled sends are one pass a second over the worker's
   connections, not a timer each.
   `WISP_IO=epoll` asks for that. Other systems accept on the main thread
@@ -783,6 +892,7 @@ and `.wisp-*` classes, so they never touch an app's own CSS.
   | `WISP_THREADS`          | Worker threads, one per CPU by default                             |
   | `WISP_BODY_LIMIT`       | The largest request body (`1048576`, `512KB`, `10MB`); 1 MB by default |
   | `WISP_SECRET`           | Signs cookies; at least 32 characters                              |
+  | `WISP_SECRET_OLD`       | The secret before, still accepted on cookies it signed (rotation)  |
   | `ORIGIN`                | The site's address (`https://example.com`), for a proxy that does not pass `Host` on |
   | `WISP_CLIENT_IP_HEADER` | The header the proxy puts the client's address in, for `cx.client_ip()` |
   | `WISP_MAX_CONNS`        | Open connections, WebSockets included, before new ones get a 503; 10000 by default, 0 for no cap |
@@ -800,8 +910,9 @@ and `.wisp-*` classes, so they never touch an app's own CSS.
   added), and is the peer's address otherwise.
 - On SIGTERM (how systemd, Docker and Kubernetes stop a server) or Ctrl+C,
   `run` stops accepting, answers the requests under way with
-  `connection: close`, closes idle connections (a client retries on a new
-  one), and returns after at most 10 s, or at a second signal.
+  `connection: close`, waits for the responses the drivers are still
+  sending, closes idle connections (a client retries on a new one), and
+  returns after at most 10 s, or at a second signal.
 - Under `wisp dev` the app holds a pipe from the CLI as its stdin and exits
   when it closes, so a killed `wisp dev` never leaves an app on the port.
 - The io_uring and epoll drivers are the `unsafe` modules of a native
@@ -816,18 +927,34 @@ and `.wisp-*` classes, so they never touch an app's own CSS.
   runtime. It runs until its future is dropped.
 - One task per connection. `Cx` owns the connection's read buffer; the task also
   owns a write buffer and an `Out { head, body }` pair of `String`s, all reused
-  across requests.
+  across requests. A connection holds them only while it has a request: an
+  idle one (tokio's or the epoll's; not yet the ring's), a WebSocket and a
+  streamed response give them back to the thread's pool, so an idle
+  keep-alive connection costs about 4 KB on Windows, its task and socket.
+  A wakeup with nothing to read (tokio on Windows says every new socket
+  is readable) gives them back again rather than waiting in a read.
 - HTTP/1.1 with keep-alive and pipelining: every complete request in the read
   buffer is answered into the write buffer, then one `write_all`.
 - Requests are parsed in place (`httparse`) and recorded in `Cx` as byte spans
   into its buffer, so `Cx` has no lifetime and handlers take `&mut Cx`.
-- Limits: 16 KB of headers, 64 headers, a 1 MB body (`WISP_BODY_LIMIT`, or
+- Limits: 16 KB of headers, 100 headers, a 1 MB body (`WISP_BODY_LIMIT`, or
   a route's `BODY_LIMIT`, checked against `Content-Length` before any of the
   body is read), 10 s to receive a request's head and then 10 s for each
   part of its body (an upload may take minutes as long as it keeps coming),
   60 s keep-alive idle, 30 s for a client to take any of a response. The
   buffer for a body grows as it arrives, at most 1 MB ahead: a large
-  `Content-Length` alone allocates nothing.
+  `Content-Length` alone allocates nothing. A refused request is answered,
+  the sending side closed, and what the client still sends read and
+  dropped for up to 2 s (and 1 MB), so the close does not reset the
+  connection before the client has read why. On the wire, HTTP/1.1 without
+  `Host`, or any request with two, → 400 (RFC 9112 §3.2); an absolute-form
+  target (`GET http://host/x`, as a proxy sends) is its path, with its host
+  as `Host` (§3.2.2); `Expect: 100-continue` is answered only to HTTP/1.1.
+  Out of descriptors, accepting pauses 50 ms at a time, logged once a
+  second. These deadlines and buffer rules are one module of plain
+  functions (`crates/wisp/src/policy.rs`) that tokio's sockets, the epoll,
+  the ring and the epoll driver's own answers all call, tested there on a
+  made-up clock.
 - Chunked request bodies are read, strictly: `Transfer-Encoding: chunked`
   alone (any other coding → 501), hex sizes of at most 16 digits, CRLF line
   ends, extensions and trailers skipped but bounded, and framing may not
@@ -957,21 +1084,46 @@ reach them at once, and on https://github.com/wyziedevs/wisp when it was
 installed with `cargo install --git`.
 
 The demo template is `examples/demo` itself, read with `include_str!`, so the
-two cannot drift. With Tailwind, the template's styles go in `@layer base`
+two cannot drift. A published crate has no `examples` beside it, so build.rs
+copies them into `crates/wisp-cli/templates/vendor` whenever they are there
+and differ (a build in the repo refreshes it; commit the result), and a build
+without them reads that copy. With Tailwind, the template's styles go in `@layer base`
 after the import, so utility classes still win over them.
 
 ## Dev loop
 
 `wisp dev` is one std-only process:
 
-- Polls `src/`, `static/`, `Cargo.toml` and `build.rs` mtimes every 50 ms (no
-  `notify`). Editors' swap, backup and lock files are ignored, and a burst of
-  changes settles for at most a second.
+- Polls `src/`, `static/`, `Cargo.toml`, `build.rs`, `package.json` and
+  `postcss.config.*` mtimes every 50 ms (no `notify`). Editors' swap, backup and lock files
+  are ignored, and a burst of changes settles for at most a second.
 - `wisp dev [--port <n> | --port=<n> | -p <n>]`; anything else is an error
   with the usage. The app gets `HOST=127.0.0.1` unless `HOST` is set, and the
   address it prints is the one shown and used for hot swaps (port 0 works).
 - Runs Tailwind standalone `--watch` into `.wisp/app.css` if `src/app.css`
-  imports Tailwind; otherwise `src/app.css` is served as written.
+  imports Tailwind, or Dart Sass (standalone, pinned in `~/.wisp/bin`,
+  `$WISP_SASS` overrides) `--watch` if `src/app.scss` exists; with a
+  `postcss.config.*`, the tool writes `.wisp/pre.css` and the app's
+  `node_modules/postcss-cli` (run by `node`, no npx) `--watch` makes
+  `.wisp/app.css` of it (or of a plain `src/app.css`). Otherwise
+  `src/app.css` is served as written. A watcher makes the first build
+  itself; adding or removing `src/app.scss` or a `postcss.config.*`
+  replaces the watchers. `wisp build` runs each once, minified
+  (`--minify`, `--style=compressed`).
+- Every child of `wisp dev` dies when its stdin, a pipe `wisp dev` holds,
+  closes: however `wisp dev` ends, even killed, the system closes it. The
+  app exits by itself (`exit_with_parent`); a CSS watcher runs under
+  `wisp __child <exe> <args…>`, which kills the tool at that point.
+- Bare imports (`'canvas-confetti'`) are npm packages: `package.json`
+  pins them to exact versions (`wisp add`), dev imports
+  `https://esm.sh/pkg@v?target=es2022`, and a release build serves
+  `.wisp/npm`, which `wisp build` fills from esm.sh before compiling: the
+  modules `wisp check` finds imported and what they import, a level at a
+  time, 16 at once, only those not there yet. Each is saved with its
+  imports pointed at `/_app/c/npm/`, and an import of esm.sh's re-export
+  stub at the module it re-exports. The build embeds the files
+  (`include_str!`); their paths name their versions, so they are cached
+  for good without a `?v=`.
 - Builds with `cargo build`, copies the exe to `.wisp/run/` (so the next build can
   overwrite the original while the old server keeps serving), then restarts it.
   The app is ready when it prints its `listening on` line; the CLI reads the
@@ -1019,7 +1171,13 @@ expression or `.rs` edit rebuilds and restarts in 0.3 s.
 - Signed cookies bind the signature to the cookie's name and value, and are
   compared in constant time. `WISP_SECRET` shorter than 32 characters stops
   the server at start.
-- Dev endpoints exist only in debug builds and only answer loopback peers.
+- Dev endpoints exist only in debug builds and only answer loopback peers
+  (behind a proxy on the same machine every peer is loopback: never serve a
+  debug build). Dev mode on a non-loopback address says so at start.
+- Live URL attributes (`href={:x}`, `:src="x"`) block `javascript:` and
+  `vbscript:` on the server's first paint and in the browser, as `href={x}`
+  does; wisp.js never follows a `javascript:` redirect or `goto`, and saves a
+  posted form's attachment instead of opening it as a page of this site.
 - Request size and time limits as above; no request smuggling surface
   (strict chunked parsing, CL+TE rejected).
 - At most `WISP_MAX_CONNS` (10000) open connections, WebSockets included;

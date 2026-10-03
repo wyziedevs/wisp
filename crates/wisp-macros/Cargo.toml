@@ -10,5 +10,9 @@ repository.workspace = true
 [lib]
 proc-macro = true
 
+# `#[validate]`'s rules and `.await`, read as the build reads them.
+[dependencies]
+wisp-shared.workspace = true
+
 [lints]
 workspace = true

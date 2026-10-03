@@ -3,11 +3,14 @@
 //!
 //! A template with a client script or directives is compiled into an ES
 //! module (`/_app/c/ID.js`). Each time it renders, it is an *instance*: its
-//! elements are marked `data-w="I.G"`, and the page ends with the list of
+//! elements are marked with it and their binding group (`GROUP_ATTR`, and
+//! `LOOP_ATTR` in a Rust loop), and the page ends with the list of
 //! instances, the server values each one's code reads, and the runtime
-//! (`client/live.js`) that starts them. See `page` in `http.rs`.
+//! (`wisp_shared::LIVE_JS`) that starts them. See `page` in `http.rs`, and
+//! `protocol.rs` for the format.
 
 use crate::Out;
+use crate::protocol::{ISLAND_NONE, LIVE_CLOSE, LIVE_OPEN, LIVE_PARAMS, LIVE_RECORDS, LIVE_ROUTE};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
@@ -57,9 +60,13 @@ pub(crate) struct Live {
     /// The modules instances use, each with whether one of them starts
     /// with the page (rather than as an island, later).
     modules: Vec<(&'static ClientModule, bool)>,
-    /// `[0,"t3",-1,{…}],[1,"t5",0,{…}]`: id, module, the instance it
-    /// renders inside (for context), and its server values.
+    /// `[0,"t3",-1,{…}],[1,"t5",0,{…},"v"]`: id, module, the instance it
+    /// renders inside (for context), its server values, and how an island
+    /// starts. The last record is left open: its blob is the caller's to
+    /// write after `live`, and its `how` comes after the blob, so it is
+    /// closed, with `last_how` if any, by the next `live` or by `tail`.
     instances: String,
+    last_how: Option<&'static str>,
     /// The instances rendering now, innermost last, and when each starts.
     open: Vec<(u32, Start)>,
     /// `,"r":"/post/[slug]","p":{"slug":"x"}` for a page with a `+page.js`.
@@ -87,6 +94,7 @@ impl Live {
         self.count = 0;
         self.modules.clear();
         self.instances.clear();
+        self.last_how = None;
         self.open.clear();
         self.route.clear();
         self.next = None;
@@ -102,16 +110,17 @@ impl Live {
             return;
         }
         s.reserve(self.instances.len() + 200 * self.modules.len() + 200);
-        s.push_str("<script type=\"application/json\" id=\"wisp-live\">{\"m\":{");
+        s.push_str(LIVE_OPEN);
         for (k, (m, _)) in self.modules.iter().enumerate() {
             let comma = if k > 0 { "," } else { "" };
             let _ = write!(s, "{comma}\"{}\":\"{}\"", m.id, m.url);
         }
-        s.push_str("},\"i\":[");
+        s.push_str(LIVE_RECORDS);
         s.push_str(&self.instances);
+        close(s, self.last_how);
         s.push(']');
         s.push_str(&self.route);
-        s.push_str("}</script>");
+        s.push_str(LIVE_CLOSE);
         let mut extra = "";
         for (m, _) in self.modules.iter().filter(|m| m.1) {
             let _ = write!(s, "<link rel=\"modulepreload\" href=\"{}\">", m.url);
@@ -124,7 +133,9 @@ impl Live {
         }
         if self.modules.iter().any(|m| m.1) {
             s.push_str(concat!(
-                "<script type=\"module\" src=\"/_app/live.js?v=",
+                "<script type=\"module\" src=\"",
+                wisp_shared::app_path!("live.js"),
+                "?v=",
                 env!("WISP_RUNTIME_V"),
                 "\"></script>"
             ));
@@ -134,13 +145,14 @@ impl Live {
 
 /// Starts an instance of `module`: records it and returns its id, with the
 /// buffer its blob (a JSON object of the server values it reads) goes into.
-/// The caller writes the blob and then the `]` that closes the record.
+/// The caller writes the blob; the record is closed after it, with its
+/// `how`, when the next one starts or the list is written.
 pub fn live<'a>(out: &'a mut Out, module: &'static ClientModule) -> (u32, &'a mut String) {
     let l = &mut out.live;
     let how = l.next.take();
     let parent = l.open.last().copied();
     let start = match (how, parent.map(|p| p.1)) {
-        (Some("n"), _) | (_, Some(Start::Never)) => Start::Never,
+        (Some(ISLAND_NONE), _) | (_, Some(Start::Never)) => Start::Never,
         (Some(_), _) | (_, Some(Start::Later)) => Start::Later,
         _ => Start::Now,
     };
@@ -156,15 +168,22 @@ pub fn live<'a>(out: &'a mut Out, module: &'static ClientModule) -> (u32, &'a mu
         None => l.modules.push((module, start == Start::Now)),
     }
     if !l.instances.is_empty() {
+        close(&mut l.instances, l.last_how);
         l.instances.push(',');
     }
+    l.last_how = how;
     let parent = parent.map_or(-1, |p| p.0 as i64);
     let _ = write!(l.instances, "[{i},\"{}\",{parent},", module.id);
-    if let Some(how) = how {
-        string(&mut l.instances, how);
-        l.instances.push(',');
-    }
     (i, &mut l.instances)
+}
+
+/// Closes the open record: its `how`, then `]`.
+fn close(s: &mut String, how: Option<&'static str>) {
+    if let Some(how) = how {
+        s.push(',');
+        string(s, how);
+    }
+    s.push(']');
 }
 
 /// The component about to render is an island: its instance starts as
@@ -186,9 +205,9 @@ pub fn live_end(out: &mut Out) {
 pub fn live_route(out: &mut Out, id: &str, params: &[(&str, &str)]) {
     let r = &mut out.live.route;
     r.clear();
-    r.push_str(",\"r\":");
+    r.push_str(LIVE_ROUTE);
     string(r, id);
-    r.push_str(",\"p\":{");
+    r.push_str(LIVE_PARAMS);
     for (k, (name, value)) in params.iter().enumerate() {
         if k > 0 {
             r.push(',');
@@ -232,23 +251,14 @@ impl<'a> Js<'a> {
     /// `data.user`: a member of an object; `null` for anything else, as
     /// `undefined` shows and tests the same.
     pub fn get(self, key: &str) -> Js<'a> {
-        let (s, b) = (self.0, self.0.as_bytes());
-        if b.first() == Some(&b'{') {
-            let mut i = 1;
-            while i < b.len() && b[i] == b'"' {
-                let k = value_end(b, i);
-                let v = k + 1; // after the `:`
-                let e = value_end(b, v);
-                if &s[i + 1..k - 1] == key {
-                    return Js(&s[v..e]);
-                }
-                i = e + 1; // after the `,`
-            }
-        }
-        Js("null")
+        self.entries()
+            .find(|(k, _)| *k == key)
+            .map_or(Js("null"), |(_, v)| v)
     }
 
-    /// The keys and values of an object (nothing for anything else).
+    /// The keys and values of an object (nothing for anything else). What
+    /// is not JSON (a hand-written `Json` impl's mistake) ends it early,
+    /// never in a panic or a loop.
     pub fn entries(self) -> impl Iterator<Item = (Cow<'a, str>, Js<'a>)> {
         let (s, b) = (self.0, self.0.as_bytes());
         let mut i = if b.first() == Some(&b'{') { 1 } else { b.len() };
@@ -256,10 +266,14 @@ impl<'a> Js<'a> {
             if i >= b.len() || b[i] != b'"' {
                 return None;
             }
-            let k = value_end(b, i);
+            let k = value_end(b, i); // at the `:`
+            if b.get(k) != Some(&b':') {
+                i = b.len();
+                return None;
+            }
             let e = value_end(b, k + 1);
             let item = (unescape(&s[i..k]), Js(&s[k + 1..e]));
-            i = e + 1;
+            i = e + 1; // after the `,`
             Some(item)
         })
     }
@@ -282,7 +296,12 @@ impl<'a> Js<'a> {
             }
             let e = value_end(b, i);
             let item = Js(&s[i..e]);
-            i = e + (e < b.len() && b[e] == b',') as usize;
+            // On past a `,`; at a `]`, or anything else, the end.
+            i = if b.get(e) == Some(&b',') {
+                e + 1
+            } else {
+                b.len()
+            };
             Some(item)
         })
     }
@@ -297,17 +316,21 @@ impl<'a> Js<'a> {
         }
     }
 
-    /// As `if (value)` tests it.
+    /// As `if (value)` tests it: all but `null`, `false`, `""` and zero.
     pub fn truthy(self) -> bool {
-        !matches!(self.0, "" | "null" | "false" | "0" | "-0" | "\"\"")
+        match self.0.as_bytes().first() {
+            None => false,
+            Some(b'-' | b'0'..=b'9') => !self.0.parse::<f64>().is_ok_and(|n| n == 0.0),
+            _ => !matches!(self.0, "null" | "false" | "\"\""),
+        }
     }
 
     /// As `{:value}` shows it, HTML-escaped: a string as itself, `null` as
     /// nothing, anything else as its JSON.
     pub fn text(self, out: &mut String) {
         match self.0.as_bytes().first() {
-            Some(b'"') => crate::html::escape(out, &unescape(self.0)),
-            _ if self.0 != "null" => crate::html::escape(out, self.0),
+            Some(b'"') => crate::contexts::escape(out, &unescape(self.0)),
+            _ if self.0 != "null" => crate::contexts::escape(out, self.0),
             _ => {}
         }
     }
@@ -342,14 +365,7 @@ pub fn js_attr(out: &mut String, name: &str, v: Js<'_>) {
             if !s.is_empty() {
                 s.push(';');
             }
-            for c in k.chars() {
-                if c.is_ascii_uppercase() && !k.starts_with("--") {
-                    s.push('-');
-                    s.push(c.to_ascii_lowercase());
-                } else {
-                    s.push(c);
-                }
-            }
+            css_property(&mut s, &k);
             s.push(':');
             x.raw(&mut s);
         }
@@ -359,14 +375,30 @@ pub fn js_attr(out: &mut String, name: &str, v: Js<'_>) {
     out.push(' ');
     out.push_str(name);
     out.push_str("=\"");
-    crate::html::escape(out, &s);
+    let start = out.len();
+    crate::contexts::escape(out, &s);
+    crate::contexts::guard_attr(out, name, start);
     out.push('"');
 }
 
-/// `{:...attrs}`'s first paint: each key an attribute (see `js_attr`), but
-/// the `on…` ones, which are the browser's listeners. Pairs of a name and a
-/// value too.
-pub fn js_attrs(out: &mut String, v: Js<'_>) {
+/// A `style` object's key as a CSS property: `fontSize` is `font-size`;
+/// a custom property (`--x`) stays as it is.
+fn css_property(out: &mut String, key: &str) {
+    for c in key.chars() {
+        if c.is_ascii_uppercase() && !key.starts_with("--") {
+            out.push('-');
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+}
+
+/// `{:...attrs}`'s first paint on a `tag` ("" when the browser's code
+/// chooses it): each key an attribute (see `js_attr`), but the `on…` ones,
+/// which are the browser's listeners, and the others no value may set
+/// (`contexts::holds_script`). Pairs of a name and a value too.
+pub fn js_attrs(out: &mut String, tag: &str, v: Js<'_>) {
     // A component's `...rest` comes as `[name, value]` pairs.
     let pairs = v.items().filter_map(|p| {
         let mut i = p.items();
@@ -376,7 +408,7 @@ pub fn js_attrs(out: &mut String, v: Js<'_>) {
         Some((Cow::Owned(name), x))
     });
     for (k, x) in v.entries().chain(pairs) {
-        let ok = !k.starts_with("on")
+        let ok = crate::contexts::holds_script(tag, &k).is_none()
             && !k.is_empty()
             && k.bytes()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b':' | b'.'));
@@ -529,7 +561,7 @@ pub const fn same_version(build: &str) -> bool {
 }
 
 /// A JSON string, safe in a `<script>` and (HTML-escaped) in an attribute.
-/// As in `html::escape`, text with nothing to escape (the usual case) is
+/// As in `contexts::escape`, text with nothing to escape (the usual case) is
 /// not looked at a byte at a time: 16 bytes at once in a loop the compiler
 /// makes a few vector compares, then 8 in a word (SWAR), then the last few.
 /// 2.5x (short) to 7x (long) the speed of a loop over the characters.
@@ -542,10 +574,10 @@ fn string(out: &mut String, s: &str) {
     for chunk in b.as_chunks::<16>().0 {
         let mut hit = 0u8;
         for &c in chunk {
-            hit |= special(c) as u8;
+            hit |= script_special(c) as u8;
         }
         if hit != 0 {
-            escape(out, s, &mut done, i, i + 16);
+            script_escape(out, s, &mut done, i, i + 16);
         }
         i += 16;
     }
@@ -557,27 +589,31 @@ fn string(out: &mut String, s: &str) {
             | eq(x, b'\\')
             | eq(x, 0xe2);
         if hit != 0 {
-            escape(out, s, &mut done, i, i + 8);
+            script_escape(out, s, &mut done, i, i + 8);
         }
         i += 8;
     }
-    escape(out, s, &mut done, i, b.len());
+    script_escape(out, s, &mut done, i, b.len());
     out.push_str(&s[done..]);
     out.push('"');
 }
 
-/// A byte that may need escaping in a JSON string: a control, `"`, `\`,
-/// `<`, `>`, `&`, or the first of U+2028 or U+2029 (which end a line in
-/// older JavaScript). `"` and `&` differ only in bit 2, `<` and `>` only in
-/// bit 1.
+/// A byte that may need escaping in a JSON string in a `<script>`: a
+/// control, `"`, `\`, `<`, `>`, `&`, or the first of U+2028 or U+2029
+/// (which end a line in older JavaScript). `"` and `&` differ only in bit
+/// 2, `<` and `>` only in bit 1. (`string`'s eight-at-a-time test is the
+/// same set.)
 #[inline(always)]
-fn special(c: u8) -> bool {
+fn script_special(c: u8) -> bool {
     (c < 0x20) | ((c | 4) == b'&') | ((c | 2) == b'>') | (c == b'\\') | (c == 0xe2)
 }
 
-/// Escapes `s[from..to]`, appending what precedes each escaped byte first.
+/// Escapes `s[from..to]` for a JSON string in a `<script>` (which, then
+/// HTML-escaped, is safe in an attribute too), appending what precedes
+/// each escaped byte first. `<`, `>` and `&` are `<`..., so no
+/// `</script>` or `<!--` can be in it.
 #[inline(always)]
-fn escape(out: &mut String, s: &str, done: &mut usize, from: usize, to: usize) {
+fn script_escape(out: &mut String, s: &str, done: &mut usize, from: usize, to: usize) {
     let b = s.as_bytes();
     for i in from..to {
         let (esc, len) = match b[i] {
@@ -942,6 +978,264 @@ mod tests {
         assert_eq!(Js("5").items().count(), 0);
     }
 
+    /// What a hand-written `Json` impl might get wrong: read without a
+    /// panic or a loop (`[1:2]` once never ended, `{"a"` sliced past its end).
+    #[test]
+    fn first_paint_survives_what_is_not_json() {
+        use crate::fuzz::{Rng, mutate};
+        let walk = |j: &str| {
+            let v = Js(j);
+            let _ = (
+                v.get("a"),
+                v.length(),
+                v.items().count(),
+                v.entries().count(),
+            );
+            let mut s = String::new();
+            for name in ["class", "style", "href", "title"] {
+                js_attr(&mut s, name, v);
+            }
+            js_attrs(&mut s, "", v);
+            v.text(&mut s);
+            v.raw(&mut s);
+            tag_name(&mut s, v);
+        };
+        for bad in [
+            "{\"",
+            "{\"a\"",
+            "{\"a\":",
+            "{\"a\"\u{e9}:1}",
+            "[1:2]",
+            "{\"a\"x:1}",
+            "[",
+            "{",
+            "\"\\",
+            "{\"a\":1:\"b\":2}",
+            "[\"\\",
+            "{\"\\u12",
+            "[,]",
+            "{:}",
+            "\"\\ud800\"",
+        ] {
+            walk(bad);
+        }
+        assert_eq!(Js("[1:2]").items().count(), 1);
+        assert_eq!(Js("{\"a\"").get("a").0, "null");
+        let mut m = BTreeMap::new();
+        m.insert("a", (vec!["x\"<é", "\\"], Some(1.5f64), [true, false]));
+        m.insert("class", (vec!["b"], None, [false, true]));
+        let good = to_json(&m);
+        let mut rng = Rng::new(3);
+        for _ in 0..20_000 {
+            let mut b = good.clone().into_bytes();
+            mutate(&mut rng, &mut b);
+            if let Ok(j) = String::from_utf8(b) {
+                walk(&j);
+            }
+        }
+    }
+
+    /// `href={:x}` and the like, painted first: a value that would run
+    /// script is blocked, as `href={x}` blocks it.
+    #[test]
+    fn first_paint_blocks_script_urls() {
+        let paint = |name: &str, json: &str| {
+            let mut s = String::new();
+            js_attr(&mut s, name, Js(json));
+            s
+        };
+        for (name, json) in [
+            ("href", "\"javascript:alert(1)\""),
+            ("src", "\" \\u0001JavaScript:x\""),
+            ("formaction", "\"java\\tscript:x\""),
+            ("xlink:href", "\"vbscript:x\""),
+            ("HREF", "\"javascript:x\""),
+        ] {
+            assert_eq!(
+                paint(name, json),
+                format!(" {name}=\"about:invalid#blocked\""),
+                "{json}"
+            );
+        }
+        assert_eq!(
+            paint("href", "\"/a?b=javascript:c\""),
+            " href=\"/a?b=javascript:c\""
+        );
+        assert_eq!(
+            paint("title", "\"javascript:x\""),
+            " title=\"javascript:x\""
+        );
+        assert_eq!(paint("href", "null"), "");
+        let mut s = String::new();
+        js_attrs(&mut s, "a", Js("{\"href\":\"javascript:x\",\"id\":\"a\"}"));
+        assert_eq!(s, " href=\"about:invalid#blocked\" id=\"a\"");
+        // Script in any case, a document, a refresh: left out.
+        let held = r#"{"ONCLICK":"x","srcdoc":"<b>","content":"0;url=javascript:x","http-equiv":"refresh","id":"a"}"#;
+        let mut s = String::new();
+        js_attrs(&mut s, "meta", Js(held));
+        assert_eq!(s, " id=\"a\"");
+        let mut s = String::new();
+        js_attrs(&mut s, "div", Js(held));
+        assert_eq!(
+            s,
+            " content=\"0;url=javascript:x\" http-equiv=\"refresh\" id=\"a\""
+        );
+    }
+
+    /// The first paint of `class`, `style` and URL attributes against what
+    /// live.js sets, for the values where JavaScript and JSON differ most
+    /// (0, "", null, false, true, nesting). Run by Node when there is one;
+    /// skipped quietly otherwise. Also checks that the minified runtime parses.
+    #[test]
+    fn first_paint_matches_the_browser_runtime() {
+        let source = wisp_shared::LIVE_JS.replace("\r\n", "\n");
+        let from = source.find("// What watchers write.").unwrap();
+        let attr = source[from..].find("function attr(").unwrap() + from;
+        let to = source[attr..].find("\n}\n").unwrap() + attr + 3;
+        let cases: &[(&str, &str)] = &[
+            (
+                "class",
+                "[0,\"\",null,false,true,\"a\",[\"b\",0,[\"\"]],{\"c\":0,\"d\":1,\"e\":\"\",\"f\":[]},5]",
+            ),
+            ("class", "{\"x\":true,\"y\":null,\"z\":\"0\"}"),
+            ("class", "0"),
+            ("class", "\"\""),
+            ("class", "true"),
+            ("class", "[]"),
+            (
+                "style",
+                "{\"color\":\"red\",\"fontSize\":\"2em\",\"--x\":0,\"a\":null,\"b\":false,\"c\":\"\"}",
+            ),
+            ("style", "\"color: red\""),
+            ("title", "0"),
+            ("title", "false"),
+            ("title", "true"),
+            ("title", "null"),
+            ("aria-hidden", "false"),
+            ("href", "\"javascript:alert(1)\""),
+            ("href", "\" \\u0001java\\nscript:x\""),
+            ("href", "\"https://a.b/?javascript:x\""),
+            ("src", "\"VBScript:x\""),
+        ];
+        let helpers = source.find("const str = ").unwrap();
+        let helpers =
+            &source[helpers..source[helpers..].find("// The root's listener").unwrap() + helpers];
+        let mut js = String::from("const X = {};\n");
+        js.push_str(helpers);
+        js.push_str(&source[from..to]);
+        js.push_str("\nfor (const [a, j] of ");
+        let list: Vec<(&str, &str)> = cases.to_vec();
+        list.json(&mut js);
+        js.push_str(
+            ") { let r = null; const el = { setAttribute: (n, v) => (r = v), removeAttribute: () => (r = null) };\n\
+             attr(JSON.parse(j), true, el, a); console.log(r == null ? '-' : '+' + encodeURIComponent(r)); }\n",
+        );
+        let run = std::process::Command::new("node")
+            .args(["-e", &js])
+            .output();
+        let Ok(run) = run else {
+            return; // no Node here
+        };
+        assert!(
+            run.status.success(),
+            "{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        let out = String::from_utf8(run.stdout).unwrap();
+        for ((name, json), line) in cases.iter().zip(out.lines()) {
+            let browser = line
+                .strip_prefix('+')
+                .map(|v| crate::cx::decode(v.as_bytes(), false).into_owned());
+            let mut s = String::new();
+            js_attr(&mut s, name, Js(json));
+            let server = s.strip_prefix(&format!(" {name}")).map(|v| {
+                let v = v
+                    .strip_prefix("=\"")
+                    .and_then(|v| v.strip_suffix('"'))
+                    .unwrap_or(v);
+                v.replace("&quot;", "\"")
+                    .replace("&#39;", "'")
+                    .replace("&lt;", "<")
+                    .replace("&gt;", ">")
+                    .replace("&amp;", "&")
+            });
+            assert_eq!(server, browser, "{name}={json}");
+        }
+        assert_eq!(out.lines().count(), cases.len());
+    }
+
+    /// JSON values and whether JavaScript counts them as true.
+    const TRUTHY: &[(&str, bool)] = &[
+        ("null", false),
+        ("false", false),
+        ("0", false),
+        ("-0", false),
+        ("0.0", false),
+        ("0e5", false),
+        ("\"\"", false),
+        ("true", true),
+        ("1", true),
+        ("-1.5", true),
+        ("\"0\"", true),
+        ("\"false\"", true),
+        ("[]", true),
+        ("{}", true),
+    ];
+
+    /// `Js::truthy` against the table, and the table against JavaScript's
+    /// own truthiness and live.js's `class` names (run by Node when there
+    /// is one; skipped quietly otherwise).
+    #[test]
+    fn truthy_as_javascript() {
+        for &(json, want) in TRUTHY {
+            assert_eq!(Js(json).truthy(), want, "{json}");
+        }
+        let source = wisp_shared::LIVE_JS.replace("\r\n", "\n");
+        let helpers = source.find("const str = ").unwrap();
+        let end = source[helpers..].find("// The root's listener").unwrap() + helpers;
+        let mut js = String::from("const X = {};\n");
+        js.push_str(&source[helpers..end]);
+        js.push_str("\nfor (const j of ");
+        let list: Vec<&str> = TRUTHY.iter().map(|t| t.0).collect();
+        list.json(&mut js);
+        js.push_str(") { const v = JSON.parse(j); console.log(String(!!v), cls({ a: v })); }\n");
+        let Ok(run) = std::process::Command::new("node")
+            .args(["-e", &js])
+            .output()
+        else {
+            return; // no Node here
+        };
+        assert!(
+            run.status.success(),
+            "{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        let out = String::from_utf8(run.stdout).unwrap();
+        let mut lines = out.lines();
+        for &(json, want) in TRUTHY {
+            let class = if want { "a" } else { "" };
+            assert_eq!(lines.next(), Some(&*format!("{want} {class}")), "{json}");
+        }
+        assert_eq!(lines.next(), None);
+    }
+
+    #[test]
+    fn script_strings() {
+        let s = "a\"\\\n\r\t<>&\u{1}\u{2028}\u{2029}\u{2027}é";
+        let mut out = String::new();
+        let mut done = 0;
+        script_escape(&mut out, s, &mut done, 0, s.len());
+        out.push_str(&s[done..]);
+        assert_eq!(
+            out,
+            "a\\\"\\\\\\n\\r\\t\\u003c\\u003e\\u0026\\u0001\\u2028\\u2029\u{2027}é"
+        );
+        for c in 0..=255u8 {
+            let plain = c >= 0x20 && !matches!(c, b'"' | b'\\' | b'<' | b'>' | b'&' | 0xe2);
+            assert_eq!(script_special(c), !plain, "{c}");
+        }
+    }
+
     #[test]
     fn versions() {
         assert!(same_version(RUNTIME_VERSION));
@@ -969,7 +1263,7 @@ mod tests {
         let mut out = Out::default();
         assert_eq!(tail_of(&out), "");
         // B renders inside the first A; the second A comes after both.
-        for (m, blob, ends) in [(&A, "{}]", 0), (&B, "{\"x\":1}]", 2), (&A, "{}]", 1)] {
+        for (m, blob, ends) in [(&A, "{}", 0), (&B, "{\"x\":1}", 2), (&A, "{}", 1)] {
             let (_, b) = live(&mut out, m);
             b.push_str(blob);
             for _ in 0..ends {
@@ -995,9 +1289,9 @@ mod tests {
         // An island and what renders inside it wait, and nothing loads the
         // runtime or preloads their module; `client:none` sends nothing.
         for (how, m, blob, ends) in [
-            (Some("v"), &A, "{}]", 0),
-            (None, &B, "{}]", 2),
-            (Some("n"), &B, "{\"secret\":1}]", 1),
+            (Some("v"), &A, "{}", 0),
+            (None, &B, "{}", 2),
+            (Some("n"), &B, "{\"secret\":1}", 1),
         ] {
             if let Some(h) = how {
                 live_how(&mut out, h);
@@ -1010,7 +1304,7 @@ mod tests {
         }
         let tail = tail_of(&out);
         assert!(
-            tail.contains("\"i\":[[0,\"t1\",-1,\"v\",{}],[1,\"t2\",0,{}]]}</script>")
+            tail.contains("\"i\":[[0,\"t1\",-1,{},\"v\"],[1,\"t2\",0,{}]]}</script>")
                 && !tail.contains("secret")
                 && !tail.contains("modulepreload")
                 && !tail.contains("live.js"),

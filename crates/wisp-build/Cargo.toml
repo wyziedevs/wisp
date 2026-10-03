@@ -7,5 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+# The runtime's context rules, wire protocol and browser runtime: what a
+# build folds and writes is what the runtime does.
+[dependencies]
+wisp-shared.workspace = true
+
 [lints]
 workspace = true

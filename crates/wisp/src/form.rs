@@ -17,7 +17,7 @@ pub struct Form<'a> {
 /// with `enctype="multipart/form-data"`. Read it with `cx.form().file("photo")`.
 #[derive(Clone, Debug)]
 pub struct File<'a> {
-    /// The file's name on the visitor's machine, as their browser sent it.
+    /// The file's name on the visitor's machine, without its folders.
     /// It is visitor input: never use it as a path.
     pub name: Cow<'a, str>,
     /// As the browser sent it; `application/octet-stream` when it sent none.
@@ -107,7 +107,11 @@ impl<'a> Form<'a> {
                     return None;
                 }
                 Some(File {
-                    name: filename,
+                    name: if filename.is_empty() {
+                        Cow::Borrowed("file")
+                    } else {
+                        filename
+                    },
                     content_type: p.content_type.unwrap_or("application/octet-stream"),
                     bytes: p.data,
                 })
@@ -240,7 +244,6 @@ impl<'a> Parts<'a> {
 }
 
 /// `form-data; name="field"; filename="a.png"` → the name and file name.
-/// Browsers write `"` in either as `%22`, and a line break as `%0A`.
 fn disposition(v: &[u8]) -> (Option<Cow<'_, str>>, Option<Cow<'_, str>>) {
     let (mut name, mut filename) = (None, None);
     let mut i = v.iter().position(|&c| c == b';').unwrap_or(v.len());
@@ -282,27 +285,55 @@ fn disposition(v: &[u8]) -> (Option<Cow<'_, str>>, Option<Cow<'_, str>>) {
         if key.eq_ignore_ascii_case(b"name") {
             name = Some(unquote(value));
         } else if key.eq_ignore_ascii_case(b"filename") {
-            filename = Some(unquote(value));
+            filename = Some(base_name(unquote(value)));
         }
     }
     (name, filename)
 }
 
-/// A quoted string's text: `\x` is `x`.
+/// A quoted string's text. Browsers write `"`, CR and LF in it as `%22`,
+/// `%0D` and `%0A` (WHATWG), and only those: any other `%` is itself.
+/// Older clients write `\"` and `\\`; a `\` before anything else is itself,
+/// as in an old browser's `C:\photos\a.png`.
 fn unquote(value: &[u8]) -> Cow<'_, str> {
-    if !value.contains(&b'\\') {
+    if !value.iter().any(|&c| c == b'\\' || c == b'%') {
         return String::from_utf8_lossy(value);
     }
     let mut out = Vec::with_capacity(value.len());
     let mut k = 0;
     while k < value.len() {
-        if value[k] == b'\\' && k + 1 < value.len() {
-            k += 1;
-        }
-        out.push(value[k]);
-        k += 1;
+        let (c, n) = match (value[k], value.get(k + 1), value.get(k + 2)) {
+            (b'\\', Some(&e @ (b'"' | b'\\')), _) => (e, 2),
+            (b'%', Some(b'2'), Some(b'2')) => (b'"', 3),
+            (b'%', Some(b'0'), Some(b'd' | b'D')) => (b'\r', 3),
+            (b'%', Some(b'0'), Some(b'a' | b'A')) => (b'\n', 3),
+            (c, _, _) => (c, 1),
+        };
+        out.push(c);
+        k += n;
     }
     Cow::Owned(String::from_utf8_lossy(&out).into_owned())
+}
+
+/// A file name without the folders some clients send with it:
+/// `C:\photos\a.png` and `photos/a.png` are `a.png`. Control characters
+/// are taken out, and a name that is then empty, `.` or `..` is `file`, so
+/// one joined to a folder stays in it. Only `""` as sent stays empty: the
+/// browser's "no file chosen".
+fn base_name(name: Cow<'_, str>) -> Cow<'_, str> {
+    if name.is_empty() {
+        return name;
+    }
+    let at = name.rfind(['/', '\\']).map_or(0, |at| at + 1);
+    let clean = !name[at..].contains(char::is_control);
+    let name = match name {
+        Cow::Borrowed(s) if clean => Cow::Borrowed(&s[at..]),
+        _ => Cow::Owned(name[at..].chars().filter(|c| !c.is_control()).collect()),
+    };
+    match &*name {
+        "" | "." | ".." => Cow::Borrowed("file"),
+        _ => name,
+    }
 }
 
 /// The index of the first `\r\n--boundary` at or after `from`, as the index
@@ -383,6 +414,43 @@ b\r\n--XyZ--\r\nepilogue";
         );
         assert_eq!(f.iter().count(), 3);
         assert!(f.file("title").is_none());
+    }
+
+    #[test]
+    fn filenames_unquote_as_browsers_write_them() {
+        let ct = Some("multipart/form-data; boundary=XyZ");
+        let part = |disposition: &str| {
+            format!("--XyZ\r\nContent-Disposition: form-data; {disposition}\r\n\r\nx\r\n--XyZ--")
+        };
+        for (sent, want) in [
+            (r#"filename="a.png""#, "a.png"),
+            (r#"filename="a%22b%22.png""#, "a\"b\".png"),
+            (r#"filename="a%0D%0ab.png""#, "ab.png"),
+            (r#"filename="a	b.png""#, "ab.png"),
+            (r#"filename="..""#, "file"),
+            (r#"filename="photos/.""#, "file"),
+            (r#"filename="photos/""#, "file"),
+            (r#"filename="%0D%0A""#, "file"),
+            (r#"filename="""#, "file"),
+            (r#"filename="100%25 %41.png""#, "100%25 %41.png"),
+            (r#"filename="a%2Fb.png""#, "a%2Fb.png"),
+            (r#"filename="a \"b\".png""#, "a \"b\".png"),
+            (r#"filename="a\\b.png""#, "b.png"),
+            (r#"filename="C:\photos\a.png""#, "a.png"),
+            (r#"filename="\\server\share\a.png""#, "a.png"),
+            (r#"filename="photos/2026/a.png""#, "a.png"),
+            (r#"filename="../../etc/passwd""#, "passwd"),
+        ] {
+            let body = part(&format!("name=\"f\"; {sent}"));
+            let file = Form::new(ct, body.as_bytes()).file("f");
+            assert_eq!(file.as_ref().map(|f| f.name.as_ref()), Some(want), "{sent}");
+        }
+        let body = part(r#"name="a%22b\"c""#);
+        assert_eq!(
+            Form::new(ct, body.as_bytes()).get("a\"b\"c").as_deref(),
+            Some("x"),
+            "a field's name is unquoted the same way"
+        );
     }
 
     #[test]

@@ -1,6 +1,9 @@
 //! The test app answering in process, through `wisp::test::client`: the
 //! same parser, limits, hooks and pages as on the wire, with no server.
 
+mod common;
+
+use common::{MULTIPART, multipart};
 use wisp::test::client;
 use wisp::{Body, Request, Value};
 use wisp_test_app::Site;
@@ -221,7 +224,13 @@ fn rest_resources_filter_sort_page_and_hook() {
         "{}",
         refused.text()
     );
-    assert_eq!(app.get("/tasks").header("x-total-count"), Some("3"));
+    let list = app.get("/tasks");
+    assert_eq!(list.header("x-total-count"), Some("3"));
+    assert_eq!(
+        list.header("vary"),
+        Some("accept"),
+        "JSON or NDJSON by accept"
+    );
 
     assert_eq!(titles(&app.get("/tasks?done=true")), ["Milk"]);
     assert_eq!(titles(&app.get("/tasks?points.gte=2")), ["Tea", "Eggs"]);
@@ -416,7 +425,9 @@ fn action_forms_post_check_and_keep_input() {
     let html = long.text();
     assert_eq!(long.status, 422);
     assert!(
-        html.contains("<input name=\"text\" value=\"far &lt;too&gt; long\">"),
+        html.contains(
+            "<input name=\"text\" required minlength=\"1\" pattern=\"[\\s\\S]{0,10}\" value=\"far &lt;too&gt; long\">"
+        ),
         "{html}"
     );
     assert!(
@@ -424,7 +435,9 @@ fn action_forms_post_check_and_keep_input() {
         "{html}"
     );
     assert!(
-        html.contains("<p class=\"problem\">must have at most 10 characters</p>"),
+        html.contains(
+            "<p class=\"problem\"><small class=\"problem\">must have at most 10 characters</small></p>"
+        ),
         "{html}"
     );
     assert!(
@@ -443,4 +456,243 @@ fn action_forms_post_check_and_keep_input() {
         "{}",
         gone.text()
     );
+}
+
+/// A multipart post of one file, as a browser sends `<input type="file">`.
+fn upload(target: &str, field: &str, bytes: &[u8]) -> Request {
+    let mut req = Request::new("POST", target);
+    req.header("content-type", MULTIPART);
+    req.body = multipart(&[(field, Some("a"), bytes)]);
+    req
+}
+
+#[test]
+fn members_sign_in_and_upload_a_picture() {
+    let mut app = client::<Site>();
+    // Signed out, a members' page sends the visitor to sign in.
+    let away = app.get("/me");
+    assert_eq!(
+        (away.status, away.header("location")),
+        (303, Some("/login"))
+    );
+    // The browser checks first what it can (the server checks it all);
+    // `join` awaits without `async`, which `#[action]` adds.
+    let page = app.get("/join").text().to_string();
+    assert!(
+        page.contains("<input type=\"password\" name=\"password\" required minlength=\"8\">"),
+        "{page}"
+    );
+    let short = app.post_form("/join?/join", &[("name", "ada"), ("password", "short")]);
+    assert_eq!(short.status, 422);
+
+    let joined = app.post_form(
+        "/join?/join",
+        &[("name", "ada"), ("password", "correct horse")],
+    );
+    assert_eq!(
+        (joined.status, joined.header("location")),
+        (303, Some("/me"))
+    );
+    assert!(app.cookie("session").is_some());
+    let me = app.get("/me");
+    assert!(
+        me.status == 200 && me.text().contains("<h1>ada</h1>"),
+        "{}",
+        me.text()
+    );
+    assert!(!me.text().contains("<img"));
+
+    // An image is taken; the page shows it, and its address serves it.
+    let gif = b"GIF89a\x01\0\x01\0\0\0\0;";
+    let r = app.send(upload("/me?/avatar", "avatar", gif));
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert!(r.text().contains("<img src=\"/avatars/1\""), "{}", r.text());
+    let pic = app.get("/avatars/1");
+    assert_eq!((pic.status, pic.bytes()), (200, &gif[..]));
+    assert_eq!(pic.header("content-type"), Some("image/gif"));
+    assert_eq!(pic.header("cache-control"), Some("no-cache"));
+    let etag = pic.header("etag").unwrap().to_string();
+    app.header("if-none-match", &etag);
+    let again = app.get("/avatars/1");
+    assert_eq!((again.status, again.bytes().len()), (304, 0));
+    assert_eq!(app.get("/avatars/2").status, 404);
+
+    // Not an image, or too big: the page again, the problem by the field.
+    let svg = app.send(upload(
+        "/me?/avatar",
+        "avatar",
+        b"<svg onload=\"alert(1)\"/>",
+    ));
+    assert_eq!(svg.status, 422);
+    assert!(
+        svg.text()
+            .contains("must be a PNG, JPEG, GIF, WebP or AVIF image"),
+        "{}",
+        svg.text()
+    );
+    let big = [&gif[..], &[0; 64 * 1024]].concat();
+    let big = app.send(upload("/me?/avatar", "avatar", &big));
+    assert_eq!(big.status, 422);
+    assert!(
+        big.text().contains("must be at most 64 KB"),
+        "{}",
+        big.text()
+    );
+    let none = app.send(upload("/me?/avatar", "other", gif));
+    assert!(none.status == 422 && none.text().contains("choose an image"));
+    assert_eq!(app.get("/avatars/1").bytes(), gif, "kept as it was");
+
+    // Out, and in again with the password.
+    let left = app.post_form("/me?/leave", &[]);
+    assert_eq!(left.header("location"), Some("/"));
+    assert!(app.cookie("session").is_none());
+    assert_eq!(app.get("/me").status, 303);
+    let wrong = app.post_form("/join?/enter", &[("name", "ada"), ("password", "horse")]);
+    assert_eq!(wrong.status, 422);
+    assert!(
+        wrong.text().contains("Wrong name or password"),
+        "{}",
+        wrong.text()
+    );
+    // No such name says the same, so a sign-in tells nobody who exists.
+    let nobody = app.post_form("/join?/enter", &[("name", "bob"), ("password", "horse")]);
+    assert_eq!(nobody.status, 422);
+    assert!(nobody.text().contains("Wrong name or password"));
+    let back = app.post_form(
+        "/join?/enter",
+        &[("name", "ada"), ("password", "correct horse")],
+    );
+    assert_eq!(back.header("location"), Some("/me"));
+    assert_eq!(app.get("/me").status, 200);
+
+    // Signed out everywhere: the session it still sends, as a copy kept by
+    // someone else would be, is nobody, and signing in again holds.
+    let ended = app.post_form("/me?/everywhere", &[]);
+    assert_eq!(ended.header("location"), Some("/"));
+    assert!(app.cookie("session").is_some());
+    assert_eq!(app.get("/me").status, 303);
+    let back = app.post_form(
+        "/join?/enter",
+        &[("name", "ada"), ("password", "correct horse")],
+    );
+    assert_eq!(back.header("location"), Some("/me"));
+    assert_eq!(app.get("/me").status, 200);
+}
+
+#[test]
+fn pages_of_rows() {
+    let mut app = client::<Site>();
+    for text in ["one", "two", "three"] {
+        app.post_form("/feed?/add", &[("text", text)]);
+    }
+    let html = app.get("/feed").text().to_string();
+    assert!(
+        html.contains("<p>three</p>") && html.contains("<p>two</p>"),
+        "{html}"
+    );
+    assert!(
+        !html.contains("<p>one</p>") && !html.contains("Newer"),
+        "{html}"
+    );
+    assert!(html.contains("<a href=\"?page=2\">Older</a>"), "{html}");
+    let html = app.get("/feed?page=2").text().to_string();
+    assert!(
+        html.contains("<p>one</p>") && !html.contains("<p>two</p>"),
+        "{html}"
+    );
+    assert!(
+        html.contains("<a href=\"?page=1\">Newer</a>") && !html.contains("Older"),
+        "{html}"
+    );
+}
+
+#[test]
+fn an_email_a_browser_takes_is_taken() {
+    let mut app = client::<Site>();
+    // `<input type="email">` takes `a@b`, and Firefox sends a Unicode domain.
+    for ok in ["a@b", "a@bücher.de", "x.y+z@mail.example.org"] {
+        let r = app.post_form("/t/sugar?/join", &[("email", ok)]);
+        assert_eq!(r.status, 303, "{ok}");
+    }
+    for bad in ["a@b.", "a@-b", "a b@c", "ü@b"] {
+        let r = app.post_form("/t/sugar?/join", &[("email", bad)]);
+        assert_eq!(r.status, 422, "{bad}");
+    }
+}
+
+#[test]
+fn json_that_is_not_json_is_a_400_everywhere() {
+    let mut app = client::<Site>();
+    // An action's parameters read from a JSON body: not each one missing.
+    let action = app.post_json("/t/sugar?/join", r#"{"email":"#);
+    assert_eq!(action.status, 400, "{}", action.text());
+    assert!(action.text().contains("Invalid JSON"), "{}", action.text());
+    // `body: T` of a REST type: the same 400, and a 422 by field for JSON
+    // that is not a `T`.
+    let rest = app.post_json("/tasks", r#"{"title":"#);
+    assert_eq!(rest.status, 400);
+    assert!(
+        rest.text().contains(r#""code":"bad_request""#),
+        "{}",
+        rest.text()
+    );
+    let invalid = app.post_json("/tasks", r#"{"title":"","points":-1}"#);
+    assert_eq!(invalid.status, 422);
+    assert!(
+        invalid
+            .text()
+            .starts_with(r#"{"status":422,"code":"invalid","error":"#),
+        "{}",
+        invalid.text()
+    );
+    assert!(
+        invalid.text().contains(r#""errors":{"title":"#),
+        "{}",
+        invalid.text()
+    );
+}
+
+// The tests below write rows under a user of their own, not to `/tasks`,
+// whose rows `rest_resources_filter_sort_page_and_hook` counts.
+
+#[test]
+fn if_match_compares_strongly() {
+    let mut app = client::<Site>();
+    let made = app.post_json("/users/41/items", r#"{"name":"Tea"}"#);
+    assert_eq!(made.status, 201);
+    let at = made.header("location").unwrap().to_string();
+    let tag = app.get(&at).header("etag").unwrap().to_string();
+    app.header("if-match", &format!("W/{tag}"));
+    let weak = app.put_json(&at, r#"{"name":"Weak"}"#);
+    assert_eq!(weak.status, 412, "a weak tag promises no bytes");
+    app.header("if-match", &tag);
+    let strong = app.put_json(&at, r#"{"name":"Strong"}"#);
+    assert_eq!(strong.status, 200, "{}", strong.text());
+
+    // A PATCH of many names the type does not have is read once.
+    let mut many: String = (0..40_000).map(|i| format!("\"x{i}\":1,")).collect();
+    many = format!("{{{many}\"name\":\"Done\"}}");
+    let patched = app.patch_json(&at, &many);
+    assert_eq!(patched.status, 200);
+    assert!(patched.text().contains(r#""name":"Done""#));
+}
+
+#[test]
+fn one_visitor_never_gets_another_visitors_answer() {
+    let mut app = client::<Site>();
+    let body = r#"{"name":"Mine"}"#;
+    app.header("idempotency-key", "same");
+    app.header("cookie", "session=ann");
+    let ann = app.post_json("/users/42/items", body);
+    app.header("idempotency-key", "same");
+    app.header("cookie", "session=bob");
+    let bob = app.post_json("/users/42/items", body);
+    assert_eq!((ann.status, bob.status), (201, 201));
+    assert_eq!(bob.header("idempotent-replayed"), None);
+    assert_ne!(ann.header("location"), bob.header("location"));
+    app.header("idempotency-key", "same");
+    app.header("cookie", "session=ann");
+    let again = app.post_json("/users/42/items", body);
+    assert_eq!(again.header("idempotent-replayed"), Some("true"));
+    assert_eq!(again.text(), ann.text());
 }

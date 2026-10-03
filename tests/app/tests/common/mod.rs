@@ -136,3 +136,59 @@ pub fn header<'a>(response: &'a str, name: &str) -> Option<&'a str> {
 pub fn body(response: &str) -> &str {
     response.split_once("\r\n\r\n").map_or("", |(_, b)| b)
 }
+
+/// The content type of a `multipart` body.
+pub const MULTIPART: &str = "multipart/form-data; boundary=XX";
+
+/// A form as a browser posts it with a file input: `(name, filename, bytes)`
+/// parts, a file (said to be a PNG) where there is a filename.
+pub fn multipart(parts: &[(&str, Option<&str>, &[u8])]) -> Vec<u8> {
+    let mut b = Vec::new();
+    for (name, file, bytes) in parts {
+        let head = match file {
+            Some(f) => format!(
+                "--XX\r\ncontent-disposition: form-data; name=\"{name}\"; filename=\"{f}\"\r\ncontent-type: image/png\r\n\r\n"
+            ),
+            None => format!("--XX\r\ncontent-disposition: form-data; name=\"{name}\"\r\n\r\n"),
+        };
+        b.extend_from_slice(head.as_bytes());
+        b.extend_from_slice(bytes);
+        b.extend_from_slice(b"\r\n");
+    }
+    b.extend_from_slice(b"--XX--\r\n");
+    b
+}
+
+/// The status line and headers of the next answer, without the blank line.
+pub fn read_head(c: &mut BufReader<TcpStream>) -> String {
+    let mut head = String::new();
+    loop {
+        let mut line = String::new();
+        c.read_line(&mut line).unwrap();
+        if line == "\r\n" {
+            return head;
+        }
+        assert!(
+            !line.is_empty(),
+            "the connection closed inside a head: {head:?}"
+        );
+        head.push_str(&line);
+    }
+}
+
+/// One answer: the head, and the body if it says how long it is.
+pub fn read_answer(c: &mut BufReader<TcpStream>) -> (String, String) {
+    let head = read_head(c);
+    let len = head
+        .lines()
+        .find_map(|l| {
+            l.to_ascii_lowercase()
+                .strip_prefix("content-length: ")?
+                .parse()
+                .ok()
+        })
+        .unwrap_or(0);
+    let mut body = vec![0; len];
+    c.read_exact(&mut body).unwrap();
+    (head, String::from_utf8_lossy(&body).into_owned())
+}

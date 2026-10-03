@@ -521,9 +521,10 @@ function start() {
   if (json) json.__j = null;
   route = { id: r, params: p };
   const at = {};
-  const list = i.map(([I, id, P, ...x]) => {
-    const rec = { I, id, P, blob: x.pop(), how: x[0] };
-    rec.late = rec.how || at[P]?.late;
+  // A record: [I, module, parent, blob, how?] (protocol.rs).
+  const list = i.map(([I, id, P, blob, how]) => {
+    const rec = { I, id, P, blob, how };
+    rec.late = how || at[P]?.late;
     return (at[I] = rec);
   });
   cur = { list, at, m };
@@ -1040,6 +1041,13 @@ function toggle(v, first, el, a) {
   el.classList.toggle(a, !!v);
 }
 
+// A URL attribute whose value would run script when followed is blocked,
+// as the server blocks it (`contexts.rs`, whose tests hold this to its
+// rules): the scheme as the browser reads it, leading spaces and controls
+// dropped, tabs and newlines ignored.
+const URLS = new Set(['action', 'background', 'cite', 'data', 'formaction', 'href', 'poster', 'src', 'xlink:href']);
+const scripted = (s) => /^(javascript|vbscript):/i.test(s.replace(/^[\0- ]+/, '').replace(/[\t\n\r]/g, ''));
+
 // :attr and attr={:…}: false, null and undefined remove it; aria-* states
 // are "true" or "false". A transition plays as `hidden` turns off, and
 // before it turns on.
@@ -1047,7 +1055,9 @@ function attr(v, first, el, a, sc) {
   const aria = a.startsWith('aria-');
   if (a == 'class' && v && typeof v == 'object') v = cls(v);
   else if (a == 'style' && v && typeof v == 'object') v = css(v);
-  const s = v == null || (v === false && !aria) ? null : v === true && !aria ? '' : String(v);
+  let s = v == null || (v === false && !aria) ? null : v === true && !aria ? '' : String(v);
+  // Most values have no `:`, and need no name lowercased.
+  if (s?.includes(':') && URLS.has(a.toLowerCase()) && scripted(s)) s = 'about:invalid#blocked';
   const put = () => {
     if (s == null) el.removeAttribute(a);
     else el.setAttribute(a, s);
@@ -1064,10 +1074,10 @@ function binding(sc, inst, el, L, quiet, bnd) {
   switch (kind) {
     case 'on': {
       // b: the modifiers, as the compiler worked them out: bits (prevent 1,
-      // stop 2, once 4, self 8, capture 16, passive 32, window 64, document
-      // 128, outside 256, ctrl 512, shift 1024, alt 2048, meta 4096, and
-      // 8192 for an event the root handles), then the keys (e.key, lower
-      // case) and the debounce time.
+      // stop 2, once 4, self 8, capture 16, passive 32, window 64,
+      // document 128, outside 256, ctrl 512, shift 1024, alt 2048,
+      // meta 4096, and 8192 for an event the root handles), then the keys
+      // (e.key, lower case) and the debounce time. protocol.rs has them.
       const [, , , , keys, ms] = bnd;
       const root = b & 8192 && el.nodeType == 1;
       if (root) {
@@ -1324,7 +1334,7 @@ function lis(a) {
 // animate:flip, so a copy knows whether it has any; `waiting` the elements
 // whose client:* has not come.
 const X = {
-  ...{ Sig, node, watch, scope, end, untrack, clones, binding, range, cls, css, track, proxy, same, proxied, shared, sub, on, report },
+  ...{ Sig, node, watch, scope, end, untrack, clones, binding, range, attr, track, proxy, same, proxied, shared, sub, on, report },
   ...{ defs, instance, script, adopt, painted, place, drop, RAW, metas, sigOf, keysOf, verOf, changed, bump },
   outs: 0,
   flips: 0,

@@ -31,6 +31,13 @@ pages, layouts and components, and runs once for each place the file is shown.
 - At most one script per file.
 - `import` lines at the top are moved to the module's head, so
   `import confetti from 'https://esm.sh/canvas-confetti'` works.
+- npm packages: `wisp add canvas-confetti` pins it in `package.json`
+  (`@1.2.3` or a tag; `wisp remove x`; no Node), then `import confetti
+  from 'canvas-confetti'` (also `'pkg/sub'`, `'@scope/pkg'`), in scripts
+  and `src/lib`. Dev loads it from esm.sh; `wisp build` downloads it once
+  into `.wisp/npm` and the binary serves it from `/_app/c/npm/`: no CDN.
+  A package `package.json` lacks, or one with a range (`^1.0`) rather
+  than a version, is a build error.
 - Errors point at the real `.wisp` file and line.
 
 A `<script>` with `type` or `src` stays plain HTML, as before.
@@ -112,7 +119,7 @@ inside a block, misspelled) is a build error at its line.
 
 ```html
 <input bind:value="query" on:keydown.enter="search" on:keydown.escape="query = ''">
-<ul :hidden="!open" transition:slide hidden>…</ul>
+<ul :hidden="!open" transition:slide>…</ul>
 <div class:dark="theme === 'dark'" style:--hue="hue"></div>
 ```
 
@@ -281,8 +288,10 @@ rendered on the server with `{@render chip(x)}`.
 
 ### First paint
 
-When the server knows what a block, a component or a `{:…}` shows, it
-renders it into the page: people see it before the JavaScript loads, and
+When the server knows what a block, a component, a `{:…}` or a boolean
+attribute directive (`:hidden="!open"` with `let open = false`) shows, it
+renders it into the page (so no static `hidden` is needed next to it):
+people see it before the JavaScript loads, and
 without JavaScript at all. The browser then takes those nodes over (no
 flicker, nothing drawn twice) and keeps them live. The server knows:
 
