@@ -9,6 +9,7 @@
 pub mod base64;
 pub mod contexts;
 pub mod json;
+pub mod pattern;
 pub mod protocol;
 pub mod rng;
 pub mod rules;
