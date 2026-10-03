@@ -22,11 +22,16 @@ fn a_swap_keeps_state() {
 
     // New text, the shape the app has: its part of the page morphs in.
     let src = std::fs::read_to_string(format!("{}/{REL}", Site::ROOT)).unwrap();
-    let (t, _) = wisp_build::parse_wisp(&src.replace("Hot page", "Hotter page"), REL).unwrap();
+    let root = std::env::temp_dir().join(format!("wisp-hot-{}", std::process::id()));
+    let file = root.join(REL);
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, src.replace("Hot page", "Hotter page")).unwrap();
+    let (chunks, new, _) = wisp_build::hot_chunks(&root, REL).unwrap();
+    let _ = std::fs::remove_dir_all(&root);
     let shape = Site::TEMPLATES.iter().find(|t| t.0 == REL).unwrap().1;
-    assert_eq!(t.shape, shape, "text alone");
-    let mut body = format!("{REL}\n{shape:016x}\n{}\n", t.chunks.len());
-    for c in &t.chunks {
+    assert_eq!(new, shape, "text alone");
+    let mut body = format!("{REL}\n{shape:016x}\n{}\n", chunks.len());
+    for c in &chunks {
         body.push_str(&format!("{}\n{c}", c.len()));
     }
     let post = |path: &str, body: &str| {
