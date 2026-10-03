@@ -18,6 +18,7 @@ use wisp_shared::{contexts, protocol};
 mod bake;
 #[cfg(not(target_arch = "wasm32"))]
 mod channel;
+mod compress;
 mod cx;
 mod dev;
 #[cfg(target_arch = "wasm32")]
@@ -28,6 +29,8 @@ mod export;
 mod form;
 #[cfg(test)]
 mod fuzz;
+mod headers;
+mod health;
 mod html;
 mod http;
 mod idem;
@@ -37,11 +40,15 @@ pub mod json;
 #[cfg(not(target_arch = "wasm32"))]
 mod limit;
 mod live;
+mod otel;
 pub mod password;
 mod policy;
+mod range;
 mod rest;
 #[doc(hidden)]
 pub mod rt_traits;
+#[cfg(test)]
+mod serve_tests;
 mod session;
 mod sign;
 mod store;
@@ -49,6 +56,7 @@ mod swar;
 mod table;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod test;
+mod timeout;
 #[cfg(feature = "tower")]
 pub mod tower;
 #[cfg(target_os = "linux")]

@@ -6,8 +6,8 @@
 //! in place and every complete request in the read buffer is answered
 //! before a single write, which gives pipelining for free.
 //!
-//! Deliberately not here: TLS, HTTP/2, compression. A reverse proxy or CDN
-//! does those better.
+//! Deliberately not here: TLS, HTTP/2, compression of pages (embedded files
+//! are gzipped once, `compress.rs`). A reverse proxy or CDN does those better.
 //!
 //! The edge build (wasm32) has no sockets: it keeps `handle` and what it
 //! needs, and leaves the server out.
@@ -756,6 +756,7 @@ fn started(addr: SocketAddr) {
 /// the built-in server. Cheap to call again.
 pub(crate) fn setup<A: App>() {
     install_panic_hook();
+    crate::otel::init();
     let _ = crate::sign::ROOT.set(A::ROOT);
     if crate::settings().dev {
         dev::listed(A::ROOT, "/"); // lists `static/` now, not in the first request
@@ -2584,8 +2585,12 @@ fn answered(cx: &mut Cx, reply: &mut Reply, started: Option<Instant>, failure: O
         key.finish(reply, cx.page_headers());
     }
     cx.send_headers(&mut reply.headers);
+    crate::headers::add(reply);
     let method = cx.method.as_str();
     if let Some(started) = started {
+        crate::otel::span(cx, reply.status, started.elapsed());
+    }
+    if let Some(started) = started.filter(|_| crate::settings().dev) {
         let blocked = Some(BLOCKED.replace(Duration::ZERO)).filter(|&b| b >= BLOCKING);
         let (path, id) = (cx.path(), cx.id());
         dev::log_request(
@@ -2915,7 +2920,7 @@ fn short_path(file: &str) -> String {
 /// Whether handlers are timed, for the dev log: in dev, but not in the
 /// edge build, which has no clock to read.
 fn timed() -> bool {
-    crate::settings().dev && cfg!(not(target_arch = "wasm32"))
+    (crate::settings().dev || crate::otel::on()) && cfg!(not(target_arch = "wasm32"))
 }
 
 /// Runs a handler future, turning a panic into a 500 so one bad request
@@ -2932,6 +2937,7 @@ async fn catch_made<F: Future<Output = crate::Result<()>>>(
 ) -> crate::Result<()> {
     let mut f = std::pin::pin!(make());
     let timed = timed();
+    let mut late = crate::timeout::Late::new();
     std::future::poll_fn(move |cx| {
         let began = timed.then(Instant::now);
         IN_HANDLER.set(true);
@@ -2940,7 +2946,11 @@ async fn catch_made<F: Future<Output = crate::Result<()>>>(
         if let Some(began) = began {
             BLOCKED.set(BLOCKED.get().max(began.elapsed()));
         }
-        polled.unwrap_or_else(|panic| Poll::Ready(Err(panicked(panic))))
+        let polled = polled.unwrap_or_else(|panic| Poll::Ready(Err(panicked(panic))));
+        if polled.is_pending() && late.over(cx) {
+            return Poll::Ready(Err(crate::timeout::error()));
+        }
+        polled
     })
     .await
 }
@@ -2997,6 +3007,10 @@ fn internal<A: App>(cx: &Cx, path: &str, reply: &mut Reply) -> bool {
         "/_wisp/openapi.json" if docs => (A::openapi().as_bytes(), "json", None),
         "/_wisp/client.ts" if docs => (A::client_ts().as_bytes(), "txt", None),
         "/_wisp/docs" if docs => (api_docs(), "html", None),
+        crate::health::PATH if get => {
+            crate::health::answer(reply);
+            return true;
+        }
         _ if s.dev && path.starts_with("/_wisp/") => {
             let (status, msg) = dev::endpoint::<A>(cx.method, path, cx.body(), cx.peer());
             reply.set_plain(status, msg);
@@ -3071,6 +3085,9 @@ fn send_file(reply: &mut Reply, cx: &Cx, body: Body, ext: &str, etag: Option<&'s
         reply.headers.clear(); // a 304 describes the file it did not send
     } else {
         reply.set(200, mime(ext), body);
+        if !crate::range::apply(cx, reply, etag) {
+            crate::compress::apply(cx, reply);
+        }
     }
     if let Some(tag) = etag {
         reply
