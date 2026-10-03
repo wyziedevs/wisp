@@ -107,6 +107,9 @@ pub const LIVE_JS_PATH: &str = app_path!("live.js");
 pub const EXTRA_JS_PATH: &str = app_path!("c/extra.js");
 /// The app's CSS (`src/app.css`, or what Tailwind built of it).
 pub const APP_CSS_PATH: &str = app_path!("app.css");
+/// A dev build's scoped `<style>`s, from the project root: served after
+/// the app's CSS at `APP_CSS_PATH` (a release build embeds both).
+pub const SCOPED_CSS: &str = ".wisp/scoped.css";
 
 #[cfg(test)]
 mod tests {

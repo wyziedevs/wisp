@@ -151,6 +151,11 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
 | `<slot />` or `{@render children()}` | layout/component slot |
 | `cx` | the request (`&Cx`) in pages, layouts, error pages |
 
+`<style>h1 { color: red }</style>` (no attributes, top level) styles this
+file's elements only: each gets a `w-xxxxxx` class, each selector's last
+compound too. `:global(body)` opts out; `<style global>` stays as written.
+The CSS joins `/_app/app.css`. `@import` goes in `src/app.css`.
+
 Holes can't go in `on*` attrs, tag names, `javascript:` URLs, SVG
 `<animate>`/`<set>` `to`/`from`/`values`/`by`, or `<meta http-equiv>`/refresh
 `content`, in any case; nor can `{:…}`/`:attr`, and `{:...obj}` leaves

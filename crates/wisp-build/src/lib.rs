@@ -16,6 +16,7 @@ pub mod rules;
 pub mod rust_scan;
 mod shell;
 mod stories;
+pub mod style;
 pub mod template;
 mod ty;
 
@@ -61,7 +62,14 @@ pub fn run() {
         root: &root,
         release,
     }) {
-        Ok(code) => write_if_changed(&out_dir.join("wisp.rs"), &code),
+        Ok((code, styles)) => {
+            write_if_changed(&out_dir.join("wisp.rs"), &code);
+            // A dev build serves the scoped CSS from here, which `wisp dev`
+            // rewrites when a template changes (see `write_styles`).
+            if !release && let Err(e) = save_styles(&root, &styles) {
+                println!("cargo::warning={e}");
+            }
+        }
         Err(e) => {
             eprintln!("\nwisp: {e}\n");
             std::process::exit(1);
@@ -139,17 +147,19 @@ pub fn hot_chunks(root: &Path, rel: &str) -> Result<(Vec<String>, u64), String> 
         |_| Vec::new(),
         |i| rules::fields(&i, &params, &shared_types(root)),
     );
-    let (t, _) = parse_markup(&markup, rust, &fields).map_err(|e| format!("{rel}:{e}"))?;
+    let (t, _) = parse_markup(&markup, rust, &fields, rel).map_err(|e| format!("{rel}:{e}"))?;
     Ok((t.chunks, t.shape))
 }
 
 /// A `.wisp` file parsed: its template, and the Rust of its `---` block if
 /// it has one, as long as the file (the markup blanked, so every line of
 /// Rust is on its line in the file). The block's text is part of the shape:
-/// changing it means compiling again. Errors are `line:col: msg`.
-pub fn parse_wisp(src: &str) -> Result<(template::Template, Option<String>), String> {
+/// changing it means compiling again. `rel` is its path from the project
+/// root, which names its scoped `<style>`'s class. Errors are
+/// `line:col: msg`.
+pub fn parse_wisp(src: &str, rel: &str) -> Result<(template::Template, Option<String>), String> {
     let (rust, markup) = split_front(src)?;
-    parse_markup(&markup, rust, &[])
+    parse_markup(&markup, rust, &[], rel)
 }
 
 /// The markup of a `.wisp` file `split_front` split, parsed: the fields of
@@ -159,12 +169,90 @@ pub(crate) fn parse_markup(
     markup: &str,
     rust: Option<String>,
     fields: &[rules::Field],
+    rel: &str,
 ) -> Result<(template::Template, Option<String>), String> {
-    let mut t = template::parse_with(markup, fields).map_err(|e| e.to_string())?;
+    let class = style::class(rel);
+    let mut t = template::parse_with(markup, fields, &class).map_err(|e| e.to_string())?;
     if let Some(r) = &rust {
         t.shape ^= fnv1a(r.as_bytes()).rotate_left(1);
     }
     Ok((t, rust))
+}
+
+/// The scoped `<style>`s of the templates, `(path, css)`, in path order:
+/// the same text from the build and from `wisp dev`.
+pub(crate) fn join_styles(mut styles: Vec<(&str, &str)>) -> String {
+    styles.sort_unstable();
+    let css: Vec<&str> = styles.iter().map(|s| s.1).collect();
+    css.join("\n")
+}
+
+/// For `wisp dev`, after a template changed: the scoped CSS of every
+/// `.wisp` file in `src`, written to `protocol::SCOPED_CSS`. Returns whether it
+/// changed, and whether there is any; a file that does not parse is left
+/// out (the build says what is wrong).
+pub fn write_styles(root: &Path) -> Result<(bool, bool), String> {
+    let mut files = Vec::new();
+    for dir in ["routes", "components"] {
+        wisp_files(&root.join("src").join(dir), dir == "routes", &mut files, 0);
+    }
+    let mut found = Vec::new();
+    for f in &files {
+        let rel = f
+            .strip_prefix(root)
+            .unwrap_or(f)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if let Ok((t, _)) = read_source(f)
+            .map_err(|e| e.to_string())
+            .and_then(|s| parse_wisp(&s, &rel))
+        {
+            found.extend(t.style.map(|s| (rel, s)));
+        }
+    }
+    let css = join_styles(
+        found
+            .iter()
+            .map(|(r, s)| (r.as_str(), s.as_str()))
+            .collect(),
+    );
+    let old = fs::read_to_string(root.join(protocol::SCOPED_CSS)).unwrap_or_default();
+    if old != css {
+        save_styles(root, &css)?;
+    }
+    Ok((old != css, !css.is_empty()))
+}
+
+fn wisp_files(dir: &Path, routes: bool, out: &mut Vec<PathBuf>, depth: usize) {
+    for e in fs::read_dir(dir).into_iter().flatten().flatten() {
+        let p = e.path();
+        if p.is_dir() && depth < 32 {
+            wisp_files(&p, routes, out, depth + 1);
+        } else {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.ends_with(".wisp")
+                && !routes::editor_temp(&name)
+                && (!routes || name.starts_with('+'))
+            {
+                out.push(p);
+            }
+        }
+    }
+}
+
+/// Writes `protocol::SCOPED_CSS` when it would change (an empty one only over one
+/// there).
+fn save_styles(root: &Path, css: &str) -> Result<(), String> {
+    let path = root.join(protocol::SCOPED_CSS);
+    if css.is_empty() && !path.exists() {
+        return Ok(());
+    }
+    if fs::read(&path).is_ok_and(|old| old == css.as_bytes()) {
+        return Ok(());
+    }
+    fs::create_dir_all(root.join(".wisp"))
+        .and_then(|()| fs::write(&path, css))
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// The types the app's own modules (`src/*.rs`) define, in name order (so

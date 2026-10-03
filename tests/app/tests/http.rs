@@ -45,6 +45,33 @@ fn saved_tables_survive_a_crash() {
     assert!(dir.join("note.log").exists());
 }
 
+/// A page's `<style>` is its own: its elements get its class, a
+/// component's do not, and the CSS is in `/_app/app.css`.
+#[test]
+fn scoped_styles() {
+    let s = start();
+    let page = s.request("GET", "/styled", "", b"");
+    let at = page.find("<h1 class=\"").expect("a class") + 11;
+    let class = &page[at..at + 8];
+    assert!(class.starts_with("w-"), "{page}");
+    assert!(
+        page.contains(&format!("<p class=\"lead {class}\">")),
+        "{page}"
+    );
+    assert!(page.contains("<span class=\"badge\">kept</span>"), "{page}");
+    assert!(
+        page.contains("<link rel=\"stylesheet\" href=\"/_app/app.css?v="),
+        "{page}"
+    );
+    assert!(!page.contains("<style"), "{page}");
+    let css = body(&s.request("GET", "/_app/app.css", "", b"")).to_string();
+    assert!(
+        css.contains(&format!("h1.{class}, .lead.{class} {{")),
+        "{css}"
+    );
+    assert!(css.contains("body { margin: 0 }"), "{css}");
+}
+
 #[test]
 fn hooks_and_state() {
     let s = start();

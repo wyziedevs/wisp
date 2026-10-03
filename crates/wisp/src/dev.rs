@@ -277,26 +277,43 @@ fn color() -> bool {
 }
 
 /// A file for `path` from the project directory: `/_app/app.css` is the
-/// built CSS (or `src/app.css`), anything else comes from `static/`.
+/// built CSS (or `src/app.css`) and then the scoped styles, anything else
+/// comes from `static/`.
 pub(crate) fn read_file(root: &str, path: &str) -> Option<(Vec<u8>, String)> {
     let root = Path::new(root);
-    let file = if path == crate::protocol::APP_CSS_PATH {
-        let built = root.join(".wisp").join("app.css");
-        if built.is_file() {
-            built
-        } else {
-            root.join("src").join("app.css")
-        }
-    } else {
-        root.join("static")
-            .join(crate::http::safe_relative_path(path)?)
-    };
+    if path == crate::protocol::APP_CSS_PATH {
+        return app_css(root).map(|css| (css, "css".into()));
+    }
+    let file = (root.join("static")).join(crate::http::safe_relative_path(path)?);
     let bytes = std::fs::read(&file).ok()?; // also fails for directories
     let ext = file
         .extension()
         .map(|e| e.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default();
     Some((bytes, ext))
+}
+
+/// The built CSS (or `src/app.css`), then the scoped styles; `None`
+/// without either.
+fn app_css(root: &Path) -> Option<Vec<u8>> {
+    let built = root.join(".wisp").join("app.css");
+    let app = std::fs::read(if built.is_file() {
+        built
+    } else {
+        root.join("src").join("app.css")
+    });
+    let scoped = std::fs::read(root.join(crate::protocol::SCOPED_CSS));
+    if app.is_err() && scoped.is_err() {
+        return None;
+    }
+    let mut css = app.unwrap_or_default();
+    if let Some(s) = scoped.ok().filter(|s| !s.is_empty()) {
+        if !css.is_empty() {
+            css.push(b'\n');
+        }
+        css.extend_from_slice(&s);
+    }
+    Some(css)
 }
 
 /// Whether `static/` had a file at `path` (a decoded URL path) when first

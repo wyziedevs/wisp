@@ -36,7 +36,7 @@ pub fn check_file(rel: &str, src: &str, comps: Option<&[Component]>) -> Option<D
         Err(e) => return fail(e),
     };
     let block = rust.clone();
-    let (t, _) = match crate::parse_markup(&markup, rust, &[]) {
+    let (t, _) = match crate::parse_markup(&markup, rust, &[], rel) {
         Ok(x) => x,
         Err(e) => return fail(e),
     };

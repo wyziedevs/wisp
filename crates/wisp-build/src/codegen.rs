@@ -493,25 +493,32 @@ fn with_lets(stmts: Option<String>, lets: &[(String, u32)]) -> Option<String> {
     Some(lines.join("\n"))
 }
 
-pub fn generate(input: &Input) -> Result<String, String> {
-    generate_all(input).map(|(code, _)| code)
+/// The generated Rust, and the scoped CSS of its templates.
+pub fn generate(input: &Input) -> Result<(String, String), String> {
+    generate_web(input).map(|o| (o.code, o.styles))
 }
 
 /// The generated Rust, and the TypeScript client of the app's endpoints
 /// (empty without any). The app is read phase by phase, each finding what
 /// the next needs, then written out.
 pub fn generate_all(input: &Input) -> Result<(String, String), String> {
-    generate_web(input).map(|(code, client, _)| (code, client))
+    generate_web(input).map(|o| (o.code, o.client))
 }
 
 /// [`generate`] for `wisp check`, and what the app's browser code imports
 /// of its npm packages, as esm.sh paths (for `wisp build` to download).
 pub fn check(input: &Input) -> Result<Vec<String>, String> {
-    let (_, _, web) = generate_web(input)?;
-    Ok(web.imports(npm::ESM))
+    Ok(generate_web(input)?.web.imports(npm::ESM))
 }
 
-fn generate_web(input: &Input) -> Result<(String, String, Web), String> {
+struct Output {
+    code: String,
+    client: String,
+    web: Web,
+    styles: String,
+}
+
+fn generate_web(input: &Input) -> Result<Output, String> {
     let p = Project::load(input)?;
     let web = p.browser()?;
     let mut g = Gen {
@@ -522,7 +529,12 @@ fn generate_web(input: &Input) -> Result<(String, String, Web), String> {
     g.servers(&p);
     let assets = g.assets(&p)?;
     let client = g.app(&p, &web, &assets)?;
-    Ok((g.out, client, web))
+    Ok(Output {
+        code: g.out,
+        client,
+        web,
+        styles: p.styles(),
+    })
 }
 
 /// The app, as far as it has been read.
@@ -630,6 +642,15 @@ impl<'a> Project<'a> {
             .replace('\\', "/")
     }
 
+    /// The scoped `<style>`s of every template, for `/_app/app.css`.
+    fn styles(&self) -> String {
+        crate::join_styles(
+            (self.templates.iter())
+                .filter_map(|t| Some((t.rel.as_str(), t.t.style.as_deref()?)))
+                .collect(),
+        )
+    }
+
     fn read(&self, p: &Path) -> Result<String, String> {
         crate::read_source(p).map_err(|e| format!("{}: {e}", p.display()))
     }
@@ -652,7 +673,7 @@ impl<'a> Project<'a> {
         fields: &[rules::Field],
     ) -> Result<(Template, Option<String>), String> {
         let at = |e: String| format!("{}:{e}", self.rel(p));
-        let (t, rust) = crate::parse_markup(markup, front, fields).map_err(at)?;
+        let (t, rust) = crate::parse_markup(markup, front, fields, &self.rel(p)).map_err(at)?;
         if let Some((_, line)) = t.props {
             return Err(at(format!(
                 "{line}: only components, in src/components, take props"
@@ -787,7 +808,7 @@ impl<'a> Project<'a> {
                 ));
             }
             let (mut t, rust) =
-                crate::parse_wisp(&self.read(&file)?).map_err(|e| format!("{rel}:{e}"))?;
+                crate::parse_wisp(&self.read(&file)?, &rel).map_err(|e| format!("{rel}:{e}"))?;
             if rust.is_some() {
                 return Err(format!(
                     "{rel}: a component takes what it shows as {{@props …}}; a `---` block of Rust is for pages and layouts"
@@ -882,8 +903,8 @@ impl<'a> Project<'a> {
                 note: String::new(),
             };
             for s in list {
-                let (mut t, _) =
-                    crate::parse_markup(&s.markup, None, &[]).map_err(|e| format!("{rel}:{e}"))?;
+                let (mut t, _) = crate::parse_markup(&s.markup, None, &[], &rel)
+                    .map_err(|e| format!("{rel}:{e}"))?;
                 let values = stories::wire(&mut t.nodes, &name, &decls, fill);
                 let module = format!("tpl_story_{}", self.templates.len());
                 self.add_tpl(module, &file, Kind::Story, t);
@@ -1756,22 +1777,33 @@ impl Gen {
         }
     }
 
-    /// The CSS, and in a release build the static files, embedded.
+    /// The CSS, and in a release build the static files, embedded. The
+    /// scoped `<style>`s go after the app's CSS: in a release build in the
+    /// binary, in dev in `.wisp/scoped.css` (see `run`), read with it.
     fn assets(&mut self, p: &Project) -> Result<Assets, String> {
         let css = css_source(p.root)?;
+        let styles = p.styles();
         let mut files: Vec<(String, PathBuf, String)> = Vec::new();
-        let css_hash = match &css {
-            Some(f) => Some(format!(
-                "{:016x}",
-                fnv1a(&fs::read(f).map_err(|e| format!("{}: {e}", f.display()))?)
-            )),
-            None => None,
+        let mut text = match &css {
+            Some(f) => fs::read(f).map_err(|e| format!("{}: {e}", f.display()))?,
+            None => Vec::new(),
         };
+        if !styles.is_empty() {
+            if !text.is_empty() {
+                text.push(b'\n');
+            }
+            text.extend_from_slice(styles.as_bytes());
+        }
+        let css_hash =
+            (css.is_some() || !styles.is_empty()).then(|| format!("{:016x}", fnv1a(&text)));
         if !p.release {
             return Ok(Assets { css_hash, files });
         }
-        if let (Some(f), Some(h)) = (&css, &css_hash) {
-            files.push((APP_CSS_PATH.into(), f.clone(), h.clone()));
+        // With scoped styles the CSS is written out whole, not included.
+        let inline = (!styles.is_empty()).then(|| String::from_utf8_lossy(&text).into_owned());
+        if let Some(h) = &css_hash {
+            let file = css.clone().unwrap_or_else(|| PathBuf::from("app.css"));
+            files.push((APP_CSS_PATH.into(), file, h.clone()));
         }
         let static_dir = p.root.join("static");
         if static_dir.is_dir() {
@@ -1792,9 +1824,12 @@ impl Gen {
                 .extension()
                 .map(|e| e.to_string_lossy().to_ascii_lowercase())
                 .unwrap_or_default();
+            let body = match &inline {
+                Some(t) if i == 0 => format!("{}.as_bytes()", lit(t)),
+                _ => format!("include_bytes!({})", lit(&file.to_string_lossy())),
+            };
             self.line(0, &format!(
-                "static ASSET_{i}: ::wisp::Asset = ::wisp::Asset {{ body: include_bytes!({}), ext: {}, etag: {} }};",
-                lit(&file.to_string_lossy()),
+                "static ASSET_{i}: ::wisp::Asset = ::wisp::Asset {{ body: {body}, ext: {}, etag: {} }};",
                 lit(&ext),
                 lit(&format!("\"{etag}\""))
             ));
@@ -6077,7 +6112,9 @@ mod tests {
 
     /// `app`, as a release build or a dev one.
     fn build(name: &str, files: &[(&str, &str)], release: bool) -> Result<String, String> {
-        in_dir(name, files, |root| generate(&Input { root, release }))
+        in_dir(name, files, |root| {
+            generate(&Input { root, release }).map(|(code, _)| code)
+        })
     }
 
     /// The model of the app made of `files`, or the error reading it.
