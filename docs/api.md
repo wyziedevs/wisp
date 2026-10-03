@@ -113,13 +113,12 @@ on every row made or changed there.
 
 ### Where rows are kept
 
-Saved before memory changes, read at first use. Default: a log file per
-table (`note.log`, one appended line per change, a cut line dropped on read,
-rewritten whole at twice its rows) in `WISP_DATA`: `.wisp/data` in dev,
-`data` in the working folder in release, `/data` in the `--docker` image.
-`WISP_FSYNC`: `second` (default), `always`, `off`. `WISP_DATA=off`: memory
-(tests, edge). Tables hold every row in memory: for larger data or queries a
-database should run, write the handlers.
+Saved before memory changes, read at first use: a log file per table
+(`note.log`, a line per change, a cut line dropped on read, rewritten whole
+at twice its rows) in `WISP_DATA`: `.wisp/data` in dev, `data` in release,
+`/data` in the `--docker` image. `WISP_FSYNC`: `second` (default), `always`,
+`off`. `WISP_DATA=off`: memory (tests, edge). Tables hold every row in
+memory; for larger data or database-side queries write the handlers.
 
 Any database via `wisp::store(Db)` in `init`: implement `wisp::Store` with
 `load(&self, table) -> Result<Vec<(u64, String)>>` (id and JSON of each row)
@@ -219,8 +218,8 @@ reads JSON anywhere with the same errors; `wisp::json::parse` gives a
 An error is JSON (else the app's `+error.wisp`, else Wisp's default page)
 when the request targets a `+server.rs` (or an unmatched path under a first
 segment with endpoints and no pages), is under `/api`, sent JSON, prefers
-JSON by `Accept`, or has no `Accept` and is not a browser navigating; an
-app with no pages always answers JSON:
+JSON by `Accept`, or has no `Accept` and is not a browser navigating; an app
+with no pages always answers JSON:
 
 ```json
 {"status": 422, "code": "invalid", "error": "title: must have at least 1 character",
@@ -230,12 +229,11 @@ app with no pages always answers JSON:
 `errors` only for invalid input. `code`: the status's (`bad_request
 unauthorized forbidden not_found method_not_allowed conflict
 precondition_failed too_large unsupported_media_type invalid rate_limited
-internal unavailable`…) or your own: `Error::new(409, "That email is
+internal unavailable`) or your own: `Error::new(409, "That email is
 taken").with_code("email_taken")`. `error` is your message, else the status
 name. `accept: application/problem+json`, or `WISP_PROBLEM_JSON=on`, gives
-RFC 9457: `{"type":"about:blank","title":"Unprocessable Content","status":422,"code":"invalid","detail":"…","errors":{…}}`.
-Covers 404, 405, `error(403, "…")` and panics (500; details in dev only). A
-route may answer in its own format with a `Response`.
+RFC 9457 (`type`, `title`, `status`, `code`, `detail`, `errors`). Covers 404,
+405, `error(403, "…")` and panics (500; details in dev only).
 
 ## Webhooks
 

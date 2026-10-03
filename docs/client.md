@@ -207,15 +207,14 @@ works on the server.
 
 ### First paint
 
-The server renders what it can know into the page (works before JS and
-without it); the browser takes those nodes over and keeps them live (a
-script changing a value first corrects it). Known: server values, props,
-Rust loop values; literals (`0 'text' true null [1,2] {id:1}`); script
-variables first set to those (`let todos = data.todos`); an `{:#each}`
-item/index inside it; `!`, `&&`, `||`, `.length` of those; a boolean
-directive like `:hidden="!open"` with `let open = false`. A call, sum,
-comparison or a `+page.js` page's `data` is left to the browser. Live
-attributes (`:class`, `class="a {:b}"`) keep static text until it starts.
+The server renders what it can know into the page (it works before JS and
+without it); the browser takes those nodes over and keeps them live. Known:
+server values, props, Rust loop values; literals (`0 'text' true null [1,2]
+{id:1}`); script variables first set to those (`let todos = data.todos`); an
+`{:#each}` item/index inside it; `!`, `&&`, `||`, `.length` of those; a
+boolean directive like `:hidden="!open"` with `let open = false`. A call,
+sum, comparison or a `+page.js` page's `data` is left to the browser.
+Live attributes (`:class`, `class="a {:b}"`) keep static text until it starts.
 
 ## Client components
 A component inside a client block, or given `{:…}`, `bind:` or `on:`, is
@@ -272,7 +271,7 @@ renders `<Card>` server first. Its module sends `access-control-allow-origin:
 
 ## State helpers
 
-In any client script, no imports.
+In any client script, no imports:
 
 ```js
 watch(() => data.id, (id) => { load(id) })         // when data.id changes
@@ -287,7 +286,7 @@ await tick()                                       // after the redraw
 
 ### Shared state
 
-A store outlives components and navigation. In `src/lib/`:
+A store outlives components and navigation; put it in `src/lib/`:
 
 ```js
 // src/lib/cart.js
@@ -296,16 +295,11 @@ export const cart = store([])
 export const theme = persisted('theme', 'light')       // localStorage
 export const count = derived(() => cart.value.length)
 ```
-```html
-<script>
-  import { cart, count } from '$lib/cart.js'
-</script>
-<button on:click="cart.value = [...cart.value, 'tea']">Add ({:count.value})</button>
-```
 
-A store has `.value`, `set(v)`, `update(fn)`, `subscribe(fn)`; it is deep
-and readable as `$cart`. `src/lib/**/*.js` is served; `'wisp'` and
-`'$lib/…'` imports work in them, scripts and `+page.js`.
+`import { cart } from '$lib/cart.js'` in a script, then `cart.value = [...]`
+or `$cart`. A store has `.value`, `set(v)`, `update(fn)`, `subscribe(fn)` and
+is deep. `src/lib/**/*.js` is served; `'wisp'` and `'$lib/…'` imports work in
+them, scripts and `+page.js`.
 
 ## Islands
 A page ships JS only for files with client code; a component can wait:
@@ -395,8 +389,7 @@ way down; `import()` targets and island code wait.
 
 A form action or navigation morphs the page; an instance whose element
 survives keeps its state and gets the new `data`. `data-wisp-reset` on an
-element around it starts it fresh: `<div data-wisp-reset><Counter /></div>`.
-Layouts stay mounted.
+element around it starts it fresh. Layouts stay mounted.
 
 Same-origin clicks and back/forward fetch and morph, no full reload.
 Prefetch on hover (60 ms) and touch (`data-wisp-preload="off"` opts out).
@@ -413,11 +406,11 @@ pushState('?tab=2', { tab: 2 })      // history entry, no navigation
 replaceState('', { tab: 3 })         // this entry's state ('' keeps the URL)
 ```
 
-Shallow routing: `pushState(url, state)` adds an entry at `url` (`''`:
-this one) and loads nothing; `page.value.state` is reactive (`{}` on other
-entries). Back/forward restores it with no request; a reload keeps it only
-at its URL. Events on `document`: `wisp:navigate wisp:update wisp:goto
-wisp:refresh wisp:error wisp:push wisp:pop`; on forms `wisp:submit`
+`pushState(url, state)` (shallow routing, for tabs and modals) adds an entry
+at `url` (`''`: this one) and loads nothing; `page.value.state` is reactive
+(`{}` on other entries). Back/forward restores it with no request; a reload
+keeps it only at its URL. `document` events: `wisp:navigate wisp:update
+wisp:goto wisp:refresh wisp:error wisp:push wisp:pop`; forms: `wisp:submit`
 (cancelable), `wisp:result`.
 
 ### Snapshots
@@ -440,20 +433,18 @@ Phones: pages leave with `pagehide` (back/forward cache; scroll restored). `<bod
 
 ## Forms: `use:enhance`
 
-Plain forms already update in place; `use:enhance` adds hooks.
+Plain forms already update in place; `use:enhance` adds hooks:
 
 ```html
 <form method="post" action="?/add" use:enhance="submit">
   <input name="text" bind:value="text">
   <button disabled={:pending}>Send</button>
 </form>
-<ul>{#each data.items as item}<li>{item}</li>{/each}{:#each optimistic as o}<li>{:o}</li>{:/each}</ul>
 <script>
-  let text = '', pending = false, optimistic = []
+  let text = '', pending = false
   function submit({ formData, cancel }) {
     pending = true
-    optimistic = [formData.get('text')]
-    return (result) => { pending = false; optimistic = [] }   // after the page updated
+    return (result) => { pending = false }   // after the page updated
   }
 </script>
 ```
@@ -465,24 +456,17 @@ JSON (`Response::json_of(…)`) leaves the form on the page; `data` and
 
 ## `+page.js`
 
-Runs in the browser on every navigation (not on the server):
-
-```js
-// src/routes/search/+page.js
-export async function load({ data, url, params, route, fetch }) {
-  const r = await fetch('/api/search?q=' + url.searchParams.get('q'))
-  return { ...data, results: await r.json() }
-}
-```
-
-The return is the script's `data`. With a server `load` the whole `Data`
-is sent (`#[derive(Json)]`). `params.slug` for `blog/[slug]`; `route.id` is
+Runs in the browser on every navigation, not on the server:
+`export async function load({ data, url, params, route, fetch }) { return { ...data, results: await (await fetch('/api/search?q=' + url.searchParams.get('q'))).json() } }`.
+The return is the script's `data`. With a server `load` the whole `Data` is
+sent (`#[derive(Json)]`). `params.slug` for `blog/[slug]`; `route.id` is
 `/blog/[slug]`.
 
 ## Server functions
 
-`#[remote]` on a Rust fn in a page block or `src/*.rs` (`src/remote.rs`)
-makes it callable from browser code: no endpoint, fetch or import.
+`#[remote]` on a Rust fn in a page block or `src/*.rs` makes it callable from
+browser code: no endpoint, fetch or import. In `src/lib`: `import { user }
+from 'wisp:remote'`.
 
 ```html
 ---
@@ -498,13 +482,11 @@ fn user(id: u64) -> Result<User> {
 </script>
 ```
 
-In `src/lib`: `import { user } from 'wisp:remote'`.
-
 - POST `/_app/r/<hash>`, arguments a JSON object by name (`{"id":5}`), read
   with `FromJson`; a wrong type or failed `#[validate]` is a 422 by field.
-- Answers like an endpoint: `Json` value, `None` is 404, nothing is 204
-  (`undefined`). Built like an action (`cx`, `async`, `-> Result` implied);
-  the same-origin check and `before` run first.
+- Answers like an endpoint (`Json` value; `None` is 404; nothing is 204,
+  `undefined`). Built like an action (`cx`, `async`, `-> Result` implied);
+  same-origin check and `before` run first.
 - Errors reject with `status`, `message` (and `errors` for 422);
   `redirect("/x")` navigates.
 - `#[remote(get)]`: GET, arguments as JSON in the query (`?id=5&q=%22tea%22`;
@@ -515,20 +497,12 @@ In `src/lib`: `import { user } from 'wisp:remote'`.
 
 ## Server rendering off
 
-```html
----
-const SSR: bool = false;
-let items = db::items().await;
----
-<title>Items</title>
-{:#each items as item (item.id)}<p>{:item.name}</p>{:/each}
-```
-
-The server runs the statements and sends layouts, `<head>`, the markup as an
-unpainted `<template>` and the values it names; the browser draws it. The
-markup is browser code: `{…}`, `{#if}`, `{#each}` or a component given `{…}`
-is a build error (Rust is fine in `<title>`/`<head>`). For pages that depend
-on the browser (size, `localStorage`) or that `+page.js` fills. `wisp build
+`const SSR: bool = false;` in the block: the server runs the statements and
+sends layouts, `<head>`, the markup as an unpainted `<template>` and the
+values it names; the browser draws it. The markup is browser code
+(`{:x}`, `{:#each}`): `{…}`, `{#if}`, `{#each}` or a component given `{…}` is
+a build error (Rust is fine in `<title>`/`<head>`). For pages that depend on
+the browser (size, `localStorage`) or that `+page.js` fills. `wisp build
 --spa` serves them from a static host.
 
 ## Errors and source maps
@@ -541,36 +515,31 @@ each browser module has `//# sourceMappingURL=t3.js.map` (also `src/lib`,
 modules).
 
 ## Installable and offline (PWA)
-```json
-// src/manifest.json
-{ "name": "Notes", "theme_color": "#7c3aed", "offline": true }
-```
 
-- Served at `/manifest.webmanifest`, linked by every page; nothing is
-  emitted without the file. Filled in: `short_name`/`name`, `start_url`
-  `/`, `display` `standalone`, `icons` from `static/icon*.png` (size read)
-  and `static/icon*.svg`. One `static/icon.png` (512 px or more) suffices:
-  `wisp build` also writes 192 and 512 px WebP into `/_app/img/` with cwebp
-  (absent: a warning, the PNG alone).
-- At startup instead: `wisp::app_manifest(r#"{"name": "Notes"}"#)?;` in `init`.
-- `"offline": true` adds Wisp's service worker: at install it keeps `/`, the
-  browser files and `static/`; pages come from the network and are kept;
-  offline: the kept page or a 503. A new build drops the old cache.
+`src/manifest.json` (`{ "name": "Notes", "theme_color": "#7c3aed", "offline":
+true }`) is served at `/manifest.webmanifest` and linked by every page;
+nothing is emitted without it. Filled in: `short_name`/`name`, `start_url`
+`/`, `display` `standalone`, `icons` from `static/icon*.png` (size read) and
+`static/icon*.svg`. One `static/icon.png` (512 px or more) suffices: `wisp
+build` also writes 192 and 512 px WebP into `/_app/img/` with cwebp (absent:
+a warning, the PNG alone). At startup instead: `wisp::app_manifest(r#"{"name":
+"Notes"}"#)?;` in `init`.
 
-Your own worker replaces it (`src/service-worker.js` or `.ts`, a classic
-script served at `/service-worker.js`, registered by every page; imports
-only `'wisp/sw'`, `env.PUBLIC_X` works):
+`"offline": true` adds Wisp's service worker: at install it keeps `/`, the
+browser files and `static/`; pages come from the network and are kept;
+offline: the kept page or a 503; a new build drops the old cache. Your own
+`src/service-worker.js` (or `.ts`) replaces it: a classic script at
+`/service-worker.js`, registered by every page, importing only `'wisp/sw'`
+(`env.PUBLIC_X` works):
 
 ```js
-import { build, files, version } from 'wisp/sw'
+import { build, files, version } from 'wisp/sw'  // browser files, static/ files, hash of both (empty in dev)
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(`app-${version}`).then((c) => c.addAll([...build, ...files])))
 })
 ```
 
-`build` is the browser files' URLs, `files` those of `static/`, `version` a
-hash of both (lists empty in dev). The CSP gets `worker-src 'self'` and the
-registering script's hash.
+The CSP gets `worker-src 'self'` and the registering script's hash.
 
 ## Dev: hot reload and devtools
 
