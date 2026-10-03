@@ -1613,6 +1613,31 @@ const TOKEN: [bool; 256] = {
     t
 };
 
+/// `HTTP/1.1` and `HTTP/1.0` as [`swar::word`] reads them.
+const V11: u64 = u64::from_le_bytes(*b"HTTP/1.1");
+const V10: u64 = u64::from_le_bytes(*b"HTTP/1.0");
+
+/// The first byte of `b[i..]` that is not visible ASCII, or is `also`,
+/// eight bytes at a time; `b.len()` if none.
+#[inline(always)]
+fn visible(b: &[u8], mut i: usize, also: u8) -> usize {
+    while i + 8 <= b.len() {
+        let x = swar::word(b, i);
+        let stop = swar::below(x, 0x21) | swar::above(x, 0x7e) | swar::eq(x, also);
+        if stop != 0 {
+            return i + swar::first(stop);
+        }
+        i += 8;
+    }
+    while b
+        .get(i)
+        .is_some_and(|&c| (0x21..=0x7e).contains(&c) && c != also)
+    {
+        i += 1;
+    }
+    i
+}
+
 /// The head of `buf[at..]` when it has the usual shape: a method in
 /// capitals, a target of visible ASCII, `HTTP/1.1` or `HTTP/1.0`, lines that
 /// end in CRLF, header names of `tchar`s, and all of it here, in at most
@@ -1625,6 +1650,9 @@ fn fast_head(buf: &[u8], at: usize, headers: &mut Vec<(Span, Span)>) -> Option<H
     let method = if b.get(i..i + 4) == Some(b"GET ") {
         i += 3;
         Method::Get
+    } else if b.get(i..i + 5) == Some(b"POST ") {
+        i += 4;
+        Method::Post
     } else {
         while b.get(i).is_some_and(u8::is_ascii_uppercase) {
             i += 1;
@@ -1637,37 +1665,32 @@ fn fast_head(buf: &[u8], at: usize, headers: &mut Vec<(Span, Span)>) -> Option<H
     i += 1;
 
     // The target, to the first byte that is not visible ASCII: its space.
+    // Its path ends at its first `?`, where its query starts.
     let target = i;
-    while i + 8 <= b.len() {
-        let x = swar::word(b, i);
-        let stop = swar::below(x, 0x21) | swar::above(x, 0x7e);
-        if stop != 0 {
-            i += swar::first(stop);
-            break;
-        }
-        i += 8;
-    }
-    while b.get(i).is_some_and(|c| (0x21..=0x7e).contains(c)) {
-        i += 1;
-    }
-    let end = i;
-    let http11 = match b.get(i..i + 11)? {
-        b" HTTP/1.1\r\n" => true,
-        b" HTTP/1.0\r\n" => false,
+    let path_end = visible(b, target, b'?');
+    let end = match b.get(path_end) {
+        Some(b'?') => visible(b, path_end + 1, b' '),
+        _ => path_end,
+    };
+    let line = b.get(end..end + 11)?;
+    let http11 = match swar::word(line, 1) {
+        V11 => true,
+        V10 => false,
         _ => return None,
     };
     // Empty (its space), or not a path: `*`, `http://host/x`.
-    if b[target] != b'/' {
+    if line[0] != b' ' || line[9..] != *b"\r\n" || b[target] != b'/' {
         return None;
     }
-    i += 11;
+    i = end + 11;
     let span = |from: usize, to: usize| Span {
         start: from as u32,
         len: (to - from) as u32,
     };
-    let (path, query) = match b[target..end].iter().position(|&c| c == b'?') {
-        Some(q) => (span(target, target + q), span(target + q + 1, end)),
-        None => (span(target, end), Span::default()),
+    let (path, query) = if path_end == end {
+        (span(target, end), Span::default())
+    } else {
+        (span(target, path_end), span(path_end + 1, end))
     };
 
     loop {
