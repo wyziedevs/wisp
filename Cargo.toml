@@ -11,6 +11,7 @@ members = [
     "tests/app",
     "tests/agents",
     "tests/islands",
+    "tests/platform",
     "bench/load",
     "bench/run",
     "bench/app",

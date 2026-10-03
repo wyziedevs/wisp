@@ -1103,10 +1103,12 @@ const css = (v) =>
 
 
 // The root's listener for delegated events: the handlers of each element
-// from the target up, as if on each, until one stops the event.
+// from the target up, as if on each, until one stops the event. From
+// inside a shadow root (a custom element's) the root sees its host: the
+// walk starts at the real target, and goes on from a shadow root to its host.
 const rooted = new Set();
 function delegate(e) {
-  for (let n = e.target; n; n = n.parentNode) {
+  for (let n = e.target.shadowRoot ? e.composedPath()[0] : e.target; n; n = n.parentNode || n.host) {
     const hs = n.__on;
     if (!hs) continue;
     for (const [type, f, sc, L] of hs) {

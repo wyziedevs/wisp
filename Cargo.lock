@@ -303,5 +303,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "wisp-test-platform"
+version = "0.1.0"
+dependencies = [
+ "wisp",
+ "wisp-build",
+]
+
+[[package]]
 name = "wisp-tokens"
 version = "0.0.0"
