@@ -521,6 +521,29 @@ the first one wakes. `wisp.js` does the waking.
 
 On a component, `client:*` needs the component to have browser code.
 
+## Server components
+
+A component with no browser code (no script, `{:…}` or directive) is a
+server component: the server renders it and it ships no JavaScript. That is
+the default. Server components and islands nest in any order, as an
+island's children or in its own markup:
+
+```html
+<Panel client:idle>                <!-- an island: Panel.wisp has a script -->
+  <Plain label="Sales" />          <!-- a server component: no JS -->
+</Panel>
+```
+
+```html
+<!-- src/components/Plain.wisp -->
+{@props label: &str}
+<div><h3>{label}</h3><Chart client:visible /></div>   <!-- an island again -->
+```
+
+Only `Panel`'s and `Chart`'s modules load. An inner island wakes at its own
+moment, and wakes the island around it that still waits (its parent, for
+`getContext`); what has no `client:*` waits with the island around it.
+
 ## Speed
 
 The runtime is two files: `live.js` (about 9 KB compressed), and

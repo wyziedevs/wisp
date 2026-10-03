@@ -763,3 +763,17 @@ fn one_visitor_never_gets_another_visitors_answer() {
     assert_eq!(again.header("idempotent-replayed"), Some("true"));
     assert_eq!(again.text(), ann.text());
 }
+
+/// Server components: `Plain` has no browser code, so the page names no
+/// module for it, though islands sit around and inside it.
+#[test]
+fn server_components_ship_no_js() {
+    let mut app = client::<Site>();
+    let page = app.get("/a2/server").text().to_string();
+    assert!(page.contains("<p>slotted</p>") && page.contains("<p>direct</p>"));
+    let json = &page[page.find("id=\"wisp-live\">").expect("instances")..];
+    let map = &json[..json.find("},\"i\"").unwrap()];
+    assert_eq!(map.matches("/_app/c/t").count(), 3, "Panel, Ping, Tally: {map}");
+    // Each Ping waits for itself, inside its Panel island.
+    assert_eq!(json.matches(",{},\"v\"]").count(), 3, "{json}");
+}

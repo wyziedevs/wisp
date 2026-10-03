@@ -215,6 +215,8 @@ npm: `wisp add canvas-confetti`, then `import confetti from 'canvas-confetti'`
 (esm.sh in dev; `wisp build` puts it in the binary, no CDN; one not in package.json
 is a build error).
 Islands: `<Chart client:visible|idle|interaction|media="(…)"|none />`.
+Server components: one with no browser code ships no JS; islands and server
+components nest in any order (an inner island wakes a waiting outer one).
 TypeScript: `<script lang="ts">`, `src/lib/*.ts`, `+page.ts`. Types are
 stripped (spaces, so lines and columns hold), as Node's strip-types does:
 `enum`, a `namespace` with values and parameter properties are build errors
@@ -2352,6 +2354,29 @@ code is all islands does not load the runtime (`live.js`, about 9 KB) until
 the first one wakes. `wisp.js` does the waking.
 
 On a component, `client:*` needs the component to have browser code.
+
+## Server components
+
+A component with no browser code (no script, `{:…}` or directive) is a
+server component: the server renders it and it ships no JavaScript. That is
+the default. Server components and islands nest in any order, as an
+island's children or in its own markup:
+
+```html
+<Panel client:idle>                <!-- an island: Panel.wisp has a script -->
+  <Plain label="Sales" />          <!-- a server component: no JS -->
+</Panel>
+```
+
+```html
+<!-- src/components/Plain.wisp -->
+{@props label: &str}
+<div><h3>{label}</h3><Chart client:visible /></div>   <!-- an island again -->
+```
+
+Only `Panel`'s and `Chart`'s modules load. An inner island wakes at its own
+moment, and wakes the island around it that still waits (its parent, for
+`getContext`); what has no `client:*` waits with the island around it.
 
 ## Speed
 
