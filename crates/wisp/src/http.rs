@@ -1843,7 +1843,7 @@ const MAX_BODY: usize = 1 << 31;
 /// `WISP_BODY_LIMIT`, and at most `MAX_BODY`. Only requests with a body
 /// look it up.
 pub(crate) fn body_limit<A: App>(path: &str) -> usize {
-    let route = path.starts_with('/').then(|| A::route(path)).flatten();
+    let route = path.starts_with('/').then(|| find::<A>(path)).flatten();
     limit_of::<A>(route.map(|(id, _)| id))
 }
 
@@ -2320,19 +2320,21 @@ fn before_routes<A: App>(cx: &Cx, route: Option<usize>, out: &mut Out, reply: &m
         return true;
     }
     if raw.len() > 1 && raw.ends_with(b"/") {
-        // One leading slash: `//evil.example/` would send the browser to
-        // another site (and so would `/\evil.example/`).
-        let trimmed = cx.path().trim_matches(['/', '\\']);
-        let query = cx.query_string();
-        let location = if query.is_empty() {
-            format!("/{trimmed}")
-        } else {
-            format!("/{trimmed}?{query}")
-        };
-        reply.set_plain(308, "");
-        reply
-            .headers
-            .push((Cow::Borrowed("location"), Cow::Owned(location)));
+        if route.is_none() || slash() == TrailingSlash::Never {
+            slash_redirect(cx, reply, false);
+            return true;
+        }
+    } else if raw.len() > 1
+        && slash() == TrailingSlash::Always
+        && matches!(cx.method, Method::Get | Method::Head)
+        && route.is_some_and(|r| A::ROUTES[r].page)
+        && !cx
+            .path()
+            .rsplit('/')
+            .next()
+            .is_some_and(|last| last.contains('.'))
+    {
+        slash_redirect(cx, reply, true);
         return true;
     }
     if !matches!(cx.method, Method::Get | Method::Head) {
@@ -2441,7 +2443,7 @@ fn answered(cx: &mut Cx, reply: &mut Reply, started: Option<Instant>, failure: O
 /// The route of the request in `cx`, which gets its params: the matched
 /// parameters as spans, so `cx` can be handed out mutably.
 fn route<A: App>(cx: &mut Cx) -> Option<usize> {
-    let (id, raw) = A::route(cx.path())?;
+    let (id, raw) = find::<A>(cx.path())?;
     // Only the route's own: most have none.
     let names = A::ROUTES[id].params;
     if names.is_empty() {
@@ -2454,6 +2456,69 @@ fn route<A: App>(cx: &mut Cx) -> Option<usize> {
     }
     cx.set_params(names, params);
     Some(id)
+}
+
+/// The route of `path`, and its parameters. A path that ends in `/` is
+/// its route's without it too, when [`trailing_slash`] serves it: looked
+/// for only when the path itself matches nothing.
+fn find<A: App>(path: &str) -> Option<(usize, [&str; crate::cx::MAX_PARAMS])> {
+    match A::route(path) {
+        None if path.len() > 1 && path.ends_with('/') && slash() != TrailingSlash::Never => {
+            A::route(&path[..path.len() - 1])
+        }
+        found => found,
+    }
+}
+
+/// How a page's address ends, which `wisp::trailing_slash` sets in
+/// `init`. The other form gets a 308 to it; endpoints and files are left
+/// as they are asked for, but a path ending in `/` that is no route's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrailingSlash {
+    /// `/about/`.
+    Always,
+    /// `/about`, the default.
+    Never,
+    /// Either, served as it is asked for.
+    Ignore,
+}
+
+static SLASH: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(1);
+
+/// `wisp::trailing_slash(Always)` in `init`: pages' addresses end in `/`,
+/// and `/about` gets a 308 to `/about/`. `Never` is the default; `Ignore`
+/// serves both. The build warns of a literal `href` of the other form.
+pub fn trailing_slash(how: TrailingSlash) {
+    SLASH.store(how as u8, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn slash() -> TrailingSlash {
+    match SLASH.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => TrailingSlash::Always,
+        2 => TrailingSlash::Ignore,
+        _ => TrailingSlash::Never,
+    }
+}
+
+/// A 308 to `cx`'s path with one leading slash, and a trailing one when
+/// `trailing`, its query kept: `//evil.example/` would send the browser to
+/// another site (and so would `/\evil.example/`).
+fn slash_redirect(cx: &Cx, reply: &mut Reply, trailing: bool) {
+    let trimmed = cx.path().trim_matches(['/', '\\']);
+    let end = if trailing && !trimmed.is_empty() {
+        "/"
+    } else {
+        ""
+    };
+    let query = cx.query_string();
+    let location = match query.is_empty() {
+        true => format!("/{trimmed}{end}"),
+        false => format!("/{trimmed}{end}?{query}"),
+    };
+    reply.set_plain(308, "");
+    reply
+        .headers
+        .push((Cow::Borrowed("location"), Cow::Owned(location)));
 }
 
 /// Whether `res`, a 200 to a GET or HEAD with an `etag` (an [`crate::Image`],

@@ -209,6 +209,14 @@ Text, and a component:
   index page: `{#each wisp::pages("blog") as p}<a href={p.path}>{p.title}</a>{/each}`.
   It is a `static` slice the build wrote: no I/O, no allocation.
 
+Trailing slash: a page's address is `/about` and `/about/` gets a 308 to
+it, the query kept. `wisp::trailing_slash(Always)` in `init` turns that
+round (`/about` → `/about/`, for GET and HEAD of pages; endpoints and
+paths with a `.` in their last segment are left as asked), and `Ignore`
+serves both. The other form is matched only after its own path matched
+no route, so the default costs nothing. The build warns of a literal
+`href="/…"` in a template that the setting would redirect.
+
 ### Page logic
 
 A page's Rust goes at the top of its `.wisp`, between two `---` lines:

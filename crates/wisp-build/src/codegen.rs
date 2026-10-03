@@ -1277,10 +1277,64 @@ impl<'a> Project<'a> {
                     .map(|l| (t.rel.as_str(), l.line, crate::lint_line(l)))
             })
             .collect();
+        warnings.extend(self.slash_lints());
         warnings.sort();
         (warnings.into_iter())
             .map(|(rel, line, w)| format!("{rel}:{line}: {w}"))
             .collect()
+    }
+
+    /// Literal `href`s to the app's pages in the form that
+    /// `wisp::trailing_slash` (in `src/hooks.rs`; `Never` without it)
+    /// answers with a 308: `href="/about/"` where pages end without `/`.
+    fn slash_lints(&self) -> Vec<(&str, u32, String)> {
+        let hooks = crate::read_source(&self.root.join("src").join("hooks.rs")).unwrap_or_default();
+        let how = (hooks.split("trailing_slash(").nth(1))
+            .and_then(|s| s.split(')').next())
+            .and_then(|s| s.rsplit("::").next())
+            .map(str::trim);
+        let always = match how {
+            Some("Always") => true,
+            Some("Ignore") => return Vec::new(),
+            _ => false,
+        };
+        let page = |path: &str| {
+            let routes = self.tree.routes.iter().zip(&self.model.routes);
+            (routes.filter(|(_, m)| m.page.is_some()))
+                .any(|(r, _)| r.expansions().iter().any(|e| may_match(e, path)))
+        };
+        let mut out = Vec::new();
+        for t in self.templates.iter().filter(|t| t.kind != Kind::Story) {
+            let mut src: Option<String> = None;
+            for href in t.t.chunks.iter().flat_map(|c| hrefs(c)) {
+                let path = href.split(['?', '#']).next().unwrap_or("");
+                let bare = path.trim_end_matches('/');
+                let wrong = match always {
+                    true => {
+                        !path.ends_with('/') && !bare.rsplit('/').next().unwrap_or("").contains('.')
+                    }
+                    false => path.len() > 1 && path.ends_with('/'),
+                };
+                if !wrong || path.starts_with("//") || path.starts_with("/_") || !page(bare) {
+                    continue;
+                }
+                let src = src.get_or_insert_with(|| {
+                    crate::read_source(&self.root.join(&t.rel)).unwrap_or_default()
+                });
+                let line = (src.find(&format!("href=\"{href}\"")))
+                    .map_or(1, |i| src[..i].matches('\n').count() as u32 + 1);
+                let (to, how) = match always {
+                    true => (format!("{bare}/"), "Always"),
+                    false => (bare.to_string(), "Never"),
+                };
+                out.push((
+                    t.rel.as_str(),
+                    line,
+                    format!("href=\"{href}\" gets a 308 to {to} (wisp::trailing_slash({how})): link there"),
+                ));
+            }
+        }
+        out
     }
 
     /// The scoped `<style>`s of every template, for `/_app/app.css`.
@@ -3343,12 +3397,13 @@ impl Gen {
             self.line(
                 2,
                 &format!(
-                    "::wisp::rt::RouteFacts {{ params: &[{}], body_limit: {}, uploads: {}, now: {}, sync: {sync}, files: {files}, error: {} }}, // {}",
+                    "::wisp::rt::RouteFacts {{ params: &[{}], body_limit: {}, uploads: {}, now: {}, sync: {sync}, files: {files}, error: {}, page: {} }}, // {}",
                     names.join(", "),
                     some(limit),
                     some(uploads),
                     !before && !m.route_waits(route),
                     opt(route.error),
+                    route.page.is_some(),
                     route.pattern
                 ),
             );
@@ -4002,6 +4057,13 @@ const METHODS: [(&str, &str, &str); 5] = [
 /// Whether the path `url` (`/a/b.png`, encoded) may be one the route arm
 /// `exp` matches: by its segments, a parameter any but an empty one (a
 /// matcher's, any), a `[...rest]` anything.
+/// The literal `href="/…"` values in `html`, a template's text.
+fn hrefs(html: &str) -> impl Iterator<Item = &str> {
+    (html.split("href=\"").skip(1))
+        .filter_map(|s| s.split_once('"').map(|(v, _)| v))
+        .filter(|v| v.starts_with('/'))
+}
+
 fn may_match(exp: &[&Seg], url: &str) -> bool {
     if exp.iter().any(|s| matches!(s, Seg::Rest(_))) {
         return true;
@@ -8480,7 +8542,7 @@ mod tests {
         let code = app("sitemap", &files).unwrap();
         for (pattern, indexed) in [("/", true), ("/a", false), ("/b", false)] {
             let want = format!(
-                "pattern: {pattern:?}, page: true, actions: false, server: false, entries: None, indexed: {indexed} }}"
+                "pattern: {pattern:?}, page: true, actions: false, server: false, entries: None, indexed: {indexed}, ssr: true, prerender: false }}"
             );
             assert!(code.contains(&want), "{want}\n{code}");
         }
@@ -8703,6 +8765,49 @@ mod tests {
             let err = app(name, &files).unwrap_err();
             assert!(err.contains(want), "{name}: {err}");
         }
+    }
+
+    #[test]
+    fn links_against_the_trailing_slash_are_warned() {
+        let warnings = |name: &str, hooks: Option<&'static str>| {
+            let mut files = vec![
+                (
+                    "src/routes/+page.wisp",
+                    "<a href=\"/about/\">a</a>\n<a href=\"/about?x=1\">b</a>\n<a href=\"/api/x\">c</a>\n\
+                     <a href=\"/feed.xml\">d</a><a href=\"/_app/x\">e</a><a href=\"/\">f</a>",
+                ),
+                ("src/routes/about/+page.wisp", "x"),
+                ("src/routes/api/x/+server.rs", "fn get() {}"),
+            ];
+            files.extend(hooks.map(|h| ("src/hooks.rs", h)));
+            in_dir(name, &files, |root| {
+                check(&Input {
+                    root,
+                    release: false,
+                    maps: true,
+                    prerendered: None,
+                })
+                .map(|o| o.1)
+            })
+            .unwrap()
+        };
+        assert_eq!(
+            warnings("slash-never", None),
+            [
+                "src/routes/+page.wisp:1: href=\"/about/\" gets a 308 to /about (wisp::trailing_slash(Never)): link there"
+            ]
+        );
+        assert_eq!(
+            warnings(
+                "slash-always",
+                Some("fn init() {\n    wisp::trailing_slash(Always);\n}")
+            ),
+            [
+                "src/routes/+page.wisp:2: href=\"/about?x=1\" gets a 308 to /about/ (wisp::trailing_slash(Always)): link there"
+            ]
+        );
+        let ignore = "fn init() { wisp::trailing_slash(wisp::TrailingSlash::Ignore); }";
+        assert!(warnings("slash-ignore", Some(ignore)).is_empty());
     }
 
     #[test]
