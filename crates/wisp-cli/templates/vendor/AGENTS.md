@@ -169,6 +169,13 @@ skipped heading levels, button without text/aria-label, tabindex > 0,
 unknown `aria-*`. `<!-- wisp-ignore a11y-img-alt -->` on the line before
 silences one. Fix them rather than silence them.
 
+Images: `<img src="$lib/photo.jpg" alt="…">` (`src/lib`) or `src="/x.png"`
+(`static/`), JPEG/PNG/WebP, gets `width`/`height` from the file (no layout
+shift). `wisp build` adds WebP at up to 3 widths (by a pinned cwebp,
+`$WISP_CWEBP`; none → a warning, the original), cached by hash in
+`.wisp/img`, as `srcset`, `sizes="100vw"`, `loading="lazy"`,
+`decoding="async"`. Attributes you write stay; `data-wisp-raw` opts out.
+
 Holes can't go in `on*` attrs, tag names, `javascript:` URLs, SVG
 `<animate>`/`<set>` `to`/`from`/`values`/`by`, or `<meta http-equiv>`/refresh
 `content`, in any case; nor can `{:…}`/`:attr`, and `{:...obj}` leaves

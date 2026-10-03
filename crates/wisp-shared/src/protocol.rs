@@ -101,6 +101,9 @@ pub const MODULES: &str = app_path!("c/");
 /// A release build's npm modules, from `.wisp/npm`: each path names its
 /// package's version, so it never changes.
 pub const NPM_MODULES: &str = app_path!("c/npm/");
+/// Templates' images: a release build's by content hash (immutable), a dev
+/// build's `src/lib` ones under `lib/`.
+pub const IMAGES: &str = app_path!("img/");
 /// The browser runtime: wisp.js, live.js and live.js's less used half.
 pub const WISP_JS_PATH: &str = app_path!("wisp.js");
 pub const LIVE_JS_PATH: &str = app_path!("live.js");

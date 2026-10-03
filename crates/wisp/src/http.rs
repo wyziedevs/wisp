@@ -2903,6 +2903,7 @@ fn file<A: App>(cx: &Cx, raw: &[u8], route: Option<usize>, reply: &mut Reply) ->
         let path = cx.path();
         // A page's path goes to the disk only if `static/` had a file there.
         if path != crate::protocol::APP_CSS_PATH
+            && !path.starts_with(crate::protocol::IMAGES)
             && routed
             && !dev::listed(A::ROOT, &decode(path.as_bytes(), false))
         {
@@ -2926,14 +2927,15 @@ fn file<A: App>(cx: &Cx, raw: &[u8], route: Option<usize>, reply: &mut Reply) ->
 }
 
 /// A file, cached by its `etag` (forever when the address is versioned:
-/// with `?v=`, or an npm module's, whose path names the package's version),
-/// or never without one.
+/// with `?v=`, or an npm module's or an image's, whose path names its
+/// version or hash), or never without one.
 fn send_file(reply: &mut Reply, cx: &Cx, body: Body, ext: &str, etag: Option<&'static str>) {
     let cache = match etag {
         None => "no-store",
         Some(_)
             if cx.query_string().split('&').any(|kv| kv.starts_with("v="))
-                || cx.path().starts_with(crate::protocol::NPM_MODULES) =>
+                || cx.path().starts_with(crate::protocol::NPM_MODULES)
+                || cx.path().starts_with(crate::protocol::IMAGES) =>
         {
             "public, max-age=31536000, immutable"
         }

@@ -169,6 +169,13 @@ skipped heading levels, button without text/aria-label, tabindex > 0,
 unknown `aria-*`. `<!-- wisp-ignore a11y-img-alt -->` on the line before
 silences one. Fix them rather than silence them.
 
+Images: `<img src="$lib/photo.jpg" alt="…">` (`src/lib`) or `src="/x.png"`
+(`static/`), JPEG/PNG/WebP, gets `width`/`height` from the file (no layout
+shift). `wisp build` adds WebP at up to 3 widths (by a pinned cwebp,
+`$WISP_CWEBP`; none → a warning, the original), cached by hash in
+`.wisp/img`, as `srcset`, `sizes="100vw"`, `loading="lazy"`,
+`decoding="async"`. Attributes you write stay; `data-wisp-raw` opts out.
+
 Holes can't go in `on*` attrs, tag names, `javascript:` URLs, SVG
 `<animate>`/`<set>` `to`/`from`/`values`/`by`, or `<meta http-equiv>`/refresh
 `content`, in any case; nor can `{:…}`/`:attr`, and `{:...obj}` leaves
@@ -1057,6 +1064,35 @@ build.
 `<!-- wisp-ignore a11y-img-alt -->` on the line before an element silences
 that lint there (several names may follow). A value set by an expression
 (`alt={x}`, `:alt="x"`, `{...attrs}`) counts as set. The examples have none.
+
+### Images
+
+`<img src="$lib/photo.jpg" alt="…">` (a file of `src/lib`) or
+`src="/photo.jpg"` (one of `static/`), a JPEG, PNG or WebP with a quoted
+`src`, is filled in by the compiler before it parses the template (in
+`wisp-build/src/image.rs`, on the same lines):
+
+- Always: `width` and `height` from the file's header (a small reader for
+  the three formats, EXIF orientation included; no image crate), unless
+  the tag sets either. The page does not shift as images load.
+- `wisp build`: each image is written as WebP at up to three widths (640,
+  1280, 1920, never wider than it) into `.wisp/img/<hash>-<w>.webp`, by a
+  pinned cwebp (libwebp 1.6.0, downloaded once to `~/.wisp/bin` and checked
+  by SHA-256, as Tailwind is; `$WISP_CWEBP` overrides it). The names are
+  the content's hash, so a second build encodes nothing. The release build
+  embeds them, a `src/lib` original too, served under `/_app/img/` as
+  immutable, and adds `srcset`, `sizes="100vw"`, `loading="lazy"` and
+  `decoding="async"`. An attribute the tag has stays as written.
+- Durable: without cwebp (no network, no build for the platform, a failed
+  encode) the build warns, and the tag gets no `srcset`: the original is
+  served, sized. A JPEG whose EXIF turns it gets no WebP (cwebp would not
+  turn it). A `$lib/` file that is not there is a build error.
+- Dev serves the original (`/_app/img/lib/photo.jpg` from `src/lib`),
+  adding only `width` and `height`: nothing to encode on a save.
+- `<img data-wisp-raw …>` stays as written (a `$lib/` src still gets its
+  URL). A `src` with a hole, or another site's, is left alone.
+- Cost: none for an app without local images; a header read per image per
+  build.
 
 ### Snippets
 

@@ -367,19 +367,30 @@ fn color() -> bool {
 }
 
 /// A file for `path` from the project directory: `/_app/app.css` is the
-/// built CSS (or `src/app.css`) and then the scoped styles, anything else
+/// built CSS (or `src/app.css`) and then the scoped styles, a template's
+/// `$lib/` image (`/_app/img/lib/x.png`) is `src/lib`'s, anything else
 /// comes from `static/`.
 pub(crate) fn read_file(root: &str, path: &str) -> Option<(Vec<u8>, String)> {
     let root = Path::new(root);
     if path == crate::protocol::APP_CSS_PATH {
         return app_css(root).map(|css| (css, "css".into()));
     }
-    let file = (root.join("static")).join(crate::http::safe_relative_path(path)?);
+    let lib = (path.strip_prefix(crate::protocol::IMAGES)).and_then(|p| p.strip_prefix("lib"));
+    let file = match lib {
+        Some(rest) => root
+            .join("src")
+            .join("lib")
+            .join(crate::http::safe_relative_path(rest)?),
+        None => (root.join("static")).join(crate::http::safe_relative_path(path)?),
+    };
     let bytes = std::fs::read(&file).ok()?; // also fails for directories
     let ext = file
         .extension()
         .map(|e| e.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default();
+    if lib.is_some() && !matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "webp") {
+        return None;
+    }
     Some((bytes, ext))
 }
 
@@ -449,6 +460,26 @@ fn list(dir: &Path, url: &mut String, depth: usize, files: &mut HashSet<String>)
 mod tests {
     use super::*;
     use crate::fuzz::{Fuzz, Rng, TEMPLATE, mutate};
+
+    /// A template's `$lib/` image is `src/lib`'s, and only an image.
+    #[test]
+    fn lib_images_are_read_from_src_lib() {
+        let root = std::env::temp_dir().join(format!("wisp-dev-img-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src/lib/a")).unwrap();
+        std::fs::write(root.join("src/lib/a/cat.png"), "png").unwrap();
+        std::fs::write(root.join("src/lib/x.js"), "js").unwrap();
+        let r = root.to_string_lossy();
+        let got = read_file(&r, "/_app/img/lib/a/cat.png");
+        let other = [
+            "/_app/img/lib/x.js",
+            "/_app/img/lib/../lib/a/cat.png",
+            "/_app/img/libx/a/cat.png",
+        ]
+        .map(|p| read_file(&r, p));
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(got, Some((b"png".to_vec(), "png".into())));
+        assert_eq!(other, [None, None, None]);
+    }
 
     /// Swap bodies from a buggy or hostile local client: an answer, never a
     /// panic or an abort (a huge count once reserved that much memory).

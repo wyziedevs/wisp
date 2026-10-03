@@ -414,7 +414,7 @@ fn sass() -> Result<Command, String> {
         let archive = tmp.with_extension("archive");
         let unpacked = download(&format!("Sass {SASS_VERSION}"), &url, sha, &archive, set)
             .and_then(|()| crate::make_dir(&tmp))
-            .and_then(|()| untar(&archive, &tmp))
+            .and_then(|()| untar(&archive, &tmp, set))
             .and_then(|()| place(&tmp.join("dart-sass"), &dir, "Sass"));
         let _ = fs::remove_file(&archive);
         let _ = fs::remove_dir_all(&tmp);
@@ -427,7 +427,7 @@ fn sass() -> Result<Command, String> {
 }
 
 /// tar unpacks both: Windows 10+ ships bsdtar, which reads zip files too.
-fn untar(archive: &Path, into: &Path) -> Result<(), String> {
+pub(crate) fn untar(archive: &Path, into: &Path, set: &str) -> Result<(), String> {
     let system =
         std::env::var_os("SystemRoot").map(|r| PathBuf::from(r).join("System32").join("tar.exe"));
     let tar = system
@@ -439,19 +439,24 @@ fn untar(archive: &Path, into: &Path) -> Result<(), String> {
         .arg("-C")
         .arg(into)
         .status()
-        .map_err(|e| format!("Could not run tar to unpack Sass: {e}.\nInstall tar, or set WISP_SASS to a sass binary."))?;
+        .map_err(|e| {
+            format!(
+                "Could not run tar to unpack {}: {e}.\nInstall tar, or {set}.",
+                archive.display()
+            )
+        })?;
     if status.success() {
         Ok(())
     } else {
         Err(format!(
-            "Could not unpack {}.\nSet WISP_SASS to a sass binary.",
+            "Could not unpack {}.\nInstead, {set}.",
             archive.display()
         ))
     }
 }
 
 /// This machine's asset of a tool and its SHA-256.
-fn asset(
+pub(crate) fn asset(
     assets: &'static [(&str, &str, &'static str, &'static str)],
     name: &str,
     set: &str,
@@ -465,7 +470,7 @@ fn asset(
 }
 
 /// `~/.wisp/bin`, made if missing.
-fn bin_dir() -> Result<PathBuf, String> {
+pub(crate) fn bin_dir() -> Result<PathBuf, String> {
     let home = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .ok_or("Could not find the home folder.\nSet HOME or USERPROFILE.")?;
@@ -475,7 +480,13 @@ fn bin_dir() -> Result<PathBuf, String> {
 }
 
 /// Downloads `url` to `dest`, if it is the file expected, executable.
-fn download(what: &str, url: &str, sha: &str, dest: &Path, set: &str) -> Result<(), String> {
+pub(crate) fn download(
+    what: &str,
+    url: &str,
+    sha: &str,
+    dest: &Path,
+    set: &str,
+) -> Result<(), String> {
     term::step(&format!(
         "Downloading {what} from {url}. This happens once."
     ));
@@ -500,7 +511,7 @@ fn download(what: &str, url: &str, sha: &str, dest: &Path, set: &str) -> Result<
 
 /// Moves an unpacked download into place. Another `wisp` may have
 /// finished first; its copy is the same.
-fn place(from: &Path, to: &Path, what: &str) -> Result<(), String> {
+pub(crate) fn place(from: &Path, to: &Path, what: &str) -> Result<(), String> {
     if let Err(e) = fs::rename(from, to)
         && !to.exists()
     {

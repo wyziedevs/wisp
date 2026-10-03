@@ -8,6 +8,7 @@ pub mod csp;
 pub mod fmt;
 mod fold;
 pub mod ide;
+pub mod image;
 pub mod inspect;
 mod js;
 mod markdown;
@@ -64,6 +65,7 @@ pub fn run() {
         ".wisp/app.css",
         "package.json",
         ".wisp/npm",
+        ".wisp/img",
         ".env",
     ] {
         if root.join(p).exists() {
@@ -186,6 +188,7 @@ pub fn hot_chunks(root: &Path, rel: &str) -> Result<(Vec<String>, u64, Vec<Strin
         |_| Vec::new(),
         |i| rules::fields(&i, &params, &shared_types(root)),
     );
+    let markup = image::rewrite(&markup, root, false).map_err(|e| format!("{rel}:{e}"))?;
     let (t, _) = parse_markup(&markup, rust, &fields, rel).map_err(|e| format!("{rel}:{e}"))?;
     let warnings = (t.lints.iter())
         .map(|l| format!("{rel}:{}: {}", l.line, lint_line(l)))
