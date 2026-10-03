@@ -18,7 +18,6 @@ use wisp_shared::{contexts, protocol};
 mod admin;
 mod bake;
 mod blob;
-mod envconf;
 mod cache;
 #[cfg(not(target_arch = "wasm32"))]
 mod channel;
@@ -31,6 +30,7 @@ mod dev;
 pub mod edge;
 #[cfg(target_arch = "wasm32")]
 mod edge_store;
+mod envconf;
 #[cfg(target_os = "linux")]
 mod epoll;
 mod export;
@@ -150,9 +150,9 @@ pub mod prelude {
     /// For `wisp::trailing_slash(Always)` in `init`.
     pub use crate::TrailingSlash::{Always, Ignore, Never};
     pub use crate::{
-        Config, Cookie, CookieOptions, Cx, Email, Error, FromJson, Image, Json, KB, MB, Method, OrStatus,
-        Response, Rest, Result, Row, SameSite, Shared, Table, Upload, Value, action, error, invalid,
-        model, redirect, remote,
+        Config, Cookie, CookieOptions, Cx, Email, Error, FromJson, Image, Json, KB, MB, Method,
+        OrStatus, Response, Rest, Result, Row, SameSite, Shared, Table, Upload, Value, action,
+        error, invalid, model, redirect, remote,
     };
 }
 
@@ -1507,8 +1507,8 @@ impl<T, E: fmt::Display> OrStatus<T> for std::result::Result<T, E> {
 /// Support for generated code. Not a stable API.
 #[doc(hidden)]
 pub mod rt {
-    pub use crate::i18n::{Arg, Case, Count, Msg, Part, Tr};
     pub use crate::envconf::{config, config_error, config_opt};
+    pub use crate::i18n::{Arg, Case, Count, Msg, Part, Tr};
     pub use crate::timeout::within;
 
     /// The request's locale, by index: for `Out::lang`.

@@ -36,7 +36,10 @@ fn parse<T: FromStr>(key: &str, v: &str, bad: &mut Vec<String>) -> Option<T> {
 
 /// Why the app cannot start.
 pub fn config_error(bad: &[String]) -> Error {
-    Error::new(500, format!("the environment is not right: {}", bad.join("; ")))
+    Error::new(
+        500,
+        format!("the environment is not right: {}", bad.join("; ")),
+    )
 }
 
 #[cfg(test)]
@@ -51,7 +54,10 @@ mod tests {
         assert_eq!(parse::<u16>("PORT", "http", &mut bad), None);
         assert_eq!(parse::<u16>("PORT", " 80 ", &mut bad), Some(80));
         let e = config_error(&bad).message().to_string();
-        assert!(e.contains("WISP_CONF_UNSET is not set; PORT is not a u16"), "{e}");
+        assert!(
+            e.contains("WISP_CONF_UNSET is not set; PORT is not a u16"),
+            "{e}"
+        );
         assert!(!e.contains("http"), "{e}");
     }
 }

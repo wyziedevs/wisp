@@ -883,7 +883,9 @@ fn config(item: TokenStream) -> Result<TokenStream, Error> {
         } else {
             "config"
         };
-        reads.push_str(&format!("let {n} = ::wisp::rt::{helper}({key:?}, &mut __bad); "));
+        reads.push_str(&format!(
+            "let {n} = ::wisp::rt::{helper}({key:?}, &mut __bad); "
+        ));
         some.push_str(&format!("Some({n}), "));
         list.push_str(&format!("{n}, "));
     }

@@ -1761,7 +1761,12 @@ impl<'a> Project<'a> {
             tpl.data = data;
             tpl.stmts = lg.stmts.map(|s| (s, Vec::new()));
             let tpl = self.templates.len() - 1;
-            self.model.layouts.push(model::Layout { tpl, load, waits, guard });
+            self.model.layouts.push(model::Layout {
+                tpl,
+                load,
+                waits,
+                guard,
+            });
         }
         Ok(())
     }
@@ -2215,8 +2220,8 @@ impl<'a> Project<'a> {
                         .map_err(|e| format!("{rel}: {e}"))?;
                 }
                 let guard = guards(&items, &rel, &mut shims)?;
-                let (handlers, mut before) = server_handlers(&items, segs, &mut shims)
-                    .map_err(|e| format!("{rel}:{e}"))?;
+                let (handlers, mut before) =
+                    server_handlers(&items, segs, &mut shims).map_err(|e| format!("{rel}:{e}"))?;
                 before |= add_guard(&mut shims, &guard, before);
                 let waits = items.fns.iter().any(|f| f.is_async);
                 (self.user_mods).push(UserMod::new(
@@ -4438,7 +4443,10 @@ fn add_guard(shims: &mut Vec<String>, guard: &str, has: bool) -> bool {
     if guard.is_empty() {
         return false;
     }
-    match shims.iter_mut().find(|s| s.starts_with("pub async fn before(")) {
+    match shims
+        .iter_mut()
+        .find(|s| s.starts_with("pub async fn before("))
+    {
         Some(s) => *s = s.replacen(OPEN, &format!("{OPEN}{guard}"), 1),
         None => shims.push(format!(
             "pub async fn before(cx: &mut ::wisp::Cx) {OPEN}{guard}Ok(None) }}"
@@ -8971,14 +8979,29 @@ mod tests {
         ] {
             assert!(code.contains(want), "{want}: {code}");
         }
-        let page = ("src/routes/+page.wisp", "---\nconst RATE_LIMIT: u32 = 5;\n---\nx");
+        let page = (
+            "src/routes/+page.wisp",
+            "---\nconst RATE_LIMIT: u32 = 5;\n---\nx",
+        );
         let code = app("guard-page", &[page]).unwrap();
         assert!(code.contains("page_0::__call::__guard(cx)?;"), "{code}");
-        let err = app("guard-ty", &[("src/routes/+server.rs", "const RATE_LIMIT: u8 = 5;\nfn get() {}")]);
+        let err = app(
+            "guard-ty",
+            &[(
+                "src/routes/+server.rs",
+                "const RATE_LIMIT: u8 = 5;\nfn get() {}",
+            )],
+        );
         assert!(err.unwrap_err().contains("make it a `u32`"));
-        let layout = ("src/routes/+layout.wisp", "---\nconst RATE_LIMIT: u32 = 5;\n---\n{@render children()}");
+        let layout = (
+            "src/routes/+layout.wisp",
+            "---\nconst RATE_LIMIT: u32 = 5;\n---\n{@render children()}",
+        );
         let err = app("guard-layout", &[("src/routes/+page.wisp", "x"), layout]);
-        assert!(err.unwrap_err().contains("a layout's `RATE_LIMIT` does nothing"));
+        assert!(
+            err.unwrap_err()
+                .contains("a layout's `RATE_LIMIT` does nothing")
+        );
     }
 
     #[test]
