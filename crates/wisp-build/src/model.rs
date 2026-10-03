@@ -78,6 +78,8 @@ pub struct Page {
     pub waits: bool,
     /// The browser draws it: `const SSR: bool = false;`.
     pub drawn: bool,
+    /// `wisp build` renders it: `const PRERENDER: bool = true;`.
+    pub prerender: bool,
 }
 
 impl Page {

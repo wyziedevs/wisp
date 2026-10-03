@@ -18,6 +18,23 @@ fn export(spa: bool) -> (Temp, std::io::Result<()>) {
     (dir, done)
 }
 
+/// `wisp build`'s prerender run: the `PRERENDER` pages alone, each a file,
+/// and the index the build reads them by.
+#[test]
+fn prerendered_pages_are_written_for_the_build() {
+    let dir = Temp::new("prerender");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(wisp::prerender::<Lab>(&dir)).unwrap();
+    let read =
+        |p: &str| std::fs::read_to_string(dir.join(p)).unwrap_or_else(|e| panic!("{p}: {e}"));
+    assert_eq!(read("index.tsv"), "/hello\t/hello\t0.html\n");
+    assert!(read("0.html").contains("<h1>hello</h1>"));
+    assert!(!dir.join("1.html").exists());
+}
+
 /// `--spa`: a page the browser draws whose route has parameters and no
 /// `entries` is written once, and the fallback, `index.html`, lists it.
 #[test]

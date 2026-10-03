@@ -79,6 +79,28 @@ them: wisp.js draws the one whose route fits the address, with that
 address's parameters. Such a page gets its data from `+page.js` (its
 statements ran once, for `0`).
 
+### Prerendered pages
+
+A server build can prerender some pages and serve the rest:
+
+```html
+---
+const PRERENDER: bool = true;
+fn entries() -> Vec<&'static str> { vec!["hello", "second-post"] }  // with [params]
+let post = db::post(&slug).await?;
+---
+```
+
+`wisp build` builds the binary, runs it once to render those pages (its
+`init` runs, so the data they read is there), and builds again with the
+bytes inside: they are served as they are, with an ETag and its 304,
+whatever the request, the way a page that reads nothing is. Until then
+(`cargo run` out of dev mode, other targets) each worker keeps a
+prerendered page's first render for good. Since one render serves every
+request, the page cannot read it: `cx` in its statements, markup or
+`load` is a build error. Its layouts render with it, once, as for a
+request with no cookies. `--static` prerenders every page.
+
 ## Docker
 
 ```sh

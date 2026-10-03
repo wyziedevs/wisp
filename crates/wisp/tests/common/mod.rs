@@ -76,9 +76,13 @@ impl App for Lab {
             entries,
             indexed: true,
             ssr: true,
+            prerender: false,
         };
         vec![
-            page("/hello", None),
+            ExportRoute {
+                prerender: true,
+                ..page("/hello", None)
+            },
             page(
                 "/item/[id]",
                 Some(|| vec![vec!["a".into()], vec!["b.txt".into()]]),

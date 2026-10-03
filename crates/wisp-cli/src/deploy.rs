@@ -86,6 +86,69 @@ pub fn static_site(root: &Path, exe: &Path, out: &Path, spa: bool) -> Result<(),
     Ok(())
 }
 
+/// Where `wisp build` prerenders pages, for the build after it to embed.
+const PRERENDERED: &str = ".wisp/prerender";
+
+/// Whether a page of the app says `const PRERENDER: bool = true;`: a look
+/// at the text, which the build checks.
+pub fn prerenders(root: &Path) -> bool {
+    fn any(dir: &Path, depth: u32) -> bool {
+        (std::fs::read_dir(dir).into_iter().flatten().flatten()).any(|e| {
+            let p = e.path();
+            if p.is_dir() {
+                return depth < 32 && any(&p, depth + 1);
+            }
+            let page = matches!(
+                p.file_name().and_then(|n| n.to_str()),
+                Some("+page.wisp" | "+page.rs")
+            );
+            page && std::fs::read_to_string(&p).is_ok_and(|t| t.contains("PRERENDER: bool = true"))
+        })
+    }
+    any(&root.join("src").join("routes"), 0)
+}
+
+/// Runs the built app to render its prerendered pages into
+/// `.wisp/prerender` (see `wisp::export::prerender`), then builds it again
+/// with them inside (`WISP_PRERENDERED`), with `env` as the first build
+/// had.
+pub fn prerender(root: &Path, exe: &Path, env: &[(&str, &str)]) -> Result<(), String> {
+    let dir =
+        std::path::absolute(root.join(PRERENDERED)).map_err(|e| format!("{PRERENDERED}: {e}"))?;
+    let _ = std::fs::remove_dir_all(&dir);
+    term::step("Prerendering");
+    let mut child = Command::new(exe)
+        .env("WISP_PRERENDER", &dir)
+        .current_dir(root)
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Could not run {}: {e}.", exe.display()))?;
+    let mut pages = 0;
+    term::each_line(
+        child.stdout.take().expect("stdout is piped"),
+        |line| match line.split_once(' ') {
+            Some(("wrote", _)) => pages += 1,
+            Some(("warn", msg)) => term::warn(msg),
+            _ => println!("{line}"),
+        },
+    );
+    if !child.wait().is_ok_and(|s| s.success()) {
+        return Err("Prerendering failed.\nThe app's message is above.".into());
+    }
+    let dir = dir.to_string_lossy();
+    let mut env = env.to_vec();
+    env.push(("WISP_PRERENDERED", &dir));
+    let b = crate::cargo::build_for(root, true, false, &[], &env);
+    if !b.ok {
+        return Err(
+            "The build with the prerendered pages failed.\nThe compiler's errors are above.".into(),
+        );
+    }
+    let s = if pages == 1 { "" } else { "s" };
+    term::done(&format!("Prerendered {pages} page{s} into the binary"));
+    Ok(())
+}
+
 pub fn copy_dir(from: &Path, to: &Path) -> Result<usize, String> {
     let io = |p: &Path, e: std::io::Error| format!("{}: {e}", p.display());
     std::fs::create_dir_all(to).map_err(|e| io(to, e))?;

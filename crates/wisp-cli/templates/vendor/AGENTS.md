@@ -84,6 +84,11 @@ Block rules:
   all), nor an answer that sets a cookie or `cache-control: private` or
   `no-store`; not in dev. Hooks still run. The page must not read other
   headers.
+- `const PRERENDER: bool = true;` (and `fn entries()` with params):
+  `wisp build` renders the page once and the binary serves those bytes
+  (ETag, 304); till then each worker keeps its first render, for everyone.
+  `cx` in its statements, markup or `load` is a build error; its layouts
+  render with it, once (no cookies). `--static` prerenders every page.
 - `const SSR: bool = false;`: the browser draws the page. The server sends
   layouts, `<head>`, the markup unpainted and the values it names; the
   markup must be browser code (`{:x}`, `{:#each}`; Rust is a build error,
