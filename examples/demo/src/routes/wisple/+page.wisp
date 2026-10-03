@@ -48,7 +48,10 @@
       <h2 class="visually-hidden">Row {r + 1}</h2>
       <div class="row {row.class}">
         {#each row.tiles as tile, i}
-          <div class="letter {tile.mark.class()}" style="--i: {i}" use:pop="row.class === 'current' && guess[i]">
+          <div
+            class="letter {tile.mark.class()}"
+            style="--i: {i}"
+            use:pop="row.class === 'current' && guess[i]">
             <span :text="row.class === 'current' ? guess[i] ?? '' : tile.letter">{tile.letter}</span>
             <span class="visually-hidden">{tile.mark.label()}</span>
           </div>
@@ -76,23 +79,46 @@
           The word was <strong>{answer}</strong>.
         {/if}
       </p>
-      <button class="button primary restart" formaction="?/restart" title="Play again" bind:this="enter">Play again</button>
+      <button
+        class="button primary restart"
+        formaction="?/restart"
+        title="Play again"
+        bind:this="enter">Play again</button>
     {:else}
       <div class="keyboard">
         {#each keys as row, r}
           <div class="row">
             {#if r == 2}
-              <button class="wide enter" title="Enter the guess" disabled={!full} :disabled="!full" bind:this="enter">Enter</button>
+              <button
+                class="wide enter"
+                title="Enter the guess"
+                disabled={!full}
+                :disabled="!full"
+                bind:this="enter">Enter</button>
             {/if}
             {#each row as key}
-              <button class={key.mark.class()} formaction="?/update" name="key" value={key.letter}
-                      aria-label="{key.letter} {key.mark.label()}" title={key.letter} disabled={full}
-                      :disabled="full" class:pressed="pressed === key.letter"
-                      on:click.prevent="type(key.letter)">{key.letter}</button>
+              <button
+                class={key.mark.class()}
+                formaction="?/update"
+                name="key"
+                value={key.letter}
+                aria-label="{key.letter} {key.mark.label()}"
+                title={key.letter}
+                disabled={full}
+                :disabled="full"
+                class:pressed="pressed === key.letter"
+                on:click.prevent="type(key.letter)">{key.letter}</button>
             {/each}
             {#if r == 2}
-              <button class="wide" formaction="?/update" name="key" value="backspace" aria-label="Backspace" title="Backspace"
-                      class:pressed="pressed === 'backspace'" on:click.prevent="type('backspace')">
+              <button
+                class="wide"
+                formaction="?/update"
+                name="key"
+                value="backspace"
+                aria-label="Backspace"
+                title="Backspace"
+                class:pressed="pressed === 'backspace'"
+                on:click.prevent="type('backspace')">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-6-7z M11 9l6 6 M17 9l-6 6"/></svg>
               </button>
             {/if}
