@@ -112,6 +112,10 @@ pub const IMAGES: &str = app_path!("img/");
 pub const WISP_JS_PATH: &str = app_path!("wisp.js");
 pub const LIVE_JS_PATH: &str = app_path!("live.js");
 pub const EXTRA_JS_PATH: &str = app_path!("c/extra.js");
+/// `#[remote]` functions: each is served at this and its hash, and
+/// browser code calls them through the module at `REMOTE_JS_PATH`.
+pub const REMOTE: &str = app_path!("r/");
+pub const REMOTE_JS_PATH: &str = app_path!("c/remote.js");
 /// The app's CSS (`src/app.css`, or what Tailwind built of it).
 pub const APP_CSS_PATH: &str = app_path!("app.css");
 /// A dev build's scoped `<style>`s, from the project root: served after

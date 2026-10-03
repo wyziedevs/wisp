@@ -25,6 +25,27 @@ pub fn action(attr: TokenStream, item: TokenStream) -> TokenStream {
     implicit_cx(item)
 }
 
+/// `#[remote]` (or `#[remote(get)]`) marks a function browser code calls as
+/// `await name(args)`: `wisp-build` finds it and serves it at
+/// `/_app/r/<hash>`. The function is made as an action's is.
+#[proc_macro_attribute]
+pub fn remote(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let args: Vec<TokenTree> = attr.into_iter().collect();
+    match args.as_slice() {
+        [] => {}
+        [TokenTree::Ident(i)] if i.to_string() == "get" => {}
+        [first, ..] => {
+            let mut out = error(
+                "#[remote] takes nothing, or `get`: #[remote(get)]",
+                first.span(),
+            );
+            out.extend(item);
+            return out;
+        }
+    }
+    implicit_cx(item)
+}
+
 /// A parameter list without its `#[validate(...)]` attributes, which
 /// `wisp-build` reads to check the input before the call.
 fn without_rules(params: TokenStream) -> Vec<TokenTree> {

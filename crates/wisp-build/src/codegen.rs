@@ -14,8 +14,8 @@ use crate::npm::{self, Npm};
 use crate::openapi::{self, Op};
 use crate::protocol::{
     APP_CSS_PATH, COPY_END, COPY_START, EXTRA_JS_PATH, GROUP_ATTR, IMAGES, ISLAND_MEDIA,
-    LIVE_JS_PATH, LOOP_ATTR, MODULES, NPM_MODULES, ON_FLAGS, ON_PLACED, ON_ROOT, SLOT_ATTR,
-    WISP_JS_PATH,
+    LIVE_JS_PATH, LOOP_ATTR, MODULES, NPM_MODULES, ON_FLAGS, ON_PLACED, ON_ROOT, REMOTE,
+    REMOTE_JS_PATH, SLOT_ATTR, WISP_JS_PATH,
 };
 use crate::routes::Seg;
 use crate::rust_scan::{self, FnItem, Returns};
@@ -178,6 +178,29 @@ struct Logic {
     stmts: Option<String>,
 }
 
+/// A `#[remote]` function: browser code's `await name(args)`.
+struct RemoteFn {
+    f: FnItem,
+    /// Its module from the generated file's top: `page_3`, `__mods::remote`.
+    module: String,
+    /// Its file, from the project root.
+    rel: String,
+    /// The types its signature may name, for its TypeScript.
+    types: Vec<rust_scan::TypeItem>,
+}
+
+impl RemoteFn {
+    /// Where it is served: `/_app/r/` and a hash of its file and name.
+    fn path(&self) -> String {
+        let id = format!("{}\0{}", self.rel, self.f.name);
+        format!("{REMOTE}{:016x}", fnv1a(id.as_bytes()))
+    }
+
+    fn get(&self) -> bool {
+        self.f.remote == Some(rust_scan::Remote::Get)
+    }
+}
+
 /// What the generated code expects back from a function it calls.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Shim {
@@ -315,6 +338,84 @@ fn shim(f: &FnItem, kind: Shim) -> Result<String, String> {
             format!("pub async fn init() -> ::wisp::Result<()> {{ let () = {call}; Ok(()) }}")
         }
     })
+}
+
+/// The `__call` function of `#[remote] fn f`, `__r_f`: reads each argument
+/// by name from the JSON object a POST sends (a GET's query), as
+/// `FromJson`, checks every one before any answer (one 422 lists each that
+/// does not pass), calls it, and answers what it returns as an endpoint's
+/// value is. `line: msg` errors.
+fn remote_shim(f: &FnItem) -> Result<String, String> {
+    let mut args = Vec::new();
+    if f.implicit_cx {
+        args.push("cx".to_string());
+    }
+    let mut lets = String::from(
+        "let __v = ::wisp::rt::remote::args(cx)?; let __m = ::wisp::rt::remote::members(&__v); \
+         let mut __p = ::wisp::json::Problems::default(); ",
+    );
+    let mut names = Vec::new();
+    let mut inputs = f.inputs()?.into_iter();
+    for (_, ty) in &f.params {
+        if rust_scan::is_cx(ty) {
+            args.push("cx".to_string());
+            continue;
+        }
+        let (name, ty) = inputs.next().expect("an input per parameter but cx");
+        let v = format!("__a{}", names.len());
+        // A borrow (`&str`) is read owned and lent.
+        let (owned, arg) = if ty::is_str_ref(ty) {
+            ("String".to_string(), format!("&{v}"))
+        } else if ty::option_inner(ty).is_some_and(ty::is_str_ref) {
+            ("Option<String>".to_string(), format!("{v}.as_deref()"))
+        } else {
+            (ty.to_string(), v.clone())
+        };
+        let _ = write!(
+            lets,
+            "let {v}: Option<{owned}> = __p.field(__m, {}); ",
+            lit(name)
+        );
+        for (p, rules) in &f.checks {
+            if p == name {
+                lets.push_str(&checks(name, &v, rules).map_err(|e| format!("{}: {e}", f.line))?);
+            }
+        }
+        names.push(v);
+        args.push(arg);
+    }
+    if let Some((p, _)) = (f.checks.iter()).find(|(p, _)| !f.params.iter().any(|(n, _)| n == p)) {
+        return Err(format!(
+            "{}: `#[validate]` is on `{p}`, which is not an argument",
+            f.line
+        ));
+    }
+    if names.is_empty() {
+        // Nothing to read: what was sent is not looked at.
+        lets.clear();
+    } else {
+        let some: String = names.iter().map(|v| format!("Some({v}), ")).collect();
+        let _ = write!(
+            lets,
+            "let ({some}true) = ({}, __p.is_empty()) else {{ return ::wisp::rt::input::refused(__p); }}; ",
+            names.join(", ")
+        );
+    }
+    let call = format!(
+        "super::{}({}){}{}",
+        f.name,
+        args.join(", "),
+        if f.is_async { ".await" } else { "" },
+        if f.fallible { "?" } else { "" }
+    );
+    let body = match returns_nothing(f) {
+        true => format!("{call}; Ok(::wisp::Response::empty(204))"),
+        false => format!("use ::wisp::rt_traits::ret::*; (&&&Ret::new({call})).respond()"),
+    };
+    Ok(format!(
+        "pub async fn __r_{}(cx: &mut ::wisp::Cx) -> ::wisp::Result<::wisp::Response> {{ {lets}{body} }}",
+        f.name
+    ))
 }
 
 /// Whether `f` returns nothing (no `->`, or `-> ()`): its answer is a 204.
@@ -829,7 +930,58 @@ pub fn types(input: &Input, probed: &str) -> Result<(Vec<(String, String)>, bool
         }
         out.push((format!("{}.ts", t.rel), f));
     }
+    if !p.remotes.is_empty() {
+        out.push(("remote.d.ts".into(), remote_ts(&p.remotes)?));
+    }
     Ok((out, wanted))
+}
+
+/// The `#[remote]` functions as TypeScript: global, as scripts call them,
+/// and as `wisp:remote`'s exports. An `Option` argument at the end may be
+/// left out; what answers `None` (a 404) rejects, so it is not in the
+/// promise.
+fn remote_ts(remotes: &[RemoteFn]) -> Result<String, String> {
+    let mut decls = Vec::new();
+    let mut sigs = Vec::new();
+    for r in remotes {
+        let inputs = r.f.inputs().map_err(|e| format!("{}:{e}", r.rel))?;
+        let mut params = Vec::new();
+        let mut trailing = true;
+        for (n, ty) in inputs.iter().rev() {
+            trailing &= ty::option_inner(ty).is_some();
+            let q = if trailing { "?" } else { "" };
+            params.push(format!("{n}{q}: {}", openapi::ts(ty, &r.types, &mut decls)));
+        }
+        params.reverse();
+        let value = r.f.value_type();
+        let value = ty::option_inner(value).unwrap_or(value);
+        let ret = match rust_scan::returns_kind(value) {
+            Returns::Nothing => "void".to_string(),
+            Returns::Other if ty::last_segment(value) != "Image" => {
+                openapi::ts(value, &r.types, &mut decls)
+            }
+            _ => "unknown".to_string(),
+        };
+        sigs.push(format!(
+            "function {}({}): Promise<{ret}>;",
+            r.f.name,
+            params.join(", ")
+        ));
+    }
+    let mut f =
+        String::from("// Written by `wisp check --types`: the app's #[remote] functions.\n");
+    for s in &sigs {
+        let _ = writeln!(f, "declare {s}");
+    }
+    f.push_str("declare module 'wisp:remote' {\n");
+    for s in &sigs {
+        let _ = writeln!(f, "  export {s}");
+    }
+    f.push_str("}\n");
+    for (_, d) in decls {
+        f.push_str(&d);
+    }
+    Ok(f)
 }
 
 /// The Rust type of `let name: T = …` in `stmts`, if it is written.
@@ -987,6 +1139,8 @@ struct Project<'a> {
     /// `src/locales`, and per key whether a template's `t("key")` uses it.
     i18n: Option<i18n::Locales>,
     t_used: Vec<bool>,
+    /// The `#[remote]` functions of pages and `src/*.rs`.
+    remotes: Vec<RemoteFn>,
 }
 
 /// The browser's half: the modules of templates (by template), and the
@@ -1054,6 +1208,7 @@ impl<'a> Project<'a> {
             md_pages: Vec::new(),
             i18n,
             t_used,
+            remotes: Vec::new(),
         })
     }
 
@@ -1445,6 +1600,12 @@ impl<'a> Project<'a> {
                     a.line, a.name
                 ));
             }
+            if let Some(r) = lg.items.fns.iter().find(|f| f.remote.is_some()) {
+                return Err(format!(
+                    "{where_}:{}: a layout cannot have #[remote] functions (`{}`); put it in a page or src/remote.rs",
+                    r.line, r.name
+                ));
+            }
             if let Some(c) = lg.items.constant("BODY_LIMIT") {
                 return Err(format!(
                     "{where_}:{}: a layout's `BODY_LIMIT` does nothing; set it in the page or +server.rs whose requests it limits",
@@ -1652,6 +1813,7 @@ impl<'a> Project<'a> {
         }
         let data = lg.items.data_fields();
         let tables = lg.items.tables();
+        let types = lg.items.types;
         let fns = lg.items.fns;
         let has_load = fns.iter().any(|f| f.name == "load");
         if lg.stmts.is_some() && page_js.is_some() {
@@ -1711,7 +1873,30 @@ impl<'a> Project<'a> {
                 ),
             ));
         }
+        let mut remotes = Vec::new();
         for f in &fns {
+            if f.remote.is_some() {
+                if f.action || f.name == "load" {
+                    return Err(at(
+                        f,
+                        format!(
+                            "`{}` cannot be both #[remote] and {}",
+                            f.name,
+                            if f.action { "an action" } else { "load" }
+                        ),
+                    ));
+                }
+                shims.push(remote_shim(f).map_err(|e| format!("{}:{e}", self.rel(&rs)))?);
+                let mut types = types.clone();
+                types.extend(self.shared.iter().cloned());
+                remotes.push(RemoteFn {
+                    f: f.clone(),
+                    module: format!("page_{i}"),
+                    rel: self.rel(&rs),
+                    types,
+                });
+                continue;
+            }
             let kind = match f.name.as_str() {
                 _ if f.action => Shim::Answer,
                 "load" => Shim::Load,
@@ -1719,6 +1904,7 @@ impl<'a> Project<'a> {
             };
             shims.push(shim(f, kind).map_err(|e| format!("{}:{e}", self.rel(&rs)))?);
         }
+        self.remotes.extend(remotes);
         let reads = has_load || lg.stmts.is_some();
         let user = lg.file.is_some().then(|| (format!("page_{i}"), reads));
         if lg.file.is_some() {
@@ -1786,6 +1972,14 @@ impl<'a> Project<'a> {
             }
             None => {
                 let items = self.scan(&file)?;
+                if let Some(r) = items.fns.iter().find(|f| f.remote.is_some()) {
+                    return Err(format!(
+                        "{}:{}: `{}` is #[remote], which browser code calls; +server.rs has endpoints. Put it in a page or src/remote.rs",
+                        self.rel(&file),
+                        r.line,
+                        r.name
+                    ));
+                }
                 let module = format!("server_{i}");
                 let mut shims = Vec::new();
                 self.body_limit(route, &items, &file, module.clone(), page_file, &mut shims)?;
@@ -1874,9 +2068,42 @@ impl<'a> Project<'a> {
             self.user_mods
                 .push(UserMod::new(name, file.clone(), None, shims, &items));
         }
-        self.mods = app_mods(self.root)?;
+        let (mods, remotes) = app_mods(self.root)?;
+        self.mods = mods;
+        for mut r in remotes {
+            r.types.clone_from(&self.shared);
+            self.remotes.push(r);
+        }
+        self.check_remotes()?;
         for t in &self.templates {
             check_components(&t.t.nodes, &t.t, &self.comps, &t.rel, false)?;
+        }
+        Ok(())
+    }
+
+    /// Browser code calls a `#[remote]` function by its name alone, so each
+    /// name is the app's once, and one no script's own names hide.
+    fn check_remotes(&self) -> Result<(), String> {
+        for (k, r) in self.remotes.iter().enumerate() {
+            let name = r.f.name.as_str();
+            let at = format!("{}:{}", r.rel, r.f.line);
+            if let Some(o) = self.remotes[..k].iter().find(|o| o.f.name == name) {
+                return Err(format!(
+                    "{at}: there is already a #[remote] fn `{name}` ({}:{}); browser code calls them by name, so rename one",
+                    o.rel, o.f.line
+                ));
+            }
+            let helper = HELPERS.split(',').any(|h| h.trim() == name);
+            if helper
+                || js::is_reserved(name)
+                || js::is_global(name)
+                || matches!(name, "define" | "env" | "data")
+                || name.starts_with("__")
+            {
+                return Err(format!(
+                    "{at}: browser code calls #[remote] fn `{name}` by its name, which JavaScript or Wisp has already; rename it"
+                ));
+            }
         }
         Ok(())
     }
@@ -1905,8 +2132,23 @@ impl<'a> Project<'a> {
                 .replace('\\', "/");
             lib_src.push((path, self.read(f)?));
         }
+        // The `#[remote]` functions' module, which scripts import from.
+        let remote = (!self.remotes.is_empty()).then(|| {
+            let src = remote_js(&self.remotes);
+            let source = if self.release { js::runtime(&src) } else { src };
+            JsFile {
+                path: REMOTE_JS_PATH.into(),
+                hash: format!("{:016x}", fnv1a(source.as_bytes())),
+                source,
+                file: None,
+            }
+        });
         let lib_hash = {
             let mut h = Vec::new();
+            // The URL of `wisp:remote`, which they may import.
+            if let Some(r) = &remote {
+                h.extend_from_slice(r.hash.as_bytes());
+            }
             for (p, src) in &lib_src {
                 h.extend_from_slice(p.as_bytes());
                 h.push(0);
@@ -1920,6 +2162,7 @@ impl<'a> Project<'a> {
             format!("{:016x}", fnv1a(&h))
         };
         let specs = Specs {
+            remote: remote.as_ref().map(|f| format!("{}?v={}", f.path, f.hash)),
             lib: lib_src.iter().map(|(p, _)| p.clone()).collect(),
             lib_hash,
             npm: Npm::new(
@@ -1977,7 +2220,7 @@ impl<'a> Project<'a> {
             }
             Ok::<_, String>(s)
         };
-        let mut js_files = Vec::with_capacity(lib_src.len());
+        let mut js_files: Vec<JsFile> = remote.into_iter().collect();
         for (p, src) in &lib_src {
             let dir = p.rfind('/').map_or("", |i| &p[..i]);
             let path = format!("{MODULES}lib/{p}");
@@ -1997,6 +2240,7 @@ impl<'a> Project<'a> {
         }
 
         // The modules of templates.
+        let remote_names: Vec<String> = self.remotes.iter().map(|r| r.f.name.clone()).collect();
         let as_client: std::collections::HashSet<String> = self
             .templates
             .iter()
@@ -2034,6 +2278,7 @@ impl<'a> Project<'a> {
                 env: &self.env,
                 i18n: self.i18n.as_ref(),
                 extra: &extra_url,
+                remotes: &remote_names,
             };
             let c = client(t, &cx)?;
             if let Some(c) = c.as_ref().filter(|_| self.maps) {
@@ -2205,7 +2450,7 @@ impl Gen {
         self.line(0, "pub mod __mods {");
         for m in &p.mods {
             self.user_mod(m, &p.rel(&m.file), "super::*")?;
-            if !m.tables.is_empty() {
+            if !m.calls().is_empty() {
                 self.call_mod(m, &[]);
             }
             self.line(0, "}");
@@ -2337,6 +2582,8 @@ impl Gen {
             self.line(0, "");
         }
 
+        self.remotes(p);
+
         // One per +error.wisp, inside the layouts of its directory.
         for (i, e) in m.errors.iter().enumerate() {
             self.line(0, "#[allow(unused_variables)]");
@@ -2357,6 +2604,61 @@ impl Gen {
             self.line(0, "}");
             self.line(0, "");
         }
+    }
+
+    /// `#[remote]` functions, at `/_app/r/<hash>`: a path no route has, so
+    /// they cost a routed request nothing. Like an action's, a POST's
+    /// origin is checked; `before` in hooks.rs has run.
+    fn remotes(&mut self, p: &Project) {
+        if p.remotes.is_empty() {
+            return;
+        }
+        self.line(0, "async fn serve_remote(cx: &mut ::wisp::Cx, __o: &mut ::wisp::Out) -> ::wisp::Result<()> {");
+        self.line(1, "use ::wisp::Method::*;");
+        self.line(1, "let k = match cx.path() {");
+        for (k, r) in p.remotes.iter().enumerate() {
+            self.line(2, &format!("{} => {k}, // {}", lit(&r.path()), r.f.name));
+        }
+        self.line(
+            2,
+            "_ => return Err(::wisp::Error::new(404, \"Not Found\")),",
+        );
+        self.line(1, "};");
+        self.line(1, "::wisp::rt::endpoint(cx);");
+        self.line(1, "let r = match (k, cx.method) {");
+        for (k, r) in p.remotes.iter().enumerate() {
+            let call = format!("{}::__call::__r_{}(cx).await?", r.module, r.f.name);
+            if r.get() {
+                self.line(
+                    2,
+                    &format!("({k}, Get | Head) => ::wisp::rt::remote::get({call}),"),
+                );
+                self.line(
+                    2,
+                    &format!(
+                        "({k}, _) => return Err(::wisp::rt::method_not_allowed(\"GET, HEAD\")),"
+                    ),
+                );
+            } else {
+                self.line(
+                    2,
+                    &format!("({k}, Post) => {{ ::wisp::rt::check_origin(cx)?; {call} }}"),
+                );
+                self.line(
+                    2,
+                    &format!("({k}, _) => return Err(::wisp::rt::method_not_allowed(\"POST\")),"),
+                );
+            }
+        }
+        self.line(
+            2,
+            "_ => return Err(::wisp::Error::new(404, \"Not Found\")),",
+        );
+        self.line(1, "};");
+        self.line(1, "::wisp::rt::respond(__o, r);");
+        self.line(1, "Ok(())");
+        self.line(0, "}");
+        self.line(0, "");
     }
 
     /// The CSS, and in a release build the static files, embedded. The
@@ -2920,7 +3222,8 @@ impl Gen {
         }
         self.line(1, "];");
         // An unmatched path is answered by the root error page.
-        if !before && !m.root_waits() {
+        // A `#[remote]` function is served where no route is, and may wait.
+        if !before && !m.root_waits() && p.remotes.is_empty() {
             self.line(1, "const NOT_FOUND_NOW: bool = true;");
         }
     }
@@ -3042,9 +3345,13 @@ impl Gen {
             self.line(2, &answer("hooks::__call::before"));
         }
         self.line(2, "::wisp::rt::hooked(cx);");
+        let unrouted = match p.remotes.is_empty() {
+            true => "Err(::wisp::Error::new(404, \"Not Found\"))",
+            false => "serve_remote(cx, __o).await",
+        };
         self.line(
             2,
-            "let Some(route) = route else { return Err(::wisp::Error::new(404, \"Not Found\")) };",
+            &format!("let Some(route) = route else {{ return {unrouted} }};"),
         );
         self.line(2, "match (route, cx.method) {");
         for (i, r) in p.model.routes.iter().enumerate() {
@@ -3596,6 +3903,12 @@ fn hooks(root: &Path) -> Result<(Option<UserMod>, bool), String> {
                 f.name
             )));
         }
+        if f.remote.is_some() {
+            return Err(at(format!(
+                "`{}` is marked #[remote], which belongs in a page or src/remote.rs",
+                f.name
+            )));
+        }
         match f.name.as_str() {
             "init" => {
                 if !f.params.is_empty() {
@@ -3632,16 +3945,16 @@ fn hooks(root: &Path) -> Result<(Option<UserMod>, bool), String> {
 /// not declare themselves (with `mod NAME;`), but for `main.rs`, `lib.rs`
 /// and `hooks.rs`. Wisp compiles each as `crate::NAME` with the prelude in
 /// scope, and route files and templates reach it as `NAME`.
-fn app_mods(root: &Path) -> Result<Vec<UserMod>, String> {
+fn app_mods(root: &Path) -> Result<(Vec<UserMod>, Vec<RemoteFn>), String> {
     let src = root.join("src");
     let mut declared = String::new();
     for f in ["main.rs", "lib.rs"] {
         declared.push_str(&crate::read_source(&src.join(f)).unwrap_or_default());
         declared.push('\n');
     }
-    let mut out = Vec::new();
+    let (mut out, mut remotes) = (Vec::new(), Vec::new());
     let Ok(dir) = fs::read_dir(&src) else {
-        return Ok(out);
+        return Ok((out, remotes));
     };
     let mut files: Vec<PathBuf> = dir.flatten().map(|e| e.path()).collect();
     files.sort();
@@ -3667,9 +3980,19 @@ fn app_mods(root: &Path) -> Result<Vec<UserMod>, String> {
         items
             .check_inner()
             .map_err(|e| format!("src/{name}.rs:{e}"))?;
-        out.push(UserMod::new(name.into(), file, None, Vec::new(), &items));
+        let mut shims = Vec::new();
+        for f in items.fns.iter().filter(|f| f.remote.is_some()) {
+            shims.push(remote_shim(f).map_err(|e| format!("src/{name}.rs:{e}"))?);
+            remotes.push(RemoteFn {
+                f: f.clone(),
+                module: format!("__mods::{name}"),
+                rel: format!("src/{name}.rs"),
+                types: Vec::new(),
+            });
+        }
+        out.push(UserMod::new(name.into(), file, None, shims, &items));
     }
-    Ok(out)
+    Ok((out, remotes))
 }
 
 /// Whether `src` has `mod NAME;` (`pub mod`, with attributes, anywhere).
@@ -5657,6 +5980,8 @@ struct ClientCx<'a> {
     i18n: Option<&'a i18n::Locales>,
     /// The URL of the runtime's less used half (`extra.js`).
     extra: &'a str,
+    /// The `#[remote]` functions, which a script calls without an import.
+    remotes: &'a [String],
 }
 
 /// The runtime's less used half: served when a module uses it.
@@ -6031,6 +6356,26 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
         .flat_map(|p| &p.props)
         .filter_map(|x| Some((x.name.clone(), x.default.clone()?)))
         .collect();
+    // The `#[remote]` functions it calls, by a name it does not have.
+    let called: Vec<&str> = {
+        let mut words: Vec<&str> = Vec::new();
+        for c in std::iter::once(runs.as_str()).chain(groups.iter().flatten().map(String::as_str)) {
+            for tok in js::tokens(c)
+                .iter()
+                .filter(|t| !t.member && t.kind == JsKind::Ident)
+            {
+                words.push(tok.text(c));
+            }
+        }
+        (cx.remotes.iter().map(String::as_str))
+            .filter(|n| {
+                words.contains(n)
+                    && !declared.iter().any(|(d, _)| d == n)
+                    && !imported.iter().any(|i| i == n)
+                    && !owned.iter().any(|o| o == n)
+            })
+            .collect()
+    };
     let id = format!("t{}", t.id);
     let html = cx.as_client.then(|| {
         let mut s = String::new();
@@ -6050,6 +6395,10 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
         groups: &groups,
         group_lines: &tt.groups.iter().map(|g| g.line).collect::<Vec<_>>(),
         imports: &imports,
+        remote: (!called.is_empty())
+            .then_some(cx.specs.remote.as_deref())
+            .flatten()
+            .map(|url| (url, called.as_slice())),
         load: cx.load.as_deref(),
         extra: (snap.is_some()
             || tt.groups.iter().flat_map(|g| &g.directives).any(is_extra)
@@ -6146,6 +6495,49 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
     }))
 }
 
+/// The module of the `#[remote]` functions: each a `fetch` of its path,
+/// its arguments as a JSON object by name (a GET's in the query, each as
+/// JSON). It answers the value, `undefined` for a 204, or throws an
+/// `Error` with the `status` (and a 422's `errors`); a redirect is
+/// followed, as wisp.js follows a form's.
+fn remote_js(remotes: &[RemoteFn]) -> String {
+    let mut s = String::from(
+        "// The app's #[remote] functions, written by wisp-build.
+const call = async (path, get, names, args) => {
+  const a = {};
+  names.forEach((n, i) => { if (args[i] !== undefined) a[n] = args[i]; });
+  const headers = { 'x-wisp': '1', accept: 'application/json' };
+  const r = get
+    ? await fetch(path + '?' + new URLSearchParams(Object.keys(a).map((k) => [k, JSON.stringify(a[k])])), { headers })
+    : await fetch(path, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(a) });
+  const to = r.headers.get('x-wisp-location');
+  if (to) {
+    return new Promise((done) => document.dispatchEvent(new CustomEvent('wisp:goto', { detail: { url: to, done: () => done() } })));
+  }
+  const text = await r.text();
+  let v = text;
+  if (text && (r.headers.get('content-type') || '').includes('json')) v = JSON.parse(text);
+  if (!r.ok) throw Object.assign(new Error((v && v.error) || r.statusText), { status: r.status, errors: v && v.errors });
+  return text ? v : undefined;
+};
+",
+    );
+    for r in remotes {
+        let names: Vec<String> = (r.f.inputs().unwrap_or_default().iter())
+            .map(|(n, _)| js_str(n))
+            .collect();
+        let _ = writeln!(
+            s,
+            "export const {} = (...a) => call({}, {}, [{}], a);",
+            r.f.name,
+            js_str(&r.path()),
+            u8::from(r.get()),
+            names.join(", ")
+        );
+    }
+    s
+}
+
 /// Where a module's import of component `ci`'s module goes, until the
 /// URLs are known (see `generate`).
 fn comp_placeholder(ci: usize) -> String {
@@ -6220,6 +6612,8 @@ struct Module<'a> {
     group_lines: &'a [u32],
     /// Modules of the components it renders.
     imports: &'a [String],
+    /// The `#[remote]` functions' module and the ones it calls.
+    remote: Option<(&'a str, &'a [&'a str])>,
     load: Option<&'a str>,
     /// `extra.js`'s URL, when the module uses it.
     extra: Option<&'a str>,
@@ -6266,6 +6660,9 @@ fn module_source(m: &Module) -> Result<(String, Vec<sourcemap::Line>), String> {
     );
     for url in m.imports {
         let _ = writeln!(s, "import {};", js_str(url));
+    }
+    if let Some((url, names)) = m.remote {
+        let _ = writeln!(s, "import {{ {} }} from {};", names.join(", "), js_str(url));
     }
     if let Some(url) = m.load {
         let _ = writeln!(s, "import * as __wisp_u from {};", js_str(url));
@@ -6410,6 +6807,8 @@ fn var(vars: &[(String, String)], name: &str) -> Option<String> {
 /// What an import's module name resolves against: `src/lib`'s files (all
 /// under one hash) and the app's npm packages.
 struct Specs {
+    /// The `#[remote]` functions' module, `wisp:remote`, if there are any.
+    remote: Option<String>,
     /// `src/lib`'s files, as `x.js` or `dir/y.ts`.
     lib: Vec<String>,
     lib_hash: String,
@@ -6424,6 +6823,14 @@ fn resolve_spec(spec: &str, cx: &Specs, base: Option<&str>) -> Result<Option<Str
     if spec == "wisp" {
         let v = crate::runtime_version();
         return Ok(Some(format!("{LIVE_JS_PATH}?v={v}")));
+    }
+    if spec == "wisp:remote" {
+        return match &cx.remote {
+            Some(url) => Ok(Some(url.clone())),
+            None => Err(
+                "`wisp:remote` has the app's #[remote] functions, and it has none: mark one in a page's block or src/remote.rs".into(),
+            ),
+        };
     }
     if npm::is_bare(spec) {
         return cx.npm.url(spec).map(Some);
@@ -8345,6 +8752,7 @@ pub fn load() -> Data { todo!() }";
         // The script's bare imports are the app's npm packages.
         let deps = vec![("a".into(), "1".into()), ("b".into(), "2".into())];
         let specs = Specs {
+            remote: Some("/_app/c/remote.js?v=R".into()),
             lib: Vec::new(),
             lib_hash: "0".into(),
             npm: Npm::new(deps, None),
@@ -8360,8 +8768,65 @@ pub fn load() -> Data { todo!() }";
             env: &[],
             i18n: None,
             extra: "/_app/c/extra.js",
+            remotes: &["user".into(), "save".into(), "gone".into()],
         };
         client(&t, &cx).map(|c| c.expect("the page has browser code"))
+    }
+
+    #[test]
+    fn remote_functions_in_typescript() {
+        let items = rust_scan::scan(
+            "#[derive(Json)] struct User { name: String }\n\
+             #[remote] fn user(id: u64, note: Option<String>) -> Result<Option<User>> { todo!() }\n\
+             #[remote(get)] fn ping() {}",
+        )
+        .unwrap();
+        let remotes: Vec<RemoteFn> = (items.fns.iter())
+            .map(|f| RemoteFn {
+                f: f.clone(),
+                module: "page_0".into(),
+                rel: "src/remote.rs".into(),
+                types: items.types.clone(),
+            })
+            .collect();
+        let ts = remote_ts(&remotes).unwrap();
+        for want in [
+            "declare function user(id: number, note?: string | null): Promise<User>;",
+            "declare function ping(): Promise<void>;",
+            "declare module 'wisp:remote' {\n  export function user(",
+            "interface User {",
+        ] {
+            assert!(ts.contains(want), "{want}\n{ts}");
+        }
+        let js = remote_js(&remotes);
+        assert!(
+            js.contains(&format!(
+                "export const ping = (...a) => call(\"{}\", 1, [], a);",
+                remotes[1].path()
+            )),
+            "{js}"
+        );
+        // A release build's, shortened, keeps its exports.
+        let small = js::runtime(&js);
+        assert!(
+            small.len() < js.len() && small.contains("export let ping="),
+            "{small}"
+        );
+    }
+
+    #[test]
+    fn scripts_call_remote_functions_without_an_import() {
+        let src = "<button on:click=\"save(1)\">x</button><script>let u = await user(5); let gone = 1</script>";
+        let c = page_client(src, false).unwrap();
+        assert!(
+            c.source
+                .contains("import { user, save } from \"/_app/c/remote.js?v=R\";\n"),
+            "{}",
+            c.source
+        );
+        // None used: no import.
+        let c = page_client("<b on:click=\"n++\">x</b><script>let n = 0</script>", false).unwrap();
+        assert!(!c.source.contains("remote.js"), "{}", c.source);
     }
 
     #[test]
@@ -9127,6 +9592,7 @@ pub fn load() -> Data { todo!() }";
             ("@s/p".into(), "2.0.0".into()),
         ];
         let specs = |vendor| Specs {
+            remote: None,
             lib: Vec::new(),
             lib_hash: "H".into(),
             npm: Npm::new(deps.clone(), vendor),

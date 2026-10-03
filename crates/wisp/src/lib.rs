@@ -46,6 +46,7 @@ mod limit;
 mod live;
 pub mod password;
 mod policy;
+mod remote;
 mod rest;
 #[doc(hidden)]
 pub mod rt_traits;
@@ -87,7 +88,7 @@ pub use session::{sign_in_page, sign_out_everywhere};
 pub use sign::{hex, hmac_sha256};
 pub use store::{Store, store};
 pub use table::{Page, Row, Table};
-pub use wisp_macros::{Cookie, FromJson, Json, Rest, action};
+pub use wisp_macros::{Cookie, FromJson, Json, Rest, action, remote};
 pub use ws::{Message, WebSocket};
 
 use std::any::{Any, TypeId};
@@ -110,7 +111,7 @@ pub mod prelude {
     pub use crate::{
         Cookie, CookieOptions, Cx, Email, Error, FromJson, Image, Json, KB, MB, Method, OrStatus,
         Response, Rest, Result, Row, SameSite, Shared, Table, Value, action, error, invalid,
-        redirect,
+        redirect, remote,
     };
 }
 
@@ -1583,6 +1584,11 @@ pub mod rt {
             };
             Some((self.body_limit.unwrap_or(usual)).max(usual.saturating_add(uploads)))
         }
+    }
+
+    /// `#[remote]` functions' arguments and answers (see `remote.rs`).
+    pub mod remote {
+        pub use crate::remote::{args, get, members};
     }
 
     /// A handler's parameters, read by name (see `input.rs`).

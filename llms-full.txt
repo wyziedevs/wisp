@@ -16,6 +16,7 @@ package.json                npm packages for browser code: `wisp add canvas-conf
 .env                        X=…: `wisp::env("X")` (start), `env.PUBLIC_X` in browser code (build)
 src/hooks.rs                fn init() once; fn before(cx) every request
 src/NAME.rs                 any module, no `mod` line: `NAME::f()` everywhere
+src/remote.rs               #[remote] fns browser code calls (or in a page's block)
 src/components/Card.wisp    <Card title={x}>…</Card>
 src/lib/*.js (or .ts)       browser modules, `import … from '$lib/x.js'` (or `'$lib/x'`)
 src/params/word.rs          fn matches(s: &str) -> bool, for [x=word]
@@ -74,7 +75,7 @@ Block rules:
   `[[lang]]` → `Option<String>`. Works even with no block: `<h1>{slug}</h1>`.
 - No `use` lines needed: prelude = `Cx Response Result Error Email Image Json
   FromJson Rest Cookie Method Value Shared Table Row RateLimit OrStatus KB MB
-  action error invalid redirect`.
+  action remote error invalid redirect`.
   `Result` alone = `Result<()>`.
 - Layout blocks: statements are sync, `cx: &Cx`, no `.await`/`?`.
 - `const CACHE: u32 = 60;` (page or `+server.rs`): each worker keeps a GET's
@@ -292,6 +293,16 @@ server's `wisp::env("X")` reads the process's environment, else `.env`'s
 Source maps: dev serves `/_app/c/t3.js.map` beside each module (the `.wisp`
 line of each line); release only with `wisp build --sourcemap` (`--static`
 writes them too).
+Server functions: `#[remote] fn user(id: u64) -> Result<User> {…}` in a
+page's block or `src/*.rs` is `await user(5)` in any script or directive,
+no import (`src/lib`: `import { user } from 'wisp:remote'`). A POST of
+`{"id":5}` to `/_app/r/<hash>`: arguments `FromJson` by name, the answer
+as an endpoint's (`Json`; `Option` None → 404; nothing → `undefined`).
+Made as actions are (`cx`, `async`, `#[validate]` → 422 by field); the
+origin check and `before` apply. Errors reject with an `Error` of
+`status`, `message` (and `errors`); `redirect()` navigates.
+`#[remote(get)]`: a GET, each argument JSON in the query, ETag/304. A name
+is the app's once and not a JS global or helper (build error).
 Server values sent to JS must `#[derive(Json)]`. Full: docs/client.md.
 
 ## Endpoints (`+server.rs`)
@@ -2836,6 +2847,50 @@ endpoints are its API. With a server `load`, the whole `Data` is sent, so it
 must `#[derive(Json)]`. `params` holds the route's parameters (for
 `blog/[slug]`, `params.slug`) and `route.id` its pattern (`/blog/[slug]`),
 on the first load and after every navigation. It does not run on the server.
+
+## Server functions
+
+A Rust function marked `#[remote]`, in a page's block or in `src/remote.rs`
+(any `src/*.rs`), is a function browser code calls. No endpoint, no fetch,
+no import:
+
+```html
+---
+#[remote]
+fn user(id: u64) -> Result<User> {
+    USERS.get(id).map(|r| r.value).or_404()
+}
+---
+<button on:click="user(5).then((u) => (name = u.name))">Load</button>
+<p>{:name}</p>
+<script>
+  let name = ''
+</script>
+```
+
+In `src/lib`, import it: `import { user } from 'wisp:remote'`.
+
+- A call is a POST to `/_app/r/<hash>` with the arguments as a JSON object
+  by name (`{"id":5}`). Each is read with `FromJson` (numbers, strings,
+  `Option`, `Vec`, a `#[derive(FromJson)]` struct); one that is not the
+  type, or fails its `#[validate(…)]`, is a 422 by field, all at once.
+- The answer is an endpoint's: a `#[derive(Json)]` value as JSON, `None`
+  as a 404, nothing as a 204 (`undefined`).
+- It is made as an action is: `cx` when the body uses it, `async` when it
+  `.await`s, `-> Result` when it has no `->`. The same-origin check and
+  `before` in hooks.rs run first, as for actions.
+- An error rejects with an `Error` whose `status` and `message` are the
+  server's (and `errors`, by field, for a 422). `redirect("/x")` navigates
+  there, as a form's does.
+- `#[remote(get)]` makes it a GET, each argument as JSON in the query
+  (`?id=5&q=%22tea%22`; text that is not JSON is a string). Its answer has
+  an `etag`, so the browser keeps it and gets a 304 when it is the same.
+
+Names are global to browser code: two of one name, or one JavaScript or
+Wisp already has (`fetch`, `goto`), is a build error. A name the script
+declares itself, or a server value of the page, is that instead.
+`wisp check --types` types each (`declare function user(id: number):
+Promise<User>`). An app without any serves nothing more and pays nothing.
 
 ## Errors
 
