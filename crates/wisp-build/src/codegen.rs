@@ -128,6 +128,8 @@ struct UserMod {
     shims: Vec<String>,
     /// The tables it keeps (`super::TODOS`), which load at startup.
     tables: Vec<String>,
+    /// Its `#[derive(Config)]` types, which read the environment before `init`.
+    configs: Vec<String>,
 }
 
 impl UserMod {
@@ -144,6 +146,7 @@ impl UserMod {
             inline,
             shims,
             tables: items.tables(),
+            configs: items.configs(),
         }
     }
 
@@ -151,6 +154,14 @@ impl UserMod {
     /// tables.
     fn calls(&self) -> Vec<String> {
         let mut out = self.shims.clone();
+        if !self.configs.is_empty() {
+            let each: String = (self.configs.iter())
+                .map(|c| format!("{c}::load()?; "))
+                .collect();
+            out.push(format!(
+                "pub fn __config() -> ::wisp::Result<()> {{ {each}Ok(()) }}"
+            ));
+        }
         if !self.tables.is_empty() {
             let each: String = self
                 .tables
@@ -2067,6 +2078,7 @@ impl<'a> Project<'a> {
                 inline: lg.inline,
                 shims,
                 tables,
+                configs: Vec::new(),
             });
         }
         let tpl = self.add_tpl(format!("tpl_page_{i}"), &file, Kind::Page, t);
@@ -3761,6 +3773,14 @@ impl Gen {
 
     fn init(&mut self, p: &Project) {
         self.line(1, "async fn init() -> ::wisp::Result<()> {");
+        // What `#[derive(Config)]` reads is there for `init`.
+        let mods = p.mods.iter().map(|m| (m, "__mods::"));
+        let own = p.hooks.iter().chain(&p.user_mods).map(|m| (m, ""));
+        for (m, at) in mods.chain(own) {
+            if !m.configs.is_empty() {
+                self.line(2, &format!("{at}{}::__call::__config()?;", m.name));
+            }
+        }
         if p.has_hook("init") {
             self.line(2, "hooks::__call::init().await?;");
         }

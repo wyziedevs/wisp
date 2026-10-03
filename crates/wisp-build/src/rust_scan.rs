@@ -150,6 +150,14 @@ impl Items {
         statics.chain(rest).collect()
     }
 
+    /// The `#[derive(Config)]` types, which read the environment at start.
+    pub fn configs(&self) -> Vec<String> {
+        let has = |t: &&TypeItem| t.derives.iter().any(|d| d == "Config");
+        (self.types.iter().filter(has))
+            .map(|t| format!("super::{}", t.name))
+            .collect()
+    }
+
     /// Why the file cannot be a route file (or `src/hooks.rs`), if it
     /// cannot: its `load` must return the `Data` the template reads.
     pub fn check(&self) -> Result<(), String> {

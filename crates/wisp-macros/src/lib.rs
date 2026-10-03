@@ -852,6 +852,57 @@ pub fn derive_rest(item: TokenStream) -> TokenStream {
     }
 }
 
+/// What the app reads from its environment once, at start: each field of
+/// the struct from the variable of its name in capitals (`api_key` from
+/// `API_KEY`, or `.env`), any `FromStr` type, an `Option` one may be unset.
+/// `Config::get().api_key` reads it anywhere. A variable missing or not
+/// parsing stops the server when it starts (the build calls `Config::load()`
+/// before `init`), naming each one, never a request.
+#[proc_macro_derive(Config)]
+pub fn derive_config(item: TokenStream) -> TokenStream {
+    match config(item) {
+        Ok(code) => code,
+        Err((msg, span)) => error(&msg, span),
+    }
+}
+
+fn config(item: TokenStream) -> Result<TokenStream, Error> {
+    let (name, shape) = read_type(item.clone(), "Config")?;
+    let fields = named_fields(&item)?;
+    if !matches!(shape, Shape::Named(_)) || fields.is_empty() {
+        return Err((
+            "#[derive(Config)] works on a struct with named fields: one variable each".into(),
+            name.span(),
+        ));
+    }
+    let (mut reads, mut some, mut list) = (String::new(), String::new(), String::new());
+    for f in &fields {
+        let (n, key) = (&f.name, f.name.to_string().to_uppercase());
+        let helper = if f.ty.starts_with("Option") {
+            "config_opt"
+        } else {
+            "config"
+        };
+        reads.push_str(&format!("let {n} = ::wisp::rt::{helper}({key:?}, &mut __bad); "));
+        some.push_str(&format!("Some({n}), "));
+        list.push_str(&format!("{n}, "));
+    }
+    Ok(parse(&format!(
+        "static __CONFIG_{name}: ::std::sync::OnceLock<{name}> = ::std::sync::OnceLock::new(); \
+         #[allow(dead_code)] impl {name} {{ \
+         pub fn load() -> ::wisp::Result<()> {{ \
+         if __CONFIG_{name}.get().is_some() {{ return Ok(()); }} \
+         let mut __bad = ::std::vec::Vec::<::std::string::String>::new(); \
+         {reads}\
+         let ({some}) = ({list}) else {{ return Err(::wisp::rt::config_error(&__bad)); }}; \
+         let _ = __CONFIG_{name}.set({name} {{ {list} }}); \
+         Ok(()) }} \
+         pub fn get() -> &'static {name} {{ \
+         if let Err(e) = {name}::load() {{ panic!(\"{{}}\", e.message()); }} \
+         __CONFIG_{name}.get().expect(\"loaded\") }} }}"
+    )))
+}
+
 /// What `#[rest(...)]` takes, for its errors.
 const REST_TAKES: &str = "#[rest] takes key = \"ENV_VAR\", write = \"ENV_VAR\", admin = \"ENV_VAR\", \
                           table = \"name\", ids = \"random\" and memory";
