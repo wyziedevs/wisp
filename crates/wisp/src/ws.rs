@@ -7,6 +7,9 @@
 //! masked), puts fragmented messages back together, answers pings, echoes
 //! a close, checks text is UTF-8, and refuses a message larger than the
 //! route's body limit. No extensions (compression) are offered.
+//!
+//! The edge build has no connections to upgrade: it keeps the codec, and
+//! answers an upgrade 501 without running it.
 #![cfg_attr(target_arch = "wasm32", allow(dead_code))]
 
 use crate::{Cx, Error, Gone, Method, Response, Result};
@@ -113,7 +116,7 @@ pub(crate) fn handshake(cx: &Cx) -> Result<String> {
         })
     };
     if cx.method != Method::Get
-        || !cx.http11
+        || !cx.wire.http11
         || !has("upgrade", "websocket")
         || !has("connection", "upgrade")
     {
@@ -202,6 +205,8 @@ fn compress(state: &mut [u32; 5], block: &[u8; 64]) {
         *s = s.wrapping_add(v);
     }
 }
+
+// The frame codec, for the built-in server alone.
 
 const CONTINUATION: u8 = 0;
 const TEXT: u8 = 1;
@@ -314,6 +319,10 @@ impl Inbox {
                 Ok(None) => {
                     self.buf.drain(..self.at);
                     self.at = 0;
+                    // What one large message grew it to goes once it is read.
+                    if !crate::policy::kept(self.buf.capacity()) {
+                        self.buf.shrink_to(crate::policy::KEEP_CAPACITY);
+                    }
                     return None;
                 }
                 Err(code) => return Some(Event::Fail(code)),
@@ -530,6 +539,8 @@ mod native {
             buf.clear();
             frame(buf, op, payload);
             let sent = http::write(half, buf).await;
+            buf.clear();
+            crate::policy::trim(buf, 0);
             if op == CLOSE || sent.is_err() {
                 self.closed.store(true, Ordering::Relaxed);
             }
@@ -683,6 +694,14 @@ mod tests {
         assert!(matches!(&got[1], Event::Message(Message::Text(t)) if t == "Hello"));
         assert!(matches!(&got[2], Event::Message(Message::Binary(b)) if b.len() == 300));
         assert_eq!(got.len(), 3);
+    }
+
+    #[test]
+    fn a_large_message_leaves_no_large_buffer() {
+        let mut i = inbox(client(true, BINARY, &[7; 300_000]), 1 << 20);
+        assert!(matches!(i.next(), Some(Event::Message(Message::Binary(b))) if b.len() == 300_000));
+        assert!(i.next().is_none());
+        assert!(i.buf.capacity() <= crate::policy::KEEP_CAPACITY);
     }
 
     #[test]

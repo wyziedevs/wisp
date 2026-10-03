@@ -62,6 +62,29 @@ pub fn above(x: u64, n: u8) -> u64 {
     (x.wrapping_add(LO * (127 - n) as u64) | x) & HI
 }
 
+/// Control bytes, which end a header value: below 0x20, and DEL.
+#[inline(always)]
+pub fn control(x: u64) -> u64 {
+    below(x, 0x20) | eq(x, 0x7f)
+}
+
+/// [`control`] for one byte.
+#[inline(always)]
+pub fn is_control(c: u8) -> bool {
+    c < 0x20 || c == 0x7f
+}
+
+/// Whether any of sixteen bytes is [`control`]: byte by byte, which the
+/// compiler makes one vector compare.
+#[inline(always)]
+pub fn any_control(chunk: &[u8]) -> bool {
+    let mut stop = 0u8;
+    for &c in chunk {
+        stop |= is_control(c) as u8;
+    }
+    stop != 0
+}
+
 /// Whether `test` matches no byte of `b`. Past eight bytes, the last word
 /// overlaps the one before; below, the bytes are padded with `a`, which
 /// `test` must not match.
@@ -75,6 +98,37 @@ pub fn none(b: &[u8], test: impl Fn(u64) -> u64) -> bool {
         hit |= test(u64::from_le_bytes(*w));
     }
     hit == 0
+}
+
+/// Bytes that are not a letter, a digit or `-`, which most header names
+/// are made of. Exact up to the first match (a byte of 0x80 and up may
+/// carry into the ones above it).
+#[inline(always)]
+pub fn not_name(x: u64) -> u64 {
+    let l = x | (LO * 0x20);
+    let range = |x: u64, lo: u8, hi: u8| above(x, lo - 1) & !above(x, hi);
+    !(range(l, b'a', b'z') | range(x, b'0', b'9') | range(x, b'-', b'-')) & HI | x & HI
+}
+
+/// Whether `s` is `lower` (ASCII, its letters lowercase) but for the case
+/// of letters, as `eq_ignore_ascii_case` says: a byte where `lower` has a
+/// letter matches it in either case (bit 5 set, the two become one), any
+/// other only itself.
+#[inline(always)]
+pub fn eq_lower(s: &[u8], lower: &[u8]) -> bool {
+    let same = |x: u64, t: u64| x | (above(t, b'a' - 1) & !above(t, b'z')) >> 2 == t;
+    if s.len() != lower.len() {
+        return false;
+    }
+    if s.len() < 8 {
+        return same(tail(s, 0), tail(lower, 0));
+    }
+    let last = s.len() - 8;
+    let mut ok = same(word(s, last), word(lower, last));
+    for (a, b) in s.as_chunks::<8>().0.iter().zip(lower.as_chunks::<8>().0) {
+        ok &= same(u64::from_le_bytes(*a), u64::from_le_bytes(*b));
+    }
+    ok
 }
 
 /// Where the first match of a nonzero `mask` is, from 0 to 7.
@@ -92,7 +146,9 @@ mod tests {
     #[test]
     fn tests_match_byte_by_byte() {
         type Test = (fn(u64) -> u64, fn(u8) -> bool);
-        let tests: [Test; 6] = [
+        let tests: [Test; 8] = [
+            (not_name, |b| !(b.is_ascii_alphanumeric() || b == b'-')),
+            (control, is_control),
             (|x| eq(x, 0), |b| b == 0),
             (|x| eq(x, b'"'), |b| b == b'"'),
             (|x| eq(x, 0xff), |b| b == 0xff),
@@ -158,6 +214,25 @@ mod tests {
         }
         for s in ["é", "ünï", "\u{2028}"] {
             assert!(!valid_header(s, "v") && valid_header("n", s));
+        }
+    }
+
+    /// Every byte value at every place of every length up to 17, against
+    /// `eq_ignore_ascii_case`, for targets of letters, digits and `-`.
+    #[test]
+    fn eq_lower_matches_eq_ignore_ascii_case() {
+        let target = b"content-length-100";
+        for len in 0..=17 {
+            let lower = &target[..len];
+            assert!(!eq_lower(lower, &target[..len + 1]));
+            assert!(eq_lower(&lower.to_ascii_uppercase(), lower));
+            for at in 0..len {
+                for v in 0..=255u8 {
+                    let mut s = lower.to_vec();
+                    s[at] = v;
+                    assert_eq!(eq_lower(&s, lower), s.eq_ignore_ascii_case(lower), "{s:?}");
+                }
+            }
         }
     }
 

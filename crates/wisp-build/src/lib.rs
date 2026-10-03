@@ -5,13 +5,20 @@
 mod codegen;
 mod fold;
 mod js;
+mod model;
+pub mod npm;
 mod openapi;
 pub mod routes;
-mod rules;
+pub mod rules;
 pub mod rust_scan;
 mod shell;
 pub mod template;
 mod ty;
+
+// The runtime's HTML context rules (escaping, URL attributes and the
+// schemes that run script) and live-page wire protocol: what a build folds
+// and writes and what the runtime does are one code.
+use wisp_shared::{contexts, protocol};
 
 /// JavaScript without comments and needless whitespace, its names
 /// shortened: the browser runtime as release builds serve it (`wisp`'s
@@ -34,7 +41,13 @@ pub fn run() {
 
     // Only existing paths: Cargo treats a missing one as always changed, which
     // would rebuild the app on every `cargo build`.
-    for p in ["src", "static", ".wisp/app.css"] {
+    for p in [
+        "src",
+        "static",
+        ".wisp/app.css",
+        "package.json",
+        ".wisp/npm",
+    ] {
         if root.join(p).exists() {
             println!("cargo::rerun-if-changed={p}");
         }
@@ -70,7 +83,9 @@ pub fn uses_tailwind(css: &str) -> bool {
     css.contains("@import \"tailwindcss\"") || css.contains("@import 'tailwindcss'")
 }
 
-/// A JSON (and JavaScript) string literal.
+/// A JSON (and JavaScript) string literal, for files of their own (a
+/// module, the OpenAPI document) and values the server writes escaped:
+/// not for inside a `<script>`, as `<` stays.
 pub(crate) fn json_str(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
@@ -80,6 +95,9 @@ pub(crate) fn json_str(s: &str) -> String {
             '\\' => out.push_str("\\\\"),
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
+            // Older JavaScript took these for line ends, inside strings too.
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
             c if c < ' ' => out.push_str(&format!("\\u{:04x}", c as u32)),
             c => out.push(c),
         }
@@ -97,7 +115,27 @@ pub fn hot_chunks(root: &Path, rel: &str) -> Result<(Vec<String>, u64), String> 
         let parts = shell::split(&src).map_err(|e| format!("{rel}: {e}"))?;
         return Ok((parts.to_vec(), shell::SHAPE));
     }
-    let (t, _) = parse_wisp(&src).map_err(|e| format!("{rel}:{e}"))?;
+    let (rust, markup) = split_front(&src).map_err(|e| format!("{rel}:{e}"))?;
+    // A page's forms' fields get their attributes, as in the build: from
+    // its block or its `+page.rs`, its route's params and the app's types.
+    let rs = rel
+        .strip_suffix("+page.wisp")
+        .and_then(|dir| read_source(&root.join(dir).join("+page.rs")).ok());
+    let items = match (&rust, rs) {
+        (Some(block), _) => rust_scan::scan(&rust_scan::split_items(block).0),
+        (None, Some(rs)) => rust_scan::scan(&rs),
+        (None, None) => Ok(rust_scan::Items::default()),
+    };
+    let segs: Vec<routes::Seg> = (rel.split('/'))
+        .filter_map(|d| routes::parse_segment(d).ok().flatten())
+        .collect();
+    let params: Vec<&str> = segs.iter().filter_map(routes::Seg::param).collect();
+    // What does not scan has no fields: the build says what is wrong.
+    let fields = items.map_or_else(
+        |_| Vec::new(),
+        |i| rules::fields(&i, &params, &shared_types(root)),
+    );
+    let (t, _) = parse_markup(&markup, rust, &fields).map_err(|e| format!("{rel}:{e}"))?;
     Ok((t.chunks, t.shape))
 }
 
@@ -107,11 +145,38 @@ pub fn hot_chunks(root: &Path, rel: &str) -> Result<(Vec<String>, u64), String> 
 /// changing it means compiling again. Errors are `line:col: msg`.
 pub fn parse_wisp(src: &str) -> Result<(template::Template, Option<String>), String> {
     let (rust, markup) = split_front(src)?;
-    let mut t = template::parse(&markup).map_err(|e| e.to_string())?;
+    parse_markup(&markup, rust, &[])
+}
+
+/// The markup of a `.wisp` file `split_front` split, parsed: the fields of
+/// its action forms given the attributes the browser checks them by
+/// ([`rules::fields`]), the Rust of its block in its shape.
+pub(crate) fn parse_markup(
+    markup: &str,
+    rust: Option<String>,
+    fields: &[rules::Field],
+) -> Result<(template::Template, Option<String>), String> {
+    let mut t = template::parse_with(markup, fields).map_err(|e| e.to_string())?;
     if let Some(r) = &rust {
         t.shape ^= fnv1a(r.as_bytes()).rotate_left(1);
     }
     Ok((t, rust))
+}
+
+/// The types the app's own modules (`src/*.rs`) define, in name order (so
+/// that the first of two of one name is the same on every machine); a
+/// file that does not scan is skipped. Endpoints and forms name them.
+pub(crate) fn shared_types(root: &Path) -> Vec<rust_scan::TypeItem> {
+    let mut files: Vec<PathBuf> = (fs::read_dir(root.join("src")).into_iter().flatten())
+        .flatten()
+        .map(|e| e.path())
+        .filter(|f| f.extension().is_some_and(|e| e == "rs"))
+        .collect();
+    files.sort();
+    (files.iter())
+        .filter_map(|f| rust_scan::scan(&read_source(f).ok()?).ok())
+        .flat_map(|items| items.types)
+        .collect()
 }
 
 /// Splits off the `---` block of Rust a page or layout may start with:
@@ -125,7 +190,7 @@ pub fn parse_wisp(src: &str) -> Result<(template::Template, Option<String>), Str
 ///
 /// Both halves keep the file's lines: the Rust with the markup blanked, the
 /// markup with the block's lines left empty.
-fn split_front(src: &str) -> Result<(Option<String>, String), String> {
+pub(crate) fn split_front(src: &str) -> Result<(Option<String>, String), String> {
     let lines: Vec<&str> = src.split('\n').collect();
     let Some(open) = lines.iter().position(|l| !l.trim().is_empty()) else {
         return Ok((None, src.to_string()));
@@ -160,12 +225,13 @@ fn split_front(src: &str) -> Result<(Option<String>, String), String> {
 }
 
 /// Checks the whole project the way `run` does, without writing anything.
-pub fn check(root: &Path) -> Result<(), String> {
-    codegen::generate(&codegen::Input {
+/// Returns the esm.sh paths of the npm modules the app's browser code
+/// imports, which `wisp build` downloads into `.wisp/npm` for a release.
+pub fn check(root: &Path) -> Result<Vec<String>, String> {
+    codegen::check(&codegen::Input {
         root,
         release: false,
     })
-    .map(|_| ())
 }
 
 /// The TypeScript client of the project's `+server.rs` endpoints: a module
@@ -185,11 +251,12 @@ pub fn client_ts(root: &Path) -> Result<String, String> {
 pub fn runtime_version() -> &'static str {
     static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     V.get_or_init(|| {
-        let js = concat!(
-            include_str!("../../wisp/src/client/wisp.js"),
-            include_str!("../../wisp/src/client/live.js")
-        );
-        format!("{}-{:08x}", env!("CARGO_PKG_VERSION"), fnv1a(js.as_bytes()) as u32)
+        let js = [wisp_shared::WISP_JS, wisp_shared::LIVE_JS].concat();
+        format!(
+            "{}-{:08x}",
+            env!("CARGO_PKG_VERSION"),
+            fnv1a(js.as_bytes()) as u32
+        )
     })
 }
 

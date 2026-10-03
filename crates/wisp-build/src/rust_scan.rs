@@ -12,6 +12,8 @@
 use crate::template::{raw_str_start, skip_char, skip_raw_str, skip_str};
 pub use crate::ty::last_segment;
 use crate::ty::{first_arg, is_ident, is_word, option_inner};
+pub use wisp_shared::rust::awaits;
+use wisp_shared::rust::{skip_block_comment, skip_literal, skip_space};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FnItem {
@@ -19,7 +21,8 @@ pub struct FnItem {
     pub action: bool,
     /// `pub`, in any form.
     pub public: bool,
-    /// `async fn`: the call is awaited.
+    /// `async fn`, or an action whose body `.await`s (`#[action]` makes it
+    /// `async`): the call is awaited.
     pub is_async: bool,
     /// Every parameter, as its pattern and its type: `("slug", "String")`.
     pub params: Vec<(String, String)>,
@@ -49,6 +52,14 @@ pub struct TypeItem {
     /// `#[validate(len = 1..=9)]` on its fields, as (field, what is inside
     /// `validate(…)`).
     pub rules: Vec<(String, String)>,
+}
+
+impl TypeItem {
+    /// Field `name` is one Wisp sets when it is left out: a
+    /// `#[derive(Rest)]` type's `created_at` and `updated_at`.
+    pub fn set_by_wisp(&self, name: &str) -> bool {
+        matches!(name, "created_at" | "updated_at") && self.derives.iter().any(|d| d == "Rest")
+    }
 }
 
 /// A top-level `const` or `static`.
@@ -176,7 +187,7 @@ impl FnItem {
             if is_cx(ty) {
                 continue;
             }
-            let name = pat.strip_prefix("mut ").unwrap_or(pat).trim();
+            let name = pat.as_str();
             if !is_ident(name) || name == "_" {
                 return Err(format!(
                     "{}: `{}` takes `{pat}: {ty}`; each parameter but `cx` is read from the request by its name, so it needs one, like `id: u64`",
@@ -375,8 +386,13 @@ pub fn scan(src: &str) -> Result<Items, String> {
                                 && !takes_cx
                                 && b.get(body) == Some(&b'{')
                                 && uses_ident(&b[body..block_end(b, body)], b"cx");
-                            // `#[action]` makes one without `->` return `Result`.
+                            // `#[action]` makes one without `->` return `Result`,
+                            // and one that awaits `async`.
                             let fallible = fallible || (action && returns.is_empty());
+                            is_async = is_async
+                                || (action
+                                    && b.get(body) == Some(&b'{')
+                                    && awaits(&src[body..block_end(b, body)]));
                             items.fns.push(FnItem {
                                 name,
                                 action,
@@ -429,10 +445,8 @@ fn fields(src: &str, i: usize) -> Params {
     let (mut depth, mut start, mut j) = (0i32, open + 1, open + 1);
     while j < b.len() {
         match b[j] {
-            b'/' if b.get(j + 1) == Some(&b'/') => j = skip_space(b, j) - 1,
-            b'/' if b.get(j + 1) == Some(&b'*') => j = skip_block_comment(b, j),
-            b'"' => j = skip_str(b, j),
-            b'\'' => j = skip_char(b, j),
+            // Strings (raw ones too), chars and comments.
+            b'/' | b'"' | b'\'' | b'r' if skip_literal(b, j) != j => j = skip_literal(b, j),
             b'(' | b'[' | b'{' | b'<' => depth += 1,
             b'>' if b[j - 1] == b'-' => {}
             b')' | b']' | b'>' => depth -= 1,
@@ -587,6 +601,11 @@ fn signature(src: &str, mut i: usize) -> (Params, bool, String, usize) {
                     for piece in split_top(&text) {
                         let (rules, rest) = param_attrs(piece);
                         let (name, ty) = param(rest);
+                        // `mut n` reads input `n`: the name alone, once.
+                        let name = match name.strip_prefix("mut ") {
+                            Some(n) => n.trim().to_string(),
+                            None => name,
+                        };
                         if let Some(r) = rules {
                             params.1.push((name.clone(), r));
                         }
@@ -600,6 +619,7 @@ fn signature(src: &str, mut i: usize) -> (Params, bool, String, usize) {
         }
         i += 1;
     }
+    let i = i.min(b.len());
     let returns = ret.map_or("", |r| {
         let t = &src[r..i];
         // Up to a `where` clause.
@@ -636,25 +656,6 @@ fn block_end(b: &[u8], open: usize) -> usize {
         i += 1;
     }
     b.len()
-}
-
-/// If a literal or comment starts at `i`, the index of its last byte;
-/// otherwise `i`.
-fn skip_literal(b: &[u8], i: usize) -> usize {
-    match b[i] {
-        b'"' => skip_str(b, i),
-        b'\'' => skip_char(b, i),
-        b'r' if raw_str_start(b, i).is_some() => skip_raw_str(b, i),
-        b'/' if b.get(i + 1) == Some(&b'/') => {
-            let mut j = i;
-            while j + 1 < b.len() && b[j + 1] != b'\n' {
-                j += 1;
-            }
-            j
-        }
-        b'/' if b.get(i + 1) == Some(&b'*') => skip_block_comment(b, i),
-        _ => i,
-    }
 }
 
 /// Whether the identifier `name` appears in `b` as code (not in a literal,
@@ -801,16 +802,60 @@ pub fn let_names(stmts: &str) -> Vec<String> {
     out
 }
 
-/// Whether the expression `code` awaits: `.await` outside its literals.
-pub fn awaits(code: &str) -> bool {
+/// Whether statements `code` may wait: they `.await`, or call a macro,
+/// which may expand to an await (`join!`, `select!`, one of the app's),
+/// but for std's that cannot. A doubt is a yes: see `codegen`'s `now`.
+pub fn may_wait(code: &str) -> bool {
+    const PLAIN: [&[u8]; 32] = [
+        b"assert",
+        b"assert_eq",
+        b"assert_ne",
+        b"cfg",
+        b"column",
+        b"concat",
+        b"dbg",
+        b"debug_assert",
+        b"debug_assert_eq",
+        b"debug_assert_ne",
+        b"env",
+        b"eprint",
+        b"eprintln",
+        b"file",
+        b"format",
+        b"format_args",
+        b"include_bytes",
+        b"include_str",
+        b"line",
+        b"matches",
+        b"module_path",
+        b"option_env",
+        b"panic",
+        b"print",
+        b"println",
+        b"stringify",
+        b"todo",
+        b"unimplemented",
+        b"unreachable",
+        b"vec",
+        b"write",
+        b"writeln",
+    ];
+    if awaits(code) {
+        return true;
+    }
     let b = code.as_bytes();
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'.' {
-            let at = skip_space(b, i + 1);
-            if b[at..].starts_with(b"await") && b.get(at + 5).is_none_or(|&c| !is_word(c)) {
+        if b[i].is_ascii_alphabetic() || b[i] == b'_' {
+            let end = ident_end(b, i);
+            let bang = b.get(end) == Some(&b'!') && b.get(end + 1) != Some(&b'=');
+            // Any path is a doubt (`tokio::join!`), even `std::vec!`.
+            let path = b[..i].ends_with(b"::");
+            if bang && (path || !PLAIN.contains(&&b[i..end])) {
                 return true;
             }
+            i = end;
+            continue;
         }
         i = skip_literal(b, i) + 1;
     }
@@ -920,50 +965,12 @@ fn strip_comments(s: &str) -> String {
     out
 }
 
-/// The index of the first byte at or after `i` that is not whitespace or
-/// in a comment.
-fn skip_space(b: &[u8], mut i: usize) -> usize {
-    while i < b.len() {
-        if b[i].is_ascii_whitespace() {
-            i += 1;
-        } else if b[i..].starts_with(b"//") {
-            while i < b.len() && b[i] != b'\n' {
-                i += 1;
-            }
-        } else if b[i..].starts_with(b"/*") {
-            i = skip_block_comment(b, i) + 1;
-        } else {
-            break;
-        }
-    }
-    i
-}
-
 /// The end of the identifier starting at `i` (`i` itself if there is none).
 pub(crate) fn ident_end(b: &[u8], mut i: usize) -> usize {
     while i < b.len() && is_word(b[i]) {
         i += 1;
     }
     i
-}
-
-fn skip_block_comment(b: &[u8], mut i: usize) -> usize {
-    let mut depth = 0;
-    while i + 1 < b.len() {
-        if b[i] == b'/' && b[i + 1] == b'*' {
-            depth += 1;
-            i += 2;
-        } else if b[i] == b'*' && b[i + 1] == b'/' {
-            depth -= 1;
-            i += 2;
-            if depth == 0 {
-                return i - 1;
-            }
-        } else {
-            i += 1;
-        }
-    }
-    b.len()
 }
 
 /// Where the file's leading `//!` docs and `#![…]` attributes end (0 if it
@@ -985,7 +992,7 @@ pub fn inner_end(src: &str) -> usize {
             }
         } else if rest.starts_with("/*") && !rest.starts_with("/**") {
             let doc = rest.starts_with("/*!");
-            i = skip_block_comment(b, i) + 1;
+            i = (skip_block_comment(b, i) + 1).min(b.len());
             if doc {
                 end = i;
             }
@@ -1034,7 +1041,7 @@ fn matching_bracket(b: &[u8], open: usize) -> Option<usize> {
                     return Some(i);
                 }
             }
-            b'"' => i = skip_str(b, i),
+            b'"' | b'r' => i = skip_literal(b, i),
             _ => {}
         }
         i += 1;
@@ -1126,6 +1133,17 @@ mod tests {
                 ("after_const".into(), true, false, false),
             ]
         );
+    }
+
+    #[test]
+    fn actions_that_await_are_async() {
+        let src = "#[action] fn a() { let h = hash(&p).await; }
+                   #[action] fn b() { let s = \"x.await\"; }
+                   fn c() { f().await }
+                   #[action] async fn d() {}";
+        let fs = top_level_fns(src);
+        let got: Vec<bool> = fs.iter().map(|f| f.is_async).collect();
+        assert_eq!(got, [true, false, false, true]);
     }
 
     #[test]
@@ -1255,7 +1273,7 @@ mod tests {
  /// one, two
  pub a: Vec<(u8, u8)>,
  #[x(a, b)] pub b: String,
- pub(crate) c: u8,
+ #[doc = r#\"a\", }\"#] pub(crate) c: u8,
  d: u8,
  pub e: fn(u8) -> u8,
  // pub f: u8,
@@ -1441,13 +1459,13 @@ fn a() {}"
         assert_eq!(
             f.params,
             [
-                ("mut t".to_string(), "String".to_string()),
+                ("t".to_string(), "String".to_string()),
                 ("n".into(), "u8".into())
             ]
         );
         assert_eq!(
             f.checks,
-            [("mut t".to_string(), "len = 1..=9, email".to_string())]
+            [("t".to_string(), "len = 1..=9, email".to_string())]
         );
         let g = &top_level_fns("fn g(id: u64) -> Result<Option<Note>> { todo!() }")[0];
         assert_eq!(g.optional_value(), Some("Note"));
@@ -1469,6 +1487,39 @@ fn a() {}"
         assert!(super::awaits("f(x). await ?"));
         assert!(!super::awaits("\"a.await\""));
         assert!(!super::awaits("x.awaited"));
+        assert!(super::awaits(
+            "f(x)./* c */
+ await"
+        ));
+    }
+
+    #[test]
+    fn statements_that_may_wait() {
+        let wait = super::may_wait;
+        assert!(wait("let a = db::a().await;"));
+        assert!(wait(
+            "let a = f()
+    .await?;"
+        ));
+        assert!(wait("let (a, b) = tokio::join!(f(), g());"));
+        assert!(wait("let a = join!(f(), g());"));
+        assert!(wait("let a = get!(f());"));
+        assert!(wait("let v = std::vec![1];"));
+        assert!(!wait(
+            "let a = format!(\"{}\", 1); let v = vec![1]; assert!(a != \"\");"
+        ));
+        assert!(!wait("let a = x!=y; let s = \"join!(a)\"; // get!(x)"));
+        assert!(!wait("let a = f(); /* x.await */"));
+    }
+
+    #[test]
+    fn unclosed_literals_and_comments_end_the_text() {
+        // Found by the fuzz tests: each panicked past the end.
+        assert_eq!(super::inner_end("/*! a"), 5);
+        assert_eq!(super::inner_end("/*"), 0);
+        assert!(!super::awaits("x./* a"));
+        assert!(super::scan("fn t()->'\\").is_ok());
+        assert!(super::scan("fn r->'\\").is_ok());
     }
 
     #[test]
@@ -1487,7 +1538,7 @@ fn a() {}"
             [
                 "cx:&mut Cx",
                 "slug:String",
-                "mut n:Option<u32>",
+                "n:Option<u32>",
                 "f:impl Fn(u8, u8) -> u8"
             ]
         );

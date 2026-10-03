@@ -222,6 +222,31 @@ fn javascript_is_minified() {
     assert_eq!(min(&once), once);
 }
 
+/// The runtime as release builds serve it (minified by `wisp`'s build.rs
+/// and codegen) still parses. Run by Node when there is one.
+#[test]
+fn the_minified_runtime_parses() {
+    let dir = std::env::temp_dir();
+    for (file, js) in [
+        ("live.mjs", wisp_shared::LIVE_JS),
+        ("wisp.js", wisp_shared::WISP_JS),
+        ("extra.mjs", wisp_shared::EXTRA_JS),
+    ] {
+        let path = dir.join(format!("wisp-check-{}-{file}", std::process::id()));
+        fs::write(&path, minify_js(js)).unwrap();
+        let checked = std::process::Command::new("node")
+            .arg("--check")
+            .arg(&path)
+            .output();
+        let _ = fs::remove_file(&path);
+        let Ok(checked) = checked else {
+            return; // no Node here
+        };
+        let why = String::from_utf8_lossy(&checked.stderr);
+        assert!(checked.status.success(), "{file}: {why}");
+    }
+}
+
 /// What the browser runtime is served as: names it binds are shortened,
 /// what it does not (exports, globals, properties) is not.
 #[test]
@@ -627,4 +652,34 @@ fn templates_parse_from_the_public_module() {
     let client = template::parse("<p :hidden=\"a\">x</p><script>let a</script>").unwrap();
     assert!(client.is_live() && client.script.is_some());
     assert!(!template::parse("<p>x</p>").unwrap().is_live());
+}
+
+#[test]
+fn a_package_import_needs_the_package() {
+    let page = (
+        "src/routes/+page.wisp",
+        "<button on:click=\"go()\">x</button>\n<script>\n  import confetti from 'canvas-confetti'\n  function go() { confetti() }\n</script>",
+    );
+    let lib = (
+        "src/lib/fx.js",
+        "export { default } from 'canvas-confetti/x'\n",
+    );
+    let p = Project::new(&[page, lib]);
+    let e = wisp_build::check(p.root()).unwrap_err();
+    assert!(
+        e.contains("src/lib/fx.js") && e.contains("`wisp add canvas-confetti`"),
+        "{e}"
+    );
+    let json = (
+        "package.json",
+        "{\"dependencies\": {\"canvas-confetti\": \"1.9.3\"}}",
+    );
+    let p = Project::new(&[page, lib, json]);
+    assert_eq!(
+        wisp_build::check(p.root()).unwrap(),
+        [
+            "/canvas-confetti@1.9.3/x?target=es2022",
+            "/canvas-confetti@1.9.3?target=es2022"
+        ]
+    );
 }

@@ -125,6 +125,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokens-real-wisp"
+version = "0.0.0"
+dependencies = [
+ "wisp",
+ "wisp-build",
+]
+
+[[package]]
 name = "tokens-wisp"
 version = "0.0.0"
 dependencies = [
@@ -188,6 +196,7 @@ dependencies = [
  "tower-service",
  "wisp-build",
  "wisp-macros",
+ "wisp-shared",
 ]
 
 [[package]]
@@ -201,20 +210,34 @@ dependencies = [
 [[package]]
 name = "wisp-build"
 version = "0.1.0"
+dependencies = [
+ "wisp-shared",
+]
 
 [[package]]
 name = "wisp-cli"
 version = "0.1.0"
 dependencies = [
  "wisp-build",
+ "wisp-shared",
 ]
 
 [[package]]
 name = "wisp-load"
 version = "0.0.0"
+dependencies = [
+ "tokio",
+]
 
 [[package]]
 name = "wisp-macros"
+version = "0.1.0"
+dependencies = [
+ "wisp-shared",
+]
+
+[[package]]
+name = "wisp-shared"
 version = "0.1.0"
 
 [[package]]

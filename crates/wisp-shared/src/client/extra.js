@@ -9,7 +9,7 @@
 // calls them.
 import { __wisp as X, page, store } from 'wisp';
 
-const { Sig, node, watch, scope, end, untrack, clones, binding, range, cls, css, track, proxy, same, proxied, on, report } = X;
+const { Sig, node, watch, scope, end, untrack, clones, binding, range, attr, track, proxy, same, proxied, on, report } = X;
 const { defs, instance, script, adopt, painted, place, drop, RAW, metas, sigOf, keysOf, verOf, changed, bump } = X;
 const trans = new WeakMap(); // element -> { i, o }: its in and out transitions, [kind, options]
 const anims = new WeakMap(); // element -> its running animation
@@ -179,18 +179,28 @@ X.tag = (sc, inst, el, bs, L, quiet) => {
   });
 };
 
-// {:...attrs}: each key an attribute, a function under on* a listener.
+// What an attribute holds that escaping does not make safe, in any case:
+// on*, srcdoc, an <animate>/<set>'s to from values by, a <meta>'s
+// http-equiv and content; a tag of '' is any (`contexts::holds_script`).
+const held = (tag, k) =>
+  /^(on|srcdoc$)/i.test(k) || (/^(animate|set|)$/i.test(tag) && /^(to|from|values|by)$/i.test(k)) || (/^(meta|)$/i.test(tag) && /^(http-equiv|content)$/i.test(k));
+
+// {:...attrs}: each key an attribute, set as `attr={:…}` sets it (a URL
+// that would run script is blocked), a function under on* a listener. Any
+// other held key (see above) is left out, as the server's first paint
+// leaves it.
 X.spread = (sc, inst, el, L, quiet, [, a]) => {
   let had = {};
-  watch(sc, a, L, (v) => {
+  watch(sc, a, L, (v, first) => {
     v = v || {};
     for (const k in had) if (!(k in v)) k.startsWith('on') ? el.removeEventListener(k.slice(2), had[k]) : el.removeAttribute(k);
     for (const k in v) {
       const x = v[k];
-      if (k.startsWith('on') && typeof x == 'function') {
-        if (had[k] !== x) had[k] && el.removeEventListener(k.slice(2), had[k]), el.addEventListener(k.slice(2), x);
-      } else if (x == null || x === false) el.removeAttribute(k);
-      else el.setAttribute(k, k == 'class' ? cls(x) : k == 'style' && typeof x == 'object' ? css(x) : x === true ? '' : x);
+      if (!k.startsWith('on')) held(el.localName, k) || attr(x, first, el, k, sc);
+      else if (had[k] !== x) {
+        if (typeof had[k] == 'function') el.removeEventListener(k.slice(2), had[k]);
+        if (typeof x == 'function') el.addEventListener(k.slice(2), x);
+      }
     }
     had = { ...v };
   });

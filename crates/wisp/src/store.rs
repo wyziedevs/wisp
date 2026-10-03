@@ -64,6 +64,22 @@ pub trait Store: Send + Sync + 'static {
     /// means it was removed. An error fails the request that made the
     /// change, and the table in memory stays as it was.
     fn save(&self, table: &str, id: u64, json: Option<&str>) -> Result;
+    /// Keeps rows new to `table`, as `(id, json)`, all or none: a `POST` of
+    /// an array. An error fails the request, and neither the store nor the
+    /// table in memory keeps any of them. By default each is saved in turn
+    /// and, when one fails, those before it are removed again; a database
+    /// does better with one transaction.
+    fn save_many(&self, table: &str, rows: &[(u64, String)]) -> Result {
+        for (k, (id, json)) in rows.iter().enumerate() {
+            if let Err(e) = self.save(table, *id, Some(json)) {
+                for (id, _) in &rows[..k] {
+                    let _ = self.save(table, *id, None);
+                }
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Keeps every durable table (`#[derive(Rest)]` types, `Table::saved`) in
@@ -88,7 +104,7 @@ pub(crate) fn memory() {
 /// Where a durable table loads from and saves to: `None` keeps it in
 /// memory (the edge build, tests, `WISP_DATA=off`).
 pub(crate) fn current() -> Option<&'static dyn Store> {
-    if let Some(s) = *CUSTOM.read().unwrap_or_else(|e| e.into_inner()) {
+    if let Some(s) = custom() {
         return Some(s);
     }
     #[cfg(target_arch = "wasm32")]
@@ -99,6 +115,29 @@ pub(crate) fn current() -> Option<&'static dyn Store> {
             return None;
         }
         files::default().map(|f| f as &'static dyn Store)
+    }
+}
+
+/// The store the app set with [`store`], which other instances of the app
+/// may share; `None` for the log files, each instance's own.
+pub(crate) fn custom() -> Option<&'static dyn Store> {
+    *CUSTOM.read().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Whether the store may hold rows of `table`, found without making a
+/// folder or a file: a log file is there, or the app's own store.
+pub(crate) fn holds(table: &str) -> bool {
+    if custom().is_some() {
+        return true;
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = table;
+        false
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        !MEMORY.load(Ordering::Relaxed) && files::default().is_some_and(|f| f.has(table))
     }
 }
 
@@ -123,7 +162,7 @@ pub(crate) mod files {
     use crate::Shared;
     use std::collections::{BTreeMap, HashMap};
     use std::fs::{self, File, OpenOptions};
-    use std::io::{Seek, SeekFrom, Write};
+    use std::io::{Read, Seek, SeekFrom, Write};
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, OnceLock};
 
@@ -165,6 +204,10 @@ pub(crate) mod files {
         compacting: bool,
         /// The size past which a compaction that failed is tried again.
         retry_at: u64,
+        /// A write failed part way, or a compaction could not open the log
+        /// it put in place: before the next write the log is opened again
+        /// and cut back to `size`, so a torn line never joins the next one.
+        bad: bool,
     }
 
     /// The store for `WISP_DATA`, made once; `None` for `off`.
@@ -225,6 +268,11 @@ pub(crate) mod files {
                 sync,
                 logs: Shared::new(BTreeMap::new()),
             }
+        }
+
+        /// Whether `table` has a log in the folder.
+        pub(crate) fn has(&self, table: &str) -> bool {
+            self.dir.join(format!("{table}.log")).exists()
         }
 
         /// Every log written since it last reached the disk, synced. The
@@ -293,17 +341,8 @@ pub(crate) mod files {
                     "wisp: table `{table}`: dropped the last {} bytes of its log, a write cut short",
                     text.len() - whole
                 ));
-                OpenOptions::new()
-                    .write(true)
-                    .open(&path)
-                    .and_then(|f| f.set_len(whole as u64))
-                    .map_err(|e| io(table, "repair its log", e))?;
             }
-            let file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-                .map_err(|e| io(table, "open its log", e))?;
+            let file = reopen(&path, whole as u64).map_err(|e| io(table, "open its log", e))?;
             let mut out = Vec::with_capacity(rows.len());
             let mut live = HashMap::with_capacity(rows.len());
             let mut live_bytes = 0;
@@ -327,6 +366,7 @@ pub(crate) mod files {
                     dirty: false,
                     compacting: false,
                     retry_at: 0,
+                    bad: false,
                 }),
             };
             self.logs.lock().insert(table.to_string(), Arc::new(log));
@@ -334,29 +374,75 @@ pub(crate) mod files {
         }
 
         fn save(&self, table: &str, id: u64, json: Option<&str>) -> Result {
+            let body = json.unwrap_or("");
+            let mut line = Vec::with_capacity(body.len() + 22);
+            push_line(&mut line, table, id, body)?;
+            let n = if json.is_some() { line.len() as u64 } else { 0 };
+            self.append(table, &line, &[(id, n)])
+        }
+
+        /// The rows' lines in one write: a write that fails part way is cut
+        /// off whole, so the log has all of them or none.
+        fn save_many(&self, table: &str, rows: &[(u64, String)]) -> Result {
+            let mut lines = Vec::with_capacity(rows.iter().map(|r| r.1.len() + 22).sum());
+            let mut live = Vec::with_capacity(rows.len());
+            for (id, json) in rows {
+                let at = lines.len();
+                push_line(&mut lines, table, *id, json)?;
+                live.push((*id, (lines.len() - at) as u64));
+            }
+            self.append(table, &lines, &live)
+        }
+    }
+
+    /// Adds row `id`'s line to `out`: `ID\tJSON\n`, or `ID\t\n` when it was
+    /// removed (`json` is empty).
+    fn push_line(out: &mut Vec<u8>, table: &str, id: u64, json: &str) -> Result {
+        // A line break would end the line early, and what follows could
+        // read back as another row. JSON has none outside its strings,
+        // where they are `\n`; a `Json` of the app's own might.
+        if json.contains('\n') {
+            return Err(Error::new(
+                500,
+                format!("table `{table}`: row {id}'s JSON has a line break"),
+            ));
+        }
+        out.extend_from_slice(id.to_string().as_bytes());
+        out.push(b'\t');
+        out.extend_from_slice(json.as_bytes());
+        out.push(b'\n');
+        Ok(())
+    }
+
+    impl Files {
+        /// Appends `lines` to `table`'s log with one write. `live` is each
+        /// row's id and the bytes of its line, 0 for a row removed.
+        fn append(&self, table: &str, lines: &[u8], live: &[(u64, u64)]) -> Result {
             let Some(log) = self.logs.lock().get(table).cloned() else {
                 return Err(Error::new(
                     500,
                     format!("table `{table}` was saved before it was loaded"),
                 ));
             };
-            let body = json.unwrap_or("");
-            let mut line = Vec::with_capacity(body.len() + 22);
-            line.extend_from_slice(id.to_string().as_bytes());
-            line.push(b'\t');
-            line.extend_from_slice(body.as_bytes());
-            line.push(b'\n');
             let mut s = log.state.lock();
-            (&*s.file)
-                .write_all(&line)
-                .map_err(|e| io(table, "write its log", e))?;
-            s.size += line.len() as u64;
-            let n = if json.is_some() { line.len() as u64 } else { 0 };
-            let old = match n {
-                0 => s.live.remove(&id),
-                n => s.live.insert(id, n),
-            };
-            s.live_bytes = s.live_bytes + n - old.unwrap_or(0);
+            if s.bad {
+                let file = reopen(&log.path, s.size).map_err(|e| io(table, "repair its log", e))?;
+                (s.file, s.bad) = (Arc::new(file), false);
+            }
+            if let Err(e) = (&*s.file).write_all(lines) {
+                // Part of the lines may be in the file (a full disk): cut
+                // off before the next write.
+                s.bad = true;
+                return Err(io(table, "write its log", e));
+            }
+            s.size += lines.len() as u64;
+            for &(id, n) in live {
+                let old = match n {
+                    0 => s.live.remove(&id),
+                    n => s.live.insert(id, n),
+                };
+                s.live_bytes = s.live_bytes + n - old.unwrap_or(0);
+            }
             s.dirty |= self.sync == Sync::Second;
             let compact = !s.compacting
                 && s.size > COMPACT_AFTER.max(s.retry_at)
@@ -377,6 +463,16 @@ pub(crate) mod files {
             }
             Ok(())
         }
+    }
+
+    /// The log at `path` cut to its first `size` bytes, open to append to.
+    fn reopen(path: &Path, size: u64) -> std::io::Result<File> {
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
+        if file.metadata()?.len() != size {
+            // An appending handle cannot cut the file; a writing one can.
+            OpenOptions::new().write(true).open(path)?.set_len(size)?;
+        }
+        Ok(file)
     }
 
     fn line_len(id: u64, json: usize) -> u64 {
@@ -429,18 +525,32 @@ pub(crate) mod files {
             let mut old = File::open(&self.path)?;
             old.seek(SeekFrom::Start(size))?;
             let mut f = OpenOptions::new().append(true).open(tmp)?;
-            std::io::copy(&mut old, &mut f)?;
+            // To `s.size`: past it is only a write that failed part way.
+            std::io::copy(&mut (&mut old).take(s.size - size), &mut f)?;
             f.sync_all()?;
+            let size = f.metadata()?.len();
             drop((old, f));
             fs::rename(tmp, &self.path)?;
+            // From here the log is the new file, and the old one's handle
+            // would write where nothing reads: one that will not open is
+            // opened before the next write (`bad`), which fails until then.
+            s.size = size;
+            s.dirty = false;
+            match OpenOptions::new().append(true).open(&self.path) {
+                Ok(file) => (s.file, s.bad) = (Arc::new(file), false),
+                Err(e) => {
+                    s.bad = true;
+                    crate::http::log(format_args!(
+                        "wisp: table `{}`: could not open its compacted log: {e}",
+                        self.table
+                    ));
+                }
+            }
             // The rename itself reaches the disk with the folder's entry.
             #[cfg(unix)]
             if let Some(dir) = self.path.parent() {
                 File::open(dir)?.sync_all()?;
             }
-            s.file = Arc::new(OpenOptions::new().append(true).open(&self.path)?);
-            s.size = s.file.metadata()?.len();
-            s.dirty = false;
             Ok(())
         }
     }
@@ -487,6 +597,48 @@ pub(crate) mod files {
                 fs::read_to_string(d.join("t.log")).unwrap(),
                 "1\t\"a\"\n2\t\"b\"\n4\t\"d\"\n"
             );
+            let _ = fs::remove_dir_all(d);
+        }
+
+        #[test]
+        fn a_write_that_failed_part_way_is_cut_off() {
+            let d = dir("partial");
+            let files = Files::new(d.clone(), Sync::Off);
+            files.load("p").unwrap();
+            files.save("p", 1, Some("\"a\"")).unwrap();
+            // What a full disk leaves: part of a line, then the error.
+            let log = files.logs.lock()["p"].clone();
+            let mut f = OpenOptions::new().append(true).open(&log.path).unwrap();
+            f.write_all(b"2\t\"b").unwrap();
+            log.state.lock().bad = true;
+            files.save("p", 3, Some("\"c\"")).unwrap();
+            assert_eq!(
+                fs::read_to_string(&log.path).unwrap(),
+                "1\t\"a\"\n3\t\"c\"\n",
+                "not `2\\t\"b3\\t\"c\"`, a row 2 that is not JSON"
+            );
+            let err = files.save("p", 4, Some("\"x\ny\"")).unwrap_err();
+            assert!(err.message().contains("line break"));
+            let _ = fs::remove_dir_all(d);
+        }
+
+        #[test]
+        fn a_batch_is_one_write_all_or_none() {
+            let d = dir("batch");
+            let files = Files::new(d.clone(), Sync::Off);
+            files.load("b").unwrap();
+            files.save("b", 1, Some("\"a\"")).unwrap();
+            let bad = [(2, "\"b\"".to_string()), (3, "\"x\ny\"".to_string())];
+            assert!(files.save_many("b", &bad).is_err());
+            let good = [(2, "\"b\"".to_string()), (3, "\"c\"".to_string())];
+            files.save_many("b", &good).unwrap();
+            assert_eq!(
+                fs::read_to_string(d.join("b.log")).unwrap(),
+                "1\t\"a\"\n2\t\"b\"\n3\t\"c\"\n",
+                "nothing of the batch that failed"
+            );
+            let log = files.logs.lock()["b"].clone();
+            assert_eq!(log.state.lock().live_bytes, 18);
             let _ = fs::remove_dir_all(d);
         }
 

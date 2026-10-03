@@ -1,6 +1,6 @@
 //! Every way to give a command the wrong arguments, and what it says back.
 
-use crate::{Dir, fail, has, wisp};
+use crate::{Dir, fail, has, new_app, wisp};
 use std::fs;
 
 const BUILD_USAGE: &str = "wisp build takes --static";
@@ -12,6 +12,7 @@ fn build_arguments() {
         (&["build", "--nope"][..], "There is no option --nope."),
         (&["build", "dist"], "Unexpected dist."),
         (&["build", "--out"], "--out needs a folder."),
+        (&["build", "--static", "--out="], "--out needs a folder."),
         (&["build", "-o"], "-o needs a folder."),
         (&["build", "--target"], "--target needs a host."),
         (&["build", "-t"], "-t needs a host."),
@@ -147,4 +148,27 @@ fn outside_an_app_the_commands_say_so() {
     fs::write(cwd.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
     fail(&cwd, &["check"], "There is no Wisp app here.");
     assert!(wisp(&cwd, &["--help"]).ok);
+}
+
+#[test]
+fn out_cannot_be_part_of_the_app() {
+    let cwd = Dir::new("out-in-app");
+    let app = new_app(&cwd, "app", &["-t", "minimal"]);
+    for args in [
+        &["build", "--static", "--out", "static"][..],
+        &["build", "--static", "--out=."],
+        &["build", "--target", "node", "--out", "src/x"],
+    ] {
+        fail(&app, args, "is part of the app.");
+    }
+    assert!(app.join("static/favicon.svg").metadata().unwrap().len() > 0);
+}
+
+#[test]
+fn names_cargo_would_refuse_are_refused_before_writing() {
+    let cwd = Dir::new("bad-names");
+    for name in ["fn", "nul"] {
+        fail(&cwd, &["new", name, "-y"], "An app cannot be called");
+    }
+    assert!(fs::read_dir(&*cwd).unwrap().next().is_none());
 }

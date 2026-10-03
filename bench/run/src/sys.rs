@@ -1,6 +1,8 @@
 //! What the runner needs from the OS: which CPUs to give the servers and
 //! the load, starting a process pinned to its CPUs, the processes it
-//! started in turn, their CPU time and peak memory, and stopping them.
+//! started in turn, their CPU time and memory, and stopping them; for the
+//! real traffic suite, room for its connections and timers fine enough to
+//! send on time.
 
 // Every call here is a plain query or setting on a process, with buffers
 // sized and owned right at the call.
@@ -127,6 +129,13 @@ mod imp {
         let _ = child.wait();
     }
 
+    /// Asks `child` to stop, as systemd, Docker and Kubernetes do: SIGTERM
+    /// to it alone (a process manager passes it on to its workers).
+    pub fn terminate(child: &Child) {
+        // SAFETY: a signal to a process this one started.
+        unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
+    }
+
     /// `pid` and every process under it.
     pub fn tree(pid: u32) -> Vec<u32> {
         let mut parent: Vec<(u32, u32)> = Vec::new();
@@ -171,13 +180,44 @@ mod imp {
 
     /// Bytes of the most memory `pid` has had resident.
     pub fn peak_memory(pid: u32) -> u64 {
+        status_kb(pid, "VmHWM:") * 1024
+    }
+
+    /// Bytes `pid` has resident now.
+    pub fn memory(pid: u32) -> u64 {
+        status_kb(pid, "VmRSS:") * 1024
+    }
+
+    /// A `kB` figure of `/proc/<pid>/status`.
+    fn status_kb(pid: u32, key: &str) -> u64 {
         let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
         let kb = status
             .lines()
-            .find_map(|l| l.strip_prefix("VmHWM:"))
+            .find_map(|l| l.strip_prefix(key))
             .and_then(|v| v.trim().trim_end_matches("kB").trim().parse::<u64>().ok());
-        kb.unwrap_or(0) * 1024
+        kb.unwrap_or(0)
     }
+
+    /// Raises this process's open-file limit to its hard limit (the servers
+    /// it starts inherit it) and returns the limit it has.
+    pub fn raise_open_files() -> Option<u64> {
+        // SAFETY: `r` is owned here, and only it is read and written.
+        unsafe {
+            let mut r: libc::rlimit = std::mem::zeroed();
+            if libc::getrlimit(libc::RLIMIT_NOFILE, &mut r) != 0 {
+                return None;
+            }
+            r.rlim_cur = r.rlim_max;
+            libc::setrlimit(libc::RLIMIT_NOFILE, &r);
+            if libc::getrlimit(libc::RLIMIT_NOFILE, &mut r) != 0 {
+                return None;
+            }
+            Some(r.rlim_cur as u64)
+        }
+    }
+
+    /// Timers here are fine already.
+    pub fn fine_timers() {}
 }
 
 #[cfg(windows)]
@@ -195,6 +235,7 @@ mod imp {
         GetCurrentProcess, GetProcessAffinityMask, GetProcessTimes, OpenProcess,
         PROCESS_QUERY_LIMITED_INFORMATION, SetProcessAffinityMask,
     };
+    use windows_sys::Win32::System::WindowsProgramming::QueryProcessCycleTime;
 
     /// Windows numbers a core's hyperthreads next to each other, so cores
     /// are consecutive pairs when there are more logical CPUs than cores.
@@ -300,10 +341,15 @@ mod imp {
         }
     }
 
-    /// Seconds of (total, kernel) CPU time per process.
+    /// Seconds of (total, kernel) CPU time per process. The total is
+    /// counted in cycles: `GetProcessTimes` charges each 15.6 ms clock tick
+    /// to the thread running at it, so a server that wakes briefly between
+    /// ticks, as under a light load, shows next to none. The kernel's share
+    /// is still that sampled time.
     pub fn cpu_times(pids: &[u32]) -> HashMap<u32, (f64, f64)> {
         let secs =
             |t: FILETIME| ((t.dwHighDateTime as u64) << 32 | t.dwLowDateTime as u64) as f64 / 1e7;
+        let hz = cycles_per_second();
         pids.iter()
             .filter_map(|&p| {
                 let times = with_process(p, |h| {
@@ -311,27 +357,73 @@ mod imp {
                         dwLowDateTime: 0,
                         dwHighDateTime: 0,
                     }; 4];
-                    // SAFETY: four out-parameters owned here.
+                    let mut cycles = 0;
+                    // SAFETY: five out-parameters owned here.
                     let ok = unsafe {
-                        GetProcessTimes(h, &mut created, &mut exited, &mut kernel, &mut user)
+                        GetProcessTimes(h, &mut created, &mut exited, &mut kernel, &mut user) != 0
+                            && QueryProcessCycleTime(h, &mut cycles) != 0
                     };
-                    (ok != 0).then(|| (secs(user) + secs(kernel), secs(kernel)))
+                    let total = match hz {
+                        Some(hz) => cycles as f64 / hz,
+                        None => secs(user) + secs(kernel),
+                    };
+                    ok.then(|| (total, secs(kernel)))
                 })?;
                 Some((p, times))
             })
             .collect()
     }
 
+    /// The rate of the time stamp counter, which Windows counts cycles in,
+    /// measured once against the clock over 50 ms.
+    fn cycles_per_second() -> Option<f64> {
+        static HZ: std::sync::OnceLock<Option<f64>> = std::sync::OnceLock::new();
+        *HZ.get_or_init(|| {
+            #[cfg(target_arch = "x86_64")]
+            {
+                use std::arch::x86_64::_rdtsc;
+                let t = std::time::Instant::now();
+                // SAFETY: reads the time stamp counter, which every x86-64 has.
+                let c = unsafe { _rdtsc() };
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                let c = unsafe { _rdtsc() } - c;
+                Some(c as f64 / t.elapsed().as_secs_f64())
+            }
+            #[cfg(not(target_arch = "x86_64"))]
+            None
+        })
+    }
+
     /// Bytes of the most memory `pid` has had resident.
     pub fn peak_memory(pid: u32) -> u64 {
+        counters(pid).map_or(0, |c| c.PeakWorkingSetSize as u64)
+    }
+
+    /// Bytes `pid` has resident now.
+    pub fn memory(pid: u32) -> u64 {
+        counters(pid).map_or(0, |c| c.WorkingSetSize as u64)
+    }
+
+    fn counters(pid: u32) -> Option<PROCESS_MEMORY_COUNTERS> {
         with_process(pid, |h| {
             // SAFETY: `c` is sized as the API requires and owned here.
             let mut c: PROCESS_MEMORY_COUNTERS = unsafe { std::mem::zeroed() };
             c.cb = size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
             let ok = unsafe { K32GetProcessMemoryInfo(h, &mut c, c.cb) };
-            (ok != 0).then_some(c.PeakWorkingSetSize as u64)
+            (ok != 0).then_some(c)
         })
-        .unwrap_or(0)
+    }
+
+    /// Windows has no open-file limit to raise.
+    pub fn raise_open_files() -> Option<u64> {
+        None
+    }
+
+    /// Asks for 1 ms timers: by default a wait ends on a 15.6 ms tick, which
+    /// would make every user's request look that late.
+    pub fn fine_timers() {
+        // SAFETY: a setting of this process's timer resolution.
+        unsafe { windows_sys::Win32::Media::timeBeginPeriod(1) };
     }
 }
 

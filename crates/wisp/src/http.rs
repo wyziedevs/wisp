@@ -13,9 +13,11 @@
 //! needs, and leaves the server out.
 #![cfg_attr(target_arch = "wasm32", allow(dead_code, unused_imports))]
 
-use crate::cx::{Cx, Method, Span, decode, hex_digit, valid_header};
-use crate::idem::Start;
-use crate::{App, Error, Out, dev, rt};
+use crate::cx::{Cx, KNOWN, Known, Method, Span, decode, hex_digit, valid_header};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::policy::READ_CAPACITY;
+use crate::policy::{self, KEEP_CAPACITY, WRITE_TIMEOUT};
+use crate::{App, Error, Out, dev, rt, swar};
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::future::Future;
@@ -34,31 +36,20 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Notify, mpsc};
 
-const MAX_HEADERS: usize = 64;
+/// Headers a request may have: as many as hyper's, room for a browser's
+/// behind a proxy or two that add their own.
+const MAX_HEADERS: usize = 100;
 const MAX_HEAD: usize = 16 * 1024;
-/// Time allowed to receive a request's head once its first byte arrived,
-/// and then for each part of its body: a large upload may take minutes, as
-/// long as it keeps coming.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-/// Bytes a second a request body must average, after `REQUEST_TIMEOUT`.
-const MIN_BODY_RATE: usize = 1024;
-/// Time an idle keep-alive connection is kept open.
-const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
-/// Time a client may take none of a response before it is dropped.
-pub(crate) const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Time a stopping server waits for the requests under way.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 /// A handler that holds its thread longer than this in one go is reported
 /// in dev: every other connection on that thread waited meanwhile.
 const BLOCKING: Duration = Duration::from_millis(100);
-/// A buffer that grew past this for one large message is shrunk afterwards,
-/// so memory per idle connection stays bounded.
-pub(crate) const KEEP_CAPACITY: usize = 64 * 1024;
 
 /// The browser runtime: as written in dev builds, without comments and
 /// indentation in release ones (see `build.rs`). The ETag tells them apart.
 #[cfg(debug_assertions)]
-const CLIENT_JS: &[u8] = include_bytes!("client/wisp.js");
+const CLIENT_JS: &[u8] = wisp_shared::WISP_JS.as_bytes();
 #[cfg(not(debug_assertions))]
 const CLIENT_JS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/wisp.js"));
 #[cfg(debug_assertions)]
@@ -68,7 +59,7 @@ const CLIENT_JS_ETAG: &str = concat!("\"", env!("WISP_RUNTIME_V"), "\"");
 /// The runtime of client scripts and directives, linked by pages that
 /// render any (see `live.rs`). Versioned like `wisp.js`.
 #[cfg(debug_assertions)]
-const LIVE_JS: &[u8] = include_bytes!("client/live.js");
+const LIVE_JS: &[u8] = wisp_shared::LIVE_JS.as_bytes();
 #[cfg(not(debug_assertions))]
 const LIVE_JS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/live.js"));
 /// Live reload and the build error dialog, with the dialog's styles. Served
@@ -207,22 +198,37 @@ fn run_linux<A: App>(
     let listeners = (0..threads)
         .map(|_| crate::uring::listen(addr).map_err(|e| cannot_listen(addr, e)))
         .collect::<io::Result<Vec<_>>>()?;
-    // Connections wait in the listeners' queues until their workers start.
-    started(addr);
+    // Each worker says when its io_uring or epoll is set up; the server is
+    // started once all are. (One that cannot be set up ends the process.)
+    let (ready, all_ready) = std::sync::mpsc::channel();
     let workers = listeners
         .into_iter()
         .enumerate()
         .map(|(i, listener)| {
             let ring = rings.as_mut().and_then(Iterator::next);
+            let ready = ready.clone();
             worker(i, move || async move {
                 match ring {
-                    Some(ring) => tokio::spawn(crate::uring::serve(ring, listener, ringed::<A>)),
-                    None => tokio::spawn(crate::epoll::serve(listener, polled::<A>)),
+                    Some(ring) => {
+                        tokio::spawn(crate::uring::serve(ring, listener, ringed::<A>, ready))
+                    }
+                    None => tokio::spawn(crate::epoll::serve(
+                        listener,
+                        polled::<A>,
+                        answers::<A>().then_some(on_driver::<A>),
+                        ready,
+                    )),
                 };
                 std::future::pending().await
             })
         })
         .collect::<io::Result<Vec<_>>>()?;
+    drop(ready);
+    for _ in 0..threads {
+        // Only a worker that ended (and with it the process) sends nothing.
+        let _ = all_ready.recv();
+    }
+    started(addr);
     main.block_on(async {
         stop_signal().await;
         stop(&workers).await; // the workers close their listeners
@@ -267,7 +273,7 @@ fn polled<A: App>(stream: std::net::TcpStream) {
     let Some((slot, peer)) = admit(&stream) else {
         return;
     };
-    crate::epoll::spawn(stream, move |sock| async move {
+    crate::epoll::spawn(stream, peer, move |sock| async move {
         connection::<A>(Conn::Poll(sock), peer).await;
         drop(slot);
     });
@@ -285,11 +291,11 @@ fn admit(stream: &std::net::TcpStream) -> Option<(Slot, SocketAddr)> {
 }
 
 /// Stopping: new connections are already refused (Linux workers refuse
-/// them as this begins). A connection answers
-/// what it is receiving or working on with `connection: close` and closes;
-/// an idle one is closed as the process exits, as nginx does, and a client
-/// retries on another connection. Waits at most `DRAIN_TIMEOUT`, or until a
-/// second signal.
+/// them as this begins). A connection answers what it is receiving or
+/// working on with `connection: close` and closes, and the responses the
+/// drivers still send go out; an idle one is closed as the process exits,
+/// as nginx does, and a client retries on another connection. Waits at
+/// most `DRAIN_TIMEOUT`, or until a second signal.
 #[cfg(not(target_arch = "wasm32"))]
 async fn stop(workers: &[tokio::runtime::Handle]) {
     STOPPING.store(true, Ordering::Relaxed);
@@ -302,7 +308,7 @@ async fn stop(workers: &[tokio::runtime::Handle]) {
             for w in workers {
                 let tx = tx.clone();
                 w.spawn(async move {
-                    let _ = tx.send(BUSY.get());
+                    let _ = tx.send(BUSY.get() + sending() as isize);
                 });
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -317,6 +323,28 @@ async fn stop(workers: &[tokio::runtime::Handle]) {
         ));
     };
     first(drained, stop_signal()).await;
+}
+
+thread_local! {
+    /// Responses this thread's driver has yet to send (on Linux; elsewhere a
+    /// connection sends its own before it is idle).
+    static SENDING: Cell<usize> = const { Cell::new(0) };
+}
+
+/// [`SENDING`] on this thread.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn sending() -> usize {
+    SENDING.get()
+}
+
+/// A send the driver finishes began (`true`) or ended.
+#[cfg(target_os = "linux")]
+pub(crate) fn send_under_way(began: bool) {
+    SENDING.set(if began {
+        SENDING.get() + 1
+    } else {
+        SENDING.get() - 1
+    });
 }
 
 /// SIGTERM, which is how systemd, Docker and Kubernetes stop a server, or
@@ -353,6 +381,7 @@ pub(crate) async fn first<T>(a: impl Future<Output = T>, b: impl Future<Output =
 
 /// Set once the server is stopping.
 static STOPPING: AtomicBool = AtomicBool::new(false);
+
 /// Wakes what waits for the server to stop.
 static STOP: Notify = Notify::const_new();
 
@@ -525,6 +554,46 @@ impl Conn {
         }
     }
 
+    /// What came onto the end of `buf`, without waiting: `None` when nothing
+    /// has (a wakeup with nothing behind it), else as [`Conn::read`]. Only
+    /// where `waits_bare`.
+    fn try_read(&mut self, buf: &mut Vec<u8>) -> Option<io::Result<usize>> {
+        let read = match self {
+            Conn::Tcp(s) => s.try_read_buf(buf),
+            #[cfg(target_os = "linux")]
+            Conn::Ring(_) => return None,
+            #[cfg(target_os = "linux")]
+            Conn::Poll(s) => s.try_read(buf),
+        };
+        match read {
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => None,
+            r => Some(r),
+        }
+    }
+
+    /// It can wait for something to read without a buffer to read it into
+    /// (`readable`). The ring cannot: it receives into the connection's
+    /// buffer as it waits.
+    fn waits_bare(&self) -> bool {
+        match self {
+            Conn::Tcp(_) => true,
+            #[cfg(target_os = "linux")]
+            Conn::Ring(_) => false,
+            #[cfg(target_os = "linux")]
+            Conn::Poll(_) => true,
+        }
+    }
+
+    /// What the epoll driver received for this connection and left to it
+    /// (see [`on_driver`]), once `readable`.
+    fn handed(&mut self) -> Option<Handed> {
+        match self {
+            #[cfg(target_os = "linux")]
+            Conn::Poll(s) => s.handed(),
+            _ => None,
+        }
+    }
+
     /// Ends the sending side, once all of it is sent.
     async fn shutdown(&mut self) {
         match self {
@@ -563,18 +632,46 @@ impl Conn {
 async fn read(
     stream: &mut Conn,
     buf: &mut Vec<u8>,
-    mut timer: std::pin::Pin<&mut tokio::time::Sleep>,
+    timer: std::pin::Pin<&mut tokio::time::Sleep>,
     deadline: u64,
 ) -> io::Result<usize> {
     #[cfg(target_os = "linux")]
     if let Conn::Poll(s) = stream {
         return s.read_by(buf, deadline).await;
     }
+    by(timer, deadline, stream.read(buf)).await
+}
+
+/// Waits until the socket has something to read (or its end, or an error,
+/// which the read after it reports), failing with `TimedOut` if nothing
+/// came by `deadline`, as [`read`] does. Only where `waits_bare`.
+#[cfg(not(target_arch = "wasm32"))]
+async fn readable(
+    stream: &mut Conn,
+    timer: std::pin::Pin<&mut tokio::time::Sleep>,
+    deadline: u64,
+) -> io::Result<()> {
+    match stream {
+        #[cfg(target_os = "linux")]
+        Conn::Poll(s) => s.readable_by(deadline).await,
+        #[cfg(target_os = "linux")]
+        Conn::Ring(_) => Ok(()),
+        Conn::Tcp(s) => by(timer, deadline, s.readable()).await,
+    }
+}
+
+/// `f`, unless `deadline` (in `seconds()`) comes first: then `TimedOut`.
+#[cfg(not(target_arch = "wasm32"))]
+async fn by<T>(
+    mut timer: std::pin::Pin<&mut tokio::time::Sleep>,
+    deadline: u64,
+    f: impl Future<Output = io::Result<T>>,
+) -> io::Result<T> {
     let when = instant(deadline);
     if timer.deadline() != when {
         timer.as_mut().reset(when);
     }
-    first(stream.read(buf), async {
+    first(f, async {
         timer.await;
         Err(io::ErrorKind::TimedOut.into())
     })
@@ -667,11 +764,14 @@ pub(crate) fn setup<A: App>() {
         let mut s = String::new();
         if let Some(v) = A::CSS {
             s.push_str(&format!(
-                "<link rel=\"stylesheet\" href=\"/_app/app.css?v={v}\">"
+                "<link rel=\"stylesheet\" href=\"{}?v={v}\">",
+                crate::protocol::APP_CSS_PATH
             ));
         }
         s.push_str(concat!(
-            "<script defer src=\"/_app/wisp.js?v=",
+            "<script defer src=\"",
+            wisp_shared::app_path!("wisp.js"),
+            "?v=",
             env!("WISP_RUNTIME_V"),
             "\"></script>"
         ));
@@ -701,13 +801,27 @@ pub(crate) fn accept_failed(e: &std::io::Error) -> bool {
     if matches!(e.kind(), ConnectionAborted | ConnectionReset | Interrupted) {
         return false;
     }
-    log(format_args!("wisp: accept failed: {e}"));
+    // Once a second at most: out of descriptors, accepting is retried 20
+    // times a second until some close.
+    static LOGGED: AtomicU64 = AtomicU64::new(u64::MAX);
+    if LOGGED.swap(seconds(), Ordering::Relaxed) != seconds() {
+        log(format_args!("wisp: accept failed: {e}"));
+    }
     true
 }
 
+/// A complete request, described by `cx`: its bytes, whether its client
+/// asked to keep the connection open, and its route when a body's limit
+/// had `parse` find it (its params are in `cx` then).
+#[derive(Clone, Copy)]
+struct Req {
+    len: usize,
+    keep_alive: bool,
+    routed: Option<Option<usize>>,
+}
+
 enum Parsed {
-    /// A complete request is described by `cx`; it occupies `len` bytes.
-    Request { len: usize, keep_alive: bool },
+    Request(Req),
     /// More bytes are needed. `need` is the full request size when known;
     /// `body` is set once the head is in.
     Partial {
@@ -720,7 +834,8 @@ enum Parsed {
 }
 
 /// What a connection works in: its `Cx` (and read buffer), write buffer,
-/// page and reply, all reused across its requests.
+/// page and reply, all reused across its requests. Boxed, so a connection
+/// waiting holds a pointer at most, and handing them on moves only that.
 struct Buffers {
     cx: Cx,
     wbuf: Vec<u8>,
@@ -728,30 +843,39 @@ struct Buffers {
     reply: Reply,
 }
 
-/// How many `Buffers` a thread keeps for its next connections.
-const POOLED: usize = 32;
+/// How many `Buffers` a thread keeps for the requests to come.
+const POOLED: usize = 64;
 
 thread_local! {
-    /// Buffers of connections that closed, for the next ones on this thread:
-    /// a new connection allocates nothing.
-    static POOL: std::cell::RefCell<Vec<Buffers>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Buffers no request is using, last returned first: a connection waits
+    /// for its next request without any, and takes the warmest set when it
+    /// comes. So a thread whose requests are answered as they arrive works
+    /// in one set, in cache, however many connections it serves, and a new
+    /// connection allocates nothing. Boxed: a set moves as a pointer.
+    #[allow(clippy::vec_box)]
+    static POOL: std::cell::RefCell<Vec<Box<Buffers>>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
+/// Buffers for a request from `peer`.
 #[cfg(not(target_arch = "wasm32"))]
-async fn connection<A: App>(stream: Conn, peer: SocketAddr) {
-    let mut b = POOL.with_borrow_mut(Vec::pop).unwrap_or_else(|| Buffers {
-        cx: Cx::new(peer),
-        wbuf: Vec::with_capacity(16 * 1024),
-        out: Out::default(),
-        reply: Reply::default(),
+fn take_buffers(peer: SocketAddr) -> Box<Buffers> {
+    let mut b = POOL.with_borrow_mut(Vec::pop).unwrap_or_else(|| {
+        Box::new(Buffers {
+            cx: Cx::new(peer),
+            wbuf: Vec::with_capacity(16 * 1024),
+            out: Out::default(),
+            reply: Reply::default(),
+        })
     });
-    b.cx.peer = peer;
-    requests::<A>(stream, &mut b).await;
-    b.cx.buf.clear();
-    b.cx.reset();
-    b.wbuf.clear();
-    b.out.clear();
-    b.reply = Reply::default();
+    b.cx.wire.peer = peer;
+    b
+}
+
+/// `b` back, for the next request on this thread. Each request reset its
+/// `Cx` as it was answered.
+#[cfg(not(target_arch = "wasm32"))]
+fn give_buffers(mut b: Box<Buffers>) {
+    reset_buffers(&mut b);
     POOL.with_borrow_mut(|p| {
         if p.len() < POOLED {
             p.push(b);
@@ -759,42 +883,389 @@ async fn connection<A: App>(stream: Conn, peer: SocketAddr) {
     });
 }
 
+/// `b` emptied of what came and what went, for its next request.
+#[cfg(not(target_arch = "wasm32"))]
+fn reset_buffers(b: &mut Buffers) {
+    b.cx.wire.buf.clear();
+    b.wbuf.clear();
+    trim_buffers(b);
+}
+
+/// What one large request or response grew `b` to goes; the read buffer
+/// only once it is empty.
+#[cfg(not(target_arch = "wasm32"))]
+fn trim_buffers(b: &mut Buffers) {
+    if b.cx.wire.buf.is_empty() {
+        policy::trim(&mut b.cx.wire.buf, READ_CAPACITY);
+    }
+    policy::trim(&mut b.wbuf, KEEP_CAPACITY);
+    if !policy::kept(b.out.body.capacity()) {
+        b.out = Out::default();
+    }
+    if !policy::kept_headers(b.reply.headers.capacity()) {
+        b.reply.headers = Vec::new();
+    }
+}
+
+/// What the epoll driver received for a connection and leaves to its
+/// future (see [`on_driver`]): the buffers, how much of `cx.wire.buf` is
+/// answered, and the request after that when the driver got that far with
+/// it (see [`Ahead`]).
+pub(crate) struct Handed {
+    held: Holding,
+    at: usize,
+    ahead: Option<Ahead>,
+}
+
+/// The buffers of what is handed, or the request deciding in them: one the
+/// build said never waits, which did. The connection's future goes on
+/// polling it, so what it did so far is never lost.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+enum Holding {
+    Ready(Box<Buffers>),
+    Deciding(Deciding),
+}
+
+/// A decider (see [`decider`]) with a request under way.
+type Deciding = std::pin::Pin<Box<dyn Future<Output = ()> + Send>>;
+
+impl Handed {
+    #[cfg(target_os = "linux")]
+    fn new(held: Holding, at: usize, ahead: Option<Ahead>) -> Handed {
+        Handed { held, at, ahead }
+    }
+
+    /// What is still to send, which the driver sends before it hands over.
+    /// A request still deciding has the answers before it: they go with
+    /// its own.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn wbuf(&mut self) -> Option<&mut Vec<u8>> {
+        match &mut self.held {
+            Holding::Ready(b) => Some(&mut b.wbuf),
+            Holding::Deciding(_) => None,
+        }
+    }
+}
+
+/// A request [`on_driver`] parsed but leaves to the connection's future,
+/// whole: `parse` is not run on it again, which would read a chunked body
+/// it already moved over its framing. Its route is in `routed` once the
+/// driver found it (its params in `cx`). And whether it is decided too:
+/// its reply is in `reply` (a stream, a WebSocket), or is still being
+/// decided (`Holding::Deciding`).
+type Ahead = (Req, bool);
+
+/// Whether some route of `A` answers without waiting, so [`on_driver`] can help.
+#[cfg(target_os = "linux")]
+fn answers<A: App>() -> bool {
+    A::NOT_FOUND_NOW || A::ROUTES.iter().any(|r| r.now)
+}
+
+/// Answers on the epoll driver, without the connection's future, the
+/// requests that came for connection `token` while its future waited for
+/// them holding nothing: those to routes the build found never wait
+/// (`RouteFacts::now`), whole, that keep the connection open. True when that was
+/// all of them; false when the future takes over, with what is left handed
+/// to it.
+///
+/// It saves what the future's way costs a request: polling the
+/// connection's future and its state, and taking and giving back buffers
+/// across it. The work is the same: [`parse`], [`decide`], [`serialize`].
+/// A route that waits after all is no failure, only slower: its request,
+/// still deciding, goes on in the future.
+#[cfg(target_os = "linux")]
+pub(crate) fn on_driver<A: App>(token: u64) -> bool {
+    use crate::epoll::{self, Got};
+    if stopping() {
+        return false;
+    }
+    let Some((id, peer)) = epoll::free(token) else {
+        return false;
+    };
+    let mut b = DRIVER.take().unwrap_or_else(|| take_buffers(peer));
+    b.cx.wire.peer = peer;
+    let mut got = epoll::receive(id, &mut b.cx.wire.buf);
+    loop {
+        let more = match got {
+            Got::Bytes(more) => more,
+            Got::Nothing => break,
+            Got::End => {
+                park(b);
+                return false;
+            }
+        };
+        b = match answer_whole::<A>(b) {
+            Ok(b) => b,
+            Err(h) => {
+                epoll::hand(id, h);
+                return false;
+            }
+        };
+        b.cx.wire.buf.clear();
+        // Sent, and the next: in one go on the worker. Something answered
+        // (all of it), so the connection waits from now on.
+        let deadline = policy::idle_deadline(seconds());
+        got = epoll::next(id, &mut b.wbuf, &mut b.cx.wire.buf, more, deadline);
+    }
+    park(b);
+    true
+}
+
+#[cfg(target_os = "linux")]
+thread_local! {
+    /// The buffers [`on_driver`] answers in, kept for its next connection:
+    /// its requests are each reset as answered, so only what came and what
+    /// went is cleared between.
+    static DRIVER: Cell<Option<Box<Buffers>>> = const { Cell::new(None) };
+}
+
+/// `b` back to [`DRIVER`].
+#[cfg(target_os = "linux")]
+fn park(mut b: Box<Buffers>) {
+    reset_buffers(&mut b);
+    DRIVER.set(Some(b));
+}
+
+/// [`on_driver`]'s requests in `b.cx.wire.buf`, answered into `b.wbuf`:
+/// the buffers when that was all of them, else what is left for the
+/// connection's future.
+#[cfg(target_os = "linux")]
+fn answer_whole<A: App>(mut b: Box<Buffers>) -> Result<Box<Buffers>, Handed> {
+    let mut at = 0;
+    while at < b.cx.wire.buf.len() && b.wbuf.len() < KEEP_CAPACITY {
+        let Parsed::Request(mut req) = parse::<A>(&mut b.cx, at, true) else {
+            break;
+        };
+        if !policy::keeps_open(req.keep_alive, stopping()) {
+            return Err(Handed::new(Holding::Ready(b), at, Some((req, false))));
+        }
+        let route = req.routed.unwrap_or_else(|| route::<A>(&mut b.cx));
+        req.routed = Some(route);
+        if !route.map_or(A::NOT_FOUND_NOW, |r| A::ROUTES[r].now) {
+            return Err(Handed::new(Holding::Ready(b), at, Some((req, false))));
+        }
+        let job = match route.is_some_and(|r| A::ROUTES[r].sync & b.cx.method.bit() != 0) {
+            true => {
+                let Buffers { cx, out, reply, .. } = &mut *b;
+                decide_now::<A>(cx, out, reply, route)
+            }
+            false => Some(Job::Decide(route)),
+        };
+        if let Some(job) = job {
+            b = match at_once::<A>(b, job) {
+                Ok(b) => b,
+                Err(f) => return Err(Handed::new(Holding::Deciding(f), at, Some((req, true)))),
+            };
+        }
+        if matches!(b.reply.body, Body::Stream(_) | Body::WebSocket(_)) {
+            return Err(Handed::new(Holding::Ready(b), at, Some((req, true))));
+        }
+        let Buffers {
+            cx,
+            wbuf,
+            out,
+            reply,
+        } = &mut *b;
+        serialize::<A>(
+            wbuf,
+            reply,
+            out,
+            cx.wire.http11,
+            true,
+            cx.method == Method::Head,
+        );
+        cx.reset();
+        at += req.len;
+    }
+    if at < b.cx.wire.buf.len() {
+        return Err(Handed::new(Holding::Ready(b), at, None));
+    }
+    Ok(b)
+}
+
+#[cfg(target_os = "linux")]
+thread_local! {
+    /// The decider of [`on_driver`]'s requests on this thread. A thread
+    /// drives one app's server (its workers are its own), so it is that app's.
+    static DECIDER: Cell<Option<Deciding>> = const { Cell::new(None) };
+    /// A request for the decider, and what is left to do for it.
+    static INBOX: Cell<Option<(Box<Buffers>, Job)>> = const { Cell::new(None) };
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+thread_local! {
+    /// The buffers of the request a decider just decided, taken at once
+    /// by what polled it.
+    static OUTBOX: Cell<Option<Box<Buffers>>> = const { Cell::new(None) };
+}
+
+/// [`decide`] for the driver, as one future a thread keeps: each request
+/// comes in through [`INBOX`], its buffers go out through [`OUTBOX`] once
+/// it is decided, and no future is made or moved for it. A request that
+/// waits keeps its decider, which the connection's future polls on, and
+/// the thread makes another.
+#[cfg(target_os = "linux")]
+async fn decider<A: App>() {
+    loop {
+        let (mut b, job) =
+            std::future::poll_fn(|_| INBOX.take().map_or(Poll::Pending, Poll::Ready)).await;
+        {
+            let Buffers { cx, out, reply, .. } = &mut *b;
+            match job {
+                Job::Decide(route) => decide::<A>(cx, out, reply, Some(route)).await,
+                Job::Page(f) => {
+                    render_error::<A>(f.route, cx, out, f.page).await;
+                    answered(cx, reply, f.started, f.failure);
+                    tag(cx, reply);
+                }
+            }
+        }
+        OUTBOX.set(Some(b));
+    }
+}
+
+/// What the decider is to do for a request.
+#[cfg(target_os = "linux")]
+enum Job {
+    /// All of [`decide`], routed to this.
+    Decide(Option<usize>),
+    /// The error page of what [`decide_now`] decided.
+    Page(Failed),
+}
+
+/// A request [`decide_now`] decided but for its error page, which is
+/// rendered in a future: an error page may wait.
+#[cfg(target_os = "linux")]
+struct Failed {
+    route: Option<usize>,
+    page: (u16, Cow<'static, str>),
+    failure: Option<String>,
+    started: Option<Instant>,
+}
+
+/// [`decide`], for an arm of the request's route that [`App::handle_now`]
+/// answers: with no future, unless for an error page. What is left for the
+/// decider, if anything: all of it when the arm turns out to have no sync
+/// form, as nothing was done that `decide` does not do again.
+#[cfg(target_os = "linux")]
+fn decide_now<A: App>(
+    cx: &mut Cx,
+    out: &mut Out,
+    reply: &mut Reply,
+    route: Option<usize>,
+) -> Option<Job> {
+    if crate::settings().request_id {
+        cx.request_id();
+    }
+    if !before_routes::<A>(cx, route, reply) {
+        let started = timed().then(Instant::now);
+        out.clear();
+        let Some(result) = catch_now(|| A::handle_now(route, cx, out)) else {
+            return Some(Job::Decide(route));
+        };
+        let (failure, page) = settle(cx, out, reply, result);
+        if let Some(page) = page {
+            return Some(Job::Page(Failed {
+                route,
+                page,
+                failure,
+                started,
+            }));
+        }
+        answered(cx, reply, started, failure);
+    }
+    tag(cx, reply);
+    None
+}
+
+/// Decides the request in `b`, routed to `route`, on this thread's
+/// decider: its buffers when that is done at once, else the decider, still
+/// deciding it (see [`decided`]).
+#[cfg(target_os = "linux")]
+fn at_once<A: App>(b: Box<Buffers>, job: Job) -> Result<Box<Buffers>, Deciding> {
+    let mut d = DECIDER.take().unwrap_or_else(|| Box::pin(decider::<A>()));
+    INBOX.set(Some((b, job)));
+    // Taken out meanwhile: one that panics is dropped, not polled again.
+    let _ = d
+        .as_mut()
+        .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()));
+    match OUTBOX.take() {
+        Some(b) => {
+            DECIDER.set(Some(d));
+            Ok(b)
+        }
+        None => Err(d),
+    }
+}
+
+/// The buffers of the request the decider `d` decides, once it has.
+#[cfg(not(target_arch = "wasm32"))]
+async fn decided(mut d: Deciding) -> Box<Buffers> {
+    std::future::poll_fn(|cx| {
+        let _ = d.as_mut().poll(cx);
+        OUTBOX.take().map_or(Poll::Pending, Poll::Ready)
+    })
+    .await
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn connection<A: App>(stream: Conn, peer: SocketAddr) {
+    let mut held = Some(take_buffers(peer));
+    requests::<A>(stream, peer, &mut held).await;
+    if let Some(b) = held {
+        give_buffers(b);
+    }
+}
+
 /// Answers the requests of one connection, until it closes.
 #[cfg(not(target_arch = "wasm32"))]
-async fn requests<A: App>(mut stream: Conn, b: &mut Buffers) {
-    let Buffers {
-        cx,
-        wbuf,
-        out,
-        reply,
-    } = b;
+async fn requests<A: App>(mut stream: Conn, peer: SocketAddr, held: &mut Option<Box<Buffers>>) {
     let mut busy = Busy(false);
     let mut head_since: Option<u64> = None;
     let mut body_since: Option<u64> = None;
     let mut sent_continue = false;
     let mut timer = std::pin::pin!(tokio::time::sleep_until(instant(0)));
+    // Where the driver stopped in what it handed over, and the request
+    // there when it got that far (see `Handed`).
+    let mut start = 0;
+    let mut ahead: Option<Ahead> = None;
 
-    loop {
-        let mut used = 0;
+    'conn: loop {
+        let b = &mut **held.get_or_insert_with(|| take_buffers(peer));
+        let mut used = std::mem::take(&mut start);
         let mut need = 0;
         let mut in_body = false;
         let mut close = false;
-        while used < cx.buf.len() {
-            match parse::<A>(cx, used) {
-                Parsed::Request { len, keep_alive } => {
-                    let keep_alive = keep_alive && !STOPPING.load(Ordering::Relaxed);
-                    decide::<A>(cx, out, reply).await;
+        let mut refused = false;
+        while used < b.cx.wire.buf.len() {
+            let (parsed, decided) = match ahead.take() {
+                Some((req, decided)) => (Parsed::Request(req), decided),
+                None => (parse::<A>(&mut b.cx, used, true), false),
+            };
+            let Buffers {
+                cx,
+                wbuf,
+                out,
+                reply,
+            } = &mut *b;
+            match parsed {
+                Parsed::Request(req) => {
+                    let keep_alive = policy::keeps_open(req.keep_alive, stopping());
+                    if !decided {
+                        decide::<A>(cx, out, reply, req.routed).await;
+                    }
                     // Only as a 101: a hook may have answered otherwise.
                     let upgrade = reply.take_websocket().filter(|_| reply.status == 101);
                     let streamed = serialize::<A>(
                         wbuf,
                         reply,
                         out,
-                        cx.http11,
+                        cx.wire.http11,
                         keep_alive || upgrade.is_some(),
                         cx.method == Method::Head,
                     );
-                    used += len;
+                    cx.reset();
+                    used += req.len;
                     // Answers to many small pipelined requests go out in
                     // pieces, so a buffer of them cannot make a huge one.
                     if streamed.is_none()
@@ -807,12 +1278,14 @@ async fn requests<A: App>(mut stream: Conn, b: &mut Buffers) {
                     if let Some(upgrade) = upgrade {
                         // The rest of the connection is the WebSocket's,
                         // on tokio's socket, with what the client sent
-                        // after its handshake.
-                        if stream.write(wbuf).await.is_ok()
-                            && let Ok((tcp, early)) = stream.into_tcp(cx.buf[used..].to_vec()).await
-                        {
-                            let limit = body_limit::<A>(cx.path());
-                            crate::ws::serve(tcp, early, limit, upgrade, cx.path()).await;
+                        // after its handshake. It holds none of the
+                        // buffers meanwhile.
+                        let early = cx.wire.buf[used..].to_vec();
+                        let (limit, path) = (body_limit::<A>(cx.path()), cx.path().to_owned());
+                        let sent = stream.write(wbuf).await.is_ok();
+                        give_buffers(held.take().expect("taken at the top of the loop"));
+                        if sent && let Ok((tcp, early)) = stream.into_tcp(early).await {
+                            crate::ws::serve(tcp, early, limit, upgrade, &path).await;
                         }
                         return;
                     }
@@ -820,24 +1293,33 @@ async fn requests<A: App>(mut stream: Conn, b: &mut Buffers) {
                     body_since = None;
                     sent_continue = false;
                     if let Some(s) = streamed {
-                        // What was answered so far goes first, then the body as
-                        // it comes. Bytes the client sends meanwhile (a request
-                        // after this one) wait in `early`.
-                        let mut early = Vec::new();
+                        // What was answered so far goes first, then the body
+                        // as it comes, which may take hours (server-sent
+                        // events): meanwhile the connection holds none of
+                        // the buffers, and what the client sends (a request
+                        // after this one) waits in `early`.
                         if stream.write(wbuf).await.is_err() {
                             return;
                         }
-                        if pump(&mut stream, s.body, s.chunked, wbuf, &mut early)
+                        let mut early = cx.wire.buf[used..].to_vec();
+                        give_buffers(held.take().expect("taken at the top of the loop"));
+                        let mut w = Vec::new();
+                        if pump(&mut stream, s.body, s.chunked, &mut w, &mut early)
                             .await
                             .is_err()
                         {
                             return;
                         }
-                        cx.buf.extend_from_slice(&early);
                         if s.close {
-                            close = true;
-                            break;
+                            stream.shutdown().await;
+                            return;
                         }
+                        held.insert(take_buffers(peer))
+                            .cx
+                            .wire
+                            .buf
+                            .extend_from_slice(&early);
+                        continue 'conn;
                     }
                     if !keep_alive {
                         close = true;
@@ -851,7 +1333,7 @@ async fn requests<A: App>(mut stream: Conn, b: &mut Buffers) {
                 } => {
                     need = n;
                     in_body = body;
-                    if expect_continue && !sent_continue {
+                    if policy::continues(expect_continue, sent_continue) {
                         wbuf.extend_from_slice(b"HTTP/1.1 100 Continue\r\n\r\n");
                         sent_continue = true;
                     }
@@ -860,125 +1342,156 @@ async fn requests<A: App>(mut stream: Conn, b: &mut Buffers) {
                 Parsed::Invalid(status) => {
                     reply.set_plain(status, reason(status));
                     serialize::<A>(wbuf, reply, out, true, false, false);
-                    close = true;
+                    (close, refused) = (true, true);
                     break;
                 }
             }
         }
 
-        if !wbuf.is_empty() {
-            if stream.write(wbuf).await.is_err() {
-                return;
-            }
-            if wbuf.capacity() > KEEP_CAPACITY {
-                wbuf.shrink_to(KEEP_CAPACITY);
-            }
+        if !b.wbuf.is_empty() && stream.write(&mut b.wbuf).await.is_err() {
+            return;
         }
         if close {
             stream.shutdown().await;
+            if refused {
+                linger(&mut stream, &mut b.cx.wire.buf, timer.as_mut()).await;
+            }
             return;
         }
 
-        cx.buf.drain(..used);
-        if cx.buf.is_empty() && cx.buf.capacity() > KEEP_CAPACITY {
-            cx.buf.shrink_to(8 * 1024);
-        }
-        if out.body.capacity() > KEEP_CAPACITY {
-            *out = Out::default();
-        }
-        // Room for the rest of the body, but at most 1 MB ahead of what came:
-        // a large `content-length` alone is not a reason to allocate.
-        cx.buf
-            .reserve(need.saturating_sub(cx.buf.len()).clamp(4096, 1024 * 1024));
+        b.cx.wire.buf.drain(..used);
+        trim_buffers(b);
+        let have = b.cx.wire.buf.len();
+        b.cx.wire.buf.reserve(policy::read_ahead(need, have));
 
-        let deadline = if cx.buf.is_empty() {
+        let deadline = if have == 0 {
             busy.set(false);
-            if STOPPING.load(Ordering::Relaxed) {
+            if stopping() {
                 return;
             }
-            seconds() + IDLE_TIMEOUT.as_secs()
+            policy::idle_deadline(seconds())
         } else if in_body {
-            // Each part in time, and the whole at `MIN_BODY_RATE` at least
-            // after the same grace: a body sent a byte at a time cannot hold
-            // a connection for days.
             let since = *body_since.get_or_insert_with(seconds);
-            let rate = since + REQUEST_TIMEOUT.as_secs() + (cx.buf.len() / MIN_BODY_RATE) as u64;
-            (seconds() + REQUEST_TIMEOUT.as_secs()).min(rate)
+            policy::body_deadline(seconds(), since, have)
         } else {
-            *head_since.get_or_insert_with(seconds) + REQUEST_TIMEOUT.as_secs()
+            policy::head_deadline(*head_since.get_or_insert_with(seconds))
         };
-        match read(&mut stream, &mut cx.buf, timer.as_mut(), deadline).await {
+        if have == 0 && stream.waits_bare() {
+            // Nothing of a next request yet: wait for it without buffers,
+            // which go to whichever request on this thread comes first.
+            give_buffers(held.take().expect("taken at the top of the loop"));
+            loop {
+                if readable(&mut stream, timer.as_mut(), deadline)
+                    .await
+                    .is_err()
+                {
+                    return; // closed, error or too slow
+                }
+                if let Some(h) = stream.handed() {
+                    busy.set(true);
+                    *held = Some(match h.held {
+                        Holding::Ready(b) => b,
+                        Holding::Deciding(d) => decided(d).await,
+                    });
+                    (start, ahead) = (h.at, h.ahead);
+                    continue 'conn;
+                }
+                let b = held.insert(take_buffers(peer));
+                match stream.try_read(&mut b.cx.wire.buf) {
+                    Some(Ok(n)) if n > 0 => break,
+                    Some(_) => return,
+                    // Readable with nothing to read (a new socket, which
+                    // the epoll tries at once; tokio's on Windows, which
+                    // says so of every new one): it waits again holding
+                    // nothing, rather than in a read holding the buffers.
+                    None => give_buffers(held.take().expect("just taken")),
+                }
+            }
+            busy.set(true);
+            continue;
+        }
+        match read(&mut stream, &mut b.cx.wire.buf, timer.as_mut(), deadline).await {
             Ok(n) if n > 0 => busy.set(true),
             _ => return, // closed, error or too slow
         }
     }
 }
 
-/// Parses the request starting at `cx.buf[at..]` and, if it is complete,
-/// records it in `cx` as spans.
-fn parse<A: App>(cx: &mut Cx, at: usize) -> Parsed {
-    cx.reset();
-    cx.headers.clear();
-    let head = match fast_head(&cx.buf, at, &mut cx.headers) {
+/// After a refused request: what the client still sends (the rest of a body
+/// too large, say) is read and dropped for a moment, up to a limit. A socket
+/// closed with bytes unread resets the connection, and the client may lose
+/// the answer before it has read it.
+#[cfg(not(target_arch = "wasm32"))]
+async fn linger(
+    stream: &mut Conn,
+    buf: &mut Vec<u8>,
+    mut timer: std::pin::Pin<&mut tokio::time::Sleep>,
+) {
+    let deadline = seconds() + policy::LINGER.as_secs();
+    let mut left = policy::LINGER_BYTES;
+    while left > 0 {
+        buf.clear();
+        match read(stream, buf, timer.as_mut(), deadline).await {
+            Ok(n) if n > 0 => left = left.saturating_sub(n),
+            _ => return,
+        }
+    }
+}
+
+/// Parses the request starting at `cx.wire.buf[at..]` and, if it is complete,
+/// records it in `cx` as spans. `on_wire`: from a client of the built-in
+/// server, where HTTP/1.1 must name its host (RFC 9112 §3.2); a request
+/// from another host (`Cx::from_request`) may have none.
+fn parse<A: App>(cx: &mut Cx, at: usize, on_wire: bool) -> Parsed {
+    cx.wire.headers.clear();
+    let mut seen = Seen::default();
+    let head = match fast_head(&cx.wire.buf, at, &mut cx.wire.headers, &mut seen) {
         Some(head) => head,
         None => {
-            cx.headers.clear();
-            match slow_head(&cx.buf, at, &mut cx.headers) {
-                Ok(head) => head,
+            cx.wire.headers.clear();
+            match slow_head(&cx.wire.buf, at, &mut cx.wire.headers) {
+                Ok(head) => {
+                    seen = Seen::of(&cx.wire.buf, &cx.wire.headers);
+                    head
+                }
                 Err(parsed) => return parsed,
             }
         }
     };
-    let buf = &cx.buf[..];
-
-    let mut content_length: Option<usize> = None;
-    let mut transfer_encodings = 0;
-    let mut keep_alive = head.http11;
-    let mut expect_continue = false;
-    for &(name, value) in &cx.headers {
-        // Only these four matter here; their lengths tell most others apart
-        // without comparing a byte.
-        if !matches!(name.len, 6 | 10 | 14 | 17) {
-            continue;
-        }
-        let (name, value) = (&buf[name.range()], &buf[value.range()]);
-        if name.eq_ignore_ascii_case(b"content-length") {
-            // Strict: digits only, and repeated headers must agree (smuggling).
-            match (parse_decimal(value), content_length) {
-                (Some(n), None) => content_length = Some(n),
-                (Some(n), Some(m)) if n == m => {}
-                _ => return Parsed::Invalid(400),
-            }
-        } else if name.eq_ignore_ascii_case(b"transfer-encoding") {
-            // Only `chunked`, alone: gzip and the like are for a proxy.
-            if !value.trim_ascii().eq_ignore_ascii_case(b"chunked") {
-                return Parsed::Invalid(501);
-            }
-            transfer_encodings += 1;
-        } else if name.eq_ignore_ascii_case(b"connection") {
-            for token in value.split(|&b| b == b',').map(<[u8]>::trim_ascii) {
-                if token.eq_ignore_ascii_case(b"close") {
-                    keep_alive = false;
-                } else if token.eq_ignore_ascii_case(b"keep-alive") {
-                    keep_alive = true;
-                }
-            }
-        } else if name.eq_ignore_ascii_case(b"expect") {
-            expect_continue = value.trim_ascii().eq_ignore_ascii_case(b"100-continue");
-        }
+    if seen.refuse != 0 {
+        return Parsed::Invalid(seen.refuse);
     }
-    let chunked = transfer_encodings > 0;
+    let keep_alive = seen.keep.unwrap_or(head.http11);
+    // Never to HTTP/1.0, which has no such answer (RFC 9110 §10.1.1).
+    let expect_continue = head.http11 && seen.expect;
+    let (content_length, hosts) = (seen.length, seen.hosts);
+    cx.wire.knows = seen.knows;
+    cx.wire.known = seen.known;
+    let chunked = seen.chunked > 0;
     // Both framings at once is the classic smuggling vector; HTTP/1.0 has
-    // no chunked framing at all.
-    if chunked && (content_length.is_some() || transfer_encodings > 1 || !head.http11) {
+    // no chunked framing at all. Two hosts could be read as either, by
+    // Wisp and a proxy or cache in front of it (RFC 9112 §3.2).
+    if (chunked && (content_length.is_some() || seen.chunked > 1 || !head.http11)) || hosts > 1 {
         return Parsed::Invalid(400);
     }
 
-    // The path only matters here for a body's limit.
-    let path = || std::str::from_utf8(&buf[head.path.range()]).unwrap_or("");
+    cx.method = head.method;
+    cx.wire.http11 = head.http11;
+    cx.wire.path = head.path;
+    cx.wire.query = head.query;
+    // A body's limit is its route's: the request is routed for it now, once.
     let body_start = at + head.len;
+    let len = content_length.unwrap_or(0);
+    let mut routed = None;
+    let mut limit = 0;
+    if chunked || len > 0 {
+        let route = cx.path().starts_with('/').then(|| route::<A>(cx));
+        limit = limit_of::<A>(route.flatten());
+        routed = route;
+    }
+    let buf = &cx.wire.buf[..];
     let (len, total) = if chunked {
-        match chunks(&buf[body_start..], body_limit::<A>(path())) {
+        match chunks(&buf[body_start..], limit) {
             Chunks::Complete { wire, body } => (body, head.len + wire),
             Chunks::Partial => {
                 return Parsed::Partial {
@@ -991,8 +1504,7 @@ fn parse<A: App>(cx: &mut Cx, at: usize) -> Parsed {
             Chunks::Invalid => return Parsed::Invalid(400),
         }
     } else {
-        let len = content_length.unwrap_or(0);
-        if len > 0 && len > body_limit::<A>(path()) {
+        if len > limit {
             return Parsed::Invalid(413);
         }
         if buf.len() - body_start < len {
@@ -1005,26 +1517,27 @@ fn parse<A: App>(cx: &mut Cx, at: usize) -> Parsed {
         (len, head.len + len)
     };
 
-    cx.method = head.method;
-    cx.http11 = head.http11;
-    cx.path = head.path;
-    cx.query = head.query;
-    cx.body = Span {
+    // Once whole, as the limits come first.
+    if on_wire && hosts == 0 && head.http11 {
+        return Parsed::Invalid(400);
+    }
+    cx.wire.body = Span {
         start: body_start as u32,
         len: len as u32,
     };
     if chunked {
         // The body's data moves up over the chunk framing, into one piece
-        // where `cx.body` says. The head stays as it is.
-        unchunk(&mut cx.buf[body_start..at + total]);
+        // where `cx.wire.body` says. The head stays as it is.
+        unchunk(&mut cx.wire.buf[body_start..at + total]);
     }
-    Parsed::Request {
+    Parsed::Request(Req {
         len: total,
         keep_alive,
-    }
+        routed,
+    })
 }
 
-/// A request's head: its line, and its headers, which went to `cx.headers`.
+/// A request's head: its line, and its headers, which went to `cx.wire.headers`.
 struct Head {
     /// Its bytes, up to the body.
     len: usize,
@@ -1033,6 +1546,160 @@ struct Head {
     query: Span,
     /// HTTP/1.1 rather than 1.0.
     http11: bool,
+}
+
+/// What the headers say that the framing and the connection need, each
+/// read once: as [`fast_head`] passes it, or after [`slow_head`].
+#[derive(Default, PartialEq, Debug)]
+struct Seen {
+    length: Option<usize>,
+    /// `transfer-encoding: chunked` headers.
+    chunked: u32,
+    hosts: u32,
+    /// What `connection` said last: keep-alive or close.
+    keep: Option<bool>,
+    /// The last `expect` is `100-continue`.
+    expect: bool,
+    knows: u8,
+    known: [Span; KNOWN],
+    /// The answer to the first header refused, or 0.
+    refuse: u16,
+}
+
+impl Seen {
+    fn of(buf: &[u8], headers: &[(Span, Span)]) -> Seen {
+        let mut seen = Seen::default();
+        for &(name, value) in headers {
+            let name = header_name(buf, name.start as usize, name.len as usize);
+            seen.header(buf, name, value);
+        }
+        seen
+    }
+
+    #[inline(always)]
+    fn header(&mut self, buf: &[u8], name: Name, span: Span) {
+        let value = &buf[span.range()];
+        match name {
+            Name::Other => {}
+            Name::Host => self.hosts += 1,
+            // Strict: digits only, and repeated headers must agree (smuggling).
+            Name::ContentLength => match (parse_decimal(value), self.length) {
+                (Some(n), None) => self.length = Some(n),
+                (Some(n), Some(m)) if n == m => {}
+                _ => self.refuse(400),
+            },
+            // Only `chunked`, alone: gzip and the like are for a proxy.
+            Name::TransferEncoding if swar::eq_lower(value.trim_ascii(), b"chunked") => {
+                self.chunked += 1
+            }
+            Name::TransferEncoding => self.refuse(501),
+            // One token, the usual case, before splitting the list.
+            Name::Connection => match value.trim_ascii() {
+                v if swar::eq_lower(v, b"keep-alive") => self.keep = Some(true),
+                v if swar::eq_lower(v, b"close") => self.keep = Some(false),
+                v => {
+                    for token in v.split(|&b| b == b',').map(<[u8]>::trim_ascii) {
+                        if swar::eq_lower(token, b"close") {
+                            self.keep = Some(false);
+                        } else if swar::eq_lower(token, b"keep-alive") {
+                            self.keep = Some(true);
+                        }
+                    }
+                }
+            },
+            Name::Expect => self.expect = swar::eq_lower(value.trim_ascii(), b"100-continue"),
+            Name::Known(k) => {
+                if self.knows & 1 << k as u8 == 0 {
+                    self.knows |= 1 << k as u8;
+                    self.known[k as usize] = span;
+                }
+            }
+        }
+    }
+
+    fn refuse(&mut self, code: u16) {
+        if self.refuse == 0 {
+            self.refuse = code;
+        }
+    }
+}
+
+/// The headers the parser acts on, and the [`Known`] ones it marks for `Cx`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum Name {
+    Host,
+    ContentLength,
+    TransferEncoding,
+    Connection,
+    Expect,
+    Known(Known),
+    Other,
+}
+
+/// The eight bytes of `s` from `from`, zero past its end, as [`swar::word`]
+/// reads them.
+const fn key(s: &[u8], from: usize) -> u64 {
+    let (mut x, mut k) = (0, 0);
+    while k < 8 && from + k < s.len() {
+        x |= (s[from + k] as u64) << (8 * k);
+        k += 1;
+    }
+    x
+}
+
+/// The first and last eight bytes of `s`, at least eight long.
+const fn ends(s: &[u8]) -> (u64, u64) {
+    (key(s, 0), key(s, s.len() - 8))
+}
+
+/// Which header the name `b[at..at + len]` is, in any case. It is a token
+/// (`tchar`s), so setting bit 5 of every byte lowercases its letters and
+/// keeps `-`, and turns no other `tchar` into either: its length and two
+/// words (three past 16 bytes) against the lowercase names tell.
+#[inline(always)]
+pub(crate) fn header_name(b: &[u8], at: usize, len: usize) -> Name {
+    const LOWER: u64 = 0x2020_2020_2020_2020;
+    if len < 8 {
+        if len == 0 {
+            return Name::Other;
+        }
+        let w = if at + 8 <= b.len() {
+            swar::word(b, at)
+        } else {
+            swar::tail(&b[at..at + len], 0)
+        };
+        // Past the name, zeros, as in the keys: a key is one length's.
+        const HOST: u64 = key(b"host", 0);
+        const EXPECT: u64 = key(b"expect", 0);
+        const ACCEPT: u64 = key(b"accept", 0);
+        const ORIGIN: u64 = key(b"origin", 0);
+        return match (w | LOWER) & u64::MAX >> (8 * (8 - len)) {
+            HOST => Name::Host,
+            EXPECT => Name::Expect,
+            ACCEPT => Name::Known(Known::Accept),
+            ORIGIN => Name::Known(Known::Origin),
+            _ => Name::Other,
+        };
+    }
+    let word = |i: usize| swar::word(b, i) | LOWER;
+    let w = (word(at), word(at + len - 8));
+    match len {
+        10 if w == const { ends(b"connection") } => Name::Connection,
+        12 if w == const { ends(b"content-type") } => Name::Known(Known::ContentType),
+        12 if w == const { ends(crate::protocol::HEADER_ERROR.as_bytes()) } => {
+            Name::Known(Known::WispError)
+        }
+        13 if w == const { ends(b"if-none-match") } => Name::Known(Known::IfNoneMatch),
+        14 if w == const { ends(b"content-length") } => Name::ContentLength,
+        14 if w == const { ends(b"sec-fetch-site") } => Name::Known(Known::SecFetchSite),
+        15 if w == const { ends(b"idempotency-key") } => Name::Known(Known::IdempotencyKey),
+        17 if w == const { ends(b"transfer-encoding") }
+            && word(at + 8) == const { key(b"transfer-encoding", 8) } =>
+        {
+            Name::TransferEncoding
+        }
+        _ => Name::Other,
+    }
 }
 
 /// The bytes of a header name (RFC 9110 `tchar`), as httparse takes them.
@@ -1052,19 +1719,110 @@ const TOKEN: [bool; 256] = {
     t
 };
 
+/// `HTTP/1.1` and `HTTP/1.0` as [`swar::word`] reads them.
+const V11: u64 = u64::from_le_bytes(*b"HTTP/1.1");
+const V10: u64 = u64::from_le_bytes(*b"HTTP/1.0");
+
+/// The first byte of `b[i..]` that is not visible ASCII, or is `also`,
+/// eight bytes at a time; `b.len()` if none.
+#[inline(always)]
+fn visible(b: &[u8], mut i: usize, also: u8) -> usize {
+    while i + 8 <= b.len() {
+        let x = swar::word(b, i);
+        let stop = swar::below(x, 0x21) | swar::above(x, 0x7e) | swar::eq(x, also);
+        if stop != 0 {
+            return i + swar::first(stop);
+        }
+        i += 8;
+    }
+    while b
+        .get(i)
+        .is_some_and(|&c| (0x21..=0x7e).contains(&c) && c != also)
+    {
+        i += 1;
+    }
+    i
+}
+
+/// A few bytes, at most eight, to match a word against: `key` as
+/// [`swar::word`] reads it, in its first `mask` bytes, letters in any case.
+struct Pat {
+    key: u64,
+    case: u64,
+    mask: u64,
+}
+
+impl Pat {
+    const fn of(s: &[u8]) -> Pat {
+        let (mut key, mut case, mut k) = (0, 0, 0);
+        while k < s.len() {
+            key |= (s[k] as u64) << (8 * k);
+            if s[k].is_ascii_lowercase() {
+                case |= 0x20 << (8 * k);
+            }
+            k += 1;
+        }
+        Pat {
+            key,
+            case,
+            mask: u64::MAX >> (8 * (8 - s.len())),
+        }
+    }
+
+    /// Setting bit 5 of a letter's byte makes either case its lowercase,
+    /// and nothing else that lowercase: other bytes must be the same.
+    #[inline(always)]
+    fn is(&self, x: u64) -> bool {
+        (x | self.case) & self.mask == self.key
+    }
+}
+
+/// The length and kind of the name at `b[i..]` when it is one of the headers every
+/// request sends, with its colon after it (as a match of its bytes, it is
+/// a `tchar` name): `host`, `connection`, `content-length`, `user-agent`.
+/// 0 for others, whose bytes are then checked.
+#[inline(always)]
+fn by_name(b: &[u8], i: usize) -> (usize, Name) {
+    const HOST: Pat = Pat::of(b"host:");
+    const CONTENT: Pat = Pat::of(b"content-");
+    const LENGTH: Pat = Pat::of(b"length:");
+    const CONNECTI: Pat = Pat::of(b"connecti");
+    const ON: Pat = Pat::of(b"on:");
+    const USER_AGE: Pat = Pat::of(b"user-age");
+    const NT: Pat = Pat::of(b"nt:");
+    let Some(w) = b.get(i..i + 16) else {
+        return (0, Name::Other);
+    };
+    let (x, y) = (swar::word(w, 0), swar::word(w, 8));
+    match x as u8 | 0x20 {
+        b'h' if HOST.is(x) => (4, Name::Host),
+        b'c' if CONTENT.is(x) && LENGTH.is(y) => (14, Name::ContentLength),
+        b'c' if CONNECTI.is(x) && ON.is(y) => (10, Name::Connection),
+        b'u' if USER_AGE.is(x) && NT.is(y) => (10, Name::Other),
+        _ => (0, Name::Other),
+    }
+}
+
 /// The head of `buf[at..]` when it has the usual shape: a method in
 /// capitals, a target of visible ASCII, `HTTP/1.1` or `HTTP/1.0`, lines that
 /// end in CRLF, header names of `tchar`s, and all of it here, in at most
 /// `MAX_HEAD` bytes. Header values are scanned 16 bytes at a time. It is
 /// `None` for anything else, which [`slow_head`] (httparse) then reads,
 /// or refuses: what this reads, httparse reads the same.
-fn fast_head(buf: &[u8], at: usize, headers: &mut Vec<(Span, Span)>) -> Option<Head> {
-    use crate::swar;
+fn fast_head(
+    buf: &[u8],
+    at: usize,
+    headers: &mut Vec<(Span, Span)>,
+    seen: &mut Seen,
+) -> Option<Head> {
     let b = &buf[..buf.len().min(at + MAX_HEAD)];
     let mut i = at;
     let method = if b.get(i..i + 4) == Some(b"GET ") {
         i += 3;
         Method::Get
+    } else if b.get(i..i + 5) == Some(b"POST ") {
+        i += 4;
+        Method::Post
     } else {
         while b.get(i).is_some_and(u8::is_ascii_uppercase) {
             i += 1;
@@ -1077,36 +1835,32 @@ fn fast_head(buf: &[u8], at: usize, headers: &mut Vec<(Span, Span)>) -> Option<H
     i += 1;
 
     // The target, to the first byte that is not visible ASCII: its space.
+    // Its path ends at its first `?`, where its query starts.
     let target = i;
-    while i + 8 <= b.len() {
-        let x = swar::word(b, i);
-        let stop = swar::below(x, 0x21) | swar::above(x, 0x7e);
-        if stop != 0 {
-            i += swar::first(stop);
-            break;
-        }
-        i += 8;
-    }
-    while b.get(i).is_some_and(|c| (0x21..=0x7e).contains(c)) {
-        i += 1;
-    }
-    let end = i;
-    let http11 = match b.get(i..i + 11)? {
-        b" HTTP/1.1\r\n" => true,
-        b" HTTP/1.0\r\n" => false,
+    let path_end = visible(b, target, b'?');
+    let end = match b.get(path_end) {
+        Some(b'?') => visible(b, path_end + 1, b' '),
+        _ => path_end,
+    };
+    let line = b.get(end..end + 11)?;
+    let http11 = match swar::word(line, 1) {
+        V11 => true,
+        V10 => false,
         _ => return None,
     };
-    if end == target {
+    // Empty (its space), or not a path: `*`, `http://host/x`.
+    if line[0] != b' ' || line[9..] != *b"\r\n" || b[target] != b'/' {
         return None;
     }
-    i += 11;
+    i = end + 11;
     let span = |from: usize, to: usize| Span {
         start: from as u32,
         len: (to - from) as u32,
     };
-    let (path, query) = match b[target..end].iter().position(|&c| c == b'?') {
-        Some(q) => (span(target, target + q), span(target + q + 1, end)),
-        None => (span(target, end), Span::default()),
+    let (path, query) = if path_end == end {
+        (span(target, end), Span::default())
+    } else {
+        (span(target, path_end), span(path_end + 1, end))
     };
 
     loop {
@@ -1119,15 +1873,34 @@ fn fast_head(buf: &[u8], at: usize, headers: &mut Vec<(Span, Span)>) -> Option<H
                 http11,
             });
         }
+        // The name: one read most by its bytes, or else letters, digits
+        // and `-` eight at a time, any other `tchar` one at a time.
         let name = i;
-        while b.get(i).is_some_and(|&c| TOKEN[usize::from(c)]) {
-            i += 1;
-        }
-        if i == name || b.get(i) != Some(&b':') {
-            return None;
+        let (n, mut kind) = by_name(b, i);
+        i += n;
+        if i == name {
+            loop {
+                if i + 8 <= b.len() {
+                    let miss = swar::not_name(swar::word(b, i));
+                    if miss == 0 {
+                        i += 8;
+                        continue;
+                    }
+                    i += swar::first(miss);
+                }
+                if !b.get(i).is_some_and(|&c| TOKEN[usize::from(c)]) {
+                    break;
+                }
+                i += 1;
+            }
+            if i == name || b.get(i) != Some(&b':') {
+                return None;
+            }
+            kind = header_name(b, name, i - name);
         }
         let name = span(name, i);
-        i += 1;
+        // Its colon, and the space after it most send.
+        i += if b.get(i + 1) == Some(&b' ') { 2 } else { 1 };
         while b.get(i).is_some_and(|&c| c == b' ' || c == b'\t') {
             i += 1;
         }
@@ -1135,26 +1908,24 @@ fn fast_head(buf: &[u8], at: usize, headers: &mut Vec<(Span, Span)>) -> Option<H
         // bytes of 0x80 and up; any other control stops it.
         let value = i;
         loop {
-            if let Some(chunk) = b.get(i..i + 16) {
-                let mut stop = 0u8;
-                for &c in chunk {
-                    stop |= ((c < 0x20) | (c == 0x7f)) as u8;
-                }
-                if stop == 0 {
-                    i += 16;
-                    continue;
-                }
-            }
             if i + 8 <= b.len() {
-                let x = swar::word(b, i);
-                let stop = swar::below(x, 0x20) | swar::eq(x, 0x7f);
+                let stop = swar::control(swar::word(b, i));
                 if stop == 0 {
                     i += 8;
+                    // Past sixteen, a long value (a cookie, a user agent):
+                    // sixteen at a time.
+                    if i - value >= 16 {
+                        while let Some(chunk) = b.get(i..i + 16)
+                            && !swar::any_control(chunk)
+                        {
+                            i += 16;
+                        }
+                    }
                     continue;
                 }
                 i += swar::first(stop);
             } else {
-                while b.get(i).is_some_and(|&c| c >= 0x20 && c != 0x7f) {
+                while b.get(i).is_some_and(|&c| !swar::is_control(c)) {
                     i += 1;
                 }
             }
@@ -1173,7 +1944,9 @@ fn fast_head(buf: &[u8], at: usize, headers: &mut Vec<(Span, Span)>) -> Option<H
         if headers.len() == MAX_HEADERS {
             return None;
         }
-        headers.push((name, span(value, value_end)));
+        let value = span(value, value_end);
+        headers.push((name, value));
+        seen.header(b, kind, value);
         i += 2;
     }
 }
@@ -1182,7 +1955,7 @@ fn fast_head(buf: &[u8], at: usize, headers: &mut Vec<(Span, Span)>) -> Option<H
 /// not: bare LF line ends, empty lines before the request, other methods
 /// and targets. `Err` is what to answer: wait for more, or refuse it.
 fn slow_head(buf: &[u8], at: usize, headers: &mut Vec<(Span, Span)>) -> Result<Head, Parsed> {
-    // Left uninitialized: zeroing 64 headers cost more than parsing a small request.
+    // Left uninitialized: zeroing them cost more than parsing a small request.
     let mut raw = [const { MaybeUninit::uninit() }; MAX_HEADERS];
     let mut req = httparse::Request::new(&mut []);
     let len = match req.parse_with_uninit_headers(&buf[at..], &mut raw) {
@@ -1197,18 +1970,61 @@ fn slow_head(buf: &[u8], at: usize, headers: &mut Vec<(Span, Span)>) -> Result<H
         Ok(_) | Err(httparse::Error::TooManyHeaders) => return Err(Parsed::Invalid(431)),
         Err(_) => return Err(Parsed::Invalid(400)),
     };
-    for h in req.headers.iter() {
-        headers.push((Span::of(buf, h.name.as_bytes()), Span::of(buf, h.value)));
+    let target = req.path.unwrap_or("").as_bytes();
+    let (mut path, query) = match target.iter().position(|&c| c == b'?') {
+        Some(q) => (&target[..q], &target[q + 1..]),
+        None => (target, &b""[..]),
+    };
+    // The absolute form a proxy sends, `http://host/x` (RFC 9112 §3.2.2): its
+    // path, and its host in place of the `host` header's.
+    let mut host = None;
+    if let Some((authority, origin)) = absolute_form(path) {
+        (host, path) = (Some(Span::of(buf, authority)), origin);
     }
-    let target = req.path.unwrap_or("");
-    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    for h in req.headers.iter() {
+        let value = match host {
+            Some(host) if h.name.eq_ignore_ascii_case("host") => host,
+            _ => Span::of(buf, h.value),
+        };
+        headers.push((Span::of(buf, h.name.as_bytes()), value));
+    }
     Ok(Head {
         len,
         method: Method::parse(req.method.unwrap_or("").as_bytes()),
-        path: Span::of(buf, path.as_bytes()),
-        query: Span::of(buf, query.as_bytes()),
+        path: Span::of(buf, path),
+        query: Span::of(buf, query),
         http11: req.version == Some(1),
     })
+}
+
+/// The authority and path of an absolute-form target's path part
+/// (`http://host:80/x`): `http` or `https`, a host without user info. The
+/// path of `http://host` is `/`, the slash before `host`.
+fn absolute_form(t: &[u8]) -> Option<(&[u8], &[u8])> {
+    if t.first() == Some(&b'/') {
+        return None; // the usual origin form
+    }
+    let colon = t.iter().position(|&c| c == b':')?;
+    let scheme = &t[..colon];
+    if !(scheme.eq_ignore_ascii_case(b"http") || scheme.eq_ignore_ascii_case(b"https"))
+        || t.get(colon + 1..colon + 3) != Some(b"//")
+    {
+        return None;
+    }
+    let host = colon + 3;
+    let end = t[host..]
+        .iter()
+        .position(|&c| c == b'/')
+        .map_or(t.len(), |i| host + i);
+    if end == host || t[host..end].contains(&b'@') {
+        return None;
+    }
+    let path = if end < t.len() {
+        &t[end..]
+    } else {
+        &t[host - 1..host]
+    };
+    Some((&t[host..end], path))
 }
 
 /// The largest body any route takes, whatever its limit says: requests are
@@ -1219,14 +2035,16 @@ const MAX_BODY: usize = 1 << 31;
 /// `WISP_BODY_LIMIT`, and at most `MAX_BODY`. Only requests with a body
 /// look it up.
 pub(crate) fn body_limit<A: App>(path: &str) -> usize {
-    let route = if path.starts_with('/') {
-        A::route(path)
-    } else {
-        None
-    };
+    let route = path.starts_with('/').then(|| A::route(path)).flatten();
+    limit_of::<A>(route.map(|(id, _)| id))
+}
+
+/// [`body_limit`] of a request routed to `route`.
+fn limit_of<A: App>(route: Option<usize>) -> usize {
+    let usual = crate::settings().body_limit;
     route
-        .and_then(|(id, _)| A::body_limit(id))
-        .unwrap_or(crate::settings().body_limit)
+        .and_then(|id| A::ROUTES[id].limit(usual))
+        .unwrap_or(usual)
         .min(MAX_BODY)
 }
 
@@ -1352,10 +2170,22 @@ pub(crate) fn spare() -> Vec<u8> {
     SPARE.take()
 }
 
+/// [`spare`] for `len` bytes that may be kept long (a `String` input a
+/// handler stores): only one about that size, else a new buffer, so a
+/// small value never holds a large one's room.
+pub(crate) fn spare_for(len: usize) -> Vec<u8> {
+    let b = SPARE.take();
+    if (len..=len.max(16) * 4).contains(&b.capacity()) {
+        return b;
+    }
+    SPARE.set(b);
+    Vec::with_capacity(len)
+}
+
 /// Keeps `body`, now written, for [`spare`] to hand out again, unless one
 /// large message made it big.
 fn recycle(mut body: Vec<u8>) {
-    if body.capacity() <= KEEP_CAPACITY {
+    if policy::kept(body.capacity()) {
         body.clear();
         SPARE.set(body);
     }
@@ -1524,7 +2354,7 @@ pub async fn handle<A: App>(req: Request) -> Reply {
 pub(crate) async fn answer<A: App>(mut cx: Cx) -> Reply {
     setup::<A>();
     let (mut out, mut reply) = (Out::default(), Reply::default());
-    decide::<A>(&mut cx, &mut out, &mut reply).await;
+    decide::<A>(&mut cx, &mut out, &mut reply, None).await;
     match reply.body {
         Body::WebSocket(_) => reply.set_plain(501, "WebSockets need Wisp's own server"),
         Body::Page => reply.body = Body::Bytes(page::<A>(&mut out).concat().into_bytes()),
@@ -1563,17 +2393,17 @@ impl Cx {
         body: &[u8],
         peer: SocketAddr,
     ) -> Result<Cx, u16> {
-        // What would end a line or a field here would let one request pass
-        // for two.
-        let bad = |s: &[u8]| s.iter().any(|&b| b == b'\r' || b == b'\n' || b == 0);
+        // A control byte (but a value's tab) would end a line or a field
+        // here, and let one request pass for two.
+        let bad = |s: &[u8]| s.iter().any(|&b| swar::is_control(b) && b != b'\t');
         if method.is_empty()
             || !method.bytes().all(|b| b.is_ascii_alphabetic())
-            || target.bytes().any(|b| b <= b' ' || b == 0x7f)
+            || !swar::none(target.as_bytes(), |x| swar::control(x) | swar::eq(x, b' '))
         {
             return Err(400);
         }
         let mut cx = Cx::new(peer);
-        let buf = &mut cx.buf;
+        let buf = &mut cx.wire.buf;
         buf.clear();
         for part in [method, " ", target, " HTTP/1.1\r\n"] {
             buf.extend_from_slice(part.as_bytes());
@@ -1595,32 +2425,65 @@ impl Cx {
         push_decimal(buf, body.len() as u64);
         buf.extend_from_slice(b"\r\n\r\n");
         buf.extend_from_slice(body);
-        match parse::<A>(&mut cx, 0) {
-            Parsed::Request { len, .. } if len == cx.buf.len() => Ok(cx),
+        match parse::<A>(&mut cx, 0, false) {
+            Parsed::Request(r) if r.len == cx.wire.buf.len() => Ok(cx),
             Parsed::Invalid(status) => Err(status),
             _ => Err(400),
         }
     }
 }
 
-/// Decides the response to the request in `cx`, and gives it `x-request-id`
-/// when the request has an id (`WISP_REQUEST_ID=on`, or `cx.request_id()`).
-async fn decide<A: App>(cx: &mut Cx, out: &mut Out, reply: &mut Reply) {
+/// Decides the response to the request in `cx`: Wisp's own files, the
+/// app's, routing, hooks, redirects, error pages. Writes nothing; see
+/// [`serialize`]. Gives it `x-request-id` when the request has an id
+/// (`WISP_REQUEST_ID=on`, or `cx.request_id()`). `routed`: its route, when
+/// [`route`] found it already.
+///
+/// What it holds across its awaits is little, the handler's future and
+/// the error page's: the rest is done in plain functions around them, so
+/// the future moves cheaply as it is made, every request.
+async fn decide<A: App>(
+    cx: &mut Cx,
+    out: &mut Out,
+    reply: &mut Reply,
+    routed: Option<Option<usize>>,
+) {
     if crate::settings().request_id {
         cx.request_id();
     }
-    match crate::idem::start(cx) {
-        Start::Skip => decide_inner::<A>(cx, out, reply).await,
-        Start::Fresh(key) => {
-            decide_inner::<A>(cx, out, reply).await;
-            crate::idem::finish(key, reply);
+    // Routed first (it only matches), so the path is read once.
+    let route = routed.unwrap_or_else(|| route::<A>(cx));
+    if !before_routes::<A>(cx, route, reply) {
+        let started = timed().then(Instant::now);
+        out.clear();
+        let result = catch_made(|| A::handle(route, cx, out)).await;
+        let (failure, page) = settle(cx, out, reply, result);
+        if let Some(page) = page {
+            render_error::<A>(route, cx, out, page).await;
         }
-        Start::Replay(r) => *reply = r,
-        Start::Refused(e) => {
-            let body = e.json(e.message(), false).into_bytes();
-            reply.set(e.status, "application/json", Body::Bytes(body));
-        }
+        answered(cx, reply, started, failure);
     }
+    tag(cx, reply);
+}
+
+/// The reply to what the handler did, `result` ([`answer_of`]), or to its
+/// error ([`error_reply`]): what went wrong, for the log, and the error
+/// page to render, if any.
+#[allow(clippy::type_complexity)]
+fn settle(
+    cx: &mut Cx,
+    out: &mut Out,
+    reply: &mut Reply,
+    result: crate::Result<()>,
+) -> (Option<String>, Option<(u16, Cow<'static, str>)>) {
+    match answer_of(cx, out, reply, result) {
+        Ok(()) => (None, None),
+        Err(e) => error_reply(cx, out, reply, e),
+    }
+}
+
+/// The reply's `x-request-id`, when the request has an id.
+fn tag(cx: &Cx, reply: &mut Reply) {
     if let Some(id) = cx.id() {
         reply
             .headers
@@ -1628,23 +2491,22 @@ async fn decide<A: App>(cx: &mut Cx, out: &mut Out, reply: &mut Reply) {
     }
 }
 
-/// Wisp's own files, the app's, routing, hooks, redirects, error pages.
-/// Writes nothing; see [`serialize`].
-async fn decide_inner<A: App>(cx: &mut Cx, out: &mut Out, reply: &mut Reply) {
-    let started = timed().then(Instant::now);
-    let method = cx.method;
-
-    let path = cx.path();
-    if !path.starts_with('/') {
-        return reply.set_plain(400, "Bad Request");
+/// What is answered before the routes: a path that is not one, Wisp's own
+/// files, a trailing slash, the app's files. Whether it was.
+fn before_routes<A: App>(cx: &Cx, route: Option<usize>, reply: &mut Reply) -> bool {
+    // Its bytes: only a few of these need it as a `str`.
+    let raw = cx.raw_path();
+    if raw.first() != Some(&b'/') {
+        reply.set_plain(400, "Bad Request");
+        return true;
     }
-    if internal::<A>(cx, path, reply) {
-        return;
+    if raw.starts_with(b"/_") && internal::<A>(cx, cx.path(), reply) {
+        return true;
     }
-    if path.len() > 1 && path.ends_with('/') {
+    if raw.len() > 1 && raw.ends_with(b"/") {
         // One leading slash: `//evil.example/` would send the browser to
         // another site (and so would `/\evil.example/`).
-        let trimmed = path.trim_matches(['/', '\\']);
+        let trimmed = cx.path().trim_matches(['/', '\\']);
         let query = cx.query_string();
         let location = if query.is_empty() {
             format!("/{trimmed}")
@@ -1655,22 +2517,19 @@ async fn decide_inner<A: App>(cx: &mut Cx, out: &mut Out, reply: &mut Reply) {
         reply
             .headers
             .push((Cow::Borrowed("location"), Cow::Owned(location)));
-        return;
+        return true;
     }
+    matches!(cx.method, Method::Get | Method::Head) && file::<A>(cx, raw, route, reply)
+}
 
-    // Route, then turn the matched parameters into spans so `cx` can be
-    // handed out mutably.
-    let route = A::route(path);
-    if matches!(method, Method::Get | Method::Head) && file::<A>(cx, path, route.is_some(), reply) {
-        return;
-    }
-    let route = route.map(|(id, raw)| (id, raw.map(|s| Span::of(&cx.buf, s.as_bytes()))));
-    out.clear();
-    if let Some((id, params)) = route {
-        cx.set_params(A::PARAMS[id], params);
-    }
-    let route = route.map(|(id, _)| id);
-    let mut result = catch(A::handle(route, cx, out)).await;
+/// The reply to what the handler did, `result`: its response, page or
+/// redirect; or the error an error page answers.
+fn answer_of(
+    cx: &mut Cx,
+    out: &mut Out,
+    reply: &mut Reply,
+    mut result: crate::Result<()>,
+) -> Result<(), Error> {
     if result.is_ok()
         && let Some(res) = out.response.as_mut().filter(|r| r.upgrade.is_some())
     {
@@ -1679,12 +2538,13 @@ async fn decide_inner<A: App>(cx: &mut Cx, out: &mut Out, reply: &mut Reply) {
                 .push((Cow::Borrowed("sec-websocket-accept"), accept));
         });
     }
-
-    // What went wrong in a 5xx, for the log. The page may say less.
-    let failure = match result {
+    match result {
         Ok(()) => {
             match out.response.take() {
                 Some(mut res) => {
+                    if not_modified(cx, &res) {
+                        res.status = 304;
+                    }
                     reply.status = res.status;
                     reply.headers.clear();
                     if !res.content_type.is_empty() {
@@ -1692,7 +2552,9 @@ async fn decide_inner<A: App>(cx: &mut Cx, out: &mut Out, reply: &mut Reply) {
                             .headers
                             .push((Cow::Borrowed("content-type"), res.content_type));
                     }
-                    reply.add(res.headers);
+                    if !res.headers.is_empty() {
+                        reply.add(res.headers);
+                    }
                     reply.body = match (res.upgrade.take(), res.stream.take()) {
                         (Some(upgrade), _) => Body::WebSocket(upgrade),
                         (None, Some(body)) => Body::Stream(body),
@@ -1701,39 +2563,83 @@ async fn decide_inner<A: App>(cx: &mut Cx, out: &mut Out, reply: &mut Reply) {
                 }
                 None => match out.made.take() {
                     Some(made) => crate::bake::reply(cx, made, reply),
-                    None => reply.set(cx.status, "text/html; charset=utf-8", Body::Page),
+                    None => reply.set(cx.status(), "text/html; charset=utf-8", Body::Page),
                 },
             }
-            None
+            Ok(())
         }
         Err(e) if e.status < 400 => {
             redirect_reply(cx, e, reply);
-            None
+            Ok(())
         }
-        Err(e) => render_error::<A>(route, cx, out, reply, e).await,
-    };
-    reply.headers.append(&mut cx.out_headers);
+        Err(e) => Err(e),
+    }
+}
 
+/// The reply decided: kept for its `Idempotency-Key`, given the headers the
+/// request set, and logged; `failure` is what went wrong in a 5xx, for the
+/// log (the page may say less).
+fn answered(cx: &mut Cx, reply: &mut Reply, started: Option<Instant>, failure: Option<String>) {
+    if let Some(key) = cx.idem.take() {
+        key.finish(reply, cx.page_headers());
+    }
+    cx.send_headers(&mut reply.headers);
+    let method = cx.method.as_str();
     if let Some(started) = started {
         let blocked = Some(BLOCKED.replace(Duration::ZERO)).filter(|&b| b >= BLOCKING);
+        let (path, id) = (cx.path(), cx.id());
         dev::log_request(
-            method.as_str(),
-            cx.path(),
+            method,
+            path,
             reply.status,
             started.elapsed(),
             failure.as_deref(),
             blocked,
-            cx.id(),
+            id,
         );
     } else if let Some(f) = failure {
         let id = cx.id().map_or(String::new(), |id| format!(" [{id}]"));
         log(format_args!(
-            "wisp: {} {} {}{id}: {f}",
+            "wisp: {} {method} {}{id}: {f}",
             reply.status,
-            method.as_str(),
             cx.path()
         ));
     }
+}
+
+/// The route of the request in `cx`, which gets its params: the matched
+/// parameters as spans, so `cx` can be handed out mutably.
+fn route<A: App>(cx: &mut Cx) -> Option<usize> {
+    let (id, raw) = A::route(cx.path())?;
+    // Only the route's own: most have none.
+    let names = A::ROUTES[id].params;
+    if names.is_empty() {
+        cx.clear_params();
+        return Some(id);
+    }
+    let mut params = [Span::default(); crate::cx::MAX_PARAMS];
+    for (p, s) in params.iter_mut().zip(raw).take(names.len()) {
+        *p = Span::of(&cx.wire.buf, s.as_bytes());
+    }
+    cx.set_params(names, params);
+    Some(id)
+}
+
+/// Whether `res`, a 200 to a GET or HEAD with an `etag` (an [`crate::Image`],
+/// say), is what the client says it has: then it is a 304, with no body.
+/// The response's own headers are few; the request's are looked through
+/// only for one with an `etag`.
+fn not_modified(cx: &Cx, res: &crate::Response) -> bool {
+    res.status == 200
+        && matches!(cx.method, Method::Get | Method::Head)
+        && (res.headers.iter()).any(|(n, v)| n == "etag" && fresh(cx, v))
+}
+
+/// Whether the request's `if-none-match` names `etag`, weakly as a GET
+/// compares (`W/"x"` is `"x"`), or is `*`: the client has it, a 304.
+pub(crate) fn fresh(cx: &Cx, etag: &str) -> bool {
+    cx.known(Known::IfNoneMatch)
+        .is_some_and(|h| crate::rest::names::<true>(h, etag))
 }
 
 /// A redirect. Headers set before it (a login cookie) still apply.
@@ -1741,11 +2647,11 @@ async fn decide_inner<A: App>(cx: &mut Cx, out: &mut Out, reply: &mut Reply) {
 /// follow it with the post's own headers, and to another site (a payment
 /// page) not at all.
 fn redirect_reply(cx: &Cx, e: Error, reply: &mut Reply) {
-    let js = cx.header("x-wisp").is_some();
+    let js = cx.header(crate::protocol::HEADER_JS).is_some();
     reply.set_plain(if js { 200 } else { e.status }, "");
     if let Some((name, value)) = e.header.map(|h| *h) {
         let name = if js && name == "location" {
-            "x-wisp-location"
+            crate::protocol::HEADER_LOCATION
         } else {
             name
         };
@@ -1753,15 +2659,31 @@ fn redirect_reply(cx: &Cx, e: Error, reply: &mut Reply) {
     }
 }
 
-/// The page for a 4xx or 5xx: the nearest `+error.wisp`, or JSON for a
-/// client that wants that. Returns what went wrong in a 5xx, for the log.
+/// The error page of `status` with `message`: the nearest `+error.wisp`,
+/// else Wisp's own.
 async fn render_error<A: App>(
     route: Option<usize>,
     cx: &mut Cx,
     out: &mut Out,
+    (status, message): (u16, Cow<'static, str>),
+) {
+    let rendered = catch_made(|| A::error(route, cx, out, status, &message)).await;
+    if rendered.is_err() || out.response.is_some() {
+        out.clear();
+        rt::default_error(cx, out, status, &message);
+    }
+}
+
+/// The reply to a 4xx or 5xx: JSON for a client that wants that, else an
+/// error page, whose status and message come back for [`render_error`].
+/// And what went wrong in a 5xx, for the log.
+#[allow(clippy::type_complexity)]
+fn error_reply(
+    cx: &mut Cx,
+    out: &mut Out,
     reply: &mut Reply,
     mut e: Error,
-) -> Option<String> {
+) -> (Option<String>, Option<(u16, Cow<'static, str>)>) {
     let failure = (e.status >= 500).then(|| e.detail());
     // 5xx details can leak internals; only dev shows them. An error that
     // says no more than its status's name gets a sentence about the status
@@ -1770,49 +2692,49 @@ async fn render_error<A: App>(
         || e.message.is_empty()
         || e.message.eq_ignore_ascii_case(reason(e.status))
     {
-        sentence(e.status)
+        Cow::Borrowed(sentence(e.status))
     } else {
-        e.message()
+        std::mem::take(&mut e.message)
     };
     out.clear();
     // The headers of the page that failed go with it; the `before` hook's
     // stay.
-    cx.out_headers.truncate(cx.kept_headers);
-    if wants_json(cx) {
+    cx.drop_page_headers();
+    let page = if wants_json(cx) {
         let problem = crate::settings().problem_json
             || cx
-                .header("accept")
+                .known(Known::Accept)
                 .is_some_and(|a| a.contains("application/problem+json"));
-        let body = e.json(message, problem).into_bytes();
+        let body = e.json(&message, problem).into_bytes();
         let kind = match problem {
             true => "application/problem+json",
             false => "application/json",
         };
         reply.set(e.status, kind, Body::Bytes(body));
+        None
     } else {
-        let rendered = catch(A::error(route, cx, out, e.status, message)).await;
-        if rendered.is_err() || out.response.is_some() {
-            out.clear();
-            rt::default_error(cx, out, e.status, message);
-        }
         reply.set(e.status, "text/html; charset=utf-8", Body::Page);
-    }
+        Some((e.status, message))
+    };
     if let Some((name, value)) = e.header.take().map(|h| *h) {
         reply.headers.push((Cow::Borrowed(name), Cow::Owned(value)));
     }
-    failure
+    (failure, page)
 }
 
 /// Whether an error goes back as JSON rather than an error page: a request
 /// under `/api`, one that sent JSON, one that asks for JSON and not HTML,
 /// or one to a `+server.rs` endpoint from anything but a browser page.
-fn wants_json(cx: &Cx) -> bool {
+pub(crate) fn wants_json(cx: &Cx) -> bool {
     let path = cx.path();
     path == "/api"
         || path.starts_with("/api/")
         || crate::input::is_json(cx)
         || crate::input::asks_json(cx)
-        || (cx.api && !cx.header("accept").is_some_and(|a| a.contains("text/html")))
+        || (cx.api()
+            && !cx
+                .known(Known::Accept)
+                .is_some_and(|a| a.contains("text/html")))
 }
 
 /// Whether `name` is framing, which the host writes itself: an app's own
@@ -1892,9 +2814,9 @@ fn serialize<A: App>(
         // HTTP/1.0 closes after each response unless told otherwise.
         w.extend_from_slice(b"connection: keep-alive\r\n");
     }
-    for (name, value) in &reply.headers {
-        if !framing(name, head_only) {
-            header(w, name, value);
+    for h in &reply.headers {
+        if !framing(&h.0, head_only) {
+            header(w, h);
         }
     }
     w.extend_from_slice(b"\r\n");
@@ -1999,32 +2921,61 @@ fn timed() -> bool {
 /// Runs a handler future, turning a panic into a 500 so one bad request
 /// cannot take the connection (or anything else) down with it.
 pub(crate) async fn catch<F: Future<Output = crate::Result<()>>>(f: F) -> crate::Result<()> {
-    let mut f = std::pin::pin!(f);
+    catch_made(|| f).await
+}
+
+/// [`catch`] of the future `make` makes. The future is made in place: a
+/// future taken as an argument would be held twice over, as it came and
+/// as it is polled, and moved in full each request.
+async fn catch_made<F: Future<Output = crate::Result<()>>>(
+    make: impl FnOnce() -> F,
+) -> crate::Result<()> {
+    let mut f = std::pin::pin!(make());
+    let timed = timed();
     std::future::poll_fn(move |cx| {
-        let began = timed().then(Instant::now);
+        let began = timed.then(Instant::now);
         IN_HANDLER.set(true);
         let polled = catch_unwind(AssertUnwindSafe(|| f.as_mut().poll(cx)));
         IN_HANDLER.set(false);
         if let Some(began) = began {
             BLOCKED.set(BLOCKED.get().max(began.elapsed()));
         }
-        match polled {
-            Ok(poll) => poll,
-            Err(panic) => {
-                let msg = panic
-                    .downcast_ref::<&str>()
-                    .map(|s| s.to_string())
-                    .or_else(|| panic.downcast_ref::<String>().cloned())
-                    .unwrap_or_else(|| "panic".into());
-                let msg = match PANICKED_AT.take() {
-                    Some(at) => format!("panic at {at}: {msg}"),
-                    None => format!("panic: {msg}"),
-                };
-                Poll::Ready(Err(Error::new(500, msg)))
-            }
-        }
+        polled.unwrap_or_else(|panic| Poll::Ready(Err(panicked(panic))))
     })
     .await
+}
+
+/// [`catch`] of a sync [`App::handle_now`]: `None` when it answered
+/// nothing.
+#[cfg(target_os = "linux")]
+fn catch_now(f: impl FnOnce() -> crate::Result<bool>) -> Option<crate::Result<()>> {
+    let began = timed().then(Instant::now);
+    IN_HANDLER.set(true);
+    let ran = catch_unwind(AssertUnwindSafe(f));
+    IN_HANDLER.set(false);
+    if let Some(began) = began {
+        BLOCKED.set(BLOCKED.get().max(began.elapsed()));
+    }
+    match ran {
+        Ok(Ok(true)) => Some(Ok(())),
+        Ok(Ok(false)) => None,
+        Ok(Err(e)) => Some(Err(e)),
+        Err(panic) => Some(Err(panicked(panic))),
+    }
+}
+
+/// The 500 of a handler's `panic`, saying where it was.
+fn panicked(panic: Box<dyn std::any::Any + Send>) -> Error {
+    let msg = panic
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "panic".into());
+    let msg = match PANICKED_AT.take() {
+        Some(at) => format!("panic at {at}: {msg}"),
+        None => format!("panic: {msg}"),
+    };
+    Error::new(500, msg)
 }
 
 /// Wisp's own addresses: the browser runtime, the API docs and, in dev,
@@ -2038,8 +2989,8 @@ fn internal<A: App>(cx: &Cx, path: &str, reply: &mut Reply) -> bool {
     let dev = get && s.dev;
     let docs = get && s.api_docs && !A::openapi().is_empty();
     let (body, ext, etag): (&'static [u8], _, _) = match path {
-        "/_app/wisp.js" if get => (CLIENT_JS, "js", Some(CLIENT_JS_ETAG)),
-        "/_app/live.js" if get => (LIVE_JS, "js", Some(CLIENT_JS_ETAG)),
+        crate::protocol::WISP_JS_PATH if get => (CLIENT_JS, "js", Some(CLIENT_JS_ETAG)),
+        crate::protocol::LIVE_JS_PATH if get => (LIVE_JS, "js", Some(CLIENT_JS_ETAG)),
         "/_app/wisp-dev.js" if dev => (DEV_JS, "js", None),
         "/_app/wisp-ui.css" if dev => (UI_CSS.as_bytes(), "css", None),
         "/_app/wisp-dialog.css" if dev => (DIALOG_CSS, "css", None),
@@ -2058,12 +3009,13 @@ fn internal<A: App>(cx: &Cx, path: &str, reply: &mut Reply) -> bool {
 }
 
 /// The app's files: templates' browser modules, then its assets, embedded
-/// or, in dev, read from `static/`. `routed`: a route matches the path.
+/// or, in dev, read from `static/`. `route`: the route the path matches.
 /// `false` if the path is not a file.
-fn file<A: App>(cx: &Cx, path: &str, routed: bool, reply: &mut Reply) -> bool {
+fn file<A: App>(cx: &Cx, raw: &[u8], route: Option<usize>, reply: &mut Reply) -> bool {
+    let routed = route.is_some();
     // Compiled in, in dev too: a change to one is a rebuild anyway.
-    if path.starts_with("/_app/c/")
-        && let Some(m) = A::client_module(path)
+    if raw.starts_with(crate::protocol::MODULES.as_bytes())
+        && let Some(m) = A::client_module(cx.path())
     {
         send_file(
             reply,
@@ -2075,8 +3027,9 @@ fn file<A: App>(cx: &Cx, path: &str, routed: bool, reply: &mut Reply) -> bool {
         return true;
     }
     if crate::settings().dev {
+        let path = cx.path();
         // A page's path goes to the disk only if `static/` had a file there.
-        if path != "/_app/app.css"
+        if path != crate::protocol::APP_CSS_PATH
             && routed
             && !dev::listed(A::ROOT, &decode(path.as_bytes(), false))
         {
@@ -2088,24 +3041,32 @@ fn file<A: App>(cx: &Cx, path: &str, routed: bool, reply: &mut Reply) -> bool {
         send_file(reply, cx, Body::Bytes(bytes), &ext, None);
         return true;
     }
-    let Some(a) = A::asset(path) else {
+    // The build knows which routes no embedded file is at.
+    if route.is_some_and(|r| !A::ROUTES[r].files) {
+        return false;
+    }
+    let Some(a) = A::asset(cx.path()) else {
         return false;
     };
     send_file(reply, cx, Body::Static(a.body), a.ext, Some(a.etag));
     true
 }
 
-/// A file, cached by its `etag` (forever when the address is versioned
-/// with `?v=`), or never without one.
+/// A file, cached by its `etag` (forever when the address is versioned:
+/// with `?v=`, or an npm module's, whose path names the package's version),
+/// or never without one.
 fn send_file(reply: &mut Reply, cx: &Cx, body: Body, ext: &str, etag: Option<&'static str>) {
     let cache = match etag {
         None => "no-store",
-        Some(_) if cx.query_string().split('&').any(|kv| kv.starts_with("v=")) => {
+        Some(_)
+            if cx.query_string().split('&').any(|kv| kv.starts_with("v="))
+                || cx.path().starts_with(crate::protocol::NPM_MODULES) =>
+        {
             "public, max-age=31536000, immutable"
         }
         Some(_) => "public, max-age=0, must-revalidate",
     };
-    if etag.is_some() && cx.header("if-none-match") == etag {
+    if etag.is_some_and(|tag| fresh(cx, tag)) {
         reply.set(304, "", Body::Static(b""));
         reply.headers.clear(); // a 304 describes the file it did not send
     } else {
@@ -2202,15 +3163,54 @@ async fn pump(
 
 /// A header the app set with a line break or NUL in it (through `Response`'s
 /// public fields, which nothing checks) would split the response: it is
-/// left out.
-fn header(w: &mut Vec<u8>, name: &str, value: &str) {
-    if !valid_header(name, value) {
+/// left out. A pair of `'static` strings (the code's own, as
+/// `content-type: text/plain` is) is checked once a thread while it is one
+/// of the last few such pairs: such a string never changes, so its address
+/// and length say it is the same.
+fn header(w: &mut Vec<u8>, (name, value): &(Cow<'static, str>, Cow<'static, str>)) {
+    /// The pairs a thread keeps checked: a response's few static headers.
+    const KEPT: usize = 4;
+    thread_local! {
+        static VALID: [Cell<[usize; 4]>; KEPT] = const { [const { Cell::new([0; 4]) }; KEPT] };
+        static NEXT: Cell<usize> = const { Cell::new(0) };
+    }
+    if name == "content-type"
+        && let Some(line) = type_line(value)
+    {
+        w.extend_from_slice(line);
         return;
+    }
+    let key = match (name, value) {
+        (Cow::Borrowed(n), Cow::Borrowed(v)) => {
+            Some([n.as_ptr() as usize, n.len(), v.as_ptr() as usize, v.len()])
+        }
+        _ => None,
+    };
+    if !key.is_some_and(|k| VALID.with(|v| v.iter().any(|c| c.get() == k))) {
+        if !valid_header(name, value) {
+            return;
+        }
+        if let Some(k) = key {
+            let next = NEXT.get();
+            VALID.with(|v| v[next].set(k));
+            NEXT.set((next + 1) % KEPT);
+        }
     }
     w.extend_from_slice(name.as_bytes());
     w.extend_from_slice(b": ");
     w.extend_from_slice(value.as_bytes());
     w.extend_from_slice(b"\r\n");
+}
+
+/// The `content-type` line of the types most responses have, written in
+/// one piece.
+fn type_line(value: &str) -> Option<&'static [u8]> {
+    Some(match value {
+        "text/plain; charset=utf-8" => b"content-type: text/plain; charset=utf-8\r\n",
+        "text/html; charset=utf-8" => b"content-type: text/html; charset=utf-8\r\n",
+        "application/json" => b"content-type: application/json\r\n",
+        _ => return None,
+    })
 }
 
 /// `n` in lowercase hex, as few digits as it takes.
@@ -2529,11 +3529,15 @@ mod tests {
     #[test]
     fn headers_that_would_split_a_response_are_left_out() {
         let mut w = Vec::new();
-        header(&mut w, "x-a", "1");
-        header(&mut w, "x-b", "2\r\nset-cookie: x=1");
-        header(&mut w, "x-c\n", "3");
-        header(&mut w, "x-d", "4\0");
-        assert_eq!(w, b"x-a: 1\r\n");
+        let mut put = |n: &'static str, v: &'static str| {
+            header(&mut w, &(n.into(), v.into())); // checked, then known
+            header(&mut w, &(n.into(), v.to_string().into())); // checked
+        };
+        put("x-a", "1");
+        put("x-b", "2\r\nset-cookie: x=1");
+        put("x-c\n", "3");
+        put("x-d", "4\0");
+        assert_eq!(w, b"x-a: 1\r\nx-a: 1\r\n");
     }
 
     #[test]
@@ -2651,17 +3655,17 @@ mod tests {
 
     fn cx_with(bytes: &[u8]) -> Cx {
         let mut cx = Cx::new(SocketAddr::from(([127, 0, 0, 1], 1)));
-        cx.buf.extend_from_slice(bytes);
+        cx.wire.buf.extend_from_slice(bytes);
         cx
     }
 
     /// What a parsed request says must lie inside the buffer, within limits.
     fn check_parsed(cx: &Cx, at: usize, len: usize) {
-        assert!(at + len <= cx.buf.len());
-        let body = cx.body.range();
+        assert!(at + len <= cx.wire.buf.len());
+        let body = cx.wire.body.range();
         assert!(body.start >= at && body.end <= at + len);
         assert!(body.len() <= limit(cx.path()));
-        for (n, v) in &cx.headers {
+        for (n, v) in &cx.wire.headers {
             assert!(n.range().end <= at + len && v.range().end <= at + len);
         }
         let _ = (cx.query_string(), cx.headers().count(), cx.cookie("a"));
@@ -2680,14 +3684,14 @@ mod tests {
             let s = sent(&mut rng);
             let too_large = s.body.len() > limit(s.path);
             let mut cx = cx_with(&s.wire);
-            match parse::<Fuzz>(&mut cx, 0) {
-                Parsed::Request { len, .. } if !too_large => {
+            match parse::<Fuzz>(&mut cx, 0, false) {
+                Parsed::Request(Req { len, .. }) if !too_large => {
                     assert_eq!(len, s.wire.len());
                     assert_eq!(
                         (cx.path(), cx.query_string(), cx.body()),
                         (s.path, &*s.query, &s.body[..])
                     );
-                    assert_eq!(cx.headers.len(), s.headers);
+                    assert_eq!(cx.wire.headers.len(), s.headers);
                     check_parsed(&cx, 0, len);
                 }
                 Parsed::Invalid(413) if too_large => {}
@@ -2701,10 +3705,75 @@ mod tests {
             };
             for cut in cuts {
                 let mut cx = cx_with(&s.wire[..cut]);
-                match parse::<Fuzz>(&mut cx, 0) {
+                match parse::<Fuzz>(&mut cx, 0, false) {
                     Parsed::Partial { .. } => {}
                     Parsed::Invalid(413) if too_large => {}
                     _ => panic!("{cut} of {:?}", String::from_utf8_lossy(&s.wire)),
+                }
+            }
+        }
+    }
+
+    /// `header_name` says what comparing the names byte by byte, in any
+    /// case, says: of each name in mixed case, with each byte any other
+    /// `tchar`, one byte shorter or longer, and at the end of the buffer.
+    #[test]
+    fn header_names_read_as_compared() {
+        let names = [
+            ("host", Name::Host),
+            ("content-length", Name::ContentLength),
+            ("transfer-encoding", Name::TransferEncoding),
+            ("connection", Name::Connection),
+            ("expect", Name::Expect),
+            ("idempotency-key", Name::Known(Known::IdempotencyKey)),
+            ("if-none-match", Name::Known(Known::IfNoneMatch)),
+            ("content-type", Name::Known(Known::ContentType)),
+            ("accept", Name::Known(Known::Accept)),
+            (crate::protocol::HEADER_ERROR, Name::Known(Known::WispError)),
+            ("origin", Name::Known(Known::Origin)),
+            ("sec-fetch-site", Name::Known(Known::SecFetchSite)),
+        ];
+        let want = |n: &[u8]| {
+            names
+                .iter()
+                .find(|(s, _)| s.as_bytes().eq_ignore_ascii_case(n))
+                .map_or(Name::Other, |&(_, k)| k)
+        };
+        let check = |n: &[u8], after: &[u8]| {
+            let b = [b"x", n, after].concat();
+            assert_eq!(
+                header_name(&b, 1, n.len()),
+                want(n),
+                "{:?}",
+                n.escape_ascii()
+            );
+        };
+        let tchars: Vec<u8> = (0..=255u8).filter(|&c| TOKEN[usize::from(c)]).collect();
+        let mut rng = Rng::new(11);
+        for (s, _) in names {
+            for _ in 0..50 {
+                let n: Vec<u8> = s
+                    .bytes()
+                    .map(|c| {
+                        if rng.one_in(2) {
+                            c.to_ascii_uppercase()
+                        } else {
+                            c
+                        }
+                    })
+                    .collect();
+                check(&n, b": 1\r\n\r\n");
+                check(&n, b"");
+                check(&n[1..], b":");
+                check(&n[..n.len() - 1], b":");
+                check(&[&n[..], b"a"].concat(), b":");
+            }
+            for p in 0..s.len() {
+                for &v in &tchars {
+                    let mut n = s.as_bytes().to_vec();
+                    n[p] = v;
+                    check(&n, b": 1\r\n\r\n");
+                    check(&n, b"");
                 }
             }
         }
@@ -2716,8 +3785,8 @@ mod tests {
     #[test]
     fn the_fast_head_reads_as_httparse_does() {
         let same = |wire: &[u8], must: bool| {
-            let (mut fast, mut slow) = (Vec::new(), Vec::new());
-            let Some(f) = fast_head(wire, 0, &mut fast) else {
+            let (mut fast, mut slow, mut seen) = (Vec::new(), Vec::new(), Seen::default());
+            let Some(f) = fast_head(wire, 0, &mut fast, &mut seen) else {
                 assert!(!must, "{:?}", String::from_utf8_lossy(wire));
                 return;
             };
@@ -2725,6 +3794,13 @@ mod tests {
                 panic!("httparse refused {:?}", String::from_utf8_lossy(wire));
             };
             let text = |s: Span| &wire[s.range()];
+            // An empty value's span is anywhere.
+            let empty = |mut s: Seen| {
+                s.known = s
+                    .known
+                    .map(|k| if k.len == 0 { Span::default() } else { k });
+                s
+            };
             let pairs = |h: &[(Span, Span)]| {
                 h.iter()
                     .map(|&(n, v)| (text(n), text(v)))
@@ -2737,7 +3813,8 @@ mod tests {
                     f.http11,
                     text(f.path),
                     text(f.query),
-                    pairs(&fast)
+                    pairs(&fast),
+                    empty(seen)
                 ),
                 (
                     s.len,
@@ -2745,7 +3822,8 @@ mod tests {
                     s.http11,
                     text(s.path),
                     text(s.query),
-                    pairs(&slow)
+                    pairs(&slow),
+                    empty(Seen::of(wire, &slow))
                 ),
                 "{:?}",
                 String::from_utf8_lossy(wire)
@@ -2754,6 +3832,39 @@ mod tests {
         let mut rng = Rng::new(6);
         for k in 0..30_000 {
             let mut wire = sent(&mut rng).wire;
+            let whole = k % 3 == 0;
+            if !whole {
+                mutate(&mut rng, &mut wire);
+            }
+            same(&wire, whole);
+        }
+        // The headers read by name, in any case and order, and broken.
+        let names = [
+            "Host",
+            "Content-Length",
+            "Connection",
+            "Content-Type",
+            "Hosts",
+            "Content-Lengths",
+            "Connections",
+            "Hos",
+            "User-Agent",
+            "User-Agents",
+        ];
+        for k in 0..30_000 {
+            let mut wire = b"POST /x HTTP/1.1\r\n".to_vec();
+            for _ in 0..rng.below(5) {
+                wire.extend(rng.pick(&names).bytes().map(|c| {
+                    if rng.one_in(2) {
+                        c.to_ascii_uppercase()
+                    } else {
+                        c.to_ascii_lowercase()
+                    }
+                }));
+                wire.extend_from_slice(rng.pick(&[&b": 1"[..], b":", b":\tclose"]));
+                wire.extend_from_slice(b"\r\n");
+            }
+            wire.extend_from_slice(b"\r\n");
             let whole = k % 3 == 0;
             if !whole {
                 mutate(&mut rng, &mut wire);
@@ -2804,11 +3915,11 @@ mod tests {
                 continue;
             }
             let mut cx = cx_with(&[&a.wire[..], &b.wire].concat());
-            let Parsed::Request { len, .. } = parse::<Fuzz>(&mut cx, 0) else {
+            let Parsed::Request(Req { len, .. }) = parse::<Fuzz>(&mut cx, 0, false) else {
                 panic!()
             };
             assert_eq!((len, cx.body()), (a.wire.len(), &a.body[..]));
-            let Parsed::Request { len, .. } = parse::<Fuzz>(&mut cx, len) else {
+            let Parsed::Request(Req { len, .. }) = parse::<Fuzz>(&mut cx, len, false) else {
                 panic!()
             };
             assert_eq!((len, cx.body()), (b.wire.len(), &b.body[..]));
@@ -2826,12 +3937,12 @@ mod tests {
             let mut wire = sent(&mut rng).wire;
             mutate(&mut rng, &mut wire);
             let mut cx = cx_with(&wire);
-            match parse::<Fuzz>(&mut cx, 0) {
-                Parsed::Request { len, .. } => {
+            match parse::<Fuzz>(&mut cx, 0, false) {
+                Parsed::Request(Req { len, .. }) => {
                     check_parsed(&cx, 0, len);
-                    rt.block_on(decide::<Fuzz>(&mut cx, &mut out, &mut reply));
+                    rt.block_on(decide::<Fuzz>(&mut cx, &mut out, &mut reply, None));
                     w.clear();
-                    serialize::<Fuzz>(&mut w, &mut reply, &mut out, cx.http11, true, false);
+                    serialize::<Fuzz>(&mut w, &mut reply, &mut out, cx.wire.http11, true, false);
                     assert!(w.starts_with(b"HTTP/1.1 "));
                 }
                 Parsed::Partial { need, .. } => assert!(need <= MAX_HEAD + MAX_BODY),
@@ -2848,7 +3959,7 @@ mod tests {
             long.extend_from_slice(b"x-a: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\r\n");
         }
         assert!(matches!(
-            parse::<Fuzz>(&mut cx_with(&long), 0),
+            parse::<Fuzz>(&mut cx_with(&long), 0, false),
             Parsed::Invalid(431)
         ));
         let many: String = (0..MAX_HEADERS + 1)
@@ -2856,15 +3967,15 @@ mod tests {
             .collect();
         let many = format!("GET / HTTP/1.1\r\n{many}\r\n");
         assert!(matches!(
-            parse::<Fuzz>(&mut cx_with(many.as_bytes()), 0),
+            parse::<Fuzz>(&mut cx_with(many.as_bytes()), 0, false),
             Parsed::Invalid(431)
         ));
 
         let head = "POST /small HTTP/1.1\r\ntransfer-encoding: chunked\r\n\r\n";
         let body_of = |chunked: &str| {
             let mut cx = cx_with(format!("{head}{chunked}").as_bytes());
-            match parse::<Fuzz>(&mut cx, 0) {
-                Parsed::Request { .. } => Ok(cx.body().to_vec()),
+            match parse::<Fuzz>(&mut cx, 0, false) {
+                Parsed::Request(_) => Ok(cx.body().to_vec()),
                 Parsed::Invalid(status) => Err(status),
                 Parsed::Partial { .. } => Err(0),
             }
@@ -2897,6 +4008,72 @@ mod tests {
     }
 
     #[test]
+    fn http_1_1_names_one_host() {
+        // On the wire; from another host (`Cx::from_request`) it may not.
+        let hosted = |wire: &[u8], on_wire| match parse::<Fuzz>(&mut cx_with(wire), 0, on_wire) {
+            Parsed::Request(_) => Ok(()),
+            Parsed::Invalid(status) => Err(status),
+            Parsed::Partial { .. } => Err(0),
+        };
+        assert_eq!(hosted(b"GET / HTTP/1.1\r\nHost: a\r\n\r\n", true), Ok(()));
+        assert_eq!(hosted(b"GET / HTTP/1.1\r\nx: 1\r\n\r\n", true), Err(400));
+        assert_eq!(hosted(b"GET / HTTP/1.1\r\nx: 1\r\n\r\n", false), Ok(()));
+        assert_eq!(hosted(b"GET / HTTP/1.0\r\n\r\n", true), Ok(()));
+        assert_eq!(
+            hosted(b"GET / HTTP/1.1\r\nhost: a\r\nHOST: a\r\n\r\n", false),
+            Err(400)
+        );
+        assert_eq!(
+            hosted(b"GET / HTTP/1.0\r\nhost: a\r\nhost: b\r\n\r\n", true),
+            Err(400)
+        );
+    }
+
+    #[test]
+    fn an_absolute_target_is_its_path_on_its_host() {
+        let read = |wire: &[u8]| {
+            let mut cx = cx_with(wire);
+            match parse::<Fuzz>(&mut cx, 0, true) {
+                Parsed::Request(_) => Some(format!(
+                    "{} {} {}",
+                    cx.header("host").unwrap_or("-"),
+                    cx.path(),
+                    cx.query_string()
+                )),
+                _ => None,
+            }
+        };
+        let host =
+            |target: &str| read(format!("GET {target} HTTP/1.1\r\nHost: proxy\r\n\r\n").as_bytes());
+        assert_eq!(
+            host("http://a.test/x/y?q=1").as_deref(),
+            Some("a.test /x/y q=1")
+        );
+        assert_eq!(
+            host("HTTPS://a.test:8443").as_deref(),
+            Some("a.test:8443 / ")
+        );
+        assert_eq!(host("http://a.test?q").as_deref(), Some("a.test / q"));
+        // Anything else is left as it came, and refused later.
+        for odd in [
+            "*",
+            "ftp://a/",
+            "http://",
+            "http://u@a/",
+            "http:/a/",
+            "a.test/x",
+        ] {
+            assert_eq!(host(odd), Some(format!("proxy {odd} ")), "{odd}");
+        }
+        // HTTP/1.1 still names a host, as it must.
+        assert_eq!(read(b"GET http://a/ HTTP/1.1\r\n\r\n"), None);
+        assert_eq!(
+            read(b"GET http://a/ HTTP/1.0\r\n\r\n").as_deref(),
+            Some("- / ")
+        );
+    }
+
+    #[test]
     fn slash_redirects_stay_on_the_site_and_framing_is_ours() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
@@ -2909,8 +4086,11 @@ mod tests {
             ("///", "/"),
         ] {
             let mut cx = cx_with(format!("GET {path} HTTP/1.1\r\n\r\n").as_bytes());
-            assert!(matches!(parse::<Fuzz>(&mut cx, 0), Parsed::Request { .. }));
-            rt.block_on(decide::<Fuzz>(&mut cx, &mut out, &mut reply));
+            assert!(matches!(
+                parse::<Fuzz>(&mut cx, 0, false),
+                Parsed::Request(_)
+            ));
+            rt.block_on(decide::<Fuzz>(&mut cx, &mut out, &mut reply, None));
             assert_eq!((reply.status, reply.header("location")), (308, Some(to)));
         }
 
@@ -2998,7 +4178,8 @@ mod tests {
     impl App for Bench {
         const ROOT: &'static str = ".";
         const CSS: Option<&'static str> = None;
-        const PARAMS: &'static [&'static [&'static str]] = &[&[], &[], &[]];
+        const ROUTES: &'static [crate::rt::RouteFacts] =
+            &[const { crate::rt::RouteFacts::new(&[]) }; 3];
         const TEMPLATES: &'static [(&'static str, u64)] = &[];
 
         fn route(path: &str) -> Option<(usize, [&str; 8])> {
@@ -3010,10 +4191,6 @@ mod tests {
                 _ => return None,
             };
             Some((id, [""; 8]))
-        }
-
-        fn body_limit(_: usize) -> Option<usize> {
-            None
         }
 
         fn shell() -> [&'static str; 3] {
@@ -3040,7 +4217,7 @@ mod tests {
             let Some(route) = route else {
                 return Err(Error::new(404, "Not Found"));
             };
-            if cx.method == Method::Get && cx.header("x-wisp-error").is_some() {
+            if cx.method == Method::Get && cx.header(crate::protocol::HEADER_ERROR).is_some() {
                 return Err(Error::new(500, "Something went wrong in the browser"));
             }
             match route {
@@ -3099,22 +4276,23 @@ mod tests {
     /// One request on a kept-alive connection, as `requests` answers it:
     /// parsed from the read buffer, decided, written to the write buffer.
     fn answer(b: &mut Buffers, request: &[u8]) {
-        b.cx.buf.clear();
-        b.cx.buf.extend_from_slice(request);
-        let Parsed::Request { keep_alive, .. } = parse::<Bench>(&mut b.cx, 0) else {
+        b.cx.wire.buf.clear();
+        b.cx.wire.buf.extend_from_slice(request);
+        let Parsed::Request(Req { keep_alive, .. }) = parse::<Bench>(&mut b.cx, 0, false) else {
             panic!("{:?}", String::from_utf8_lossy(request));
         };
-        ready(decide::<Bench>(&mut b.cx, &mut b.out, &mut b.reply));
+        ready(decide::<Bench>(&mut b.cx, &mut b.out, &mut b.reply, None));
         b.wbuf.clear();
         let head = b.cx.method == Method::Head;
         serialize::<Bench>(
             &mut b.wbuf,
             &mut b.reply,
             &mut b.out,
-            b.cx.http11,
+            b.cx.wire.http11,
             keep_alive,
             head,
         );
+        b.cx.reset();
     }
 
     fn buffers() -> Buffers {
@@ -3175,6 +4353,266 @@ mod tests {
         }
     }
 
+    /// What a request costs Wisp itself, sockets aside: parse, decide and
+    /// serialize on a warm connection, as zrk sends it.
+    /// `cargo test -p wisp --release --lib http::tests::cost -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn cost() {
+        let mut b = buffers();
+        for path in ["/plaintext", "/json", "/fortunes"] {
+            let request = format!(
+                "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:3000\r\nUser-Agent: zrk\r\nConnection: keep-alive\r\n\r\n"
+            );
+            for _ in 0..10_000 {
+                answer(&mut b, request.as_bytes());
+            }
+            let n = 1_000_000;
+            let started = std::time::Instant::now();
+            for _ in 0..n {
+                answer(&mut b, std::hint::black_box(request.as_bytes()));
+            }
+            let ns = started.elapsed().as_nanos() as f64 / n as f64;
+            println!("{path}: {ns:.0} ns a request");
+        }
+    }
+
+    /// Routes the build said never wait: `/now` (0), and `/wait` (1),
+    /// which waits after all, as a wrong guess would.
+    #[cfg(target_os = "linux")]
+    struct Guessed;
+
+    #[cfg(target_os = "linux")]
+    static WAITED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    #[cfg(target_os = "linux")]
+    impl App for Guessed {
+        const ROOT: &'static str = ".";
+        const CSS: Option<&'static str> = None;
+        const ROUTES: &'static [crate::rt::RouteFacts] = &[const {
+            crate::rt::RouteFacts {
+                now: true,
+                ..crate::rt::RouteFacts::new(&[])
+            }
+        }; 2];
+        const TEMPLATES: &'static [(&'static str, u64)] = &[];
+
+        fn route(path: &str) -> Option<(usize, [&str; 8])> {
+            match path {
+                "/now" => Some((0, [""; 8])),
+                "/wait" => Some((1, [""; 8])),
+                _ => None,
+            }
+        }
+
+        fn shell() -> [&'static str; 3] {
+            ["", "", ""]
+        }
+
+        fn asset(_: &str) -> Option<&'static crate::Asset> {
+            None
+        }
+
+        async fn init() -> crate::Result<()> {
+            Ok(())
+        }
+
+        async fn handle(route: Option<usize>, cx: &mut Cx, out: &mut Out) -> crate::Result<()> {
+            crate::rt::hooked(cx);
+            crate::rt::endpoint(cx);
+            let text = match route {
+                Some(0) => "now",
+                Some(_) => {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    WAITED.fetch_add(1, Ordering::Relaxed);
+                    "waited"
+                }
+                None => return Err(Error::new(404, "Not Found")),
+            };
+            crate::rt::respond(out, crate::Response::text(text));
+            Ok(())
+        }
+
+        async fn error(
+            _: Option<usize>,
+            cx: &mut Cx,
+            out: &mut Out,
+            status: u16,
+            message: &str,
+        ) -> crate::Result<()> {
+            crate::rt::default_error(cx, out, status, message);
+            Ok(())
+        }
+    }
+
+    /// A request to a route the build wrongly said never waits is no
+    /// failure: the driver hands it, still deciding, to the connection's
+    /// future, which answers it once, then the requests after it, in order;
+    /// and the driver answers the next ones itself again.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_route_that_waits_after_all_is_answered_in_order() {
+        use std::io::{Read, Write};
+        let listener = crate::uring::listen("127.0.0.1:0".parse().unwrap()).unwrap();
+        let addr = listener.local_addr().unwrap();
+        start_clock();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async move {
+                let (ready, _) = std::sync::mpsc::channel();
+                let now = Some(on_driver::<Guessed> as fn(u64) -> bool);
+                tokio::spawn(crate::epoll::serve(listener, polled::<Guessed>, now, ready));
+                std::future::pending::<()>().await
+            });
+        });
+        let mut c = std::net::TcpStream::connect(addr).unwrap();
+        c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let get = |path: &str| format!("GET {path} HTTP/1.1\r\nhost: a\r\n\r\n");
+        // The bodies of the answers, in order, each by its content-length.
+        let mut ask = |paths: &[&str]| {
+            let wire: String = paths.iter().map(|p| get(p)).collect();
+            c.write_all(wire.as_bytes()).unwrap();
+            let (mut got, mut bodies, mut buf) = (String::new(), Vec::new(), [0; 4096]);
+            while bodies.len() < paths.len() {
+                if let Some(end) = got.find("\r\n\r\n") {
+                    let len: usize = got[..end]
+                        .split("content-length: ")
+                        .nth(1)
+                        .and_then(|l| l.split("\r\n").next()?.parse().ok())
+                        .unwrap();
+                    if got.len() >= end + 4 + len {
+                        assert!(got.starts_with("HTTP/1.1 200 OK"), "{got}");
+                        bodies.push(got[end + 4..end + 4 + len].to_string());
+                        got.drain(..end + 4 + len);
+                        continue;
+                    }
+                }
+                let n = c.read(&mut buf).unwrap();
+                assert!(n > 0, "closed after {got:?}");
+                got.push_str(std::str::from_utf8(&buf[..n]).unwrap());
+            }
+            bodies.join(" ")
+        };
+        let before = WAITED.load(Ordering::Relaxed);
+        assert_eq!(ask(&["/now"]), "now");
+        std::thread::sleep(Duration::from_millis(50)); // its future waits bare
+        assert_eq!(ask(&["/now", "/wait", "/now"]), "now waited now");
+        assert_eq!(WAITED.load(Ordering::Relaxed) - before, 1);
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(ask(&["/now", "/now"]), "now now");
+        assert_eq!(ask(&["/wait"]), "waited");
+    }
+
+    /// Routes whose GET the build made sync: `/sync` (0), which
+    /// `handle_now` answers; `/later` (1), which it turns out not to, so
+    /// `handle` does; `/boom` (2), which panics; `/gone` (3), which fails
+    /// to its error page, rendered in the decider.
+    #[cfg(target_os = "linux")]
+    struct Plain;
+
+    #[cfg(target_os = "linux")]
+    impl App for Plain {
+        const ROOT: &'static str = ".";
+        const CSS: Option<&'static str> = None;
+        const ROUTES: &'static [crate::rt::RouteFacts] = &[const {
+            crate::rt::RouteFacts {
+                now: true,
+                sync: Method::Get.bit(),
+                ..crate::rt::RouteFacts::new(&[])
+            }
+        }; 4];
+        const TEMPLATES: &'static [(&'static str, u64)] = &[];
+
+        fn route(path: &str) -> Option<(usize, [&str; 8])> {
+            let id = ["/sync", "/later", "/boom", "/gone"]
+                .iter()
+                .position(|p| *p == path)?;
+            Some((id, [""; 8]))
+        }
+
+        fn shell() -> [&'static str; 3] {
+            ["", "", ""]
+        }
+
+        fn asset(_: &str) -> Option<&'static crate::Asset> {
+            None
+        }
+
+        async fn init() -> crate::Result<()> {
+            Ok(())
+        }
+
+        async fn handle(_: Option<usize>, _: &mut Cx, out: &mut Out) -> crate::Result<()> {
+            crate::rt::respond(out, crate::Response::text("later"));
+            Ok(())
+        }
+
+        async fn error(
+            _: Option<usize>,
+            _: &mut Cx,
+            out: &mut Out,
+            _: u16,
+            _: &str,
+        ) -> crate::Result<()> {
+            out.body.push_str("page");
+            Ok(())
+        }
+
+        fn handle_now(route: Option<usize>, _: &mut Cx, out: &mut Out) -> crate::Result<bool> {
+            match route {
+                Some(0) => crate::rt::respond(out, crate::Response::text("sync")),
+                Some(2) => panic!("boom"),
+                Some(3) => return Err(Error::new(410, "Gone")),
+                _ => return Ok(false),
+            }
+            Ok(true)
+        }
+    }
+
+    /// The driver answers sync arms with no future, falls back to `handle`
+    /// for one that has none, turns a panic into a 500, and has the decider
+    /// render an error page: all in order, none handed on.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sync_arms_are_answered_without_a_future() {
+        start_clock();
+        let mut b = Box::new(buffers());
+        let paths = ["/sync", "/later", "/boom", "/gone", "/sync"];
+        let wire =
+            paths.map(|p| format!("GET {p} HTTP/1.1\r\nhost: a\r\naccept: text/html\r\n\r\n"));
+        b.cx.wire.buf.extend_from_slice(wire.concat().as_bytes());
+        let Ok(b) = answer_whole::<Plain>(b) else {
+            panic!("handed on");
+        };
+        let text = String::from_utf8_lossy(&b.wbuf);
+        let statuses: Vec<&str> = text.split("HTTP/1.1 ").skip(1).map(|r| &r[..3]).collect();
+        assert_eq!(statuses, ["200", "200", "500", "410", "200"], "{text}");
+        let bodies: Vec<&str> = (text.split("\r\n\r\n").skip(1))
+            .map(|r| r.split("HTTP/1.1").next().unwrap())
+            .collect();
+        // A page's head may have tags other tests set (`HEAD_TAGS`).
+        let ends = ["sync", "later", "page", "page", "sync"];
+        assert!(
+            bodies.iter().zip(ends).all(|(b, e)| b.ends_with(e)),
+            "{text}"
+        );
+    }
+
+    /// A `String` input takes a spare body only of about its size: one it
+    /// keeps (in a table, say) never holds a large body's room.
+    #[test]
+    fn a_string_input_takes_a_spare_of_its_size_only() {
+        recycle(Vec::with_capacity(4096));
+        assert!(spare_for(3).capacity() < 64);
+        assert_eq!(spare().capacity(), 4096);
+        recycle(Vec::with_capacity(32));
+        assert_eq!(spare_for(10).capacity(), 32);
+        assert_eq!(spare().capacity(), 0);
+    }
+
     #[test]
     fn requests_from_other_hosts_never_panic() {
         let mut rng = Rng::new(5);
@@ -3191,7 +4629,7 @@ mod tests {
                 Cx::from_request::<Fuzz>(&method, &target, headers, &body, cx_with(b"").peer())
             {
                 assert_eq!(cx.body(), body);
-                check_parsed(&cx, 0, cx.buf.len());
+                check_parsed(&cx, 0, cx.wire.buf.len());
             }
         }
     }

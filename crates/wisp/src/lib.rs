@@ -11,6 +11,10 @@
     forbid(unsafe_code)
 )]
 
+// The HTML context rules and the live-page wire protocol, which wisp-build
+// compiles by too.
+use wisp_shared::{contexts, protocol};
+
 mod bake;
 #[cfg(not(target_arch = "wasm32"))]
 mod channel;
@@ -27,14 +31,18 @@ mod fuzz;
 mod html;
 mod http;
 mod idem;
+mod image;
 mod input;
 pub mod json;
 #[cfg(not(target_arch = "wasm32"))]
 mod limit;
 mod live;
+pub mod password;
+mod policy;
 mod rest;
 #[doc(hidden)]
 pub mod rt_traits;
+mod session;
 mod sign;
 mod store;
 mod swar;
@@ -53,15 +61,17 @@ pub use cx::{CookieOptions, Cx, Method, SameSite};
 pub use export::{Entry, ExportRoute, export};
 pub use form::{File, Form};
 pub use http::{Body, Reply, Request, handle};
+pub use image::Image;
 pub use input::Email;
 pub use json::{FromJson, Value, from_json, to_json};
 #[cfg(not(target_arch = "wasm32"))]
 pub use limit::RateLimit;
 pub use live::{ClientModule, Json};
 pub use rest::Resource;
+pub use session::{sign_in_page, sign_out_everywhere};
 pub use sign::{hex, hmac_sha256};
 pub use store::{Store, store};
-pub use table::{Row, Table};
+pub use table::{Page, Row, Table};
 pub use wisp_macros::{Cookie, FromJson, Json, Rest, action};
 pub use ws::{Message, WebSocket};
 
@@ -83,8 +93,9 @@ pub mod prelude {
     #[cfg(not(target_arch = "wasm32"))]
     pub use crate::RateLimit;
     pub use crate::{
-        Cookie, CookieOptions, Cx, Email, Error, FromJson, Json, Method, OrStatus, Response, Rest,
-        Result, Row, SameSite, Shared, Table, Value, action, error, invalid, redirect,
+        Cookie, CookieOptions, Cx, Email, Error, FromJson, Image, Json, KB, MB, Method, OrStatus,
+        Response, Rest, Result, Row, SameSite, Shared, Table, Value, action, error, invalid,
+        redirect,
     };
 }
 
@@ -169,7 +180,12 @@ pub fn run<A: App>() {
         Some(n) => n,
         None => std::thread::available_parallelism().map_or(1, |n| n.get()),
     };
-    settings();
+    if settings().dev && !addr.ip().is_loopback() {
+        http::log(format_args!(
+            "wisp: dev mode is on (a debug build, or WISP_DEV=on) on {addr}, which other machines reach: \
+             error pages show what failed inside\n  Serve a release build (`wisp build`), or set WISP_DEV=off."
+        ));
+    }
     let served = http::run::<A>(addr, threads);
     store::files::flush();
     if let Err(e) = served {
@@ -198,9 +214,11 @@ pub async fn serve<A: App>(addr: SocketAddr) -> std::io::Result<()> {
 pub async fn prepare<A: App>() -> std::io::Result<()> {
     settings();
     http::setup::<A>();
-    A::init()
-        .await
-        .map_err(|e| std::io::Error::other(format!("init in src/hooks.rs failed: {}", e.detail())))
+    A::init().await.map_err(|e| {
+        std::io::Error::other(format!("init in src/hooks.rs failed: {}", e.detail()))
+    })?;
+    session::ready();
+    Ok(())
 }
 
 /// Makes `value` available to every request through [`state`]: a database
@@ -286,9 +304,10 @@ pub async fn sleep(duration: std::time::Duration) {
 /// ```
 ///
 /// Runs in this process, on the thread that called it; a task that takes
-/// longer than `period` is not started again until it is done. Not in the
-/// edge build, whose instances live for a request: use the host's cron
-/// triggers there.
+/// longer than `period` is not started again until it is done, and one
+/// that panics (reported as any panic is) runs again the next period. Not
+/// in the edge build, whose instances live for a request: use the host's
+/// cron triggers there.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn every<F, Fut>(period: std::time::Duration, mut task: F)
 where
@@ -313,7 +332,18 @@ where
             if stopped {
                 return;
             }
-            task().await;
+            // A panic would end this loop, and with it every later run.
+            let mut run = None;
+            std::future::poll_fn(|cx| {
+                use std::panic::{AssertUnwindSafe, catch_unwind};
+                catch_unwind(AssertUnwindSafe(|| {
+                    run.get_or_insert_with(|| Box::pin(task()))
+                        .as_mut()
+                        .poll(cx)
+                }))
+                .unwrap_or(std::task::Poll::Ready(()))
+            })
+            .await;
             next = (next + period).max(tokio::time::Instant::now());
         }
     });
@@ -480,14 +510,17 @@ pub(crate) struct Settings {
     pub client_ip_header: Option<String>,
     /// `WISP_SECRET`: signs cookies.
     pub secret: Option<String>,
+    /// `WISP_SECRET_OLD`: the secret before, still accepted on cookies it
+    /// signed while a new one takes over.
+    pub old_secret: Option<String>,
     /// `WISP_WS_IDLE`: seconds a WebSocket client may stay quiet (60; 0
     /// never closes). It is pinged halfway.
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // no upgrades there
+    #[cfg(not(target_arch = "wasm32"))] // no upgrades there
     pub ws_idle: std::time::Duration,
     /// `WISP_MAX_CONNS`: open connections, WebSockets too, past which the
     /// built-in server answers new ones 503 and closes them (10000; 0 is
     /// no cap).
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // no sockets there
+    #[cfg(not(target_arch = "wasm32"))] // no sockets there
     pub max_conns: usize,
     /// `WISP_API_DOCS`: serve `/_wisp/openapi.json` and `/_wisp/docs`
     /// (`on` in dev, `off` otherwise).
@@ -505,7 +538,7 @@ fn switch(name: &str, default: bool) -> bool {
     match setting::<String>(name, "on or off").map(|v| v.to_ascii_lowercase()) {
         None => default,
         Some(v) if matches!(&*v, "on" | "1" | "true") => true,
-        Some(v) if matches!(&*v, "off" | "0" | "false") => false,
+        Some(v) if !input::on(&v) => false,
         Some(v) => fail(&format!("{name} is {v:?}, which is not on or off")),
     }
 }
@@ -523,16 +556,20 @@ pub(crate) fn settings() -> &'static Settings {
             o
         });
         let client_ip_header = setting::<String>("WISP_CLIENT_IP_HEADER", "a header name").map(|h| h.to_ascii_lowercase());
-        let secret = setting::<String>("WISP_SECRET", "a secret");
-        if let Some(s) = &secret
-            && s.len() < 32
-        {
-            fail(&format!(
-                "WISP_SECRET is {} characters, too short to keep signed cookies safe\n  Use at least 32 random ones: `openssl rand -hex 32` makes some.",
-                s.len()
-            ));
-        }
+        let secret = |name: &str| {
+            let s = setting::<String>(name, "a secret")?;
+            if s.len() < 32 {
+                fail(&format!(
+                    "{name} is {} characters, too short to keep signed cookies safe\n  Use at least 32 random ones: `openssl rand -hex 32` makes some.",
+                    s.len()
+                ));
+            }
+            Some(s)
+        };
+        let (secret, old_secret) = (secret("WISP_SECRET"), secret("WISP_SECRET_OLD"));
+        #[cfg(not(target_arch = "wasm32"))]
         let ws_idle = std::time::Duration::from_secs(setting::<u64>("WISP_WS_IDLE", "a number of seconds").unwrap_or(60));
+        #[cfg(not(target_arch = "wasm32"))]
         let max_conns = match setting::<usize>("WISP_MAX_CONNS", "a number of connections") {
             Some(0) => usize::MAX,
             n => n.unwrap_or(10_000),
@@ -541,7 +578,13 @@ pub(crate) fn settings() -> &'static Settings {
         let api_docs = switch("WISP_API_DOCS", dev);
         let request_id = switch("WISP_REQUEST_ID", false);
         let problem_json = switch("WISP_PROBLEM_JSON", false);
-        Settings { dev, body_limit, origin, client_ip_header, secret, ws_idle, max_conns, api_docs, request_id, problem_json }
+        Settings {
+            dev, body_limit, origin, client_ip_header, secret, old_secret, api_docs, request_id, problem_json,
+            #[cfg(not(target_arch = "wasm32"))]
+            ws_idle,
+            #[cfg(not(target_arch = "wasm32"))]
+            max_conns,
+        }
     })
 }
 
@@ -575,15 +618,16 @@ pub trait App: 'static {
     const ROOT: &'static str;
     /// Hash of the built CSS, `"dev"` in dev builds, `None` without CSS.
     const CSS: Option<&'static str>;
-    /// Parameter names per route id.
-    const PARAMS: &'static [&'static [&'static str]];
+    /// What the build knows of each route, by route id.
+    const ROUTES: &'static [rt::RouteFacts];
+    /// [`rt::RouteFacts::now`] for a request no route matched, which the
+    /// root error page answers.
+    const NOT_FOUND_NOW: bool = false;
     /// `(path, shape)` per template id, for dev hot swapping.
     const TEMPLATES: &'static [(&'static str, u64)];
 
     /// The route of `path` and its parameters, slices of it.
     fn route(path: &str) -> Option<(usize, [&str; cx::MAX_PARAMS])>;
-    /// The route's own `BODY_LIMIT`, if its `+page.rs` or `+server.rs` sets one.
-    fn body_limit(route: usize) -> Option<usize>;
     fn shell() -> [&'static str; 3];
     fn asset(path: &str) -> Option<&'static Asset>;
     /// The browser module of a template with client code, by its path
@@ -622,6 +666,13 @@ pub trait App: 'static {
         status: u16,
         message: &str,
     ) -> impl Future<Output = Result<()>> + Send;
+    /// What [`App::handle`] does, for the arms the build made plain code
+    /// ([`rt::RouteFacts::sync`]): `Ok(false)` for any other, having done
+    /// nothing.
+    fn handle_now(route: Option<usize>, cx: &mut Cx, out: &mut Out) -> Result<bool> {
+        let _ = (route, cx, out);
+        Ok(false)
+    }
 }
 
 /// Where a request's output goes: HTML for the head and body of the shell,
@@ -951,14 +1002,7 @@ impl Sender {
     /// `message` whose `data` is `data`. Each line of it is sent as its own
     /// `data:` field, as the format requires, so any text arrives whole.
     pub async fn event(&self, data: &str) -> Result<(), Gone> {
-        let mut out = String::with_capacity(data.len() + 8);
-        for line in data.split('\n') {
-            out.push_str("data: ");
-            out.push_str(line.strip_suffix('\r').unwrap_or(line));
-            out.push('\n');
-        }
-        out.push('\n');
-        self.send(out).await
+        self.send(event_text(data)).await
     }
 
     /// Sends `value` as JSON and a newline: a line of [`Response::ndjson`].
@@ -973,6 +1017,31 @@ impl Sender {
     pub fn is_closed(&self) -> bool {
         self.0.is_closed()
     }
+}
+
+/// `data` as one server-sent event: a `data:` field per line. A line ends
+/// at CR LF, LF or a CR alone, as the browser reads it, so text with a CR
+/// in it cannot start a field of its own (`event:`, `id:`, `retry:`).
+fn event_text(data: &str) -> String {
+    let mut out = String::with_capacity(data.len() + 8);
+    let mut rest = data;
+    loop {
+        let end = rest.find(['\r', '\n']).unwrap_or(rest.len());
+        out.push_str("data: ");
+        out.push_str(&rest[..end]);
+        out.push('\n');
+        if end == rest.len() {
+            break;
+        }
+        let eol = if rest[end..].starts_with("\r\n") {
+            2
+        } else {
+            1
+        };
+        rest = &rest[end + eol..];
+    }
+    out.push('\n');
+    out
 }
 
 /// The client of a streamed response has gone.
@@ -1309,19 +1378,81 @@ pub mod rt {
             None => Some(T::now()),
         }
     }
+    /// What the build knows of a route: one row per route id in
+    /// [`crate::App::ROUTES`], so no fact can drift from the others.
+    pub struct RouteFacts {
+        /// Its parameters' names.
+        pub params: &'static [&'static str],
+        /// Its own `BODY_LIMIT`, if its `+page.rs` or `+server.rs` sets one.
+        pub body_limit: Option<usize>,
+        /// The bytes its page's actions take as uploads in all (their
+        /// `max_size`), if they take any.
+        pub uploads: Option<usize>,
+        /// A request to it is answered without waiting on anything: its
+        /// `before` hooks, loads, actions, handlers and error page call no
+        /// `async fn` of the app's, and its page's statements await
+        /// nothing. The server then answers it as it receives it, without
+        /// a task's round trip.
+        pub now: bool,
+        /// The methods ([`crate::Method::bit`]) whose arm
+        /// [`crate::App::handle_now`] answers, with no future at all.
+        pub sync: u8,
+        /// A file the binary embeds may be at one of its paths, and is
+        /// served instead: else a GET to it skips looking.
+        pub files: bool,
+        /// Its nearest `+error.wisp`, by the app's own numbering.
+        pub error: Option<usize>,
+    }
+
+    impl RouteFacts {
+        /// A route with parameters `params` and no other facts.
+        pub const fn new(params: &'static [&'static str]) -> RouteFacts {
+            RouteFacts {
+                params,
+                body_limit: None,
+                uploads: None,
+                now: false,
+                sync: 0,
+                files: true,
+                error: None,
+            }
+        }
+
+        /// Its body limit, if not the usual one: with uploads, room for
+        /// them on top of the usual limit, or its own `BODY_LIMIT` when
+        /// that is more. `usual`: `WISP_BODY_LIMIT`, which the caller has.
+        #[inline]
+        pub(crate) fn limit(&self, usual: usize) -> Option<usize> {
+            let Some(uploads) = self.uploads else {
+                return self.body_limit;
+            };
+            Some((self.body_limit.unwrap_or(usual)).max(usual.saturating_add(uploads)))
+        }
+    }
+
     /// A handler's parameters, read by name (see `input.rs`).
     pub mod input {
-        pub use crate::input::{all, body, failed, flag, optional, required};
+        pub use crate::input::{all, body, failed, flag, optional, read, refused, required, whole};
     }
-    pub use crate::html::{
-        Always, Attr, Direct, Formatted, Maybe, Text, escape, guard_url, raw as html, text,
-    };
+    pub use crate::contexts::{escape, guard_url};
+    pub use crate::html::{Always, Attr, Direct, Formatted, Maybe, Text, raw as html, text};
     pub use crate::json::to_json as js_of;
     pub use crate::live::{
-        Js, RUNTIME_VERSION, js_attr, js_attrs, js_text, json, live, live_end, live_how, live_route,
-        same_version, tag_name,
+        Js, RUNTIME_VERSION, js_attr, js_attrs, js_text, json, live, live_end, live_how,
+        live_route, same_version, tag_name,
     };
     use crate::{Cx, Error, Out, Response};
+
+    /// The segment at the start of `r`, a path after one of its `/`s, and
+    /// the path after the `/` that ends it, if one does: how the router
+    /// walks a path.
+    #[inline(always)]
+    pub fn seg(r: &str) -> (&str, Option<&str>) {
+        match r.bytes().position(|b| b == b'/') {
+            Some(i) => (&r[..i], Some(&r[i + 1..])),
+            None => (r, None),
+        }
+    }
 
     /// The text of a `[...rest]` match: from its first segment to the end of
     /// the path, still percent-encoded. Segments are slices of `path`.
@@ -1338,42 +1469,133 @@ pub mod rt {
 
     /// What the form sent for `name`, when an action refused it: an
     /// `<input name="x">` in a `<form action="?/…">` shows it again.
-    pub fn kept<'a>(cx: &'a Cx, name: &str) -> Option<std::borrow::Cow<'a, str>> {
-        cx.get::<Error>()?;
+    pub fn kept<'a>(
+        cx: &'a Cx,
+        refused: Option<&Error>,
+        name: &str,
+    ) -> Option<std::borrow::Cow<'a, str>> {
+        refused?;
         cx.input(name)
+    }
+
+    /// What an action refused, if it did: read once a render, for its
+    /// form's fields (`kept`, `problem`).
+    pub fn refused(cx: &Cx) -> Option<&Error> {
+        cx.get::<Error>()
+    }
+
+    /// What a `<select>` chooses its option by (see `chosen`): text from
+    /// the form, or its own value written into a small buffer (a `String`
+    /// only for one too long for it).
+    pub enum Chosen<'a> {
+        None,
+        Kept(std::borrow::Cow<'a, str>),
+        Small(u8, [u8; 48]),
+    }
+
+    /// The value a `<select>` of an action's form chooses its option by:
+    /// what was sent (`kept`), else its own `value={expr}`, as text.
+    pub fn chosen<'a, T: std::fmt::Display + ?Sized>(
+        own: Option<&T>,
+        kept: Option<std::borrow::Cow<'a, str>>,
+    ) -> Chosen<'a> {
+        use std::fmt::Write;
+        if let Some(k) = kept {
+            return Chosen::Kept(k);
+        }
+        let Some(v) = own else { return Chosen::None };
+        struct Buf(usize, [u8; 48]);
+        impl Write for Buf {
+            fn write_str(&mut self, s: &str) -> std::fmt::Result {
+                let end = self.0 + s.len();
+                self.1
+                    .get_mut(self.0..end)
+                    .ok_or(std::fmt::Error)?
+                    .copy_from_slice(s.as_bytes());
+                self.0 = end;
+                Ok(())
+            }
+        }
+        let mut b = Buf(0, [0; 48]);
+        match write!(b, "{v}") {
+            Ok(()) => Chosen::Small(b.0 as u8, b.1),
+            Err(_) => Chosen::Kept(std::borrow::Cow::Owned(v.to_string())),
+        }
+    }
+
+    /// Whether an `<option>`'s value is `chosen`: `selected` then.
+    pub fn is<T: std::fmt::Display + ?Sized>(chosen: &Chosen<'_>, value: &T) -> bool {
+        // Compared as it is written, without a copy of it.
+        struct Rest<'a>(&'a [u8]);
+        impl std::fmt::Write for Rest<'_> {
+            fn write_str(&mut self, s: &str) -> std::fmt::Result {
+                self.0 = self.0.strip_prefix(s.as_bytes()).ok_or(std::fmt::Error)?;
+                Ok(())
+            }
+        }
+        let mut rest = Rest(match chosen {
+            Chosen::None => return false,
+            Chosen::Kept(c) => c.as_bytes(),
+            Chosen::Small(n, b) => &b[..*n as usize],
+        });
+        std::fmt::write(&mut rest, format_args!("{value}")).is_ok() && rest.0.is_empty()
     }
 
     /// What was wrong with `name`, after its `<input>` in an action's form:
     /// `<small class="problem">…</small>`, or nothing.
-    pub fn problem<'a>(cx: &'a Cx, name: &str) -> Problem<'a> {
-        Problem(cx.problem(name))
-    }
-
-    pub struct Problem<'a>(Option<&'a str>);
-
-    impl std::fmt::Display for Problem<'_> {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            let Some(p) = self.0 else { return Ok(()) };
-            let mut s = String::from("<small class=\"problem\">");
-            escape(&mut s, p);
-            s.push_str("</small>");
-            f.write_str(&s)
-        }
+    pub fn problem(out: &mut String, refused: Option<&Error>, name: &str) {
+        let Some((_, p)) = refused.and_then(|e| e.fields().iter().find(|(f, _)| f == name)) else {
+            return;
+        };
+        out.push_str("<small class=\"problem\">");
+        escape(out, p);
+        out.push_str("</small>");
     }
 
     pub fn respond(out: &mut Out, r: Response) {
         out.response = Some(r);
     }
 
+    /// The answer of a handler that returns nothing: a 204.
+    pub fn no_content(out: &mut Out) {
+        out.made = Some(crate::bake::Made::NoContent);
+    }
+
+    /// A POST the hooks let through, with an `Idempotency-Key`: true when
+    /// its answer is decided already, the first one again or a refusal, in
+    /// `out`; else it is answered as usual, and that answer kept.
+    pub fn idempotent(cx: &mut Cx, out: &mut Out) -> bool {
+        match crate::idem::start(cx) {
+            crate::idem::Start::Skip => false,
+            crate::idem::Start::Fresh(key) => {
+                cx.idem = Some(key);
+                false
+            }
+            crate::idem::Start::Answered(r) => {
+                respond(out, r);
+                true
+            }
+        }
+    }
+
+    /// A 500 when the GET of a page is live.js asking for its error page
+    /// (`x-wisp-error`): its browser code failed while starting.
+    pub fn browser_ok(cx: &Cx) -> crate::Result<()> {
+        if cx.method == crate::Method::Get && cx.known(crate::cx::Known::WispError).is_some() {
+            return Err(Error::new(500, "Something went wrong in the browser"));
+        }
+        Ok(())
+    }
+
     /// The request is routed to a `+server.rs` endpoint: its errors are JSON.
     pub fn endpoint(cx: &mut Cx) {
-        cx.api = true;
+        cx.set_api();
     }
 
     /// The `before` hook has run: the headers it set stay on this request's
     /// response, error pages included.
     pub fn hooked(cx: &mut Cx) {
-        cx.kept_headers = cx.out_headers.len();
+        cx.keep_headers();
     }
 
     /// Form posts must come from our own origin (CSRF). Browsers always send
@@ -1381,9 +1603,16 @@ pub mod rt {
     /// origin must be `ORIGIN` when that is set, or name the host the request
     /// was sent to: `Host`, or `X-Forwarded-Host` from a proxy (a page on
     /// another site cannot set that header without the app allowing it).
+    /// Without `Origin`, a `Sec-Fetch-Site` that names another site (or a
+    /// sibling one, `same-site`) is refused too: an older browser, or a
+    /// privacy setting, may leave `Origin` out.
     pub fn check_origin(cx: &Cx) -> crate::Result<()> {
-        let Some(origin) = cx.header("origin") else {
-            return Ok(());
+        let Some(origin) = cx.known(crate::cx::Known::Origin) else {
+            let site = cx.known(crate::cx::Known::SecFetchSite).unwrap_or("none");
+            if site.eq_ignore_ascii_case("same-origin") || site.eq_ignore_ascii_case("none") {
+                return Ok(());
+            }
+            return Err(Error::new(403, "Cross-site form submissions are forbidden"));
         };
         if let Some(own) = &crate::settings().origin {
             if origin.eq_ignore_ascii_case(own) {
@@ -1461,10 +1690,10 @@ pub mod rt {
         if status >= 500 && matches!(cx.method, crate::Method::Get | crate::Method::Head) {
             out.body
                 .push_str("<a class=\"wisp-button wisp-primary\" href=\"");
-            crate::html::escape(&mut out.body, cx.path());
+            crate::contexts::escape(&mut out.body, cx.path());
             if !cx.query_string().is_empty() {
                 out.body.push('?');
-                crate::html::escape(&mut out.body, cx.query_string());
+                crate::contexts::escape(&mut out.body, cx.query_string());
             }
             out.body.push_str(
                 "\">Try Again</a><a class=\"wisp-button\" href=\"/\">Go to the Home Page</a>",
@@ -1514,6 +1743,80 @@ mod tests {
     }
 
     #[test]
+    fn events_keep_every_line_in_data() {
+        use super::event_text;
+        assert_eq!(event_text("hi"), "data: hi\n\n");
+        assert_eq!(event_text(""), "data: \n\n");
+        assert_eq!(
+            event_text("a\r\nb\nc\rd\n"),
+            "data: a\ndata: b\ndata: c\ndata: d\ndata: \n\n"
+        );
+        // A lone CR ends a line for the browser: what follows it is data
+        // still, not a field of its own.
+        let sneaky = event_text("x\revent: admin\rid: 9\r\rdata: y");
+        assert!(
+            sneaky
+                .lines()
+                .all(|l| l.is_empty() || l.starts_with("data: "))
+        );
+        assert!(!sneaky.contains('\r'));
+    }
+
+    /// A task of `every` that panics runs again the next period.
+    #[test]
+    fn every_outlives_a_panic() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static RUNS: AtomicU32 = AtomicU32::new(0);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            super::every(std::time::Duration::from_millis(5), || async {
+                if RUNS.fetch_add(1, Ordering::Relaxed) == 0 {
+                    panic!("the first run fails, on purpose");
+                }
+            });
+            for _ in 0..400 {
+                if RUNS.load(Ordering::Relaxed) >= 3 {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        });
+        assert!(RUNS.load(Ordering::Relaxed) >= 3);
+    }
+
+    #[test]
+    fn form_posts_from_other_sites_are_refused() {
+        let post = |headers: &str| {
+            let cx = crate::Cx::for_test(
+                &format!("POST /p HTTP/1.1\r\nhost: a.com\r\n{headers}\r\n"),
+                &[],
+            );
+            super::rt::check_origin(&cx).map_err(|e| e.status())
+        };
+        assert_eq!(post(""), Ok(()), "curl sends no Origin");
+        assert_eq!(post("origin: https://a.com\r\n"), Ok(()));
+        assert_eq!(post("origin: https://b.com\r\n"), Err(403));
+        assert_eq!(post("origin: null\r\n"), Err(403));
+        assert_eq!(post("origin: https://a.com.b.com\r\n"), Err(403));
+        // No `Origin`: what the browser says of the page that sent it.
+        assert_eq!(post("sec-fetch-site: same-origin\r\n"), Ok(()));
+        assert_eq!(
+            post("sec-fetch-site: none\r\n"),
+            Ok(()),
+            "typed or bookmarked"
+        );
+        assert_eq!(post("sec-fetch-site: cross-site\r\n"), Err(403));
+        assert_eq!(post("sec-fetch-site: same-site\r\n"), Err(403));
+        assert_eq!(
+            post("origin: https://a.com\r\nsec-fetch-site: same-origin\r\n"),
+            Ok(())
+        );
+    }
+
+    #[test]
     fn provided_values_reach_every_thread() {
         struct Answer(u32);
         super::provide(Answer(1));
@@ -1543,5 +1846,19 @@ mod tests {
             r#"{"type":"about:blank","title":"Conflict","status":409,"code":"email_taken","detail":"Taken"}"#
         );
         assert_eq!(super::Error::new(418, "x").code(), "client_error");
+    }
+
+    #[test]
+    fn a_select_chooses_by_text() {
+        use super::rt::{chosen, is};
+        use std::borrow::Cow;
+        let kept = chosen(Some(&3u8), Some(Cow::Borrowed("7")));
+        assert!(is(&kept, &7) && !is(&kept, &3), "what was sent first");
+        let own = chosen(Some(&7u64), None);
+        assert!(is(&own, &7) && is(&own, "7"));
+        assert!(!is(&own, &70) && !is(&own, "") && !is(&own, &"77"));
+        let long = chosen(Some(&"x".repeat(60)), None);
+        assert!(is(&long, &"x".repeat(60)) && !is(&long, &"x".repeat(59)));
+        assert!(!is(&chosen(None::<&str>, None), ""), "nothing is chosen");
     }
 }

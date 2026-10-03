@@ -372,6 +372,10 @@ fn schema(t: &str, types: &[TypeItem], schemas: &mut Vec<(String, J)>) -> J {
         "Email" if types.iter().all(|x| x.name != "Email") => {
             J::obj([("type", J::str("string")), ("format", J::str("email"))])
         }
+        // `wisp::Image`: its JSON is a `data:` URL.
+        "Image" if types.iter().all(|x| x.name != "Image") => {
+            J::obj([("type", J::str("string")), ("format", J::str("data-url"))])
+        }
         "Vec" | "VecDeque" | "BTreeSet" | "HashSet" => array(schema(arg(), types, schemas)),
         "BTreeMap" | "HashMap" => {
             let value = arg().split_once(',').map_or("", |(_, v)| v);
@@ -424,18 +428,19 @@ fn constrain(schema: &mut J, rules: &str, t: &str) {
         "Vec" => ("minItems", "maxItems"),
         _ => ("minLength", "maxLength"),
     };
+    // Written as JSON writes a number: Rust's `5.`, `1_0` or `inf` are not.
     let mut add = |key: &str, n: &str| {
-        if n.parse::<f64>().is_ok() {
-            schema.set(key, J::Num(n.to_string()));
+        if let Some(x) = rules::plain(n) {
+            schema.set(key, J::Num(x.to_string()));
         }
     };
     let mut email = false;
-    for r in rules::parse(rules).unwrap_or_default() {
+    for r in rules::parse(rules).unwrap_or_default().rules {
         match r.key {
-            Key::Min => add("minimum", r.value),
-            Key::Max => add("maximum", r.value),
-            Key::MinLen => add(min_len, r.value),
-            Key::MaxLen => add(max_len, r.value),
+            Key::Min => add("minimum", &r.value),
+            Key::Max => add("maximum", &r.value),
+            Key::MinLen => add(min_len, &r.value),
+            Key::MaxLen => add(max_len, &r.value),
             Key::Len => {
                 let (lo, hi) = r.len_bounds();
                 add(min_len, &lo.map_or(String::new(), |n| n.to_string()));
@@ -575,11 +580,22 @@ const TS_TAKEN: [&str; 24] = [
 /// One entry of the object `client` returns.
 fn method(e: &Endpoint, op: &Op, decls: &mut Vec<(String, String)>) -> String {
     let mut args = Vec::new();
-    let mut path = String::new();
+    // The path as the inside of a template literal, which a parameter
+    // makes it: a folder may be named with a backtick or a `$`. Without
+    // one it is the route's pattern.
+    let mut tpl = String::new();
     let mut dynamic = false;
     for s in &e.route.segs {
         match s {
-            Seg::Static(n) => path.push_str(&format!("/{n}")),
+            Seg::Static(n) => {
+                tpl.push('/');
+                for c in n.chars() {
+                    if matches!(c, '`' | '\\' | '$') {
+                        tpl.push('\\');
+                    }
+                    tpl.push(c);
+                }
+            }
             Seg::Param(n, _) | Seg::Optional(n, _) | Seg::Rest(n) => {
                 let mut a: String = n
                     .chars()
@@ -588,16 +604,19 @@ fn method(e: &Endpoint, op: &Op, decls: &mut Vec<(String, String)>) -> String {
                 if TS_TAKEN.contains(&a.as_str()) {
                     a.push('_');
                 }
+                // `[1st]`: a name cannot start with a digit.
+                if a.starts_with(|c: char| c.is_ascii_digit()) {
+                    a.insert(0, '_');
+                }
                 args.push(format!("{a}: string | number"));
-                path.push_str(&format!("/${{encodeURIComponent({a})}}"));
+                tpl.push_str(&format!("/${{encodeURIComponent({a})}}"));
                 dynamic = true;
             }
         }
     }
-    let path = match (path.is_empty(), dynamic) {
-        (true, _) => "\"/\"".to_string(),
-        (false, true) => format!("`{path}`"),
-        (false, false) => q(&path),
+    let path = match dynamic {
+        true => format!("`{tpl}`"),
+        false => q(&e.route.pattern()),
     };
     let mut fields = Vec::new();
     let mut query = Vec::new();
@@ -707,7 +726,7 @@ fn ts(t: &str, types: &[TypeItem], decls: &mut Vec<(String, String)>) -> String 
     }
     match last_segment(t) {
         "Box" | "Arc" | "Rc" => ts(arg(), types, decls),
-        "Email" if types.iter().all(|x| x.name != "Email") => "string".into(),
+        "Email" | "Image" if types.iter().all(|x| x.name != last_segment(t)) => "string".into(),
         "Option" => format!("{} | null", ts(arg(), types, decls)),
         "Row" if inner(t).is_some() => format!("{{ id: number }} & {}", ts(arg(), types, decls)),
         "Vec" | "VecDeque" | "BTreeSet" | "HashSet" => array(ts(arg(), types, decls)),
@@ -763,8 +782,7 @@ fn declare(
 /// `None`, an empty list and `false` are read for it, and a
 /// `#[derive(Rest)]` type's `created_at` and `updated_at` are Wisp's.
 fn may_leave_out(ty: &TypeItem, name: &str, t: &str) -> bool {
-    may_omit(t)
-        || (ty.derives.iter().any(|d| d == "Rest") && matches!(name, "created_at" | "updated_at"))
+    may_omit(t) || ty.set_by_wisp(name)
 }
 
 /// A request body's type. A struct of the file with members a request may
@@ -900,6 +918,12 @@ mod tests {
         let email = text(&schema("Option<Email>", &items.types, &mut schemas));
         assert_eq!(email, "{\"type\":\"string\",\"format\":\"email\"}");
         assert_eq!(ts("Email", &items.types, &mut Vec::new()), "string");
+        let image = text(&schema("Image", &items.types, &mut schemas));
+        assert_eq!(image, "{\"type\":\"string\",\"format\":\"data-url\"}");
+        assert_eq!(
+            ts("Option<Image>", &items.types, &mut Vec::new()),
+            "string | null"
+        );
     }
 
     #[test]
@@ -988,6 +1012,17 @@ mod tests {
             ts.contains("    getApiNotes: async () => call<string>(\"GET\", \"/api/notes\"),\n"),
             "{ts}"
         );
+        // Folder names that are not JavaScript names, in a template literal.
+        route.segs = vec![Seg::Static("a`$b".into()), Seg::Param("1st".into(), None)];
+        let ts = typescript(&[Endpoint {
+            route: &route,
+            ops: &ops(&items),
+            types: &items.types,
+        }]);
+        assert!(
+            ts.contains("(_1st: string | number) => call<string>(\"GET\", `/a\\`\\$b/${encodeURIComponent(_1st)}`)"),
+            "{ts}"
+        );
     }
 
     #[test]
@@ -1003,6 +1038,10 @@ struct New {
     tags: Vec<String>,
     #[validate(max_len = MAX)]
     x: String,
+    #[validate(min = 0.5, max = 5.)]
+    f: f64,
+    #[validate(min = inf)]
+    g: f64,
 }
 fn post(body: New) {}",
         )
@@ -1016,6 +1055,9 @@ fn post(body: New) {}",
             "\"n\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":10}",
             "\"tags\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"maxItems\":4}",
             "\"x\":{\"type\":\"string\"}",
+            // As JSON writes numbers; one that is none is left out.
+            "\"f\":{\"type\":\"number\",\"minimum\":0.5,\"maximum\":5}",
+            "\"g\":{\"type\":\"number\"}",
         ] {
             assert!(new.contains(want), "{want}\n{new}");
         }

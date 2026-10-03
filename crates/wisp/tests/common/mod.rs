@@ -3,7 +3,7 @@
 //! path and query, and each route below is one thing an app does.
 
 use wisp::prelude::*;
-use wisp::rt::MAX_PARAMS;
+use wisp::rt::{MAX_PARAMS, RouteFacts};
 use wisp::{App, Asset, ExportRoute, Message, Out};
 
 pub struct Lab;
@@ -32,7 +32,14 @@ static ASSET: Asset = Asset {
 impl App for Lab {
     const ROOT: &'static str = ROOT;
     const CSS: Option<&'static str> = None;
-    const PARAMS: &'static [&'static [&'static str]] = &[&[], &["id"]];
+    /// `/item/[id]` takes 16 bytes.
+    const ROUTES: &'static [RouteFacts] = &[
+        RouteFacts::new(&[]),
+        RouteFacts {
+            body_limit: Some(16),
+            ..RouteFacts::new(&["id"])
+        },
+    ];
     const TEMPLATES: &'static [(&'static str, u64)] = &[TEMPLATE];
 
     fn route(path: &str) -> Option<(usize, [&str; MAX_PARAMS])> {
@@ -46,11 +53,6 @@ impl App for Lab {
             }
             _ => Some((0, params)),
         }
-    }
-
-    /// `/item/[id]` takes 16 bytes.
-    fn body_limit(route: usize) -> Option<usize> {
-        (route == 1).then_some(16)
     }
 
     fn shell() -> [&'static str; 3] {

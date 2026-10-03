@@ -65,12 +65,19 @@
   // Where a response sends the page. The server hands its redirects to us
   // as `x-wisp-location`, since fetch would follow them with the post's own
   // headers, and to another site not at all; fetch follows any other.
+  // A `javascript:` one is dropped: a browser never follows a redirect
+  // there, and `redirect(next)` with a `?next=` from a link must not run it.
   function redirect(res) {
     const to = res.headers.get('x-wisp-location');
-    return to ? new URL(to, location.href) : res.redirected ? new URL(res.url) : null;
+    const url = to ? new URL(to, location.href) : res.redirected ? new URL(res.url) : null;
+    return url && !script(url) ? url : null;
   }
+  const script = (url) => /^(javascript|vbscript):$/.test(url.protocol);
 
-  const isHtml = (res) => (res.headers.get('content-type') || '').startsWith('text/html');
+  // A page to morph in: HTML the server does not mean to be saved as a file.
+  const isHtml = (res) =>
+    (res.headers.get('content-type') || '').startsWith('text/html') && !attachment(res);
+  const attachment = (res) => /^\s*attachment/i.test(res.headers.get('content-disposition') || '');
 
   async function refresh(extra) {
     const res = await fetch(location.href, { headers: { ...headers, ...extra } });
@@ -104,6 +111,7 @@
 
   async function go(url, how = {}) {
     url = new URL(url, location.href);
+    if (script(url)) return; // goto(text from a visitor) runs nothing
     if (url.origin !== location.origin) return location.assign(url);
     const my = ++nav;
     if (!how.pop) history.replaceState({ ...history.state, x: scrollX, y: scrollY }, '');
@@ -302,10 +310,19 @@
         result.data = await res.json(); // an action's answer, for use:enhance
         res = null;
       } else if (!isHtml(res)) {
-        // Not a page (a file): show it as the browser would.
+        // Not a page (a file): shown, or saved when the server says so,
+        // as the browser would. A blob's address is this site's, so a file
+        // to save is never opened as a page here, where its script would run.
         const blob = await res.blob();
-        if (blob.size) location.assign(URL.createObjectURL(blob));
-        else await refresh();
+        if (!blob.size) await refresh();
+        else if (!attachment(res)) location.assign(URL.createObjectURL(blob));
+        else {
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = /filename="?([^";]*)/i.exec(res.headers.get('content-disposition'))?.[1] || '';
+          a.click();
+          setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+        }
         return;
       }
       if (res) html = await res.text();
@@ -344,14 +361,15 @@
     woke?.abort();
     woke = new AbortController();
     const { signal } = woke;
-    // Parsed here once: live.js takes it from `__j`.
+    // Parsed here once: live.js takes it from `__j`. Each record is
+    // [I, module, parent, blob, how?] (protocol.rs).
     const el = document.getElementById('wisp-live');
     const json = el && (el.__j = JSON.parse(el.textContent));
     const parent = {};
     const waits = new Map(); // client:interaction islands -> their start
-    for (const [I, , P, how] of json && runtime ? json.i : []) {
+    for (const [I, , P, , how] of json && runtime ? json.i : []) {
       parent[I] = P;
-      if (typeof how != 'string') continue;
+      if (!how) continue;
       let started;
       const go = () =>
         signal.aborted ||

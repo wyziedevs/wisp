@@ -8,6 +8,7 @@
 
 use crate::{Cx, Error, FromJson, Method, Result, Value};
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fmt::Display;
 use std::str::FromStr;
 
@@ -41,7 +42,7 @@ fn find<'a>(cx: &'a Cx, name: &str) -> Option<(Cow<'a, str>, From)> {
 
 /// Whether the client asks for JSON rather than a page, by its `Accept`.
 pub(crate) fn asks_json(cx: &Cx) -> bool {
-    let accept = cx.header("accept").unwrap_or("");
+    let accept = cx.known(crate::cx::Known::Accept).unwrap_or("");
     accept.contains("json") && !accept.contains("text/html")
 }
 
@@ -104,7 +105,7 @@ fn json_values<'a>(cx: &'a Cx, name: &str) -> impl Iterator<Item = Cow<'a, str>>
 /// `body: T`: the request's JSON body read as a `T` (see
 /// [`crate::from_json`]). A body sent as another type is a 415.
 pub fn body<T: FromJson>(cx: &Cx) -> Result<T> {
-    if cx.header("content-type").is_some() && !is_json(cx) {
+    if cx.known(crate::cx::Known::ContentType).is_some() && !is_json(cx) {
         return Err(Error::new(
             415,
             "Expected a JSON body, sent with Content-Type: application/json",
@@ -129,9 +130,25 @@ fn parse<T: FromStr<Err: Display>>(name: &str, v: &str, from: From) -> Result<T>
 pub fn required<T: FromStr<Err: Display>>(cx: &Cx, name: &str) -> Result<T> {
     match find(cx, name) {
         Some((v, from)) => parse(name, &v, from),
-        None if posts(cx) && is_json(cx) => Err(Error::invalid(name, "is required")),
+        None if posts(cx) && is_json(cx) => {
+            not_json(cx)?;
+            Err(Error::invalid(name, "is required"))
+        }
         None if posts(cx) => Err(Error::new(400, format!("missing form field `{name}`"))),
         None => Err(Error::new(400, format!("missing query parameter `{name}`"))),
+    }
+}
+
+/// [`required`] for a `String`, which never fails to parse: in a buffer
+/// a response gave back, when one of its size is there.
+pub fn text(cx: &Cx, name: &str) -> Result<String> {
+    match find(cx, name) {
+        Some((v, _)) => {
+            let mut s = String::from_utf8(crate::http::spare_for(v.len())).unwrap_or_default();
+            s.push_str(&v);
+            Ok(s)
+        }
+        None => required(cx, name),
     }
 }
 
@@ -140,14 +157,93 @@ pub fn optional<T: FromStr<Err: Display>>(cx: &Cx, name: &str) -> Result<Option<
     match find(cx, name) {
         Some((v, _)) if v.is_empty() => Ok(None),
         Some((v, from)) => parse(name, &v, from).map(Some),
-        None => Ok(None),
+        None => not_json(cx).map(|_| None),
     }
+}
+
+/// A JSON body that is not JSON: the 400 that says where, as `body: T`
+/// gets, rather than every parameter read from it missing. Asked once a
+/// parameter was looked for in it ([`json_values`]), so it costs a load.
+fn not_json(cx: &Cx) -> Result<()> {
+    if cx.json_failed() && !cx.body().trim_ascii().is_empty() {
+        return crate::from_json::<Value>(cx.body()).map(|_| ());
+    }
+    Ok(())
+}
+
+/// `post: Post`, a struct with `#[derive(FromJson)]` (or `Rest`): a JSON
+/// body read whole, or the form's fields by the struct's field names, with
+/// its `#[validate]` rules. A blank field counts as missing; every problem
+/// is listed by field, in one 422.
+pub fn whole<T: FromJson>(cx: &Cx) -> Result<T> {
+    if is_json(cx) {
+        return crate::from_json(cx.body());
+    }
+    // A name's place in `members`: a scan while they are few, an index
+    // once they are many (made then), so a form of thousands of fields is
+    // not a scan of the ones before for each.
+    let mut members: Vec<(String, Value)> = Vec::new();
+    let mut index: HashMap<String, usize> = HashMap::new();
+    for (k, v) in cx.form().iter() {
+        let v = Value::String(v.into_owned());
+        let found = if members.len() < 32 {
+            members.iter().position(|(m, _)| *m == k)
+        } else {
+            if index.is_empty() {
+                index.extend(members.iter().enumerate().map(|(i, (m, _))| (m.clone(), i)));
+            }
+            index.get(&*k).copied()
+        };
+        match found.map(|i| &mut members[i].1) {
+            Some(Value::Array(items)) => items.push(v),
+            Some(first) => *first = Value::Array(vec![std::mem::replace(first, Value::Null), v]),
+            None => {
+                if !index.is_empty() {
+                    index.insert(k.to_string(), members.len());
+                }
+                members.push((k.into_owned(), v));
+            }
+        }
+    }
+    let mut problems = crate::json::Problems::form();
+    match T::from_json(&Value::Object(members), &mut problems) {
+        Some(v) if problems.is_empty() => Ok(v),
+        _ => Err(problems.into_error()),
+    }
+}
+
+/// A handler's input `r`, as its generated call reads each: `None` when
+/// what was sent does not pass (a 422 by field), whose problems join the
+/// others' in `problems`, so one answer lists them all. Any other error is
+/// the answer.
+pub fn read<T>(problems: &mut crate::json::Problems, r: Result<T>) -> Result<Option<T>> {
+    match r {
+        Ok(v) => Ok(Some(v)),
+        Err(e) if e.status() == 422 && !e.fields().is_empty() => {
+            for (field, problem) in e.fields() {
+                problems.check(field, Some(problem.clone()));
+            }
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// The 422 of every input that did not pass (see [`read`]).
+pub fn refused<T>(problems: crate::json::Problems) -> Result<T> {
+    Err(problems.into_error())
 }
 
 /// `name: bool`: a checkbox, `true` when it was sent with any value but
 /// `false`, `off` or `0`.
 pub fn flag(cx: &Cx, name: &str) -> bool {
-    find(cx, name).is_some_and(|(v, _)| !matches!(&*v, "false" | "off" | "0"))
+    find(cx, name).is_some_and(|(v, _)| on(&v))
+}
+
+/// Whether a checkbox's (or a switch's) value is on: anything but `false`,
+/// `off` or `0`.
+pub(crate) fn on(v: &str) -> bool {
+    !matches!(v, "false" | "off" | "0")
 }
 
 /// `name: Vec<T>`: every value sent under the name, such as a group of
@@ -156,7 +252,11 @@ pub fn all<T: FromStr<Err: Display>>(cx: &Cx, name: &str) -> Result<Vec<T>> {
     let form: Vec<Cow<str>> = if !posts(cx) {
         Vec::new()
     } else if is_json(cx) {
-        json_values(cx, name).collect()
+        let sent: Vec<Cow<str>> = json_values(cx, name).collect();
+        if sent.is_empty() {
+            not_json(cx)?;
+        }
+        sent
     } else {
         cx.form().all(name).collect()
     };
@@ -166,6 +266,18 @@ pub fn all<T: FromStr<Err: Display>>(cx: &Cx, name: &str) -> Result<Vec<T>> {
         (form, if is_json(cx) { From::Json } else { From::Form })
     };
     sent.iter().map(|v| parse(name, v, from)).collect()
+}
+
+/// `name: Image`: the file chosen in the form's field `name` (`None` for
+/// none), or a 422 by the field when it is not an image.
+pub fn image(cx: &Cx, name: &str) -> Result<Option<crate::Image>> {
+    let Some(file) = cx.form().file(name) else {
+        return Ok(None);
+    };
+    match crate::Image::new(file.bytes) {
+        Some(image) => Ok(Some(image)),
+        None => Err(Error::invalid(name, crate::image::NOT_AN_IMAGE)),
+    }
 }
 
 /// An email address, checked as it is read: `#[action] fn join(email:
@@ -312,6 +424,25 @@ mod tests {
         let whole: crate::Value = body(&post).unwrap();
         assert_eq!(whole.get("n").and_then(|n| n.as_i64()), Some(3));
 
+        // Not JSON: a 400 that says where, not each parameter missing.
+        let broken = cx(
+            "POST /p HTTP/1.1\r\nContent-Type: application/json\r\n\r\n{\"text\":",
+            &[],
+        );
+        for e in [
+            required::<String>(&broken, "text").unwrap_err(),
+            optional::<String>(&broken, "text").unwrap_err(),
+            all::<String>(&broken, "text").unwrap_err(),
+        ] {
+            assert_eq!(e.status(), 400);
+            assert!(e.message().starts_with("Invalid JSON"), "{}", e.message());
+        }
+        let empty = cx(
+            "POST /p HTTP/1.1\r\nContent-Type: application/json\r\n\r\n ",
+            &[],
+        );
+        assert_eq!(optional::<String>(&empty, "text").unwrap(), None);
+
         let form = cx(
             "POST /p HTTP/1.1\r\nContent-Type: text/plain\r\n\r\n{}",
             &[],
@@ -323,5 +454,106 @@ mod tests {
             [1],
             "no Content-Type: tried as JSON"
         );
+    }
+
+    /// What `#[derive(FromJson)]` writes for a struct with named fields.
+    #[derive(Debug, PartialEq)]
+    struct Post {
+        title: String,
+        stars: u8,
+        draft: bool,
+        tags: Vec<String>,
+        note: Option<String>,
+    }
+
+    impl FromJson for Post {
+        fn from_json(v: &Value, p: &mut crate::json::Problems) -> Option<Post> {
+            let m = p.object(v)?;
+            let title: Option<String> = p.field(m, "title");
+            if let Some(t) = &title {
+                p.check("title", crate::json::check::max_len(t, 5));
+            }
+            let (stars, draft) = (p.field(m, "stars"), p.field(m, "draft"));
+            let (tags, note) = (p.field(m, "tags"), p.field(m, "note"));
+            Some(Post {
+                title: title?,
+                stars: stars?,
+                draft: draft?,
+                tags: tags?,
+                note: note?,
+            })
+        }
+    }
+
+    fn form(body: &str) -> Cx {
+        let raw = format!(
+            "POST /p HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\n\r\n{body}"
+        );
+        cx(&raw, &[])
+    }
+
+    #[test]
+    fn a_struct_from_a_form() {
+        let ok = whole::<Post>(&form("title=Hi&stars=3&draft=on&tags=a&note=")).unwrap();
+        let want = Post {
+            title: "Hi".into(),
+            stars: 3,
+            draft: true,
+            tags: vec!["a".into()],
+            note: None,
+        };
+        assert_eq!(ok, want, "text read by type; a blank field is left out");
+        let two = whole::<Post>(&form("title=Hi&stars=3&tags=a&tags=b&tags=c")).unwrap();
+        assert_eq!(
+            (two.draft, two.tags),
+            (false, vec!["a".into(), "b".into(), "c".into()])
+        );
+        // Many fields are read at once, not each looked for among the rest.
+        let mut many: String = (0..200_000).map(|i| format!("f{i}=&")).collect();
+        many.push_str("title=Hi&stars=1");
+        assert_eq!(whole::<Post>(&form(&many)).unwrap().stars, 1);
+
+        // Every problem, by field: blank is missing, text is not a number.
+        let bad = whole::<Post>(&form("title=+&stars=x")).unwrap_err();
+        assert_eq!(bad.status(), 422);
+        assert_eq!(
+            bad.fields(),
+            [
+                ("title".to_string(), "is required".to_string()),
+                ("stars".into(), "expected a whole number".into()),
+            ]
+        );
+        let long = whole::<Post>(&form("title=Longer&stars=300")).unwrap_err();
+        assert_eq!(
+            long.fields(),
+            [
+                (
+                    "title".to_string(),
+                    "must have at most 5 characters".to_string()
+                ),
+                ("stars".into(), "must be from 0 to 255".into()),
+            ]
+        );
+
+        // A JSON body is JSON: a number as text is wrong there.
+        let json = cx(
+            "POST /p HTTP/1.1\r\nContent-Type: application/json\r\n\r\n{\"title\":\"Hi\",\"stars\":\"3\"}",
+            &[],
+        );
+        let e = whole::<Post>(&json).unwrap_err();
+        assert_eq!(e.fields()[0].1, "expected a number, found a string");
+    }
+
+    #[test]
+    fn every_input_problem_is_kept() {
+        let mut p = crate::json::Problems::default();
+        let a: Option<u8> = read(&mut p, Ok(1)).unwrap();
+        let b: Option<u8> = read(&mut p, Err(Error::invalid("b", "no"))).unwrap();
+        let c: Option<u8> = read(&mut p, Err(Error::invalid("c", "nor").and("d", "this"))).unwrap();
+        assert_eq!((a, b, c), (Some(1), None, None));
+        let missing = read::<u8>(&mut p, Err(Error::new(400, "missing"))).unwrap_err();
+        assert_eq!(missing.status(), 400, "any other error is the answer");
+        let all = refused::<()>(p).unwrap_err();
+        assert_eq!((all.status(), all.fields().len()), (422, 3));
     }
 }

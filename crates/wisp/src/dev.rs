@@ -59,14 +59,16 @@ pub(crate) fn exit_with_parent() {
         });
 }
 
-/// `/_wisp/dev/*`. Only loopback peers are answered.
+/// `/_wisp/dev/*`. Only loopback peers are answered, and only by a debug
+/// build: a release build's pages never read swapped text, so there it is
+/// nothing to anyone, `WISP_DEV=on` or not.
 pub(crate) fn endpoint<A: App>(
     method: Method,
     path: &str,
     body: &[u8],
     peer: SocketAddr,
 ) -> (u16, &'static str) {
-    if !peer.ip().is_loopback() {
+    if !cfg!(debug_assertions) || !peer.ip().is_loopback() {
         return (404, "Not Found");
     }
     match (method, path) {
@@ -97,7 +99,9 @@ fn swap<A: App>(body: &[u8]) -> Result<(), &'static str> {
     if A::TEMPLATES[id].1 != shape {
         return Err("template shape changed; rebuild needed");
     }
-    let mut chunks = Vec::with_capacity(count);
+    // Each chunk takes a line at least: a count past that is a lie, and
+    // reserving it could abort the process.
+    let mut chunks = Vec::with_capacity(count.min(rest.len()));
     for _ in 0..count {
         let len: usize = line(&mut rest)?.parse().map_err(|_| "bad length")?;
         if rest.len() < len || !rest.is_char_boundary(len) {
@@ -187,7 +191,7 @@ fn color() -> bool {
 /// built CSS (or `src/app.css`), anything else comes from `static/`.
 pub(crate) fn read_file(root: &str, path: &str) -> Option<(Vec<u8>, String)> {
     let root = Path::new(root);
-    let file = if path == "/_app/app.css" {
+    let file = if path == crate::protocol::APP_CSS_PATH {
         let built = root.join(".wisp").join("app.css");
         if built.is_file() {
             built
@@ -242,5 +246,37 @@ fn list(dir: &Path, url: &mut String, depth: usize, files: &mut HashSet<String>)
             list(&path, url, depth + 1, files);
         }
         url.truncate(len);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fuzz::{Fuzz, Rng, TEMPLATE, mutate};
+
+    /// Swap bodies from a buggy or hostile local client: an answer, never a
+    /// panic or an abort (a huge count once reserved that much memory).
+    #[test]
+    fn swap_takes_any_body() {
+        let (path, shape) = TEMPLATE;
+        let huge = format!("{path}\n{shape:x}\n{}\n", usize::MAX);
+        assert_eq!(swap::<Fuzz>(huge.as_bytes()), Err("truncated request"));
+        let peer: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let stranger: SocketAddr = "192.0.2.1:9".parse().unwrap();
+        let body = format!("{path}\n{shape:x}\n0\n");
+        let swapped = endpoint::<Fuzz>(Method::Post, "/_wisp/dev/swap", body.as_bytes(), peer);
+        let expect = if cfg!(debug_assertions) { 200 } else { 404 };
+        assert_eq!(swapped.0, expect, "debug builds only");
+        assert_eq!(
+            endpoint::<Fuzz>(Method::Post, "/_wisp/dev/swap", body.as_bytes(), stranger).0,
+            404
+        );
+        let good = format!("{path}\n{shape:x}\n2\n5\nhello3\nabc").into_bytes();
+        let mut rng = Rng::new(17);
+        for _ in 0..20_000 {
+            let mut b = good.clone();
+            mutate(&mut rng, &mut b);
+            let _ = swap::<Fuzz>(&b);
+        }
     }
 }

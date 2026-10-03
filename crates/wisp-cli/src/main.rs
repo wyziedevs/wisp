@@ -6,17 +6,20 @@ mod css;
 mod deploy;
 mod dev;
 mod events;
+mod net;
 mod new;
-mod sha256;
+mod npm;
 mod targets;
+#[cfg(test)]
+mod template_files;
 mod term;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
 /// `wisp --help`: each command or option, and what it does.
-const COMMANDS: [(&str, &str); 8] = [
+const COMMANDS: [(&str, &str); 10] = [
     (
         "wisp new [name]",
         "Create an app. It asks a few questions; the options below answer them.",
@@ -48,6 +51,14 @@ const COMMANDS: [(&str, &str); 8] = [
     (
         "wisp check",
         "Check routes and templates without compiling.",
+    ),
+    (
+        "wisp add <pkg>[@version]",
+        "Add an npm package to package.json, for import x from 'pkg'. No Node needed.",
+    ),
+    (
+        "wisp remove <pkg>",
+        "Take an npm package out of package.json.",
     ),
 ];
 
@@ -88,7 +99,15 @@ fn usage() -> String {
 }
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // `std::env::args` panics on an argument that is not UTF-8.
+    let args: Result<Vec<String>, _> = std::env::args_os()
+        .skip(1)
+        .map(|a| a.into_string())
+        .collect();
+    let Ok(args) = args else {
+        term::failed("An argument is not valid UTF-8.\nUse names made of ordinary text.");
+        return ExitCode::FAILURE;
+    };
     let result = match args.first().map(String::as_str) {
         Some("new") => new::run(&args[1..]),
         Some("dev") => {
@@ -100,8 +119,12 @@ fn main() -> ExitCode {
         Some("check") => no_options("check", &args[1..])
             .and_then(|()| project())
             .and_then(|root| {
-                wisp_build::check(root).map(|()| term::done("Routes and templates are valid."))
+                wisp_build::check(root).map(|_| term::done("Routes and templates are valid."))
             }),
+        Some("add") => project().and_then(|root| npm::add(root, &args[1..])),
+        Some("remove") => project().and_then(|root| npm::remove(root, &args[1..])),
+        // Not in --help: how `wisp dev` runs a tool that must end with it.
+        Some("__child") => css::child(&args[1..]),
         Some("-h" | "--help" | "help") | None => {
             print!("{}", usage());
             Ok(())
@@ -181,30 +204,21 @@ fn build_options(args: &[String]) -> Result<BuildOptions, String> {
                 o.client = true;
             }
             "--out" | "-o" => {
-                let out = args.next().ok_or_else(|| {
-                    format!(
-                        "{arg} needs a folder.
-{usage}"
-                    )
-                })?;
+                let out = args
+                    .next()
+                    .ok_or_else(|| format!("{arg} needs a folder.\n{usage}"))?;
                 o.out = Some(out.clone());
             }
             _ if arg.starts_with("--out=") => o.out = Some(arg["--out=".len()..].to_string()),
             _ if arg.starts_with('-') => {
-                return Err(format!(
-                    "There is no option {arg}.
-{usage}"
-                ));
+                return Err(format!("There is no option {arg}.\n{usage}"));
             }
-            _ => {
-                return Err(format!(
-                    "Unexpected {arg}.
-{usage}"
-                ));
-            }
+            _ => return Err(format!("Unexpected {arg}.\n{usage}")),
         }
     }
-    let wrong = if o.target.is_some() && (o.static_site || o.docker) {
+    let wrong = if o.out.as_deref() == Some("") {
+        Some("--out needs a folder.")
+    } else if o.target.is_some() && (o.static_site || o.docker) {
         Some("--target <host> goes alone, without --static or --docker.")
     } else if o.client && (o.static_site || o.docker || o.target.is_some()) {
         Some("--client ts goes alone, with --out <file> if you like.")
@@ -216,10 +230,7 @@ fn build_options(args: &[String]) -> Result<BuildOptions, String> {
         None
     };
     if let Some(wrong) = wrong {
-        return Err(format!(
-            "{wrong}
-{usage}"
-        ));
+        return Err(format!("{wrong}\n{usage}"));
     }
     Ok(o)
 }
@@ -249,6 +260,11 @@ fn no_options(command: &str, args: &[String]) -> Result<(), String> {
     }
 }
 
+/// `dir` and the folders above it, made if missing.
+fn make_dir(dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("Could not create {}: {e}.", dir.display()))
+}
+
 /// The current directory, if it looks like a Wisp app.
 fn project() -> Result<&'static Path, String> {
     let root = Path::new(".");
@@ -268,8 +284,7 @@ fn build(root: &Path, o: &BuildOptions) -> Result<(), String> {
         }
         let out = o.out.as_deref().unwrap_or("client.ts");
         if let Some(dir) = Path::new(out).parent() {
-            std::fs::create_dir_all(dir)
-                .map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
+            make_dir(dir)?;
         }
         std::fs::write(out, ts).map_err(|e| format!("Could not write {out}: {e}"))?;
         term::done(&format!("Wrote {out}"));
@@ -281,12 +296,19 @@ fn build(root: &Path, o: &BuildOptions) -> Result<(), String> {
         );
         return Ok(());
     }
+    // `--out`, else `dist` (`dist/<host>` for a host's build).
+    let out = |host: Option<&str>| match (&o.out, host) {
+        (Some(out), _) => PathBuf::from(out),
+        (None, Some(host)) => PathBuf::from(format!("{}/{host}", deploy::DEFAULT_OUT)),
+        (None, None) => PathBuf::from(deploy::DEFAULT_OUT),
+    };
     if let Some(host) = &o.target {
-        let out = o.out.clone().unwrap_or_else(|| format!("dist/{host}"));
-        return targets::build(root, host, Path::new(&out));
+        return targets::build(root, host, &out(Some(host)));
     }
+    let imports = wisp_build::check(root)?;
+    css::build(root)?;
+    npm::vendor(root, &imports)?;
     if o.docker {
-        css::build(root)?;
         deploy::docker(
             root,
             &cargo::package_name(root).ok_or("Cargo.toml has no package name.")?,
@@ -296,8 +318,6 @@ fn build(root: &Path, o: &BuildOptions) -> Result<(), String> {
             return Ok(());
         }
     }
-    wisp_build::check(root)?;
-    css::build(root)?;
     let started = Instant::now();
     term::step("Building for release");
     let b = cargo::build(root, true, false);
@@ -316,7 +336,7 @@ The compiler's errors are above.",
         ))
     ));
     if o.static_site {
-        return deploy::static_site(root, &exe, Path::new(o.out.as_deref().unwrap_or("dist")));
+        return deploy::static_site(root, &exe, &out(None));
     }
     println!("    One file with the CSS and static files inside. Copy it to a server and run it.");
     Ok(())

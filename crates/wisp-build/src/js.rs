@@ -669,6 +669,41 @@ pub fn initializer<'a>(src: &'a str, name: &str) -> Option<&'a str> {
     (start < end).then(|| &src[t[start].start..t[end - 1].end])
 }
 
+/// `src` with the module name of each import (`import … from '…'`,
+/// `export … from '…'`, `import('…')`) replaced by what `f` makes of it
+/// (`None`: left as written). The new name is written as a JSON string.
+pub fn specifiers(
+    src: &str,
+    mut f: impl FnMut(&str) -> Result<Option<String>, String>,
+) -> Result<String, String> {
+    let t = tokens(src);
+    let mut out = String::with_capacity(src.len());
+    let mut at = 0;
+    for k in 0..t.len() {
+        if t[k].kind != Kind::String {
+            continue;
+        }
+        let prev = |n: usize| k.checked_sub(n).map(|j| t[j].text(src));
+        if !(matches!(prev(1), Some("from" | "import"))
+            || (prev(1) == Some("(") && prev(2) == Some("import")))
+        {
+            continue;
+        }
+        let raw = t[k].text(src);
+        if raw.len() < 2 {
+            continue;
+        }
+        let Some(url) = f(&raw[1..raw.len() - 1])? else {
+            continue;
+        };
+        out.push_str(&src[at..t[k].start]);
+        out.push_str(&crate::json_str(&url));
+        at = t[k].end;
+    }
+    out.push_str(&src[at..]);
+    Ok(out)
+}
+
 /// The top-level `import … from '…'` and `import '…'` statements of a
 /// script, as byte ranges, with their `with { … }` and `;` if any. Dynamic
 /// `import(…)` and `import.meta` are not statements.
@@ -2049,24 +2084,7 @@ mod tests {
         assert_eq!(each("if in xs"), None);
     }
 
-    /// Deterministic pseudo-random numbers: xorshift64.
-    pub(crate) struct Rng(pub u64);
-
-    impl Rng {
-        pub fn next(&mut self) -> u64 {
-            self.0 ^= self.0 << 13;
-            self.0 ^= self.0 >> 7;
-            self.0 ^= self.0 << 17;
-            self.0
-        }
-
-        /// Text of `n` pieces picked from `from`.
-        pub fn text(&mut self, from: &[&str], n: usize) -> String {
-            (0..n)
-                .map(|_| from[self.next() as usize % from.len()])
-                .collect()
-        }
-    }
+    use wisp_shared::rng::Rng;
 
     const PIECES: &[&str] = &[
         "let ",
@@ -2155,7 +2173,7 @@ mod tests {
             stores: vec!["cart".into()],
         };
         for round in 0..4000 {
-            let src = rng.text(PIECES, 1 + round % 40);
+            let src = rng.pieces(PIECES, 1 + round % 40);
             let t = tokens(&src);
             assert!(
                 t.iter().all(|k| k.start < k.end && k.end <= src.len()),
@@ -2197,7 +2215,7 @@ mod tests {
             "a+ +b- -c;1 .x;`a ${b} c`"
         );
         // The runtime's extra half, as release builds serve it.
-        let src = include_str!("extra.js");
+        let src = wisp_shared::EXTRA_JS;
         let texts =
             |s: &str| -> Vec<String> { tokens(s).iter().map(|t| t.text(s).to_string()).collect() };
         assert_eq!(texts(src), texts(&minify(src)));

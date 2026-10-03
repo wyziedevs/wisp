@@ -61,6 +61,12 @@ impl Method {
         }
     }
 
+    /// Its bit in a set of methods, a `u8`.
+    #[doc(hidden)]
+    pub const fn bit(self) -> u8 {
+        1 << self as u8
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Method::Get => "GET",
@@ -76,7 +82,7 @@ impl Method {
 }
 
 /// A byte range of `Cx::buf`.
-#[derive(Clone, Copy, Default, Debug)]
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
 pub(crate) struct Span {
     pub start: u32,
     pub len: u32,
@@ -102,29 +108,56 @@ impl Span {
     }
 }
 
+/// Headers the parser marks as it reads them, so the framework reads each
+/// without a search: by index in [`Wire::known`].
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum Known {
+    IdempotencyKey,
+    IfNoneMatch,
+    ContentType,
+    Accept,
+    WispError,
+    Origin,
+    SecFetchSite,
+}
+
+/// How many [`Known`] there are.
+pub(crate) const KNOWN: usize = 7;
+
+/// The request as it came over the wire: the connection's read buffer and
+/// spans into it. The parser in `http.rs` writes it; `Cx`'s methods read it.
+pub(crate) struct Wire {
+    /// This request and any pipelined after it.
+    pub buf: Vec<u8>,
+    pub path: Span,
+    pub query: Span,
+    pub body: Span,
+    pub headers: Vec<(Span, Span)>,
+    /// The value of the first of each [`Known`] header, where its bit in
+    /// `knows` is set.
+    pub known: [Span; KNOWN],
+    pub knows: u8,
+    /// HTTP/1.1 rather than 1.0, which cannot take a chunked response.
+    pub http11: bool,
+    pub peer: SocketAddr,
+}
+
 pub struct Cx {
     pub method: Method,
-    /// The connection's read buffer: this request and any pipelined after it.
-    pub(crate) buf: Vec<u8>,
-    pub(crate) path: Span,
-    pub(crate) query: Span,
-    pub(crate) body: Span,
-    pub(crate) headers: Vec<(Span, Span)>,
-    /// HTTP/1.1 rather than 1.0, which cannot take a chunked response.
-    pub(crate) http11: bool,
-    pub(crate) peer: SocketAddr,
+    pub(crate) wire: Wire,
     names: &'static [&'static str],
     params: [Span; MAX_PARAMS],
     /// Percent-decoded copies, only for params that needed decoding.
     decoded: [Option<String>; MAX_PARAMS],
-    pub(crate) status: u16,
+    status: u16,
     /// The response's headers, `set-cookie` among them: `cookie` reads what
     /// this request set before what it sent, so a page's `load` sees what
     /// its action just stored.
-    pub(crate) out_headers: Vec<(Cow<'static, str>, Cow<'static, str>)>,
+    out_headers: Vec<(Cow<'static, str>, Cow<'static, str>)>,
     /// How many of `out_headers` the `before` hook set. Those stay on an
     /// error page; a handler's are dropped with the page it did not finish.
-    pub(crate) kept_headers: usize,
+    /// A `u32` packs it with the fields beside it.
+    kept_headers: u32,
     /// Signed cookies whose signature held, as (name, cookie as read): each
     /// is checked once a request.
     verified: std::sync::Mutex<Vec<(String, String)>>,
@@ -135,20 +168,27 @@ pub struct Cx {
     /// The request id, once one is asked for (see [`Cx::request_id`]).
     id: std::sync::OnceLock<String>,
     /// Routed to a `+server.rs` endpoint, whose errors are JSON.
-    pub(crate) api: bool,
+    api: bool,
+    /// The `Idempotency-Key` this request answers first, kept with its
+    /// answer (see `idem.rs`).
+    pub(crate) idem: Option<crate::idem::Key>,
 }
 
 impl Cx {
     pub(crate) fn new(peer: SocketAddr) -> Cx {
         Cx {
             method: Method::Get,
-            buf: Vec::with_capacity(8 * 1024),
-            path: Span::default(),
-            query: Span::default(),
-            body: Span::default(),
-            headers: Vec::with_capacity(16),
-            http11: true,
-            peer,
+            wire: Wire {
+                buf: Vec::with_capacity(8 * 1024),
+                path: Span::default(),
+                query: Span::default(),
+                body: Span::default(),
+                headers: Vec::with_capacity(16),
+                known: [Span::default(); KNOWN],
+                knows: 0,
+                http11: true,
+                peer,
+            },
             names: &[],
             params: [Span::default(); MAX_PARAMS],
             decoded: [const { None }; MAX_PARAMS],
@@ -160,13 +200,17 @@ impl Cx {
             json: std::sync::OnceLock::new(),
             id: std::sync::OnceLock::new(),
             api: false,
+            idem: None,
         }
     }
 
-    /// Clears per-request state; request spans are set by the parser.
+    /// Clears what a request left, once it is answered; the next one's
+    /// spans are set by the parser. The edge build answers each request in
+    /// a `Cx` of its own.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn reset(&mut self) {
-        self.names = &[];
-        self.decoded.iter_mut().for_each(|d| *d = None);
+        self.idem = None;
+        self.clear_params();
         self.status = 200;
         self.out_headers.clear();
         self.kept_headers = 0;
@@ -187,30 +231,66 @@ impl Cx {
             .as_ref()
     }
 
+    /// Whether the body was parsed as JSON (see [`Cx::json_body`]) and was
+    /// not JSON: a load, for the error path to ask.
+    pub(crate) fn json_failed(&self) -> bool {
+        matches!(self.json.get(), Some(None))
+    }
+
+    /// No route params, as a route with none has.
+    pub(crate) fn clear_params(&mut self) {
+        // Only the route's own are ever set (`set_params`).
+        self.decoded[..self.names.len()].fill(None);
+        self.names = &[];
+    }
+
     pub(crate) fn set_params(&mut self, names: &'static [&'static str], spans: [Span; MAX_PARAMS]) {
         debug_assert!(names.len() <= MAX_PARAMS);
         self.names = names;
         self.params = spans;
+        // The spans are of the path, a `str`: only an escape makes one owned.
         for (span, decoded) in spans.iter().zip(&mut self.decoded).take(names.len()) {
-            if let Cow::Owned(s) = decode(&self.buf[span.range()], false) {
-                *decoded = Some(s);
-            }
+            let raw = &self.wire.buf[span.range()];
+            *decoded = match raw.contains(&b'%') {
+                true => Some(decode(raw, false).into_owned()),
+                false => None,
+            };
         }
     }
 
     fn str(&self, span: Span) -> &str {
         // Request lines and header names are validated ASCII by httparse.
-        std::str::from_utf8(&self.buf[span.range()]).unwrap_or("")
+        std::str::from_utf8(&self.wire.buf[span.range()]).unwrap_or("")
     }
 
     /// The URL path, as sent (not percent-decoded).
     pub fn path(&self) -> &str {
-        self.str(self.path)
+        self.str(self.wire.path)
+    }
+
+    /// [`Cx::path`] as its bytes, which reading is free.
+    pub(crate) fn raw_path(&self) -> &[u8] {
+        &self.wire.buf[self.wire.path.range()]
     }
 
     /// The raw query string, without the `?`.
     pub fn query_string(&self) -> &str {
-        self.str(self.query)
+        self.str(self.wire.query)
+    }
+
+    /// The query as it was sent, each part followed by `&`, but those named
+    /// one of `keys` and an action's `/name`: for a link to the page with
+    /// those changed.
+    pub(crate) fn query_without(&self, keys: &[&str]) -> String {
+        let mut out = String::new();
+        for part in self.query_string().split('&') {
+            let key = part.split('=').next().unwrap_or("");
+            if !part.is_empty() && !part.starts_with('/') && !keys.contains(&key) {
+                out.push_str(part);
+                out.push('&');
+            }
+        }
+        out
     }
 
     /// A route parameter such as `slug` in `blog/[slug]`, percent-decoded.
@@ -237,14 +317,14 @@ impl Cx {
 
     /// First query parameter named `name`, decoded.
     pub fn query(&self, name: &str) -> Option<Cow<'_, str>> {
-        pairs(&self.buf[self.query.range()])
+        pairs(&self.wire.buf[self.wire.query.range()])
             .find(|(k, _)| k == name)
             .map(|(_, v)| v)
     }
 
     /// Every query parameter, decoded, in order.
     pub(crate) fn query_pairs(&self) -> impl Iterator<Item = (Cow<'_, str>, Cow<'_, str>)> {
-        pairs(&self.buf[self.query.range()])
+        pairs(&self.wire.buf[self.wire.query.range()])
     }
 
     /// The route's parameters, decoded, as (name, value).
@@ -256,7 +336,7 @@ impl Cx {
 
     /// Every query parameter named `name`, decoded, in order.
     pub(crate) fn query_all<'a>(&'a self, name: &'a str) -> impl Iterator<Item = Cow<'a, str>> {
-        pairs(&self.buf[self.query.range()])
+        pairs(&self.wire.buf[self.wire.query.range()])
             .filter(move |(k, _)| k == name)
             .map(|(_, v)| v)
     }
@@ -270,22 +350,31 @@ impl Cx {
     /// The form the request carries, urlencoded or multipart (which is how
     /// forms send files: [`Form::file`]). Empty for any other body.
     pub fn form(&self) -> Form<'_> {
-        Form::new(self.header("content-type"), self.body())
+        Form::new(self.known(Known::ContentType), self.body())
     }
 
     /// The request body as sent, whatever its type: JSON for
     /// `serde_json::from_slice(cx.body())`, say.
     pub fn body(&self) -> &[u8] {
-        &self.buf[self.body.range()]
+        &self.wire.buf[self.wire.body.range()]
+    }
+
+    /// [`Cx::header`] of a [`Known`] header, with no search.
+    pub(crate) fn known(&self, k: Known) -> Option<&str> {
+        if self.wire.knows & 1 << k as usize == 0 {
+            return None;
+        }
+        std::str::from_utf8(&self.wire.buf[self.wire.known[k as usize].range()]).ok()
     }
 
     /// Request header by case-insensitive name. Non-UTF-8 values are `None`.
     pub fn header(&self, name: &str) -> Option<&str> {
         let (_, v) = self
+            .wire
             .headers
             .iter()
-            .find(|(n, _)| self.buf[n.range()].eq_ignore_ascii_case(name.as_bytes()))?;
-        std::str::from_utf8(&self.buf[v.range()]).ok()
+            .find(|(n, _)| self.wire.buf[n.range()].eq_ignore_ascii_case(name.as_bytes()))?;
+        std::str::from_utf8(&self.wire.buf[v.range()]).ok()
     }
 
     /// A header parsed as any `FromStr` type, or `default` when it is
@@ -297,8 +386,8 @@ impl Cx {
     /// The body's media type, its `content-type` without parameters:
     /// `application/json`. Empty when it has none.
     pub(crate) fn mime(&self) -> &str {
-        let t = self.header("content-type").unwrap_or("");
-        t.split(';').next().unwrap_or("").trim()
+        let t = self.known(Known::ContentType).unwrap_or("");
+        t[..t.bytes().position(|b| b == b';').unwrap_or(t.len())].trim()
     }
 
     /// The first value of a header each proxy adds to, such as
@@ -427,10 +516,10 @@ impl Cx {
     /// Every request header as `(name, value)`, in the order sent. Values
     /// that are not UTF-8 are left out.
     pub fn headers(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.headers.iter().filter_map(|(n, v)| {
+        self.wire.headers.iter().filter_map(|(n, v)| {
             Some((
-                std::str::from_utf8(&self.buf[n.range()]).ok()?,
-                std::str::from_utf8(&self.buf[v.range()]).ok()?,
+                std::str::from_utf8(&self.wire.buf[n.range()]).ok()?,
+                std::str::from_utf8(&self.wire.buf[v.range()]).ok()?,
             ))
         })
     }
@@ -483,7 +572,7 @@ impl Cx {
 
     /// The TCP peer: the client, or the proxy in front of the app.
     pub fn peer(&self) -> SocketAddr {
-        self.peer
+        self.wire.peer
     }
 
     /// The client's IP address. Behind a proxy, set `WISP_CLIENT_IP_HEADER`
@@ -497,7 +586,7 @@ impl Cx {
             .as_deref()
             .and_then(|h| self.header(h))
             .and_then(|v| v.rsplit(',').next()?.trim().parse().ok());
-        from_proxy.unwrap_or(self.peer.ip())
+        from_proxy.unwrap_or(self.wire.peer.ip())
     }
 
     /// Status for a rendered page. Endpoints set it on their `Response`.
@@ -518,8 +607,67 @@ impl Cx {
     }
 
     /// Adds a response header whose value is known to be one.
-    fn put(&mut self, name: &'static str, value: Cow<'static, str>) {
+    pub(crate) fn put(&mut self, name: &'static str, value: Cow<'static, str>) {
         self.out_headers.push((Cow::Borrowed(name), value));
+    }
+
+    // The response so far, as the server reads it: the status, the headers
+    // and whether errors go back as JSON. App code sets them with the
+    // methods above.
+
+    /// The status for a rendered page (see [`Cx::set_status`]).
+    #[inline]
+    pub(crate) fn status(&self) -> u16 {
+        self.status
+    }
+
+    /// Routed to a `+server.rs` endpoint, whose errors are JSON.
+    #[inline]
+    pub(crate) fn api(&self) -> bool {
+        self.api
+    }
+
+    #[inline]
+    pub(crate) fn set_api(&mut self) {
+        self.api = true;
+    }
+
+    /// The `before` hook has run: the headers set so far stay on an error
+    /// page.
+    #[inline]
+    pub(crate) fn keep_headers(&mut self) {
+        self.kept_headers = self.out_headers.len() as u32;
+    }
+
+    /// The headers the handler set, after the `before` hook's.
+    #[inline]
+    pub(crate) fn page_headers(&self) -> &[(Cow<'static, str>, Cow<'static, str>)] {
+        &self.out_headers[self.kept_headers as usize..]
+    }
+
+    /// Takes [`Cx::page_headers`] out.
+    #[inline]
+    pub(crate) fn take_page_headers(
+        &mut self,
+    ) -> std::vec::Drain<'_, (Cow<'static, str>, Cow<'static, str>)> {
+        self.out_headers.drain(self.kept_headers as usize..)
+    }
+
+    /// Drops [`Cx::page_headers`], with the page that failed.
+    #[inline]
+    pub(crate) fn drop_page_headers(&mut self) {
+        self.out_headers.truncate(self.kept_headers as usize);
+    }
+
+    /// Moves every header set onto the end of `to`.
+    #[inline]
+    pub(crate) fn send_headers(&mut self, to: &mut Vec<(Cow<'static, str>, Cow<'static, str>)>) {
+        to.append(&mut self.out_headers);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn out_headers(&self) -> &[(Cow<'static, str>, Cow<'static, str>)] {
+        &self.out_headers
     }
 
     /// Keeps `value` for the rest of this request, for any handler to read
@@ -704,20 +852,28 @@ impl Cx {
     /// Builds a Cx the way the server does: bytes in the buffer, spans into
     /// it. Each of `params` is a name and its text, found in the path.
     pub(crate) fn for_test(raw: &str, params: &[(&'static str, &str)]) -> Cx {
+        // Saved tables (the sessions' sign-outs) stay out of the folder.
+        crate::store::memory();
         let mut cx = Cx::new("127.0.0.1:1".parse().unwrap());
-        cx.buf.extend_from_slice(raw.as_bytes());
+        cx.wire.buf.extend_from_slice(raw.as_bytes());
         let (head, body) = raw.split_once("\r\n\r\n").unwrap();
         let mut lines = head.split("\r\n");
         let target = lines.next().unwrap().split(' ').nth(1).unwrap();
         let at = |s: &str| Span::of(raw.as_bytes(), s.as_bytes());
         let (path, query) = target.split_once('?').unwrap_or((target, ""));
         cx.method = Method::parse(head.split(' ').next().unwrap().as_bytes());
-        cx.path = at(path);
-        cx.query = at(query);
-        cx.body = at(body);
+        cx.wire.path = at(path);
+        cx.wire.query = at(query);
+        cx.wire.body = at(body);
         for l in lines {
             let (n, v) = l.split_once(": ").unwrap();
-            cx.headers.push((at(n), at(v)));
+            cx.wire.headers.push((at(n), at(v)));
+            if let crate::http::Name::Known(k) = crate::http::header_name(n.as_bytes(), 0, n.len())
+                && cx.wire.knows & 1 << k as u8 == 0
+            {
+                cx.wire.knows |= 1 << k as u8;
+                cx.wire.known[k as usize] = at(v);
+            }
         }
         let mut spans = [Span::default(); MAX_PARAMS];
         for (span, (_, value)) in spans.iter_mut().zip(params) {

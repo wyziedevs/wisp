@@ -331,7 +331,7 @@ fn action_inputs_are_checked() {
             &page("\n#[action]\nfn a(#[validate(size = 1)] t: String) {}"),
             &[
                 "src/routes/+page.rs:3: #[validate] has no `size`",
-                "len, min, max, min_len, max_len and email",
+                "len, min, max, min_len, max_len, email and max_size",
             ],
         ),
         (
