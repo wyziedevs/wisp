@@ -2,7 +2,8 @@
   <title>Wisp in axum</title>
 </head>
 
-<main>
+<a class="skip" href="#main">Skip to Content</a>
+<main id="main">
   <h1>Hello from Wisp</h1>
   <p>This page is Wisp's. <code>/api/hello</code> is axum's, served from the same port.</p>
   <p class="actions">

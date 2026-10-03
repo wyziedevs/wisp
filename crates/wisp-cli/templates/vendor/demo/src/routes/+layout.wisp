@@ -4,6 +4,7 @@ const NAV: [(&str, &str); 3] = [("/", "Home"), ("/about", "About"), ("/wisple", 
 let section = cx.path().split('/').nth(1).unwrap_or("");
 ---
 <div class="app">
+  <a class="skip" href="#main">Skip to Content</a>
   <header class="site-header">
     <div class="corner" title="Home">
       <a href="/" aria-label="Home" title="Home"><img src="/favicon.svg" alt="" width="32" height="32"></a>
@@ -29,7 +30,7 @@ let section = cx.path().split('/').nth(1).unwrap_or("");
     </div>
   </header>
 
-  <main>
+  <main id="main">
     <slot />
   </main>
 

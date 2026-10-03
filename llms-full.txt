@@ -164,8 +164,8 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
 
 `<style>h1 { color: red }</style>` (top level, no attributes) styles this
 file only (`:global(x)` opts out; `<style global>`); it joins app.css.
-Accessibility lints warn, never fail (img alt, label control, `<a href>`,
-heading order, button text...); `<!-- wisp-ignore a11y-img-alt -->` silences
+Accessibility lints warn, never fail (img alt, input label, link and button
+name, `<a href>`, heading order, tabindex...); `<!-- wisp-ignore a11y-img-alt -->` silences
 one. Images: `<img src="$lib/p.jpg" alt="">` or `src="/x.png"` gets
 `width`/`height`; `wisp build` adds WebP `srcset` (cwebp, cached), lazy.
 `data-wisp-raw` opts out. Translations: `src/locales/en.json` (`{"hi":
@@ -242,6 +242,9 @@ props={:{...}} />` (`react|preact|vue|svelte`); web components just work.
 reject with `status`, `message`, `errors`. PWA: `src/manifest.json` (or
 `wisp::app_manifest(json)?`) is `/manifest.webmanifest`, icons from
 `static/icon.png`; `"offline": true` adds a service worker.
+Phones: `<body data-wisp-revalidate>` refetches on focus/online; `<form
+data-wisp-queue>` (safe to repeat) waits offline and is sent after; a
+navigation focuses the h1 and announces the title.
 Stores, islands, the rest: docs/client.md.
 
 ## Endpoints (`+server.rs`)
@@ -1104,6 +1107,8 @@ build.
 |---|---|
 | `img-alt` | `<img>` without `alt` (`alt=""` is fine: decorative) |
 | `click-events` | `on:click` on an element that is not interactive (nor a custom element, `<sl-button>`), without both a `role` and a key handler (`on:keydown`) |
+| `input-label` | `<input>`, `<select>` or `<textarea>` with no `<label>` around it, no `id` (for a `<label for>`), no `aria-label`/`aria-labelledby`/`title` (hidden and button types are exempt) |
+| `link-name` | `<a href>` with no text, `<img alt>`, `aria-label` or `title` |
 | `label-control` | `<label>` with no `for` and no control inside |
 | `anchor-href` | `<a>` without `href`, or `href="#"` |
 | `autofocus` | `autofocus` |
@@ -1115,6 +1120,21 @@ build.
 `<!-- wisp-ignore a11y-img-alt -->` on the line before an element silences
 that lint there (several names may follow). A value set by an expression
 (`alt={x}`, `:alt="x"`, `{...attrs}`) counts as set. The examples have none.
+
+The rest of accessibility is CSS, the client script and the starters, with
+nothing added to a request: a navigation moves focus to the `<h1>` and says
+the title in an `aria-live` region; view transitions and `--change`
+(every component's transition time) go to nothing under
+`prefers-reduced-motion`; `tokens.css` turns its lines and quiet text up
+under `prefers-contrast: more`; the starters carry a skip link
+(`.skip`, `<main id="main">`), `:focus-visible` rings, 44px buttons where the
+pointer is coarse, `forced-colors` borders, `viewport-fit=cover` with
+`env(safe-area-inset-*)`, `100dvh`, and fluid `clamp()` tokens
+(`--wisp-step-0..3`, `--wisp-space-s..xl`). `Dialog` and `Menu` are the
+native `<dialog>` and popover (focus trap, Escape, focus returned); `Input`,
+`Textarea` and `Select` set `aria-invalid` and `aria-describedby` from
+`problem`/`hint`. `Card` answers its own box width with `@container`. Phone
+behavior is in [client.md](client.md#phones-and-flaky-networks).
 
 ### Images
 
@@ -2910,6 +2930,24 @@ A script keeps its own state the same way:
 
 `snapshot` is the only thing a script may export. It costs a page without
 one nothing (it is in `extra.js`).
+
+## Phones and flaky networks
+
+- Pages load and leave with `pagehide`, never `unload`, so the browser's
+  back/forward cache can keep them; scroll is restored on back, forward and
+  reload.
+- `<body data-wisp-revalidate>` fetches the page's data anew when the tab
+  comes back or the network does, at most every 30 seconds (the attribute's
+  value is the seconds). The morph keeps focus, scroll and typed text.
+- Offline, a form post is not sent into the void. A `<form data-wisp-queue>`
+  (you say sending it twice is safe: the server takes the same post once)
+  waits in `sessionStorage` and is sent, in order, when the network is back;
+  the page then refreshes (`wisp:sent` on `document`). Any other form shows
+  "You are offline" and fires `wisp:result` with `error: "offline"`. Only
+  urlencoded forms queue, not file uploads.
+- A navigation moves focus to the `<h1>` (else `<main>`) and says the title
+  in a polite live region; the view transition is skipped under
+  `prefers-reduced-motion`.
 
 ## Forms: `use:enhance`
 

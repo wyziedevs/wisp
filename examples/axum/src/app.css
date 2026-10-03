@@ -110,6 +110,22 @@ pre code {
   font-size: inherit;
 }
 
+.skip {
+  position: absolute;
+  top: -4rem;
+  left: 1rem;
+  z-index: 10;
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+.skip:focus {
+  top: max(1rem, env(safe-area-inset-top));
+}
+
 .button {
   display: inline-flex;
   align-items: center;
@@ -160,4 +176,40 @@ main {
   flex-wrap: wrap;
   justify-content: center;
   gap: 0.75rem;
+}
+
+/* More contrast asked for: lines and quiet text turn up. Forced colors: the
+   system's, with the borders and the focus ring that survive them. */
+@media (prefers-contrast: more) {
+  :root {
+    --line: #a8a8a8;
+    --line-strong: #fafafa;
+    --ink-muted: #fafafa;
+    --ink-subtle: #e0e0e0;
+  }
+}
+
+@media (forced-colors: active) {
+  .button {
+    border: 1px solid ButtonText;
+  }
+
+  :focus-visible {
+    outline-color: CanvasText;
+  }
+}
+
+@media (pointer: coarse) {
+  .button {
+    min-height: 2.75rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition-duration: 1ms !important;
+  }
 }

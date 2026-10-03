@@ -105,6 +105,18 @@
   }
 }
 
+/* Forced colors take the system's; the edge and the ring stay. */
+@media (forced-colors: active) {
+  .wisp-button {
+    border-color: ButtonText;
+  }
+
+  .wisp-button:focus-visible,
+  .wisp-button.wisp-ring {
+    outline-color: CanvasText;
+  }
+}
+
 /* Fingers: every button is at least 44px where the pointer is coarse. */
 @media (pointer: coarse) {
   .wisp-button,

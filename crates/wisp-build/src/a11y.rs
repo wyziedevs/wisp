@@ -18,7 +18,7 @@ pub struct Checker {
     pub lints: Vec<Lint>,
     /// `wisp-ignore` comments: the line each ends on, and its words.
     ignores: Vec<(u32, String)>,
-    /// The `<button>`s and `<label>`s open: tag, line, whether it has what
+    /// The `<button>`s, `<a>`s and `<label>`s open: tag, line, whether it has what
     /// it needs (a name; a control) yet.
     open: Vec<(&'static str, u32, bool)>,
     /// The last heading's level.
@@ -104,7 +104,7 @@ impl Checker {
     /// the buttons; a component may hold a control, too.
     pub fn content(&mut self, component: bool) {
         for (tag, _, ok) in &mut self.open {
-            *ok |= *tag == "button" || component;
+            *ok |= *tag != "label" || component;
         }
     }
 
@@ -148,7 +148,19 @@ impl Checker {
                 "anchor-href",
                 "<a href=\"#\"> goes nowhere: link to a place, or use a <button>",
             ),
+            "a" => self.open.push(("a", line, named)),
             "button" => self.open.push(("button", line, named)),
+            "input" | "select" | "textarea"
+                if !named
+                    && !has("id")
+                    && !self.open.iter().any(|o| o.0 == "label")
+                    && !matches!(
+                        value("type"),
+                        Some(Some("hidden" | "submit" | "button" | "reset" | "image"))
+                    ) =>
+            {
+                self.lint(line, "input-label", &format!("<{tag}> has no label: wrap it in a <label>, or give it an id for a <label for>, or an aria-label (a placeholder is not a name)"));
+            }
             "label" => self.open.push(("label", line, has("for"))),
             _ => {}
         }
@@ -219,6 +231,12 @@ impl Checker {
                 "button-name",
                 "<button> has no text: screen readers say only \"button\"; add text or aria-label",
             );
+        } else if tag == "a" {
+            self.lint(
+                line,
+                "link-name",
+                "<a> has no text: screen readers say only \"link\"; add text, an <img alt>, or aria-label",
+            );
         } else {
             self.lint(line, "label-control", "<label> labels nothing: put its control inside it, or give it for=\"the control's id\"");
         }
@@ -262,7 +280,9 @@ mod tests {
             ["1 anchor-href", "1 anchor-href"]
         );
         assert_eq!(
-            lints("<input autofocus>\n<p tabindex=\"2\" aria-lable=\"x\" aria-label=\"y\">"),
+            lints(
+                "<input id=\"a\" autofocus>\n<p tabindex=\"2\" aria-lable=\"x\" aria-label=\"y\">"
+            ),
             ["1 autofocus", "2 tabindex", "2 aria-attr"]
         );
         assert!(
@@ -278,6 +298,22 @@ mod tests {
                  <button aria-label=\"Close\"><svg/></button><button><img alt=\"Go\"></button>"
             ),
             ["1 button-name", "2 button-name"]
+        );
+        assert_eq!(
+            lints(
+                "<a href=\"/\"></a>
+<a href=\"/\"><svg/></a><a href=\"/\">Home</a>
+                 <a href=\"/\" aria-label=\"Home\"><svg/></a><a href=\"/\">{n}</a><a href=\"/\"><img alt=\"x\"></a>"
+            ),
+            ["1 link-name", "2 link-name"]
+        );
+        assert_eq!(
+            lints(
+                "<input name=\"a\">
+<label>N <input></label><input id=\"b\"><input type=\"hidden\">
+                 <textarea></textarea><select aria-label=\"S\"></select><input type=\"submit\"><input {id}>"
+            ),
+            ["1 input-label", "3 input-label"]
         );
         assert_eq!(
             lints(
@@ -310,7 +346,7 @@ mod tests {
     #[test]
     fn a_comment_on_the_line_before_silences_one() {
         let src = "<!-- wisp-ignore a11y-img-alt -->\n<img src=\"a\"><a>x</a>\n\
-                   <!-- wisp-ignore a11y-autofocus a11y-tabindex -->\n\n<input autofocus>";
+                   <!-- wisp-ignore a11y-autofocus a11y-tabindex -->\n\n<input id=\"a\" autofocus>";
         assert_eq!(lints(src), ["2 anchor-href", "5 autofocus"]);
     }
 }

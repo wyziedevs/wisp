@@ -164,8 +164,8 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
 
 `<style>h1 { color: red }</style>` (top level, no attributes) styles this
 file only (`:global(x)` opts out; `<style global>`); it joins app.css.
-Accessibility lints warn, never fail (img alt, label control, `<a href>`,
-heading order, button text...); `<!-- wisp-ignore a11y-img-alt -->` silences
+Accessibility lints warn, never fail (img alt, input label, link and button
+name, `<a href>`, heading order, tabindex...); `<!-- wisp-ignore a11y-img-alt -->` silences
 one. Images: `<img src="$lib/p.jpg" alt="">` or `src="/x.png"` gets
 `width`/`height`; `wisp build` adds WebP `srcset` (cwebp, cached), lazy.
 `data-wisp-raw` opts out. Translations: `src/locales/en.json` (`{"hi":
@@ -242,6 +242,9 @@ props={:{...}} />` (`react|preact|vue|svelte`); web components just work.
 reject with `status`, `message`, `errors`. PWA: `src/manifest.json` (or
 `wisp::app_manifest(json)?`) is `/manifest.webmanifest`, icons from
 `static/icon.png`; `"offline": true` adds a service worker.
+Phones: `<body data-wisp-revalidate>` refetches on focus/online; `<form
+data-wisp-queue>` (safe to repeat) waits offline and is sent after; a
+navigation focuses the h1 and announces the title.
 Stores, islands, the rest: docs/client.md.
 
 ## Endpoints (`+server.rs`)

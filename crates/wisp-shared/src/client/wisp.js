@@ -262,13 +262,12 @@
       else {
         // To the heading (else the main part), where a screen reader starts
         // reading, and the title said aloud.
-        const t = document.querySelector('h1, main, [role=main]') || document.body;
+        const t = document.querySelector('h1') || document.querySelector('main, [role=main]') || document.body;
         document.activeElement?.blur();
         t.setAttribute('tabindex', '-1');
         t.style.outline = 'none';
         t.focus({ preventScroll: true });
-        t.removeAttribute('tabindex');
-        t.addEventListener('blur', () => (t.style.outline = ''), { once: true });
+        t.addEventListener('blur', () => (t.removeAttribute('tabindex'), (t.style.outline = '')), { once: true });
         say(document.title);
       }
     };

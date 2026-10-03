@@ -686,6 +686,8 @@ build.
 |---|---|
 | `img-alt` | `<img>` without `alt` (`alt=""` is fine: decorative) |
 | `click-events` | `on:click` on an element that is not interactive (nor a custom element, `<sl-button>`), without both a `role` and a key handler (`on:keydown`) |
+| `input-label` | `<input>`, `<select>` or `<textarea>` with no `<label>` around it, no `id` (for a `<label for>`), no `aria-label`/`aria-labelledby`/`title` (hidden and button types are exempt) |
+| `link-name` | `<a href>` with no text, `<img alt>`, `aria-label` or `title` |
 | `label-control` | `<label>` with no `for` and no control inside |
 | `anchor-href` | `<a>` without `href`, or `href="#"` |
 | `autofocus` | `autofocus` |
@@ -697,6 +699,21 @@ build.
 `<!-- wisp-ignore a11y-img-alt -->` on the line before an element silences
 that lint there (several names may follow). A value set by an expression
 (`alt={x}`, `:alt="x"`, `{...attrs}`) counts as set. The examples have none.
+
+The rest of accessibility is CSS, the client script and the starters, with
+nothing added to a request: a navigation moves focus to the `<h1>` and says
+the title in an `aria-live` region; view transitions and `--change`
+(every component's transition time) go to nothing under
+`prefers-reduced-motion`; `tokens.css` turns its lines and quiet text up
+under `prefers-contrast: more`; the starters carry a skip link
+(`.skip`, `<main id="main">`), `:focus-visible` rings, 44px buttons where the
+pointer is coarse, `forced-colors` borders, `viewport-fit=cover` with
+`env(safe-area-inset-*)`, `100dvh`, and fluid `clamp()` tokens
+(`--wisp-step-0..3`, `--wisp-space-s..xl`). `Dialog` and `Menu` are the
+native `<dialog>` and popover (focus trap, Escape, focus returned); `Input`,
+`Textarea` and `Select` set `aria-invalid` and `aria-describedby` from
+`problem`/`hint`. `Card` answers its own box width with `@container`. Phone
+behavior is in [client.md](client.md#phones-and-flaky-networks).
 
 ### Images
 

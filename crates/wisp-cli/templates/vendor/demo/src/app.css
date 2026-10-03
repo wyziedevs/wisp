@@ -117,6 +117,22 @@ pre code {
   white-space: nowrap;
 }
 
+.skip {
+  position: absolute;
+  top: -4rem;
+  left: 1rem;
+  z-index: 10;
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+.skip:focus {
+  top: max(1rem, env(safe-area-inset-top));
+}
+
 .button {
   display: inline-flex;
   align-items: center;
@@ -779,6 +795,28 @@ nav a[aria-current="page"]::before {
   color: var(--ink-muted);
 }
 
+/* More contrast asked for: lines and quiet text turn up. Forced colors: the
+   system's, with the borders and the focus ring that survive them. */
+@media (prefers-contrast: more) {
+  :root {
+    --line: #a8a8a8;
+    --line-strong: #fafafa;
+    --ink-muted: #fafafa;
+    --ink-subtle: #e0e0e0;
+  }
+}
+
+@media (forced-colors: active) {
+  .button,
+  nav ul {
+    border: 1px solid ButtonText;
+  }
+
+  :focus-visible {
+    outline-color: CanvasText;
+  }
+}
+
 /* Fingers: 44px at least where the pointer is coarse. */
 @media (pointer: coarse) {
   .button {
@@ -787,6 +825,11 @@ nav a[aria-current="page"]::before {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  :root {
+    --change: 1ms;
+  }
+
+
   *,
   *::before,
   *::after {

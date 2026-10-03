@@ -56,3 +56,14 @@
 
   color-scheme: dark;
 }
+
+/* More contrast asked for: the edges and the quiet text turn up. */
+@media (prefers-contrast: more) {
+  :root,
+  :host {
+    --wisp-line: #a8a8a8;
+    --wisp-line-strong: #fafafa;
+    --wisp-slate: #fafafa;
+    --wisp-ash: #e0e0e0;
+  }
+}
