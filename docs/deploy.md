@@ -118,6 +118,23 @@ server runs on an epoll per worker rather than an io_uring (see docs/design.md);
 a profile that allows `io_uring_setup`, `io_uring_enter` and
 `io_uring_register` brings it back.
 
+## Logs, metrics and traces
+
+Off until set, on the binary, Docker and Lambda; no app code.
+
+`WISP_LOG=json` writes one JSON line per request to stdout:
+
+```json
+{"time":"2026-10-03T12:04:05.007Z","method":"GET","route":"/blog/[slug]","path":"/blog/hello","status":200,"ms":0.412,"bytes":5120,"id":"9f3c2a1b00000001","ip":"203.0.113.9"}
+```
+
+`route` is the route's folder (null when none matched), `path` leaves the
+query out (it may hold tokens), `bytes` is the body, `ip` is
+`cx.client_ip()` (see `WISP_CLIENT_IP_HEADER`). Each request gets an id,
+the client's `x-request-id` if it sent one, and is answered with it. A
+streamed response is logged when its head is sent. `WISP_LOG=off` (the
+default) writes nothing.
+
 ## Edge and serverless: `--target`
 
 ```sh

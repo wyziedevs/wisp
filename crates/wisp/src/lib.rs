@@ -44,6 +44,7 @@ mod lambda;
 #[cfg(not(target_arch = "wasm32"))]
 mod limit;
 mod live;
+mod obs;
 pub mod password;
 mod policy;
 mod pwa;
@@ -817,6 +818,8 @@ pub struct Out {
     /// template reads.
     #[doc(hidden)]
     pub lang: u8,
+    /// The request, while logs, metrics or traces watch it.
+    obs: Option<obs::Pending>,
 }
 
 impl Out {
@@ -1597,6 +1600,9 @@ pub mod rt {
         pub error: Option<usize>,
         /// It has a page, whose address [`crate::trailing_slash`] decides.
         pub page: bool,
+        /// Its path as the route folder spells it, `/blog/[slug]`: what
+        /// logs, metrics and traces name it by.
+        pub pattern: &'static str,
     }
 
     impl RouteFacts {
@@ -1611,6 +1617,7 @@ pub mod rt {
                 files: true,
                 error: None,
                 page: false,
+                pattern: "",
             }
         }
 
