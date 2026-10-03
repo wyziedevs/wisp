@@ -11,4 +11,4 @@ paths:
 - `App::now`: routes the build proved never wait are answered on the driver (`http::on_driver`); the rest are handed to the connection future. An `async fn before` in hooks.rs takes every route off it, so keep `before` sync. Logs, metrics and traces keep the epoll fast path off, not a hook in it.
 - Deps: only `tokio` and `httparse`. A new dependency needs a written reason in docs/design.md.
 - Errors after startup return a response (`Error`), never `unwrap` or panic. Fuzz and robust-I/O tests (`fuzz.rs`, `tests/app/tests/robust_io.rs`) stay green.
-- Behavior change: update docs/design.md (the contract), and AGENTS.md if app authors see it.
+- Behavior change: update docs/design.md (the contract), and llms/AGENTS.md if app authors see it.

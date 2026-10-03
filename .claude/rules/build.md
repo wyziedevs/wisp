@@ -11,5 +11,5 @@ paths:
 - Escaping: holes never go in `on*` attrs, tag names, `javascript:` URLs, SVG animation values or `<meta http-equiv>`. Keep that check when touching template.rs.
 - std only (plus `pulldown-cmark` for Markdown). No new deps without a reason in docs/design.md.
 - Goldens (`tests/app/tests/golden.*`) pin generated output: a codegen change that alters it must be intended. `tests/agents` compiles the code blocks of AGENTS.md, so a syntax change updates AGENTS.md and docs/.
-- Syntax or API change: update AGENTS.md (apps get it), docs/*.md, `wisp fmt` and the LSP (fmt.rs, ide.rs) and the editors/ grammar if affected.
+- Syntax or API change: update llms/AGENTS.md (apps get it), docs/*.md, `wisp fmt` and the LSP (fmt.rs, ide.rs) and the editors/ grammar if affected.
 - Test: `cargo test -q -p wisp-build -p wisp`, then the apps under `tests/`.
