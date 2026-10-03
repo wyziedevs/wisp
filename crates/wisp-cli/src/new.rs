@@ -606,7 +606,7 @@ mod tests {
         };
         let base = Path::new(env!("CARGO_MANIFEST_DIR"));
         assert!(AGENTS_MD.ends_with(END));
-        let Ok(agents) = read_text(&repo(base).join("AGENTS.md")) else {
+        let Ok(agents) = read_text(&repo(base).join("llms/AGENTS.md")) else {
             return;
         };
         assert!(
@@ -616,7 +616,7 @@ mod tests {
         assert!(!AGENTS_MD.contains("<!-- repo") && !AGENTS_MD.contains("Carmack"));
         let full = llms_full(&repo(base)).unwrap();
         assert!(full == read_text(&vendor(base).join("llms-full.txt")).unwrap());
-        let path = repo(base).join("llms-full.txt");
+        let path = repo(base).join("llms/llms-full.txt");
         if read_text(&path).ok().as_deref() != Some(full.as_str()) {
             write_if_changed(&path, &full).unwrap();
             panic!("llms-full.txt was stale; it is written again now: commit it");

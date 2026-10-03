@@ -182,10 +182,10 @@ fn reference(text: &str) -> String {
 
 /// `llms-full.txt`: the app's AGENTS.md, then each of [`DOCS`], one file.
 pub fn llms_full(repo: &Path) -> io::Result<String> {
-    let mut out = reference(&read_text(&repo.join("AGENTS.md"))?);
+    let mut out = reference(&read_text(&repo.join("llms/AGENTS.md"))?);
     for doc in DOCS {
         out.push_str(&format!("\n\n<!-- docs/{doc}.md -->\n\n"));
-        out.push_str(read_text(&repo.join(format!("docs/{doc}.md")))?.trim_end());
+        out.push_str(reference(&read_text(&repo.join(format!("docs/{doc}.md")))?).trim_end());
         out.push('\n');
     }
     Ok(out)

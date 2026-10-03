@@ -10,7 +10,7 @@
   <a href="docs/design.md">Docs</a> ·
   <a href="#quick-start">Quick start</a> ·
   <a href="examples">Examples</a> ·
-  <a href="AGENTS.md">AGENTS.md</a>
+  <a href="llms/AGENTS.md">AGENTS.md</a>
 </p>
 
 <p align="center">
@@ -59,7 +59,7 @@ The `---` block is Rust that runs for each request, `{name}` is rendered on the 
 - Hot reload keeps your `$state`; markup edits show in under 100 ms.
 
 **Built for AI and tokens**
-- [AGENTS.md](AGENTS.md) and [llms-full.txt](llms-full.txt) hold the whole reference.
+- [AGENTS.md](llms/AGENTS.md) and [llms-full.txt](llms/llms-full.txt) hold the whole reference.
 - `wisp mcp` serves the docs to coding agents.
 - A whole app takes about half the tokens of SvelteKit or Next.js ([docs/tokens.md](docs/tokens.md)).
 - The compiler infers types, so apps write fewer of them.
@@ -109,7 +109,7 @@ Wisp has no `unsafe` code outside its Linux I/O drivers and the edge exports. Th
 
 ## Contributing
 
-Issues and pull requests are welcome; read the design rule at the top of [AGENTS.md](AGENTS.md) first.
+Issues and pull requests are welcome; read the design rule at the top of [AGENTS.md](llms/AGENTS.md) first.
 
 ## License
 

@@ -6,6 +6,7 @@ framework, and a single binary to deploy.
 
 This document is the contract for v0. When code and doc disagree, fix one of them.
 
+<!-- repo: not in llms-full.txt -->
 ## Principles
 
 1. **Ultra fast, then cheap, then durable, then flexible; developer happiness
@@ -17,7 +18,7 @@ This document is the contract for v0. When code and doc disagree, fix one of the
    first by what it costs the app's code: a convention beats a line of
    setup, one file beats two, and a name the build can infer is not written.
    [tokens.md](tokens.md) measures it against other frameworks, and
-   [AGENTS.md](../AGENTS.md) is the whole language in one short page.
+   [AGENTS.md](../llms/AGENTS.md) is the whole language in one short page.
 2. **Fast by construction.** Templates compile to straight-line `push_str` calls.
    Routes compile to one `match`. Buffers are reused per connection. No boxing,
    no dynamic dispatch, no allocation on the hot path after warm-up.
@@ -87,6 +88,7 @@ tests/agents       every Rust and HTML snippet of AGENTS.md, compiled
 bench/             the same app in other stacks, load generator, runner (bench-run)
 ```
 
+<!-- /repo -->
 ## An app
 
 ```
@@ -1224,6 +1226,7 @@ and `.wisp-*` classes, so they never touch an app's own CSS.
   changed in dim. Violet is only for what can be typed. A failure is a
   sentence, then the reason or what to do indented under it.
 
+<!-- repo: not in llms-full.txt -->
 ## Runtime
 
 - `wisp::main!()` is `wisp::app!()` plus a `main` that calls
@@ -1377,6 +1380,7 @@ The built-in server is one front end. `respond` decides an answer as a
 Every path uses the same request parser and limits. See [embed.md](embed.md)
 and [deploy.md](deploy.md).
 
+<!-- /repo -->
 ### Less Rust boilerplate in templates
 
 - `Data` fields are in scope: `{count}` for `{data.count}`.
@@ -1403,6 +1407,7 @@ no handler trait objects anywhere. (Values given to `provide` and `cx.set`
 are the one place with `dyn Any`: a lookup by type, off the hot path unless
 the app uses them.)
 
+<!-- repo: not in llms-full.txt -->
 ## Build
 
 `wisp_build::run()` (in the app's `build.rs`):
@@ -1453,6 +1458,7 @@ The build sees every route and template, and uses that:
   the rest split the path, into an array as deep as the deepest of them,
   with parameters as slices of the path.
 
+<!-- /repo -->
 ## `wisp new`
 
 `wisp new [name]` asks where the app goes, which template (Demo: a home page
@@ -1705,6 +1711,7 @@ content-security-policy: default-src 'self'; script-src 'self' 'sha256-…';
   them). A script put in by `{@html}` or an `onclick="…"` attribute does
   not run; use a file, or `on:click`.
 
+<!-- repo: not in llms-full.txt -->
 ## v0 non-goals
 
 No homegrown auth, ORM or job system, now or later: Wisp gives the tools
@@ -1724,3 +1731,4 @@ HTTP/2 in process, Windows services.
    **Reactive and everywhere** – client scripts, router, tower, static
    export, Docker, edge targets.  ← done
 4. **v0.2** – behaviors, link boosting, docs site built with Wisp.
+<!-- /repo -->

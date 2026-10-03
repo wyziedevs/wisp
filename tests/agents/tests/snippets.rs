@@ -19,7 +19,7 @@ fn files(dir: &Path, out: &mut Vec<String>) {
 #[test]
 fn every_snippet_is_compiled_here() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let agents = fs::read_to_string(root.join("../../AGENTS.md"))
+    let agents = fs::read_to_string(root.join("../../llms/AGENTS.md"))
         .unwrap()
         .replace("\r\n", "\n");
     let mut app = Vec::new();

@@ -38,10 +38,10 @@ fn main() {
         println!("cargo:rerun-if-changed={}", file.display());
     }
     println!("cargo:rustc-env=WISP_CLI_COMMIT={commit}");
-    if let Ok(agents) = template_files::read_text(&repo.join("AGENTS.md")) {
+    if let Ok(agents) = template_files::read_text(&repo.join("llms/AGENTS.md")) {
         println!(
             "cargo:rerun-if-changed={}",
-            repo.join("AGENTS.md").display()
+            repo.join("llms/AGENTS.md").display()
         );
         for doc in template_files::DOCS {
             let path = repo.join(format!("docs/{doc}.md"));

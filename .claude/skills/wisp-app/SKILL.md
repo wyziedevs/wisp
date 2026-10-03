@@ -4,7 +4,7 @@ description: Write or edit an app built with the Wisp Rust web framework (src/ro
 ---
 # Writing a Wisp app
 
-The full reference is `AGENTS.md` at the repo root (an app has its own copy at its root): read the section you need, not all of it. Deeper: `docs/client.md` (browser code), `docs/api.md` (Rest, OpenAPI), `docs/data.md` (tables, queues, uploads), `docs/auth.md`, `docs/serve.md`, `docs/deploy.md`.
+The full reference is `llms/AGENTS.md` (an app has its own copy at its root): read the section you need, not all of it. Deeper: `docs/client.md` (browser code), `docs/api.md` (Rest, OpenAPI), `docs/data.md` (tables, queues, uploads), `docs/auth.md`, `docs/serve.md`, `docs/deploy.md`.
 
 Core, in short:
 - Files are routes: `src/routes/x/+page.wisp` (optional `---` Rust block, then markup), `+layout.wisp`, `+error.wisp`, `+server.rs` (fn get/post/...), `+page.rs` (`struct Data` + `fn load`). Models and tables live in `src/db.rs`; its `pub` items are in every route file. No `use` lines (there is a prelude).
