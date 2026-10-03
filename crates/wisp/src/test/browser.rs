@@ -7,7 +7,7 @@
 //! fn counter() {
 //!     let mut b = wisp::browser!(App); // returns, skipped, without a browser
 //!     b.goto("/");
-//!     b.click("text=Plus one");
+//!     b.click("text=Plus One");
 //!     assert_eq!(b.text("output"), "1");
 //! }
 //! ```

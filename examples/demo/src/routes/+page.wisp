@@ -46,13 +46,13 @@ fn decrement() {
   <p class="hint">try editing <code>src/routes/+page.wisp</code></p>
 
   <form class="counter" method="post">
-    <button formaction="?/decrement" aria-label="Decrease the counter by one" title="Minus one">
+    <button formaction="?/decrement" aria-label="Decrease the Counter by One" title="Minus One">
       <svg viewBox="0 0 1 1" aria-hidden="true"><path d="M0,0.5 L1,0.5"/></svg>
     </button>
-    <output class="count" aria-live="polite" title="Your count">
+    <output class="count" aria-live="polite" title="Your Count">
       <strong id="count-{count}">{count}</strong>
     </output>
-    <button formaction="?/increment" aria-label="Increase the counter by one" title="Plus one">
+    <button formaction="?/increment" aria-label="Increase the Counter by One" title="Plus One">
       <svg viewBox="0 0 1 1" aria-hidden="true"><path d="M0,0.5 L1,0.5 M0.5,0 L0.5,1"/></svg>
     </button>
   </form>
