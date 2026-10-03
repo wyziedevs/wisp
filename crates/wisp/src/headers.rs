@@ -7,44 +7,53 @@
 
 use crate::http::Reply;
 use std::borrow::Cow;
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 const NOSNIFF: (&str, &str) = ("x-content-type-options", "nosniff");
 const REFERRER: (&str, &str) = ("referrer-policy", "strict-origin-when-cross-origin");
-const HSTS: (&str, &str) = (
+const HSTS_HEADER: (&str, &str) = (
     "strict-transport-security",
     "max-age=31536000; includeSubDomains",
 );
 
-#[derive(Clone, Copy)]
-struct Mode {
-    pages: bool,
-    hsts: bool,
-}
+const PAGES: u8 = 1;
+const HSTS: u8 = 2;
+const UNSET: u8 = 4;
 
-fn mode() -> Mode {
-    static MODE: OnceLock<Mode> = OnceLock::new();
-    *MODE.get_or_init(|| Mode {
-        pages: crate::switch("WISP_SECURE_HEADERS", true),
-        hsts: crate::switch("WISP_HSTS", false),
-    })
-}
+/// Which headers are on, read from the environment the first time.
+static MODE: AtomicU8 = AtomicU8::new(UNSET);
 
 /// The headers `reply` is missing: the page ones for HTML, which is what
-/// pages and error pages are, HSTS for any.
+/// pages and error pages are, HSTS for any. What most answers (JSON, say)
+/// pay is one load and a look at the content type's sixth byte.
+#[inline(always)]
 pub(crate) fn add(reply: &mut Reply) {
-    let m = mode();
-    if reply.status < 200 || !(m.pages || m.hsts) {
+    let m = MODE.load(Ordering::Relaxed);
+    let maybe_html = m & PAGES != 0
+        && (reply.headers.first()).is_some_and(|(_, v)| v.as_bytes().get(5) == Some(&b'h'));
+    if maybe_html || m & (HSTS | UNSET) != 0 {
+        push(reply);
+    }
+}
+
+#[inline(never)]
+fn push(reply: &mut Reply) {
+    let mut m = MODE.load(Ordering::Relaxed);
+    if m & UNSET != 0 {
+        m = u8::from(crate::switch("WISP_SECURE_HEADERS", true)) * PAGES
+            | u8::from(crate::switch("WISP_HSTS", false)) * HSTS;
+        MODE.store(m, Ordering::Relaxed);
+    }
+    if reply.status < 200 {
         return;
     }
-    let html = reply
-        .headers
-        .first()
-        .is_some_and(|(n, v)| n == "content-type" && v.starts_with("text/html"));
+    let html = m & PAGES != 0
+        && (reply.headers.first())
+            .is_some_and(|(n, v)| v.starts_with("text/html") && n == "content-type");
     let wanted = [
-        (m.pages && html, NOSNIFF),
-        (m.pages && html, REFERRER),
-        (m.hsts, HSTS),
+        (html, NOSNIFF),
+        (html, REFERRER),
+        (m & HSTS != 0, HSTS_HEADER),
     ];
     for (on, (name, value)) in wanted {
         if on && reply.header(name).is_none() {
