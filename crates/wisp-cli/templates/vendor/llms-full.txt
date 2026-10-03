@@ -367,12 +367,13 @@ takes the no-wait fast path off every route.
 
 `wisp new app` · `wisp dev` (hot reload) · `wisp check` · `wisp build`
 (`--static`, `--docker`, `--target cloudflare|deno|vercel|netlify|node`,
-`--client ts`) · `wisp add pkg[@ver]` · `wisp remove pkg` · `wisp
-update-docs` (this file, after upgrading Wisp) · `wisp mcp` (tools for AI
-agents: `wisp_docs(topic)`, `wisp_check`, `wisp_routes`, `wisp_components`,
-`wisp_new_route(path, kind)`; Claude Code: `claude mcp add wisp -- wisp mcp`).
-More: `wisp_docs`, or https://raw.githubusercontent.com/wyziedevs/wisp/main/llms-full.txt
-(this file and every doc).
+`--client ts`) · `wisp add pkg[@ver]` · `wisp remove pkg` · `wisp lsp` (language
+server; VS Code: editors/vscode) · `wisp update-docs` (this file, after
+upgrading Wisp) · `wisp mcp` (tools for AI agents: `wisp_docs(topic)`,
+`wisp_check`, `wisp_routes`, `wisp_components`, `wisp_new_route(path, kind)`;
+Claude Code: `claude mcp add wisp -- wisp mcp`). More: `wisp_docs`, or
+https://raw.githubusercontent.com/wyziedevs/wisp/main/llms-full.txt (this
+file and every doc).
 
 
 <!-- docs/design.md -->
@@ -455,10 +456,12 @@ crates/wisp        runtime: HTTP server, Cx, escaping, assets, dev hooks
 crates/wisp-build  compiler: route scan, .wisp parser, codegen (used from build.rs)
 crates/wisp-shared what runtime, compiler and browser agree on: contexts.rs, protocol.rs, client/*.js
 crates/wisp-macros #[action], #[derive(Cookie)], #[derive(Json)] and #[derive(FromJson)] (proc macros; no deps but wisp-build, for `#[validate]`'s rules)
-crates/wisp-cli    `wisp new | dev | build | check`; deploy targets
+crates/wisp-cli    `wisp new | dev | build | check | lsp | mcp | update-docs`; deploy targets
+editors/vscode     VS Code extension: .wisp grammar, starts `wisp lsp`
 examples/demo      the demo app, which is also `wisp new`'s demo template
 examples/api       a JSON API, which is also `wisp new --api`
 tests/app          an app that uses every feature, and the tests that run it
+tests/agents       every Rust and HTML snippet of AGENTS.md, compiled
 bench/             the same app in other stacks, load generator, runner (bench-run)
 ```
 
@@ -1576,6 +1579,33 @@ Targets: markup edit → visible < 100 ms. Rust edit → visible ≤ 3 s (small 
 Measured on the demo (Windows, Ryzen 7800X3D): a text edit is swapped in under
 1 ms and served about 85 ms after the save (mostly the 50 ms poll); an
 expression or `.rs` edit rebuilds and restarts in 0.3 s.
+
+### Editors
+
+`wisp lsp` is a language server over stdio, in the CLI: JSON-RPC framed by
+hand, `wisp_shared::json` for parsing, no new dependency. Each file's app is
+the nearest folder above it with `Cargo.toml` and `build.rs`.
+
+- Problems: on open and every change, the buffer goes through the build's own
+  parser and checks (`wisp_build::ide::check_file`: `---` block, template,
+  component props against `src/components` as last read). On open and save,
+  the whole app is checked from disk as `wisp check` does, and its problem
+  shows in its file, open or not. One problem per file, as the compiler stops
+  at the first. A panic in a request is answered as an error; the server
+  goes on.
+- Hover: a component's `{@props}`, a prop's type and default, directive and
+  block docs, a route param's type.
+- Go to definition: `<Card>` → its file, `'$lib/x.js'` → `src/lib/x.js`, a
+  literal `href="/x"` → the route's `+page.wisp` (or `+page.rs`, `+server.rs`).
+- Completion: components (with their required props), props, directives,
+  `on:` events and modifiers, `{#…}` / `{:#…}` blocks, route paths in `href`.
+
+`editors/vscode` is a small extension: a TextMate grammar (HTML; Rust in the
+block and `{…}`; JavaScript in `<script>`, directive values and `{:…}`; CSS in
+`<style>`) and a client (`vscode-languageclient`) that starts `wisp lsp`.
+
+Follow-up: cheap Rust checks inside the `---` block (rust-analyzer covers
+`.rs` files only).
 
 ## Security
 
