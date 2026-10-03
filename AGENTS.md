@@ -275,6 +275,11 @@ Stores in `src/lib`: `import { store, persisted, derived } from 'wisp'`.
 npm: `wisp add canvas-confetti`, then `import confetti from 'canvas-confetti'`
 (esm.sh in dev; `wisp build` puts it in the binary, no CDN; one not in package.json
 is a build error).
+On demand: `import('$lib/x.js')`, a relative path into `src/lib` (from any
+file) or `import('pkg')` resolve as imports do and load at first use. No
+bundle: each lib file, component and package is one module, one URL every
+page shares (fetched once). A page `modulepreload`s its static imports all
+the way down; `import()` waits. A path to no `src/lib` file is a build error.
 Islands: `<Chart client:visible|idle|interaction|media="(…)"|none />`.
 Server components: one with no browser code ships no JS; islands and server
 components nest in any order (an inner island wakes a waiting outer one).

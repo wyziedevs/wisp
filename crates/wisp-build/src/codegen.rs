@@ -2222,11 +2222,11 @@ impl<'a> Project<'a> {
         };
         let mut js_files: Vec<JsFile> = remote.into_iter().collect();
         for (p, src) in &lib_src {
-            let dir = p.rfind('/').map_or("", |i| &p[..i]);
+            let dir = format!("lib/{}", p.rfind('/').map_or("", |i| &p[..i]));
             let path = format!("{MODULES}lib/{p}");
             let source = lib_file(
                 src,
-                Some(dir),
+                Some(&dir),
                 &format!("src/lib/{p}"),
                 &path,
                 &mut js_files,
@@ -2251,8 +2251,13 @@ impl<'a> Project<'a> {
             let load = match &t.load_js {
                 Some(f) => {
                     let path = format!("{MODULES}t{}.load.js", t.id);
-                    let source =
-                        lib_file(&self.read(f)?, None, &self.rel(f), &path, &mut js_files)?;
+                    let source = lib_file(
+                        &self.read(f)?,
+                        Some(&src_dir(&self.rel(f))),
+                        &self.rel(f),
+                        &path,
+                        &mut js_files,
+                    )?;
                     let hash = format!("{:016x}", fnv1a(source.as_bytes()));
                     let url = format!("{path}?v={hash}");
                     js_files.push(JsFile {
@@ -2333,6 +2338,7 @@ impl<'a> Project<'a> {
             c.hash.clone_from(&finals[k]);
         }
         let mut web = Web { clients, js_files };
+        let mut npm_src: Vec<(String, String)> = Vec::new();
         // A release build serves the npm modules imported, and what they
         // import, from .wisp/npm.
         if self.release {
@@ -2348,8 +2354,30 @@ impl<'a> Project<'a> {
                     path: format!("{NPM_MODULES}{f}"),
                     hash: format!("{:016x}", fnv1a(src.as_bytes())),
                     source: String::new(),
-                    file: Some(dir.join(f)),
+                    file: Some(dir.join(&f)),
                 });
+                npm_src.push((format!("{NPM_MODULES}{f}"), src));
+            }
+        }
+        // Each module's static imports, preloaded with it.
+        let mut sources: Vec<(String, &str)> = (web.js_files.iter())
+            .filter(|f| f.file.is_none())
+            .map(|f| (format!("{}?v={}", f.path, f.hash), f.source.as_str()))
+            .collect();
+        sources.extend(
+            (web.clients.iter().flatten())
+                .map(|c| (format!("{}?v={}", c.path(), c.hash), c.source.as_str())),
+        );
+        sources.extend(npm_src.iter().map(|(u, s)| (u.clone(), s.as_str())));
+        let preloads: Vec<Vec<String>> = (web.clients.iter())
+            .map(|c| {
+                c.as_ref()
+                    .map_or(Vec::new(), |c| static_imports(&c.source, &sources))
+            })
+            .collect();
+        for (c, p) in web.clients.iter_mut().zip(preloads) {
+            if let Some(c) = c {
+                c.preload = p;
             }
         }
         Ok(web)
@@ -2507,7 +2535,7 @@ impl Gen {
                 None => (format!("{}?v={}", f.path, f.hash), lit(&f.source)),
             };
             self.line(0, &format!(
-                "static __WISP_JS_{i}: ::wisp::ClientModule = ::wisp::ClientModule {{ id: {}, path: {}, url: {}, etag: {}, source: {source}, preload: \"\", texts: &[] }};",
+                "static __WISP_JS_{i}: ::wisp::ClientModule = ::wisp::ClientModule {{ id: {}, path: {}, url: {}, etag: {}, source: {source}, preload: &[], texts: &[] }};",
                 lit(&f.path),
                 lit(&f.path),
                 lit(&url),
@@ -4581,7 +4609,7 @@ impl Gen {
                 lit(&url),
                 lit(&format!("\"{}\"", c.hash)),
                 lit(&c.source),
-                lit(c.extra.as_deref().unwrap_or("")),
+                preload_list(&c.preload),
                 c.texts.iter().map(|k| format!("&__wisp_i18n::J{k}")).collect::<Vec<_>>().join(", ")
             ));
         }
@@ -5907,8 +5935,9 @@ enum Piece {
 struct Client {
     /// `t3`, from the template's id.
     id: String,
-    /// The URL of `extra.js`, when it imports it.
-    extra: Option<String>,
+    /// What it imports statically, all the way down, but the runtime: the
+    /// page preloads it with the module (see `Project::browser`).
+    preload: Vec<String>,
     source: String,
     /// Where each line of `source` came from in the file, for its map.
     lines: Vec<sourcemap::Line>,
@@ -6377,6 +6406,7 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
             .collect()
     };
     let id = format!("t{}", t.id);
+    let base = src_dir(&t.rel);
     let html = cx.as_client.then(|| {
         let mut s = String::new();
         client_html(&tt.nodes, tt, &mut s);
@@ -6416,6 +6446,7 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
         .then_some(cx.extra),
         html: html.as_deref(),
         specs: cx.specs,
+        base: &base,
         dev: dev.as_deref(),
         file: (!cx.release).then_some(t.rel.as_str()),
         effect,
@@ -6477,7 +6508,7 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
         declared.push(r.clone());
     }
     Ok(Some(Client {
-        extra: m.extra.map(String::from),
+        preload: Vec::new(),
         id,
         source,
         lines,
@@ -6619,6 +6650,8 @@ struct Module<'a> {
     extra: Option<&'a str>,
     html: Option<&'a str>,
     specs: &'a Specs,
+    /// Its file's directory under `src`, which a relative import is from.
+    base: &'a str,
     /// A dev build's call that tells the devtools about the instance.
     dev: Option<&'a str>,
     /// A dev build's: the file, by which `wisp dev` swaps the module in
@@ -6676,12 +6709,13 @@ fn module_source(m: &Module) -> Result<(String, Vec<sourcemap::Line>), String> {
         // Imports go first, as a module's must; they leave blank lines.
         let spans = js::imports(src);
         for &(a, b) in &spans {
-            s.push_str(&rewrite_specifiers(&src[a..b], m.specs, None)?);
+            s.push_str(&rewrite_specifiers(&src[a..b], m.specs, Some(m.base))?);
             s.push('\n');
             let first = src[..a].matches('\n').count() as u32;
             upto(&s, &mut map, &|k| script_line(first + k));
         }
-        body = js::blank(src, &spans);
+        // `import('…')` stays where it is, resolved: it loads on demand.
+        body = rewrite_specifiers(&js::blank(src, &spans), m.specs, Some(m.base))?;
     }
     let _ = write!(
         s,
@@ -6741,7 +6775,8 @@ fn module_source(m: &Module) -> Result<(String, Vec<sourcemap::Line>), String> {
     s.push_str("return { g: [\n");
     upto(&s, &mut map, &|_| None);
     for (g, &line) in m.groups.iter().zip(m.group_lines) {
-        let _ = writeln!(s, "  [{}],", g.join(", "));
+        let g = rewrite_specifiers(&g.join(", "), m.specs, Some(m.base))?;
+        let _ = writeln!(s, "  [{g}],");
         upto(&s, &mut map, &|k| Some((line - 1 + k, 0)));
     }
     s.push(']');
@@ -6815,10 +6850,12 @@ struct Specs {
     npm: Npm,
 }
 
-/// The URL the browser loads for `spec` in an import: `wisp` is the
-/// runtime, `$lib/x.js` is `src/lib/x.js`, and in a lib file (whose
-/// directory under `src/lib` is `base`) so is a relative path; a package
-/// name is that npm package. Anything else (a full URL) stays as written.
+/// The URL the browser loads for `spec` in an import, static or `import()`:
+/// `wisp` is the runtime, `wisp:remote` the `#[remote]` functions,
+/// `$lib/x.js` is `src/lib/x.js`, and so is a relative path from a file
+/// whose directory under `src` is `base` (`lib/sub`, `routes/blog`); a
+/// package name is that npm package. Anything else (a full URL) stays as
+/// written. A path to no file of `src/lib` is an error.
 fn resolve_spec(spec: &str, cx: &Specs, base: Option<&str>) -> Result<Option<String>, String> {
     if spec == "wisp" {
         let v = crate::runtime_version();
@@ -6835,8 +6872,8 @@ fn resolve_spec(spec: &str, cx: &Specs, base: Option<&str>) -> Result<Option<Str
     if npm::is_bare(spec) {
         return cx.npm.url(spec).map(Some);
     }
-    let rel = if let Some(p) = spec.strip_prefix("$lib/") {
-        p.to_string()
+    let path = if let Some(p) = spec.strip_prefix("$lib/") {
+        format!("lib/{p}")
     } else {
         let Some(b) = base.filter(|_| spec.starts_with("./") || spec.starts_with("../")) else {
             return Ok(None);
@@ -6845,28 +6882,81 @@ fn resolve_spec(spec: &str, cx: &Specs, base: Option<&str>) -> Result<Option<Str
         for p in spec.split('/') {
             match p {
                 "." | "" => {}
-                ".." => {
-                    parts.pop();
+                ".." if parts.pop().is_none() => {
+                    return Err(format!("`{spec}` is outside src"));
                 }
+                ".." => {}
                 p => parts.push(p),
             }
         }
         parts.join("/")
     };
-    // `$lib/x` is `x.js` or `x.ts`, whichever there is.
-    let bare = !rel.rsplit('/').next().unwrap_or("").contains('.');
-    let rel = (["js", "ts"].iter())
-        .map(|e| format!("{rel}.{e}"))
-        .find(|f| bare && cx.lib.contains(f))
-        .unwrap_or(rel);
+    let Some(rel) = path.strip_prefix("lib/") else {
+        return Err(format!(
+            "`{spec}` is src/{path}; the browser loads only src/lib's files, so move it there and import it as `$lib/…`"
+        ));
+    };
+    // `$lib/x` is `x.js` or `x.ts`, whichever there is; `x.js` may be
+    // `x.ts`, as TypeScript writes it.
+    let ext = rel.rsplit('/').next().unwrap_or("").contains('.');
+    let ts = rel.strip_suffix(".js").map(|r| format!("{r}.ts"));
+    let found = match ext {
+        false => (["js", "ts"].iter())
+            .map(|e| format!("{rel}.{e}"))
+            .find(|f| cx.lib.contains(f)),
+        true => std::iter::once(rel.to_string())
+            .chain(ts)
+            .find(|f| cx.lib.contains(f)),
+    };
+    let Some(rel) = found else {
+        return Err(format!("`{spec}`: there is no src/{path}"));
+    };
     Ok(Some(format!("{MODULES}lib/{rel}?v={}", cx.lib_hash)))
+}
+
+/// The directory under `src` of the file at `rel` (from the project root):
+/// `routes/blog` for `src/routes/blog/+page.wisp`.
+fn src_dir(rel: &str) -> String {
+    let rel = rel.strip_prefix("src/").unwrap_or(rel);
+    rel.rfind('/').map_or("", |i| &rel[..i]).to_string()
 }
 
 /// `src` with the module names of its imports replaced as `resolve_spec`
 /// says. Every file reaches a lib file by the same URL, so a store in it
 /// is one store.
 fn rewrite_specifiers(src: &str, cx: &Specs, base: Option<&str>) -> Result<String, String> {
+    if !src.contains("import") && !src.contains("from") {
+        return Ok(src.to_string());
+    }
     js::specifiers(src, |spec| resolve_spec(spec, cx, base))
+}
+
+/// `&["/_app/c/lib/x.js?v=…", …]`: a module's preloads, as Rust.
+fn preload_list(urls: &[String]) -> String {
+    let all: Vec<String> = urls.iter().map(|u| lit(u)).collect();
+    format!("&[{}]", all.join(", "))
+}
+
+/// What a module of `source` imports statically, all the way down, by
+/// URL, in the order found: through the other modules served (`sources`,
+/// by URL), not into `import()`, and never the runtime, which the page
+/// loads itself. Code that two pages import is one module of one URL,
+/// which each page preloads and the browser fetches once.
+fn static_imports(source: &str, sources: &[(String, &str)]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut stack = vec![source];
+    while let Some(src) = stack.pop() {
+        for url in js::static_specs(src) {
+            if url.starts_with(LIVE_JS_PATH) || out.contains(&url) {
+                continue;
+            }
+            if let Some((_, next)) = sources.iter().find(|(u, _)| *u == url) {
+                stack.push(next);
+            }
+            out.push(url);
+        }
+    }
+    out
 }
 
 /// Resolves the names an expression (with the line it is on) reads: the
@@ -9225,7 +9315,10 @@ pub fn load() -> Data { todo!() }";
             c.source
         );
         assert!(c.source.contains("], snap: snapshot };"), "{}", c.source);
-        assert!(c.extra.is_some(), "extra.js keeps snapshots");
+        assert!(
+            c.source.contains("import \"/_app/c/extra.js\";"),
+            "extra.js keeps snapshots"
+        );
         let Err(err) = page_client("<script>\n  export let x = 1\n</script>", true) else {
             panic!("exports x");
         };
@@ -9593,12 +9686,14 @@ pub fn load() -> Data { todo!() }";
         ];
         let specs = |vendor| Specs {
             remote: None,
-            lib: Vec::new(),
+            lib: ["a.js", "b.js", "sub/c.js", "y.js", "t.ts"]
+                .map(String::from)
+                .to_vec(),
             lib_hash: "H".into(),
             npm: Npm::new(deps.clone(), vendor),
         };
         let dev = specs(None);
-        let out = rewrite_specifiers(src, &dev, Some("sub")).unwrap();
+        let out = rewrite_specifiers(src, &dev, Some("lib/sub")).unwrap();
         assert_eq!(
             out,
             format!(
@@ -9606,11 +9701,36 @@ pub fn load() -> Data { todo!() }";
                  import \"/_app/c/lib/sub/c.js?v=H\"\nimport x from 'https://esm.sh/x'\nconst y = import(\"/_app/c/lib/y.js?v=H\")\nconst s = 'wisp'"
             )
         );
-        // Outside src/lib, a relative path is left as written.
+        // From no file, a relative path is left as written.
         assert_eq!(
             rewrite_specifiers("import './c.js'", &dev, None).unwrap(),
             "import './c.js'"
         );
+        // From a page's, it is src/lib's file; `x.js` may be `x.ts`.
+        assert_eq!(
+            rewrite_specifiers(
+                "import('../../lib/sub/c.js'); import '$lib/t.js'",
+                &dev,
+                Some("routes/blog")
+            )
+            .unwrap(),
+            "import(\"/_app/c/lib/sub/c.js?v=H\"); import \"/_app/c/lib/t.ts?v=H\""
+        );
+        for (spec, want) in [
+            (
+                "./x.js",
+                "`./x.js` is src/routes/blog/x.js; the browser loads only src/lib's files",
+            ),
+            ("../../../x.js", "`../../../x.js` is outside src"),
+            (
+                "$lib/nope.js",
+                "`$lib/nope.js`: there is no src/lib/nope.js",
+            ),
+        ] {
+            let err = rewrite_specifiers(&format!("import('{spec}')"), &dev, Some("routes/blog"))
+                .unwrap_err();
+            assert!(err.starts_with(want), "{err}");
+        }
         // A package name is the package: from esm.sh in dev, from the app
         // in a release build; one package.json does not list is an error.
         let npm = "import confetti from 'canvas-confetti'\nimport { q } from '@s/p/sub'\nconst m = import('canvas-confetti')";

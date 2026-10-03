@@ -50,7 +50,7 @@ pub static MODULE: crate::ClientModule = crate::ClientModule {
     url: "/_app/c/fuzz.js?v=1",
     etag: "\"1\"",
     source: "define(\"fuzz\", () => ({ g: [] }));",
-    preload: "",
+    preload: &[],
     texts: &[],
 };
 

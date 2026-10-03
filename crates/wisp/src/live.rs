@@ -50,9 +50,10 @@ pub struct ClientModule {
     pub url: &'static str,
     pub etag: &'static str,
     pub source: &'static str,
-    /// A module it imports that the page preloads with it (the runtime's
-    /// less used half, `/_app/c/extra.js?v=…`), or "".
-    pub preload: &'static str,
+    /// What it imports, statically, all the way down, that the page
+    /// preloads with it (`$lib` files, `extra.js`, npm packages, the
+    /// modules of components it renders); not `import()`, which waits.
+    pub preload: &'static [&'static str],
     /// The messages its `t('key')` calls show, per key: `"key":message`
     /// as JSON, in each locale.
     pub texts: &'static [&'static [&'static str]],
@@ -140,19 +141,24 @@ impl Live {
             s.push('}');
         }
         s.push_str(LIVE_CLOSE);
-        let mut extra = "";
-        for (m, _) in self.modules.iter().filter(|m| m.1) {
+        let now = || self.modules.iter().filter(|m| m.1).map(|m| m.0);
+        for m in now() {
             let _ = write!(
                 s,
                 "<link rel=\"modulepreload\" href=\"{}\">",
                 crate::dev::url(m)
             );
-            if extra.is_empty() {
-                extra = m.preload;
-            }
         }
-        if !extra.is_empty() {
-            let _ = write!(s, "<link rel=\"modulepreload\" href=\"{extra}\">");
+        // What they import, each once, but for one of them: a module that
+        // waits for `import()` is not here.
+        for (k, m) in now().enumerate() {
+            for &p in m.preload {
+                let seen = now().take(k).any(|o| o.preload.contains(&p))
+                    || now().any(|o| crate::dev::url(o) == p);
+                if !seen {
+                    let _ = write!(s, "<link rel=\"modulepreload\" href=\"{p}\">");
+                }
+            }
         }
         if self.modules.iter().any(|m| m.1) {
             s.push_str(concat!(
@@ -1273,7 +1279,7 @@ mod tests {
             url: "/_app/c/t1.js?v=1",
             etag: "\"1\"",
             source: "",
-            preload: "",
+            preload: &["/_app/c/lib/x.js?v=1", "/_app/c/t2.js?v=2"],
             texts: &[],
         };
         static B: ClientModule = ClientModule {
@@ -1282,7 +1288,7 @@ mod tests {
             url: "/_app/c/t2.js?v=2",
             etag: "\"2\"",
             source: "",
-            preload: "",
+            preload: &["/_app/c/lib/x.js?v=1"],
             texts: &[],
         };
         let mut out = Out::default();
@@ -1300,6 +1306,13 @@ mod tests {
             tail.starts_with(
                 "<script type=\"application/json\" id=\"wisp-live\">{\"m\":{\"t1\":\"/_app/c/t1.js?v=1\",\"t2\":\"/_app/c/t2.js?v=2\"},\
                  \"i\":[[0,\"t1\",-1,{}],[1,\"t2\",0,{\"x\":1}],[2,\"t1\",-1,{}]]}</script><link rel=\"modulepreload\" href=\"/_app/c/t1.js?v=1\">"
+            ),
+            "{tail}"
+        );
+        // What they import, once, and not a module the page has already.
+        assert!(
+            tail.contains(
+                "href=\"/_app/c/t2.js?v=2\"><link rel=\"modulepreload\" href=\"/_app/c/lib/x.js?v=1\"><script"
             ),
             "{tail}"
         );

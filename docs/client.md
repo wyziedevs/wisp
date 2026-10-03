@@ -647,6 +647,32 @@ The server sends the tag as written; the browser upgrades it when its module
 loads. The `click-events` accessibility lint leaves custom elements alone: their
 keyboard is inside them.
 
+## Loading code on demand
+
+`import()` loads a module when the code reaches it, not with the page:
+
+```html
+<button on:click="import('$lib/chart.js').then((m) => m.draw(el))">Chart</button>
+<script>
+  async function edit() {
+    const { Editor } = await import('../../lib/editor.js')
+  }
+</script>
+```
+
+It resolves as a static import does: `$lib/x.js` (or `$lib/x`, and
+`x.js` for a `x.ts`), a relative path from the file into `src/lib`, an npm
+package. A path to no file there is a build error, as is one outside
+`src/lib`, whose files are the only ones the browser loads.
+
+There is no bundle to split. Each `src/lib` file, component and npm
+package is one module at one URL (immutable, by hash), the same for every
+page, so code that two pages import is fetched once and cached for both.
+A page `modulepreload`s what its modules import statically, all the way
+down (lib files, packages, `extra.js`, components it renders), so the
+browser fetches them at once rather than one level at a time. What only an
+`import()` names is left until it runs, and so is an island's code.
+
 ## Speed
 
 The runtime is two files: `live.js` (about 9 KB compressed), and
