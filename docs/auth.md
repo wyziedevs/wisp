@@ -26,15 +26,15 @@ that `?` returns. A site not listed gets no `access-control-allow-origin`.
 ## Signed tokens (reset, verify, magic link)
 
 ```rust
-let t = wisp::token_for("reset", &user.id, Duration::from_secs(3600));
-let id: u64 = wisp::untoken_for("reset", &t)?;   // 400 for any failure, the same one
+let t = wisp::token("reset", &user.id, Duration::from_secs(3600));
+let id: u64 = wisp::untoken("reset", &t)?;   // 400 for any failure, the same one
 ```
 
 HMAC-SHA256 under `WISP_SECRET` (and `WISP_SECRET_OLD`) over purpose,
 payload and expiry. The payload is readable, not forgeable; keep secrets
 out of it. A token works until it expires: for a reset, put something in
 it that changes when it is used (the password hash's first bytes) and
-compare. `token`/`untoken` are the same with no purpose.
+compare. A purpose of `""` is none.
 
 ## Two-factor codes
 

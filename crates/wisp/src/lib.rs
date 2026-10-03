@@ -105,7 +105,7 @@ pub use session::{Account, login, sign_in_page, sign_out_everywhere, signup, use
 pub use sign::{hex, hmac_sha256};
 pub use store::{Changes, Store, store};
 pub use table::{Page, Row, Table};
-pub use token::{token, token_for, untoken, untoken_for};
+pub use token::{token, untoken};
 pub use wisp_macros::{Cookie, FromJson, Json, Rest, action, model};
 pub use ws::{Message, WebSocket};
 
