@@ -1507,6 +1507,7 @@ impl<T, E: fmt::Display> OrStatus<T> for std::result::Result<T, E> {
 #[doc(hidden)]
 pub mod rt {
     pub use crate::i18n::{Arg, Case, Count, Msg, Part, Tr};
+    pub use crate::timeout::within;
 
     /// The request's locale, by index: for `Out::lang`.
     #[inline]

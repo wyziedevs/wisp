@@ -55,6 +55,23 @@ impl Late {
     }
 }
 
+/// A route's `const TIMEOUT: u32 = 5;` (seconds): `f` is dropped and the
+/// request answered with a 503 if it takes longer. Only routes that set it
+/// call this.
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn within<T>(secs: u32, f: impl Future<Output = crate::Result<T>>) -> crate::Result<T> {
+    match tokio::time::timeout(Duration::from_secs(secs.into()), f).await {
+        Ok(r) => r,
+        Err(_) => Err(error()),
+    }
+}
+
+/// The edge has no timer: the host's own limit applies.
+#[cfg(target_arch = "wasm32")]
+pub async fn within<T>(_: u32, f: impl Future<Output = crate::Result<T>>) -> crate::Result<T> {
+    f.await
+}
+
 /// What the request is answered with.
 pub(crate) fn error() -> Error {
     Error::new(503, "The server took too long to answer")

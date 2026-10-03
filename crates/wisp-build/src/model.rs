@@ -49,6 +49,10 @@ pub struct Route {
     /// The page module whose actions take uploads (`__call::UPLOADS`
     /// bytes), which raise the body limit.
     pub uploads: Option<String>,
+    /// The page module with a `__guard` (`RATE_LIMIT`, `CORS`) to run first.
+    pub guard: Option<String>,
+    /// The module whose `TIMEOUT` (seconds) applies.
+    pub timeout: Option<String>,
     pub cache: Option<Cache>,
     /// `/sitemap.xml` lists it: a page outside any `(private)` group,
     /// without a `<meta name="robots" content="noindex">`.

@@ -1699,7 +1699,7 @@ impl<'a> Project<'a> {
                     c.line
                 ));
             }
-            if let Some(c) = ["CACHE", "CACHE_PUBLIC"]
+            if let Some(c) = ["CACHE", "CACHE_PUBLIC", "RATE_LIMIT", "CORS", "TIMEOUT"]
                 .iter()
                 .find_map(|n| lg.items.constant(n))
             {
@@ -1875,6 +1875,8 @@ impl<'a> Project<'a> {
                 error,
                 body_limit: None,
                 uploads: None,
+                guard: None,
+                timeout: None,
                 cache: None,
                 indexed: r.page
                     && !(r.dir.strip_prefix(self.root).unwrap_or(&r.dir).components())
@@ -1932,6 +1934,17 @@ impl<'a> Project<'a> {
         // The page comes first: nothing set these before it.
         self.body_limit(route, &lg.items, &rs, format!("page_{i}"), "", &mut shims)?;
         self.cache(route, &lg.items, &rs, format!("page_{i}"), "", &mut shims)?;
+        let (rel, module) = (self.rel(&rs), format!("page_{i}"));
+        let guard = guards(&lg.items, &rel, &mut shims)?;
+        if !guard.is_empty() {
+            shims.push(format!(
+                "pub fn __guard(cx: &mut ::wisp::Cx) -> ::wisp::Result<()> {{ {guard}Ok(()) }}"
+            ));
+            route.guard = Some(module.clone());
+        }
+        if timeout(&lg.items, &rel, &mut shims)? {
+            route.timeout = Some(module);
+        }
         if let Some(sum) =
             upload_sizes(&lg.items.fns).map_err(|e| format!("{}:{e}", self.rel(&rs)))?
         {
@@ -2141,6 +2154,10 @@ impl<'a> Project<'a> {
                     )
                     .map_err(at)?;
                 }
+                if sf.timeout {
+                    let m = sf.server.module.clone();
+                    set_once(&mut route.timeout, m, "TIMEOUT", page_file).map_err(at)?;
+                }
                 if let Some(public) = sf.cache {
                     let cache = model::Cache {
                         module: sf.server.module.clone(),
@@ -2169,8 +2186,17 @@ impl<'a> Project<'a> {
                     .map(|c| c.public);
                 let segs = &self.tree.routes[i].segs;
                 let segs = &segs[..segs.len() - usize::from(member)];
-                let (handlers, before) = server_handlers(&items, segs, &mut shims)
-                    .map_err(|e| format!("{}:{e}", self.rel(&file)))?;
+                let rel = self.rel(&file);
+                let has_timeout = timeout(&items, &rel, &mut shims)?;
+                if has_timeout {
+                    let m = module.clone();
+                    set_once(&mut route.timeout, m, "TIMEOUT", page_file)
+                        .map_err(|e| format!("{rel}: {e}"))?;
+                }
+                let guard = guards(&items, &rel, &mut shims)?;
+                let (handlers, mut before) = server_handlers(&items, segs, &mut shims)
+                    .map_err(|e| format!("{rel}:{e}"))?;
+                before |= add_guard(&mut shims, &guard, before);
                 let waits = items.fns.iter().any(|f| f.is_async);
                 (self.user_mods).push(UserMod::new(
                     module.clone(),
@@ -2182,6 +2208,7 @@ impl<'a> Project<'a> {
                 servers.push(ServerFile {
                     file: file.clone(),
                     limit: route.body_limit.as_ref() == Some(&module),
+                    timeout: has_timeout,
                     cache,
                     server: model::Server {
                         module,
@@ -3848,14 +3875,22 @@ impl Gen {
                 // live.js asks for the page's error page this way when its
                 // browser code fails while starting (see `boundary` in
                 // live.js): only pages have any.
+                let guard = match &r.guard {
+                    Some(m) if r.page.as_ref().is_some_and(|p| &p.module == m) => {
+                        format!("{m}::__call::__guard(cx)?; ")
+                    }
+                    _ => String::new(),
+                };
+                let (open, close) = within(r, &page.module);
                 self.line(
                     3,
-                    &format!("({i}, Get | Head) => {{ ::wisp::rt::browser_ok(cx)?; {get} }},"),
+                    &format!("({i}, Get | Head) => {open}{{ {guard}::wisp::rt::browser_ok(cx)?; {get} }}{close},"),
                 );
                 allow.extend(["GET", "HEAD"]);
                 let actions: Vec<&FnItem> = page.actions().collect();
                 if !actions.is_empty() {
-                    self.line(3, &format!("({i}, Post) => {{"));
+                    self.line(3, &format!("({i}, Post) => {open}{{"));
+                    self.line(4, &guard);
                     self.line(4, "::wisp::rt::check_origin(cx)?;");
                     self.line(4, &idempotent("()"));
                     self.line(4, "match cx.action() {");
@@ -3878,7 +3913,7 @@ impl Gen {
                     self.line(5, "other => return Err(::wisp::rt::no_action(other)),");
                     self.line(4, "}");
                     self.line(4, &format!("serve_page_{i}(cx, __o).await"));
-                    self.line(3, "}");
+                    self.line(3, &format!("}}{close},"));
                     allow.push("POST");
                 }
             }
@@ -3898,9 +3933,10 @@ impl Gen {
                 if h.op.method == "get" {
                     serve = kept(serve);
                 }
+                let (open, close) = within(r, m);
                 self.line(
                     3,
-                    &format!("({i}, {variants}) => {{ ::wisp::rt::endpoint(cx); {before}{serve} Ok(()) }}"),
+                    &format!("({i}, {variants}) => {open}{{ ::wisp::rt::endpoint(cx); {before}{serve} Ok(()) }}{close}{}", if open.is_empty() { "" } else { "," }),
                 );
                 allow.push(allowed);
             }
@@ -4019,6 +4055,8 @@ struct ServerFile {
     file: PathBuf,
     /// It sets `BODY_LIMIT`.
     limit: bool,
+    /// It sets `TIMEOUT`.
+    timeout: bool,
     /// It sets `CACHE` (`false`) or `CACHE_PUBLIC` (`true`).
     cache: Option<bool>,
     /// All it serves: each of its routes takes its own handlers of it.
@@ -4316,6 +4354,81 @@ fn now_arms<'a>(p: &Project, r: &'a model::Route) -> Vec<(&'a model::Server, &'a
         .collect()
 }
 
+/// A file's `const RATE_LIMIT: u32 = 60;` (requests a minute per client
+/// address) and `const CORS: &str = "*";`, checked: the statements that
+/// enforce them, the first thing its requests run, `RateLimit` in `shims`.
+fn guards(items: &rust_scan::Items, rel: &str, shims: &mut Vec<String>) -> Result<String, String> {
+    let mut out = String::new();
+    let get = |name: &str, ok: fn(&str) -> bool, want: &str| {
+        let Some(c) = items.constant(name) else {
+            return Ok(false);
+        };
+        match ok(&c.ty) && !c.is_static {
+            true => Ok(true),
+            false => Err(format!(
+                "{rel}:{}: `{name}` is a `{}`; make it {want}",
+                c.line, c.ty
+            )),
+        }
+    };
+    let str_ = |t: &str| t.starts_with('&') && t.ends_with("str");
+    if get("CORS", str_, "a `&str`: `const CORS: &str = \"*\";`")? {
+        out.push_str("cx.cors(super::CORS)?; ");
+    }
+    let rate = "a `u32`, the requests a minute per client: `const RATE_LIMIT: u32 = 60;`";
+    if get("RATE_LIMIT", |t| t == "u32", rate)? {
+        shims.push(
+            "pub static __RATE: ::wisp::RateLimit = ::wisp::RateLimit::per_minute(super::RATE_LIMIT);"
+                .into(),
+        );
+        out.push_str("__RATE.check(cx.client_ip())?; ");
+    }
+    Ok(out)
+}
+
+/// A file's `const TIMEOUT: u32 = 5;` (seconds, then a 503), checked.
+fn timeout(items: &rust_scan::Items, rel: &str, shims: &mut Vec<String>) -> Result<bool, String> {
+    let Some(c) = items.constant("TIMEOUT") else {
+        return Ok(false);
+    };
+    if c.ty != "u32" || c.is_static {
+        return Err(format!(
+            "{rel}:{}: `TIMEOUT` is a `{}`; make it a `u32` of seconds: `const TIMEOUT: u32 = 5;`",
+            c.line, c.ty
+        ));
+    }
+    shims.push("pub const TIMEOUT: u32 = super::TIMEOUT;".into());
+    Ok(true)
+}
+
+/// Makes `guard` run first in the file's `before`, which it adds when the
+/// file has none (`has`). Whether it added one.
+fn add_guard(shims: &mut Vec<String>, guard: &str, has: bool) -> bool {
+    const OPEN: &str = "-> ::wisp::Result<Option<::wisp::Response>> { ";
+    if guard.is_empty() {
+        return false;
+    }
+    match shims.iter_mut().find(|s| s.starts_with("pub async fn before(")) {
+        Some(s) => *s = s.replacen(OPEN, &format!("{OPEN}{guard}"), 1),
+        None => shims.push(format!(
+            "pub async fn before(cx: &mut ::wisp::Cx) {OPEN}{guard}Ok(None) }}"
+        )),
+    }
+    !has
+}
+
+/// What goes around an arm of `r` served by `module`: its `TIMEOUT`, if that
+/// module sets it.
+fn within(r: &model::Route, module: &str) -> (String, &'static str) {
+    match &r.timeout {
+        Some(m) if m == module => (
+            format!("::wisp::rt::within({m}::__call::TIMEOUT, async "),
+            ").await",
+        ),
+        _ => (String::new(), ""),
+    }
+}
+
 /// The statement in `handle` that runs an `Answer` shim (an action or
 /// `before`): a `Response` it hands back is sent instead of the page.
 fn answer(shim: &str) -> String {
@@ -4422,6 +4535,8 @@ fn hooks(root: &Path) -> Result<(Option<UserMod>, bool), String> {
             _ => {}
         }
     }
+    let guard = guards(&items, "src/hooks.rs", &mut shims)?;
+    add_guard(&mut shims, &guard, items.function("before").is_some());
     let waits = items.function("before").is_some_and(|f| f.is_async);
     Ok((
         Some(UserMod::new("hooks".into(), file, None, shims, &items)),
@@ -8813,6 +8928,27 @@ mod tests {
             )
             .contains("needs a range")
         );
+    }
+
+    #[test]
+    fn guards_are_checked_and_run_first() {
+        let rs = "const RATE_LIMIT: u32 = 5;\nconst CORS: &str = \"*\";\nconst TIMEOUT: u32 = 2;\nfn get() {}";
+        let code = app("guard-ok", &[("src/routes/+server.rs", rs)]).unwrap();
+        for want in [
+            "pub async fn before(cx: &mut ::wisp::Cx) -> ::wisp::Result<Option<::wisp::Response>> { cx.cors(super::CORS)?; __RATE.check(cx.client_ip())?; Ok(None) }",
+            "pub const TIMEOUT: u32 = super::TIMEOUT;",
+            "::wisp::rt::within(server_0::__call::TIMEOUT, async {",
+        ] {
+            assert!(code.contains(want), "{want}: {code}");
+        }
+        let page = ("src/routes/+page.wisp", "---\nconst RATE_LIMIT: u32 = 5;\n---\nx");
+        let code = app("guard-page", &[page]).unwrap();
+        assert!(code.contains("page_0::__call::__guard(cx)?;"), "{code}");
+        let err = app("guard-ty", &[("src/routes/+server.rs", "const RATE_LIMIT: u8 = 5;\nfn get() {}")]);
+        assert!(err.unwrap_err().contains("make it a `u32`"));
+        let layout = ("src/routes/+layout.wisp", "---\nconst RATE_LIMIT: u32 = 5;\n---\n{@render children()}");
+        let err = app("guard-layout", &[("src/routes/+page.wisp", "x"), layout]);
+        assert!(err.unwrap_err().contains("a layout's `RATE_LIMIT` does nothing"));
     }
 
     #[test]
