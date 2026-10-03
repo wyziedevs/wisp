@@ -228,6 +228,14 @@ in `dist/vercel`. Add `WISP_SECRET` under the project's environment variables.
 **Netlify.** `wisp build --target netlify`, then `npx netlify deploy --prod`
 in `dist/netlify`.
 
+**Vercel Edge and Netlify Edge.** Add `--edge`: `wisp build --target vercel
+--edge` or `--target netlify --edge`. The same wasm app runs in their edge
+runtimes, imported as a module (`app.wasm?module`) and built with
+`opt-level = "z"`. Vercel gets `functions/index.func` with `"runtime":"edge"`;
+Netlify gets `netlify/edge-functions/wisp.mjs`, whose `config` skips the
+`static/` files (`excludedPath`) that the publish folder serves. Deploy as
+above. The edge limits on what works apply (see What works on the edge).
+
 **AWS Amplify.** `wisp build --target node`. Put the folder in
 `.amplify-hosting/compute/default/`, `static/` in `.amplify-hosting/static/`,
 and write a `deploy-manifest.json`. `hosts/amplify.md` in the output has it

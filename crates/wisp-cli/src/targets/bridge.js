@@ -5,15 +5,21 @@ const dec = new TextDecoder();
 const failed = { status: 500, headers: [['content-type', 'text/plain; charset=utf-8']], body: enc.encode('Internal Server Error') };
 
 // A first line, `name: value` lines, an empty line, the body.
+function head(first, headers) {
+  let h = first + '\n';
+  for (const [k, v] of headers) h += `${k}: ${v}\n`;
+  return enc.encode(h + '\n');
+}
+
 function encode(first, headers, body) {
-  let head = first + '\n';
-  for (const [k, v] of headers) head += `${k}: ${v}\n`;
-  const h = enc.encode(head + '\n');
+  const h = head(first, headers);
   const out = new Uint8Array(h.length + body.length);
   out.set(h);
   out.set(body, h.length);
   return out;
 }
+
+const none = new Uint8Array();
 
 function decode(bytes) {
   let end = 0;
@@ -128,10 +134,13 @@ export function wisp(module, env = {}) {
     const x = { pending: new Map(), streams: new Map(), retired: false, work: 0, idlers: [] };
     const mem = () => new Uint8Array(x.exports.memory.buffer);
     const copy = (p, n) => mem().slice(p, p + n);
-    x.put = (bytes) => {
-      const p = x.exports.wisp_buf(bytes.length); // may grow memory: view it after
-      mem().set(bytes, p);
-      return bytes.length;
+    x.put = (bytes, tail = none) => {
+      const n = bytes.length + tail.length;
+      const p = x.exports.wisp_buf(n); // may grow memory: view it after
+      const m = mem();
+      m.set(bytes, p);
+      m.set(tail, p + bytes.length);
+      return n;
     };
     x.idle = () => (x.work ? new Promise((r) => x.idlers.push(r)) : Promise.resolve());
     // Runs `f` once `promise` settles, counted as work until then.
@@ -169,7 +178,7 @@ export function wisp(module, env = {}) {
         reply: (id, p, n) => {
           const done = x.pending.get(id);
           x.pending.delete(id);
-          const r = decode(copy(p, n));
+          const r = decode(mem().subarray(p, p + n)); // only its body is copied
           if (r.first.endsWith(' stream')) {
             r.body = new ReadableStream({
               start: (c) => void x.streams.set(id, c),
@@ -193,7 +202,7 @@ export function wisp(module, env = {}) {
           return 1;
         },
         fetch: (id, p, n) => {
-          const r = decode(copy(p, n));
+          const r = decode(mem().subarray(p, p + n));
           const [method, url] = r.first.split(' ', 2);
           const answer = url === 'wisp:store' ? stored(x, env, method, r.body) : outbound(r);
           x.later(answer, (b) => x.call(() => x.exports.wisp_fetched(id, x.put(b))));
@@ -237,8 +246,8 @@ export function wisp(module, env = {}) {
     }
     const id = (next = (next + 1) & 0x7fffffff);
     const answer = new Promise((resolve) => x.pending.set(id, resolve));
-    const bytes = encode(`${method} ${target} ${peer}`, headers, body);
-    x.call(() => x.exports.wisp_request(id, x.put(bytes)));
+    // Written into the app's memory as it is: no joined copy first.
+    x.call(() => x.exports.wisp_request(id, x.put(head(`${method} ${target} ${peer}`, headers), body)));
     const r = await answer;
     const idle = x.idle();
     return r ? { status: parseInt(r.first) || 500, headers: r.headers, body: r.body, idle } : { ...failed, idle };
@@ -250,7 +259,7 @@ export function wisp(module, env = {}) {
     const url = new URL(request.url);
     const headers = [...request.headers];
     if (!request.headers.has('host')) headers.push(['host', url.host]);
-    const body = new Uint8Array(await request.arrayBuffer());
+    const body = request.body ? new Uint8Array(await request.arrayBuffer()) : none;
     const r = await handle({ method: request.method, target: url.pathname + url.search, peer, headers, body });
     ctx?.waitUntil?.(r.idle);
     const empty = r.status < 200 || r.status === 204 || r.status === 304 || request.method === 'HEAD';

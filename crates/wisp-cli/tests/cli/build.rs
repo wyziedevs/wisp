@@ -509,6 +509,60 @@ fn each_host_gets_its_folder() {
     );
     assert_eq!(read(&out, "public/favicon.svg"), favicon);
 
+    let o = build(&["--target", "vercel", "--edge", "--out", "ve"]);
+    has(&o, &["npx vercel deploy --prebuilt"]);
+    let out = app.join("ve");
+    let func = ".vercel/output/functions/index.func";
+    assert_tree(
+        &out,
+        &[
+            ".vercel/output/config.json",
+            ".vercel/output/static/favicon.svg",
+            &format!("{func}/.vc-config.json"),
+            &format!("{func}/app.wasm"),
+            &format!("{func}/bridge.mjs"),
+            &format!("{func}/index.mjs"),
+        ],
+    );
+    wasm(&format!("ve/{func}/app.wasm"));
+    has(
+        &read(&out, &format!("{func}/.vc-config.json")),
+        &["\"runtime\":\"edge\"", "\"entrypoint\":\"index.mjs\""],
+    );
+    has(
+        &read(&out, ".vercel/output/config.json"),
+        &["\"handle\":\"filesystem\""],
+    );
+    has(
+        &read(&out, &format!("{func}/index.mjs")),
+        &["from './app.wasm?module'"],
+    );
+
+    let o = build(&["--target=netlify", "--edge", "-o", "ne"]);
+    has(&o, &["npx netlify deploy --prod"]);
+    let out = app.join("ne");
+    let dir = "netlify/edge-functions";
+    assert_tree(
+        &out,
+        &[
+            &format!("{dir}/app.wasm"),
+            &format!("{dir}/bridge.mjs"),
+            &format!("{dir}/wisp.mjs"),
+            "netlify.toml",
+            "public/favicon.svg",
+        ],
+    );
+    wasm(&format!("ne/{dir}/app.wasm"));
+    has(
+        &read(&out, &format!("{dir}/wisp.mjs")),
+        &[
+            "from './app.wasm?module'",
+            "path: '/*'",
+            "excludedPath: ['/favicon.svg']",
+        ],
+    );
+    has(&read(&out, "netlify.toml"), &["publish = \"public\""]);
+
     let o = build(&["--target", "node", "--out=node-out"]);
     has(
         &o,

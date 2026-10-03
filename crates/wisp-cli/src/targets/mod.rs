@@ -13,7 +13,13 @@ const NODE: &str = include_str!("node.mjs");
 const WORKER: &str = include_str!("worker.js");
 const DENO: &str = include_str!("deno.ts");
 const NETLIFY: &str = include_str!("netlify.mjs");
+const VERCEL_EDGE: &str = include_str!("vercel_edge.mjs");
+const NETLIFY_EDGE: &str = include_str!("netlify_edge.mjs");
 const BUN: &str = include_str!("bun.mjs");
+
+/// Static files first, then the one function.
+const VERCEL_CONFIG: &str =
+    r#"{"version":3,"routes":[{"handle":"filesystem"},{"src":"/(.*)","dest":"/index"}]}"#;
 
 const WASM_TARGET: &str = "wasm32-unknown-unknown";
 /// Static, so it runs on any Linux: `provided.al2023` and older.
@@ -57,7 +63,7 @@ struct Layout {
     deploy: &'static str,
 }
 
-pub fn build(root: &Path, host: &str, out: &Path) -> Result<(), String> {
+pub fn build(root: &Path, host: &str, edge: bool, out: &Path) -> Result<(), String> {
     // Vercel's folder is `.vercel/output`, which may be in the app's own.
     let written = match host {
         "vercel" => out.join(".vercel/output"),
@@ -94,10 +100,11 @@ pub fn build(root: &Path, host: &str, out: &Path) -> Result<(), String> {
     // machine, and stripped: Lambda loads it on every cold start.
     const LINKER: &str = "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER";
     let strip = ("CARGO_PROFILE_RELEASE_STRIP", "symbols");
-    // Pages bundles the module into a worker with a size limit: the smallest.
+    // Pages and the edge builds have size limits: the smallest.
     let small = ("CARGO_PROFILE_RELEASE_OPT_LEVEL", "z");
     let env: &[(&str, &str)] = match host {
         "pages" => &[small],
+        _ if edge => &[small],
         "lambda" if std::env::var_os(LINKER).is_none() => &[(LINKER, "rust-lld"), strip],
         "lambda" => &[strip],
         _ => &[],
@@ -110,10 +117,12 @@ pub fn build(root: &Path, host: &str, out: &Path) -> Result<(), String> {
     let app = std::fs::read(&app).map_err(|e| format!("{}: {e}", app.display()))?;
     let package = cargo::package_name(root).ok_or("Cargo.toml has no package name.")?;
     let has_static = root.join("static").is_dir();
-    let mut layout = layout(host, &package, app, has_static)?;
+    let skips = skips(&root.join("static"));
+    let mut layout = layout(host, &package, app, has_static, edge, &skips)?;
     if host == "pages" {
-        let routes = routes(&root.join("static"));
-        layout.files.push(("_routes.json", routes.into_bytes()));
+        layout
+            .files
+            .push(("_routes.json", routes(&skips).into_bytes()));
     }
 
     let io = |p: &Path, e: std::io::Error| format!("{}: {e}", p.display());
@@ -140,7 +149,15 @@ pub fn build(root: &Path, host: &str, out: &Path) -> Result<(), String> {
 }
 
 /// `wasm` is the built app: `app.wasm`, or for Lambda its Linux binary.
-fn layout(host: &str, package: &str, wasm: Vec<u8>, has_static: bool) -> Result<Layout, String> {
+/// `edge` is `--edge` (Vercel, Netlify); `skips` the static paths.
+fn layout(
+    host: &str,
+    package: &str,
+    wasm: Vec<u8>,
+    has_static: bool,
+    edge: bool,
+    skips: &[String],
+) -> Result<Layout, String> {
     let bridge = || BRIDGE.as_bytes().to_vec();
     let text = |s: &str| s.as_bytes().to_vec();
     Ok(match host {
@@ -163,10 +180,34 @@ fn layout(host: &str, package: &str, wasm: Vec<u8>, has_static: bool) -> Result<
             statics: None,
             deploy: "deployctl deploy --entrypoint main.ts (or deno run -A main.ts to try it)",
         },
+        "vercel" if edge => Layout {
+            files: vec![
+                (".vercel/output/config.json", text(VERCEL_CONFIG)),
+                (".vercel/output/functions/index.func/.vc-config.json", text(r#"{"runtime":"edge","entrypoint":"index.mjs"}"#)),
+                (".vercel/output/functions/index.func/index.mjs", text(VERCEL_EDGE)),
+                (".vercel/output/functions/index.func/bridge.mjs", bridge()),
+                (".vercel/output/functions/index.func/app.wasm", wasm),
+            ],
+            statics: Some(".vercel/output/static"),
+            deploy: "npx vercel deploy --prebuilt",
+        },
+        "netlify" if edge => {
+            let list: Vec<_> = skips.iter().map(|s| format!("'{s}'")).collect();
+            Layout {
+                files: vec![
+                    ("netlify.toml", text("[build]\npublish = \"public\"\n")),
+                    ("netlify/edge-functions/wisp.mjs", NETLIFY_EDGE.replace("/*SKIP*/", &list.join(", ")).into_bytes()),
+                    ("netlify/edge-functions/bridge.mjs", bridge()),
+                    ("netlify/edge-functions/app.wasm", wasm),
+                ],
+                statics: Some("public"),
+                deploy: "npx netlify deploy --prod",
+            }
+        }
         "vercel" => {
             Layout {
                 files: vec![
-                    (".vercel/output/config.json", text(r#"{"version":3,"routes":[{"handle":"filesystem"},{"src":"/(.*)","dest":"/index"}]}"#)),
+                    (".vercel/output/config.json", text(VERCEL_CONFIG)),
                     (
                         ".vercel/output/functions/index.func/.vc-config.json",
                         text(r#"{"runtime":"nodejs22.x","handler":"index.mjs","launcherType":"Nodejs","shouldAddHelpers":false,"supportsResponseStreaming":true}"#),
@@ -242,16 +283,23 @@ fn pages_worker() -> String {
     )
 }
 
-/// Pages' `_routes.json`: everything reaches the worker but the app's static
-/// files, which its CDN answers.
-fn routes(statics: &Path) -> String {
+/// The paths of the app's static files, a folder as `/name/*`: what the
+/// CDN answers, and the worker or function does not.
+fn skips(statics: &Path) -> Vec<String> {
     let mut skip = Vec::new();
     for e in std::fs::read_dir(statics).into_iter().flatten().flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
         let all = if e.path().is_dir() { "/*" } else { "" };
-        skip.push(format!("\"/{name}{all}\""));
+        skip.push(format!("/{name}{all}"));
     }
     skip.sort();
+    skip
+}
+
+/// Pages' `_routes.json`: everything reaches the worker but the app's static
+/// files.
+fn routes(skips: &[String]) -> String {
+    let skip: Vec<_> = skips.iter().map(|s| format!("\"{s}\"")).collect();
     format!(
         "{{\"version\":1,\"include\":[\"/*\"],\"exclude\":[{}]}}\n",
         skip.join(",")
@@ -393,7 +441,7 @@ mod tests {
             .into_iter()
             .filter(|h| !["lambda", "pages"].contains(h))
         {
-            let l = layout(host, "site", b"\0asm".to_vec(), true).unwrap();
+            let l = layout(host, "site", b"\0asm".to_vec(), true, false, &[]).unwrap();
             let paths: Vec<_> = l.files.iter().map(|(p, _)| *p).collect();
             assert!(paths.iter().any(|p| p.ends_with("bridge.mjs")), "{host}");
             assert!(
@@ -403,7 +451,7 @@ mod tests {
                 "{host}"
             );
         }
-        let cf = layout("cloudflare", "site", Vec::new(), true).unwrap();
+        let cf = layout("cloudflare", "site", Vec::new(), true, false, &[]).unwrap();
         let wrangler = &cf
             .files
             .iter()
@@ -413,14 +461,14 @@ mod tests {
         assert!(String::from_utf8_lossy(wrangler).contains("name = \"site\""));
         assert!(
             !String::from_utf8_lossy(
-                &layout("cloudflare", "site", Vec::new(), false)
+                &layout("cloudflare", "site", Vec::new(), false, false, &[])
                     .unwrap()
                     .files[3]
                     .1
             )
             .contains("[assets]")
         );
-        assert!(layout("heroku", "site", Vec::new(), true).is_err());
+        assert!(layout("heroku", "site", Vec::new(), true, false, &[]).is_err());
     }
 
     #[test]
@@ -432,7 +480,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("wisp-routes-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("img")).unwrap();
         std::fs::write(dir.join("a.css"), "").unwrap();
-        let r = routes(&dir);
+        let r = routes(&skips(&dir));
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(
             r,
@@ -443,7 +491,7 @@ mod tests {
     #[test]
     fn lambda_gets_an_executable_bootstrap_zip() {
         assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
-        let l = layout("lambda", "site", b"\x7fELF".to_vec(), true).unwrap();
+        let l = layout("lambda", "site", b"\x7fELF".to_vec(), true, false, &[]).unwrap();
         let (path, z) = &l.files[0];
         assert_eq!(*path, "bootstrap.zip");
         assert!(z.starts_with(b"PK\x03\x04") && z.windows(13).any(|w| w == b"bootstrap\x7fELF"));

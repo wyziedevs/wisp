@@ -302,10 +302,12 @@ struct BuildOptions {
     client: bool,
     /// `--sourcemap`: source maps for the browser modules, as in dev.
     sourcemap: bool,
+    /// `--edge`: Vercel's or Netlify's edge runtime, not their Node functions.
+    edge: bool,
 }
 
 fn build_options(args: &[String]) -> Result<BuildOptions, String> {
-    let usage = "wisp build takes --static or --spa [--out <folder>], --docker [--force], --target <host> [--out <folder>], --client ts [--out <file>] and --sourcemap.";
+    let usage = "wisp build takes --static or --spa [--out <folder>], --docker [--force], --target <host> [--edge] [--out <folder>], --client ts [--out <file>] and --sourcemap.";
     let mut o = BuildOptions::default();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
@@ -322,6 +324,7 @@ fn build_options(args: &[String]) -> Result<BuildOptions, String> {
             "--docker" => o.docker = true,
             "--force" => o.force = true,
             "--sourcemap" => o.sourcemap = true,
+            "--edge" => o.edge = true,
             "--client" | "--client=ts" => {
                 if arg == "--client" && args.next().map(String::as_str) != Some("ts") {
                     return Err(format!(
@@ -357,6 +360,8 @@ fn build_options(args: &[String]) -> Result<BuildOptions, String> {
         Some("--out goes with --static, --target or --client.")
     } else if o.sourcemap && (o.client || o.target.is_some()) {
         Some("--sourcemap goes with a binary build, or --static.")
+    } else if o.edge && !matches!(o.target.as_deref(), Some("vercel" | "netlify")) {
+        Some("--edge goes with --target vercel or --target netlify.")
     } else if o.force && !o.docker {
         Some("--force goes with --docker.")
     } else {
@@ -474,7 +479,7 @@ fn build(root: &Path, o: &BuildOptions) -> Result<(), String> {
             _ => out(Some(host)),
         };
         if host != "native" {
-            return targets::build(root, host, &out);
+            return targets::build(root, host, o.edge, &out);
         }
     }
     let imports = check(root)?;
@@ -588,6 +593,8 @@ mod tests {
             opts("--target=node --out app").unwrap().out.as_deref(),
             Some("app")
         );
+        assert!(opts("-t vercel --edge").unwrap().edge);
+        assert!(opts("--edge --target=netlify").unwrap().edge);
         assert!(opts("-t static").unwrap().static_site);
         assert!(opts("--target docker").unwrap().docker);
         assert_eq!(opts("-t native").unwrap().target.as_deref(), Some("native"));
@@ -600,6 +607,8 @@ mod tests {
             "--target=",
             "--target node --static",
             "--docker -t deno",
+            "--edge",
+            "-t node --edge",
         ] {
             assert!(opts(bad).is_err(), "{bad}");
         }
