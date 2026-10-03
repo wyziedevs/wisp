@@ -704,6 +704,27 @@ pub fn specifiers(
     Ok(out)
 }
 
+/// The module names a module's top-level `import`s and `export … from`s
+/// load before it runs, in order: not `import('…')`, which waits.
+pub fn static_specs(src: &str) -> Vec<String> {
+    let t = tokens(src);
+    let mut out = Vec::new();
+    for k in 1..t.len() {
+        let (tok, prev) = (t[k], t[k - 1]);
+        if tok.kind == Kind::String
+            && tok.depth == 0
+            && matches!(prev.text(src), "from" | "import")
+            && !prev.member
+        {
+            let raw = tok.text(src);
+            if raw.len() >= 2 {
+                out.push(raw[1..raw.len() - 1].to_string());
+            }
+        }
+    }
+    out
+}
+
 /// The top-level `import … from '…'` and `import '…'` statements of a
 /// script, as byte ranges, with their `with { … }` and `;` if any. Dynamic
 /// `import(…)` and `import.meta` are not statements.
@@ -2963,6 +2984,13 @@ mod tests {
 
     fn kinds(src: &str) -> Vec<(Kind, &str)> {
         tokens(src).iter().map(|t| (t.kind, t.text(src))).collect()
+    }
+
+    #[test]
+    fn static_imports_but_not_import_calls() {
+        let src = "import a from \"/a.js\"\nimport \"/b.js\";\nexport * from '/c.js'\n\
+                   const d = import(\"/d.js\")\nfunction f() { return import('/e.js') }\nx.import('/f.js')";
+        assert_eq!(static_specs(src), ["/a.js", "/b.js", "/c.js"]);
     }
 
     /// Declarations, helpers that end with the instance, logs and writes
