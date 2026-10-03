@@ -228,7 +228,7 @@ Both sign in. `wisp::users(&db::USERS)` in `init` makes it `cx.user()`.
 `wisp::login`/`signup` are these without a Cx. Hashes: PBKDF2-SHA256, ~0.2 s
 off the worker (`RateLimit` sign-ins); by hand `wisp::password::{hash, check}`.
 `cx.need(&USERS, |u| u.admin)?` is the Row, 403 if not allowed. More:
-`docs/auth.md` (`token_for`/`untoken_for` links, `totp`, `oauth`, `mail`,
+`docs/auth.md` (`token`/`untoken` links, `totp`, `oauth`, `mail`,
 `fetch`).
 
 ## hooks.rs

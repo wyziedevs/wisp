@@ -1,8 +1,8 @@
 //! Signed expiring tokens: a password reset, an email check, a magic link.
 //!
 //! ```ignore
-//! let link = format!("/reset?t={}", wisp::token_for("reset", &user.id, Duration::from_secs(3600)));
-//! let id: u64 = wisp::untoken_for("reset", &t)?;   // 400 unless it is ours, this purpose, and fresh
+//! let link = format!("/reset?t={}", wisp::token("reset", &user.id, Duration::from_secs(3600)));
+//! let id: u64 = wisp::untoken("reset", &t)?;   // 400 unless it is ours, this purpose, and fresh
 //! ```
 //!
 //! A token is `payload.expiry.signature`: HMAC-SHA256 under `WISP_SECRET`
@@ -28,14 +28,10 @@ const NAME: &str = "wisp token";
 /// Longest token read: a forged one costs no more than this to refuse.
 const MAX: usize = 4096;
 
-/// A token holding `value`, good for `ttl`.
-pub fn token(value: &(impl Json + ?Sized), ttl: Duration) -> String {
-    token_for("", value, ttl)
-}
-
-/// [`token`] for one `purpose` (`"reset"`, `"verify"`): [`untoken_for`] with
-/// another purpose refuses it. Panics on `.` or a newline in `purpose`.
-pub fn token_for(purpose: &str, value: &(impl Json + ?Sized), ttl: Duration) -> String {
+/// A token holding `value`, good for `ttl`, for one `purpose` (`"reset"`,
+/// `"verify"`, or `""` for none): [`untoken`] with another purpose refuses
+/// it. Panics on `.` or a newline in `purpose`.
+pub fn token(purpose: &str, value: &(impl Json + ?Sized), ttl: Duration) -> String {
     assert!(
         !purpose.contains(['.', '\n']),
         "a token's purpose is a word, not {purpose:?}"
@@ -51,14 +47,9 @@ pub fn token_for(purpose: &str, value: &(impl Json + ?Sized), ttl: Duration) -> 
     out
 }
 
-/// The value in `token`, if Wisp made it, for no purpose, and it has not
-/// expired; else a 400.
-pub fn untoken<T: FromJson>(token: &str) -> Result<T> {
-    untoken_for("", token)
-}
-
-/// [`untoken`] for `purpose`, which [`token_for`] was given.
-pub fn untoken_for<T: FromJson>(purpose: &str, token: &str) -> Result<T> {
+/// The value in `token`, if Wisp made it for `purpose`, which [`token`] was
+/// given, and it has not expired; else a 400.
+pub fn untoken<T: FromJson>(purpose: &str, token: &str) -> Result<T> {
     read(purpose, token).ok_or_else(|| {
         Error::new(400, "This link is not valid, or has expired").with_code("bad_token")
     })
@@ -106,13 +97,10 @@ mod tests {
 
     #[test]
     fn round_trip() {
-        let t = token(&42u64, HOUR);
-        assert_eq!(untoken::<u64>(&t).unwrap(), 42);
-        let s = token_for("reset", "ada@example.com", HOUR);
-        assert_eq!(
-            untoken_for::<String>("reset", &s).unwrap(),
-            "ada@example.com"
-        );
+        let t = token("", &42u64, HOUR);
+        assert_eq!(untoken::<u64>("", &t).unwrap(), 42);
+        let s = token("reset", "ada@example.com", HOUR);
+        assert_eq!(untoken::<String>("reset", &s).unwrap(), "ada@example.com");
         assert!(!s.contains(['+', '/', '=']), "safe in a URL");
     }
 
@@ -120,36 +108,39 @@ mod tests {
     fn expired_forged_and_wrong_purpose_are_all_the_same_400() {
         let fresh = made(NAME, "", "1", unix_now());
         assert_eq!(
-            untoken::<u64>(&fresh).unwrap(),
+            untoken::<u64>("", &fresh).unwrap(),
             1,
             "this second still counts"
         );
         let gone = made(NAME, "", "1", unix_now() - 1);
-        let e = untoken::<u64>(&gone).unwrap_err();
+        let e = untoken::<u64>("", &gone).unwrap_err();
         assert_eq!((e.status(), e.code()), (400, "bad_token"));
 
-        let reset = token_for("reset", &7u64, HOUR);
-        let wrong = untoken_for::<u64>("verify", &reset).unwrap_err();
+        let reset = token("reset", &7u64, HOUR);
+        let wrong = untoken::<u64>("verify", &reset).unwrap_err();
         assert_eq!(wrong.message(), e.message());
-        assert!(untoken::<u64>(&reset).is_err(), "no purpose is a purpose");
+        assert!(
+            untoken::<u64>("", &reset).is_err(),
+            "no purpose is a purpose"
+        );
 
         // Another payload or expiry under the same signature.
-        let other = token_for("reset", &8u64, HOUR);
+        let other = token("reset", &8u64, HOUR);
         let a: Vec<_> = reset.split('.').collect();
         let b: Vec<_> = other.split('.').collect();
         let spliced = format!("{}.{}.{}", b[0], a[1], a[2]);
-        assert!(untoken_for::<u64>("reset", &spliced).is_err());
+        assert!(untoken::<u64>("reset", &spliced).is_err());
         let longer = format!("{}.{}.{}", a[0], unix_now() + 999_999, a[2]);
-        assert!(untoken_for::<u64>("reset", &longer).is_err());
+        assert!(untoken::<u64>("reset", &longer).is_err());
     }
 
     /// A signed cookie's signature is not a token's.
     #[test]
     fn a_signed_cookie_is_not_a_token() {
         let forged = made("token", "", "5", unix_now() + 999);
-        assert!(untoken::<u64>(&forged).is_err());
+        assert!(untoken::<u64>("", &forged).is_err());
         assert_eq!(
-            untoken::<u64>(&made(NAME, "", "5", unix_now() + 999)).unwrap(),
+            untoken::<u64>("", &made(NAME, "", "5", unix_now() + 999)).unwrap(),
             5
         );
     }
@@ -157,18 +148,18 @@ mod tests {
     #[test]
     fn mangled_tokens_are_refused_and_never_panic() {
         use crate::fuzz::{Rng, mutate};
-        let good = token_for("x", &99u64, HOUR);
+        let good = token("x", &99u64, HOUR);
         let mut rng = Rng::new(9);
         for _ in 0..20_000 {
             let mut b = good.clone().into_bytes();
             mutate(&mut rng, &mut b);
             if let Ok(s) = String::from_utf8(b) {
-                let got = untoken_for::<u64>("x", &s).ok();
+                let got = untoken::<u64>("x", &s).ok();
                 assert!(got.is_none() || got == Some(99), "{s:?}");
             }
         }
         for s in ["", ".", "..", "...", "a.b.c", &"A".repeat(MAX + 1)] {
-            assert!(untoken::<u64>(s).is_err());
+            assert!(untoken::<u64>("", s).is_err());
         }
     }
 }
