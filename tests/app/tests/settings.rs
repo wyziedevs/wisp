@@ -78,6 +78,18 @@ fn a_setting_that_is_not_valid_stops_the_server_and_says_why() {
         ),
         (("WISP_BODY_LIMIT", "-5"), "WISP_BODY_LIMIT is \"-5\""),
         (("WISP_BODY_LIMIT", "1TB"), "WISP_BODY_LIMIT is \"1TB\""),
+        (
+            ("WISP_LOG", "yaml"),
+            "WISP_LOG is \"yaml\", which is not json or off",
+        ),
+        (
+            ("OTEL_EXPORTER_OTLP_ENDPOINT", "https://otel.example"),
+            "Wisp sends OTLP over plain http://",
+        ),
+        (
+            ("OTEL_EXPORTER_OTLP_ENDPOINT", "http://"),
+            "which is not an http:// address",
+        ),
         (("WISP_MAX_CONNS", "x"), "WISP_MAX_CONNS is \"x\""),
         (("WISP_WS_IDLE", "x"), "WISP_WS_IDLE is \"x\""),
         (

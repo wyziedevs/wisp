@@ -158,6 +158,28 @@ scrape_configs:
 The counters are atomics, one row per route made at start: counting
 takes no lock and allocates nothing.
 
+`OTEL_EXPORTER_OTLP_ENDPOINT` (such as `http://localhost:4318`) sends
+OpenTelemetry traces over OTLP/HTTP as JSON to `<endpoint>/v1/traces`
+(`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is used as it is): one server span
+per request, named `GET /blog/[slug]`, with the method, path, route and
+status. A request's `traceparent` is continued (its sampled flag
+respected), and the reply carries the request's own, which `WISP_LOG=json`
+lines name as `trace`. Inside a handler:
+
+```rust
+let _s = wisp::span("charge card"); // a child span, until dropped
+let t = wisp::traceparent(); // Some("00-…-01"): the header for a call to another service
+```
+
+Spans are sent in batches of up to 512 by a thread of their own, at
+least every `OTEL_BSP_SCHEDULE_DELAY` ms (5000). `OTEL_SERVICE_NAME`
+names the service (the binary's name otherwise), and
+`OTEL_EXPORTER_OTLP_HEADERS` (`api-key=…,x=…`) adds headers. A collector
+that is down or slow costs requests nothing: up to 2048 spans wait, more
+are dropped, and stderr says so once a minute. The export is plain HTTP:
+for a TLS endpoint, run an OpenTelemetry Collector beside the app and let
+it forward. No opentelemetry crates: the OTLP JSON is written by hand.
+
 ## Edge and serverless: `--target`
 
 ```sh

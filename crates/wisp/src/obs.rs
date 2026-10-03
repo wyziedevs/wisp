@@ -1,10 +1,12 @@
 //! What the server tells an operator about its requests, each part off
 //! until its variable is set: `WISP_LOG=json`, a JSON line a request on
-//! stdout; `METRICS_KEY`, Prometheus text at `/_wisp/metrics`. With none
+//! stdout; `METRICS_KEY`, Prometheus text at `/_wisp/metrics`;
+//! `OTEL_EXPORTER_OTLP_ENDPOINT`, a span a request (`otel.rs`). With none
 //! set, [`OBS`] stays empty and a request pays one load of it.
 
 use crate::Cx;
 use crate::http::{Body, Reply};
+use crate::otel::{self, Ctx, Otel};
 use crate::rt::RouteFacts;
 use std::borrow::Cow;
 use std::io::Write;
@@ -22,6 +24,8 @@ struct Obs {
     json: bool,
     /// `METRICS_KEY`.
     metrics: Option<Metrics>,
+    /// `OTEL_EXPORTER_OTLP_ENDPOINT`.
+    otel: Option<Otel>,
     /// The app's routes, for their patterns.
     routes: &'static [RouteFacts],
     started: Instant,
@@ -44,75 +48,175 @@ pub(crate) fn init(routes: &'static [RouteFacts]) {
         let metrics = crate::setting::<String>("METRICS_KEY", "a key")
             .filter(|k| !k.is_empty())
             .map(|key| Metrics::new(key, routes.len()));
-        if json || metrics.is_some() {
-            let started = Instant::now();
-            let _ = OBS.set(Obs {
-                json,
-                metrics,
-                routes,
-                started,
-            });
+        let otel = Otel::from_env();
+        if !json && metrics.is_none() && otel.is_none() {
+            return;
+        }
+        let started = Instant::now();
+        let _ = OBS.set(Obs {
+            json,
+            metrics,
+            otel,
+            routes,
+            started,
+        });
+        if let Some(o) = self::otel() {
+            let spawned = std::thread::Builder::new()
+                .name("wisp-otlp".into())
+                .spawn(|| o.run());
+            if let Err(e) = spawned {
+                // Spans fill the queue, then are dropped: requests go on.
+                crate::http::log(format_args!("wisp: could not start the OTLP exporter: {e}"));
+            }
         }
     });
 }
 
+/// The trace exporter, when traces are on.
+pub(crate) fn otel() -> Option<&'static Otel> {
+    OBS.get()?.otel.as_ref()
+}
+
+/// Sends the spans still queued, as the server stops.
+#[cfg(not(target_arch = "wasm32"))] // the host ends instances
+pub(crate) fn flush() {
+    if let Some(o) = otel() {
+        o.flush();
+    }
+}
+
 /// A request under way, while something watches: what its line needs,
-/// taken when it is decided, for when it is sent.
+/// taken when it is decided, for when it is sent. Small, so a request
+/// moves little of it; metrics alone need no more.
 pub(crate) struct Pending {
     started: Instant,
     route: Option<usize>,
+    /// For the log line and the span.
+    more: Option<Box<More>>,
+}
+
+struct More {
     method: &'static str,
     ip: IpAddr,
     path: String,
     id: String,
+    /// Its span, with traces on, and the span it continues.
+    ctx: Option<Ctx>,
+    parent: Option<u64>,
 }
 
-/// The start of the request in `cx`, routed to `route`, if anything
-/// watches. `WISP_LOG=json` gives it an id, as `WISP_REQUEST_ID=on` does.
+/// Whether anything watches requests: one load.
 #[inline]
-pub(crate) fn begin(cx: &Cx, route: Option<usize>) -> Option<Pending> {
-    OBS.get().map(|o| o.begin(cx, route))
+pub(crate) fn on() -> bool {
+    OBS.get().is_some()
 }
 
-/// The request `p` answered, with `status` and a body of `bytes`.
-#[inline]
-pub(crate) fn finish(p: Pending, status: u16, bytes: usize) {
+// The rest is out of line, so the request's own code is as it was
+// without it: callers check `on()` or the slot first.
+
+/// Starts watching the request in `cx`, routed to `route`, into `slot`.
+/// `WISP_LOG=json` gives it an id, as `WISP_REQUEST_ID=on` does.
+#[cold]
+#[inline(never)]
+pub(crate) fn begin(cx: &Cx, route: Option<usize>, slot: &mut Option<Pending>) {
     if let Some(o) = OBS.get() {
+        *slot = Some(o.begin(cx, route));
+    }
+}
+
+/// The span of the request `p` watches, if traces are on.
+fn ctx(p: &Option<Pending>) -> Option<Ctx> {
+    p.as_ref()?.more.as_ref()?.ctx
+}
+
+/// Makes the request's span current while its handler runs, for
+/// `wisp::span`.
+#[cold]
+#[inline(never)]
+pub(crate) fn hand(p: &Option<Pending>) {
+    if let Some(c) = ctx(p) {
+        otel::hand(c);
+    }
+}
+
+/// Gives the reply the request's `traceparent`, with traces on.
+#[cold]
+#[inline(never)]
+pub(crate) fn tag(p: &Option<Pending>, reply: &mut Reply) {
+    if let Some(c) = ctx(p) {
+        let name = Cow::Borrowed("traceparent");
+        reply.headers.push((name, Cow::Owned(c.header())));
+    }
+}
+
+/// The request in `slot` answered, with `status` and a body of `bytes`.
+#[cold]
+#[inline(never)]
+pub(crate) fn finish(slot: &mut Option<Pending>, status: u16, bytes: usize) {
+    if let (Some(p), Some(o)) = (slot.take(), OBS.get()) {
         o.finish(p, status, bytes);
     }
 }
 
 impl Obs {
-    #[inline(never)]
     fn begin(&self, cx: &Cx, route: Option<usize>) -> Pending {
         if let Some(m) = &self.metrics {
             m.in_flight.fetch_add(1, Relaxed);
         }
-        // Metrics alone take nothing that allocates.
-        let (path, id) = match self.json {
-            true => (cx.path().to_owned(), cx.request_id().to_owned()),
-            false => (String::new(), String::new()),
-        };
+        let more = (self.json || self.otel.is_some()).then(|| {
+            let (ctx, parent) = match self.otel {
+                Some(_) => {
+                    let (c, parent) = Ctx::begin(cx.header("traceparent"));
+                    (Some(c), parent)
+                }
+                None => (None, None),
+            };
+            Box::new(More {
+                method: cx.method.as_str(),
+                ip: cx.client_ip(),
+                path: cx.path().to_owned(),
+                id: match self.json {
+                    true => cx.request_id().to_owned(),
+                    false => String::new(),
+                },
+                ctx,
+                parent,
+            })
+        });
         Pending {
             started: Instant::now(),
             route,
-            method: cx.method.as_str(),
-            ip: cx.client_ip(),
-            path,
-            id,
+            more,
         }
     }
 
-    #[inline(never)]
-    fn finish(&self, p: Pending, status: u16, bytes: usize) {
+    fn finish(&self, mut p: Pending, status: u16, bytes: usize) {
         if let Some(m) = &self.metrics {
             m.record(p.route, status, p.started.elapsed());
         }
+        let Some(mut more) = p.more.take() else {
+            return;
+        };
+        let route = p.route.and_then(|r| self.routes.get(r)).map(|r| r.pattern);
         if self.json {
-            let route = p.route.and_then(|r| self.routes.get(r)).map(|r| r.pattern);
-            let line = line(&p, route, status, bytes, unix_millis());
+            let line = line(&more, p.started, route, status, bytes, unix_millis());
             // A reader that is gone loses the line, never the request.
             let _ = std::io::stdout().lock().write_all(line.as_bytes());
+        }
+        if let (Some(o), Some(ctx)) = (&self.otel, more.ctx.filter(|c| c.sampled)) {
+            o.push(otel::Span {
+                ctx,
+                parent: more.parent,
+                name: "",
+                start: p.started,
+                end: Instant::now(),
+                server: Some(otel::Server {
+                    method: more.method,
+                    route,
+                    path: std::mem::take(&mut more.path),
+                    status,
+                }),
+            });
         }
     }
 }
@@ -295,27 +399,38 @@ fn unix_millis() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
-/// The JSON line of `p`, ended by a newline.
-fn line(p: &Pending, route: Option<&str>, status: u16, bytes: usize, millis: u64) -> String {
+/// The JSON line of the request `m` begun at `started`, ended by a newline.
+fn line(
+    m: &More,
+    started: Instant,
+    route: Option<&str>,
+    status: u16,
+    bytes: usize,
+    millis: u64,
+) -> String {
     use crate::Json;
     use std::fmt::Write;
-    let mut s = String::with_capacity(160 + p.path.len() + p.id.len());
+    let mut s = String::with_capacity(160 + m.path.len() + m.id.len());
     s.push_str("{\"time\":\"");
     rfc3339(&mut s, millis);
-    let _ = write!(s, "\",\"method\":\"{}\",\"route\":", p.method);
+    let _ = write!(s, "\",\"method\":\"{}\",\"route\":", m.method);
     match route {
         Some(r) => r.json(&mut s),
         None => s.push_str("null"),
     }
     s.push_str(",\"path\":");
-    p.path.json(&mut s);
-    let ms = p.started.elapsed().as_secs_f64() * 1000.0;
+    m.path.json(&mut s);
+    let ms = started.elapsed().as_secs_f64() * 1000.0;
     let _ = write!(
         s,
         ",\"status\":{status},\"ms\":{ms:.3},\"bytes\":{bytes},\"id\":"
     );
-    p.id.json(&mut s);
-    let _ = writeln!(s, ",\"ip\":\"{}\"}}", p.ip);
+    m.id.json(&mut s);
+    let _ = write!(s, ",\"ip\":\"{}\"", m.ip);
+    if let Some(c) = m.ctx {
+        let _ = write!(s, ",\"trace\":\"{:016x}{:016x}\"", c.trace[0], c.trace[1]);
+    }
+    s.push_str("}\n");
     s
 }
 
@@ -333,14 +448,14 @@ fn rfc3339(s: &mut String, millis: u64) {
 mod tests {
     use super::*;
 
-    fn pending(path: &str) -> Pending {
-        Pending {
-            started: Instant::now(),
-            route: Some(0),
+    fn more(path: &str) -> More {
+        More {
             method: "GET",
             ip: IpAddr::from([10, 0, 0, 7]),
             path: path.into(),
             id: "ab\"c".into(),
+            ctx: None,
+            parent: None,
         }
     }
 
@@ -402,7 +517,14 @@ mod tests {
 
     #[test]
     fn a_line_is_one_json_object() {
-        let text = line(&pending("/blog/\"x\"\n"), Some("/blog/[slug]"), 404, 12, 0);
+        let text = line(
+            &more("/blog/\"x\"\n"),
+            Instant::now(),
+            Some("/blog/[slug]"),
+            404,
+            12,
+            0,
+        );
         assert!(
             text.ends_with("}\n") && text.matches('\n').count() == 1,
             "{text}"
@@ -430,7 +552,7 @@ mod tests {
                 .and_then(|v| v.as_f64())
                 .is_some_and(|ms| ms >= 0.0)
         );
-        let unrouted = line(&pending("/x"), None, 404, 0, 0);
+        let unrouted = line(&more("/x"), Instant::now(), None, 404, 0, 0);
         assert!(
             crate::json::parse(&unrouted)
                 .unwrap()

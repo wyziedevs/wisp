@@ -45,6 +45,7 @@ mod lambda;
 mod limit;
 mod live;
 mod obs;
+mod otel;
 pub mod password;
 mod policy;
 mod pwa;
@@ -85,6 +86,7 @@ pub use json::{FromJson, Value, from_json, to_json};
 #[cfg(not(target_arch = "wasm32"))]
 pub use limit::RateLimit;
 pub use live::{ClientModule, Json};
+pub use otel::{SpanGuard, span, traceparent};
 pub use pwa::app_manifest;
 pub use rest::Resource;
 pub use session::{sign_in_page, sign_out_everywhere};
@@ -243,6 +245,7 @@ pub fn run<A: App>() {
     }
     let served = http::run::<A>(addr, threads);
     store::files::flush();
+    obs::flush();
     if let Err(e) = served {
         fail(&e.to_string());
     }

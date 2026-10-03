@@ -505,12 +505,16 @@ takes the no-wait fast path off every route.
 
 ## Observability (env vars, no app code)
 
-`WISP_LOG=json`: one line per request on stdout, `{"time","method","route"
-(`/blog/[slug]`, or null),"path" (no query),"status","ms","bytes","id","ip"}`;
-every request then gets an `x-request-id`. `METRICS_KEY=k`:
+`WISP_LOG=json`: one JSON line per request on stdout with `time method
+route path status ms bytes id ip` (`route` is `/blog/[slug]` or null, `path`
+has no query); every request then gets an `x-request-id`. `METRICS_KEY=k`:
 `/_wisp/metrics` (Prometheus, `Authorization: Bearer k`; 404 unset):
 `wisp_requests_total{route,status="2xx"}`, `wisp_request_duration_seconds`
 histogram per route, `wisp_requests_in_flight`, `wisp_uptime_seconds`.
+`OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318`: a span per request
+(OTLP/HTTP JSON, batched; `traceparent` continued and sent back). Own
+spans: `let _s = wisp::span("charge card");` (ends when dropped);
+`wisp::traceparent()` is the header for a call to another service.
 
 ## Gotchas
 
