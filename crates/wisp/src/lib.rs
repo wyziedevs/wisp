@@ -72,7 +72,7 @@ pub use session::{sign_in_page, sign_out_everywhere};
 pub use sign::{hex, hmac_sha256};
 pub use store::{Store, store};
 pub use table::{Page, Row, Table};
-pub use wisp_macros::{Cookie, FromJson, Json, Rest, action};
+pub use wisp_macros::{Cookie, FromJson, Json, Rest, action, model};
 pub use ws::{Message, WebSocket};
 
 use std::any::{Any, TypeId};
@@ -94,7 +94,7 @@ pub mod prelude {
     pub use crate::RateLimit;
     pub use crate::{
         Cookie, CookieOptions, Cx, Email, Error, FromJson, Image, Json, KB, MB, Method, OrStatus,
-        Response, Rest, Result, Row, SameSite, Shared, Table, Value, action, error, invalid,
+        Response, Rest, Result, Row, SameSite, Shared, Table, Value, action, error, invalid, model,
         redirect,
     };
 }
