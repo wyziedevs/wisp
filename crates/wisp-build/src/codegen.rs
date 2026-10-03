@@ -2318,7 +2318,7 @@ impl<'a> Project<'a> {
             let source = if self.release { js::runtime(&src) } else { src };
             JsFile {
                 path: REMOTE_JS_PATH.into(),
-                hash: format!("{:016x}", fnv1a(source.as_bytes())),
+                hash: image::hash(source.as_bytes()),
                 source,
                 file: None,
             }
@@ -2339,7 +2339,7 @@ impl<'a> Project<'a> {
             for (k, v) in &self.env {
                 h.extend_from_slice(format!("{k}={v}\0").as_bytes());
             }
-            format!("{:016x}", fnv1a(&h))
+            image::hash(&h)
         };
         let specs = Specs {
             remote: remote.as_ref().map(|f| format!("{}?v={}", f.path, f.hash)),
@@ -2354,7 +2354,7 @@ impl<'a> Project<'a> {
         let extra = {
             let src = rewrite_specifiers(EXTRA_JS, &specs, None)?;
             let source = if self.release { js::runtime(&src) } else { src };
-            let hash = format!("{:016x}", fnv1a(source.as_bytes()));
+            let hash = image::hash(source.as_bytes());
             JsFile {
                 path: EXTRA_JS_PATH.into(),
                 hash,
@@ -2438,7 +2438,7 @@ impl<'a> Project<'a> {
                         &path,
                         &mut js_files,
                     )?;
-                    let hash = format!("{:016x}", fnv1a(source.as_bytes()));
+                    let hash = image::hash(source.as_bytes());
                     let url = format!("{path}?v={hash}");
                     js_files.push(JsFile {
                         path,
@@ -2512,7 +2512,7 @@ impl<'a> Project<'a> {
                     .filter(|&j| seen[j])
                     .filter_map(|j| clients[j].as_ref().map(|c| c.hash.as_str()))
                     .collect();
-                format!("{:016x}", fnv1a(all.as_bytes()))
+                image::hash(all.as_bytes())
             })
             .collect();
         for (k, c) in clients.iter_mut().enumerate() {
@@ -2541,7 +2541,7 @@ impl<'a> Project<'a> {
             for (f, src) in files {
                 web.js_files.push(JsFile {
                     path: format!("{NPM_MODULES}{f}"),
-                    hash: format!("{:016x}", fnv1a(src.as_bytes())),
+                    hash: image::hash(src.as_bytes()),
                     source: String::new(),
                     file: Some(dir.join(&f)),
                 });
@@ -2639,7 +2639,7 @@ impl<'a> Project<'a> {
                 None => {
                     let src = rewrite_specifiers(wisp_shared::ELEMENT_JS, specs, None)?;
                     let source = if self.release { js::runtime(&src) } else { src };
-                    let hash = format!("{:016x}", fnv1a(source.as_bytes()));
+                    let hash = image::hash(source.as_bytes());
                     let url = format!("{ELEMENT_JS_PATH}?v={hash}");
                     files.push(JsFile {
                         path: ELEMENT_JS_PATH.into(),
@@ -2661,7 +2661,7 @@ impl<'a> Project<'a> {
             );
             files.push(JsFile {
                 path: format!("{ELEMENTS}{tag}.js"),
-                hash: format!("{:016x}", fnv1a(source.as_bytes())),
+                hash: image::hash(source.as_bytes()),
                 source,
                 file: None,
             });
@@ -3047,8 +3047,7 @@ impl Gen {
             }
             text.extend_from_slice(styles.as_bytes());
         }
-        let css_hash =
-            (css.is_some() || !styles.is_empty()).then(|| format!("{:016x}", fnv1a(&text)));
+        let css_hash = (css.is_some() || !styles.is_empty()).then(|| image::hash(&text));
         if !p.release {
             return Ok(Assets { css_hash, files });
         }
@@ -4744,7 +4743,7 @@ fn hash_files(files: &[PathBuf]) -> Vec<Result<String, String>> {
     let per = files.len().div_ceil(cores).max(1);
     let hash = |f: &PathBuf| {
         fs::read(f)
-            .map(|b| format!("{:016x}", fnv1a(&b)))
+            .map(|b| image::hash(&b))
             .map_err(|e| format!("{}: {e}", f.display()))
     };
     std::thread::scope(|s| {
@@ -6960,7 +6959,7 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
     } else {
         let _ = writeln!(source, "//# sourceURL=wisp:///{}", t.rel);
     }
-    let hash = format!("{:016x}", fnv1a(source.as_bytes()));
+    let hash = image::hash(source.as_bytes());
     let blob = if used.is_empty() {
         vec![Piece::Text("{}".into())]
     } else {
@@ -7339,7 +7338,7 @@ fn map_file(path: &str, name: &str, rel: &str, src: &str, lines: &[sourcemap::Li
     let source = sourcemap::encode(name, &format!("wisp:///{rel}"), src, lines);
     JsFile {
         path: format!("{path}.map"),
-        hash: format!("{:016x}", fnv1a(source.as_bytes())),
+        hash: image::hash(source.as_bytes()),
         source,
         file: None,
     }
@@ -10167,7 +10166,7 @@ pub fn load() -> Data { todo!() }";
                 Piece::Text("}}".into())
             ]
         );
-        assert_eq!(c.hash, format!("{:016x}", fnv1a(c.source.as_bytes())));
+        assert_eq!(c.hash, image::hash(c.source.as_bytes()));
 
         // Without `load`, `data` is JavaScript's; without a script, the
         // module only has bindings.
