@@ -78,7 +78,8 @@ pub fn input_type(name: &str, ty: &str) -> &'static str {
     let t = ty::option_inner(ty).unwrap_or(ty);
     if is_upload(t) {
         "file"
-    } else if name == "password" || name.ends_with("_password") {
+    } else if name == "password" || name.ends_with("_password") || ty::last_segment(t) == "Password"
+    {
         "password"
     } else if ty::last_segment(t) == "Email" {
         "email"
@@ -220,6 +221,7 @@ mod tests {
             ("email", "Option<Email>", "email"),
             ("password", "String", "password"),
             ("new_password", "String", "password"),
+            ("secret", "wisp::Password", "password"),
             ("avatar", "Image", "file"),
             ("avatar", "Option<Image>", "file"),
             ("agree", "bool", "checkbox"),
