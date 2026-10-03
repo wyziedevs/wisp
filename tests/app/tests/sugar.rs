@@ -5,6 +5,25 @@ use wisp::test::client;
 use wisp_test_app::Site;
 
 #[test]
+fn a_form_asks_for_what_its_action_takes() {
+    let mut app = client::<Site>();
+    let page = app.get("/t/fields").text().to_string();
+    for want in [
+        "<form method=\"post\" enctype=\"multipart/form-data\">",
+        "<label>Email <input name=\"email\" type=\"email\" required></label>",
+        "<input name=\"password\" type=\"password\" required minlength=\"8\">",
+        "<label>Note <input name=\"note\"",
+        "<input name=\"avatar\" type=\"file\" accept=\"image/*\">",
+        "<button>Go</button></form>",
+    ] {
+        assert!(page.contains(want), "{want}\n{page}");
+    }
+    let bad = app.post_form("/t/fields", &[("email", "nope"), ("password", "x")]);
+    assert_eq!(bad.status, 422);
+    assert!(bad.text().contains("value=\"nope\""), "{}", bad.text());
+}
+
+#[test]
 fn what_app_code_leaves_out() {
     let mut app = client::<Site>();
     assert!(app.get("/t/sugar").text().contains("<p id=\"count\">0</p>"));
