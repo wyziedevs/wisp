@@ -59,7 +59,7 @@ const CASES: &[(&str, &str)] = &[
     ),
     (
         "#[derive(wisp::FromJson)] struct S { #[validate(bogus = 1)] a: u8 }",
-        "#[validate] has no `bogus`: it takes len, min, max, min_len, max_len, email and max_size",
+        "#[validate] has no `bogus`: it takes len, min, max, min_len, max_len, email, url, one_of, pattern, with and max_size",
     ),
     (
         "#[derive(wisp::FromJson)] struct S { #[validate(min 1)] a: u8 }",

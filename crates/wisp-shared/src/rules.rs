@@ -24,6 +24,14 @@ pub enum Key {
     /// A range: `1..=100`, `..10`, `3..`.
     Len,
     Email,
+    /// An absolute http(s) address.
+    Url,
+    /// One of the words of a quoted, space-separated list.
+    OneOf,
+    /// The whole text matches a pattern (`wisp::json::check::pattern`).
+    Pattern,
+    /// A function of the app's: `with = ok_name`, `fn(&T) -> Option<String>`.
+    With,
 }
 
 /// What a rule takes after its name.
@@ -55,7 +63,7 @@ struct Def {
 }
 
 /// Every rule.
-const DEFS: [Def; 6] = [
+const DEFS: [Def; 10] = [
     Def {
         key: Key::Min,
         name: "min",
@@ -117,6 +125,34 @@ const DEFS: [Def; 6] = [
         takes: Takes::Nothing,
         check: |v, _| format!("::wisp::json::check::email({v})"),
         native: |n, _, k| n.email |= k.text,
+    },
+    Def {
+        key: Key::Url,
+        name: "url",
+        takes: Takes::Nothing,
+        check: |v, _| format!("::wisp::json::check::url({v})"),
+        native: |_, _, _| {},
+    },
+    Def {
+        key: Key::OneOf,
+        name: "one_of",
+        takes: Takes::Value,
+        check: |v, x| format!("::wisp::json::check::one_of({v}, {x})"),
+        native: |_, _, _| {},
+    },
+    Def {
+        key: Key::Pattern,
+        name: "pattern",
+        takes: Takes::Value,
+        check: |v, x| format!("::wisp::json::check::pattern({v}, {x})"),
+        native: |_, _, _| {},
+    },
+    Def {
+        key: Key::With,
+        name: "with",
+        takes: Takes::Value,
+        check: |v, x| format!("({x})({v})"),
+        native: |_, _, _| {},
     },
 ];
 
@@ -189,7 +225,7 @@ pub fn rule(name: &str, value: Option<&str>) -> Result<Rule, String> {
             return Err("`max_size` is for an upload: an action's `Image` parameter".into());
         }
         return Err(format!(
-            "#[validate] has no `{name}`: it takes len, min, max, min_len, max_len, email and max_size"
+            "#[validate] has no `{name}`: it takes len, min, max, min_len, max_len, email, url, one_of, pattern, with and max_size"
         ));
     };
     let value = match (&def.takes, value.map(str::trim)) {
@@ -372,6 +408,16 @@ mod tests {
             ("max_len = 9", Ok("::wisp::json::check::max_len(&x, 9)")),
             ("len = 1..=9", Ok("::wisp::rt_traits::len(&x, 1..=9)")),
             ("email", Ok("::wisp::json::check::email(&x)")),
+            ("url", Ok("::wisp::json::check::url(&x)")),
+            (
+                "one_of = \"a b\"",
+                Ok("::wisp::json::check::one_of(&x, \"a b\")"),
+            ),
+            (
+                "pattern = \"[a-z]+\"",
+                Ok("::wisp::json::check::pattern(&x, \"[a-z]+\")"),
+            ),
+            ("with = ok_name", Ok("(ok_name)(&x)")),
             (
                 "max_size = 2 * MB",
                 Ok("::wisp::rt_traits::max_size(&x, (2 * MB) as usize)"),
@@ -379,7 +425,7 @@ mod tests {
             (
                 "size = 1",
                 Err(
-                    "#[validate] has no `size`: it takes len, min, max, min_len, max_len, email and max_size",
+                    "#[validate] has no `size`: it takes len, min, max, min_len, max_len, email, url, one_of, pattern, with and max_size",
                 ),
             ),
             (
