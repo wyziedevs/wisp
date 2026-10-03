@@ -8,6 +8,7 @@ mod deploy;
 mod dev;
 mod events;
 mod fmt;
+mod git_head;
 mod images;
 mod lsp;
 mod mcp;

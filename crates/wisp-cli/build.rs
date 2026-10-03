@@ -3,6 +3,8 @@
 //! examples present, their copy in `templates/vendor` (what a published crate
 //! builds from) is brought up to date first.
 
+#[path = "src/git_head.rs"]
+mod git_head;
 #[path = "src/template_files.rs"]
 mod template_files;
 
@@ -29,6 +31,13 @@ fn main() {
     // mcp`): the repository's AGENTS.md, less its part for work on Wisp,
     // and llms-full.txt (that and docs/).
     let repo = template_files::repo(&base);
+    // The commit this CLI is built from, for the check that an app using the
+    // framework by path is not ahead of it. Empty when there is no checkout.
+    let (commit, watched) = git_head::read(&repo).unwrap_or_default();
+    for file in watched {
+        println!("cargo:rerun-if-changed={}", file.display());
+    }
+    println!("cargo:rustc-env=WISP_CLI_COMMIT={commit}");
     if let Ok(agents) = template_files::read_text(&repo.join("AGENTS.md")) {
         println!(
             "cargo:rerun-if-changed={}",
