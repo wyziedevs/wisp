@@ -22,7 +22,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 /// `wisp --help`: each command or option, and what it does.
-const COMMANDS: [(&str, &str); 13] = [
+const COMMANDS: [(&str, &str); 15] = [
     (
         "wisp new [name]",
         "Create an app. It asks a few questions; the options below answer them.",
