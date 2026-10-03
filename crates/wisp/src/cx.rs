@@ -6,7 +6,7 @@
 //! borrowing it) keeps `Cx` free of lifetimes: handlers take `&mut Cx`.
 
 use crate::form::{Form, pairs};
-use crate::{Response, sign};
+use crate::sign;
 use std::any::{Any, TypeId};
 use std::borrow::Cow;
 use std::net::{IpAddr, SocketAddr};
@@ -467,8 +467,9 @@ impl Cx {
 
     /// The CORS headers of `Cx::cors` (`guard.rs`), and the answer to a
     /// preflight, the OPTIONS a browser sends before a request that is not
-    /// a plain form post.
-    pub(crate) fn cors_preflight(&mut self, origins: &str) -> Option<Response> {
+    /// a plain form post. A preflight's status, 204, once its headers are
+    /// set too.
+    pub(crate) fn cors_preflight(&mut self, origins: &str) -> Option<u16> {
         let origin = self.header("origin")?;
         let listed =
             |o: &str| !o.is_empty() && o.trim_end_matches('/').eq_ignore_ascii_case(origin);
@@ -492,13 +493,15 @@ impl Cx {
         if self.method != Method::Options {
             return None;
         }
-        let mut preflight = Response::empty(204)
-            .with_header("access-control-allow-methods", method)
-            .with_header("access-control-max-age", "86400");
-        if let Some(h) = self.header("access-control-request-headers") {
-            preflight = preflight.with_header("access-control-allow-headers", h);
+        // Copied out: what is read from `self` is not held while it is set.
+        let method = method.to_string();
+        let headers = self.header("access-control-request-headers").map(str::to_string);
+        self.set_header("access-control-allow-methods", method);
+        self.put("access-control-max-age", Cow::Borrowed("86400"));
+        if let Some(h) = headers {
+            self.set_header("access-control-allow-headers", h);
         }
-        Some(preflight)
+        Some(204)
     }
 
     /// Every request header as `(name, value)`, in the order sent. Values
@@ -1179,12 +1182,13 @@ mod tests {
         let mut pre = cx_for(
             "OPTIONS /api HTTP/1.1\r\nOrigin: https://x.example\r\nAccess-Control-Request-Method: PUT\r\nAccess-Control-Request-Headers: content-type\r\n\r\n",
         );
-        let r = pre.cors_preflight("*").expect("a preflight is answered");
-        assert_eq!(r.status, 204);
-        let names: Vec<&str> = r.headers.iter().map(|(n, _)| &**n).collect();
+        assert_eq!(pre.cors_preflight("*"), Some(204));
+        let names: Vec<String> = pre.out_headers.iter().map(|(n, _)| n.to_string()).collect();
         assert_eq!(
             names,
             [
+                "vary",
+                "access-control-allow-origin",
                 "access-control-allow-methods",
                 "access-control-max-age",
                 "access-control-allow-headers"
