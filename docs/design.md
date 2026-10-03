@@ -872,15 +872,13 @@ roles and values (light and dark, following the system), with Wisp violet
 (`#7456d6` light, `#896ce0` dark) as the one accent, only on what is
 interactive. One-pixel hairlines, two shadow steps, one type scale, and one
 focus ring. The styles live in `crates/wisp/src/client/ui.css` (tokens,
-buttons, the error page) and `dialog.css` (dev only), all `--wisp-*` tokens
+buttons) and `dialog.css` (dev only), all `--wisp-*` tokens
 and `.wisp-*` classes, so they never touch an app's own CSS.
 
-- **The error page**, for apps without a `+error.wisp`. It is told in three
-  parts: what happened (the status's name), what it means or what to do (the
-  error's message, or a sentence about the status when the message says no
-  more than its name), and the status with the request (`404 · GET
-  /nope?x=1`) as the reference line. A 5xx carries the failure glyph and a
-  Try Again button; a 4xx stays gray. Its styles come inlined, since the
+- **The error page**, for apps without a `+error.wisp`: the status and one
+  line, centered (`404 | Not Found`). The line is the status's name, or the
+  error's own message when it says more. No links or buttons; an app that
+  wants them writes a `+error.wisp`. Its few styles come inlined, since the
   app's own CSS may not exist yet.
 - **The build error dialog** in dev: a title and one sentence saying where to
   look (`src/routes/+page.rs, line 7. Save a fix and the page updates.`), then
