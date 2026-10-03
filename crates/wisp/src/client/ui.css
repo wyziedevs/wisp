@@ -165,64 +165,6 @@
   outline-offset: 2px;
 }
 
-/* ---- The error page ---------------------------------------------------------
-   What happened, what it means or what to do, and the status with the
-   request as the reference line. */
-
-body:has(.wisp-error) {
-  margin: 0;
-  background: var(--wisp-paper);
-}
-
-.wisp-error {
-  box-sizing: border-box;
-  width: min(28rem, 100% - 2rem);
-  margin: 16vh auto 2rem;
-  padding: 1.25rem;
-  border: 1px solid var(--wisp-line);
-  border-radius: 0.5rem;
-  background: var(--wisp-panel);
-  box-shadow: var(--wisp-raised);
-  color: var(--wisp-ink);
-  font: 400 0.875rem/1.25rem var(--wisp-sans);
-}
-
-.wisp-error h1 {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin: 0;
-  font-size: 1.125rem;
-  font-weight: 600;
-  line-height: 1.5rem;
-  letter-spacing: -0.025em;
-}
-
-.wisp-error h1 svg {
-  flex: none;
-  width: 1.125rem;
-  height: 1.125rem;
-  color: var(--wisp-danger);
-}
-
-.wisp-error p {
-  margin: 0.25rem 0 0;
-  overflow-wrap: anywhere;
-}
-
-.wisp-error .wisp-ref {
-  margin-top: 0.75rem;
-  color: var(--wisp-ash);
-  font: 400 0.6875rem/1rem var(--wisp-mono);
-}
-
-.wisp-error .wisp-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  margin-top: 1.25rem;
-}
-
 @media (prefers-reduced-motion: reduce) {
   .wisp-button {
     transition-duration: 1ms !important;

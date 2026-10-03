@@ -1721,63 +1721,30 @@ pub mod rt {
         Error::new(405, "Method Not Allowed").with_header("allow", allow)
     }
 
-    /// Used when no `+error.wisp` applies, or when rendering one failed. It
-    /// says what happened, what it means or what to do, and the status with
-    /// the request as the reference line. It brings its own styles
-    /// (`client/ui.css`), since the app's own CSS may not exist yet.
-    pub fn default_error(cx: &Cx, out: &mut Out, status: u16, message: &str) {
+    /// Used when no `+error.wisp` applies, or when rendering one failed: the
+    /// status and one line, centered, with its own few styles (the app's CSS
+    /// may not exist yet). The line is the status's name unless the error
+    /// says something more specific.
+    pub fn default_error(_cx: &Cx, out: &mut Out, status: u16, message: &str) {
         let title = crate::http::title(status);
+        let line = if message.is_empty() || message == crate::http::sentence(status) {
+            title
+        } else {
+            message
+        };
         out.head.push_str("<title>");
         text(&mut out.head, title);
         out.head.push_str("</title><style>");
-        out.head.push_str(crate::http::UI_CSS);
+        out.head.push_str(ERROR_CSS);
         out.head.push_str("</style>");
-
-        // A 5xx failed; it wears the failure glyph. A 4xx is an answer about
-        // the request and stays gray.
         out.body.push_str("<main class=\"wisp-error\"><h1>");
-        if status >= 500 {
-            out.body.push_str(FAILED_ICON);
-        }
-        text(&mut out.body, title);
-        out.body.push_str("</h1><p>");
-        text(&mut out.body, message);
-        out.body.push_str("</p><p class=\"wisp-ref\">");
         text(&mut out.body, &status);
-        out.body.push_str(" · ");
-        text(&mut out.body, cx.method.as_str());
-        out.body.push(' ');
-        text(&mut out.body, cx.path());
-        if !cx.query_string().is_empty() {
-            out.body.push('?');
-            text(&mut out.body, cx.query_string());
-        }
-        out.body.push_str("</p><div class=\"wisp-actions\">");
-        // The same address again is worth a try when the server failed at
-        // something that may pass; a post is not repeated behind a link.
-        if status >= 500 && matches!(cx.method, crate::Method::Get | crate::Method::Head) {
-            out.body
-                .push_str("<a class=\"wisp-button wisp-primary\" href=\"");
-            crate::contexts::escape(&mut out.body, cx.path());
-            if !cx.query_string().is_empty() {
-                out.body.push('?');
-                crate::contexts::escape(&mut out.body, cx.query_string());
-            }
-            out.body.push_str(
-                "\">Try Again</a><a class=\"wisp-button\" href=\"/\">Go to the Home Page</a>",
-            );
-        } else {
-            out.body.push_str(
-                "<a class=\"wisp-button wisp-primary\" href=\"/\">Go to the Home Page</a>",
-            );
-        }
-        out.body.push_str("</div></main>");
+        out.body.push_str("</h1><p>");
+        text(&mut out.body, line);
+        out.body.push_str("</p></main>");
     }
 
-    /// The failure glyph, shared with the build error dialog.
-    const FAILED_ICON: &str = "<svg viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" aria-hidden=\"true\">\
-<circle cx=\"8\" cy=\"8\" r=\"6.25\"/><path d=\"M8 4.75v3.75\" stroke-linecap=\"round\"/>\
-<circle cx=\"8\" cy=\"11\" r=\".75\" fill=\"currentColor\" stroke=\"none\"/></svg>";
+    const ERROR_CSS: &str = "body{margin:0;color-scheme:light dark;font:400 0.875rem/1.5 system-ui,sans-serif}.wisp-error{display:flex;align-items:center;justify-content:center;gap:1.25rem;min-height:100vh;padding:0 1rem;box-sizing:border-box}.wisp-error h1{margin:0;padding-right:1.25rem;border-right:1px solid color-mix(in srgb,currentColor 30%,transparent);font-size:1.5rem;font-weight:500}.wisp-error p{margin:0;overflow-wrap:anywhere}";
 }
 
 #[cfg(test)]

@@ -69,7 +69,7 @@ const DEV_JS: &[u8] = include_bytes!("client/wisp-dev.js");
 /// The devtools overlay (`Alt+Shift+W`): debug builds only.
 #[cfg(debug_assertions)]
 const DEVTOOLS_JS: &[u8] = include_bytes!("client/wisp-devtools.js");
-/// Also inlined into the fallback error page (`rt::default_error`).
+/// Also inlined into the API docs page and the workshop.
 pub(crate) const UI_CSS: &str = include_str!("client/ui.css");
 const DIALOG_CSS: &[u8] = include_bytes!("client/dialog.css");
 
