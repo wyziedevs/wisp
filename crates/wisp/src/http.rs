@@ -2618,10 +2618,10 @@ fn route<A: App>(cx: &mut Cx) -> Option<usize> {
         return Some(id);
     }
     let mut params = [Span::default(); crate::cx::MAX_PARAMS];
-    for (p, s) in params.iter_mut().zip(raw).take(names.len()) {
-        *p = Span::of(&cx.wire.buf, s.as_bytes());
+    for k in 0..names.len() {
+        params[k] = Span::of(&cx.wire.buf, raw[k].as_bytes());
     }
-    cx.set_params(names, params);
+    cx.set_params(names, &params[..names.len()]);
     Some(id)
 }
 
