@@ -11,9 +11,10 @@
 
 use crate::json::FromJson;
 use crate::store::{self, Store};
-use crate::{Json, Result, Shared};
+use crate::{Json, Result, Shared, Value};
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 /// Rows under ids from 1 up (or random ones), kept in order of their ids.
@@ -25,6 +26,14 @@ pub struct Table<T> {
     saved: Option<Saved<T>>,
     /// Ids are random numbers under 2^53, not counted up.
     random: bool,
+    /// A field no two rows share: its name and how to read it ([`Table::unique`]).
+    unique: Option<(&'static str, fn(&T) -> &str)>,
+    /// Changes each stored row's JSON as it is read ([`Table::migrate`]).
+    migrate: Option<fn(&mut Value)>,
+    /// Each change is sent on the channel named as the table ([`Table::live`]).
+    live: bool,
+    /// Where the store's changes were read up to ([`Store::changes`]).
+    cursor: AtomicU64,
 }
 
 /// A saved table's name in the store, and how its rows become JSON and back.
@@ -37,6 +46,8 @@ struct Saved<T> {
 pub(crate) struct Rows<T> {
     pub(crate) last: u64,
     pub(crate) map: BTreeMap<u64, T>,
+    /// A unique field's values, by the id of the row that has each.
+    index: BTreeMap<String, u64>,
     state: State,
 }
 
@@ -56,6 +67,7 @@ impl<T> Rows<T> {
     /// it on next use.
     fn stale(&mut self, store: &'static dyn Store) {
         self.map.clear();
+        self.index.clear();
         self.last = 0;
         self.state = State::Unread(Some(store));
     }
@@ -146,10 +158,81 @@ pub(crate) fn row_json<T: Json + ?Sized>(out: &mut String, id: u64, value: &T) {
 /// two tables under one name would write over each other's rows.
 static NAMES: Shared<Vec<(&'static str, usize)>> = Shared::new(Vec::new());
 
+/// A table the poll thread follows.
+trait Poll: Sync {
+    fn poll(&self) -> Result;
+}
+
+impl<T: Send + Sync> Poll for Table<T> {
+    fn poll(&self) -> Result {
+        Table::poll(self)
+    }
+}
+
+/// Tables that follow their store (`WISP_STORE_POLL`).
+static POLLED: Shared<Vec<&'static dyn Poll>> = Shared::new(Vec::new());
+
+/// Whether `WISP_STORE_POLL` is set; the first time, starts the thread that
+/// polls every `ready` table that long apart. A table whose store has no
+/// `changes` is asked each time and never answers: nothing happens.
+fn polling() -> bool {
+    let secs: u64 = crate::env_or("WISP_STORE_POLL", 0);
+    #[cfg(not(target_arch = "wasm32"))]
+    if secs > 0 {
+        static STARTED: std::sync::Once = std::sync::Once::new();
+        STARTED.call_once(|| {
+            let every = std::time::Duration::from_secs(secs);
+            let _ = std::thread::Builder::new()
+                .name("wisp-store-poll".into())
+                .spawn(move || {
+                    loop {
+                        std::thread::sleep(every);
+                        let all: Vec<_> = POLLED.lock().clone();
+                        for t in all {
+                            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| t.poll()));
+                            if let Ok(Err(e)) = r {
+                                crate::http::log(format_args!("wisp: store poll: {}", e.detail()));
+                            }
+                        }
+                    }
+                });
+        });
+    }
+    secs > 0
+}
+
 impl<T> Table<T> {
     /// A table kept in memory: its rows are gone when the server stops.
     pub const fn new() -> Table<T> {
         Table::make(None, false)
+    }
+
+    /// No two rows may have the same `key` (a field, such as an email):
+    /// `Table::saved("users").unique("email", |u: &User| &u.email)`. Looking one up
+    /// by it is `by`, and a second one is refused: `try_add` and `try_update`
+    /// give a 422 on `field` (`add`, `update` and `set` panic, a 500). Rows
+    /// already saved with a repeat keep the last.
+    pub const fn unique(mut self, field: &'static str, key: fn(&T) -> &str) -> Table<T> {
+        self.unique = Some((field, key));
+        self
+    }
+
+    /// Changes each saved row's JSON before it is read back, to bring old
+    /// rows to the type as it is now: a renamed field, a new one with a
+    /// default. Runs at load only: `.migrate(|row| rename(row, "name",
+    /// "title"))`.
+    pub const fn migrate(mut self, f: fn(&mut Value)) -> Table<T> {
+        self.migrate = Some(f);
+        self
+    }
+
+    /// Sends `change` on the channel named as the table (`wisp::channel(name)`)
+    /// after every change, from any request or, with `WISP_STORE_POLL`, from
+    /// another instance: a page listening to it can refresh. Nothing is sent
+    /// while no one listens. A table in memory has no name: nothing is sent.
+    pub const fn live(mut self) -> Table<T> {
+        self.live = true;
+        self
     }
 
     const fn make(saved: Option<Saved<T>>, random: bool) -> Table<T> {
@@ -161,10 +244,15 @@ impl<T> Table<T> {
             rows: RwLock::new(Rows {
                 last: 0,
                 map: BTreeMap::new(),
+                index: BTreeMap::new(),
                 state,
             }),
             saved,
             random,
+            unique: None,
+            migrate: None,
+            live: false,
+            cursor: AtomicU64::new(0),
         }
     }
 
@@ -219,6 +307,8 @@ impl<T> Table<T> {
             let mut rows = e.into_inner();
             if let State::Stored(store) = rows.state {
                 rows.stale(store);
+            } else {
+                self.reindex(&mut rows);
             }
             rows
         });
@@ -231,10 +321,59 @@ impl<T> Table<T> {
 
     /// Reads a saved table's rows from the store now, rather than on first
     /// use: at startup, after `init` has set the store. A store that fails
-    /// then stops the server before it answers anything.
+    /// then stops the server before it answers anything. With
+    /// `WISP_STORE_POLL` (seconds), the table then follows the store's
+    /// changes, for a store other instances write to ([`Store::changes`]).
     #[doc(hidden)]
-    pub fn ready(&self) {
+    pub fn ready(&'static self)
+    where
+        T: Send + Sync + 'static,
+    {
         drop(self.write());
+        if self.saved.is_some() && polling() && matches!(self.read().state, State::Stored(_)) {
+            POLLED.lock().push(self);
+        }
+    }
+
+    /// The unique field's index, made again from the rows.
+    fn reindex(&self, rows: &mut Rows<T>) {
+        rows.index.clear();
+        if let Some((_, key)) = self.unique {
+            for (&id, v) in &rows.map {
+                rows.index.insert(key(v).to_owned(), id);
+            }
+        }
+    }
+
+    /// The 422 for a value whose unique field another row (not `except`)
+    /// has: `Ok` when it is free, or the table has none.
+    fn free(&self, rows: &Rows<T>, value: &T, except: u64) -> Result {
+        match self.unique {
+            Some((field, key)) if rows.index.get(key(value)).is_some_and(|&id| id != except) => {
+                crate::invalid(field, "is taken")
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Sends `change` to those listening, if the table is live.
+    fn notify(&self) {
+        if let (true, Some(saved)) = (self.live, &self.saved) {
+            let c = crate::channel(saved.name);
+            if c.subscribers() > 0 {
+                c.send("change");
+            }
+        }
+    }
+
+    /// A stored row's value: its JSON, migrated if the table says how.
+    fn read_row(&self, saved: &Saved<T>, json: &str) -> Result<T> {
+        let Some(migrate) = self.migrate else {
+            return (saved.read)(json.as_bytes());
+        };
+        let mut v = crate::json::parse(json).map_err(|e| crate::Error::new(500, e))?;
+        migrate(&mut v);
+        (saved.read)(crate::json::to_json(&v).as_bytes())
     }
 
     /// Reads a saved table's rows from `store`, which keeps its changes
@@ -266,7 +405,7 @@ impl<T> Table<T> {
                 rows.last = rows.last.max(json.parse().unwrap_or(0));
                 continue;
             }
-            let value = (saved.read)(json.as_bytes()).unwrap_or_else(|e| {
+            let value = self.read_row(saved, &json).unwrap_or_else(|e| {
                 panic!(
                     "table `{name}`: row {id} is not a {} any more ({}). A field added \
                      since it was saved must be an `Option` (or a `bool`), so old rows read.",
@@ -277,6 +416,7 @@ impl<T> Table<T> {
             rows.last = rows.last.max(id);
             rows.map.insert(id, value);
         }
+        self.reindex(rows);
         rows.state = State::Stored(store);
     }
 
@@ -352,7 +492,7 @@ impl<T> Table<T> {
         let kept = store.load(saved.name)?;
         let mut fresh = Vec::with_capacity(kept.len());
         for (id, json) in kept.into_iter().filter(|(id, _)| *id != 0) {
-            fresh.push((id, (saved.read)(json.as_bytes())?));
+            fresh.push((id, self.read_row(saved, &json)?));
         }
         let rows = self.read();
         fresh.retain(|(id, v)| rows.map.get(id).is_none_or(|old| newer(old, v)));
@@ -370,6 +510,43 @@ impl<T> Table<T> {
                     rows.map.insert(id, v);
                 }
             }
+        }
+        self.reindex(&mut rows);
+        drop(rows);
+        self.notify();
+        Ok(())
+    }
+
+    /// Applies what the store's `changes` say happened since the last
+    /// poll. The table is locked from before the store is asked, so a
+    /// change made here meanwhile is not written over with an older row.
+    fn poll(&self) -> Result {
+        let mut rows = self.write();
+        let (State::Stored(store), Some(saved)) = (rows.state, &self.saved) else {
+            return Ok(());
+        };
+        let Some(changes) = store.changes(saved.name, self.cursor.load(Ordering::Relaxed))? else {
+            return Ok(());
+        };
+        let any = !changes.rows.is_empty();
+        for (id, json) in changes.rows {
+            match (id, json) {
+                (0, Some(last)) => rows.last = rows.last.max(last.parse().unwrap_or(0)),
+                (id, None) => {
+                    rows.map.remove(&id);
+                }
+                (id, Some(json)) => {
+                    let v = self.read_row(saved, &json)?;
+                    rows.last = rows.last.max(id);
+                    rows.map.insert(id, v);
+                }
+            }
+        }
+        self.reindex(&mut rows);
+        self.cursor.store(changes.cursor, Ordering::Relaxed);
+        drop(rows);
+        if any {
+            self.notify();
         }
         Ok(())
     }
@@ -389,19 +566,34 @@ impl<T> Table<T> {
         self.load(&mut self.rows.write().unwrap(), Some(store));
     }
 
-    /// Keeps `value` under a new id, which it returns.
+    /// Keeps `value` under a new id, which it returns. A table with a
+    /// [`unique`](Table::unique) field panics (a 500) for a repeat: see
+    /// [`Table::try_add`].
     pub fn add(&self, value: T) -> u64 {
-        self.insert(self.write(), value)
+        let mut rows = self.write();
+        match self.insert(&mut rows, value) {
+            Ok(id) => id,
+            Err(e) => Self::failed(rows, e),
+        }
     }
 
-    fn insert(&self, mut rows: RwLockWriteGuard<'_, Rows<T>>, value: T) -> u64 {
-        let id = self.next_id(&mut rows);
-        let json = self.encode(&rows, &value);
-        if let Err(e) = self.save(&mut rows, id, Some(&json)) {
-            Self::failed(rows, e);
+    /// Like [`Table::add`], but a value whose unique field another row has
+    /// is a 422 on that field (`is taken`), for an action to return.
+    pub fn try_add(&self, value: T) -> Result<u64> {
+        self.insert(&mut self.write(), value)
+    }
+
+    fn insert(&self, rows: &mut Rows<T>, value: T) -> Result<u64> {
+        self.free(rows, &value, 0)?;
+        let id = self.next_id(rows);
+        let json = self.encode(rows, &value);
+        self.save(rows, id, Some(&json))?;
+        if let Some((_, key)) = self.unique {
+            rows.index.insert(key(&value).to_owned(), id);
         }
         rows.map.insert(id, value);
-        id
+        self.notify();
+        Ok(id)
     }
 
     /// Saves that row `id` is gone and takes it out. When it had the last
@@ -415,7 +607,12 @@ impl<T> Table<T> {
         if id == rows.last && !self.random {
             self.save(rows, 0, Some(&id.to_string()))?;
         }
-        Ok(rows.map.remove(&id))
+        let gone = rows.map.remove(&id);
+        if let (Some((_, key)), Some(v)) = (self.unique, &gone) {
+            rows.index.remove(key(v));
+        }
+        self.notify();
+        Ok(gone)
     }
 
     /// Takes the row out; `None` when there is none.
@@ -431,12 +628,65 @@ impl<T> Table<T> {
     /// `None` when there is none.
     pub fn update<R>(&self, id: u64, f: impl FnOnce(&mut T) -> R) -> Option<R> {
         let mut rows = self.write();
-        let r = f(rows.map.get_mut(&id)?);
+        let row = rows.map.get_mut(&id)?;
+        let before = self.unique.map(|(_, key)| key(row).to_owned());
+        let r = f(row);
+        if let (Some((field, key)), Some(before)) = (self.unique, before) {
+            let now = key(&rows.map[&id]);
+            if now != before {
+                if rows.index.get(now).is_some_and(|&o| o != id) {
+                    // Half changed, as after a closure that panicked.
+                    panic!("{field} is taken: change a unique field with try_update");
+                }
+                let now = now.to_owned();
+                rows.index.remove(&before);
+                rows.index.insert(now, id);
+            }
+        }
         let json = self.encode(&rows, &rows.map[&id]);
         if let Err(e) = self.save(&mut rows, id, Some(&json)) {
             Self::failed(rows, e);
         }
+        self.notify();
         Some(r)
+    }
+
+    /// Replaces the row with `value`; `None` when there is none. A repeat
+    /// of another row's unique field panics: see [`Table::try_set`].
+    pub fn set(&self, id: u64, value: T) -> Option<()> {
+        self.try_set(id, value)
+            .unwrap_or_else(|e| panic!("{}", e.message()))
+    }
+
+    /// Like [`Table::set`], but a repeat of another row's unique field is
+    /// a 422 on that field.
+    pub fn try_set(&self, id: u64, value: T) -> Result<Option<()>> {
+        let mut rows = self.write();
+        if !rows.map.contains_key(&id) {
+            return Ok(None);
+        }
+        self.free(&rows, &value, id)?;
+        let json = self.encode(&rows, &value);
+        self.save(&mut rows, id, Some(&json))?;
+        if let Some((_, key)) = self.unique {
+            let old = key(&rows.map[&id]).to_owned();
+            rows.index.remove(&old);
+            rows.index.insert(key(&value).to_owned(), id);
+        }
+        rows.map.insert(id, value);
+        self.notify();
+        Ok(Some(()))
+    }
+
+    /// Takes every row out. Ids are not given again, as after `remove`.
+    pub fn clear(&self) {
+        let mut rows = self.write();
+        let ids: Vec<u64> = rows.map.keys().copied().collect();
+        for id in ids {
+            if let Err(e) = self.delete(&mut rows, id) {
+                Self::failed(rows, e);
+            }
+        }
     }
 
     /// Reads the row where it is, without a copy: `NOTES.with(id, |n|
@@ -474,15 +724,37 @@ impl<T: Clone> Table<T> {
     /// Keeps `value` unless `taken` is true of a row already there, checked
     /// with the table locked: two at once cannot both be kept.
     pub fn add_unless(&self, taken: impl Fn(&T) -> bool, value: T) -> Option<Row<T>> {
-        let rows = self.write();
+        let mut rows = self.write();
         if rows.map.values().any(taken) {
             return None;
         }
         let copy = value.clone();
+        match self.insert(&mut rows, value) {
+            Ok(id) => Some(Row { id, value: copy }),
+            Err(e) => Self::failed(rows, e),
+        }
+    }
+
+    /// The row whose unique field is `key`, found without a scan; `None`
+    /// when there is none, or the table has no [`unique`](Table::unique).
+    pub fn by(&self, key: &str) -> Option<Row<T>> {
+        let rows = self.read();
+        let id = *rows.index.get(key)?;
         Some(Row {
-            id: self.insert(rows, value),
-            value: copy,
+            id,
+            value: rows.map.get(&id)?.clone(),
         })
+    }
+
+    /// Like [`Table::update`], but on a copy, so a unique field changed to
+    /// another row's is a 422 on that field and the row stays as it was.
+    pub fn try_update<R>(&self, id: u64, f: impl FnOnce(&mut T) -> R) -> Result<Option<R>> {
+        let Some(mut v) = self.with(id, T::clone) else {
+            return Ok(None);
+        };
+        let r = f(&mut v);
+        // The row may have gone meanwhile: `try_set` says.
+        Ok(self.try_set(id, v)?.map(|_| r))
     }
 
     /// A copy of every row, in order of their ids (oldest first, unless
@@ -735,6 +1007,19 @@ mod tests {
                 .push((table.into(), id, json.map(str::to_string)));
             Ok(())
         }
+
+        /// The cursor is how many changes of any table were made.
+        fn changes(&self, table: &str, since: u64) -> Result<Option<store::Changes>> {
+            let log = self.0.lock().unwrap();
+            let rows = (log.iter().skip(since as usize))
+                .filter(|(t, ..)| t == table)
+                .map(|(_, id, json)| (*id, json.clone()))
+                .collect();
+            Ok(Some(store::Changes {
+                cursor: log.len() as u64,
+                rows,
+            }))
+        }
     }
 
     #[test]
@@ -809,5 +1094,106 @@ mod tests {
         let random: Table<String> = Table::rest(None, true);
         let id = random.add("x".into());
         assert!(id > 0 && id < 1 << 53 && random.get(id).is_some());
+    }
+
+    #[derive(Clone, PartialEq, Debug)]
+    struct User {
+        email: String,
+        age: u32,
+    }
+
+    impl Json for User {
+        fn json(&self, out: &mut String) {
+            out.push_str("{\"email\":");
+            self.email.json(out);
+            out.push_str(",\"age\":");
+            self.age.json(out);
+            out.push('}');
+        }
+    }
+
+    impl FromJson for User {
+        fn from_json(v: &Value, p: &mut json::Problems) -> Option<User> {
+            Some(User {
+                email: p.read("email", v.get("email")?)?,
+                age: p.read("age", v.get("age")?)?,
+            })
+        }
+    }
+
+    fn user(email: &str, age: u32) -> User {
+        User {
+            email: email.into(),
+            age,
+        }
+    }
+
+    #[test]
+    fn set_clear_and_unique() {
+        let t: Table<User> = Table::new().unique("email", |u: &User| &u.email);
+        let a = t.add(user("a@x", 1));
+        let b = t.add(user("b@x", 2));
+        assert_eq!(t.by("b@x").map(|r| r.id), Some(b));
+        assert_eq!(t.by("c@x"), None);
+        let err = t.try_add(user("a@x", 3)).unwrap_err();
+        assert_eq!((err.status(), err.message()), (422, "email: is taken"));
+        assert_eq!(t.len(), 2);
+        assert_eq!(t.set(a, user("c@x", 4)), Some(()));
+        assert_eq!(t.set(99, user("z@x", 4)), None);
+        assert!(t.by("a@x").is_none() && t.by("c@x").is_some(), "index follows");
+        assert!(t.try_set(b, user("c@x", 5)).is_err());
+        assert_eq!(t.try_set(b, user("b@x", 5)).unwrap(), Some(()), "its own value");
+        assert!(t.try_update(b, |u| u.email = "c@x".into()).is_err());
+        assert_eq!(t.get(b).unwrap().age, 5, "left as it was");
+        assert_eq!(t.try_update(b, |u| u.email = "d@x".into()).unwrap(), Some(()));
+        assert_eq!(t.update(b, |u| u.age += 1), Some(()));
+        assert_eq!((t.by("d@x").unwrap().age, t.by("b@x")), (6, None));
+        t.remove(b);
+        assert!(t.by("d@x").is_none());
+        assert!(t.add_unless(|u| u.age == 4, user("e@x", 1)).is_none());
+        assert_eq!(t.add(user("d@x", 1)), 3, "ids go on");
+        let boom = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| t.add(user("d@x", 9))));
+        assert!(boom.is_err() && t.len() == 2, "add panics for a repeat");
+        t.clear();
+        assert!(t.is_empty() && t.by("c@x").is_none());
+        assert_eq!(t.add(user("c@x", 1)), 4, "not given again");
+    }
+
+    #[test]
+    fn migrated_live_and_following_a_store() {
+        store::memory();
+        let mem: &'static Mem = Box::leak(Box::new(Mem(Mutex::new(Vec::new()))));
+        mem.save("old_users", 1, Some(r#"{"mail":"a@x"}"#)).unwrap();
+        mem.save("old_users", 0, Some("1")).unwrap();
+        let t: Table<User> = Table::saved("old_users")
+            .unique("email", |u: &User| &u.email)
+            .migrate(|row| {
+                if let Value::Object(m) = row {
+                    for (k, _) in m.iter_mut().filter(|(k, _)| k == "mail") {
+                        *k = "email".into();
+                    }
+                    m.push(("age".into(), Value::Number("7".into())));
+                }
+            })
+            .live();
+        t.load_from(mem);
+        assert_eq!(t.by("a@x").unwrap().value, user("a@x", 7));
+
+        // Another instance's changes arrive on a poll, and tell listeners.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let mut heard = crate::channel("old_users").subscribe();
+        t.poll().unwrap();
+        mem.save("old_users", 2, Some(r#"{"email":"b@x","age":1}"#))
+            .unwrap();
+        mem.save("old_users", 1, None).unwrap();
+        t.poll().unwrap();
+        assert_eq!((t.len(), t.by("a@x")), (1, None));
+        assert_eq!(t.by("b@x").unwrap().id, 2);
+        rt.block_on(async {
+            assert_eq!(heard.recv().await.as_deref(), Some("change"));
+        });
+        assert_eq!(t.add(user("d@x", 1)), 3);
     }
 }
