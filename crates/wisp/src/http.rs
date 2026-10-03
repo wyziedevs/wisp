@@ -1781,12 +1781,13 @@ fn fast_head(buf: &[u8], at: usize, headers: &mut Vec<(Span, Span)>) -> Option<H
                 }
                 i += 1;
             }
-        }
-        if i == name || b.get(i) != Some(&b':') {
-            return None;
+            if i == name || b.get(i) != Some(&b':') {
+                return None;
+            }
         }
         let name = span(name, i);
-        i += 1;
+        // Its colon, and the space after it most send.
+        i += if b.get(i + 1) == Some(&b' ') { 2 } else { 1 };
         while b.get(i).is_some_and(|&c| c == b' ' || c == b'\t') {
             i += 1;
         }
