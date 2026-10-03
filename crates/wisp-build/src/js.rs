@@ -1685,6 +1685,63 @@ pub fn mangle(src: &str) -> String {
     apply(src, edits)
 }
 
+/// `src` with each `env.PUBLIC_NAME`, where `env` is no name of its own,
+/// as the JavaScript string of `value(name)`: browser code's environment,
+/// filled in when the app is built. Any other `env` is an error at its
+/// offset: a name without `PUBLIC_` (so a secret cannot reach the
+/// browser), one that is not set, or `env` read whole.
+pub fn public_env(
+    src: &str,
+    value: &dyn Fn(&str) -> Option<String>,
+) -> Result<String, (usize, String)> {
+    if !src.contains("env") {
+        return Ok(src.to_string());
+    }
+    let t = tokens(src);
+    let mut top: Vec<String> = declarations(src).into_iter().map(|(n, _)| n).collect();
+    top.extend(import_names(src, &imports(src)));
+    if top.iter().any(|n| n == "env") {
+        return Ok(src.to_string());
+    }
+    let own = bound(src, &t);
+    let mut edits = Vec::new();
+    for (k, tok) in t.iter().enumerate() {
+        if tok.kind != Kind::Ident || tok.member || tok.key || own[k] || tok.text(src) != "env" {
+            continue;
+        }
+        let name = t
+            .get(k + 2)
+            .filter(|n| n.kind == Kind::Ident && t[k + 1].is(src, Kind::Punct, "."));
+        let Some(name) = name else {
+            return Err((
+                tok.start,
+                "`env` is filled in when the app is built, a name at a time: `env.PUBLIC_API_URL`"
+                    .into(),
+            ));
+        };
+        let n = name.text(src);
+        if !n.starts_with("PUBLIC_") {
+            return Err((
+                tok.start,
+                format!(
+                    "`env.{n}` is not sent to the browser: only `PUBLIC_` variables are, so that a secret cannot leak. \
+                     Name it `PUBLIC_{n}` if it is public, or read it on the server with `wisp::env(\"{n}\")`"
+                ),
+            ));
+        }
+        let Some(v) = value(n) else {
+            return Err((
+                tok.start,
+                format!(
+                    "`env.{n}` is not set: set {n} in the environment or in .env (`{n}=…`; empty is allowed)"
+                ),
+            ));
+        };
+        edits.push((tok.start, name.end, crate::json_str(&v)));
+    }
+    Ok(apply(src, edits))
+}
+
 /// `src` with each range replaced by spaces, its line breaks kept, so the
 /// rest keeps its line numbers.
 pub fn blank(src: &str, ranges: &[(usize, usize)]) -> String {
@@ -2943,6 +3000,44 @@ mod tests {
             strip("function g(): { a: number; b(): void } {\n  return { a: 1, b() {} }\n}"),
             "function g() { return { a: 1, b() {} } }",
         );
+    }
+
+    #[test]
+    fn public_env_is_filled_in() {
+        let vars = |n: &str| match n {
+            "PUBLIC_API" => Some("https://x.io/\"a\"".to_string()),
+            "PUBLIC_EMPTY" => Some(String::new()),
+            _ => None,
+        };
+        let fill = |src: &str| public_env(src, &vars);
+        assert_eq!(
+            fill("fetch(env.PUBLIC_API + '/a')\nlet e = env.PUBLIC_EMPTY || x.env.y"),
+            Ok("fetch(\"https://x.io/\\\"a\\\"\" + '/a')\nlet e = \"\" || x.env.y".into())
+        );
+        // An `env` of the code's own is its own.
+        for own in [
+            "let env = {}; env.SECRET",
+            "import { env } from '$lib/e.js'\nenv.KEY",
+            "function f(env) { return env.SECRET }",
+            "const o = { env: 1 }",
+        ] {
+            assert_eq!(fill(own), Ok(own.into()), "{own}");
+        }
+        let err = |src: &str| fill(src).unwrap_err();
+        let (at, msg) = err("let a = 1\nlet k = env.SECRET_KEY");
+        assert_eq!(at, 18);
+        assert!(
+            msg.contains("`env.SECRET_KEY` is not sent to the browser")
+                && msg.contains("wisp::env(\"SECRET_KEY\")"),
+            "{msg}"
+        );
+        assert!(
+            err("env.PUBLIC_MISSING")
+                .1
+                .contains("`env.PUBLIC_MISSING` is not set")
+        );
+        assert!(err("console.log(env)").1.contains("a name at a time"));
+        assert!(err("env['PUBLIC_API']").1.contains("a name at a time"));
     }
 
     #[test]

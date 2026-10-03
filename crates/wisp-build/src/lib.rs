@@ -48,6 +48,11 @@ pub fn run() {
     let release = env::var("PROFILE").is_ok_and(|p| p == "release");
     // `wisp build --sourcemap` asks for source maps in a release build.
     println!("cargo::rerun-if-env-changed=WISP_SOURCEMAP");
+    // Browser code's `env.PUBLIC_X`. One it reads that none sets is an
+    // error, and a failed build runs this again.
+    for (k, _) in public_env(&root) {
+        println!("cargo::rerun-if-env-changed={k}");
+    }
     let maps = !release || env::var_os("WISP_SOURCEMAP").is_some_and(|v| !v.is_empty());
 
     // Only existing paths: Cargo treats a missing one as always changed, which
@@ -58,6 +63,7 @@ pub fn run() {
         ".wisp/app.css",
         "package.json",
         ".wisp/npm",
+        ".env",
     ] {
         if root.join(p).exists() {
             println!("cargo::rerun-if-changed={p}");
@@ -106,6 +112,48 @@ pub fn read_source(path: &Path) -> std::io::Result<String> {
 /// CLI builds into `.wisp/app.css`.
 pub fn uses_tailwind(css: &str) -> bool {
     css.contains("@import \"tailwindcss\"") || css.contains("@import 'tailwindcss'")
+}
+
+/// The `PUBLIC_*` variables browser code reads as `env.PUBLIC_X`: the
+/// process's, and those of `.env` at the app's root the process lacks.
+pub fn public_env(root: &Path) -> Vec<(String, String)> {
+    let mut vars: Vec<(String, String)> = env::vars_os()
+        .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
+        .filter(|(k, _)| k.starts_with("PUBLIC_"))
+        .collect();
+    let file = read_source(&root.join(".env")).unwrap_or_default();
+    for (k, v) in dotenv(&file) {
+        if k.starts_with("PUBLIC_") && !vars.iter().any(|(n, _)| *n == k) {
+            vars.push((k, v));
+        }
+    }
+    vars.sort();
+    vars
+}
+
+/// The `KEY=value` lines of a `.env` file: `#` comments, `export KEY=…`,
+/// and values in '…' or "…" (where `\n` is a line break).
+fn dotenv(text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        let (k, v) = (k.trim(), v.trim());
+        if k.is_empty() || k.starts_with('#') {
+            continue;
+        }
+        let quoted = |q: char| v.strip_prefix(q)?.strip_suffix(q).filter(|_| v.len() > 1);
+        let v = match (quoted('"'), quoted('\'')) {
+            (Some(d), _) => d.replace("\\n", "\n").replace("\\\"", "\""),
+            (_, Some(s)) => s.to_string(),
+            _ => v.split(" #").next().unwrap_or("").trim_end().to_string(),
+        };
+        out.push((k.to_string(), v));
+    }
+    out
 }
 
 /// A JSON (and JavaScript) string literal, for files of their own (a
@@ -410,6 +458,23 @@ fn write_if_changed(path: &Path, contents: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dotenv_lines() {
+        let text = "# a comment\nPUBLIC_A=1\nexport PUBLIC_B = two words # note\n\nPUBLIC_C=\"x\\ny # kept\"\nPUBLIC_D='$raw\\n'\nPUBLIC_E=\nnot a line\n=x\nPUBLIC_F=a=b";
+        assert_eq!(
+            super::dotenv(text),
+            [
+                ("PUBLIC_A", "1"),
+                ("PUBLIC_B", "two words"),
+                ("PUBLIC_C", "x\ny # kept"),
+                ("PUBLIC_D", "$raw\\n"),
+                ("PUBLIC_E", ""),
+                ("PUBLIC_F", "a=b"),
+            ]
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+        );
+    }
+
     #[test]
     fn fnv_vectors() {
         assert_eq!(super::fnv1a(b""), 0xcbf29ce484222325);

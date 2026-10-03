@@ -130,6 +130,36 @@ a `#[derive(Json)]` type's fields, and a block's `let items: Vec<Item>`, as
 TypeScript interfaces; an unannotated `let`, `any`. Errors point at the
 `.wisp` file and line.
 
+## Environment variables
+
+`env.PUBLIC_NAME` in browser code (a script, a directive, `src/lib`,
+`+page.js`) is the variable `PUBLIC_NAME`, written in when the app is
+built: there is no `env` object in the browser.
+
+```html
+<script>
+  const r = await fetch(env.PUBLIC_API_URL + '/items')
+</script>
+```
+
+```sh
+# .env, at the app's root (next to Cargo.toml)
+PUBLIC_API_URL=https://api.example.com
+```
+
+- The values come from the build's environment, and from `.env` for the
+  names it lacks. `wisp dev` rebuilds when `.env` changes; a release build
+  has the values it was built with.
+- Only `PUBLIC_` names reach the browser. `env.DATABASE_URL` in browser
+  code is a build error, so a secret can't leak: read it on the server,
+  `wisp::env("DATABASE_URL")` (which reads the process's environment, not
+  `.env`).
+- A `PUBLIC_` name that is not set is a build error, not `undefined` at
+  runtime. Set it, even to nothing (`PUBLIC_FLAG=`).
+- `env` read whole, or `env[name]`, is an error too: names are filled in
+  one at a time. A variable or parameter of your own named `env` is just
+  that.
+
 ## Directives
 
 | Syntax | Meaning |
