@@ -199,10 +199,33 @@ impl Validate {
     }
 }
 
+/// `rules` cut at the commas that are not inside a string: `pattern = "a{1,2}"`.
+fn split(rules: &str) -> Vec<&str> {
+    let (mut out, mut from, mut quoted, mut escaped) = (Vec::new(), 0, false, false);
+    for (i, c) in rules.char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' if quoted => escaped = true,
+            '"' => quoted = !quoted,
+            ',' if !quoted => {
+                out.push(&rules[from..i]);
+                from = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&rules[from..]);
+    out
+}
+
 /// What is inside `validate(…)`, or what is wrong with it.
 pub fn parse(rules: &str) -> Result<Validate, String> {
     let mut out = Validate::default();
-    for r in rules.split(',').map(str::trim).filter(|r| !r.is_empty()) {
+    for r in split(rules)
+        .into_iter()
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+    {
         let (name, value) = match r.split_once('=') {
             Some((k, v)) => (k.trim(), Some(v.trim())),
             None => (r, None),
@@ -381,6 +404,8 @@ mod tests {
         assert_eq!(r[0], want(Key::Len, "1..=100"));
         assert_eq!(r[1], want(Key::Email, ""));
         assert_eq!(r[0].len_bounds(), (Some(1), Some(100)));
+        let q = parse(r#"pattern = "a{1,2}, b", url"#).unwrap().rules;
+        assert_eq!((q.len(), q[0].value.as_str()), (2, r#""a{1,2}, b""#));
         let first = |rules| parse(rules).unwrap().rules[0].len_bounds();
         assert_eq!(first("len = ..10"), (None, Some(9)));
         assert_eq!(first("len = N.."), (None, None));

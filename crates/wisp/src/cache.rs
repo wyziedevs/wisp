@@ -15,8 +15,10 @@ use std::sync::Arc;
 /// Most answers kept: past it, the expired go, then the oldest key.
 const MAX: usize = 1024;
 
-static KEPT: Shared<BTreeMap<String, (u64, Arc<dyn Any + Send + Sync>)>> =
-    Shared::new(BTreeMap::new());
+/// An answer and the unix second it is kept until.
+type Kept = (u64, Arc<dyn Any + Send + Sync>);
+
+static KEPT: Shared<BTreeMap<String, Kept>> = Shared::new(BTreeMap::new());
 
 /// The answer kept under `key` if it is under `secs` seconds old, else what
 /// `make` gives, kept from now: `let top = wisp::cache("top", 60, || async {

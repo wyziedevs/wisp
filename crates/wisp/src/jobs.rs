@@ -83,7 +83,6 @@ impl FromJson for Job {
 pub struct Queue {
     name: &'static str,
     table: Table<Job>,
-    #[cfg(not(target_arch = "wasm32"))]
     wake: tokio::sync::Notify,
     worked: AtomicBool,
 }
@@ -91,14 +90,16 @@ pub struct Queue {
 /// The queue called `name` (letters, digits, `_`, `-`), made on first use;
 /// its jobs are the saved table `queue-name`.
 pub fn queue(name: &str) -> &'static Queue {
-    static ALL: crate::Shared<Vec<(&'static str, &'static Queue)>> =
-        crate::Shared::new(Vec::new());
+    static ALL: crate::Shared<Vec<(&'static str, &'static Queue)>> = crate::Shared::new(Vec::new());
     let mut all = ALL.lock();
     if let Some((_, q)) = all.iter().find(|(n, _)| *n == name) {
         return q;
     }
     assert!(
-        !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
+        !name.is_empty()
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
         "a queue's name is letters, digits, _ and -: {name:?}"
     );
     let name: &'static str = Box::leak(name.into());
@@ -106,7 +107,6 @@ pub fn queue(name: &str) -> &'static Queue {
     let q: &'static Queue = Box::leak(Box::new(Queue {
         name,
         table: Table::saved(table),
-        #[cfg(not(target_arch = "wasm32"))]
         wake: tokio::sync::Notify::new(),
         worked: AtomicBool::new(false),
     }));
@@ -130,7 +130,6 @@ impl Queue {
             dead: false,
             error: None,
         });
-        #[cfg(not(target_arch = "wasm32"))]
         self.wake.notify_one();
         id
     }
@@ -161,7 +160,6 @@ impl Queue {
             };
             was
         });
-        #[cfg(not(target_arch = "wasm32"))]
         self.wake.notify_one();
         revived == Some(true)
     }
@@ -188,7 +186,6 @@ fn settle(j: &mut Job, now: u64, error: String) {
 /// `Ok` ends the job; `Err` or a panic has it tried again later (see the
 /// module). A job that is not a `T` is dead at once. Call it once per queue,
 /// in `init`.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn work<T, F, Fut>(name: &str, mut f: F)
 where
     T: FromJson + Send + 'static,
@@ -210,7 +207,6 @@ where
 }
 
 /// Runs the next due job of `q`, or waits for one: `false` once the server is stopping.
-#[cfg(not(target_arch = "wasm32"))]
 async fn step<T, F, Fut>(q: &'static Queue, f: &mut F) -> bool
 where
     T: FromJson + Send + 'static,
@@ -218,7 +214,9 @@ where
     Fut: Future<Output = crate::Result> + Send + 'static,
 {
     let now = crate::unix_now();
-    let due = q.table.find(|j| !j.dead && j.run_at <= now && j.lease <= now);
+    let due = q
+        .table
+        .find(|j| !j.dead && j.run_at <= now && j.lease <= now);
     let claimed = match &due {
         Some(row) => q.table.update(row.id, |j| {
             let free = !j.dead && j.lease <= now;
@@ -233,10 +231,9 @@ where
         // Nothing due: a push wakes it, else look again in a second.
         return crate::http::first(
             async {
-                crate::http::first(
-                    async { q.wake.notified().await },
-                    async { tokio::time::sleep(std::time::Duration::from_secs(1)).await },
-                )
+                crate::http::first(async { q.wake.notified().await }, async {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await
+                })
                 .await;
                 true
             },
@@ -266,7 +263,8 @@ where
                 q.name,
                 row.tries + 1
             ));
-            q.table.update(row.id, |j| settle(j, crate::unix_now(), error));
+            q.table
+                .update(row.id, |j| settle(j, crate::unix_now(), error));
         }
     }
     true
@@ -303,17 +301,26 @@ impl Cron {
     pub(crate) fn parse(expr: &str) -> Result<Cron, String> {
         let f: Vec<&str> = expr.split_whitespace().collect();
         let [m, h, dom, mon, dow] = f[..] else {
-            return Err(format!("{expr:?} is not 5 fields: minute hour day month weekday"));
+            return Err(format!(
+                "{expr:?} is not 5 fields: minute hour day month weekday"
+            ));
         };
         let field = |s: &str, lo: u32, hi: u32| -> Result<u64, String> {
             let mut set = 0u64;
             for part in s.split(',') {
                 let (range, step) = part.split_once('/').unwrap_or((part, "1"));
-                let step: u32 = step.parse().ok().filter(|&n| n > 0).ok_or(format!("bad step in {s:?}"))?;
+                let step: u32 = step
+                    .parse()
+                    .ok()
+                    .filter(|&n| n > 0)
+                    .ok_or(format!("bad step in {s:?}"))?;
                 let num = |x: &str| x.parse::<u32>().ok().filter(|n| (lo..=hi).contains(n));
                 let (a, b) = match range.split_once('-') {
                     _ if range == "*" => (lo, hi),
-                    Some((a, b)) => (num(a).ok_or(format!("bad {s:?}"))?, num(b).ok_or(format!("bad {s:?}"))?),
+                    Some((a, b)) => (
+                        num(a).ok_or(format!("bad {s:?}"))?,
+                        num(b).ok_or(format!("bad {s:?}"))?,
+                    ),
                     None => {
                         let a = num(range).ok_or(format!("{s:?} is outside {lo}-{hi}"))?;
                         (a, if part.contains('/') { hi } else { a })
@@ -373,7 +380,6 @@ impl Cron {
 /// takes longer than the gap to the next skips the minutes it overran; one
 /// that panics runs again at the next match, as with [`every`](crate::every).
 /// Several servers each run it: have one do it (a job on a [`queue`] once).
-#[cfg(not(target_arch = "wasm32"))]
 pub fn cron<F, Fut>(expr: &str, mut task: F)
 where
     F: FnMut() -> Fut + Send + 'static,
@@ -421,27 +427,59 @@ mod tests {
         const H: u64 = 3600;
         const D: u64 = 86_400;
         assert_eq!(next("0 3 * * *", JAN1_2024), 3 * H);
-        assert_eq!(next("0 3 * * *", JAN1_2024 + 3 * H), D + 3 * H, "after, not at");
+        assert_eq!(
+            next("0 3 * * *", JAN1_2024 + 3 * H),
+            D + 3 * H,
+            "after, not at"
+        );
         assert_eq!(next("* * * * *", JAN1_2024), 60);
         assert_eq!(next("*/15 * * * *", JAN1_2024 + 61), 15 * 60);
         assert_eq!(next("5,10 1-2 * * *", JAN1_2024), H + 5 * 60);
         assert_eq!(next("0 9 * * 1", JAN1_2024), 9 * H, "Monday");
         assert_eq!(next("0 9 * * 0", JAN1_2024), 6 * D + 9 * H, "Sunday");
         assert_eq!(next("0 9 * * 7", JAN1_2024), 6 * D + 9 * H, "Sunday, as 7");
-        assert_eq!(next("30 2 29 2 *", JAN1_2024), (31 + 28) * D + 2 * H + 30 * 60, "leap day");
+        assert_eq!(
+            next("30 2 29 2 *", JAN1_2024),
+            (31 + 28) * D + 2 * H + 30 * 60,
+            "leap day"
+        );
         assert_eq!(next("0 0 1 6 *", JAN1_2024), 152 * D, "June 1st");
         // Both day fields given: either one.
-        assert_eq!(next("0 0 3 * 2", JAN1_2024), D, "Tuesday the 2nd, before the 3rd");
+        assert_eq!(
+            next("0 0 3 * 2", JAN1_2024),
+            D,
+            "Tuesday the 2nd, before the 3rd"
+        );
         assert_eq!(next("10-20/5 * * * *", JAN1_2024), 10 * 60);
-        assert_eq!(next("0 0 */10 * *", JAN1_2024 + 1), 10 * D, "the 1st, 11th, 21st, 31st");
+        assert_eq!(
+            next("0 0 */10 * *", JAN1_2024 + 1),
+            10 * D,
+            "the 1st, 11th, 21st, 31st"
+        );
     }
 
     #[test]
     fn cron_refuses_what_is_wrong() {
-        for bad in ["", "* * * *", "* * * * * *", "60 * * * *", "* 24 * * *", "0 0 0 * *", "0 0 * 13 *", "*/0 * * * *", "5-1 * * * *", "a * * * *", "0 0 * * 8"] {
+        for bad in [
+            "",
+            "* * * *",
+            "* * * * * *",
+            "60 * * * *",
+            "* 24 * * *",
+            "0 0 0 * *",
+            "0 0 * 13 *",
+            "*/0 * * * *",
+            "5-1 * * * *",
+            "a * * * *",
+            "0 0 * * 8",
+        ] {
             assert!(Cron::parse(bad).is_err(), "{bad}");
         }
-        assert_eq!(Cron::parse("0 0 30 2 *").unwrap().next(JAN1_2024), None, "February 30");
+        assert_eq!(
+            Cron::parse("0 0 30 2 *").unwrap().next(JAN1_2024),
+            None,
+            "February 30"
+        );
     }
 
     #[test]
@@ -510,10 +548,26 @@ mod tests {
             }
             assert_eq!(*done.lock(), ["a", "b"]);
             let failed = q.table.filter(|j| j.tries > 0);
-            assert_eq!(failed.len(), 2, "the two that failed wait to be tried again");
-            assert!(failed.iter().all(|r| r.run_at > crate::unix_now() && !r.dead));
-            assert!(failed.iter().any(|r| r.error.as_deref().is_some_and(|e| e.contains("no luck"))));
-            assert!(failed.iter().any(|r| r.error.as_deref().is_some_and(|e| e.contains("panic"))));
+            assert_eq!(
+                failed.len(),
+                2,
+                "the two that failed wait to be tried again"
+            );
+            assert!(
+                failed
+                    .iter()
+                    .all(|r| r.run_at > crate::unix_now() && !r.dead)
+            );
+            assert!(
+                failed
+                    .iter()
+                    .any(|r| r.error.as_deref().is_some_and(|e| e.contains("no luck")))
+            );
+            assert!(
+                failed
+                    .iter()
+                    .any(|r| r.error.as_deref().is_some_and(|e| e.contains("panic")))
+            );
             assert_eq!(q.pending(), 2);
             // Out of tries: dead, until put back.
             let id = failed[0].id;

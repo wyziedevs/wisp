@@ -93,7 +93,10 @@ mod tests {
 
     impl Relay for &'static Loop {
         fn publish(&self, channel: &str, message: &str) {
-            self.1.lock().unwrap().push((channel.into(), message.into()));
+            self.1
+                .lock()
+                .unwrap()
+                .push((channel.into(), message.into()));
             if let Some(d) = &*self.0.lock().unwrap() {
                 d(channel, message);
             }
@@ -116,19 +119,32 @@ mod tests {
             assert_eq!(crate::channel("relay-room").send("hi"), 1);
             assert_eq!(sub.recv().await.as_deref(), Some("hi"));
             // The echo of its own is dropped: one copy, not two.
-            let sent: Vec<_> = (broker.1.lock().unwrap().iter()).filter(|(c, _)| c == "relay-room").cloned().collect();
+            let sent: Vec<_> = (broker.1.lock().unwrap().iter())
+                .filter(|(c, _)| c == "relay-room")
+                .cloned()
+                .collect();
             assert_eq!(sent.len(), 1);
             let (name, wire) = &sent[0];
             assert_eq!(name, "relay-room");
             assert!(wire.ends_with(" hi"));
             // Another instance's message reaches this one's listeners, and
             // is not sent on again.
-            let d = broker.0.lock().unwrap();
-            d.as_ref().unwrap()("relay-room", "0000000000000000 from afar");
-            d.as_ref().unwrap()("relay-room", "garbage");
-            drop(d);
+            {
+                let d = broker.0.lock().unwrap();
+                d.as_ref().unwrap()("relay-room", "0000000000000000 from afar");
+                d.as_ref().unwrap()("relay-room", "garbage");
+            }
             assert_eq!(sub.recv().await.as_deref(), Some("from afar"));
-            assert_eq!(broker.1.lock().unwrap().iter().filter(|(c, _)| c == "relay-room").count(), 1);
+            assert_eq!(
+                broker
+                    .1
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|(c, _)| c == "relay-room")
+                    .count(),
+                1
+            );
         });
         assert!(RELAY.get().is_some());
     }

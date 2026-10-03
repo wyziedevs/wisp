@@ -58,7 +58,10 @@ impl Blobs for Folder {
         let io = |e: std::io::Error| Error::new(500, format!("could not keep a file: {e}"));
         std::fs::create_dir_all(&self.0).map_err(io)?;
         // Two puts of one file may race: each has its own, the last rename wins, both whole.
-        let tmp = self.0.join(format!("{hash}.{}.tmp", crate::hex(&crate::sign::random::<4>())));
+        let tmp = self.0.join(format!(
+            "{hash}.{}.tmp",
+            crate::hex(&crate::sign::random::<4>())
+        ));
         std::fs::write(&tmp, bytes).map_err(io)?;
         std::fs::rename(&tmp, &path).map_err(|e| {
             let _ = std::fs::remove_file(&tmp);
@@ -76,7 +79,10 @@ struct Memory(Shared<BTreeMap<String, Vec<u8>>>);
 
 impl Blobs for Memory {
     fn put(&self, hash: &str, bytes: &[u8]) -> Result {
-        self.0.lock().entry(hash.into()).or_insert_with(|| bytes.to_vec());
+        self.0
+            .lock()
+            .entry(hash.into())
+            .or_insert_with(|| bytes.to_vec());
         Ok(())
     }
 
@@ -100,11 +106,11 @@ fn current() -> &'static dyn Blobs {
             None if crate::store::current().is_none() => return None,
             None => match crate::setting::<String>("WISP_DATA", "a folder") {
                 Some(d) => std::path::Path::new(&d).join("blobs"),
-                None if cfg!(debug_assertions) => std::path::Path::new(
-                    crate::sign::ROOT.get().copied().unwrap_or("."),
-                )
-                .join(".wisp")
-                .join("blobs"),
+                None if cfg!(debug_assertions) => {
+                    std::path::Path::new(crate::sign::ROOT.get().copied().unwrap_or("."))
+                        .join(".wisp")
+                        .join("blobs")
+                }
                 None => "blobs".into(),
             },
         };
@@ -127,7 +133,8 @@ pub fn put(bytes: &[u8]) -> Result<String> {
 /// The bytes kept under `hash`; `None` when there are none, or `hash` is not
 /// a hash (so it is safe to pass what a URL says).
 pub fn get(hash: &str) -> Option<Vec<u8>> {
-    let hash_like = hash.len() == 64 && hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    let hash_like =
+        hash.len() == 64 && hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
     hash_like.then(|| current().get(hash)).flatten()
 }
 
@@ -137,7 +144,8 @@ pub fn serve(path: &str) -> Option<Response> {
     let hash = path.strip_prefix(PREFIX)?;
     let bytes = get(hash)?;
     let sniffed = bytes.len().min(512);
-    let kind = crate::Image::new(bytes[..sniffed].to_vec()).map_or("application/octet-stream", |i| i.kind());
+    let kind = crate::Image::new(bytes[..sniffed].to_vec())
+        .map_or("application/octet-stream", |i| i.kind());
     Some(
         Response::new(kind, bytes)
             .with_header("etag", format!("\"{hash}\""))
@@ -165,7 +173,11 @@ impl Upload {
     /// `file`. A file of no bytes is refused too.
     pub fn new(file: &crate::File, types: &str) -> Result<Upload> {
         let ext = file.name.rsplit_once('.').map_or("", |(_, e)| e);
-        if !types.is_empty() && !types.split_whitespace().any(|t| t.eq_ignore_ascii_case(ext)) {
+        if !types.is_empty()
+            && !types
+                .split_whitespace()
+                .any(|t| t.eq_ignore_ascii_case(ext))
+        {
             let all: Vec<_> = types.split_whitespace().collect();
             return crate::invalid("file", format!("must be {}", all.join(", ")));
         }
@@ -222,7 +234,12 @@ impl FromJson for Upload {
                 None
             }
         };
-        let (hash, name, kind, size) = (field("hash")?, field("name")?, field("type")?, field("size")?);
+        let (hash, name, kind, size) = (
+            field("hash")?,
+            field("name")?,
+            field("type")?,
+            field("size")?,
+        );
         Some(Upload {
             hash: p.read("hash", hash)?,
             name: p.read("name", name)?,
@@ -260,7 +277,11 @@ mod tests {
 
         let r = serve(&a.url()).unwrap();
         assert_eq!(r.content_type, "application/octet-stream");
-        assert!(r.headers.iter().any(|(n, v)| n == "cache-control" && v.contains("immutable")));
+        assert!(
+            r.headers
+                .iter()
+                .any(|(n, v)| n == "cache-control" && v.contains("immutable"))
+        );
         assert!(serve("/_wisp/blob/../x").is_none());
         assert!(serve("/other").is_none());
         assert!(get(&"0".repeat(64)).is_none());
@@ -279,8 +300,16 @@ mod tests {
         let hash = "a".repeat(64);
         f.put(&hash, b"one").unwrap();
         f.put(&hash, b"two").unwrap();
-        assert_eq!(f.get(&hash).as_deref(), Some(&b"one"[..]), "kept, not replaced");
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no temp file left");
+        assert_eq!(
+            f.get(&hash).as_deref(),
+            Some(&b"one"[..]),
+            "kept, not replaced"
+        );
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            1,
+            "no temp file left"
+        );
         assert!(f.get(&"b".repeat(64)).is_none());
         let _ = std::fs::remove_dir_all(dir);
     }
