@@ -70,7 +70,7 @@ pub use live::{ClientModule, Json};
 pub use rest::Resource;
 pub use session::{Account, login, sign_in_page, sign_out_everywhere, signup, users};
 pub use sign::{hex, hmac_sha256};
-pub use store::{Store, store};
+pub use store::{Changes, Store, store};
 pub use table::{Page, Row, Table};
 pub use wisp_macros::{Cookie, FromJson, Json, Rest, action, model};
 pub use ws::{Message, WebSocket};
