@@ -2911,6 +2911,24 @@ A script keeps its own state the same way:
 `snapshot` is the only thing a script may export. It costs a page without
 one nothing (it is in `extra.js`).
 
+## Phones and flaky networks
+
+- Pages load and leave with `pagehide`, never `unload`, so the browser's
+  back/forward cache can keep them; scroll is restored on back, forward and
+  reload.
+- `<body data-wisp-revalidate>` fetches the page's data anew when the tab
+  comes back or the network does, at most every 30 seconds (the attribute's
+  value is the seconds). The morph keeps focus, scroll and typed text.
+- Offline, a form post is not sent into the void. A `<form data-wisp-queue>`
+  (you say sending it twice is safe: the server takes the same post once)
+  waits in `sessionStorage` and is sent, in order, when the network is back;
+  the page then refreshes (`wisp:sent` on `document`). Any other form shows
+  "You are offline" and fires `wisp:result` with `error: "offline"`. Only
+  urlencoded forms queue, not file uploads.
+- A navigation moves focus to the `<h1>` (else `<main>`) and says the title
+  in a polite live region; the view transition is skipped under
+  `prefers-reduced-motion`.
+
 ## Forms: `use:enhance`
 
 Plain forms already update in place. `use:enhance` adds hooks.

@@ -43,6 +43,7 @@
     document.head.append(...next);
     served.push(...next);
     morph(document.body, doc.body);
+    seen = Date.now();
     shown = key(location.href);
     // Parsed scripts are inert; a copy made here runs when inserted.
     for (const old of document.querySelectorAll('script')) {
@@ -103,6 +104,34 @@
   const isHtml = (res) =>
     (res.headers.get('content-type') || '').startsWith('text/html') && !attachment(res);
   const attachment = (res) => /^\s*attachment/i.test(res.headers.get('content-disposition') || '');
+
+  // A polite live region for what a page load would have said: the new
+  // page's title, "offline".
+  let live;
+  const say = (t) => {
+    if (!live?.isConnected) {
+      live = document.createElement('div');
+      live.setAttribute('aria-live', 'polite');
+      live.style.cssText = 'position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)';
+      live.__w = 1;
+      document.body.append(live);
+    }
+    live.textContent = '';
+    setTimeout(() => (live.textContent = t), 50);
+  };
+
+  // `<body data-wisp-revalidate>`: back in the tab, or online again, the
+  // page's data is fetched anew (at most every 30s, or the attribute's
+  // seconds). The morph keeps the focus and the scroll.
+  let seen = Date.now();
+  const stale = () => {
+    const s = document.body.dataset.wispRevalidate;
+    if (s == null || document.hidden || !navigator.onLine || Date.now() - seen < (+s || 30) * 1000) return;
+    seen = Date.now();
+    refresh().catch(() => {});
+  };
+  document.addEventListener('visibilitychange', stale);
+  addEventListener('online', stale);
 
   async function refresh(extra) {
     const res = await fetch(location.href, { headers: { ...headers, ...extra } });
@@ -231,10 +260,16 @@
       const auto = document.querySelector('[autofocus]');
       if (auto) auto.focus();
       else {
+        // To the heading (else the main part), where a screen reader starts
+        // reading, and the title said aloud.
+        const t = document.querySelector('h1, main, [role=main]') || document.body;
         document.activeElement?.blur();
-        document.body.setAttribute('tabindex', '-1');
-        document.body.focus({ preventScroll: true });
-        document.body.removeAttribute('tabindex');
+        t.setAttribute('tabindex', '-1');
+        t.style.outline = 'none';
+        t.focus({ preventScroll: true });
+        t.removeAttribute('tabindex');
+        t.addEventListener('blur', () => (t.style.outline = ''), { once: true });
+        say(document.title);
       }
     };
     if (document.startViewTransition && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
@@ -503,6 +538,17 @@
     if (!send('wisp:submit', { data, submitter: btn, action: url }, form)) return;
     const multipart = (attr('enctype') || '').toLowerCase() === 'multipart/form-data';
     const body = multipart ? data : new URLSearchParams([...data].map(([k, v]) => [k, typeof v === 'string' ? v : v.name]));
+    if (!navigator.onLine) {
+      // `data-wisp-queue` says sending it twice is safe (the server takes the
+      // same post once): it waits for the network. Any other form says so.
+      const text = typeof body === 'string' || body instanceof URLSearchParams;
+      if (form.hasAttribute('data-wisp-queue') && text) {
+        enqueue([url.href, String(body)]);
+        say('Saved: it is sent when you are back online.');
+      } else say('You are offline. Try again when you are back.');
+      send('wisp:result', { ok: false, status: 0, error: 'offline' }, form);
+      return;
+    }
     busy.add(form);
     form.setAttribute('aria-busy', 'true');
     if (btn) btn.disabled = true;
@@ -563,6 +609,30 @@
     else if (to && !result.data) await go(to, { replace: false });
     send('wisp:result', result, form);
   });
+
+  // Posts that waited for the network: [url, urlencoded body], in
+  // sessionStorage (a reload keeps them). Sent in order when online; one
+  // the server turns down (4xx) is dropped, a failure keeps the rest.
+  const queue = () => {
+    try { return JSON.parse(sessionStorage['wisp:q'] || '[]'); } catch { return []; }
+  };
+  const enqueue = (p) => {
+    try { sessionStorage['wisp:q'] = JSON.stringify([...queue(), p]); } catch {}
+  };
+  async function drain() {
+    if (!queue().length) return;
+    for (let q; (q = queue()).length && navigator.onLine; ) {
+      try {
+        const r = await fetch(q[0][0], { method: 'POST', body: q[0][1], headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded' } });
+        if (r.status >= 500) return;
+      } catch { return; }
+      sessionStorage['wisp:q'] = JSON.stringify(q.slice(1));
+    }
+    send('wisp:sent');
+    refresh().catch(() => {});
+  }
+  addEventListener('online', drain);
+  if (queue().length) drain();
 
   // ---- islands --------------------------------------------------------------
 
