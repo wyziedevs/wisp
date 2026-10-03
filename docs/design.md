@@ -1162,6 +1162,16 @@ Measured on the demo (Windows, Ryzen 7800X3D): a text edit is swapped in under
 1 ms and served about 85 ms after the save (mostly the 50 ms poll); an
 expression or `.rs` edit rebuilds and restarts in 0.3 s.
 
+`wisp fmt [paths]` formats `.wisp` files (`--check` lists the unformatted
+and fails; `wisp check` warns of them): the element tree and template blocks
+two spaces a level, attribute values double-quoted, a start tag that begins
+its line on one line or, past 100 columns, an attribute a line; the `---`
+block through `rustfmt --edition 2021` inside a wrapper fn; `<script>`
+re-indented only; `<style>` a declaration a line when it has no strings,
+comments or `url(`. Text, holes, `<pre>` and `<textarea>` are never touched.
+Markup that does not balance, or that would not parse to the same template,
+is left as written; formatting twice equals formatting once.
+
 ### Editors
 
 `wisp lsp` is a language server over stdio, in the CLI: JSON-RPC framed by
