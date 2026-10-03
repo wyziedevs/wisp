@@ -275,7 +275,7 @@ no-wait fast path off every route.
   Test: `let mut app = wisp::test::client::<App>(); app.get("/").text()`,
   `app.post_form/post_json/delete`, `.json::<T>()`, `r.location()`,
   `app.upload(url, field, mime, bytes)`, `app.sign_in(id)`,
-  `app.modules(&page)`, `app.websocket(url)` (`.send/.recv`).
+  `app.modules(&page)`, `app.websocket(url)` (`.send/.recv`). `wisp::test::fresh()` empties every table.
 
 - Serve extras (docs/serve.md): embedded files gzip + `Range`; pages get
   `nosniff` and `referrer-policy` (`WISP_HSTS=on`, `WISP_SECURE_HEADERS=off`);

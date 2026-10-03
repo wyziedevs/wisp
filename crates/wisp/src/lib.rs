@@ -34,9 +34,9 @@ mod fetch;
 mod form;
 #[cfg(test)]
 mod fuzz;
+mod guard;
 mod headers;
 mod health;
-mod guard;
 mod html;
 mod http;
 mod idem;
@@ -48,9 +48,9 @@ pub mod json;
 #[cfg(not(target_arch = "wasm32"))]
 mod limit;
 mod live;
-mod otel;
 mod mail;
 pub mod oauth;
+mod otel;
 pub mod password;
 mod policy;
 mod range;
@@ -97,9 +97,9 @@ pub use json::{FromJson, Value, from_json, to_json};
 #[cfg(not(target_arch = "wasm32"))]
 pub use limit::RateLimit;
 pub use live::{ClientModule, Json};
+pub use mail::mail;
 #[cfg(not(target_arch = "wasm32"))]
 pub use relay::{Deliver, Relay, relay};
-pub use mail::mail;
 pub use rest::Resource;
 pub use session::{Account, login, sign_in_page, sign_out_everywhere, signup, users};
 pub use sign::{hex, hmac_sha256};

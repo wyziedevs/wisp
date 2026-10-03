@@ -208,6 +208,26 @@ impl<T: Send + Sync> crate::admin::Admin for Table<T> {
     }
 }
 
+/// Every table `ready` has seen, for `test::fresh`.
+static EVERY: Shared<Vec<&'static dyn Wipe>> = Shared::new(Vec::new());
+
+trait Wipe: Sync {
+    fn wipe(&self);
+}
+
+impl<T: Send + Sync> Wipe for Table<T> {
+    fn wipe(&self) {
+        self.clear();
+    }
+}
+
+/// Empties every table, for a test that starts from nothing.
+pub(crate) fn wipe_all() {
+    for t in EVERY.lock().iter() {
+        t.wipe();
+    }
+}
+
 /// Tables that follow their store (`WISP_STORE_POLL`).
 static POLLED: Shared<Vec<&'static dyn Poll>> = Shared::new(Vec::new());
 
@@ -370,6 +390,11 @@ impl<T> Table<T> {
         T: Send + Sync + 'static,
     {
         drop(self.write());
+        let mut every = EVERY.lock();
+        if !every.iter().any(|t| std::ptr::addr_eq(*t, self)) {
+            every.push(self);
+        }
+        drop(every);
         if self.saved.is_none() || !matches!(self.read().state, State::Stored(_)) {
             return;
         }
@@ -1216,6 +1241,22 @@ mod tests {
         t.clear();
         assert!(t.is_empty() && t.by("c@x").is_none());
         assert_eq!(t.add(user("c@x", 1)), 4, "not given again");
+    }
+
+    #[test]
+    fn fresh_empties_the_tables_that_are_ready() {
+        static T: Table<u8> = Table::new();
+        T.ready();
+        T.ready();
+        T.add(1);
+        crate::test::fresh();
+        assert!(T.is_empty());
+        let seen = EVERY
+            .lock()
+            .iter()
+            .filter(|t| std::ptr::addr_eq(**t, &T))
+            .count();
+        assert_eq!(seen, 1, "listed once");
     }
 
     #[test]
