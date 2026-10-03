@@ -119,6 +119,10 @@ pub const REMOTE_JS_PATH: &str = app_path!("c/remote.js");
 /// Components built as custom elements: `el/x-card.js`, and what they run.
 pub const ELEMENTS: &str = app_path!("c/el/");
 pub const ELEMENT_JS_PATH: &str = app_path!("c/el.js");
+/// An app's service worker and web app manifest, at the root so the
+/// worker's scope is the whole site.
+pub const SERVICE_WORKER_PATH: &str = "/service-worker.js";
+pub const MANIFEST_PATH: &str = "/manifest.webmanifest";
 /// The app's CSS (`src/app.css`, or what Tailwind built of it).
 pub const APP_CSS_PATH: &str = app_path!("app.css");
 /// A dev build's scoped `<style>`s, from the project root: served after

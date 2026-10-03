@@ -17,6 +17,7 @@ mod markdown;
 mod model;
 pub mod npm;
 mod openapi;
+mod pwa;
 pub mod routes;
 pub mod rules;
 pub mod rust_scan;
@@ -117,6 +118,14 @@ pub fn read_source(path: &Path) -> std::io::Result<String> {
     } else {
         text.to_string()
     })
+}
+
+/// Whether the app has a web app manifest: `src/manifest.json`, or a call
+/// of `wisp::app_manifest` in `src/hooks.rs`.
+pub fn has_manifest(root: &Path) -> bool {
+    root.join("src").join("manifest.json").is_file()
+        || read_source(&root.join("src").join("hooks.rs"))
+            .is_ok_and(|s| s.contains("app_manifest("))
 }
 
 /// Whether the app's CSS (`src/app.css`) is Tailwind's input, which the

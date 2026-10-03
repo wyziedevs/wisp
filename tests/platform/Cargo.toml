@@ -1,5 +1,6 @@
 # An app of the platform features that change every page or the app's
-# headers, kept out of tests/app: a component built as a custom element.
+# headers, kept out of tests/app: a component built as a custom element, a
+# web app manifest and Wisp's offline service worker.
 [package]
 name = "wisp-test-platform"
 version = "0.1.0"
@@ -8,6 +9,10 @@ publish = false
 
 [dependencies]
 wisp.workspace = true
+
+[dev-dependencies]
+# `tests/http.rs`: `wisp build --static`'s export.
+tokio.workspace = true
 
 [build-dependencies]
 wisp-build.workspace = true

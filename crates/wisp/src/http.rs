@@ -783,6 +783,10 @@ pub(crate) fn setup<A: App>() {
             env!("WISP_RUNTIME_V"),
             "\"></script>"
         ));
+        if let Some(p) = A::PWA {
+            s.push_str(p.head);
+            crate::pwa::icons(p.icons);
+        }
         if let Some(port) = dev::events_port() {
             s.push_str(&format!(
                 "<script defer src=\"/_app/wisp-dev.js\" data-port=\"{port}\"></script>"
@@ -2931,7 +2935,7 @@ fn internal<A: App>(cx: &Cx, path: &str, out: &mut Out, reply: &mut Reply) -> bo
         _ => return false,
     };
     send_file(reply, cx, Body::Static(body), ext, etag);
-    if A::ELEMENTS && path == crate::protocol::LIVE_JS_PATH {
+    if !A::ELEMENTS.is_empty() && path == crate::protocol::LIVE_JS_PATH {
         any_origin(reply);
     }
     true
@@ -2942,6 +2946,25 @@ fn internal<A: App>(cx: &Cx, path: &str, out: &mut Out, reply: &mut Reply) -> bo
 /// `false` if the path is not a file.
 fn file<A: App>(cx: &Cx, raw: &[u8], route: Option<usize>, reply: &mut Reply) -> bool {
     let routed = route.is_some();
+    // The service worker and the manifest, of an app with either.
+    if let Some(p) = A::PWA {
+        use crate::protocol::{MANIFEST_PATH, SERVICE_WORKER_PATH};
+        let got = match cx.path() {
+            SERVICE_WORKER_PATH if !p.worker.is_empty() => {
+                Some((p.worker, "js", Some(p.worker_etag)))
+            }
+            MANIFEST_PATH => match p.manifest {
+                Some("") => None,
+                Some(m) => Some((m, "webmanifest", Some(p.manifest_etag))),
+                None => crate::pwa::manifest().map(|m| (m, "webmanifest", None)),
+            },
+            _ => None,
+        };
+        if let Some((body, ext, etag)) = got {
+            send_file(reply, cx, Body::Static(body.as_bytes()), ext, etag);
+            return true;
+        }
+    }
     // One `wisp dev` swapped in, never cached: its URL names its version.
     #[cfg(debug_assertions)]
     if raw.starts_with(crate::protocol::MODULES.as_bytes())
@@ -2972,7 +2995,7 @@ fn file<A: App>(cx: &Cx, raw: &[u8], route: Option<usize>, reply: &mut Reply) ->
             ext,
             Some(m.etag),
         );
-        if A::ELEMENTS {
+        if !A::ELEMENTS.is_empty() {
             any_origin(reply);
         }
         return true;

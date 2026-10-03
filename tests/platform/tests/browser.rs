@@ -4,6 +4,35 @@
 
 use wisp_test_platform::Site;
 
+/// The page registers Wisp's offline service worker (its CSP allows the
+/// script and the worker), which takes the page over and keeps the shell.
+#[test]
+fn the_service_worker_registers() {
+    let mut b = wisp::browser!(Site);
+    b.goto("/");
+    let url = b.eval("navigator.serviceWorker.ready.then((r) => r.active.scriptURL)");
+    assert!(
+        url.as_str()
+            .unwrap_or_default()
+            .ends_with("/service-worker.js"),
+        "{url:?}"
+    );
+    let controlled = "navigator.serviceWorker.controller ? 1 : new Promise((r) => \
+                      navigator.serviceWorker.addEventListener('controllerchange', () => r(1)))";
+    assert_eq!(b.eval(controlled).as_f64(), Some(1.0));
+    let kept = "caches.keys().then(async (ks) => [ks.length, ks[0].startsWith('wisp-'), \
+                !!(await (await caches.open(ks[0])).match('/'))].join())";
+    assert_eq!(b.eval(kept).as_str(), Some("1,true,true"));
+    // A page, through the worker, from the network.
+    let page = "fetch('/', { headers: { accept: 'text/html' } }).then((r) => r.text())";
+    assert!(
+        b.eval(page)
+            .as_str()
+            .unwrap_or_default()
+            .contains("<h1>Platform</h1>")
+    );
+}
+
 /// `<x-card>` on a page that is not Wisp's, with one script tag: drawn in
 /// its shadow root with its CSS, its attributes read as their Rust types,
 /// its properties, its children in its `<slot>`, its events.

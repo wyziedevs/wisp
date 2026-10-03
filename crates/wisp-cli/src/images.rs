@@ -79,6 +79,20 @@ pub fn build(root: &Path) {
             }
         }
     }
+    // The app's icon, at the widths its manifest lists.
+    if let Some((size, widths)) = image::icon(root) {
+        for (width, name) in widths {
+            let to = dir.join(name);
+            if !to.is_file() {
+                jobs.push(Job {
+                    from: root.join(image::ICON),
+                    width,
+                    resize: width < size.width,
+                    to,
+                });
+            }
+        }
+    }
     if jobs.is_empty() {
         return;
     }

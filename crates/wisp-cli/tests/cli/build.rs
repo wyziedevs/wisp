@@ -537,6 +537,46 @@ fn each_host_gets_its_folder() {
     assert!(app.join("n2/public").is_dir());
 }
 
+#[test]
+fn the_icon_is_sized_for_the_manifest() {
+    let cwd = Dir::new("icon");
+    let app = pinned_app(&cwd, "pwa", &["-t", "minimal"]);
+    let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+    png.extend(600u32.to_be_bytes());
+    png.extend(600u32.to_be_bytes());
+    png.extend([8, 6, 0, 0, 0]);
+    fs::write(app.join("static/icon.png"), &png).unwrap();
+    write(&app, "src/manifest.json", "{\"name\": \"Pics\"}");
+    let tool = fake_cwebp(&cwd);
+    let o = wisp_env(
+        &app,
+        &["build", "--static", "--out=out"],
+        &[("WISP_CWEBP", &tool)],
+    );
+    assert!(o.ok, "{}", o.err);
+    has(&o.out, &["Encoding 2 WebP images into .wisp/img"]);
+    let h = wisp_build::image::hash(&png);
+    has(
+        &read(&app, "out/manifest.webmanifest"),
+        &[&format!(
+            "\"icons\":[{{\"src\":\"/icon.png\",\"sizes\":\"600x600\",\"type\":\"image/png\"}},\
+             {{\"src\":\"/_app/img/{h}-192.webp\",\"sizes\":\"192x192\",\"type\":\"image/webp\"}},\
+             {{\"src\":\"/_app/img/{h}-512.webp\",\"sizes\":\"512x512\",\"type\":\"image/webp\"}}]"
+        )],
+    );
+    let files = tree(&app.join("out"));
+    for f in [
+        format!("_app/img/{h}-192.webp"),
+        format!("_app/img/{h}-512.webp"),
+    ] {
+        assert!(files.contains(&f), "{f} in {files:?}");
+    }
+    has(
+        &read(&app, "out/index.html"),
+        &["<link rel=\"manifest\" href=\"/manifest.webmanifest\">"],
+    );
+}
+
 /// A stand-in for cwebp that writes its `-o` file.
 fn fake_cwebp(dir: &Path) -> std::path::PathBuf {
     let (name, script) = if cfg!(windows) {

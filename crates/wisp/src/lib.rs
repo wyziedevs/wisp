@@ -46,6 +46,7 @@ mod limit;
 mod live;
 pub mod password;
 mod policy;
+mod pwa;
 mod remote;
 mod rest;
 #[doc(hidden)]
@@ -83,6 +84,7 @@ pub use json::{FromJson, Value, from_json, to_json};
 #[cfg(not(target_arch = "wasm32"))]
 pub use limit::RateLimit;
 pub use live::{ClientModule, Json};
+pub use pwa::app_manifest;
 pub use rest::Resource;
 pub use session::{sign_in_page, sign_out_everywhere};
 pub use sign::{hex, hmac_sha256};
@@ -278,7 +280,10 @@ pub async fn prepare<A: App>() -> std::io::Result<()> {
         std::io::Error::other(format!("init in src/hooks.rs failed: {}", e.detail()))
     })?;
     session::ready();
-    csp::ready(A::SCRIPT_HASHES);
+    csp::ready(
+        A::SCRIPT_HASHES,
+        A::PWA.is_some_and(|p| !p.worker.is_empty()),
+    );
     content::ready(A::PAGES);
     Ok(())
 }
@@ -720,9 +725,12 @@ pub trait App: 'static {
     const SCRIPT_HASHES: &'static [&'static str] = &[];
     /// The Markdown pages, for [`pages`].
     const PAGES: &'static [MdPage] = &[];
-    /// Has a component built as a custom element (`{@element "x-card"}`),
-    /// which other sites load: the browser modules allow any origin.
-    const ELEMENTS: bool = false;
+    /// The tags of the components built as custom elements (`{@element
+    /// "x-card"}`), which other sites load: with any, the browser modules
+    /// allow any origin.
+    const ELEMENTS: &'static [&'static str] = &[];
+    /// The service worker and web app manifest, if the app has either.
+    const PWA: Option<rt::Pwa> = None;
     /// What the build knows of each route, by route id.
     const ROUTES: &'static [rt::RouteFacts];
     /// [`rt::RouteFacts::now`] for a request no route matched, which the
@@ -1544,6 +1552,23 @@ pub mod rt {
         pub values: &'static [(&'static str, &'static str)],
         /// Renders it, its simple props from the query.
         pub render: fn(&mut crate::Out, &crate::Cx),
+    }
+
+    /// The app's service worker and web app manifest ([`crate::App::PWA`]),
+    /// as the build made them.
+    pub struct Pwa {
+        /// `/service-worker.js`, or "".
+        pub worker: &'static str,
+        pub worker_etag: &'static str,
+        /// `/manifest.webmanifest`: `None` when `init` gives it
+        /// ([`crate::app_manifest`]), "" without one.
+        pub manifest: Option<&'static str>,
+        pub manifest_etag: &'static str,
+        /// `static/`'s icons, which a manifest from `init` gets.
+        pub icons: &'static str,
+        /// What every page's head gets: the manifest's link, the script
+        /// that registers the worker.
+        pub head: &'static str,
     }
 
     /// What the build knows of a route: one row per route id in

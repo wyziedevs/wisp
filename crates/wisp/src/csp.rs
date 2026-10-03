@@ -42,10 +42,15 @@ pub fn csp_off() {
     CHANGES.lock().unwrap_or_else(|e| e.into_inner()).1 = true;
 }
 
-/// Makes the header, once: after `init`, which may change it.
-pub(crate) fn ready(hashes: &[&str]) {
+/// Makes the header, once: after `init`, which may change it. An app with
+/// a service worker (`worker`) says `worker-src 'self'`, before its own
+/// changes, which may say otherwise.
+pub(crate) fn ready(hashes: &[&str], worker: bool) {
     HEADER.get_or_init(|| {
-        let (changes, off) = CHANGES.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let (mut changes, off) = CHANGES.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if worker {
+            changes.insert_str(0, "worker-src 'self';");
+        }
         let dev = crate::settings()
             .dev
             .then(|| crate::dev::events_port().map(|p| format!("http://127.0.0.1:{p}")));
@@ -146,6 +151,20 @@ mod tests {
         // `'unsafe-inline'` stays on: a hash beside it would turn it off.
         let p = policy(&["'sha256-a'"], "script-src 'self' 'unsafe-inline'", None);
         assert!(p.contains("script-src 'self' 'unsafe-inline';"), "{p}");
+    }
+
+    #[test]
+    fn a_service_worker_is_allowed() {
+        let p = policy(&[], "worker-src 'self';", None);
+        assert!(
+            p.ends_with("; frame-ancestors 'self'; worker-src 'self'"),
+            "{p}"
+        );
+        let p = policy(&[], "worker-src 'self';worker-src 'none';", None);
+        assert!(
+            p.ends_with("; worker-src 'none'"),
+            "the app's own wins: {p}"
+        );
     }
 
     #[test]
