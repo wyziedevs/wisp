@@ -2334,7 +2334,22 @@ fn before_routes<A: App>(cx: &Cx, route: Option<usize>, out: &mut Out, reply: &m
             .push((Cow::Borrowed("location"), Cow::Owned(location)));
         return true;
     }
-    matches!(cx.method, Method::Get | Method::Head) && file::<A>(cx, raw, route, reply)
+    if !matches!(cx.method, Method::Get | Method::Head) {
+        return false;
+    }
+    if file::<A>(cx, raw, route, reply) {
+        return true;
+    }
+    // `/sitemap.xml` and `/robots.txt`, when no route or file is there.
+    let Some((body, mime)) = route
+        .is_none()
+        .then(|| crate::seo::answer::<A>(cx))
+        .flatten()
+    else {
+        return false;
+    };
+    reply.set(200, mime, Body::Bytes(body));
+    true
 }
 
 /// The reply to what the handler did, `result`: its response, page or

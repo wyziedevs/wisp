@@ -50,6 +50,9 @@ pub struct Route {
     /// bytes), which raise the body limit.
     pub uploads: Option<String>,
     pub cache: Option<Cache>,
+    /// `/sitemap.xml` lists it: a page outside any `(private)` group,
+    /// without a `<meta name="robots" content="noindex">`.
+    pub indexed: bool,
 }
 
 impl Route {

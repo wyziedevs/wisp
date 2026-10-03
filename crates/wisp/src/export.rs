@@ -28,6 +28,9 @@ pub struct ExportRoute {
     pub server: bool,
     /// The values of the route's parameters for each page, from `entries`.
     pub entries: Option<fn() -> Vec<Vec<String>>>,
+    /// `/sitemap.xml` lists it: outside any `(private)` group, without a
+    /// robots `noindex` meta.
+    pub indexed: bool,
 }
 
 /// What `entries` returns a `Vec` of.
@@ -114,6 +117,15 @@ pub async fn export<A: App>(dir: &Path) -> io::Result<()> {
         find_assets(missing.text(), &mut assets);
         write(dir, "404.html", missing.bytes())?;
     }
+    // A static host has no request host: the sitemap needs `SITE_URL`.
+    if std::env::var_os("SITE_URL").is_some_and(|s| !s.is_empty()) {
+        for f in ["sitemap.xml", "robots.txt"] {
+            let reply = handle::<A>(Request::new("GET", &format!("/{f}"))).await;
+            if reply.status == 200 {
+                write(dir, f, reply.bytes())?;
+            }
+        }
+    }
     // A module brings what it imports, and its source map when it has one
     // (`wisp build --sourcemap`).
     let mut done = BTreeSet::new();
@@ -161,7 +173,7 @@ fn source_map(js: &str) -> Option<(&str, &str)> {
 }
 
 /// The pages a route makes, as path segments.
-fn paths(r: &ExportRoute) -> Result<Vec<Vec<String>>, String> {
+pub(crate) fn paths(r: &ExportRoute) -> Result<Vec<Vec<String>>, String> {
     let params: Vec<&str> = r
         .pattern
         .split('/')
@@ -220,7 +232,7 @@ fn segments(pattern: &str, values: &[String]) -> Option<Vec<String>> {
 }
 
 /// The address to ask for: `/blog/hello%20world`.
-fn url(segs: &[String]) -> String {
+pub(crate) fn url(segs: &[String]) -> String {
     if segs.is_empty() {
         return "/".into();
     }
@@ -282,6 +294,7 @@ mod tests {
             page: true,
             actions: false,
             server: false,
+            indexed: true,
             entries,
         }
     }

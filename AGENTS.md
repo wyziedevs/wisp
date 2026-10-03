@@ -41,6 +41,10 @@ static/…                    served at /
 Folders: `blog` static, `[slug]` param, `[[lang]]` optional, `[...rest]`
 rest, `[id=int]` digits only (u64), `[x=word]` custom matcher, `(group)` not
 in URL. `+page.rs`/`+layout.rs` still work instead of a block (not both).
+`/sitemap.xml` (pages without params, or with `entries()`; not `(private)`
+groups or `<meta name="robots" content="noindex">` pages; host from env
+`SITE_URL`, else the request) and `/robots.txt` pointing to it are made;
+a route or a `static/` file of that name wins.
 
 ## A page
 
@@ -209,7 +213,7 @@ Text. <Card title="x">
 Built at build time (pulldown-cmark), baked. `{`/`}` in text are text.
 Fenced rust/js/ts/html/css/json/bash is highlighted: `<span class="hl-k">`
 (k keyword, s string, c comment, n number, t type/tag, a attribute); color
-them in app.css. `noindex: true` adds a robots noindex meta. Index page:
+them in app.css. `noindex: true` keeps it out of the sitemap. Index page:
 `{#each wisp::pages("blog") as p}<a href={p.path}>{p.title}</a> {p.get("date")}{/each}`
 (newest `date` first).
 
