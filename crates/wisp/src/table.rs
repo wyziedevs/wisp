@@ -391,9 +391,12 @@ impl<T> Table<T> {
     {
         drop(self.write());
         let mut every = EVERY.lock();
-        if !every.iter().any(|t| std::ptr::addr_eq(*t, self)) {
-            every.push(self);
+        // Once: a second `ready` (each test client makes one) would have the
+        // table polled and listed in the admin page twice.
+        if every.iter().any(|t| std::ptr::addr_eq(*t, self)) {
+            return;
         }
+        every.push(self);
         drop(every);
         if self.saved.is_none() || !matches!(self.read().state, State::Stored(_)) {
             return;

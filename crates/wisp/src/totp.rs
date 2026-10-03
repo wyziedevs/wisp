@@ -13,7 +13,6 @@
 //! keep the step [`check_step`] returns, and refuse one no later than it.
 //! Six digits are guessable: put a `RateLimit` on the check, by user.
 
-use crate::token::percent;
 use crate::ws::Sha1;
 use crate::{secure_eq, unix_now};
 use std::fmt::Write;
@@ -58,13 +57,13 @@ fn unbase32(s: &str) -> Option<Vec<u8>> {
 /// `issuer` names the app, `account` the user (an email).
 pub fn uri(issuer: &str, account: &str, secret: &str) -> String {
     let mut out = String::from("otpauth://totp/");
-    percent(&mut out, issuer);
+    let _ = crate::cx::encode(&mut out, issuer, crate::cx::unreserved);
     out.push(':');
-    percent(&mut out, account);
+    let _ = crate::cx::encode(&mut out, account, crate::cx::unreserved);
     out.push_str("?secret=");
-    percent(&mut out, secret);
+    let _ = crate::cx::encode(&mut out, secret, crate::cx::unreserved);
     out.push_str("&issuer=");
-    percent(&mut out, issuer);
+    let _ = crate::cx::encode(&mut out, issuer, crate::cx::unreserved);
     let _ = write!(out, "&algorithm=SHA1&digits={DIGITS}&period={STEP}");
     out
 }

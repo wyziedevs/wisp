@@ -22,6 +22,7 @@ pub(crate) fn span(_: &crate::cx::Cx, _: u16, _: std::time::Duration) {}
 
 #[cfg(not(target_arch = "wasm32"))]
 mod real {
+    use crate::Json as _;
     use crate::cx::Cx;
     use std::fmt::Write as _;
     use std::io::{Read, Write};
@@ -146,30 +147,10 @@ mod real {
         }
         let mut out = [0; N];
         for (i, b) in out.iter_mut().enumerate() {
-            *b = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok()?;
+            let d = s.as_bytes();
+            *b = crate::cx::hex_digit(d[i * 2])? << 4 | crate::cx::hex_digit(d[i * 2 + 1])?;
         }
         Some(out)
-    }
-
-    fn hex(out: &mut String, bytes: &[u8]) {
-        for b in bytes {
-            let _ = write!(out, "{b:02x}");
-        }
-    }
-
-    fn quoted(out: &mut String, s: &str) {
-        out.push('"');
-        for c in s.chars() {
-            match c {
-                '"' => out.push_str("\\\""),
-                '\\' => out.push_str("\\\\"),
-                c if (c as u32) < 0x20 => {
-                    let _ = write!(out, "\\u{:04x}", c as u32);
-                }
-                c => out.push(c),
-            }
-        }
-        out.push('"');
     }
 
     /// `spans` as an OTLP/HTTP JSON request body.
@@ -177,28 +158,28 @@ mod real {
         let mut o = String::from(
             r#"{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"#,
         );
-        quoted(&mut o, service);
+        service.json(&mut o);
         o.push_str(r#"}}]},"scopeSpans":[{"scope":{"name":"wisp"},"spans":["#);
         for (i, s) in spans.iter().enumerate() {
             if i > 0 {
                 o.push(',');
             }
             o.push_str(r#"{"traceId":""#);
-            hex(&mut o, &s.trace);
+            o.push_str(&crate::hex(&s.trace));
             o.push_str(r#"","spanId":""#);
-            hex(&mut o, &s.id);
+            o.push_str(&crate::hex(&s.id));
             if let Some(p) = &s.parent {
                 o.push_str(r#"","parentSpanId":""#);
-                hex(&mut o, p);
+                o.push_str(&crate::hex(p));
             }
             o.push_str(r#"","name":"#);
-            quoted(&mut o, &format!("{} {}", s.method, s.path));
+            format!("{} {}", s.method, s.path).json(&mut o);
             let _ = write!(
                 o,
                 r#","kind":2,"startTimeUnixNano":"{}","endTimeUnixNano":"{}","attributes":[{{"key":"http.request.method","value":{{"stringValue":"{}"}}}},{{"key":"url.path","value":{{"stringValue":"#,
                 s.start, s.end, s.method
             );
-            quoted(&mut o, &s.path);
+            s.path.json(&mut o);
             let _ = write!(
                 o,
                 r#"}}}},{{"key":"http.response.status_code","value":{{"intValue":"{}"}}}}]"#,
