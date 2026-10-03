@@ -447,7 +447,8 @@ answer from it. To allow it on some paths only:
   user, as slow; with hashes from `wisp::password::hash(&password).await?`;
   both run on threads kept for
   hashing, so the worker serves other requests meanwhile), then `let id =
-  cx.signed_in()?;` or `let user = cx.user(&USERS)?;` where only members
+  cx.signed_in()?;` or `let user = cx.user(&USERS)?;` (`cx.login` and
+  `cx.signup` do the checking and hashing, see [design.md](design.md#cookies)) where only members
   may go: signed out, a page sends the visitor to `/login` (303;
   `wisp::sign_in_page("/x")` in `init` names another) and an endpoint or
   JSON client gets a 401 (`signed_out`). `cx.sign_out()` ends it on this

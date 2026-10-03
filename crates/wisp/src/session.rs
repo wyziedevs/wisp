@@ -128,7 +128,68 @@ fn sign_outs(id: u64) -> u64 {
     SIGN_OUTS.with(id, |n| *n).unwrap_or(0)
 }
 
+/// A member row: who it is (`email` or `name`) and its password hash.
+/// `#[model]` implements it for a struct with a `hash: String` and an
+/// `email` or `name` field; any other type can by hand.
+pub trait Account {
+    /// The field members sign in by: errors name it.
+    const WHO: &'static str;
+    fn who(&self) -> &str;
+    fn hash(&self) -> &str;
+    fn set_hash(&mut self, hash: String);
+}
+
+/// The member of `users` whose `who` and `password` these are, or a 422 on
+/// `who`'s field, the same whichever is wrong. Takes as long for no such
+/// member (`password::check`), so names stay secret.
+pub async fn login<T: Account + Clone>(
+    users: &Table<T>,
+    who: &str,
+    password: &str,
+) -> Result<Row<T>> {
+    let found = users.find(|u| u.who() == who);
+    let right = crate::password::check(password, found.as_ref().map(|u| u.hash())).await?;
+    found
+        .filter(|_| right)
+        .ok_or_else(|| Error::invalid(T::WHO, format!("Wrong {} or password", T::WHO)))
+}
+
+/// Keeps `row` in `users`, its `hash` field holding the password, which
+/// becomes its hash first; a 422 on `who`'s field when a member has that
+/// already.
+pub async fn signup<T: Account + Clone>(users: &Table<T>, mut row: T) -> Result<Row<T>> {
+    let hash = crate::password::hash(row.hash()).await?;
+    row.set_hash(hash);
+    let who = row.who().to_string();
+    users
+        .add_unless(|u| u.who() == who, row)
+        .ok_or_else(|| Error::invalid(T::WHO, "Already signed up"))
+}
+
+/// Names the app's users table, in `init`: `wisp::users(&db::USERS)`. The
+/// build reads it, so `cx.user()` takes no argument.
+pub fn users<T>(_: &Table<T>) {}
+
 impl Cx {
+    /// [`login`], then signs the visitor in as the member.
+    pub async fn login<T: Account + Clone>(
+        &mut self,
+        users: &Table<T>,
+        who: &str,
+        password: &str,
+    ) -> Result<Row<T>> {
+        let user = login(users, who, password).await?;
+        self.sign_in(user.id);
+        Ok(user)
+    }
+
+    /// [`signup`], then signs the visitor in as the new member.
+    pub async fn signup<T: Account + Clone>(&mut self, users: &Table<T>, row: T) -> Result<Row<T>> {
+        let user = signup(users, row).await?;
+        self.sign_in(user.id);
+        Ok(user)
+    }
+
     /// Signs the visitor in as `id` (a row id of the app's users, say) for
     /// 30 days, from the response to this request on. The session is a new
     /// one whatever the visitor sent, so one planted before sign-in

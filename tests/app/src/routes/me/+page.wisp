@@ -18,13 +18,13 @@ fn everywhere() {
     redirect("/")
 }
 
-let me = cx.user(&PEOPLE)?;
+let me = cx.user()?;
 ---
 <h1>{me.name}</h1>
 {#if me.avatar.is_some()}
   <img src="/avatars/{me.id}" alt="">
 {/if}
-<form action="?/avatar" enctype="multipart/form-data">
+<form action="?/avatar">
   <input type="file" name="avatar">
   <small class="problem">{cx.problem("avatar")}</small>
 </form>

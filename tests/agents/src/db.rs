@@ -1,8 +1,26 @@
-//! What AGENTS.md's handlers by hand call (`api/items/+server.rs`).
+//! What AGENTS.md's snippets call: `src/db.rs`'s `pub` items are in every route file.
 
-#[derive(Json, FromJson, Clone)]
+// src/db.rs
+#[model]                       // Json + FromJson + Clone, fields pub
+pub struct Todo {
+    #[validate(len = 1..=100)]
+    text: String,
+}
+pub static TODOS: Table<Todo> = Table::saved();   // "todos"; Table::new() = memory
+
+// src/db.rs: `hash` and `email` (or `name`) make a #[model] an Account
+#[model]
+pub struct User { email: Email, hash: String }
+pub static USERS: Table<User> = Table::saved();
+
+#[model]
+pub struct Post {
+    title: String,
+}
+
+#[model]
 pub struct Note {
-    pub title: String,
+    title: String,
 }
 
 #[derive(FromJson)]
@@ -17,15 +35,11 @@ pub fn all() -> Vec<Note> {
 }
 
 pub fn add(new: New) -> Note {
-    let note = Note { title: new.title };
-    NOTES.add(note.clone());
-    note
+    let post = Note { title: new.title };
+    NOTES.add(post.clone());
+    post
 }
 
 pub fn find(id: u64) -> Option<Note> {
     NOTES.get(id).map(|r| r.value)
-}
-
-pub fn remove(id: u64) -> Option<()> {
-    NOTES.remove(id).map(|_| ())
 }

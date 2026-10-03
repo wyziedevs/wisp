@@ -268,7 +268,9 @@ fn shim(f: &FnItem, kind: Shim) -> Result<String, String> {
         ));
     }
     let mut lets = String::new();
-    if let ([(_, v, get, owned)], true) = (read.as_slice(), f.checks.is_empty()) {
+    let nothing_to_check =
+        f.checks.is_empty() && !f.params.iter().any(|(p, _)| unsized_upload(f, p));
+    if let ([(_, v, get, owned)], true) = (read.as_slice(), nothing_to_check) {
         // One input, nothing to check: its error is the answer.
         let ty = annotation(owned, "{}");
         lets = format!("let {v}{ty} = {get}?; ");
@@ -285,6 +287,11 @@ fn shim(f: &FnItem, kind: Shim) -> Result<String, String> {
                 if p == name {
                     lets.push_str(&checks(name, v, rules).map_err(|e| format!("{}: {e}", f.line))?);
                 }
+            }
+            if unsized_upload(f, name) {
+                lets.push_str(
+                    &checks(name, v, DEFAULT_SIZE).map_err(|e| format!("{}: {e}", f.line))?,
+                );
             }
         }
         let names: Vec<&str> = read.iter().map(|(_, v, ..)| v.as_str()).collect();
@@ -456,6 +463,17 @@ fn checks(name: &str, v: &str, rules: &str) -> Result<String, String> {
     Ok(format!("if let Some(__v) = &{v} {{ {each}}} "))
 }
 
+/// What an upload with no `max_size` is held to: `::wisp::MAX_SIZE`.
+const DEFAULT_SIZE: &str = "max_size = ::wisp::MAX_SIZE";
+
+/// Whether parameter `p` of `f` is an upload with no `max_size` of its own.
+fn unsized_upload(f: &FnItem, p: &str) -> bool {
+    let upload = f.params.iter().any(|(n, t)| n == p && rules::is_upload(t));
+    upload
+        && !(f.checks.iter())
+            .any(|(c, r)| c == p && rules::parse(r).is_ok_and(|v| v.max_size.is_some()))
+}
+
 /// The bytes the uploads of a page's actions may take in all, from their
 /// `#[validate(max_size = …)]`, as code (`0 + (1 * MB)`), which the route's
 /// body limit makes room for; `None` when none says. `max_size` on a
@@ -471,6 +489,9 @@ fn upload_sizes(fns: &[FnItem]) -> Result<Option<String>, String> {
             if let Some(size) = rules.max_size {
                 let _ = write!(sum, " + ({size}) as usize");
             }
+        }
+        for _ in f.params.iter().filter(|(p, _)| unsized_upload(f, p)) {
+            sum.push_str(" + ::wisp::MAX_SIZE");
         }
     }
     Ok((!sum.is_empty()).then(|| format!("0{sum}")))
@@ -1102,6 +1123,8 @@ fn generate_parts<'a>(input: &Input<'a>) -> Result<(Project<'a>, Web, String, St
         out: String::new(),
         release: input.release,
         types: (!input.release).then(Vec::new),
+        users: None,
+        db: false,
     };
     g.modules(&p, &web)?;
     g.servers(&p);
@@ -1434,6 +1457,7 @@ impl<'a> Project<'a> {
                     .unwrap_or_default()
             ));
         }
+        let code = rust_scan::mark_default(&code).unwrap_or(code);
         let (items_src, stmts) = rust_scan::split_items(&code);
         let at = |e: String| format!("{}:{e}", self.rel(wisp));
         let items = rust_scan::scan(&items_src).map_err(at)?;
@@ -2780,9 +2804,15 @@ impl Gen {
             lit(crate::runtime_version())
         ));
         self.line(0, "");
-        if p.hooks.is_none() {
-            self.line(0, "pub mod hooks {}");
+        match &p.hooks {
+            None => self.line(0, "pub mod hooks {}"),
+            Some(h) => {
+                let rel = p.rel(&h.file);
+                let src = crate::read_source(&h.file).map_err(|e| format!("{rel}: {e}"))?;
+                self.users = rust_scan::users_table(&src).map_err(|e| format!("{rel}: {e}"))?;
+            }
         }
+        self.db = p.mods.iter().any(|m| m.name == "db");
         // Modules of the app's own (`src/notes.rs`), reachable by name from
         // every route file and as `crate::notes` (see `wisp::app!`).
         self.line(0, "#[doc(hidden)]");
@@ -2815,7 +2845,7 @@ impl Gen {
             self.call_mod(m, &twins);
             for (t, c) in p.templates.iter().zip(&web.clients) {
                 if t.user.as_ref().is_some_and(|(u, _)| *u == m.name) {
-                    self.template(t, &p.comps, c.as_ref());
+                    self.template(t, &p.comps, c.as_ref())?;
                 }
             }
             self.line(0, "}");
@@ -2855,7 +2885,7 @@ impl Gen {
         }
         for (t, c) in p.templates.iter().zip(&web.clients) {
             if t.user.is_none() {
-                self.template(t, &p.comps, c.as_ref());
+                self.template(t, &p.comps, c.as_ref())?;
             }
         }
         Ok(())
@@ -4877,6 +4907,10 @@ struct Gen {
     /// Dev builds: the templates' modules with a `__wisp_types`, which
     /// only `wisp check --types` compiles (`wisp::__ts!`).
     types: Option<Vec<String>>,
+    /// The users table `init` names (`db::USERS`), which `cx.user()` reads.
+    users: Option<String>,
+    /// There is a `src/db.rs`, whose `pub` items every route file sees.
+    db: bool,
 }
 
 impl Gen {
@@ -4891,7 +4925,7 @@ impl Gen {
     /// Opens `pub mod NAME {` with an app file in it: its own `//!` docs
     /// and `#![…]` attributes first (only possible with the file written
     /// into the module), `use {glob};`, the file (included, so errors point
-    /// at it, unless it has inner attributes; a `---` block's items line by
+    /// at it, unless it has inner attributes or a `Table::saved()` to name; a `---` block's items line by
     /// line, each marked with its line), then the prelude.
     fn user_mod(&mut self, m: &UserMod, rel: &str, glob: &str) -> Result<(), String> {
         self.line(0, &format!("pub mod {} {{", m.name));
@@ -4906,11 +4940,17 @@ impl Gen {
         }
         self.line(1, "#[allow(unused_imports)]");
         self.line(1, &format!("use {glob};"));
+        self.db_items(glob);
+        let named = rust_scan::name_saved(&src[top..]);
+        let tail = named.as_deref().unwrap_or(&src[top..]);
         if m.inline.is_some() {
             let first = src[..top].matches('\n').count() + 1;
-            self.rust_lines(1, &src[top..], first, rel);
-        } else if top > 0 {
-            self.out.push_str(&src[top..]);
+            self.rust_lines(1, tail, first, rel)?;
+        } else if let Some(code) = self.bound(tail, rel)? {
+            self.out.push_str(&code);
+            self.out.push('\n');
+        } else if top > 0 || named.is_some() {
+            self.out.push_str(tail);
             self.out.push('\n');
         } else {
             self.line(1, &format!("include!({});", lit(&m.file.to_string_lossy())));
@@ -4952,7 +4992,15 @@ impl Gen {
     /// each line marked with where it is (`// file.wisp:7`) so that rustc's
     /// errors are told against the file. Blank lines are left out, and a
     /// line inside a string is written as it is.
-    fn rust_lines(&mut self, ind: usize, code: &str, first: usize, rel: &str) {
+    fn rust_lines(
+        &mut self,
+        ind: usize,
+        code: &str,
+        first: usize,
+        rel: &str,
+    ) -> Result<(), String> {
+        let bound = self.bound(code, rel)?;
+        let code = bound.as_deref().unwrap_or(code);
         let ends = rust_scan::line_ends_in_code(code);
         let mut inside = false;
         for (k, l) in code.split('\n').enumerate() {
@@ -4972,9 +5020,25 @@ impl Gen {
             self.out.push('\n');
             inside = !safe;
         }
+        Ok(())
     }
 
-    fn template(&mut self, t: &Tpl, comps: &[Comp], client: Option<&Client>) {
+    /// `use super::__mods::db::*;` for a file that sees the app's modules
+    /// (`glob`): what `src/db.rs` makes `pub` needs no `db::`. Its own
+    /// names win over these.
+    fn db_items(&mut self, glob: &str) {
+        if self.db && glob == "super::__mods::*" {
+            self.line(1, "#[allow(unused_imports)]");
+            self.line(1, "use super::__mods::db::*;");
+        }
+    }
+
+    /// `code` with its `cx.user()`s given the users table, if it has any.
+    fn bound(&self, code: &str, rel: &str) -> Result<Option<String>, String> {
+        rust_scan::bind_user(code, self.users.as_deref()).map_err(|e| format!("{rel}: {e}"))
+    }
+
+    fn template(&mut self, t: &Tpl, comps: &[Comp], client: Option<&Client>) -> Result<(), String> {
         self.line(0, &format!("// {}", t.rel));
         self.line(0, "#[doc(hidden)]");
         self.line(0, "#[allow(unused_imports, unused_variables, unused_mut, unused_parens, unused_braces, unused_macros, dead_code, clippy::all)]");
@@ -4991,6 +5055,7 @@ impl Gen {
             self.line(1, "use super::*;");
         } else {
             self.line(1, "use super::__mods::*;");
+            self.db_items("super::__mods::*");
         }
         // The messages its `t("key")` calls read (see `i18n`).
         if t.i18n || client.is_some_and(|c| !c.texts.is_empty()) {
@@ -5084,7 +5149,7 @@ impl Gen {
             for b in binds {
                 self.line(2, b);
             }
-            self.rust_lines(2, stmts, 1, &t.rel);
+            self.rust_lines(2, stmts, 1, &t.rel)?;
             if t.kind == Kind::Page {
                 self.line(2, "let cx: &::wisp::Cx = cx;");
                 self.line(2, "__wrap(__o, cx, &|__o: &mut ::wisp::Out| {");
@@ -5188,7 +5253,7 @@ impl Gen {
         }
         self.line(1, "}");
         if self.types.is_some() {
-            self.probe(t, client);
+            self.probe(t, client)?;
         }
         // A component the browser renders: its markup as the browser's copy
         // of it, painted from its props' JSON, for a page to show first.
@@ -5222,14 +5287,15 @@ impl Gen {
         }
         self.line(0, "}");
         self.line(0, "");
+        Ok(())
     }
 
     /// `wisp check --types`: `__wisp_types`, which reads the types of the
     /// block's values the browser code reads (`items` or `data.items`) from
     /// a closure of its statements that is never called (see `wisp::ts`).
-    fn probe(&mut self, t: &Tpl, client: Option<&Client>) {
+    fn probe(&mut self, t: &Tpl, client: Option<&Client>) -> Result<(), String> {
         let (Some((stmts, binds)), Some(mods)) = (&t.stmts, &mut self.types) else {
-            return;
+            return Ok(());
         };
         let lets = rust_scan::let_names(&format!("{}\n{stmts}", binds.join("\n")));
         let mut names: Vec<&str> = data_names(client);
@@ -5243,10 +5309,10 @@ impl Gen {
         }
         names.retain(|n| lets.iter().any(|l| l == n));
         let (closure, pick) = match t.kind {
-            _ if names.is_empty() => return,
+            _ if names.is_empty() => return Ok(()),
             Kind::Page => ("|cx: &'static mut ::wisp::Cx| async move {", "page"),
             Kind::Layout => ("|cx: &'static ::wisp::Cx| {", "layout"),
-            _ => return,
+            _ => return Ok(()),
         };
         mods.push(match &t.user {
             Some((u, _)) => format!("{u}::{}", t.module),
@@ -5266,7 +5332,7 @@ impl Gen {
         for b in binds {
             self.line(3, b);
         }
-        self.rust_lines(3, stmts, 1, &t.rel);
+        self.rust_lines(3, stmts, 1, &t.rel)?;
         self.line(3, "use ::wisp::ts::{ViaAny as _, ViaTs as _};");
         self.line(3, &tail);
         self.line(2, "};");
@@ -5281,6 +5347,7 @@ impl Gen {
         );
         self.line(1, "}");
         self.line(1, "}");
+        Ok(())
     }
 
     /// Writes `pieces`, JSON with Rust values in it, to `buf` (a `&mut String`).
@@ -8623,6 +8690,72 @@ mod tests {
     }
 
     #[test]
+    fn db_items_are_in_every_route_file() {
+        let db = ("src/db.rs", "pub fn items() -> Vec<u8> { vec![] }");
+        let page = (
+            "src/routes/+page.wisp",
+            "---\nlet n = items().len();\n---\n{n}",
+        );
+        let bare = ("src/routes/a/+page.wisp", "{#each items() as i}{i}{/each}");
+        let code = app("db-glob", &[db, page, bare]).unwrap();
+        let globs = code.matches("use super::__mods::db::*;").count();
+        // The page (its template inherits it) and the page with no block: not `db` itself.
+        assert_eq!(globs, 2, "{code}");
+        let none = app("db-none", &[page]).unwrap();
+        assert!(!none.contains("db::*"), "{none}");
+    }
+
+    #[test]
+    fn an_upload_is_held_to_a_size() {
+        let page = |src: &'static str| ("src/routes/+page.wisp", src);
+        let none = "---\n#[action]\nfn a(img: Image, b: Option<Image>) {}\n---\n<form action=\"?/a\"><input name=\"img\" type=\"file\"></form>";
+        let code = app("size-default", &[page(none)]).unwrap();
+        assert!(
+            code.contains("max_size(__v, (::wisp::MAX_SIZE) as usize)"),
+            "{code}"
+        );
+        assert!(
+            code.contains("UPLOADS: usize = 0 + ::wisp::MAX_SIZE + ::wisp::MAX_SIZE;"),
+            "{code}"
+        );
+        assert!(
+            code.contains(
+                r#"<form action=\"?/a\" method=\"post\" enctype=\"multipart/form-data\">"#
+            ),
+            "{code}"
+        );
+        // Alone, too: not "one input, nothing to check".
+        let one = app(
+            "size-one",
+            &[page("---\n#[action]\nfn a(img: Image) {}\n---\nx")],
+        )
+        .unwrap();
+        assert!(
+            one.contains("max_size(__v, (::wisp::MAX_SIZE) as usize)"),
+            "{one}"
+        );
+        let own = "---\n#[action]\nfn a(#[validate(max_size = 3 * MB)] img: Image) {}\n---\nx";
+        let code = app("size-own", &[page(own)]).unwrap();
+        assert!(
+            code.contains("UPLOADS: usize = 0 + (3 * MB) as usize;"),
+            "{code}"
+        );
+        assert!(!code.contains("MAX_SIZE"), "{code}");
+    }
+
+    #[test]
+    fn cx_user_needs_the_users_table() {
+        let page = ("src/routes/+page.wisp", "---\nlet me = cx.user()?;\n---\nx");
+        let err = app("user-none", &[page]).unwrap_err();
+        assert!(err.contains("wisp::users(&db::USERS)"), "{err}");
+        let hooks = ("src/hooks.rs", "fn init() { wisp::users(&db::USERS); }");
+        let db = ("src/db.rs", "pub static USERS: Table<u8> = Table::saved();");
+        let code = app("user-some", &[page, hooks, db]).unwrap();
+        assert!(code.contains("cx.user(&db::USERS)?"), "{code}");
+        assert!(code.contains("Table::saved(\"users\")"), "{code}");
+    }
+
+    #[test]
     fn action_parameters_are_checked() {
         let page = |src: &'static str| ("src/routes/+page.wisp", src);
         let code = app(
@@ -8732,7 +8865,7 @@ mod tests {
         );
         assert_eq!(facts(&code, "uploads"), ["Some(page_0::__call::UPLOADS)"]);
         for want in [
-            "pub const UPLOADS: usize = 0 + (1 * MB) as usize + (500) as usize;",
+            "pub const UPLOADS: usize = 0 + (1 * MB) as usize + (500) as usize + ::wisp::MAX_SIZE;",
             "if let Some(__v) = &__a0 { __p.check(\"pic\", ::wisp::rt_traits::max_size(__v, (1 * MB) as usize)); }",
             "use super::*;",
         ] {

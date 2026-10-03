@@ -414,9 +414,9 @@ fn component_files() {
             &["src/components/Card.wisp:1:1: {@props …} lists the component's props"],
         ),
         (
-            "a prop without a type",
-            &[("src/components/Card.wisp", "{@props a}\nx"), page],
-            &["expected `name: Type` in {@props …}, found `a`"],
+            "two words for a prop",
+            &[("src/components/Card.wisp", "{@props a b}\nx"), page],
+            &["`a b` is not a name for a prop"],
         ),
         (
             "a prop with a bad name",

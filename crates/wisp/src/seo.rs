@@ -22,7 +22,14 @@ pub(crate) fn answer<A: App>(cx: &Cx) -> Option<(Vec<u8>, &'static str)> {
     let routes = A::export_routes();
     let base = base(cx).filter(|_| routes.iter().any(|r| r.page && r.indexed))?;
     let (body, mime) = match sitemap {
-        true => (xml(&base, &routes), "application/xml; charset=utf-8"),
+        true => (
+            xml(
+                &base,
+                &routes,
+                crate::http::slash() == crate::TrailingSlash::Always,
+            ),
+            "application/xml; charset=utf-8",
+        ),
         false => (robots(&base), "text/plain; charset=utf-8"),
     };
     Some((body.into_bytes(), mime))
@@ -57,8 +64,9 @@ fn base(cx: &Cx) -> Option<String> {
     Some(format!("{scheme}://{host}"))
 }
 
-/// The sitemap of `routes`' indexed pages, each address once, in order.
-fn xml(base: &str, routes: &[ExportRoute]) -> String {
+/// The sitemap of `routes`' indexed pages, each address once, in order;
+/// `slashed`: each ends in `/`, as `trailing_slash(Always)` serves them.
+fn xml(base: &str, routes: &[ExportRoute], slashed: bool) -> String {
     let mut urls = BTreeSet::new();
     for r in routes.iter().filter(|r| r.page && r.indexed) {
         // A route whose `entries()` panics or does not fit is left out.
@@ -71,7 +79,8 @@ fn xml(base: &str, routes: &[ExportRoute]) -> String {
     );
     for u in urls {
         out.push_str("<url><loc>");
-        crate::html::text(&mut out, &format!("{base}{u}"));
+        let end = if slashed && u != "/" { "/" } else { "" };
+        crate::html::text(&mut out, &format!("{base}{u}{end}"));
         out.push_str("</loc></url>\n");
     }
     out.push_str("</urlset>\n");
@@ -111,7 +120,7 @@ mod tests {
             post,
         ];
         assert_eq!(
-            xml("https://x.org", &routes),
+            xml("https://x.org", &routes, false),
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
              <urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n\
              <url><loc>https://x.org/</loc></url>\n\
@@ -121,6 +130,10 @@ mod tests {
              <url><loc>https://x.org/post/c</loc></url>\n\
              </urlset>\n"
         );
+        let slashed = xml("https://x.org", &routes, true);
+        assert!(slashed.contains("<loc>https://x.org/about/</loc>"));
+        assert!(slashed.contains("<loc>https://x.org/post/c/</loc>"));
+        assert!(slashed.contains("<loc>https://x.org/</loc>"));
         assert_eq!(
             robots("https://x.org"),
             "User-agent: *\nAllow: /\n\nSitemap: https://x.org/sitemap.xml\n"

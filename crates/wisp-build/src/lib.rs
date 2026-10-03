@@ -192,7 +192,10 @@ pub fn hot_chunks(root: &Path, rel: &str) -> Result<(Vec<String>, u64, Vec<Strin
         .strip_suffix("+page.wisp")
         .and_then(|dir| read_source(&root.join(dir).join("+page.rs")).ok());
     let items = match (&rust, rs) {
-        (Some(block), _) => rust_scan::scan(&rust_scan::split_items(block).0),
+        (Some(block), _) => {
+            let marked = rust_scan::mark_default(block);
+            rust_scan::scan(&rust_scan::split_items(marked.as_deref().unwrap_or(block)).0)
+        }
         (None, Some(rs)) => rust_scan::scan(&rs),
         (None, None) => Ok(rust_scan::Items::default()),
     };

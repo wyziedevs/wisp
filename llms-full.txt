@@ -9,100 +9,88 @@ compiled to Rust, form actions, optional browser reactivity, one binary.
 ```
 src/main.rs                 wisp::main!();   (generated; leave it)
 src/app.html                shell with %wisp.head% %wisp.body% (optional)
-src/app.css                 served at /_app/app.css; Tailwind if it imports it
-src/app.scss                Sass instead of app.css, served the same (no Node)
-postcss.config.*            PostCSS after either (needs Node + node_modules/postcss-cli)
-package.json                npm packages for browser code: `wisp add canvas-confetti`, no Node
-.env                        X=…: `wisp::env("X")` (start), `env.PUBLIC_X` in browser code (build)
+src/app.css | app.scss      served at /_app/app.css (Tailwind if it imports it; Sass, no Node)
+postcss.config.*            PostCSS after either (needs Node + postcss-cli)
+package.json                npm packages for browser code: `wisp add canvas-confetti`
+.env                        X=…: `wisp::env("X")`, `env.PUBLIC_X` in browser code
 src/hooks.rs                fn init() once; fn before(cx) every request
+src/db.rs                   models and tables; its `pub` items are in every route file
 src/NAME.rs                 any module, no `mod` line: `NAME::f()` everywhere
 src/remote.rs               #[remote] fns browser code calls (or in a page's block)
 src/components/Card.wisp    <Card title={x}>…</Card>
-src/lib/*.js (or .ts)       browser modules, `import … from '$lib/x.js'` (or `'$lib/x'`)
+src/lib/*.js (or .ts)       browser modules, `import … from '$lib/x.js'`
 src/params/word.rs          fn matches(s: &str) -> bool, for [x=word]
-src/locales/en.json         messages, fr.json etc.: {t("key")} (see Translations)
-src/manifest.json           web app manifest, linked: {"name": "Notes", "offline": true}
-src/service-worker.js       registered for you (or .ts): import { build, files, version } from 'wisp/sw'
+src/locales/en.json         messages, fr.json etc.: {t("key")}
+src/manifest.json           web app manifest: {"name": "Notes", "offline": true}
+src/service-worker.js       registered for you: import { build, files, version } from 'wisp/sw'
 src/routes/…/+page.wisp     page: optional `---` Rust block, then markup
 src/routes/…/+layout.wisp   wraps pages below; must <slot /> (or {@render children()})
 src/routes/…/+error.wisp    error page; has `status`, `message`, `cx`
 src/routes/…/+server.rs     endpoints: fn get/post/put/patch/delete/list
-src/routes/…/+page.md       Markdown page (also `blog/x.md` = /blog/x), see below
-src/routes/…/+page.js       optional browser `load({data,url,params,fetch})` (or +page.ts)
+src/routes/…/+page.md       Markdown page (`blog/x.md` = /blog/x)
+src/routes/…/+page.js       optional browser `load({data,url,params,fetch})` (or .ts)
 static/…                    served at /
 ```
 
 Folders: `blog` static, `[slug]` param, `[[lang]]` optional, `[...rest]`
-rest, `[id=int]` digits only (u64), `[x=word]` custom matcher,
-`[[lang=locale]]` one of `src/locales`, `(group)` not in URL. `+page.rs`/`+layout.rs` still work instead of a block (not both).
+rest, `[id=int]` digits (u64), `[x=word]` custom matcher, `[[lang=locale]]`
+one of `src/locales`, `(group)` not in URL. `+page.rs` (`struct Data` + `fn load(..) -> Data`, which the markup reads
+by name) and `+layout.rs` work instead of a block.
 `/sitemap.xml` (pages without params, or with `entries()`; not `(private)`
-groups or `<meta name="robots" content="noindex">` pages; host from env
-`SITE_URL`, else the request) and `/robots.txt` pointing to it are made;
-a route or a `static/` file of that name wins.
+groups or `noindex` pages; host from env `SITE_URL`, else the request) and
+`/robots.txt` are made; a route or `static/` file of that name wins.
 
 ## A page
 
+```rust
+// src/db.rs
+#[model]                       // Json + FromJson + Clone, fields pub
+pub struct Todo {
+    #[validate(len = 1..=100)]
+    text: String,
+}
+pub static TODOS: Table<Todo> = Table::saved();   // "todos"; Table::new() = memory
+```
 ```html
 ---
-static TODOS: Table<String> = Table::new();
-
 #[action]
-fn add(#[validate(len = 1..=100)] text: String) {
-    TODOS.add(text);
-}
-
-#[action]
-fn remove(id: u64) {
-    TODOS.remove(id);
+fn add(todo: Todo) {
+    TODOS.add(todo);
 }
 
 let count = TODOS.len();
 ---
 <title>Todos ({count})</title>
-<form action="?/add">
-  <input name="text">
-</form>
+<form action="?/add" fields><button>Add</button></form>
 {#each TODOS.all() as todo}
-  <p>{todo} <button action="?/remove&id={todo.id}">x</button></p>
+  <p>{todo.text}</p>
 {/each}
 ```
 
 Block rules:
-- Items (`fn`, `struct`, `enum`, `use`, `static`, `const`, `impl`,
-  `#[action]`) go in the page module. Statements are the page's load: run per
-  request (GET, and after an action) before render; markup reads their names.
-- Statements run in `async fn(cx: &mut Cx) -> Result`: `.await`, `?`,
-  `return redirect("/x")`, `return error(404, "Gone")` work.
+- Items (`fn struct enum use static const impl #[action]`) go in the page
+  module. Statements are the page's load: they run per request (GET, and
+  after an action) before render, in `async fn(cx: &mut Cx) -> Result`:
+  `.await`, `?`, `return redirect("/x")`, `return error(404, "Gone")`; the
+  markup reads their names. Layout blocks: sync, `cx: &Cx`.
 - Route params are locals: `slug: String`, `[id=int]` → `id: u64`,
-  `[[lang]]` → `Option<String>`. Works even with no block: `<h1>{slug}</h1>`.
-- No `use` lines needed: prelude = `Cx Response Result Error Email Image Json
+  `[[lang]]` → `Option<String>`. Even with no block.
+- No `use` lines: prelude = `Cx Response Result Error Email Image Json
   FromJson Rest Cookie Method Value Shared Table Row RateLimit OrStatus KB MB
-  action remote error invalid redirect Always Never Ignore`.
-  `Result` alone = `Result<()>`.
-- Layout blocks: statements are sync, `cx: &Cx`, no `.await`/`?`.
-- `const CACHE: u32 = 60;` (page or `+server.rs`): each worker keeps a GET's
-  answer per host, path and query for 60 s and sends it as is (ETag, 304).
-  Not for a request with a cookie or `authorization` (`CACHE_PUBLIC` is for
-  all), nor an answer that sets a cookie or `cache-control: private` or
-  `no-store`; not in dev. Hooks still run. The page must not read other
-  headers.
-- `const PRERENDER: bool = true;` (and `fn entries()` with params):
-  `wisp build` renders the page once and the binary serves those bytes
-  (ETag, 304); till then each worker keeps its first render, for everyone.
-  `cx` in its statements, markup or `load` is a build error; its layouts
-  render with it, once (no cookies). `--static` prerenders every page.
-- `const SSR: bool = false;`: the browser draws the page. The server sends
-  layouts, `<head>`, the markup unpainted and the values it names; the
-  markup must be browser code (`{:x}`, `{:#each}`; Rust is a build error,
-  but in `<title>`/`<head>`). `wisp build --spa` = `--static` + an
-  `index.html` fallback that draws such pages for any params (static hosts).
-- `.await` in a page's markup, outside any block, runs with the statements
-  before render: `{#each db::items().await as item}` needs no block. Not
-  inside `{#if}`/`{#each}` bodies, layouts or components (build error).
-- A page that reads nothing (no load, statements or params; literal holes,
-  components with literal props) is baked whole at build: no `CACHE` needed.
-- Old form: `+page.rs` with `struct Data {..}` + `fn load(..) -> Data`
-  (markup reads Data fields by name, or `data.x`). A block may hold that too.
+  action remote error invalid model redirect Always Never Ignore` and `src/db.rs`'s `pub` items (local
+  names win). `Result` alone = `Result<()>`.
+- `const CACHE: u32 = 60;` (page or `+server.rs`) keeps a GET's answer 60 s
+  per worker (ETag, 304), but never for a request with a cookie or
+  `authorization` (`CACHE_PUBLIC`: all), nor one that sets a cookie; not in dev.
+- `const PRERENDER: bool = true;` (and `fn entries()` with params): `wisp
+  build` renders the page once and the binary serves those bytes (ETag,
+  304). `cx` in it is a build error. `--static` prerenders every page.
+- `const SSR: bool = false;`: the browser draws the page; the markup must be
+  browser code (`{:x}`, `{:#each}`). `wisp build --spa` = `--static` + an
+  `index.html` fallback for static hosts.
+- `.await` in markup outside any block runs with the statements:
+  `{#each items().await as item}` (not in bodies, layouts, components). A
+  page that reads nothing is baked at build.
 
 ## Actions (form posts)
 
@@ -114,43 +102,38 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
 }
 ```
 
-- No `->`: the action returns `Result`, so it may use `?`, `return
-  error(..)`, `return;`, and end in `redirect(..)`/`invalid(..)` or `;`.
-  No `async` either: a body with `.await` makes it async.
-
-- `<form action="?/like">` posts to it (`method="post"` is added);
-  `<form method="post">` with no `action` → `#[action] fn default`. `<button action="?/rm&id={x.id}">x</button>`
-  outside a form is a one-button form.
+- No `->`: returns `Result` (`?`, `return error(..)`, end in `redirect(..)`
+  or `;`); `.await` makes it async. Or return `Response`/`Option<Response>`
+  to answer instead of the page. A lone `fn default` needs no `#[action]`.
+- `<form action="?/like">` posts (`method="post"` is added); `<form
+  method="post">` → `fn default`; `<button action="?/rm&id={x.id}">` outside
+  a form is a one-button form.
+- `<form action="?/join" fields>` writes a labelled input per param: `Email`
+  → `type=email`, `password`/`*_password` → password, `Image` → file, `bool`
+  → checkbox, numbers → number, else text. Add your own button; for a
+  textarea or select write the inputs yourself.
 - Params by name: route param, then form, then query. `T` required (400
-  missing or a body that isn't JSON; sent but not a `T` → 422 by field,
-  like `invalid`), `Option<T>`
-  missing/blank → None, `bool` checkbox, `Vec<T>` repeated, `&str` ok,
-  `Email` (what `<input type=email>` takes), a `#[derive(FromJson)]`/`Rest` struct (the page's or `src/*.rs`'s)
-  (`fn default(post: Post)`: its fields by name, its `#[validate]`s; blank
-  = missing). Returns nothing/`Result`, or `Response`/`Option<Response>`
-  to send instead of the page.
-- Uploads: `#[validate(max_size = 1 * MB)] avatar: Image` (`Option<Image>`
-  may be empty) in a form with `enctype="multipart/form-data"`. Only PNG,
-  JPEG, GIF, WebP, AVIF by their bytes (not SVG); else 422 by field. The
-  body limit grows by `max_size` itself: no `BODY_LIMIT`. Store it in a
-  table field (`avatar: Option<Image>`), serve it with
-  `fn get(id: u64) -> Option<Image> { USERS.get(id)?.value.avatar }` in
-  `avatars/[id=int]/+server.rs` (type, ETag/304, `no-cache`).
-- `#[validate(len = 1..=100)] text: String` (also `min max min_len max_len
-  email`), or `return invalid("field", "msg")` → page re-renders as 422
-  listing every failing field. Its inputs get the browser's own checks
-  that match (`required`, `minlength`, `type="email"`, `min`/`max` on
-  `type="number"`, a `pattern` for the most length); the server still
-  checks all; a button with `formaction="?/other"` skips them
-  (`formnovalidate`). Each named `<input>`, `<textarea>`, `<select>` of an
-  action form (`?/x`, or `method="post"`) shows what was sent again, else
-  its own value (`value={post.title}` or `value="x"`, not `value="a{b}"`,
+  missing; not a `T` → 422 by field), `Option<T>` missing/blank → None,
+  `bool` checkbox, `Vec<T>` repeated, `&str`, `Email`, or a `#[model]`
+  struct (the page's or `src/*.rs`'s): `fn default(post: Post)` reads its
+  fields by name, blank = missing.
+- Uploads: `avatar: Image` (`Option<Image>` may be empty): PNG, JPEG, GIF,
+  WebP or AVIF by its bytes (not SVG), else 422; at most 2 MB
+  (`wisp::MAX_SIZE`) unless `#[validate(max_size = 5 * MB)]`. The form gets
+  `enctype="multipart/form-data"` and the file input `accept="image/*"`.
+  Keep it in a table field, serve it with `fn get(id: u64) -> Option<Image> {
+  USERS.get(id)?.value.avatar }` in `avatars/[id=int]/+server.rs`.
+- Rules: `#[validate(len = 1..=100)]` (also `min max min_len max_len email`)
+  or `return invalid("field", "msg")` → 422, the page re-rendered listing
+  every failing field. Inputs get the matching browser checks (`required`,
+  `minlength`, `type=email`, `min`/`max`); the server checks all; a button
+  with `formaction="?/other"` skips them.
+- Each named `<input>`, `<textarea>`, `<select>` of an action form shows what
+  was sent again, else its own value (`value={post.title}`, `value="x"`,
   `<textarea name="body">{post.body}</textarea>`, `<select name="kind"
-  value={post.kind}>` selects the option of that value, or text), and after it `<small
-  class="problem">msg</small>` (passwords/files: the problem, never the
-  value). `{cx.problem("field")}` puts that field's `<small>` there instead.
-  Other errors → error page.
-- Same-origin checked. Works without JS; wisp.js morphs the page in place.
+  value={post.kind}>`), then `<small class="problem">msg</small>` (passwords,
+  files: the problem only); `{cx.problem("field")}` puts it elsewhere. Other
+  errors → error page. Same-origin checked. Works without JS.
 
 ## Templates (Rust on the server)
 
@@ -159,184 +142,79 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
 | `{expr}` | escaped Display; an `Option` shows nothing for None |
 | `{@html expr}` | raw (trusted only) |
 | `attr={expr}` | quoted+escaped; `Option` → left out when None |
-| `disabled={bool}` | boolean attrs present iff true |
-| `<a {href}>` | `href={href}` |
-| `class:on={bool}` | toggle class |
+| `disabled={bool}` `<a {href}>` `class:on={bool}` | boolean attr, `href={href}`, toggled class |
 | `{#if c}…{:else if c}…{:else}…{/if}` | `if let Some(x) = y` works |
-| `{#each list as item, i}…{:else}…{/each}` | for loop; `{:else}` when empty |
+| `{#each list as item, i}…{:else}…{/each}` | `{:else}` when empty |
 | `{#match e}{:case P}…{/match}` | match |
 | `{@const x = expr}` | let |
 | `{#snippet row(a, b)}…{/snippet}` `{@render row(x, 1)}` | local markup fn |
-| `<head>…</head>` | into document head (also `<wisp:head>`); a top-level `<title>` goes there alone |
+| `{@pager posts}` | Newer/Older links of a `Table::page` |
+| `<head>…</head>` | into the document head; a top-level `<title>` goes there alone |
 | `<slot />` or `{@render children()}` | layout/component slot |
 | `cx` | the request (`&Cx`) in pages, layouts, error pages |
 
-`<style>h1 { color: red }</style>` (no attributes, top level) styles this
-file's elements only: each gets a `w-xxxxxx` class, each selector's last
-compound too. `:global(body)` opts out; `<style global>` stays as written.
-The CSS joins `/_app/app.css`. `@import` goes in `src/app.css`.
+`<style>h1 { color: red }</style>` (top level, no attributes) styles this
+file only (`:global(x)` opts out; `<style global>`); it joins app.css.
+Accessibility lints warn, never fail (img alt, label control, `<a href>`,
+heading order, button text...); `<!-- wisp-ignore a11y-img-alt -->` silences
+one. Images: `<img src="$lib/p.jpg" alt="">` or `src="/x.png"` gets
+`width`/`height`; `wisp build` adds WebP `srcset` (cwebp, cached), lazy.
+`data-wisp-raw` opts out. Translations: `src/locales/en.json` (`{"hi":
+"Hello, {name}!", "n": "{count, plural, =0 {None} one {# item} other {#
+items}}"}`), `{t("hi", name = user.name)}`, `t('n', c)` in scripts; keys
+checked across locales at build. Locale: `[[lang=locale]]`, cookie `lang`,
+`Accept-Language`, first; `cx.locale()`, `wisp::locales()`,
+`wisp::localize(cx.path(), "fr")`, `wisp::default_locale("fr")?`.
 
-Accessibility lints warn (check, dev, build), never fail: img without alt,
-on:click on a non-interactive element without role + on:keydown, label
-without control or `for`, `<a>` without href or `href="#"`, autofocus,
-skipped heading levels, button without text/aria-label, tabindex > 0,
-unknown `aria-*`. `<!-- wisp-ignore a11y-img-alt -->` on the line before
-silences one. Fix them rather than silence them.
-
-Images: `<img src="$lib/photo.jpg" alt="…">` (`src/lib`) or `src="/x.png"`
-(`static/`), JPEG/PNG/WebP, gets `width`/`height` from the file (no layout
-shift). `wisp build` adds WebP at up to 3 widths (by a pinned cwebp,
-`$WISP_CWEBP`; none → a warning, the original), cached by hash in
-`.wisp/img`, as `srcset`, `sizes="100vw"`, `loading="lazy"`,
-`decoding="async"`. Attributes you write stay; `data-wisp-raw` opts out.
-
-Translations: `src/locales/en.json` (`{"cart": {"items": "{count, plural,
-=0 {No items} one {# item} other {# items}}"}, "hi": "Hello, {name}!"}`),
-`fr.json`…; `{t("cart.items", count)}`, `{t("hi", name = user.name)}` (or
-`name` alone); in scripts `t('cart.items', n)`, `t('hi', { name })`, no
-import. Keys, placeholders and plural cases are checked across locales at
-build. Locale: `[[lang=locale]]`, then cookie `lang`, then
-`Accept-Language`, then the first (or `wisp::default_locale("fr")?` in
-`init`); `cx.locale()`, `<html lang>` follow. Switcher:
-`wisp::locales()`, `wisp::localize(cx.path(), "fr")`.
-
-Holes can't go in `on*` attrs, tag names, `javascript:` URLs, SVG
-`<animate>`/`<set>` `to`/`from`/`values`/`by`, or `<meta http-equiv>`/refresh
-`content`, in any case; nor can `{:…}`/`:attr`, and `{:...obj}` leaves
-those keys out. `<script>` and `<style>` contents are not parsed for holes.
+Holes can't go in `on*` attrs, tag names, `javascript:` URLs, SVG animation
+values or `<meta http-equiv>`; `<script>`/`<style>` bodies have none.
 
 ## Components (`src/components/Name.wisp`)
 
 ```html
-{@props title: &str, count: u32 = 0, featured: bool = false}
-<h2>{title}{#if featured} ★{/if} ({count})</h2>{@render children()}
+{@props title, count: u32 = 0, featured: bool = false, row: Snippet<&Post, usize>}
+<h2>{title}{#if featured} ★{/if}</h2>{@render children()}
 ```
 Use: `<Card title={post.title} count={3} featured>kids</Card>`. Props are
-typed and checked at build; one without a default is required. No `---`
-block in components. Markup as a prop: `row: Snippet<&Post, usize>`,
-shown with `{@render row(p, i)}`, given as `<Table {row} />` or a
-`{#snippet row(p, i)}…{/snippet}` among the tag's children.
-
-`{@element "x-card"}` first in a component also builds it as a custom
-element, `/_app/c/el/x-card.js`: that one `<script type="module" src>` and
-`<x-card title="Hi" count="3">kids</x-card>` work on any site. Attributes
-read as the props' Rust types (numbers, `bool` with `"false"` false, text,
-else JSON), properties too; children go in its `<slot>`; it draws in a
-shadow root with its `<style>`. Its markup is browser code (`{:title}`,
-`{:#if}`), its defaults literals.
+checked at build (no type = `&str`; none = required). No `---` block in
+components. `{@element "x-card"}` first also builds it as a custom element
+(`/_app/c/el/x-card.js`): `<x-card title="Hi">kids</x-card>` works on any site.
 
 ## Markdown pages
 
-```markdown
----
-title: Hello            (else the first `# heading`)
-layout: Post            (a component; the page is its children)
-date: 2026-10-01        (any field: data, and a prop if Post declares it)
----
-Text. <Card title="x">
-
-**Markdown** in a component, between blank lines.
-
-</Card>
-```
-Built at build time (pulldown-cmark), baked. `{`/`}` in text are text.
-Fenced rust/js/ts/html/css/json/bash is highlighted: `<span class="hl-k">`
-(k keyword, s string, c comment, n number, t type/tag, a attribute); color
-them in app.css. `noindex: true` keeps it out of the sitemap. Index page:
-`{#each wisp::pages("blog") as p}<a href={p.path}>{p.title}</a> {p.get("date")}{/each}`
-(newest `date` first).
+`+page.md` with `---` front matter (`title`, `layout: Post` a component the
+page is the children of, any field `date: 2026-10-01`); text may use
+`<Card>` between blank lines. Built at build time; fenced code is
+highlighted (`hl-k hl-s hl-c hl-n hl-t hl-a`; color them). `noindex: true`
+leaves the sitemap. Index: `{#each wisp::pages("blog") as p}<a
+href={p.path}>{p.title}</a>{/each}` (newest `date` first).
 
 ## Browser code (JavaScript, same file)
 
 `{…}` is Rust on the server; quoted directive values and `{:…}` are JS.
 
-```html
-<button on:click="count++">Clicked {:count} times</button>
-<script>
-  let count = 0                       // top-level lets are state
-  let big = $derived(count > 5)
-  let name = user.name                // a block's `let user` (or `data.user`)
-</script>
-```
-
-A page's (or layout's) Rust names are browser values by name: `items` is
-the block's `items` (also `data.items`); a name the script declares is the
-script's (`let guess = data.guess`). `bind:value="q"` with no `let q`
-anywhere declares it (state), so a live search needs no script:
-`<input bind:value="q">` `{:#each items.filter((i) => matches(i.name, q)) as i}…{:/each}`
-(`matches(text, q)`: case-blind contains; empty `q` matches).
-
-Directives: `on:click="f"` (modifiers `.prevent .stop .once .self .window
-.document .outside .debounce.300ms .enter .escape .ctrl`…), `bind:value="q"`,
-`bind:checked`, `bind:this="el"`, `:attr="js"` (`:hidden="!open"` with
-`let open = false` is rendered hidden: no static `hidden`), `:text="js"`,
-`class:x="js"`, `style:--x="js"`, `transition:fade|slide|scale|fly`,
-`use:action="arg"`, `animate:flip`. Client blocks: `{:#if}…{:/if}`,
-`{:#each items as it, i (it.id)}…{:/each}`, `{:@render s(x)}`. Runes:
-`$state $state.raw $derived $effect $props $bindable $inspect`. Helpers (no
-import): `onMount onDestroy effect watch tick listen goto invalidate matches`.
-Shallow routing (tabs, modals): `pushState('?tab=2', { tab: 2 })`,
-`replaceState('', s)`; `page.value.state` is the entry's, reactive; back and
-forward restore it with no request. Snapshots: fields the visitor changed
-come back with their history entry (back, forward, reload; not passwords,
-files, `autocomplete="off"`); a script's own state:
-`export const snapshot = { capture: () => x, restore: (v) => (x = v) }`.
-Stores in `src/lib`: `import { store, persisted, derived } from 'wisp'`.
-npm: `wisp add canvas-confetti`, then `import confetti from 'canvas-confetti'`
-(esm.sh in dev; `wisp build` puts it in the binary, no CDN; one not in package.json
-is a build error).
-On demand: `import('$lib/x.js')`, a relative path into `src/lib` (from any
-file) or `import('pkg')` resolve as imports do and load at first use. No
-bundle: each lib file, component and package is one module, one URL every
-page shares (fetched once). A page `modulepreload`s its static imports all
-the way down; `import()` waits. A path to no `src/lib` file is a build error.
-Islands: `<Chart client:visible|idle|interaction|media="(…)"|none />`.
-Server components: one with no browser code ships no JS; islands and server
-components nest in any order (an inner island wakes a waiting outer one).
-npm components: `wisp add react react-dom react-switch`, then `<Island
-of="react:react-switch" client:visible props={:{ checked: on, onChange: (v) => (on = v) }} />`
-(`react|preact|vue|svelte`; `#Name` for a named export; `$lib/x.js` too;
-`props={rust}` sends JSON; children show until it starts; the framework
-loads only on that page).
-Web components (Shoelace, Web Awesome, Lit) just work: `wisp add @shoelace-style/shoelace`,
-`import '@shoelace-style/shoelace/dist/components/button/button.js'` in the script, then
-`<sl-button on:click="n++">`, `<sl-input bind:value="q">`, `on:sl-change="…"`; theme CSS
-into `static/`.
-TypeScript: `<script lang="ts">`, `src/lib/*.ts`, `+page.ts`. Types are
-stripped (spaces, so lines and columns hold), as Node's strip-types does:
-`enum`, a `namespace` with values and parameter properties are build errors
-(use `as const` objects, modules, fields). `wisp check --types` runs the
-app's tsc (`npm i -D typescript`, or `WISP_TSC`) with server values typed
-by the compiler (`let items = vec![Item{..}]` → `Item[]`; a type with no TS
-→ `unknown`, noted).
-Env: `env.PUBLIC_API_URL` in browser code (scripts, directives, `src/lib`,
-`+page.js`) is filled in at build from the process's `PUBLIC_*`, else
-`.env`'s (dev rebuilds when it changes). `env.SECRET` (no `PUBLIC_`), a
-`PUBLIC_*` that is not set, or `env` read whole is a build error. The
-server's `wisp::env("X")` reads the process's environment, else `.env`'s
-(once, at start; a bad line warns; not on edge hosts).
-Source maps: dev serves `/_app/c/t3.js.map` beside each module (the `.wisp`
-line of each line); release only with `wisp build --sourcemap` (`--static`
-writes them too).
-Server functions: `#[remote] fn user(id: u64) -> Result<User> {…}` in a
-page's block or `src/*.rs` is `await user(5)` in any script or directive,
-no import (`src/lib`: `import { user } from 'wisp:remote'`). A POST of
-`{"id":5}` to `/_app/r/<hash>`: arguments `FromJson` by name, the answer
-as an endpoint's (`Json`; `Option` None → 404; nothing → `undefined`).
-Made as actions are (`cx`, `async`, `#[validate]` → 422 by field); the
-origin check and `before` apply. Errors reject with an `Error` of
-`status`, `message` (and `errors`); `redirect()` navigates.
-`#[remote(get)]`: a GET, each argument JSON in the query, ETag/304. A name
-is the app's once and not a JS global or helper (build error).
-Server values sent to JS must `#[derive(Json)]`. Full: docs/client.md.
-PWA: `src/manifest.json` (or `wisp::app_manifest(json)?` in `init`) is
-served at `/manifest.webmanifest` with `start_url`, `display`, and `icons`:
-`static/icon*.png`/`.svg` as they are, and one `static/icon.png` (512 px+)
-also at 192 and 512 px by `wisp build`'s cwebp. `"offline": true` there adds Wisp's
-service worker: shell, browser files and `static/` kept, pages from the
-network, offline the kept page or an offline page. `src/service-worker.js`
-is yours instead: a classic script, it imports only `'wisp/sw'` (empty
-lists in dev). Pages register it; the CSP gets `worker-src 'self'`.
+`<button on:click="count++">{:count}</button>` with `<script>let count = 0</script>`
+(top-level lets are state). A page's Rust names are browser values by name (`items`, `data.items`).
+`bind:value="q"` with no `let q` declares it, so a live search needs no
+script: `<input bind:value="q">` `{:#each items.filter((i) => matches(i.name,
+q)) as i}…{:/each}`. Directives `on:click` (`.prevent .once .debounce.300ms`…),
+`bind:value|checked|this`, `:attr="js"`, `:text`, `class:x="js"`,
+`transition:fade`, `use:action`; client blocks `{:#if}` `{:#each}`; runes
+`$state $derived $effect $props`; helpers `onMount listen goto invalidate
+matches`. Values sent to JS must be `#[model]` or `#[derive(Json)]`.
+`pushState('?tab=2', {tab: 2})`: shallow routing, `page.value.state`; changed
+fields are restored with history. `import('$lib/x.js')` loads on demand.
+`<script lang="ts">`, `src/lib/*.ts`, `+page.ts` (types stripped; `wisp check
+--types`). `env.PUBLIC_X` is filled at build. Dev source maps; `--sourcemap`.
+`npm`: `wisp add pkg`; `<Island of="react:react-switch" client:visible
+props={:{...}} />` (`react|preact|vue|svelte`); web components just work.
+`#[remote] fn user(id: u64) -> Result<User>` (page block or `src/*.rs`) is
+`await user(5)` in any script (`src/lib`: `import { user } from
+'wisp:remote'`): POST to `/_app/r/<hash>`, `#[remote(get)]` a GET; errors
+reject with `status`, `message`, `errors`. PWA: `src/manifest.json` (or
+`wisp::app_manifest(json)?`) is `/manifest.webmanifest`, icons from
+`static/icon.png`; `"offline": true` adds a service worker.
+Stores, islands, the rest: docs/client.md.
 
 ## Endpoints (`+server.rs`)
 
@@ -344,84 +222,64 @@ A whole JSON API, saved across restarts (`src/routes/api/notes/+server.rs`):
 
 ```rust
 #[derive(Rest)]                    // Json + FromJson + Note::table()
-#[rest(write = "API_KEY")]         // writes need Bearer $API_KEY; key = all, admin = DELETE
+#[rest(write = "API_KEY")]         // writes need Bearer $API_KEY
 struct Note {
-    #[validate(len = 1..=200)]     // len, min, max, min_len, max_len, email
+    #[validate(len = 1..=200)]
     title: String,
     done: bool,                    // left out: false; Vec: []; Option: None
-    tags: Vec<String>,
-    created_at: String,            // set by Wisp (RFC 3339; u64 = unix seconds); also updated_at
+    created_at: String,            // set by Wisp (also updated_at)
 }
-fn before_create(note: &mut Note) -> Result { Ok(()) }  // also before_update(id, note),
-fn after_update(note: &Row<Note>) {}                     // before_delete/after_*(row); cx optional
+fn before_create(note: &mut Note) -> Result { Ok(()) }  // also before_update, after_*
 ```
 → GET/POST `/api/notes`, GET/PUT/PATCH/DELETE `/api/notes/[id]`; rows are
-`{"id":1,…}`; 201 + Location, 404, 422 by field. GET list:
-`?done=true&title.has=tea&n.gte=2` (`.ne .gt .gte .lt .lte .has`),
-`&sort=-created_at,title&limit=20&after=40` (or `&offset=`), `&fields=title`;
-`x-total-count` + `link: rel="next"`; `accept: application/x-ndjson` = a row
-a line. ETag on GET (304), `if-match` on writes (412); POST an array = bulk.
-`#[rest(table = "n", ids = "random", memory)]`. In `users/[user]/notes`, a
-`user` field is filtered and set from the route. A handler the file writes
-replaces that one. Rows live in `WISP_DATA` log files (`.wisp/data` in dev);
-`wisp::store(MyDb)` in `init` puts them in any DB (`impl wisp::Store`:
-`load(table)`, `save(table, id, json)`). Edge: in memory, or env
-`WISP_STORE=d1:DB|deno-kv|libsql://…` (+`WISP_STORE_TOKEN`). Handlers by hand:
+`{"id":1,…}`; 201, 404, 422 by field. Filters, sorting, pages, ETags, ndjson,
+idempotency, RFC 9457, webhooks, OpenAPI, TypeScript client: docs/api.md. A
+handler the file writes replaces that one; by hand:
 
 ```rust
 fn list() -> Vec<Note> { db::all() }                  // GET /api/notes
 fn post(body: New) -> Response { Response::created(&db::add(body)) }
-fn get(id: u64) -> Option<Note> { db::find(id) }      // an `id` param → /api/notes/[id]
-fn delete(id: u64) -> Option<()> { db::remove(id) }   // None → 404, Some(()) → 204
-fn before(cx: &mut Cx) -> Result {                    // runs before each handler here
-    if cx.writes() { cx.need_bearer("API_KEY")?; }    // 401 unless Bearer $API_KEY
-    Ok(())
-}
+fn get(id: u64) -> Option<Note> { db::find(id) }      // `id` → /api/notes/[id]
 ```
+`fn before(cx) -> Result` in the file runs before each handler.
 
-`body: T` = whole JSON body (422 with `errors` by field). Other params by
-name as for actions. Returns: value (`#[derive(Json)]`) → 200 JSON; nothing →
-204; `Response`; `Option<T>` (None → 404). Errors of endpoints, `/api` and
-JSON requests are JSON `{"status","code","error","errors"}` (`code`:
-`not_found` `invalid`…, or `Error::new(409, "x").with_code("taken")`);
-`accept: application/problem+json` or `WISP_PROBLEM_JSON=on` → RFC 9457.
-POST with `Idempotency-Key` replays the first answer (per cookie). Webhooks:
-`cx.need_signature("GITHUB_SECRET", "x-hub-signature-256")?` (hex, base64,
-Stripe). Big lists: `Response::ndjson(|out| async move { out.line(&x).await?; Ok(()) })`.
-Versions are folders (`api/v1`). `const BODY_LIMIT: usize = 20 * wisp::MB;`.
-OpenAPI at `/_wisp/docs`; TypeScript client at `/_wisp/client.ts` or
-`wisp build --client ts`.
+`body: T` = the JSON body (422 with `errors` by field); other params by name
+as for actions. Returns: a `#[model]`/`Json` value → 200; nothing → 204;
+`Response`; `Option<T>` (None → 404). Endpoint and `/api` errors are JSON
+`{"status","code","error","errors"}` (`Error::new(409, "x").with_code("taken")`).
+`const BODY_LIMIT: usize = 20 * wisp::MB;`. Rows live in `WISP_DATA` log
+files; `wisp::store(MyDb)` in `init` uses any DB; edge: env
+`WISP_STORE=d1:DB|deno-kv|libsql://…`.
+
 ## Members
 
 ```rust
-static USERS: Table<User> = Table::saved("users");   // User { name, hash: String, .. }
-
-#[action]
-fn join(name: String, #[validate(min_len = 8)] password: String) {
-    let id = USERS.add(User { name, hash: wisp::password::hash(&password).await? });
-    cx.sign_in(id);                     // signed cookie, 30 days, a new one
-    redirect("/me")
-}
-#[action]
-fn login(name: String, password: String) {
-    let user = USERS.find(|u| u.name == name);
-    let hash = user.as_ref().map(|u| u.hash.as_str());  // None: as slow, so names stay secret
-    if !wisp::password::check(&password, hash).await? { return invalid("password", "Wrong name or password"); }
-    cx.sign_in(user.unwrap().id);
-    redirect("/me")
-}
-let me = cx.user(&USERS)?;              // a members' page: Row<User>, or 303 to /login
+// src/db.rs: `hash` and `email` (or `name`) make a #[model] an Account
+#[model]
+pub struct User { email: Email, hash: String }
+pub static USERS: Table<User> = Table::saved();
 ```
-`cx.signed_in()?` is the id alone; `.ok()` asks without redirecting;
-`cx.sign_out()`; `wisp::sign_out_everywhere(id)?` ends all of `id`'s
-sessions, stolen ones too (saved; read at start; with a shared
-`wisp::store` other instances see it within 30 s, log files are per
-instance). Endpoints/JSON clients get 401. Sign-in page elsewhere:
-`wisp::sign_in_page("/enter")` in `init`. Hashes are PBKDF2-SHA256,
-600,000 rounds (~0.2 s of a core, on purpose, off the worker: `.await?`
-them; 503 + `retry-after` when ~3 s are queued; `RateLimit` sign-in against floods). `wisp::password::outdated(&hash)` → rehash at
-sign-in. Rotate the secret: new `WISP_SECRET`, old one in `WISP_SECRET_OLD`
-for 30 days (sessions' life; 400 for other signed cookies), then drop it.
+```html
+---
+#[action]                                       // sign up
+fn signup(email: Email, #[validate(min_len = 8)] password: String) {
+    cx.signup(&USERS, User { email, hash: password }).await?;  // hashes it; 422 if taken
+    redirect("/me")
+}
+#[action]                                       // log in
+fn login(email: Email, password: String) {
+    cx.login(&USERS, &email, &password).await?; // 422 for either wrong, equally slow
+    redirect("/me")
+}
+let me = cx.user(&USERS)?;                      // Row<User>, or 303 to /login
+---
+<h1>{me.email}</h1>
+```
+Both sign in. `wisp::users(&db::USERS)` in `init` makes it `cx.user()`.
+`cx.signed_in()?` is the id (`.ok()`: no redirect; JSON clients get 401),
+`cx.sign_out()`, `wisp::sign_out_everywhere(id)?`, `wisp::sign_in_page("/enter")`.
+`wisp::login`/`signup` are these without a Cx. Hashes: PBKDF2-SHA256, ~0.2 s
+off the worker (`RateLimit` sign-ins); by hand `wisp::password::{hash, check}`.
 
 ## hooks.rs
 
@@ -432,131 +290,70 @@ async fn init() -> Result {
 }
 fn before(cx: &mut Cx) -> Result<Option<Response>> {
     if let Some(r) = cx.cors("*") { return Ok(Some(r)); }
-    if cx.writes() && cx.path().starts_with("/api") {
-        cx.need_bearer("API_KEY")?;
-    }
     Ok(None)
 }
 ```
-Pages get a `content-security-policy` (`'self'`, inline template scripts
-by build-time hash, `img-src 'self' data: https:`, inline styles ok; dev
-adds esm.sh). `wisp::csp("img-src 'self' https://cdn.x")` in `init`
-replaces that directive (or adds one); `wisp::csp_off()` sends none.
-`wisp::trailing_slash(Always)` in `init`: pages are `/about/`, `/about` gets
-a 308 there (`Never`, the default, the other way; `Ignore` serves both;
-endpoints and files as asked). A literal `href` of the other form warns.
-`onclick="…"` and scripts in `{@html}` don't run: use `on:click` or a file.
-Any other `pub fn` in hooks.rs is an error. `pub` types there are
-`crate::hooks::T`. Keep `before` sync: an `async fn before`
-takes the no-wait fast path off every route.
+Pages get a `content-security-policy` (`wisp::csp("img-src 'self' https://x")`
+in `init` replaces a directive; `wisp::csp_off()`); `onclick="…"` doesn't run:
+use `on:click`. `wisp::trailing_slash(Always)` in `init`: pages are `/about/`
+(`/about` gets a 308; `Never`, the default; `Ignore` both; sitemap follows).
+No other `pub fn` here. Keep `before` sync: `async fn before` takes the
+no-wait fast path off every route.
 
 ## API
 
-- `cx`: `path() param(n) query(n) query_or(n, d) input(n) problem(n) form()
-  .get/.file/.files body() header(n) header_or(n, d) bearer() need_bearer(env)
-  writes() need_signature(env, header)
-  basic_auth() locale() cookie(n)
-  cookie_or(n, d) set_cookie(n, v) delete_cookie(n) signed_cookie(n)
-  set_signed_cookie(n, v) sign_in(id) sign_out() signed_in() user(&TABLE)
-  flash(msg) flashed() set(v) get::<T>() take::<T>()
-  fail(status, v) set_status(s) set_header(n, v) client_ip() cors(o)
-  method`.
+- `cx`: `path() param(n) query(n) input(n) form() body() header(n) bearer()
+  client_ip() method`, `query_or header_or cookie_or(n, d)`; `locale()
+  cookie set_cookie delete_cookie signed_cookie set_signed_cookie`; `sign_in
+  sign_out signed_in user login signup`; `flash(msg) flashed() problem(n)`;
+  `set(v) get::<T>() take::<T>()`; `fail(status, v) set_status set_header
+  cors(o)`; `writes() need_bearer(env) need_signature(env, header)`.
 - Errors: `error(404, "msg")`, `redirect("/x")`, `invalid("f", "msg")` return
-  `Result`; `opt.or_404()?`, `.or_status(403)?`; `Error::new(s, m)` for
-  `map_err`; any `std::error::Error` via `?` → 500.
-- `Response::`: `json_of(&v) created(&v) text html empty(s)
-  download(name, bytes) file_in(dir, name).await stream ndjson events
-  websocket` + `.with_status(s) .with_header(n, v)`.
-- State: `Table<T>` (`Table::new()` memory, `Table::saved("name")` survives
-  restarts; `add(v)→id get(id) all() find(f) filter(f) update(id, f)
-  remove(id) len()`, rows are `Row { id, value }` that read as the value;
-  `page(cx, 10)`: `?page=N`'s rows newest first, `{#each posts as p}`,
-  `{#if let Some(href) = posts.next}<a {href}>Older</a>{/if}`, also `prev`),
-  `Shared<T>` (`.lock()`), `wisp::provide(v)` / `wisp::state::<T>()`,
-  `wisp::env("K")`, `wisp::env_or("K", d)`, `wisp::spawn`, `wisp::every`,
-  `wisp::channel("x").send/subscribe/connect`, `fn get() -> Response {
-  wisp::channel("x").events() }` (SSE) or `.websocket()`, `RateLimit::per_minute(n)
-  .check(key)?`, `#[derive(Cookie)]`, `#[derive(Json)]`.
-- Static export: `fn entries() -> Vec<&'static str>` in a `[param]` page's
-  block.
-- Tests (`cargo test`; in `src/tests.rs` with `use crate::App;`, or
-  `tests/x.rs` after `wisp::app!();`): `let mut app =
-  wisp::test::client::<App>(); app.get("/").text()`, `app.post_form("/?/add",
-  &[("text", "hi")]) bearer(t) header(n, v) post_json put_json patch_json
-  delete cookie(n)`, `.status`, `.json::<T>()`; cookies kept; tables are in
-  memory.
-- Browser test (`wisp test --browser` = `cargo test --features browser`, headless Chrome/Edge;
-  passes, skipped, without one): `let mut b = wisp::browser!(App);
-  b.goto("/"); b.click("text=Plus One"); assert_eq!(b.text("output"), "1");`
-  also `hover fill(sel, t) press("Enter") attr(sel, n) count wait
-  eval(js) -> Value url screenshot(path)`. Selectors: CSS or `text=…`
-  (text, aria-label or title). Actions wait for the element and for the
-  page to settle (5 s, `b.timeout(d)`): no sleeps needed.
-
-## Observability (env vars, no app code)
-
-`WISP_LOG=json`: one JSON line per request on stdout with `time method
-route path status ms bytes id ip` (`route` is `/blog/[slug]` or null, `path`
-has no query); every request then gets an `x-request-id`. `METRICS_KEY=k`:
-`/_wisp/metrics` (Prometheus, `Authorization: Bearer k`; 404 unset):
-`wisp_requests_total{route,status="2xx"}`, `wisp_request_duration_seconds`
-histogram per route, `wisp_requests_in_flight`, `wisp_uptime_seconds`.
-`OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318`: a span per request
-(OTLP/HTTP JSON, batched; `traceparent` continued and sent back). Own
-spans: `let _s = wisp::span("charge card");` (ends when dropped);
-`wisp::traceparent()` is the header for a call to another service.
+  `Result`; `opt.or_404()?`, `.or_status(403)?`; `Error::new(s, m)`; any
+  `std::error::Error` via `?` → 500.
+- `Response::`: `json_of(&v) created(&v) text html empty(s) download(name,
+  bytes) file_in(dir, name).await stream ndjson events websocket`
+  + `.with_status(s) .with_header(n, v)`.
+- State: `Table<T>`: `add(v)→id get(id) all() find(f) filter(f) update(id, f)
+  remove(id) len() page(cx, 10)`; rows are `Row { id, value }` that read as
+  the value. `Shared<T>` (`.lock()`), `wisp::provide(v)`/`state::<T>()`,
+  `wisp::env("K")`, `spawn`, `every`, `wisp::channel("x")`
+  `.send/events()` (SSE)`/websocket()`, `RateLimit::per_minute(n).check(key)?`,
+  `#[derive(Cookie)]`.
+- Static export: `fn entries() -> Vec<&'static str>` in a `[param]` page.
+  Test: `let mut app = wisp::test::client::<App>(); app.get("/").text()`,
+  `app.post_form/post_json/delete cookie(n) .status`, `.json::<T>()`. Browser
+  test: `wisp test --browser`, `let mut b = wisp::browser!(App); b.goto("/");
+  b.click("text=Go"); b.text("output")`; also `fill press attr count eval`.
+- Env, no code: `WISP_LOG=json` (a line per request, `x-request-id`),
+  `METRICS_KEY=k` (`/_wisp/metrics`, Prometheus), `OTEL_EXPORTER_OTLP_ENDPOINT`
+  (spans; `wisp::span("x")`, `wisp::traceparent()`).
 
 ## Gotchas
 
 - `Err(error(..))` is wrong: `error()` already returns the `Result`.
-- `+page.wisp` needs the `+`. A page can't have both a block and `+page.rs`.
-- Block statements and `fn load` are exclusive. A block's last statement
-  ends with `;`.
-- An action returns nothing, `Result`, or a response, never data.
-- Don't hold `Shared::lock()` or other guards across `.await`.
-- `{#each x as y}` borrows a field path; call `.iter()` on other expressions.
-- Handlers run on a thread per core: blocking work → `tokio::task::spawn_blocking`.
-- In a page's JS, a Rust name reads its server value (`data.x` too); a
-  browser global (`document`, `location`, `event`…) stays the browser's. In
-  a component, a prop the script also declares is an error.
-- An action without `->` must end in `;` or a `Result`, not another value.
-- In `+server.rs`, a param named `id` (the folder having no `[id]`) serves
-  `/[id]`: use `list` for the folder's GET. `#[validate]` on params is for
-  actions; endpoints validate their `body: T` type's fields.
-- A field added to a saved type (`#[derive(Rest)]`, `Table::saved`) must be
-  `Option`, `Vec` or `bool`, so rows saved before it still read.
+- `+page.wisp` needs the `+`. Block statements and `fn load` are exclusive;
+  a block's last statement ends with `;`.
+- Don't hold `Shared::lock()` or other guards across `.await`; blocking work
+  → `tokio::task::spawn_blocking` (a thread per core).
+- `{#each x as y}` borrows a field path; `.iter()` other expressions.
+- In `+server.rs`, a param named `id` (no `[id]` folder) serves `/[id]`: use
+  `list` for the folder's GET. `#[validate]` on params is for actions.
+- A field added to a saved type (`Rest`, `Table::saved`) must be `Option`,
+  `Vec` or `bool`, so rows saved before it still read.
 
 ## Commands
 
-`wisp new app` · `wisp dev` (hot reload) · `wisp test [--browser] [args]` · `wisp check [--types]` · `wisp fmt [paths]`
-(`--check`, `--stdin`; markup, `---` via rustfmt, scripts, styles) · `wisp build`
-(`--static`, `--spa`, `--docker`, `--target cloudflare|deno|vercel|netlify|node|bun|lambda|native`,
-`--client ts`, `--sourcemap`; in a host's CI it picks that host) · `wisp deploy init <host>`
-(GitHub Actions) · `wisp add pkg[@ver]` · `wisp remove pkg` · `wisp ui add button dialog`
-(accessible components into `src/components`, the app's to change, with stories; Button
-Badge Card Input Textarea Checkbox Switch Select Accordion Dialog Menu Tabs Tooltip Toast;
-`--force` overwrites; `wisp ui list`) · `wisp lsp` (language
-server; setup per editor: editors/README.md) · `wisp update-docs` (this file, after
-upgrading Wisp) · `wisp mcp` (tools for AI agents: `wisp_docs(topic)`,
-`wisp_check`, `wisp_routes`, `wisp_components`, `wisp_new_route(path, kind)`;
-Claude Code: `claude mcp add wisp -- wisp mcp`). More: `wisp_docs`, or
-https://raw.githubusercontent.com/wyziedevs/wisp/main/llms-full.txt (this
-file and every doc).
-Hot reload keeps state: a saved `.wisp` whose script or `{:…}` markup
-changed swaps its module in place, in ms, no compile: `$state` kept by
-name, focus, selection and fields kept; text alone morphs that file's part
-of the page; a `<style>` swaps the stylesheet. Rust (`---`, `{expr}`,
-`{@props}`) compiles; a changed `---` or `{@props}`, a top-level statement
-other than declarations/helpers (`init()`, `if`, `window.x =`) or a swap
-that throws starts it afresh, with one console line saying why.
-Under `wisp dev` (debug builds only): `Alt+Shift+W` opens the devtools
-(components, editable `$state`, props, stores, route, timings, open in
-editor via `$WISP_EDITOR`/`$EDITOR`/`code -g`); `/_wisp/components` is the
-component workshop: `src/components/Card.stories.wisp` holds
-`{#story "Featured"}<Card featured title="x" />{/story}` blocks, each
-rendered on its own page with controls for its `&str`/`String`, number
-and `bool` props; a component without one gets a default story when all
-its required props are of those types. Release builds ignore story files.
+`wisp new app` · `wisp dev` (hot reload keeps `$state`; `Alt+Shift+W`
+devtools; `/_wisp/components` workshop of `*.stories.wisp`) · `wisp test
+[--browser]` · `wisp check [--types]` · `wisp fmt [--check]` · `wisp build`
+(`--static`, `--spa`, `--docker`, `--target
+cloudflare|deno|vercel|netlify|node|bun|lambda|native`, `--client ts`,
+`--sourcemap`) · `wisp deploy init <host>` · `wisp add|remove pkg` · `wisp ui
+add button dialog` (accessible components into `src/components`) · `wisp lsp`
+· `wisp update-docs` · `wisp mcp` (`claude mcp add wisp -- wisp mcp`). Docs:
+README.md, docs/design.md, client.md, api.md, deploy.md, embed.md, tokens.md,
+or llms-full.txt (this file and every doc).
 
 
 <!-- docs/design.md -->
@@ -1391,8 +1188,10 @@ type says nothing the bytes do not. Text fields read the same either way.
 Uploads are held in memory, so a route that takes large ones raises its own
 `BODY_LIMIT` rather than the whole app's.
 
-A picture is an action parameter: `#[validate(max_size = 1 * MB)] avatar:
-Image` (or `Option<Image>`, which may be left empty). Its kind is what its
+A picture is an action parameter: `avatar: Image` (or `Option<Image>`, which
+may be left empty). It takes at most 2 MB (`wisp::MAX_SIZE`) unless
+`#[validate(max_size = 5 * MB)]` says another size. The build gives its form
+`enctype="multipart/form-data"` and its file input `accept="image/*"`. Its kind is what its
 first bytes say, never what the browser claimed: PNG, JPEG, GIF, WebP or
 AVIF. Anything else, SVG included (it can carry script), and a file over
 `max_size`, show the page again as a 422 with the problem by the field. The
@@ -1431,12 +1230,17 @@ signing everyone out, move the old one to `WISP_SECRET_OLD`: signatures it
 made still hold (nothing new is signed with it) until it is removed, 30 days
 on for sign-ins.
 
-Signing in is built on that. `cx.sign_in(id)` (a row id of the app's users)
+Signing in is built on that. For a `#[model]` with a `hash` field and an
+`email` or `name` (an `Account`), `cx.signup(&USERS, row).await?` hashes the
+password in `row.hash`, refuses a taken name with a 422 and signs in, and
+`cx.login(&USERS, &email, &password).await?` checks it as slowly for a name
+no one has; `wisp::signup` and `wisp::login` do the same without a `Cx`. `cx.sign_in(id)` (a row id of the app's users)
 sets the signed cookie `session` to the id and the time, for 30 days;
 `cx.signed_in()?` is the id, and signed out (or 30 days on) it is the error
 that sends the visitor to sign in: a 303 to `/login`, or a 401 for a JSON
 client. `cx.user(&USERS)?` is the row itself, the same way. A members' page
-starts with `let me = cx.user(&USERS)?;`; `cx.signed_in().ok()` asks without
+starts with `let me = cx.user(&USERS)?;` (`cx.user()` when `init` names the
+table: `wisp::users(&db::USERS)`); `cx.signed_in().ok()` asks without
 sending anyone anywhere; `cx.sign_out()` ends it. The page at `/login` is
 the convention; `wisp::sign_in_page("/enter")` in `init` names another.
 `sign_in` always sets a new session, so one planted on a visitor before
@@ -3665,7 +3469,8 @@ answer from it. To allow it on some paths only:
   user, as slow; with hashes from `wisp::password::hash(&password).await?`;
   both run on threads kept for
   hashing, so the worker serves other requests meanwhile), then `let id =
-  cx.signed_in()?;` or `let user = cx.user(&USERS)?;` where only members
+  cx.signed_in()?;` or `let user = cx.user(&USERS)?;` (`cx.login` and
+  `cx.signup` do the checking and hashing, see [design.md](design.md#cookies)) where only members
   may go: signed out, a page sends the visitor to `/login` (303;
   `wisp::sign_in_page("/x")` in `init` names another) and an endpoint or
   JSON client gets a 401 (`signed_out`). `cx.sign_out()` ends it on this
