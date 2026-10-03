@@ -1,0 +1,53 @@
+{
+  "name": "wisp",
+  "displayName": "Wisp",
+  "description": "Wisp .wisp templates: highlighting, problems as you type, hovers, go to definition, completion.",
+  "version": "0.1.0",
+  "publisher": "wisp",
+  "license": "MIT",
+  "repository": "https://github.com/wyziedevs/wisp",
+  "engines": { "vscode": "^1.82.0" },
+  "categories": ["Programming Languages"],
+  "activationEvents": ["onLanguage:wisp"],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "wisp",
+        "aliases": ["Wisp"],
+        "extensions": [".wisp"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "wisp",
+        "scopeName": "text.html.wisp",
+        "path": "./syntaxes/wisp.tmLanguage.json",
+        "embeddedLanguages": {
+          "source.rust": "rust",
+          "source.js": "javascript",
+          "source.ts": "typescript",
+          "source.css": "css"
+        }
+      },
+      {
+        "scopeName": "wisp.holes",
+        "path": "./syntaxes/holes.tmLanguage.json",
+        "injectTo": ["text.html.wisp"],
+        "embeddedLanguages": { "source.rust": "rust", "source.js": "javascript" }
+      }
+    ],
+    "configuration": {
+      "title": "Wisp",
+      "properties": {
+        "wisp.path": {
+          "type": "string",
+          "default": "wisp",
+          "description": "The wisp command, which runs `wisp lsp`."
+        }
+      }
+    }
+  },
+  "dependencies": { "vscode-languageclient": "^9.0.1" }
+}

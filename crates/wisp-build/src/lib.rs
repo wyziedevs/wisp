@@ -4,6 +4,7 @@
 
 mod codegen;
 mod fold;
+pub mod ide;
 mod js;
 mod model;
 pub mod npm;

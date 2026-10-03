@@ -1,0 +1,47 @@
+{
+  "comment": "Wisp's holes and directives, in the markup and in tags: `{rust}`, `{#if}`, `{:js}`, `on:click=\"js\"`.",
+  "scopeName": "wisp.holes",
+  "injectionSelector": "L:text.html.wisp -comment -source",
+  "patterns": [
+    { "include": "#directive" },
+    { "include": "#client" },
+    { "include": "#rust" }
+  ],
+  "repository": {
+    "directive": {
+      "begin": "(?<=\\s)((?:on|bind|class|style|use|transition|animate|client):[\\w.|-]+|:[\\w-]+)\\s*(=)\\s*(\")",
+      "end": "\"",
+      "beginCaptures": {
+        "1": { "name": "entity.other.attribute-name.wisp" },
+        "2": { "name": "punctuation.separator.key-value.html" },
+        "3": { "name": "punctuation.definition.string.begin.html" }
+      },
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.html" } },
+      "contentName": "source.js",
+      "patterns": [{ "include": "source.js" }]
+    },
+    "client": {
+      "comment": "`{:expr}`, `{:#each …}`, `{:/if}`: JavaScript. (`{:else}` and `{:case}` are Rust.)",
+      "begin": "(\\{)(:(?:[#/@]\\w+)?)(?!else\\b|case\\b)",
+      "end": "\\}",
+      "beginCaptures": {
+        "1": { "name": "punctuation.section.embedded.begin.wisp" },
+        "2": { "name": "keyword.control.wisp" }
+      },
+      "endCaptures": { "0": { "name": "punctuation.section.embedded.end.wisp" } },
+      "contentName": "source.js",
+      "patterns": [{ "include": "source.js" }]
+    },
+    "rust": {
+      "begin": "(\\{)((?:[#/@]|:)(?:else\\s+if|\\w+))?",
+      "end": "\\}",
+      "beginCaptures": {
+        "1": { "name": "punctuation.section.embedded.begin.wisp" },
+        "2": { "name": "keyword.control.wisp" }
+      },
+      "endCaptures": { "0": { "name": "punctuation.section.embedded.end.wisp" } },
+      "contentName": "source.rust",
+      "patterns": [{ "include": "source.rust" }]
+    }
+  }
+}

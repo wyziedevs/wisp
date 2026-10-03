@@ -6,6 +6,7 @@ mod css;
 mod deploy;
 mod dev;
 mod events;
+mod lsp;
 mod net;
 mod new;
 mod npm;
@@ -19,7 +20,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 /// `wisp --help`: each command or option, and what it does.
-const COMMANDS: [(&str, &str); 10] = [
+const COMMANDS: [(&str, &str); 11] = [
     (
         "wisp new [name]",
         "Create an app. It asks a few questions; the options below answer them.",
@@ -59,6 +60,10 @@ const COMMANDS: [(&str, &str); 10] = [
     (
         "wisp remove <pkg>",
         "Take an npm package out of package.json.",
+    ),
+    (
+        "wisp lsp",
+        "Run the language server for editors, over stdio (editors/vscode starts it).",
     ),
 ];
 
@@ -123,6 +128,7 @@ fn main() -> ExitCode {
             }),
         Some("add") => project().and_then(|root| npm::add(root, &args[1..])),
         Some("remove") => project().and_then(|root| npm::remove(root, &args[1..])),
+        Some("lsp") => no_options("lsp", &args[1..]).and_then(|()| lsp::run()),
         // Not in --help: how `wisp dev` runs a tool that must end with it.
         Some("__child") => css::child(&args[1..]),
         Some("-h" | "--help" | "help") | None => {
