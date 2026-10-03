@@ -113,7 +113,7 @@ impl Live {
         s.push_str(LIVE_OPEN);
         for (k, (m, _)) in self.modules.iter().enumerate() {
             let comma = if k > 0 { "," } else { "" };
-            let _ = write!(s, "{comma}\"{}\":\"{}\"", m.id, m.url);
+            let _ = write!(s, "{comma}\"{}\":\"{}\"", m.id, crate::dev::url(m));
         }
         s.push_str(LIVE_RECORDS);
         s.push_str(&self.instances);
@@ -123,7 +123,11 @@ impl Live {
         s.push_str(LIVE_CLOSE);
         let mut extra = "";
         for (m, _) in self.modules.iter().filter(|m| m.1) {
-            let _ = write!(s, "<link rel=\"modulepreload\" href=\"{}\">", m.url);
+            let _ = write!(
+                s,
+                "<link rel=\"modulepreload\" href=\"{}\">",
+                crate::dev::url(m)
+            );
             if extra.is_empty() {
                 extra = m.preload;
             }

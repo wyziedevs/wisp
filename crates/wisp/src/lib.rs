@@ -1347,7 +1347,7 @@ pub mod rt {
     pub use crate::cx::{
         BadCookie, CookieReader, CookieWriter, MAX_PARAMS, MAX_SEGS, decode, split,
     };
-    pub use crate::dev::chunk;
+    pub use crate::dev::{chunk, marks};
     /// A `#[derive(Rest)]` type's handlers and hooks (see `rest.rs`).
     pub mod rest {
         pub use crate::rest::{Hooks, Kind, create, delete, get, list, patch, put};

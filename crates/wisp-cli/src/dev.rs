@@ -3,8 +3,10 @@
 //! One thread polls file mtimes (no watcher dependency, identical on every
 //! OS). What changed decides what happens:
 //!
-//! - `.wisp` / `app.html` text edits: hot swap into the running app, no
-//!   compile. If the template's shape changed, fall through to a rebuild.
+//! - `.wisp` / `app.html` edits: hot swap into the running app, no compile,
+//!   when only text or browser code changed (`hot_swap`): browsers morph in
+//!   that file's part of the page and swap its module in place, keeping
+//!   state. Anything else falls through to a rebuild.
 //! - CSS output: tell browsers to swap the stylesheet (a CSS tool's input
 //!   is its watcher's; a new `src/app.scss` or `postcss.config.*` changes
 //!   the watchers).
@@ -63,7 +65,8 @@ pub fn run(root: &Path, port: u16) -> Result<(), String> {
     );
     let mut files = scan(root);
     term::step("Building");
-    rebuild(&mut app, &events, root, true);
+    // The app as the running build has it, for what can be swapped in.
+    let mut base = rebuild(&mut app, &events, root, true, "");
     let mut had_styles = wisp_build::write_styles(root).is_ok_and(|(_, any)| any);
 
     loop {
@@ -133,10 +136,14 @@ pub fn run(root: &Path, port: u16) -> Result<(), String> {
                 Err(e) => term::failed(&e),
             }
         }
+        // Why browsers swap their modules whole after the rebuild, if so.
+        let mut why = String::new();
         if !rebuild_needed && !templates.is_empty() {
-            match hot_swap(&app, &templates) {
-                Swap::Done(warnings) => {
-                    events.send("reload", "");
+            match hot_swap(&app, &mut base, &templates) {
+                Swap::Done(news, warnings) => {
+                    if !news.is_empty() {
+                        events.send("hot", &news);
+                    }
                     term::changed(
                         &templates.join(", "),
                         &format!("swapped in {}ms", started.elapsed().as_millis()),
@@ -156,12 +163,17 @@ pub fn run(root: &Path, port: u16) -> Result<(), String> {
                         &e,
                     );
                 }
-                Swap::NeedsRebuild => rebuild_needed = true,
+                Swap::NeedsRebuild(reason) => {
+                    rebuild_needed = true;
+                    why = reason;
+                }
             }
         }
         if rebuild_needed {
             term::changed(&names, "");
-            rebuild(&mut app, &events, root, false);
+            if let Some(next) = rebuild(&mut app, &events, root, false, &why) {
+                base = Some(next);
+            }
         } else if full {
             events.send("full", "");
             term::changed(&names, "reloaded");
@@ -172,22 +184,37 @@ pub fn run(root: &Path, port: u16) -> Result<(), String> {
     }
 }
 
-/// Builds and restarts the app. `first` shows cargo's progress, since the
-/// first build can take a minute; later ones only say how they went.
-fn rebuild(app: &mut Server, events: &Events, root: &Path, first: bool) {
+/// Builds and restarts the app; then the app as that build has it, for
+/// what can be swapped in later. `first` shows cargo's progress, since the
+/// first build can take a minute; later ones only say how they went. `why`
+/// is told to browsers: why their modules are swapped whole, if they are.
+fn rebuild(
+    app: &mut Server,
+    events: &Events,
+    root: &Path,
+    first: bool,
+    why: &str,
+) -> Option<wisp_build::Hot> {
     let started = Instant::now();
     events.send("building", "");
     // Route and template errors are found in milliseconds without cargo.
-    if let Err(e) = crate::check(root) {
-        term::failed(&e);
-        show_error(
-            events,
-            "Build Failed",
-            &summary(place(&e), 1),
-            "Wisp Check",
-            &e,
-        );
-        return;
+    // Taken before cargo reads the files: a save meanwhile is a change to it.
+    let hot = match wisp_build::hot(root) {
+        Ok(hot) => hot,
+        Err(e) => {
+            term::failed(&e);
+            show_error(
+                events,
+                "Build Failed",
+                &summary(place(&e), 1),
+                "Wisp Check",
+                &e,
+            );
+            return None;
+        }
+    };
+    for w in &hot.warnings {
+        term::warn(w);
     }
     let build = cargo::build(root, false, !first);
     let Some(exe) = build.exe.filter(|_| build.ok) else {
@@ -204,7 +231,7 @@ fn rebuild(app: &mut Server, events: &Events, root: &Path, first: bool) {
             "Compiler Output",
             &build.errors,
         );
-        return;
+        return None;
     };
     match app.restart(&exe) {
         Ok(()) => {
@@ -223,12 +250,14 @@ fn rebuild(app: &mut Server, events: &Events, root: &Path, first: bool) {
             if let Some(a) = app.addr {
                 events.allow(a);
             }
-            events.send("reload", "");
+            events.send("reload", why);
+            Some(hot)
         }
         Err(e) => {
             term::failed(&e);
             let summary = e.lines().next().unwrap_or_default();
             show_error(events, "App Didn't Start", summary, "Startup", &e);
+            None
         }
     }
 }
@@ -262,35 +291,143 @@ fn summary(first: Option<(String, usize)>, count: usize) -> String {
 }
 
 enum Swap {
-    /// Swapped in; the accessibility warnings of what changed.
-    Done(Vec<String>),
+    /// Swapped in: what browsers are told (the `hot` event: `m URL` per
+    /// module to load again, then `r file` per template whose text to
+    /// morph in), and the accessibility warnings of what changed.
+    Done(String, Vec<String>),
     /// The template does not parse; show the error, keep the running app.
     Invalid(String),
-    /// New shape or unknown template: only a compile can apply it.
-    NeedsRebuild,
+    /// Only a compile can apply it; why browsers should then swap their
+    /// modules whole, if they should.
+    NeedsRebuild(String),
 }
 
-fn hot_swap(app: &Server, templates: &[&str]) -> Swap {
+/// Swaps changed templates into the running app. Text alone: their static
+/// text, as the shape the app has is still theirs. Else, when a compile
+/// would make the same program but for templates' text and shapes and the
+/// browser modules (`wisp_build::hot`), those. Anything else is a compile.
+fn hot_swap(app: &Server, base: &mut Option<wisp_build::Hot>, templates: &[&str]) -> Swap {
     let Some(addr) = app.addr else {
-        return Swap::NeedsRebuild;
+        return Swap::NeedsRebuild(String::new());
     };
+    let mut news = String::new();
     let mut all = Vec::new();
+    let mut whole = true;
     for rel in templates {
         let (chunks, shape, warnings) = match wisp_build::hot_chunks(&app.root, rel) {
             Ok(x) => x,
             Err(e) => return Swap::Invalid(e),
         };
-        let mut body = format!("{rel}\n{shape:016x}\n{}\n", chunks.len()).into_bytes();
-        for c in &chunks {
-            body.extend_from_slice(format!("{}\n", c.len()).as_bytes());
-            body.extend_from_slice(c.as_bytes());
+        if !post_chunks(addr, rel, shape, shape, &chunks) {
+            whole = false;
+            break;
         }
-        match request(addr, "POST", "/_wisp/dev/swap", &body) {
-            Some(200) => all.extend(warnings),
-            _ => return Swap::NeedsRebuild,
+        all.extend(warnings);
+        // Only its style changed: the stylesheet swap is all.
+        let kept = base
+            .as_mut()
+            .and_then(|b| b.templates.iter_mut().find(|t| t.rel == *rel));
+        match kept {
+            Some(t) if t.chunks == chunks => {}
+            Some(t) => {
+                t.chunks = chunks;
+                news.push_str(&format!("r {rel}\n"));
+            }
+            None => news.push_str(&format!("r {rel}\n")),
         }
     }
-    Swap::Done(all)
+    if whole {
+        return Swap::Done(news, all);
+    }
+    // Browser code changed too.
+    let next = match wisp_build::hot(&app.root) {
+        Ok(next) => next,
+        Err(e) => return Swap::Invalid(e),
+    };
+    let Some(old) = base.as_ref() else {
+        return Swap::NeedsRebuild(String::new());
+    };
+    if next.rust != old.rust {
+        return Swap::NeedsRebuild(why(old, &next, templates));
+    }
+    // The modules first: the app takes them only from the Wisp it was
+    // built with, whose compile this one stands for.
+    let (mut modules, mut regions) = (String::new(), String::new());
+    for (path, url, source) in &next.files {
+        let Some(o) = old.files.iter().find(|o| o.0 == *path) else {
+            return Swap::NeedsRebuild(String::new());
+        };
+        if o.2 == *source {
+            continue;
+        }
+        let version = wisp_build::runtime_version();
+        let mut body = format!("{path}\n{url}\n{version}\n").into_bytes();
+        body.extend_from_slice(source.as_bytes());
+        if request(addr, "POST", "/_wisp/dev/module", &body) != Some(200) {
+            return Swap::NeedsRebuild(String::new());
+        }
+        if path.ends_with(".js") {
+            modules.push_str(&format!("m {url}\n"));
+        }
+    }
+    if modules.is_empty() {
+        return Swap::NeedsRebuild(String::new());
+    }
+    for t in &next.templates {
+        let Some(o) = old.templates.iter().find(|o| o.rel == t.rel) else {
+            return Swap::NeedsRebuild(String::new());
+        };
+        if (o.shape != t.shape || o.chunks != t.chunks)
+            && !post_chunks(addr, &t.rel, o.shape, t.shape, &t.chunks)
+        {
+            return Swap::NeedsRebuild(String::new());
+        }
+        if o.chunks != t.chunks {
+            regions.push_str(&format!("r {}\n", t.rel));
+        }
+    }
+    let warnings = (next.warnings.iter())
+        .filter(|w| templates.iter().any(|t| w.starts_with(&format!("{t}:"))))
+        .cloned()
+        .collect();
+    *base = Some(next);
+    modules.push_str(&regions);
+    Swap::Done(modules, warnings)
+}
+
+/// Sends a template's static text to the app, for the template whose shape
+/// is `from` there, which then has shape `to`.
+fn post_chunks(addr: SocketAddr, rel: &str, from: u64, to: u64, chunks: &[String]) -> bool {
+    let shapes = match from == to {
+        true => format!("{from:016x}"),
+        false => format!("{from:016x}>{to:016x}"),
+    };
+    let mut body = format!("{rel}\n{shapes}\n{}\n", chunks.len()).into_bytes();
+    for c in chunks {
+        body.extend_from_slice(format!("{}\n", c.len()).as_bytes());
+        body.extend_from_slice(c.as_bytes());
+    }
+    request(addr, "POST", "/_wisp/dev/swap", &body) == Some(200)
+}
+
+/// Why browsers swap a changed template's module whole once it is
+/// compiled: its `{@props}` or its `---` block changed. Empty for another
+/// change, after which they keep its state.
+fn why(old: &wisp_build::Hot, next: &wisp_build::Hot, templates: &[&str]) -> String {
+    for rel in templates {
+        let find = |h: &wisp_build::Hot| {
+            h.templates
+                .iter()
+                .find(|t| t.rel == *rel)
+                .map(|t| (t.props, t.block))
+        };
+        match (find(old), find(next)) {
+            (Some(o), Some(n)) if o.0 != n.0 => return format!("{rel}: its props changed"),
+            (Some(o), Some(n)) if o.1 != n.1 => return format!("{rel}: its --- block changed"),
+            _ => {}
+        }
+    }
+    String::new()
 }
 
 /// The app process. Runs from a copy of the executable so `cargo build` can

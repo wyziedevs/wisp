@@ -632,6 +632,43 @@ lines: each line of a script, an import or a directive maps to its line of
 the file. A release build has none (no cost), unless built with
 `wisp build --sourcemap`.
 
+## Hot reload that keeps state
+
+Save a `.wisp` file under `wisp dev` and the page changes in place, in
+milliseconds, with no compile, whenever only what the browser runs or the
+static text changed:
+
+- **Script or `{:…}` markup:** the file's module is swapped in. Each
+  instance runs the new script and gets back its `$state` by name (a name
+  the script no longer declares is dropped), its effects and handlers are
+  the new ones, and its elements are bound again. Focus, the selection and
+  what fields hold stay. A component the browser draws keeps its state too.
+- **Text alone:** only that page's, layout's or component's part of the
+  page is morphed in, between the marks templates write under `wisp dev`
+  (`<!--w:src/components/Card.wisp-->`). The rest of the page is untouched.
+- **`<style>`:** the stylesheet is swapped, as before.
+
+`wisp dev` knows a change is one of these by compiling the app's Rust in
+memory and comparing it, but for text and browser code: the same, a
+compile would make the same program, so it sends the new text and modules
+to the running app (debug builds take them on `/_wisp/dev/*`, from
+loopback, from the same Wisp version) and tells the page. The page's next
+load names the new modules, so a reload never gets an old one.
+
+Anything else compiles, and the page then morphs as before, still keeping
+state where it can. It starts the instances afresh, and the console says
+why in one line, when:
+
+- the `---` block or `{@props}` changed;
+- the script has a top-level statement other than declarations, logging,
+  writes to its own names and helpers that end with the instance
+  (`$effect`, `onMount`, `setInterval`...): `init()`, `if (…)`, `new X()`,
+  `window.x = 1` could do twice what they did once;
+- the swap throws, which loads the page again.
+
+Release builds have none of this: `live.js` and `wisp.js` minify to the
+same bytes.
+
 ## Devtools and the component workshop
 
 Both are for `wisp dev` alone: a release build has neither, and its
@@ -685,7 +722,9 @@ rebuilds; release builds and routing never read them.
 - The first paint leaves out what it cannot work out (see
   [First paint](#first-paint)); live attributes (`:class`, `class="a {:b}"`)
   keep their static text until the browser starts.
-- Editing a client script rebuilds; editing markup still hot-swaps.
+- A hot swap matches a component the browser draws to its state by the
+  order they were made, and an instance of the page by its place: a list
+  that reorders as it swaps may trade states.
 - Deep state tracks plain objects, arrays, maps and sets, and classes with
   `$state` fields. A `Date` or another class's instance is not tracked
   inside: assign it again (`d = d`) to redraw.

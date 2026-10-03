@@ -517,6 +517,121 @@ pub fn check(input: &Input) -> Result<(Vec<String>, Vec<String>), String> {
     Ok((o.web.imports(npm::ESM), o.warnings))
 }
 
+/// For `wisp dev`: what a running dev build takes without a compile, and a
+/// fingerprint of the rest.
+pub struct Hot {
+    /// The generated Rust but for what the running build takes as it is
+    /// (templates' static text and shapes, browser files) and the
+    /// `// file:line` notes: equal, a compile would make the same program.
+    pub rust: u64,
+    /// `src/app.html` first, then every template.
+    pub templates: Vec<HotTemplate>,
+    /// The browser files served: path, the URL pages name it by, source.
+    pub files: Vec<(String, String, String)>,
+    /// As [`generate`] gives them.
+    pub warnings: Vec<String>,
+}
+
+pub struct HotTemplate {
+    pub rel: String,
+    pub shape: u64,
+    pub chunks: Vec<String>,
+    /// Of its `---` block (or `+page.rs`), and of its `{@props}`: what a
+    /// change needs a compile for, to say why.
+    pub block: u64,
+    pub props: u64,
+}
+
+pub fn hot(input: &Input) -> Result<Hot, String> {
+    let (p, web, code, _) = generate_parts(input)?;
+    let mut rust = Vec::with_capacity(code.len());
+    for line in code.lines() {
+        let l = line.trim_start();
+        if l.starts_with("static __WISP_S:")
+            || l.starts_with("const TEMPLATES:")
+            || l.starts_with("pub static S: [&str; 3]")
+            || l.starts_with("static BAKED_")
+            || l.contains("::wisp::ClientModule = ::wisp::ClientModule {")
+        {
+            continue;
+        }
+        rust.extend_from_slice(without_note(line).as_bytes());
+        rust.push(b'\n');
+    }
+    let mut templates = vec![HotTemplate {
+        rel: "src/app.html".into(),
+        shape: shell::shape(&p.shell),
+        chunks: p.shell.to_vec(),
+        block: 0,
+        props: 0,
+    }];
+    // A story may have its component's file: stories are a compile anyway.
+    for t in p.templates.iter().filter(|t| t.kind != Kind::Story) {
+        let inline = (p.user_mods.iter())
+            .find(|m| p.rel(&m.file) == t.rel)
+            .and_then(|m| m.inline.as_deref());
+        let block = format!(
+            "{}\0{}",
+            inline.unwrap_or(""),
+            t.stmts.as_ref().map_or("", |s| s.0.as_str())
+        );
+        let mut props = Vec::new();
+        prop_decls(&t.t, &mut props);
+        templates.push(HotTemplate {
+            rel: t.rel.clone(),
+            shape: t.t.shape,
+            chunks: t.t.chunks.clone(),
+            block: fnv1a(block.as_bytes()),
+            props: fnv1a(&props),
+        });
+    }
+    let mut files: Vec<(String, String, String)> = (web.clients.iter().flatten())
+        .map(|c| {
+            (
+                c.path(),
+                format!("{}?v={}", c.path(), c.hash),
+                c.source.clone(),
+            )
+        })
+        .collect();
+    files.extend((web.js_files.iter()).filter(|f| f.file.is_none()).map(|f| {
+        (
+            f.path.clone(),
+            format!("{}?v={}", f.path, f.hash),
+            f.source.clone(),
+        )
+    }));
+    Ok(Hot {
+        rust: fnv1a(&rust),
+        templates,
+        files,
+        warnings: p.warnings(),
+    })
+}
+
+/// A generated line without the ` // src/x.wisp:12` note at its end, which
+/// moves with every line added above it.
+fn without_note(line: &str) -> &str {
+    match line.rfind(" // src/") {
+        Some(i)
+            if line[i + 4..].split_once(':').is_some_and(|(f, n)| {
+                !f.contains(' ') && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())
+            }) =>
+        {
+            &line[..i]
+        }
+        _ => line,
+    }
+}
+
+/// A template's `{@props}`, as its shape has them.
+fn prop_decls(t: &Template, out: &mut Vec<u8>) {
+    for d in t.props.iter().flat_map(|(ds, _)| ds) {
+        let default = d.default.as_deref().unwrap_or("");
+        out.extend_from_slice(format!("{}\0{}\0{default}\0", d.name, d.ty).as_bytes());
+    }
+}
+
 /// For `wisp check --types`: what `.wisp/types` holds for `tsc`, by path
 /// there. Each `<script lang="ts">` is a module of its own,
 /// `src/routes/+page.wisp.ts`, on its lines of the file, with the server
@@ -691,6 +806,19 @@ pub struct Output {
 }
 
 fn generate_web(input: &Input) -> Result<Output, String> {
+    let (p, web, code, client) = generate_parts(input)?;
+    Ok(Output {
+        code,
+        client,
+        styles: p.styles(),
+        warnings: p.warnings(),
+        web,
+    })
+}
+
+/// The app read, its browser half, the generated Rust and the TypeScript
+/// client.
+fn generate_parts<'a>(input: &Input<'a>) -> Result<(Project<'a>, Web, String, String), String> {
     let p = Project::load(input)?;
     let web = p.browser()?;
     let mut g = Gen {
@@ -701,23 +829,7 @@ fn generate_web(input: &Input) -> Result<Output, String> {
     g.servers(&p);
     let assets = g.assets(&p)?;
     let client = g.app(&p, &web, &assets)?;
-    let mut warnings: Vec<(&str, u32, String)> = (p.templates.iter())
-        .flat_map(|t| {
-            t.t.lints
-                .iter()
-                .map(|l| (t.rel.as_str(), l.line, crate::lint_line(l)))
-        })
-        .collect();
-    warnings.sort();
-    Ok(Output {
-        code: g.out,
-        client,
-        web,
-        styles: p.styles(),
-        warnings: (warnings.into_iter())
-            .map(|(rel, line, w)| format!("{rel}:{line}: {w}"))
-            .collect(),
-    })
+    Ok((p, web, g.out, client))
 }
 
 /// The app, as far as it has been read.
@@ -828,6 +940,22 @@ impl<'a> Project<'a> {
             .unwrap_or(p)
             .to_string_lossy()
             .replace('\\', "/")
+    }
+
+    /// The templates' accessibility warnings, `file:line: what (a11y-name)`,
+    /// in file order.
+    fn warnings(&self) -> Vec<String> {
+        let mut warnings: Vec<(&str, u32, String)> = (self.templates.iter())
+            .flat_map(|t| {
+                t.t.lints
+                    .iter()
+                    .map(|l| (t.rel.as_str(), l.line, crate::lint_line(l)))
+            })
+            .collect();
+        warnings.sort();
+        (warnings.into_iter())
+            .map(|(rel, line, w)| format!("{rel}:{line}: {w}"))
+            .collect()
     }
 
     /// The scoped `<style>`s of every template, for `/_app/app.css`.
@@ -3909,8 +4037,31 @@ impl Gen {
                 .map(|(s, _)| rust_scan::let_names(s))
                 .unwrap_or_default(),
         };
+        // Under `wisp dev`, what it renders goes between marks, so that a
+        // change to its text morphs that alone in (wisp.js).
+        let mark = (!self.release
+            && matches!(t.kind, Kind::Page | Kind::Layout | Kind::Component)
+            && !t.rel.contains("--"))
+        .then(|| {
+            let mark = |m: String| {
+                format!(
+                    "if ::wisp::rt::marks() {{ __o.body.push_str({}); }}",
+                    lit(&m)
+                )
+            };
+            (
+                mark(format!("<!--w:{}-->", t.rel)),
+                mark(format!("<!--/w:{}-->", t.rel)),
+            )
+        });
+        if let Some((open, _)) = &mark {
+            self.line(2, open);
+        }
         let at = self.out.len();
         self.nodes(&t.t.nodes, 2, &mut cx);
+        if let Some((_, close)) = &mark {
+            self.line(2, close);
+        }
         // Its form's fields read what an action refused: once a render.
         if self.out[at..].contains("__refused") {
             self.out
@@ -5426,6 +5577,12 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
             lines.join(", ")
         )
     });
+    // And the line of its first top-level statement that may not be run
+    // twice, if any: `wisp dev` swaps such a module whole.
+    let effect = (!cx.release)
+        .then(|| js::top_effect(src))
+        .flatten()
+        .map(|off| script_at(off).0);
     let defaults: Vec<(String, String)> = rune
         .iter()
         .flat_map(|p| &p.props)
@@ -5467,6 +5624,8 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
         html: html.as_deref(),
         specs: cx.specs,
         dev: dev.as_deref(),
+        file: (!cx.release).then_some(t.rel.as_str()),
+        effect,
     };
     let (source, lines) = module_source(&m).map_err(|e| format!("{}: {e}", t.rel))?;
     let mut source = js::public_env(&source, &|n| var(cx.env, n)).map_err(|(off, msg)| {
@@ -5614,6 +5773,10 @@ struct Module<'a> {
     specs: &'a Specs,
     /// A dev build's call that tells the devtools about the instance.
     dev: Option<&'a str>,
+    /// A dev build's: the file, by which `wisp dev` swaps the module in
+    /// place, and the line of a top-level statement that keeps it from that.
+    file: Option<&'a str>,
+    effect: Option<u32>,
 }
 
 /// The module's text, and where each of its lines came from in the file
@@ -5735,6 +5898,12 @@ fn module_source(m: &Module) -> Result<(String, Vec<sourcemap::Line>), String> {
     }
     if m.load.is_some() {
         opts.push("load: __wisp_u.load".into());
+    }
+    if let Some(f) = m.file {
+        opts.push(format!("file: {}", js_str(f)));
+    }
+    if let Some(l) = m.effect {
+        opts.push(format!("effect: {l}"));
     }
     if !opts.is_empty() {
         let _ = write!(s, ", {{ {} }}", opts.join(", "));
@@ -7899,6 +8068,83 @@ pub fn load() -> Data { todo!() }";
         assert_eq!(segs[button], [[0, 0, 1, 0]]);
     }
 
+    /// What `wisp dev` swaps into a running build: a change to browser
+    /// code or text alone leaves the rest of the program as it was (lines
+    /// moving included); one to Rust does not. Templates mark what they
+    /// render in dev builds, and a module names its file and a top-level
+    /// statement that may not run twice.
+    #[test]
+    fn hot_tells_what_needs_a_compile() {
+        let hot = |page: &str| {
+            in_dir("hot", &[("src/routes/+page.wisp", page)], |root| {
+                super::hot(&Input {
+                    root,
+                    release: false,
+                    maps: true,
+                })
+                .unwrap()
+            })
+        };
+        let base =
+            "<p>{1 + 1}</p><button on:click=\"n++\">Hi {:n}</button>\n<script>let n = 0</script>";
+        let a = hot(base);
+        let script = hot(&base.replace("let n = 0", "\n\nlet n = 0\nfunction f() {}"));
+        let text = hot(&base.replace("Hi", "Hello"));
+        let rust = hot(&base.replace("1 + 1", "1 + 2"));
+        let first = hot(&base.replace("let n = 0", "let n = 1"));
+        assert_eq!(a.rust, script.rust);
+        assert_eq!(a.rust, text.rust);
+        assert_ne!(a.rust, rust.rust);
+        assert_ne!(a.rust, first.rust, "the first paint has it");
+        let module = |h: &Hot| {
+            h.files
+                .iter()
+                .find(|f| f.0 == "/_app/c/t1.js")
+                .unwrap()
+                .2
+                .clone()
+        };
+        assert_ne!(module(&a), module(&script));
+        assert!(module(&a).contains("file: \"src/routes/+page.wisp\""));
+        assert!(!module(&a).contains("effect:"));
+        let effect = hot(&base.replace("let n = 0", "let n = 0\nstart()"));
+        assert!(module(&effect).contains("effect: 3"), "{}", module(&effect));
+        let page = &a.templates[1];
+        assert_eq!(
+            (page.rel.as_str(), page.chunks[0].as_str()),
+            ("src/routes/+page.wisp", "<p>")
+        );
+        assert_ne!(page.shape, script.templates[1].shape);
+
+        // A component's text, whose shape has it.
+        let comp = |text: &str| {
+            let files = [
+                ("src/routes/+page.wisp", "<Note text=\"a\" />"),
+                ("src/components/Note.wisp", text),
+            ];
+            in_dir("hot-comp", &files, |root| {
+                super::hot(&Input {
+                    root,
+                    release: false,
+                    maps: true,
+                })
+                .unwrap()
+            })
+        };
+        let (a, b) = (
+            comp("{@props text: &str}\n<p>Note: {text}</p>"),
+            comp("{@props text: &str}\n<p>A note: {text}</p>"),
+        );
+        assert_eq!(a.templates[1].shape, b.templates[1].shape);
+        assert_eq!(a.rust, b.rust);
+
+        let page = [("src/routes/+page.wisp", "<p>Hi</p>")];
+        let mark =
+            "if ::wisp::rt::marks() { __o.body.push_str(\"<!--w:src/routes/+page.wisp-->\"); }";
+        assert!(build("marks", &page, false).unwrap().contains(mark));
+        assert!(!build("marks", &page, true).unwrap().contains("marks()"));
+    }
+
     #[test]
     fn modules() {
         let src = "<p>hi</p>\n<button on:click=\"toggle\" :hidden=\"data.done\">x</button>\n\n\n\n\n\n\n<script>\n  import a from 'a'\n  import {\n    b } from \"b\";\n  let open = false\n  function toggle() { open = !open }\n</script>";
@@ -7927,7 +8173,7 @@ pub fn load() -> Data { todo!() }";
         );
         // A dev build hands the devtools the file, its state and their lines.
         let tail = "  function toggle() { open.v = !open.v }\n\
-                    globalThis.__wisp_dev?.state(\"src/routes/+page.wisp\", { open }, { open: 13 });\nreturn { g: [\n  [[\"on\", \"click\", 8192, (_, event) => toggle(event)], [\"attr\", \"hidden\", () => (data.v.done)]],\n] };\n} } });\n\
+                    globalThis.__wisp_dev?.state(\"src/routes/+page.wisp\", { open }, { open: 13 });\nreturn { g: [\n  [[\"on\", \"click\", 8192, (_, event) => toggle(event)], [\"attr\", \"hidden\", () => (data.v.done)]],\n] };\n} } }, { file: \"src/routes/+page.wisp\" });\n\
                     //# sourceMappingURL=t7.js.map\n";
         assert!(c.source.ends_with(tail), "{}", c.source);
         // Its map: the imports and the script on their lines of the file
@@ -8334,7 +8580,7 @@ pub fn load() -> Data { todo!() }";
         let code = app("client-comp", &[comp, page]).unwrap();
         assert!(
             code.contains(
-                "{ html: \\\"<p><template data-w=\\\\\\\"0\\\\\\\"></template><!----></p>\\\" }"
+                "{ html: \\\"<p><template data-w=\\\\\\\"0\\\\\\\"></template><!----></p>\\\", file: \\\"src/components/Card.wisp\\\" }"
             ),
             "{code}"
         );

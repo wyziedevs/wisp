@@ -368,13 +368,13 @@ takes the no-wait fast path off every route.
   .check(key)?`, `#[derive(Cookie)]`, `#[derive(Json)]`.
 - Static export: `fn entries() -> Vec<&'static str>` in a `[param]` page's
   block.
-- Tests (`cargo test`; in `src/tests.rs` with `use super::App;`, or
+- Tests (`cargo test`; in `src/tests.rs` with `use crate::App;`, or
   `tests/x.rs` after `wisp::app!();`): `let mut app =
   wisp::test::client::<App>(); app.get("/").text()`, `app.post_form("/?/add",
   &[("text", "hi")]) bearer(t) header(n, v) post_json put_json patch_json
   delete cookie(n)`, `.status`, `.json::<T>()`; cookies kept; tables are in
   memory.
-- Browser test (`cargo test --features browser`, headless Chrome/Edge;
+- Browser test (`wisp test --browser` = `cargo test --features browser`, headless Chrome/Edge;
   passes, skipped, without one): `let mut b = wisp::browser!(App);
   b.goto("/"); b.click("text=Plus One"); assert_eq!(b.text("output"), "1");`
   also `hover fill(sel, t) press("Enter") attr(sel, n) count wait
@@ -404,7 +404,7 @@ takes the no-wait fast path off every route.
 
 ## Commands
 
-`wisp new app` · `wisp dev` (hot reload) · `wisp check [--types]` · `wisp fmt [paths]`
+`wisp new app` · `wisp dev` (hot reload) · `wisp test [--browser] [args]` · `wisp check [--types]` · `wisp fmt [paths]`
 (`--check`, `--stdin`; markup, `---` via rustfmt, scripts, styles) · `wisp build`
 (`--static`, `--docker`, `--target cloudflare|deno|vercel|netlify|node|bun|lambda|native`,
 `--client ts`, `--sourcemap`; in a host's CI it picks that host) · `wisp deploy init <host>`
@@ -415,6 +415,13 @@ upgrading Wisp) · `wisp mcp` (tools for AI agents: `wisp_docs(topic)`,
 Claude Code: `claude mcp add wisp -- wisp mcp`). More: `wisp_docs`, or
 https://raw.githubusercontent.com/wyziedevs/wisp/main/llms-full.txt (this
 file and every doc).
+Hot reload keeps state: a saved `.wisp` whose script or `{:…}` markup
+changed swaps its module in place, in ms, no compile: `$state` kept by
+name, focus, selection and fields kept; text alone morphs that file's part
+of the page; a `<style>` swaps the stylesheet. Rust (`---`, `{expr}`,
+`{@props}`) compiles; a changed `---` or `{@props}`, a top-level statement
+other than declarations/helpers (`init()`, `if`, `window.x =`) or a swap
+that throws starts it afresh, with one console line saying why.
 Under `wisp dev` (debug builds only): `Alt+Shift+W` opens the devtools
 (components, editable `$state`, props, stores, route, timings, open in
 editor via `$WISP_EDITOR`/`$EDITOR`/`code -g`); `/_wisp/components` is the

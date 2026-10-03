@@ -2852,7 +2852,20 @@ fn internal<A: App>(cx: &Cx, path: &str, out: &mut Out, reply: &mut Reply) -> bo
 /// `false` if the path is not a file.
 fn file<A: App>(cx: &Cx, raw: &[u8], route: Option<usize>, reply: &mut Reply) -> bool {
     let routed = route.is_some();
-    // Compiled in, in dev too: a change to one is a rebuild anyway.
+    // One `wisp dev` swapped in, never cached: its URL names its version.
+    #[cfg(debug_assertions)]
+    if raw.starts_with(crate::protocol::MODULES.as_bytes())
+        && let Some(source) = dev::module(cx.path())
+    {
+        let ext = if cx.path().ends_with(".map") {
+            "json"
+        } else {
+            "js"
+        };
+        send_file(reply, cx, Body::Static(source.as_bytes()), ext, None);
+        return true;
+    }
+    // Compiled in, in dev too: what `wisp dev` cannot swap is a rebuild.
     if raw.starts_with(crate::protocol::MODULES.as_bytes())
         && let Some(m) = A::client_module(cx.path())
     {

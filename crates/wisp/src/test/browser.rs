@@ -173,6 +173,8 @@ fn find() -> Option<PathBuf> {
 impl Browser {
     fn start<A: App>(exe: &Path) -> Result<Browser, String> {
         crate::store::memory();
+        // Pages as `wisp dev` serves them, for a test of its hot swaps.
+        crate::dev::mark();
         let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .map_err(|e| format!("could not listen on a free port: {e}"))?;
         let base = format!(

@@ -109,6 +109,30 @@
     }
   }
 
+  // `hot`: `m URL` per browser module swapped into the app, which a page
+  // with browser code loads (live.js swaps one it has in place), then
+  // `r file` per template whose text changed, whose part of the page is
+  // morphed in (wisp.js); the shell's is the whole page.
+  async function hot(lines) {
+    const urls = lines.filter((l) => l.startsWith('m ')).map((l) => l.slice(2));
+    const files = lines.filter((l) => l.startsWith('r ')).map((l) => l.slice(2));
+    try {
+      if (globalThis.__wisp_dev) await Promise.all(urls.map((u) => import(u)));
+    } catch (e) {
+      console.error(e);
+      return location.reload();
+    }
+    if (files.includes('src/app.html')) document.dispatchEvent(new Event('wisp:refresh'));
+    else if (files.some((f) => marked(f))) document.dispatchEvent(new CustomEvent('wisp:region', { detail: { files } }));
+  }
+
+  // Whether the page shows what the template `file` renders.
+  function marked(file) {
+    const w = document.createTreeWalker(document.body, NodeFilter.SHOW_COMMENT);
+    while (w.nextNode()) if (w.currentNode.data === 'w:' + file) return true;
+    return false;
+  }
+
   const events = new EventSource(`http://127.0.0.1:${port}/events`);
   events.onmessage = (e) => {
     const nl = e.data.indexOf('\n');
@@ -117,9 +141,12 @@
     if (kind === 'building') return waiting(true);
     if (kind === 'title') return void (meta = data.split('\n'));
     waiting(false);
+    // Said with a rebuild's `reload`: why its modules swap whole.
+    if (globalThis.__wisp_dev) __wisp_dev.full = kind === 'reload' ? data : '';
     if (kind === 'error') return showError(data);
     dialog.close();
     if (kind === 'reload') document.dispatchEvent(new Event('wisp:refresh'));
+    else if (kind === 'hot') hot(data.split('\n'));
     else if (kind === 'full') location.reload();
     else if (kind === 'css') swapStylesheet();
   };
