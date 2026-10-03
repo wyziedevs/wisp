@@ -92,6 +92,9 @@ my-app/
   src/main.rs         wisp::main!();
   src/app.html        document shell with %wisp.head% and %wisp.body%
   src/app.css         optional; Tailwind if it contains @import "tailwindcss"
+  src/app.scss        optional; Sass, instead of src/app.css
+  postcss.config.*    optional; PostCSS (npx) after either, or on src/app.css
+  package.json        optional; npm packages (`wisp add`), for bare imports
   src/hooks.rs        optional; `init` at start, `before` every request
   src/components/...  optional; Card.wisp is <Card>
   src/routes/...      pages
@@ -1091,14 +1094,23 @@ after the import, so utility classes still win over them.
 
 `wisp dev` is one std-only process:
 
-- Polls `src/`, `static/`, `Cargo.toml` and `build.rs` mtimes every 50 ms (no
-  `notify`). Editors' swap, backup and lock files are ignored, and a burst of
-  changes settles for at most a second.
+- Polls `src/`, `static/`, `Cargo.toml`, `build.rs` and `package.json`
+  mtimes every 50 ms (no `notify`). Editors' swap, backup and lock files
+  are ignored, and a burst of changes settles for at most a second.
 - `wisp dev [--port <n> | --port=<n> | -p <n>]`; anything else is an error
   with the usage. The app gets `HOST=127.0.0.1` unless `HOST` is set, and the
   address it prints is the one shown and used for hot swaps (port 0 works).
 - Runs Tailwind standalone `--watch` into `.wisp/app.css` if `src/app.css`
-  imports Tailwind; otherwise `src/app.css` is served as written.
+  imports Tailwind, or Dart Sass (standalone, pinned in `~/.wisp/bin`,
+  `$WISP_SASS` overrides) `--watch` if `src/app.scss` exists; with a
+  `postcss.config.*`, the tool writes `.wisp/pre.css` and `npx postcss
+  --watch` makes `.wisp/app.css` of it (or of a plain `src/app.css`).
+  Otherwise `src/app.css` is served as written. `wisp build` runs each
+  once, minified (`--minify`, `--style=compressed`).
+- Bare imports (`'canvas-confetti'`) are npm packages: `package.json`
+  pins them (`wisp add`), dev imports `https://esm.sh/pkg@v?target=es2022`,
+  and a release build serves `.wisp/npm`, which `wisp build` fills from
+  esm.sh (each module and what it imports, once) before compiling.
 - Builds with `cargo build`, copies the exe to `.wisp/run/` (so the next build can
   overwrite the original while the old server keeps serving), then restarts it.
   The app is ready when it prints its `listening on` line; the CLI reads the

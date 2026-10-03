@@ -31,6 +31,12 @@ pages, layouts and components, and runs once for each place the file is shown.
 - At most one script per file.
 - `import` lines at the top are moved to the module's head, so
   `import confetti from 'https://esm.sh/canvas-confetti'` works.
+- npm packages: `wisp add canvas-confetti` pins it in `package.json`
+  (`@1.2.3` or a tag; `wisp remove x`; no Node), then `import confetti
+  from 'canvas-confetti'` (also `'pkg/sub'`, `'@scope/pkg'`), in scripts
+  and `src/lib`. Dev loads it from esm.sh; `wisp build` downloads it once
+  into `.wisp/npm` and the binary serves it from `/_app/c/npm/`: no CDN.
+  A package `package.json` lacks is a build error.
 - Errors point at the real `.wisp` file and line.
 
 A `<script>` with `type` or `src` stays plain HTML, as before.
