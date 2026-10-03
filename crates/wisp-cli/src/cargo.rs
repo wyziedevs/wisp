@@ -56,6 +56,8 @@ pub fn build_for(
     } else {
         Stdio::inherit()
     };
+    // The build script leaves its warnings to the CLI, which checked first.
+    cmd.env("WISP_CLI", "1");
     cmd.current_dir(root).stdout(Stdio::piped()).stderr(stderr);
     let mut child = match cmd.spawn() {
         Ok(c) => c,

@@ -284,6 +284,8 @@ pub struct Template {
     pub groups: Vec<Group>,
     /// Its bare `<style>`s, scoped: CSS for `/_app/app.css`.
     pub style: Option<String>,
+    /// Its accessibility warnings.
+    pub lints: Vec<crate::a11y::Lint>,
 }
 
 impl Template {
@@ -330,6 +332,7 @@ fn parse_as(src: &str, fields: &[Field], scope: Option<&str>) -> Result<Template
         scope_tag: false,
         scoped: false,
         style: None,
+        a11y: Default::default(),
         b: src.as_bytes(),
         i: 0,
         ctx: Ctx::Text,
@@ -450,6 +453,7 @@ fn parse_as(src: &str, fields: &[Field], scope: Option<&str>) -> Result<Template
         script: p.script,
         groups: p.groups,
         style: p.style,
+        lints: p.a11y.lints,
     })
 }
 
@@ -654,6 +658,7 @@ struct Parser<'a> {
     scope_tag: bool,
     scoped: bool,
     style: Option<String>,
+    a11y: crate::a11y::Checker,
 }
 
 /// A `<textarea>` or `<select>` of an action's form, till its end tag:
@@ -697,7 +702,10 @@ impl Parser<'_> {
                     b'{' => self.hole()?,
                     b'<' => self.tag_open()?,
                     _ if is_ws(c) => self.whitespace(),
-                    _ => self.copy_until(|c| c == b'{' || c == b'<' || is_ws(c)),
+                    _ => {
+                        self.copy_until(|c| c == b'{' || c == b'<' || is_ws(c));
+                        self.a11y.content(false);
+                    }
                 },
                 Ctx::Tag => match c {
                     b'{' => self.hole()?,
@@ -1007,6 +1015,8 @@ impl Parser<'_> {
                 None => return Err(self.err(start, "unclosed <!-- comment".into())),
             };
             self.i = start + 4 + n;
+            let line = self.line_of(self.i - 1);
+            self.a11y.comment(&body[..n.saturating_sub(3)], line);
             return Ok(());
         }
         let closing = rest.first() == Some(&b'/');
@@ -1207,6 +1217,9 @@ impl Parser<'_> {
             j
         };
         let mut j = skip_ws(name_end);
+        if !closing {
+            self.a11y.content(true);
+        }
         if closing {
             if b.get(j) != Some(&b'>') {
                 return Err(self.err(start, format!("</{name}> takes nothing but its name")));
@@ -1496,6 +1509,10 @@ impl Parser<'_> {
         }
         if !self.closing {
             self.form_defaults()?;
+            if !self.tag.starts_with("wisp:") {
+                let line = self.line_of(self.tag_pos);
+                (self.a11y).element(&self.tag, line, &self.tag_seen, &self.directives);
+            }
             // `<meta http-equiv="refresh" content="0;url=…">` goes to its URL,
             // which no guard checks: its `content` stays static.
             if self.tag == "meta" {
@@ -1560,6 +1577,7 @@ impl Parser<'_> {
             }
         }
         if self.closing {
+            self.a11y.end(&self.tag);
             match self.tag.as_str() {
                 "template" => {
                     self.templates.pop();
@@ -2926,6 +2944,9 @@ impl Parser<'_> {
             )
         })?;
         self.i = end + 1;
+        if self.ctx == Ctx::Text {
+            self.a11y.content(false);
+        }
         let t = self.src[open + 1..end].trim();
         if has_line_comment(t) {
             return Err(self.err(open, "no // comments inside {…}: the code after it would be commented out too. Use /* … */".into()));

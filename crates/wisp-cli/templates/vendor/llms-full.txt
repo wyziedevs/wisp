@@ -156,6 +156,13 @@ file's elements only: each gets a `w-xxxxxx` class, each selector's last
 compound too. `:global(body)` opts out; `<style global>` stays as written.
 The CSS joins `/_app/app.css`. `@import` goes in `src/app.css`.
 
+Accessibility lints warn (check, dev, build), never fail: img without alt,
+on:click on a non-interactive element without role + on:keydown, label
+without control or `for`, `<a>` without href or `href="#"`, autofocus,
+skipped heading levels, button without text/aria-label, tabindex > 0,
+unknown `aria-*`. `<!-- wisp-ignore a11y-img-alt -->` on the line before
+silences one. Fix them rather than silence them.
+
 Holes can't go in `on*` attrs, tag names, `javascript:` URLs, SVG
 `<animate>`/`<set>` `to`/`from`/`values`/`by`, or `<meta http-equiv>`/refresh
 `content`, in any case; nor can `{:…}`/`:attr`, and `{:...obj}` leaves
@@ -907,6 +914,30 @@ Components can also be drawn by the browser (inside client blocks, or with
   `.wisp/scoped.css`, which `wisp dev` rewrites on a template save and the
   browser swaps in like any CSS change, no compile.
 - Cost: the class's bytes on each element, nothing at run time.
+
+### Accessibility warnings
+
+The parser lints each template as it reads it. `wisp check`, `wisp dev`
+(on each build and template swap) and `wisp build` print them as
+warnings (`! src/routes/+page.wisp:4: <img> has no alt: … (a11y-img-alt)`);
+a plain `cargo build` prints them as `cargo::warning`s. They never stop a
+build.
+
+| Name | Warns about |
+|---|---|
+| `img-alt` | `<img>` without `alt` (`alt=""` is fine: decorative) |
+| `click-events` | `on:click` on an element that is not interactive, without both a `role` and a key handler (`on:keydown`) |
+| `label-control` | `<label>` with no `for` and no control inside |
+| `anchor-href` | `<a>` without `href`, or `href="#"` |
+| `autofocus` | `autofocus` |
+| `heading-order` | a heading more than one level below the one before it in the file |
+| `button-name` | `<button>` with no text, `aria-label`, `aria-labelledby` or `title` |
+| `tabindex` | `tabindex` above 0 |
+| `aria-attr` | an `aria-*` name that ARIA does not have |
+
+`<!-- wisp-ignore a11y-img-alt -->` on the line before an element silences
+that lint there (several names may follow). A value set by an expression
+(`alt={x}`, `:alt="x"`, `{...attrs}`) counts as set. The examples have none.
 
 ### Snippets
 

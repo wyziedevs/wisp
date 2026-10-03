@@ -156,6 +156,13 @@ file's elements only: each gets a `w-xxxxxx` class, each selector's last
 compound too. `:global(body)` opts out; `<style global>` stays as written.
 The CSS joins `/_app/app.css`. `@import` goes in `src/app.css`.
 
+Accessibility lints warn (check, dev, build), never fail: img without alt,
+on:click on a non-interactive element without role + on:keydown, label
+without control or `for`, `<a>` without href or `href="#"`, autofocus,
+skipped heading levels, button without text/aria-label, tabindex > 0,
+unknown `aria-*`. `<!-- wisp-ignore a11y-img-alt -->` on the line before
+silences one. Fix them rather than silence them.
+
 Holes can't go in `on*` attrs, tag names, `javascript:` URLs, SVG
 `<animate>`/`<set>` `to`/`from`/`values`/`by`, or `<meta http-equiv>`/refresh
 `content`, in any case; nor can `{:…}`/`:attr`, and `{:...obj}` leaves

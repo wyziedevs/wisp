@@ -1,7 +1,7 @@
 <h1 :text="heading">{title}</h1>
 <button on:click="open = !open" class:active="open" :aria-expanded="open">Menu</button>
 <ul :hidden="!open">
-  {#each items as item, i}
+  {#each items as item, i}<!-- wisp-ignore a11y-click-events -->
     <li on:click.prevent="pick(item.name)" class:picked="picked === item.name">{i}: {item.name}</li>
   {/each}
 </ul>

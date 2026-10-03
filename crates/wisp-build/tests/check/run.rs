@@ -195,6 +195,28 @@ fn scoped_styles_join_the_apps_css() {
     assert_eq!(fs::read_to_string(&scoped).unwrap(), "");
 }
 
+/// Accessibility lints warn, from `check` and from the build (unless the
+/// CLI, which checked first, runs it); they never stop it.
+#[test]
+fn lints_are_warnings() {
+    let project = Project::new(&[("src/routes/+page.wisp", "<h1>a</h1>\n<img src=\"a.png\">")]);
+    let want = "src/routes/+page.wisp:2: <img> has no alt";
+    let (_, warnings) = wisp_build::check(project.root()).unwrap();
+    assert!(
+        warnings.len() == 1 && warnings[0].starts_with(want),
+        "{warnings:?}"
+    );
+    assert!(warnings[0].ends_with("(a11y-img-alt)"), "{warnings:?}");
+    let out = Project::new(&[]);
+    let run = build(Some(project.root()), Some(out.root()), None);
+    assert!(run.status.success(), "{}", text(&run.stderr));
+    let stdout = text(&run.stdout);
+    assert!(
+        stdout.contains(&format!("cargo::warning={want}")),
+        "{stdout}"
+    );
+}
+
 #[test]
 fn a_mistake_ends_the_build_with_its_message() {
     let project = Project::new(&[("src/routes/about/page.wisp", "x")]);
