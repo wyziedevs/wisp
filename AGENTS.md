@@ -86,12 +86,18 @@ Block rules:
 - Route params are locals: `slug: String`, `[id=int]` → `id: u64`,
   `[[lang]]` → `Option<String>`. Even with no block.
 - No `use` lines: prelude = `Cx Response Result Error Email Image Json
-  FromJson Rest Cookie Method Value Shared Table Row RateLimit OrStatus KB MB
+  FromJson Rest Config Upload Cookie Method Value Shared Table Row RateLimit OrStatus KB MB
   action remote error invalid model redirect Always Never Ignore` and `src/db.rs`'s `pub` items (local
   names win). `Result` alone = `Result<()>`.
 - `const CACHE: u32 = 60;` (page or `+server.rs`) keeps a GET's answer 60 s
   per worker (ETag, 304), but never for a request with a cookie or
   `authorization` (`CACHE_PUBLIC`: all), nor one that sets a cookie; not in dev.
+- `const RATE_LIMIT: u32 = 60;` (page, `+server.rs` or `src/hooks.rs`) is 60
+  requests a minute per client address, then a 429; `const CORS: &str = "*";`
+  is `cx.cors("*")?`; `const TIMEOUT: u32 = 5;` (page or `+server.rs`) a 503
+  after 5 s. They run first; a route that sets none pays nothing.
+  `const SIGNED_IN: bool = true;` in a `+layout.wisp` block: its pages and
+  actions are for members (303 to sign in, 401 for JSON).
 - `const PRERENDER: bool = true;` (and `fn entries()` with params): `wisp
   build` renders the page once and the binary serves those bytes (ETag,
   304). `cx` in it is a build error. `--static` prerenders every page.
@@ -131,7 +137,8 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
   WebP or AVIF by its bytes (not SVG), else 422; at most 2 MB
   (`wisp::MAX_SIZE`) unless `#[validate(max_size = 5 * MB)]`. The form gets
   `enctype="multipart/form-data"` and the file input `accept="image/*"`.
-  Keep it in a table field, serve it with `fn get(id: u64) -> Option<Image> {
+  `doc: Upload` is any file kept as a blob (`doc.name`, `doc.url()`, shows
+  its URL; docs/data.md). Keep an image in a table field, serve it with `fn get(id: u64) -> Option<Image> {
   USERS.get(id)?.value.avatar }` in `avatars/[id=int]/+server.rs`.
 - Rules: `#[validate(len = 1..=100)]` (also `min max min_len max_len email`)
   or `return invalid("field", "msg")` → 422, the page re-rendered listing
@@ -310,7 +317,9 @@ Pages get a `content-security-policy` (`wisp::csp("img-src 'self' https://x")`
 in `init` replaces a directive; `wisp::csp_off()`); `onclick="…"` doesn't run:
 use `on:click`. `wisp::trailing_slash(Always)` in `init`: pages are `/about/`
 (`/about` gets a 308; `Never`, the default; `Ignore` both; sitemap follows).
-No other `pub fn` here. Keep `before` sync: `async fn before` takes the
+`#[derive(Config)] struct Conf { api_key: String, port: Option<u16> }` (any
+`src/*.rs`) reads `API_KEY`, `PORT` (env or `.env`) before `init`; one wrong
+stops the start, naming it; `Conf::get().api_key` anywhere. No other `pub fn` here. Keep `before` sync: `async fn before` takes the
 no-wait fast path off every route.
 
 ## API

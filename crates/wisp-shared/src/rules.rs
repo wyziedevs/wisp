@@ -250,7 +250,9 @@ pub fn parse(rules: &str) -> Result<Validate, String> {
 pub fn rule(name: &str, value: Option<&str>) -> Result<Rule, String> {
     let Some(def) = DEFS.iter().find(|d| d.name == name) else {
         if name == MAX_SIZE {
-            return Err("`max_size` is for an upload: an action's `Image` or `Upload` parameter".into());
+            return Err(
+                "`max_size` is for an upload: an action's `Image` or `Upload` parameter".into(),
+            );
         }
         return Err(format!(
             "#[validate] has no `{name}`: it takes len, min, max, min_len, max_len, email, url, one_of, pattern, with and max_size"

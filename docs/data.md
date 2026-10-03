@@ -45,6 +45,13 @@ let file = cx.form().file("file").or_status(400)?;
 DOCS.add(Doc { title, file: Upload::new(&file, "pdf csv")? });  // 422 on `file`
 ```
 
+An action takes one by name, no code: `#[action] fn add(title: String, file:
+Upload) { DOCS.add(Doc { title, file }); }`. Any kind of file, at most
+`wisp::MAX_SIZE` (`#[validate(max_size = ..)]`; raise `BODY_LIMIT` with it);
+none chosen is a 422 on the field, and `<form fields>` writes its file input.
+The bytes are kept as the action reads them, so a form refused for another
+field leaves its file in the store.
+
 Files go in `WISP_BLOBS` (default: `blobs` beside the data folder; memory
 where tables are); `wisp::blobs(impl Blobs)` puts them in S3 or elsewhere.
 The server answers `/_wisp/blob/<hash>` itself: typed by its bytes
