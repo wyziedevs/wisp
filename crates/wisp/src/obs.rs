@@ -18,6 +18,8 @@ use std::time::{Duration, Instant};
 /// What is on, read from the environment once, at start. Empty when
 /// nothing is.
 static OBS: OnceLock<Obs> = OnceLock::new();
+/// Whether [`OBS`] is set, where a request reads it in one load.
+static ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 struct Obs {
     /// `WISP_LOG=json`.
@@ -53,6 +55,7 @@ pub(crate) fn init(routes: &'static [RouteFacts]) {
             return;
         }
         let started = Instant::now();
+        ON.store(true, std::sync::atomic::Ordering::Relaxed);
         let _ = OBS.set(Obs {
             json,
             metrics,
@@ -108,7 +111,7 @@ struct More {
 /// Whether anything watches requests: one load.
 #[inline]
 pub(crate) fn on() -> bool {
-    OBS.get().is_some()
+    ON.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 // The rest is out of line, so the request's own code is as it was
