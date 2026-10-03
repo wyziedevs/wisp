@@ -292,7 +292,7 @@ Both sign in. `wisp::users(&db::USERS)` in `init` makes it `cx.user()`.
 `cx.sign_out()`, `wisp::sign_out_everywhere(id)?`, `wisp::sign_in_page("/enter")`.
 `wisp::login`/`signup` are these without a Cx. Hashes: PBKDF2-SHA256, ~0.2 s
 off the worker (`RateLimit` sign-ins); by hand `wisp::password::{hash, check}`.
-A `Password` is stored as its hash and is `null` in any JSON out (`hash: String` still works).
+A `Password` is `Plain` as typed (never sniffed, even if it looks like a hash) and `Hashed` once a table (add/update/set) or `signup` hashes it, once; stores hold and load only hashes. It is `null` in any JSON out (`hash: String` still works).
 `cx.need(&USERS, |u| u.admin)?` is the Row, 403 if not allowed. More:
 `docs/auth.md` (`token`/`untoken` links, `totp`, `oauth`, `mail`,
 `fetch`).
