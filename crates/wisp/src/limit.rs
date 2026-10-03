@@ -9,7 +9,39 @@ use crate::{Error, Result, Shared};
 use std::collections::HashMap;
 use std::hash::{BuildHasher, BuildHasherDefault, Hash, Hasher, RandomState};
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use wasm_clock::Instant;
+
+/// `std`'s `Instant` has no clock on the edge: the host's, as a time since 1970.
+#[cfg(target_arch = "wasm32")]
+mod wasm_clock {
+    use std::ops::Add;
+    use std::time::Duration;
+
+    #[derive(Clone, Copy, PartialEq, PartialOrd)]
+    pub struct Instant(Duration);
+
+    impl Instant {
+        pub fn now() -> Instant {
+            Instant(crate::edge::clock())
+        }
+
+        pub fn saturating_duration_since(self, earlier: Instant) -> Duration {
+            self.0.saturating_sub(earlier.0)
+        }
+    }
+
+    impl Add<Duration> for Instant {
+        type Output = Instant;
+
+        fn add(self, d: Duration) -> Instant {
+            Instant(self.0 + d)
+        }
+    }
+}
 
 /// Past this many keys, buckets that have filled up again are dropped, so
 /// clients that came once do not stay in memory. If that is not enough

@@ -53,7 +53,6 @@ mod jobs;
 pub mod json;
 #[cfg(not(target_arch = "wasm32"))]
 mod lambda;
-#[cfg(not(target_arch = "wasm32"))]
 mod limit;
 mod live;
 mod mail;
@@ -114,7 +113,6 @@ pub use input::Email;
 #[cfg(not(target_arch = "wasm32"))]
 pub use jobs::{Queue, cron, queue, work};
 pub use json::{FromJson, Value, from_json, to_json};
-#[cfg(not(target_arch = "wasm32"))]
 pub use limit::RateLimit;
 pub use live::{ClientModule, Json};
 pub use mail::mail;
@@ -148,7 +146,6 @@ pub type Result<T = (), E = Error> = std::result::Result<T, E>;
 /// app's own sees without a `use` line. Other Rust files can
 /// `use wisp::prelude::*`.
 pub mod prelude {
-    #[cfg(not(target_arch = "wasm32"))]
     pub use crate::RateLimit;
     /// For `wisp::trailing_slash(Always)` in `init`.
     pub use crate::TrailingSlash::{Always, Ignore, Never};

@@ -72,6 +72,11 @@ pub(crate) fn unix_seconds() -> u64 {
     now() as u64
 }
 
+/// The host's clock, for what `std::time::Instant` cannot time here.
+pub(crate) fn clock() -> std::time::Duration {
+    std::time::Duration::from_secs_f64(now())
+}
+
 type Task = Pin<Box<dyn Future<Output = ()>>>;
 type Handler = fn(Request) -> Pin<Box<dyn Future<Output = Reply>>>;
 

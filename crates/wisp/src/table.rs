@@ -254,6 +254,7 @@ pub(crate) fn live_events(name: &str) -> Option<crate::Response> {
 static EVERY: Shared<Vec<&'static dyn Wipe>> = Shared::new(Vec::new());
 
 trait Wipe: Sync {
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     fn wipe(&self);
 }
 
@@ -264,6 +265,7 @@ impl<T: Send + Sync> Wipe for Table<T> {
 }
 
 /// Empties every table, for a test that starts from nothing.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn wipe_all() {
     for t in EVERY.lock().iter() {
         t.wipe();
