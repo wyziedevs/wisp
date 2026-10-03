@@ -566,6 +566,12 @@ pub(crate) struct Settings {
     /// `WISP_REQUEST_ID`: give every request an id, not only those that ask
     /// for one with `cx.request_id()` (`off`).
     pub request_id: bool,
+    /// `WISP_SECURE_HEADERS`: `nosniff` and `referrer-policy` on pages (`on`).
+    pub secure_headers: bool,
+    /// `WISP_HSTS`: `strict-transport-security` on every answer (`off`).
+    pub hsts: bool,
+    /// Either of `request_id` and `hsts`: what a request pays one check for.
+    pub extras: bool,
     /// `WISP_PROBLEM_JSON`: JSON errors as RFC 9457 `application/problem+json`
     /// for every client, not only those whose `accept` asks for it (`off`).
     pub problem_json: bool,
@@ -616,8 +622,11 @@ pub(crate) fn settings() -> &'static Settings {
         let api_docs = switch("WISP_API_DOCS", dev);
         let request_id = switch("WISP_REQUEST_ID", false);
         let problem_json = switch("WISP_PROBLEM_JSON", false);
+        let secure_headers = switch("WISP_SECURE_HEADERS", true);
+        let hsts = switch("WISP_HSTS", false);
+        let extras = request_id || hsts;
         Settings {
-            dev, body_limit, origin, client_ip_header, secret, old_secret, api_docs, request_id, problem_json,
+            dev, body_limit, origin, client_ip_header, secret, old_secret, api_docs, request_id, problem_json, secure_headers, hsts, extras,
             #[cfg(not(target_arch = "wasm32"))]
             ws_idle,
             #[cfg(not(target_arch = "wasm32"))]
@@ -925,7 +934,13 @@ impl Response {
     }
 
     pub fn html(body: impl IntoText) -> Response {
-        Response::new("text/html; charset=utf-8", body.into_text())
+        let mut res = Response::new("text/html; charset=utf-8", body.into_text());
+        if settings().secure_headers {
+            for (name, value) in [headers::NOSNIFF, headers::REFERRER] {
+                res.headers.push((Cow::Borrowed(name), value.to_string()));
+            }
+        }
+        res
     }
 
     /// Serialize with whatever you like; this only sets the content type.
@@ -963,6 +978,10 @@ impl Response {
             cx::valid_header(&name, &value),
             "invalid header {name:?}: {value:?}"
         );
+        // One of a page's own headers gives way to the app's.
+        if [headers::NOSNIFF.0, headers::REFERRER.0].contains(&&*name.to_ascii_lowercase()) {
+            self.headers.retain(|(n, _)| !n.eq_ignore_ascii_case(&name));
+        }
         self.headers.push((name, value));
         self
     }

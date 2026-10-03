@@ -1155,8 +1155,8 @@ fn decide_now<A: App>(
     reply: &mut Reply,
     route: Option<usize>,
 ) -> Option<Job> {
-    if crate::settings().request_id {
-        cx.request_id();
+    if crate::settings().extras {
+        extras(cx);
     }
     if !before_routes::<A>(cx, route, reply) {
         let started = timed().then(Instant::now);
@@ -2434,6 +2434,18 @@ impl Cx {
     }
 }
 
+/// What a server with `WISP_REQUEST_ID` or `WISP_HSTS` on does as a request
+/// starts.
+#[cold]
+fn extras(cx: &mut Cx) {
+    if crate::settings().request_id {
+        cx.request_id();
+    }
+    if crate::settings().hsts {
+        crate::headers::hsts(cx);
+    }
+}
+
 /// Decides the response to the request in `cx`: Wisp's own files, the
 /// app's, routing, hooks, redirects, error pages. Writes nothing; see
 /// [`serialize`]. Gives it `x-request-id` when the request has an id
@@ -2449,8 +2461,8 @@ async fn decide<A: App>(
     reply: &mut Reply,
     routed: Option<Option<usize>>,
 ) {
-    if crate::settings().request_id {
-        cx.request_id();
+    if crate::settings().extras {
+        extras(cx);
     }
     // Routed first (it only matches), so the path is read once.
     let route = routed.unwrap_or_else(|| route::<A>(cx));
@@ -2567,8 +2579,17 @@ fn answer_of(
             match out.response.take() {
                 Some(res) => put(cx, reply, res),
                 None => match out.made.take() {
-                    Some(made) => crate::bake::reply(cx, made, reply),
-                    None => reply.set(cx.status(), "text/html; charset=utf-8", Body::Page),
+                    Some(made) => {
+                        // A kept page was made with them.
+                        if matches!(made, crate::bake::Made::Baked(_)) {
+                            crate::headers::page(cx);
+                        }
+                        crate::bake::reply(cx, made, reply);
+                    }
+                    None => {
+                        crate::headers::page(cx);
+                        reply.set(cx.status(), "text/html; charset=utf-8", Body::Page);
+                    }
                 },
             }
             Ok(())
@@ -2589,7 +2610,6 @@ fn answered(cx: &mut Cx, reply: &mut Reply, started: Option<Instant>, failure: O
         key.finish(reply, cx.page_headers());
     }
     cx.send_headers(&mut reply.headers);
-    crate::headers::add(reply);
     let method = cx.method.as_str();
     if let Some(started) = started {
         crate::otel::span(cx, reply.status, started.elapsed());
@@ -2722,6 +2742,7 @@ fn error_reply(
         reply.set(e.status, kind, Body::Bytes(body));
         None
     } else {
+        crate::headers::page(cx);
         reply.set(e.status, "text/html; charset=utf-8", Body::Page);
         Some((e.status, message))
     };
@@ -3098,6 +3119,15 @@ fn send_file(reply: &mut Reply, cx: &Cx, body: Body, ext: &str, etag: Option<&'s
         reply.headers.clear(); // a 304 describes the file it did not send
     } else {
         reply.set(200, mime(ext), body);
+        if ext.starts_with("htm") && crate::settings().secure_headers {
+            for (name, value) in [crate::headers::NOSNIFF, crate::headers::REFERRER] {
+                if !cx.has_out(name) {
+                    reply
+                        .headers
+                        .push((Cow::Borrowed(name), Cow::Borrowed(value)));
+                }
+            }
+        }
         if !crate::range::apply(cx, reply, etag) {
             crate::compress::apply(cx, reply);
         }
