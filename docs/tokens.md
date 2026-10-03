@@ -21,7 +21,8 @@ with the workspace, and its tests check each feature.
 
 | Stack | list | form | api | layout | search | data | setup | total | chars / 4 | files |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| **Wisp** | 60 | 118 | 35 | 60 | 106 | 115 | 0 | **494** | 298 | 6 |
+| **Wisp** | 58 | 94 | 31 | 60 | 104 | 115 | 0 | **462** | 281 | 6 |
+| Wisp, before the sugar round | 60 | 118 | 35 | 60 | 106 | 115 | 0 | 494 | 298 | 6 |
 | Wisp, before this round | 74 | 127 | 35 | 60 | 120 | 115 | 0 | 531 | 321 | 6 |
 | Wisp, two rounds ago | 74 | 149 | 35 | 60 | 134 | 115 | 0 | 567 | 341 | 6 |
 | SvelteKit 2 | 128 | 396 | 57 | 83 | 192 | 72 | 0 | 928 | 596 | 9 |
