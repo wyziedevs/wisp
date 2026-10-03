@@ -26,6 +26,9 @@ pub struct Layout {
     pub load: bool,
     /// Its Rust has an `async fn`.
     pub waits: bool,
+    /// `const SIGNED_IN: bool = true;`: its pages and their actions are for
+    /// members.
+    pub guard: bool,
 }
 
 /// A `+error.wisp`, rendered inside the layouts of its own directory.

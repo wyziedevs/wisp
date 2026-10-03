@@ -1717,6 +1717,15 @@ impl<'a> Project<'a> {
                     c.line, c.name
                 ));
             }
+            let mut guarded = Vec::new();
+            let at = lg.file.clone().unwrap_or_else(|| dir.join("+layout.rs"));
+            let guard = self.flag(&lg.items, "SIGNED_IN", &at, &mut guarded)? == Some(true);
+            if guard {
+                guarded.push(
+                    "pub fn __guard(cx: &mut ::wisp::Cx) -> ::wisp::Result<()> { cx.signed_in()?; Ok(()) }"
+                        .into(),
+                );
+            }
             let load = lg.items.function("load");
             // The template reads `data` from a load, or names from statements.
             let reads = load.is_some() || lg.stmts.is_some();
@@ -1730,7 +1739,7 @@ impl<'a> Project<'a> {
                     .transpose()
                     .map_err(|e| format!("{where_}:{e}"))?;
                 let name = format!("layout_{i}");
-                let shims = shims.into_iter().collect();
+                let shims = shims.into_iter().chain(guarded).collect();
                 self.user_mods
                     .push(UserMod::new(name, src, lg.inline, shims, &lg.items));
             }
@@ -1741,7 +1750,7 @@ impl<'a> Project<'a> {
             tpl.data = data;
             tpl.stmts = lg.stmts.map(|s| (s, Vec::new()));
             let tpl = self.templates.len() - 1;
-            self.model.layouts.push(model::Layout { tpl, load, waits });
+            self.model.layouts.push(model::Layout { tpl, load, waits, guard });
         }
         Ok(())
     }
@@ -3875,12 +3884,13 @@ impl Gen {
                 // live.js asks for the page's error page this way when its
                 // browser code fails while starting (see `boundary` in
                 // live.js): only pages have any.
-                let guard = match &r.guard {
-                    Some(m) if r.page.as_ref().is_some_and(|p| &p.module == m) => {
-                        format!("{m}::__call::__guard(cx)?; ")
-                    }
-                    _ => String::new(),
-                };
+                let layouts = r.layouts.iter().filter(|l| p.model.layouts[**l].guard);
+                let mut guard: String = layouts
+                    .map(|l| format!("layout_{l}::__call::__guard(cx)?; "))
+                    .collect();
+                if let Some(g) = &r.guard {
+                    guard.push_str(&format!("{g}::__call::__guard(cx)?; "));
+                }
                 let (open, close) = within(r, &page.module);
                 self.line(
                     3,
