@@ -19,7 +19,7 @@ use crate::protocol::{
 use crate::routes::Seg;
 use crate::rust_scan::{self, FnItem, Returns};
 use crate::template::{self, Code, Dir, Directive, Node, PropDecl, PropValue, Template};
-use crate::{fnv1a, fold, js, rules, shell, stories, ty};
+use crate::{fnv1a, fold, js, rules, shell, sourcemap, stories, ty};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -27,6 +27,9 @@ use std::path::{Path, PathBuf};
 pub struct Input<'a> {
     pub root: &'a Path,
     pub release: bool,
+    /// Source maps for browser modules: in dev, and in release with
+    /// `wisp build --sourcemap`.
+    pub maps: bool,
 }
 
 /// What a template is for; decides its render signature.
@@ -557,6 +560,7 @@ fn generate_web(input: &Input) -> Result<Output, String> {
 struct Project<'a> {
     root: &'a Path,
     release: bool,
+    maps: bool,
     tree: crate::routes::Tree,
     /// `src/app.html` (or the default) in its three pieces.
     shell: [String; 3],
@@ -621,6 +625,7 @@ impl<'a> Project<'a> {
         Ok(Project {
             root,
             release: input.release,
+            maps: input.maps,
             tree,
             shell,
             comps: Vec::new(),
@@ -1435,24 +1440,43 @@ impl<'a> Project<'a> {
         };
         let extra_url = format!("{}?v={}", extra.path, extra.hash);
         // A lib file that makes a `persisted` store imports it too (last, so
-        // its lines stay).
-        let lib_file = |src: &str, dir: Option<&str>, rel: &str| {
-            let mut s = rewrite_specifiers(src, &specs, dir).map_err(|e| format!("{rel}: {e}"))?;
-            if js::tokens(src)
-                .iter()
-                .any(|t| !t.member && t.text(src) == "persisted")
-            {
-                s.push_str(&format!("\nimport {};\n", js_str(&extra_url)));
-            }
-            Ok::<_, String>(s)
-        };
+        // its lines stay). With maps, it ends naming its map, served at
+        // `path.map`.
+        let maps = self.maps;
+        let lib_file =
+            |src: &str, dir: Option<&str>, rel: &str, path: &str, files: &mut Vec<JsFile>| {
+                let mut s =
+                    rewrite_specifiers(src, &specs, dir).map_err(|e| format!("{rel}: {e}"))?;
+                let mut added = 0;
+                if js::tokens(src)
+                    .iter()
+                    .any(|t| !t.member && t.text(src) == "persisted")
+                {
+                    s.push_str(&format!("\nimport {};\n", js_str(&extra_url)));
+                    added = 2;
+                }
+                if maps {
+                    let name = path.rsplit('/').next().unwrap_or(path);
+                    s.push_str(&sourcemap::comment(name));
+                    files.push(map_file(path, name, rel, src, &sourcemap::same(src, added)));
+                }
+                Ok::<_, String>(s)
+            };
         let mut js_files = Vec::with_capacity(lib_src.len());
         for (p, src) in &lib_src {
             let dir = p.rfind('/').map_or("", |i| &p[..i]);
+            let path = format!("{MODULES}lib/{p}");
+            let source = lib_file(
+                src,
+                Some(dir),
+                &format!("src/lib/{p}"),
+                &path,
+                &mut js_files,
+            )?;
             js_files.push(JsFile {
-                path: format!("{MODULES}lib/{p}"),
+                path,
                 hash: specs.lib_hash.clone(),
-                source: lib_file(src, Some(dir), &format!("src/lib/{p}"))?,
+                source,
                 file: None,
             });
         }
@@ -1467,9 +1491,10 @@ impl<'a> Project<'a> {
         for (k, t) in self.templates.iter().enumerate() {
             let load = match &t.load_js {
                 Some(f) => {
-                    let source = lib_file(&self.read(f)?, None, &self.rel(f))?;
-                    let hash = format!("{:016x}", fnv1a(source.as_bytes()));
                     let path = format!("{MODULES}t{}.load.js", t.id);
+                    let source =
+                        lib_file(&self.read(f)?, None, &self.rel(f), &path, &mut js_files)?;
+                    let hash = format!("{:016x}", fnv1a(source.as_bytes()));
                     let url = format!("{path}?v={hash}");
                     js_files.push(JsFile {
                         path,
@@ -1490,9 +1515,21 @@ impl<'a> Project<'a> {
                 specs: &specs,
                 load,
                 release: self.release,
+                maps: self.maps,
                 extra: &extra_url,
             };
-            clients.push(client(t, &cx)?);
+            let c = client(t, &cx)?;
+            if let Some(c) = c.as_ref().filter(|_| self.maps) {
+                let file = self.read(&self.root.join(&t.rel))?;
+                js_files.push(map_file(
+                    &c.path(),
+                    &format!("{}.js", c.id),
+                    &t.rel,
+                    &file,
+                    &c.lines,
+                ));
+            }
+            clients.push(c);
         }
         if clients
             .iter()
@@ -3081,6 +3118,7 @@ pub(crate) fn components(root: &Path) -> Result<Vec<Comp>, String> {
     let mut p = Project::new(&Input {
         root,
         release: false,
+        maps: false,
     })?;
     p.components()?;
     Ok(p.comps)
@@ -4796,6 +4834,8 @@ struct Client {
     /// The URL of `extra.js`, when it imports it.
     extra: Option<String>,
     source: String,
+    /// Where each line of `source` came from in the file, for its map.
+    lines: Vec<sourcemap::Line>,
     /// Of `source`, for the module's URL.
     hash: String,
     /// The instance's server values: a JSON object.
@@ -4854,6 +4894,8 @@ struct ClientCx<'a> {
     load: Option<String>,
     /// A release build: `$inspect` goes.
     release: bool,
+    /// Source maps: the module names its map, not its file.
+    maps: bool,
     /// The URL of the runtime's less used half (`extra.js`).
     extra: &'a str,
 }
@@ -5204,13 +5246,16 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
     });
     let m = Module {
         id: &id,
-        rel: &t.rel,
         params: &params,
         rest: rest.as_deref(),
         defaults: &defaults,
-        script: (script.is_some() || !bound.is_empty())
-            .then(|| (runs.as_str(), script.map_or(1, |s| s.line))),
+        script: (script.is_some() || !bound.is_empty()).then(|| {
+            let (line, col) = script.map_or((1, 1), |s| (s.line, s.col));
+            let own = script.map_or(0, |s| s.src.matches('\n').count() + 1);
+            (runs.as_str(), line, col, own)
+        }),
         groups: &groups,
+        group_lines: &tt.groups.iter().map(|g| g.line).collect::<Vec<_>>(),
         imports: &imports,
         load: cx.load.as_deref(),
         extra: (tt.groups.iter().flat_map(|g| &g.directives).any(is_extra)
@@ -5230,7 +5275,12 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
         specs: cx.specs,
         dev: dev.as_deref(),
     };
-    let source = module_source(&m).map_err(|e| format!("{}: {e}", t.rel))?;
+    let (mut source, lines) = module_source(&m).map_err(|e| format!("{}: {e}", t.rel))?;
+    if cx.maps {
+        source.push_str(&sourcemap::comment(&format!("{id}.js")));
+    } else {
+        let _ = writeln!(source, "//# sourceURL=wisp:///{}", t.rel);
+    }
     let hash = format!("{:016x}", fnv1a(source.as_bytes()));
     let blob = if used.is_empty() {
         vec![Piece::Text("{}".into())]
@@ -5268,6 +5318,7 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
         extra: m.extra.map(String::from),
         id,
         source,
+        lines,
         hash,
         blob,
         locals,
@@ -5341,16 +5392,18 @@ fn client_html(nodes: &[Node], t: &Template, out: &mut String) {
 /// A module's parts, for `module_source`.
 struct Module<'a> {
     id: &'a str,
-    rel: &'a str,
     /// The server values or props, and the variable each is read as.
     params: &'a [(String, String)],
     /// `...rest`'s variable: the props not named.
     rest: Option<&'a str>,
     /// `$props()` defaults: a prop's JavaScript when it is not given.
     defaults: &'a [(String, String)],
-    /// The script, as it runs, and the line of the file it starts on.
-    script: Option<(&'a str, u32)>,
+    /// The script, as it runs, the line and column of the file it starts
+    /// on, and how many of its lines are the file's (`bind:` may add some).
+    script: Option<(&'a str, u32, u32, usize)>,
     groups: &'a [Vec<String>],
+    /// The line of each group's element.
+    group_lines: &'a [u32],
     /// Modules of the components it renders.
     imports: &'a [String],
     load: Option<&'a str>,
@@ -5362,15 +5415,30 @@ struct Module<'a> {
     dev: Option<&'a str>,
 }
 
-/// The module's text. The script keeps its line numbers, as far as the
-/// lines before it allow, so the browser's errors point into the .wisp file.
+/// The module's text, and where each of its lines came from in the file
+/// (for its source map). The script keeps its line numbers too, as far as
+/// the lines before it allow.
 ///
 /// The script runs in blocks of its own, inside the helpers and then the
 /// server values (signals, which the runtime sets again when a morph or a
 /// parent brings new ones), so it may reuse a helper's name and a server
 /// value may too. Its function returns the binding groups.
-fn module_source(m: &Module) -> Result<String, String> {
+fn module_source(m: &Module) -> Result<(String, Vec<sourcemap::Line>), String> {
     let mut s = String::new();
+    // Each line of `s` so far, and the length of `s` it has counted.
+    let mut map: (Vec<sourcemap::Line>, usize) = (Vec::new(), 0);
+    // The lines of `s` added since came from `at(k)`, the k-th of them.
+    let upto =
+        |s: &str, map: &mut (Vec<sourcemap::Line>, usize), at: &dyn Fn(u32) -> sourcemap::Line| {
+            let new = s[map.1..].matches('\n').count() as u32;
+            map.0.extend((0..new).map(at));
+            map.1 = s.len();
+        };
+    // Line `k` of the script (0-based), as a line and column of the file.
+    let script_line = |k: u32| {
+        let (_, line, col, own) = m.script?;
+        ((k as usize) < own).then(|| (line - 1 + k, if k == 0 { col - 1 } else { 0 }))
+    };
     let _ = writeln!(
         s,
         "import {{ define }} from \"{LIVE_JS_PATH}?v={}\";",
@@ -5385,13 +5453,16 @@ fn module_source(m: &Module) -> Result<String, String> {
     if let Some(url) = m.extra {
         let _ = writeln!(s, "import {};", js_str(url));
     }
+    upto(&s, &mut map, &|_| None);
     let mut body = String::new();
-    if let Some((src, _)) = m.script {
+    if let Some((src, ..)) = m.script {
         // Imports go first, as a module's must; they leave blank lines.
         let spans = js::imports(src);
         for &(a, b) in &spans {
             s.push_str(&rewrite_specifiers(&src[a..b], m.specs, None)?);
             s.push('\n');
+            let first = src[..a].matches('\n').count() as u32;
+            upto(&s, &mut map, &|k| script_line(first + k));
         }
         body = js::blank(src, &spans);
     }
@@ -5435,22 +5506,26 @@ fn module_source(m: &Module) -> Result<String, String> {
         );
     }
     s.push_str("{\n");
-    if let Some((_, line)) = m.script {
+    if let Some((_, line, ..)) = m.script {
         let next = s.matches('\n').count() as u32 + 1;
         for _ in next..line {
             s.push('\n');
         }
+        upto(&s, &mut map, &|_| None);
         s.push_str(&body);
         if !body.ends_with('\n') {
             s.push('\n');
         }
+        upto(&s, &mut map, &script_line);
     }
     if let Some(d) = m.dev {
         s.push_str(d);
     }
     s.push_str("return { g: [\n");
-    for g in m.groups {
+    upto(&s, &mut map, &|_| None);
+    for (g, &line) in m.groups.iter().zip(m.group_lines) {
         let _ = writeln!(s, "  [{}],", g.join(", "));
+        upto(&s, &mut map, &|k| Some((line - 1 + k, 0)));
     }
     s.push_str("] };\n} } }");
     let mut opts = Vec::new();
@@ -5464,8 +5539,20 @@ fn module_source(m: &Module) -> Result<String, String> {
         let _ = write!(s, ", {{ {} }}", opts.join(", "));
     }
     s.push_str(");\n");
-    let _ = writeln!(s, "//# sourceURL=wisp:///{}", m.rel);
-    Ok(s)
+    upto(&s, &mut map, &|_| None);
+    Ok((s, map.0))
+}
+
+/// The source map of the module served at `path`, named `name` there,
+/// whose lines came from the file `rel` as `lines` says.
+fn map_file(path: &str, name: &str, rel: &str, src: &str, lines: &[sourcemap::Line]) -> JsFile {
+    let source = sourcemap::encode(name, &format!("wisp:///{rel}"), src, lines);
+    JsFile {
+        path: format!("{path}.map"),
+        hash: format!("{:016x}", fnv1a(source.as_bytes())),
+        source,
+        file: None,
+    }
 }
 
 /// What an import's module name resolves against: `src/lib`'s files (all
@@ -6143,7 +6230,12 @@ mod tests {
     /// `app`, as a release build or a dev one.
     fn build(name: &str, files: &[(&str, &str)], release: bool) -> Result<String, String> {
         in_dir(name, files, |root| {
-            generate(&Input { root, release }).map(|o| o.code)
+            generate(&Input {
+                root,
+                release,
+                maps: !release,
+            })
+            .map(|o| o.code)
         })
     }
 
@@ -6153,6 +6245,7 @@ mod tests {
             Project::load(&Input {
                 root,
                 release: false,
+                maps: true,
             })
             .map(|p| p.model)
         })
@@ -7345,9 +7438,65 @@ pub fn load() -> Data { todo!() }";
             specs: &specs,
             load: None,
             release: false,
+            maps: true,
             extra: "/_app/c/extra.js",
         };
         client(&t, &cx).map(|c| c.expect("the page has browser code"))
+    }
+
+    #[test]
+    fn source_maps_in_dev_and_on_request() {
+        let files = [
+            (
+                "src/routes/+page.wisp",
+                "<p>{:n}</p>\n<script>\n  import { a } from '$lib/a.js'\n  let n = a\n</script>",
+            ),
+            ("src/lib/a.js", "export const a = 1\n"),
+            (
+                "src/routes/+page.js",
+                "export function load({ data }) { return data }\n",
+            ),
+        ];
+        let dev = app("maps", &files).unwrap();
+        for m in ["t1.js", "lib/a.js", "t1.load.js"] {
+            let name = m.rsplit('/').next().unwrap();
+            assert!(dev.contains(&format!("\"/_app/c/{m}.map\"")), "{m}: {dev}");
+            assert!(
+                dev.contains(&format!("//# sourceMappingURL={name}.map")),
+                "{m}"
+            );
+        }
+        assert!(
+            dev.contains(r#"\"sources\":[\"wisp:///src/lib/a.js\"]"#),
+            "{dev}"
+        );
+        assert!(!dev.contains("sourceURL"));
+        let release = build("maps-release", &files, true).unwrap();
+        assert!(
+            !release.contains(".map")
+                && release.contains("sourceURL=wisp:///src/routes/+page.wisp")
+        );
+        let asked = in_dir("maps-asked", &files, |root| {
+            generate(&Input {
+                root,
+                release: true,
+                maps: true,
+            })
+            .map(|o| o.code)
+        });
+        assert!(asked.unwrap().contains("\"/_app/c/t1.js.map\""));
+
+        // What a browser reads of a stack trace: the line a `throw` runs on
+        // is, through the map, its line of the file.
+        let src = "<h1>Maps</h1>\n<button on:click=\"boom()\">Boom</button>\n<p>{:n}</p>\n\n<script>\n  import { twice } from 'a'\n  let n = twice(2)\n  function boom() {\n    throw new Error('boom')\n  }\n</script>\n";
+        let c = page_client(src, false).unwrap();
+        let map = sourcemap::encode("t7.js", "wisp:///x.wisp", src, &c.lines);
+        let segs = sourcemap::tests::decode(sourcemap::tests::mappings(&map));
+        let at = |text: &str, s: &str| s.lines().position(|l| l.contains(text)).unwrap();
+        let thrown = at("throw new", &c.source);
+        assert_eq!(segs[thrown], [[0, 0, at("throw new", src) as i64, 0]]);
+        let button = at("(boom())", &c.source);
+        assert_eq!(segs[button], [[0, 0, 1, 0]]);
     }
 
     #[test]
@@ -7379,8 +7528,23 @@ pub fn load() -> Data { todo!() }";
         // A dev build hands the devtools the file, its state and their lines.
         let tail = "  function toggle() { open.v = !open.v }\n\
                     globalThis.__wisp_dev?.state(\"src/routes/+page.wisp\", { open }, { open: 13 });\nreturn { g: [\n  [[\"on\", \"click\", 8192, (_, event) => toggle(event)], [\"attr\", \"hidden\", () => (data.v.done)]],\n] };\n} } });\n\
-                    //# sourceURL=wisp:///src/routes/+page.wisp\n";
+                    //# sourceMappingURL=t7.js.map\n";
         assert!(c.source.ends_with(tail), "{}", c.source);
+        // Its map: the imports and the script on their lines of the file
+        // (0-based), the group on its element's, Wisp's own lines on none.
+        assert_eq!(c.lines.len(), c.source.lines().count() - 1);
+        assert_eq!(
+            c.lines[..5],
+            [None, Some((9, 0)), Some((10, 0)), Some((11, 0)), None]
+        );
+        assert_eq!(c.lines[12..14], [Some((12, 0)), Some((13, 0))]);
+        let group = c
+            .source
+            .lines()
+            .position(|l| l.starts_with("  [["))
+            .unwrap();
+        assert_eq!(c.lines[group], Some((1, 0)));
+        assert_eq!(c.lines[group + 1..], [None, None]);
         assert_eq!(
             c.blob,
             [

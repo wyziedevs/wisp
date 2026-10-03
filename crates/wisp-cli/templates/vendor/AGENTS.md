@@ -214,6 +214,8 @@ npm: `wisp add canvas-confetti`, then `import confetti from 'canvas-confetti'`
 (esm.sh in dev; `wisp build` puts it in the binary, no CDN; one not in package.json
 is a build error).
 Islands: `<Chart client:visible|idle|interaction|media="(…)"|none />`.
+Source maps: dev serves `/_app/c/t3.js.map` beside each module (the `.wisp`
+line of each line); release only with `wisp build --sourcemap`.
 Server values sent to JS must `#[derive(Json)]`. Full: docs/client.md.
 
 ## Endpoints (`+server.rs`)
@@ -393,7 +395,7 @@ takes the no-wait fast path off every route.
 `wisp new app` · `wisp dev` (hot reload) · `wisp check` · `wisp fmt [paths]`
 (`--check`, `--stdin`; markup, `---` via rustfmt, scripts, styles) · `wisp build`
 (`--static`, `--docker`, `--target cloudflare|deno|vercel|netlify|node|bun|lambda|native`,
-`--client ts`; in a host's CI it picks that host) · `wisp deploy init <host>`
+`--client ts`, `--sourcemap`; in a host's CI it picks that host) · `wisp deploy init <host>`
 (GitHub Actions) · `wisp add pkg[@ver]` · `wisp remove pkg` · `wisp lsp` (language
 server; setup per editor: editors/README.md) · `wisp update-docs` (this file, after
 upgrading Wisp) · `wisp mcp` (tools for AI agents: `wisp_docs(topic)`,

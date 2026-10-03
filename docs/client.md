@@ -38,7 +38,7 @@ pages, layouts and components, and runs once for each place the file is shown.
   into `.wisp/npm` and the binary serves it from `/_app/c/npm/`: no CDN.
   A package `package.json` lacks, or one with a range (`^1.0`) rather
   than a version, is a build error.
-- Errors point at the real `.wisp` file and line.
+- Errors point at the real `.wisp` file and line (see [Source maps](#source-maps)).
 
 A `<script>` with `type` or `src` stays plain HTML, as before.
 
@@ -555,6 +555,15 @@ on the first load and after every navigation. It does not run on the server.
 An error thrown while a client script starts, or in `+page.js`, shows the
 nearest `+error.wisp`, as a server error would. Errors inside handlers show in
 the console with the `.wisp` file and line.
+
+### Source maps
+
+In dev, every browser module ends with `//# sourceMappingURL=t3.js.map`,
+served beside it (`/_app/c/t3.js.map`, also for `src/lib` files and
+`+page.js`). DevTools then shows the `.wisp` file, and a stack trace its
+lines: each line of a script, an import or a directive maps to its line of
+the file. A release build has none (no cost), unless built with
+`wisp build --sourcemap`.
 
 ## Devtools and the component workshop
 

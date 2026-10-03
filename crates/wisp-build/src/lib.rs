@@ -17,6 +17,7 @@ pub mod routes;
 pub mod rules;
 pub mod rust_scan;
 mod shell;
+mod sourcemap;
 mod stories;
 pub mod style;
 pub mod template;
@@ -45,6 +46,9 @@ pub fn run() {
         env::var_os("OUT_DIR").expect("wisp_build::run must be called from build.rs"),
     );
     let release = env::var("PROFILE").is_ok_and(|p| p == "release");
+    // `wisp build --sourcemap` asks for source maps in a release build.
+    println!("cargo::rerun-if-env-changed=WISP_SOURCEMAP");
+    let maps = !release || env::var_os("WISP_SOURCEMAP").is_some_and(|v| !v.is_empty());
 
     // Only existing paths: Cargo treats a missing one as always changed, which
     // would rebuild the app on every `cargo build`.
@@ -63,6 +67,7 @@ pub fn run() {
     match codegen::generate(&codegen::Input {
         root: &root,
         release,
+        maps,
     }) {
         Ok(out) => {
             write_if_changed(&out_dir.join("wisp.rs"), &out.code);
@@ -342,6 +347,7 @@ pub fn check(root: &Path) -> Result<(Vec<String>, Vec<String>), String> {
     codegen::check(&codegen::Input {
         root,
         release: false,
+        maps: false,
     })
 }
 
@@ -352,6 +358,7 @@ pub fn client_ts(root: &Path) -> Result<String, String> {
     codegen::generate_all(&codegen::Input {
         root,
         release: false,
+        maps: false,
     })
     .map(|(_, ts)| ts)
 }
