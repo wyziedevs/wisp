@@ -1,0 +1,191 @@
+================================================================================
+Holes with braces and strings
+================================================================================
+
+<p>{format!("{}}", x)} {items.iter().map(|i| { i.n }).sum::<u32>()}</p>
+
+--------------------------------------------------------------------------------
+
+(document
+  (start_tag
+    (tag_name))
+  (hole
+    (code))
+  (hole
+    (code))
+  (end_tag
+    (tag_name)))
+
+================================================================================
+If, else if, else
+================================================================================
+
+{#if let Some(x) = y}
+  <b>{x}</b>
+{:else if count > 1}
+  many
+{:else}
+  none
+{/if}
+
+--------------------------------------------------------------------------------
+
+(document
+  (block
+    (block_start
+      (block_open)
+      (code))
+    (start_tag
+      (tag_name))
+    (hole
+      (code))
+    (end_tag
+      (tag_name))
+    (branch
+      (branch_open)
+      (code)
+      (text))
+    (branch
+      (branch_open)
+      (text))
+    (block_end)))
+
+================================================================================
+Each and match
+================================================================================
+
+{#each list as item, i}<li>{item}</li>{:else}<li>none</li>{/each}
+{#match kind}{:case Kind::A}a{:case _}b{/match}
+
+--------------------------------------------------------------------------------
+
+(document
+  (block
+    (block_start
+      (block_open)
+      (code))
+    (start_tag
+      (tag_name))
+    (hole
+      (code))
+    (end_tag
+      (tag_name))
+    (branch
+      (branch_open)
+      (start_tag
+        (tag_name))
+      (text)
+      (end_tag
+        (tag_name)))
+    (block_end))
+  (block
+    (block_start
+      (block_open)
+      (code))
+    (branch
+      (branch_open)
+      (code)
+      (text))
+    (branch
+      (branch_open)
+      (code)
+      (text))
+    (block_end)))
+
+================================================================================
+Tags
+================================================================================
+
+{@props title: &str, n: u32 = 0}
+{@html raw}
+{@const x = 1}
+{#snippet row(a)}<td>{a}</td>{/snippet}
+{@render row(1)}
+
+--------------------------------------------------------------------------------
+
+(document
+  (tag
+    (tag_open)
+    (code))
+  (tag
+    (tag_open)
+    (code))
+  (tag
+    (tag_open)
+    (code))
+  (block
+    (block_start
+      (block_open)
+      (code))
+    (start_tag
+      (tag_name))
+    (hole
+      (code))
+    (end_tag
+      (tag_name))
+    (block_end))
+  (tag
+    (tag_open)
+    (code)))
+
+================================================================================
+Attributes
+================================================================================
+
+<a href="/x/{id}?q=1" title='t' class=big {href} disabled={off} class:on={big}>x</a>
+
+--------------------------------------------------------------------------------
+
+(document
+  (start_tag
+    (tag_name)
+    (attribute
+      (attribute_name)
+      (quoted_attribute_value
+        (attribute_value)
+        (hole
+          (code))
+        (attribute_value)))
+    (attribute
+      (attribute_name)
+      (quoted_attribute_value
+        (attribute_value)))
+    (attribute
+      (attribute_name)
+      (attribute_value))
+    (hole
+      (code))
+    (attribute
+      (attribute_name)
+      (hole
+        (code)))
+    (directive
+      (directive_name)
+      (hole
+        (code))))
+  (text)
+  (end_tag
+    (tag_name)))
+
+================================================================================
+Component
+================================================================================
+
+<Card title={post.title} count={3} featured />
+
+--------------------------------------------------------------------------------
+
+(document
+  (self_closing_tag
+    (tag_name)
+    (attribute
+      (attribute_name)
+      (hole
+        (code)))
+    (attribute
+      (attribute_name)
+      (hole
+        (code)))
+    (attribute
+      (attribute_name))))
