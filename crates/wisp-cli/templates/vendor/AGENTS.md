@@ -463,7 +463,10 @@ takes the no-wait fast path off every route.
 (`--check`, `--stdin`; markup, `---` via rustfmt, scripts, styles) · `wisp build`
 (`--static`, `--docker`, `--target cloudflare|deno|vercel|netlify|node|bun|lambda|native`,
 `--client ts`, `--sourcemap`; in a host's CI it picks that host) · `wisp deploy init <host>`
-(GitHub Actions) · `wisp add pkg[@ver]` · `wisp remove pkg` · `wisp lsp` (language
+(GitHub Actions) · `wisp add pkg[@ver]` · `wisp remove pkg` · `wisp ui add button dialog`
+(accessible components into `src/components`, the app's to change, with stories; Button
+Badge Card Input Textarea Checkbox Switch Select Accordion Dialog Menu Tabs Tooltip Toast;
+`--force` overwrites; `wisp ui list`) · `wisp lsp` (language
 server; setup per editor: editors/README.md) · `wisp update-docs` (this file, after
 upgrading Wisp) · `wisp mcp` (tools for AI agents: `wisp_docs(topic)`,
 `wisp_check`, `wisp_routes`, `wisp_components`, `wisp_new_route(path, kind)`;

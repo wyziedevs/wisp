@@ -463,7 +463,10 @@ takes the no-wait fast path off every route.
 (`--check`, `--stdin`; markup, `---` via rustfmt, scripts, styles) · `wisp build`
 (`--static`, `--docker`, `--target cloudflare|deno|vercel|netlify|node|bun|lambda|native`,
 `--client ts`, `--sourcemap`; in a host's CI it picks that host) · `wisp deploy init <host>`
-(GitHub Actions) · `wisp add pkg[@ver]` · `wisp remove pkg` · `wisp lsp` (language
+(GitHub Actions) · `wisp add pkg[@ver]` · `wisp remove pkg` · `wisp ui add button dialog`
+(accessible components into `src/components`, the app's to change, with stories; Button
+Badge Card Input Textarea Checkbox Switch Select Accordion Dialog Menu Tabs Tooltip Toast;
+`--force` overwrites; `wisp ui list`) · `wisp lsp` (language
 server; setup per editor: editors/README.md) · `wisp update-docs` (this file, after
 upgrading Wisp) · `wisp mcp` (tools for AI agents: `wisp_docs(topic)`,
 `wisp_check`, `wisp_routes`, `wisp_components`, `wisp_new_route(path, kind)`;
@@ -1019,6 +1022,42 @@ its file: `Card.wisp` is `<Card>`. It declares what it takes at the top:
 
 Components can also be drawn by the browser (inside client blocks, or with
 `{:…}` props, `bind:` and `on:`); see [client.md](client.md).
+
+### A component kit: `wisp ui add`
+
+```sh
+wisp ui list                     # what there is
+wisp ui add button dialog tabs   # into src/components, with stories
+```
+
+`wisp ui add` copies components into `src/components`: the source is in the
+CLI, the copy is the app's, to change as it likes. A file already there is
+the app's and stays; `--force` writes over it. Each comes with a
+`Name.stories.wisp` for the workshop at `/_wisp/components`.
+
+| Component | Use | Browser code |
+|---|---|---|
+| `Button` | `<Button variant="secondary" kind="submit">Save</Button>`; `href` makes it a link | none |
+| `Badge` | `<Badge tone="success">Paid</Badge>` | none |
+| `Card` | `<Card title="Tea">…</Card>` | none |
+| `Input`, `Textarea` | `<Input label="Email" name="email" kind="email" hint="…" problem={p} />` | none |
+| `Checkbox`, `Switch` | `<Switch label="Dark" name="dark" checked />` (a checkbox, `role="switch"`) | none |
+| `Select` | `<Select label="Drink" name="drink"><option>Tea</option></Select>` (native) | none |
+| `Accordion` | `<Accordion title="Q" group="faq">A</Accordion>` (`<details name>`) | none |
+| `Dialog` | `<Dialog id="d" title="Sure?" trigger="Delete">…</Dialog>` (`<dialog>`, `commandfor`) | none |
+| `Menu` | `<Menu id="m" label="Actions"><button role="menuitem">Edit</button></Menu>` (popover) | arrow keys |
+| `Tabs` | `<Tabs id="t" labels={["A", "B"]}><div>…</div><div>…</div></Tabs>` | arrow keys |
+| `Tooltip` | `<Tooltip id="tip" text="Saves it"><button>Save</button></Tooltip>` | `aria-describedby`, Escape |
+| `Toast` | `<Toast message={flash.unwrap_or_default()} />` in the layout; scripts send `dispatchEvent(new CustomEvent('toast', { detail: 'Saved' }))` | the list |
+
+- Props are typed, as any component's. Styles are scoped and read the
+  demo's tokens with fallbacks (`var(--accent, #896ce0)`, `--panel`,
+  `--line`, `--ink`, `--radius`…), so an app's `:root` restyles them all;
+  `--danger`, `--success` and `--warning` are read the same way.
+- Native elements first (`<dialog>`, `popover`, `<details>`, `<select>`,
+  checkboxes): the browser's keyboard, focus and screen reader support,
+  and no JavaScript for ten of the fourteen. The rest follow the WAI-ARIA
+  patterns. A test builds all of them with no accessibility warnings.
 
 ### Scoped styles
 
