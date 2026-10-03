@@ -1,10 +1,10 @@
 <head>
-  <title>How to play Wisple</title>
-  <meta name="description" content="How to play Wisple">
+  <title>How to Play Wisple</title>
+  <meta name="description" content="How to Play Wisple">
 </head>
 
 <div class="text-column">
-  <h1>How to play Wisple</h1>
+  <h1>How to Play Wisple</h1>
 
   <p>Wisple is a clone of <a href="https://www.nytimes.com/games/wordle/index.html" title="Wordle">Wordle</a>, the word guessing game. To win, guess the secret five-letter word in six tries or fewer.</p>
 

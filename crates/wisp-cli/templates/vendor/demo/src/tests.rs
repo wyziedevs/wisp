@@ -9,10 +9,10 @@ fn counter_counts() {
     let mut b = wisp::browser!(App);
     b.goto("/");
     assert_eq!(b.text("output"), "0");
-    b.click("text=Plus one");
-    b.click("text=Plus one");
+    b.click("text=Plus One");
+    b.click("text=Plus One");
     assert_eq!(b.text("output"), "2");
-    b.click("text=Minus one");
+    b.click("text=Minus One");
     assert_eq!(b.text("output"), "1");
 }
 
@@ -21,7 +21,7 @@ fn casper_looks_at_the_pointer() {
     let mut b = wisp::browser!(App);
     b.goto("/");
     // The counter is below Casper, so his eyes look down.
-    b.hover("text=Plus one");
+    b.hover("text=Plus One");
     let style = b.attr(".casper", "style").unwrap_or_default();
     let y = style
         .split(';')

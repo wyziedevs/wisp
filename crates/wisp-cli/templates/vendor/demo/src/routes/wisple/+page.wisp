@@ -41,7 +41,7 @@
 </script>
 
 <form class="wisple" action="?/enter" bind:this="form" on:keydown.window="press">
-  <a class="how-to-play" href="/wisple/how-to-play" title="How to play">How to play</a>
+  <a class="how-to-play" href="/wisple/how-to-play" title="How to Play">How to Play</a>
 
   <div class="grid" class:won={won} bind:this="grid">
     {#each rows as row, r}
@@ -82,8 +82,8 @@
       <button
         class="button primary restart"
         formaction="?/restart"
-        title="Play again"
-        bind:this="enter">Play again</button>
+        title="Play Again"
+        bind:this="enter">Play Again</button>
     {:else}
       <div class="keyboard">
         {#each keys as row, r}
@@ -91,7 +91,7 @@
             {#if r == 2}
               <button
                 class="wide enter"
-                title="Enter the guess"
+                title="Enter the Guess"
                 disabled={!full}
                 :disabled="!full"
                 bind:this="enter">Enter</button>

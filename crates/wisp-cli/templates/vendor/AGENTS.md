@@ -376,7 +376,7 @@ takes the no-wait fast path off every route.
   memory.
 - Browser test (`cargo test --features browser`, headless Chrome/Edge;
   passes, skipped, without one): `let mut b = wisp::browser!(App);
-  b.goto("/"); b.click("text=Plus one"); assert_eq!(b.text("output"), "1");`
+  b.goto("/"); b.click("text=Plus One"); assert_eq!(b.text("output"), "1");`
   also `hover fill(sel, t) press("Enter") attr(sel, n) count wait
   eval(js) -> Value url screenshot(path)`. Selectors: CSS or `text=…`
   (text, aria-label or title). Actions wait for the element and for the

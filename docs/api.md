@@ -703,7 +703,7 @@ DevTools protocol: no Node, no WebDriver, no extra crate.
 fn counter() {
     let mut b = wisp::browser!(App); // the app on a free port, and a browser
     b.goto("/");
-    b.click("text=Plus one");
+    b.click("text=Plus One");
     assert_eq!(b.text("output"), "1");
 }
 ```
@@ -711,7 +711,7 @@ fn counter() {
 - Methods: `goto(path) click(sel) hover(sel) fill(sel, text) press(key)
   text(sel) attr(sel, name) count(sel) wait(sel) eval(js) -> Value url()
   screenshot(path) timeout(d)`.
-- Selectors are CSS, or `text=Plus one`: the innermost element whose text,
+- Selectors are CSS, or `text=Plus One`: the innermost element whose text,
   `aria-label` or `title` contains it, ignoring case.
 - Actions wait for their element (there, visible, enabled, not covered),
   then for the page to settle (no fetch or navigation under way, the DOM
