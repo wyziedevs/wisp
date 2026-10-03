@@ -114,6 +114,25 @@ fn cache_public_keeps_for_every_request() {
     }
 }
 
+/// `const PRERENDER: bool = true;`, before `wisp build` renders it into
+/// the binary: the first render is kept for good, for every request.
+#[test]
+fn a_prerendered_page_renders_once() {
+    let s = server();
+    let first = get(&s, "/prerendered", "");
+    assert!(first.contains("<p>render 0</p>"), "{first}");
+    for headers in ["", "cookie: a=1\r\n", "authorization: Bearer x\r\n"] {
+        assert_eq!(
+            body(&get(&s, "/prerendered", headers)),
+            body(&first),
+            "{headers}"
+        );
+    }
+    let etag = header(&first, "etag").expect("an etag");
+    let again = get(&s, "/prerendered", &format!("if-none-match: {etag}\r\n"));
+    assert_eq!((status(&again), body(&again)), (304, ""));
+}
+
 #[test]
 fn dev_mode_keeps_nothing() {
     let s = start(&[("WISP_DEV", "on"), ("WISP_THREADS", "1")]);

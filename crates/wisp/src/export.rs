@@ -11,6 +11,10 @@
 //! or a tuple of them for several, in the order they appear in the path.
 //! For `[[optional]]` and `[...rest]`, an empty string leaves it out.
 //!
+//! `wisp build` runs it with `WISP_PRERENDER=dir` too, when a page has
+//! `const PRERENDER: bool = true;`: [`prerender`] writes those pages for
+//! the build that follows to embed.
+//!
 //! `wisp build --spa` (`WISP_SPA=1`) also serves static hosts' fallback,
 //! `index.html`, which they answer a path they have no file for with: a
 //! page the browser draws (`const SSR: bool = false;`) whose route has
@@ -41,6 +45,8 @@ pub struct ExportRoute {
     pub indexed: bool,
     /// The server renders the page: no `const SSR: bool = false;`.
     pub ssr: bool,
+    /// `const PRERENDER: bool = true;`: `wisp build` renders it.
+    pub prerender: bool,
 }
 
 /// What `entries` returns a `Vec` of.
@@ -72,12 +78,47 @@ impl<A: Into<String>, B: Into<String>, C: Into<String>> Entry for (A, B, C) {
     }
 }
 
+/// `job` on a runtime of this thread's, as `wisp build` runs the app.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn run<A: App>(dir: &str, spa: bool) -> io::Result<()> {
+pub(crate) fn run(job: impl std::future::Future<Output = io::Result<()>>) -> io::Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(export::<A>(Path::new(dir), spa))
+    runtime.block_on(job)
+}
+
+/// For `wisp build`: the pages with `const PRERENDER: bool = true;`, each
+/// rendered once into `dir` as `N.html`, and `index.tsv` a line for each:
+/// its route's pattern, its path and its file, tab apart. The build that
+/// follows embeds them (see `wisp_build`'s `prerendered`).
+pub async fn prerender<A: App>(dir: &Path) -> io::Result<()> {
+    crate::prepare::<A>().await?;
+    fs::create_dir_all(dir)?;
+    let mut index = String::new();
+    for r in A::export_routes().into_iter().filter(|r| r.prerender) {
+        let paths = match paths(&r) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("warn {e}");
+                continue;
+            }
+        };
+        for segs in paths {
+            let url = url(&segs);
+            let reply = handle::<A>(Request::new("GET", &url)).await;
+            if reply.status != 200 {
+                println!(
+                    "warn {url} answered {}, so it is not prerendered",
+                    reply.status
+                );
+                continue;
+            }
+            let file = format!("{}.html", index.lines().count());
+            write(dir, &file, reply.bytes())?;
+            index.push_str(&format!("{}\t{url}\t{file}\n", r.pattern));
+        }
+    }
+    fs::write(dir.join("index.tsv"), index)
 }
 
 /// Writes the app's pages, and the files they use, under `dir`; with
@@ -345,6 +386,7 @@ mod tests {
             indexed: true,
             entries,
             ssr: true,
+            prerender: false,
         }
     }
 

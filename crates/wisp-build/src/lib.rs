@@ -58,6 +58,11 @@ pub fn run() {
         println!("cargo::rerun-if-env-changed={k}");
     }
     let maps = !release || env::var_os("WISP_SOURCEMAP").is_some_and(|v| !v.is_empty());
+    // `wisp build`'s prerendered pages, to embed (`const PRERENDER`).
+    println!("cargo::rerun-if-env-changed=WISP_PRERENDERED");
+    let prerendered = (env::var_os("WISP_PRERENDERED"))
+        .filter(|v| release && !v.is_empty())
+        .map(PathBuf::from);
 
     // Only existing paths: Cargo treats a missing one as always changed, which
     // would rebuild the app on every `cargo build`.
@@ -79,6 +84,7 @@ pub fn run() {
         root: &root,
         release,
         maps,
+        prerendered: prerendered.as_deref(),
     }) {
         Ok(out) => {
             write_if_changed(&out_dir.join("wisp.rs"), &out.code);
@@ -393,6 +399,7 @@ pub fn check(root: &Path) -> Result<(Vec<String>, Vec<String>), String> {
         root,
         release: false,
         maps: false,
+        prerendered: None,
     })
 }
 
@@ -406,6 +413,7 @@ pub fn hot(root: &Path) -> Result<Hot, String> {
         root,
         release: false,
         maps: true,
+        prerendered: None,
     })
 }
 
@@ -419,6 +427,7 @@ pub fn types(root: &Path, probed: &str) -> Result<(Vec<(String, String)>, bool),
             root,
             release: false,
             maps: false,
+            prerendered: None,
         },
         probed,
     )
@@ -432,6 +441,7 @@ pub fn client_ts(root: &Path) -> Result<String, String> {
         root,
         release: false,
         maps: false,
+        prerendered: None,
     })
     .map(|(_, ts)| ts)
 }

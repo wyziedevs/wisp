@@ -31,6 +31,10 @@ pub struct Input<'a> {
     /// Source maps for browser modules: in dev, and in release with
     /// `wisp build --sourcemap`.
     pub maps: bool,
+    /// The pages `wisp build` prerendered (`WISP_PRERENDERED`): a folder
+    /// of `N.html` files and `index.tsv`, a line per file: its route's
+    /// pattern, its path and its name (see `wisp::export::prerender`).
+    pub prerendered: Option<&'a Path>,
 }
 
 /// What a template is for; decides its render signature.
@@ -1111,6 +1115,7 @@ struct Project<'a> {
     root: &'a Path,
     release: bool,
     maps: bool,
+    prerendered: Option<&'a Path>,
     tree: crate::routes::Tree,
     /// `src/app.html` (or the default) in its three pieces.
     shell: [String; 3],
@@ -1193,6 +1198,7 @@ impl<'a> Project<'a> {
             root,
             release: input.release,
             maps: input.maps,
+            prerendered: input.prerendered,
             tree,
             shell,
             comps: Vec::new(),
@@ -1624,7 +1630,10 @@ impl<'a> Project<'a> {
                     c.line, c.name
                 ));
             }
-            if let Some(c) = lg.items.constant("SSR") {
+            if let Some(c) = ["SSR", "PRERENDER"]
+                .iter()
+                .find_map(|n| lg.items.constant(n))
+            {
                 return Err(format!(
                     "{where_}:{}: a layout's `{}` does nothing; set it in each page it is for",
                     c.line, c.name
@@ -1827,6 +1836,8 @@ impl<'a> Project<'a> {
         let rs = lg.file.clone().unwrap_or_else(|| dir.join("+page.rs"));
         let mut shims = Vec::new();
         let drawn = self.flag(&lg.items, "SSR", &rs, &mut shims)? == Some(false);
+        let prerender = self.flag(&lg.items, "PRERENDER", &rs, &mut shims)? == Some(true);
+        let line = lg.items.constant("PRERENDER").map_or(1, |c| c.line);
         let (mut t, _) = self.markup(&file, &markup, front, &fields, drawn)?;
         check_no_children(&t, &self.rel(&file))?;
         // `.await` in the markup: statements, after the block's own.
@@ -1943,6 +1954,10 @@ impl<'a> Project<'a> {
             shims.push(shim(f, kind).map_err(|e| format!("{}:{e}", self.rel(&rs)))?);
         }
         self.remotes.extend(remotes);
+        if prerender {
+            let stmts = lg.stmts.as_deref();
+            self.prerender(i, route, line, stmts, &markup, &fns, &rs, &mut shims)?;
+        }
         let reads = has_load || lg.stmts.is_some();
         let user = lg.file.is_some().then(|| (format!("page_{i}"), reads));
         if lg.file.is_some() {
@@ -1972,7 +1987,55 @@ impl<'a> Project<'a> {
             fns,
             waits,
             drawn,
+            prerender,
         });
+        Ok(())
+    }
+
+    /// A page with `const PRERENDER: bool = true;`, checked: it reads
+    /// nothing of the request (no `cx` in its statements, markup or
+    /// `load`), and a route with parameters has `entries`. Until `wisp
+    /// build` renders it, each worker keeps its first render for good, as
+    /// `CACHE_PUBLIC` would.
+    #[allow(clippy::too_many_arguments)]
+    fn prerender(
+        &self,
+        i: usize,
+        route: &mut model::Route,
+        line: usize,
+        stmts: Option<&str>,
+        markup: &str,
+        fns: &[FnItem],
+        rs: &Path,
+        shims: &mut Vec<String>,
+    ) -> Result<(), String> {
+        let at = |msg: &str| format!("{}:{line}: {msg}", self.rel(rs));
+        let load_cx = (fns.iter().find(|f| f.name == "load"))
+            .is_some_and(|f| f.implicit_cx || f.params.iter().any(|(_, ty)| ty.contains("Cx")));
+        if load_cx || names_word(markup, "cx") || stmts.is_some_and(|s| names_word(s, "cx")) {
+            return Err(at(
+                "this page is prerendered (`const PRERENDER: bool = true;`): rendered once for every request, \
+                 it cannot read the request. Drop `cx` from its statements, markup and `load`, or drop `PRERENDER`",
+            ));
+        }
+        let r = &self.tree.routes[i];
+        let required = (r.segs.iter()).any(|s| matches!(s, Seg::Param(..) | Seg::Rest(_)));
+        if required && !fns.iter().any(|f| f.name == "entries") {
+            return Err(at(
+                "this prerendered page has parameters: say which pages to render with \
+                 `fn entries() -> Vec<&'static str> { vec![\"a\", \"b\"] }`",
+            ));
+        }
+        if route.cache.is_some() {
+            return Err(at(
+                "a prerendered page is kept for good: `PRERENDER` and `CACHE` do not go together",
+            ));
+        }
+        route.cache = Some(model::Cache {
+            module: format!("page_{i}"),
+            public: true,
+        });
+        shims.push("pub const CACHE: u32 = u32::MAX;".into());
         Ok(())
     }
 
@@ -2820,6 +2883,7 @@ impl Gen {
         if baked.iter().any(Option::is_some) {
             self.line(0, "");
         }
+        let pre = self.prerendered(p)?;
         self.line(0, "pub struct App;");
         self.line(0, "");
         self.line(
@@ -3006,8 +3070,9 @@ impl Gen {
                 None => "None".into(),
             };
             let ssr = !page.is_some_and(|pg| pg.drawn);
+            let prerender = page.is_some_and(|pg| pg.prerender);
             self.line(3, &format!(
-                "::wisp::ExportRoute {{ pattern: {}, page: {}, actions: {actions}, server: {}, entries: {entries}, indexed: {}, ssr: {ssr} }},",
+                "::wisp::ExportRoute {{ pattern: {}, page: {}, actions: {actions}, server: {}, entries: {entries}, indexed: {}, ssr: {ssr}, prerender: {prerender} }},",
                 lit(&r.pattern),
                 page.is_some(),
                 r.server.is_some(),
@@ -3018,7 +3083,7 @@ impl Gen {
         self.line(1, "}");
         self.line(0, "");
 
-        self.handle(p, &baked);
+        self.handle(p, &baked, &pre);
         self.handle_now(p);
         self.error(p);
         self.line(0, "}");
@@ -3405,7 +3470,50 @@ impl Gen {
         self.line(0, "");
     }
 
-    fn handle(&mut self, p: &Project, baked: &[Option<String>]) {
+    /// The pages `wisp build` prerendered, as `static PRE_{route}_{k}`
+    /// responses (see `Baked`); per route, the paths of its `k`s.
+    fn prerendered(&mut self, p: &Project) -> Result<Vec<Vec<String>>, String> {
+        let mut pre = vec![Vec::new(); p.model.routes.len()];
+        let Some(dir) = p.prerendered else {
+            return Ok(pre);
+        };
+        let at = |e: std::io::Error| format!("{}: {e}", dir.display());
+        let index = std::fs::read_to_string(dir.join("index.tsv")).map_err(at)?;
+        for line in index.lines() {
+            let mut parts = line.split('\t');
+            let (Some(pattern), Some(path), Some(name)) =
+                (parts.next(), parts.next(), parts.next())
+            else {
+                continue;
+            };
+            let Some(i) = (p.model.routes.iter()).position(|r| {
+                r.pattern == pattern && r.page.as_ref().is_some_and(|pg| pg.prerender)
+            }) else {
+                continue;
+            };
+            let file = dir.join(name);
+            let doc = std::fs::read_to_string(&file).map_err(at)?;
+            let etag = format!("\"{:016x}\"", fnv1a(doc.as_bytes()));
+            let head = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/html; charset=utf-8\r\netag: {etag}\r\ncontent-length: {}\r\n",
+                doc.len()
+            );
+            self.line(
+                0,
+                &format!(
+                    "static PRE_{i}_{}: ::wisp::rt::Baked = ::wisp::rt::Baked::new({}, include_str!({}), {}); // {path}",
+                    pre[i].len(),
+                    lit(&head),
+                    lit(&file.to_string_lossy()),
+                    lit(&etag),
+                ),
+            );
+            pre[i].push(path.to_string());
+        }
+        Ok(pre)
+    }
+
+    fn handle(&mut self, p: &Project, baked: &[Option<String>], pre: &[Vec<String>]) {
         self.line(1, "async fn handle(route: Option<usize>, cx: &mut ::wisp::Cx, __o: &mut ::wisp::Out) -> ::wisp::Result<()> {");
         self.line(2, "use ::wisp::Method::*;");
         if p.has_hook("before") {
@@ -3451,6 +3559,19 @@ impl Gen {
                         )
                     }
                     None => format!("serve_page_{i}(cx, __o).await"),
+                };
+                // What `wisp build` prerendered, by path.
+                let get = match pre[i].is_empty() {
+                    true => get,
+                    false => {
+                        let arms: String = (pre[i].iter().enumerate())
+                            .map(|(k, path)| format!("{} => Some(&PRE_{i}_{k}), ", lit(path)))
+                            .collect();
+                        format!(
+                            "if let Some(b) = match cx.path() {{ {arms}_ => None }} {{ \
+                             if ::wisp::rt::baked(cx, __o, b) {{ return Ok(()); }} }} {get}"
+                        )
+                    }
                 };
                 // live.js asks for the page's error page this way when its
                 // browser code fails while starting (see `boundary` in
@@ -4111,6 +4232,7 @@ pub(crate) fn components(root: &Path) -> Result<Vec<Comp>, String> {
         root,
         release: false,
         maps: false,
+        prerendered: None,
     })?;
     p.components()?;
     Ok(p.comps)
@@ -7635,6 +7757,7 @@ mod tests {
                 root,
                 release,
                 maps: !release,
+                prerendered: None,
             })
             .map(|o| o.code)
         })
@@ -7647,6 +7770,7 @@ mod tests {
                 root,
                 release: false,
                 maps: true,
+                prerendered: None,
             })
             .map(|p| p.model)
         })
@@ -8494,6 +8618,94 @@ mod tests {
     }
 
     #[test]
+    fn prerendered_pages() {
+        // Until `wisp build` renders it, each worker keeps its first render.
+        let page = "---\nconst PRERENDER: bool = true;\nlet n = 1;\n---\n{n}";
+        let code = app("pre", &[("src/routes/+page.wisp", page)]).unwrap();
+        for want in [
+            "const _: bool = super::PRERENDER;",
+            "pub const CACHE: u32 = u32::MAX;",
+            "if ::wisp::rt::cached::<false>(cx, __o, true) { return Ok(()); }",
+            "::wisp::ExportRoute { pattern: \"/\", page: true, actions: false, server: false, entries: None, indexed: true, ssr: true, prerender: true },",
+        ] {
+            assert!(code.contains(want), "{want}\n{code}");
+        }
+        // What `wisp build` rendered is served by path, before that.
+        let files = [
+            (
+                "src/routes/[slug]/+page.wisp",
+                "---\nconst PRERENDER: bool = true;\nfn entries() -> Vec<&'static str> { vec![\"a\"] }\n---\n<p>{slug}</p>",
+            ),
+            (
+                "pre/index.tsv",
+                "/[slug]\t/a\t0.html\n/gone\t/gone\t1.html\n",
+            ),
+            ("pre/0.html", "<p>a</p>"),
+        ];
+        let code = in_dir("pre-built", &files, |root| {
+            let pre = root.join("pre");
+            generate(&Input {
+                root,
+                release: true,
+                maps: false,
+                prerendered: Some(&pre),
+            })
+            .map(|o| o.code)
+        })
+        .unwrap();
+        for want in [
+            "static PRE_0_0: ::wisp::rt::Baked = ::wisp::rt::Baked::new(\"HTTP/1.1 200 OK\\r\\ncontent-type: text/html; charset=utf-8\\r\\netag: \\\"",
+            "if let Some(b) = match cx.path() { \"/a\" => Some(&PRE_0_0), _ => None } { if ::wisp::rt::baked(cx, __o, b) { return Ok(()); } }",
+        ] {
+            assert!(code.contains(want), "{want}\n{code}");
+        }
+        assert!(
+            !code.contains("PRE_0_1") && !code.contains("/gone"),
+            "{code}"
+        );
+        for (name, files, want) in [
+            (
+                "pre-cx",
+                vec![(
+                    "src/routes/+page.wisp",
+                    "---\nconst PRERENDER: bool = true;\n---\n{cx.cookie(\"a\")}",
+                )],
+                "+page.wisp:2: this page is prerendered",
+            ),
+            (
+                "pre-load",
+                vec![
+                    ("src/routes/+page.wisp", "{n}"),
+                    (
+                        "src/routes/+page.rs",
+                        "const PRERENDER: bool = true;\nstruct Data { n: u8 }\nfn load(cx: &Cx) -> Data { Data { n: 1 } }",
+                    ),
+                ],
+                "+page.rs:1: this page is prerendered",
+            ),
+            (
+                "pre-params",
+                vec![(
+                    "src/routes/[id]/+page.wisp",
+                    "---\nconst PRERENDER: bool = true;\n---\n{id}",
+                )],
+                "say which pages to render",
+            ),
+            (
+                "pre-cache",
+                vec![(
+                    "src/routes/+page.wisp",
+                    "---\nconst PRERENDER: bool = true;\nconst CACHE: u32 = 5;\n---\nx",
+                )],
+                "`PRERENDER` and `CACHE` do not go together",
+            ),
+        ] {
+            let err = app(name, &files).unwrap_err();
+            assert!(err.contains(want), "{name}: {err}");
+        }
+    }
+
+    #[test]
     fn cache_keeps_gets() {
         let page = (
             "src/routes/+page.wisp",
@@ -9232,6 +9444,7 @@ pub fn load() -> Data { todo!() }";
                     root,
                     release: false,
                     maps: false,
+                    prerendered: None,
                 },
                 "",
             )
@@ -9304,6 +9517,7 @@ pub fn load() -> Data { todo!() }";
                 root,
                 release: true,
                 maps: true,
+                prerendered: None,
             })
             .map(|o| o.code)
         });
@@ -9335,6 +9549,7 @@ pub fn load() -> Data { todo!() }";
                     root,
                     release: false,
                     maps: true,
+                    prerendered: None,
                 })
                 .unwrap()
             })
@@ -9381,6 +9596,7 @@ pub fn load() -> Data { todo!() }";
                     root,
                     release: false,
                     maps: true,
+                    prerendered: None,
                 })
                 .unwrap()
             })

@@ -73,7 +73,7 @@ pub use channel::{Channel, Subscription, channel};
 pub use content::{MdPage, pages};
 pub use csp::{csp, csp_off};
 pub use cx::{CookieOptions, Cx, Method, SameSite};
-pub use export::{Entry, ExportRoute, export};
+pub use export::{Entry, ExportRoute, export, prerender};
 pub use form::{File, Form};
 pub use http::{Body, Reply, Request, handle};
 pub use i18n::{default_locale, locales, localize};
@@ -211,7 +211,13 @@ pub fn run<A: App>() {
     // `wisp build --static` runs the app this way, to write its pages out.
     if let Some(dir) = setting::<String>("WISP_EXPORT", "a folder") {
         let spa = std::env::var_os("WISP_SPA").is_some_and(|v| v == "1");
-        return export::run::<A>(&dir, spa).unwrap_or_else(|e| fail(&e.to_string()));
+        let job = export::export::<A>(std::path::Path::new(&dir), spa);
+        return export::run(job).unwrap_or_else(|e| fail(&e.to_string()));
+    }
+    // `wisp build` runs it so for pages with `const PRERENDER: bool = true;`.
+    if let Some(dir) = setting::<String>("WISP_PRERENDER", "a folder") {
+        let job = export::prerender::<A>(std::path::Path::new(&dir));
+        return export::run(job).unwrap_or_else(|e| fail(&e.to_string()));
     }
     // On AWS Lambda (`wisp build --target lambda`), its runtime API hands
     // out the requests.

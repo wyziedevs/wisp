@@ -488,6 +488,10 @@ The compiler's errors are above.",
     if o.static_site {
         return deploy::static_site(root, &exe, &out(None), o.spa);
     }
+    // `const PRERENDER: bool = true;` pages: rendered now, then built in.
+    if deploy::prerenders(root) {
+        deploy::prerender(root, &exe, maps)?;
+    }
     println!("    One file with the CSS and static files inside. Copy it to a server and run it.");
     Ok(())
 }

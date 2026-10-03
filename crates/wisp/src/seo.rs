@@ -91,6 +91,7 @@ mod tests {
             entries: None,
             indexed,
             ssr: true,
+            prerender: false,
         }
     }
 
