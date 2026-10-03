@@ -149,7 +149,7 @@ pub fn repo(base: &Path) -> PathBuf {
 }
 
 /// The docs `llms-full.txt` holds after AGENTS.md, in order.
-pub const DOCS: [&str; 5] = ["design", "client", "api", "deploy", "embed"];
+pub const DOCS: [&str; 4] = ["client", "api", "deploy", "embed"];
 
 /// A text file with `\r\n` as `\n`, as a checkout on Windows may have it.
 pub fn read_text(path: &Path) -> io::Result<String> {
@@ -185,7 +185,7 @@ pub fn llms_full(repo: &Path) -> io::Result<String> {
     let mut out = reference(&read_text(&repo.join("llms/AGENTS.md"))?);
     for doc in DOCS {
         out.push_str(&format!("\n\n<!-- docs/{doc}.md -->\n\n"));
-        out.push_str(reference(&read_text(&repo.join(format!("docs/{doc}.md")))?).trim_end());
+        out.push_str(read_text(&repo.join(format!("docs/{doc}.md")))?.trim_end());
         out.push('\n');
     }
     Ok(out)

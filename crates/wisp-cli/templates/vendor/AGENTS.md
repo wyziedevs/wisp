@@ -419,6 +419,6 @@ runtime), `--client ts`,
 add button dialog` (accessible components into `src/components`) Â· `wisp lsp`
 Â· `wisp update-docs` Â· `wisp mcp` (`claude mcp add wisp -- wisp mcp`). Docs:
 README.md, docs/design.md, client.md, api.md, deploy.md, embed.md, tokens.md,
-or llms-full.txt (this file and every doc).
+or llms-full.txt (this file, client, api, deploy and embed).
 
 <!-- End of the Wisp reference. Notes for this app go below; wisp update-docs keeps them. -->
