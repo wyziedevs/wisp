@@ -147,25 +147,25 @@ fn accept(key: &str) -> String {
 
 /// SHA-1, FIPS 180-4. Only for the handshake, which the RFC fixes; it
 /// protects nothing.
-struct Sha1 {
+pub(crate) struct Sha1 {
     state: [u32; 5],
     blocks: crate::sign::Blocks,
 }
 
 impl Sha1 {
-    fn new() -> Sha1 {
+    pub(crate) fn new() -> Sha1 {
         Sha1 {
             state: [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0],
             blocks: crate::sign::Blocks::new(),
         }
     }
 
-    fn update(&mut self, data: &[u8]) {
+    pub(crate) fn update(&mut self, data: &[u8]) {
         let state = &mut self.state;
         self.blocks.update(data, &mut |b| compress(state, b));
     }
 
-    fn finish(mut self) -> [u8; 20] {
+    pub(crate) fn finish(mut self) -> [u8; 20] {
         let state = &mut self.state;
         self.blocks.finish(&mut |b| compress(state, b));
         let mut out = [0u8; 20];
