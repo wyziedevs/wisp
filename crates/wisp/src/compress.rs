@@ -11,7 +11,7 @@ use crate::cx::Cx;
 use crate::http::{Body, Reply};
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{OnceLock, RwLock};
 
 /// Smaller than this is not worth a header and a decode.
 const MIN: usize = 256;
@@ -63,15 +63,18 @@ fn takes_gzip(value: &str) -> bool {
 /// The gzip of an embedded `body`, made once and kept for good; `None`
 /// when it did not get smaller.
 fn copy(body: &'static [u8]) -> Option<&'static [u8]> {
-    type Made = Mutex<HashMap<(usize, usize), Option<&'static [u8]>>>;
+    type Made = RwLock<HashMap<(usize, usize), Option<&'static [u8]>>>;
     static MADE: OnceLock<Made> = OnceLock::new();
-    let mut made = MADE.get_or_init(Default::default).lock().ok()?;
-    *made
-        .entry((body.as_ptr() as usize, body.len()))
-        .or_insert_with(|| {
-            let gz = gzip(body);
-            (gz.len() < body.len()).then(|| &*Box::leak(gz.into_boxed_slice()))
-        })
+    let made = MADE.get_or_init(Default::default);
+    let key = (body.as_ptr() as usize, body.len());
+    if let Some(&kept) = made.read().ok()?.get(&key) {
+        return kept;
+    }
+    // Compressed with no lock held: two first requests may both do it (one
+    // copy is kept), but no other file waits for it.
+    let gz = gzip(body);
+    let gz = (gz.len() < body.len()).then(|| &*Box::leak(gz.into_boxed_slice()));
+    *made.write().ok()?.entry(key).or_insert(gz)
 }
 
 /// `data` as a gzip file.
