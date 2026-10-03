@@ -22,6 +22,8 @@ mod cx;
 mod dev;
 #[cfg(target_arch = "wasm32")]
 pub mod edge;
+#[cfg(target_arch = "wasm32")]
+mod edge_store;
 #[cfg(target_os = "linux")]
 mod epoll;
 mod export;
@@ -34,6 +36,8 @@ mod idem;
 mod image;
 mod input;
 pub mod json;
+#[cfg(not(target_arch = "wasm32"))]
+mod lambda;
 #[cfg(not(target_arch = "wasm32"))]
 mod limit;
 mod live;
@@ -174,6 +178,11 @@ pub fn run<A: App>() {
     if let Some(dir) = setting::<String>("WISP_EXPORT", "a folder") {
         return export::run::<A>(&dir).unwrap_or_else(|e| fail(&e.to_string()));
     }
+    // On AWS Lambda (`wisp build --target lambda`), its runtime API hands
+    // out the requests.
+    if let Some(api) = lambda_api() {
+        return lambda::run::<A>(&api);
+    }
     let addr = address();
     let threads = match setting("WISP_THREADS", "a number of threads above 0") {
         Some(0) => fail("WISP_THREADS is 0, which is not a number of threads above 0"),
@@ -191,6 +200,14 @@ pub fn run<A: App>() {
     if let Err(e) = served {
         fail(&e.to_string());
     }
+}
+
+/// `AWS_LAMBDA_RUNTIME_API`, which Lambda sets and nothing else does.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn lambda_api() -> Option<String> {
+    std::env::var("AWS_LAMBDA_RUNTIME_API")
+        .ok()
+        .filter(|a| !a.is_empty())
 }
 
 #[cfg(target_arch = "wasm32")]

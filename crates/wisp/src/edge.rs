@@ -131,7 +131,7 @@ pub extern "C" fn wisp_env(len: usize) {
 pub extern "C" fn wisp_request(id: u32, len: usize) {
     let bytes = take_in(len);
     let task = async move {
-        let reply = match parse_request(&bytes) {
+        let mut reply = match parse_request(&bytes) {
             Some(req) => {
                 Ready.await;
                 match READY.get() {
@@ -141,6 +141,10 @@ pub extern "C" fn wisp_request(id: u32, len: usize) {
             }
             None => Reply::plain(400),
         };
+        // Its changes to saved tables are in `WISP_STORE` before it is answered.
+        if !crate::edge_store::Saved.await {
+            reply = Reply::plain(500);
+        }
         let wire = encode_reply(&reply);
         send_reply(id, wire.as_ptr(), wire.len());
         // A stream's chunks go out as they come; an empty one ends it.
@@ -211,7 +215,18 @@ pub(crate) fn start<A: App>() {
         return;
     }
     let init = async {
-        let ready = match crate::prepare::<A>().await {
+        // Saved tables' rows, before `init`, which may set a store of its own.
+        let opened = match env("WISP_STORE") {
+            Some(_) => crate::edge_store::open()
+                .await
+                .map_err(|e| std::io::Error::other(format!("WISP_STORE: {}", e.detail()))),
+            None => Ok(()),
+        };
+        let ready = match opened {
+            Ok(()) => crate::prepare::<A>().await,
+            failed => failed,
+        };
+        let ready = match ready {
             Ok(()) => 1,
             Err(e) => {
                 crate::http::log(format_args!("wisp: {e}"));
@@ -387,9 +402,20 @@ pub(crate) async fn sleep(duration: std::time::Duration) {
     Wait(&TIMERS, id).await
 }
 
-/// Polls every woken task until none is. A task is taken out while it is
-/// polled, so it may spawn, wake or fetch freely.
+/// Polls every woken task until none is, then sends the changes to saved
+/// tables they made, if any. A task is taken out while it is polled, so it
+/// may spawn, wake or fetch freely.
 fn run() {
+    loop {
+        poll_woken();
+        if !crate::edge_store::due() {
+            return;
+        }
+        spawn_task(Box::pin(crate::edge_store::send()));
+    }
+}
+
+fn poll_woken() {
     while let Some(id) = WOKEN.with_borrow_mut(Vec::pop) {
         let Some(mut task) = TASKS.with_borrow_mut(|t| t.remove(&id)) else {
             continue;
