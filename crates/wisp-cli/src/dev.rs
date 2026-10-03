@@ -5,7 +5,9 @@
 //!
 //! - `.wisp` / `app.html` text edits: hot swap into the running app, no
 //!   compile. If the template's shape changed, fall through to a rebuild.
-//! - CSS output: tell browsers to swap the stylesheet.
+//! - CSS output: tell browsers to swap the stylesheet (a CSS tool's input
+//!   is its watcher's).
+//! - package.json: rebuild, for the npm packages' versions.
 //! - `static/`: tell browsers to reload.
 //! - anything else (Rust, Cargo.toml, new/removed routes): rebuild, restart,
 //!   and let browsers morph to the new page.
@@ -34,7 +36,7 @@ const SETTLE_MAX: Duration = Duration::from_secs(1);
 pub fn run(root: &Path, port: u16) -> Result<(), String> {
     let events =
         Events::start(port).map_err(|e| format!("Could not start the reload server: {e}."))?;
-    let _tailwind = css::watch(root)?;
+    let _css = css::watch(root)?;
     let mut app = Server {
         root: root.to_path_buf(),
         port,
@@ -91,12 +93,11 @@ pub fn run(root: &Path, port: u16) -> Result<(), String> {
                 } else {
                     rebuild_needed = true
                 }
-            } else if rel == ".wisp/app.css"
-                || (rel == "src/app.css" && matches!(css::detect(root), css::Css::Plain))
+            } else if rel == ".wisp/app.css" || (rel == "src/app.css" && css::detect(root).plain())
             {
                 css = true;
-            } else if rel == "src/app.css" {
-                // Tailwind is watching it and will write .wisp/app.css.
+            } else if rel == "src/app.css" || rel.ends_with(".scss") {
+                // A CSS tool is watching it and will write .wisp/app.css.
             } else if rel.starts_with("static/") {
                 full = true;
             } else {
@@ -459,7 +460,7 @@ fn scan(root: &Path) -> Snapshot {
     let mut out = Snapshot::new();
     walk(root, &root.join("src"), &mut out);
     walk(root, &root.join("static"), &mut out);
-    for f in ["Cargo.toml", "build.rs", ".wisp/app.css"] {
+    for f in ["Cargo.toml", "build.rs", ".wisp/app.css", "package.json"] {
         if let Ok(meta) = fs::metadata(root.join(f))
             && let Ok(m) = meta.modified()
         {
