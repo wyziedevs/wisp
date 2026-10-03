@@ -1,5 +1,8 @@
-//! `/sitemap.xml` and `/robots.txt`, made from the routes when no route
-//! and no file in `static/` answers them.
+//! `/sitemap.xml`, `/robots.txt` and `/feed.xml`, made from the routes when
+//! no route and no file in `static/` answers them. The feed is an Atom
+//! feed of the Markdown pages with a `date` (newest first; `SITE_TITLE`
+//! names it, a page's `description` field is its summary). [`og`] is the
+//! Open Graph tags of a page's head.
 //!
 //! The sitemap lists every page whose address is known: a route without
 //! parameters, or one with `entries()`, outside any `(private)` group and
@@ -15,6 +18,10 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 /// another path, or an app with no page to list.
 pub(crate) fn answer<A: App>(cx: &Cx) -> Option<(Vec<u8>, &'static str)> {
     let sitemap = match cx.raw_path() {
+        b"/feed.xml" => {
+            let feed = atom(&base(cx)?, crate::content::all())?;
+            return Some((feed.into_bytes(), "application/atom+xml; charset=utf-8"));
+        }
         b"/sitemap.xml" => true,
         b"/robots.txt" => false,
         _ => return None,
@@ -33,6 +40,78 @@ pub(crate) fn answer<A: App>(cx: &Cx) -> Option<(Vec<u8>, &'static str)> {
         false => (robots(&base), "text/plain; charset=utf-8"),
     };
     Some((body.into_bytes(), mime))
+}
+
+/// `<tag>v</tag>`, escaped.
+fn elem(out: &mut String, tag: &str, v: &str) {
+    out.push_str(&format!("<{tag}>"));
+    crate::html::text(out, v);
+    out.push_str(&format!("</{tag}>"));
+}
+
+/// The Atom feed of the dated pages in `all`, newest first; `None` with
+/// none.
+fn atom(base: &str, all: &[crate::MdPage]) -> Option<String> {
+    let mut dated: Vec<_> = all
+        .iter()
+        .filter_map(|p| Some((p.get("date")?, p)))
+        .collect();
+    dated.sort_by(|a, b| b.0.cmp(a.0));
+    let when = |d: &str| match d.len() {
+        10 => format!("{d}T00:00:00Z"),
+        _ => d.to_string(),
+    };
+    let site = std::env::var("SITE_TITLE")
+        .unwrap_or_else(|_| base.split_once("://").map_or(base, |h| h.1).to_string());
+    let mut out = String::from(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<feed xmlns=\"http://www.w3.org/2005/Atom\">\n",
+    );
+    elem(&mut out, "title", &site);
+    elem(&mut out, "id", &format!("{base}/"));
+    elem(&mut out, "updated", &when(dated.first()?.0));
+    out.push('\n');
+    for (date, p) in dated {
+        let url = format!("{base}{}", p.path);
+        out.push_str("<entry>");
+        elem(&mut out, "title", p.title);
+        out.push_str("<link href=\"");
+        crate::html::text(&mut out, &url);
+        out.push_str("\"/>");
+        elem(&mut out, "id", &url);
+        elem(&mut out, "updated", &when(date));
+        if let Some(d) = p.get("description") {
+            elem(&mut out, "summary", d);
+        }
+        out.push_str("</entry>\n");
+    }
+    out.push_str("</feed>\n");
+    Some(out)
+}
+
+/// A page's Open Graph and Twitter card tags, for its head:
+/// `{@html wisp::og("Hello", "A first post", "/cover.png")}`. Escaped; an
+/// empty `image` leaves that tag out.
+pub fn og(title: &str, description: &str, image: &str) -> String {
+    let mut out = String::new();
+    let mut tag = |name: &str, v: &str| {
+        out.push_str(&format!("<meta property=\"{name}\" content=\""));
+        crate::html::text(&mut out, v);
+        out.push_str("\">\n");
+    };
+    tag("og:title", title);
+    tag("og:description", description);
+    if !image.is_empty() {
+        tag("og:image", image);
+    }
+    let card = if image.is_empty() {
+        "summary"
+    } else {
+        "summary_large_image"
+    };
+    out.push_str(&format!(
+        "<meta name=\"twitter:card\" content=\"{card}\">\n"
+    ));
+    out
 }
 
 /// Every crawler may read every page, and where the sitemap is.
@@ -102,6 +181,30 @@ mod tests {
             ssr: true,
             prerender: false,
         }
+    }
+
+    #[test]
+    fn a_feed_and_og_tags() {
+        let page = |path, date: Option<&'static str>| crate::MdPage {
+            path,
+            title: "A & B",
+            fields: match date {
+                Some(_) => &[("date", "2026-10-01"), ("description", "Hi")],
+                None => &[],
+            },
+        };
+        let all = [page("/blog/a", Some("")), page("/about", None)];
+        let feed = atom("https://x.org", &all).unwrap();
+        assert!(feed.contains("<updated>2026-10-01T00:00:00Z</updated>"));
+        assert!(feed.contains("<link href=\"https://x.org/blog/a\"/>"));
+        assert!(feed.contains("<title>A &amp; B</title>"));
+        assert!(feed.contains("<summary>Hi</summary>"));
+        assert!(!feed.contains("/about"));
+        assert!(atom("https://x.org", &all[1..]).is_none());
+        let tags = og("A \"b\"", "d", "");
+        assert!(tags.contains("og:title\" content=\"A &quot;b&quot;\""));
+        assert!(!tags.contains("og:image") && tags.contains("\"summary\""));
+        assert!(og("t", "d", "/c.png").contains("og:image\" content=\"/c.png\""));
     }
 
     #[test]

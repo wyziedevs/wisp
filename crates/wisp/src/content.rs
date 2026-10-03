@@ -32,11 +32,16 @@ pub(crate) fn ready(all: &'static [MdPage]) {
     let _ = PAGES.set(all);
 }
 
+/// Every Markdown page, folder by folder.
+pub(crate) fn all() -> &'static [MdPage] {
+    PAGES.get().copied().unwrap_or_default()
+}
+
 /// The Markdown pages in folder `dir` (`"blog"` for `/blog/x`; `""` for the
 /// root), newest `date` first, then by path:
 /// `{#each wisp::pages("blog") as p}<a href={p.path}>{p.title}</a>{/each}`.
 pub fn pages(dir: &str) -> &'static [MdPage] {
-    let all = PAGES.get().copied().unwrap_or_default();
+    let all = all();
     let dir = dir.trim_matches('/');
     let of = |p: &MdPage| {
         let d = p.path.rsplit_once('/').map_or("", |(d, _)| d);

@@ -207,7 +207,7 @@ pub async fn export<A: App>(dir: &Path, spa: bool) -> io::Result<()> {
     }
     // A static host has no request host: the sitemap needs `SITE_URL`.
     if std::env::var_os("SITE_URL").is_some_and(|s| !s.is_empty()) {
-        for f in ["sitemap.xml", "robots.txt"] {
+        for f in ["sitemap.xml", "robots.txt", "feed.xml"] {
             let reply = handle::<A>(page(&format!("/{f}"))).await;
             if reply.status == 200 {
                 write(dir, f, reply.bytes())?;

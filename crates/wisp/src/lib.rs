@@ -124,6 +124,7 @@ pub use pwa::app_manifest;
 #[cfg(not(target_arch = "wasm32"))]
 pub use relay::{Deliver, Relay, relay};
 pub use rest::Resource;
+pub use seo::og;
 pub use session::{Account, login, sign_in_page, sign_out_everywhere, signup, users};
 pub use sign::{hex, hmac_sha256};
 pub use store::{Changes, Store, store};

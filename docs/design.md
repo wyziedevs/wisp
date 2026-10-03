@@ -168,6 +168,13 @@ everything and names the sitemap. A file of the same name in `static/`, or
 a route, is served instead. `wisp build --static` writes both when
 `SITE_URL` is set.
 
+`/feed.xml` is made the same way: an Atom feed of the Markdown pages with
+a `date` front matter field, newest first (title `SITE_TITLE`, else the
+host; a page's `description` field is its summary); none without a dated
+page; `--static` writes it too. `wisp::og(title, description, image)` is
+the Open Graph and Twitter card tags of a page's head, escaped:
+`{@html wisp::og("Hello", "A first post", "/cover.png")}`.
+
 ### Markdown pages
 
 `+page.md`, and each `x.md` in a route folder (a page at `x`), is turned

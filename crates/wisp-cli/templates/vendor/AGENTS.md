@@ -211,7 +211,9 @@ the same name wins. A `path` dependency or one in the registry; no git dependenc
 page is the children of, any field `date: 2026-10-01`); text may use
 `<Card>` between blank lines. Built at build time; fenced code is
 highlighted (`hl-k hl-s hl-c hl-n hl-t hl-a`; color them). `noindex: true`
-leaves the sitemap. Index: `{#each wisp::pages("blog") as p}<a
+leaves the sitemap. `/feed.xml` is an Atom feed of pages with a `date`
+(`description` is the summary). `{@html wisp::og(title, desc, image)}` in a
+head: Open Graph tags. Index: `{#each wisp::pages("blog") as p}<a
 href={p.path}>{p.title}</a>{/each}` (newest `date` first).
 
 ## Browser code (JavaScript, same file)

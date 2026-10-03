@@ -211,7 +211,9 @@ the same name wins. A `path` dependency or one in the registry; no git dependenc
 page is the children of, any field `date: 2026-10-01`); text may use
 `<Card>` between blank lines. Built at build time; fenced code is
 highlighted (`hl-k hl-s hl-c hl-n hl-t hl-a`; color them). `noindex: true`
-leaves the sitemap. Index: `{#each wisp::pages("blog") as p}<a
+leaves the sitemap. `/feed.xml` is an Atom feed of pages with a `date`
+(`description` is the summary). `{@html wisp::og(title, desc, image)}` in a
+head: Open Graph tags. Index: `{#each wisp::pages("blog") as p}<a
 href={p.path}>{p.title}</a>{/each}` (newest `date` first).
 
 ## Browser code (JavaScript, same file)
@@ -581,6 +583,13 @@ Addresses start with `SITE_URL` (env), else the request's scheme and host
 everything and names the sitemap. A file of the same name in `static/`, or
 a route, is served instead. `wisp build --static` writes both when
 `SITE_URL` is set.
+
+`/feed.xml` is made the same way: an Atom feed of the Markdown pages with
+a `date` front matter field, newest first (title `SITE_TITLE`, else the
+host; a page's `description` field is its summary); none without a dated
+page; `--static` writes it too. `wisp::og(title, description, image)` is
+the Open Graph and Twitter card tags of a page's head, escaped:
+`{@html wisp::og("Hello", "A first post", "/cover.png")}`.
 
 ### Markdown pages
 
