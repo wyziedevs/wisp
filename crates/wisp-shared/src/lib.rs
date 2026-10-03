@@ -3,11 +3,12 @@
 //! in a page and how it is escaped there (`contexts`), the marks and
 //! headers of a live page (`protocol`), and the browser runtime itself;
 //! and what more than one of them needs: SHA-256 (`sha256`), base64
-//! (`base64`), the seeded generator of the property tests (`rng`). `std` only, so the compiler
+//! (`base64`), JSON (`json`), the seeded generator of the property tests (`rng`). `std` only, so the compiler
 //! stays small to build.
 
 pub mod base64;
 pub mod contexts;
+pub mod json;
 pub mod protocol;
 pub mod rng;
 pub mod rules;
