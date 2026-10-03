@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
+use wisp_build::fmt;
 use wisp_build::ide::{self, Component, Diag};
 use wisp_build::routes::{self, Seg};
 use wisp_shared::json::{self, Json};
@@ -171,7 +172,7 @@ impl Server {
                 .to_string()
         };
         match method {
-            "initialize" => Ok(r##"{"capabilities":{"textDocumentSync":{"openClose":true,"change":1,"save":true},"hoverProvider":true,"definitionProvider":true,"completionProvider":{"triggerCharacters":["<",":",".","{","#","@","/","\""]}},"serverInfo":{"name":"wisp"}}"##.into()),
+            "initialize" => Ok(r##"{"capabilities":{"textDocumentSync":{"openClose":true,"change":1,"save":true},"hoverProvider":true,"definitionProvider":true,"documentFormattingProvider":true,"completionProvider":{"triggerCharacters":["<",":",".","{","#","@","/","\""]}},"serverInfo":{"name":"wisp"}}"##.into()),
             "shutdown" => Ok("null".into()),
             "textDocument/didOpen" => {
                 let text = (p.get("textDocument").and_then(|d| d.str("text"))).unwrap_or("");
@@ -200,6 +201,14 @@ impl Server {
                 self.docs.remove(&uri);
                 self.outbox.push(diagnostics(&uri, "", &[]));
                 Ok("null".into())
+            }
+            "textDocument/formatting" => {
+                let uri = uri();
+                let Some(doc) = self.docs.get(&uri) else {
+                    return Ok("null".into());
+                };
+                let new = fmt::format(&doc.text, &fmt::edition(&uri_path(&uri)));
+                Ok(edit_all(&doc.text, &new))
             }
             "textDocument/hover" | "textDocument/definition" | "textDocument/completion" => {
                 let uri = uri();
@@ -340,6 +349,20 @@ fn diagnostics(uri: &str, text: &str, diags: &[Diag]) -> String {
         r#"{{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{{"uri":{},"diagnostics":[{}]}}}}"#,
         q(uri),
         items.join(",")
+    )
+}
+
+/// The text edits that turn `old` into `new`: none, or one of the whole text.
+fn edit_all(old: &str, new: &str) -> String {
+    if old == new {
+        return "[]".into();
+    }
+    let lines = old.matches('\n').count();
+    let last = &old[old.rfind('\n').map_or(0, |i| i + 1)..];
+    format!(
+        r#"[{{"range":{{"start":{{"line":0,"character":0}},"end":{{"line":{lines},"character":{}}}}},"newText":{}}}]"#,
+        last.encode_utf16().count(),
+        q(new)
     )
 }
 
@@ -986,6 +1009,35 @@ mod tests {
         has("8", "prevent");
         has("9", "-32601");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn formats() {
+        let open = |text: &str| {
+            format!(
+                r#"{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"file:///nowhere/x.wisp","languageId":"wisp","version":1,"text":{}}}}}}}"#,
+                q(text)
+            )
+        };
+        let format = r#"{"jsonrpc":"2.0","id":1,"method":"textDocument/formatting","params":{"textDocument":{"uri":"file:///nowhere/x.wisp"},"options":{"tabSize":2,"insertSpaces":true}}}"#;
+        let input: String = [
+            &open("<div>\n<p>é</p>\n</div>"),
+            format,
+            &open("<p>a</p>\n"),
+            format,
+        ]
+        .iter()
+        .map(|m| frame(m))
+        .collect();
+        let mut out = Vec::new();
+        serve(&mut input.as_bytes(), &mut out).unwrap();
+        let answers: Vec<String> = (messages(&out).iter())
+            .filter_map(|m| m.get("result").map(|r| format!("{r:?}")))
+            .collect();
+        assert_eq!(answers.len(), 2, "{answers:?}");
+        let want = r#"("end", Obj([("line", Num("2")), ("character", Num("6"))]))])), ("newText", Str("<div>\n  <p>é</p>\n</div>\n"))"#;
+        assert!(answers[0].contains(want), "{}", answers[0]);
+        assert_eq!(answers[1], "Arr([])");
     }
 
     #[test]

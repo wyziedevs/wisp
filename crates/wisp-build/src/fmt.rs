@@ -12,6 +12,7 @@
 
 use crate::template::{self, hole_end};
 use std::io::Write;
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 /// Columns a start tag may take on one line, its indentation included.
@@ -22,8 +23,33 @@ const VOID: [&str; 14] = [
     "track", "wbr",
 ];
 
-/// `src` formatted: the same file in Wisp's layout. Idempotent.
-pub fn format(src: &str) -> String {
+/// The Rust edition of the crate `path` is in, for rustfmt: the nearest
+/// `Cargo.toml` above it that names one (`edition.workspace = true` looks
+/// further up, to the workspace's), else 2024. As `cargo fmt` formats.
+pub fn edition(path: &Path) -> String {
+    for dir in path.ancestors() {
+        let Ok(toml) = std::fs::read_to_string(dir.join("Cargo.toml")) else {
+            continue;
+        };
+        for line in toml.lines() {
+            let Some(rest) = line.trim().strip_prefix("edition") else {
+                continue;
+            };
+            let Some(v) = rest.trim_start().strip_prefix('=') else {
+                continue;
+            };
+            let v = v.trim().trim_matches(['"', '\'']);
+            if v.len() == 4 && v.bytes().all(|b| b.is_ascii_digit()) {
+                return v.to_string();
+            }
+        }
+    }
+    "2024".into()
+}
+
+/// `src` formatted: the same file in Wisp's layout, its block as rustfmt
+/// formats Rust of `edition`. Idempotent.
+pub fn format(src: &str, edition: &str) -> String {
     let (bom, text) = match src.strip_prefix('\u{feff}') {
         Some(t) => ("\u{feff}", t),
         None => ("", src),
@@ -33,7 +59,7 @@ pub fn format(src: &str) -> String {
     if lf.contains('\r') {
         return src.to_string();
     }
-    let Some(out) = format_lf(&lf) else {
+    let Some(out) = format_lf(&lf, edition) else {
         return src.to_string();
     };
     let out = if crlf { out.replace('\n', "\r\n") } else { out };
@@ -41,7 +67,7 @@ pub fn format(src: &str) -> String {
 }
 
 /// A file with `\n` line ends formatted; `None` when its block has no end.
-fn format_lf(src: &str) -> Option<String> {
+fn format_lf(src: &str, edition: &str) -> Option<String> {
     let lines: Vec<&str> = src.split('\n').collect();
     let open = lines.iter().position(|l| !l.trim().is_empty());
     let Some(open) = open.filter(|&o| lines[o].trim() == "---") else {
@@ -55,7 +81,7 @@ fn format_lf(src: &str) -> Option<String> {
     let rust = if block.trim().is_empty() {
         String::new()
     } else {
-        rustfmt(&block).unwrap_or(block)
+        rustfmt(&block, edition).unwrap_or(block)
     };
     let rest = lines[close + 1..].join("\n");
     Some(format!("---\n{rust}---\n{}", markup(&rest)))
@@ -65,7 +91,7 @@ fn format_lf(src: &str) -> Option<String> {
 /// function and out again. Every line goes in four spaces deeper and
 /// comes out four spaces shallower, so a string's lines stay as they were.
 /// `None` when rustfmt is missing or fails.
-fn rustfmt(block: &str) -> Option<String> {
+fn rustfmt(block: &str, edition: &str) -> Option<String> {
     const HEAD: &str = "fn __wisp_fmt() {\n";
     let mut wrapped = String::from(HEAD);
     for l in block.lines() {
@@ -75,7 +101,7 @@ fn rustfmt(block: &str) -> Option<String> {
     }
     wrapped.push_str("}\n");
     let mut child = Command::new("rustfmt")
-        .args(["--edition", "2021", "--emit", "stdout"])
+        .args(["--edition", edition, "--emit", "stdout"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -793,8 +819,8 @@ mod tests {
     /// Formats `src`, checking that once more changes nothing and that the
     /// markup parses as before.
     fn fmt(src: &str) -> String {
-        let once = format(src);
-        assert_eq!(format(&once), once, "not idempotent for:\n{src}");
+        let once = format(src, "2024");
+        assert_eq!(format(&once, "2024"), once, "not idempotent for:\n{src}");
         let (a, _) = crate::parse_wisp(src).unwrap();
         let (b, _) = crate::parse_wisp(&once).unwrap();
         assert!(key(a) == key(b), "meaning changed:\n{src}\n---\n{once}");
@@ -875,7 +901,7 @@ mod tests {
             "<p>\n  a\r</p>\n",
             "---\nlet x = 1;\n<p>{x}</p>\n",
         ] {
-            assert_eq!(format(src), src);
+            assert_eq!(format(src, "2024"), src);
         }
     }
 
@@ -892,6 +918,29 @@ mod tests {
             out == "---\nlet x = \"a\n  b\";\n---\n<p>{x}</p>\n" || out == src,
             "{out}"
         );
+    }
+
+    #[test]
+    fn edition_from_cargo_toml() {
+        let root = std::env::temp_dir().join(format!("wisp-fmt-ed-{}", std::process::id()));
+        let app = root.join("app");
+        std::fs::create_dir_all(app.join("src")).unwrap();
+        let file = app.join("src").join("x.wisp");
+        let toml = |dir: &Path, text: &str| std::fs::write(dir.join("Cargo.toml"), text).unwrap();
+        toml(&root, "[workspace.package]\nedition = \"2018\"\n");
+        toml(&app, "[package]\nedition.workspace = true\n");
+        assert_eq!(edition(&file), "2018");
+        toml(&app, "[package]\nname = \"x\"\nedition = \"2021\"\n");
+        assert_eq!(edition(&file), "2021");
+        let _ = std::fs::remove_dir_all(&root);
+        // rustfmt sorts `use` names by edition: 2024 as `cargo fmt` does there.
+        let src = "---\nuse a::{a_b, Zb, ZA};\n---\n<p></p>\n";
+        let new = format(src, "2024");
+        // Without rustfmt the block stays as written.
+        if new != src {
+            assert_eq!(new, "---\nuse a::{ZA, Zb, a_b};\n---\n<p></p>\n");
+            assert_eq!(format(src, "2021"), src);
+        }
     }
 
     /// Every example formats to itself the second time, and to the same

@@ -23,7 +23,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 /// `wisp --help`: each command or option, and what it does.
-const COMMANDS: [(&str, &str); 16] = [
+const COMMANDS: [(&str, &str); 17] = [
     (
         "wisp new [name]",
         "Create an app. It asks a few questions; the options below answer them.",
@@ -67,6 +67,10 @@ const COMMANDS: [(&str, &str); 16] = [
     (
         "wisp fmt --check",
         "Name the .wisp files that are not formatted, and fail if any are.",
+    ),
+    (
+        "wisp fmt --stdin [path]",
+        "Format stdin to stdout, as the file at path (for editors and Prettier).",
     ),
     (
         "wisp add <pkg>[@version]",

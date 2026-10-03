@@ -1,19 +1,32 @@
 //! `wisp fmt [paths] [--check]`: formats `.wisp` files in place, or with
 //! `--check` names those that are not formatted. `wisp check` warns of them.
+//! `wisp fmt --stdin [path]` formats stdin to stdout (for editors and
+//! Prettier); `path` is where the text belongs, for the crate's edition.
 
 use crate::term;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use wisp_build::fmt::{edition, format};
 
 pub fn run(args: &[String]) -> Result<(), String> {
-    let usage = "wisp fmt takes files or folders (the current one by default) and --check.";
+    let usage = "wisp fmt takes files or folders (the current one by default), --check or --stdin.";
     let mut check = false;
+    let mut stdin = false;
     let mut paths = Vec::new();
     for arg in args {
         match arg.as_str() {
             "--check" => check = true,
+            "--stdin" => stdin = true,
             _ if arg.starts_with('-') => return Err(format!("There is no option {arg}.\n{usage}")),
             _ => paths.push(PathBuf::from(arg)),
         }
+    }
+    if stdin {
+        return match (check, &paths[..]) {
+            (false, []) => filter(Path::new("x.wisp")),
+            (false, [p]) => filter(p),
+            _ => Err(format!("wisp fmt --stdin takes one path at most.\n{usage}")),
+        };
     }
     if paths.is_empty() {
         paths.push(PathBuf::from("."));
@@ -49,6 +62,18 @@ pub fn run(args: &[String]) -> Result<(), String> {
         (false, n) => term::done(&format!("Formatted {n} of {} files.", files.len())),
     }
     Ok(())
+}
+
+/// Stdin formatted to stdout, as if it were the file at `path`.
+fn filter(path: &Path) -> Result<(), String> {
+    let mut src = String::new();
+    (std::io::stdin().read_to_string(&mut src))
+        .map_err(|e| format!("Could not read stdin: {e}"))?;
+    let path = std::env::current_dir().map_or(path.to_path_buf(), |d| d.join(path));
+    let mut out = std::io::stdout().lock();
+    (out.write_all(format(&src, &edition(&path)).as_bytes()))
+        .and_then(|()| out.flush())
+        .map_err(|e| format!("Could not write stdout: {e}"))
 }
 
 /// For `wisp check`: the app's `.wisp` files that `wisp fmt` would change.
@@ -94,7 +119,7 @@ fn format_all(files: &[PathBuf]) -> Result<Vec<(PathBuf, String)>, String> {
                     for f in part {
                         let src = std::fs::read_to_string(f)
                             .map_err(|e| format!("Could not read {}: {e}", shown(f)))?;
-                        let out = wisp_build::fmt::format(&src);
+                        let out = format(&src, &edition(f));
                         if out != src {
                             changed.push((f.clone(), out));
                         }
