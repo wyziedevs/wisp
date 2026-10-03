@@ -637,8 +637,6 @@ impl Problems {
         }
     }
 
-    /// The field `name` of an object: absent is `T::missing()`, which is a
-    /// problem for anything but an `Option`.
     /// [`Problems::field`] for a field with `#[json(was = "old")]` (`was`,
     /// `""` for none), which old rows still name that way, and
     /// `#[json(default)]`: `absent` is what it is when it is not there.
@@ -668,6 +666,8 @@ impl Problems {
         self.field(members, name)
     }
 
+    /// The field `name` of an object: absent is `T::missing()`, which is a
+    /// problem for anything but an `Option`.
     pub fn field<T: FromJson>(&mut self, members: &[(String, Value)], name: &str) -> Option<T> {
         let blank = |v: &Value| matches!(v, Value::String(s) if s.trim().is_empty());
         // A form's blank field is one left out: required, or `None`.
