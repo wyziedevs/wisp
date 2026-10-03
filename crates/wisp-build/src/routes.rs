@@ -37,8 +37,9 @@ pub struct Route {
     pub segs: Vec<Seg>,
     pub page: bool,
     pub page_rs: bool,
-    /// A `+page.js` whose `load` runs in the browser.
-    pub page_js: bool,
+    /// A `+page.js` (or `+page.ts`) whose `load` runs in the browser: its
+    /// name.
+    pub page_js: Option<&'static str>,
     pub server: bool,
     /// The `/[id]` its directory's `+server.rs` also serves: handlers that
     /// take an `id` the directory does not give, or a `#[derive(Rest)]`'s.
@@ -295,10 +296,11 @@ fn walk(
 
     let has = |f: &str| files.iter().any(|x| x == f);
     for f in &files {
-        const KNOWN: [&str; 7] = [
+        const KNOWN: [&str; 8] = [
             "+page.wisp",
             "+page.rs",
             "+page.js",
+            "+page.ts",
             "+layout.wisp",
             "+layout.rs",
             "+error.wisp",
@@ -318,9 +320,15 @@ fn walk(
             show(dir)
         ));
     }
-    if has("+page.js") && !has("+page.wisp") {
+    let page_js = ["+page.js", "+page.ts"].into_iter().find(|f| has(f));
+    if let Some(f) = page_js
+        && !has("+page.wisp")
+    {
+        return Err(format!("{}: {f} needs a +page.wisp next to it", show(dir)));
+    }
+    if has("+page.js") && has("+page.ts") {
         return Err(format!(
-            "{}: +page.js needs a +page.wisp next to it",
+            "{}: +page.js and +page.ts are one file; keep one",
             show(dir)
         ));
     }
@@ -357,7 +365,7 @@ fn walk(
             segs: segs.clone(),
             page: has("+page.wisp"),
             page_rs: has("+page.rs"),
-            page_js: has("+page.js"),
+            page_js,
             server: collection,
             member: false,
             layouts: layouts.clone(),
@@ -372,7 +380,7 @@ fn walk(
             segs,
             page: false,
             page_rs: false,
-            page_js: false,
+            page_js: None,
             server: true,
             member: true,
             layouts: layouts.clone(),

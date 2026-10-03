@@ -26,13 +26,13 @@ package.json                npm packages for browser code: `wisp add canvas-conf
 src/hooks.rs                fn init() once; fn before(cx) every request
 src/NAME.rs                 any module, no `mod` line: `NAME::f()` everywhere
 src/components/Card.wisp    <Card title={x}>…</Card>
-src/lib/*.js                browser modules, `import … from '$lib/x.js'`
+src/lib/*.js (or .ts)       browser modules, `import … from '$lib/x.js'` (or `'$lib/x'`)
 src/params/word.rs          fn matches(s: &str) -> bool, for [x=word]
 src/routes/…/+page.wisp     page: optional `---` Rust block, then markup
 src/routes/…/+layout.wisp   wraps pages below; must <slot /> (or {@render children()})
 src/routes/…/+error.wisp    error page; has `status`, `message`, `cx`
 src/routes/…/+server.rs     endpoints: fn get/post/put/patch/delete/list
-src/routes/…/+page.js       optional browser `load({data,url,params,fetch})`
+src/routes/…/+page.js       optional browser `load({data,url,params,fetch})` (or +page.ts)
 static/…                    served at /
 ```
 
@@ -224,6 +224,12 @@ npm: `wisp add canvas-confetti`, then `import confetti from 'canvas-confetti'`
 (esm.sh in dev; `wisp build` puts it in the binary, no CDN; one not in package.json
 is a build error).
 Islands: `<Chart client:visible|idle|interaction|media="(…)"|none />`.
+TypeScript: `<script lang="ts">`, `src/lib/*.ts`, `+page.ts`. Types are
+stripped (spaces, so lines and columns hold), as Node's strip-types does:
+`enum`, a `namespace` with values and parameter properties are build errors
+(use `as const` objects, modules, fields). `wisp check --types` runs the
+app's tsc (`npm i -D typescript`, or `WISP_TSC`) with server values typed
+(`#[derive(Json)]` fields, `let x: T` in a block; else `any`).
 Source maps: dev serves `/_app/c/t3.js.map` beside each module (the `.wisp`
 line of each line); release only with `wisp build --sourcemap`.
 Server values sent to JS must `#[derive(Json)]`. Full: docs/client.md.
@@ -402,7 +408,7 @@ takes the no-wait fast path off every route.
 
 ## Commands
 
-`wisp new app` · `wisp dev` (hot reload) · `wisp check` · `wisp fmt [paths]`
+`wisp new app` · `wisp dev` (hot reload) · `wisp check [--types]` · `wisp fmt [paths]`
 (`--check`, `--stdin`; markup, `---` via rustfmt, scripts, styles) · `wisp build`
 (`--static`, `--docker`, `--target cloudflare|deno|vercel|netlify|node|bun|lambda|native`,
 `--client ts`, `--sourcemap`; in a host's CI it picks that host) · `wisp deploy init <host>`

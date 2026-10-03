@@ -16,13 +16,13 @@ package.json                npm packages for browser code: `wisp add canvas-conf
 src/hooks.rs                fn init() once; fn before(cx) every request
 src/NAME.rs                 any module, no `mod` line: `NAME::f()` everywhere
 src/components/Card.wisp    <Card title={x}>…</Card>
-src/lib/*.js                browser modules, `import … from '$lib/x.js'`
+src/lib/*.js (or .ts)       browser modules, `import … from '$lib/x.js'` (or `'$lib/x'`)
 src/params/word.rs          fn matches(s: &str) -> bool, for [x=word]
 src/routes/…/+page.wisp     page: optional `---` Rust block, then markup
 src/routes/…/+layout.wisp   wraps pages below; must <slot /> (or {@render children()})
 src/routes/…/+error.wisp    error page; has `status`, `message`, `cx`
 src/routes/…/+server.rs     endpoints: fn get/post/put/patch/delete/list
-src/routes/…/+page.js       optional browser `load({data,url,params,fetch})`
+src/routes/…/+page.js       optional browser `load({data,url,params,fetch})` (or +page.ts)
 static/…                    served at /
 ```
 
@@ -214,6 +214,12 @@ npm: `wisp add canvas-confetti`, then `import confetti from 'canvas-confetti'`
 (esm.sh in dev; `wisp build` puts it in the binary, no CDN; one not in package.json
 is a build error).
 Islands: `<Chart client:visible|idle|interaction|media="(…)"|none />`.
+TypeScript: `<script lang="ts">`, `src/lib/*.ts`, `+page.ts`. Types are
+stripped (spaces, so lines and columns hold), as Node's strip-types does:
+`enum`, a `namespace` with values and parameter properties are build errors
+(use `as const` objects, modules, fields). `wisp check --types` runs the
+app's tsc (`npm i -D typescript`, or `WISP_TSC`) with server values typed
+(`#[derive(Json)]` fields, `let x: T` in a block; else `any`).
 Source maps: dev serves `/_app/c/t3.js.map` beside each module (the `.wisp`
 line of each line); release only with `wisp build --sourcemap`.
 Server values sent to JS must `#[derive(Json)]`. Full: docs/client.md.
@@ -392,7 +398,7 @@ takes the no-wait fast path off every route.
 
 ## Commands
 
-`wisp new app` · `wisp dev` (hot reload) · `wisp check` · `wisp fmt [paths]`
+`wisp new app` · `wisp dev` (hot reload) · `wisp check [--types]` · `wisp fmt [paths]`
 (`--check`, `--stdin`; markup, `---` via rustfmt, scripts, styles) · `wisp build`
 (`--static`, `--docker`, `--target cloudflare|deno|vercel|netlify|node|bun|lambda|native`,
 `--client ts`, `--sourcemap`; in a host's CI it picks that host) · `wisp deploy init <host>`
@@ -1904,6 +1910,43 @@ class Todo {
 
 `untrack(fn)` reads without tracking. A rune in the wrong place (in markup,
 inside a block, misspelled) is a build error at its line.
+
+## TypeScript
+
+`<script lang="ts">` is the client script in TypeScript. So are
+`src/lib/*.ts` (`import { f } from '$lib/x'`, no extension needed) and
+`+page.ts`.
+
+```html
+<script lang="ts">
+  import { twice, type Num } from '$lib/util'
+  interface Point { x: number; y: number }
+  let n: Num = twice(2 as Num)
+  const p: Point = { x: 1, y: 2 }
+</script>
+```
+
+There is no compiler to install: the build strips the types, the way Node's
+`--experimental-strip-types` does, and writes spaces where they were, so
+every line and column stays (errors and source maps point at the file).
+Annotations, `interface`, `type`, `as`, `satisfies`, generics, `!`,
+`declare`, `import type`, `abstract`, access modifiers, `implements`,
+overloads and optional `?` all go. What TypeScript would turn into code is
+a build error that says what to write instead:
+
+| Not erasable | Write |
+|---|---|
+| `enum Color { Red }` | `const Color = { Red: 'red' } as const` |
+| `namespace N { export const x = 1 }` | a module, `src/lib/n.ts` |
+| `constructor(private x: number)` | `x: number; constructor(x: number) { this.x = x }` |
+| `import fs = require('fs')` | `import fs from 'fs'` |
+
+The build only strips. `wisp check --types` checks the types too, with the
+app's own TypeScript (`npm install -D typescript`, or `WISP_TSC` naming a
+`tsc`; without Node or it, it says so and skips). Server values are typed:
+a `#[derive(Json)]` type's fields, and a block's `let items: Vec<Item>`, as
+TypeScript interfaces; an unannotated `let`, `any`. Errors point at the
+`.wisp` file and line.
 
 ## Directives
 

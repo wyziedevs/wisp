@@ -11,7 +11,7 @@ use crate::js::Kind as JsKind;
 use crate::json_str as js_str;
 use crate::model::{self, Handler, Model};
 use crate::npm::{self, Npm};
-use crate::openapi::Op;
+use crate::openapi::{self, Op};
 use crate::protocol::{
     APP_CSS_PATH, COPY_END, COPY_START, EXTRA_JS_PATH, GROUP_ATTR, ISLAND_MEDIA, LIVE_JS_PATH,
     LOOP_ATTR, MODULES, NPM_MODULES, ON_FLAGS, ON_PLACED, ON_ROOT, SLOT_ATTR, WISP_JS_PATH,
@@ -517,6 +517,169 @@ pub fn check(input: &Input) -> Result<(Vec<String>, Vec<String>), String> {
     Ok((o.web.imports(npm::ESM), o.warnings))
 }
 
+/// For `wisp check --types`: what `.wisp/types` holds for `tsc`, by path
+/// there. Each `<script lang="ts">` is a module of its own,
+/// `src/routes/+page.wisp.ts`, on its lines of the file, with the server
+/// values or props it reads declared at its end (a `#[derive(Json)]`
+/// type's fields as theirs, a block's `let`s as `any`); `wisp.d.ts` has
+/// the runes and helpers.
+pub fn types(input: &Input) -> Result<Vec<(String, String)>, String> {
+    let p = Project::load(input)?;
+    let mut out = vec![("wisp.d.ts".to_string(), WISP_D_TS.to_string())];
+    for t in &p.templates {
+        let Some((s, written)) = (t.t.script.as_ref()).and_then(|s| Some((s, s.ts.as_deref()?)))
+        else {
+            continue;
+        };
+        let mut f = "\n".repeat(s.line as usize - 1) + &" ".repeat(s.col as usize - 1);
+        f.push_str(written);
+        f.push_str("\nexport {};\n");
+        // What the script declares is its own.
+        let mut own: Vec<String> = js::declarations(&s.src)
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        own.extend(js::import_names(&s.src, &js::imports(&s.src)));
+        let types = p.types_of(t);
+        let mut decls = Vec::new();
+        let mut values: Vec<(String, String)> = Vec::new();
+        let mut ts = |ty: &str| openapi::ts(ty, &types, &mut decls);
+        match t.kind {
+            Kind::Component => {
+                for d in t.t.props.iter().flat_map(|(ds, _)| ds) {
+                    values.push((d.name.clone(), ts(&d.ty)));
+                }
+            }
+            Kind::Page | Kind::Layout if matches!(t.user, Some((_, true))) => {
+                let mut fields: Vec<(String, String)> =
+                    t.data.iter().map(|(n, ty)| (n.clone(), ts(ty))).collect();
+                if let Some((stmts, binds)) = &t.stmts {
+                    let lets = rust_scan::let_names(stmts).into_iter();
+                    for n in lets.chain(rust_scan::let_names(&binds.join("\n"))) {
+                        if !n.starts_with("__") && !fields.iter().any(|f| f.0 == n) {
+                            let ty = annotated(stmts, &n).map_or_else(|| "any".into(), |r| ts(&r));
+                            fields.push((n, ty));
+                        }
+                    }
+                }
+                let shape: Vec<String> = fields.iter().map(|(n, t)| format!("{n}: {t}")).collect();
+                // A `+page.js` makes `data` in the browser.
+                let data = match t.load_js {
+                    Some(_) => "any".to_string(),
+                    None => format!("{{ {} }}", shape.join("; ")),
+                };
+                values.push(("data".into(), data));
+                values.extend(fields);
+            }
+            _ => {}
+        }
+        for (n, ty) in values {
+            if !own.contains(&n) && !js::is_reserved(&n) && !js::is_global(&n) {
+                let _ = writeln!(f, "declare const {n}: {ty};");
+            }
+        }
+        // `$cart` is store `cart`'s value.
+        let mut stores: Vec<&str> = Vec::new();
+        for tok in js::tokens(&s.src) {
+            let w = tok.text(&s.src);
+            if let Some(b) = w.strip_prefix('$')
+                && own.iter().any(|n| n == b)
+                && !stores.contains(&w)
+            {
+                stores.push(w);
+                let _ = writeln!(
+                    f,
+                    "declare let {w}: typeof {b} extends {{ value: infer V }} ? V : never;"
+                );
+            }
+        }
+        for (_, d) in decls {
+            f.push_str(&d);
+        }
+        out.push((format!("{}.ts", t.rel), f));
+    }
+    Ok(out)
+}
+
+/// The Rust type of `let name: T = …` in `stmts`, if it is written.
+fn annotated(stmts: &str, name: &str) -> Option<String> {
+    let at = [format!("let {name}:"), format!("let mut {name}:")]
+        .iter()
+        .find_map(|p| stmts.find(p.as_str()).map(|i| i + p.len()))?;
+    let rest = &stmts[at..];
+    let mut depth = 0i32;
+    let end = rest.char_indices().find_map(|(i, c)| {
+        match c {
+            '<' | '(' | '[' => depth += 1,
+            '>' | ')' | ']' => depth -= 1,
+            '=' | ';' if depth == 0 => return Some(i),
+            _ => {}
+        }
+        None
+    })?;
+    Some(rest[..end].trim().to_string()).filter(|t| !t.is_empty())
+}
+
+/// The runes, the helpers every script has, and the `wisp` module, as
+/// TypeScript sees them (`wisp check --types`).
+const WISP_D_TS: &str = "// Written by `wisp check --types`: Wisp's browser helpers, for tsc.
+declare function $state<T>(value: T): T;
+declare function $state<T>(): T | undefined;
+declare namespace $state {
+  function raw<T>(value: T): T;
+  function snapshot<T>(value: T): T;
+}
+declare function $derived<T>(value: T): T;
+declare namespace $derived {
+  function by<T>(f: () => T): T;
+}
+declare function $effect(f: () => void | (() => void)): void;
+declare namespace $effect {
+  function pre(f: () => void | (() => void)): void;
+}
+declare function $props(): any;
+declare function $bindable<T>(value?: T): T;
+declare function $inspect(...values: unknown[]): void;
+declare function onMount(f: () => void | (() => void) | Promise<void>): void;
+declare function onDestroy(f: () => void): void;
+declare function effect(f: () => void | (() => void), deps?: () => unknown[]): void;
+declare function watch<T>(read: () => T, f: (value: T) => void): void;
+declare function listen(url: string, f: (data: any) => void): void;
+declare function emit(name: string, value?: unknown): void;
+declare function setContext(key: unknown, value: unknown): void;
+declare function getContext<T = any>(key: unknown): T;
+declare function tick(): Promise<void>;
+declare function untrack<T>(f: () => T): T;
+declare function goto(url: string | URL, opts?: { replace?: boolean }): Promise<void>;
+declare function invalidate(): Promise<void>;
+declare function matches(text: unknown, q: unknown): boolean;
+declare function enhance(form: HTMLFormElement, submit?: (e: any) => any): void;
+declare function context<T = any>(): [() => T, (value: T) => void];
+declare const page: { value: { url: URL; status: number; form: any } };
+declare const navigating: { value: { from: URL; to: URL } | null };
+declare module 'wisp' {
+  export interface Store<T> {
+    value: T;
+    set(value: T): void;
+    update(f: (value: T) => T): void;
+    subscribe(f: (value: T) => void): () => void;
+  }
+  export function store<T>(value: T): Store<T>;
+  export function persisted<T>(key: string, value: T): Store<T>;
+  export function derived<T>(f: () => T): Store<T>;
+  export function context<T = any>(): [() => T, (value: T) => void];
+  export function untrack<T>(f: () => T): T;
+  export function tick(): Promise<void>;
+  export function goto(url: string | URL, opts?: { replace?: boolean }): Promise<void>;
+  export function invalidate(): Promise<void>;
+  export function matches(text: unknown, q: unknown): boolean;
+  export const page: Store<{ url: URL; status: number; form: any }>;
+  export const navigating: Store<{ from: URL; to: URL } | null>;
+}
+// An npm package or a URL: what it exports is not known here.
+declare module '*';
+";
+
 pub struct Output {
     pub code: String,
     client: String,
@@ -674,6 +837,21 @@ impl<'a> Project<'a> {
 
     fn read(&self, p: &Path) -> Result<String, String> {
         crate::read_source(p).map_err(|e| format!("{}: {e}", p.display()))
+    }
+
+    /// The Rust types template `t` may name: the app's and its own
+    /// block's (or `+page.rs`'s, `+layout.rs`'s).
+    fn types_of(&self, t: &Tpl) -> Vec<rust_scan::TypeItem> {
+        let mut types = self.shared.clone();
+        let file = crate::read_source(&self.root.join(&t.rel)).unwrap_or_default();
+        let items = match crate::split_front(&file).ok().and_then(|(rust, _)| rust) {
+            Some(block) => rust_scan::scan(&rust_scan::split_items(&block).0).ok(),
+            None => (t.rel.strip_suffix(".wisp"))
+                .and_then(|base| crate::read_source(&self.root.join(format!("{base}.rs"))).ok())
+                .and_then(|rs| rust_scan::scan(&rs).ok()),
+        };
+        types.extend(items.into_iter().flat_map(|i| i.types));
+        types
     }
 
     /// A layout or error page: with the Rust of its `---` block, if it has
@@ -1164,7 +1342,7 @@ impl<'a> Project<'a> {
         let tables = lg.items.tables();
         let fns = lg.items.fns;
         let has_load = fns.iter().any(|f| f.name == "load");
-        if lg.stmts.is_some() && page_js {
+        if lg.stmts.is_some() && page_js.is_some() {
             return Err(format!(
                 "{}: +page.js gets the page's `data`, which comes from a `load`; with a `---` block of statements there is none. Move them into `fn load`.",
                 self.rel(&file)
@@ -1243,7 +1421,7 @@ impl<'a> Project<'a> {
         let tpl = self.add_tpl(format!("tpl_page_{i}"), &file, Kind::Page, t);
         tpl.user = user;
         tpl.data = data;
-        tpl.load_js = page_js.then(|| dir.join("+page.js"));
+        tpl.load_js = page_js.map(|f| dir.join(f));
         let waits =
             fns.iter().any(|f| f.is_async) || lg.stmts.as_deref().is_some_and(rust_scan::may_wait);
         // A page with no Rust still reads its route parameters.
@@ -1398,7 +1576,7 @@ impl<'a> Project<'a> {
         if lib_dir.is_dir() {
             list_files(&lib_dir, &mut lib)?;
         }
-        lib.retain(|f| f.extension().is_some_and(|e| e == "js"));
+        lib.retain(|f| f.extension().is_some_and(|e| e == "js" || e == "ts"));
         lib.sort();
         let mut lib_src = Vec::new();
         for f in &lib {
@@ -1420,6 +1598,7 @@ impl<'a> Project<'a> {
             format!("{:016x}", fnv1a(&h))
         };
         let specs = Specs {
+            lib: lib_src.iter().map(|(p, _)| p.clone()).collect(),
             lib_hash,
             npm: Npm::new(
                 npm::deps(self.root)?,
@@ -1445,12 +1624,13 @@ impl<'a> Project<'a> {
         let maps = self.maps;
         let lib_file =
             |src: &str, dir: Option<&str>, rel: &str, path: &str, files: &mut Vec<JsFile>| {
+                let code = javascript(src, rel)?;
                 let mut s =
-                    rewrite_specifiers(src, &specs, dir).map_err(|e| format!("{rel}: {e}"))?;
+                    rewrite_specifiers(&code, &specs, dir).map_err(|e| format!("{rel}: {e}"))?;
                 let mut added = 0;
-                if js::tokens(src)
+                if js::tokens(&code)
                     .iter()
-                    .any(|t| !t.member && t.text(src) == "persisted")
+                    .any(|t| !t.member && t.text(&code) == "persisted")
                 {
                     s.push_str(&format!("\nimport {};\n", js_str(&extra_url)));
                     added = 2;
@@ -5555,9 +5735,25 @@ fn map_file(path: &str, name: &str, rel: &str, src: &str, lines: &[sourcemap::Li
     }
 }
 
+/// `src` as JavaScript: a `.ts` file's types blanked out (see
+/// `js::strip_types`), so its lines and columns stay.
+fn javascript(src: &str, rel: &str) -> Result<String, String> {
+    if !rel.ends_with(".ts") {
+        return Ok(src.to_string());
+    }
+    js::strip_types(src).map_err(|(off, msg)| {
+        let before = &src[..off];
+        let line = before.matches('\n').count() + 1;
+        let col = before.rsplit('\n').next().unwrap_or("").chars().count() + 1;
+        format!("{rel}:{line}:{col}: {msg}")
+    })
+}
+
 /// What an import's module name resolves against: `src/lib`'s files (all
 /// under one hash) and the app's npm packages.
 struct Specs {
+    /// `src/lib`'s files, as `x.js` or `dir/y.ts`.
+    lib: Vec<String>,
     lib_hash: String,
     npm: Npm,
 }
@@ -5592,6 +5788,12 @@ fn resolve_spec(spec: &str, cx: &Specs, base: Option<&str>) -> Result<Option<Str
         }
         parts.join("/")
     };
+    // `$lib/x` is `x.js` or `x.ts`, whichever there is.
+    let bare = !rel.rsplit('/').next().unwrap_or("").contains('.');
+    let rel = (["js", "ts"].iter())
+        .map(|e| format!("{rel}.{e}"))
+        .find(|f| bare && cx.lib.contains(f))
+        .unwrap_or(rel);
     Ok(Some(format!("{MODULES}lib/{rel}?v={}", cx.lib_hash)))
 }
 
@@ -7428,6 +7630,7 @@ pub fn load() -> Data { todo!() }";
         // The script's bare imports are the app's npm packages.
         let deps = vec![("a".into(), "1".into()), ("b".into(), "2".into())];
         let specs = Specs {
+            lib: Vec::new(),
             lib_hash: "0".into(),
             npm: Npm::new(deps, None),
         };
@@ -7442,6 +7645,122 @@ pub fn load() -> Data { todo!() }";
             extra: "/_app/c/extra.js",
         };
         client(&t, &cx).map(|c| c.expect("the page has browser code"))
+    }
+
+    #[test]
+    fn typescript_scripts_lib_files_and_page_ts() {
+        let files = [
+            (
+                "src/routes/+page.wisp",
+                "<p>{:n}</p>\n<script lang=\"ts\">\n  import { twice, type Num } from '$lib/util'\n  let n: Num = twice(2 as Num)\n</script>",
+            ),
+            (
+                "src/lib/util.ts",
+                "export type Num = number\nexport function twice(x: Num): Num {\n  return x * 2\n}\n",
+            ),
+            (
+                "src/routes/+page.ts",
+                "export function load({ data }: { data: object }): object {\n  return data\n}\n",
+            ),
+        ];
+        let code = app("ts", &files).unwrap();
+        for js in [
+            "let n = __wisp_s(twice(2))",
+            "export function twice(x) {",
+            "export function load({ data }) {",
+            "/_app/c/lib/util.ts?v=",
+        ] {
+            // Its types are spaces now.
+            let squeezed = code.replace("\\\"", "\"").replace(' ', "");
+            assert!(squeezed.contains(&js.replace(' ', "")), "{js}: {code}");
+        }
+
+        // What TypeScript would write code for is an error at its place.
+        let err = app(
+            "ts-enum",
+            &[(
+                "src/routes/+page.wisp",
+                "<p>{:x}</p>\n<script lang=\"ts\">\n  enum E { A }\n  let x = 1\n</script>",
+            )],
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("+page.wisp:3:3:") && err.contains("`enum`"),
+            "{err}"
+        );
+        let err = app(
+            "ts-lib-enum",
+            &[
+                ("src/routes/+page.wisp", "<p>hi</p>"),
+                ("src/lib/e.ts", "\nexport enum E { A }\n"),
+            ],
+        )
+        .unwrap_err();
+        assert!(err.starts_with("src/lib/e.ts:2:8:"), "{err}");
+        // Another attribute keeps the script as HTML.
+        let code = app(
+            "ts-typed",
+            &[(
+                "src/routes/+page.wisp",
+                "<script lang=\"ts\" type=\"module\">let a: number = 1</script>",
+            )],
+        )
+        .unwrap();
+        assert!(code.contains("let a: number = 1"), "{code}");
+    }
+
+    #[test]
+    fn typescript_files_for_tsc() {
+        let files = [
+            (
+                "src/routes/+page.wisp",
+                "---\n#[derive(Json)]\nstruct Item { name: String, price: Option<u32> }\nlet items: Vec<Item> = Vec::new();\nlet other = 1;\n---\n\
+                 <p>{:items.length}</p>\n<script lang=\"ts\">\n  import { cart } from '$lib/cart'\n  let other: number = $cart\n</script>",
+            ),
+            (
+                "src/components/Card.wisp",
+                "{@props title: &str, count: u32 = 0}\n<b>{:title}</b><script lang=\"ts\">let n: number = count</script>",
+            ),
+            (
+                "src/routes/plain/+page.wisp",
+                "<p>{:x}</p><script>let x = 1</script>",
+            ),
+        ];
+        let out = in_dir("types", &files, |root| {
+            types(&Input {
+                root,
+                release: false,
+                maps: false,
+            })
+        })
+        .unwrap();
+        let file = |p: &str| &out.iter().find(|(n, _)| n == p).unwrap().1;
+        assert!(file("wisp.d.ts").contains("declare function $state<T>"));
+        // On the lines of the file, with what it reads declared after it.
+        let page = file("src/routes/+page.wisp.ts");
+        assert_eq!(
+            page.lines().nth(8),
+            Some("  import { cart } from '$lib/cart'")
+        );
+        assert!(
+            page.contains(
+                "declare const data: { items: Item[]; other: any };\ndeclare const items: Item[];\n"
+            ) && !page.contains("declare const other")
+                && page.contains(
+                    "declare let $cart: typeof cart extends { value: infer V } ? V : never;"
+                )
+                && page.contains(
+                    "export interface Item {\n  name: string;\n  price?: number | null;\n}"
+                ),
+            "{page}"
+        );
+        let card = file("src/components/Card.wisp.ts");
+        assert!(
+            card.starts_with(&format!("\n{}let n: number = count", " ".repeat(33)))
+                && card.contains("declare const title: string;\ndeclare const count: number;"),
+            "{card:?}"
+        );
+        assert_eq!(out.len(), 3);
     }
 
     #[test]
@@ -7856,6 +8175,7 @@ pub fn load() -> Data { todo!() }";
             ("@s/p".into(), "2.0.0".into()),
         ];
         let specs = |vendor| Specs {
+            lib: Vec::new(),
             lib_hash: "H".into(),
             npm: Npm::new(deps.clone(), vendor),
         };

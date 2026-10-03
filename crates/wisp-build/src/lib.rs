@@ -351,6 +351,16 @@ pub fn check(root: &Path) -> Result<(Vec<String>, Vec<String>), String> {
     })
 }
 
+/// For `wisp check --types`: the files `.wisp/types` holds for `tsc`, by
+/// path there (see the CLI's `types.rs`).
+pub fn types(root: &Path) -> Result<Vec<(String, String)>, String> {
+    codegen::types(&codegen::Input {
+        root,
+        release: false,
+        maps: false,
+    })
+}
+
 /// The TypeScript client of the project's `+server.rs` endpoints: a module
 /// whose `client({ base, token })` has a typed method per operation, for
 /// `wisp build --client ts`. Empty when the app has no endpoints.
