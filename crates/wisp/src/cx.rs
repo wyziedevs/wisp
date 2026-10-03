@@ -495,7 +495,9 @@ impl Cx {
         }
         // Copied out: what is read from `self` is not held while it is set.
         let method = method.to_string();
-        let headers = self.header("access-control-request-headers").map(str::to_string);
+        let headers = self
+            .header("access-control-request-headers")
+            .map(str::to_string);
         self.set_header("access-control-allow-methods", method);
         self.put("access-control-max-age", Cow::Borrowed("86400"));
         if let Some(h) = headers {

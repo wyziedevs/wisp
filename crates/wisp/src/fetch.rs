@@ -251,6 +251,11 @@ fn parse(buf: &[u8], eof: bool, head: bool) -> std::result::Result<Option<Reply>
     let body = if head || status < 200 || status == 204 || status == 304 {
         Vec::new()
     } else if chunked {
+        // A body ends with its empty line: until it does, reading it all
+        // again for every chunk that arrives would cost the square of its size.
+        if !eof && !rest.ends_with(b"\r\n\r\n") {
+            return Ok(None);
+        }
         match unchunk(rest)? {
             Some(body) => body,
             None if eof => return Err("the connection closed early"),
