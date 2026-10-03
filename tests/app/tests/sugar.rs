@@ -53,3 +53,14 @@ fn what_app_code_leaves_out() {
     // `last` in browser code is the block's `last`, sent by its name.
     assert!(page.contains("\"last\":\"ann@example.com 2\""), "{page}");
 }
+
+#[test]
+fn a_route_limits_and_times_itself() {
+    let mut app = client::<Site>();
+    // `const RATE_LIMIT: u32 = 2;`: the third request in a minute is a 429.
+    assert_eq!(app.get("/t/limited").status, 200);
+    assert_eq!(app.get("/t/limited").status, 200);
+    assert_eq!(app.get("/t/limited").status, 429);
+    // `const TIMEOUT: u32 = 1;`.
+    assert_eq!(app.get("/t/stuck").status, 503);
+}
