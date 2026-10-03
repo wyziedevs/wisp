@@ -144,7 +144,12 @@ const DEFS: [Def; 10] = [
         key: Key::Pattern,
         name: "pattern",
         takes: Takes::Value,
-        check: |v, x| format!("::wisp::json::check::pattern({v}, {x})"),
+        check: |v, x| {
+            // Read once, at the first request: a static of this check's own.
+            format!(
+                "::wisp::json::check::pattern_once({v}, {{ static P: ::wisp::json::check::Pattern = ::wisp::json::check::Pattern::new(); &P }}, {x})"
+            )
+        },
         native: |_, _, _| {},
     },
     Def {
@@ -276,10 +281,49 @@ pub fn rule(name: &str, value: Option<&str>) -> Result<Rule, String> {
         }
         (Takes::Value, Some(v)) => v.to_string(),
     };
+    // A pattern that cannot be read is the build's error, not a visitor's.
+    if def.key == Key::Pattern
+        && let Some(text) = literal(&value)
+        && crate::pattern::parse(&text).is_none()
+    {
+        return Err(format!(
+            "`pattern = {value}` cannot be read: it takes literals, `.`, classes, groups, `|` and `? * + {{n}} {{n,m}}`"
+        ));
+    }
     Ok(Rule {
         key: def.key,
         value,
     })
+}
+
+/// The text of a string literal as written in a rule (`"a"` or `r"a"`);
+/// `None` for anything else, or an escape this does not know.
+fn literal(v: &str) -> Option<String> {
+    if let Some(raw) = v.strip_prefix('r') {
+        let hashes = raw.len() - raw.trim_start_matches('#').len();
+        let inner = raw[hashes..].strip_prefix('"')?;
+        let inner = inner.strip_suffix(&format!("\"{}", "#".repeat(hashes)))?;
+        return Some(inner.to_string());
+    }
+    let inner = v.strip_prefix('"')?.strip_suffix('"')?;
+    let mut out = String::new();
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        out.push(match chars.next()? {
+            '\\' => '\\',
+            '"' => '"',
+            '\'' => '\'',
+            'n' => '\n',
+            't' => '\t',
+            'r' => '\r',
+            _ => return None,
+        });
+    }
+    Some(out)
 }
 
 impl Rule {
@@ -440,7 +484,9 @@ mod tests {
             ),
             (
                 "pattern = \"[a-z]+\"",
-                Ok("::wisp::json::check::pattern(&x, \"[a-z]+\")"),
+                Ok(
+                    "::wisp::json::check::pattern_once(&x, { static P: ::wisp::json::check::Pattern = ::wisp::json::check::Pattern::new(); &P }, \"[a-z]+\")",
+                ),
             ),
             ("with = ok_name", Ok("(ok_name)(&x)")),
             (
@@ -466,6 +512,12 @@ mod tests {
                 Err("`len = ..` needs a bound, such as `len = 1..=100`"),
             ),
             ("min", Err("`min` needs a value: `min = 1`")),
+            (
+                "pattern = \"[a-\"",
+                Err(
+                    "`pattern = \"[a-\"` cannot be read: it takes literals, `.`, classes, groups, `|` and `? * + {n} {n,m}`",
+                ),
+            ),
             ("email = 1", Err("`email` takes no value")),
         ] {
             let got = parse(rules).map(|v| v.checks("&x").swap_remove(0));
