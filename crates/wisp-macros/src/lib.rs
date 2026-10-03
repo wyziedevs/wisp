@@ -220,6 +220,7 @@ pub fn model(attr: TokenStream, item: TokenStream) -> TokenStream {
         .any(|t| matches!(t, TokenTree::Ident(i) if i.to_string() == "struct"))
         && matches!(tokens.last(), Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Brace);
     let last = tokens.len().wrapping_sub(1);
+    let account = named.then(|| account(&tokens)).flatten();
     for (k, t) in tokens.into_iter().enumerate() {
         match t {
             TokenTree::Group(g) if named && k == last => {
@@ -230,7 +231,31 @@ pub fn model(attr: TokenStream, item: TokenStream) -> TokenStream {
             t => out.extend([t]),
         }
     }
+    out.extend(account);
     out
+}
+
+/// `impl wisp::Account` for a struct with a `hash` field and an `email` or
+/// a `name`.
+fn account(tokens: &[TokenTree]) -> Option<TokenStream> {
+    let at = tokens
+        .iter()
+        .position(|t| matches!(t, TokenTree::Ident(i) if i.to_string() == "struct"))?;
+    let TokenTree::Ident(name) = tokens.get(at + 1)? else {
+        return None;
+    };
+    let fields = named_fields(&tokens.iter().cloned().collect()).ok()?;
+    let has = |f: &str| fields.iter().any(|x| x.name.to_string() == f);
+    let who = ["email", "name"].into_iter().find(|f| has(f))?;
+    if !has("hash") {
+        return None;
+    }
+    Some(parse(&format!(
+        "impl ::wisp::Account for {name} {{ const WHO: &'static str = {who:?}; \
+         fn who(&self) -> &str {{ ::std::convert::AsRef::<str>::as_ref(&self.{who}) }} \
+         fn hash(&self) -> &str {{ &self.hash }} \
+         fn set_hash(&mut self, hash: String) {{ self.hash = hash; }} }}"
+    )))
 }
 
 /// A struct's fields with `pub` before each that has no visibility.

@@ -984,6 +984,52 @@ pub fn name_saved(src: &str) -> Option<String> {
     (from > 0).then_some(out)
 }
 
+/// The table `wisp::users(&db::USERS)` names, as written, in `src` (the
+/// hooks file), if it does.
+pub fn users_table(src: &str) -> Result<Option<String>, String> {
+    let src = strip_comments(src);
+    let Some(at) = src.find("wisp::users(") else {
+        return Ok(None);
+    };
+    let arg = &src[at + 12..];
+    let arg = arg[..arg.find(')').unwrap_or(arg.len())]
+        .trim()
+        .trim_start_matches('&');
+    if !arg.contains("::") {
+        return Err(format!(
+            "`wisp::users` takes the table by its module path: `wisp::users(&db::{arg})`"
+        ));
+    }
+    Ok(Some(arg.trim().to_string()))
+}
+
+/// `src` with each `cx.user()` made `cx.user(&TABLE)` (the table
+/// `wisp::users` names in `init`), or `None` if there is none. An error
+/// when there is one but no table.
+pub fn bind_user(src: &str, table: Option<&str>) -> Result<Option<String>, String> {
+    let b = src.as_bytes();
+    let (mut out, mut from, mut i) = (String::new(), 0, 0);
+    while i < b.len() {
+        if !(b[i].is_ascii_alphabetic() || b[i] == b'_') {
+            i = skip_literal(b, i) + 1;
+            continue;
+        }
+        let end = ident_end(b, i);
+        if &src[i..end] == "cx" && src[end..].starts_with(".user()") && (i == 0 || b[i - 1] != b'.')
+        {
+            let Some(table) = table else {
+                return Err("`cx.user()` needs `wisp::users(&db::USERS)` in `init` (src/hooks.rs), naming the users table".into());
+            };
+            out.push_str(&src[from..end + 6]);
+            let _ = write!(out, "&{table}");
+            from = end + 6;
+        }
+        i = end;
+    }
+    out.push_str(&src[from..]);
+    Ok((from > 0).then_some(out))
+}
+
 /// `s` with its comments blanked out.
 fn strip_comments(s: &str) -> String {
     let b = s.as_bytes();
@@ -1604,6 +1650,19 @@ fn a() {}"
         assert_eq!(name_saved(src).as_deref(), Some(want));
         assert_eq!(name_saved("static A: Table<U> = Table::new();"), None);
         assert_eq!(name_saved("let t = Table::saved();"), None);
+    }
+
+    #[test]
+    fn cx_user_takes_the_table_init_names() {
+        let init = "// wisp::users(&other::X)\nfn init() { wisp::users(&db::USERS); }";
+        assert_eq!(users_table(init), Ok(Some("db::USERS".into())));
+        assert_eq!(users_table("fn init() {}"), Ok(None));
+        assert!(users_table("wisp::users(&USERS)").is_err());
+        let src = "let a = cx.user()?; let b = \"cx.user()\"; let c = x.cx.user(&T);";
+        let want = "let a = cx.user(&db::USERS)?; let b = \"cx.user()\"; let c = x.cx.user(&T);";
+        assert_eq!(bind_user(src, Some("db::USERS")), Ok(Some(want.into())));
+        assert_eq!(bind_user("cx.user(&T)", None), Ok(None));
+        assert!(bind_user(src, None).unwrap_err().contains("wisp::users"));
     }
 
     #[test]

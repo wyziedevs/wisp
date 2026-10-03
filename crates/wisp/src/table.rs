@@ -391,7 +391,10 @@ impl<T> Table<T> {
 
     /// Keeps `value` under a new id, which it returns.
     pub fn add(&self, value: T) -> u64 {
-        let mut rows = self.write();
+        self.insert(self.write(), value)
+    }
+
+    fn insert(&self, mut rows: RwLockWriteGuard<'_, Rows<T>>, value: T) -> u64 {
         let id = self.next_id(&mut rows);
         let json = self.encode(&rows, &value);
         if let Err(e) = self.save(&mut rows, id, Some(&json)) {
@@ -466,6 +469,20 @@ impl<T: Clone> Table<T> {
     pub fn get(&self, id: u64) -> Option<Row<T>> {
         let value = self.with(id, T::clone)?;
         Some(Row { id, value })
+    }
+
+    /// Keeps `value` unless `taken` is true of a row already there, checked
+    /// with the table locked: two at once cannot both be kept.
+    pub fn add_unless(&self, taken: impl Fn(&T) -> bool, value: T) -> Option<Row<T>> {
+        let rows = self.write();
+        if rows.map.values().any(taken) {
+            return None;
+        }
+        let copy = value.clone();
+        Some(Row {
+            id: self.insert(rows, value),
+            value: copy,
+        })
     }
 
     /// A copy of every row, in order of their ids (oldest first, unless

@@ -68,7 +68,7 @@ pub use json::{FromJson, Value, from_json, to_json};
 pub use limit::RateLimit;
 pub use live::{ClientModule, Json};
 pub use rest::Resource;
-pub use session::{sign_in_page, sign_out_everywhere};
+pub use session::{Account, login, sign_in_page, sign_out_everywhere, signup, users};
 pub use sign::{hex, hmac_sha256};
 pub use store::{Store, store};
 pub use table::{Page, Row, Table};
