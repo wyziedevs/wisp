@@ -1315,6 +1315,18 @@ struct Project<'a> {
     t_used: Vec<bool>,
     /// The `#[remote]` functions of pages and `src/*.rs`.
     remotes: Vec<RemoteFn>,
+    /// What each layout sets for the pages below it, by layout.
+    layout_opts: Vec<LayoutOpts>,
+}
+
+/// The page options a `+layout` sets, which its pages inherit unless they
+/// set their own.
+#[derive(Default, Clone, Copy)]
+struct LayoutOpts {
+    /// `CACHE` (false) or `CACHE_PUBLIC` (true).
+    cache: Option<bool>,
+    ssr: Option<bool>,
+    prerender: Option<bool>,
 }
 
 /// The browser's half: the modules of templates (by template), and the
@@ -1385,6 +1397,7 @@ impl<'a> Project<'a> {
             i18n,
             t_used,
             remotes: Vec::new(),
+            layout_opts: Vec::new(),
         })
     }
 
@@ -1577,7 +1590,7 @@ impl<'a> Project<'a> {
         mut markup: std::borrow::Cow<'x, str>,
     ) -> std::borrow::Cow<'x, str> {
         let rs = match p.file_name().and_then(|n| n.to_str()) {
-            Some("+page.wisp") => "+page.rs",
+            Some(n) if n.starts_with("+page") && n.ends_with(".wisp") => "+page.rs",
             Some("+layout.wisp") => "+layout.rs",
             _ => return markup,
         };
@@ -1884,7 +1897,7 @@ impl<'a> Project<'a> {
                     c.line
                 ));
             }
-            if let Some(c) = ["CACHE", "CACHE_PUBLIC", "RATE_LIMIT", "CORS", "TIMEOUT"]
+            if let Some(c) = ["RATE_LIMIT", "CORS", "TIMEOUT"]
                 .iter()
                 .find_map(|n| lg.items.constant(n))
             {
@@ -1893,17 +1906,35 @@ impl<'a> Project<'a> {
                     c.line, c.name
                 ));
             }
-            if let Some(c) = ["SSR", "PRERENDER"]
-                .iter()
-                .find_map(|n| lg.items.constant(n))
-            {
-                return Err(format!(
-                    "{where_}:{}: a layout's `{}` does nothing; set it in each page it is for",
-                    c.line, c.name
-                ));
-            }
             let mut guarded = Vec::new();
             let at = lg.file.clone().unwrap_or_else(|| dir.join("+layout.rs"));
+            // `CACHE`, `SSR` and `PRERENDER` are the pages' below it, unless
+            // a page sets its own.
+            let mut opts = LayoutOpts {
+                ssr: self.flag(&lg.items, "SSR", &at, &mut guarded)?,
+                prerender: self.flag(&lg.items, "PRERENDER", &at, &mut guarded)?,
+                ..LayoutOpts::default()
+            };
+            match (lg.items.constant("CACHE"), lg.items.constant("CACHE_PUBLIC")) {
+                (None, None) => {}
+                (Some(c), None) | (None, Some(c)) => {
+                    if c.ty != "u32" || c.is_static {
+                        return Err(format!(
+                            "{where_}:{}: `{}` is a `{}`; make it a `const` `u32`, the seconds a response is kept, such as `const {0}: u32 = 60;`",
+                            c.line, c.name, c.ty
+                        ));
+                    }
+                    opts.cache = Some(c.name == "CACHE_PUBLIC");
+                    guarded.push(format!("pub const CACHE: u32 = super::{};", c.name));
+                }
+                (Some(_), Some(c)) => {
+                    return Err(format!(
+                        "{where_}:{}: `CACHE_PUBLIC` is `CACHE` shared with signed-in visitors too; set one of them",
+                        c.line
+                    ));
+                }
+            }
+            self.layout_opts.push(opts);
             let guard = self.flag(&lg.items, "SIGNED_IN", &at, &mut guarded)? == Some(true);
             if guard {
                 guarded.push(
@@ -2087,6 +2118,15 @@ impl<'a> Project<'a> {
             if self.tree.routes[i].server {
                 self.server(i, &mut route, &mut servers)?;
             }
+            // A page's `CACHE` from a layout above it, when nothing sets one
+            // (a streamed page is not kept whole).
+            if route.cache.is_none()
+                && route.page.as_ref().is_some_and(|p| !p.streams)
+                && let Some((l, public)) = (self.tree.routes[i].layouts.iter().rev())
+                    .find_map(|l| self.layout_opts[*l].cache.map(|p| (*l, p)))
+            {
+                route.cache = Some(model::Cache { module: format!("layout_{l}"), public });
+            }
             self.model.routes.push(route);
         }
         Ok(())
@@ -2096,7 +2136,8 @@ impl<'a> Project<'a> {
     fn page(&mut self, i: usize, route: &mut model::Route) -> Result<(), String> {
         let r = &self.tree.routes[i];
         let (dir, page_rs, page_js, md) = (r.dir.clone(), r.page_rs, r.page_js, r.md.clone());
-        let file = md.clone().unwrap_or_else(|| dir.join("+page.wisp"));
+        let name = r.page_file.clone();
+        let file = md.clone().unwrap_or_else(|| dir.join(&name));
         // Its Rust first: its actions' fields get the browser's checks.
         let src = match md {
             Some(_) => {
@@ -2114,8 +2155,15 @@ impl<'a> Project<'a> {
         let fields = rules::fields(&lg.items, &self.tree.routes[i].params(), &self.shared);
         let rs = lg.file.clone().unwrap_or_else(|| dir.join("+page.rs"));
         let mut shims = Vec::new();
-        let drawn = self.flag(&lg.items, "SSR", &rs, &mut shims)? == Some(false);
-        let prerender = self.flag(&lg.items, "PRERENDER", &rs, &mut shims)? == Some(true);
+        // What the layouts above set stands where the page sets nothing.
+        let up = |f: fn(&LayoutOpts) -> Option<bool>| {
+            (self.tree.routes[i].layouts.iter().rev()).find_map(|l| f(&self.layout_opts[*l]))
+        };
+        let own_cache = lg.items.constant("CACHE").or(lg.items.constant("CACHE_PUBLIC")).is_some();
+        let ssr = self.flag(&lg.items, "SSR", &rs, &mut shims)?.or(up(|o| o.ssr));
+        let drawn = ssr == Some(false);
+        let own = self.flag(&lg.items, "PRERENDER", &rs, &mut shims)?;
+        let prerender = own.or(up(|o| o.prerender).filter(|_| !own_cache)) == Some(true);
         let line = lg.items.constant("PRERENDER").map_or(1, |c| c.line);
         let (mut t, _) = self.markup(&file, &markup, front, &fields, drawn)?;
         check_no_children(&t, &self.rel(&file))?;
@@ -8839,6 +8887,36 @@ mod tests {
     }
 
     #[test]
+    fn a_page_can_leave_its_layouts() {
+        let files = |a: &'static str, b: &'static str| {
+            [
+                ("src/routes/+layout.wisp", "<slot />"),
+                ("src/routes/(app)/+layout.wisp", "<slot />"),
+                ("src/routes/(app)/a/+layout.wisp", "<slot />"),
+                (a, "x"),
+                (b, "x"),
+            ]
+        };
+        let chains = |a: &'static str, b: &'static str| {
+            let m = model("reset", &files(a, b)).unwrap();
+            m.routes
+                .iter()
+                .map(|r| (r.pattern.clone(), r.layouts.clone()))
+                .collect::<Vec<_>>()
+        };
+        // `@` leaves all of them, `@app` keeps up to the `(app)` one.
+        let all = chains("src/routes/(app)/a/+page@.wisp", "src/routes/(app)/a/b/+page.wisp");
+        assert_eq!(all[0], ("/a".to_string(), vec![]));
+        assert_eq!(all[1], ("/a/b".to_string(), vec![0, 1, 2]));
+        let some = chains("src/routes/(app)/a/+page@app.wisp", "src/routes/x/+page.wisp");
+        assert_eq!(some[0], ("/a".to_string(), vec![0, 1]));
+        let err = model("reset", &files("src/routes/(app)/a/+page@nope.wisp", "src/routes/y/+page.wisp"))
+            .err()
+            .unwrap();
+        assert!(err.contains("resets to the layout of `nope`"), "{err}");
+    }
+
+    #[test]
     fn layouts_and_error_pages_resolve_per_route() {
         let m = model(
             "chains",
@@ -9744,18 +9822,27 @@ fn report(cx: &mut Cx, err: &Error) {}",
             let err = app(name, &[("src/routes/+page.wisp", page)]).unwrap_err();
             assert!(err.contains(want), "{name}: {err}");
         }
-        let err = app(
+        // A layout's `SSR` is its pages', unless a page says otherwise.
+        let layout = (
+            "src/routes/+layout.wisp",
+            "---\nconst SSR: bool = false;\nconst PRERENDER: bool = true;\n---\n<slot />",
+        );
+        let m = model(
             "drawn-layout",
             &[
+                layout,
                 ("src/routes/+page.wisp", "x"),
                 (
-                    "src/routes/+layout.wisp",
-                    "---\nconst SSR: bool = false;\n---\n<slot />",
+                    "src/routes/b/+page.wisp",
+                    "---\nconst SSR: bool = true;\nconst PRERENDER: bool = false;\n---\nx",
                 ),
             ],
         )
-        .unwrap_err();
-        assert!(err.contains("a layout's `SSR` does nothing"), "{err}");
+        .unwrap();
+        let flags: Vec<_> = (m.routes.iter())
+            .map(|r| r.page.as_ref().map(|p| (p.drawn, p.prerender)))
+            .collect();
+        assert_eq!(flags, [Some((true, true)), Some((false, false))]);
     }
 
     #[test]
@@ -9967,10 +10054,25 @@ fn report(cx: &mut Cx, err: &Error) {}",
             ),
             ("src/routes/+page.wisp", "x"),
         ];
-        let err = app("cache-layout", &layout).unwrap_err();
-        assert!(
-            err.contains("a layout's `CACHE_PUBLIC` does nothing"),
-            "{err}"
+        // The pages below it are kept too, but for one that sets its own.
+        let m = model(
+            "cache-layout",
+            &[
+                layout[0],
+                layout[1],
+                (
+                    "src/routes/b/+page.wisp",
+                    "---\nconst CACHE: u32 = 9;\n---\nx",
+                ),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            cache(&m),
+            [
+                Some(("layout_0".into(), true, false)),
+                Some(("page_1".into(), false, false))
+            ]
         );
         let twice = [
             (

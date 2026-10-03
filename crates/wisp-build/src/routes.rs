@@ -36,6 +36,10 @@ pub struct Route {
     pub dir: PathBuf,
     pub segs: Vec<Seg>,
     pub page: bool,
+    /// The page file's name: `+page.wisp`, or `+page@.wisp` / `+page@group.wisp`,
+    /// which leaves out the layouts above it (all of them, or those above
+    /// `group`'s own).
+    pub page_file: String,
     /// The page is Markdown: this `+page.md` or `x.md`.
     pub md: Option<PathBuf>,
     pub page_rs: bool,
@@ -315,7 +319,10 @@ fn walk(
     dirs.sort();
     mds.sort();
 
-    let has = |f: &str| files.iter().any(|x| x == f);
+    let reset = files
+        .iter()
+        .find_map(|f| reset_of(f).map(|g| (f.clone(), g.to_string())));
+    let has = |f: &str| files.iter().any(|x| x == f) || (f == "+page.wisp" && reset.is_some());
     for f in &files {
         const KNOWN: [&str; 9] = [
             "+page.wisp",
@@ -328,7 +335,7 @@ fn walk(
             "+error.wisp",
             "+server.rs",
         ];
-        if !KNOWN.contains(&f.as_str()) {
+        if !KNOWN.contains(&f.as_str()) && reset_of(f).is_none() {
             return Err(format!(
                 "{}: unknown route file (expected one of {})",
                 show(&dir.join(f)),
@@ -388,17 +395,45 @@ fn walk(
         false => (false, None),
     };
     let page_md = has("+page.md").then(|| dir.join("+page.md"));
+    // `+page@group.wisp`: the layouts above `group`'s directory (it too) stay.
+    let (page_file, page_layouts) = match &reset {
+        None => ("+page.wisp".to_string(), layouts.clone()),
+        Some((f, group)) => {
+            let keep = |l: &usize| {
+                tree.layouts[*l]
+                    .dir
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| {
+                        n == group
+                            || n.strip_prefix('(').and_then(|n| n.strip_suffix(')')) == Some(group)
+                    })
+            };
+            let at = match group.is_empty() {
+                true => Some(0),
+                false => layouts.iter().rposition(keep).map(|i| i + 1),
+            };
+            let Some(at) = at else {
+                return Err(format!(
+                    "{}: `{f}` resets to the layout of `{group}`, and no directory above it has a +layout.wisp of that name",
+                    show(&dir.join(f))
+                ));
+            };
+            (f.clone(), layouts[..at].to_vec())
+        }
+    };
     if has("+page.wisp") || page_md.is_some() || collection {
         tree.routes.push(Route {
             dir: dir.to_path_buf(),
             segs: segs.clone(),
             page: has("+page.wisp") || page_md.is_some(),
+            page_file,
             md: page_md,
             page_rs: has("+page.rs"),
             page_js,
             server: collection,
             member: false,
-            layouts: layouts.clone(),
+            layouts: page_layouts,
             error,
         });
     }
@@ -409,6 +444,7 @@ fn walk(
             dir: dir.to_path_buf(),
             segs,
             page: false,
+            page_file: String::new(),
             md: None,
             page_rs: false,
             page_js: None,
@@ -432,6 +468,7 @@ fn walk(
             dir: dir.to_path_buf(),
             segs,
             page: true,
+            page_file: String::new(),
             md: Some(dir.join(&name)),
             page_rs: false,
             page_js: None,
@@ -522,6 +559,11 @@ fn server_shape(file: &Path, segs: &[Seg]) -> (bool, Option<Option<String>>) {
 }
 
 /// `None` for `(group)` directories, which do not appear in the URL.
+/// `group` of `+page@group.wisp` (empty for `+page@.wisp`).
+fn reset_of(file: &str) -> Option<&str> {
+    file.strip_prefix("+page@")?.strip_suffix(".wisp")
+}
+
 pub fn parse_segment(name: &str) -> Result<Option<Seg>, String> {
     let ident = |s: &str| -> Result<String, String> {
         if !crate::ty::is_ident(s) {
