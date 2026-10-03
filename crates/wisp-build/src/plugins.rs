@@ -63,6 +63,26 @@ pub(crate) fn sync(root: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(dirs)
 }
 
+/// `base = "/app"` of `[package.metadata.wisp]` in the app's Cargo.toml:
+/// the path it is served under (see `protocol::BASE`).
+pub fn base(root: &Path) -> Option<String> {
+    base_of(&fs::read_to_string(root.join("Cargo.toml")).ok()?)
+}
+
+fn base_of(toml: &str) -> Option<String> {
+    let mut on = false;
+    for l in toml.lines() {
+        let l = l.trim();
+        if l.starts_with('[') {
+            on = l == "[package.metadata.wisp]";
+        } else if on && let Some(v) = l.strip_prefix("base").map(str::trim_start) {
+            let v = v.strip_prefix('=')?.trim();
+            return Some(v.trim_matches(['"', '\'']).to_string());
+        }
+    }
+    None
+}
+
 /// The crate names of `use = [...]` in `[package.metadata.wisp]`.
 fn used(toml: &str) -> Vec<String> {
     let mut on = false;
@@ -71,7 +91,7 @@ fn used(toml: &str) -> Vec<String> {
         let l = l.trim();
         if l.starts_with('[') {
             on = l == "[package.metadata.wisp]";
-        } else if on {
+        } else if on && !l.starts_with("base") {
             text += l;
             text += "\n";
         }
@@ -236,6 +256,15 @@ fn files(dir: &Path, base: &Path, out: &mut Vec<(String, PathBuf)>, depth: usize
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_the_base_path() {
+        let t =
+            "[package]\nname = \"a\"\n[package.metadata.wisp]\nbase = \"/user\"\nuse = [\"kit\"]\n";
+        assert_eq!(base_of(t).as_deref(), Some("/user"));
+        assert_eq!(used(t), ["kit"]);
+        assert_eq!(base_of("[package]\nbase = \"/x\"\n"), None);
+    }
 
     #[test]
     fn reads_use_and_paths() {

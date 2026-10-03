@@ -490,6 +490,12 @@ pub fn client_ts(root: &Path) -> Result<String, String> {
     .map(|(_, ts)| ts)
 }
 
+/// `base = "/app"` of `[package.metadata.wisp]`, for `wisp build` to build
+/// with as `WISP_BASE`.
+pub fn app_base(root: &std::path::Path) -> Option<String> {
+    plugins::base(root)
+}
+
 /// The base path the app is served under (`WISP_BASE`), empty for none.
 pub const BASE: &str = protocol::BASE;
 

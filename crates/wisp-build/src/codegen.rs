@@ -1947,7 +1947,10 @@ impl<'a> Project<'a> {
                 prerender: self.flag(&lg.items, "PRERENDER", &at, &mut guarded)?,
                 ..LayoutOpts::default()
             };
-            match (lg.items.constant("CACHE"), lg.items.constant("CACHE_PUBLIC")) {
+            match (
+                lg.items.constant("CACHE"),
+                lg.items.constant("CACHE_PUBLIC"),
+            ) {
                 (None, None) => {}
                 (Some(c), None) | (None, Some(c)) => {
                     if c.ty != "u32" || c.is_static {
@@ -2157,7 +2160,10 @@ impl<'a> Project<'a> {
                 && let Some((l, public)) = (self.tree.routes[i].layouts.iter().rev())
                     .find_map(|l| self.layout_opts[*l].cache.map(|p| (*l, p)))
             {
-                route.cache = Some(model::Cache { module: format!("layout_{l}"), public });
+                route.cache = Some(model::Cache {
+                    module: format!("layout_{l}"),
+                    public,
+                });
             }
             self.model.routes.push(route);
         }
@@ -2191,8 +2197,14 @@ impl<'a> Project<'a> {
         let up = |f: fn(&LayoutOpts) -> Option<bool>| {
             (self.tree.routes[i].layouts.iter().rev()).find_map(|l| f(&self.layout_opts[*l]))
         };
-        let own_cache = lg.items.constant("CACHE").or(lg.items.constant("CACHE_PUBLIC")).is_some();
-        let ssr = self.flag(&lg.items, "SSR", &rs, &mut shims)?.or(up(|o| o.ssr));
+        let own_cache = lg
+            .items
+            .constant("CACHE")
+            .or(lg.items.constant("CACHE_PUBLIC"))
+            .is_some();
+        let ssr = self
+            .flag(&lg.items, "SSR", &rs, &mut shims)?
+            .or(up(|o| o.ssr));
         let drawn = ssr == Some(false);
         let own = self.flag(&lg.items, "PRERENDER", &rs, &mut shims)?;
         let prerender = own.or(up(|o| o.prerender).filter(|_| !own_cache)) == Some(true);
@@ -3660,7 +3672,10 @@ impl Gen {
             for (i, f) in web.js_files.iter().enumerate() {
                 self.line(
                     3,
-                    &format!("{} => Some(&__WISP_JS_{i}),", lit(crate::protocol::unbased(&f.path))),
+                    &format!(
+                        "{} => Some(&__WISP_JS_{i}),",
+                        lit(crate::protocol::unbased(&f.path))
+                    ),
                 );
             }
             self.line(3, "_ => None,");
@@ -8492,7 +8507,13 @@ fn typed_routes(routes: &[crate::routes::Route]) -> String {
     let ident = |s: &str| {
         let s: String = s
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
         match s.starts_with(|c: char| c.is_ascii_digit()) {
             true => format!("r_{s}"),
@@ -8501,7 +8522,7 @@ fn typed_routes(routes: &[crate::routes::Route]) -> String {
     };
     let mut out = String::from(
         "/// A function per route: `routes::blog_slug(slug)` is `/blog/<slug>`.\n\
-         #[allow(dead_code)]\npub mod routes {\n",
+         #[allow(dead_code, unused_mut, clippy::all)]\npub mod routes {\n",
     );
     let mut taken: Vec<String> = Vec::new();
     for r in routes {
@@ -8528,7 +8549,9 @@ fn typed_routes(routes: &[crate::routes::Route]) -> String {
         let mut body = format!("let mut s = String::from({});", lit(crate::protocol::BASE));
         for seg in &r.segs {
             match seg {
-                Seg::Static(n) => body.push_str(&format!(" s.push_str({});", lit(&format!("/{n}")))),
+                Seg::Static(n) => {
+                    body.push_str(&format!(" s.push_str({});", lit(&format!("/{n}"))))
+                }
                 Seg::Param(n, _) | Seg::Rest(n) | Seg::Optional(n, _) => {
                     let (n, rest) = (ident(n), matches!(seg, Seg::Rest(_)));
                     match seg {
@@ -9032,10 +9055,15 @@ mod tests {
         let id = |name: &str, page: &'static str, release: bool| {
             let page = ("src/routes/+page.wisp", page);
             let code = build(name, &[page], release).unwrap();
-            let at = code.find("name=\\\"wisp-build\\\" content=\\\"").map(|i| i + 31);
+            let at = code
+                .find("name=\\\"wisp-build\\\" content=\\\"")
+                .map(|i| i + 31);
             at.map(|i| code[i..i + 16].to_string())
         };
-        let (a, b) = (id("id-a", "x", true).unwrap(), id("id-b", "y", true).unwrap());
+        let (a, b) = (
+            id("id-a", "x", true).unwrap(),
+            id("id-b", "y", true).unwrap(),
+        );
         assert_ne!(a, b);
         assert_eq!(a, id("id-c", "x", true).unwrap());
         assert_eq!(id("id-dev", "x", false), None);
@@ -9059,7 +9087,10 @@ mod tests {
             assert!(code.contains(want), "{want}\n{code}");
         }
         let err = app("reroute-bad", &[page, hooks("fn reroute(cx: &mut Cx) {}")]).err();
-        assert!(err.unwrap().contains("`reroute` is `fn reroute(path: &str) -> &str`"));
+        assert!(
+            err.unwrap()
+                .contains("`reroute` is `fn reroute(path: &str) -> &str`")
+        );
     }
 
     #[test]
@@ -9078,10 +9109,10 @@ mod tests {
         )
         .unwrap();
         for want in [
-            "pub fn home() -> String { let mut s = String::new(); if s.is_empty()",
-            "pub fn blog_slug(slug: impl ::core::fmt::Display) -> String { let mut s = String::new(); s.push_str(\"/blog\"); s.push('/'); ::wisp::rt::path_param(&mut s, &slug, false);",
+            "pub fn home() -> String { let mut s = String::from(\"\"); if s.is_empty()",
+            "pub fn blog_slug(slug: impl ::core::fmt::Display) -> String { let mut s = String::from(\"\"); s.push_str(\"/blog\"); s.push('/'); ::wisp::rt::path_param(&mut s, &slug, false);",
             "pub fn blog_slug_edit_it(slug: impl",
-            "pub fn files_path(path: impl ::core::fmt::Display) -> String { let mut s = String::new(); s.push_str(\"/files\"); s.push('/'); ::wisp::rt::path_param(&mut s, &path, true);",
+            "pub fn files_path(path: impl ::core::fmt::Display) -> String { let mut s = String::from(\"\"); s.push_str(\"/files\"); s.push('/'); ::wisp::rt::path_param(&mut s, &path, true);",
             "pub fn type_type(r#type: Option<impl ::core::fmt::Display>)",
             "pub fn api() -> String",
             "pub fn blog_slug_2() -> String",
@@ -9124,14 +9155,26 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         // `@` leaves all of them, `@app` keeps up to the `(app)` one.
-        let all = chains("src/routes/(app)/a/+page@.wisp", "src/routes/(app)/a/b/+page.wisp");
+        let all = chains(
+            "src/routes/(app)/a/+page@.wisp",
+            "src/routes/(app)/a/b/+page.wisp",
+        );
         assert_eq!(all[0], ("/a".to_string(), vec![]));
         assert_eq!(all[1], ("/a/b".to_string(), vec![0, 1, 2]));
-        let some = chains("src/routes/(app)/a/+page@app.wisp", "src/routes/x/+page.wisp");
+        let some = chains(
+            "src/routes/(app)/a/+page@app.wisp",
+            "src/routes/x/+page.wisp",
+        );
         assert_eq!(some[0], ("/a".to_string(), vec![0, 1]));
-        let err = model("reset", &files("src/routes/(app)/a/+page@nope.wisp", "src/routes/y/+page.wisp"))
-            .err()
-            .unwrap();
+        let err = model(
+            "reset",
+            &files(
+                "src/routes/(app)/a/+page@nope.wisp",
+                "src/routes/y/+page.wisp",
+            ),
+        )
+        .err()
+        .unwrap();
         assert!(err.contains("resets to the layout of `nope`"), "{err}");
     }
 

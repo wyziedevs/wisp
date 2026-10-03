@@ -15,4 +15,5 @@ fn before(cx: &mut Cx) -> Result {
     Ok(())
 }
 fn after(cx: &mut Cx, reply: &mut Reply) {}   // sync, every reply: headers, logs
-fn report(cx: &mut Cx, err: &Error) {}        // sync, every 5xx: Sentry and the like
+fn report(cx: &mut Cx, err: &Error) {}        // sync, every 5xx: Sentry and the like (handleError)
+fn reroute(path: &str) -> &str { path }       // sync, before routing: return a part of `path`

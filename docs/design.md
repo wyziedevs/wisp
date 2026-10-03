@@ -1224,6 +1224,58 @@ and `.wisp-*` classes, so they never touch an app's own CSS.
   changed in dim. Violet is only for what can be typed. A failure is a
   sentence, then the reason or what to do indented under it.
 
+## Parity features: what a server framework is expected to have
+
+All build-time, a const or a cold path: a request that uses none of them runs
+no code for them (`on_driver` and `dispatch` in `http.rs` only gained const-gated
+branches).
+
+- **Base path.** `WISP_BASE=/app` (cargo env, or `base = "/app"` under
+  `[package.metadata.wisp]` for `wisp build`; `wisp dev` always serves at `/`)
+  is compiled into `wisp-shared` (`protocol::BASE`, a `build.rs` sets it), so
+  every crate sees one const. `parse` takes it off the path span (`under_base`,
+  cold, and only built with a base: `/app` alone is `/`), so routes, assets,
+  `cx.path()` and the `/_wisp/*` paths are as without. What Wisp writes has it:
+  the `protocol` URL consts (`/_app/...`, assets' `url`, JS imports), static
+  `href`/`src`/`action`/`poster`/`formaction` values that start with one `/`
+  in templates and the shell (`template::under_base`), `Error::redirect`, the
+  trailing-slash 308, `Location` of a created row, the sitemap, `routes::`.
+  Matching uses `protocol::route::*` (no base) and the generated `asset()`
+  and `client_module()` match the base-less path. wisp.js reads the base from
+  its own script URL. Not covered: a dynamic `href={x}` (use `routes::` or
+  `wisp::based`), cookies' `Path`, the service worker and manifest.
+- **Hooks** (`src/hooks.rs`). `report(cx, err)` is `handleError`: sync, every
+  5xx, a const (`REPORT`). `reroute(path) -> &str` is const-gated (`REROUTE`):
+  `find` asks it for the path to route by; it returns a part of the request
+  path (or a path with no parameters). `wisp::on_fetch(f)` (once, in `init`)
+  is `handleFetch`: `wisp::fetch` calls it before a request goes out; the edge
+  build's `fetch` does not. No hook is on a path that has none.
+- **Layout reset.** `+page@.wisp` is a page with no layouts above it,
+  `+page@group.wisp` one with those down to the `group` (or `(group)`)
+  directory's `+layout.wisp`, in `routes.rs` (`Route::page_file`, `layouts`).
+- **Options.** `CACHE`/`CACHE_PUBLIC`, `SSR` and `PRERENDER` in a layout are
+  its pages' (`Project::layout_opts`; the nearest layout wins, a page's own
+  const wins over all; the cache refers to the layout's module in the
+  generated arm, so the request does what a page's own `CACHE` does). A
+  layout's `RATE_LIMIT`, `CORS` and `TIMEOUT` still do nothing and are
+  errors. `trailing_slash` is the app's, not a page's.
+- **CSRF for endpoints.** A `+server.rs` handler for post/put/patch/delete
+  starts with `rt::check_origin` (one header compare, only on those methods),
+  the check actions have; `const CORS` or `const CSRF: bool = false;` in the
+  file leaves it out.
+- **Env.** Browser code reads `env.PUBLIC_X`, inlined at build; any other name
+  is a build error (`js::public_env`), so a secret cannot reach the browser.
+- **Typed routes.** The build writes `pub mod routes` (re-exported by
+  `__mods`): a function per route, named from its pattern (`/` is `home`,
+  `/blog/[slug]` `blog_slug`, `_2` for a name taken), taking each parameter
+  as `impl Display` (optional ones `Option<..>`), percent-encoding it
+  (`rt::path_param`; a rest parameter keeps its `/`).
+- **Version skew.** A release build puts `<meta name="wisp-build" content=ID>`
+  in the shell (a hash of templates and Rust: baked, nothing per request).
+  wisp.js compares it with the page a navigation fetched, as it does
+  `wisp.js?v=` (which only changes with the runtime), and sends `wisp:stale`
+  (the `updated` store).
+
 ## Runtime
 
 - `wisp::main!()` is `wisp::app!()` plus a `main` that calls

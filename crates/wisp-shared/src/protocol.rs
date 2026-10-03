@@ -124,7 +124,9 @@ pub fn based(path: &str) -> std::borrow::Cow<'_, str> {
 }
 
 fn without<'a>(base: &str, path: &'a str) -> &'a str {
-    path.strip_prefix(base).filter(|p| p.starts_with('/')).unwrap_or(path)
+    path.strip_prefix(base)
+        .filter(|p| p.starts_with('/'))
+        .unwrap_or(path)
 }
 
 fn with<'a>(base: &str, path: &'a str) -> std::borrow::Cow<'a, str> {
@@ -168,6 +170,7 @@ pub const ELEMENT_JS_PATH: &str = app_path!("c/el.js");
 /// The same paths without [`BASE`]: what a request is matched by, its
 /// base already taken off.
 pub mod route {
+    pub const APP_PREFIX: &str = "/_app/";
     pub const APP_CSS_PATH: &str = "/_app/app.css";
     pub const WISP_JS_PATH: &str = "/_app/wisp.js";
     pub const LIVE_JS_PATH: &str = "/_app/live.js";
@@ -235,7 +238,7 @@ mod tests {
             format!("how == {}", q(ISLAND_INTERACTION)),
             format!("how == {}", q(ISLAND_VISIBLE)),
             format!("how[0] == '{ISLAND_MEDIA}'"),
-            format!("startsWith({})", q(APP_PREFIX)),
+            format!("startsWith(base + {})", q(route::APP_PREFIX)),
             "for (const [I, , P, , how] of".into(),
             "querySelectorAll('[data-wisp-await]')".into(),
             "getElementById('wisp-await-' + d.dataset.wispAwait)".into(),

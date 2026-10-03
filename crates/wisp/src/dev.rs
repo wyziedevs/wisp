@@ -375,7 +375,8 @@ pub(crate) fn read_file(root: &str, path: &str) -> Option<(Vec<u8>, String)> {
     if path == crate::protocol::route::APP_CSS_PATH {
         return app_css(root).map(|css| (css, "css".into()));
     }
-    let lib = (path.strip_prefix(crate::protocol::route::IMAGES)).and_then(|p| p.strip_prefix("lib"));
+    let lib =
+        (path.strip_prefix(crate::protocol::route::IMAGES)).and_then(|p| p.strip_prefix("lib"));
     let file = match lib {
         Some(rest) => root
             .join("src")

@@ -11,9 +11,13 @@ fn main() {
         || (base.starts_with('/')
             && !base.starts_with("//")
             && !base.contains("//")
-            && base.bytes().all(|b| b.is_ascii_graphic() && !b"?#\"'<>\\`%".contains(&b)));
+            && base
+                .bytes()
+                .all(|b| b.is_ascii_graphic() && !b"?#\"'<>\\`%".contains(&b)));
     if !ok {
-        println!("cargo::error=WISP_BASE is `{base}`: write it as `/app`, a path with a slash first, none last and no `?`, `#`, quote or space");
+        println!(
+            "cargo::error=WISP_BASE is `{base}`: write it as `/app`, a path with a slash first, none last and no `?`, `#`, quote or space"
+        );
         return;
     }
     println!("cargo::rustc-env=WISP_BASE={base}");

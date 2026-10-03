@@ -25,6 +25,7 @@ src/locales/en.json         messages, fr.json etc.: {t("key")}
 src/manifest.json           web app manifest: {"name": "Notes", "offline": true}
 src/service-worker.js       registered for you: import { build, files, version } from 'wisp/sw'
 src/routes/…/+page.wisp     page: optional `---` Rust block, then markup
+src/routes/…/+page@.wisp    a page without the layouts above it (`+page@app.wisp`: only up to the `(app)` layout)
 src/routes/…/+layout.wisp   wraps pages below; must <slot /> (or {@render children()})
 src/routes/…/+error.wisp    error page; has `status`, `message`, `cx`
 src/routes/…/+server.rs     endpoints: fn get/post/put/patch/delete/list
@@ -89,6 +90,8 @@ Block rules:
   after 5 s. They run first; a route that sets none pays nothing.
   `const SIGNED_IN: bool = true;` in a `+layout.wisp` block: its pages and
   actions are for members (303 to sign in, 401 for JSON).
+- `CACHE`, `CACHE_PUBLIC`, `SSR` and `PRERENDER` in a `+layout` block are its
+  pages' unless a page sets its own (no cache for a streamed page).
 - `const PRERENDER: bool = true;` (and `fn entries()` with params): `wisp
   build` renders the page once and the binary serves those bytes (ETag,
   304). `cx` in it is a build error. `--static` prerenders every page.
@@ -253,6 +256,10 @@ Stores, islands, the rest: docs/client.md.
 
 ## Endpoints (`+server.rs`)
 
+post/put/patch/delete refuse a request another site sent (`Origin`, else
+`Sec-Fetch-Site`; 403, as actions do); `const CORS` (it takes other sites) or
+`const CSRF: bool = false;` in the file opts out. GET and curl are unaffected.
+
 A whole JSON API, saved across restarts (`src/routes/api/notes/+server.rs`):
 
 ```rust
@@ -336,9 +343,20 @@ fn before(cx: &mut Cx) -> Result {
     Ok(())
 }
 fn after(cx: &mut Cx, reply: &mut Reply) {}   // sync, every reply: headers, logs
-fn report(cx: &mut Cx, err: &Error) {}        // sync, every 5xx: Sentry and the like
+fn report(cx: &mut Cx, err: &Error) {}        // sync, every 5xx: Sentry and the like (handleError)
+fn reroute(path: &str) -> &str { path }       // sync, before routing: return a part of `path`
 ```
-`after`/`report` cost nothing in an app that has none (the build sets a const).
+`after`/`report`/`reroute` cost nothing in an app that has none (the build sets
+a const). `wisp::on_fetch(|req| req.header("x-key", K))` in `init` runs on every
+`wisp::fetch`. `routes::blog_slug(slug)` (in every route file; `routes::home()`)
+is the path `/blog/<slug>`, percent-encoded: a link that names a route gone
+does not compile. `WISP_BASE=/app wisp build` (or `[package.metadata.wisp]
+base = "/app"` in Cargo.toml) serves the app under `/app`: requests lose it,
+`cx.path()` and routes never see it; Wisp's own URLs, `href="/x"`/`src`/`action`
+in templates and shell, `redirect`, `routes::` and the sitemap have it
+(`wisp::based(p)` for others; PWA, cookies, dynamic `href={x}` do not); `wisp
+dev` serves at `/`. A release build's pages carry `<meta name="wisp-build">`:
+a client navigation to a page of another build fires `wisp:stale` (`updated`).
 Pages get a `content-security-policy` (`wisp::csp("img-src 'self' https://x")`
 in `init` replaces a directive; `wisp::csp_off()`); `onclick="…"` doesn't run:
 use `on:click`. `wisp::trailing_slash(Always)` in `init`: pages are `/about/`

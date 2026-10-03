@@ -143,6 +143,21 @@ pub fn build_for(
     env: &[(&str, &str)],
 ) -> Build {
     let mut cmd = Command::new("cargo");
+    // The base path the app is served under, compiled in (`WISP_BASE`): a
+    // release build's, from Cargo.toml (`[package.metadata.wisp] base`) when
+    // the environment names none; `wisp dev` serves at `/`.
+    match release {
+        true => {
+            if std::env::var_os("WISP_BASE").is_none()
+                && let Some(base) = wisp_build::app_base(root)
+            {
+                cmd.env("WISP_BASE", base);
+            }
+        }
+        false => {
+            cmd.env("WISP_BASE", "");
+        }
+    }
     cmd.envs(env.iter().copied());
     cmd.args(["build", "--message-format=json-diagnostic-rendered-ansi"]);
     cmd.args(args);

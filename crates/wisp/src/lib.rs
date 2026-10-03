@@ -129,6 +129,8 @@ pub use store::{Changes, Store, store};
 pub use table::{Page, Row, Table};
 pub use token::{token, untoken};
 pub use wisp_macros::{Config, Cookie, FromJson, Json, Rest, action, model, remote};
+/// `wisp::based("/x")`: a path of the app's own under its base path (`WISP_BASE`).
+pub use wisp_shared::protocol::based;
 pub use ws::{Message, WebSocket};
 
 use std::any::{Any, TypeId};

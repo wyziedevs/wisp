@@ -32,6 +32,10 @@
   const key = (u) => String(u).split('#')[0];
   let shown = key(location.href);
   const me = document.currentScript?.src;
+  // The path the app is served under (`/app`, or none), from this script's.
+  const base = me ? new URL(me).pathname.replace(/\/_app\/wisp\.js$/, '') : '';
+  // The build this page is of (`<meta name="wisp-build">`, release builds).
+  const build = document.querySelector('meta[name=wisp-build]')?.content;
   const ran = new Set([...document.scripts].map((s) => s.src || s.text));
   // Head elements the server sent: a navigation swaps these, and leaves
   // alone what scripts added.
@@ -43,7 +47,8 @@
     if (doc.title) document.title = doc.title;
     const next = [...doc.head.children];
     const v = doc.querySelector('script[src*="wisp.js"]')?.src;
-    if (me && v && v != me) send('wisp:stale');
+    const b = doc.querySelector('meta[name=wisp-build]')?.content;
+    if ((me && v && v != me) || (build && b && b != build)) send('wisp:stale');
     served = served.filter((n) => {
       const i = next.findIndex((m) => m.isEqualNode(n));
       if (i < 0) n.remove();
@@ -177,7 +182,7 @@
   function fit(route, path) {
     let got;
     try {
-      got = path.split('/').filter(Boolean).map(decodeURIComponent);
+      got = path.slice(path.startsWith(base) ? base.length : 0).split('/').filter(Boolean).map(decodeURIComponent);
     } catch {
       return null;
     }
@@ -224,7 +229,7 @@
     return (
       url.origin === location.origin &&
       /^https?:$/.test(url.protocol) &&
-      !url.pathname.startsWith('/_app/') &&
+      !url.pathname.startsWith(base + '/_app/') &&
       !a.hasAttribute('download') &&
       (!t || t === '_self') &&
       !/\bexternal\b/.test(a.rel) &&
@@ -323,7 +328,7 @@
   document.addEventListener('wisp:preload', async (e) => {
     const { url, code, done } = e.detail;
     const u = new URL(url, location.href);
-    const res = u.origin === location.origin && !u.pathname.startsWith('/_app/') && (await ahead(u));
+    const res = u.origin === location.origin && !u.pathname.startsWith(base + '/_app/') && (await ahead(u));
     if (code && res?.ok) {
       const m = /id="wisp-live"[^>]*>([^<]*)/.exec(await res.clone().text());
       for (const href of Object.values((m && JSON.parse(m[1]).m) || {})) {

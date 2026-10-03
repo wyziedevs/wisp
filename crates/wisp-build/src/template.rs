@@ -542,8 +542,15 @@ pub(crate) fn under_base(html: &str, base: &str) -> Option<String> {
             .map_or(0, |i| i + 1);
         let boundary = name_at == 0 || b[name_at - 1].is_ascii_whitespace();
         let value = &html[at + 2..];
-        let own = value.strip_prefix(base).is_some_and(|r| r.starts_with(['/', '"', '\'', '?', '#']));
-        if boundary && !own && NAMES.iter().any(|n| html[name_at..at].eq_ignore_ascii_case(n)) {
+        let own = value
+            .strip_prefix(base)
+            .is_some_and(|r| r.starts_with(['/', '"', '\'', '?', '#']));
+        if boundary
+            && !own
+            && NAMES
+                .iter()
+                .any(|n| html[name_at..at].eq_ignore_ascii_case(n))
+        {
             out.push_str(&html[done..at + 2]);
             out.push_str(base);
             done = at + 2;
@@ -555,12 +562,7 @@ pub(crate) fn under_base(html: &str, base: &str) -> Option<String> {
     })
 }
 
-fn parse_class(
-    src: &str,
-    fields: &[Field],
-    class: &str,
-    drawn: bool,
-) -> Result<Template, Error> {
+fn parse_class(src: &str, fields: &[Field], class: &str, drawn: bool) -> Result<Template, Error> {
     let expanded = crate::island::expand(src)?;
     let src = expanded.as_deref().unwrap_or(src);
     let styled = (src.as_bytes().windows(6)).any(|w| w.eq_ignore_ascii_case(b"<style"));
