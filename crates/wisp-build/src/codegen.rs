@@ -519,6 +519,7 @@ fn generate_web(input: &Input) -> Result<(String, String, Web), String> {
         out: String::new(),
         release: input.release,
         users: None,
+        db: false,
     };
     g.modules(&p, &web)?;
     g.servers(&p);
@@ -1543,6 +1544,7 @@ impl Gen {
                 self.users = rust_scan::users_table(&src).map_err(|e| format!("{rel}: {e}"))?;
             }
         }
+        self.db = p.mods.iter().any(|m| m.name == "db");
         // Modules of the app's own (`src/notes.rs`), reachable by name from
         // every route file and as `crate::notes` (see `wisp::app!`).
         self.line(0, "#[doc(hidden)]");
@@ -3214,6 +3216,8 @@ struct Gen {
     release: bool,
     /// The users table `init` names (`db::USERS`), which `cx.user()` reads.
     users: Option<String>,
+    /// There is a `src/db.rs`, whose `pub` items every route file sees.
+    db: bool,
 }
 
 impl Gen {
@@ -3243,6 +3247,7 @@ impl Gen {
         }
         self.line(1, "#[allow(unused_imports)]");
         self.line(1, &format!("use {glob};"));
+        self.db_items(glob);
         let named = rust_scan::name_saved(&src[top..]);
         let tail = named.as_deref().unwrap_or(&src[top..]);
         if m.inline.is_some() {
@@ -3325,6 +3330,16 @@ impl Gen {
         Ok(())
     }
 
+    /// `use super::__mods::db::*;` for a file that sees the app's modules
+    /// (`glob`): what `src/db.rs` makes `pub` needs no `db::`. Its own
+    /// names win over these.
+    fn db_items(&mut self, glob: &str) {
+        if self.db && glob == "super::__mods::*" {
+            self.line(1, "#[allow(unused_imports)]");
+            self.line(1, "use super::__mods::db::*;");
+        }
+    }
+
     /// `code` with its `cx.user()`s given the users table, if it has any.
     fn bound(&self, code: &str, rel: &str) -> Result<Option<String>, String> {
         rust_scan::bind_user(code, self.users.as_deref()).map_err(|e| format!("{rel}: {e}"))
@@ -3347,6 +3362,7 @@ impl Gen {
             self.line(1, "use super::*;");
         } else {
             self.line(1, "use super::__mods::*;");
+            self.db_items("super::__mods::*");
         }
         if !self.release {
             let chunks: Vec<String> = t.t.chunks.iter().map(|c| lit(c)).collect();
@@ -6505,6 +6521,19 @@ mod tests {
         }
         assert_eq!(code.matches("::__call::__ready();").count(), 3, "{code}");
         assert!(!code.contains("C.ready()"), "{code}");
+    }
+
+    #[test]
+    fn db_items_are_in_every_route_file() {
+        let db = ("src/db.rs", "pub fn items() -> Vec<u8> { vec![] }");
+        let page = ("src/routes/+page.wisp", "---\nlet n = items().len();\n---\n{n}");
+        let bare = ("src/routes/a/+page.wisp", "{#each items() as i}{i}{/each}");
+        let code = app("db-glob", &[db, page, bare]).unwrap();
+        let globs = code.matches("use super::__mods::db::*;").count();
+        // The page (its template inherits it) and the page with no block: not `db` itself.
+        assert_eq!(globs, 2, "{code}");
+        let none = app("db-none", &[page]).unwrap();
+        assert!(!none.contains("db::*"), "{none}");
     }
 
     #[test]
