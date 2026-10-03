@@ -87,7 +87,7 @@ Block rules:
 - Route params are locals: `slug: String`, `[id=int]` → `id: u64`,
   `[[lang]]` → `Option<String>`. Even with no block.
 - No `use` lines: prelude = `Cx Response Result Error Email Image Json
-  FromJson Rest Config Upload Cookie Method Value Shared Table Row RateLimit OrStatus KB MB
+  FromJson Rest Config Upload Cookie CookieOptions SameSite Method Value Shared Table Row RateLimit OrStatus Password Reply KB MB
   action remote error invalid model redirect Always Never Ignore` and `src/db.rs`'s `pub` items (local
   names win). `Result` alone = `Result<()>`.
 - `const CACHE: u32 = 60;` (page or `+server.rs`) keeps a GET's answer 60 s
@@ -147,8 +147,8 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
   `minlength`, `type=email`, `min`/`max`); the server checks all; a button
   with `formaction="?/other"` skips them.
 - Each named `<input>`, `<textarea>`, `<select>` of an action form shows what
-  was sent again, else its own value (`value={post.title}`, `value="x"`,
-  `<textarea name="body">{post.body}</textarea>`, `<select name="kind"
+  was sent, else its own value (`value={post.title}`, `<textarea
+  name="body">{post.body}</textarea>`, `<select name="kind"
   value={post.kind}>`), then `<small class="problem">msg</small>` (passwords,
   files: the problem only); `{cx.problem("field")}` puts it elsewhere. Other
   errors → error page. Same-origin checked. Works without JS.
@@ -186,16 +186,14 @@ checked across locales at build. Locale: `[[lang=locale]]`, cookie `lang`,
 `wisp::localize(cx.path(), "fr")`, `wisp::default_locale("fr")?`.
 
 `{#await stats(id)}<p>…</p>{:then s}<p>{s.posts}</p>{:catch e}{e}{/await}`:
-the page goes out at once; each answer follows in the same response as it
-comes, moved in place (no JS: at the end). `f` is a future (not awaited),
-`Send + 'static`: no `cx` or borrowed locals in it or its branches. `v` is a
-`Result`'s `Ok` or the value; `e` the error's text; no `{:catch}`, a
-panic or `WISP_HANDLER_TIMEOUT` → "Something went wrong". Components in
-branches start like the page's (islands too); the page's own `{:x}`/`on:`
-and `cx` can't go in branches; form fields there show their own values.
-gzip when the client takes it, flushed per answer. Not in layouts,
-components, `<head>`, attributes; not with `CACHE`. A page without one is
-answered as ever.
+the page goes out at once; each answer follows in the same response, moved
+in place (no JS: at the end). `f` is a future (not awaited), `Send +
+'static`: no `cx` or borrowed locals in it or its branches. `v` is a
+`Result`'s `Ok` or the value; `e` the error's text; no `{:catch}`, a panic
+or `WISP_HANDLER_TIMEOUT` shows "Something went wrong". Components in
+branches start like the page's (islands too); the page's `{:x}`/`on:` and
+`cx` can't go in branches. Not in layouts, components, `<head>`,
+attributes; not with `CACHE`.
 
 Holes can't go in `on*` attrs, tag names, `javascript:` URLs, SVG animation
 values or `<meta http-equiv>`; `<script>`/`<style>` bodies have none.
@@ -210,11 +208,12 @@ Use: `<Card title={post.title} count={3} featured>kids</Card>`. Props are
 checked at build (no type = `&str`; none = required). No `---` block in
 components. `{@element "x-card"}` first also builds it as a custom element
 (`/_app/c/el/x-card.js`): `<x-card title="Hi">kids</x-card>` works on any site.
-In Rust (a mail body): `Card::html("Hi", 3, false)` is the HTML string; every prop is
-an argument, no children (none for a component named like a prelude type: `Table`, `Box`). Plugin crates: `[package.metadata.wisp] use = ["kit"]` in
-Cargo.toml copies the dependency's `wisp/routes` and `wisp/components` into the app at
-build (to `src/routes/(kit)/`, `src/components/kit/`, git-ignored); the app's own component of
-the same name wins. A `path` dependency or one in the registry; no git dependency.
+In Rust (a mail body): `Card::html("Hi", 3, false)` is the HTML string: every
+prop an argument, no children (none for a component named like a prelude type,
+`Table`, `Box`). Plugin crates: `[package.metadata.wisp] use = ["kit"]` in
+Cargo.toml copies the dependency's `wisp/routes` and `wisp/components` into
+`src/routes/(kit)/` and `src/components/kit/` at build (git-ignored; the
+app's own same-named component wins; `path` or registry dependency, not git).
 
 ## Markdown pages
 
@@ -296,7 +295,7 @@ as for actions. Returns: a `#[model]`/`Json` value → 200; nothing → 204;
 for endpoints (and unmatched paths under a prefix of only endpoints), `/api`,
 apps with no page, and clients preferring JSON to HTML or sending no `Accept`
 (unless navigating); `error` = your message, else the status name. Else the
-`+error.wisp`, else a dark default page (`wisp dev`: also request, detail, home link).
+`+error.wisp`, else a dark default page, the status and a line (`wisp dev`: also request, detail, home link).
 `const BODY_LIMIT: usize = 20 * wisp::MB;`. Rows live in `WISP_DATA` log
 files; `wisp::store(MyDb)` in `init` uses any DB; edge: env
 `WISP_STORE=d1:DB|deno-kv|libsql://…`.
@@ -400,7 +399,7 @@ no-wait fast path off every route.
 
 - Serve extras (docs/serve.md): embedded files gzip + `Range`; pages get
   `nosniff` and `referrer-policy` (`WISP_HSTS=on`, `WISP_SECURE_HEADERS=off`);
-  `/_wisp/health`; `WISP_HANDLER_TIMEOUT=secs` â†’ 503.
+  `/_wisp/health`; `WISP_HANDLER_TIMEOUT=secs` is a 503.
 
 ## Gotchas
 
@@ -417,6 +416,7 @@ no-wait fast path off every route.
 
 ## Commands
 
+<<<<<<< HEAD
 `wisp new app` Â· `wisp dev` (hot reload keeps `$state`; `Alt+Shift+W`
 devtools; `/_wisp/components` workshop of `*.stories.wisp`) Â· `wisp test
 [--browser]` Â· `wisp check [--types]` Â· `wisp fmt [--check]` Â· `wisp build`
@@ -430,3 +430,18 @@ add button dialog` (accessible components into `src/components`) Â· `wisp lsp`
 Â· `wisp update-docs` Â· `wisp mcp` (`claude mcp add wisp -- wisp mcp`). Docs:
 README.md, docs/design.md, client.md, api.md, deploy.md, embed.md, tokens.md,
 or llms-full.txt (this file, client, api, deploy and embed).
+=======
+`wisp new app [--template demo|minimal|api] [--[no-]tailwind|git|install] [-y]`,
+`wisp dev [--port N]` (hot reload keeps `$state`; `Alt+Shift+W` devtools;
+`/_wisp/components` workshop of `*.stories.wisp`), `wisp test [--browser]`,
+`wisp check [--types]`, `wisp fmt [--check]`, `wisp build` (`--static`,
+`--spa`, `--docker [--force]`, `--target cloudflare|deno|vercel|netlify|node|bun|lambda|native`,
+`--client ts [--out f]`, `--sourcemap`), `wisp deploy init <host>` (GitHub
+Actions workflow for cloudflare deno vercel netlify lambda fly pages; or
+`fly|render|railway`: that host's config), `wisp routes`, `wisp new-route
+/path page|server|rest`, `wisp add|remove pkg`, `wisp ui add|list button
+dialog` (accessible components into `src/components`), `wisp lsp`, `wisp
+update-docs`, `wisp mcp` (`claude mcp add wisp -- wisp mcp`). Docs: README.md,
+docs/design.md, client.md, api.md, deploy.md, embed.md, tokens.md, or
+llms-full.txt (this file, client, api, deploy and embed).
+>>>>>>> 941a5e5 (Shrink the AI-facing docs and fix stale facts (commands, prelude, mojibake))

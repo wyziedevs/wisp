@@ -1,60 +1,42 @@
 # Client code
 
-Wisp pages work without JavaScript. When you want a page to react in the
-browser, you add a script and a few directives to the same `.wisp` file. No
-build step, no bundler, no framework to load.
-
-**The one rule:** braces `{…}` are Rust and run on the server. A quoted value
-on a directive, and `{:…}`, are JavaScript and run in the browser.
+Pages work without JavaScript; a script and directives in the same `.wisp`
+file add behavior. No bundler. `{…}` is Rust (server); a quoted directive
+value and `{:…}` are JavaScript (browser).
 
 ```html
 <button on:click="count++">Clicked {:count} times</button>
-
 <script>
   let count = 0
 </script>
 ```
 
-Turn JavaScript off and the server's HTML is still there. The script only
-adds behavior.
-
 ## The script
+A bare `<script>` (no attributes; one per file) works in pages, layouts and
+components and runs once per place the file is shown. `<script type|src>`
+stays plain HTML. Errors point at the `.wisp` line.
 
-A bare `<script>` (no attributes) is the file's client script. It works in
-pages, layouts and components, and runs once for each place the file is shown.
+- Top-level `let`s are state: assigning one, or changing an object, array,
+  `Map` or `Set` in it (`todos.push(t)`, `todo.done = true`), redraws. A
+  `let` set to a string, number or boolean and never assigned is a constant.
+- `import` lines move to the module head (`import c from 'https://esm.sh/canvas-confetti'`).
+- npm: `wisp add canvas-confetti[@1.2.3|tag]` pins it in `package.json`
+  (`wisp remove x`; no Node); `import c from 'canvas-confetti'` (also
+  `'pkg/sub'`, `'@scope/pkg'`) in scripts and `src/lib`. Dev loads esm.sh;
+  `wisp build` downloads into `.wisp/npm` and the binary serves
+  `/_app/c/npm/`. A package not in `package.json`, or a range (`^1.0`), is a
+  build error.
 
-- Top-level `let`s are the state. Assign to one, or change an object,
-  array, `Map` or `Set` in it (`todos.push(t)`, `todo.done = true`,
-  `seen.add(id)`), and the page updates. A `let` set to a string, number
-  or boolean and never assigned again is a plain constant: it costs nothing.
-- `let total = $derived(price * qty)` is a value worked out from others.
-- At most one script per file.
-- `import` lines at the top are moved to the module's head, so
-  `import confetti from 'https://esm.sh/canvas-confetti'` works.
-- npm packages: `wisp add canvas-confetti` pins it in `package.json`
-  (`@1.2.3` or a tag; `wisp remove x`; no Node), then `import confetti
-  from 'canvas-confetti'` (also `'pkg/sub'`, `'@scope/pkg'`), in scripts
-  and `src/lib`. Dev loads it from esm.sh; `wisp build` downloads it once
-  into `.wisp/npm` and the binary serves it from `/_app/c/npm/`: no CDN.
-  A package `package.json` lacks, or one with a range (`^1.0`) rather
-  than a version, is a build error.
-- Errors point at the real `.wisp` file and line (see [Source maps](#source-maps)).
+### Runes
 
-A `<script>` with `type` or `src` stays plain HTML, as before.
-
-### Runes and fine-grained updates
-
-Every read of state in a binding is tracked. A write redraws only the
-bindings that read what changed: no virtual DOM, no diffing, and a
-component's script runs once, never again on an update. Changes made
-together are drawn together, in a microtask.
+A write redraws only the bindings that read what changed (no virtual DOM);
+the script runs once; writes batch in a microtask.
 
 ```html
 <p>{:done} of {:todos.length} done</p>
 {:#each todos as todo (todo.id)}
   <li class:done="todo.done" on:click="todo.done = !todo.done">{:todo.text}</li>
 {:/each}
-
 <script>
   let todos = $state([{ id: 1, text: 'Tea', done: false }])
   let done = $derived(todos.filter((t) => t.done).length)
@@ -62,282 +44,150 @@ together are drawn together, in a microtask.
 </script>
 ```
 
-Clicking one item writes one class and one number, nothing else. And
-`x === e` in markup, for a state variable `x`, runs again only where the
-answer changes: with `class:on="selected === row.id"`, a new `selected`
-redraws two rows, not the list. An item's key is tracked too: change it in
-place and the item moves.
-
 | Rune | Meaning |
 |---|---|
-| `let x = $state(v)` | State, deep: objects, arrays, maps and sets track each key. A plain `let x = v` is the same. |
-| `$state.raw(v)` | State that changes only when assigned. |
-| `$state.snapshot(x)` | A plain copy, for `structuredClone` or a library. |
-| `$derived(expr)`, `$derived.by(fn)` | Worked out when read after an input changed. Assigning to it is a build error. |
-| `$effect(fn)` | Runs after the DOM is drawn, and again when what it read changes. It may return a cleanup. |
-| `$effect.pre(fn)` | The same, before the DOM is drawn. |
-| `let { a, b = 1, c: d, ...rest } = $props()` | In a component: its props, with browser defaults (for a prop not given, or `null`); `c: d` reads prop `c` as `d`, `...rest` holds the others. Without `{@props}` this is all a component needs (see [Client components](#client-components)). |
-| `$bindable(default)` | A prop a parent may `bind:`. Once a component uses `$props()`, only these can be bound. |
-| `$inspect(a, b)` | Logs them as they change. Gone in release builds. |
-| `$cart` | For a store `cart`: `cart.value`, tracked. `$cart = x` sets it. |
+| `let x = $state(v)` | Deep state (a plain `let x = v` is the same). |
+| `$state.raw(v)` | Changes only when assigned. |
+| `$state.snapshot(x)` | Plain copy. |
+| `$derived(expr)`, `$derived.by(fn)` | Recomputed when read after an input changed; assigning is a build error. |
+| `$effect(fn)` | After the DOM is drawn and when what it read changes; may return a cleanup. |
+| `$effect.pre(fn)` | Same, before the DOM is drawn. |
+| `let { a, b = 1, c: d, ...rest } = $props()` | Component props with browser defaults (absent or `null`); needs no `{@props}`. |
+| `$bindable(default)` | A prop a parent may `bind:`; with `$props()` only these bind. |
+| `$inspect(a, b)` | Logs on change; gone in release. |
+| `$cart` | Store `cart`'s `.value`, tracked; `$cart = x` sets it. |
 
-A class's `$state` fields make its instances state too:
-
-```js
-class Todo {
-  done = $state(false)
-  label = $derived(this.done ? 'done' : 'open')
-}
-```
-
-`untrack(fn)` reads without tracking. A rune in the wrong place (in markup,
-inside a block, misspelled) is a build error at its line.
+A class's `$state`/`$derived` fields make its instances state. `untrack(fn)`
+reads untracked. A misplaced rune is a build error. Deep state tracks plain
+objects, arrays, maps, sets and such classes; for a `Date` or other
+instance assign again (`d = d`). `x === e` redraws only where the answer
+changes (`class:on="selected === row.id"` redraws two rows).
 
 ## TypeScript
-
-`<script lang="ts">` is the client script in TypeScript. So are
-`src/lib/*.ts` (`import { f } from '$lib/x'`, no extension needed) and
-`+page.ts`.
-
-```html
-<script lang="ts">
-  import { twice, type Num } from '$lib/util'
-  interface Point { x: number; y: number }
-  let n: Num = twice(2 as Num)
-  const p: Point = { x: 1, y: 2 }
-</script>
-```
-
-There is no compiler to install: the build strips the types, the way Node's
-`--experimental-strip-types` does, and writes spaces where they were, so
-every line and column stays (errors and source maps point at the file).
-Annotations, `interface`, `type`, `as`, `satisfies`, generics, `!`,
-`declare`, `import type`, `abstract`, access modifiers, `implements`,
-overloads and optional `?` all go. What TypeScript would turn into code is
-a build error that says what to write instead:
-
-| Not erasable | Write |
-|---|---|
-| `enum Color { Red }` | `const Color = { Red: 'red' } as const` |
-| `namespace N { export const x = 1 }` | a module, `src/lib/n.ts` |
-| `constructor(private x: number)` | `x: number; constructor(x: number) { this.x = x }` |
-| `import fs = require('fs')` | `import fs from 'fs'` |
-
-The build only strips. `wisp check --types` checks the types too, with the
-app's own TypeScript (`npm install -D typescript`, or `WISP_TSC` naming a
-`tsc`; without Node or it, it says so and skips). Server values are typed
-by the Rust compiler, no annotations needed: `let items = vec![Item {..}]`
-is `Item[]`, `let n = 3` is `number`, a `#[derive(Json)]` type an
-interface. For it the app is built once more (`--features wisp/types`),
-and prints the types without running a page. A value whose type has no
-TypeScript (a `Json` written by hand) is `unknown`, with a note. Errors
-point at the `.wisp` file and line.
+`<script lang="ts">`, `src/lib/*.ts` (`'$lib/x'`) and `+page.ts`. Types are
+stripped in place (lines and columns stay); no compiler. Code-producing TS
+is a build error saying what to write: `enum Color { Red }` ->
+`const Color = { Red: 'red' } as const`; `namespace` -> a module;
+`constructor(private x: number)` -> `x: number; constructor(x: number) { this.x = x }`;
+`import fs = require('fs')` -> `import fs from 'fs'`.
+`wisp check --types` also type-checks with the app's TypeScript
+(`npm install -D typescript`, or `WISP_TSC` naming a `tsc`; else skipped).
+Server values are typed by Rust (`Vec<Item>` is `Item[]`, a
+`#[derive(Json)]` type an interface; hand-written `Json` is `unknown`).
 
 ## Environment variables
-
-`env.PUBLIC_NAME` in browser code (a script, a directive, `src/lib`,
-`+page.js`) is the variable `PUBLIC_NAME`, written in when the app is
-built: there is no `env` object in the browser.
-
-```html
-<script>
-  const r = await fetch(env.PUBLIC_API_URL + '/items')
-</script>
-```
-
-```sh
-# .env, at the app's root (next to Cargo.toml)
-PUBLIC_API_URL=https://api.example.com
-```
-
-- The values come from the build's environment, and from `.env` for the
-  names it lacks (a name given twice is its last value). `wisp dev`
-  rebuilds when `.env` changes; a release build has the values it was
-  built with.
-- Only `PUBLIC_` names reach the browser. `env.DATABASE_URL` in browser
-  code is a build error, so a secret can't leak: read it on the server,
-  `wisp::env("DATABASE_URL")` (the process's environment, else `.env`'s,
-  read when the server starts).
-- A `PUBLIC_` name that is not set is a build error, not `undefined` at
-  runtime. Set it, even to nothing (`PUBLIC_FLAG=`).
-- `env` read whole, or `env[name]`, is an error too: names are filled in
-  one at a time. A variable or parameter of your own named `env` is just
-  that.
+`env.PUBLIC_NAME` in browser code (script, directive, `src/lib`, `+page.js`)
+is written in at build (no `env` object exists). Values: the build's
+environment, then `.env` for names it lacks; `wisp dev` rebuilds when `.env`
+changes. Only `PUBLIC_` names reach the browser (`env.DATABASE_URL` is a
+build error); an unset one is a build error too, so set it even empty
+(`PUBLIC_FLAG=`). `env` read whole or `env[name]` is an error; a variable of
+your own named `env` is just that. Server: `wisp::env("K")`.
 
 ## Translations
-
-`t('cart.items', n)` in a script or directive shows a message of
-`src/locales` (see [design.md](design.md#translations)), with no import.
-The key is checked at build; the page sends the messages its scripts use,
-in its locale, and nothing else. Several values go in an object:
-`t('hi', { name, count: n })`. A `t` of your own is just that; `src/lib`
-code cannot call it (pass it the text).
+`t('cart.items', n)` or `t('hi', { name, count: n })` in a script or
+directive, no import; keys checked at build; the page sends only the
+messages its scripts use. `src/lib` code can't call `t`. Message files:
+docs/design.md.
 
 ## Directives
 
 | Syntax | Meaning |
 |---|---|
-| `on:click="count++"` | Event handler. A bare name (`on:click="press"`) is called with the event. |
-| `bind:value="q"` / `bind:checked="done"` | Two-way binding. `bind:value` alone binds `value`. A name no script, import or server value declares is declared by the binding, as state (`let q`): a live search needs no `<script>`. |
-| `bind:group="size"` | Radios (a value) and checkboxes (an array) with one `name`. |
-| `bind:files`, `bind:open`, `bind:innerHTML`, `bind:currentTime`, `bind:paused`, … | Any property; the element's own event keeps it current. |
-| `bind:clientWidth="w"` | Sizes (`clientWidth/Height`, `offsetWidth/Height`, `contentRect`), from a ResizeObserver. |
-| `bind:this="el"` | Puts the element in `el`. |
-| `:hidden="!open"` | Live attribute. `false`, `null`, `undefined` remove it. |
+| `on:click="count++"` | Handler; a bare name (`on:click="press"`) is called with the event. |
+| `bind:value="q"` / `bind:checked="done"` | Two-way. `bind:value` alone binds `value`. An undeclared name is declared as state (`let q`): live search needs no `<script>`. |
+| `bind:group="size"` | Radios (value) and checkboxes (array) sharing a `name`. |
+| `bind:files` `bind:open` `bind:innerHTML` `bind:currentTime` `bind:paused`… | Any property; the element's own event keeps it current. |
+| `bind:clientWidth="w"` | Sizes (`clientWidth/Height`, `offsetWidth/Height`, `contentRect`). |
+| `bind:this="el"` | Element into `el`. |
+| `:hidden="!open"` | Live attribute; `false`, `null`, `undefined` remove it. |
 | `:text="name"` | Live text. |
-| `class:open="isOpen"` | Toggle a class. `class:open` alone reads `open`. |
-| `style:--x="x"` | Set a style property. `style:color` alone reads `color`. |
-| `class={:['card', { on }]}` | Names from strings, arrays and the keys of objects whose value holds. |
+| `class:open="isOpen"` | Toggle a class; `class:open` alone reads `open`. |
+| `style:--x="x"` | Style property; `style:color` alone reads `color`. |
+| `class={:['card', { on }]}` | Names from strings, arrays, truthy object keys. |
 | `style={:{ color, fontSize: '2em' }}` | Properties from an object. |
-| `{:...attrs}` | Every key of an object an attribute (an `on…` function a listener). |
-| `transition:fade` | Animate in and out: `fade`, `slide`, `scale`, `fly`, `blur`. Takes options: `transition:fly="{ y: 20 }"`. |
-| `in:fly` / `out:fade` | Only in, or only out. |
-| `transition:spin` | Your function: `spin(el, options, { direction })` returns `{ duration, delay, easing, css: (t, u) => '…' }` or `{ tick(t, u) }`. |
-| `use:tip="'Hello'"` | Call `tip(el, 'Hello')`, and its `update` when the value changes. It may return a cleanup function, or `{ update, destroy }`. |
-| `use:portal="'#modal'"` | Move the element there (bare: to `<body>`). |
+| `{:...attrs}` | Each key an attribute (an `on…` function a listener). |
+| `transition:fade` | `fade slide scale fly blur`, options `transition:fly="{ y: 20 }"`. |
+| `in:fly` / `out:fade` | Only in / only out. |
+| `transition:spin` | Your `spin(el, options, { direction })` returning `{ duration, delay, easing, css: (t, u) => '…' }` or `{ tick(t, u) }`. |
+| `use:tip="'Hello'"` | Calls `tip(el, 'Hello')` and its `update` on change; may return a cleanup or `{ update, destroy }`. |
+| `use:portal="'#modal'"` | Move the element there (bare: `<body>`). |
 | `animate:flip` | Animate moves in a keyed `{:#each}`. |
 
 ```html
 <input bind:value="query" on:keydown.enter="search" on:keydown.escape="query = ''">
-<ul :hidden="!open" transition:slide>…</ul>
-<div class:dark="theme === 'dark'" style:--hue="hue"></div>
-```
-
-A bound input starts from what the server rendered, or what the visitor had
-already typed before the script started.
-
-### Event modifiers
-
-`.prevent .stop .once .self .capture .passive`, `.window` and `.document` to
-listen there, `.outside` (fires for events outside the element),
-`.debounce` or `.debounce.300ms` (default 250 ms), key names (`.enter
-.escape .space .tab .backspace .delete .up .down .left .right .home .end
-.pageup .pagedown`, or a single letter or digit) and `.ctrl .shift .alt
-.meta`. An unknown modifier is a build error that lists the valid ones.
-
-```html
 <div on:click.outside="open = false">…</div>
 <input on:input.debounce.300ms="search()">
 <div on:keydown.ctrl.s.prevent.window="save">…</div>
 ```
 
-## Server values in the browser
+### Event modifiers
 
-Any Rust value your client code mentions is sent to the browser. Only the
-parts it mentions.
+`.prevent .stop .once .self .capture .passive`, `.window`
+and `.document` (listen there), `.outside`, `.debounce[.300ms]` (250 ms),
+keys (`.enter .escape .space .tab .backspace .delete .up .down .left
+.right .home .end .pageup .pagedown`, a letter or digit), `.ctrl .shift
+.alt .meta`. Unknown ones are a build error. A bound input starts from what
+the server rendered or the visitor already typed.
+
+## Server values in the browser
+Any Rust value client code mentions is sent, only the mentioned parts.
 
 ```html
 <script>
-  let guess = data.guess          // the script's own `guess`, from the server's
+  let guess = data.guess          // the script's `guess`, from the server's
   const total = items.length      // the page's `let items` (or `data.items`)
 </script>
-
-{#each keys as key}
-  <button on:click="type(key.letter)">{key.letter}</button>   <!-- sends key.letter only -->
-{/each}
+{#each keys as key}<button on:click="type(key.letter)">{key.letter}</button>{/each}   <!-- sends key.letter only -->
 ```
 
-- A page's or layout's Rust names (its block's `let`s, route parameters,
-  `Data` fields) by name, or as `data.x.y`. A name the script declares is
-  the script's; a browser global (`document`, `location`, `event`, `fetch`…)
-  stays the browser's, and its Rust value is `data.location`.
-- Props in components.
-- Loop, `if let` and `{@const}` values used in a directive.
-
-A live search is then the input and the list:
-
-```html
----
-let items = db::items().await;
----
-<input bind:value="q" placeholder="Search">
-{:#each items.filter((i) => matches(i.name, q)) as item}<p>{:item.name}</p>{:/each}
-```
-
-`matches(text, q)` (no import) is whether `text` has `q` in it, whatever
-the case; an empty `q` matches everything.
-
-Values are sent as JSON through the `wisp::Json` trait. It is implemented for
-numbers, strings, `bool`, `Option`, `Vec`, arrays, tuples and maps. For your
-own types, derive it:
-
-```rust
-#[derive(Json)]
-struct Item { name: String, price: u32 }
-```
-
-A value that can't be sent is a compile error that names `wisp::Json`. A
-component's prop that is also a script variable is a build error. A
-parameter or a local variable of the same name is just that: in
-`items.map(data => data.x)` or `function f({ data }) {}`, `data` is not the
-page's, and nothing is sent for it.
+- Sent: a page's or layout's Rust names (block `let`s, route params, `Data`
+  fields) by name or `data.x.y`; component props; loop, `if let` and
+  `{@const}` values used in a directive. A name the script declares is the
+  script's; a browser global (`document`, `location`, `event`, `fetch`)
+  stays the browser's (the Rust one is `data.location`); a parameter or
+  local of that name (`items.map(data => data.x)`) is just that.
+- Sent as JSON via `wisp::Json`: numbers, strings, `bool`, `Option`, `Vec`,
+  arrays, tuples, maps; own types `#[derive(Json)]`. An unsendable value is
+  a compile error naming `wisp::Json`; a prop that is also a script
+  variable is a build error.
+- `matches(text, q)` (no import): case-insensitive contains; empty `q`
+  matches all. Live search: `<input bind:value="q">` then
+  `{:#each items.filter((i) => matches(i.name, q)) as item}<p>{:item.name}</p>{:/each}`.
 
 ## `{:expr}` holes
 
-`{:expr}` is a JavaScript expression that stays live anywhere in your markup.
-
-```html
-<p>Hi {:name}, you have {:items.length} items.</p>
-<p class="card {:mood}" data-id={:item.id}>…</p>
-<a href={:url}>Link</a>
-```
-
-When the server can work the value out, it writes it too, so the first paint
-is right (see [First paint](#first-paint)). Mixing `{…}` and `{:…}` in one
-attribute value is a build error.
+A live JS expression anywhere in markup: `<p>Hi {:name}</p>`,
+`<p class="card {:mood}" data-id={:item.id}>`, `<a href={:url}>`. Mixing
+`{…}` and `{:…}` in one attribute value is a build error.
 
 ## Client blocks
 
-Lists and conditions in the browser. Same shape as the server blocks, with a
-colon.
-
 ```html
-{:#if open}
-  <p>Open</p>
-{:else if name}
-  <p>Named {:name}</p>
+{:#if open}<p>Open</p>{:else if name}<p>{:name}</p>{:else}<p>Closed</p>{:/if}
+
+{:#each items as item, i (item.id)}
+  <li animate:flip>{:i}: {:item.text}</li>
 {:else}
-  <p>Closed</p>
-{:/if}
+  <li>Nothing</li>
+{:/each}
 
-<ul>
-  {:#each items as item, i (item.id)}
-    <li animate:flip>{:i}: {:item.text}</li>
-  {:else}
-    <li>Nothing here</li>
-  {:/each}
-</ul>
-```
+{:#key user.id}<Profile id={:user.id} />{:/key}      <!-- redrawn when it changes -->
 
-`(item.id)` is the key. Without it, items are matched by position.
-`{:#each list}` alone draws its content once per item, and `{:#each 3 as
-i}` counts. There is also the `<template each="item, i in list">` and
-`<template if="cond">` form.
-
-```html
-{:#key user.id}<Profile id={:user.id} />{:/key}      <!-- drawn afresh when it changes -->
-
-{:#await results}
-  <p>Loading…</p>
-{:then list}
-  <p>{:list.length} found</p>
-{:catch error}
-  <p>{:error.message}</p>
-{:/await}
+{:#await results}<p>Loading…</p>{:then list}{:list.length}{:catch error}{:error.message}{:/await}
 {:#await p then v}…{:/await}                        <!-- no pending branch -->
 
-{:#try}
-  <Chart data={:points} />                          <!-- an error drawing it… -->
-{:catch error}
-  <p>Chart failed: {:error.message}</p>             <!-- …shows this instead -->
-  <button on:click="reset()">Retry</button>         <!-- draws the chart again -->
+{:#try}<Chart data={:points} />{:catch error}
+  <p>{:error.message}</p><button on:click="reset()">Retry</button>
 {:/try}
 ```
 
-The server paints a key block, an await block's pending branch and a try
-block's body, as it does the others.
+`(item.id)` is the key (else by position). `{:#each list}` alone draws once
+per item; `{:#each 3 as i}` counts. Also `<template each="item, i in list">`
+and `<template if="cond">`. The server paints key blocks, an await's pending
+branch and a try body.
 
-### Special elements
+Special elements (each takes directives for its target, closes itself):
 
 ```html
 <wisp:window on:keydown.escape="open = false" bind:innerWidth="w" />
@@ -346,181 +196,106 @@ block's body, as it does the others.
 <wisp:element this={:level > 1 ? 'h3' : 'h2'} class="title">{:text}</wisp:element>
 ```
 
-`<wisp:window>`, `<wisp:document>` and `<wisp:body>` take directives for
-that target, and close themselves. `<wisp:element>` takes its tag from
-`this`; the server writes it when it knows it.
-
-### Snippets in the browser
-
-`{:@render name(args)}` draws a `{#snippet}` of the file in the browser,
-inside a client block or anywhere text goes. The arguments are JavaScript,
-and the snippet's parameters are plain names its body reads in `{:…}`:
+Snippets: `{:@render name(args)}` draws a file's `{#snippet}` in the browser
+(args are JS; parameters are plain names read in `{:…}`); `{@render}` still
+works on the server.
 
 ```html
 {#snippet chip(tag)}<b class="chip">{:tag}</b>{/snippet}
-
 {:#each tags as tag (tag)}{:@render chip(tag)}{:/each}
 ```
 
-Each parameter is a one-item `{:#each}` around the body, so the server
-paints it when it knows the argument. The same snippet can still be
-rendered on the server with `{@render chip(x)}`.
-
 ### First paint
 
-When the server knows what a block, a component, a `{:…}` or a boolean
-attribute directive (`:hidden="!open"` with `let open = false`) shows, it
-renders it into the page (so no static `hidden` is needed next to it):
-people see it before the JavaScript loads, and
-without JavaScript at all. The browser then takes those nodes over (no
-flicker, nothing drawn twice) and keeps them live. The server knows:
-
-- server values: a page's Rust names (`items`, `data.x`), props, Rust loop values;
-- literals: `0`, `'text'`, `true`, `null`, `[1, 2]`, `{ id: 1 }`;
-- script variables first set to one of those: `let todos = data.todos`;
-- an `{:#each}`'s item and index, inside it;
-- `!`, `&&`, `||` and `.length` of those.
-
-Anything else (a call, a sum, a comparison, a `+page.js` page's `data`) is
-left to the browser, which draws that part when it starts. If a script
-changes a value before it starts, the browser corrects what the server drew.
+The server renders what it can know into the page (works before JS and
+without it); the browser takes those nodes over and keeps them live (a
+script changing a value first corrects it). Known: server values, props,
+Rust loop values; literals (`0 'text' true null [1,2] {id:1}`); script
+variables first set to those (`let todos = data.todos`); an `{:#each}`
+item/index inside it; `!`, `&&`, `||`, `.length` of those; a boolean
+directive like `:hidden="!open"` with `let open = false`. A call, sum,
+comparison or a `+page.js` page's `data` is left to the browser. Live
+attributes (`:class`, `class="a {:b}"`) keep static text until it starts.
 
 ## Client components
-
-A component inside a client block, or given a `{:…}` value, a `bind:` or an
-`on:`, is drawn by the browser.
+A component inside a client block, or given `{:…}`, `bind:` or `on:`, is
+drawn by the browser.
 
 ```html
 {:#each names as name (name)}
-  <Item label={:name} bind:count="counts[name]" on:bump="bumped = event">
-    <b>{:name}!</b>
-  </Item>
+  <Item label={:name} bind:count="counts[name]" on:bump="bumped = event"><b>{:name}!</b></Item>
 {:/each}
 ```
-
 ```html
 <!-- src/components/Item.wisp -->
 {@props label: &str, count: i32 = 0}
 <button on:click="count++; emit('bump', label)">{:label}: {:count}</button>
 ```
 
-- Props are browser values. A `{…}` Rust prop there is an error.
-- `{:...props}` gives each key of an object as a prop, where it stands:
-  `<Item {:...item} label="x" />` (`label` wins).
-- `bind:count` writes back to the parent.
-- `emit('bump', x)` fires the parent's `on:bump`; the handler sees `x` as `event`.
-- A component drawn in the browser can only use text, directives, `{:…}`,
-  client blocks and `{@render children()}`. Server code in it is a build error.
-- A component may render itself, as a tree view does, inside an `{:#if}` or
-  `{:#each}` that ends; with nothing around it, it is a build error. Nesting
-  stops at 64 levels in the browser (and the server paints 32).
-- `setContext(key, value)` and `getContext(key)` share values with
-  descendants. `const [getUser, setUser] = context()` (in a script or a
-  lib module) makes a pair with a key of its own; both work as a script
-  starts.
-
-```html
-<!-- src/components/Tree.wisp -->
-{@props node: &str}
-<li>{:node.name}
-  <ul>{:#each node.kids as kid (kid.name)}<Tree node={:kid} />{/each}</ul>
-</li>
-```
-
-The Rust type of a prop only matters where Rust renders the component; a
-component only the browser draws can use any `Json` type, such as `&str`.
-
-A component whose props are browser values needs no `{@props}` at all:
-`$props()` says what it takes. Each is optional, and any `Json` value; the
-server paints a literal default.
+- Props are browser values (a `{…}` Rust prop is an error);
+  `{:...props}` spreads an object (`<Item {:...item} label="x" />`, `label`
+  wins). `bind:count` writes back to the parent. `emit('bump', x)` fires the
+  parent's `on:bump`; the handler sees `x` as `event`.
+- Only text, directives, `{:…}`, client blocks and `{@render children()}`;
+  server code in it is a build error. It may render itself (tree view)
+  inside an `{:#if}`/`{:#each}` (bare is a build error); depth stops at 64
+  in the browser, 32 on the server.
+- `setContext(key, value)`/`getContext(key)` share with descendants;
+  `const [getUser, setUser] = context()` makes a keyed pair.
+- A prop's Rust type matters only where Rust renders the component; a
+  browser-only one takes any `Json` type. With `$props()` (no `{@props}`)
+  every prop is optional and Rust shows it as the browser would; declare it
+  in `{@props}` to use it in Rust (`{#if}`, methods).
 
 ```html
 <!-- src/components/Pill.wisp -->
 <span class={:['pill', tone]} {:...rest}>{:text}</span>
-
 <script>
   let { label: text, tone = 'plain', ...rest } = $props()
 </script>
 ```
-
-```html
-<Pill label="new" tone="warm" title="Just in" />      <!-- title goes to rest -->
-```
-
-Where Rust renders it, such a prop shows as the browser would show it
-(`{label}`, `title={label}`); to work with it in Rust (`{#if}`, a method),
-declare it in `{@props}` with its type.
+`<Pill label="new" tone="warm" title="Just in" />` (`title` goes to `rest`).
 
 ## Custom elements
 
-`{@element "x-card"}` first in a component builds it as a custom element
-too, at `/_app/c/el/x-card.js`. Any site uses it with one script tag:
-
-```html
-<!-- src/components/Card.wisp -->
-{@element "x-card"}
-{@props title: &str, count: u32 = 0, featured: bool = false}
-<h2>{:title}{:#if featured} ★{:/if}</h2>
-<button on:click="count++">{:count}</button>
-{@render children()}
-<style>h2 { color: teal }</style>
-```
-
-```html
-<!-- any page, on any site -->
-<script type="module" src="https://app.example/_app/c/el/x-card.js"></script>
-<x-card title="Hi" count="3" featured>Kids</x-card>
-```
-
-- Each prop is an attribute (`snake_case` as `snake-case`) and a property.
-  An attribute is read as the prop's Rust type: a number, a `bool`
-  (present is true, `"false"` false), text, or else JSON (`tags='["a"]'`).
-  A removed attribute goes back to the default.
-- It draws in an open shadow root, with its scoped `<style>` and those of
-  the components it draws. `{@render children()}` is a `<slot>`.
-- The browser draws it, so its markup is browser code (as a client
-  component's) and its defaults are literals; both are build errors
-  otherwise. The app still renders `<Card>` itself, server first.
-- Its module and what it imports allow any origin
-  (`access-control-allow-origin: *`), so another site can load them; only
-  an app with an element sends that header. It loads `live.js`, not
-  `wisp.js`.
+`{@element "x-card"}` first in a component also builds it as a custom
+element at `/_app/c/el/x-card.js` (AGENTS.md has the form). Any site:
+`<script type="module" src="https://app.example/_app/c/el/x-card.js"></script>`
+then `<x-card title="Hi" count="3" featured>Kids</x-card>`. Each prop is an
+attribute (`snake_case` as `snake-case`) and property, read as its Rust type
+(number; `bool`: present is true, `"false"` false; text; else JSON
+`tags='["a"]'`); removing it resets the default. Open shadow root with
+scoped `<style>`s; `{@render children()}` is a `<slot>`. Markup is browser
+code and defaults are literals (build errors otherwise); the app still
+renders `<Card>` server first. Its module sends `access-control-allow-origin:
+*` and loads `live.js`, not `wisp.js`.
 
 ## State helpers
 
-Available inside any client script. No imports.
+In any client script, no imports.
 
 ```js
-let double = $derived(count * 2)                   // {:double}, kept current
-
 watch(() => data.id, (id) => { load(id) })         // when data.id changes
-effect(() => { load(id) }, () => [id])             // at the start, and when id changes
-                                                   // (return a function to clean up)
+effect(() => { load(id) }, () => [id])             // at start and when id changes (return cleanup)
 onMount(() => { ready = true })                    // may return a cleanup
 onDestroy(() => socket.close())
-
-setInterval(() => n++, 1000)                       // cleaned up for you
+setInterval(() => n++, 1000)                       // also setTimeout, requestAnimationFrame,
+                                                   // addEventListener: stopped for you
 listen('/events', (data) => { last = data })       // server-sent events
-await tick()                                       // wait for the redraw
+await tick()                                       // after the redraw
 ```
-
-`setTimeout`, `setInterval`, `requestAnimationFrame` and `addEventListener`
-stop when the component goes away.
 
 ### Shared state
 
-A store is a value that outlives one component, and even navigation.
-Put it in `src/lib/`:
+A store outlives components and navigation. In `src/lib/`:
 
 ```js
 // src/lib/cart.js
 import { store, persisted, derived } from 'wisp'
-
 export const cart = store([])
-export const theme = persisted('theme', 'light')    // saved in localStorage
-export const count = derived(() => cart.value.length)  // a store's derived value
+export const theme = persisted('theme', 'light')       // localStorage
+export const count = derived(() => cart.value.length)
 ```
-
 ```html
 <script>
   import { cart, count } from '$lib/cart.js'
@@ -528,349 +303,169 @@ export const count = derived(() => cart.value.length)  // a store's derived valu
 <button on:click="cart.value = [...cart.value, 'tea']">Add ({:count.value})</button>
 ```
 
-A store has `.value`, `set(v)`, `update(fn)` and `subscribe(fn)`. It is deep,
-like `$state`, and a script can read it as `$cart`. Files in `src/lib/**/*.js` are served with the app; `'wisp'` and
-`'$lib/…'` imports work in them, in scripts and in `+page.js`.
+A store has `.value`, `set(v)`, `update(fn)`, `subscribe(fn)`; it is deep
+and readable as `$cart`. `src/lib/**/*.js` is served; `'wisp'` and
+`'$lib/…'` imports work in them, scripts and `+page.js`.
 
-## Islands: load only what is needed
-
-A page ships JavaScript only for files with client code. A component can
-wait longer: its module is not even downloaded until its moment comes.
+## Islands
+A page ships JS only for files with client code; a component can wait:
 
 ```html
-<Chart client:visible />                        <!-- scrolled near (200px) -->
-<Comments client:idle />                        <!-- when the browser is idle -->
-<Filters client:media="(min-width: 800px)" />   <!-- when the query matches -->
-<Menu client:interaction />                     <!-- first pointer, focus or key on it -->
-<Badge client:none />                           <!-- never: no module, no values sent -->
+<Chart client:visible />                        <!-- near the viewport (200px) -->
+<Comments client:idle />                        <!-- browser idle -->
+<Filters client:media="(min-width: 800px)" />   <!-- query matches -->
+<Menu client:interaction />                     <!-- first pointer, focus or key -->
+<Badge client:none />                           <!-- never: no module, no values -->
+<section client:visible>{:#each rows as row}…{:/each}</section>   <!-- an element with browser code -->
 ```
 
-`client:load`, the default, starts with the page. On an element with
-browser code, the same waits for the element and what is inside it; its
-module is already in, only the work waits:
+`client:load` (default) starts with the page. The server paints every
+island, so it works as HTML until it wakes; the click that wakes one is
+replayed. `client:*` on a component needs it to have browser code. Islands
+get no `modulepreload`; a page of only islands loads no runtime until one
+wakes. A component with no browser code is a server component (no JS);
+they nest with islands in any order (`<Panel client:idle><Plain
+label="Sales" /></Panel>`, where `Plain.wisp` may hold `<Chart
+client:visible />`). An inner island wakes at its own moment and wakes the
+waiting island around it (its parent, for `getContext`).
 
-```html
-<section client:visible>{:#each rows as row}…{:/each}</section>
-```
+### React, Vue, Svelte, Preact
 
- The server paints every
-island in full, so until it wakes it reads and works as HTML (links and
-forms too). A click that wakes an island is held and replayed once it is
-ready. What renders inside an island waits with it.
-
-Why it is faster: the browser parses and runs only the modules for what the
-visitor sees or touches. Islands get no `modulepreload`, and a page whose
-code is all islands does not load the runtime (`live.js`, about 9 KB) until
-the first one wakes. `wisp.js` does the waking.
-
-On a component, `client:*` needs the component to have browser code.
-
-## Server components
-
-A component with no browser code (no script, `{:…}` or directive) is a
-server component: the server renders it and it ships no JavaScript. That is
-the default. Server components and islands nest in any order, as an
-island's children or in its own markup:
-
-```html
-<Panel client:idle>                <!-- an island: Panel.wisp has a script -->
-  <Plain label="Sales" />          <!-- a server component: no JS -->
-</Panel>
-```
-
-```html
-<!-- src/components/Plain.wisp -->
-{@props label: &str}
-<div><h3>{label}</h3><Chart client:visible /></div>   <!-- an island again -->
-```
-
-Only `Panel`'s and `Chart`'s modules load. An inner island wakes at its own
-moment, and wakes the island around it that still waits (its parent, for
-`getContext`); what has no `client:*` waits with the island around it.
-
-## React, Vue, Svelte and Preact components
-
-A component from npm, drawn by its own framework, is an `<Island>`:
-
-```sh
-wisp add react react-dom react-switch     # the framework first, then the component
-```
+`wisp add react react-dom react-switch` (framework first), then:
 
 ```html
 <Island of="react:react-switch" client:visible
   props={:{ checked: on, onChange: (v) => (on = v) }} />
 <p>{:on ? 'On' : 'Off'}</p>
-
 <script>
   let on = false
 </script>
 ```
 
-- `of="framework:module"`: `react`, `preact`, `vue` or `svelte`, then the
-  module, whose default export is the component; `#Name` picks a named
-  one: `of="react:recharts#LineChart"`. A `$lib` file works too:
-  `of="react:$lib/Chart.js#Chart"`.
-- `props={:…}` is a browser value: it reads state and holds callbacks, and
-  the component draws again when what it reads changes. `props={rows}` is
-  Rust instead, sent as JSON once.
-- `client:visible`, `client:idle` and the rest wait as for any island;
-  without one it starts with the page. Children are shown until it starts
-  (`<Island …>Loading…</Island>`). Other attributes (`class`, `id`) go on
-  the `<div>` it is drawn in, which page morphs leave alone.
-- The framework is added first: `wisp add react react-dom` (`wisp add
-  preact`, `wisp add vue`, `wisp add svelte`). It loads only on the pages
-  with an island of it, from esm.sh in dev and from the binary after `wisp
-  build`, like any npm package; one not in `package.json` is a build
-  error. Every package gets the app's version of each framework, so a
-  library and the page share one copy of React (its hooks need that).
-- The mount for each framework is a few lines added to the page's module:
-  React's `createRoot`, Preact's `render`, Vue's `createApp` and Svelte's
-  `mount`. A Svelte package must ship compiled JavaScript.
+- `of="framework:module"` (`react preact vue svelte`); the default export is
+  the component, `#Name` a named one (`react:recharts#LineChart`); `$lib`
+  works (`react:$lib/Chart.js#Chart`).
+- `props={:…}` is browser (state, callbacks, redraws on change);
+  `props={rows}` is Rust, sent once as JSON.
+- `client:*` as for any island; children show until it starts. Other
+  attributes (`class`, `id`) go on its `<div>`, which morphs leave alone.
+- The framework must be in `package.json` (else a build error); it loads
+  only on pages with an island of it, one shared copy. A Svelte package
+  must ship compiled JS.
 
-## Web components: Shoelace, Web Awesome, Lit
+### Web components
 
-Custom elements need nothing from Wisp: import the element's module and
-write its tag. Directives work on them as on any element: `on:` takes
-their own events (dashes too), `bind:value` reads `value` on `input`
-events, which their inner inputs send.
-
-```sh
-wisp add @shoelace-style/shoelace
-```
+Import the module, write the tag (Shoelace, Web Awesome `wa-`, Lit). `on:`
+takes their events (dashes too); `bind:value` listens for `input`.
 
 ```html
 <sl-input label="Name" bind:value="name"></sl-input>
 <sl-switch on:sl-change="on = event.target.checked">Power</sl-switch>
-<sl-button variant="primary" on:click="save()">Save {:name}</sl-button>
-
 <script>
   import '@shoelace-style/shoelace/dist/components/input/input.js'
   import '@shoelace-style/shoelace/dist/components/switch/switch.js'
-  import '@shoelace-style/shoelace/dist/components/button/button.js'
   let on = false
-  function save() {}
 </script>
 ```
 
-- Import each component's own module, as above: the page loads only those.
-- Their theme is CSS: copy `cdn/themes/light.css` (or `dark.css`) from the
-  package into `static/` and `<link>` it in `src/app.html`, or `@import`
-  it from a CDN in `src/app.css` after `wisp::csp("style-src 'self'
-  'unsafe-inline' https://cdn.jsdelivr.net")` in `init`.
-- Web Awesome, Shoelace's successor, is the same with its package and
-  `wa-` tags.
-- Your own, with Lit: `wisp add lit`, then a `src/lib` module defines it
-  and a script imports it (`import '$lib/hello-tag.js'`):
-
-```js
-// src/lib/hello-tag.js
-import { LitElement, html } from 'lit'
-
-customElements.define('hello-tag', class extends LitElement {
-  static properties = { name: {} }
-  render() {
-    return html`<button @click=${() => this.dispatchEvent(new CustomEvent('greet', { detail: this.name, bubbles: true }))}>Hello, ${this.name}</button>`
-  }
-})
-```
-
-```html
-<hello-tag name="Wisp" on:greet="said = event.detail"></hello-tag>
-```
-
-The server sends the tag as written; the browser upgrades it when its module
-loads. The `click-events` accessibility lint leaves custom elements alone: their
-keyboard is inside them.
+`wisp add @shoelace-style/shoelace`; import each component's own module.
+Theme CSS: copy `cdn/themes/light.css` into `static/` and `<link>` it in
+`src/app.html`, or `@import` a CDN after `wisp::csp("style-src 'self'
+'unsafe-inline' https://cdn.jsdelivr.net")` in `init`. Your own with Lit:
+`wisp add lit`, `customElements.define('hello-tag', class extends
+LitElement {…})` in a `src/lib` module a script imports. The
+`click-events` a11y lint skips custom elements.
 
 ## Loading code on demand
 
-`import()` loads a module when the code reaches it, not with the page:
+`import()` loads when reached:
 
 ```html
 <button on:click="import('$lib/chart.js').then((m) => m.draw(el))">Chart</button>
-<script>
-  async function edit() {
-    const { Editor } = await import('../../lib/editor.js')
-  }
-</script>
 ```
 
-It resolves as a static import does: `$lib/x.js` (or `$lib/x`, and
-`x.js` for a `x.ts`), a relative path from the file into `src/lib`, an npm
-package. A path to no file there is a build error, as is one outside
-`src/lib`, whose files are the only ones the browser loads.
+Resolves like a static import: `$lib/x.js` (or `$lib/x`; `x.js` for
+`x.ts`), a relative path into `src/lib`, an npm package. A missing path, or
+one outside `src/lib` (the only files the browser loads), is a build error.
+No bundle: each lib file, component and package is one immutable hashed
+URL shared by all pages. A page `modulepreload`s its static imports all the
+way down; `import()` targets and island code wait.
 
-There is no bundle to split. Each `src/lib` file, component and npm
-package is one module at one URL (immutable, by hash), the same for every
-page, so code that two pages import is fetched once and cached for both.
-A page `modulepreload`s what its modules import statically, all the way
-down (lib files, packages, `extra.js`, components it renders), so the
-browser fetches them at once rather than one level at a time. What only an
-`import()` names is left until it runs, and so is an island's code.
+## Morphs and the router
 
-## Speed
+A form action or navigation morphs the page; an instance whose element
+survives keeps its state and gets the new `data`. `data-wisp-reset` on an
+element around it starts it fresh: `<div data-wisp-reset><Counter /></div>`.
+Layouts stay mounted.
 
-The runtime is two files: `live.js` (about 9 KB compressed), and
-`/_app/c/extra.js` (transitions, await and try blocks, components the
-browser draws, `bind:group`, persisted stores and the like), which only
-the modules that use them import. A keyed list is kept in place with the
-fewest moves; events bubble to one listener; a list's template is prepared
-once and cloned, and each copy's bindings run as one node. On the
-js-framework-benchmark operations (`/a2/bench` in the test app, and
-`src/lib/bench.js` to time it) it runs at about 1.2x the time of
-hand-written DOM code, where Svelte 5 and Solid run at about 1.1x.
-
-## Morphs keep state
-
-When a form action or a navigation brings in new HTML, Wisp morphs the page.
-An instance whose element survives the morph keeps its state and gets the new
-`data`. To start fresh, put `data-wisp-reset` on an element around it.
-
-```html
-<div data-wisp-reset><Counter /></div>
-```
-
-## Router
-
-Links work as links, and Wisp makes them faster. A same-origin click, and the
-back and forward buttons, fetch the next page and morph it in, with no full
-reload. Layouts stay mounted, so their state survives.
-
-- Prefetch on hover (60 ms) and touch. `data-wisp-preload="off"` opts out.
-- Scroll is restored on back and forward. Focus moves to `[autofocus]`.
-- View transitions are used when the browser has them.
-- `data-wisp-reload` on a link or its parent forces a full load. Links with
-  `target`, `download`, `rel="external"`, and `/_app/` are left alone.
-
-- `data-wisp-noscroll`, `data-wisp-keepfocus` and `data-wisp-replacestate`
-  (on a link or around it) keep the scroll, keep the focus, and replace the
-  history entry. `goto(url, { noscroll, keepfocus, replace })` takes the same.
-
-Inside scripts:
+Same-origin clicks and back/forward fetch and morph, no full reload.
+Prefetch on hover (60 ms) and touch (`data-wisp-preload="off"` opts out).
+Scroll is restored; focus moves to `[autofocus]`; view transitions when
+available. `data-wisp-reload` on a link or parent forces a full load; links
+with `target`, `download`, `rel="external"` and `/_app/` are left alone.
 
 ```js
 goto('/login')                       // or goto(url, { replace: true })
 invalidate()                         // run this page's load again
-invalidate('cart')                   // only the +page.js loads that depends('cart')
-matches(item.name, q)                // text has q in it, whatever the case
-
 page.value.url.pathname              // page: { url, status, form, state }
 navigating.value                     // { from, to } while loading, else null
-
-pushState('?tab=2', { tab: 2 })      // a history entry: no navigation
+pushState('?tab=2', { tab: 2 })      // history entry, no navigation
 replaceState('', { tab: 3 })         // this entry's state ('' keeps the URL)
 ```
 
-Hooks, from `'wisp'`; each returns a function that removes it, and one made
-while a script starts goes with that script:
+Shallow routing: `pushState(url, state)` adds an entry at `url` (`''`:
+this one) and loads nothing; `page.value.state` is reactive (`{}` on other
+entries). Back/forward restores it with no request; a reload keeps it only
+at its URL. Events on `document`: `wisp:navigate wisp:update wisp:goto
+wisp:refresh wisp:error wisp:push wisp:pop`; on forms `wisp:submit`
+(cancelable), `wisp:result`.
 
-```js
-import { beforeNavigate, afterNavigate, onNavigate, preloadData, preloadCode,
-  invalidateAll, updated } from 'wisp'
+### Snapshots
 
-beforeNavigate(({ from, to, pop, cancel }) => unsaved && !pop && cancel())
-afterNavigate(({ from, to }) => track(to.pathname))   // each page shown
-onNavigate(({ to }) => document.startViewTransition?.(...))  // before the swap
-preloadData('/blog')                 // the page, ahead (what hovering does)
-preloadCode('/blog')                 // and the modules it names
-updated.value                        // true once a page names a newer wisp.js
-```
-
-`onNavigate`'s function runs once the page is fetched, before it is drawn;
-a promise it returns is waited for, and a function it resolves to runs after
-the page changed. `cancel()` stops a click or `goto`, not back and forward
-(the browser has gone there). In `+page.js`, `load` gets `depends(key)`, and
-a URL it `fetch`es counts too: `invalidate(key)` runs only those loads again,
-with no request for the page. Nothing depends on it, nothing happens. The
-server renders a page whole, so it has no part of its data to skip.
-
-Shallow routing, for tabs and modals: `pushState(url, state)` adds a
-history entry at `url` (`''`: this one) and loads nothing; `page.value.state`
-is its state, reactive (`{}` on other entries). Back and forward to it
-bring the state back with no request. Leaving and coming back loads its URL
-and its state; a reload keeps the state only at the URL it was made on.
-
-Events on `document`: `wisp:navigate`, `wisp:update`, `wisp:goto`,
-`wisp:refresh`, `wisp:error`, `wisp:push`, `wisp:pop`. On forms: `wisp:submit` (cancelable) and
-`wisp:result`.
-
-## Snapshots
-
-What the visitor typed comes back with its history entry: back, forward and
-a reload put each field the visitor changed (`<input>`, `<textarea>`,
-`<select>`) back, with no code. Passwords, files, hidden fields and anything
-under `autocomplete="off"` are never kept. The values live in
-`sessionStorage`, for the tab; where it is not there, nothing is kept.
-
-A script keeps its own state the same way:
+Back, forward and reload restore each changed `<input>`, `<textarea>`,
+`<select>` (never passwords, files, hidden, `autocomplete="off"`) from
+`sessionStorage`. A script keeps its own state; `snapshot` is the only
+export a script may have:
 
 ```html
 <script>
   let open = false
-  export const snapshot = {
-    capture: () => open,              // any JSON, when the entry is left
-    restore: (v) => (open = v),       // when it comes back
-  }
+  export const snapshot = { capture: () => open, restore: (v) => (open = v) }  // capture: any JSON
 </script>
 ```
 
-`snapshot` is the only thing a script may export. It costs a page without
-one nothing (it is in `extra.js`).
+`data-wisp-noscroll`, `data-wisp-keepfocus`, `data-wisp-replacestate` (on or around a link) keep scroll, keep focus, replace history; `goto(url, { noscroll, keepfocus, replace })` too. Hooks from `'wisp'` return an unsubscribe: `beforeNavigate(({ from, to, pop, cancel }) => ..)`, `afterNavigate`, `onNavigate` (after fetch, before the swap; a returned promise is awaited, a returned function runs after), `preloadData(url)`, `preloadCode(url)`, `invalidateAll()`, `updated.value` (a newer wisp.js exists). `cancel()` does not stop back/forward. `+page.js` `load` gets `depends(key)` (a `fetch`ed URL counts); `invalidate('key')` reruns only those loads, no page request.
 
-## Phones and flaky networks
-
-- Pages load and leave with `pagehide`, never `unload`, so the browser's
-  back/forward cache can keep them; scroll is restored on back, forward and
-  reload.
-- `<body data-wisp-revalidate>` fetches the page's data anew when the tab
-  comes back or the network does, at most every 30 seconds (the attribute's
-  value is the seconds). The morph keeps focus, scroll and typed text.
-- Offline, a form post is not sent into the void. A `<form data-wisp-queue>`
-  (you say sending it twice is safe: the server takes the same post once)
-  waits in `sessionStorage` and is sent, in order, when the network is back;
-  the page then refreshes (`wisp:sent` on `document`). Any other form shows
-  "You are offline" and fires `wisp:result` with `error: "offline"`. Only
-  urlencoded forms queue, not file uploads.
-- A navigation moves focus to the `<h1>` (else `<main>`) and says the title
-  in a polite live region; the view transition is skipped under
-  `prefers-reduced-motion`.
+Phones: pages leave with `pagehide` (back/forward cache; scroll restored). `<body data-wisp-revalidate="30">` refetches data when the tab or network returns (at most every N s, default 30; the morph keeps focus, scroll, typed text). Offline, `<form data-wisp-queue>` (safe to send twice) waits in `sessionStorage`, is sent in order when back, then the page refreshes (`wisp:sent`); other forms show "You are offline" and fire `wisp:result` with `error: "offline"`. Only urlencoded forms queue. A navigation focuses the `<h1>` (else `<main>`) and announces the title; view transitions skip under `prefers-reduced-motion`.
 
 ## Forms: `use:enhance`
 
-Plain forms already update in place. `use:enhance` adds hooks.
+Plain forms already update in place; `use:enhance` adds hooks.
 
 ```html
 <form method="post" action="?/add" use:enhance="submit">
   <input name="text" bind:value="text">
   <button disabled={:pending}>Send</button>
 </form>
-<ul>
-  {#each data.items as item}<li>{item}</li>{/each}
-  {:#each optimistic as o}<li>{:o}</li>{:/each}
-</ul>
-
+<ul>{#each data.items as item}<li>{item}</li>{/each}{:#each optimistic as o}<li>{:o}</li>{:/each}</ul>
 <script>
   let text = '', pending = false, optimistic = []
-
   function submit({ formData, cancel }) {
     pending = true
     optimistic = [formData.get('text')]
-    return (result) => {               // after the page updated
-      pending = false
-      optimistic = []
-    }
+    return (result) => { pending = false; optimistic = [] }   // after the page updated
   }
 </script>
 ```
 
-The first function gets `{ form, formData, submitter, action, cancel }`. The
-one it returns gets `{ ok, status, location?, data?, error? }`. If the action
-answers with JSON (`Response::json(…)`), `data` holds it and the form stays on
-the page; `page.value.form` has it too.
+The first function gets `{ form, formData, submitter, action, cancel }`; the
+returned one `{ ok, status, location?, data?, error? }`. An action answering
+JSON (`Response::json_of(…)`) leaves the form on the page; `data` and
+`page.value.form` hold it.
 
 ## `+page.js`
 
-A file beside `+page.wisp` that runs in the browser on every navigation:
+Runs in the browser on every navigation (not on the server):
 
 ```js
 // src/routes/search/+page.js
@@ -880,17 +475,14 @@ export async function load({ data, url, params, route, fetch }) {
 }
 ```
 
-What it returns is the `data` of the page's script. Your `+server.rs`
-endpoints are its API. With a server `load`, the whole `Data` is sent, so it
-must `#[derive(Json)]`. `params` holds the route's parameters (for
-`blog/[slug]`, `params.slug`) and `route.id` its pattern (`/blog/[slug]`),
-on the first load and after every navigation. It does not run on the server.
+The return is the script's `data`. With a server `load` the whole `Data`
+is sent (`#[derive(Json)]`). `params.slug` for `blog/[slug]`; `route.id` is
+`/blog/[slug]`.
 
 ## Server functions
 
-A Rust function marked `#[remote]`, in a page's block or in `src/remote.rs`
-(any `src/*.rs`), is a function browser code calls. No endpoint, no fetch,
-no import:
+`#[remote]` on a Rust fn in a page block or `src/*.rs` (`src/remote.rs`)
+makes it callable from browser code: no endpoint, fetch or import.
 
 ```html
 ---
@@ -906,29 +498,20 @@ fn user(id: u64) -> Result<User> {
 </script>
 ```
 
-In `src/lib`, import it: `import { user } from 'wisp:remote'`.
+In `src/lib`: `import { user } from 'wisp:remote'`.
 
-- A call is a POST to `/_app/r/<hash>` with the arguments as a JSON object
-  by name (`{"id":5}`). Each is read with `FromJson` (numbers, strings,
-  `Option`, `Vec`, a `#[derive(FromJson)]` struct); one that is not the
-  type, or fails its `#[validate(…)]`, is a 422 by field, all at once.
-- The answer is an endpoint's: a `#[derive(Json)]` value as JSON, `None`
-  as a 404, nothing as a 204 (`undefined`).
-- It is made as an action is: `cx` when the body uses it, `async` when it
-  `.await`s, `-> Result` when it has no `->`. The same-origin check and
-  `before` in hooks.rs run first, as for actions.
-- An error rejects with an `Error` whose `status` and `message` are the
-  server's (and `errors`, by field, for a 422). `redirect("/x")` navigates
-  there, as a form's does.
-- `#[remote(get)]` makes it a GET, each argument as JSON in the query
-  (`?id=5&q=%22tea%22`; text that is not JSON is a string). Its answer has
-  an `etag`, so the browser keeps it and gets a 304 when it is the same.
-
-Names are global to browser code: two of one name, or one JavaScript or
-Wisp already has (`fetch`, `goto`), is a build error. A name the script
-declares itself, or a server value of the page, is that instead.
-`wisp check --types` types each (`declare function user(id: number):
-Promise<User>`). An app without any serves nothing more and pays nothing.
+- POST `/_app/r/<hash>`, arguments a JSON object by name (`{"id":5}`), read
+  with `FromJson`; a wrong type or failed `#[validate]` is a 422 by field.
+- Answers like an endpoint: `Json` value, `None` is 404, nothing is 204
+  (`undefined`). Built like an action (`cx`, `async`, `-> Result` implied);
+  the same-origin check and `before` run first.
+- Errors reject with `status`, `message` (and `errors` for 422);
+  `redirect("/x")` navigates.
+- `#[remote(get)]`: GET, arguments as JSON in the query (`?id=5&q=%22tea%22`;
+  non-JSON text is a string), with an `etag` (304).
+- Names are global to browser code: a duplicate, or one JS/Wisp has
+  (`fetch`, `goto`), is a build error; a script's own or a page's server
+  value of that name wins. `wisp check --types` types each.
 
 ## Server rendering off
 
@@ -941,194 +524,74 @@ let items = db::items().await;
 {:#each items as item (item.id)}<p>{:item.name}</p>{:/each}
 ```
 
-The server runs the page's statements and sends its layouts, its `<head>`,
-the markup as a `<template>` it does not paint, and the values the markup
-names; the browser draws the page. Its markup is browser code, as in a
-component the browser draws: `{…}`, `{#if}`, `{#each}` or a component given
-`{…}` is a build error (in `<title>` and `<head>` Rust is fine). For a page
-whose look depends on the browser (its size, `localStorage`), or that
-`+page.js` fills. `wisp build --spa` serves such pages from a static host
-(see deploy.md).
+The server runs the statements and sends layouts, `<head>`, the markup as an
+unpainted `<template>` and the values it names; the browser draws it. The
+markup is browser code: `{…}`, `{#if}`, `{#each}` or a component given `{…}`
+is a build error (Rust is fine in `<title>`/`<head>`). For pages that depend
+on the browser (size, `localStorage`) or that `+page.js` fills. `wisp build
+--spa` serves them from a static host.
 
-## Errors
+## Errors and source maps
 
-An error thrown while a client script starts, or in `+page.js`, shows the
-nearest `+error.wisp`, as a server error would. Errors inside handlers show in
-the console with the `.wisp` file and line.
-
-### Source maps
-
-In dev, every browser module ends with `//# sourceMappingURL=t3.js.map`,
-served beside it (`/_app/c/t3.js.map`, also for `src/lib` files and
-`+page.js`). DevTools then shows the `.wisp` file, and a stack trace its
-lines: each line of a script, an import or a directive maps to its line of
-the file. A release build has none (no cost), unless built with
-`wisp build --sourcemap`; `--static --sourcemap` writes the maps beside
-the modules.
+An error thrown while a script starts, or in `+page.js`, shows the nearest
+`+error.wisp`; handler errors go to the console with file and line. In dev
+each browser module has `//# sourceMappingURL=t3.js.map` (also `src/lib`,
+`+page.js`), so DevTools shows the `.wisp` file. Release has none unless
+`wisp build --sourcemap` (`--static --sourcemap` writes them beside the
+modules).
 
 ## Installable and offline (PWA)
-
-One file each, and nothing for an app with neither: no tag, no route.
-
 ```json
 // src/manifest.json
 { "name": "Notes", "theme_color": "#7c3aed", "offline": true }
 ```
 
-- It is served at `/manifest.webmanifest`, which every page links. What it
-  leaves out is filled in: `short_name` (or `name`) from the other,
-  `start_url` `/`, `display` `standalone`, and `icons`: each
-  `static/icon*.png`, its size read from the file, and `static/icon*.svg`
-  of any size. One `static/icon.png` is enough: `wisp build` also writes it
-  at 192 and 512 px as WebP (the sizes browsers ask for to install), with
-  the pinned cwebp the images use, into `/_app/img/`. Make it 512 px or
-  more; it is never made larger. Without cwebp the build warns and lists
-  the PNG alone.
-- Made at startup instead (from the environment, say):
-  `wisp::app_manifest(r#"{"name": "Notes"}"#)?;` in `init`. The build sees
-  the call in `src/hooks.rs` and links it.
-- `"offline": true` adds Wisp's service worker. At install it keeps `/`,
-  the browser files and `static/`; a versioned file then comes from what
-  it kept; a page comes from the network and is kept, and offline it is
-  the kept page or a short offline page (503). A new build is a new
-  version: the old cache goes.
+- Served at `/manifest.webmanifest`, linked by every page; nothing is
+  emitted without the file. Filled in: `short_name`/`name`, `start_url`
+  `/`, `display` `standalone`, `icons` from `static/icon*.png` (size read)
+  and `static/icon*.svg`. One `static/icon.png` (512 px or more) suffices:
+  `wisp build` also writes 192 and 512 px WebP into `/_app/img/` with cwebp
+  (absent: a warning, the PNG alone).
+- At startup instead: `wisp::app_manifest(r#"{"name": "Notes"}"#)?;` in `init`.
+- `"offline": true` adds Wisp's service worker: at install it keeps `/`, the
+  browser files and `static/`; pages come from the network and are kept;
+  offline: the kept page or a 503. A new build drops the old cache.
 
-Your own worker replaces Wisp's:
+Your own worker replaces it (`src/service-worker.js` or `.ts`, a classic
+script served at `/service-worker.js`, registered by every page; imports
+only `'wisp/sw'`, `env.PUBLIC_X` works):
 
 ```js
-// src/service-worker.js (or .ts)
 import { build, files, version } from 'wisp/sw'
-
-const cache = `app-${version}`
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(cache).then((c) => c.addAll([...build, ...files])))
+  e.waitUntil(caches.open(`app-${version}`).then((c) => c.addAll([...build, ...files])))
 })
 ```
 
-- `build` is the URLs of the browser files, as pages ask for them (CSS,
-  runtime, modules; versioned, so they never change), `files` those of
-  `static/`, and `version` a hash of both. In dev both lists are empty.
-- It is served at `/service-worker.js` (scope `/`, revalidated by its
-  ETag) and every page registers it. It runs as a classic script, so it
-  imports only `'wisp/sw'`; `env.PUBLIC_X` works. Any other import is a
-  build error.
-- The page's `content-security-policy` gets `worker-src 'self'`, and the
-  hash of the script that registers it.
+`build` is the browser files' URLs, `files` those of `static/`, `version` a
+hash of both (lists empty in dev). The CSP gets `worker-src 'self'` and the
+registering script's hash.
 
-## Hot reload that keeps state
+## Dev: hot reload and devtools
 
-Save a `.wisp` file under `wisp dev` and the page changes in place, in
-milliseconds, with no compile, whenever only what the browser runs or the
-static text changed:
+`wisp dev` applies a `.wisp` save with no compile when only browser code or
+static text changed: a script or `{:…}` change swaps the file's module
+(instances rerun it, keeping `$state` by name, focus, selection and field
+values); text alone morphs that file's part between the
+`<!--w:src/components/Card.wisp-->` marks; `<style>` swaps the stylesheet.
+Else it compiles and morphs. Instances restart (one console line says why)
+when the `---` block or `{@props}` changed, the script has a top-level
+statement other than declarations, logging, writes to its own names and
+instance-ending helpers (`$effect`, `onMount`, `setInterval`…; `init()`,
+`if`, `new X()`, `window.x = 1` could run twice), or the swap throws.
+Components match by creation order, so a reordering list may trade states.
+None of this is in release builds.
 
-- **Script or `{:…}` markup:** the file's module is swapped in. Each
-  instance runs the new script and gets back its `$state` by name (a name
-  the script no longer declares is dropped), its effects and handlers are
-  the new ones, and its elements are bound again. Focus, the selection and
-  what fields hold stay. A component the browser draws keeps its state too.
-- **Text alone:** only that page's, layout's or component's part of the
-  page is morphed in, between the marks templates write under `wisp dev`
-  (`<!--w:src/components/Card.wisp-->`). The rest of the page is untouched.
-- **`<style>`:** the stylesheet is swapped, as before.
-
-`wisp dev` knows a change is one of these by compiling the app's Rust in
-memory and comparing it, but for text and browser code: the same, a
-compile would make the same program, so it sends the new text and modules
-to the running app (debug builds take them on `/_wisp/dev/*`, from
-loopback, from the same Wisp version) and tells the page. The page's next
-load names the new modules, so a reload never gets an old one.
-
-Anything else compiles, and the page then morphs as before, still keeping
-state where it can. It starts the instances afresh, and the console says
-why in one line, when:
-
-- the `---` block or `{@props}` changed;
-- the script has a top-level statement other than declarations, logging,
-  writes to its own names and helpers that end with the instance
-  (`$effect`, `onMount`, `setInterval`...): `init()`, `if (…)`, `new X()`,
-  `window.x = 1` could do twice what they did once;
-- the swap throws, which loads the page again.
-
-Release builds have none of this: `live.js` and `wisp.js` minify to the
-same bytes.
-
-## Devtools and the component workshop
-
-Both are for `wisp dev` alone: a release build has neither, and its
-`live.js` is byte for byte what it was without them.
-
-**Devtools.** Press `Alt+Shift+W` on any page. A panel opens over it, with
-no browser extension:
-
-- **Components:** the tree of instances running in the browser. Pick one
-  to see its props and its state, live. Numbers, text and booleans are
-  edited in place, anything else as JSON; the page redraws as it would for
-  its own code. A `$derived` value only shows. `line 12` opens the file at
-  the line that declares it.
-- **Stores:** each store and `derived` value, named by the line that made
-  it (`export const cart = store([])` is `cart`), editable the same way.
-- **Route:** the URL, the route and its parameters (sent to pages with a
-  `+page.js`), and the server values each page and layout reads.
-- **Timings:** the last navigation or action: the whole time, the wait for
-  the server, the download, and the morph and redraw.
-
-"Open" sends the file to your editor: `$WISP_EDITOR` or `$EDITOR` (one
-with a window; `code`, `cursor` and `codium` get `-g file:line`), else
-VS Code's `code -g`, else what the system opens the file with. Only
-`localhost` can ask.
-
-A page with no browser code has no runtime to read: the panel shows its
-URL and timings.
-
-**Workshop.** `/_wisp/components` lists every component. Beside
-`Card.wisp`, a `Card.stories.wisp` holds named examples:
-
-```html
-{#story "Featured"}
-  <Card featured title="Tea" count={3}>A pot for two.</Card>
-{/story}
-
-{#story "Empty"}<Card title="Nothing yet" />{/story}
-```
-
-Each story renders on the server, in the app's own shell and CSS, at
-`/_wisp/components/Card/featured`. Beside it are controls for the props of
-types `&str`, `String`, numbers and `bool`: a text field, a number field
-or a checkbox, which render it again as you change them (the URL keeps
-them, `?title=Mint`). A component with no stories file gets a "Default"
-story from its props' defaults, when every prop it requires is one of
-those types; the others say what they need. Saving a stories file
-rebuilds; release builds and routing never read them.
-
-## Limits
-
-- The first paint leaves out what it cannot work out (see
-  [First paint](#first-paint)); live attributes (`:class`, `class="a {:b}"`)
-  keep their static text until the browser starts.
-- A hot swap matches a component the browser draws to its state by the
-  order they were made, and an instance of the page by its place: a list
-  that reorders as it swaps may trade states.
-- Deep state tracks plain objects, arrays, maps and sets, and classes with
-  `$state` fields. A `Date` or another class's instance is not tracked
-  inside: assign it again (`d = d`) to redraw.
-
-## Less Rust boilerplate
-
-Small additions to server templates, in the same spirit.
-
-```html
-<p>{count} items</p>                       <!-- a field of Data, no `data.` -->
-{#each rows as row}…{/each}
-
-<div class="grid" class:won={data.won}>    <!-- server class toggle -->
-<a {href}>Home</a>                         <!-- href={href} -->
-<a href="/x" aria-current={current}>       <!-- an Option<_>: left out when None -->
-```
-
-```rust
-fn get() -> Stats {                        // a +server.rs endpoint:
-    Stats { hits: 3 }                      // sent as JSON, #[derive(Json)], no serde
-}
-```
-
-`data.count` still works.
+`Alt+Shift+W` opens dev-only devtools: component tree with live props and
+state (editable), stores, route and server values, timings; "Open" uses
+`$WISP_EDITOR` or `$EDITOR`, else `code -g`. `/_wisp/components` is the
+workshop: `Card.stories.wisp` beside `Card.wisp` holds
+`{#story "Featured"}<Card featured title="Tea" />{/story}` examples, each
+rendered at `/_wisp/components/Card/featured` with controls for `&str`,
+`String`, number and `bool` props (`?title=Mint`); a component without
+stories gets a "Default" one when its required props are all such types.
