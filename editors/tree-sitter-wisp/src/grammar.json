@@ -513,6 +513,10 @@
                   {
                     "type": "SYMBOL",
                     "name": "hole"
+                  },
+                  {
+                    "type": "SYMBOL",
+                    "name": "client_hole"
                   }
                 ]
               }
@@ -547,6 +551,10 @@
                   {
                     "type": "SYMBOL",
                     "name": "hole"
+                  },
+                  {
+                    "type": "SYMBOL",
+                    "name": "client_hole"
                   }
                 ]
               }
@@ -846,13 +854,8 @@
           }
         },
         {
-          "type": "ALIAS",
-          "content": {
-            "type": "SYMBOL",
-            "name": "_block_end"
-          },
-          "named": true,
-          "value": "block_end"
+          "type": "SYMBOL",
+          "name": "block_end"
         }
       ]
     },
@@ -883,13 +886,8 @@
           }
         },
         {
-          "type": "ALIAS",
-          "content": {
-            "type": "SYMBOL",
-            "name": "_client_block_end"
-          },
-          "named": true,
-          "value": "block_end"
+          "type": "SYMBOL",
+          "name": "block_end"
         }
       ]
     },
@@ -994,13 +992,9 @@
         ]
       }
     },
-    "_block_end": {
+    "block_end": {
       "type": "PATTERN",
-      "value": "\\{\\/[a-zA-Z]+[ \\t]*\\}"
-    },
-    "_client_block_end": {
-      "type": "PATTERN",
-      "value": "\\{:\\/[a-zA-Z]+[ \\t]*\\}"
+      "value": "\\{:?\\/[a-zA-Z]+[ \\t]*\\}"
     }
   },
   "extras": [

@@ -114,8 +114,8 @@ module.exports = grammar({
 
     quoted_attribute_value: ($) =>
       choice(
-        seq('"', repeat(choice(alias(/[^"{]+/, $.attribute_value), $.hole)), '"'),
-        seq("'", repeat(choice(alias(/[^'{]+/, $.attribute_value), $.hole)), "'"),
+        seq('"', repeat(choice(alias(/[^"{]+/, $.attribute_value), $.hole, $.client_hole)), '"'),
+        seq("'", repeat(choice(alias(/[^'{]+/, $.attribute_value), $.hole, $.client_hole)), "'"),
       ),
 
     directive: ($) =>
@@ -158,13 +158,14 @@ module.exports = grammar({
 
     _code_part: ($) => choice(/[^{}"]+/, /"([^"\\]|\\.)*"/, seq('{', repeat($._code_part), '}')),
 
-    // Blocks: `{#if c}…{:else}…{/if}` (Rust), `{:#each xs as x}…{:/each}` (JS).
+    // Blocks: `{#if c}…{:else}…{/if}` (Rust), `{:#each xs as x}…{:/each}` (JS;
+    // `{/each}` ends it too).
     block: ($) =>
       seq(
         $.block_start,
         repeat($._node),
         repeat($.branch),
-        alias($._block_end, $.block_end),
+        $.block_end,
       ),
 
     client_block: ($) =>
@@ -172,7 +173,7 @@ module.exports = grammar({
         alias($.client_block_start, $.block_start),
         repeat($._node),
         repeat($.branch),
-        alias($._client_block_end, $.block_end),
+        $.block_end,
       ),
 
     block_start: ($) => seq(alias(/\{#[a-zA-Z]+/, $.block_open), optional($.code), '}'),
@@ -189,8 +190,6 @@ module.exports = grammar({
         ),
       ),
 
-    _block_end: (_) => /\{\/[a-zA-Z]+[ \t]*\}/,
-
-    _client_block_end: (_) => /\{:\/[a-zA-Z]+[ \t]*\}/,
+    block_end: (_) => /\{:?\/[a-zA-Z]+[ \t]*\}/,
   },
 });
