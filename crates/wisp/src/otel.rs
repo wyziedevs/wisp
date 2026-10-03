@@ -12,7 +12,7 @@
 pub(crate) use real::*;
 
 #[cfg(target_arch = "wasm32")]
-pub(crate) fn on() -> bool {
+pub(crate) fn wanted() -> bool {
     false
 }
 #[cfg(target_arch = "wasm32")]
@@ -40,12 +40,6 @@ mod real {
     const BATCH: usize = 512;
     const LINGER: Duration = Duration::from_secs(1);
 
-    /// Whether spans are exported.
-    #[inline]
-    pub(crate) fn on() -> bool {
-        ON.load(Ordering::Relaxed)
-    }
-
     /// Starts the exporter when the environment names a collector. Cheap to
     /// call again.
     pub(crate) fn init() {
@@ -68,6 +62,12 @@ mod real {
                 ON.store(true, Ordering::Relaxed);
             }
         });
+    }
+
+    /// Whether the environment names a collector, which is what `init`
+    /// starts the exporter for.
+    pub(crate) fn wanted() -> bool {
+        endpoint().is_some()
     }
 
     fn endpoint() -> Option<String> {

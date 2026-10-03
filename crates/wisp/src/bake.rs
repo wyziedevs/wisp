@@ -342,6 +342,11 @@ pub fn keep<A: App, const ACCEPT: bool>(cx: &mut Cx, out: &mut Out, secs: u32, p
             if !r.content_type.is_empty() {
                 line(&mut head, "content-type", &r.content_type);
             }
+            if r.page {
+                for (n, v) in crate::headers::missing(cx, &r.headers) {
+                    line(&mut head, n, v);
+                }
+            }
             for (n, v) in &r.headers {
                 line(&mut head, n, v);
             }

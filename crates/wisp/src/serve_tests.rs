@@ -29,9 +29,23 @@ impl App for Site {
         Ok(())
     }
 
-    async fn handle(route: Option<usize>, _: &mut Cx, out: &mut Out) -> crate::Result<()> {
+    async fn handle(route: Option<usize>, cx: &mut Cx, out: &mut Out) -> crate::Result<()> {
         if route.is_none() {
             return Err(crate::Error::new(404, "Not Found"));
+        }
+        // A page that sets some of the security headers itself, one way or the other.
+        match cx.query_string() {
+            "cx" => {
+                cx.set_header("referrer-policy", "no-referrer");
+                out.response = Some(crate::Response::html("hi"));
+                return Ok(());
+            }
+            "res" => {
+                out.response =
+                    Some(crate::Response::html("hi").with_header("referrer-policy", "no-referrer"));
+                return Ok(());
+            }
+            _ => {}
         }
         out.body.push_str("hello");
         Ok(())
@@ -144,4 +158,19 @@ fn pages_carry_security_headers() {
     assert_eq!(gone.status, 404);
     assert_eq!(gone.header("x-content-type-options"), Some("nosniff"));
     assert_eq!(page.header("strict-transport-security"), None);
+}
+
+#[test]
+fn a_page_header_the_app_set_is_sent_once() {
+    let mut app = crate::test::client::<Site>();
+    for q in ["/?cx", "/?res"] {
+        let page = app.get(q);
+        let count = |name: &str| {
+            let named = page.headers.iter().filter(|(n, _)| n == name);
+            named.count()
+        };
+        assert_eq!(count("referrer-policy"), 1, "{q}");
+        assert_eq!(page.header("referrer-policy"), Some("no-referrer"), "{q}");
+        assert_eq!(count("x-content-type-options"), 1, "{q}");
+    }
 }

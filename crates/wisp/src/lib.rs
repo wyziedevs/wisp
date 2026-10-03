@@ -568,10 +568,11 @@ pub(crate) struct Settings {
     pub request_id: bool,
     /// `WISP_SECURE_HEADERS`: `nosniff` and `referrer-policy` on pages (`on`).
     pub secure_headers: bool,
-    /// `WISP_HSTS`: `strict-transport-security` on every answer (`off`).
-    pub hsts: bool,
-    /// Either of `request_id` and `hsts`: what a request pays one check for.
-    pub extras: bool,
+    /// Handlers are timed, for the dev log and the traces: `dev`, or an
+    /// OTLP endpoint is set.
+    pub timed: bool,
+    /// `WISP_HANDLER_TIMEOUT`, in milliseconds (0 for none).
+    pub timeout_ms: u64,
     /// `WISP_PROBLEM_JSON`: JSON errors as RFC 9457 `application/problem+json`
     /// for every client, not only those whose `accept` asks for it (`off`).
     pub problem_json: bool,
@@ -623,10 +624,12 @@ pub(crate) fn settings() -> &'static Settings {
         let request_id = switch("WISP_REQUEST_ID", false);
         let problem_json = switch("WISP_PROBLEM_JSON", false);
         let secure_headers = switch("WISP_SECURE_HEADERS", true);
-        let hsts = switch("WISP_HSTS", false);
-        let extras = request_id || hsts;
+        // `WISP_HSTS`: `strict-transport-security` on every answer (`off`).
+        headers::HSTS_ON.store(switch("WISP_HSTS", false), std::sync::atomic::Ordering::Relaxed);
+        let timed = cfg!(not(target_arch = "wasm32")) && (dev || otel::wanted());
+        let timeout_ms = setting::<u64>("WISP_HANDLER_TIMEOUT", "a number of seconds").map_or(0, |s| s.saturating_mul(1000));
         Settings {
-            dev, body_limit, origin, client_ip_header, secret, old_secret, api_docs, request_id, problem_json, secure_headers, hsts, extras,
+            dev, body_limit, origin, client_ip_header, secret, old_secret, api_docs, request_id, problem_json, secure_headers, timed, timeout_ms,
             #[cfg(not(target_arch = "wasm32"))]
             ws_idle,
             #[cfg(not(target_arch = "wasm32"))]
@@ -764,6 +767,8 @@ pub struct Response {
     stream: Option<tokio::sync::mpsc::Receiver<Vec<u8>>>,
     /// For [`Response::websocket`]: what runs once upgraded.
     upgrade: Option<ws::Upgrade>,
+    /// Made by [`Response::html`]: it gets the page's security headers.
+    pub(crate) page: bool,
 }
 
 impl Response {
@@ -775,6 +780,7 @@ impl Response {
             body: body.into(),
             stream: None,
             upgrade: None,
+            page: false,
         }
     }
 
@@ -935,11 +941,7 @@ impl Response {
 
     pub fn html(body: impl IntoText) -> Response {
         let mut res = Response::new("text/html; charset=utf-8", body.into_text());
-        if settings().secure_headers {
-            for (name, value) in [headers::NOSNIFF, headers::REFERRER] {
-                res.headers.push((Cow::Borrowed(name), value.to_string()));
-            }
-        }
+        res.page = true;
         res
     }
 
@@ -978,10 +980,6 @@ impl Response {
             cx::valid_header(&name, &value),
             "invalid header {name:?}: {value:?}"
         );
-        // One of a page's own headers gives way to the app's.
-        if [headers::NOSNIFF.0, headers::REFERRER.0].contains(&&*name.to_ascii_lowercase()) {
-            self.headers.retain(|(n, _)| !n.eq_ignore_ascii_case(&name));
-        }
         self.headers.push((name, value));
         self
     }
