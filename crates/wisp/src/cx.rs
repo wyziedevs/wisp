@@ -666,7 +666,7 @@ impl Cx {
         to.append(&mut self.out_headers);
     }
 
-    #[cfg(test)]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn out_headers(&self) -> &[(Cow<'static, str>, Cow<'static, str>)] {
         &self.out_headers
     }

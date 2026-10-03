@@ -13,8 +13,19 @@
 //! Requests go through [`crate::handle`], the same path the server takes.
 //! The client keeps the cookies responses set, as a browser would.
 
+mod ws;
+
+pub use ws::TestSocket;
+
 use crate::{App, Body, Reply, Request};
 use std::marker::PhantomData;
+
+impl Reply {
+    /// Where a redirect goes: `assert_eq!(r.location(), Some("/login"))`.
+    pub fn location(&self) -> Option<&str> {
+        self.header("location")
+    }
+}
 
 pub struct Client<A> {
     runtime: tokio::runtime::Runtime,
@@ -79,6 +90,91 @@ impl<A: App> Client<A> {
         }
         req.body = body.into_bytes();
         self.send(req)
+    }
+
+    /// A file upload, as a browser sends a form with one file:
+    /// `app.upload("/avatar", "photo", "image/png", &bytes)`.
+    pub fn upload(&mut self, target: &str, field: &str, mime: &str, bytes: &[u8]) -> Reply {
+        const BOUNDARY: &str = "----wisp-test-boundary";
+        let mut req = Request::new("POST", target);
+        req.header(
+            "content-type",
+            &format!("multipart/form-data; boundary={BOUNDARY}"),
+        );
+        let mut body = format!(
+            "--{BOUNDARY}\r\ncontent-disposition: form-data; name=\"{field}\"; filename=\"upload\"\r\ncontent-type: {mime}\r\n\r\n"
+        )
+        .into_bytes();
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
+        req.body = body;
+        self.send(req)
+    }
+
+    /// Signs the client in as row `id` of the app's users, as `cx.sign_in(id)`
+    /// does, with no login form: every request from now on carries the session.
+    pub fn sign_in(&mut self, id: u64) {
+        let peer = "127.0.0.1:1".parse().expect("a socket address");
+        let mut cx = crate::Cx::from_request::<A>("GET", "/", std::iter::empty(), &[], peer)
+            .unwrap_or_else(|s| panic!("sign_in: a request for / was refused with {s}"));
+        cx.sign_in(id);
+        let set = cx.out_headers().iter().find(|(n, _)| n == "set-cookie");
+        let cookie = set.and_then(|(_, v)| v.split(';').next()?.split_once('='));
+        let (name, value) = cookie.expect("sign_in sets the session cookie");
+        self.cookies.retain(|(n, _)| n != name);
+        self.cookies.push((name.to_string(), value.to_string()));
+    }
+
+    /// The browser modules a page loads, each with its source: every
+    /// `/_app/` script the page names (but the runtime's own), fetched.
+    pub fn modules(&mut self, page: &Reply) -> Vec<(String, String)> {
+        let html = page.text();
+        let (mut urls, mut rest) = (Vec::<String>::new(), html);
+        while let Some(i) = rest.find(crate::protocol::APP_PREFIX) {
+            let tail = &rest[i..];
+            let end = tail
+                .find(['"', '\'', '?', '<', '>', ' ', '\\', ')'])
+                .unwrap_or(tail.len());
+            let url = &tail[..end];
+            if url.ends_with(".js") && !urls.iter().any(|u| u == url) {
+                urls.push(url.to_string());
+            }
+            rest = &tail[end..];
+        }
+        urls.retain(|u| !u.ends_with("/wisp.js") && !u.ends_with("/live.js"));
+        urls.into_iter()
+            .map(|u| {
+                let source = self.get(&u).text().to_string();
+                (u, source)
+            })
+            .collect()
+    }
+
+    /// Opens a WebSocket to a `+server.rs` that answers
+    /// [`Response::websocket`](crate::Response::websocket), with the
+    /// client's cookies; the handshake is checked as the server checks it.
+    /// Panics if the route does not upgrade.
+    pub fn websocket(&mut self, target: &str) -> TestSocket {
+        let mut req = Request::new("GET", target);
+        for (n, v) in [
+            ("upgrade", "websocket"),
+            ("connection", "Upgrade"),
+            ("sec-websocket-version", "13"),
+            ("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="),
+        ] {
+            req.header(n, v);
+        }
+        let (reply, upgrade) = crate::ws::capture(|| self.send(req));
+        match upgrade {
+            // The 501 is what `handle` makes of an upgrade; any other
+            // status is the handshake's refusal.
+            Some(upgrade) if reply.status == 501 => TestSocket::open(upgrade, target),
+            _ => panic!(
+                "websocket {target}: expected an upgrade, got {} {}",
+                reply.status,
+                reply.text()
+            ),
+        }
     }
 
     /// A JSON request, as an API client sends one:
