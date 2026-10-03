@@ -189,6 +189,11 @@ Use: `<Card title={post.title} count={3} featured>kids</Card>`. Props are
 checked at build (no type = `&str`; none = required). No `---` block in
 components. `{@element "x-card"}` first also builds it as a custom element
 (`/_app/c/el/x-card.js`): `<x-card title="Hi">kids</x-card>` works on any site.
+In Rust (a mail body): `Card::html("Hi", 3, false)` is the HTML string; every prop is
+an argument, no children. Plugin crates: `[package.metadata.wisp] use = ["kit"]` in
+Cargo.toml copies the dependency's `wisp/routes` and `wisp/components` into the app at
+build (to `src/routes/(kit)/`, `src/components/kit/`, git-ignored); the app's own component of
+the same name wins. A `path` dependency or one in the registry; no git dependency.
 
 ## Markdown pages
 

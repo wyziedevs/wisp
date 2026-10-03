@@ -17,7 +17,9 @@ mod markdown;
 mod model;
 pub mod npm;
 mod openapi;
+mod plugins;
 mod pwa;
+mod render;
 pub mod routes;
 pub mod rules;
 pub mod rust_scan;
@@ -78,6 +80,18 @@ pub fn run() {
     ] {
         if root.join(p).exists() {
             println!("cargo::rerun-if-changed={p}");
+        }
+    }
+
+    // Plugin crates' routes and components, copied in before the scan.
+    println!("cargo::rerun-if-changed=Cargo.toml");
+    match plugins::sync(&root) {
+        Ok(dirs) => dirs
+            .iter()
+            .for_each(|d| println!("cargo::rerun-if-changed={}", d.display())),
+        Err(e) => {
+            eprintln!("\nwisp: {e}\n");
+            std::process::exit(1);
         }
     }
 

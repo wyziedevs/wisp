@@ -2826,6 +2826,7 @@ impl Gen {
         }
         self.line(0, "}");
         self.line(0, "");
+        self.out.push_str(&crate::render::components(&p.comps));
         // The messages of `t("key")`: of templates, and sent to scripts.
         if let Some(l) = &p.i18n {
             let mut sent = vec![false; p.t_used.len()];
@@ -5251,6 +5252,10 @@ impl Gen {
             self.line(2, "Ok(())");
         }
         self.line(1, "}");
+        if t.kind == Kind::Component {
+            let props = t.t.props.as_ref().map_or(&[][..], |(p, _)| p);
+            self.out.push_str(&crate::render::html_fn(props));
+        }
         if self.types.is_some() {
             self.probe(t, client)?;
         }
