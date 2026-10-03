@@ -161,7 +161,8 @@ hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new(
 
 ### Wisp on AWS Lambda
 
-`lambda_http` takes a tower service:
+`wisp build --target lambda` needs no code (see deploy.md). For a `main` of
+your own, `lambda_http` takes a tower service:
 
 ```rust
 wisp::app!();

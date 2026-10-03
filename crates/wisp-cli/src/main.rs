@@ -2,6 +2,7 @@
 
 mod ask;
 mod cargo;
+mod ci;
 mod css;
 mod deploy;
 mod dev;
@@ -22,7 +23,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 /// `wisp --help`: each command or option, and what it does.
-const COMMANDS: [(&str, &str); 15] = [
+const COMMANDS: [(&str, &str); 16] = [
     (
         "wisp new [name]",
         "Create an app. It asks a few questions; the options below answer them.",
@@ -33,7 +34,7 @@ const COMMANDS: [(&str, &str); 15] = [
     ),
     (
         "wisp build",
-        "Build one release binary with the CSS and static files inside.",
+        "Build one release binary with the CSS and static files inside (in a host's CI: for that host).",
     ),
     (
         "wisp build --static [--out dist]",
@@ -45,11 +46,15 @@ const COMMANDS: [(&str, &str); 15] = [
     ),
     (
         "wisp build --target <host> [--out dist/<host>]",
-        "Write a folder ready to deploy to cloudflare, deno, vercel, netlify or node.",
+        "Write a folder for cloudflare, deno, vercel, netlify, node, bun or lambda.",
     ),
     (
         "wisp build --client ts [--out client.ts]",
         "Write a typed TypeScript client of the app's +server.rs endpoints.",
+    ),
+    (
+        "wisp deploy init <host> [--force]",
+        "Write a GitHub Actions workflow that deploys to the host on each push.",
     ),
     (
         "wisp check",
@@ -139,6 +144,7 @@ fn main() -> ExitCode {
         Some("build") => {
             build_options(&args[1..]).and_then(|o| project().and_then(|root| build(root, &o)))
         }
+        Some("deploy") => project().and_then(|root| ci::run(root, &args[1..])),
         Some("check") => no_options("check", &args[1..])
             .and_then(|()| project())
             .and_then(|root| {
@@ -204,8 +210,8 @@ struct BuildOptions {
     docker: bool,
     force: bool,
     out: Option<String>,
-    /// `--target <host>`, an edge or Node host (`static` and `docker` set
-    /// the flags above).
+    /// `--target <host>`, an edge, Node or Lambda host, or `native` (`static`
+    /// and `docker` set the flags above).
     target: Option<String>,
     /// `--client ts`: write the TypeScript client of the app's endpoints.
     client: bool,
@@ -254,7 +260,11 @@ fn build_options(args: &[String]) -> Result<BuildOptions, String> {
         Some("--target <host> goes alone, without --static or --docker.")
     } else if o.client && (o.static_site || o.docker || o.target.is_some()) {
         Some("--client ts goes alone, with --out <file> if you like.")
-    } else if o.out.is_some() && !o.static_site && o.target.is_none() && !o.client {
+    } else if o.out.is_some()
+        && !o.static_site
+        && o.target.as_deref().is_none_or(|t| t == "native")
+        && !o.client
+    {
         Some("--out goes with --static, --target or --client.")
     } else if o.force && !o.docker {
         Some("--force goes with --docker.")
@@ -272,10 +282,12 @@ fn target(o: &mut BuildOptions, host: &str) -> Result<(), String> {
     match host {
         "static" => o.static_site = true,
         "docker" => o.docker = true,
-        _ if targets::HOSTS.contains(&host) => o.target = Some(host.to_string()),
+        _ if host == "native" || targets::HOSTS.contains(&host) => {
+            o.target = Some(host.to_string());
+        }
         _ => {
             return Err(format!(
-                "There is no target {host}.\nThe targets are {}, static and docker.",
+                "There is no target {host}.\nThe targets are {}, native, static and docker.",
                 targets::HOSTS.join(", ")
             ));
         }
@@ -334,8 +346,24 @@ fn build(root: &Path, o: &BuildOptions) -> Result<(), String> {
         (None, Some(host)) => PathBuf::from(format!("{}/{host}", deploy::DEFAULT_OUT)),
         (None, None) => PathBuf::from(deploy::DEFAULT_OUT),
     };
-    if let Some(host) = &o.target {
-        return targets::build(root, host, &out(Some(host)));
+    // In a host's CI, a plain `wisp build` builds for that host.
+    let found = match (&o.target, o.static_site || o.docker) {
+        (None, false) => targets::detect(|k| std::env::var(k).ok()),
+        _ => None,
+    };
+    if let Some((var, host)) = found {
+        term::step(&format!("{var} is set, so this builds for {host}"));
+        println!("    wisp build --target native builds the plain binary instead.");
+    }
+    if let Some(host) = o.target.as_deref().or(found.map(|f| f.1)) {
+        // Vercel's build reads `.vercel/output` from the app's folder.
+        let out = match (found, host) {
+            (Some(_), "vercel") if o.out.is_none() => PathBuf::from("."),
+            _ => out(Some(host)),
+        };
+        if host != "native" {
+            return targets::build(root, host, &out);
+        }
     }
     let imports = wisp_build::check(root)?;
     css::build(root)?;
@@ -421,7 +449,11 @@ mod tests {
         );
         assert!(opts("-t static").unwrap().static_site);
         assert!(opts("--target docker").unwrap().docker);
+        assert_eq!(opts("-t native").unwrap().target.as_deref(), Some("native"));
+        assert_eq!(opts("-t lambda").unwrap().target.as_deref(), Some("lambda"));
         for bad in [
+            "-t native --out x",
+            "-t native --static",
             "--target",
             "--target heroku",
             "--target=",

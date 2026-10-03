@@ -161,7 +161,8 @@ wisp build --target cloudflare    # or deno, vercel, netlify, node
 | GitHub Pages, GitLab Pages | `--static` |
 | Cloudflare, Deno Deploy, Vercel, Netlify | `--target` |
 | AWS Amplify, Firebase, Azure Static Web Apps, Stormkit, Zeabur | `--target node` |
-| AWS Lambda | `tower` feature |
+| AWS Lambda | `--target lambda` |
+| Bun | `--target bun` |
 
 Commands per host, and what the edge can't do, are in [docs/deploy.md](docs/deploy.md).
 
