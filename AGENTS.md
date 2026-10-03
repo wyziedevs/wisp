@@ -265,7 +265,9 @@ no-wait fast path off every route.
   `#[derive(Cookie)]`.
 - Static export: `fn entries() -> Vec<&'static str>` in a `[param]` page.
   Test: `let mut app = wisp::test::client::<App>(); app.get("/").text()`,
-  `app.post_form/post_json/delete`, `.json::<T>()`.
+  `app.post_form/post_json/delete`, `.json::<T>()`, `r.location()`,
+  `app.upload(url, field, mime, bytes)`, `app.sign_in(id)`,
+  `app.modules(&page)`, `app.websocket(url)` (`.send/.recv`).
 
 ## Gotchas
 
@@ -284,5 +286,6 @@ no-wait fast path off every route.
 
 `wisp new app` · `wisp dev` · `wisp check` · `wisp build` (`--static`,
 `--docker`, `--target cloudflare|deno|vercel|netlify|node`, `--client ts`) ·
-`wisp add|remove pkg`. Docs: README.md, docs/design.md, client.md, api.md,
+`wisp add|remove pkg` · `wisp routes` · `wisp new-route /path page|server|rest` ·
+`wisp deploy init fly|render|railway`. Docs: README.md, docs/design.md, client.md, api.md,
 deploy.md, embed.md, tokens.md.
