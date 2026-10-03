@@ -173,7 +173,9 @@ impl Checker {
         }) || ["onkeydown", "onkeyup", "onkeypress"]
             .iter()
             .any(|k| value(k).is_some());
-        if clicks && !INTERACTIVE.contains(&tag) && !(has("role") && keys) {
+        // A custom element (`<sl-button>`) keeps its keyboard inside it.
+        let custom = tag.contains('-');
+        if clicks && !custom && !INTERACTIVE.contains(&tag) && !(has("role") && keys) {
             self.lint(line, "click-events", &format!("<{tag}> takes clicks but not the keyboard: use a <button>, or give it a role and on:keydown"));
         }
         if value("autofocus").is_some() {
@@ -298,7 +300,8 @@ mod tests {
         assert!(
             lints(&format!(
                 "<li role=\"button\" on:click=\"go\" on:keydown=\"go\">y</li>\
-                 <button on:click=\"go\">b</button><div on:click.outside=\"go\">z</div>{js}"
+                 <button on:click=\"go\">b</button><div on:click.outside=\"go\">z</div>\
+                 <sl-button on:click=\"go\">c</sl-button>{js}"
             ))
             .is_empty()
         );
