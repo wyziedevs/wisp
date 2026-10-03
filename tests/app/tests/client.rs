@@ -773,13 +773,49 @@ fn shallow_routing_helpers() {
     let at = page.find("/_app/c/t").expect("a module");
     let url = &page[at..at + page[at..].find('"').unwrap()];
     let module = app.get(url).text().to_string();
-    assert!(module.contains("pushState('?tab=2', { tab: 2 })"), "{module}");
+    assert!(
+        module.contains("pushState('?tab=2', { tab: 2 })"),
+        "{module}"
+    );
     assert!(module.contains("pushState, replaceState, "), "{module}");
     let at = page.find("/_app/live.js").expect("the runtime");
-    let live = app.get(&page[at..at + page[at..].find('"').unwrap()]).text().to_string();
+    let live = app
+        .get(&page[at..at + page[at..].find('"').unwrap()])
+        .text()
+        .to_string();
     assert!(live.contains("export const pushState") && live.contains("'wisp:push'"));
     let wisp = app.get("/_app/wisp.js").text().to_string();
     assert!(wisp.contains("'wisp:push'") && wisp.contains("'wisp:pop'"));
+}
+
+/// Snapshots: wisp.js keeps fields per history entry; a script's
+/// `export const snapshot` is handed to extra.js, which its module imports.
+#[test]
+fn snapshots_are_kept_per_entry() {
+    let mut app = client::<Site>();
+    let wisp = app.get("/_app/wisp.js").text().to_string();
+    assert!(wisp.contains("sessionStorage") && wisp.contains("[autocomplete=off]"));
+    let page = app.get("/a2/snap").text().to_string();
+    let at = page.find("/_app/c/t").expect("a module");
+    let module = app
+        .get(&page[at..at + page[at..].find('"').unwrap()])
+        .text()
+        .to_string();
+    assert!(
+        module.contains("], snap: snapshot };") && module.contains("/_app/c/extra.js"),
+        "{module}"
+    );
+    // A page without one pays nothing for it.
+    let page = app.get("/a2/shallow").text().to_string();
+    let at = page.find("/_app/c/t").expect("a module");
+    let module = app
+        .get(&page[at..at + page[at..].find('"').unwrap()])
+        .text()
+        .to_string();
+    assert!(
+        !module.contains("snap:") && !module.contains("extra.js"),
+        "{module}"
+    );
 }
 
 /// Server components: `Plain` has no browser code, so the page names no
@@ -791,7 +827,11 @@ fn server_components_ship_no_js() {
     assert!(page.contains("<p>slotted</p>") && page.contains("<p>direct</p>"));
     let json = &page[page.find("id=\"wisp-live\">").expect("instances")..];
     let map = &json[..json.find("},\"i\"").unwrap()];
-    assert_eq!(map.matches("/_app/c/t").count(), 3, "Panel, Ping, Tally: {map}");
+    assert_eq!(
+        map.matches("/_app/c/t").count(),
+        3,
+        "Panel, Ping, Tally: {map}"
+    );
     // Each Ping waits for itself, inside its Panel island.
     assert_eq!(json.matches(",{},\"v\"]").count(), 3, "{json}");
 }

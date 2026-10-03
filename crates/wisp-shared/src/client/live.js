@@ -644,6 +644,7 @@ function begin(rec) {
     live.push(inst);
     bindAll(inst, mine);
     if (inst.s) loadThen(def, blob, my, (b) => inst.s(b));
+    if (inst.snap) X.snap(inst);
   } else if (def.load) {
     // Its +page.js loads first: the page's elements wait unbound.
     waiting[I] = [];
@@ -714,10 +715,11 @@ function script(inst, blob) {
   const prev = current;
   current = inst;
   try {
-    inst.g = untrack(() => inst.def.fn(blob, helpers(inst))).g;
+    ({ g: inst.g, snap: inst.snap } = untrack(() => inst.def.fn(blob, helpers(inst))));
   } finally {
     current = prev;
   }
+  if (inst.snap) X.snap(inst);
   // dev{
   made.add(inst);
   if (inst.slot) give(inst, carry.get(inst.def.file)?.shift());

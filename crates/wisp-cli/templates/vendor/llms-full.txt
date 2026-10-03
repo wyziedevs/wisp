@@ -212,7 +212,10 @@ Directives: `on:click="f"` (modifiers `.prevent .stop .once .self .window
 import): `onMount onDestroy effect watch tick listen goto invalidate matches`.
 Shallow routing (tabs, modals): `pushState('?tab=2', { tab: 2 })`,
 `replaceState('', s)`; `page.value.state` is the entry's, reactive; back and
-forward restore it with no request.
+forward restore it with no request. Snapshots: fields the visitor changed
+come back with their history entry (back, forward, reload; not passwords,
+files, `autocomplete="off"`); a script's own state:
+`export const snapshot = { capture: () => x, restore: (v) => (x = v) }`.
 Stores in `src/lib`: `import { store, persisted, derived } from 'wisp'`.
 npm: `wisp add canvas-confetti`, then `import confetti from 'canvas-confetti'`
 (esm.sh in dev; `wisp build` puts it in the binary, no CDN; one not in package.json
@@ -2438,6 +2441,29 @@ and its state; a reload keeps the state only at the URL it was made on.
 Events on `document`: `wisp:navigate`, `wisp:update`, `wisp:goto`,
 `wisp:refresh`, `wisp:error`, `wisp:push`, `wisp:pop`. On forms: `wisp:submit` (cancelable) and
 `wisp:result`.
+
+## Snapshots
+
+What the visitor typed comes back with its history entry: back, forward and
+a reload put each field the visitor changed (`<input>`, `<textarea>`,
+`<select>`) back, with no code. Passwords, files, hidden fields and anything
+under `autocomplete="off"` are never kept. The values live in
+`sessionStorage`, for the tab; where it is not there, nothing is kept.
+
+A script keeps its own state the same way:
+
+```html
+<script>
+  let open = false
+  export const snapshot = {
+    capture: () => open,              // any JSON, when the entry is left
+    restore: (v) => (open = v),       // when it comes back
+  }
+</script>
+```
+
+`snapshot` is the only thing a script may export. It costs a page without
+one nothing (it is in `extra.js`).
 
 ## Forms: `use:enhance`
 

@@ -602,6 +602,29 @@ Events on `document`: `wisp:navigate`, `wisp:update`, `wisp:goto`,
 `wisp:refresh`, `wisp:error`, `wisp:push`, `wisp:pop`. On forms: `wisp:submit` (cancelable) and
 `wisp:result`.
 
+## Snapshots
+
+What the visitor typed comes back with its history entry: back, forward and
+a reload put each field the visitor changed (`<input>`, `<textarea>`,
+`<select>`) back, with no code. Passwords, files, hidden fields and anything
+under `autocomplete="off"` are never kept. The values live in
+`sessionStorage`, for the tab; where it is not there, nothing is kept.
+
+A script keeps its own state the same way:
+
+```html
+<script>
+  let open = false
+  export const snapshot = {
+    capture: () => open,              // any JSON, when the entry is left
+    restore: (v) => (open = v),       // when it comes back
+  }
+</script>
+```
+
+`snapshot` is the only thing a script may export. It costs a page without
+one nothing (it is in `extra.js`).
+
 ## Forms: `use:enhance`
 
 Plain forms already update in place. `use:enhance` adds hooks.

@@ -3,8 +3,8 @@
 // that does not pays nothing for it: transitions and animate:flip,
 // {:#await} and {:#try}, <wisp:element>, {:...spread}, client:* on an
 // element, bind: on anything but value and checked, components drawn in
-// the browser, use:enhance, $state.snapshot, persisted stores, and Maps
-// and Sets as state.
+// the browser, use:enhance, $state.snapshot, persisted stores, Maps and
+// Sets as state, and pages' own snapshots.
 // It adds its kinds of binding and helpers to live.js's `__wisp`, which
 // calls them.
 import { __wisp as X, page, store } from 'wisp';
@@ -402,3 +402,33 @@ X.coll = {
     return (...a) => (track(verOf(m)), f.apply(t, a));
   },
 };
+
+// ---- snapshots ----------------------------------------------------------------
+
+// `export const snapshot = { capture, restore }` in a script: what capture()
+// gives is kept with the history entry (wisp.js keeps it, by module and
+// order), and handed to restore() when the entry comes back by back,
+// forward or a reload.
+const snaps = new Set();
+const tell = (type, d) => (document.dispatchEvent(new CustomEvent(type, { detail: d })), d);
+X.snap = (inst) => {
+  snaps.add(inst);
+  const v = tell('wisp:restore', {}).s?.[inst.id]?.shift();
+  try {
+    if (v != null) inst.snap.restore?.(v);
+  } catch (e) {
+    console.error(e);
+  }
+};
+document.addEventListener('wisp:capture', ({ detail: d }) => {
+  for (const i of snaps) {
+    if (i.sc.dead) snaps.delete(i);
+    else
+      try {
+        (d.s[i.id] ||= []).push(i.snap.capture?.() ?? null);
+      } catch (e) {
+        console.error(e);
+      }
+  }
+});
+document.addEventListener('wisp:pop', () => snaps.forEach(X.snap));
