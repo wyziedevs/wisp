@@ -3626,8 +3626,9 @@ impl Gen {
         if !before && !m.root_waits() && p.remotes.is_empty() {
             self.line(1, "const NOT_FOUND_NOW: bool = true;");
         }
-        // No source of the app names `trailing_slash`: no request looks.
-        if !mentions_slash(&p.root.join("src")) {
+        // No source file of the app (tests too) names `trailing_slash`: no
+        // request looks.
+        if !mentions_slash(p.root) {
             self.line(1, "const TRAILING_SLASH: bool = false;");
         }
     }
@@ -4333,7 +4334,7 @@ fn set_once<T>(slot: &mut Option<T>, v: T, name: &str, page: &str) -> Result<(),
     Ok(())
 }
 
-/// Whether a file under `dir` (Rust or `.wisp`) says `trailing_slash`, or
+/// Whether a file under `dir` (Rust or `.wisp`; not `target`) says `trailing_slash`, or
 /// cannot be read: the app may then set how a page's address ends.
 fn mentions_slash(dir: &Path) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -4342,7 +4343,10 @@ fn mentions_slash(dir: &Path) -> bool {
     entries.flatten().any(|e| {
         let path = e.path();
         if path.is_dir() {
-            return mentions_slash(&path);
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            return !(name == "target" || name == "node_modules" || name.starts_with('.'))
+                && mentions_slash(&path);
         }
         let ext = path.extension().and_then(|x| x.to_str());
         matches!(ext, Some("rs" | "wisp"))
