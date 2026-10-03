@@ -6,6 +6,7 @@ mod codegen;
 pub mod fmt;
 mod fold;
 pub mod ide;
+pub mod inspect;
 mod js;
 mod model;
 pub mod npm;

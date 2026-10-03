@@ -8,6 +8,7 @@ mod dev;
 mod events;
 mod fmt;
 mod lsp;
+mod mcp;
 mod net;
 mod new;
 mod npm;
@@ -73,6 +74,14 @@ const COMMANDS: [(&str, &str); 13] = [
     (
         "wisp lsp",
         "Run the language server for editors, over stdio (editors/vscode starts it).",
+    ),
+    (
+        "wisp update-docs",
+        "Bring AGENTS.md, the reference for AI agents, up to this Wisp.",
+    ),
+    (
+        "wisp mcp",
+        "Serve docs, routes, components and checks to AI agents (MCP, stdio).",
     ),
 ];
 
@@ -142,6 +151,10 @@ fn main() -> ExitCode {
         Some("add") => project().and_then(|root| npm::add(root, &args[1..])),
         Some("remove") => project().and_then(|root| npm::remove(root, &args[1..])),
         Some("lsp") => no_options("lsp", &args[1..]).and_then(|()| lsp::run()),
+        Some("update-docs") => no_options("update-docs", &args[1..])
+            .and_then(|()| project())
+            .and_then(new::update_docs),
+        Some("mcp") => no_options("mcp", &args[1..]).and_then(|()| mcp::run()),
         // Not in --help: how `wisp dev` runs a tool that must end with it.
         Some("__child") => css::child(&args[1..]),
         Some("-h" | "--help" | "help") | None => {

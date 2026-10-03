@@ -182,7 +182,7 @@ On a server-rendered HTML benchmark on Linux, Wisp serves 13% more requests than
 
 ## Documentation
 
-- [AGENTS.md](AGENTS.md): everything on one page, for coding agents (and people in a hurry).
+- [AGENTS.md](AGENTS.md): everything on one page, for coding agents (and people in a hurry). Every app gets it; `wisp mcp` serves it and the docs to agents (`claude mcp add wisp -- wisp mcp`; Cursor and VS Code in [docs/design.md](docs/design.md#ai-agents)).
 - [docs/design.md](docs/design.md): the template language, routing, actions, the runtime and the dev server.
 - [docs/tokens.md](docs/tokens.md): what the same apps cost in tokens here and in other frameworks.
 - [docs/client.md](docs/client.md): scripts, directives, components, stores, the router.
