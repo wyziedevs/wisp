@@ -2054,7 +2054,7 @@ impl Reply {
 
     /// Starts over as a response of `content_type`. The headers keep their
     /// capacity, so a connection's `Reply` allocates nothing once warm.
-    fn set(&mut self, status: u16, content_type: &'static str, body: Body) {
+    pub(crate) fn set(&mut self, status: u16, content_type: &'static str, body: Body) {
         self.status = status;
         self.headers.clear();
         self.headers
@@ -2070,7 +2070,7 @@ impl Reply {
         self.body = body;
     }
 
-    fn set_plain(&mut self, status: u16, text: &'static str) {
+    pub(crate) fn set_plain(&mut self, status: u16, text: &'static str) {
         self.set(
             status,
             "text/plain; charset=utf-8",
@@ -2916,6 +2916,7 @@ fn internal<A: App>(cx: &Cx, path: &str, out: &mut Out, reply: &mut Reply) -> bo
         "/_wisp/openapi.json" if docs => (A::openapi().as_bytes(), "json", None),
         "/_wisp/client.ts" if docs => (A::client_ts().as_bytes(), "txt", None),
         "/_wisp/docs" if docs => (api_docs(), "html", None),
+        "/_wisp/metrics" if get && crate::obs::serve(cx, reply) => return true,
         #[cfg(debug_assertions)]
         "/_app/wisp-devtools.js" if dev => (DEVTOOLS_JS, "js", None),
         #[cfg(debug_assertions)]
@@ -4197,24 +4198,29 @@ mod tests {
     /// a page of escaped rows, HEAD or GET, with no allocation: its
     /// buffers, `Cx`, headers and response bodies are all reused. Measured
     /// as a release server runs, with dev mode off: in a child process, when
-    /// this one has it on.
+    /// this one has it on, and in another with `METRICS_KEY` set, whose
+    /// counting allocates nothing either.
 
     #[test]
     fn warm_requests_allocate_nothing() {
         if crate::settings().dev {
             let name = "http::tests::warm_requests_allocate_nothing";
-            let child = std::process::Command::new(std::env::current_exe().unwrap())
-                .args([name, "--exact", "--nocapture"])
-                .env("WISP_DEV", "off")
-                .output()
-                .unwrap();
-            let said = String::from_utf8_lossy(&child.stdout);
-            assert!(
-                child.status.success() && said.contains("1 passed"),
-                "{said}"
-            );
+            for metrics in ["", "key"] {
+                let child = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([name, "--exact", "--nocapture"])
+                    .env("WISP_DEV", "off")
+                    .env("METRICS_KEY", metrics)
+                    .output()
+                    .unwrap();
+                let said = String::from_utf8_lossy(&child.stdout);
+                assert!(
+                    child.status.success() && said.contains("1 passed"),
+                    "{said}"
+                );
+            }
             return;
         }
+        crate::obs::init(Bench::ROUTES);
         let mut b = buffers();
         for (method, path, answered) in [
             ("GET", "/plaintext", &b"Hello, World!"[..]),
