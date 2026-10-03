@@ -13,7 +13,7 @@ use std::io::Write;
 use std::net::IpAddr;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering::Relaxed};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 /// What is on, read from the environment once, at start. Empty when
 /// nothing is.
@@ -199,7 +199,14 @@ impl Obs {
         };
         let route = p.route.and_then(|r| self.routes.get(r)).map(|r| r.pattern);
         if self.json {
-            let line = line(&more, p.started, route, status, bytes, unix_millis());
+            let line = line(
+                &more,
+                p.started,
+                route,
+                status,
+                bytes,
+                otel::unix_nanos() / 1_000_000,
+            );
             // A reader that is gone loses the line, never the request.
             let _ = std::io::stdout().lock().write_all(line.as_bytes());
         }
@@ -390,13 +397,6 @@ pub(crate) fn serve(cx: &Cx, reply: &mut Reply) -> bool {
     let fresh = (Cow::Borrowed("cache-control"), Cow::Borrowed("no-store"));
     reply.headers.push(fresh);
     true
-}
-
-/// Milliseconds since 1970, by the wall clock.
-fn unix_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
 }
 
 /// The JSON line of the request `m` begun at `started`, ended by a newline.

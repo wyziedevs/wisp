@@ -503,7 +503,7 @@ fn headers(list: &str) -> String {
     out
 }
 
-fn unix_nanos() -> u64 {
+pub(crate) fn unix_nanos() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
