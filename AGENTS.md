@@ -137,8 +137,8 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
   WebP or AVIF by its bytes (not SVG), else 422; at most 2 MB
   (`wisp::MAX_SIZE`) unless `#[validate(max_size = 5 * MB)]`. The form gets
   `enctype="multipart/form-data"` and the file input `accept="image/*"`.
-  `doc: Upload` is any file kept as a blob (`doc.name`, `doc.url()`, shows
-  its URL; docs/data.md). Keep an image in a table field, serve it with `fn get(id: u64) -> Option<Image> {
+  `doc: Upload` is any file kept as a blob once all inputs pass (`doc.name`,
+  `doc.url()`, shows its URL; docs/data.md). Keep an image in a table field, serve it with `fn get(id: u64) -> Option<Image> {
   USERS.get(id)?.value.avatar }` in `avatars/[id=int]/+server.rs`.
 - Rules: `#[validate(len = 1..=100)]` (also `min max min_len max_len email`)
   or `return invalid("field", "msg")` → 422, the page re-rendered listing
@@ -197,7 +197,7 @@ checked at build (no type = `&str`; none = required). No `---` block in
 components. `{@element "x-card"}` first also builds it as a custom element
 (`/_app/c/el/x-card.js`): `<x-card title="Hi">kids</x-card>` works on any site.
 In Rust (a mail body): `Card::html("Hi", 3, false)` is the HTML string; every prop is
-an argument, no children. Plugin crates: `[package.metadata.wisp] use = ["kit"]` in
+an argument, no children (none for a component named like a prelude type: `Table`, `Box`). Plugin crates: `[package.metadata.wisp] use = ["kit"]` in
 Cargo.toml copies the dependency's `wisp/routes` and `wisp/components` into the app at
 build (to `src/routes/(kit)/`, `src/components/kit/`, git-ignored); the app's own component of
 the same name wins. A `path` dependency or one in the registry; no git dependency.
