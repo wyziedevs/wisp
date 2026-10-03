@@ -1,0 +1,74 @@
+//! What the test app's binary tells an operator: `WISP_LOG=json` lines.
+
+mod common;
+
+use common::{Server, command, header, status};
+use std::io::{BufRead, BufReader};
+use std::process::{ChildStdout, Stdio};
+use wisp::Value;
+
+/// The app with `env`, and its stdout after the line with its port.
+fn start_reading(env: &[(&str, &str)]) -> (Server, BufReader<ChildStdout>) {
+    let mut child = command(env)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("start the test app");
+    let mut out = BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    out.read_line(&mut line).unwrap();
+    let port = line.trim().rsplit(':').next().unwrap().parse().unwrap();
+    (Server { child, port }, out)
+}
+
+fn next_json(out: &mut BufReader<ChildStdout>) -> Value {
+    let mut line = String::new();
+    out.read_line(&mut line).unwrap();
+    wisp::json::parse(&line).unwrap_or_else(|e| panic!("{e}: {line:?}"))
+}
+
+fn text<'a>(v: &'a Value, key: &str) -> &'a str {
+    v.get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("{key} in {v:?}"))
+}
+
+fn number(v: &Value, key: &str) -> i64 {
+    v.get(key)
+        .and_then(Value::as_i64)
+        .unwrap_or_else(|| panic!("{key} in {v:?}"))
+}
+
+#[test]
+fn json_logs_a_line_a_request() {
+    let (s, mut out) = start_reading(&[("WISP_LOG", "json"), ("WISP_DEV", "off")]);
+    let page = s.request("GET", "/post/hello?x=1", "x-request-id: req-7\r\n", b"");
+    assert_eq!(status(&page), 200, "{page}");
+    let v = next_json(&mut out);
+    assert_eq!(text(&v, "method"), "GET");
+    assert_eq!(text(&v, "route"), "/post/[slug]");
+    assert_eq!(
+        text(&v, "path"),
+        "/post/hello",
+        "no query: it may hold secrets"
+    );
+    assert_eq!(number(&v, "status"), 200);
+    let len: i64 = header(&page, "content-length").unwrap().parse().unwrap();
+    assert_eq!(number(&v, "bytes"), len);
+    assert_eq!(text(&v, "id"), "req-7");
+    assert_eq!(text(&v, "ip"), "127.0.0.1");
+    assert!(text(&v, "time").ends_with('Z'));
+    assert!(
+        v.get("ms")
+            .and_then(Value::as_f64)
+            .is_some_and(|ms| ms >= 0.0)
+    );
+
+    // Every request gets an id, sent back to correlate with the line.
+    let missing = s.request("GET", "/no/such/page", "", b"");
+    assert_eq!(status(&missing), 404);
+    let v = next_json(&mut out);
+    assert!(v.get("route").unwrap().is_null(), "{v:?}");
+    assert_eq!(number(&v, "status"), 404);
+    assert_eq!(Some(text(&v, "id")), header(&missing, "x-request-id"));
+}

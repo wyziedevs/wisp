@@ -3580,14 +3580,14 @@ impl Gen {
             self.line(
                 2,
                 &format!(
-                    "::wisp::rt::RouteFacts {{ params: &[{}], body_limit: {}, uploads: {}, now: {}, sync: {sync}, files: {files}, error: {}, page: {} }}, // {}",
+                    "::wisp::rt::RouteFacts {{ params: &[{}], body_limit: {}, uploads: {}, now: {}, sync: {sync}, files: {files}, error: {}, page: {}, pattern: {} }},",
                     names.join(", "),
                     some(limit),
                     some(uploads),
                     !before && !m.route_waits(route),
                     opt(route.error),
                     route.page.is_some(),
-                    route.pattern
+                    lit(&route.pattern)
                 ),
             );
         }

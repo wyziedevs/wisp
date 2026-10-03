@@ -493,6 +493,12 @@ takes the no-wait fast path off every route.
   (text, aria-label or title). Actions wait for the element and for the
   page to settle (5 s, `b.timeout(d)`): no sleeps needed.
 
+## Observability (env vars, no app code)
+
+`WISP_LOG=json`: one line per request on stdout, `{"time","method","route"
+(`/blog/[slug]`, or null),"path" (no query),"status","ms","bytes","id","ip"}`;
+every request then gets an `x-request-id`.
+
 ## Gotchas
 
 - `Err(error(..))` is wrong: `error()` already returns the `Result`.

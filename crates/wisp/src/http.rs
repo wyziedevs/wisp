@@ -763,6 +763,7 @@ fn started(addr: SocketAddr) {
 /// the built-in server. Cheap to call again.
 pub(crate) fn setup<A: App>() {
     install_panic_hook();
+    crate::obs::init(A::ROUTES);
     let _ = crate::sign::ROOT.set(A::ROOT);
     crate::i18n::ready(A::LOCALES);
     if crate::settings().dev {
@@ -1172,6 +1173,7 @@ fn decide_now<A: App>(
     if crate::settings().request_id {
         cx.request_id();
     }
+    out.obs = crate::obs::begin(cx, route);
     if !before_routes::<A>(cx, route, out, reply) {
         let started = timed().then(Instant::now);
         out.clear();
@@ -2197,6 +2199,9 @@ pub(crate) async fn answer<A: App>(mut cx: Cx) -> Reply {
                 .push((Cow::Borrowed("content-length"), Cow::Owned(len.to_string())));
         }
     }
+    if let Some(p) = out.obs.take() {
+        crate::obs::finish(p, reply.status, reply.bytes().len());
+    }
     reply
 }
 
@@ -2273,6 +2278,7 @@ async fn decide<A: App>(
     }
     // Routed first (it only matches), so the path is read once.
     let route = routed.unwrap_or_else(|| route::<A>(cx));
+    out.obs = crate::obs::begin(cx, route);
     if !before_routes::<A>(cx, route, out, reply) {
         let started = timed().then(Instant::now);
         out.clear();
@@ -2682,6 +2688,7 @@ fn serialize<A: App>(
     // HTTP/1.0 has no chunks: a streamed body ends with the connection.
     let chunked = stream && http11;
     let keep_alive = keep_alive && (!stream || chunked || head_only);
+    let watched = out.obs.take();
     let parts = matches!(reply.body, Body::Page).then(|| page::<A>(out));
     let len = match &parts {
         Some(parts) => parts.iter().map(|p| p.len()).sum(),
@@ -2724,6 +2731,10 @@ fn serialize<A: App>(
     let body = std::mem::replace(&mut reply.body, Body::Static(b""));
     reply.headers.clear();
     let send = !head_only && !bodiless;
+    if let Some(p) = watched {
+        let sent = if send && !stream { len } else { 0 };
+        crate::obs::finish(p, reply.status, sent);
+    }
     match body {
         Body::Bytes(b) => {
             if send {
