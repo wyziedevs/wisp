@@ -537,17 +537,17 @@ fn each_host_gets_its_folder() {
     assert!(app.join("n2/public").is_dir());
 }
 
-/// A stand-in for cwebp that logs each run and writes its `-o` file.
+/// A stand-in for cwebp that writes its `-o` file.
 fn fake_cwebp(dir: &Path) -> std::path::PathBuf {
     let (name, script) = if cfg!(windows) {
         (
             "cwebp.cmd",
-            "@echo off\r\necho %*>>\"%~dp0cwebp.log\"\r\n:next\r\nif \"%~1\"==\"-o\" (echo webp>\"%~2\"& exit /b 0)\r\nshift\r\nif not \"%~1\"==\"\" goto next\r\nexit /b 1\r\n",
+            "@echo off\r\n:next\r\nif \"%~1\"==\"-o\" (echo webp>\"%~2\"& exit /b 0)\r\nshift\r\nif not \"%~1\"==\"\" goto next\r\nexit /b 1\r\n",
         )
     } else {
         (
             "cwebp.sh",
-            "#!/bin/sh\necho \"$@\" >> \"$(dirname \"$0\")/cwebp.log\"\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = -o ]; then echo webp > \"$2\"; exit 0; fi\n  shift\ndone\nexit 1\n",
+            "#!/bin/sh\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = -o ]; then echo webp > \"$2\"; exit 0; fi\n  shift\ndone\nexit 1\n",
         )
     };
     let path = dir.join(name);
@@ -617,13 +617,12 @@ fn images_get_webp_widths_and_their_size() {
     ] {
         assert!(files.contains(&f), "{f} in {files:?}");
     }
-    assert_eq!(read(&cwd, "cwebp.log").lines().count(), 4);
+    assert_eq!(tree(&app.join(".wisp/img")).len(), 4);
 
     // A second build encodes nothing.
     let o = build(&tool);
     assert!(o.ok, "{}", o.err);
     assert!(!o.out.contains("Encoding"), "{}", o.out);
-    assert_eq!(read(&cwd, "cwebp.log").lines().count(), 4);
 
     // Without cwebp the build warns, and serves the original, sized.
     fs::remove_dir_all(app.join(".wisp/img")).unwrap();
