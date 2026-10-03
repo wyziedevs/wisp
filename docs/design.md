@@ -600,8 +600,10 @@ type says nothing the bytes do not. Text fields read the same either way.
 Uploads are held in memory, so a route that takes large ones raises its own
 `BODY_LIMIT` rather than the whole app's.
 
-A picture is an action parameter: `#[validate(max_size = 1 * MB)] avatar:
-Image` (or `Option<Image>`, which may be left empty). Its kind is what its
+A picture is an action parameter: `avatar: Image` (or `Option<Image>`, which
+may be left empty). It takes at most 2 MB (`wisp::MAX_SIZE`) unless
+`#[validate(max_size = 5 * MB)]` says another size. The build gives its form
+`enctype="multipart/form-data"` and its file input `accept="image/*"`. Its kind is what its
 first bytes say, never what the browser claimed: PNG, JPEG, GIF, WebP or
 AVIF. Anything else, SVG included (it can carry script), and a file over
 `max_size`, show the page again as a 422 with the problem by the field. The
@@ -640,12 +642,17 @@ signing everyone out, move the old one to `WISP_SECRET_OLD`: signatures it
 made still hold (nothing new is signed with it) until it is removed, 30 days
 on for sign-ins.
 
-Signing in is built on that. `cx.sign_in(id)` (a row id of the app's users)
+Signing in is built on that. For a `#[model]` with a `hash` field and an
+`email` or `name` (an `Account`), `cx.signup(&USERS, row).await?` hashes the
+password in `row.hash`, refuses a taken name with a 422 and signs in, and
+`cx.login(&USERS, &email, &password).await?` checks it as slowly for a name
+no one has; `wisp::signup` and `wisp::login` do the same without a `Cx`. `cx.sign_in(id)` (a row id of the app's users)
 sets the signed cookie `session` to the id and the time, for 30 days;
 `cx.signed_in()?` is the id, and signed out (or 30 days on) it is the error
 that sends the visitor to sign in: a 303 to `/login`, or a 401 for a JSON
 client. `cx.user(&USERS)?` is the row itself, the same way. A members' page
-starts with `let me = cx.user(&USERS)?;`; `cx.signed_in().ok()` asks without
+starts with `let me = cx.user(&USERS)?;` (`cx.user()` when `init` names the
+table: `wisp::users(&db::USERS)`); `cx.signed_in().ok()` asks without
 sending anyone anywhere; `cx.sign_out()` ends it. The page at `/login` is
 the convention; `wisp::sign_in_page("/enter")` in `init` names another.
 `sign_in` always sets a new session, so one planted on a visitor before
