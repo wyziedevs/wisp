@@ -6,6 +6,7 @@ mod codegen;
 mod fold;
 mod js;
 mod model;
+pub mod npm;
 mod openapi;
 pub mod routes;
 pub mod rules;
@@ -40,7 +41,13 @@ pub fn run() {
 
     // Only existing paths: Cargo treats a missing one as always changed, which
     // would rebuild the app on every `cargo build`.
-    for p in ["src", "static", ".wisp/app.css"] {
+    for p in [
+        "src",
+        "static",
+        ".wisp/app.css",
+        "package.json",
+        ".wisp/npm",
+    ] {
         if root.join(p).exists() {
             println!("cargo::rerun-if-changed={p}");
         }
@@ -224,6 +231,15 @@ pub fn check(root: &Path) -> Result<(), String> {
         release: false,
     })
     .map(|_| ())
+}
+
+/// The esm.sh paths of the npm packages the app's browser code imports,
+/// which `wisp build` downloads into `.wisp/npm` for the release build.
+pub fn npm_used(root: &Path) -> Result<Vec<String>, String> {
+    codegen::npm_used(&codegen::Input {
+        root,
+        release: false,
+    })
 }
 
 /// The TypeScript client of the project's `+server.rs` endpoints: a module

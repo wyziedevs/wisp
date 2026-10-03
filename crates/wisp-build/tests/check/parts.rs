@@ -653,3 +653,33 @@ fn templates_parse_from_the_public_module() {
     assert!(client.is_live() && client.script.is_some());
     assert!(!template::parse("<p>x</p>").unwrap().is_live());
 }
+
+#[test]
+fn a_package_import_needs_the_package() {
+    let page = (
+        "src/routes/+page.wisp",
+        "<button on:click=\"go()\">x</button>\n<script>\n  import confetti from 'canvas-confetti'\n  function go() { confetti() }\n</script>",
+    );
+    let lib = (
+        "src/lib/fx.js",
+        "export { default } from 'canvas-confetti/x'\n",
+    );
+    let p = Project::new(&[page, lib]);
+    let e = wisp_build::check(p.root()).unwrap_err();
+    assert!(
+        e.contains("src/lib/fx.js") && e.contains("`wisp add canvas-confetti`"),
+        "{e}"
+    );
+    let json = (
+        "package.json",
+        "{\"dependencies\": {\"canvas-confetti\": \"1.9.3\"}}",
+    );
+    let p = Project::new(&[page, lib, json]);
+    assert_eq!(
+        wisp_build::npm_used(p.root()).unwrap(),
+        [
+            "/canvas-confetti@1.9.3/x?target=es2022",
+            "/canvas-confetti@1.9.3?target=es2022"
+        ]
+    );
+}

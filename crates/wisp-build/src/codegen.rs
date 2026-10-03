@@ -10,6 +10,7 @@
 use crate::js::Kind as JsKind;
 use crate::json_str as js_str;
 use crate::model::{self, Handler, Model};
+use crate::npm::{self, Npm};
 use crate::openapi::Op;
 use crate::protocol::{
     APP_CSS_PATH, COPY_END, COPY_START, EXTRA_JS_PATH, GROUP_ATTR, ISLAND_MEDIA, LIVE_JS_PATH,
@@ -495,6 +496,11 @@ pub fn generate_all(input: &Input) -> Result<(String, String), String> {
     Ok((g.out, client))
 }
 
+/// The esm.sh paths of the npm packages the app's browser code imports.
+pub fn npm_used(input: &Input) -> Result<Vec<String>, String> {
+    Ok(Project::load(input)?.browser()?.npm)
+}
+
 /// The app, as far as it has been read.
 struct Project<'a> {
     root: &'a Path,
@@ -524,6 +530,8 @@ struct Project<'a> {
 struct Web {
     clients: Vec<Option<Client>>,
     js_files: Vec<JsFile>,
+    /// The esm.sh paths of the npm packages imported.
+    npm: Vec<String>,
 }
 
 impl<'a> Project<'a> {
@@ -1253,9 +1261,13 @@ impl<'a> Project<'a> {
             }
             format!("{:016x}", fnv1a(&h))
         };
+        let specs = Specs {
+            lib_hash,
+            npm: Npm::new(npm::deps(self.root)?, self.release),
+        };
         // The runtime's less used half, which modules that use it import.
         let extra = {
-            let src = rewrite_specifiers(EXTRA_JS, &lib_hash, None);
+            let src = rewrite_specifiers(EXTRA_JS, &specs, None)?;
             let source = if self.release { js::runtime(&src) } else { src };
             let hash = format!("{:016x}", fnv1a(source.as_bytes()));
             JsFile {
@@ -1267,24 +1279,25 @@ impl<'a> Project<'a> {
         let extra_url = format!("{}?v={}", extra.path, extra.hash);
         // A lib file that makes a `persisted` store imports it too (last, so
         // its lines stay).
-        let lib_file = |src: &str, dir: Option<&str>| {
-            let mut s = rewrite_specifiers(src, &lib_hash, dir);
+        let lib_file = |src: &str, dir: Option<&str>, rel: &str| {
+            let mut s = rewrite_specifiers(src, &specs, dir).map_err(|e| format!("{rel}: {e}"))?;
             if js::tokens(src)
                 .iter()
                 .any(|t| !t.member && t.text(src) == "persisted")
             {
                 s.push_str(&format!("\nimport {};\n", js_str(&extra_url)));
             }
-            s
+            Ok::<_, String>(s)
         };
-        let mut js_files: Vec<JsFile> = lib_src
-            .iter()
-            .map(|(p, src)| JsFile {
+        let mut js_files = Vec::with_capacity(lib_src.len());
+        for (p, src) in &lib_src {
+            let dir = p.rfind('/').map_or("", |i| &p[..i]);
+            js_files.push(JsFile {
                 path: format!("{MODULES}lib/{p}"),
-                hash: lib_hash.clone(),
-                source: lib_file(src, Some(p.rfind('/').map_or("", |i| &p[..i]))),
-            })
-            .collect();
+                hash: specs.lib_hash.clone(),
+                source: lib_file(src, Some(dir), &format!("src/lib/{p}"))?,
+            });
+        }
 
         // The modules of templates.
         let as_client: std::collections::HashSet<String> = self
@@ -1296,7 +1309,7 @@ impl<'a> Project<'a> {
         for (k, t) in self.templates.iter().enumerate() {
             let load = match &t.load_js {
                 Some(f) => {
-                    let source = lib_file(&self.read(f)?, None);
+                    let source = lib_file(&self.read(f)?, None, &self.rel(f))?;
                     let hash = format!("{:016x}", fnv1a(source.as_bytes()));
                     let path = format!("{MODULES}t{}.load.js", t.id);
                     let url = format!("{path}?v={hash}");
@@ -1311,7 +1324,7 @@ impl<'a> Project<'a> {
                 comps: &self.comps,
                 templates: &self.templates,
                 as_client: is_client,
-                lib_hash: &lib_hash,
+                specs: &specs,
                 load,
                 release: self.release,
                 extra: &extra_url,
@@ -1324,6 +1337,11 @@ impl<'a> Project<'a> {
             .any(|c| c.source.contains(&extra_url))
         {
             js_files.push(extra);
+        }
+        // A release build serves the npm packages imported from .wisp/npm.
+        for (path, source) in specs.npm.vendored(self.root)? {
+            let hash = format!("{:016x}", fnv1a(source.as_bytes()));
+            js_files.push(JsFile { path, hash, source });
         }
         // A module imports the modules of the components it renders by URLs
         // whose hash covers every module it can reach, so a change in any of
@@ -1357,7 +1375,11 @@ impl<'a> Project<'a> {
             c.source = link_comps(&c.source, url);
             c.hash.clone_from(&finals[k]);
         }
-        Ok(Web { clients, js_files })
+        Ok(Web {
+            clients,
+            js_files,
+            npm: specs.npm.used(),
+        })
     }
 
     /// Per route, its page when it is the same for every request, whole, as
@@ -4550,7 +4572,7 @@ struct ClientCx<'a> {
     templates: &'a [Tpl],
     /// Some page renders this component in the browser.
     as_client: bool,
-    lib_hash: &'a str,
+    specs: &'a Specs,
     /// The page's `+page.js`, served at this URL.
     load: Option<String>,
     /// A release build: `$inspect` goes.
@@ -4908,9 +4930,9 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
                 }))
         .then_some(cx.extra),
         html: html.as_deref(),
-        lib_hash: cx.lib_hash,
+        specs: cx.specs,
     };
-    let source = module_source(&m);
+    let source = module_source(&m).map_err(|e| format!("{}: {e}", t.rel))?;
     let hash = format!("{:016x}", fnv1a(source.as_bytes()));
     let blob = if used.is_empty() {
         vec![Piece::Text("{}".into())]
@@ -5037,7 +5059,7 @@ struct Module<'a> {
     /// `extra.js`'s URL, when the module uses it.
     extra: Option<&'a str>,
     html: Option<&'a str>,
-    lib_hash: &'a str,
+    specs: &'a Specs,
 }
 
 /// The module's text. The script keeps its line numbers, as far as the
@@ -5047,7 +5069,7 @@ struct Module<'a> {
 /// server values (signals, which the runtime sets again when a morph or a
 /// parent brings new ones), so it may reuse a helper's name and a server
 /// value may too. Its function returns the binding groups.
-fn module_source(m: &Module) -> String {
+fn module_source(m: &Module) -> Result<String, String> {
     let mut s = String::new();
     let _ = writeln!(
         s,
@@ -5068,7 +5090,7 @@ fn module_source(m: &Module) -> String {
         // Imports go first, as a module's must; they leave blank lines.
         let spans = js::imports(src);
         for &(a, b) in &spans {
-            s.push_str(&rewrite_specifiers(&src[a..b], m.lib_hash, None));
+            s.push_str(&rewrite_specifiers(&src[a..b], m.specs, None)?);
             s.push('\n');
         }
         body = js::blank(src, &spans);
@@ -5140,21 +5162,34 @@ fn module_source(m: &Module) -> String {
     }
     s.push_str(");\n");
     let _ = writeln!(s, "//# sourceURL=wisp:///{}", m.rel);
-    s
+    Ok(s)
+}
+
+/// What an import's module name resolves against: `src/lib`'s files (all
+/// under one hash) and the app's npm packages.
+struct Specs {
+    lib_hash: String,
+    npm: Npm,
 }
 
 /// The URL the browser loads for `spec` in an import: `wisp` is the
 /// runtime, `$lib/x.js` is `src/lib/x.js`, and in a lib file (whose
-/// directory under `src/lib` is `base`) so is a relative path. Anything else
-/// (a full URL) stays as written.
-fn resolve_spec(spec: &str, lib_hash: &str, base: Option<&str>) -> Option<String> {
+/// directory under `src/lib` is `base`) so is a relative path; a package
+/// name is that npm package. Anything else (a full URL) stays as written.
+fn resolve_spec(spec: &str, cx: &Specs, base: Option<&str>) -> Result<Option<String>, String> {
     if spec == "wisp" {
-        return Some(format!("{LIVE_JS_PATH}?v={}", crate::runtime_version()));
+        let v = crate::runtime_version();
+        return Ok(Some(format!("{LIVE_JS_PATH}?v={v}")));
+    }
+    if npm::is_bare(spec) {
+        return cx.npm.url(spec).map(Some);
     }
     let rel = if let Some(p) = spec.strip_prefix("$lib/") {
         p.to_string()
     } else {
-        let b = base.filter(|_| spec.starts_with("./") || spec.starts_with("../"))?;
+        let Some(b) = base.filter(|_| spec.starts_with("./") || spec.starts_with("../")) else {
+            return Ok(None);
+        };
         let mut parts: Vec<&str> = b.split('/').filter(|p| !p.is_empty()).collect();
         for p in spec.split('/') {
             match p {
@@ -5167,39 +5202,14 @@ fn resolve_spec(spec: &str, lib_hash: &str, base: Option<&str>) -> Option<String
         }
         parts.join("/")
     };
-    Some(format!("{MODULES}lib/{rel}?v={lib_hash}"))
+    Ok(Some(format!("{MODULES}lib/{rel}?v={}", cx.lib_hash)))
 }
 
-/// `src` with the module names of its imports (`import … from '…'`,
-/// `export … from '…'`, `import('…')`) replaced as `resolve_spec` says. Every
-/// file reaches a lib file by the same URL, so a store in it is one store.
-fn rewrite_specifiers(src: &str, lib_hash: &str, base: Option<&str>) -> String {
-    let t = js::tokens(src);
-    let mut out = String::with_capacity(src.len());
-    let mut at = 0;
-    for k in 0..t.len() {
-        if t[k].kind != js::Kind::String {
-            continue;
-        }
-        let prev = |n: usize| k.checked_sub(n).map(|j| t[j].text(src));
-        if !(matches!(prev(1), Some("from" | "import"))
-            || (prev(1) == Some("(") && prev(2) == Some("import")))
-        {
-            continue;
-        }
-        let raw = t[k].text(src);
-        if raw.len() < 2 {
-            continue;
-        }
-        let Some(url) = resolve_spec(&raw[1..raw.len() - 1], lib_hash, base) else {
-            continue;
-        };
-        out.push_str(&src[at..t[k].start]);
-        out.push_str(&js_str(&url));
-        at = t[k].end;
-    }
-    out.push_str(&src[at..]);
-    out
+/// `src` with the module names of its imports replaced as `resolve_spec`
+/// says. Every file reaches a lib file by the same URL, so a store in it
+/// is one store.
+fn rewrite_specifiers(src: &str, cx: &Specs, base: Option<&str>) -> Result<String, String> {
+    js::specifiers(src, |spec| resolve_spec(spec, cx, base))
 }
 
 /// Resolves the names an expression (with the line it is on) reads: the
@@ -6973,11 +6983,17 @@ pub fn load() -> Data { todo!() }";
             stmts: None,
             t: template::parse(src).unwrap(),
         };
+        // The script's bare imports are the app's npm packages.
+        let deps = vec![("a".into(), "1".into()), ("b".into(), "2".into())];
+        let specs = Specs {
+            lib_hash: "0".into(),
+            npm: Npm::new(deps, false),
+        };
         let cx = ClientCx {
             comps: &[],
             templates: &[],
             as_client: false,
-            lib_hash: "0",
+            specs: &specs,
             load: None,
             release: false,
             extra: "/_app/c/extra.js",
@@ -6991,7 +7007,7 @@ pub fn load() -> Data { todo!() }";
         let c = page_client(src, true).unwrap();
         assert_eq!(c.id, "t7");
         let head = format!(
-            "import {{ define }} from \"/_app/live.js?v={}\";\nimport a from 'a'\nimport {{\n    b }} from \"b\";\n\
+            "import {{ define }} from \"/_app/live.js?v={}\";\nimport a from \"https://esm.sh/a@1?target=es2022\"\nimport {{\n    b }} from \"https://esm.sh/b@2?target=es2022\";\n\
              define(\"t7\", function (__wisp_p, __wisp_h) {{ const {{ {HELPERS} }} = __wisp_h; {{ const {{ data }} = __wisp_props(__wisp_p, [\"data\"]); {{\n",
             crate::runtime_version()
         );
@@ -7320,7 +7336,16 @@ pub fn load() -> Data { todo!() }";
     fn imports_are_rewritten() {
         let v = crate::runtime_version();
         let src = "import { store } from 'wisp'\nimport a from '$lib/a.js'\nexport * from '../b.js'\nimport './c.js'\nimport x from 'https://esm.sh/x'\nconst y = import('$lib/y.js')\nconst s = 'wisp'";
-        let out = rewrite_specifiers(src, "H", Some("sub"));
+        let deps = vec![
+            ("canvas-confetti".into(), "1.9.3".into()),
+            ("@s/p".into(), "2.0.0".into()),
+        ];
+        let specs = |release| Specs {
+            lib_hash: "H".into(),
+            npm: Npm::new(deps.clone(), release),
+        };
+        let dev = specs(false);
+        let out = rewrite_specifiers(src, &dev, Some("sub")).unwrap();
         assert_eq!(
             out,
             format!(
@@ -7330,9 +7355,39 @@ pub fn load() -> Data { todo!() }";
         );
         // Outside src/lib, a relative path is left as written.
         assert_eq!(
-            rewrite_specifiers("import './c.js'", "H", None),
+            rewrite_specifiers("import './c.js'", &dev, None).unwrap(),
             "import './c.js'"
         );
+        // A package name is the package: from esm.sh in dev, from the app
+        // in a release build; one package.json does not list is an error.
+        let npm = "import confetti from 'canvas-confetti'\nimport { q } from '@s/p/sub'\nconst m = import('canvas-confetti')";
+        assert_eq!(
+            rewrite_specifiers(npm, &dev, None).unwrap(),
+            "import confetti from \"https://esm.sh/canvas-confetti@1.9.3?target=es2022\"\n\
+             import { q } from \"https://esm.sh/@s/p@2.0.0/sub?target=es2022\"\n\
+             const m = import(\"https://esm.sh/canvas-confetti@1.9.3?target=es2022\")"
+        );
+        let release = specs(true);
+        let out = rewrite_specifiers(npm, &release, None).unwrap();
+        assert!(
+            out.starts_with(
+                "import confetti from \"/_app/c/npm/canvas-confetti@1.9.3_target_es2022.js?v="
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains("from \"/_app/c/npm/@s/p@2.0.0/sub_target_es2022.js?v="),
+            "{out}"
+        );
+        assert_eq!(
+            release.npm.used(),
+            [
+                "/@s/p@2.0.0/sub?target=es2022",
+                "/canvas-confetti@1.9.3?target=es2022"
+            ]
+        );
+        let err = rewrite_specifiers("import 'left-pad'", &dev, None).unwrap_err();
+        assert!(err.contains("`wisp add left-pad`"), "{err}");
     }
 
     #[test]
