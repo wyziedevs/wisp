@@ -764,6 +764,24 @@ fn one_visitor_never_gets_another_visitors_answer() {
     assert_eq!(again.text(), ann.text());
 }
 
+/// pushState and replaceState need no import: every module gets them from
+/// live.js, which sends them to wisp.js, which keeps the history.
+#[test]
+fn shallow_routing_helpers() {
+    let mut app = client::<Site>();
+    let page = app.get("/a2/shallow").text().to_string();
+    let at = page.find("/_app/c/t").expect("a module");
+    let url = &page[at..at + page[at..].find('"').unwrap()];
+    let module = app.get(url).text().to_string();
+    assert!(module.contains("pushState('?tab=2', { tab: 2 })"), "{module}");
+    assert!(module.contains("pushState, replaceState, "), "{module}");
+    let at = page.find("/_app/live.js").expect("the runtime");
+    let live = app.get(&page[at..at + page[at..].find('"').unwrap()]).text().to_string();
+    assert!(live.contains("export const pushState") && live.contains("'wisp:push'"));
+    let wisp = app.get("/_app/wisp.js").text().to_string();
+    assert!(wisp.contains("'wisp:push'") && wisp.contains("'wisp:pop'"));
+}
+
 /// Server components: `Plain` has no browser code, so the page names no
 /// module for it, though islands sit around and inside it.
 #[test]

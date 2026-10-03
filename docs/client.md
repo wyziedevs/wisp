@@ -585,12 +585,21 @@ goto('/login')                       // or goto(url, { replace: true })
 invalidate()                         // run this page's load again
 matches(item.name, q)                // text has q in it, whatever the case
 
-page.value.url.pathname              // page: { url, status, form }
+page.value.url.pathname              // page: { url, status, form, state }
 navigating.value                     // { from, to } while loading, else null
+
+pushState('?tab=2', { tab: 2 })      // a history entry: no navigation
+replaceState('', { tab: 3 })         // this entry's state ('' keeps the URL)
 ```
 
+Shallow routing, for tabs and modals: `pushState(url, state)` adds a
+history entry at `url` (`''`: this one) and loads nothing; `page.value.state`
+is its state, reactive (`{}` on other entries). Back and forward to it
+bring the state back with no request. Leaving and coming back loads its URL
+and its state; a reload keeps the state only at the URL it was made on.
+
 Events on `document`: `wisp:navigate`, `wisp:update`, `wisp:goto`,
-`wisp:refresh`, `wisp:error`. On forms: `wisp:submit` (cancelable) and
+`wisp:refresh`, `wisp:error`, `wisp:push`, `wisp:pop`. On forms: `wisp:submit` (cancelable) and
 `wisp:result`.
 
 ## Forms: `use:enhance`

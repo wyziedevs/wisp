@@ -220,6 +220,9 @@ Directives: `on:click="f"` (modifiers `.prevent .stop .once .self .window
 `{:#each items as it, i (it.id)}…{:/each}`, `{:@render s(x)}`. Runes:
 `$state $state.raw $derived $effect $props $bindable $inspect`. Helpers (no
 import): `onMount onDestroy effect watch tick listen goto invalidate matches`.
+Shallow routing (tabs, modals): `pushState('?tab=2', { tab: 2 })`,
+`replaceState('', s)`; `page.value.state` is the entry's, reactive; back and
+forward restore it with no request.
 Stores in `src/lib`: `import { store, persisted, derived } from 'wisp'`.
 npm: `wisp add canvas-confetti`, then `import confetti from 'canvas-confetti'`
 (esm.sh in dev; `wisp build` puts it in the binary, no CDN; one not in package.json

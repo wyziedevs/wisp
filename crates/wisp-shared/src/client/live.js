@@ -419,8 +419,28 @@ export function derived(f) {
   return { get value() { return m.v; }, subscribe: (g) => sub(() => m.v, g) };
 }
 
-export const page = store({ url: new URL(location.href), status: 200, form: undefined });
+// `state` is the history entry's, from pushState: kept on a reload only
+// at the address it was made on.
+const hs = () => history.state?.s || {};
+export const page = store({
+  url: new URL(location.href),
+  status: 200,
+  form: undefined,
+  state: history.state?.p == location.href.split('#')[0] ? hs() : {},
+});
 export const navigating = store(null);
+
+// Shallow routing: a history entry with this state (`page.value.state`),
+// at `url` if given, and no navigation; back and forward bring it back
+// with no request (wisp.js keeps the history).
+export const pushState = (url, state) => shallow(url, state);
+export const replaceState = (url, state) => shallow(url, state, 1);
+function shallow(url, state = {}, replace) {
+  send('wisp:push', { url: String(url ?? ''), state, replace });
+  popped();
+}
+const popped = () => (page.value = { ...page.value, url: new URL(location.href), state: hs() });
+document.addEventListener('wisp:pop', popped);
 
 // Client navigation, done by wisp.js: to `url`, or the current page again.
 export function goto(url, opts = {}) {
@@ -776,6 +796,8 @@ const shared = {
   goto,
   invalidate,
   matches,
+  pushState,
+  replaceState,
   page,
   navigating,
   context,
@@ -1546,7 +1568,7 @@ document.addEventListener('wisp:navigate', (e) => {
   navigating.value = { from: new URL(e.detail.from), to: new URL(e.detail.to, location.href) };
 });
 document.addEventListener('wisp:update', (e) => {
-  page.value = { ...page.value, url: new URL(location.href), status: e.detail?.status ?? 200 };
+  page.value = { ...page.value, url: new URL(location.href), status: e.detail?.status ?? 200, state: hs() };
   navigating.value = null;
   start();
 });
