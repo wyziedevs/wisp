@@ -30,6 +30,9 @@ pub struct Table<T> {
     unique: Option<Unique<T>>,
     /// Changes each stored row's JSON as it is read ([`Table::migrate`]).
     migrate: Option<fn(&mut Value)>,
+    /// Hashes a row's `Password`s as it enters: `None` for a row type with
+    /// none, which pays nothing.
+    seal: Option<fn(&mut T, bool)>,
     /// Each change is sent on the channel named as the table ([`Table::live`]).
     live: bool,
     /// Where the store's changes were read up to ([`Store::changes`]).
@@ -350,6 +353,7 @@ impl<T> Table<T> {
             random,
             unique: None,
             migrate: None,
+            seal: None,
             live: false,
             cursor: AtomicU64::new(0),
             writes: AtomicU64::new(0),
@@ -377,13 +381,14 @@ impl<T> Table<T> {
             Some(name) => Some(Saved {
                 name,
                 write: crate::password::stored::<T>,
-                read: crate::json::from_json::<T>,
+                read: crate::password::read::<T>,
             }),
             None => None,
         };
         let mut table = Table::make(saved, random);
         // `#[unique]` on a field of the row type.
         table.unique = T::UNIQUE;
+        table.seal = if T::SEALS { Some(T::seal) } else { None };
         table
     }
 
@@ -557,6 +562,14 @@ impl<T> Table<T> {
         }
     }
 
+    /// Hashes the `Password`s `value` holds that are text typed, once, as it
+    /// enters the table (not under its lock).
+    fn seal(&self, value: &mut T) {
+        if let Some(seal) = self.seal {
+            seal(value, true);
+        }
+    }
+
     /// The JSON a saved table keeps for `value`; empty for one in memory.
     fn encode(&self, rows: &Rows<T>, value: &T) -> String {
         let mut json = String::new();
@@ -709,7 +722,8 @@ impl<T> Table<T> {
     /// Keeps `value` under a new id, which it returns. A table with a
     /// [`unique`](Table::unique) field panics (a 500) for a repeat: see
     /// [`Table::try_add`].
-    pub fn add(&self, value: T) -> u64 {
+    pub fn add(&self, mut value: T) -> u64 {
+        self.seal(&mut value);
         let mut rows = self.write();
         match self.insert(&mut rows, value) {
             Ok(id) => {
@@ -723,7 +737,8 @@ impl<T> Table<T> {
 
     /// Like [`Table::add`], but a value whose unique field another row has
     /// is a 422 on that field (`is taken`), for an action to return.
-    pub fn try_add(&self, value: T) -> Result<u64> {
+    pub fn try_add(&self, mut value: T) -> Result<u64> {
+        self.seal(&mut value);
         let mut rows = self.write();
         let id = self.insert(&mut rows, value)?;
         drop(rows);
@@ -781,6 +796,9 @@ impl<T> Table<T> {
         let row = rows.map.get_mut(&id)?;
         let before = self.unique.map(|(_, key)| key(row).to_owned());
         let r = f(row);
+        // A password set here is hashed with the table locked: hash it
+        // first (`Password::new`) to keep the wait off it.
+        self.seal(row);
         if let (Some((field, key)), Some(before)) = (self.unique, before) {
             let now = key(&rows.map[&id]);
             if now != before {
@@ -811,7 +829,8 @@ impl<T> Table<T> {
 
     /// Like [`Table::set`], but a repeat of another row's unique field is
     /// a 422 on that field.
-    pub fn try_set(&self, id: u64, value: T) -> Result<Option<()>> {
+    pub fn try_set(&self, id: u64, mut value: T) -> Result<Option<()>> {
+        self.seal(&mut value);
         let mut rows = self.write();
         if !rows.map.contains_key(&id) {
             return Ok(None);
@@ -877,7 +896,8 @@ impl<T: Clone> Table<T> {
 
     /// Keeps `value` unless `taken` is true of a row already there, checked
     /// with the table locked: two at once cannot both be kept.
-    pub fn add_unless(&self, taken: impl Fn(&T) -> bool, value: T) -> Option<Row<T>> {
+    pub fn add_unless(&self, taken: impl Fn(&T) -> bool, mut value: T) -> Option<Row<T>> {
+        self.seal(&mut value);
         let mut rows = self.write();
         if rows.map.values().any(taken) {
             return None;

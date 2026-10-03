@@ -214,14 +214,18 @@ fn encode(rounds: u32, salt: &[u8], key: &[u8; 32]) -> String {
     out
 }
 
-/// Whether `text` is a hash [`hash`] makes, not a password.
-pub fn is_hash(text: &str) -> bool {
-    parse(text).is_some()
-}
-
 thread_local! {
     /// A saved table is writing a row: a [`Password`] gives its hash.
     static STORING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A stored row's value: its JSON, its passwords the hashes they are.
+pub(crate) fn read<T: crate::FromJson>(json: &[u8]) -> Result<T> {
+    let mut row = crate::json::from_json::<T>(json)?;
+    if T::SEALS {
+        row.seal(false);
+    }
+    Ok(row)
 }
 
 /// What a saved table writes a row with: [`Json::json`](crate::Json), but
@@ -238,39 +242,50 @@ pub(crate) fn stored<T: crate::Json>(row: &T, out: &mut String) {
     row.json(out);
 }
 
-/// A password in a `#[model]`: `password: Password`. It reads from a form
-/// or JSON as the text typed; [`Password::new`] or `cx.signup` makes its
-/// hash, which is all a saved table keeps. It is never written out as JSON
-/// (a page's data, a REST reply, an island): that is `null`. Check a typed
-/// password with [`Password::check`]; a table that must not wait on a hash
-/// still keeps one, made on the spot, for a password not hashed yet.
+/// A password in a `#[model]`: `password: Password`. It is `Plain` as read
+/// from a form or JSON, and `Hashed` once made so: [`Password::new`] or
+/// `cx.signup` hash it (off the worker), and a table hashes any `Plain` one
+/// as the row enters it (`add`, `update`, `set`: on the spot, about a fifth
+/// of a second, once), so a table holds, and a store keeps, only hashes. A
+/// stored row reads back `Hashed`. Nothing guesses from the text which it
+/// is: text typed that looks like a hash is still `Plain`, and is hashed.
+/// It is never written out as JSON (a page's data, a REST reply, an
+/// island): that is `null`. Check a typed password with [`Password::check`].
 #[derive(Clone, PartialEq, Eq)]
-pub struct Password(String);
+pub enum Password {
+    /// The text typed, not hashed yet.
+    Plain(String),
+    /// A hash [`hash`] made, as a PHC string.
+    Hashed(String),
+}
 
 impl Password {
     /// `password`, hashed (see [`hash`]).
     pub async fn new(password: &str) -> Result<Password> {
-        hash(password).await.map(Password)
+        hash(password).await.map(Password::Hashed)
     }
 
-    /// Whether `typed` is the password this holds; `None` takes as long.
+    /// Whether `typed` is the password this holds; `None` takes as long. A
+    /// `Plain` one is not a hash, so it is `false`.
     pub async fn check(this: Option<&Password>, typed: &str) -> Result<bool> {
-        check(typed, this.map(|p| p.0.as_str())).await
+        check(typed, this.map(Password::as_str)).await
     }
 
-    /// Whether it is a hash already, not the text typed.
+    /// Whether it is hashed, not the text typed.
     pub fn hashed(&self) -> bool {
-        is_hash(&self.0)
+        matches!(self, Password::Hashed(_))
     }
 
     /// The hash, or the text typed when it is not hashed yet.
     pub fn as_str(&self) -> &str {
-        &self.0
+        match self {
+            Password::Plain(s) | Password::Hashed(s) => s,
+        }
     }
 
     /// A password that is this hash.
     pub fn from_hash(hash: String) -> Password {
-        Password(hash)
+        Password::Hashed(hash)
     }
 }
 
@@ -280,7 +295,7 @@ impl std::str::FromStr for Password {
     fn from_str(s: &str) -> std::result::Result<Password, String> {
         match s.is_empty() {
             true => Err("is required".into()),
-            false => Ok(Password(s.to_string())),
+            false => Ok(Password::Plain(s.to_string())),
         }
     }
 }
@@ -290,7 +305,7 @@ impl std::ops::Deref for Password {
     type Target = str;
 
     fn deref(&self) -> &str {
-        &self.0
+        self.as_str()
     }
 }
 
@@ -302,23 +317,40 @@ impl std::fmt::Debug for Password {
 
 impl crate::Json for Password {
     fn json(&self, out: &mut String) {
-        if !STORING.get() {
-            out.push_str("null");
-        } else if self.hashed() {
-            crate::Json::json(&self.0, out);
-        } else {
-            // Never a password in a store: hashed here, on this thread.
-            let salt = random::<16>();
-            let hash = encode(ROUNDS, &salt, &pbkdf2(self.0.as_bytes(), &salt, ROUNDS));
-            crate::Json::json(&hash, out);
+        match self {
+            _ if !STORING.get() => out.push_str("null"),
+            Password::Hashed(hash) => crate::Json::json(hash, out),
+            // A table seals what enters it, so this is not reached; but
+            // never a password in a store.
+            Password::Plain(text) => crate::Json::json(&sealed(text), out),
         }
     }
+}
+
+/// `text`, hashed here on this thread.
+fn sealed(text: &str) -> String {
+    let salt = random::<16>();
+    encode(ROUNDS, &salt, &pbkdf2(text.as_bytes(), &salt, ROUNDS))
 }
 
 impl crate::FromJson for Password {
     fn from_json(v: &crate::Value, p: &mut crate::json::Problems) -> Option<Password> {
         let s = <String as crate::FromJson>::from_json(v, p)?;
         s.parse().map_err(|e: String| p.add(e)).ok()
+    }
+
+    const SEALS: bool = true;
+
+    /// `hash`: hashes it if it is `Plain`; else it was read from a store,
+    /// where it is a hash already.
+    fn seal(&mut self, hash: bool) {
+        if let Password::Plain(text) = self {
+            *self = Password::Hashed(if hash {
+                sealed(text)
+            } else {
+                std::mem::take(text)
+            });
+        }
     }
 }
 
@@ -351,13 +383,33 @@ mod tests {
         assert!(kept.starts_with("\"$pbkdf2-sha256$i=600000$"), "{kept}");
         assert!(!kept.contains("horse") && !STORING.get());
         // What the table keeps reads back as a hash, which checks.
-        let back: Password = crate::from_json(kept.as_bytes()).unwrap();
+        let back: Password = read(kept.as_bytes()).unwrap();
         assert!(back.hashed());
         assert!(block(Password::check(Some(&back), "correct horse")).unwrap());
         assert!(!block(Password::check(Some(&back), "correct horsf")).unwrap());
         assert!(!block(Password::check(None, "x")).unwrap());
         let made = block(Password::new("pw")).unwrap();
         assert!(made.hashed() && format!("{made:?}") == "Password(..)");
+    }
+
+    /// A hashed password is written as it is, each time (no new salt, no
+    /// 600,000 rounds), and what the store gives back is hashed, not typed.
+    #[test]
+    fn a_hashed_password_is_written_as_it_is() {
+        let hashed = block(Password::new("pw")).unwrap();
+        let (mut a, mut b) = (String::new(), String::new());
+        let t = Instant::now();
+        stored(&hashed, &mut a);
+        stored(&hashed, &mut b);
+        assert!(t.elapsed() < Duration::from_millis(50) && a == b);
+        let back: Password = read(a.as_bytes()).unwrap();
+        assert!(back == hashed);
+        // Text that looks like a hash, typed, is still the text.
+        let typed: Password = hashed.as_str().parse().unwrap();
+        assert!(!typed.hashed() && typed != hashed);
+        let mut typed = typed;
+        crate::FromJson::seal(&mut typed, true);
+        assert!(typed.hashed() && typed != hashed);
     }
 
     #[test]
