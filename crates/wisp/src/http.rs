@@ -2467,6 +2467,29 @@ async fn decide<A: App>(
     tag(cx, reply);
 }
 
+/// Writes `res`, a handler's response, into `reply`.
+#[inline(always)]
+fn put(cx: &Cx, reply: &mut Reply, mut res: crate::Response) {
+    if not_modified(cx, &res) {
+        res.status = 304;
+    }
+    reply.status = res.status;
+    reply.headers.clear();
+    if !res.content_type.is_empty() {
+        reply
+            .headers
+            .push((Cow::Borrowed("content-type"), res.content_type));
+    }
+    if !res.headers.is_empty() {
+        reply.add(res.headers);
+    }
+    reply.body = match (res.upgrade.take(), res.stream.take()) {
+        (Some(upgrade), _) => Body::WebSocket(upgrade),
+        (None, Some(body)) => Body::Stream(body),
+        (None, None) => Body::Bytes(res.body),
+    };
+}
+
 /// The reply to what the handler did, `result` ([`answer_of`]), or to its
 /// error ([`error_reply`]): what went wrong, for the log, and the error
 /// page to render, if any.
@@ -2542,26 +2565,7 @@ fn answer_of(
     match result {
         Ok(()) => {
             match out.response.take() {
-                Some(mut res) => {
-                    if not_modified(cx, &res) {
-                        res.status = 304;
-                    }
-                    reply.status = res.status;
-                    reply.headers.clear();
-                    if !res.content_type.is_empty() {
-                        reply
-                            .headers
-                            .push((Cow::Borrowed("content-type"), res.content_type));
-                    }
-                    if !res.headers.is_empty() {
-                        reply.add(res.headers);
-                    }
-                    reply.body = match (res.upgrade.take(), res.stream.take()) {
-                        (Some(upgrade), _) => Body::WebSocket(upgrade),
-                        (None, Some(body)) => Body::Stream(body),
-                        (None, None) => Body::Bytes(res.body),
-                    };
-                }
+                Some(res) => put(cx, reply, res),
                 None => match out.made.take() {
                     Some(made) => crate::bake::reply(cx, made, reply),
                     None => reply.set(cx.status(), "text/html; charset=utf-8", Body::Page),
@@ -3009,6 +3013,15 @@ fn internal<A: App>(cx: &Cx, path: &str, reply: &mut Reply) -> bool {
         "/_wisp/docs" if docs => (api_docs(), "html", None),
         crate::health::PATH if get => {
             crate::health::answer(reply);
+            return true;
+        }
+        _ if path.starts_with("/_wisp/blob/") || path.starts_with("/_wisp/admin") => {
+            let found = match path.starts_with("/_wisp/blob/") {
+                true => crate::blob::serve(path),
+                false => crate::admin::serve(cx, path),
+            };
+            let Some(res) = found else { return false };
+            put(cx, reply, res);
             return true;
         }
         _ if s.dev && path.starts_with("/_wisp/") => {

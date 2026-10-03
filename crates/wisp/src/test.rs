@@ -37,6 +37,12 @@ pub struct Client<A> {
     app: PhantomData<fn() -> A>,
 }
 
+/// Empties every table, so the next test starts from nothing; rows are
+/// gone and ids not given again, as after `Table::clear`.
+pub fn fresh() {
+    crate::table::wipe_all();
+}
+
 /// A client for `A`, once [`crate::prepare`] has run. Panics if `init` fails.
 ///
 /// Durable tables stay in memory in tests (each test process starts
