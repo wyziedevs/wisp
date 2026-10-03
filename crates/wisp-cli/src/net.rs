@@ -1,58 +1,76 @@
 //! HTTP by curl, which ships with Windows 10+, macOS and every Linux
 //! distribution: the CLI needs no HTTP client of its own.
 
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// Why a fetch failed: the server answered with an error (a 404, say), or
-/// there was no answer (no network, no curl).
-pub enum Fail {
-    Status,
-    Other(String),
+/// Why a fetch failed, in words.
+pub struct Fail {
+    /// The server answered with an error (a 404, say), rather than not at
+    /// all (no network, no curl).
+    pub status: bool,
+    pub text: String,
 }
 
-impl Fail {
-    pub fn text(&self) -> &str {
-        match self {
-            Fail::Status => "the server answered with an error",
-            Fail::Other(e) => e,
-        }
-    }
+/// `url`'s body.
+pub fn fetch(url: &str) -> Result<Vec<u8>, Fail> {
+    curl(url, None)
 }
 
-/// `url`'s body, into `to` (with a progress bar) or returned.
-pub fn fetch(url: &str, to: Option<&Path>) -> Result<Vec<u8>, Fail> {
+/// Downloads `url` to `dest`, whole or not at all: into a file beside it
+/// (named by the process, so two `wisp` commands never write one file),
+/// which `check` may read, change or refuse (its error is returned), then
+/// moved into place. Another `wisp` may have put it there first; its copy
+/// is the same.
+pub fn fetch_to(
+    url: &str,
+    dest: &Path,
+    check: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut partial = dest.as_os_str().to_owned();
+    partial.push(format!(".{}.download", std::process::id()));
+    let partial = PathBuf::from(partial);
+    let done = curl(url, Some(&partial))
+        .map_err(|e| format!("Could not download {url}: {}.", e.text))
+        .and_then(|_| check(&partial))
+        .and_then(|()| match fs::rename(&partial, dest) {
+            Err(e) if !dest.exists() => Err(format!("Could not write {}: {e}.", dest.display())),
+            _ => Ok(()),
+        });
+    let _ = fs::remove_file(&partial);
+    done
+}
+
+/// curl, the body into `out` or returned.
+fn curl(url: &str, out: Option<&Path>) -> Result<Vec<u8>, Fail> {
     let mut cmd = Command::new("curl");
-    cmd.args(["-fL", "--connect-timeout", "30", "--retry", "2"]);
-    match to {
-        Some(file) => {
-            cmd.args(["--progress-bar", "-o"]).arg(file);
-        }
-        None => {
-            cmd.arg("-sS").stdout(Stdio::piped());
-        }
+    cmd.args(["-fsSL", "--connect-timeout", "30", "--retry", "2"]);
+    if let Some(file) = out {
+        cmd.arg("-o").arg(file);
     }
     let out = cmd
         .arg(url)
-        .stderr(if to.is_some() {
-            Stdio::inherit()
-        } else {
-            Stdio::piped()
-        })
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .output()
-        .map_err(|e| Fail::Other(format!("could not run curl: {e}; install curl")))?;
-    match out.status.code() {
-        Some(0) => Ok(out.stdout),
-        // curl's code for an HTTP error, with -f.
-        Some(22) => Err(Fail::Status),
-        _ => {
-            let why = String::from_utf8_lossy(&out.stderr);
-            let why = why.trim().trim_start_matches("curl: ");
-            Err(Fail::Other(if why.is_empty() {
-                "curl failed".into()
-            } else {
-                why.into()
-            }))
-        }
+        .map_err(|e| Fail {
+            status: false,
+            text: format!("could not run curl: {e}; install curl"),
+        })?;
+    if out.status.success() {
+        return Ok(out.stdout);
     }
+    let why = String::from_utf8_lossy(&out.stderr);
+    let why = why.trim().trim_start_matches("curl: ");
+    Err(Fail {
+        // curl's code for an HTTP error, with -f.
+        status: out.status.code() == Some(22),
+        text: if why.is_empty() {
+            "curl failed".into()
+        } else {
+            why.into()
+        },
+    })
 }

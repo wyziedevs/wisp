@@ -98,6 +98,9 @@ macro_rules! app_path {
 pub const APP_PREFIX: &str = app_path!("");
 /// The browser modules: templates', `src/lib`'s (`lib/`) and extra.js.
 pub const MODULES: &str = app_path!("c/");
+/// A release build's npm modules, from `.wisp/npm`: each path names its
+/// package's version, so it never changes.
+pub const NPM_MODULES: &str = app_path!("c/npm/");
 /// The browser runtime: wisp.js, live.js and live.js's less used half.
 pub const WISP_JS_PATH: &str = app_path!("wisp.js");
 pub const LIVE_JS_PATH: &str = app_path!("live.js");

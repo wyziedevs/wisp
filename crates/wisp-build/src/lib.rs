@@ -225,18 +225,10 @@ pub(crate) fn split_front(src: &str) -> Result<(Option<String>, String), String>
 }
 
 /// Checks the whole project the way `run` does, without writing anything.
-pub fn check(root: &Path) -> Result<(), String> {
-    codegen::generate(&codegen::Input {
-        root,
-        release: false,
-    })
-    .map(|_| ())
-}
-
-/// The esm.sh paths of the npm packages the app's browser code imports,
-/// which `wisp build` downloads into `.wisp/npm` for the release build.
-pub fn npm_used(root: &Path) -> Result<Vec<String>, String> {
-    codegen::npm_used(&codegen::Input {
+/// Returns the esm.sh paths of the npm modules the app's browser code
+/// imports, which `wisp build` downloads into `.wisp/npm` for a release.
+pub fn check(root: &Path) -> Result<Vec<String>, String> {
+    codegen::check(&codegen::Input {
         root,
         release: false,
     })

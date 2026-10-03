@@ -14,7 +14,7 @@ use crate::npm::{self, Npm};
 use crate::openapi::Op;
 use crate::protocol::{
     APP_CSS_PATH, COPY_END, COPY_START, EXTRA_JS_PATH, GROUP_ATTR, ISLAND_MEDIA, LIVE_JS_PATH,
-    LOOP_ATTR, MODULES, ON_FLAGS, ON_PLACED, ON_ROOT, SLOT_ATTR, WISP_JS_PATH,
+    LOOP_ATTR, MODULES, NPM_MODULES, ON_FLAGS, ON_PLACED, ON_ROOT, SLOT_ATTR, WISP_JS_PATH,
 };
 use crate::routes::Seg;
 use crate::rust_scan::{self, FnItem, Returns};
@@ -483,6 +483,17 @@ pub fn generate(input: &Input) -> Result<String, String> {
 /// (empty without any). The app is read phase by phase, each finding what
 /// the next needs, then written out.
 pub fn generate_all(input: &Input) -> Result<(String, String), String> {
+    generate_web(input).map(|(code, client, _)| (code, client))
+}
+
+/// [`generate`] for `wisp check`, and what the app's browser code imports
+/// of its npm packages, as esm.sh paths (for `wisp build` to download).
+pub fn check(input: &Input) -> Result<Vec<String>, String> {
+    let (_, _, web) = generate_web(input)?;
+    Ok(web.imports(npm::ESM))
+}
+
+fn generate_web(input: &Input) -> Result<(String, String, Web), String> {
     let p = Project::load(input)?;
     let web = p.browser()?;
     let mut g = Gen {
@@ -493,12 +504,7 @@ pub fn generate_all(input: &Input) -> Result<(String, String), String> {
     g.servers(&p);
     let assets = g.assets(&p)?;
     let client = g.app(&p, &web, &assets)?;
-    Ok((g.out, client))
-}
-
-/// The esm.sh paths of the npm packages the app's browser code imports.
-pub fn npm_used(input: &Input) -> Result<Vec<String>, String> {
-    Ok(Project::load(input)?.browser()?.npm)
+    Ok((g.out, client, web))
 }
 
 /// The app, as far as it has been read.
@@ -530,8 +536,28 @@ struct Project<'a> {
 struct Web {
     clients: Vec<Option<Client>>,
     js_files: Vec<JsFile>,
-    /// The esm.sh paths of the npm packages imported.
-    npm: Vec<String>,
+}
+
+impl Web {
+    /// The modules under `prefix` (an npm package's, from esm.sh or
+    /// `.wisp/npm`) that the app's own modules import, by their path after
+    /// it, each once.
+    fn imports(&self, prefix: &str) -> Vec<String> {
+        let mut out = std::collections::BTreeSet::new();
+        let sources = self.js_files.iter().map(|f| &f.source);
+        for src in sources.chain(self.clients.iter().flatten().map(|c| &c.source)) {
+            if !src.contains(prefix) {
+                continue;
+            }
+            let _ = js::specifiers(src, |s| {
+                if let Some(rest) = s.strip_prefix(prefix) {
+                    out.insert(rest.to_string());
+                }
+                Ok(None)
+            });
+        }
+        out.into_iter().collect()
+    }
 }
 
 impl<'a> Project<'a> {
@@ -1263,7 +1289,10 @@ impl<'a> Project<'a> {
         };
         let specs = Specs {
             lib_hash,
-            npm: Npm::new(npm::deps(self.root)?, self.release),
+            npm: Npm::new(
+                npm::deps(self.root)?,
+                self.release.then(|| self.root.join(".wisp").join("npm")),
+            ),
         };
         // The runtime's less used half, which modules that use it import.
         let extra = {
@@ -1274,6 +1303,7 @@ impl<'a> Project<'a> {
                 path: EXTRA_JS_PATH.into(),
                 hash,
                 source,
+                file: None,
             }
         };
         let extra_url = format!("{}?v={}", extra.path, extra.hash);
@@ -1296,6 +1326,7 @@ impl<'a> Project<'a> {
                 path: format!("{MODULES}lib/{p}"),
                 hash: specs.lib_hash.clone(),
                 source: lib_file(src, Some(dir), &format!("src/lib/{p}"))?,
+                file: None,
             });
         }
 
@@ -1313,7 +1344,12 @@ impl<'a> Project<'a> {
                     let hash = format!("{:016x}", fnv1a(source.as_bytes()));
                     let path = format!("{MODULES}t{}.load.js", t.id);
                     let url = format!("{path}?v={hash}");
-                    js_files.push(JsFile { path, hash, source });
+                    js_files.push(JsFile {
+                        path,
+                        hash,
+                        source,
+                        file: None,
+                    });
                     Some(url)
                 }
                 None => None,
@@ -1337,11 +1373,6 @@ impl<'a> Project<'a> {
             .any(|c| c.source.contains(&extra_url))
         {
             js_files.push(extra);
-        }
-        // A release build serves the npm packages imported from .wisp/npm.
-        for (path, source) in specs.npm.vendored(self.root)? {
-            let hash = format!("{:016x}", fnv1a(source.as_bytes()));
-            js_files.push(JsFile { path, hash, source });
         }
         // A module imports the modules of the components it renders by URLs
         // whose hash covers every module it can reach, so a change in any of
@@ -1375,11 +1406,27 @@ impl<'a> Project<'a> {
             c.source = link_comps(&c.source, url);
             c.hash.clone_from(&finals[k]);
         }
-        Ok(Web {
-            clients,
-            js_files,
-            npm: specs.npm.used(),
-        })
+        let mut web = Web { clients, js_files };
+        // A release build serves the npm modules imported, and what they
+        // import, from .wisp/npm.
+        if self.release {
+            let dir = self.root.join(".wisp").join("npm");
+            let roots: Vec<String> = web
+                .imports(NPM_MODULES)
+                .into_iter()
+                .map(|p| format!("/{p}"))
+                .collect();
+            let files = npm::walk(&dir, &roots, |p| Err(npm::absent(&p[0])))?;
+            for (f, src) in files {
+                web.js_files.push(JsFile {
+                    path: format!("{NPM_MODULES}{f}"),
+                    hash: format!("{:016x}", fnv1a(src.as_bytes())),
+                    source: String::new(),
+                    file: Some(dir.join(f)),
+                });
+            }
+        }
+        Ok(web)
     }
 
     /// Per route, its page when it is the same for every request, whole, as
@@ -1517,13 +1564,19 @@ impl Gen {
         self.line(0, "");
 
         for (i, f) in web.js_files.iter().enumerate() {
+            let (url, source) = match &f.file {
+                Some(file) => (
+                    f.path.clone(),
+                    format!("include_str!({})", lit(&file.to_string_lossy())),
+                ),
+                None => (format!("{}?v={}", f.path, f.hash), lit(&f.source)),
+            };
             self.line(0, &format!(
-                "static __WISP_JS_{i}: ::wisp::ClientModule = ::wisp::ClientModule {{ id: {}, path: {}, url: {}, etag: {}, source: {}, preload: \"\" }};",
+                "static __WISP_JS_{i}: ::wisp::ClientModule = ::wisp::ClientModule {{ id: {}, path: {}, url: {}, etag: {}, source: {source}, preload: \"\" }};",
                 lit(&f.path),
                 lit(&f.path),
-                lit(&format!("{}?v={}", f.path, f.hash)),
+                lit(&url),
                 lit(&format!("\"{}\"", f.hash)),
-                lit(&f.source)
             ));
         }
         for (t, c) in p.templates.iter().zip(&web.clients) {
@@ -4552,11 +4605,14 @@ impl Client {
 }
 
 /// A JavaScript file served as it is, but for its imports: `src/lib/**.js`
-/// and each `+page.js`.
+/// and each `+page.js`; or a file of `.wisp/npm`, embedded as it is.
 struct JsFile {
     path: String,
     hash: String,
     source: String,
+    /// The `.wisp/npm` file: its path names its package's version, so its
+    /// URL needs no `?v=`.
+    file: Option<PathBuf>,
 }
 
 /// The helpers every module's function takes. Most are scoped to the
@@ -6987,7 +7043,7 @@ pub fn load() -> Data { todo!() }";
         let deps = vec![("a".into(), "1".into()), ("b".into(), "2".into())];
         let specs = Specs {
             lib_hash: "0".into(),
-            npm: Npm::new(deps, false),
+            npm: Npm::new(deps, None),
         };
         let cx = ClientCx {
             comps: &[],
@@ -7340,11 +7396,11 @@ pub fn load() -> Data { todo!() }";
             ("canvas-confetti".into(), "1.9.3".into()),
             ("@s/p".into(), "2.0.0".into()),
         ];
-        let specs = |release| Specs {
+        let specs = |vendor| Specs {
             lib_hash: "H".into(),
-            npm: Npm::new(deps.clone(), release),
+            npm: Npm::new(deps.clone(), vendor),
         };
-        let dev = specs(false);
+        let dev = specs(None);
         let out = rewrite_specifiers(src, &dev, Some("sub")).unwrap();
         assert_eq!(
             out,
@@ -7367,24 +7423,24 @@ pub fn load() -> Data { todo!() }";
              import { q } from \"https://esm.sh/@s/p@2.0.0/sub?target=es2022\"\n\
              const m = import(\"https://esm.sh/canvas-confetti@1.9.3?target=es2022\")"
         );
-        let release = specs(true);
-        let out = rewrite_specifiers(npm, &release, None).unwrap();
-        assert!(
-            out.starts_with(
-                "import confetti from \"/_app/c/npm/canvas-confetti@1.9.3_target_es2022.js?v="
-            ),
-            "{out}"
-        );
-        assert!(
-            out.contains("from \"/_app/c/npm/@s/p@2.0.0/sub_target_es2022.js?v="),
-            "{out}"
-        );
+        // A release build's: a stub's module, or the module itself.
+        let dir = std::env::temp_dir().join(format!("wisp-npm-specs-{}", std::process::id()));
+        fs::create_dir_all(dir.join("@s/p@2.0.0")).unwrap();
+        let stub =
+            "export * from \"/_app/c/npm/canvas-confetti@1.9.3/es2022/canvas-confetti.mjs\";";
+        fs::write(dir.join("canvas-confetti@1.9.3_target_es2022.js"), stub).unwrap();
+        fs::write(
+            dir.join("@s/p@2.0.0/sub_target_es2022.js"),
+            "export const q = 1;",
+        )
+        .unwrap();
+        let out = rewrite_specifiers(npm, &specs(Some(dir.clone())), None);
+        let _ = fs::remove_dir_all(&dir);
         assert_eq!(
-            release.npm.used(),
-            [
-                "/@s/p@2.0.0/sub?target=es2022",
-                "/canvas-confetti@1.9.3?target=es2022"
-            ]
+            out.unwrap(),
+            "import confetti from \"/_app/c/npm/canvas-confetti@1.9.3/es2022/canvas-confetti.mjs\"\n\
+             import { q } from \"/_app/c/npm/@s/p@2.0.0/sub_target_es2022.js\"\n\
+             const m = import(\"/_app/c/npm/canvas-confetti@1.9.3/es2022/canvas-confetti.mjs\")"
         );
         let err = rewrite_specifiers("import 'left-pad'", &dev, None).unwrap_err();
         assert!(err.contains("`wisp add left-pad`"), "{err}");

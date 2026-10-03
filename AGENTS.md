@@ -17,7 +17,7 @@ zero warnings.
 src/main.rs                 wisp::main!();   (generated; leave it)
 src/app.html                shell with %wisp.head% %wisp.body% (optional)
 src/app.css                 served at /_app/app.css; Tailwind if it imports it
-src/app.scss                Sass instead (standalone); postcss.config.* adds PostCSS (npx)
+src/app.scss                Sass instead (standalone); postcss.config.* adds PostCSS (node)
 package.json                npm packages: `wisp add canvas-confetti`, no Node
 src/hooks.rs                fn init() once; fn before(cx) every request
 src/NAME.rs                 any module, no `mod` line: `NAME::f()` everywhere
