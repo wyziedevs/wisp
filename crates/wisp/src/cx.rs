@@ -465,23 +465,10 @@ impl Cx {
         Some((name.to_string(), password.to_string()))
     }
 
-    /// Lets pages on other sites call the app from the browser (CORS):
-    /// `origins` is `*` for any site, or the sites allowed, separated by
-    /// spaces or commas (`"https://app.example.com https://example.com"`),
-    /// which may also send their cookies. Call it from `before` in
-    /// `src/hooks.rs` and return what it returns, which answers the
-    /// browser's preflight (the OPTIONS it sends before a request that is
-    /// not a plain form post):
-    ///
-    /// ```ignore
-    /// fn before(cx: &mut Cx) -> Option<Response> {
-    ///     cx.cors("*")
-    /// }
-    /// ```
-    ///
-    /// A request from a site not allowed gets no CORS headers, so its
-    /// browser does not hand it the answer.
-    pub fn cors(&mut self, origins: &str) -> Option<Response> {
+    /// The CORS headers of `Cx::cors` (`guard.rs`), and the answer to a
+    /// preflight, the OPTIONS a browser sends before a request that is not
+    /// a plain form post.
+    pub(crate) fn cors_preflight(&mut self, origins: &str) -> Option<Response> {
         let origin = self.header("origin")?;
         let listed =
             |o: &str| !o.is_empty() && o.trim_end_matches('/').eq_ignore_ascii_case(origin);
@@ -608,8 +595,8 @@ impl Cx {
     }
 
     /// Adds a response header whose value is known to be one.
-    pub(crate) fn put(&mut self, name: &'static str, value: Cow<'static, str>) {
-        self.out_headers.push((Cow::Borrowed(name), value));
+    pub(crate) fn put(&mut self, name: impl Into<Cow<'static, str>>, value: Cow<'static, str>) {
+        self.out_headers.push((name.into(), value));
     }
 
     // The response so far, as the server reads it: the status, the headers
@@ -827,7 +814,7 @@ impl Cx {
 
     /// Whether the visitor's browser reached the site over HTTPS, as far as
     /// the app can tell: TLS ends at the proxy in front of it.
-    fn is_https(&self) -> bool {
+    pub(crate) fn is_https(&self) -> bool {
         let forwarded = self
             .forwarded("x-forwarded-proto")
             .is_some_and(|p| p.eq_ignore_ascii_case("https"));
@@ -1167,9 +1154,12 @@ mod tests {
                 .collect()
         };
         let mut same = cx_for("GET / HTTP/1.1\r\n\r\n");
-        assert!(same.cors("*").is_none() && same.out_headers.is_empty());
+        assert!(same.cors_preflight("*").is_none() && same.out_headers.is_empty());
         let mut get = cx_for("GET / HTTP/1.1\r\nOrigin: https://a.example\r\n\r\n");
-        assert!(get.cors("https://b.example, https://a.example/").is_none());
+        assert!(
+            get.cors_preflight("https://b.example, https://a.example/")
+                .is_none()
+        );
         assert_eq!(
             headers(&get),
             [
@@ -1179,12 +1169,12 @@ mod tests {
             ]
         );
         let mut other = cx_for("GET / HTTP/1.1\r\nOrigin: https://evil.example\r\n\r\n");
-        assert!(other.cors("https://a.example").is_none());
+        assert!(other.cors_preflight("https://a.example").is_none());
         assert_eq!(headers(&other), ["vary: origin"]);
         let mut pre = cx_for(
             "OPTIONS /api HTTP/1.1\r\nOrigin: https://x.example\r\nAccess-Control-Request-Method: PUT\r\nAccess-Control-Request-Headers: content-type\r\n\r\n",
         );
-        let r = pre.cors("*").expect("a preflight is answered");
+        let r = pre.cors_preflight("*").expect("a preflight is answered");
         assert_eq!(r.status, 204);
         let names: Vec<&str> = r.headers.iter().map(|(n, _)| &**n).collect();
         assert_eq!(

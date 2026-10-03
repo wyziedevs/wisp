@@ -13,11 +13,9 @@ fn init() {
     wisp::provide(Config { api_key });
 }
 
-fn before(cx: &mut Cx) -> Result<Option<Response>> {
+fn before(cx: &mut Cx) -> Result {
     // Any site's pages may call the API from the browser.
-    if let Some(preflight) = cx.cors("*") {
-        return Ok(Some(preflight));
-    }
+    cx.cors("*")?;
     if cx.writes() && cx.path().starts_with("/api/") {
         WRITES.check(cx.client_ip())?;
         let key = &wisp::state::<Config>().api_key;
@@ -26,5 +24,5 @@ fn before(cx: &mut Cx) -> Result<Option<Response>> {
             return Err(e.with_header("www-authenticate", "Bearer"));
         }
     }
-    Ok(None)
+    Ok(())
 }
