@@ -2,8 +2,12 @@
 
 Highlighting for `.wisp` files (HTML, Rust in the `---` block and `{…}`,
 JavaScript in `<script>`, directive values and `{:…}`, CSS in `<style>`),
-and `wisp lsp`: problems as you type, hovers, go to definition and
-completion.
+and `wisp lsp`: problems as you type, hovers, go to definition,
+completion, and formatting (`wisp fmt`'s layout, on save by default).
+Snippets: `page`, `layout`, `component`, `action`, `form`, `---`,
+`script`, `style`, `if`, `ifelse`, `each`, `match`, `snippet`, `:if`,
+`:each`. **Wisp: Restart server** starts `wisp lsp` again (after
+installing a new `wisp`, or changing `wisp.path`).
 
 ## Install from source
 

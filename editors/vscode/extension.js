@@ -1,10 +1,10 @@
-// Starts `wisp lsp` for .wisp files.
-const { workspace, window } = require('vscode')
+// Starts `wisp lsp` for .wisp files; `Wisp: Restart server` starts it again.
+const { commands, workspace, window } = require('vscode')
 const { LanguageClient } = require('vscode-languageclient/node')
 
 let client
 
-exports.activate = async () => {
+async function start() {
   const command = workspace.getConfiguration('wisp').get('path') || 'wisp'
   client = new LanguageClient(
     'wisp',
@@ -19,4 +19,21 @@ exports.activate = async () => {
   }
 }
 
-exports.deactivate = () => client?.stop()
+async function stop() {
+  try {
+    await client?.stop()
+  } catch {}
+  client = undefined
+}
+
+exports.activate = async (context) => {
+  context.subscriptions.push(
+    commands.registerCommand('wisp.restart', async () => {
+      await stop()
+      await start()
+    })
+  )
+  await start()
+}
+
+exports.deactivate = stop

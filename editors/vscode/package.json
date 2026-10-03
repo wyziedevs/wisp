@@ -1,7 +1,7 @@
 {
   "name": "wisp",
   "displayName": "Wisp",
-  "description": "Wisp .wisp templates: highlighting, problems as you type, hovers, go to definition, completion.",
+  "description": "Wisp .wisp templates: highlighting, problems as you type, hovers, go to definition, completion, snippets, format on save.",
   "version": "0.1.0",
   "publisher": "wisp",
   "license": "MIT",
@@ -11,6 +11,16 @@
   "activationEvents": ["onLanguage:wisp"],
   "main": "./extension.js",
   "contributes": {
+    "commands": [
+      { "command": "wisp.restart", "title": "Restart server", "category": "Wisp" }
+    ],
+    "snippets": [{ "language": "wisp", "path": "./snippets.json" }],
+    "configurationDefaults": {
+      "[wisp]": {
+        "editor.defaultFormatter": "wisp.wisp",
+        "editor.formatOnSave": true
+      }
+    },
     "languages": [
       {
         "id": "wisp",

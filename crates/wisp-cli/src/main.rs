@@ -82,7 +82,7 @@ const COMMANDS: [(&str, &str); 17] = [
     ),
     (
         "wisp lsp",
-        "Run the language server for editors, over stdio (editors/vscode starts it).",
+        "Run the language server for editors, over stdio (editors/README.md: setup per editor).",
     ),
     (
         "wisp update-docs",

@@ -1,0 +1,16 @@
+id = "wisp"
+name = "Wisp"
+version = "0.1.0"
+schema_version = 1
+authors = ["Wisp"]
+description = "Wisp .wisp templates: highlighting, and wisp lsp for problems, hovers, completion and formatting."
+repository = "https://github.com/wyziedevs/wisp"
+
+[grammars.wisp]
+repository = "https://github.com/wyziedevs/wisp"
+rev = "c5b800c"
+path = "editors/tree-sitter-wisp"
+
+[language_servers.wisp]
+name = "Wisp"
+languages = ["Wisp"]
