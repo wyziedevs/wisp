@@ -8,7 +8,7 @@ repository = "https://github.com/wyziedevs/wisp"
 
 [grammars.wisp]
 repository = "https://github.com/wyziedevs/wisp"
-rev = "c5b800c"
+rev = "12096ad3c15e20391d01f9cbbb3d1fb869c1715f"
 path = "editors/tree-sitter-wisp"
 
 [language_servers.wisp]

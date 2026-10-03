@@ -14,8 +14,8 @@ through `wisp fmt`). Formatting outside LSP: `wisp fmt --stdin [path]`
 reads stdin and writes stdout.
 
 The grammar lives at `https://github.com/wyziedevs/wisp`, folder
-`editors/tree-sitter-wisp`; `REV` below is a commit of it:
-`GRAMMAR_REV`.
+`editors/tree-sitter-wisp`, at commit
+`12096ad3c15e20391d01f9cbbb3d1fb869c1715f`.
 
 ## VS Code
 
@@ -93,7 +93,7 @@ args = ["lsp"]
 
 [[grammar]]
 name = "wisp"
-source = { git = "https://github.com/wyziedevs/wisp", rev = "REV", subpath = "editors/tree-sitter-wisp" }
+source = { git = "https://github.com/wyziedevs/wisp", rev = "12096ad3c15e20391d01f9cbbb3d1fb869c1715f", subpath = "editors/tree-sitter-wisp" }
 ```
 
 ```sh
