@@ -3964,7 +3964,7 @@ pub(crate) fn for_each_top(s: &str, mut f: impl FnMut(usize)) {
 
 /// Index of the `}` closing a hole that starts at `i`, skipping nested braces
 /// and Rust string/char literals.
-fn hole_end(b: &[u8], mut i: usize) -> Option<usize> {
+pub(crate) fn hole_end(b: &[u8], mut i: usize) -> Option<usize> {
     let mut depth = 0u32;
     while i < b.len() {
         match b[i] {

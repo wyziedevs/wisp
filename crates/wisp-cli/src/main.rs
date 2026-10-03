@@ -6,6 +6,7 @@ mod css;
 mod deploy;
 mod dev;
 mod events;
+mod fmt;
 mod lsp;
 mod net;
 mod new;
@@ -20,7 +21,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 /// `wisp --help`: each command or option, and what it does.
-const COMMANDS: [(&str, &str); 11] = [
+const COMMANDS: [(&str, &str); 13] = [
     (
         "wisp new [name]",
         "Create an app. It asks a few questions; the options below answer them.",
@@ -52,6 +53,14 @@ const COMMANDS: [(&str, &str); 11] = [
     (
         "wisp check",
         "Check routes and templates without compiling.",
+    ),
+    (
+        "wisp fmt [paths]",
+        "Format .wisp files: markup, the --- block (rustfmt), scripts and styles.",
+    ),
+    (
+        "wisp fmt --check",
+        "Name the .wisp files that are not formatted, and fail if any are.",
     ),
     (
         "wisp add <pkg>[@version]",
@@ -124,8 +133,12 @@ fn main() -> ExitCode {
         Some("check") => no_options("check", &args[1..])
             .and_then(|()| project())
             .and_then(|root| {
-                wisp_build::check(root).map(|_| term::done("Routes and templates are valid."))
+                wisp_build::check(root)?;
+                term::done("Routes and templates are valid.");
+                fmt::warn_unformatted(root);
+                Ok(())
             }),
+        Some("fmt") => fmt::run(&args[1..]),
         Some("add") => project().and_then(|root| npm::add(root, &args[1..])),
         Some("remove") => project().and_then(|root| npm::remove(root, &args[1..])),
         Some("lsp") => no_options("lsp", &args[1..]).and_then(|()| lsp::run()),

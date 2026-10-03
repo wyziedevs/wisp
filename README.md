@@ -143,6 +143,7 @@ The same five features (a list page, a validated form, a JSON endpoint, a layout
 | `wisp build --docker` | Write a Dockerfile                          |
 | `wisp build --target <host>` | Build for Cloudflare, Deno, Vercel, Netlify or Node |
 | `wisp check` | Check routes and templates without compiling         |
+| `wisp fmt`   | Format `.wisp` files (`--check` to only check)       |
 
 ## Deploy
 
