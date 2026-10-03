@@ -122,38 +122,13 @@ pub fn public_env(root: &Path) -> Vec<(String, String)> {
         .filter(|(k, _)| k.starts_with("PUBLIC_"))
         .collect();
     let file = read_source(&root.join(".env")).unwrap_or_default();
-    for (k, v) in dotenv(&file) {
+    for (k, v) in wisp_shared::dotenv::parse(&file).0 {
         if k.starts_with("PUBLIC_") && !vars.iter().any(|(n, _)| *n == k) {
             vars.push((k, v));
         }
     }
     vars.sort();
     vars
-}
-
-/// The `KEY=value` lines of a `.env` file: `#` comments, `export KEY=…`,
-/// and values in '…' or "…" (where `\n` is a line break).
-fn dotenv(text: &str) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    for line in text.lines() {
-        let line = line.trim();
-        let line = line.strip_prefix("export ").unwrap_or(line);
-        let Some((k, v)) = line.split_once('=') else {
-            continue;
-        };
-        let (k, v) = (k.trim(), v.trim());
-        if k.is_empty() || k.starts_with('#') {
-            continue;
-        }
-        let quoted = |q: char| v.strip_prefix(q)?.strip_suffix(q).filter(|_| v.len() > 1);
-        let v = match (quoted('"'), quoted('\'')) {
-            (Some(d), _) => d.replace("\\n", "\n").replace("\\\"", "\""),
-            (_, Some(s)) => s.to_string(),
-            _ => v.split(" #").next().unwrap_or("").trim_end().to_string(),
-        };
-        out.push((k.to_string(), v));
-    }
-    out
 }
 
 /// A JSON (and JavaScript) string literal, for files of their own (a
@@ -413,13 +388,18 @@ pub fn hot(root: &Path) -> Result<Hot, String> {
 }
 
 /// For `wisp check --types`: the files `.wisp/types` holds for `tsc`, by
-/// path there (see the CLI's `types.rs`).
-pub fn types(root: &Path) -> Result<Vec<(String, String)>, String> {
-    codegen::types(&codegen::Input {
-        root,
-        release: false,
-        maps: false,
-    })
+/// path there (see the CLI's `types.rs`), with `probed` (the app's own
+/// print of its block values' types, or `""`), and whether a script reads
+/// a block's values, which only that types.
+pub fn types(root: &Path, probed: &str) -> Result<(Vec<(String, String)>, bool), String> {
+    codegen::types(
+        &codegen::Input {
+            root,
+            release: false,
+            maps: false,
+        },
+        probed,
+    )
 }
 
 /// The TypeScript client of the project's `+server.rs` endpoints: a module
@@ -471,23 +451,6 @@ fn write_if_changed(path: &Path, contents: &str) {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn dotenv_lines() {
-        let text = "# a comment\nPUBLIC_A=1\nexport PUBLIC_B = two words # note\n\nPUBLIC_C=\"x\\ny # kept\"\nPUBLIC_D='$raw\\n'\nPUBLIC_E=\nnot a line\n=x\nPUBLIC_F=a=b";
-        assert_eq!(
-            super::dotenv(text),
-            [
-                ("PUBLIC_A", "1"),
-                ("PUBLIC_B", "two words"),
-                ("PUBLIC_C", "x\ny # kept"),
-                ("PUBLIC_D", "$raw\\n"),
-                ("PUBLIC_E", ""),
-                ("PUBLIC_F", "a=b"),
-            ]
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-        );
-    }
-
     #[test]
     fn fnv_vectors() {
         assert_eq!(super::fnv1a(b""), 0xcbf29ce484222325);

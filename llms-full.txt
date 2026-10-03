@@ -13,7 +13,7 @@ src/app.css                 served at /_app/app.css; Tailwind if it imports it
 src/app.scss                Sass instead of app.css, served the same (no Node)
 postcss.config.*            PostCSS after either (needs Node + node_modules/postcss-cli)
 package.json                npm packages for browser code: `wisp add canvas-confetti`, no Node
-.env                        PUBLIC_X=… for browser code's `env.PUBLIC_X` (build time)
+.env                        X=…: `wisp::env("X")` (start), `env.PUBLIC_X` in browser code (build)
 src/hooks.rs                fn init() once; fn before(cx) every request
 src/NAME.rs                 any module, no `mod` line: `NAME::f()` everywhere
 src/components/Card.wisp    <Card title={x}>…</Card>
@@ -220,14 +220,17 @@ stripped (spaces, so lines and columns hold), as Node's strip-types does:
 `enum`, a `namespace` with values and parameter properties are build errors
 (use `as const` objects, modules, fields). `wisp check --types` runs the
 app's tsc (`npm i -D typescript`, or `WISP_TSC`) with server values typed
-(`#[derive(Json)]` fields, `let x: T` in a block; else `any`).
+by the compiler (`let items = vec![Item{..}]` → `Item[]`; a type with no TS
+→ `unknown`, noted).
 Env: `env.PUBLIC_API_URL` in browser code (scripts, directives, `src/lib`,
 `+page.js`) is filled in at build from the process's `PUBLIC_*`, else
 `.env`'s (dev rebuilds when it changes). `env.SECRET` (no `PUBLIC_`), a
 `PUBLIC_*` that is not set, or `env` read whole is a build error. The
-server's `wisp::env("X")` reads the process's environment, not `.env`.
+server's `wisp::env("X")` reads the process's environment, else `.env`'s
+(once, at start; a bad line warns; not on edge hosts).
 Source maps: dev serves `/_app/c/t3.js.map` beside each module (the `.wisp`
-line of each line); release only with `wisp build --sourcemap`.
+line of each line); release only with `wisp build --sourcemap` (`--static`
+writes them too).
 Server values sent to JS must `#[derive(Json)]`. Full: docs/client.md.
 
 ## Endpoints (`+server.rs`)
@@ -1954,10 +1957,13 @@ a build error that says what to write instead:
 
 The build only strips. `wisp check --types` checks the types too, with the
 app's own TypeScript (`npm install -D typescript`, or `WISP_TSC` naming a
-`tsc`; without Node or it, it says so and skips). Server values are typed:
-a `#[derive(Json)]` type's fields, and a block's `let items: Vec<Item>`, as
-TypeScript interfaces; an unannotated `let`, `any`. Errors point at the
-`.wisp` file and line.
+`tsc`; without Node or it, it says so and skips). Server values are typed
+by the Rust compiler, no annotations needed: `let items = vec![Item {..}]`
+is `Item[]`, `let n = 3` is `number`, a `#[derive(Json)]` type an
+interface. For it the app is built once more (`--features wisp/types`),
+and prints the types without running a page. A value whose type has no
+TypeScript (a `Json` written by hand) is `unknown`, with a note. Errors
+point at the `.wisp` file and line.
 
 ## Environment variables
 
@@ -1977,12 +1983,13 @@ PUBLIC_API_URL=https://api.example.com
 ```
 
 - The values come from the build's environment, and from `.env` for the
-  names it lacks. `wisp dev` rebuilds when `.env` changes; a release build
-  has the values it was built with.
+  names it lacks (a name given twice is its last value). `wisp dev`
+  rebuilds when `.env` changes; a release build has the values it was
+  built with.
 - Only `PUBLIC_` names reach the browser. `env.DATABASE_URL` in browser
   code is a build error, so a secret can't leak: read it on the server,
-  `wisp::env("DATABASE_URL")` (which reads the process's environment, not
-  `.env`).
+  `wisp::env("DATABASE_URL")` (the process's environment, else `.env`'s,
+  read when the server starts).
 - A `PUBLIC_` name that is not set is a build error, not `undefined` at
   runtime. Set it, even to nothing (`PUBLIC_FLAG=`).
 - `env` read whole, or `env[name]`, is an error too: names are filled in
@@ -2459,7 +2466,8 @@ served beside it (`/_app/c/t3.js.map`, also for `src/lib` files and
 `+page.js`). DevTools then shows the `.wisp` file, and a stack trace its
 lines: each line of a script, an import or a directive maps to its line of
 the file. A release build has none (no cost), unless built with
-`wisp build --sourcemap`.
+`wisp build --sourcemap`; `--static --sourcemap` writes the maps beside
+the modules.
 
 ## Hot reload that keeps state
 
@@ -3143,9 +3151,13 @@ when its database is gone.
 
 ## Configuration
 
-`wisp::env("KEY")` reads a variable (the process's on a server, the
-worker's on the edge), and `wisp::env_or("WORKERS", 4)` parses one, with a
-default. Read settings once in `init` and share them:
+`wisp::env("KEY")` reads a variable (the process's on a server, else
+`.env`'s in its working directory; the worker's on the edge, which reads
+no `.env`), and `wisp::env_or("WORKERS", 4)` parses one, with a default.
+`.env` is read once, at start (Wisp's own settings, such as `PORT`, too);
+the process's environment wins over it, and a line that is not
+`KEY=value` is skipped with a warning. `wisp dev` restarts the app when it
+changes. Read settings once in `init` and share them:
 
 ```rust
 pub struct Config {
@@ -3413,7 +3425,8 @@ wisp build --static --out site
 ```
 
 Every page that takes no parameters is rendered and written as
-`about/index.html`, along with `static/` and the `/_app` files.
+`about/index.html`, along with `static/` and the `/_app` files (each
+module with what it imports; with `--sourcemap`, with its `.map`).
 
 A route with `[params]` says which pages to write:
 
@@ -3569,7 +3582,8 @@ differ.
   Rows are in one SQL table, `wisp_rows (tbl, id, json)`, or under
   `["wisp", table, id]` in Deno KV.
 - **Set `WISP_SECRET` as a host secret.** Read anything else with
-  `wisp::env("KEY")`; `std::env::var` sees nothing on the edge.
+  `wisp::env("KEY")`; `std::env::var` sees nothing on the edge. `.env` is
+  not read there: the platform's variables and secrets are the env.
 - **Streaming** (`Response::stream`, `Response::events`) is sent live on
   Cloudflare, Deno, Netlify, Vercel and Node, a chunk as it is made. A client
   that leaves makes the app's `send` fail, as on the binary.

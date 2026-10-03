@@ -453,7 +453,7 @@ fn build(root: &Path, o: &BuildOptions) -> Result<(), String> {
     } else {
         &[]
     };
-    let b = cargo::build_for(root, true, false, None, maps);
+    let b = cargo::build_for(root, true, false, &[], maps);
     let exe = b.exe.filter(|_| b.ok).ok_or(
         "The build failed.
 The compiler's errors are above.",

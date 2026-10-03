@@ -51,7 +51,8 @@ wisp build --static --out site
 ```
 
 Every page that takes no parameters is rendered and written as
-`about/index.html`, along with `static/` and the `/_app` files.
+`about/index.html`, along with `static/` and the `/_app` files (each
+module with what it imports; with `--sourcemap`, with its `.map`).
 
 A route with `[params]` says which pages to write:
 
@@ -207,7 +208,8 @@ differ.
   Rows are in one SQL table, `wisp_rows (tbl, id, json)`, or under
   `["wisp", table, id]` in Deno KV.
 - **Set `WISP_SECRET` as a host secret.** Read anything else with
-  `wisp::env("KEY")`; `std::env::var` sees nothing on the edge.
+  `wisp::env("KEY")`; `std::env::var` sees nothing on the edge. `.env` is
+  not read there: the platform's variables and secrets are the env.
 - **Streaming** (`Response::stream`, `Response::events`) is sent live on
   Cloudflare, Deno, Netlify, Vercel and Node, a chunk as it is made. A client
   that leaves makes the app's `send` fail, as on the binary.

@@ -559,9 +559,13 @@ when its database is gone.
 
 ## Configuration
 
-`wisp::env("KEY")` reads a variable (the process's on a server, the
-worker's on the edge), and `wisp::env_or("WORKERS", 4)` parses one, with a
-default. Read settings once in `init` and share them:
+`wisp::env("KEY")` reads a variable (the process's on a server, else
+`.env`'s in its working directory; the worker's on the edge, which reads
+no `.env`), and `wisp::env_or("WORKERS", 4)` parses one, with a default.
+`.env` is read once, at start (Wisp's own settings, such as `PORT`, too);
+the process's environment wins over it, and a line that is not
+`KEY=value` is skipped with a warning. `wisp dev` restarts the app when it
+changes. Read settings once in `init` and share them:
 
 ```rust
 pub struct Config {
