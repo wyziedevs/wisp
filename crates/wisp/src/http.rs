@@ -1132,7 +1132,7 @@ async fn decider<A: App>() {
                 Job::Page(f) => {
                     render_error::<A>(f.route, cx, out, f.page).await;
                     answered(cx, reply, f.started, f.failure);
-                    tag(cx, reply);
+                    tag(cx, out, reply);
                 }
             }
         }
@@ -1173,10 +1173,15 @@ fn decide_now<A: App>(
     if crate::settings().request_id {
         cx.request_id();
     }
-    out.obs = crate::obs::begin(cx, route);
+    if crate::obs::on() {
+        crate::obs::begin(cx, route, &mut out.obs);
+    }
     if !before_routes::<A>(cx, route, out, reply) {
         let started = timed().then(Instant::now);
         out.clear();
+        if out.obs.is_some() {
+            crate::obs::hand(&out.obs);
+        }
         let Some(result) = catch_now(|| A::handle_now(route, cx, out)) else {
             return Some(Job::Decide(route));
         };
@@ -1191,7 +1196,7 @@ fn decide_now<A: App>(
         }
         answered(cx, reply, started, failure);
     }
-    tag(cx, reply);
+    tag(cx, out, reply);
     None
 }
 
@@ -2199,8 +2204,8 @@ pub(crate) async fn answer<A: App>(mut cx: Cx) -> Reply {
                 .push((Cow::Borrowed("content-length"), Cow::Owned(len.to_string())));
         }
     }
-    if let Some(p) = out.obs.take() {
-        crate::obs::finish(p, reply.status, reply.bytes().len());
+    if out.obs.is_some() {
+        crate::obs::finish(&mut out.obs, reply.status, reply.bytes().len());
     }
     reply
 }
@@ -2278,10 +2283,15 @@ async fn decide<A: App>(
     }
     // Routed first (it only matches), so the path is read once.
     let route = routed.unwrap_or_else(|| route::<A>(cx));
-    out.obs = crate::obs::begin(cx, route);
+    if crate::obs::on() {
+        crate::obs::begin(cx, route, &mut out.obs);
+    }
     if !before_routes::<A>(cx, route, out, reply) {
         let started = timed().then(Instant::now);
         out.clear();
+        if out.obs.is_some() {
+            crate::obs::hand(&out.obs);
+        }
         let result = catch_made(|| A::handle(route, cx, out)).await;
         let (failure, page) = settle(cx, out, reply, result);
         if let Some(page) = page {
@@ -2289,7 +2299,7 @@ async fn decide<A: App>(
         }
         answered(cx, reply, started, failure);
     }
-    tag(cx, reply);
+    tag(cx, out, reply);
 }
 
 /// The reply to what the handler did, `result` ([`answer_of`]), or to its
@@ -2308,12 +2318,16 @@ fn settle(
     }
 }
 
-/// The reply's `x-request-id`, when the request has an id.
-fn tag(cx: &Cx, reply: &mut Reply) {
+/// The reply's `x-request-id`, when the request has an id, and its
+/// `traceparent`, with traces on.
+fn tag(cx: &Cx, out: &Out, reply: &mut Reply) {
     if let Some(id) = cx.id() {
         reply
             .headers
             .push((Cow::Borrowed("x-request-id"), Cow::Owned(id.to_string())));
+    }
+    if out.obs.is_some() {
+        crate::obs::tag(&out.obs, reply);
     }
 }
 
@@ -2688,12 +2702,20 @@ fn serialize<A: App>(
     // HTTP/1.0 has no chunks: a streamed body ends with the connection.
     let chunked = stream && http11;
     let keep_alive = keep_alive && (!stream || chunked || head_only);
-    let watched = out.obs.take();
-    let parts = matches!(reply.body, Body::Page).then(|| page::<A>(out));
+    let page = matches!(reply.body, Body::Page);
+    let parts = page.then(|| parts::<A>(&out.live, out.lang, &out.head, &mut out.body));
     let len = match &parts {
         Some(parts) => parts.iter().map(|p| p.len()).sum(),
         None => reply.bytes().len(),
     };
+    if out.obs.is_some() {
+        let sent = if head_only || bodiless || stream {
+            0
+        } else {
+            len
+        };
+        crate::obs::finish(&mut out.obs, reply.status, sent);
+    }
 
     // See `framing`.
     let own_length = head_only && reply.header("content-length").is_some();
@@ -2731,10 +2753,6 @@ fn serialize<A: App>(
     let body = std::mem::replace(&mut reply.body, Body::Static(b""));
     reply.headers.clear();
     let send = !head_only && !bodiless;
-    if let Some(p) = watched {
-        let sent = if send && !stream { len } else { 0 };
-        crate::obs::finish(p, reply.status, sent);
-    }
     match body {
         Body::Bytes(b) => {
             if send {
@@ -2767,16 +2785,26 @@ fn serialize<A: App>(
 /// `%wisp.head%`, the page's head, and its body, which its browser code
 /// ends. Once a page.
 pub(crate) fn page<A: App>(out: &mut Out) -> [&str; 8] {
-    out.live.tail(&mut out.body, out.lang);
+    parts::<A>(&out.live, out.lang, &out.head, &mut out.body)
+}
+
+/// [`page`] of an `Out`'s fields, leaving the others free.
+fn parts<'a, A: App>(
+    live: &crate::live::Live,
+    lang: u8,
+    head: &'a str,
+    body: &'a mut String,
+) -> [&'a str; 8] {
+    live.tail(body, lang);
     let [s0, s1, s2] = A::shell();
     let tags = HEAD_TAGS.get().map_or("", String::as_str);
     // `<html lang="…">` says the request's locale, in an app with some.
-    let lang = A::LOCALES.get(out.lang as usize).copied().unwrap_or("");
+    let lang = A::LOCALES.get(lang as usize).copied().unwrap_or("");
     let (a, b) = match crate::i18n::lang_value(s0).filter(|_| !lang.is_empty()) {
         Some((at, end)) => ((&s0[..at], lang), &s0[end..]),
         None => ((s0, ""), ""),
     };
-    [a.0, a.1, b, tags, &out.head, s1, &out.body, s2]
+    [a.0, a.1, b, tags, head, s1, body, s2]
 }
 
 thread_local! {
@@ -2849,11 +2877,17 @@ async fn catch_made<F: Future<Output = crate::Result<()>>>(
 ) -> crate::Result<()> {
     let mut f = std::pin::pin!(make());
     let timed = timed();
+    // The request's span, current while it is polled.
+    let trace = crate::otel::adopt();
     std::future::poll_fn(move |cx| {
         let began = timed.then(Instant::now);
+        let was = trace.map(crate::otel::enter);
         IN_HANDLER.set(true);
         let polled = catch_unwind(AssertUnwindSafe(|| f.as_mut().poll(cx)));
         IN_HANDLER.set(false);
+        if let Some(was) = was {
+            crate::otel::leave(was);
+        }
         if let Some(began) = began {
             BLOCKED.set(BLOCKED.get().max(began.elapsed()));
         }
@@ -2867,9 +2901,13 @@ async fn catch_made<F: Future<Output = crate::Result<()>>>(
 #[cfg(target_os = "linux")]
 fn catch_now(f: impl FnOnce() -> crate::Result<bool>) -> Option<crate::Result<()>> {
     let began = timed().then(Instant::now);
+    let was = crate::otel::adopt().map(crate::otel::enter);
     IN_HANDLER.set(true);
     let ran = catch_unwind(AssertUnwindSafe(f));
     IN_HANDLER.set(false);
+    if let Some(was) = was {
+        crate::otel::leave(was);
+    }
     if let Some(began) = began {
         BLOCKED.set(BLOCKED.get().max(began.elapsed()));
     }
