@@ -50,26 +50,50 @@ pub fn native(ty: &str, rules: &[Rule], whole: bool) -> Native {
     n
 }
 
-/// A field of a form that posts to `action`, which reads it as `name`.
+/// A field of a form that posts to `action`, which reads it as `name`, of
+/// type `ty` as written.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Field {
     pub action: String,
     pub name: String,
+    pub ty: String,
     pub native: Native,
 }
 
-/// The fields of the actions in `items` the browser can check: each
-/// parameter, and each field of a struct that one reads whole (`fn
+/// The `type` an `<input>` for a field takes (`<form fields>` writes it):
+/// `""` for plain text.
+pub fn input_type(name: &str, ty: &str) -> &'static str {
+    let t = ty::option_inner(ty).unwrap_or(ty);
+    if is_upload(t) {
+        "file"
+    } else if name == "password" || name.ends_with("_password") {
+        "password"
+    } else if ty::last_segment(t) == "Email" {
+        "email"
+    } else if ty::last_segment(t) == "bool" {
+        "checkbox"
+    } else if matches!(
+        ty::scalar(t),
+        Scalar::Unsigned | Scalar::Signed | Scalar::Float
+    ) {
+        "number"
+    } else {
+        ""
+    }
+}
+
+/// The fields of the actions in `items`: each parameter, and each field of a struct that one reads whole (`fn
 /// default(post: Post)`), which the file defines or the app's `shared`
 /// modules do. None that is a route parameter in `params`: the route, not
 /// the form, gives that.
 pub fn fields(items: &Items, params: &[&str], shared: &[TypeItem]) -> Vec<Field> {
     let mut out = Vec::new();
-    let mut push = |action: &str, name: String, native: Native| {
-        if native != Native::default() && !params.contains(&name.as_str()) {
+    let mut push = |action: &str, name: String, ty: &str, native: Native| {
+        if !params.contains(&name.as_str()) {
             out.push(Field {
                 action: action.to_string(),
                 name,
+                ty: ty.to_string(),
                 native,
             });
         }
@@ -89,7 +113,7 @@ pub fn fields(items: &Items, params: &[&str], shared: &[TypeItem]) -> Vec<Field>
                     let rules = (s.rules.iter().filter(|(n, _)| n == name))
                         .flat_map(|(_, r)| parse(r).unwrap_or_default().rules)
                         .collect::<Vec<_>>();
-                    push(&f.name, name.to_string(), native(ft, &rules, true));
+                    push(&f.name, name.to_string(), ft, native(ft, &rules, true));
                 }
                 continue;
             }
@@ -100,7 +124,7 @@ pub fn fields(items: &Items, params: &[&str], shared: &[TypeItem]) -> Vec<Field>
             let rules = (f.checks.iter().filter(|(c, _)| c == p))
                 .flat_map(|(_, r)| parse(r).unwrap_or_default().rules)
                 .collect::<Vec<_>>();
-            push(&f.name, p.clone(), native(t, &rules, false));
+            push(&f.name, p.clone(), t, native(t, &rules, false));
         }
     }
     out
@@ -178,6 +202,25 @@ mod tests {
     }
 
     #[test]
+    fn inputs_by_type() {
+        for (name, ty, want) in [
+            ("email", "Email", "email"),
+            ("email", "Option<Email>", "email"),
+            ("password", "String", "password"),
+            ("new_password", "String", "password"),
+            ("avatar", "Image", "file"),
+            ("avatar", "Option<Image>", "file"),
+            ("agree", "bool", "checkbox"),
+            ("age", "u8", "number"),
+            ("price", "f64", "number"),
+            ("name", "String", ""),
+            ("tags", "Vec<String>", ""),
+        ] {
+            assert_eq!(input_type(name, ty), want, "{name}: {ty}");
+        }
+    }
+
+    #[test]
     fn fields_of_actions() {
         let items = crate::rust_scan::scan(
             "#[derive(FromJson)] struct Post { #[validate(len = 1..=9)] title: String, note: Option<String>, done: bool }\n\
@@ -199,7 +242,10 @@ mod tests {
             .collect();
         let want = [
             ("add", "text", true),
+            ("add", "n", false),
             ("default", "title", true),
+            ("default", "note", false),
+            ("default", "done", false),
             ("save", "stars", true),
         ];
         let want: Vec<(String, String, bool)> = want

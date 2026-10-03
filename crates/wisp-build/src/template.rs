@@ -304,6 +304,110 @@ impl std::fmt::Display for Error {
     }
 }
 
+/// `<form action="?/add" fields>` with a labelled `<input>` for each
+/// parameter of that action written in (`rules::input_type` gives its
+/// `type`), all on the tag's line, so the lines of the file stay where they
+/// are. `None` when no form says `fields`.
+fn form_fields(src: &str, fields: &[Field]) -> Result<Option<String>, Error> {
+    use std::fmt::Write as _;
+    if !src.contains("fields") {
+        return Ok(None);
+    }
+    let b = src.as_bytes();
+    let (mut out, mut from, mut i) = (String::new(), 0, 0);
+    while let Some(at) = src[i..].find("<form") {
+        let start = i + at;
+        i = start + 5;
+        if !b.get(i).is_some_and(|&c| is_ws(c)) {
+            continue;
+        }
+        // The tag's attributes: (name, value) and where each starts and ends.
+        let (mut attrs, mut j) = (Vec::new(), i);
+        loop {
+            while j < b.len() && is_ws(b[j]) {
+                j += 1;
+            }
+            if j >= b.len() || b[j] == b'>' || src[j..].starts_with("/>") {
+                break;
+            }
+            let at = j;
+            while j < b.len() && !is_ws(b[j]) && !matches!(b[j], b'=' | b'>') {
+                j += 1;
+            }
+            let name = &src[at..j];
+            let mut value = "";
+            if b.get(j) == Some(&b'=') {
+                j += 1;
+                let from = j;
+                let quote = b.get(j).copied().filter(|&q| q == b'"' || q == b'\'');
+                j += usize::from(quote.is_some());
+                while j < b.len() && quote.map_or(!is_ws(b[j]) && b[j] != b'>', |q| b[j] != q) {
+                    j = if b[j] == b'{' {
+                        hole_end(b, j + 1).map_or(b.len(), |e| e + 1)
+                    } else {
+                        j + 1
+                    };
+                }
+                value = &src[from + usize::from(quote.is_some())..j.min(b.len())];
+                j += usize::from(quote.is_some());
+            }
+            attrs.push((name, value, at, j.min(b.len())));
+        }
+        let Some(&(_, _, tok, tok_end)) = attrs
+            .iter()
+            .find(|a| a.0 == "fields" && a.1.is_empty() && !src[a.2..a.3].contains('='))
+        else {
+            continue;
+        };
+        let value = |n: &str| attrs.iter().find(|a| a.0 == n).map(|a| a.1);
+        let action = match (value("action"), value("method")) {
+            (Some(a), _) => a
+                .strip_prefix("?/")
+                .map(|a| a.split('&').next().unwrap_or(a)),
+            (None, Some(m)) if m.eq_ignore_ascii_case("post") => Some("default"),
+            _ => None,
+        };
+        let line = src[..start].matches('\n').count() as u32 + 1;
+        let col = (start - src[..start].rfind('\n').map_or(0, |n| n + 1)) as u32 + 1;
+        let fail = |msg: &str| Error {
+            line,
+            col,
+            msg: msg.into(),
+        };
+        let action = action
+            .filter(|a| !a.contains('{'))
+            .ok_or_else(|| fail("`fields` needs the form to post to a named action: `<form action=\"?/add\" fields>`"))?;
+        let mut inputs = String::new();
+        for f in fields.iter().filter(|f| f.action == action) {
+            let kind = crate::rules::input_type(&f.name, &f.ty);
+            let kind = if kind.is_empty() {
+                String::new()
+            } else {
+                format!(" type=\"{kind}\"")
+            };
+            let mut label = f.name.replace('_', " ");
+            label[..1].make_ascii_uppercase();
+            let _ = write!(
+                inputs,
+                "<label>{label} <input name=\"{}\"{kind}></label>",
+                f.name
+            );
+        }
+        if inputs.is_empty() {
+            return Err(fail(
+                "`fields`: this action takes nothing a form could ask for (a `#[action]` of this page, with parameters)",
+            ));
+        }
+        let end = (j + 1 + usize::from(src[j..].starts_with("/>"))).min(src.len());
+        out.push_str(&src[from..src[..tok].trim_end().len()]);
+        out.push_str(&src[tok_end..end]);
+        out.push_str(&inputs);
+        (from, i) = (end, end);
+    }
+    out.push_str(&src[from..]);
+    Ok((from > 0).then_some(out))
+}
+
 pub fn parse(src: &str) -> Result<Template, Error> {
     parse_with(src, &[])
 }
@@ -311,6 +415,8 @@ pub fn parse(src: &str) -> Result<Template, Error> {
 /// A page's template, whose action forms' `fields` get the attributes the
 /// browser checks them by (`rules::Native`).
 pub fn parse_with(src: &str, fields: &[Field]) -> Result<Template, Error> {
+    let written = form_fields(src, fields)?;
+    let src = written.as_deref().unwrap_or(src);
     let mut p = Parser {
         src,
         fields,
@@ -4772,6 +4878,76 @@ mod tests {
                 _ => "?".into(),
             })
             .collect()
+    }
+
+    fn field(action: &str, name: &str, ty: &str) -> Field {
+        Field {
+            action: action.into(),
+            name: name.into(),
+            ty: ty.into(),
+            native: crate::rules::native(ty, &[], false),
+        }
+    }
+
+    #[test]
+    fn a_form_with_fields_asks_for_its_actions_params() {
+        let fields = [
+            field("join", "email", "Email"),
+            field("join", "password", "String"),
+            field("join", "avatar", "Option<Image>"),
+            field("join", "full_name", "String"),
+            field("other", "x", "String"),
+        ];
+        let got = form_fields(
+            "<p>a</p>\n<form class=\"x\" fields action=\"?/join&id={a > b}\">\n<button>Go</button></form>",
+            &fields,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            got,
+            "<p>a</p>\n<form class=\"x\" action=\"?/join&id={a > b}\">\
+             <label>Email <input name=\"email\" type=\"email\"></label>\
+             <label>Password <input name=\"password\" type=\"password\"></label>\
+             <label>Avatar <input name=\"avatar\" type=\"file\"></label>\
+             <label>Full name <input name=\"full_name\"></label>\n<button>Go</button></form>"
+        );
+        // The inputs are an action form's: the browser's checks, what was
+        // typed, the problem, and a multipart form.
+        let t = parse_with("<form action=\"?/join\" fields></form>", &fields).unwrap();
+        let html: String = t.chunks.concat();
+        for want in [
+            "<form action=\"?/join\" method=\"post\" enctype=\"multipart/form-data\">",
+            "<input name=\"email\" type=\"email\" required",
+            "<input name=\"avatar\" type=\"file\" accept=\"image/*\"",
+        ] {
+            assert!(html.contains(want), "{want}\n{html}");
+        }
+        // A form that does not say `fields`, and the word elsewhere, are as they were.
+        assert_eq!(
+            form_fields("<form action=\"?/join\">fields</form>", &fields),
+            Ok(None)
+        );
+        let default = [field("default", "q", "String")];
+        let post = form_fields("<form method=\"post\" fields></form>", &default);
+        assert!(post.unwrap().unwrap().contains("<input name=\"q\">"));
+    }
+
+    #[test]
+    fn fields_need_an_action_with_params() {
+        let err = |src: &str| form_fields(src, &[field("a", "x", "String")]).unwrap_err();
+        assert!(err("<form fields></form>").msg.contains("named action"));
+        assert!(
+            err("<form action=\"/x\" fields></form>")
+                .msg
+                .contains("named action")
+        );
+        assert!(
+            err("<form action=\"?/b\" fields></form>")
+                .msg
+                .contains("takes nothing")
+        );
+        assert_eq!(err("x\n<form action=\"?/b\" fields></form>").line, 2);
     }
 
     /// `sketch`, with what an action's form adds spelled out.
