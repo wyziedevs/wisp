@@ -437,6 +437,19 @@ fn each_host_gets_its_folder() {
     assert_eq!(read(&out, "public/favicon.svg"), favicon);
     has(&read(&out, "worker.js"), &["from './bridge.mjs'"]);
 
+    let o = build(&["--target", "pages", "--out", "p"]);
+    has(&o, &["Wrote p for pages", "npx wrangler pages deploy ."]);
+    assert_tree(
+        &app.join("p"),
+        &["_routes.json", "_worker.js", "app.wasm", "favicon.svg"],
+    );
+    wasm("p/app.wasm");
+    has(
+        &read(&app, "p/_worker.js"),
+        &["import module from './app.wasm'"],
+    );
+    has(&read(&app, "p/_routes.json"), &["\"/favicon.svg\""]);
+
     let o = build(&["-t", "deno", "--out", "d"]);
     has(
         &o,

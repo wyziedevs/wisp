@@ -68,7 +68,7 @@ fn target_error_lists_the_hosts() {
     );
     has(
         &o.err,
-        &["cloudflare, deno, vercel, netlify, node, bun, lambda, native, static and docker."],
+        &["cloudflare, pages, deno, vercel, netlify, node, bun, lambda, native, static and docker."],
     );
 }
 

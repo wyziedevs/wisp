@@ -19,7 +19,7 @@ fn help_lists_every_command_and_new_option() {
                 "wisp build --static [--out dist]",
                 "wisp build --docker [--force]",
                 "wisp build --target <host> [--out dist/<host>]",
-                "cloudflare, deno, vercel, netlify, node, bun or lambda",
+                "cloudflare, pages, deno, vercel, netlify, node, bun or lambda",
                 "wisp build --client ts [--out client.ts]",
                 "wisp deploy init <host> [--force]",
                 "wisp check",

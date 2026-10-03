@@ -20,8 +20,9 @@ const WASM_TARGET: &str = "wasm32-unknown-unknown";
 const LAMBDA_TARGET: &str = "x86_64-unknown-linux-musl";
 
 /// The hosts `--target` takes besides `static`, `docker` and `native`.
-pub const HOSTS: [&str; 7] = [
+pub const HOSTS: [&str; 8] = [
     "cloudflare",
+    "pages",
     "deno",
     "vercel",
     "netlify",
@@ -93,7 +94,10 @@ pub fn build(root: &Path, host: &str, out: &Path) -> Result<(), String> {
     // machine, and stripped: Lambda loads it on every cold start.
     const LINKER: &str = "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER";
     let strip = ("CARGO_PROFILE_RELEASE_STRIP", "symbols");
+    // Pages bundles the module into a worker with a size limit: the smallest.
+    let small = ("CARGO_PROFILE_RELEASE_OPT_LEVEL", "z");
     let env: &[(&str, &str)] = match host {
+        "pages" => &[small],
         "lambda" if std::env::var_os(LINKER).is_none() => &[(LINKER, "rust-lld"), strip],
         "lambda" => &[strip],
         _ => &[],
@@ -106,7 +110,11 @@ pub fn build(root: &Path, host: &str, out: &Path) -> Result<(), String> {
     let app = std::fs::read(&app).map_err(|e| format!("{}: {e}", app.display()))?;
     let package = cargo::package_name(root).ok_or("Cargo.toml has no package name.")?;
     let has_static = root.join("static").is_dir();
-    let layout = layout(host, &package, app, has_static)?;
+    let mut layout = layout(host, &package, app, has_static)?;
+    if host == "pages" {
+        let routes = routes(&root.join("static"));
+        layout.files.push(("_routes.json", routes.into_bytes()));
+    }
 
     let io = |p: &Path, e: std::io::Error| format!("{}: {e}", p.display());
     for (path, bytes) in &layout.files {
@@ -145,6 +153,11 @@ fn layout(host: &str, package: &str, wasm: Vec<u8>, has_static: bool) -> Result<
                 deploy: "npx wrangler deploy",
             }
         }
+        "pages" => Layout {
+            files: vec![("_worker.js", pages_worker().into_bytes()), ("app.wasm", wasm)],
+            statics: has_static.then_some(""),
+            deploy: "npx wrangler pages deploy .",
+        },
         "deno" => Layout {
             files: vec![("main.ts", text(DENO)), ("bridge.mjs", bridge()), ("app.wasm", wasm)],
             statics: None,
@@ -208,6 +221,41 @@ fn layout(host: &str, package: &str, wasm: Vec<u8>, has_static: bool) -> Result<
         },
         _ => return Err(format!("There is no target {host}.\nThe targets are {}, native, static and docker.", HOSTS.join(", "))),
     })
+}
+
+/// Pages' `_worker.js`: one module, the worker's entry and the bridge, which
+/// imports `app.wasm` for the host to compile.
+fn pages_worker() -> String {
+    let entry: Vec<_> = WORKER
+        .lines()
+        .filter(|l| !l.starts_with("import { wisp }"))
+        .collect();
+    let bridge = BRIDGE.replacen("export function wisp(", "function wisp(", 1);
+    let at = entry
+        .iter()
+        .position(|l| l.starts_with("let "))
+        .unwrap_or(0);
+    format!(
+        "{}\n{bridge}\n{}\n",
+        entry[..at].join("\n"),
+        entry[at..].join("\n")
+    )
+}
+
+/// Pages' `_routes.json`: everything reaches the worker but the app's static
+/// files, which its CDN answers.
+fn routes(statics: &Path) -> String {
+    let mut skip = Vec::new();
+    for e in std::fs::read_dir(statics).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let all = if e.path().is_dir() { "/*" } else { "" };
+        skip.push(format!("\"/{name}{all}\""));
+    }
+    skip.sort();
+    format!(
+        "{{\"version\":1,\"include\":[\"/*\"],\"exclude\":[{}]}}\n",
+        skip.join(",")
+    )
 }
 
 /// Standard base64 with padding, for the wasm inlined into Netlify's bundle.
@@ -341,7 +389,10 @@ mod tests {
 
     #[test]
     fn every_host_has_its_entry_and_the_app() {
-        for host in HOSTS.into_iter().filter(|h| *h != "lambda") {
+        for host in HOSTS
+            .into_iter()
+            .filter(|h| !["lambda", "pages"].contains(h))
+        {
             let l = layout(host, "site", b"\0asm".to_vec(), true).unwrap();
             let paths: Vec<_> = l.files.iter().map(|(p, _)| *p).collect();
             assert!(paths.iter().any(|p| p.ends_with("bridge.mjs")), "{host}");
@@ -370,6 +421,23 @@ mod tests {
             .contains("[assets]")
         );
         assert!(layout("heroku", "site", Vec::new(), true).is_err());
+    }
+
+    #[test]
+    fn pages_is_one_worker_module_that_imports_the_wasm() {
+        let w = pages_worker();
+        assert!(w.contains("import module from './app.wasm'"));
+        assert!(w.contains("\nfunction wisp(") && !w.contains("export function wisp"));
+        assert!(!w.contains("from './bridge.mjs'") && w.contains("export default {"));
+        let dir = std::env::temp_dir().join(format!("wisp-routes-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("img")).unwrap();
+        std::fs::write(dir.join("a.css"), "").unwrap();
+        let r = routes(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            r,
+            "{\"version\":1,\"include\":[\"/*\"],\"exclude\":[\"/a.css\",\"/img/*\"]}\n"
+        );
     }
 
     #[test]

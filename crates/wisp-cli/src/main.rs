@@ -61,7 +61,7 @@ const COMMANDS: [(&str, &str); 26] = [
     ),
     (
         "wisp build --target <host> [--out dist/<host>]",
-        "Write a folder for cloudflare, deno, vercel, netlify, node, bun or lambda.",
+        "Write a folder for cloudflare, pages, deno, vercel, netlify, node, bun or lambda.",
     ),
     (
         "wisp build --client ts [--out client.ts]",
