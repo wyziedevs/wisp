@@ -1736,12 +1736,14 @@ fn fast_head(buf: &[u8], at: usize, headers: &mut Vec<(Span, Span)>) -> Option<H
                 let stop = swar::control(swar::word(b, i));
                 if stop == 0 {
                     i += 8;
-                    // Past eight, a long value (a cookie, a user agent):
+                    // Past sixteen, a long value (a cookie, a user agent):
                     // sixteen at a time.
-                    while let Some(chunk) = b.get(i..i + 16)
-                        && !swar::any_control(chunk)
-                    {
-                        i += 16;
+                    if i - value >= 16 {
+                        while let Some(chunk) = b.get(i..i + 16)
+                            && !swar::any_control(chunk)
+                        {
+                            i += 16;
+                        }
                     }
                     continue;
                 }
