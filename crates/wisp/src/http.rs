@@ -2581,15 +2581,14 @@ fn settle<A: App>(
     {
         A::report(cx, e);
     }
-    // Consts: an app with pages and no endpoint-only prefix has no check.
-    if (A::API_ONLY || !A::API_PREFIXES.is_empty()) && result.is_err() {
-        endpoint_error::<A>(cx);
-    }
-    settle_plain(cx, out, reply, result)
+    settle_plain::<A>(cx, out, reply, result)
 }
 
+/// Out of line, as the caller's frame wants it: the endpoint check is on the
+/// error path only, so a successful request runs no more than `answer_of`.
 #[allow(clippy::type_complexity)]
-fn settle_plain(
+#[inline(never)]
+fn settle_plain<A: App>(
     cx: &mut Cx,
     out: &mut Out,
     reply: &mut Reply,
@@ -2597,7 +2596,14 @@ fn settle_plain(
 ) -> (Option<String>, Option<(u16, Cow<'static, str>)>) {
     match answer_of(cx, out, reply, result) {
         Ok(()) => (None, None),
-        Err(e) => error_reply(cx, out, reply, e),
+        Err(e) => {
+            // Consts: an app with pages and no endpoint-only prefix has no
+            // check.
+            if A::API_ONLY || !A::API_PREFIXES.is_empty() {
+                endpoint_error::<A>(cx);
+            }
+            error_reply(cx, out, reply, e)
+        }
     }
 }
 
@@ -3029,6 +3035,8 @@ fn prefers_json(accept: &str) -> bool {
 /// An error where only endpoints are, or in an app of nothing else, is an
 /// endpoint's: JSON. The routes were found already; only an unmatched
 /// path looks at its first segment.
+#[cold]
+#[inline(never)]
 fn endpoint_error<A: App>(cx: &mut Cx) {
     if A::API_ONLY {
         return cx.set_api();
