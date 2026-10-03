@@ -330,6 +330,7 @@ pub fn keep<A: App, const ACCEPT: bool>(cx: &mut Cx, out: &mut Out, secs: u32, p
     let body = match out.response.take() {
         None => {
             line(&mut head, "content-type", "text/html; charset=utf-8");
+            crate::headers::page(cx);
             crate::http::page::<A>(out).concat().into_bytes()
         }
         Some(r)
