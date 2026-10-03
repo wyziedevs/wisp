@@ -27,8 +27,8 @@
 <button id="break" on:click="broken = true">Break</button>
 
 <div id="group">
-  <input type="radio" name="size" value="s" bind:group="size"> <input type="radio" name="size" value="l" bind:group="size">
-  <input type="checkbox" name="extra" value="a" bind:group="extras"> <input type="checkbox" name="extra" value="b" bind:group="extras">
+  <input aria-label="size" type="radio" name="size" value="s" bind:group="size"> <input aria-label="size" type="radio" name="size" value="l" bind:group="size">
+  <input aria-label="extra" type="checkbox" name="extra" value="a" bind:group="extras"> <input aria-label="extra" type="checkbox" name="extra" value="b" bind:group="extras">
 </div>
 <p id="picked">{:size} {:extras.join('+')}</p>
 <div id="edit" contenteditable bind:innerHTML="html"></div>

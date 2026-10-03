@@ -33,7 +33,7 @@ fn what_app_code_leaves_out() {
     assert_eq!(bad.status, 422);
     assert!(
         bad.text().contains(
-            "<input name=\"email\" type=\"email\" required value=\"nope\"><small class=\"problem\">must be an email address</small>"
+            "<input aria-label=\"email\" name=\"email\" type=\"email\" required value=\"nope\"><small class=\"problem\">must be an email address</small>"
         ),
         "{}",
         bad.text()

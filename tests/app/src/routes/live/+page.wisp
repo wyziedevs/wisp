@@ -5,7 +5,7 @@
     <li on:click.prevent="pick(item.name)" class:picked="picked === item.name">{i}: {item.name}</li>
   {/each}
 </ul>
-<input bind:value="query">
+<input aria-label="field" bind:value="query">
 <p :text="`Looking for ${query}`"></p>
 <template each="note, n in notes"><p :text="n + ': ' + note"></p></template>
 <Dropdown label="More" />

@@ -25,7 +25,7 @@ let me = cx.user()?;
   <img src="/avatars/{me.id}" alt="">
 {/if}
 <form action="?/avatar">
-  <input type="file" name="avatar">
+  <input aria-label="avatar" type="file" name="avatar">
   <small class="problem">{cx.problem("avatar")}</small>
 </form>
 <button action="?/leave">Leave</button>

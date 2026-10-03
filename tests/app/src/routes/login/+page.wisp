@@ -16,6 +16,6 @@ fn logout() -> Result {
 }
 ---
 <form method="post">
-  <input name="name">
+  <input aria-label="name" name="name">
   <button>Sign in</button>
 </form>

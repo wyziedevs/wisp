@@ -8,7 +8,7 @@ fn default(post: Post) {
 ---
 <title>New post</title>
 <form method="post">
-  <input name="title">
-  <textarea name="body"></textarea>
+  <input aria-label="title" name="title">
+  <textarea aria-label="body" name="body"></textarea>
   <button>Create</button>
 </form>

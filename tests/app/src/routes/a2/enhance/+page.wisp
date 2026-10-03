@@ -17,7 +17,7 @@ fn answer() -> Response {
 let items = ITEMS.lock().clone();
 ---
 <form method="post" action="?/add" use:enhance="submit">
-  <input name="text" bind:value="text">
+  <input aria-label="text" name="text" bind:value="text">
   <button id="send">Send</button>
 </form>
 <p id="pending">{:pending}</p>

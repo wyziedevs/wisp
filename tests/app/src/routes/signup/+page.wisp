@@ -10,6 +10,6 @@ fn default(email: String) -> Result {
 let price = shop::price("tea");
 ---
 <head><title>Sign up</title></head>
-<form method="post"><input name="email" value={cx.input("email")}></form>
+<form method="post"><input aria-label="email" name="email" value={cx.input("email")}></form>
 {#if let Some(p) = cx.problem("email")}<p class="problem">{p}</p>{/if}
 <p id="price">{price} at {cx.path()}</p>

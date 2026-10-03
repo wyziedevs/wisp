@@ -517,7 +517,10 @@ fn browser_code() {
     );
     // `:hidden="!open"`, with `let open = false`: hidden from the start.
     assert!(page.contains("<ul data-w=\"0.2\" hidden>"), "{page}");
-    assert!(page.contains("<input data-w=\"0.4\">"), "{page}");
+    assert!(
+        page.contains("<input aria-label=\"field\" data-w=\"0.4\">"),
+        "{page}"
+    );
     // A Rust loop's values that a directive reads, as HTML-escaped JSON.
     assert!(page.contains("<li data-w=\"0.3\" data-wl=\"{&quot;item&quot;:{&quot;name&quot;:&quot;tea&quot;}}\">0: tea</li>"), "{page}");
     assert!(page.contains("data-wl=\"{&quot;item&quot;:{&quot;name&quot;:&quot;cake \\&quot;big\\&quot;&quot;}}\">1: cake &quot;big&quot;</li>"), "{page}");

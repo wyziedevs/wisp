@@ -27,4 +27,4 @@ let title = "Awaits";
 <div id="c">{#await boom()}<p>Loading c</p>{/await}</div>
 {#await slow(0, 1)}{:then}<p id="d">Quick</p>{/await}
 <p id="end">End</p>
-{#await slow(100, 5)}<p id="e">Loading e</p>{:then n}<div id="e"><Tally /><Stepper value={n as i32} client:idle /><form action="?/rename"><input name="who" value="ann"></form></div>{/await}
+{#await slow(100, 5)}<p id="e">Loading e</p>{:then n}<div id="e"><Tally /><Stepper value={n as i32} client:idle /><form action="?/rename"><input aria-label="who" name="who" value="ann"></form></div>{/await}

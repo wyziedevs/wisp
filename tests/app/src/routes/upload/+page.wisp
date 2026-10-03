@@ -1,6 +1,6 @@
 <form method="post" enctype="multipart/form-data">
-  <input name="title" value={title}>
-  <input type="file" name="photo">
+  <input aria-label="title" name="title" value={title}>
+  <input aria-label="photo" type="file" name="photo">
   <button>Upload</button>
   <button formaction="?/export">Export</button>
 </form>

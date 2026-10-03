@@ -504,12 +504,12 @@ fn action_forms_post_check_and_keep_input() {
     assert_eq!(long.status, 422);
     assert!(
         html.contains(
-            "<input name=\"text\" required minlength=\"1\" pattern=\"[\\s\\S]{0,10}\" value=\"far &lt;too&gt; long\">"
+            "<input aria-label=\"text\" name=\"text\" required minlength=\"1\" pattern=\"[\\s\\S]{0,10}\" value=\"far &lt;too&gt; long\">"
         ),
         "{html}"
     );
     assert!(
-        html.contains("<input name=\"secret\" type=\"password\">"),
+        html.contains("<input aria-label=\"secret\" name=\"secret\" type=\"password\">"),
         "{html}"
     );
     assert!(
@@ -519,14 +519,19 @@ fn action_forms_post_check_and_keep_input() {
         "{html}"
     );
     assert!(
-        html.contains("<form action=\"?/add\" method=\"post\"><input name=\"text\"></form>"),
+        html.contains("<form action=\"?/add\" method=\"post\"><input aria-label=\"text\" name=\"text\"></form>"),
         "a component keeps nothing: {html}"
     );
     let ok = app.post_form("/todos?/add", &[("text", "milk")]);
     let one =
         "<li>milk<form method=\"post\"><button formaction=\"?/remove&id=1\">x</button></form></li>";
     assert!(ok.status == 200 && ok.text().contains(one), "{}", ok.text());
-    assert!(ok.text().contains("<input name=\"text\">"), "{}", ok.text());
+    assert!(
+        ok.text()
+            .contains("<input aria-label=\"text\" name=\"text\">"),
+        "{}",
+        ok.text()
+    );
     assert_eq!(app.post_form("/todos?/add", &[("text", "")]).status, 422);
     let gone = app.post_form("/todos?/remove&id=1", &[]);
     assert!(
@@ -557,7 +562,7 @@ fn members_sign_in_and_upload_a_picture() {
     // `join` awaits without `async`, which `#[action]` adds.
     let page = app.get("/join").text().to_string();
     assert!(
-        page.contains("<input type=\"password\" name=\"password\" required minlength=\"8\">"),
+        page.contains("<input aria-label=\"password\" type=\"password\" name=\"password\" required minlength=\"8\">"),
         "{page}"
     );
     let short = app.post_form("/join?/join", &[("name", "ada"), ("password", "short")]);
@@ -620,7 +625,7 @@ fn members_sign_in_and_upload_a_picture() {
     let form = app.get("/me").text().to_string();
     assert!(
         form.contains("<form action=\"?/avatar\" method=\"post\" enctype=\"multipart/form-data\">")
-            && form.contains("<input type=\"file\" name=\"avatar\" required accept=\"image/*\">"),
+            && form.contains("<input aria-label=\"avatar\" type=\"file\" name=\"avatar\" required accept=\"image/*\">"),
         "{form}"
     );
     let none = app.send(upload("/me?/avatar", "other", gif));

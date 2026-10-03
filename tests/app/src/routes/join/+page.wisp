@@ -14,11 +14,11 @@ fn enter(name: String, password: String) {
 }
 ---
 <form action="?/join">
-  <input name="name">
-  <input type="password" name="password">
+  <input aria-label="name" name="name">
+  <input aria-label="password" type="password" name="password">
 </form>
 <form action="?/enter">
-  <input name="name">
-  <input type="password" name="password">
+  <input aria-label="name" name="name">
+  <input aria-label="password" type="password" name="password">
 </form>
 <p class="problem">{cx.problem("password")}</p>

@@ -10,11 +10,11 @@ fn an_edit_form() {
     let page = app.get("/t/forms").text().to_string();
     for want in [
         // The browser checks first what it can of the rules.
-        "<input name=\"title\" value=\"First\" required minlength=\"1\" pattern=\"[\\s\\S]{0,20}\">",
-        "<textarea name=\"body\" required>Hello</textarea>",
+        "<input aria-label=\"title\" name=\"title\" value=\"First\" required minlength=\"1\" pattern=\"[\\s\\S]{0,20}\">",
+        "<textarea aria-label=\"body\" name=\"body\" required>Hello</textarea>",
         "<option value=\"a\">A</option><option value=\"b\" selected>B</option>",
-        "<input name=\"stars\" value=\"3\" required>",
-        "<input name=\"note\">",
+        "<input aria-label=\"stars\" name=\"stars\" value=\"3\" required>",
+        "<input aria-label=\"note\" name=\"note\">",
     ] {
         assert!(page.contains(want), "{want} in {page}");
     }
@@ -32,10 +32,10 @@ fn an_edit_form() {
     assert_eq!(bad.status, 422);
     let html = bad.text();
     for want in [
-        "<input name=\"title\" value=\" \" required minlength=\"1\" pattern=\"[\\s\\S]{0,20}\"><small class=\"problem\">is required</small>",
-        "<textarea name=\"body\" required>hi</textarea><small class=\"problem\">must have at least 3 characters</small>",
+        "<input aria-label=\"title\" name=\"title\" value=\" \" required minlength=\"1\" pattern=\"[\\s\\S]{0,20}\"><small class=\"problem\">is required</small>",
+        "<textarea aria-label=\"body\" name=\"body\" required>hi</textarea><small class=\"problem\">must have at least 3 characters</small>",
         "<option value=\"a\" selected>A</option><option value=\"b\">B</option></select>",
-        "<input name=\"stars\" value=\"x\" required><small class=\"problem\">expected a whole number</small>",
+        "<input aria-label=\"stars\" name=\"stars\" value=\"x\" required><small class=\"problem\">expected a whole number</small>",
     ] {
         assert!(html.contains(want), "{want} in {html}");
     }
@@ -52,9 +52,9 @@ fn an_edit_form() {
     assert_eq!(app.post_form("/t/forms", &fields).status, 303);
     let page = app.get("/t/forms").text().to_string();
     for want in [
-        "<input name=\"title\" value=\"Second\" required",
+        "<input aria-label=\"title\" name=\"title\" value=\"Second\" required",
         "<option value=\"a\" selected>A</option>",
-        "<input name=\"draft\" type=\"checkbox\" checked>",
+        "<input aria-label=\"draft\" name=\"draft\" type=\"checkbox\" checked>",
     ] {
         assert!(page.contains(want), "{want} in {page}");
     }
@@ -82,12 +82,12 @@ fn every_problem_at_once() {
     assert_eq!(bad.status, 422);
     let html = bad.text();
     for want in [
-        "<input name=\"a\" required minlength=\"2\" value=\"x\"><small class=\"problem\">must have at least 2 characters</small>",
+        "<input aria-label=\"a\" name=\"a\" required minlength=\"2\" value=\"x\"><small class=\"problem\">must have at least 2 characters</small>",
         // Shown where the page puts it, and so not after its input.
-        "<input name=\"n\" type=\"number\" required min=\"5\" value=\"1\"><input",
+        "<input aria-label=\"n\" name=\"n\" type=\"number\" required min=\"5\" value=\"1\"><input",
         "<p id=\"n-problem\"><small class=\"problem\">must be at least 5</small></p>",
         // A password is never sent back.
-        "<input name=\"pw\" type=\"password\">\n<p",
+        "<input aria-label=\"pw\" name=\"pw\" type=\"password\">\n<p",
     ] {
         assert!(html.contains(want), "{want} in {html}");
     }

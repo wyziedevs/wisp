@@ -32,5 +32,5 @@ async fn count() -> usize {
 let last = SENT.lock().last().cloned();
 ---
 <p id="count">{count().await}</p>
-<form action="?/join"><input name="email"></form>
+<form action="?/join"><input aria-label="email" name="email"></form>
 <p id="last" :text="last"></p>

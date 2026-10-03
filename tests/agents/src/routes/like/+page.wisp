@@ -6,7 +6,7 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
 }
 ---
 <form action="?/like">
-  <input name="id">
-  <input type="email" name="email">
+  <input aria-label="id" name="id">
+  <input aria-label="email" type="email" name="email">
   <button>Like</button>
 </form>

@@ -37,14 +37,14 @@ let post = SAVED.lock().clone().unwrap_or(Post {
 });
 ---
 <form method="post">
-  <input name="title" value={post.title}>
-  <textarea name="body">{post.body}</textarea>
-  <select name="kind" value={post.kind}><option value="a">A</option><option value="b">B</option></select>
-  <input name="stars" value={post.stars}>
-  <input name="note" value={post.note}>
-  <input name="draft" type="checkbox" checked={post.draft}>
+  <input aria-label="title" name="title" value={post.title}>
+  <textarea aria-label="body" name="body">{post.body}</textarea>
+  <select aria-label="kind" name="kind" value={post.kind}><option value="a">A</option><option value="b">B</option></select>
+  <input aria-label="stars" name="stars" value={post.stars}>
+  <input aria-label="note" name="note" value={post.note}>
+  <input aria-label="draft" name="draft" type="checkbox" checked={post.draft}>
 </form>
 <form action="?/pair">
-  <input name="a"><input name="n" type="number"><input name="pw" type="password">
+  <input aria-label="a" name="a"><input aria-label="n" name="n" type="number"><input aria-label="pw" name="pw" type="password">
   <p id="n-problem">{cx.problem("n")}</p>
 </form>

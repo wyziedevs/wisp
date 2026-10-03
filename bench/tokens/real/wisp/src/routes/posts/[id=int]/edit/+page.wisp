@@ -10,7 +10,7 @@ let post = POSTS.get(id).or_404()?;
 ---
 <title>Edit {post.title}</title>
 <form method="post">
-  <input name="title" value={post.title}>
-  <textarea name="body">{post.body}</textarea>
+  <input aria-label="title" name="title" value={post.title}>
+  <textarea aria-label="body" name="body">{post.body}</textarea>
   <button>Save</button>
 </form>

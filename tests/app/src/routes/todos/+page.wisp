@@ -13,8 +13,8 @@ fn remove(id: u64) {
 ---
 <title>Todos {TODOS.len()}</title>
 <form action="?/add">
-  <input name="text">
-  <input name="secret" type="password">
+  <input aria-label="text" name="text">
+  <input aria-label="secret" name="secret" type="password">
   <button>Add</button>
   <p class="problem">{cx.problem("text")}</p>
 </form>
