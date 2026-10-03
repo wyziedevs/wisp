@@ -36,6 +36,8 @@ pub struct Route {
     pub dir: PathBuf,
     pub segs: Vec<Seg>,
     pub page: bool,
+    /// The page is Markdown: this `+page.md` or `x.md`.
+    pub md: Option<PathBuf>,
     pub page_rs: bool,
     /// A `+page.js` (or `+page.ts`) whose `load` runs in the browser: its
     /// name.
@@ -271,6 +273,8 @@ fn walk(
     let show = |p: &Path| show(root, p);
     let mut files = Vec::new();
     let mut dirs = Vec::new();
+    // `x.md`: a Markdown page at `x`.
+    let mut mds = Vec::new();
     for e in fs::read_dir(dir).map_err(|e| format!("{}: {e}", show(dir)))? {
         let e = e.map_err(|e| format!("{}: {e}", show(dir)))?;
         let name = e.file_name().to_string_lossy().into_owned();
@@ -281,6 +285,16 @@ fn walk(
             dirs.push(name);
         } else if name.starts_with('+') {
             files.push(name);
+        } else if let Some(stem) = name.strip_suffix(".md") {
+            match parse_segment(stem) {
+                Ok(Some(Seg::Static(_))) => mds.push(name),
+                _ => {
+                    return Err(format!(
+                        "{}: a Markdown page's name is its URL segment: letters, digits, `-`, `_`, `.`",
+                        show(&dir.join(&name))
+                    ));
+                }
+            }
         } else if name.ends_with(".wisp")
             || matches!(name.as_str(), "page.rs" | "layout.rs" | "server.rs")
         {
@@ -293,14 +307,16 @@ fn walk(
     }
     files.sort();
     dirs.sort();
+    mds.sort();
 
     let has = |f: &str| files.iter().any(|x| x == f);
     for f in &files {
-        const KNOWN: [&str; 8] = [
+        const KNOWN: [&str; 9] = [
             "+page.wisp",
             "+page.rs",
             "+page.js",
             "+page.ts",
+            "+page.md",
             "+layout.wisp",
             "+layout.rs",
             "+error.wisp",
@@ -313,6 +329,12 @@ fn walk(
                 KNOWN.join(", ")
             ));
         }
+    }
+    if has("+page.md") && has("+page.wisp") {
+        return Err(format!(
+            "{}: +page.md and +page.wisp are one page; keep one",
+            show(dir)
+        ));
     }
     if has("+page.rs") && !has("+page.wisp") {
         return Err(format!(
@@ -359,11 +381,13 @@ fn walk(
         true => server_shape(&dir.join("+server.rs"), segs),
         false => (false, None),
     };
-    if has("+page.wisp") || collection {
+    let page_md = has("+page.md").then(|| dir.join("+page.md"));
+    if has("+page.wisp") || page_md.is_some() || collection {
         tree.routes.push(Route {
             dir: dir.to_path_buf(),
             segs: segs.clone(),
-            page: has("+page.wisp"),
+            page: has("+page.wisp") || page_md.is_some(),
+            md: page_md,
             page_rs: has("+page.rs"),
             page_js,
             server: collection,
@@ -379,10 +403,34 @@ fn walk(
             dir: dir.to_path_buf(),
             segs,
             page: false,
+            md: None,
             page_rs: false,
             page_js: None,
             server: true,
             member: true,
+            layouts: layouts.clone(),
+            error,
+        });
+    }
+    for name in mds {
+        let stem = &name[..name.len() - 3];
+        if segs.is_empty() && (stem == "_app" || stem == "_wisp") {
+            return Err(format!(
+                "{}: /{stem} is reserved for Wisp's own files; choose another name",
+                show(&dir.join(&name))
+            ));
+        }
+        let mut segs = segs.clone();
+        segs.push(Seg::Static(stem.to_string()));
+        tree.routes.push(Route {
+            dir: dir.to_path_buf(),
+            segs,
+            page: true,
+            md: Some(dir.join(&name)),
+            page_rs: false,
+            page_js: None,
+            server: false,
+            member: false,
             layouts: layouts.clone(),
             error,
         });
@@ -752,6 +800,39 @@ fn get(id: u64) {}",
             assert!(err.contains(want), "{file}: {err}");
             fs::remove_dir_all(&root).unwrap();
         }
+
+        // Markdown: `+page.md`, and a page per `x.md`.
+        let root = tmp("md");
+        touch(&root, "blog/+page.md");
+        touch(&root, "blog/hello.md");
+        touch(&root, "(private)/notes.md");
+        let t = scan(&root).unwrap();
+        let pats: Vec<_> = t
+            .routes
+            .iter()
+            .map(|r| (r.pattern(), r.md.is_some()))
+            .collect();
+        assert_eq!(
+            pats,
+            [
+                ("/blog".into(), true),
+                ("/blog/hello".into(), true),
+                ("/notes".into(), true)
+            ]
+        );
+        touch(&root, "blog/hello/+page.wisp");
+        assert!(scan(&root).unwrap_err().contains("match the same URLs"));
+        touch(&root, "blog/+page.wisp");
+        assert!(
+            scan(&root)
+                .unwrap_err()
+                .contains("+page.md and +page.wisp are one page")
+        );
+        fs::remove_dir_all(&root).unwrap();
+        let root = tmp("md-name");
+        touch(&root, "[x].md");
+        assert!(scan(&root).unwrap_err().contains("Markdown page's name"));
+        fs::remove_dir_all(&root).unwrap();
 
         // Editors' files beside the real ones are not route files.
         let root = tmp("editor");

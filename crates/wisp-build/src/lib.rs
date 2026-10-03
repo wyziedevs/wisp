@@ -10,6 +10,7 @@ mod fold;
 pub mod ide;
 pub mod inspect;
 mod js;
+mod markdown;
 mod model;
 pub mod npm;
 mod openapi;
@@ -234,7 +235,7 @@ pub(crate) fn join_styles(mut styles: Vec<(&str, &str)>) -> String {
 }
 
 /// For `wisp dev`, after a template changed: the scoped CSS of every
-/// `.wisp` file in `src`, written to `protocol::SCOPED_CSS`. Returns whether it
+/// `.wisp` file (and Markdown page) in `src`, written to `protocol::SCOPED_CSS`. Returns whether it
 /// changed, and whether there is any; a file that does not parse is left
 /// out (the build says what is wrong).
 pub fn write_styles(root: &Path) -> Result<(bool, bool), String> {
@@ -243,14 +244,25 @@ pub fn write_styles(root: &Path) -> Result<(bool, bool), String> {
         wisp_files(&root.join("src").join(dir), dir == "routes", &mut files, 0);
     }
     let mut found = Vec::new();
+    let mut comps = None;
     for f in &files {
         let rel = f
             .strip_prefix(root)
             .unwrap_or(f)
             .to_string_lossy()
             .replace('\\', "/");
+        // A Markdown page is markup once made: its components first.
+        let md = |s: String| match rel.ends_with(".md") {
+            true => {
+                let comps =
+                    comps.get_or_insert_with(|| codegen::components(root).unwrap_or_default());
+                markdown::page(&s, comps).map(|m| m.wisp)
+            }
+            false => Ok(s),
+        };
         if let Ok((t, _)) = read_source(f)
             .map_err(|e| e.to_string())
+            .and_then(md)
             .and_then(|s| parse_wisp(&s, &rel))
         {
             found.extend(t.style.map(|s| (rel, s)));
@@ -276,9 +288,10 @@ fn wisp_files(dir: &Path, routes: bool, out: &mut Vec<PathBuf>, depth: usize) {
             wisp_files(&p, routes, out, depth + 1);
         } else {
             let name = e.file_name().to_string_lossy().into_owned();
-            if name.ends_with(".wisp")
+            let page = name.starts_with('+') || name.ends_with(".md");
+            if (name.ends_with(".wisp") || (routes && name.ends_with(".md")))
                 && !routes::editor_temp(&name)
-                && (!routes || name.starts_with('+'))
+                && (!routes || page)
             {
                 out.push(p);
             }

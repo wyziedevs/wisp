@@ -18,6 +18,7 @@ use wisp_shared::{contexts, protocol};
 mod bake;
 #[cfg(not(target_arch = "wasm32"))]
 mod channel;
+mod content;
 mod csp;
 mod cx;
 mod dev;
@@ -66,6 +67,7 @@ mod ws;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use channel::{Channel, Subscription, channel};
+pub use content::{MdPage, pages};
 pub use csp::{csp, csp_off};
 pub use cx::{CookieOptions, Cx, Method, SameSite};
 pub use export::{Entry, ExportRoute, export};
@@ -264,6 +266,7 @@ pub async fn prepare<A: App>() -> std::io::Result<()> {
     })?;
     session::ready();
     csp::ready(A::SCRIPT_HASHES);
+    content::ready(A::PAGES);
     Ok(())
 }
 
@@ -702,6 +705,8 @@ pub trait App: 'static {
     /// `'sha256-…'` of every inline script the templates and shell run,
     /// which the Content-Security-Policy allows (see `csp`).
     const SCRIPT_HASHES: &'static [&'static str] = &[];
+    /// The Markdown pages, for [`pages`].
+    const PAGES: &'static [MdPage] = &[];
     /// What the build knows of each route, by route id.
     const ROUTES: &'static [rt::RouteFacts];
     /// [`rt::RouteFacts::now`] for a request no route matched, which the

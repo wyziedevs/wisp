@@ -11,6 +11,9 @@ repository.workspace = true
 # build folds and writes is what the runtime does.
 [dependencies]
 wisp-shared.workspace = true
+# Markdown pages (`+page.md`), rendered at build time: CommonMark, fast,
+# and only the HTML writer (no binary, no SIMD feature).
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 
 [lints]
 workspace = true
