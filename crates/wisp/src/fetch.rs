@@ -148,6 +148,7 @@ impl Url {
         }
         let mut w = format!("{} {} HTTP/1.1\r\n", req.method, self.path);
         let host = match (self.https, self.port) {
+            (true, 443) | (false, 80) if self.host.contains(':') => format!("[{}]", self.host),
             (true, 443) | (false, 80) => self.host.clone(),
             (_, port) if self.host.contains(':') => format!("[{}]:{port}", self.host),
             (_, port) => format!("{}:{port}", self.host),
@@ -448,6 +449,22 @@ mod tests {
                 (302, Some("/elsewhere"))
             );
         });
+    }
+
+    #[test]
+    fn an_ipv6_host_is_bracketed_on_the_default_port() {
+        let host = |url: &str| {
+            let url = Url::parse(url).unwrap();
+            let sent = url.request(&Request::new("GET", "")).unwrap();
+            let sent = String::from_utf8(sent).unwrap();
+            sent.lines()
+                .find(|l| l.starts_with("host:"))
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(host("https://[::1]/"), "host: [::1]");
+        assert_eq!(host("http://[::1]:8080/"), "host: [::1]:8080");
+        assert_eq!(host("http://example.com/"), "host: example.com");
     }
 
     #[test]

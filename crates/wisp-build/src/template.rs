@@ -415,7 +415,9 @@ fn form_fields(src: &str, fields: &[Field]) -> Result<Option<String>, Error> {
                 format!(" type=\"{kind}\"")
             };
             let mut label = f.name.replace('_', " ");
-            label[..1].make_ascii_uppercase();
+            if let Some(first) = label.get_mut(..1) {
+                first.make_ascii_uppercase();
+            }
             let _ = write!(
                 inputs,
                 "<label>{label} <input name=\"{}\"{kind}></label>",
@@ -4932,6 +4934,15 @@ mod tests {
                 _ => "?".into(),
             })
             .collect()
+    }
+
+    #[test]
+    fn a_field_named_with_a_wide_first_letter_is_labelled() {
+        let got = form_fields(
+            "<form action=\"?/join\" fields></form>",
+            &[field("join", "émail", "String")],
+        );
+        assert!(got.unwrap().unwrap().contains("émail <input"));
     }
 
     fn field(action: &str, name: &str, ty: &str) -> Field {

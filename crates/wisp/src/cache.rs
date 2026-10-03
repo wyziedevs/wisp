@@ -43,11 +43,16 @@ where
     let mut kept = KEPT.lock();
     if kept.len() >= MAX && !kept.contains_key(key) {
         kept.retain(|_, (until, _)| *until > now);
-        if kept.len() >= MAX {
-            kept.pop_first();
+        // Still full: the one that expires first goes.
+        let oldest = kept.iter().min_by_key(|(_, (until, _))| *until);
+        if let Some(key) = oldest.map(|(k, _)| k.clone()).filter(|_| kept.len() >= MAX) {
+            kept.remove(&key);
         }
     }
-    kept.insert(key.to_owned(), (now + secs, Arc::new(v.clone())));
+    kept.insert(
+        key.to_owned(),
+        (now.saturating_add(secs), Arc::new(v.clone())),
+    );
     v
 }
 
@@ -90,5 +95,22 @@ mod tests {
             get(&format!("cache-flood-{i}"), 60);
         }
         assert!(KEPT.lock().len() <= MAX);
+    }
+
+    #[test]
+    fn the_one_that_expires_first_goes_when_it_is_full() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let get = |key: &str, secs| rt.block_on(cache(key, secs, || async { 1u8 }));
+        // `zzz` sorts last but expires first; the rest outlive it.
+        get("evict-zzz", 30);
+        for i in 0..MAX {
+            get(&format!("evict-{i}"), 3000);
+        }
+        assert!(!KEPT.lock().contains_key("evict-zzz"));
+        assert!(KEPT.lock().contains_key("evict-0"));
+        // A time too long to add is kept as long as there is.
+        assert_eq!(get("evict-huge", u64::MAX), 1);
     }
 }

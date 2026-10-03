@@ -28,18 +28,6 @@ const NAME: &str = "wisp token";
 /// Longest token read: a forged one costs no more than this to refuse.
 const MAX: usize = 4096;
 
-/// `s` onto `out` as a URL's query or a form's value takes it: all but
-/// letters, digits and `-_.~` as `%XX`.
-pub(crate) fn percent(out: &mut String, s: &str) {
-    for b in s.bytes() {
-        if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) {
-            out.push(b as char);
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
-    }
-}
-
 /// A token holding `value`, good for `ttl`.
 pub fn token(value: &(impl Json + ?Sized), ttl: Duration) -> String {
     token_for("", value, ttl)

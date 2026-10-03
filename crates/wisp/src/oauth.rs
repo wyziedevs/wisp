@@ -37,7 +37,6 @@
 
 use crate::json::{Value, from_json};
 use crate::sign::{base64, random};
-use crate::token::percent;
 use crate::{CookieOptions, Cx, Error, Request, Result, secure_eq};
 use std::time::Duration;
 use wisp_shared::sha256::sha256;
@@ -250,7 +249,7 @@ impl Provider {
             url.push('&');
             url.push_str(k);
             url.push('=');
-            percent(&mut url, v);
+            let _ = crate::cx::encode(&mut url, v, crate::cx::unreserved);
         }
         Err(Error::redirect(303, url))
     }
@@ -299,7 +298,7 @@ impl Provider {
             }
             form.push_str(k);
             form.push('=');
-            percent(&mut form, v);
+            let _ = crate::cx::encode(&mut form, v, crate::cx::unreserved);
         }
         let mut req = Request::new("POST", &self.token);
         req.header("content-type", "application/x-www-form-urlencoded");
