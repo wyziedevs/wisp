@@ -96,6 +96,7 @@ pub fn google() -> Provider {
 /// path and the keys' names (`name = "okta"`: `OKTA_CLIENT_ID`).
 pub async fn oidc(name: &'static str, issuer: &str) -> Result<Provider> {
     static FOUND: std::sync::Mutex<Vec<(String, Provider)>> = std::sync::Mutex::new(Vec::new());
+    let issuer = issuer.trim_end_matches('/');
     let find = || {
         let found = FOUND.lock().unwrap_or_else(|e| e.into_inner());
         (found.iter().find(|(i, _)| i == issuer)).map(|(_, p)| Provider { name, ..p.clone() })
@@ -103,7 +104,6 @@ pub async fn oidc(name: &'static str, issuer: &str) -> Result<Provider> {
     if let Some(p) = find() {
         return Ok(p);
     }
-    let issuer = issuer.trim_end_matches('/');
     let reply = crate::fetch(Request::new(
         "GET",
         &format!("{issuer}/.well-known/openid-configuration"),
@@ -125,10 +125,12 @@ pub async fn oidc(name: &'static str, issuer: &str) -> Result<Provider> {
         keys: None,
         ..Provider::new(name, &auth, &token, &userinfo, "openid email profile")
     };
-    FOUND
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .push((issuer.to_string(), p.clone()));
+    // A second sign-in that raced this one found nothing either: one entry.
+    let mut found = FOUND.lock().unwrap_or_else(|e| e.into_inner());
+    match found.iter_mut().find(|(i, _)| i == issuer) {
+        Some(entry) => entry.1 = p.clone(),
+        None => found.push((issuer.to_string(), p.clone())),
+    }
     Ok(p)
 }
 
@@ -261,7 +263,9 @@ impl Provider {
         let name = self.cookie();
         let started = cx.signed_cookie(&name).map(str::to_string);
         // Used up whatever comes next: a callback cannot be played twice.
+        // Kept on the error pages too, which drop a handler's headers.
         cx.delete_cookie(&name);
+        cx.keep_headers();
         let (state, verifier) = started
             .as_deref()
             .and_then(|s| s.split_once('.'))
