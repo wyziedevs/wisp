@@ -85,7 +85,7 @@ pub(crate) struct Live {
 
 /// When an instance's browser code starts.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Start {
+pub(crate) enum Start {
     /// With the page.
     Now,
     /// When the browser sees fit: it, or an instance it renders inside, is
@@ -106,17 +106,45 @@ impl Live {
         self.next = None;
     }
 
+    /// The instances of an `{#await}`'s answer, rendered after the page:
+    /// numbered from `first`, the page's count so far, inside `around`, the
+    /// instance the await was in (see `around`).
+    pub(crate) fn after(first: u32, around: Option<(u32, Start)>) -> Live {
+        Live {
+            count: first,
+            open: around.into_iter().collect(),
+            ..Live::default()
+        }
+    }
+
+    /// The instance rendering now, and when it starts.
+    pub(crate) fn around(&self) -> Option<(u32, Start)> {
+        self.open.last().copied()
+    }
+
+    /// The instances numbered so far.
+    pub(crate) fn count(&self) -> u32 {
+        self.count
+    }
+
     /// What goes at the end of the page's body when it has instances: the
     /// instances and the modules they need, the modules that start with the
     /// page preloaded, and the runtime that starts them, if any does (an
     /// island's wake-up is in wisp.js, which loads the runtime itself).
     /// Written onto `s`; nothing otherwise.
+    #[inline]
     pub(crate) fn tail(&self, s: &mut String, lang: u8) {
+        self.write(s, lang, LIVE_OPEN);
+    }
+
+    /// [`tail`](Live::tail), its list opened with `open`: an `{#await}`'s
+    /// answer has `AWAIT_LIVE_OPEN`, which its script adds to the page's.
+    pub(crate) fn write(&self, s: &mut String, lang: u8, open: &str) {
         if self.instances.is_empty() {
             return;
         }
         s.reserve(self.instances.len() + 200 * self.modules.len() + 200);
-        s.push_str(LIVE_OPEN);
+        s.push_str(open);
         for (k, (m, _)) in self.modules.iter().enumerate() {
             let comma = if k > 0 { "," } else { "" };
             let _ = write!(s, "{comma}\"{}\":\"{}\"", m.id, crate::dev::url(m));

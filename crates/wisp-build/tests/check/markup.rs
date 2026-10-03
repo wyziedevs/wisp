@@ -232,6 +232,79 @@ fn blocks_and_tags() {
     ]);
 }
 
+/// `{#await}` is a page's, in its markup, rendered by the server.
+#[test]
+fn server_awaits() {
+    const F: &str = "{#await async { 1 }}";
+    let cases: [(&str, String, &[&str]); 10] = [
+        (
+            "two thens",
+            format!("{F}{{:then}}a{{:then}}b{{/await}}"),
+            &["src/routes/+page.wisp:1:", "{:then} is not allowed here"],
+        ),
+        (
+            "a then after the catch",
+            format!("{F}{{:catch}}a{{:then}}b{{/await}}"),
+            &["{:then} is not allowed here"],
+        ),
+        (
+            "in an attribute",
+            "<p title=\"{#await async { 1 }}x{/await}\"></p>".into(),
+            &["{#await} goes in a page's markup"],
+        ),
+        (
+            "in the head",
+            format!("<head>{F}x{{/await}}</head>"),
+            &["{#await} goes in a page's markup"],
+        ),
+        (
+            "in another",
+            format!("{F}{F}x{{/await}}{{/await}}"),
+            &["{#await} goes in a page's markup"],
+        ),
+        ("unclosed", format!("{F}x"), &["{#await}"]),
+        (
+            "with CACHE",
+            format!("---\nconst CACHE: u32 = 60;\n---\n{F}x{{/await}}"),
+            &["`CACHE` keeps a whole answer"],
+        ),
+        (
+            "drawn by the browser",
+            format!("---\nconst SSR: bool = false;\n---\n{F}x{{/await}}"),
+            &["src/routes/+page.wisp:4:", "the browser draws it"],
+        ),
+        (
+            "browser code in a branch",
+            format!("{F}{{:then v}}<p>{{:n}}</p>{{/await}}<script>let n = 1</script>"),
+            &["src/routes/+page.wisp:1: ", "without its browser code"],
+        ),
+        (
+            "cx in a branch",
+            format!(
+                "
+{F}{{:then v}}<p>{{cx.path()}}</p>{{/await}}"
+            ),
+            &["src/routes/+page.wisp:2: ", "so they have no `cx`"],
+        ),
+    ];
+    page_fails(
+        &cases
+            .each_ref()
+            .map(|(name, src, want)| (*name, src.as_str(), *want)),
+    );
+    fails(&[(
+        "in a layout",
+        &[
+            (
+                "src/routes/+layout.wisp",
+                "{#await async { 1 }}x{/await}<slot />",
+            ),
+            ("src/routes/+page.wisp", "x"),
+        ],
+        &["src/routes/+layout.wisp: `{#await}` goes in a page"],
+    )]);
+}
+
 #[test]
 fn browser_blocks_and_directives() {
     page_fails(&[

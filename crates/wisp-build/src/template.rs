@@ -93,6 +93,14 @@ pub enum Node {
         scrutinee: Code,
         arms: Vec<(Code, Vec<Node>)>,
     },
+    /// `{#await future}…{:then v}…{:catch e}…{/await}` in a page: `pending`
+    /// goes out with it, a branch with its pattern later (`wisp::rt::defer`).
+    Await {
+        future: Code,
+        pending: Vec<Node>,
+        then: Option<(String, Vec<Node>)>,
+        catch: Option<(String, Vec<Node>)>,
+    },
     /// `<wisp:head>…</wisp:head>`: output goes to the document head.
     Head(Vec<Node>),
     /// `<Card title={x}>…</Card>`: a component from `src/components`, with
@@ -730,6 +738,13 @@ enum Frame {
         scrutinee: Code,
         arms: Vec<(Code, Vec<Node>)>,
     },
+    Await {
+        pos: usize,
+        future: Code,
+        pending: Vec<Node>,
+        then: Option<(String, Vec<Node>)>,
+        catch: Option<(String, Vec<Node>)>,
+    },
     Head {
         pos: usize,
         body: Vec<Node>,
@@ -771,6 +786,7 @@ impl Frame {
             Frame::If { pos, .. } => ("{#if}".into(), *pos),
             Frame::Each { pos, .. } => ("{#each}".into(), *pos),
             Frame::Match { pos, .. } => ("{#match}".into(), *pos),
+            Frame::Await { pos, .. } => ("{#await}".into(), *pos),
             Frame::Head { pos, .. } => ("<wisp:head>".into(), *pos),
             Frame::Component { pos, name, .. } => (format!("<{name}>"), *pos),
             Frame::Snippet { pos, .. } => ("{#snippet}".into(), *pos),
@@ -1086,6 +1102,15 @@ impl Parser<'_> {
                     .expect("flush rejects nodes before the first case")
                     .1
             }
+            Some(Frame::Await {
+                pending,
+                then,
+                catch,
+                ..
+            }) => match (catch, then) {
+                (Some((_, b)), _) | (None, Some((_, b))) => b,
+                (None, None) => pending,
+            },
             Some(
                 Frame::Head { body, .. }
                 | Frame::Component { body, .. }
@@ -3320,6 +3345,11 @@ impl Parser<'_> {
                 return Ok(());
             }
             let (kw, arg) = split_word(rest);
+            if matches!(kw, "then" | "catch")
+                && matches!(self.frames.last(), Some(Frame::Await { .. }))
+            {
+                return self.await_branch(open, kw, arg);
+            }
             // `{:then v}` and `{:catch e}`: the next branch of an await or try.
             let branch = match self.frames.last() {
                 Some(Frame::Client { kind, .. }) => *kind,
@@ -3573,6 +3603,33 @@ impl Parser<'_> {
         }
     }
 
+    /// `{:then v}` or `{:catch e}` (`kw`) of a server `{#await}`: its pattern
+    /// is `arg`, `_` when there is none.
+    fn await_branch(&mut self, open: usize, kw: &str, arg: &str) -> Result<(), Error> {
+        self.flush()?;
+        self.same_place(open, &format!("{{:{kw}}}"))?;
+        let Some(Frame::Await { then, catch, .. }) = self.frames.last_mut() else {
+            unreachable!("the caller saw an await");
+        };
+        let slot = match kw {
+            "then" if then.is_none() && catch.is_none() => then,
+            "catch" if catch.is_none() => catch,
+            _ => {
+                return Err(self.err(
+                    open,
+                    format!("{{:{kw}}} is not allowed here: an {{#await}} has one {{:then}}, then one {{:catch}}"),
+                ));
+            }
+        };
+        *slot = Some((
+            if arg.is_empty() { "_" } else { arg }.to_string(),
+            Vec::new(),
+        ));
+        self.restart();
+        self.skip_standalone(open);
+        Ok(())
+    }
+
     /// `{#if …}`, `{#each …}`, `{#match …}`, `{#snippet …}`: `rest` is what
     /// follows the `#`.
     fn block_open(&mut self, open: usize, rest: &str) -> Result<(), Error> {
@@ -3610,6 +3667,30 @@ impl Parser<'_> {
                 scrutinee: self.code_at(open, arg),
                 arms: Vec::new(),
             },
+            "await" => {
+                let inside = self.frames.iter().any(|f| {
+                    matches!(
+                        f,
+                        Frame::Head { .. }
+                            | Frame::Client { .. }
+                            | Frame::Snippet { .. }
+                            | Frame::Await { .. }
+                    )
+                });
+                if self.ctx != Ctx::Text || inside {
+                    return Err(self.err(
+                        open,
+                        "{#await} goes in a page's markup, outside tags, <head>, snippets, browser blocks and other awaits".into(),
+                    ));
+                }
+                Frame::Await {
+                    pos: open,
+                    future: self.code_at(open, arg),
+                    pending: Vec::new(),
+                    then: None,
+                    catch: None,
+                }
+            }
             _ => return Err(self.err(open, format!("unknown block {{#{kw}}}"))),
         };
         if matches!(self.ctx, Ctx::Quoted(_)) {
@@ -3627,6 +3708,7 @@ impl Parser<'_> {
             Some(Frame::If { .. }) => "if",
             Some(Frame::Each { .. }) => "each",
             Some(Frame::Match { .. }) => "match",
+            Some(Frame::Await { .. }) => "await",
             Some(Frame::Snippet { .. }) => "snippet",
             Some(Frame::Client { kind, .. }) if *kind != "comp" => block_of(kind),
             _ => "",
@@ -3676,6 +3758,18 @@ impl Parser<'_> {
                 }
                 Node::Match { scrutinee, arms }
             }
+            Frame::Await {
+                future,
+                pending,
+                then,
+                catch,
+                ..
+            } => Node::Await {
+                future,
+                pending,
+                then,
+                catch,
+            },
             Frame::Snippet {
                 pos,
                 name,
@@ -3927,6 +4021,15 @@ fn drop_shown(list: &mut Vec<Node>, chunks: &mut [String], shown: &[String]) {
                 otherwise.iter_mut().for_each(go);
             }
             Node::Match { arms, .. } => arms.iter_mut().for_each(|(_, l)| go(l)),
+            Node::Await {
+                pending,
+                then,
+                catch,
+                ..
+            } => {
+                go(pending);
+                then.iter_mut().chain(catch).for_each(|(_, l)| go(l));
+            }
             Node::Component { children, .. } => children.iter_mut().for_each(go),
             Node::Kept { sent, own, .. } => {
                 go(sent);
@@ -4278,6 +4381,7 @@ fn server_line(nodes: &[Node]) -> Option<u32> {
         Node::If { branches, .. } => branches.first().map(|(c, _)| c.line),
         Node::Each { iter, .. } => Some(iter.line),
         Node::Match { scrutinee, .. } => Some(scrutinee.line),
+        Node::Await { future, .. } => Some(future.line),
         Node::Component { line, .. }
         | Node::Kept { line, .. }
         | Node::Chosen { line, .. }
@@ -4579,6 +4683,25 @@ fn shape(nodes: &[Node], out: &mut Vec<u8>) {
                     code(out, c);
                     shape(body, out);
                     out.push(b';');
+                }
+                out.push(b'.');
+            }
+            Node::Await {
+                future,
+                pending,
+                then,
+                catch,
+            } => {
+                out.push(b'A');
+                code(out, future);
+                shape(pending, out);
+                for (k, b) in [(b't', then), (b'c', catch)] {
+                    if let Some((pat, body)) = b {
+                        out.push(k);
+                        out.extend_from_slice(pat.as_bytes());
+                        out.push(0);
+                        shape(body, out);
+                    }
                 }
                 out.push(b'.');
             }

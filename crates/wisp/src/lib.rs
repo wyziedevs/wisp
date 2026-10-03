@@ -78,6 +78,7 @@ mod sign;
 mod store;
 mod swar;
 mod table;
+mod tail;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod test;
 mod timeout;
@@ -1524,6 +1525,9 @@ impl<T, E: fmt::Display> OrStatus<T> for std::result::Result<T, E> {
 pub mod rt {
     pub use crate::envconf::{config, config_error, config_opt};
     pub use crate::i18n::{Arg, Case, Count, Msg, Part, Tr};
+    pub use crate::tail::{
+        AnyResult, Awaits, Settled, Value, WispResult, defer, failed, failed_html as await_failed,
+    };
     pub use crate::timeout::within;
 
     /// The request's locale, by index: for `Out::lang`.

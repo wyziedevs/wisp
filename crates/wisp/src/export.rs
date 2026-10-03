@@ -87,6 +87,20 @@ pub(crate) fn run(job: impl std::future::Future<Output = io::Result<()>>) -> io:
     runtime.block_on(job)
 }
 
+/// The page at `url`, whole: one with `{#await}` streams its answers after
+/// it, which are waited for here, so the file has them.
+async fn page<A: App>(url: &str) -> crate::Reply {
+    let mut reply = handle::<A>(Request::new("GET", url)).await;
+    if let crate::Body::Stream(rx) = &mut reply.body {
+        let mut all = Vec::new();
+        while let Some(chunk) = rx.recv().await {
+            all.extend_from_slice(&chunk);
+        }
+        reply.body = crate::Body::Bytes(all);
+    }
+    reply
+}
+
 /// For `wisp build`: the pages with `const PRERENDER: bool = true;`, each
 /// rendered once into `dir` as `N.html`, and `index.tsv` a line for each:
 /// its route's pattern, its path and its file, tab apart. The build that
@@ -105,7 +119,7 @@ pub async fn prerender<A: App>(dir: &Path) -> io::Result<()> {
         };
         for segs in paths {
             let url = url(&segs);
-            let reply = handle::<A>(Request::new("GET", &url)).await;
+            let reply = page::<A>(&url).await;
             if reply.status != 200 {
                 println!(
                     "warn {url} answered {}, so it is not prerendered",
@@ -150,7 +164,7 @@ pub async fn export<A: App>(dir: &Path, spa: bool) -> io::Result<()> {
                 let n = r.pattern.split('/').filter(|s| s.starts_with('[')).count();
                 let url = segments(r.pattern, &vec!["0".to_string(); n]).map(|s| url(&s));
                 let reply = match url {
-                    Some(url) => handle::<A>(Request::new("GET", &url)).await,
+                    Some(url) => page::<A>(&url).await,
                     None => continue,
                 };
                 if reply.status != 200 {
@@ -173,7 +187,7 @@ pub async fn export<A: App>(dir: &Path, spa: bool) -> io::Result<()> {
         };
         for segs in paths {
             let url = url(&segs);
-            let reply = handle::<A>(Request::new("GET", &url)).await;
+            let reply = page::<A>(&url).await;
             if reply.status != 200 {
                 println!(
                     "warn {url} answered {}, so it is not exported",

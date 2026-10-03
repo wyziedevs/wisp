@@ -163,6 +163,7 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
 | `{#if c}…{:else if c}…{:else}…{/if}` | `if let Some(x) = y` works |
 | `{#each list as item, i}…{:else}…{/each}` | `{:else}` when empty |
 | `{#match e}{:case P}…{/match}` | match |
+| `{#await f}…{:then v}…{:catch e}…{/await}` | page only: sent pending, `v`/`e` streamed in later |
 | `{@const x = expr}` | let |
 | `{#snippet row(a, b)}…{/snippet}` `{@render row(x, 1)}` | local markup fn |
 | `{@pager posts}` | Newer/Older links of a `Table::page` |
@@ -182,6 +183,18 @@ items}}"}`), `{t("hi", name = user.name)}`, `t('n', c)` in scripts; keys
 checked across locales at build. Locale: `[[lang=locale]]`, cookie `lang`,
 `Accept-Language`, first; `cx.locale()`, `wisp::locales()`,
 `wisp::localize(cx.path(), "fr")`, `wisp::default_locale("fr")?`.
+
+`{#await stats(id)}<p>…</p>{:then s}<p>{s.posts}</p>{:catch e}{e}{/await}`:
+the page goes out at once; each answer follows in the same response as it
+comes, moved in place (no JS: at the end). `f` is a future (not awaited),
+`Send + 'static`: no `cx` or borrowed locals in it or its branches. `v` is a
+`Result`'s `Ok` or the value; `e` the error's text; no `{:catch}`, a
+panic or `WISP_HANDLER_TIMEOUT` → "Something went wrong". Components in
+branches start like the page's (islands too); the page's own `{:x}`/`on:`
+and `cx` can't go in branches; form fields there show their own values.
+gzip when the client takes it, flushed per answer. Not in layouts,
+components, `<head>`, attributes; not with `CACHE`. A page without one is
+answered as ever.
 
 Holes can't go in `on*` attrs, tag names, `javascript:` URLs, SVG animation
 values or `<meta http-equiv>`; `<script>`/`<style>` bodies have none.

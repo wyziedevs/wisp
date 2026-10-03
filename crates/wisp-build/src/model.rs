@@ -87,6 +87,8 @@ pub struct Page {
     pub drawn: bool,
     /// `wisp build` renders it: `const PRERENDER: bool = true;`.
     pub prerender: bool,
+    /// Its markup has `{#await}`: it is streamed.
+    pub streams: bool,
 }
 
 impl Page {

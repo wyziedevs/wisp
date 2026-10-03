@@ -40,6 +40,17 @@ impl App for Site {
                 out.response = Some(crate::Response::html("hi"));
                 return Ok(());
             }
+            // A page with an `{#await}`, as the build writes one.
+            "await" => {
+                let awaits = crate::rt::Awaits::begin();
+                out.body.push_str("<p>page</p>");
+                crate::rt::defer(out, async { "answer" }, |o: &mut Out, v| {
+                    o.body.push_str(v.unwrap_or("none"))
+                });
+                out.body.push_str("</wisp-await>");
+                awaits.finish::<Site>(cx, out);
+                return Ok(());
+            }
             "res" => {
                 out.response =
                     Some(crate::Response::html("hi").with_header("referrer-policy", "no-referrer"));
@@ -86,6 +97,53 @@ fn a_file_is_gzipped_for_a_client_that_takes_it() {
     assert!(gz.bytes().len() < plain.bytes().len());
     assert_eq!(inflate(gz.bytes()), plain.bytes());
     let no = get(&[("accept-encoding", "gzip;q=0")]);
+    assert_eq!(no.header("content-encoding"), None);
+}
+
+/// A streamed page (`{#await}`) is gzipped a piece at a time for a client
+/// that takes gzip: the page decodes before its answer comes, and the whole
+/// stream is one gzip file. Any other client gets it as it is.
+#[test]
+fn a_streamed_page_is_gzipped_piece_by_piece() {
+    use crate::compress::tests::blocks;
+    let mut app = crate::test::client::<Site>();
+    let mut get = |with: &[(&str, &str)]| {
+        let mut req = Request::new("GET", "/?await");
+        for (n, v) in with {
+            req.header(n, v);
+        }
+        let mut reply = app.send(req);
+        let mut chunks = Vec::new();
+        while let Some(c) = app.next_chunk(&mut reply) {
+            chunks.push(c);
+        }
+        (reply, chunks)
+    };
+    let (plain, chunks) = get(&[]);
+    assert_eq!(plain.header("content-encoding"), None);
+    assert_eq!(plain.header("vary"), Some("accept-encoding"));
+    let text = String::from_utf8(chunks.concat()).unwrap();
+    assert!(
+        text.contains("<p>page</p><wisp-await id=\"wisp-await-0\"></wisp-await><div"),
+        "{text}"
+    );
+    assert!(
+        text.contains("<div data-wisp-await=\"0\">answer</div><script>"),
+        "{text}"
+    );
+
+    let (gz, chunks) = get(&[("accept-encoding", "gzip")]);
+    assert_eq!(gz.header("content-encoding"), Some("gzip"));
+    assert_eq!(gz.header("vary"), Some("accept-encoding"));
+    // The page alone, flushed: what a browser shows before the answer.
+    let (first, last) = blocks(&chunks[0]);
+    assert_eq!(
+        (first.as_slice(), last),
+        (&text.as_bytes()[..first.len()], false)
+    );
+    assert!(first.ends_with(b"</wisp-await>"));
+    assert_eq!(inflate(&chunks.concat()), text.as_bytes());
+    let no = get(&[("accept-encoding", "gzip;q=0")]).0;
     assert_eq!(no.header("content-encoding"), None);
 }
 

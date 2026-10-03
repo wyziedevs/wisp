@@ -89,6 +89,21 @@ pub const HEADER_LOCATION: &str = "x-wisp-location";
 /// Browser code failed to start: wisp.js asks for the route's error page.
 pub const HEADER_ERROR: &str = "x-wisp-error";
 
+/// `{#await}` in a page: its pending markup goes out inside
+/// `<wisp-await id="wisp-await-K">`; each answer comes after the page, as
+/// `<div data-wisp-await="K">…</div>` and this script, which moves it in
+/// place (one text, so one CSP hash). An answer with browser code ends its
+/// div with its instances, opened by `AWAIT_LIVE_OPEN` (numbered on from
+/// the page's), which the script adds to the page's list; live.js, which
+/// runs once the response has ended, starts them with the page's. Without
+/// JS the answers stay at the end; wisp.js does the same itself in a page
+/// it navigates to.
+pub const AWAIT_OPEN: &str = "<wisp-await id=\"wisp-await-";
+pub const AWAIT_CLOSE: &str = "</wisp-await>";
+pub const AWAIT_ANSWER: &str = "<div data-wisp-await=\"";
+pub const AWAIT_LIVE_OPEN: &str = "<script type=\"application/json\" data-wisp-live>{\"m\":{";
+pub const AWAIT_JS: &str = "(s=>{let d=s.previousElementSibling,j=d.querySelector('[data-wisp-live]'),L=document.getElementById('wisp-live'),a,b,x=document.getElementById('wisp-await-'+d.dataset.wispAwait);if(j){j.remove();if(L){a=JSON.parse(L.text);b=JSON.parse(j.text);Object.assign(a.m,b.m);a.i.push(...b.i);a.t={...a.t,...b.t};L.text=JSON.stringify(a)}else j.id='wisp-live',document.body.append(j)}x&&x.replaceWith(...d.childNodes);d.remove();s.remove()})(document.currentScript)";
+
 /// `/_app/<file>`, where Wisp serves its own files, as a literal: for a
 /// `concat!` that builds a tag once, at compile time.
 #[macro_export]
@@ -164,6 +179,8 @@ mod tests {
             format!("how[0] == '{ISLAND_MEDIA}'"),
             format!("startsWith({})", q(APP_PREFIX)),
             "for (const [I, , P, , how] of".into(),
+            "querySelectorAll('[data-wisp-await]')".into(),
+            "getElementById('wisp-await-' + d.dataset.wispAwait)".into(),
         ];
         for want in &in_live {
             assert!(live.contains(want.as_str()), "live.js reads `{want}`");
@@ -184,6 +201,14 @@ mod tests {
         // The instance list's pieces.
         assert!(LIVE_OPEN.contains(&format!("id=\"{LIVE_ID}\"")));
         assert_eq!((&COPY_START[..4], &COPY_END[5..]), ("<!--", "-->"));
+        assert!(AWAIT_OPEN.ends_with("id=\"wisp-await-") && AWAIT_JS.contains("'wisp-await-'"));
+        assert!(AWAIT_ANSWER.contains("data-wisp-await") && AWAIT_JS.contains("dataset.wispAwait"));
+        assert!(AWAIT_LIVE_OPEN.ends_with(&LIVE_OPEN[LIVE_OPEN.find('>').unwrap()..]));
+        assert!(
+            AWAIT_JS.contains("querySelector('[data-wisp-live]')")
+                && AWAIT_LIVE_OPEN.contains(" data-wisp-live>")
+        );
+        assert!(AWAIT_JS.contains(&format!("getElementById('{LIVE_ID}')")));
     }
 
     /// `document` and `outside`, which both listen on the document.

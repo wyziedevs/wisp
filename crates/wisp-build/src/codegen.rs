@@ -13,9 +13,9 @@ use crate::model::{self, Handler, Model};
 use crate::npm::{self, Npm};
 use crate::openapi::{self, Op};
 use crate::protocol::{
-    APP_CSS_PATH, COPY_END, COPY_START, ELEMENT_JS_PATH, ELEMENTS, EXTRA_JS_PATH, GROUP_ATTR,
-    IMAGES, ISLAND_MEDIA, LIVE_JS_PATH, LOOP_ATTR, MODULES, NPM_MODULES, ON_FLAGS, ON_PLACED,
-    ON_ROOT, REMOTE, REMOTE_JS_PATH, SLOT_ATTR, WISP_JS_PATH,
+    APP_CSS_PATH, AWAIT_CLOSE, AWAIT_JS, COPY_END, COPY_START, ELEMENT_JS_PATH, ELEMENTS,
+    EXTRA_JS_PATH, GROUP_ATTR, IMAGES, ISLAND_MEDIA, LIVE_JS_PATH, LOOP_ATTR, MODULES, NPM_MODULES,
+    ON_FLAGS, ON_PLACED, ON_ROOT, REMOTE, REMOTE_JS_PATH, SLOT_ATTR, WISP_JS_PATH,
 };
 use crate::routes::Seg;
 use crate::rust_scan::{self, FnItem, Returns};
@@ -636,6 +636,16 @@ fn for_each_code(
                 f(scrutinee)?;
                 all(arms.iter_mut().map(|(_, b)| b), f)?;
             }
+            Node::Await {
+                future,
+                pending,
+                then,
+                catch,
+            } => {
+                f(future)?;
+                for_each_code(pending, f)?;
+                all(then.iter_mut().chain(catch).map(|(_, b)| b), f)?;
+            }
             Node::Component {
                 props, children, ..
             } => {
@@ -689,6 +699,14 @@ fn first_await(nodes: &[Node]) -> Option<u32> {
             arms.iter()
                 .find_map(|(c, b)| code(c).or_else(|| first_await(b)))
         }),
+        Node::Await {
+            future,
+            pending,
+            then,
+            catch,
+        } => code(future)
+            .or_else(|| first_await(pending))
+            .or_else(|| all(then.iter().chain(catch).map(|(_, b)| b))),
         Node::Component {
             props, children, ..
         } => props
@@ -700,6 +718,99 @@ fn first_await(nodes: &[Node]) -> Option<u32> {
             .or_else(|| all(children.iter())),
         Node::Client(branches) => all(branches.iter().map(|(_, b)| b)),
         _ => None,
+    })
+}
+
+/// The lists of nodes right inside `n`: a block's branches, children, an
+/// await's pending markup and branches.
+fn inside(n: &Node) -> Vec<&Vec<Node>> {
+    match n {
+        Node::If {
+            branches,
+            otherwise,
+        } => branches.iter().map(|(_, b)| b).chain(otherwise).collect(),
+        Node::Each {
+            body, otherwise, ..
+        } => std::iter::once(body).chain(otherwise).collect(),
+        Node::Match { arms, .. } => arms.iter().map(|(_, b)| b).collect(),
+        Node::Kept { sent, own, .. } => std::iter::once(sent).chain(own).collect(),
+        Node::Component { children, .. } => children.iter().collect(),
+        Node::Await {
+            pending,
+            then,
+            catch,
+            ..
+        } => std::iter::once(pending)
+            .chain(then.iter().chain(catch).map(|(_, b)| b))
+            .collect(),
+        Node::Snippet { body, .. } | Node::Head(body) => vec![body],
+        Node::Client(branches) => branches.iter().map(|(_, b)| b).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The `{#await}`s in `nodes`, in blocks and children too.
+fn awaits_of(nodes: &[Node]) -> Vec<&Node> {
+    let mut out = Vec::new();
+    for n in nodes {
+        if matches!(n, Node::Await { .. }) {
+            out.push(n);
+        }
+        for list in inside(n) {
+            out.extend(awaits_of(list));
+        }
+    }
+    out
+}
+
+/// Whether `nodes` have an `{#await}`.
+fn awaits_in(nodes: &[Node]) -> bool {
+    !awaits_of(nodes).is_empty()
+}
+
+/// Whether `nodes` have browser code of their template's own: `{:x}`,
+/// `on:`, a browser block (a component's is its own).
+fn has_browser(nodes: &[Node]) -> bool {
+    nodes.iter().any(|n| {
+        matches!(
+            n,
+            Node::Live { .. } | Node::Hole { .. } | Node::Tag { .. } | Node::Client(_)
+        ) || inside(n).into_iter().any(|b| has_browser(b))
+    })
+}
+
+/// A page's `{#await}` whose `{:then}` or `{:catch}` cannot render after
+/// the page: the line of its future, and why.
+fn bad_await(nodes: &[Node]) -> Option<(u32, &'static str)> {
+    awaits_of(nodes).into_iter().find_map(|n| {
+        let Node::Await {
+            future,
+            then,
+            catch,
+            ..
+        } = n
+        else {
+            return None;
+        };
+        let mut branches: Vec<Node> = then.iter().chain(catch).flat_map(|(_, b)| b.clone()).collect();
+        if has_browser(&branches) {
+            return Some((
+                future.line,
+                "an `{#await}`'s `{:then}` and `{:catch}` are rendered after the page, without its browser code: \
+                 no `{:x}`, `on:`, `bind:` or browser blocks of the page's in them. A component with its own script works there; \
+                 or put the page's browser code around the block",
+            ));
+        }
+        let mut cx = false;
+        let _ = for_each_code(&mut branches, &mut |c| {
+            cx |= names_word(&c.src, "cx");
+            Ok(())
+        });
+        cx.then_some((
+            future.line,
+            "an `{#await}`'s `{:then}` and `{:catch}` are rendered after the request, so they have no `cx`: \
+             read what they need before, and give it to the future (`stats(cx.param(\"id\").to_string())`)",
+        ))
     })
 }
 
@@ -2012,6 +2123,11 @@ impl<'a> Project<'a> {
             ));
         }
         lg.stmts = with_lets(lg.stmts, &lets);
+        let streams = awaits_in(&t.nodes);
+        if streams {
+            self.streamed(&file, &t, &lg.items)?;
+            t.hashes.push(crate::csp::hash(AWAIT_JS));
+        }
         // The page comes first: nothing set these before it.
         self.body_limit(route, &lg.items, &rs, format!("page_{i}"), "", &mut shims)?;
         self.cache(route, &lg.items, &rs, format!("page_{i}"), "", &mut shims)?;
@@ -2146,8 +2262,9 @@ impl<'a> Project<'a> {
         tpl.user = user;
         tpl.data = data;
         tpl.load_js = page_js.map(|f| dir.join(f));
-        let waits =
-            fns.iter().any(|f| f.is_async) || lg.stmts.as_deref().is_some_and(rust_scan::may_wait);
+        let waits = streams
+            || fns.iter().any(|f| f.is_async)
+            || lg.stmts.as_deref().is_some_and(rust_scan::may_wait);
         // A page with no Rust still reads its route parameters.
         tpl.stmts = match lg.stmts {
             Some(s) => Some((s, binds)),
@@ -2161,8 +2278,24 @@ impl<'a> Project<'a> {
             waits,
             drawn,
             prerender,
+            streams,
         });
         Ok(())
+    }
+
+    /// A page with `{#await}` (`t`, of `file`), checked: not kept whole by
+    /// `CACHE`, no browser code in its branches.
+    fn streamed(&self, file: &Path, t: &Template, items: &rust_scan::Items) -> Result<(), String> {
+        let rel = self.rel(file);
+        if items.constant("CACHE").is_some() {
+            return Err(format!(
+                "{rel}: a page with `{{#await}}` is streamed as its answers come, and `CACHE` keeps a whole answer: drop one"
+            ));
+        }
+        match bad_await(&t.nodes) {
+            Some((line, msg)) => Err(format!("{rel}:{line}: {msg}")),
+            None => Ok(()),
+        }
     }
 
     /// A page with `const PRERENDER: bool = true;`, checked: it reads
@@ -3013,6 +3146,9 @@ impl Gen {
             let page = &p.templates[pg.tpl];
             self.line(0, "#[allow(unused_variables)]");
             self.line(0, &format!("async fn serve_page_{i}(cx: &mut ::wisp::Cx, __o: &mut ::wisp::Out) -> ::wisp::Result<()> {{"));
+            if pg.streams {
+                self.line(1, "let __aw = ::wisp::rt::Awaits::begin();");
+            }
             if p.i18n.is_some() {
                 self.line(1, "__o.lang = ::wisp::rt::pick_locale(cx);");
             }
@@ -3046,8 +3182,9 @@ impl Gen {
                 // The page runs its statements, then hands its render to this
                 // closure, which puts it inside the layouts.
                 let wrap = p.wrap_layouts(&route.layouts, "__p(__o)".into());
+                let end = if pg.streams { "?;" } else { "" };
                 self.line(1, &format!(
-                    "{}::render(cx, __o, |__o: &mut ::wisp::Out, cx: &::wisp::Cx, __p: &dyn Fn(&mut ::wisp::Out)| {wrap}).await",
+                    "{}::render(cx, __o, |__o: &mut ::wisp::Out, cx: &::wisp::Cx, __p: &dyn Fn(&mut ::wisp::Out)| {wrap}).await{end}",
                     page.path()
                 ));
             } else {
@@ -3055,6 +3192,11 @@ impl Gen {
                 let inner = format!("{}::render(__o, cx{data})", page.path());
                 self.line(1, "let cx: &::wisp::Cx = cx;");
                 self.line(1, &format!("{};", p.wrap_layouts(&route.layouts, inner)));
+            }
+            if pg.streams {
+                self.line(1, "__aw.finish::<App>(cx, __o);");
+            }
+            if pg.streams || page.stmts.is_none() {
                 self.line(1, "Ok(())");
             }
             self.line(0, "}");
@@ -4893,6 +5035,17 @@ pub(crate) fn check_components(
                     check_components(body, t, comps, rel, in_head)?;
                 }
             }
+            Node::Await {
+                pending,
+                then,
+                catch,
+                ..
+            } => {
+                let branches = then.iter().chain(catch).map(|(_, b)| b);
+                for body in std::iter::once(pending).chain(branches) {
+                    check_components(body, t, comps, rel, in_head)?;
+                }
+            }
             Node::Head(body) => check_components(body, t, comps, rel, true)?,
             Node::Snippet { body, .. } => check_components(body, t, comps, rel, in_head)?,
             Node::Client(branches) => {
@@ -5313,6 +5466,12 @@ impl Gen {
     }
 
     fn template(&mut self, t: &Tpl, comps: &[Comp], client: Option<&Client>) -> Result<(), String> {
+        if t.kind != Kind::Page && awaits_in(&t.t.nodes) {
+            return Err(format!(
+                "{}: `{{#await}}` goes in a page; a layout, component or error page renders whole",
+                t.rel
+            ));
+        }
         self.line(0, &format!("// {}", t.rel));
         self.line(0, "#[doc(hidden)]");
         self.line(0, "#[allow(unused_imports, unused_variables, unused_mut, unused_parens, unused_braces, unused_macros, dead_code, clippy::all)]");
@@ -5670,6 +5829,55 @@ impl Gen {
         self.line(ind, &format!("{s} // {}:{}", cx.rel, code.line));
     }
 
+    /// `{#await future}`: its pending markup now; its `{:then}` or
+    /// `{:catch}` in a closure the runtime runs once the future is done,
+    /// after the page has gone (see `wisp::rt::defer`).
+    fn await_block(
+        &mut self,
+        future: &Code,
+        pending: &[Node],
+        then: &Option<(String, Vec<Node>)>,
+        catch: &Option<(String, Vec<Node>)>,
+        ind: usize,
+        cx: &mut Emit,
+    ) {
+        self.line(ind, "{");
+        self.line(
+            ind + 1,
+            "use ::wisp::rt::{AnyResult as _, Value as _, WispResult as _};",
+        );
+        let call = format!(
+            "::wisp::rt::defer(__o, {}, move |__o: &mut ::wisp::Out, __v| {{",
+            future.src
+        );
+        self.code_line(ind + 1, &call, future, cx);
+        self.line(ind + 2, "let __r = match __v { Some(__v) => (&&&::wisp::rt::Settled::new(__v)).settle(), None => Err(::wisp::rt::failed()) };");
+        self.line(ind + 2, "match __r {");
+        // Rendered after the request, as a component is: a form's fields
+        // write their own values (`Node::Kept`), and no problems.
+        let has_cx = std::mem::replace(&mut cx.has_cx, false);
+        for (how, branch) in [("Ok", then), ("Err", catch)] {
+            match branch {
+                Some((pat, body)) => {
+                    self.line(ind + 3, &format!("{how}({pat}) => {{"));
+                    self.nodes(body, ind + 4, cx);
+                    self.line(ind + 3, "}");
+                }
+                None if how == "Ok" => self.line(ind + 3, "Ok(_) => {}"),
+                None => self.line(ind + 3, "Err(_) => ::wisp::rt::await_failed(__o),"),
+            }
+        }
+        cx.has_cx = has_cx;
+        self.line(ind + 2, "}");
+        self.line(ind + 1, "});");
+        self.nodes(pending, ind + 1, cx);
+        self.line(
+            ind + 1,
+            &format!("__o.body.push_str({});", lit(AWAIT_CLOSE)),
+        );
+        self.line(ind, "}");
+    }
+
     fn node(&mut self, n: &Node, ind: usize, cx: &mut Emit) {
         let buf = format!("__o.{}", cx.target);
         match n {
@@ -5930,6 +6138,12 @@ impl Gen {
                 }
                 self.line(ind, "}");
             }
+            Node::Await {
+                future,
+                pending,
+                then,
+                catch,
+            } => self.await_block(future, pending, then, catch, ind, cx),
             Node::Head(body) => {
                 let prev = cx.target;
                 cx.target = "head";
@@ -8251,6 +8465,20 @@ fn rust_scopes(nodes: &[Node], scope: &mut Vec<String>, out: &mut [Vec<String>])
                 for (pat, body) in arms {
                     let k = scope.len();
                     scope.extend(pattern_names(guardless(&pat.src)));
+                    rust_scopes(body, scope, out);
+                    scope.truncate(k);
+                }
+            }
+            Node::Await {
+                pending,
+                then,
+                catch,
+                ..
+            } => {
+                rust_scopes(pending, scope, out);
+                for (pat, body) in then.iter().chain(catch) {
+                    let k = scope.len();
+                    scope.extend(pattern_names(pat));
                     rust_scopes(body, scope, out);
                     scope.truncate(k);
                 }
