@@ -226,13 +226,16 @@ pub struct Group {
     pub line: u32,
 }
 
-/// The file's client script: its bare `<script>`, as written.
+/// The file's client script: its bare `<script>`, as written (or its
+/// `<script lang="ts">`, its types blanked out).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Script {
     pub src: String,
     /// Where its text starts.
     pub line: u32,
     pub col: u32,
+    /// A `lang="ts"` script's text as written, for `wisp check --types`.
+    pub ts: Option<String>,
 }
 
 /// A prop given to a component: `name={expr}`, `name="text"` or `name`.
@@ -1505,8 +1508,15 @@ impl Parser<'_> {
     }
 
     fn tag_close(&mut self) -> Result<(), Error> {
-        if self.tag == "script" && !self.closing && !self.tag_attrs {
-            return self.client_script();
+        // `<script lang="ts">` is the client script too, in TypeScript.
+        let ts = self.tag_seen.len() == 1
+            && self.directives.is_empty()
+            && self
+                .seen("lang")
+                .flatten()
+                .is_some_and(|l| l.eq_ignore_ascii_case("ts"));
+        if self.tag == "script" && !self.closing && (!self.tag_attrs || ts) {
+            return self.client_script(ts);
         }
         if self.tag == "style" && !self.closing && !self.tag_attrs {
             return self.scoped_style();
@@ -2023,10 +2033,11 @@ impl Parser<'_> {
 
     // ---- browser code -----------------------------------------------------
 
-    /// A `<script>` without attributes is the file's client script. It
-    /// leaves the HTML: the build makes it a module, which runs once for
-    /// each rendered copy of this file (see `codegen`).
-    fn client_script(&mut self) -> Result<(), Error> {
+    /// A `<script>` without attributes (or with `lang="ts"` alone) is the
+    /// file's client script. It leaves the HTML: the build makes it a
+    /// module, which runs once for each rendered copy of this file (see
+    /// `codegen`).
+    fn client_script(&mut self, ts: bool) -> Result<(), Error> {
         let at = self.tag_pos;
         if !self.frames.is_empty() || !self.templates.is_empty() {
             return Err(self.err(
@@ -2055,10 +2066,19 @@ impl Parser<'_> {
             .position(|w| w.eq_ignore_ascii_case(b"</script"))
             .ok_or_else(|| self.err(at, "unclosed <script>".into()))?;
         let end = hay[n..].find('>').map_or(hay.len(), |e| n + e + 1);
+        // TypeScript's types go here, as spaces: the rest of the build, and
+        // the browser, see JavaScript at the same lines and columns.
+        let written = &hay[..n];
+        let src = if ts {
+            crate::js::strip_types(written).map_err(|(off, msg)| self.err(body + off, msg))?
+        } else {
+            written.to_string()
+        };
         self.script = Some(Script {
-            src: hay[..n].to_string(),
+            src,
             line: self.line_of(body),
             col: self.col_of(body),
+            ts: ts.then(|| written.to_string()),
         });
         self.i = body + end;
         self.ctx = Ctx::Text;
@@ -4667,7 +4687,8 @@ mod tests {
             Some(Script {
                 src: "\n  let a = '</p>' // {x}\n".into(),
                 line: 3,
-                col: 9
+                col: 9,
+                ts: None
             })
         );
         assert!(t.is_live());

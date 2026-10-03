@@ -706,7 +706,7 @@ fn member(
 
 /// The TypeScript type of the Rust type `t`. Types defined in the file are
 /// declared in `decls` and referred to; any other type is `unknown`.
-fn ts(t: &str, types: &[TypeItem], decls: &mut Vec<(String, String)>) -> String {
+pub(crate) fn ts(t: &str, types: &[TypeItem], decls: &mut Vec<(String, String)>) -> String {
     let t = squeeze(t);
     let t = unref(&t);
     let arg = || inner(t).unwrap_or("");
@@ -844,7 +844,7 @@ mod tests {
             segs: vec![Seg::Static("api".into()), Seg::Param("id".into(), None)],
             page: false,
             page_rs: false,
-            page_js: false,
+            page_js: None,
             server: true,
             member: false,
             layouts: Vec::new(),
@@ -891,7 +891,7 @@ mod tests {
             ],
             page: false,
             page_rs: false,
-            page_js: false,
+            page_js: None,
             server: true,
             member: false,
             layouts: Vec::new(),

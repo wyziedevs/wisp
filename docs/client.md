@@ -93,6 +93,43 @@ class Todo {
 `untrack(fn)` reads without tracking. A rune in the wrong place (in markup,
 inside a block, misspelled) is a build error at its line.
 
+## TypeScript
+
+`<script lang="ts">` is the client script in TypeScript. So are
+`src/lib/*.ts` (`import { f } from '$lib/x'`, no extension needed) and
+`+page.ts`.
+
+```html
+<script lang="ts">
+  import { twice, type Num } from '$lib/util'
+  interface Point { x: number; y: number }
+  let n: Num = twice(2 as Num)
+  const p: Point = { x: 1, y: 2 }
+</script>
+```
+
+There is no compiler to install: the build strips the types, the way Node's
+`--experimental-strip-types` does, and writes spaces where they were, so
+every line and column stays (errors and source maps point at the file).
+Annotations, `interface`, `type`, `as`, `satisfies`, generics, `!`,
+`declare`, `import type`, `abstract`, access modifiers, `implements`,
+overloads and optional `?` all go. What TypeScript would turn into code is
+a build error that says what to write instead:
+
+| Not erasable | Write |
+|---|---|
+| `enum Color { Red }` | `const Color = { Red: 'red' } as const` |
+| `namespace N { export const x = 1 }` | a module, `src/lib/n.ts` |
+| `constructor(private x: number)` | `x: number; constructor(x: number) { this.x = x }` |
+| `import fs = require('fs')` | `import fs from 'fs'` |
+
+The build only strips. `wisp check --types` checks the types too, with the
+app's own TypeScript (`npm install -D typescript`, or `WISP_TSC` naming a
+`tsc`; without Node or it, it says so and skips). Server values are typed:
+a `#[derive(Json)]` type's fields, and a block's `let items: Vec<Item>`, as
+TypeScript interfaces; an unannotated `let`, `any`. Errors point at the
+`.wisp` file and line.
+
 ## Directives
 
 | Syntax | Meaning |

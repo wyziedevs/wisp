@@ -1773,6 +1773,948 @@ pub fn each(src: &str) -> Option<(String, Option<String>, usize)> {
     Some((item, index, t.get(at + 1)?.start))
 }
 
+// ---- TypeScript ---------------------------------------------------------
+
+const ENUM: &str = "`enum` is not erasable TypeScript (it makes code): use an object, \
+    `const Color = { Red: 'red', Blue: 'blue' } as const`, and for its type \
+    `type Color = (typeof Color)[keyof typeof Color]`";
+const NAMESPACE: &str = "a `namespace` with values is not erasable TypeScript (it makes code): \
+    use a module, such as src/lib/name.ts, or an object";
+const PARAMETER_PROPERTY: &str = "a parameter property (`private x` in a constructor's parameters) \
+    is not erasable TypeScript (it makes code): declare the field and set it, \
+    `x: T; constructor(x: T) { this.x = x }`";
+
+/// `src`, TypeScript, as JavaScript: its types gone the way Node's
+/// `--experimental-strip-types` takes them out, each replaced by spaces, so
+/// every line and column stays where it was (and a source map stays exact).
+///
+/// Gone: annotations, `interface`, `type`, `as` and `satisfies`, type
+/// arguments and parameters, `!` after an operand, `declare`, `import type`
+/// and `export type` (and `type` specifiers), `abstract`, access modifiers,
+/// `implements`, optional `?`, overloads and index signatures. What
+/// TypeScript would write code for (`enum`, a `namespace` with values,
+/// parameter properties, `import x =`, `export =`) is an error, at its
+/// offset, that says what to write instead.
+pub fn strip_types(src: &str) -> Result<String, (usize, String)> {
+    let t = split_closers(src, tokens(src));
+    // Each token's bracket, and each closer's opener.
+    let (mut open, mut mate) = (vec![usize::MAX; t.len()], vec![usize::MAX; t.len()]);
+    let mut stack: Vec<usize> = Vec::new();
+    for (k, tok) in t.iter().enumerate() {
+        let text = tok.text(src);
+        let piece = tok.kind == Kind::Template;
+        if (tok.kind == Kind::Punct && matches!(text, "}" | ")" | "]"))
+            || (piece && text.starts_with('}'))
+        {
+            mate[k] = stack.pop().unwrap_or(usize::MAX);
+        }
+        open[k] = stack.last().copied().unwrap_or(usize::MAX);
+        if (tok.kind == Kind::Punct && matches!(text, "{" | "(" | "["))
+            || (piece && text.ends_with("${"))
+        {
+            stack.push(k);
+        }
+    }
+    let mut ts = Ts {
+        src,
+        gone: vec![false; t.len()],
+        t,
+        open,
+        mate,
+        classes: Vec::new(),
+        cut: Vec::new(),
+    };
+    let mut k = 0;
+    while k < ts.t.len() {
+        k = ts.step(k)?;
+    }
+    let mut cut = ts.cut;
+    cut.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::with_capacity(cut.len());
+    for (a, b) in cut {
+        match merged.last_mut() {
+            Some(last) if a <= last.1 => last.1 = last.1.max(b),
+            _ => merged.push((a, b)),
+        }
+    }
+    Ok(blank(src, &merged))
+}
+
+/// `>>`, `>=` and the like as one token each of their characters, `>`
+/// apart from `=`: a type's `<…>` may end inside one (`Map<K, Set<V>>`).
+fn split_closers(src: &str, t: Vec<Token>) -> Vec<Token> {
+    let mut out = Vec::with_capacity(t.len());
+    for tok in t {
+        let text = tok.text(src);
+        if tok.kind != Kind::Punct || text.len() < 2 || !text.starts_with('>') {
+            out.push(tok);
+            continue;
+        }
+        let arrows = text.bytes().take_while(|&c| c == b'>').count();
+        for i in 0..arrows {
+            out.push(Token {
+                start: tok.start + i,
+                end: tok.start + i + 1,
+                newline: tok.newline && i == 0,
+                ..tok
+            });
+        }
+        if arrows < text.len() {
+            out.push(Token {
+                start: tok.start + arrows,
+                newline: false,
+                ..tok
+            });
+        }
+    }
+    out
+}
+
+/// The stripper's state: the tokens, which of them are gone, and the byte
+/// ranges to blank.
+struct Ts<'a> {
+    src: &'a str,
+    t: Vec<Token>,
+    gone: Vec<bool>,
+    /// Per token: the bracket it is in, and a closer's opener (or `MAX`).
+    open: Vec<usize>,
+    mate: Vec<usize>,
+    /// The `{` of each class body.
+    classes: Vec<usize>,
+    cut: Vec<(usize, usize)>,
+}
+
+type Step = Result<usize, (usize, String)>;
+
+impl Ts<'_> {
+    fn text(&self, j: usize) -> &str {
+        self.t.get(j).map_or("", |n| n.text(self.src))
+    }
+
+    fn is(&self, j: usize, s: &str) -> bool {
+        self.t
+            .get(j)
+            .is_some_and(|n| n.kind == Kind::Punct && n.text(self.src) == s)
+    }
+
+    /// An identifier `s`, not a property.
+    fn word(&self, j: usize, s: &str) -> bool {
+        self.t
+            .get(j)
+            .is_some_and(|n| n.kind == Kind::Ident && !n.member && n.text(self.src) == s)
+    }
+
+    fn ident(&self, j: usize) -> bool {
+        self.t.get(j).is_some_and(|n| n.kind == Kind::Ident)
+    }
+
+    /// The index after the bracket at `j` and what it holds.
+    fn after(&self, j: usize) -> usize {
+        (close(&self.t, j) + 1).min(self.t.len())
+    }
+
+    /// Tokens `a..b` and the text they span, gone.
+    fn erase(&mut self, a: usize, b: usize) {
+        let b = b.min(self.t.len());
+        if a < b {
+            self.cut.push((self.t[a].start, self.t[b - 1].end));
+            self.gone[a..b].fill(true);
+        }
+    }
+
+    /// The last token before `k` that is not gone.
+    fn prev(&self, k: usize) -> Option<usize> {
+        (0..k).rev().find(|&j| !self.gone[j])
+    }
+
+    /// Whether token `p` can end an operand, so that a `<`, `!` or `as`
+    /// after it is TypeScript's rather than an expression's start.
+    fn ends_operand(&self, p: usize) -> bool {
+        let tok = self.t[p];
+        let text = tok.text(self.src);
+        match tok.kind {
+            Kind::Ident => {
+                matches!(text, "this" | "super" | "true" | "false" | "null")
+                    || !(is_reserved(text) || BEFORE_EXPRESSION.contains(&text))
+            }
+            Kind::Number | Kind::String | Kind::Regex => true,
+            Kind::Template => text.ends_with('`'),
+            Kind::Punct => match text {
+                "]" | "}" => true,
+                // Not the head of `if (…)`, `while (…)` and the like.
+                ")" => {
+                    let o = self.mate[p];
+                    !(o > 0
+                        && o != usize::MAX
+                        && ["if", "while", "for", "with"]
+                            .iter()
+                            .any(|w| self.word(o - 1, w)))
+                }
+                _ => false,
+            },
+        }
+    }
+
+    fn operand(&self, k: usize) -> bool {
+        self.prev(k).is_some_and(|p| self.ends_operand(p))
+    }
+
+    /// The index after the template literal starting at `j`.
+    fn template_end(&self, j: usize) -> usize {
+        if !self.text(j).ends_with("${") {
+            return j + 1;
+        }
+        let d = self.t[j].depth;
+        (j + 1..self.t.len())
+            .find(|&i| {
+                let n = self.t[i];
+                let text = n.text(self.src);
+                n.kind == Kind::Template
+                    && n.depth == d
+                    && text.starts_with('}')
+                    && text.ends_with('`')
+            })
+            .map_or(self.t.len(), |i| i + 1)
+    }
+
+    /// The index after the `<…>` at `k`, if it closes before its bracket
+    /// or statement does. `strict`: only if all inside can be types, so
+    /// `a < b > c` stays two comparisons.
+    fn angles(&self, k: usize, strict: bool) -> Option<usize> {
+        let d = self.t[k].depth;
+        let mut n = 0;
+        for j in k..self.t.len() {
+            let tok = self.t[j];
+            let text = tok.text(self.src);
+            if tok.depth < d
+                || (tok.depth == d && text == ";")
+                || (strict && tok.kind == Kind::Regex)
+            {
+                return None;
+            }
+            if tok.depth == d && text == "<" {
+                n += 1;
+            } else if tok.depth == d && text == ">" {
+                n -= 1;
+                if n == 0 {
+                    return Some(j + 1);
+                }
+            } else if strict
+                && tok.kind == Kind::Punct
+                && !matches!(
+                    text,
+                    "." | ","
+                        | "|"
+                        | "&"
+                        | "["
+                        | "]"
+                        | "{"
+                        | "}"
+                        | "("
+                        | ")"
+                        | "=>"
+                        | "?"
+                        | ":"
+                        | ";"
+                        | "="
+                        | "..."
+                        | "-"
+                )
+            {
+                return None;
+            }
+        }
+        None
+    }
+
+    /// The index after the type at `k`, or `k` without one.
+    fn ty(&self, k: usize) -> usize {
+        let mut j = k + usize::from(self.is(k, "|") || self.is(k, "&"));
+        let mut end = k;
+        loop {
+            let e = self.ty_one(j);
+            if e == j {
+                return end;
+            }
+            end = e;
+            // A conditional type: `T extends U ? X : Y`.
+            if self.word(e, "extends") && !self.t[e].newline {
+                let c = self.ty(e + 1);
+                if self.is(c, "?") {
+                    let a = self.ty(c + 1);
+                    if self.is(a, ":") {
+                        return self.ty(a + 1);
+                    }
+                }
+                return end;
+            }
+            if !(self.is(e, "|") || self.is(e, "&")) {
+                return end;
+            }
+            j = e + 1;
+        }
+    }
+
+    /// The index after one type at `k`, without `|`, `&` or `extends`.
+    fn ty_one(&self, k: usize) -> usize {
+        let mut j = k;
+        // Prefixes: `keyof T`, `typeof x`, `readonly T[]`, `infer U`,
+        // `new () => T`, `asserts x is T`, `-1`.
+        while let Some(n) = self.t.get(j) {
+            let next = self.t.get(j + 1);
+            let word = n.kind == Kind::Ident
+                && matches!(
+                    n.text(self.src),
+                    "keyof"
+                        | "typeof"
+                        | "readonly"
+                        | "unique"
+                        | "infer"
+                        | "asserts"
+                        | "new"
+                        | "abstract"
+                )
+                && next.is_some_and(|m| {
+                    m.kind != Kind::Punct || matches!(m.text(self.src), "(" | "[" | "{" | "<")
+                });
+            let minus = self.is(j, "-") && next.is_some_and(|m| m.kind == Kind::Number);
+            if !(word || minus) {
+                break;
+            }
+            j += 1;
+        }
+        let Some(n) = self.t.get(j) else { return k };
+        let mut function = false;
+        let mut j = match n.kind {
+            Kind::Ident => {
+                let mut e = j + 1;
+                while self.is(e, ".") && self.ident(e + 1) {
+                    e += 2;
+                }
+                if self.word(j, "import") && self.is(e, "(") {
+                    e = self.after(e);
+                    while self.is(e, ".") && self.ident(e + 1) {
+                        e += 2;
+                    }
+                }
+                if self.is(e, "<") {
+                    e = self.angles(e, false).unwrap_or(e);
+                }
+                // A predicate: `x is T`.
+                if self.word(e, "is") && !self.t[e].newline {
+                    e = self.ty(e + 1);
+                }
+                e
+            }
+            Kind::String | Kind::Number => j + 1,
+            Kind::Template => self.template_end(j),
+            Kind::Regex => return k,
+            Kind::Punct => match n.text(self.src) {
+                "{" | "[" => self.after(j),
+                "(" => {
+                    function = true;
+                    self.after(j)
+                }
+                "<" => match self.angles(j, false) {
+                    Some(a) if self.is(a, "(") => {
+                        function = true;
+                        self.after(a)
+                    }
+                    _ => return k,
+                },
+                _ => return k,
+            },
+        };
+        if function && self.is(j, "=>") {
+            return self.ty(j + 1);
+        }
+        while self.is(j, "[") && !self.t[j].newline {
+            j = self.after(j);
+        }
+        j
+    }
+
+    /// The end of the declaration at `k` when it is all type (`type`,
+    /// `interface`, `declare …`, a namespace of types), with its `;`.
+    fn types_end(&self, k: usize) -> Result<Option<usize>, (usize, String)> {
+        let tok = self.t[k];
+        if tok.kind != Kind::Ident || tok.member || tok.key {
+            return Ok(None);
+        }
+        let named = self.ident(k + 1) && !self.t[k + 1].newline;
+        let e = match tok.text(self.src) {
+            "type" if named && (self.is(k + 2, "=") || self.is(k + 2, "<")) => {
+                let mut j = k + 2;
+                if self.is(j, "<") {
+                    j = self.angles(j, false).unwrap_or(j);
+                }
+                if !self.is(j, "=") {
+                    return Ok(None);
+                }
+                self.ty(j + 1)
+            }
+            "interface"
+                if named
+                    && (self.is(k + 2, "{")
+                        || self.is(k + 2, "<")
+                        || self.word(k + 2, "extends")) =>
+            {
+                self.block_end(k)
+            }
+            "declare" => return Ok(self.declared(k)),
+            "namespace" | "module" if named && (self.is(k + 2, "{") || self.is(k + 2, ".")) => {
+                let b = self.block_end(k);
+                let c = b.saturating_sub(1);
+                let mut j = (k..c).find(|&j| self.is(j, "{")).map_or(c, |o| o + 1);
+                // Each of its statements must be a type.
+                while j < c {
+                    j += usize::from(self.word(j, "export"));
+                    if self.is(j, ";") {
+                        j += 1;
+                        continue;
+                    }
+                    match self.types_end(j)? {
+                        Some(e) => j = e,
+                        None => return Err((tok.start, NAMESPACE.into())),
+                    }
+                }
+                return Ok(Some(b));
+            }
+            "enum" if named && self.is(k + 2, "{") => return Err((tok.start, ENUM.into())),
+            _ => return Ok(None),
+        };
+        Ok(Some(e + usize::from(self.is(e, ";"))))
+    }
+
+    /// The index after the first `{…}` at `k`'s depth from `k` on, or a `;`
+    /// that comes first.
+    fn block_end(&self, k: usize) -> usize {
+        let d = self.t[k].depth;
+        match (k..self.t.len())
+            .find(|&j| self.t[j].depth == d && (self.is(j, "{") || self.is(j, ";")))
+        {
+            Some(j) if self.is(j, "{") => self.after(j),
+            Some(j) => j + 1,
+            None => self.t.len(),
+        }
+    }
+
+    /// The end of a `declare …` at `k`, or `None` when `declare` is a name.
+    fn declared(&self, k: usize) -> Option<usize> {
+        let n = k + 1;
+        if self.t.get(n)?.newline {
+            return None;
+        }
+        let e = match self.text(n) {
+            "const" | "let" | "var" => {
+                let mut j = n + 1;
+                loop {
+                    j = if self.is(j, "{") || self.is(j, "[") {
+                        self.after(j)
+                    } else {
+                        j + 1
+                    };
+                    if self.is(j, ":") {
+                        j = self.ty(j + 1);
+                    }
+                    if !self.is(j, ",") {
+                        break j;
+                    }
+                    j += 1;
+                }
+            }
+            "function" => {
+                let mut j = n + 1 + usize::from(self.ident(n + 1));
+                if self.is(j, "<") {
+                    j = self.angles(j, false)?;
+                }
+                if !self.is(j, "(") {
+                    return None;
+                }
+                j = self.after(j);
+                if self.is(j, ":") {
+                    j = self.ty(j + 1);
+                }
+                j
+            }
+            "type" => return self.types_end(n).ok().flatten(),
+            "class" | "enum" | "namespace" | "module" | "global" | "interface" | "abstract" => {
+                return Some(self.block_end(n));
+            }
+            _ => return None,
+        };
+        Some(e + usize::from(self.is(e, ";")))
+    }
+
+    /// One step from token `k`: the index to go on from.
+    fn step(&mut self, k: usize) -> Step {
+        if self.gone[k] {
+            return Ok(k + 1);
+        }
+        let tok = self.t[k];
+        if let Some(o) = self.class_of(k)
+            && self.member_start(k, o)
+        {
+            return self.member(k);
+        }
+        let text = tok.text(self.src);
+        if tok.kind == Kind::Ident && !tok.member && !tok.key {
+            if let Some(e) = self.types_end(k)? {
+                self.erase(k, e);
+                return Ok(e);
+            }
+            match text {
+                "import" if !self.is(k + 1, "(") && !self.is(k + 1, ".") => return self.import(k),
+                "export" => return self.export(k),
+                "abstract" if self.word(k + 1, "class") => self.erase(k, k + 1),
+                "class" => self.class(k),
+                "let" | "const" | "var"
+                    if self.ident(k + 1) || self.is(k + 1, "{") || self.is(k + 1, "[") =>
+                {
+                    self.vars(k);
+                }
+                "as" | "satisfies" if self.operand(k) => {
+                    let e = self.ty(k + 1);
+                    if e > k + 1 {
+                        self.erase(k, e);
+                        return Ok(e);
+                    }
+                }
+                _ => {}
+            }
+        } else if tok.kind == Kind::Punct {
+            match text {
+                "(" => self.paren(k)?,
+                "<" => {
+                    // After an operand, type arguments of a call
+                    // (`f<T>(x)`, `new Map<K, V>()`, f<T>`…`); else a generic
+                    // arrow's parameters, or an assertion (`<T>x`).
+                    let operand = self.operand(k);
+                    if let Some(e) = self.angles(k, operand) {
+                        let call = self.is(e, "(")
+                            || self.t.get(e).is_some_and(|n| n.kind == Kind::Template);
+                        if !operand || call {
+                            self.erase(k, e);
+                            return Ok(e);
+                        }
+                    }
+                }
+                "!" if !tok.newline && self.operand(k) => self.erase(k, k + 1),
+                _ => {}
+            }
+        }
+        Ok(k + 1)
+    }
+
+    /// Whether a signature ending before `e` has no body: `;`, the end of
+    /// its block, or a new line follows. (Anything else, it misread.)
+    fn bodyless(&self, e: usize) -> bool {
+        !self.is(e, "{")
+            && (self.is(e, ";") || self.is(e, "}") || self.t.get(e).is_none_or(|n| n.newline))
+    }
+
+    /// The class body token `k` is directly in.
+    fn class_of(&self, k: usize) -> Option<usize> {
+        let o = self.open[k];
+        self.classes.contains(&o).then_some(o)
+    }
+
+    /// Whether `k`, in the class body at `o`, starts a member.
+    fn member_start(&self, k: usize, o: usize) -> bool {
+        let tok = self.t[k];
+        let starts = matches!(tok.kind, Kind::Ident | Kind::String | Kind::Number)
+            || matches!(tok.text(self.src), "[" | "*");
+        let Some(p) = self.prev(k) else { return false };
+        starts
+            && (p == o
+                || self.is(p, ";")
+                || (self.is(p, "}") && self.t[p].depth == tok.depth)
+                || (tok.newline && self.ends_operand(p)))
+    }
+
+    /// A class member at `k`: its modifiers, `?`, `!`, type parameters and
+    /// annotations go; one with no code (`declare`, `abstract`, an
+    /// overload, an index signature) goes whole.
+    fn member(&mut self, k: usize) -> Step {
+        let mut j = k;
+        let mut whole = false;
+        loop {
+            let named = self.t.get(j + 1).is_some_and(|n| {
+                !n.newline
+                    && (matches!(n.kind, Kind::Ident | Kind::String | Kind::Number)
+                        || matches!(n.text(self.src), "[" | "*"))
+            });
+            if !named || !self.ident(j) {
+                break;
+            }
+            match self.text(j) {
+                "public" | "private" | "protected" | "readonly" | "override" => {
+                    self.erase(j, j + 1)
+                }
+                "declare" | "abstract" => whole = true,
+                "static" | "async" | "get" | "set" | "accessor" => {}
+                _ => break,
+            }
+            j += 1;
+        }
+        // A `static { … }` block is code.
+        if self.word(j, "static") && self.is(j + 1, "{") {
+            return Ok(j + 1);
+        }
+        j += usize::from(self.is(j, "*"));
+        // An index signature: `[key: string]: T`.
+        if self.is(j, "[") && self.ident(j + 1) && self.is(j + 2, ":") {
+            let mut e = self.after(j);
+            if self.is(e, ":") {
+                e = self.ty(e + 1);
+            }
+            e += usize::from(self.is(e, ";"));
+            self.erase(k, e);
+            return Ok(e);
+        }
+        let mut m = if self.is(j, "[") {
+            self.after(j)
+        } else {
+            j + 1
+        };
+        if self.is(m, "?") || self.is(m, "!") {
+            self.erase(m, m + 1);
+            m += 1;
+        }
+        if self.is(m, "<")
+            && let Some(e) = self.angles(m, false)
+        {
+            self.erase(m, e);
+            m = e;
+        }
+        if self.is(m, "(") {
+            let c = close(&self.t, m);
+            self.params(m, c)?;
+            let mut e = c + 1;
+            if self.is(e, ":") {
+                let r = self.ty(e + 1);
+                self.erase(e, r);
+                e = r;
+            }
+            if whole || self.bodyless(e) {
+                e += usize::from(self.is(e, ";"));
+                self.erase(k, e);
+                return Ok(e);
+            }
+            // Its default values are code, as is its body.
+            return Ok(m + 1);
+        }
+        if self.is(m, ":") {
+            let e = self.ty(m + 1);
+            self.erase(m, e);
+            m = e;
+        }
+        if whole {
+            m += usize::from(self.is(m, ";"));
+            self.erase(k, m);
+        }
+        Ok(m)
+    }
+
+    /// A `(` at `k`: if it holds parameters (of a function, an arrow, a
+    /// method or a `catch`), their types go, and its return type.
+    fn paren(&mut self, k: usize) -> Result<(), (usize, String)> {
+        let c = close(&self.t, k);
+        if c >= self.t.len() {
+            return Ok(());
+        }
+        let p = self.prev(k);
+        let pp = p.and_then(|p| self.prev(p));
+        let word = |j: Option<usize>, w: &str| j.is_some_and(|j| self.word(j, w));
+        // `function f(`, `function* f(`, `function (`.
+        let mut f = p;
+        if f.is_some_and(|j| self.ident(j) && !self.word(j, "function")) {
+            f = f.and_then(|j| self.prev(j));
+        }
+        if f.is_some_and(|j| self.is(j, "*")) {
+            f = f.and_then(|j| self.prev(j));
+        }
+        let function = f.filter(|&j| self.word(j, "function"));
+        let after = c + 1;
+        let ret = self.is(after, ":").then(|| self.ty(after + 1));
+        let next = ret.unwrap_or(after);
+        // `name(…) {` where a method may be (`if (…) {` is no method).
+        let named = p.is_some_and(|p| {
+            let n = self.t[p];
+            matches!(n.kind, Kind::String | Kind::Number)
+                || (n.kind == Kind::Ident && !is_reserved(n.text(self.src)))
+        });
+        let method = named
+            && pp.is_some_and(|q| {
+                self.is(q, "{")
+                    || self.is(q, ",")
+                    || self.is(q, "*")
+                    || ["get", "set", "async", "static"]
+                        .iter()
+                        .any(|w| self.word(q, w))
+            })
+            && self.is(next, "{")
+            && !self.t[next].newline;
+        let arrow = self.is(next, "=>");
+        if !(function.is_some() || method || arrow || word(p, "catch")) {
+            return Ok(());
+        }
+        self.params(k, c)?;
+        if let Some(r) = ret {
+            self.erase(after, r);
+        }
+        // A function with no body: an overload's signature.
+        if let Some(f) = function
+            && self.bodyless(next)
+        {
+            let mut s = f;
+            for w in ["async", "default", "export"] {
+                if let Some(q) = self.prev(s).filter(|&q| self.word(q, w)) {
+                    s = q;
+                }
+            }
+            self.erase(s, next + usize::from(self.is(next, ";")));
+        }
+        Ok(())
+    }
+
+    /// The parameters in `(…)` from `k` to `c`: `?`, annotations and a
+    /// `this` parameter go; a parameter property is an error.
+    fn params(&mut self, k: usize, c: usize) -> Result<(), (usize, String)> {
+        let d = self.t[k].depth + 1;
+        let mut j = k + 1;
+        while j < c {
+            let property = ["public", "private", "protected", "readonly", "override"]
+                .iter()
+                .any(|w| self.word(j, w))
+                && (self.ident(j + 1) || self.is(j + 1, "{") || self.is(j + 1, "["));
+            if property {
+                return Err((self.t[j].start, PARAMETER_PROPERTY.into()));
+            }
+            if self.word(j, "this") && self.is(j + 1, ":") {
+                let e = self.ty(j + 2);
+                let e = e + usize::from(self.is(e, ","));
+                self.erase(j, e);
+                j = e;
+                continue;
+            }
+            j += usize::from(self.is(j, "..."));
+            let mut m = if self.is(j, "{") || self.is(j, "[") {
+                self.after(j)
+            } else {
+                j + 1
+            };
+            if self.is(m, "?") {
+                self.erase(m, m + 1);
+                m += 1;
+            }
+            if self.is(m, ":") {
+                let e = self.ty(m + 1);
+                self.erase(m, e);
+                m = e;
+            }
+            // A default value is code: on to the next parameter.
+            while m < c && !(self.t[m].depth == d && self.is(m, ",")) {
+                m += 1;
+            }
+            j = m + 1;
+        }
+        Ok(())
+    }
+
+    /// `let`, `const` or `var` at `k`: each name's `!` and annotation go.
+    fn vars(&mut self, k: usize) {
+        let d = self.t[k].depth;
+        let mut j = k + 1;
+        loop {
+            let mut m = if self.is(j, "{") || self.is(j, "[") {
+                self.after(j)
+            } else if self.ident(j) {
+                j + 1
+            } else {
+                return;
+            };
+            if self.is(m, "!") {
+                self.erase(m, m + 1);
+                m += 1;
+            }
+            if self.is(m, ":") {
+                let e = self.ty(m + 1);
+                self.erase(m, e);
+                m = e;
+            }
+            let e = if self.is(m, "=") {
+                self.value_end(m + 1, d)
+            } else {
+                m
+            };
+            if !(self.is(e, ",") && self.t[e].depth == d) {
+                return;
+            }
+            j = e + 1;
+        }
+    }
+
+    /// Where the value at `s`, in a list at depth `d`, ends: at a `,` or
+    /// `;`, its bracket's end, or a line that starts another statement.
+    fn value_end(&self, s: usize, d: u32) -> usize {
+        let mut j = s;
+        while let Some(n) = self.t.get(j) {
+            if n.depth < d {
+                break;
+            }
+            if n.depth == d && j > s {
+                let text = n.text(self.src);
+                if matches!(text, "," | ";")
+                    || (n.newline && n.kind != Kind::Punct && self.ends_operand(j - 1))
+                {
+                    break;
+                }
+                // `f<A, B>(x)`: its comma is not the list's.
+                if text == "<"
+                    && self.ends_operand(j - 1)
+                    && let Some(e) = self.angles(j, true)
+                    && self.is(e, "(")
+                {
+                    j = e;
+                    continue;
+                }
+            }
+            j += 1;
+        }
+        j
+    }
+
+    /// `class` at `k`: its type parameters, its base's type arguments and
+    /// `implements …` go, and its body is a class body.
+    fn class(&mut self, k: usize) {
+        let d = self.t[k].depth;
+        let mut j = k + 1;
+        if self.ident(j) && !self.word(j, "extends") && !self.word(j, "implements") {
+            j += 1;
+        }
+        if self.is(j, "<")
+            && let Some(e) = self.angles(j, false)
+        {
+            self.erase(j, e);
+            j = e;
+        }
+        while let Some(n) = self.t.get(j) {
+            if n.depth < d {
+                return;
+            }
+            if n.depth == d {
+                if self.is(j, "{") {
+                    self.classes.push(j);
+                    return;
+                }
+                if self.word(j, "implements") {
+                    let b = (j..self.t.len())
+                        .find(|&i| self.t[i].depth == d && self.is(i, "{"))
+                        .unwrap_or(self.t.len());
+                    self.erase(j, b);
+                    j = b;
+                    continue;
+                }
+                if self.is(j, "<")
+                    && let Some(e) = self.angles(j, true)
+                    && (self.is(e, "{") || self.word(e, "implements"))
+                {
+                    self.erase(j, e);
+                    j = e;
+                    continue;
+                }
+            }
+            j += 1;
+        }
+    }
+
+    /// `import` at `k`: `import type …` goes whole, a `type` specifier
+    /// alone. The index after the statement.
+    fn import(&mut self, k: usize) -> Step {
+        if self.ident(k + 1) && self.is(k + 2, "=") {
+            return Err((
+                self.t[k].start,
+                "`import x = …` is not erasable TypeScript (it makes code): use `import x from '…'`".into(),
+            ));
+        }
+        let d = self.t[k].depth;
+        let Some(s) =
+            (k + 1..self.t.len()).find(|&j| self.t[j].kind == Kind::String && self.t[j].depth == d)
+        else {
+            return Ok(k + 1);
+        };
+        let end = s + 1 + usize::from(self.is(s + 1, ";"));
+        if self.word(k + 1, "type") && !self.is(k + 2, ",") && !self.word(k + 2, "from") {
+            self.erase(k, end);
+        } else if let Some(o) = (k + 1..s).find(|&j| self.is(j, "{")) {
+            self.specifiers(o);
+        }
+        Ok(end)
+    }
+
+    /// `export` at `k`.
+    fn export(&mut self, k: usize) -> Step {
+        let n = k + 1;
+        if self.is(n, "=") {
+            return Err((
+                self.t[k].start,
+                "`export =` is not erasable TypeScript (it makes code): use `export default`"
+                    .into(),
+            ));
+        }
+        let typed = self.word(n, "type") && (self.is(n + 1, "{") || self.is(n + 1, "*"));
+        if typed || self.is(n, "{") || self.is(n, "*") {
+            let at = n + usize::from(typed);
+            if self.is(at, "{") {
+                self.specifiers(at);
+            }
+            let mut e = if self.is(at, "{") {
+                self.after(at)
+            } else {
+                at + 1
+            };
+            if self.word(e, "as") {
+                e += 2;
+            }
+            if self.word(e, "from") {
+                e += 2;
+            }
+            e += usize::from(self.is(e, ";"));
+            if typed {
+                self.erase(k, e);
+            }
+            return Ok(e);
+        }
+        let at = n + usize::from(self.word(n, "default"));
+        if self.t.get(at).is_some()
+            && let Some(e) = self.types_end(at)?
+        {
+            self.erase(k, e);
+            return Ok(e);
+        }
+        Ok(n)
+    }
+
+    /// `type A` (or `type A as B`) in the `{ … }` at `o` of an import or
+    /// export: gone, with its comma.
+    fn specifiers(&mut self, o: usize) {
+        let c = close(&self.t, o);
+        let d = self.t[o].depth + 1;
+        let mut j = o + 1;
+        while j < c {
+            let e = (j..c)
+                .find(|&i| self.t[i].depth == d && self.is(i, ","))
+                .unwrap_or(c);
+            // `{ type as }` imports `as`'s type; `{ type as x }` the value `type`.
+            if self.word(j, "type") && matches!(e - j, 2 | 4) {
+                self.erase(j, (e + 1).min(c));
+            }
+            j = e + 1;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1783,6 +2725,240 @@ mod tests {
 
     fn roots(src: &str) -> Vec<String> {
         chains(src).into_iter().map(|(p, _)| p.join(".")).collect()
+    }
+
+    /// `src` stripped, its whitespace runs made one space: and checks that
+    /// every line and column stayed where it was.
+    fn strip(src: &str) -> String {
+        let out = strip_types(src).unwrap_or_else(|e| panic!("{e:?} in {src}"));
+        assert_eq!(out.len(), src.len(), "{out}");
+        let lines = |s: &str| s.match_indices('\n').map(|(i, _)| i).collect::<Vec<_>>();
+        assert_eq!(lines(&out), lines(src));
+        out
+    }
+
+    /// Whether `out` is `expected` but for whitespace, other than between
+    /// two words.
+    fn same(out: String, expected: &str) {
+        let norm = |s: &str| {
+            let mut n = String::new();
+            let mut gap = false;
+            for c in s.chars() {
+                if c.is_whitespace() {
+                    gap = true;
+                    continue;
+                }
+                let word = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+                if gap && n.chars().last().is_some_and(word) && word(c) {
+                    n.push(' ');
+                }
+                gap = false;
+                n.push(c);
+            }
+            n
+        };
+        assert_eq!(norm(&out), norm(expected), "{out}");
+    }
+
+    fn strip_err(src: &str) -> String {
+        strip_types(src).expect_err(src).1
+    }
+
+    #[test]
+    fn types_go_annotations() {
+        same(
+            strip("let x: number = 1, y: Array<string[]> = [], z!: Map<string, Set<number>>"),
+            "let x = 1, y = [], z",
+        );
+        same(
+            strip(
+                "function f<T extends object = {}>(a: T, b?: number, ...rest: string[]): T[] { return [a] }",
+            ),
+            "function f(a, b, ...rest) { return [a] }",
+        );
+        same(
+            strip("const h = (a: number, { b }: { b: string } = { b: '' }): void => {}"),
+            "const h = (a, { b } = { b: '' }) => {}",
+        );
+        same(
+            strip("const g = async <T,>(x: T): Promise<T> => x"),
+            "const g = async (x) => x",
+        );
+        same(strip("const k = <T>(x: T) => x"), "const k = (x) => x");
+        same(
+            strip("items.map((i: Item): string => i.name).filter((s): s is string => !!s)"),
+            "items.map((i) => i.name).filter((s) => !!s)",
+        );
+        same(
+            strip("let cb: (a: number) => void = () => {}, u: { a: 1 } | null = null"),
+            "let cb = () => {}, u = null",
+        );
+        same(
+            strip(
+                "try { f() } catch (e: unknown) { g(e) }\nfunction m(this: Window, a: number) {}",
+            ),
+            "try { f() } catch (e) { g(e) } function m(a) {}",
+        );
+        same(
+            strip(
+                "for (const [k, v] of map) { let n: number = k }\nfor (let i: number = 0; i < n; i++) {}",
+            ),
+            "for (const [k, v] of map) { let n = k } for (let i = 0; i < n; i++) {}",
+        );
+    }
+
+    #[test]
+    fn types_go_generics_but_comparisons_stay() {
+        same(strip("const c = a < b > c"), "const c = a < b > c");
+        same(
+            strip("if (a < b && c > d) { go() }"),
+            "if (a < b && c > d) { go() }",
+        );
+        same(strip("x = a < b; y = c > (d)"), "x = a < b; y = c > (d)");
+        same(strip("const s = a<b || c>(d)"), "const s = a<b || c>(d)");
+        same(
+            strip("const r = n >> 2, q = n >>> 1, t = n >= 3"),
+            "const r = n >> 2, q = n >>> 1, t = n >= 3",
+        );
+        same(strip("const d = f<string>(x)"), "const d = f(x)");
+        same(
+            strip("let m = new Map<string, Set<number>>(), n: number"),
+            "let m = new Map(), n",
+        );
+        same(
+            strip("const q = sql<Row>`select 1`"),
+            "const q = sql`select 1`",
+        );
+        same(strip("this.emit<Event>('x', e)"), "this.emit('x', e)");
+    }
+
+    #[test]
+    fn types_go_casts_and_non_null() {
+        same(
+            strip("const o = { a: 1, b: [2] } as const"),
+            "const o = { a: 1, b: [2] }",
+        );
+        same(strip("(x as unknown as T).y = z satisfies Z"), "(x).y = z");
+        same(strip("f(x as Foo<Bar>[], y)"), "f(x, y)");
+        same(
+            strip("const el = document.querySelector('a')!; el!.click(); a![0]!.b"),
+            "const el = document.querySelector('a'); el.click(); a[0].b",
+        );
+        same(
+            strip("if (x) !y && z()\nlet a = !b"),
+            "if (x) !y && z() let a = !b",
+        );
+        same(
+            strip("const t = `${(n as number) + 1}px: ${x as string}`"),
+            "const t = `${(n) + 1}px: ${x}`",
+        );
+        same(
+            strip("const r = /a<b>c: d/g; const ok = r.test(s as string) ? 1 : 2"),
+            "const r = /a<b>c: d/g; const ok = r.test(s) ? 1 : 2",
+        );
+    }
+
+    #[test]
+    fn types_go_declarations() {
+        let src = "interface P { a: string }\ntype Q<T> = T | null;\nexport type R = { x: number }\n\
+                   export interface S extends P {}\ntype U =\n  | 'a'\n  | 'b'\nlet z = 1\n\
+                   type M<T> = { [K in keyof T]?: T[K] extends string ? K : never }\n\
+                   declare const API: string;\ndeclare function g(x: number): void\n\
+                   declare module 'x' { export const y: number }\ndeclare global { interface Window { a: number } }\n\
+                   namespace T { export type X = number; interface Y {} }\nexport default 1";
+        same(strip(src), "let z = 1 export default 1");
+        same(
+            strip(
+                "import type { A } from './a'\nimport { type B, c, type D as E } from './b';\nimport type from './t'\n\
+                   export type { A }\nexport { type B as BB, c }\nexport type * from './x'",
+            ),
+            "import { c, } from './b'; import type from './t' export { c }",
+        );
+        same(
+            strip(
+                "function f(a: string): string;\nfunction f(a: number): number\nfunction f(a: any) { return a }",
+            ),
+            "function f(a) { return a }",
+        );
+        same(
+            strip("export function f(): void;\nexport function f() {}"),
+            "export function f() {}",
+        );
+        // Plain JavaScript stays as it is.
+        let js = "let a = b ? c : d; const o = { a: 1, b: c ? 1 : 2, type: 3, m(x) { return x } };\n\
+                  label: for (;;) { break label }\nswitch (x) { case 1: f(); default: g() }\nlet type = 1, as = 2; type = as";
+        same(strip(js), js);
+    }
+
+    #[test]
+    fn types_go_classes() {
+        let src = "abstract class A<T> extends B<T> implements C, D<T> {\n  private readonly x: number = 1\n  declare y: string\n  \
+                   static z?: T\n  #w!: boolean\n  [key: string]: unknown\n  constructor(a: number) { super(); this.x = a }\n  \
+                   abstract m(): void\n  get v(): number { return this.x }\n  n<U>(u: U): U { return u }\n  \
+                   over(a: string): void;\n  over(a: any) {}\n  public async *gen(): AsyncGenerator<number> {}\n  static { init() }\n}";
+        same(
+            strip(src),
+            "class A extends B { x = 1 static z #w constructor(a) { super(); this.x = a } get v() { return this.x } \
+             n(u) { return u } over(a) {} async *gen() {} static { init() } }",
+        );
+        same(
+            strip(
+                "const o = { m(a: number): string { return '' }, get x(): number { return 1 }, async n<T>(t?: T) {} }",
+            ),
+            "const o = { m(a) { return '' }, get x() { return 1 }, async n(t) {} }",
+        );
+        same(
+            strip("class P { handle = (e: Event): void => { this.x = e }; private n = 0 }"),
+            "class P { handle = (e) => { this.x = e }; n = 0 }",
+        );
+    }
+
+    #[test]
+    fn types_go_in_tricky_places() {
+        same(
+            strip("let y: typeof x = x, k: keyof typeof o = 'a', a = <T>b, s: unique symbol"),
+            "let y = x, k = 'a', a = b, s",
+        );
+        same(
+            strip(
+                "export const id = <T,>(x: T): T => x\nconst v = c ? (a as A) : (b as B)\nconst w = c ? (a) : b",
+            ),
+            "export const id = (x) => x const v = c ? (a) : (b) const w = c ? (a) : b",
+        );
+        same(
+            strip(
+                "class Q<T = string> { private constructor(a: T) {} protected static make(): Q<number> { return new Q(1) } }",
+            ),
+            "class Q { constructor(a) {} static make() { return new Q(1) } }",
+        );
+        same(
+            strip("let f = a?.b!.c, g = (h as any)?.[0]"),
+            "let f = a?.b.c, g = (h)?.[0]",
+        );
+        same(
+            strip("const p = new Promise<void>((resolve: () => void) => setTimeout(resolve, 1))"),
+            "const p = new Promise((resolve) => setTimeout(resolve, 1))",
+        );
+        same(
+            strip("function g(): { a: number; b(): void } {\n  return { a: 1, b() {} }\n}"),
+            "function g() { return { a: 1, b() {} } }",
+        );
+    }
+
+    #[test]
+    fn types_that_make_code_are_errors() {
+        assert!(strip_err("enum E { A, B }").contains("`enum` is not erasable"));
+        assert!(strip_err("const enum E { A }").contains("as const"));
+        assert!(strip_err("export enum E { A }").contains("`enum`"));
+        assert!(strip_err("namespace N { export const x = 1 }").contains("namespace"));
+        assert!(
+            strip_err("class A { constructor(private x: number) {} }")
+                .contains("parameter property")
+        );
+        assert!(strip_err("import fs = require('fs')").contains("import x from"));
+        assert!(strip_err("export = x").contains("export default"));
+        // At the offset of what is wrong.
+        assert_eq!(strip_types("let a = 1\nenum E {}").unwrap_err().0, 10);
     }
 
     #[test]

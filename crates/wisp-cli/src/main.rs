@@ -17,6 +17,7 @@ mod targets;
 #[cfg(test)]
 mod template_files;
 mod term;
+mod types;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -61,8 +62,8 @@ const COMMANDS: [(&str, &str); 18] = [
         "Write a GitHub Actions workflow that deploys to the host on each push.",
     ),
     (
-        "wisp check",
-        "Check routes and templates without compiling.",
+        "wisp check [--types]",
+        "Check routes and templates without compiling; --types runs tsc on TypeScript too.",
     ),
     (
         "wisp fmt [paths]",
@@ -153,14 +154,13 @@ fn main() -> ExitCode {
             build_options(&args[1..]).and_then(|o| project().and_then(|root| build(root, &o)))
         }
         Some("deploy") => project().and_then(|root| ci::run(root, &args[1..])),
-        Some("check") => no_options("check", &args[1..])
-            .and_then(|()| project())
-            .and_then(|root| {
-                check(root)?;
-                term::done("Routes and templates are valid.");
-                fmt::warn_unformatted(root);
-                Ok(())
-            }),
+        Some("check") => check_types(&args[1..]).and_then(|types| {
+            let root = project()?;
+            check(root)?;
+            term::done("Routes and templates are valid.");
+            fmt::warn_unformatted(root);
+            if types { types::check(root) } else { Ok(()) }
+        }),
         Some("fmt") => fmt::run(&args[1..]),
         Some("add") => project().and_then(|root| npm::add(root, &args[1..])),
         Some("remove") => project().and_then(|root| npm::remove(root, &args[1..])),
@@ -314,6 +314,17 @@ fn no_options(command: &str, args: &[String]) -> Result<(), String> {
             "Unexpected {arg}.\nwisp {command} takes no options."
         )),
         None => Ok(()),
+    }
+}
+
+/// `wisp check`'s one option, `--types`.
+fn check_types(args: &[String]) -> Result<bool, String> {
+    match args {
+        [] => Ok(false),
+        [t] if t == "--types" => Ok(true),
+        [arg, ..] => Err(format!(
+            "Unexpected {arg}.\nwisp check takes --types, to check TypeScript with tsc."
+        )),
     }
 }
 
