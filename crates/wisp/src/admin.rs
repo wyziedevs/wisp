@@ -7,7 +7,9 @@
 //! `#[validate]`) run, only that the JSON is a row of the table's type
 //! (and, for a unique field, free). Keep the key to people who may do that.
 
-use crate::{Cx, Method, RateLimit, Response, Result};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::RateLimit;
+use crate::{Cx, Method, Response, Result};
 use std::fmt::Write;
 
 /// Where the admin page is.
@@ -43,7 +45,6 @@ pub(crate) fn register(table: &'static dyn Admin) {
 /// not under `/_wisp/admin` or the page is off.
 pub(crate) fn serve(cx: &Cx, path: &str) -> Option<Response> {
     static KEY: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    static TRIES: RateLimit = RateLimit::per_minute(60);
     let key = KEY
         .get_or_init(|| crate::env("WISP_ADMIN_KEY").filter(|k| !k.is_empty()))
         .as_deref()?;
@@ -52,13 +53,18 @@ pub(crate) fn serve(cx: &Cx, path: &str) -> Option<Response> {
         return None;
     }
     // Before the key is looked at, so guessing it is slow whoever is right.
-    Some(match tries(&TRIES, cx) {
-        Some(refused) => refused,
-        None => answer(cx, rest.trim_matches('/'), key),
-    })
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        static TRIES: RateLimit = RateLimit::per_minute(60);
+        if let Some(refused) = tries(&TRIES, cx) {
+            return Some(refused);
+        }
+    }
+    Some(answer(cx, rest.trim_matches('/'), key))
 }
 
 /// The answer to a client that has used up its requests, if it has.
+#[cfg(not(target_arch = "wasm32"))]
 fn tries(limit: &RateLimit, cx: &Cx) -> Option<Response> {
     limit.check(cx.client_ip()).err().map(|_| {
         page(429, "Slow down", "<p>Too many requests; wait a minute.</p>")
@@ -317,6 +323,7 @@ mod tests {
         assert!(!rest.contains("More"));
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn a_client_that_asks_too_much_is_refused() {
         let limit = RateLimit::per_minute(2);
