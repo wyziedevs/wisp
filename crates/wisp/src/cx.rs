@@ -244,14 +244,15 @@ impl Cx {
         self.names = &[];
     }
 
-    pub(crate) fn set_params(&mut self, names: &'static [&'static str], spans: [Span; MAX_PARAMS]) {
+    /// The params `names`, a span each in `spans`: only theirs are copied.
+    pub(crate) fn set_params(&mut self, names: &'static [&'static str], spans: &[Span]) {
         debug_assert!(names.len() <= MAX_PARAMS);
         self.names = names;
-        self.params = spans;
         // The spans are of the path, a `str`: only an escape makes one owned.
-        for (span, decoded) in spans.iter().zip(&mut self.decoded).take(names.len()) {
+        for (k, &span) in spans.iter().enumerate().take(names.len()) {
+            self.params[k] = span;
             let raw = &self.wire.buf[span.range()];
-            *decoded = match raw.contains(&b'%') {
+            self.decoded[k] = match raw.contains(&b'%') {
                 true => Some(decode(raw, false).into_owned()),
                 false => None,
             };
@@ -881,7 +882,7 @@ impl Cx {
             *span = at(&path[start..start + value.len()]);
         }
         let names: Vec<&'static str> = params.iter().map(|(n, _)| *n).collect();
-        cx.set_params(names.leak(), spans);
+        cx.set_params(names.leak(), &spans);
         cx
     }
 }
@@ -1275,7 +1276,7 @@ mod tests {
         let slug = Span::of(raw.as_bytes(), &raw.as_bytes()[at..at + "caf%C3%A9".len()]);
         let mut spans = [Span::default(); MAX_PARAMS];
         spans[0] = slug;
-        cx.set_params(&["slug"], spans);
+        cx.set_params(&["slug"], &spans);
         assert_eq!(cx.path(), "/blog/caf%C3%A9");
         assert_eq!(cx.param("slug"), "café");
         assert_eq!(cx.cookie("session"), Some("xyz"));
