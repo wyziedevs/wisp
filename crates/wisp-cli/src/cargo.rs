@@ -24,13 +24,20 @@ pub struct Build {
 /// `quiet` leaves out cargo's own progress lines, for rebuilds whose
 /// outcome `wisp dev` reports itself.
 pub fn build(root: &Path, release: bool, quiet: bool) -> Build {
-    build_for(root, release, quiet, None)
+    build_for(root, release, quiet, None, &[])
 }
 
 /// [`build`] for another target, such as `wasm32-unknown-unknown`, whose
-/// "executable" is the `.wasm` file.
-pub fn build_for(root: &Path, release: bool, quiet: bool, target: Option<&str>) -> Build {
+/// "executable" is the `.wasm` file, with `env` set for cargo.
+pub fn build_for(
+    root: &Path,
+    release: bool,
+    quiet: bool,
+    target: Option<&str>,
+    env: &[(&str, &str)],
+) -> Build {
     let mut cmd = Command::new("cargo");
+    cmd.envs(env.iter().copied());
     cmd.args(["build", "--message-format=json-diagnostic-rendered-ansi"]);
     if let Some(t) = target {
         cmd.args(["--target", t]);

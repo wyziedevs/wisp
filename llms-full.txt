@@ -231,7 +231,8 @@ a line. ETag on GET (304), `if-match` on writes (412); POST an array = bulk.
 `user` field is filtered and set from the route. A handler the file writes
 replaces that one. Rows live in `WISP_DATA` log files (`.wisp/data` in dev);
 `wisp::store(MyDb)` in `init` puts them in any DB (`impl wisp::Store`:
-`load(table)`, `save(table, id, json)`). Edge: in memory. Handlers by hand:
+`load(table)`, `save(table, id, json)`). Edge: in memory, or env
+`WISP_STORE=d1:DB|deno-kv|libsql://…` (+`WISP_STORE_TOKEN`). Handlers by hand:
 
 ```rust
 fn list() -> Vec<Note> { db::all() }                  // GET /api/notes
@@ -374,8 +375,9 @@ takes the no-wait fast path off every route.
 
 `wisp new app` · `wisp dev` (hot reload) · `wisp check` · `wisp fmt [paths]`
 (`--check`; markup, `---` via rustfmt, scripts, styles) · `wisp build`
-(`--static`, `--docker`, `--target cloudflare|deno|vercel|netlify|node`,
-`--client ts`) · `wisp add pkg[@ver]` · `wisp remove pkg` · `wisp lsp` (language
+(`--static`, `--docker`, `--target cloudflare|deno|vercel|netlify|node|bun|lambda|native`,
+`--client ts`; in a host's CI it picks that host) · `wisp deploy init <host>`
+(GitHub Actions) · `wisp add pkg[@ver]` · `wisp remove pkg` · `wisp lsp` (language
 server; VS Code: editors/vscode) · `wisp update-docs` (this file, after
 upgrading Wisp) · `wisp mcp` (tools for AI agents: `wisp_docs(topic)`,
 `wisp_check`, `wisp_routes`, `wisp_components`, `wisp_new_route(path, kind)`;
@@ -3061,10 +3063,28 @@ takes.
 | A container host (Fly.io, Railway, Render, Cloud Run, Azure Container Apps) | `wisp build --docker` |
 | A static host (GitHub Pages, GitLab Pages, S3) | `wisp build --static` |
 | An edge or serverless host (Cloudflare, Deno Deploy, Vercel, Netlify, Amplify, Firebase, Azure Static Web Apps) | `wisp build --target <host>` |
-| AWS Lambda | the `tower` feature, see [embed.md](embed.md) |
+| AWS Lambda | `wisp build --target lambda` |
+| Bun | `wisp build --target bun` |
 
 Every host needs `WISP_SECRET` (32 or more random characters) if the app
 signs cookies.
+
+## In a host's CI
+
+A plain `wisp build` inside a host's build picks that host's target from the
+variables it sets, and says so: `WORKERS_CI` or `CF_PAGES` (cloudflare),
+`VERCEL`, `NETLIFY`, `DENO_DEPLOYMENT_ID` (deno), `AWS_APP_ID` (Amplify:
+node). On Vercel it writes `.vercel/output` in the app's folder, where
+Vercel looks. `wisp build --target native` builds the plain binary anyway.
+
+## GitHub Actions
+
+```sh
+wisp deploy init cloudflare      # or deno, vercel, netlify, lambda, fly, pages
+```
+
+Writes `.github/workflows/deploy.yml`, which builds and deploys on every push
+to `main`. Its first line names the secrets to set; `--force` replaces it.
 
 ## One binary
 
@@ -3138,6 +3158,7 @@ and no other tool to install.
 | `vercel` | Vercel | `npx vercel deploy --prebuilt` |
 | `netlify` | Netlify | `npx netlify deploy --prod` |
 | `node` | Amplify, Firebase, Azure, Stormkit, Zeabur, any Node host | `npm start` runs it |
+| `bun` | Bun (with `Bun.serve`) | `bun server.mjs` runs it |
 
 `--out <folder>` changes where it goes.
 
@@ -3188,8 +3209,25 @@ variables.
 **Stormkit and Zeabur.** `wisp build --target node`. Deploy the folder as a
 Node.js service with start command `npm start`. Notes are in `hosts/`.
 
-**AWS Lambda.** Use the `tower` feature with `lambda_http`, as in
-[embed.md](embed.md). Or run the Docker image with the Lambda Web Adapter.
+**AWS Lambda.** `rustup target add x86_64-unknown-linux-musl` once, then
+`wisp build --target lambda` writes `dist/lambda/bootstrap.zip`: the app's
+own binary, static and linked by Rust's lld, so no C toolchain is needed on
+any machine. Create the function once with runtime `provided.al2023`,
+architecture `x86_64` and handler `bootstrap`, and add a Function URL (or an
+API Gateway or ALB in front):
+
+```sh
+aws lambda create-function --function-name my-app --runtime provided.al2023 \
+  --architectures x86_64 --handler bootstrap --role <role-arn> \
+  --zip-file fileb://dist/lambda/bootstrap.zip
+aws lambda update-function-code --function-name my-app --zip-file fileb://dist/lambda/bootstrap.zip
+```
+
+Any Wisp binary answers Lambda's runtime API when `AWS_LAMBDA_RUNTIME_API` is
+set; no app code. Everything the binary does works, but WebSockets and
+streaming (a stream is sent whole). Saved tables go in `/tmp`, per instance:
+use `wisp::store` for data that must last. The `tower` feature with
+`lambda_http` ([embed.md](embed.md)) still works for an app of your own.
 
 **Cloud Run.** `wisp build --docker`, then `gcloud run deploy --source .`.
 
@@ -3207,10 +3245,21 @@ differ.
   alive (`waitUntil`) until the timers and fetches it started are done. Deno
   and Node hosts keep running anyway. Vercel may freeze the function once the
   response ends, so finish the work before answering there.
-- **Tables are in memory, per instance.** `#[derive(Rest)]` types and
-  `Table::saved` have no files there, and an instance may serve one request
-  or many: keep data that must last in D1, KV or a database over HTTP
-  (`wisp::edge::fetch`), in handlers of your own.
+- **Saved tables need `WISP_STORE`.** Without it, `#[derive(Rest)]` types
+  and `Table::saved` are in memory, per instance. With it, they live in:
+
+  | `WISP_STORE` | Store |
+  |---|---|
+  | `d1:DB` | Cloudflare D1, the binding `DB` (`[[d1_databases]]` in wrangler.toml) |
+  | `deno-kv` | Deno KV (`deno-kv:<path>` for a file or a URL) |
+  | `libsql://name.turso.io` | Turso or any libSQL server over HTTP, with `WISP_STORE_TOKEN`; any host |
+
+  No app code. Each instance reads every row when it starts, so this is
+  for tables that fit in memory, as on the binary. A request's changes are
+  written in one batch before it is answered; a batch that fails answers
+  500 and the next request gets a fresh instance, read from the store.
+  Rows are in one SQL table, `wisp_rows (tbl, id, json)`, or under
+  `["wisp", table, id]` in Deno KV.
 - **Set `WISP_SECRET` as a host secret.** Read anything else with
   `wisp::env("KEY")`; `std::env::var` sees nothing on the edge.
 - **Streaming** (`Response::stream`, `Response::events`) is sent live on
@@ -3405,7 +3454,8 @@ hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new(
 
 ### Wisp on AWS Lambda
 
-`lambda_http` takes a tower service:
+`wisp build --target lambda` needs no code (see deploy.md). For a `main` of
+your own, `lambda_http` takes a tower service:
 
 ```rust
 wisp::app!();

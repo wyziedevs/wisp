@@ -231,7 +231,8 @@ a line. ETag on GET (304), `if-match` on writes (412); POST an array = bulk.
 `user` field is filtered and set from the route. A handler the file writes
 replaces that one. Rows live in `WISP_DATA` log files (`.wisp/data` in dev);
 `wisp::store(MyDb)` in `init` puts them in any DB (`impl wisp::Store`:
-`load(table)`, `save(table, id, json)`). Edge: in memory. Handlers by hand:
+`load(table)`, `save(table, id, json)`). Edge: in memory, or env
+`WISP_STORE=d1:DB|deno-kv|libsql://…` (+`WISP_STORE_TOKEN`). Handlers by hand:
 
 ```rust
 fn list() -> Vec<Note> { db::all() }                  // GET /api/notes
@@ -374,8 +375,9 @@ takes the no-wait fast path off every route.
 
 `wisp new app` · `wisp dev` (hot reload) · `wisp check` · `wisp fmt [paths]`
 (`--check`; markup, `---` via rustfmt, scripts, styles) · `wisp build`
-(`--static`, `--docker`, `--target cloudflare|deno|vercel|netlify|node`,
-`--client ts`) · `wisp add pkg[@ver]` · `wisp remove pkg` · `wisp lsp` (language
+(`--static`, `--docker`, `--target cloudflare|deno|vercel|netlify|node|bun|lambda|native`,
+`--client ts`; in a host's CI it picks that host) · `wisp deploy init <host>`
+(GitHub Actions) · `wisp add pkg[@ver]` · `wisp remove pkg` · `wisp lsp` (language
 server; VS Code: editors/vscode) · `wisp update-docs` (this file, after
 upgrading Wisp) · `wisp mcp` (tools for AI agents: `wisp_docs(topic)`,
 `wisp_check`, `wisp_routes`, `wisp_components`, `wisp_new_route(path, kind)`;
