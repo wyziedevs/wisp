@@ -2036,9 +2036,11 @@ content-security-policy: default-src 'self'; script-src 'self' 'sha256-…';
 
 ## v0 non-goals
 
-ORM, auth, background jobs, HTTP/2 in process, Windows services.
-Each is either a library users pick or a later version. A job runner can be
-started from `init` with `wisp::spawn`.
+No homegrown auth, ORM or job system, now or later: Wisp gives the tools
+(cookies, sessions, the `Store` trait, hooks, `wisp::spawn` from `init`)
+and the app builds on them. Integrations wire in existing, maintained
+crates (`wisp add sqlite`, `wisp add postgres` scaffold the glue). Also out:
+HTTP/2 in process, Windows services.
 
 ## Milestones
 
