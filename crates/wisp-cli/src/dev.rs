@@ -134,12 +134,15 @@ pub fn run(root: &Path, port: u16) -> Result<(), String> {
         }
         if !rebuild_needed && !templates.is_empty() {
             match hot_swap(&app, &templates) {
-                Swap::Done => {
+                Swap::Done(warnings) => {
                     events.send("reload", "");
                     term::changed(
                         &templates.join(", "),
                         &format!("swapped in {}ms", started.elapsed().as_millis()),
                     );
+                    for w in &warnings {
+                        term::warn(w);
+                    }
                 }
                 Swap::Invalid(e) => {
                     term::changed(&templates.join(", "), "");
@@ -174,7 +177,7 @@ fn rebuild(app: &mut Server, events: &Events, root: &Path, first: bool) {
     let started = Instant::now();
     events.send("building", "");
     // Route and template errors are found in milliseconds without cargo.
-    if let Err(e) = wisp_build::check(root) {
+    if let Err(e) = crate::check(root) {
         term::failed(&e);
         show_error(
             events,
@@ -258,7 +261,8 @@ fn summary(first: Option<(String, usize)>, count: usize) -> String {
 }
 
 enum Swap {
-    Done,
+    /// Swapped in; the accessibility warnings of what changed.
+    Done(Vec<String>),
     /// The template does not parse; show the error, keep the running app.
     Invalid(String),
     /// New shape or unknown template: only a compile can apply it.
@@ -269,8 +273,9 @@ fn hot_swap(app: &Server, templates: &[&str]) -> Swap {
     let Some(addr) = app.addr else {
         return Swap::NeedsRebuild;
     };
+    let mut all = Vec::new();
     for rel in templates {
-        let (chunks, shape) = match wisp_build::hot_chunks(&app.root, rel) {
+        let (chunks, shape, warnings) = match wisp_build::hot_chunks(&app.root, rel) {
             Ok(x) => x,
             Err(e) => return Swap::Invalid(e),
         };
@@ -280,11 +285,11 @@ fn hot_swap(app: &Server, templates: &[&str]) -> Swap {
             body.extend_from_slice(c.as_bytes());
         }
         match request(addr, "POST", "/_wisp/dev/swap", &body) {
-            Some(200) => {}
+            Some(200) => all.extend(warnings),
             _ => return Swap::NeedsRebuild,
         }
     }
-    Swap::Done
+    Swap::Done(all)
 }
 
 /// The app process. Runs from a copy of the executable so `cargo build` can

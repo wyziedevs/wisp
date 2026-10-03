@@ -493,9 +493,10 @@ fn with_lets(stmts: Option<String>, lets: &[(String, u32)]) -> Option<String> {
     Some(lines.join("\n"))
 }
 
-/// The generated Rust, and the scoped CSS of its templates.
-pub fn generate(input: &Input) -> Result<(String, String), String> {
-    generate_web(input).map(|o| (o.code, o.styles))
+/// The generated Rust, the scoped CSS of its templates and their
+/// accessibility warnings.
+pub fn generate(input: &Input) -> Result<Output, String> {
+    generate_web(input)
 }
 
 /// The generated Rust, and the TypeScript client of the app's endpoints
@@ -505,17 +506,21 @@ pub fn generate_all(input: &Input) -> Result<(String, String), String> {
     generate_web(input).map(|o| (o.code, o.client))
 }
 
-/// [`generate`] for `wisp check`, and what the app's browser code imports
-/// of its npm packages, as esm.sh paths (for `wisp build` to download).
-pub fn check(input: &Input) -> Result<Vec<String>, String> {
-    Ok(generate_web(input)?.web.imports(npm::ESM))
+/// [`generate`] for `wisp check`: what the app's browser code imports of
+/// its npm packages, as esm.sh paths (for `wisp build` to download), and
+/// the templates' accessibility warnings.
+pub fn check(input: &Input) -> Result<(Vec<String>, Vec<String>), String> {
+    let o = generate_web(input)?;
+    Ok((o.web.imports(npm::ESM), o.warnings))
 }
 
-struct Output {
-    code: String,
+pub struct Output {
+    pub code: String,
     client: String,
     web: Web,
-    styles: String,
+    pub styles: String,
+    /// `file:line: what (a11y-name)`, in file order.
+    pub warnings: Vec<String>,
 }
 
 fn generate_web(input: &Input) -> Result<Output, String> {
@@ -529,11 +534,22 @@ fn generate_web(input: &Input) -> Result<Output, String> {
     g.servers(&p);
     let assets = g.assets(&p)?;
     let client = g.app(&p, &web, &assets)?;
+    let mut warnings: Vec<(&str, u32, String)> = (p.templates.iter())
+        .flat_map(|t| {
+            t.t.lints
+                .iter()
+                .map(|l| (t.rel.as_str(), l.line, crate::lint_line(l)))
+        })
+        .collect();
+    warnings.sort();
     Ok(Output {
         code: g.out,
         client,
         web,
         styles: p.styles(),
+        warnings: (warnings.into_iter())
+            .map(|(rel, line, w)| format!("{rel}:{line}: {w}"))
+            .collect(),
     })
 }
 
@@ -6113,7 +6129,7 @@ mod tests {
     /// `app`, as a release build or a dev one.
     fn build(name: &str, files: &[(&str, &str)], release: bool) -> Result<String, String> {
         in_dir(name, files, |root| {
-            generate(&Input { root, release }).map(|(code, _)| code)
+            generate(&Input { root, release }).map(|o| o.code)
         })
     }
 

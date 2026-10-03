@@ -83,7 +83,7 @@ pub fn build(root: &Path, host: &str, out: &Path) -> Result<(), String> {
             "The {host} build needs Rust's {target} target.\nInstall it with rustup target add {target}, then run this again."
         ));
     }
-    let imports = wisp_build::check(root)?;
+    let imports = crate::check(root)?;
     css::build(root)?;
     npm::vendor(root, &imports)?;
     let started = Instant::now();

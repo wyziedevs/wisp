@@ -10,8 +10,8 @@
   <tbody id="tbody">
     {:#each rows as row (row.id)}
       <tr class:danger="selected === row.id">
-        <td>{:row.id}</td>
-        <td><a class="lbl" on:click="selected = row.id">{:row.label}</a></td>
+        <td>{:row.id}</td><!-- wisp-ignore a11y-anchor-href -->
+        <td><a class="lbl" on:click="selected = row.id">{:row.label}</a></td><!-- wisp-ignore a11y-anchor-href -->
         <td><a class="rm" on:click="rows.splice(rows.indexOf(row), 1)">x</a></td>
       </tr>
     {:/each}

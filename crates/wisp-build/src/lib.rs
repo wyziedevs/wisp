@@ -2,6 +2,7 @@
 //! `src/routes`, compiles every `.wisp` template and writes
 //! `$OUT_DIR/wisp.rs` for `wisp::app!()` to include.
 
+mod a11y;
 mod codegen;
 pub mod fmt;
 mod fold;
@@ -62,12 +63,18 @@ pub fn run() {
         root: &root,
         release,
     }) {
-        Ok((code, styles)) => {
-            write_if_changed(&out_dir.join("wisp.rs"), &code);
+        Ok(out) => {
+            write_if_changed(&out_dir.join("wisp.rs"), &out.code);
             // A dev build serves the scoped CSS from here, which `wisp dev`
             // rewrites when a template changes (see `write_styles`).
-            if !release && let Err(e) = save_styles(&root, &styles) {
+            if !release && let Err(e) = save_styles(&root, &out.styles) {
                 println!("cargo::warning={e}");
+            }
+            // The CLI checks first and says them itself.
+            if env::var_os("WISP_CLI").is_none() {
+                for w in &out.warnings {
+                    println!("cargo::warning={w}");
+                }
             }
         }
         Err(e) => {
@@ -119,13 +126,14 @@ pub(crate) fn json_str(s: &str) -> String {
 }
 
 /// For `wisp dev`: the static chunks and shape of the template at `rel`
-/// (relative to the project root, `/`-separated). A running dev build can
-/// take new chunks without recompiling as long as the shape is unchanged.
-pub fn hot_chunks(root: &Path, rel: &str) -> Result<(Vec<String>, u64), String> {
+/// (relative to the project root, `/`-separated), and its accessibility
+/// warnings (as [`check`] gives them). A running dev build can take new
+/// chunks without recompiling as long as the shape is unchanged.
+pub fn hot_chunks(root: &Path, rel: &str) -> Result<(Vec<String>, u64, Vec<String>), String> {
     let src = read_source(&root.join(rel)).map_err(|e| format!("{rel}: {e}"))?;
     if rel == "src/app.html" {
         let parts = shell::split(&src).map_err(|e| format!("{rel}: {e}"))?;
-        return Ok((parts.to_vec(), shell::SHAPE));
+        return Ok((parts.to_vec(), shell::SHAPE, Vec::new()));
     }
     let (rust, markup) = split_front(&src).map_err(|e| format!("{rel}:{e}"))?;
     // A page's forms' fields get their attributes, as in the build: from
@@ -148,7 +156,15 @@ pub fn hot_chunks(root: &Path, rel: &str) -> Result<(Vec<String>, u64), String> 
         |i| rules::fields(&i, &params, &shared_types(root)),
     );
     let (t, _) = parse_markup(&markup, rust, &fields, rel).map_err(|e| format!("{rel}:{e}"))?;
-    Ok((t.chunks, t.shape))
+    let warnings = (t.lints.iter())
+        .map(|l| format!("{rel}:{}: {}", l.line, lint_line(l)))
+        .collect();
+    Ok((t.chunks, t.shape, warnings))
+}
+
+/// A lint as the CLI and the build print it, after its `file:line: `.
+pub(crate) fn lint_line(l: &a11y::Lint) -> String {
+    format!("{} (a11y-{})", l.msg, l.name)
 }
 
 /// A `.wisp` file parsed: its template, and the Rust of its `---` block if
@@ -318,8 +334,9 @@ pub(crate) fn split_front(src: &str) -> Result<(Option<String>, String), String>
 
 /// Checks the whole project the way `run` does, without writing anything.
 /// Returns the esm.sh paths of the npm modules the app's browser code
-/// imports, which `wisp build` downloads into `.wisp/npm` for a release.
-pub fn check(root: &Path) -> Result<Vec<String>, String> {
+/// imports, which `wisp build` downloads into `.wisp/npm` for a release,
+/// and the templates' accessibility warnings (`file:line: what`).
+pub fn check(root: &Path) -> Result<(Vec<String>, Vec<String>), String> {
     codegen::check(&codegen::Input {
         root,
         release: false,

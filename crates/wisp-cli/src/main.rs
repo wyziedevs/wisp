@@ -152,7 +152,7 @@ fn main() -> ExitCode {
         Some("check") => no_options("check", &args[1..])
             .and_then(|()| project())
             .and_then(|root| {
-                wisp_build::check(root)?;
+                check(root)?;
                 term::done("Routes and templates are valid.");
                 fmt::warn_unformatted(root);
                 Ok(())
@@ -308,6 +308,15 @@ fn no_options(command: &str, args: &[String]) -> Result<(), String> {
     }
 }
 
+/// `wisp_build::check`, its warnings said: the npm modules imported.
+fn check(root: &Path) -> Result<Vec<String>, String> {
+    let (imports, warnings) = wisp_build::check(root)?;
+    for w in &warnings {
+        term::warn(w);
+    }
+    Ok(imports)
+}
+
 /// `dir` and the folders above it, made if missing.
 fn make_dir(dir: &Path) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("Could not create {}: {e}.", dir.display()))
@@ -369,7 +378,7 @@ fn build(root: &Path, o: &BuildOptions) -> Result<(), String> {
             return targets::build(root, host, &out);
         }
     }
-    let imports = wisp_build::check(root)?;
+    let imports = check(root)?;
     css::build(root)?;
     npm::vendor(root, &imports)?;
     if o.docker {

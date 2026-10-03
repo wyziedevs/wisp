@@ -2,7 +2,7 @@
 <p id="double">{:double}</p>
 <p id="done">{:done} of {:todos.length} done</p>
 <ul id="todos">
-  {:#each todos as todo (todo.id)}
+  {:#each todos as todo (todo.id)}<!-- wisp-ignore a11y-click-events -->
     <li class:done="todo.done" on:click="todo.done = !todo.done">{:todo.text}</li>
   {:/each}
 </ul>

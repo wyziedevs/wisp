@@ -505,6 +505,30 @@ Components can also be drawn by the browser (inside client blocks, or with
   browser swaps in like any CSS change, no compile.
 - Cost: the class's bytes on each element, nothing at run time.
 
+### Accessibility warnings
+
+The parser lints each template as it reads it. `wisp check`, `wisp dev`
+(on each build and template swap) and `wisp build` print them as
+warnings (`! src/routes/+page.wisp:4: <img> has no alt: … (a11y-img-alt)`);
+a plain `cargo build` prints them as `cargo::warning`s. They never stop a
+build.
+
+| Name | Warns about |
+|---|---|
+| `img-alt` | `<img>` without `alt` (`alt=""` is fine: decorative) |
+| `click-events` | `on:click` on an element that is not interactive, without both a `role` and a key handler (`on:keydown`) |
+| `label-control` | `<label>` with no `for` and no control inside |
+| `anchor-href` | `<a>` without `href`, or `href="#"` |
+| `autofocus` | `autofocus` |
+| `heading-order` | a heading more than one level below the one before it in the file |
+| `button-name` | `<button>` with no text, `aria-label`, `aria-labelledby` or `title` |
+| `tabindex` | `tabindex` above 0 |
+| `aria-attr` | an `aria-*` name that ARIA does not have |
+
+`<!-- wisp-ignore a11y-img-alt -->` on the line before an element silences
+that lint there (several names may follow). A value set by an expression
+(`alt={x}`, `:alt="x"`, `{...attrs}`) counts as set. The examples have none.
+
 ### Snippets
 
 A snippet is markup a file renders more than once, or gives to a component:

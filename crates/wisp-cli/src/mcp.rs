@@ -99,7 +99,8 @@ fn call(name: &str, args: &Json) -> Result<String, String> {
     match name {
         "wisp_docs" => Ok(docs(args.str("topic").unwrap_or(""))),
         "wisp_check" => Ok(match wisp_build::check(app()?) {
-            Ok(_) => r#"{"ok":true}"#.into(),
+            Ok((_, w)) if w.is_empty() => r#"{"ok":true}"#.into(),
+            Ok((_, w)) => format!(r#"{{"ok":true,"warnings":{}}}"#, strs(&w)),
             Err(e) => {
                 let (file, line, col, message) = located(&e);
                 let num = |n: Option<u32>| n.map_or(Json::Null, |n| Json::Num(n.to_string()));

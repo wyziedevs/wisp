@@ -121,25 +121,25 @@ fn hot_reload_takes_new_chunks_of_the_same_shape() {
         ),
         ("src/routes/bad/+page.wisp", "\n<p>{#if x}</p>"),
     ]);
-    let (chunks, shape) = hot_chunks(p.root(), "src/routes/+page.wisp").unwrap();
+    let (chunks, shape, _) = hot_chunks(p.root(), "src/routes/+page.wisp").unwrap();
     assert_eq!(chunks.concat(), "<h1>Hello </h1>");
     fs::write(
         p.root().join("src/routes/+page.wisp"),
         "<h2>Bye {name}</h2>\r\n",
     )
     .unwrap();
-    let (chunks2, shape2) = hot_chunks(p.root(), "src/routes/+page.wisp").unwrap();
+    let (chunks2, shape2, _) = hot_chunks(p.root(), "src/routes/+page.wisp").unwrap();
     assert_eq!(shape, shape2);
     assert_eq!(chunks2.concat(), "<h2>Bye </h2>");
 
-    let (c, _) = hot_chunks(p.root(), "src/components/Card.wisp").unwrap();
+    let (c, _, _) = hot_chunks(p.root(), "src/components/Card.wisp").unwrap();
     assert_eq!(c.concat(), "<b></b>");
 
     // The shell: text, head, text, body, text. Its shape is fixed.
-    let (parts, shape) = hot_chunks(p.root(), "src/app.html").unwrap();
+    let (parts, shape, _) = hot_chunks(p.root(), "src/app.html").unwrap();
     assert_eq!(parts, ["<html>", "<body>", "</body></html>"]);
     fs::write(p.root().join("src/app.html"), "<x>%wisp.head%%wisp.body%").unwrap();
-    let (parts, again) = hot_chunks(p.root(), "src/app.html").unwrap();
+    let (parts, again, _) = hot_chunks(p.root(), "src/app.html").unwrap();
     assert_eq!((parts.len(), shape), (3, again));
 
     // Errors name the file, and a template's carry `line:col`.
@@ -693,7 +693,7 @@ fn a_package_import_needs_the_package() {
     );
     let p = Project::new(&[page, lib, json]);
     assert_eq!(
-        wisp_build::check(p.root()).unwrap(),
+        wisp_build::check(p.root()).unwrap().0,
         [
             "/canvas-confetti@1.9.3/x?target=es2022",
             "/canvas-confetti@1.9.3?target=es2022"
