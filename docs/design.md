@@ -77,7 +77,7 @@ crates/wisp-build  compiler: route scan, .wisp parser, codegen (used from build.
 crates/wisp-shared what runtime, compiler and browser agree on: contexts.rs, protocol.rs, client/*.js
 crates/wisp-macros #[action], #[derive(Cookie)], #[derive(Json)] and #[derive(FromJson)] (proc macros; no deps but wisp-build, for `#[validate]`'s rules)
 crates/wisp-cli    `wisp new | dev | build | check | lsp | mcp | update-docs`; deploy targets
-editors/vscode     VS Code extension: .wisp grammar, starts `wisp lsp`
+editors/           VS Code and Zed extensions, tree-sitter grammar, Prettier plugin; README per editor
 examples/demo      the demo app, which is also `wisp new`'s demo template
 examples/api       a JSON API, which is also `wisp new --api`
 tests/app          an app that uses every feature, and the tests that run it
@@ -1207,11 +1207,15 @@ expression or `.rs` edit rebuilds and restarts in 0.3 s.
 and fails; `wisp check` warns of them): the element tree and template blocks
 two spaces a level, attribute values double-quoted, a start tag that begins
 its line on one line or, past 100 columns, an attribute a line; the `---`
-block through `rustfmt --edition 2021` inside a wrapper fn; `<script>`
+block through rustfmt inside a wrapper fn, with the edition of the nearest
+`Cargo.toml` (the workspace's when inherited; 2024 without one), as
+`cargo fmt` would; `<script>`
 re-indented only; `<style>` a declaration a line when it has no strings,
 comments or `url(`. Text, holes, `<pre>` and `<textarea>` are never touched.
 Markup that does not balance, or that would not parse to the same template,
 is left as written; formatting twice equals formatting once.
+`wisp fmt --stdin [path]` formats stdin to stdout (`path` for the edition),
+for editors and `editors/prettier-plugin-wisp`.
 
 ### Editors
 
@@ -1232,10 +1236,19 @@ the nearest folder above it with `Cargo.toml` and `build.rs`.
   literal `href="/x"` → the route's `+page.wisp` (or `+page.rs`, `+server.rs`).
 - Completion: components (with their required props), props, directives,
   `on:` events and modifiers, `{#…}` / `{:#…}` blocks, route paths in `href`.
+- Formatting: `fmt.rs` on the buffer, answered as one edit of the whole
+  text (none when it is formatted).
 
 `editors/vscode` is a small extension: a TextMate grammar (HTML; Rust in the
 block and `{…}`; JavaScript in `<script>`, directive values and `{:…}`; CSS in
-`<style>`) and a client (`vscode-languageclient`) that starts `wisp lsp`.
+`<style>`), snippets, format on save, **Wisp: Restart server**, and a client
+(`vscode-languageclient`) that starts `wisp lsp`.
+
+`editors/tree-sitter-wisp` is a tree-sitter grammar with the same embedding
+through injections, no external scanner: flat tags (markup that does not
+balance still parses), nested template blocks, code left whole. Neovim,
+Helix and Zed (`editors/zed`) use it; `editors/README.md` has each editor's
+setup, JetBrains, Sublime and Emacs included.
 
 Follow-up: cheap Rust checks inside the `---` block (rust-analyzer covers
 `.rs` files only).

@@ -384,11 +384,11 @@ takes the no-wait fast path off every route.
 ## Commands
 
 `wisp new app` · `wisp dev` (hot reload) · `wisp check` · `wisp fmt [paths]`
-(`--check`; markup, `---` via rustfmt, scripts, styles) · `wisp build`
+(`--check`, `--stdin`; markup, `---` via rustfmt, scripts, styles) · `wisp build`
 (`--static`, `--docker`, `--target cloudflare|deno|vercel|netlify|node|bun|lambda|native`,
 `--client ts`; in a host's CI it picks that host) · `wisp deploy init <host>`
 (GitHub Actions) · `wisp add pkg[@ver]` · `wisp remove pkg` · `wisp lsp` (language
-server; VS Code: editors/vscode) · `wisp update-docs` (this file, after
+server; setup per editor: editors/README.md) · `wisp update-docs` (this file, after
 upgrading Wisp) · `wisp mcp` (tools for AI agents: `wisp_docs(topic)`,
 `wisp_check`, `wisp_routes`, `wisp_components`, `wisp_new_route(path, kind)`;
 Claude Code: `claude mcp add wisp -- wisp mcp`). More: `wisp_docs`, or
