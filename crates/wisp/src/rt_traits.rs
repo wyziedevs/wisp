@@ -89,6 +89,27 @@ impl FromInput<Upload> for Option<Image> {
     }
 }
 
+/// `name: Upload`: the file sent in the form's field `name`, kept as a blob
+/// (any kind; none chosen is a 422 by the field).
+impl FromInput<Upload> for crate::Upload {
+    fn get(cx: &Cx, name: &str) -> Result<crate::Upload> {
+        match cx.form().file(name) {
+            Some(file) => crate::Upload::field(&file, "", name),
+            None => Err(crate::Error::invalid(name, "choose a file")),
+        }
+    }
+}
+
+/// `name: Option<Upload>`: `None` when no file was chosen.
+impl FromInput<Upload> for Option<crate::Upload> {
+    fn get(cx: &Cx, name: &str) -> Result<Option<crate::Upload>> {
+        match cx.form().file(name) {
+            Some(file) => crate::Upload::field(&file, "", name).map(Some),
+            None => Ok(None),
+        }
+    }
+}
+
 /// What `#[validate(max_size = …)]` measures: an upload.
 #[diagnostic::on_unimplemented(message = "`max_size` is for an `Image` parameter, not a `{Self}`")]
 pub trait Size {
@@ -98,6 +119,12 @@ pub trait Size {
 impl Size for Image {
     fn size(&self) -> usize {
         self.len()
+    }
+}
+
+impl Size for crate::Upload {
+    fn size(&self) -> usize {
+        self.size
     }
 }
 

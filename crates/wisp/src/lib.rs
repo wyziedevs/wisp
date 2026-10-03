@@ -150,8 +150,8 @@ pub mod prelude {
     pub use crate::TrailingSlash::{Always, Ignore, Never};
     pub use crate::{
         Cookie, CookieOptions, Cx, Email, Error, FromJson, Image, Json, KB, MB, Method, OrStatus,
-        Response, Rest, Result, Row, SameSite, Shared, Table, Value, action, error, invalid, model,
-        redirect, remote,
+        Response, Rest, Result, Row, SameSite, Shared, Table, Upload, Value, action, error, invalid,
+        model, redirect, remote,
     };
 }
 

@@ -64,3 +64,15 @@ fn a_route_limits_and_times_itself() {
     // `const TIMEOUT: u32 = 1;`.
     assert_eq!(app.get("/t/stuck").status, 503);
 }
+
+#[test]
+fn an_upload_param_keeps_any_file() {
+    let mut app = client::<Site>();
+    let page = app.get("/t/docs").text().to_string();
+    assert!(page.contains("enctype=\"multipart/form-data\""), "{page}");
+    assert!(page.contains("<input name=\"doc\" type=\"file\" required>"), "{page}");
+    let r = app.upload("/t/docs?/add", "doc", "application/pdf", b"%PDF-1 hi");
+    assert_eq!(r.status, 303, "{}", r.text());
+    let none = app.post_form("/t/docs?/add", &[]);
+    assert_eq!(none.status, 422);
+}
