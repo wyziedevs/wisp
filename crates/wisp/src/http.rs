@@ -755,8 +755,14 @@ fn started(addr: SocketAddr) {
     start_clock();
     dev::exit_with_parent();
     // `wisp dev` waits for this exact line to know the app is ready.
+    let line = format!(
+        "wisp: listening on http://{addr}
+"
+    );
     let mut stdout = io::stdout().lock();
-    let _ = writeln!(stdout, "wisp: listening on http://{addr}").and_then(|()| stdout.flush());
+    let _ = stdout
+        .write_all(line.as_bytes())
+        .and_then(|()| stdout.flush());
 }
 
 /// What every host needs before the first request, whether or not it runs
@@ -806,7 +812,14 @@ pub(crate) fn log(line: std::fmt::Arguments) {
     #[cfg(target_arch = "wasm32")]
     crate::edge::log(&line.to_string());
     #[cfg(not(target_arch = "wasm32"))]
-    let _ = writeln!(io::stderr().lock(), "{line}");
+    // One `write_all`, so a line is never split or interleaved with another.
+    let _ = io::stderr().lock().write_all(
+        format!(
+            "{line}
+"
+        )
+        .as_bytes(),
+    );
 }
 
 /// A client that gave up before we accepted is routine. Anything else (out

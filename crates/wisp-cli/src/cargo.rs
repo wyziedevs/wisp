@@ -21,6 +21,39 @@ pub struct Build {
     pub first: Option<(String, usize)>,
 }
 
+/// The version of the `wisp` crate the app is locked to, from its Cargo.lock.
+fn locked_wisp(lock: &str) -> Option<&str> {
+    let (_, rest) = lock.split_once(
+        "name = \"wisp\"
+",
+    )?;
+    rest.lines()
+        .next()?
+        .strip_prefix("version = \"")?
+        .strip_suffix('"')
+}
+
+fn triple(v: &str) -> Option<[u32; 3]> {
+    let mut it = v.split(['.', '-', '+']).map(|n| n.parse().ok());
+    Some([it.next()??, it.next()??, it.next()??])
+}
+
+/// Warns, once, when this CLI is older than the `wisp` the app is locked to:
+/// its templates and checks may not know that wisp. Never fails the command.
+pub fn warn_if_stale(root: &Path) {
+    let Ok(lock) = std::fs::read_to_string(root.join("Cargo.lock")) else {
+        return;
+    };
+    let ours = env!("CARGO_PKG_VERSION");
+    if let Some(app) = locked_wisp(&lock)
+        && triple(app) > triple(ours)
+    {
+        term::warn(&format!(
+            "This CLI is older than the app's wisp ({ours} vs {app}); run cargo install --path crates/wisp-cli"
+        ));
+    }
+}
+
 /// `quiet` leaves out cargo's own progress lines, for rebuilds whose
 /// outcome `wisp dev` reports itself.
 pub fn build(root: &Path, release: bool, quiet: bool) -> Build {
@@ -418,6 +451,25 @@ pub fn strip_ansi(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_cli() {
+        let lock = "[[package]]
+name = \"wisp\"
+version = \"0.2.1\"
+";
+        assert_eq!(locked_wisp(lock), Some("0.2.1"));
+        assert!(triple("0.2.1") > triple("0.1.0"));
+        assert!(triple("0.10.0") > triple("0.9.9"));
+        assert_eq!(
+            locked_wisp(
+                "name = \"wisp-build\"
+version = \"9.0.0\"
+"
+            ),
+            None
+        );
+    }
 
     #[test]
     fn reads_cargo_json() {
