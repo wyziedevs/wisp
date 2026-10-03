@@ -700,6 +700,15 @@ build.
 that lint there (several names may follow). A value set by an expression
 (`alt={x}`, `:alt="x"`, `{...attrs}`) counts as set. The examples have none.
 
+The client API (`beforeNavigate`, `afterNavigate`, `onNavigate`,
+`preloadData`, `preloadCode`, `invalidate(key)`, `updated`) and the link
+attributes `data-wisp-noscroll`, `-keepfocus` and `-replacestate` are in
+wisp.js and live.js only: `wisp:navigate` is cancelable, `wisp:leave` collects
+what `onNavigate` waits for, `wisp:preload` reuses the hover prefetch, and
+`updated` is set when a fetched page names another `wisp.js?v=`. `depends`
+is in the browser's `+page.js` `load` (the server renders pages whole, so
+there is nothing for it to skip); nothing is added to a request.
+
 The rest of accessibility is CSS, the client script and the starters, with
 nothing added to a request: a navigation moves focus to the `<h1>` and says
 the title in an `aria-live` region; view transitions and `--change`

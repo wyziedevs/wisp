@@ -245,6 +245,11 @@ reject with `status`, `message`, `errors`. PWA: `src/manifest.json` (or
 Phones: `<body data-wisp-revalidate>` refetches on focus/online; `<form
 data-wisp-queue>` (safe to repeat) waits offline and is sent after; a
 navigation focuses the h1 and announces the title.
+Router API (`import {...} from 'wisp'`): `beforeNavigate(({cancel})=>)`,
+`afterNavigate`, `onNavigate` (may return a promise, then a function),
+`preloadData(url)`, `preloadCode(url)`, `invalidate(key)` (+page.js loads that
+`depends(key)`), `invalidateAll()`, `updated` store; links take
+`data-wisp-noscroll|keepfocus|replacestate`.
 Stores, islands, the rest: docs/client.md.
 
 ## Endpoints (`+server.rs`)

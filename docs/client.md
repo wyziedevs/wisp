@@ -742,11 +742,16 @@ reload. Layouts stay mounted, so their state survives.
 - `data-wisp-reload` on a link or its parent forces a full load. Links with
   `target`, `download`, `rel="external"`, and `/_app/` are left alone.
 
+- `data-wisp-noscroll`, `data-wisp-keepfocus` and `data-wisp-replacestate`
+  (on a link or around it) keep the scroll, keep the focus, and replace the
+  history entry. `goto(url, { noscroll, keepfocus, replace })` takes the same.
+
 Inside scripts:
 
 ```js
 goto('/login')                       // or goto(url, { replace: true })
 invalidate()                         // run this page's load again
+invalidate('cart')                   // only the +page.js loads that depends('cart')
 matches(item.name, q)                // text has q in it, whatever the case
 
 page.value.url.pathname              // page: { url, status, form, state }
@@ -755,6 +760,29 @@ navigating.value                     // { from, to } while loading, else null
 pushState('?tab=2', { tab: 2 })      // a history entry: no navigation
 replaceState('', { tab: 3 })         // this entry's state ('' keeps the URL)
 ```
+
+Hooks, from `'wisp'`; each returns a function that removes it, and one made
+while a script starts goes with that script:
+
+```js
+import { beforeNavigate, afterNavigate, onNavigate, preloadData, preloadCode,
+  invalidateAll, updated } from 'wisp'
+
+beforeNavigate(({ from, to, pop, cancel }) => unsaved && !pop && cancel())
+afterNavigate(({ from, to }) => track(to.pathname))   // each page shown
+onNavigate(({ to }) => document.startViewTransition?.(...))  // before the swap
+preloadData('/blog')                 // the page, ahead (what hovering does)
+preloadCode('/blog')                 // and the modules it names
+updated.value                        // true once a page names a newer wisp.js
+```
+
+`onNavigate`'s function runs once the page is fetched, before it is drawn;
+a promise it returns is waited for, and a function it resolves to runs after
+the page changed. `cancel()` stops a click or `goto`, not back and forward
+(the browser has gone there). In `+page.js`, `load` gets `depends(key)`, and
+a URL it `fetch`es counts too: `invalidate(key)` runs only those loads again,
+with no request for the page. Nothing depends on it, nothing happens. The
+server renders a page whole, so it has no part of its data to skip.
 
 Shallow routing, for tabs and modals: `pushState(url, state)` adds a
 history entry at `url` (`''`: this one) and loads nothing; `page.value.state`

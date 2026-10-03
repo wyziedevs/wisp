@@ -429,6 +429,9 @@ export const page = store({
   state: history.state?.p == location.href.split('#')[0] ? hs() : {},
 });
 export const navigating = store(null);
+// A newer wisp.js than this tab's is named by a page it fetched.
+export const updated = store(false);
+document.addEventListener('wisp:stale', () => (updated.value = true));
 
 // Shallow routing: a history entry with this state (`page.value.state`),
 // at `url` if given, and no navigation; back and forward bring it back
@@ -444,12 +447,37 @@ document.addEventListener('wisp:pop', popped);
 
 // Client navigation, done by wisp.js: to `url`, or the current page again.
 export function goto(url, opts = {}) {
-  return new Promise((done) => send('wisp:goto', { url: String(url), replace: !!opts.replace, done }));
+  return new Promise((done) => send('wisp:goto', { ...opts, url: String(url), done }));
 }
 
-export function invalidate() {
-  return new Promise((done) => send('wisp:refresh', { done }));
+// With no key: the page again, from the server. With one (or a URL a +page.js
+// `fetch`ed): only the +page.js loads that `depends(key)` run again.
+export function invalidate(dep) {
+  if (dep == null) return new Promise((done) => send('wisp:refresh', { done }));
+  const hit = live.filter((i) => i.s && i.ld?.[1].has(String(dep)));
+  return Promise.all(hit.map((i) => loadThen(i.def, i.ld[0], gen, (b, d) => (i.s(b), (i.ld = [i.ld[0], d])))));
 }
+export const invalidateAll = () => invalidate();
+
+// Hooks on navigation, ended with the script that made them (or by what
+// they return). `from` and `to` are URLs.
+const hook = (type, f) => {
+  const off = () => document.removeEventListener(type, f);
+  document.addEventListener(type, f);
+  current?.sc.stops.push(off);
+  return off;
+};
+const urls = (d) => ({ ...d, from: new URL(d.from), to: new URL(d.to) });
+// Before a client navigation: `cancel()` stops it (not a back or forward).
+export const beforeNavigate = (f) => hook('wisp:navigate', (e) => f({ ...urls(e.detail), cancel: () => e.preventDefault() }));
+// Before the page changes, once it is fetched: f may return a promise, which
+// is waited for, and a function, which runs after.
+export const onNavigate = (f) => hook('wisp:leave', (e) => e.detail.w.push((async () => f(urls(e.detail)))().catch(console.error)));
+// After each page shown, a form's morph too.
+export const afterNavigate = (f) => hook('wisp:update', () => f({ from: was, to: page.value.url }));
+// Fetches the page ahead (preloadCode: its modules too); resolves when it is in.
+export const preloadData = (url, code) => new Promise((done) => send('wisp:preload', { url: String(url), code, done }));
+export const preloadCode = (url) => preloadData(url, 1);
 
 // A live search's test: `items.filter((i) => matches(i.name, q))`. Whether
 // text has the query in it, whatever the case; an empty query matches all.
@@ -666,13 +694,14 @@ function begin(rec) {
     inst.parent = parent;
     live.push(inst);
     bindAll(inst, mine);
-    if (inst.s) loadThen(def, blob, my, (b) => inst.s(b));
+    if (inst.s) loadThen(def, blob, my, (b, d) => (inst.s(b), (inst.ld = [blob, d])));
     if (inst.snap) X.snap(inst);
   } else if (def.load) {
     // Its +page.js loads first: the page's elements wait unbound.
     waiting[I] = [];
-    loadThen(def, blob, my, (b) => {
+    loadThen(def, blob, my, (b, d) => {
       const late = create(def, id, b, mine[0], parent);
+      late.ld = [blob, d];
       late.I = I;
       live.push(late);
       bindAll(late, mine);
@@ -720,13 +749,17 @@ export function hydrate(I) {
 
 // Runs the module's +page.js `load` if it has one, then f with the values
 // it gives as `data`. A failing load shows the error page.
+// f also gets what the load depends on: keys it gave `depends`, and URLs it
+// `fetch`ed (invalidate).
 function loadThen(def, blob, my, f) {
   if (!def.load) return f(blob);
   const url = new URL(location.href);
   const { id, params } = route;
-  Promise.resolve()
-    .then(() => def.load({ data: blob.data, url, params, route: { id }, fetch }))
-    .then((data) => my === gen && f({ ...blob, data }), boundary);
+  const deps = new Set();
+  const get = (u, o) => (deps.add(String(u)), fetch(u, o));
+  return Promise.resolve()
+    .then(() => def.load({ data: blob.data, url, params, route: { id }, fetch: get, depends: (k) => deps.add(String(k)) }))
+    .then((data) => my === gen && f({ ...blob, data }, deps), boundary);
 }
 
 // An instance of a module: its script runs once, now.
@@ -1591,11 +1624,14 @@ function refill({ f, a }) {
 
 // ---- navigation -------------------------------------------------------------
 
+let was = page.value.url; // where the last navigation came from
 document.addEventListener('wisp:navigate', (e) => {
   erred = false;
-  navigating.value = { from: new URL(e.detail.from), to: new URL(e.detail.to, location.href) };
+  // After the hooks: one may cancel it.
+  queueMicrotask(() => e.defaultPrevented || (navigating.value = { from: new URL(e.detail.from), to: new URL(e.detail.to, location.href) }));
 });
 document.addEventListener('wisp:update', (e) => {
+  was = page.value.url;
   page.value = { ...page.value, url: new URL(location.href), status: e.detail?.status ?? 200, state: hs() };
   navigating.value = null;
   start();

@@ -12,7 +12,14 @@
 // <details> state and unsaved input elsewhere survive. Without this script
 // the same links and forms work as plain navigations and posts.
 //
-// Events on the document: `wisp:navigate` before a navigation, `wisp:update`
+// A link takes data-wisp-noscroll (stay where the page is),
+// data-wisp-keepfocus (focus stays) and data-wisp-replacestate (no history
+// entry), on it or around it.
+//
+// Events on the document: `wisp:navigate` before a navigation (cancelable),
+// `wisp:leave` before the page changes (`detail.w` collects promises it
+// waits for; live.js's onNavigate), `wisp:preload` (`{url, code, done}`),
+// `wisp:stale` when a page names a newer wisp.js, `wisp:update`
 // after each morph (live.js restarts browser code on it). Dispatching
 // `wisp:refresh` morphs in the current URL's page again (`wisp dev` does it
 // after every rebuild), `wisp:goto` navigates, `wisp:push` adds a history
@@ -24,6 +31,7 @@
   const headers = { 'x-wisp': '1' };
   const key = (u) => String(u).split('#')[0];
   let shown = key(location.href);
+  const me = document.currentScript?.src;
   const ran = new Set([...document.scripts].map((s) => s.src || s.text));
   // Head elements the server sent: a navigation swaps these, and leaves
   // alone what scripts added.
@@ -34,6 +42,8 @@
     const doc = answers(new DOMParser().parseFromString(html, 'text/html'));
     if (doc.title) document.title = doc.title;
     const next = [...doc.head.children];
+    const v = doc.querySelector('script[src*="wisp.js"]')?.src;
+    if (me && v && v != me) send('wisp:stale');
     served = served.filter((n) => {
       const i = next.findIndex((m) => m.isEqualNode(n));
       if (i < 0) n.remove();
@@ -226,9 +236,10 @@
     url = new URL(url, location.href);
     if (script(url)) return; // goto(text from a visitor) runs nothing
     if (url.origin !== location.origin) return location.assign(url);
+    // A pop is over: the browser has gone there, so it cannot be canceled.
+    if (!send('wisp:navigate', { from: location.href, to: url.href, pop: !!how.pop }) && !how.pop) return;
     const my = ++nav;
     if (!how.pop) history.replaceState({ ...history.state, x: scrollX, y: scrollY }, '');
-    send('wisp:navigate', { from: location.href, to: url.href });
     let res;
     try {
       const early = pre.get(key(url));
@@ -255,11 +266,11 @@
       const at = how.pop && history.state;
       if (at) scrollTo(at.x || 0, at.y || 0);
       else if (url.hash) document.getElementById(decodeURIComponent(url.hash.slice(1)))?.scrollIntoView();
-      else scrollTo(0, 0);
+      else if (!how.noscroll) scrollTo(0, 0);
       // Focus starts over, as on a page load, unless the page asks for it.
       const auto = document.querySelector('[autofocus]');
       if (auto) auto.focus();
-      else {
+      else if (!how.keepfocus) {
         // To the heading (else the main part), where a screen reader starts
         // reading, and the title said aloud.
         const t = document.querySelector('h1') || document.querySelector('main, [role=main]') || document.body;
@@ -271,6 +282,11 @@
         say(document.title);
       }
     };
+    // onNavigate's functions run first; what they return runs after.
+    const w = [];
+    send('wisp:leave', { from: location.href, to: url.href, w });
+    const after = await Promise.all(w);
+    if (my !== nav) return;
     if (document.startViewTransition && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
       // Its animation is skipped, rejecting these, when the tab is hidden.
       const vt = document.startViewTransition(show);
@@ -278,6 +294,7 @@
       vt.finished.catch(() => {});
       await vt.updateCallbackDone;
     } else show();
+    for (const f of after) if (typeof f == 'function') f();
   }
 
   const link = (e) => e.target.closest?.('a[href]');
@@ -288,16 +305,36 @@
     // Same page, another #place (or a bare `#`): the browser scrolls there.
     if (a.href.includes('#') && key(url) === key(location.href)) return;
     e.preventDefault();
-    go(url);
+    const has = (n) => !!a.closest(`[data-wisp-${n}]`);
+    go(url, { replace: has('replacestate'), noscroll: has('noscroll'), keepfocus: has('keepfocus') });
   });
 
-  // Fetches a link's page ahead, used if it is followed within 10s.
-  function preload(a) {
-    if (!a || !ours(a) || a.closest('[data-wisp-preload="off"]')) return;
-    const k = key(a.href);
-    if (k === key(location.href) || (pre.has(k) && Date.now() - pre.get(k)[0] < 10000)) return;
-    pre.set(k, [Date.now(), fetch(k, { headers }).catch(() => null)]);
+  // Fetches a page ahead, used if it is followed within 10s.
+  function ahead(href) {
+    const k = key(href);
+    if (k === key(location.href)) return;
+    if (!(pre.has(k) && Date.now() - pre.get(k)[0] < 10000)) pre.set(k, [Date.now(), fetch(k, { headers }).catch(() => null)]);
+    return pre.get(k)[1];
   }
+  function preload(a) {
+    if (a && ours(a) && !a.closest('[data-wisp-preload="off"]')) ahead(a.href);
+  }
+  // preloadData(url), and preloadCode(url): the modules the page names too.
+  document.addEventListener('wisp:preload', async (e) => {
+    const { url, code, done } = e.detail;
+    const u = new URL(url, location.href);
+    const res = u.origin === location.origin && !u.pathname.startsWith('/_app/') && (await ahead(u));
+    if (code && res?.ok) {
+      const m = /id="wisp-live"[^>]*>([^<]*)/.exec(await res.clone().text());
+      for (const href of Object.values((m && JSON.parse(m[1]).m) || {})) {
+        const l = document.createElement('link');
+        l.rel = 'modulepreload';
+        l.href = href;
+        document.head.append(l);
+      }
+    }
+    done?.();
+  });
   let hover;
   document.addEventListener('mouseover', (e) => {
     clearTimeout(hover);
@@ -639,7 +676,7 @@
   // client:interaction starts when that happens: only then do its module,
   // and live.js on a page with nothing else to start, load. Until then the
   // server's HTML is all there is, and it works as HTML.
-  const runtime = document.currentScript?.src.replace('wisp.js', 'live.js');
+  const runtime = me?.replace('wisp.js', 'live.js');
   let woke; // ends the last page's waits
 
   function wake() {
