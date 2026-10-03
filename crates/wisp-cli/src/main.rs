@@ -418,6 +418,7 @@ fn project() -> Result<&'static Path, String> {
 }
 
 fn build(root: &Path, o: &BuildOptions) -> Result<(), String> {
+    cargo::warn_if_stale(root);
     if o.client {
         let ts = wisp_build::client_ts(root)?;
         if ts.is_empty() {
