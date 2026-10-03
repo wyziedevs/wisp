@@ -183,7 +183,10 @@ pub(crate) fn purge(prefix: &str) {
 fn under(key: &[u8], prefix: &str) -> bool {
     let after_host = key.iter().position(|&b| b == 0).map_or(0, |i| i + 1);
     let path = &key[after_host..];
-    let end = path.iter().position(|&b| b == b'?' || b == 0).unwrap_or(path.len());
+    let end = path
+        .iter()
+        .position(|&b| b == b'?' || b == 0)
+        .unwrap_or(path.len());
     let path = &path[..end];
     let p = prefix.as_bytes();
     path.starts_with(p) && (prefix.ends_with('/') || path.len() == p.len() || path[p.len()] == b'/')
@@ -444,10 +447,17 @@ mod tests {
         }
         purge("/uncache-test");
         s.sync();
-        let mut left: Vec<_> = s.kept.keys().map(|k| String::from_utf8_lossy(k).into_owned()).collect();
+        let mut left: Vec<_> = s
+            .kept
+            .keys()
+            .map(|k| String::from_utf8_lossy(k).into_owned())
+            .collect();
         left.sort();
         assert_eq!(left, ["h\0/other", "h\0/uncache-tests"]);
-        assert_eq!(s.bytes, s.kept.iter().map(|(k, v)| size(k, v)).sum::<usize>());
+        assert_eq!(
+            s.bytes,
+            s.kept.iter().map(|(k, v)| size(k, v)).sum::<usize>()
+        );
         // A prefix ending in "/" is everything below it, whatever follows.
         purge("/uncache-t/");
         put(&mut s, b"h\0/uncache-t/x");

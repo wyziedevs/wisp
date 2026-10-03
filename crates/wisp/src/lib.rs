@@ -15,9 +15,10 @@
 // compiles by too.
 use wisp_shared::{contexts, protocol};
 
+pub mod admin;
 mod bake;
-mod cache;
 pub mod blob;
+mod cache;
 #[cfg(not(target_arch = "wasm32"))]
 mod channel;
 mod cx;
@@ -35,6 +36,7 @@ mod http;
 mod idem;
 mod image;
 mod input;
+#[cfg(not(target_arch = "wasm32"))]
 mod jobs;
 pub mod json;
 #[cfg(not(target_arch = "wasm32"))]
@@ -42,6 +44,7 @@ mod limit;
 mod live;
 pub mod password;
 mod policy;
+#[cfg(not(target_arch = "wasm32"))]
 mod relay;
 mod rest;
 #[doc(hidden)]
@@ -59,9 +62,9 @@ pub mod tower;
 mod uring;
 mod ws;
 
-#[cfg(not(target_arch = "wasm32"))]
 pub use blob::{Blobs, Upload, blobs};
 pub use cache::{cache, uncache};
+#[cfg(not(target_arch = "wasm32"))]
 pub use channel::{Channel, Subscription, channel};
 pub use cx::{CookieOptions, Cx, Method, SameSite};
 pub use export::{Entry, ExportRoute, export};
@@ -69,13 +72,13 @@ pub use form::{File, Form};
 pub use http::{Body, Reply, Request, handle};
 pub use image::Image;
 pub use input::Email;
+#[cfg(not(target_arch = "wasm32"))]
+pub use jobs::{Queue, cron, queue, work};
 pub use json::{FromJson, Value, from_json, to_json};
 #[cfg(not(target_arch = "wasm32"))]
-pub use jobs::{Queue, queue};
-#[cfg(not(target_arch = "wasm32"))]
-pub use jobs::{cron, work};
 pub use limit::RateLimit;
 pub use live::{ClientModule, Json};
+#[cfg(not(target_arch = "wasm32"))]
 pub use relay::{Deliver, Relay, relay};
 pub use rest::Resource;
 pub use session::{Account, login, sign_in_page, sign_out_everywhere, signup, users};

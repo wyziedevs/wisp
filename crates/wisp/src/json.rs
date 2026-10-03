@@ -1566,7 +1566,15 @@ mod tests {
         for ok in ["http://a.b", "https://a.b/c?d#e", "http://localhost:80"] {
             assert!(check::url(&t(ok)).is_none(), "{ok}");
         }
-        for bad in ["", "a.b", "ftp://a.b", "http://", "https:///x", "http://a b", "http://@x"] {
+        for bad in [
+            "",
+            "a.b",
+            "ftp://a.b",
+            "http://",
+            "https:///x",
+            "http://a b",
+            "http://@x",
+        ] {
             assert!(check::url(&t(bad)).is_some(), "{bad}");
         }
         assert!(check::one_of(&t("b"), "a b c").is_none());

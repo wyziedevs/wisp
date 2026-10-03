@@ -27,14 +27,19 @@ pub struct Table<T> {
     /// Ids are random numbers under 2^53, not counted up.
     random: bool,
     /// A field no two rows share: its name and how to read it ([`Table::unique`]).
-    unique: Option<(&'static str, fn(&T) -> &str)>,
+    unique: Option<Unique<T>>,
     /// Changes each stored row's JSON as it is read ([`Table::migrate`]).
     migrate: Option<fn(&mut Value)>,
     /// Each change is sent on the channel named as the table ([`Table::live`]).
     live: bool,
     /// Where the store's changes were read up to ([`Store::changes`]).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    // the edge build has no thread to poll
     cursor: AtomicU64,
 }
+
+/// A unique field's name and how to read it.
+type Unique<T> = (&'static str, fn(&T) -> &str);
 
 /// A saved table's name in the store, and how its rows become JSON and back.
 struct Saved<T> {
@@ -159,6 +164,7 @@ pub(crate) fn row_json<T: Json + ?Sized>(out: &mut String, id: u64, value: &T) {
 static NAMES: Shared<Vec<(&'static str, usize)>> = Shared::new(Vec::new());
 
 /// A table the poll thread follows.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))] // the edge build has no thread to poll
 trait Poll: Sync {
     fn poll(&self) -> Result;
 }
@@ -166,6 +172,39 @@ trait Poll: Sync {
 impl<T: Send + Sync> Poll for Table<T> {
     fn poll(&self) -> Result {
         Table::poll(self)
+    }
+}
+
+/// The admin page reads and changes a saved table through its stored JSON.
+impl<T: Send + Sync> crate::admin::Admin for Table<T> {
+    fn name(&self) -> &'static str {
+        self.saved.as_ref().map_or("", |s| s.name)
+    }
+
+    fn rows(&self) -> Vec<(u64, String)> {
+        let Some(saved) = &self.saved else {
+            return Vec::new();
+        };
+        let rows = self.read();
+        let json = |v: &T| {
+            let mut out = String::new();
+            (saved.write)(v, &mut out);
+            out
+        };
+        rows.map.iter().map(|(&id, v)| (id, json(v))).collect()
+    }
+
+    fn put(&self, id: u64, json: &str) -> Result<bool> {
+        let Some(saved) = &self.saved else {
+            return Ok(false);
+        };
+        let value = (saved.read)(json.as_bytes())?;
+        Ok(self.try_set(id, value)?.is_some())
+    }
+
+    fn drop_row(&self, id: u64) -> Result<bool> {
+        let mut rows = self.write();
+        Ok(self.delete(&mut rows, id)?.is_some())
     }
 }
 
@@ -189,7 +228,8 @@ fn polling() -> bool {
                         std::thread::sleep(every);
                         let all: Vec<_> = POLLED.lock().clone();
                         for t in all {
-                            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| t.poll()));
+                            let r =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| t.poll()));
                             if let Ok(Err(e)) = r {
                                 crate::http::log(format_args!("wisp: store poll: {}", e.detail()));
                             }
@@ -330,8 +370,14 @@ impl<T> Table<T> {
         T: Send + Sync + 'static,
     {
         drop(self.write());
-        if self.saved.is_some() && polling() && matches!(self.read().state, State::Stored(_)) {
+        if self.saved.is_none() || !matches!(self.read().state, State::Stored(_)) {
+            return;
+        }
+        if polling() {
             POLLED.lock().push(self);
+        }
+        if crate::admin::enabled() {
+            crate::admin::register(self);
         }
     }
 
@@ -358,6 +404,8 @@ impl<T> Table<T> {
 
     /// Sends `change` to those listening, if the table is live.
     fn notify(&self) {
+        // Channels are not in the edge build.
+        #[cfg(not(target_arch = "wasm32"))]
         if let (true, Some(saved)) = (self.live, &self.saved) {
             let c = crate::channel(saved.name);
             if c.subscribers() > 0 {
@@ -520,6 +568,7 @@ impl<T> Table<T> {
     /// Applies what the store's `changes` say happened since the last
     /// poll. The table is locked from before the store is asked, so a
     /// change made here meanwhile is not written over with an older row.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // the edge build has no thread to poll
     fn poll(&self) -> Result {
         let mut rows = self.write();
         let (State::Stored(store), Some(saved)) = (rows.state, &self.saved) else {
@@ -1140,12 +1189,22 @@ mod tests {
         assert_eq!(t.len(), 2);
         assert_eq!(t.set(a, user("c@x", 4)), Some(()));
         assert_eq!(t.set(99, user("z@x", 4)), None);
-        assert!(t.by("a@x").is_none() && t.by("c@x").is_some(), "index follows");
+        assert!(
+            t.by("a@x").is_none() && t.by("c@x").is_some(),
+            "index follows"
+        );
         assert!(t.try_set(b, user("c@x", 5)).is_err());
-        assert_eq!(t.try_set(b, user("b@x", 5)).unwrap(), Some(()), "its own value");
+        assert_eq!(
+            t.try_set(b, user("b@x", 5)).unwrap(),
+            Some(()),
+            "its own value"
+        );
         assert!(t.try_update(b, |u| u.email = "c@x".into()).is_err());
         assert_eq!(t.get(b).unwrap().age, 5, "left as it was");
-        assert_eq!(t.try_update(b, |u| u.email = "d@x".into()).unwrap(), Some(()));
+        assert_eq!(
+            t.try_update(b, |u| u.email = "d@x".into()).unwrap(),
+            Some(())
+        );
         assert_eq!(t.update(b, |u| u.age += 1), Some(()));
         assert_eq!((t.by("d@x").unwrap().age, t.by("b@x")), (6, None));
         t.remove(b);
@@ -1172,7 +1231,9 @@ mod tests {
                     for (k, _) in m.iter_mut().filter(|(k, _)| k == "mail") {
                         *k = "email".into();
                     }
-                    m.push(("age".into(), Value::Number("7".into())));
+                    if m.iter().all(|(k, _)| k != "age") {
+                        m.push(("age".into(), Value::Number("7".into())));
+                    }
                 }
             })
             .live();
@@ -1195,5 +1256,21 @@ mod tests {
             assert_eq!(heard.recv().await.as_deref(), Some("change"));
         });
         assert_eq!(t.add(user("d@x", 1)), 3);
+
+        // The admin page's view of it: stored JSON in, rows out.
+        use crate::admin::Admin;
+        assert_eq!(
+            Admin::rows(&t)[0],
+            (2, r#"{"email":"b@x","age":1}"#.to_string())
+        );
+        assert!(Admin::put(&t, 2, r#"{"email":"z@x","age":3}"#).unwrap());
+        assert!(
+            Admin::put(&t, 3, r#"{"email":"z@x","age":3}"#).is_err(),
+            "unique"
+        );
+        assert!(Admin::put(&t, 2, "nope").is_err());
+        assert!(!Admin::put(&t, 9, r#"{"email":"q@x","age":3}"#).unwrap());
+        assert!(Admin::drop_row(&t, 2).unwrap() && !Admin::drop_row(&t, 2).unwrap());
+        assert_eq!(t.by("z@x"), None);
     }
 }
