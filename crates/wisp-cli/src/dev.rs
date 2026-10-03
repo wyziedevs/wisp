@@ -8,7 +8,8 @@
 //! - CSS output: tell browsers to swap the stylesheet (a CSS tool's input
 //!   is its watcher's; a new `src/app.scss` or `postcss.config.*` changes
 //!   the watchers).
-//! - package.json: rebuild, for the npm packages' versions.
+//! - package.json and .env: rebuild, for the npm packages' versions and
+//!   browser code's `env.PUBLIC_*`.
 //! - `static/`: tell browsers to reload.
 //! - anything else (Rust, Cargo.toml, new/removed routes): rebuild, restart,
 //!   and let browsers morph to the new page.
@@ -491,7 +492,13 @@ fn scan(root: &Path) -> Snapshot {
     let mut out = Snapshot::new();
     walk(root, &root.join("src"), &mut out);
     walk(root, &root.join("static"), &mut out);
-    let top = ["Cargo.toml", "build.rs", ".wisp/app.css", "package.json"];
+    let top = [
+        "Cargo.toml",
+        "build.rs",
+        ".wisp/app.css",
+        "package.json",
+        ".env",
+    ];
     for f in top.iter().chain(&css::POSTCSS_CONFIGS) {
         if let Ok(meta) = fs::metadata(root.join(f))
             && let Ok(m) = meta.modified()

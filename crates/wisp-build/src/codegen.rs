@@ -657,6 +657,7 @@ declare function enhance(form: HTMLFormElement, submit?: (e: any) => any): void;
 declare function context<T = any>(): [() => T, (value: T) => void];
 declare const page: { value: { url: URL; status: number; form: any } };
 declare const navigating: { value: { from: URL; to: URL } | null };
+declare const env: { readonly [name: `PUBLIC_${string}`]: string };
 declare module 'wisp' {
   export interface Store<T> {
     value: T;
@@ -744,6 +745,8 @@ struct Project<'a> {
     shared: Vec<rust_scan::TypeItem>,
     /// The component workshop (dev builds): a shelf per component.
     shelves: Vec<Shelf>,
+    /// The `PUBLIC_*` variables, for browser code's `env.PUBLIC_X`.
+    env: Vec<(String, String)>,
 }
 
 /// The browser's half: the modules of templates (by template), and the
@@ -800,6 +803,7 @@ impl<'a> Project<'a> {
             mods: Vec::new(),
             shared: crate::shared_types(root),
             shelves: Vec::new(),
+            env: crate::public_env(root),
         })
     }
 
@@ -1595,6 +1599,10 @@ impl<'a> Project<'a> {
                 h.extend_from_slice(src.as_bytes());
                 h.push(0);
             }
+            // The `env.PUBLIC_X` they may read, filled in.
+            for (k, v) in &self.env {
+                h.extend_from_slice(format!("{k}={v}\0").as_bytes());
+            }
             format!("{:016x}", fnv1a(&h))
         };
         let specs = Specs {
@@ -1625,6 +1633,8 @@ impl<'a> Project<'a> {
         let lib_file =
             |src: &str, dir: Option<&str>, rel: &str, path: &str, files: &mut Vec<JsFile>| {
                 let code = javascript(src, rel)?;
+                let code = js::public_env(&code, &|n| var(&self.env, n))
+                    .map_err(|(off, msg)| format!("{rel}:{}: {msg}", place(src, off)))?;
                 let mut s =
                     rewrite_specifiers(&code, &specs, dir).map_err(|e| format!("{rel}: {e}"))?;
                 let mut added = 0;
@@ -1696,6 +1706,7 @@ impl<'a> Project<'a> {
                 load,
                 release: self.release,
                 maps: self.maps,
+                env: &self.env,
                 extra: &extra_url,
             };
             let c = client(t, &cx)?;
@@ -5076,6 +5087,8 @@ struct ClientCx<'a> {
     release: bool,
     /// Source maps: the module names its map, not its file.
     maps: bool,
+    /// The `PUBLIC_*` variables.
+    env: &'a [(String, String)],
     /// The URL of the runtime's less used half (`extra.js`).
     extra: &'a str,
 }
@@ -5455,7 +5468,15 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
         specs: cx.specs,
         dev: dev.as_deref(),
     };
-    let (mut source, lines) = module_source(&m).map_err(|e| format!("{}: {e}", t.rel))?;
+    let (source, lines) = module_source(&m).map_err(|e| format!("{}: {e}", t.rel))?;
+    let mut source = js::public_env(&source, &|n| var(cx.env, n)).map_err(|(off, msg)| {
+        // At the line of the file the module's line came from.
+        let k = source[..off].matches('\n').count();
+        match lines.get(k).copied().flatten() {
+            Some((line, _)) => format!("{}:{}: {msg}", t.rel, line + 1),
+            None => format!("{}: {msg}", t.rel),
+        }
+    })?;
     if cx.maps {
         source.push_str(&sourcemap::comment(&format!("{id}.js")));
     } else {
@@ -5741,12 +5762,20 @@ fn javascript(src: &str, rel: &str) -> Result<String, String> {
     if !rel.ends_with(".ts") {
         return Ok(src.to_string());
     }
-    js::strip_types(src).map_err(|(off, msg)| {
-        let before = &src[..off];
-        let line = before.matches('\n').count() + 1;
-        let col = before.rsplit('\n').next().unwrap_or("").chars().count() + 1;
-        format!("{rel}:{line}:{col}: {msg}")
-    })
+    js::strip_types(src).map_err(|(off, msg)| format!("{rel}:{}: {msg}", place(src, off)))
+}
+
+/// Offset `off` of `src` as `line:col`.
+fn place(src: &str, off: usize) -> String {
+    let before = &src[..off];
+    let line = before.matches('\n').count() + 1;
+    let col = before.rsplit('\n').next().unwrap_or("").chars().count() + 1;
+    format!("{line}:{col}")
+}
+
+/// Variable `name` of `vars`.
+fn var(vars: &[(String, String)], name: &str) -> Option<String> {
+    vars.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone())
 }
 
 /// What an import's module name resolves against: `src/lib`'s files (all
@@ -7642,6 +7671,7 @@ pub fn load() -> Data { todo!() }";
             load: None,
             release: false,
             maps: true,
+            env: &[],
             extra: "/_app/c/extra.js",
         };
         client(&t, &cx).map(|c| c.expect("the page has browser code"))
@@ -7707,6 +7737,57 @@ pub fn load() -> Data { todo!() }";
         )
         .unwrap();
         assert!(code.contains("let a: number = 1"), "{code}");
+    }
+
+    #[test]
+    fn public_env_in_browser_code() {
+        let page = "<p>{:env.PUBLIC_NAME}</p>\n<script>\n  import { api } from '$lib/api.js'\n  let url = env.PUBLIC_API + api\n</script>";
+        let files = [
+            ("src/routes/+page.wisp", page),
+            ("src/lib/api.js", "export const api = env.PUBLIC_PATH\n"),
+            (
+                "src/routes/+page.js",
+                "export const load = () => ({ v: env.PUBLIC_API })\n",
+            ),
+            (
+                ".env",
+                "PUBLIC_API=https://api.example\nPUBLIC_NAME=Wisp\nPUBLIC_PATH=/v1\nSECRET=hunter2\n",
+            ),
+        ];
+        for release in [false, true] {
+            let code = build("env", &files, release).unwrap();
+            for filled in [
+                r#"let url = __wisp_s(\"https://api.example\" + api)"#,
+                r#"[\"hole\", () => (\"Wisp\")]"#,
+                r#"export const api = \"/v1\""#,
+                r#"({ v: \"https://api.example\" })"#,
+            ] {
+                assert!(code.contains(filled), "{filled}: {code}");
+            }
+            // (A dev build's source maps hold the files as written.)
+            assert!(!code.contains("hunter2") && (!release || !code.contains("env.PUBLIC")));
+        }
+        // A secret, or a name no one set, is an error at its line.
+        let secret = page.replace("env.PUBLIC_API", "env.SECRET");
+        let err = app(
+            "env-secret",
+            &[
+                files[0],
+                files[1],
+                files[3],
+                ("src/routes/+page.wisp", &secret),
+            ],
+        )
+        .unwrap_err();
+        assert!(
+            err.starts_with("src/routes/+page.wisp:4: `env.SECRET` is not sent to the browser"),
+            "{err}"
+        );
+        let err = app("env-missing", &[files[0], files[1]]).unwrap_err();
+        assert!(
+            err.contains("src/lib/api.js:1:20: `env.PUBLIC_PATH` is not set"),
+            "{err}"
+        );
     }
 
     #[test]
