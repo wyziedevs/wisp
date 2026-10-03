@@ -2,10 +2,10 @@
 // @feature crud
 #[action]
 fn remove(id: u64) {
-    db::POSTS.remove(id);
+    POSTS.remove(id);
 }
 
-let posts = db::POSTS.page(cx, 10);
+let posts = POSTS.page(cx, 10);
 ---
 <title>Posts</title>
 <a href="/posts/new">New post</a>
@@ -18,7 +18,6 @@ let posts = db::POSTS.page(cx, 10);
     <button action="?/remove&id={post.id}">Delete</button>
   </Details>
 {/each}
-{#if let Some(href) = &posts.prev}<a {href}>Newer</a>{/if}
-{#if let Some(href) = &posts.next}<a {href}>Older</a>{/if}
+{@pager posts}
 <!-- @feature live -->
 <script>listen('/posts/events', invalidate)</script>

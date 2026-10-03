@@ -1,26 +1,14 @@
 ---
-#[derive(Json, FromJson, Clone)]
-struct User {
-    name: String,
-    hash: String,
-}
-
-static USERS: Table<User> = Table::saved("users");   // User { name, hash: String, .. }
-
-#[action]
-fn join(name: String, #[validate(min_len = 8)] password: String) {
-    let id = USERS.add(User { name, hash: wisp::password::hash(&password).await? });
-    cx.sign_in(id);                     // signed cookie, 30 days, a new one
+#[action]                                       // sign up
+fn signup(email: Email, #[validate(min_len = 8)] password: String) {
+    cx.signup(&USERS, User { email, hash: password }).await?;  // hashes it; 422 if taken
     redirect("/me")
 }
-#[action]
-fn login(name: String, password: String) {
-    let user = USERS.find(|u| u.name == name);
-    let hash = user.as_ref().map(|u| u.hash.as_str());  // None: as slow, so names stay secret
-    if !wisp::password::check(&password, hash).await? { return invalid("password", "Wrong name or password"); }
-    cx.sign_in(user.unwrap().id);
+#[action]                                       // log in
+fn login(email: Email, password: String) {
+    cx.login(&USERS, &email, &password).await?; // 422 for either wrong, equally slow
     redirect("/me")
 }
-let me = cx.user(&USERS)?;              // a members' page: Row<User>, or 303 to /login
+let me = cx.user(&USERS)?;                      // Row<User>, or 303 to /login
 ---
-<h1>{me.name}</h1>
+<h1>{me.email}</h1>

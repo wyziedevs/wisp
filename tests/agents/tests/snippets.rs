@@ -35,5 +35,5 @@ fn every_snippet_is_compiled_here() {
             );
         }
     }
-    assert_eq!(n, 8, "a snippet was added: put it in tests/agents/src");
+    assert_eq!(n, 9, "a snippet was added: put it in tests/agents/src");
 }

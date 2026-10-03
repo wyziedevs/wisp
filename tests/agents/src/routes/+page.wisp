@@ -1,22 +1,13 @@
 ---
-static TODOS: Table<String> = Table::new();
-
 #[action]
-fn add(#[validate(len = 1..=100)] text: String) {
-    TODOS.add(text);
-}
-
-#[action]
-fn remove(id: u64) {
-    TODOS.remove(id);
+fn add(todo: Todo) {
+    TODOS.add(todo);
 }
 
 let count = TODOS.len();
 ---
 <title>Todos ({count})</title>
-<form action="?/add">
-  <input name="text">
-</form>
+<form action="?/add" fields><button>Add</button></form>
 {#each TODOS.all() as todo}
-  <p>{todo} <button action="?/remove&id={todo.id}">x</button></p>
+  <p>{todo.text}</p>
 {/each}

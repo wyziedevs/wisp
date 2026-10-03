@@ -13,7 +13,7 @@
 //! needs, and leaves the server out.
 #![cfg_attr(target_arch = "wasm32", allow(dead_code, unused_imports))]
 
-use crate::cx::{Cx, Known, Method, Span, decode, hex_digit, valid_header};
+use crate::cx::{Cx, KNOWN, Known, Method, Span, decode, hex_digit, valid_header};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::policy::READ_CAPACITY;
 use crate::policy::{self, KEEP_CAPACITY, WRITE_TIMEOUT};
@@ -1466,82 +1466,34 @@ async fn linger(
 /// from another host (`Cx::from_request`) may have none.
 fn parse<A: App>(cx: &mut Cx, at: usize, on_wire: bool) -> Parsed {
     cx.wire.headers.clear();
-    let head = match fast_head(&cx.wire.buf, at, &mut cx.wire.headers) {
+    let mut seen = Seen::default();
+    let head = match fast_head(&cx.wire.buf, at, &mut cx.wire.headers, &mut seen) {
         Some(head) => head,
         None => {
             cx.wire.headers.clear();
             match slow_head(&cx.wire.buf, at, &mut cx.wire.headers) {
-                Ok(head) => head,
+                Ok(head) => {
+                    seen = Seen::of(&cx.wire.buf, &cx.wire.headers);
+                    head
+                }
                 Err(parsed) => return parsed,
             }
         }
     };
-    let buf = &cx.wire.buf[..];
-
-    let mut content_length: Option<usize> = None;
-    let mut transfer_encodings = 0;
-    let mut hosts = 0;
-    let mut keep_alive = head.http11;
-    let mut expect_continue = false;
-    cx.wire.knows = 0;
-    for &(name, span) in &cx.wire.headers {
-        // Only these five matter here, and their lengths tell them apart:
-        // one comparison a header at most.
-        let is = |lower: &[u8]| swar::eq_lower(&buf[name.range()], lower);
-        let value = || &buf[span.range()];
-        match name.len {
-            4 if is(b"host") => hosts += 1,
-            14 if is(b"content-length") => {
-                // Strict: digits only, and repeated headers must agree (smuggling).
-                match (parse_decimal(value()), content_length) {
-                    (Some(n), None) => content_length = Some(n),
-                    (Some(n), Some(m)) if n == m => {}
-                    _ => return Parsed::Invalid(400),
-                }
-            }
-            17 if is(b"transfer-encoding") => {
-                // Only `chunked`, alone: gzip and the like are for a proxy.
-                if !swar::eq_lower(value().trim_ascii(), b"chunked") {
-                    return Parsed::Invalid(501);
-                }
-                transfer_encodings += 1;
-            }
-            // One token, the usual case, before splitting the list.
-            10 if is(b"connection") => match value().trim_ascii() {
-                v if swar::eq_lower(v, b"keep-alive") => keep_alive = true,
-                v if swar::eq_lower(v, b"close") => keep_alive = false,
-                v => {
-                    for token in v.split(|&b| b == b',').map(<[u8]>::trim_ascii) {
-                        if swar::eq_lower(token, b"close") {
-                            keep_alive = false;
-                        } else if swar::eq_lower(token, b"keep-alive") {
-                            keep_alive = true;
-                        }
-                    }
-                }
-            },
-            // Never to HTTP/1.0, which has no such answer (RFC 9110 §10.1.1).
-            6 if is(b"expect") => {
-                expect_continue =
-                    head.http11 && swar::eq_lower(value().trim_ascii(), b"100-continue");
-            }
-            _ => {
-                if let Some(k) = Known::of(&buf[name.range()])
-                    && cx.wire.knows & 1 << k == 0
-                {
-                    cx.wire.knows |= 1 << k;
-                    cx.wire.known[k] = span;
-                }
-            }
-        }
+    if seen.refuse != 0 {
+        return Parsed::Invalid(seen.refuse);
     }
-    let chunked = transfer_encodings > 0;
+    let keep_alive = seen.keep.unwrap_or(head.http11);
+    // Never to HTTP/1.0, which has no such answer (RFC 9110 §10.1.1).
+    let expect_continue = head.http11 && seen.expect;
+    let (content_length, hosts) = (seen.length, seen.hosts);
+    cx.wire.knows = seen.knows;
+    cx.wire.known = seen.known;
+    let chunked = seen.chunked > 0;
     // Both framings at once is the classic smuggling vector; HTTP/1.0 has
     // no chunked framing at all. Two hosts could be read as either, by
     // Wisp and a proxy or cache in front of it (RFC 9112 §3.2).
-    if (chunked && (content_length.is_some() || transfer_encodings > 1 || !head.http11))
-        || hosts > 1
-    {
+    if (chunked && (content_length.is_some() || seen.chunked > 1 || !head.http11)) || hosts > 1 {
         return Parsed::Invalid(400);
     }
 
@@ -1618,6 +1570,160 @@ struct Head {
     http11: bool,
 }
 
+/// What the headers say that the framing and the connection need, each
+/// read once: as [`fast_head`] passes it, or after [`slow_head`].
+#[derive(Default, PartialEq, Debug)]
+struct Seen {
+    length: Option<usize>,
+    /// `transfer-encoding: chunked` headers.
+    chunked: u32,
+    hosts: u32,
+    /// What `connection` said last: keep-alive or close.
+    keep: Option<bool>,
+    /// The last `expect` is `100-continue`.
+    expect: bool,
+    knows: u8,
+    known: [Span; KNOWN],
+    /// The answer to the first header refused, or 0.
+    refuse: u16,
+}
+
+impl Seen {
+    fn of(buf: &[u8], headers: &[(Span, Span)]) -> Seen {
+        let mut seen = Seen::default();
+        for &(name, value) in headers {
+            let name = header_name(buf, name.start as usize, name.len as usize);
+            seen.header(buf, name, value);
+        }
+        seen
+    }
+
+    #[inline(always)]
+    fn header(&mut self, buf: &[u8], name: Name, span: Span) {
+        let value = &buf[span.range()];
+        match name {
+            Name::Other => {}
+            Name::Host => self.hosts += 1,
+            // Strict: digits only, and repeated headers must agree (smuggling).
+            Name::ContentLength => match (parse_decimal(value), self.length) {
+                (Some(n), None) => self.length = Some(n),
+                (Some(n), Some(m)) if n == m => {}
+                _ => self.refuse(400),
+            },
+            // Only `chunked`, alone: gzip and the like are for a proxy.
+            Name::TransferEncoding if swar::eq_lower(value.trim_ascii(), b"chunked") => {
+                self.chunked += 1
+            }
+            Name::TransferEncoding => self.refuse(501),
+            // One token, the usual case, before splitting the list.
+            Name::Connection => match value.trim_ascii() {
+                v if swar::eq_lower(v, b"keep-alive") => self.keep = Some(true),
+                v if swar::eq_lower(v, b"close") => self.keep = Some(false),
+                v => {
+                    for token in v.split(|&b| b == b',').map(<[u8]>::trim_ascii) {
+                        if swar::eq_lower(token, b"close") {
+                            self.keep = Some(false);
+                        } else if swar::eq_lower(token, b"keep-alive") {
+                            self.keep = Some(true);
+                        }
+                    }
+                }
+            },
+            Name::Expect => self.expect = swar::eq_lower(value.trim_ascii(), b"100-continue"),
+            Name::Known(k) => {
+                if self.knows & 1 << k as u8 == 0 {
+                    self.knows |= 1 << k as u8;
+                    self.known[k as usize] = span;
+                }
+            }
+        }
+    }
+
+    fn refuse(&mut self, code: u16) {
+        if self.refuse == 0 {
+            self.refuse = code;
+        }
+    }
+}
+
+/// The headers the parser acts on, and the [`Known`] ones it marks for `Cx`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum Name {
+    Host,
+    ContentLength,
+    TransferEncoding,
+    Connection,
+    Expect,
+    Known(Known),
+    Other,
+}
+
+/// The eight bytes of `s` from `from`, zero past its end, as [`swar::word`]
+/// reads them.
+const fn key(s: &[u8], from: usize) -> u64 {
+    let (mut x, mut k) = (0, 0);
+    while k < 8 && from + k < s.len() {
+        x |= (s[from + k] as u64) << (8 * k);
+        k += 1;
+    }
+    x
+}
+
+/// The first and last eight bytes of `s`, at least eight long.
+const fn ends(s: &[u8]) -> (u64, u64) {
+    (key(s, 0), key(s, s.len() - 8))
+}
+
+/// Which header the name `b[at..at + len]` is, in any case. It is a token
+/// (`tchar`s), so setting bit 5 of every byte lowercases its letters and
+/// keeps `-`, and turns no other `tchar` into either: its length and two
+/// words (three past 16 bytes) against the lowercase names tell.
+#[inline(always)]
+pub(crate) fn header_name(b: &[u8], at: usize, len: usize) -> Name {
+    const LOWER: u64 = 0x2020_2020_2020_2020;
+    if len < 8 {
+        if len == 0 {
+            return Name::Other;
+        }
+        let w = if at + 8 <= b.len() {
+            swar::word(b, at)
+        } else {
+            swar::tail(&b[at..at + len], 0)
+        };
+        // Past the name, zeros, as in the keys: a key is one length's.
+        const HOST: u64 = key(b"host", 0);
+        const EXPECT: u64 = key(b"expect", 0);
+        const ACCEPT: u64 = key(b"accept", 0);
+        const ORIGIN: u64 = key(b"origin", 0);
+        return match (w | LOWER) & u64::MAX >> (8 * (8 - len)) {
+            HOST => Name::Host,
+            EXPECT => Name::Expect,
+            ACCEPT => Name::Known(Known::Accept),
+            ORIGIN => Name::Known(Known::Origin),
+            _ => Name::Other,
+        };
+    }
+    let word = |i: usize| swar::word(b, i) | LOWER;
+    let w = (word(at), word(at + len - 8));
+    match len {
+        10 if w == const { ends(b"connection") } => Name::Connection,
+        12 if w == const { ends(b"content-type") } => Name::Known(Known::ContentType),
+        12 if w == const { ends(crate::protocol::HEADER_ERROR.as_bytes()) } => {
+            Name::Known(Known::WispError)
+        }
+        13 if w == const { ends(b"if-none-match") } => Name::Known(Known::IfNoneMatch),
+        14 if w == const { ends(b"content-length") } => Name::ContentLength,
+        14 if w == const { ends(b"sec-fetch-site") } => Name::Known(Known::SecFetchSite),
+        15 if w == const { ends(b"idempotency-key") } => Name::Known(Known::IdempotencyKey),
+        17 if w == const { ends(b"transfer-encoding") }
+            && word(at + 8) == const { key(b"transfer-encoding", 8) } =>
+        {
+            Name::TransferEncoding
+        }
+        _ => Name::Other,
+    }
+}
+
 /// The bytes of a header name (RFC 9110 `tchar`), as httparse takes them.
 const TOKEN: [bool; 256] = {
     let mut t = [false; 256];
@@ -1635,18 +1741,110 @@ const TOKEN: [bool; 256] = {
     t
 };
 
+/// `HTTP/1.1` and `HTTP/1.0` as [`swar::word`] reads them.
+const V11: u64 = u64::from_le_bytes(*b"HTTP/1.1");
+const V10: u64 = u64::from_le_bytes(*b"HTTP/1.0");
+
+/// The first byte of `b[i..]` that is not visible ASCII, or is `also`,
+/// eight bytes at a time; `b.len()` if none.
+#[inline(always)]
+fn visible(b: &[u8], mut i: usize, also: u8) -> usize {
+    while i + 8 <= b.len() {
+        let x = swar::word(b, i);
+        let stop = swar::below(x, 0x21) | swar::above(x, 0x7e) | swar::eq(x, also);
+        if stop != 0 {
+            return i + swar::first(stop);
+        }
+        i += 8;
+    }
+    while b
+        .get(i)
+        .is_some_and(|&c| (0x21..=0x7e).contains(&c) && c != also)
+    {
+        i += 1;
+    }
+    i
+}
+
+/// A few bytes, at most eight, to match a word against: `key` as
+/// [`swar::word`] reads it, in its first `mask` bytes, letters in any case.
+struct Pat {
+    key: u64,
+    case: u64,
+    mask: u64,
+}
+
+impl Pat {
+    const fn of(s: &[u8]) -> Pat {
+        let (mut key, mut case, mut k) = (0, 0, 0);
+        while k < s.len() {
+            key |= (s[k] as u64) << (8 * k);
+            if s[k].is_ascii_lowercase() {
+                case |= 0x20 << (8 * k);
+            }
+            k += 1;
+        }
+        Pat {
+            key,
+            case,
+            mask: u64::MAX >> (8 * (8 - s.len())),
+        }
+    }
+
+    /// Setting bit 5 of a letter's byte makes either case its lowercase,
+    /// and nothing else that lowercase: other bytes must be the same.
+    #[inline(always)]
+    fn is(&self, x: u64) -> bool {
+        (x | self.case) & self.mask == self.key
+    }
+}
+
+/// The length and kind of the name at `b[i..]` when it is one of the headers every
+/// request sends, with its colon after it (as a match of its bytes, it is
+/// a `tchar` name): `host`, `connection`, `content-length`, `user-agent`.
+/// 0 for others, whose bytes are then checked.
+#[inline(always)]
+fn by_name(b: &[u8], i: usize) -> (usize, Name) {
+    const HOST: Pat = Pat::of(b"host:");
+    const CONTENT: Pat = Pat::of(b"content-");
+    const LENGTH: Pat = Pat::of(b"length:");
+    const CONNECTI: Pat = Pat::of(b"connecti");
+    const ON: Pat = Pat::of(b"on:");
+    const USER_AGE: Pat = Pat::of(b"user-age");
+    const NT: Pat = Pat::of(b"nt:");
+    let Some(w) = b.get(i..i + 16) else {
+        return (0, Name::Other);
+    };
+    let (x, y) = (swar::word(w, 0), swar::word(w, 8));
+    match x as u8 | 0x20 {
+        b'h' if HOST.is(x) => (4, Name::Host),
+        b'c' if CONTENT.is(x) && LENGTH.is(y) => (14, Name::ContentLength),
+        b'c' if CONNECTI.is(x) && ON.is(y) => (10, Name::Connection),
+        b'u' if USER_AGE.is(x) && NT.is(y) => (10, Name::Other),
+        _ => (0, Name::Other),
+    }
+}
+
 /// The head of `buf[at..]` when it has the usual shape: a method in
 /// capitals, a target of visible ASCII, `HTTP/1.1` or `HTTP/1.0`, lines that
 /// end in CRLF, header names of `tchar`s, and all of it here, in at most
 /// `MAX_HEAD` bytes. Header values are scanned 16 bytes at a time. It is
 /// `None` for anything else, which [`slow_head`] (httparse) then reads,
 /// or refuses: what this reads, httparse reads the same.
-fn fast_head(buf: &[u8], at: usize, headers: &mut Vec<(Span, Span)>) -> Option<Head> {
+fn fast_head(
+    buf: &[u8],
+    at: usize,
+    headers: &mut Vec<(Span, Span)>,
+    seen: &mut Seen,
+) -> Option<Head> {
     let b = &buf[..buf.len().min(at + MAX_HEAD)];
     let mut i = at;
     let method = if b.get(i..i + 4) == Some(b"GET ") {
         i += 3;
         Method::Get
+    } else if b.get(i..i + 5) == Some(b"POST ") {
+        i += 4;
+        Method::Post
     } else {
         while b.get(i).is_some_and(u8::is_ascii_uppercase) {
             i += 1;
@@ -1659,37 +1857,32 @@ fn fast_head(buf: &[u8], at: usize, headers: &mut Vec<(Span, Span)>) -> Option<H
     i += 1;
 
     // The target, to the first byte that is not visible ASCII: its space.
+    // Its path ends at its first `?`, where its query starts.
     let target = i;
-    while i + 8 <= b.len() {
-        let x = swar::word(b, i);
-        let stop = swar::below(x, 0x21) | swar::above(x, 0x7e);
-        if stop != 0 {
-            i += swar::first(stop);
-            break;
-        }
-        i += 8;
-    }
-    while b.get(i).is_some_and(|c| (0x21..=0x7e).contains(c)) {
-        i += 1;
-    }
-    let end = i;
-    let http11 = match b.get(i..i + 11)? {
-        b" HTTP/1.1\r\n" => true,
-        b" HTTP/1.0\r\n" => false,
+    let path_end = visible(b, target, b'?');
+    let end = match b.get(path_end) {
+        Some(b'?') => visible(b, path_end + 1, b' '),
+        _ => path_end,
+    };
+    let line = b.get(end..end + 11)?;
+    let http11 = match swar::word(line, 1) {
+        V11 => true,
+        V10 => false,
         _ => return None,
     };
     // Empty (its space), or not a path: `*`, `http://host/x`.
-    if b[target] != b'/' {
+    if line[0] != b' ' || line[9..] != *b"\r\n" || b[target] != b'/' {
         return None;
     }
-    i += 11;
+    i = end + 11;
     let span = |from: usize, to: usize| Span {
         start: from as u32,
         len: (to - from) as u32,
     };
-    let (path, query) = match b[target..end].iter().position(|&c| c == b'?') {
-        Some(q) => (span(target, target + q), span(target + q + 1, end)),
-        None => (span(target, end), Span::default()),
+    let (path, query) = if path_end == end {
+        (span(target, end), Span::default())
+    } else {
+        (span(target, path_end), span(path_end + 1, end))
     };
 
     loop {
@@ -1702,28 +1895,34 @@ fn fast_head(buf: &[u8], at: usize, headers: &mut Vec<(Span, Span)>) -> Option<H
                 http11,
             });
         }
-        // The name: letters, digits and `-` eight at a time, any other
-        // `tchar` one at a time.
+        // The name: one read most by its bytes, or else letters, digits
+        // and `-` eight at a time, any other `tchar` one at a time.
         let name = i;
-        loop {
-            if i + 8 <= b.len() {
-                let miss = swar::not_name(swar::word(b, i));
-                if miss == 0 {
-                    i += 8;
-                    continue;
+        let (n, mut kind) = by_name(b, i);
+        i += n;
+        if i == name {
+            loop {
+                if i + 8 <= b.len() {
+                    let miss = swar::not_name(swar::word(b, i));
+                    if miss == 0 {
+                        i += 8;
+                        continue;
+                    }
+                    i += swar::first(miss);
                 }
-                i += swar::first(miss);
+                if !b.get(i).is_some_and(|&c| TOKEN[usize::from(c)]) {
+                    break;
+                }
+                i += 1;
             }
-            if !b.get(i).is_some_and(|&c| TOKEN[usize::from(c)]) {
-                break;
+            if i == name || b.get(i) != Some(&b':') {
+                return None;
             }
-            i += 1;
-        }
-        if i == name || b.get(i) != Some(&b':') {
-            return None;
+            kind = header_name(b, name, i - name);
         }
         let name = span(name, i);
-        i += 1;
+        // Its colon, and the space after it most send.
+        i += if b.get(i + 1) == Some(&b' ') { 2 } else { 1 };
         while b.get(i).is_some_and(|&c| c == b' ' || c == b'\t') {
             i += 1;
         }
@@ -1735,12 +1934,14 @@ fn fast_head(buf: &[u8], at: usize, headers: &mut Vec<(Span, Span)>) -> Option<H
                 let stop = swar::control(swar::word(b, i));
                 if stop == 0 {
                     i += 8;
-                    // Past eight, a long value (a cookie, a user agent):
+                    // Past sixteen, a long value (a cookie, a user agent):
                     // sixteen at a time.
-                    while let Some(chunk) = b.get(i..i + 16)
-                        && !swar::any_control(chunk)
-                    {
-                        i += 16;
+                    if i - value >= 16 {
+                        while let Some(chunk) = b.get(i..i + 16)
+                            && !swar::any_control(chunk)
+                        {
+                            i += 16;
+                        }
                     }
                     continue;
                 }
@@ -1765,7 +1966,9 @@ fn fast_head(buf: &[u8], at: usize, headers: &mut Vec<(Span, Span)>) -> Option<H
         if headers.len() == MAX_HEADERS {
             return None;
         }
-        headers.push((name, span(value, value_end)));
+        let value = span(value, value_end);
+        headers.push((name, value));
+        seen.header(b, kind, value);
         i += 2;
     }
 }
@@ -2475,10 +2678,10 @@ fn route<A: App>(cx: &mut Cx) -> Option<usize> {
         return Some(id);
     }
     let mut params = [Span::default(); crate::cx::MAX_PARAMS];
-    for (p, s) in params.iter_mut().zip(raw).take(names.len()) {
-        *p = Span::of(&cx.wire.buf, s.as_bytes());
+    for k in 0..names.len() {
+        params[k] = Span::of(&cx.wire.buf, raw[k].as_bytes());
     }
-    cx.set_params(names, params);
+    cx.set_params(names, &params[..names.len()]);
     Some(id)
 }
 
@@ -2516,7 +2719,7 @@ pub fn trailing_slash(how: TrailingSlash) {
     SLASH.store(how as u8, std::sync::atomic::Ordering::Relaxed);
 }
 
-fn slash() -> TrailingSlash {
+pub(crate) fn slash() -> TrailingSlash {
     match SLASH.load(std::sync::atomic::Ordering::Relaxed) {
         0 => TrailingSlash::Always,
         2 => TrailingSlash::Ignore,
@@ -3749,14 +3952,79 @@ mod tests {
         }
     }
 
+    /// `header_name` says what comparing the names byte by byte, in any
+    /// case, says: of each name in mixed case, with each byte any other
+    /// `tchar`, one byte shorter or longer, and at the end of the buffer.
+    #[test]
+    fn header_names_read_as_compared() {
+        let names = [
+            ("host", Name::Host),
+            ("content-length", Name::ContentLength),
+            ("transfer-encoding", Name::TransferEncoding),
+            ("connection", Name::Connection),
+            ("expect", Name::Expect),
+            ("idempotency-key", Name::Known(Known::IdempotencyKey)),
+            ("if-none-match", Name::Known(Known::IfNoneMatch)),
+            ("content-type", Name::Known(Known::ContentType)),
+            ("accept", Name::Known(Known::Accept)),
+            (crate::protocol::HEADER_ERROR, Name::Known(Known::WispError)),
+            ("origin", Name::Known(Known::Origin)),
+            ("sec-fetch-site", Name::Known(Known::SecFetchSite)),
+        ];
+        let want = |n: &[u8]| {
+            names
+                .iter()
+                .find(|(s, _)| s.as_bytes().eq_ignore_ascii_case(n))
+                .map_or(Name::Other, |&(_, k)| k)
+        };
+        let check = |n: &[u8], after: &[u8]| {
+            let b = [b"x", n, after].concat();
+            assert_eq!(
+                header_name(&b, 1, n.len()),
+                want(n),
+                "{:?}",
+                n.escape_ascii()
+            );
+        };
+        let tchars: Vec<u8> = (0..=255u8).filter(|&c| TOKEN[usize::from(c)]).collect();
+        let mut rng = Rng::new(11);
+        for (s, _) in names {
+            for _ in 0..50 {
+                let n: Vec<u8> = s
+                    .bytes()
+                    .map(|c| {
+                        if rng.one_in(2) {
+                            c.to_ascii_uppercase()
+                        } else {
+                            c
+                        }
+                    })
+                    .collect();
+                check(&n, b": 1\r\n\r\n");
+                check(&n, b"");
+                check(&n[1..], b":");
+                check(&n[..n.len() - 1], b":");
+                check(&[&n[..], b"a"].concat(), b":");
+            }
+            for p in 0..s.len() {
+                for &v in &tchars {
+                    let mut n = s.as_bytes().to_vec();
+                    n[p] = v;
+                    check(&n, b": 1\r\n\r\n");
+                    check(&n, b"");
+                }
+            }
+        }
+    }
+
     /// What `fast_head` reads, httparse reads the same, byte for byte; and
     /// it reads every well-formed request `sent` makes, so it is the path
     /// taken.
     #[test]
     fn the_fast_head_reads_as_httparse_does() {
         let same = |wire: &[u8], must: bool| {
-            let (mut fast, mut slow) = (Vec::new(), Vec::new());
-            let Some(f) = fast_head(wire, 0, &mut fast) else {
+            let (mut fast, mut slow, mut seen) = (Vec::new(), Vec::new(), Seen::default());
+            let Some(f) = fast_head(wire, 0, &mut fast, &mut seen) else {
                 assert!(!must, "{:?}", String::from_utf8_lossy(wire));
                 return;
             };
@@ -3764,6 +4032,13 @@ mod tests {
                 panic!("httparse refused {:?}", String::from_utf8_lossy(wire));
             };
             let text = |s: Span| &wire[s.range()];
+            // An empty value's span is anywhere.
+            let empty = |mut s: Seen| {
+                s.known = s
+                    .known
+                    .map(|k| if k.len == 0 { Span::default() } else { k });
+                s
+            };
             let pairs = |h: &[(Span, Span)]| {
                 h.iter()
                     .map(|&(n, v)| (text(n), text(v)))
@@ -3776,7 +4051,8 @@ mod tests {
                     f.http11,
                     text(f.path),
                     text(f.query),
-                    pairs(&fast)
+                    pairs(&fast),
+                    empty(seen)
                 ),
                 (
                     s.len,
@@ -3784,7 +4060,8 @@ mod tests {
                     s.http11,
                     text(s.path),
                     text(s.query),
-                    pairs(&slow)
+                    pairs(&slow),
+                    empty(Seen::of(wire, &slow))
                 ),
                 "{:?}",
                 String::from_utf8_lossy(wire)
@@ -3793,6 +4070,39 @@ mod tests {
         let mut rng = Rng::new(6);
         for k in 0..30_000 {
             let mut wire = sent(&mut rng).wire;
+            let whole = k % 3 == 0;
+            if !whole {
+                mutate(&mut rng, &mut wire);
+            }
+            same(&wire, whole);
+        }
+        // The headers read by name, in any case and order, and broken.
+        let names = [
+            "Host",
+            "Content-Length",
+            "Connection",
+            "Content-Type",
+            "Hosts",
+            "Content-Lengths",
+            "Connections",
+            "Hos",
+            "User-Agent",
+            "User-Agents",
+        ];
+        for k in 0..30_000 {
+            let mut wire = b"POST /x HTTP/1.1\r\n".to_vec();
+            for _ in 0..rng.below(5) {
+                wire.extend(rng.pick(&names).bytes().map(|c| {
+                    if rng.one_in(2) {
+                        c.to_ascii_uppercase()
+                    } else {
+                        c.to_ascii_lowercase()
+                    }
+                }));
+                wire.extend_from_slice(rng.pick(&[&b": 1"[..], b":", b":\tclose"]));
+                wire.extend_from_slice(b"\r\n");
+            }
+            wire.extend_from_slice(b"\r\n");
             let whole = k % 3 == 0;
             if !whole {
                 mutate(&mut rng, &mut wire);

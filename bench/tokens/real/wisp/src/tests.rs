@@ -206,11 +206,11 @@ fn upload_avatar() {
         text.text()
     );
     let mut png = PNG.to_vec();
-    png.resize(1024 * 1024 + 1, 0);
+    png.resize(2 * 1024 * 1024 + 1, 0);
     let big = send_avatar(&mut app, "image/png", &png);
     assert_eq!(big.status, 422);
     assert!(
-        big.text().contains("must be at most 1 MB"),
+        big.text().contains("must be at most 2 MB"),
         "{}",
         big.text()
     );

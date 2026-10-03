@@ -12,6 +12,7 @@
 use crate::template::{raw_str_start, skip_char, skip_raw_str, skip_str};
 pub use crate::ty::last_segment;
 use crate::ty::{first_arg, is_ident, is_word, option_inner};
+use std::fmt::Write;
 pub use wisp_shared::rust::awaits;
 use wisp_shared::rust::{skip_block_comment, skip_literal, skip_space};
 
@@ -343,6 +344,10 @@ pub fn scan(src: &str) -> Result<Items, String> {
                             "get" => Remote::Get,
                             _ => Remote::Post,
                         });
+                    }
+                    // `#[model]` derives these.
+                    if depth == 0 && path.rsplit("::").next() == Some("model") {
+                        derives.extend(["Json", "FromJson", "Clone"].map(String::from));
                     }
                     if depth == 0 && path.rsplit("::").next() == Some("derive") {
                         let args = src[j + 1..end].split_once('(').map_or("", |(_, a)| a);
@@ -778,6 +783,29 @@ pub fn split_items(code: &str) -> (String, String) {
     (keep(true), keep(false))
 }
 
+/// A `---` block's `fn default`, when it is the only one and the block has
+/// no `#[action]`, is the page's default action: the block with `#[action]`
+/// put before it, on its line, or `None` when that is not so. One that
+/// returns data is a function of the page's own, not an action.
+pub fn mark_default(code: &str) -> Option<String> {
+    let items = scan(&split_items(code).0).ok()?;
+    if items.fns.iter().any(|f| f.action) {
+        return None;
+    }
+    let mut lone = items.fns.iter().filter(|f| f.name == "default");
+    let f = lone.next().filter(|_| lone.next().is_none())?;
+    if !(f.returns.is_empty() || f.fallible || f.returns_kind() != Returns::Other) {
+        return None;
+    }
+    let line: usize = code
+        .split_inclusive('\n')
+        .take(f.line - 1)
+        .map(str::len)
+        .sum();
+    let at = code.len() - code[line..].trim_start_matches([' ', '\t']).len();
+    Some(format!("{}#[action] {}", &code[..at], &code[at..]))
+}
+
 /// The names the top-level `let`s of `stmts` bind: `let (a, mut b) = …`
 /// binds `a` and `b`.
 pub fn let_names(stmts: &str) -> Vec<String> {
@@ -986,6 +1014,85 @@ pub fn line_ends_in_code(code: &str) -> Vec<bool> {
     }
     out.push(true);
     out
+}
+
+/// `src` with each `static NAME: … = Table::saved();` named for its static,
+/// `Table::saved("name")` (`USERS` is "users"), or `None` if there is none.
+/// The text keeps its lines.
+pub fn name_saved(src: &str) -> Option<String> {
+    let b = src.as_bytes();
+    let (mut out, mut from, mut name, mut i) = (String::new(), 0, String::new(), 0);
+    while i < b.len() {
+        if b[i] == b';' {
+            name.clear();
+        }
+        if !(b[i].is_ascii_alphabetic() || b[i] == b'_') {
+            i = skip_literal(b, i) + 1;
+            continue;
+        }
+        let end = ident_end(b, i);
+        match &src[i..end] {
+            "static" => {
+                let at = skip_space(b, end);
+                name = src[at..ident_end(b, at)].to_ascii_lowercase();
+            }
+            "Table" if !name.is_empty() && src[end..].starts_with("::saved()") => {
+                out.push_str(&src[from..end + 7]);
+                let _ = write!(out, "({name:?})");
+                from = end + 9;
+            }
+            _ => {}
+        }
+        i = end;
+    }
+    out.push_str(&src[from..]);
+    (from > 0).then_some(out)
+}
+
+/// The table `wisp::users(&db::USERS)` names, as written, in `src` (the
+/// hooks file), if it does.
+pub fn users_table(src: &str) -> Result<Option<String>, String> {
+    let src = strip_comments(src);
+    let Some(at) = src.find("wisp::users(") else {
+        return Ok(None);
+    };
+    let arg = &src[at + 12..];
+    let arg = arg[..arg.find(')').unwrap_or(arg.len())]
+        .trim()
+        .trim_start_matches('&');
+    if !arg.contains("::") {
+        return Err(format!(
+            "`wisp::users` takes the table by its module path: `wisp::users(&db::{arg})`"
+        ));
+    }
+    Ok(Some(arg.trim().to_string()))
+}
+
+/// `src` with each `cx.user()` made `cx.user(&TABLE)` (the table
+/// `wisp::users` names in `init`), or `None` if there is none. An error
+/// when there is one but no table.
+pub fn bind_user(src: &str, table: Option<&str>) -> Result<Option<String>, String> {
+    let b = src.as_bytes();
+    let (mut out, mut from, mut i) = (String::new(), 0, 0);
+    while i < b.len() {
+        if !(b[i].is_ascii_alphabetic() || b[i] == b'_') {
+            i = skip_literal(b, i) + 1;
+            continue;
+        }
+        let end = ident_end(b, i);
+        if &src[i..end] == "cx" && src[end..].starts_with(".user()") && (i == 0 || b[i - 1] != b'.')
+        {
+            let Some(table) = table else {
+                return Err("`cx.user()` needs `wisp::users(&db::USERS)` in `init` (src/hooks.rs), naming the users table".into());
+            };
+            out.push_str(&src[from..end + 6]);
+            let _ = write!(out, "&{table}");
+            from = end + 6;
+        }
+        i = end;
+    }
+    out.push_str(&src[from..]);
+    Ok((from > 0).then_some(out))
 }
 
 /// `s` with its comments blanked out.
@@ -1624,5 +1731,49 @@ fn a() {}"
                 .contains("needs one, like `id: u64`")
         );
         assert!(!takes_cx(&f[3]));
+    }
+
+    #[test]
+    fn saved_tables_are_named_for_their_statics() {
+        let src = "static USERS: Table<U> = Table::saved();\n// Table::saved()\nlet s = \"Table::saved()\";\npub static Post_Items: wisp::Table<P> = Table::saved();\nstatic OLD: Table<U> = Table::saved(\"old\");";
+        let want = "static USERS: Table<U> = Table::saved(\"users\");\n// Table::saved()\nlet s = \"Table::saved()\";\npub static Post_Items: wisp::Table<P> = Table::saved(\"post_items\");\nstatic OLD: Table<U> = Table::saved(\"old\");";
+        assert_eq!(name_saved(src).as_deref(), Some(want));
+        assert_eq!(name_saved("static A: Table<U> = Table::new();"), None);
+        assert_eq!(name_saved("let t = Table::saved();"), None);
+    }
+
+    #[test]
+    fn cx_user_takes_the_table_init_names() {
+        let init = "// wisp::users(&other::X)\nfn init() { wisp::users(&db::USERS); }";
+        assert_eq!(users_table(init), Ok(Some("db::USERS".into())));
+        assert_eq!(users_table("fn init() {}"), Ok(None));
+        assert!(users_table("wisp::users(&USERS)").is_err());
+        let src = "let a = cx.user()?; let b = \"cx.user()\"; let c = x.cx.user(&T);";
+        let want = "let a = cx.user(&db::USERS)?; let b = \"cx.user()\"; let c = x.cx.user(&T);";
+        assert_eq!(bind_user(src, Some("db::USERS")), Ok(Some(want.into())));
+        assert_eq!(bind_user("cx.user(&T)", None), Ok(None));
+        assert!(bind_user(src, None).unwrap_err().contains("wisp::users"));
+    }
+
+    #[test]
+    fn a_lone_default_is_an_action() {
+        let marked = |c| mark_default(c);
+        assert_eq!(
+            marked("let a = 1;\n    pub async fn default(x: u8) {}\n").as_deref(),
+            Some("let a = 1;\n    #[action] pub async fn default(x: u8) {}\n")
+        );
+        assert!(marked("fn default() -> Result {}").is_some());
+        // Not when another says which are the actions, there are two, or it gives data.
+        assert_eq!(marked("#[action] fn a() {}\nfn default() {}"), None);
+        assert_eq!(marked("fn default() {}\nasync fn default() {}"), None);
+        assert_eq!(marked("fn default() -> u32 { 1 }"), None);
+        assert_eq!(marked("fn other() {}"), None);
+        assert_eq!(marked("#[action]\nfn default() {}"), None);
+    }
+
+    #[test]
+    fn model_derives_what_actions_read() {
+        let items = scan("#[model]\nstruct Post { title: String }").unwrap();
+        assert_eq!(items.types[0].derives, ["Json", "FromJson", "Clone"]);
     }
 }

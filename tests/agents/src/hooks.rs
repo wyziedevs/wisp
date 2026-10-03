@@ -12,8 +12,5 @@ async fn init() -> Result {
 }
 fn before(cx: &mut Cx) -> Result<Option<Response>> {
     if let Some(r) = cx.cors("*") { return Ok(Some(r)); }
-    if cx.writes() && cx.path().starts_with("/api") {
-        cx.need_bearer("API_KEY")?;
-    }
     Ok(None)
 }

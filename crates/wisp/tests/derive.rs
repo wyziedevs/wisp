@@ -34,6 +34,21 @@ fn says(body: &str) -> Vec<String> {
         .collect()
 }
 
+#[wisp::model]
+struct Pet {
+    #[validate(len = 1..=5)]
+    name: String,
+    tags: Vec<String>,
+}
+
+#[test]
+fn model_derives_json_from_json_and_clone() {
+    let pet: Pet = from_json(br#"{"name":"Rex","tags":["a","b"]}"#).unwrap();
+    assert_eq!(to_json(&pet.clone()), r#"{"name":"Rex","tags":["a","b"]}"#);
+    let bad = problems::<Pet>(r#"{"name":"","tags":[]}"#);
+    assert_eq!(bad.len(), 1, "{bad:?}");
+}
+
 #[test]
 fn a_struct_is_read_from_an_object() {
     let got: Signup = from_json(GOOD.as_bytes()).unwrap();

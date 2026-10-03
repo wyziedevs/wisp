@@ -89,11 +89,11 @@ pub use live::{ClientModule, Json};
 pub use otel::{SpanGuard, span, traceparent};
 pub use pwa::app_manifest;
 pub use rest::Resource;
-pub use session::{sign_in_page, sign_out_everywhere};
+pub use session::{Account, login, sign_in_page, sign_out_everywhere, signup, users};
 pub use sign::{hex, hmac_sha256};
 pub use store::{Store, store};
 pub use table::{Page, Row, Table};
-pub use wisp_macros::{Cookie, FromJson, Json, Rest, action, remote};
+pub use wisp_macros::{Cookie, FromJson, Json, Rest, action, model, remote};
 pub use ws::{Message, WebSocket};
 
 use std::any::{Any, TypeId};
@@ -117,7 +117,7 @@ pub mod prelude {
     pub use crate::TrailingSlash::{Always, Ignore, Never};
     pub use crate::{
         Cookie, CookieOptions, Cx, Email, Error, FromJson, Image, Json, KB, MB, Method, OrStatus,
-        Response, Rest, Result, Row, SameSite, Shared, Table, Value, action, error, invalid,
+        Response, Rest, Result, Row, SameSite, Shared, Table, Value, action, error, invalid, model,
         redirect, remote,
     };
 }
@@ -143,6 +143,10 @@ impl<T> Shared<T> {
 /// Sizes for `BODY_LIMIT`: `const BODY_LIMIT: usize = 20 * wisp::MB;`
 pub const KB: usize = 1024;
 pub const MB: usize = 1024 * KB;
+
+/// The most an `Image` parameter takes unless it has a `#[validate(max_size
+/// = …)]` of its own: 2 MB. The route's body limit makes room for it.
+pub const MAX_SIZE: usize = 2 * MB;
 
 /// The whole `main.rs` of an app that needs nothing before it starts:
 /// [`app!`] plus a `main` that calls [`run`].
