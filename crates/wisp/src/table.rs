@@ -36,6 +36,9 @@ pub struct Table<T> {
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     // the edge build has no thread to poll
     cursor: AtomicU64,
+    /// Changes saved from here, so a poll can tell the table was written
+    /// while it asked the store.
+    writes: AtomicU64,
 }
 
 /// A unique field's name and how to read it.
@@ -204,7 +207,10 @@ impl<T: Send + Sync> crate::admin::Admin for Table<T> {
 
     fn drop_row(&self, id: u64) -> Result<bool> {
         let mut rows = self.write();
-        Ok(self.delete(&mut rows, id)?.is_some())
+        let gone = self.delete(&mut rows, id)?.is_some();
+        drop(rows);
+        self.notify();
+        Ok(gone)
     }
 }
 
@@ -313,6 +319,7 @@ impl<T> Table<T> {
             migrate: None,
             live: false,
             cursor: AtomicU64::new(0),
+            writes: AtomicU64::new(0),
         }
     }
 
@@ -430,8 +437,9 @@ impl<T> Table<T> {
         }
     }
 
-    /// Sends `change` to those listening, if the table is live.
-    fn notify(&self) {
+    /// Sends `change` to those listening, if the table is live. Not with
+    /// the table locked: the relay's publish is the app's code, and may wait.
+    pub(crate) fn notify(&self) {
         // Channels are not in the edge build.
         #[cfg(not(target_arch = "wasm32"))]
         if let (true, Some(saved)) = (self.live, &self.saved) {
@@ -538,6 +546,7 @@ impl<T> Table<T> {
         let (State::Stored(store), Some(saved)) = (rows.state, &self.saved) else {
             return Ok(());
         };
+        self.writes.fetch_add(1, Ordering::Relaxed);
         save(store, saved.name).map_err(|e| {
             rows.stale(store);
             let why = format!("could not save table `{}`: {}", saved.name, e.detail());
@@ -598,14 +607,31 @@ impl<T> Table<T> {
     /// change made here meanwhile is not written over with an older row.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // the edge build has no thread to poll
     fn poll(&self) -> Result {
+        let (State::Stored(store), Some(saved)) = (self.read().state, &self.saved) else {
+            return Ok(());
+        };
+        // Asked with the table unlocked: the store's round trip does not
+        // stop the requests that read or write it.
+        let (seen, cursor) = (
+            self.writes.load(Ordering::Relaxed),
+            self.cursor.load(Ordering::Relaxed),
+        );
+        let Some(mut changes) = store.changes(saved.name, cursor)? else {
+            return Ok(());
+        };
+        if changes.rows.is_empty() {
+            self.cursor.store(changes.cursor, Ordering::Relaxed);
+            return Ok(());
+        }
         let mut rows = self.write();
-        let (State::Stored(store), Some(saved)) = (rows.state, &self.saved) else {
-            return Ok(());
-        };
-        let Some(changes) = store.changes(saved.name, self.cursor.load(Ordering::Relaxed))? else {
-            return Ok(());
-        };
-        let any = !changes.rows.is_empty();
+        // A change made here since would be written over with an older row:
+        // asked again, now that nothing can be.
+        if self.writes.load(Ordering::Relaxed) != seen {
+            match store.changes(saved.name, cursor)? {
+                Some(again) => changes = again,
+                None => return Ok(()),
+            }
+        }
         for (id, json) in changes.rows {
             match (id, json) {
                 (0, Some(last)) => rows.last = rows.last.max(last.parse().unwrap_or(0)),
@@ -622,9 +648,7 @@ impl<T> Table<T> {
         self.reindex(&mut rows);
         self.cursor.store(changes.cursor, Ordering::Relaxed);
         drop(rows);
-        if any {
-            self.notify();
-        }
+        self.notify();
         Ok(())
     }
 
@@ -649,7 +673,11 @@ impl<T> Table<T> {
     pub fn add(&self, value: T) -> u64 {
         let mut rows = self.write();
         match self.insert(&mut rows, value) {
-            Ok(id) => id,
+            Ok(id) => {
+                drop(rows);
+                self.notify();
+                id
+            }
             Err(e) => Self::failed(rows, e),
         }
     }
@@ -657,7 +685,11 @@ impl<T> Table<T> {
     /// Like [`Table::add`], but a value whose unique field another row has
     /// is a 422 on that field (`is taken`), for an action to return.
     pub fn try_add(&self, value: T) -> Result<u64> {
-        self.insert(&mut self.write(), value)
+        let mut rows = self.write();
+        let id = self.insert(&mut rows, value)?;
+        drop(rows);
+        self.notify();
+        Ok(id)
     }
 
     fn insert(&self, rows: &mut Rows<T>, value: T) -> Result<u64> {
@@ -669,7 +701,6 @@ impl<T> Table<T> {
             rows.index.insert(key(&value).to_owned(), id);
         }
         rows.map.insert(id, value);
-        self.notify();
         Ok(id)
     }
 
@@ -688,7 +719,6 @@ impl<T> Table<T> {
         if let (Some((_, key)), Some(v)) = (self.unique, &gone) {
             rows.index.remove(key(v));
         }
-        self.notify();
         Ok(gone)
     }
 
@@ -696,7 +726,11 @@ impl<T> Table<T> {
     pub fn remove(&self, id: u64) -> Option<T> {
         let mut rows = self.write();
         match self.delete(&mut rows, id) {
-            Ok(v) => v,
+            Ok(v) => {
+                drop(rows);
+                self.notify();
+                v
+            }
             Err(e) => Self::failed(rows, e),
         }
     }
@@ -724,6 +758,7 @@ impl<T> Table<T> {
         if let Err(e) = self.save(&mut rows, id, Some(&json)) {
             Self::failed(rows, e);
         }
+        drop(rows);
         self.notify();
         Some(r)
     }
@@ -751,6 +786,7 @@ impl<T> Table<T> {
             rows.index.insert(key(&value).to_owned(), id);
         }
         rows.map.insert(id, value);
+        drop(rows);
         self.notify();
         Ok(Some(()))
     }
@@ -764,6 +800,8 @@ impl<T> Table<T> {
                 Self::failed(rows, e);
             }
         }
+        drop(rows);
+        self.notify();
     }
 
     /// Reads the row where it is, without a copy: `NOTES.with(id, |n|
@@ -807,7 +845,11 @@ impl<T: Clone> Table<T> {
         }
         let copy = value.clone();
         match self.insert(&mut rows, value) {
-            Ok(id) => Some(Row { id, value: copy }),
+            Ok(id) => {
+                drop(rows);
+                self.notify();
+                Some(Row { id, value: copy })
+            }
             Err(e) => Self::failed(rows, e),
         }
     }
@@ -1260,6 +1302,25 @@ mod tests {
             .filter(|t| std::ptr::addr_eq(**t, &T))
             .count();
         assert_eq!(seen, 1, "listed once");
+    }
+
+    #[test]
+    fn clearing_a_live_table_says_so_once() {
+        let t: Table<String> = Table::saved("clear_once").live();
+        for n in ["a", "b", "c"] {
+            t.add(n.into());
+        }
+        let mut heard = crate::channel("clear_once").subscribe();
+        t.clear();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            assert_eq!(heard.recv().await.as_deref(), Some("change"));
+            let more = tokio::time::timeout(std::time::Duration::from_millis(20), heard.recv());
+            assert!(more.await.is_err(), "one message, not one a row");
+        });
     }
 
     #[test]

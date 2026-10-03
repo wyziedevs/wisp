@@ -752,6 +752,7 @@ pub fn delete<T: Resource>(cx: &mut Cx, hooks: &Hooks<T>) -> Result<Response> {
     check_match(cx, id, one(&rows, id, &view)?, None)?;
     table.delete(&mut rows, id)?;
     drop(rows);
+    table.notify();
     if let (Some(h), Some(row)) = (hooks.after_delete, &row) {
         h(cx, row)?;
     }
