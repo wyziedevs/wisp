@@ -80,6 +80,24 @@ pub trait Store: Send + Sync + 'static {
         }
         Ok(())
     }
+    /// What changed in `table` since `since`, for tables that follow a store
+    /// other instances write to (`WISP_STORE_POLL` seconds): `None` (the
+    /// default) when the store cannot say. `since` is a cursor this call gave
+    /// before, `0` the first time; answer with the rows that changed after
+    /// it, each as `(id, Some(json))` or `(id, None)` for a removal (row 0 is
+    /// the last id given), and the new cursor (a sequence number, a
+    /// timestamp). Rows already known may come again.
+    fn changes(&self, table: &str, since: u64) -> Result<Option<Changes>> {
+        let _ = (table, since);
+        Ok(None)
+    }
+}
+
+/// A [`Store::changes`] answer.
+pub struct Changes {
+    /// Where to read from next time.
+    pub cursor: u64,
+    pub rows: Vec<(u64, Option<String>)>,
 }
 
 /// Keeps every durable table (`#[derive(Rest)]` types, `Table::saved`) in

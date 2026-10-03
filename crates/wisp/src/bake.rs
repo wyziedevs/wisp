@@ -16,7 +16,8 @@ use crate::{App, Cx, Out};
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// A page the compiler found constant, as it goes on the wire: the status
 /// line and fixed headers (`content-length` among them), the document, and
@@ -152,6 +153,43 @@ struct Store {
     bytes: usize,
     budget: usize,
     key: Vec<u8>,
+    /// How many `uncache` calls this worker has seen.
+    purged: u64,
+}
+
+/// How many times `uncache` was called, and the last of its prefixes with
+/// the number of the call that gave each: a worker reads what it missed
+/// the next time it looks for a kept page.
+static PURGED: AtomicU64 = AtomicU64::new(0);
+static PURGES: Mutex<Vec<(u64, String)>> = Mutex::new(Vec::new());
+
+/// The most prefixes remembered: a worker further behind drops everything.
+const PURGES_KEPT: usize = 64;
+
+/// Has every worker drop the kept pages under `prefix`, a path: that page
+/// and those below it (`/posts` and `/posts/1`, not `/postscript`);
+/// `/` drops all. Each does so before it next answers from what it keeps.
+pub(crate) fn purge(prefix: &str) {
+    let mut all = PURGES.lock().unwrap_or_else(|e| e.into_inner());
+    let n = PURGED.load(Ordering::Relaxed) + 1;
+    all.push((n, prefix.to_owned()));
+    if all.len() > PURGES_KEPT {
+        all.remove(0);
+    }
+    PURGED.store(n, Ordering::Release);
+}
+
+/// Whether the request path in `key` (see [`key`]) is `prefix` or below it.
+fn under(key: &[u8], prefix: &str) -> bool {
+    let after_host = key.iter().position(|&b| b == 0).map_or(0, |i| i + 1);
+    let path = &key[after_host..];
+    let end = path
+        .iter()
+        .position(|&b| b == b'?' || b == 0)
+        .unwrap_or(path.len());
+    let path = &path[..end];
+    let p = prefix.as_bytes();
+    path.starts_with(p) && (prefix.ends_with('/') || path.len() == p.len() || path[p.len()] == b'/')
 }
 
 impl Store {
@@ -161,11 +199,31 @@ impl Store {
             bytes: 0,
             budget,
             key: Vec::new(),
+            purged: PURGED.load(Ordering::Acquire),
         }
+    }
+
+    /// Drops what `uncache` has been told to since this worker last looked.
+    fn sync(&mut self) {
+        let now = PURGED.load(Ordering::Relaxed);
+        if now == self.purged {
+            return;
+        }
+        let all = PURGES.lock().unwrap_or_else(|e| e.into_inner());
+        if all.first().is_none_or(|(n, _)| *n > self.purged + 1) {
+            self.kept.clear();
+        } else {
+            for (_, prefix) in all.iter().filter(|(n, _)| *n > self.purged) {
+                self.kept.retain(|key, _| !under(key, prefix));
+            }
+        }
+        self.purged = now;
+        self.bytes = self.kept.iter().map(|(key, k)| size(key, k)).sum();
     }
 
     /// The response kept for `cx`, while it is fresh.
     fn get<const ACCEPT: bool>(&mut self, cx: &Cx, now: u64) -> Option<Arc<Kept>> {
+        self.sync();
         let k = self.kept.get(key::<ACCEPT>(&mut self.key, cx))?;
         (k.until > now).then(|| k.clone())
     }
@@ -370,6 +428,49 @@ mod tests {
             etag: "".into(),
             until,
         })
+    }
+
+    #[test]
+    fn uncache_drops_a_path_and_below() {
+        let mut s = Store::new(1 << 20);
+        let put = |s: &mut Store, key: &[u8]| {
+            s.kept.insert(key.into(), kept(1, u64::MAX));
+        };
+        for key in [
+            &b"h\0/uncache-test"[..],
+            b"h\0/uncache-test?page=2",
+            b"h\0/uncache-test/1\0j",
+            b"h\0/uncache-tests",
+            b"h\0/other",
+        ] {
+            put(&mut s, key);
+        }
+        purge("/uncache-test");
+        s.sync();
+        let mut left: Vec<_> = s
+            .kept
+            .keys()
+            .map(|k| String::from_utf8_lossy(k).into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["h\0/other", "h\0/uncache-tests"]);
+        assert_eq!(
+            s.bytes,
+            s.kept.iter().map(|(k, v)| size(k, v)).sum::<usize>()
+        );
+        // A prefix ending in "/" is everything below it, whatever follows.
+        purge("/uncache-t/");
+        put(&mut s, b"h\0/uncache-t/x");
+        s.sync();
+        assert_eq!(s.kept.len(), 2);
+        put(&mut s, b"h\0/uncache-t/x");
+        s.sync();
+        assert_eq!(s.kept.len(), 3, "an old purge is not applied again");
+        // A new worker has nothing to catch up on.
+        let mut fresh = Store::new(1 << 20);
+        put(&mut fresh, b"h\0/uncache-test");
+        fresh.sync();
+        assert_eq!(fresh.kept.len(), 1);
     }
 
     #[test]

@@ -15,7 +15,10 @@
 // compiles by too.
 use wisp_shared::{contexts, protocol};
 
+pub mod admin;
 mod bake;
+pub mod blob;
+mod cache;
 #[cfg(not(target_arch = "wasm32"))]
 mod channel;
 mod compress;
@@ -36,6 +39,8 @@ mod http;
 mod idem;
 mod image;
 mod input;
+#[cfg(not(target_arch = "wasm32"))]
+mod jobs;
 pub mod json;
 #[cfg(not(target_arch = "wasm32"))]
 mod limit;
@@ -44,6 +49,8 @@ mod otel;
 pub mod password;
 mod policy;
 mod range;
+#[cfg(not(target_arch = "wasm32"))]
+mod relay;
 mod rest;
 #[doc(hidden)]
 pub mod rt_traits;
@@ -63,6 +70,8 @@ pub mod tower;
 mod uring;
 mod ws;
 
+pub use blob::{Blobs, Upload, blobs};
+pub use cache::{cache, uncache};
 #[cfg(not(target_arch = "wasm32"))]
 pub use channel::{Channel, Subscription, channel};
 pub use cx::{CookieOptions, Cx, Method, SameSite};
@@ -71,14 +80,18 @@ pub use form::{File, Form};
 pub use http::{Body, Reply, Request, handle};
 pub use image::Image;
 pub use input::Email;
+#[cfg(not(target_arch = "wasm32"))]
+pub use jobs::{Queue, cron, queue, work};
 pub use json::{FromJson, Value, from_json, to_json};
 #[cfg(not(target_arch = "wasm32"))]
 pub use limit::RateLimit;
 pub use live::{ClientModule, Json};
+#[cfg(not(target_arch = "wasm32"))]
+pub use relay::{Deliver, Relay, relay};
 pub use rest::Resource;
 pub use session::{Account, login, sign_in_page, sign_out_everywhere, signup, users};
 pub use sign::{hex, hmac_sha256};
-pub use store::{Store, store};
+pub use store::{Changes, Store, store};
 pub use table::{Page, Row, Table};
 pub use wisp_macros::{Cookie, FromJson, Json, Rest, action, model};
 pub use ws::{Message, WebSocket};

@@ -263,6 +263,11 @@ no-wait fast path off every route.
   `wisp::env("K")`, `spawn`, `every`, `wisp::channel("x")`
   `.send/events()` (SSE)`/websocket()`, `RateLimit::per_minute(n).check(key)?`,
   `#[derive(Cookie)]`.
+- Data, files, jobs (docs/data.md): `Table::saved(n).unique("f", |v: &T| &v.f)
+  .migrate(f).live()`, `set clear by try_add`; `Upload`, `wisp::relay`,
+  `wisp::queue(n).push(&j)` + `work(n, f)` + `cron("0 3 * * *", f)`,
+  `wisp::cache(k, secs, f)`/`uncache(path)`, `WISP_ADMIN_KEY` admin page;
+  rules `url one_of pattern with`.
 - Static export: `fn entries() -> Vec<&'static str>` in a `[param]` page.
   Test: `let mut app = wisp::test::client::<App>(); app.get("/").text()`,
   `app.post_form/post_json/delete`, `.json::<T>()`.

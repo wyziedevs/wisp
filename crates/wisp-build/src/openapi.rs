@@ -447,6 +447,7 @@ fn constrain(schema: &mut J, rules: &str, t: &str) {
                 add(max_len, &hi.map_or(String::new(), |n| n.to_string()));
             }
             Key::Email => email = true,
+            Key::Url | Key::OneOf | Key::Pattern | Key::With => {}
         }
     }
     if email {
