@@ -631,3 +631,71 @@ fn app_modules() {
         ("src/readme.txt", "text"),
     ]);
 }
+
+#[test]
+fn remote_functions() {
+    let page = "---\n#[remote]\nfn twice(n: u32) -> u32 { n * 2 }\n---\n<p>x</p>";
+    crate::common::passes(&[
+        ("src/routes/+page.wisp", page),
+        (
+            "src/remote.rs",
+            "#[remote(get)]\nfn find(id: u64) -> Option<String> { None }",
+        ),
+        (
+            "src/lib/x.js",
+            "import { find } from 'wisp:remote'\nexport const f = find",
+        ),
+    ]);
+    fails(&[
+        (
+            "a name twice",
+            &[
+                ("src/routes/+page.wisp", page),
+                (
+                    "src/remote.rs",
+                    "\n#[remote]\nfn twice(n: u32) -> u32 { n }",
+                ),
+            ],
+            &["src/remote.rs:3: there is already a #[remote] fn `twice`"],
+        ),
+        (
+            "a name JavaScript has",
+            &[HOME, ("src/remote.rs", "#[remote]\nfn fetch() {}")],
+            &["src/remote.rs:2: browser code calls #[remote] fn `fetch` by its name"],
+        ),
+        (
+            "in a layout",
+            &[
+                HOME,
+                (
+                    "src/routes/+layout.wisp",
+                    "---\n#[remote]\nfn a() {}\n---\n<slot />",
+                ),
+            ],
+            &["src/routes/+layout.wisp:3: a layout cannot have #[remote] functions"],
+        ),
+        (
+            "in +server.rs",
+            &[("src/routes/e/+server.rs", "#[remote]\nfn get() {}")],
+            &["src/routes/e/+server.rs:2: `get` is #[remote]"],
+        ),
+        (
+            "in hooks.rs",
+            &[HOME, ("src/hooks.rs", "#[remote]\nfn x() {}")],
+            &["src/hooks.rs:2: `x` is marked #[remote]"],
+        ),
+        (
+            "also an action",
+            &[(
+                "src/routes/+page.wisp",
+                "---\n#[remote]\n#[action]\nfn a() {}\n---\nx",
+            )],
+            &["src/routes/+page.wisp:4: `a` cannot be both #[remote] and an action"],
+        ),
+        (
+            "an import with none",
+            &[HOME, ("src/lib/x.js", "import { a } from 'wisp:remote'")],
+            &["src/lib/x.js: `wisp:remote` has the app's #[remote] functions"],
+        ),
+    ]);
+}

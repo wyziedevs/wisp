@@ -779,6 +779,50 @@ must `#[derive(Json)]`. `params` holds the route's parameters (for
 `blog/[slug]`, `params.slug`) and `route.id` its pattern (`/blog/[slug]`),
 on the first load and after every navigation. It does not run on the server.
 
+## Server functions
+
+A Rust function marked `#[remote]`, in a page's block or in `src/remote.rs`
+(any `src/*.rs`), is a function browser code calls. No endpoint, no fetch,
+no import:
+
+```html
+---
+#[remote]
+fn user(id: u64) -> Result<User> {
+    USERS.get(id).map(|r| r.value).or_404()
+}
+---
+<button on:click="user(5).then((u) => (name = u.name))">Load</button>
+<p>{:name}</p>
+<script>
+  let name = ''
+</script>
+```
+
+In `src/lib`, import it: `import { user } from 'wisp:remote'`.
+
+- A call is a POST to `/_app/r/<hash>` with the arguments as a JSON object
+  by name (`{"id":5}`). Each is read with `FromJson` (numbers, strings,
+  `Option`, `Vec`, a `#[derive(FromJson)]` struct); one that is not the
+  type, or fails its `#[validate(…)]`, is a 422 by field, all at once.
+- The answer is an endpoint's: a `#[derive(Json)]` value as JSON, `None`
+  as a 404, nothing as a 204 (`undefined`).
+- It is made as an action is: `cx` when the body uses it, `async` when it
+  `.await`s, `-> Result` when it has no `->`. The same-origin check and
+  `before` in hooks.rs run first, as for actions.
+- An error rejects with an `Error` whose `status` and `message` are the
+  server's (and `errors`, by field, for a 422). `redirect("/x")` navigates
+  there, as a form's does.
+- `#[remote(get)]` makes it a GET, each argument as JSON in the query
+  (`?id=5&q=%22tea%22`; text that is not JSON is a string). Its answer has
+  an `etag`, so the browser keeps it and gets a 304 when it is the same.
+
+Names are global to browser code: two of one name, or one JavaScript or
+Wisp already has (`fetch`, `goto`), is a build error. A name the script
+declares itself, or a server value of the page, is that instead.
+`wisp check --types` types each (`declare function user(id: number):
+Promise<User>`). An app without any serves nothing more and pays nothing.
+
 ## Errors
 
 An error thrown while a client script starts, or in `+page.js`, shows the

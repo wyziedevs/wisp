@@ -26,6 +26,7 @@ package.json                npm packages for browser code: `wisp add canvas-conf
 .env                        X=…: `wisp::env("X")` (start), `env.PUBLIC_X` in browser code (build)
 src/hooks.rs                fn init() once; fn before(cx) every request
 src/NAME.rs                 any module, no `mod` line: `NAME::f()` everywhere
+src/remote.rs               #[remote] fns browser code calls (or in a page's block)
 src/components/Card.wisp    <Card title={x}>…</Card>
 src/lib/*.js (or .ts)       browser modules, `import … from '$lib/x.js'` (or `'$lib/x'`)
 src/params/word.rs          fn matches(s: &str) -> bool, for [x=word]
@@ -84,7 +85,7 @@ Block rules:
   `[[lang]]` → `Option<String>`. Works even with no block: `<h1>{slug}</h1>`.
 - No `use` lines needed: prelude = `Cx Response Result Error Email Image Json
   FromJson Rest Cookie Method Value Shared Table Row RateLimit OrStatus KB MB
-  action error invalid redirect`.
+  action remote error invalid redirect`.
   `Result` alone = `Result<()>`.
 - Layout blocks: statements are sync, `cx: &Cx`, no `.await`/`?`.
 - `const CACHE: u32 = 60;` (page or `+server.rs`): each worker keeps a GET's
@@ -302,6 +303,16 @@ server's `wisp::env("X")` reads the process's environment, else `.env`'s
 Source maps: dev serves `/_app/c/t3.js.map` beside each module (the `.wisp`
 line of each line); release only with `wisp build --sourcemap` (`--static`
 writes them too).
+Server functions: `#[remote] fn user(id: u64) -> Result<User> {…}` in a
+page's block or `src/*.rs` is `await user(5)` in any script or directive,
+no import (`src/lib`: `import { user } from 'wisp:remote'`). A POST of
+`{"id":5}` to `/_app/r/<hash>`: arguments `FromJson` by name, the answer
+as an endpoint's (`Json`; `Option` None → 404; nothing → `undefined`).
+Made as actions are (`cx`, `async`, `#[validate]` → 422 by field); the
+origin check and `before` apply. Errors reject with an `Error` of
+`status`, `message` (and `errors`); `redirect()` navigates.
+`#[remote(get)]`: a GET, each argument JSON in the query, ETag/304. A name
+is the app's once and not a JS global or helper (build error).
 Server values sent to JS must `#[derive(Json)]`. Full: docs/client.md.
 
 ## Endpoints (`+server.rs`)
