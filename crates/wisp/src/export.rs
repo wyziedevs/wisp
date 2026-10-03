@@ -10,6 +10,14 @@
 //! `pub fn entries() -> Vec<...>` in `+page.rs`: a `String` per `[param]`,
 //! or a tuple of them for several, in the order they appear in the path.
 //! For `[[optional]]` and `[...rest]`, an empty string leaves it out.
+//!
+//! `wisp build --spa` (`WISP_SPA=1`) also serves static hosts' fallback,
+//! `index.html`, which they answer a path they have no file for with: a
+//! page the browser draws (`const SSR: bool = false;`) whose route has
+//! parameters and no `entries` is written once, each parameter `0`, to
+//! `_app/spa/N.html`, and `index.html` lists those as `#wisp-spa`. wisp.js
+//! then fetches the one whose route fits the address, and draws it with
+//! that address's parameters.
 
 use crate::{App, Request, handle};
 use std::collections::BTreeSet;
@@ -31,6 +39,8 @@ pub struct ExportRoute {
     /// `/sitemap.xml` lists it: outside any `(private)` group, without a
     /// robots `noindex` meta.
     pub indexed: bool,
+    /// The server renders the page: no `const SSR: bool = false;`.
+    pub ssr: bool,
 }
 
 /// What `entries` returns a `Vec` of.
@@ -63,17 +73,20 @@ impl<A: Into<String>, B: Into<String>, C: Into<String>> Entry for (A, B, C) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn run<A: App>(dir: &str) -> io::Result<()> {
+pub(crate) fn run<A: App>(dir: &str, spa: bool) -> io::Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(export::<A>(Path::new(dir)))
+    runtime.block_on(export::<A>(Path::new(dir), spa))
 }
 
-/// Writes the app's pages, and the files they use, under `dir`.
-pub async fn export<A: App>(dir: &Path) -> io::Result<()> {
+/// Writes the app's pages, and the files they use, under `dir`; with
+/// `spa`, the fallback too (see the module's notes).
+pub async fn export<A: App>(dir: &Path, spa: bool) -> io::Result<()> {
     crate::prepare::<A>().await?;
     let mut assets = BTreeSet::new();
+    // Pattern and file of each page the fallback draws.
+    let mut drawn: Vec<(&str, String)> = Vec::new();
     for r in A::export_routes() {
         if r.server {
             println!(
@@ -92,6 +105,26 @@ pub async fn export<A: App>(dir: &Path) -> io::Result<()> {
         }
         let paths = match paths(&r) {
             Ok(p) => p,
+            Err(_) if spa && !r.ssr && r.entries.is_none() => {
+                let n = r.pattern.split('/').filter(|s| s.starts_with('[')).count();
+                let url = segments(r.pattern, &vec!["0".to_string(); n]).map(|s| url(&s));
+                let reply = match url {
+                    Some(url) => handle::<A>(Request::new("GET", &url)).await,
+                    None => continue,
+                };
+                if reply.status != 200 {
+                    println!(
+                        "warn {} answered {} with its parameters 0, so --spa cannot draw it",
+                        r.pattern, reply.status
+                    );
+                    continue;
+                }
+                let file = format!("_app/spa/{}.html", drawn.len());
+                find_assets(reply.text(), &mut assets);
+                write(dir, &file, reply.bytes())?;
+                drawn.push((r.pattern, format!("/{file}")));
+                continue;
+            }
             Err(e) => {
                 println!("warn {e}");
                 continue;
@@ -125,6 +158,21 @@ pub async fn export<A: App>(dir: &Path) -> io::Result<()> {
                 write(dir, f, reply.bytes())?;
             }
         }
+    }
+    if !drawn.is_empty() {
+        // The home page, or with none the error page, carries the list.
+        let html = fs::read_to_string(dir.join("index.html"))
+            .unwrap_or_else(|_| missing.text().to_string());
+        let list = format!(
+            "<script type=\"application/json\" id=\"wisp-spa\">{}</script>",
+            crate::json::to_json(&drawn).replace('<', "\\u003c")
+        );
+        let at = html.rfind("</body>").unwrap_or(html.len());
+        write(
+            dir,
+            "index.html",
+            [&html[..at], &list, &html[at..]].concat().as_bytes(),
+        )?;
     }
     // A module brings what it imports, and its source map when it has one
     // (`wisp build --sourcemap`).
@@ -296,6 +344,7 @@ mod tests {
             server: false,
             indexed: true,
             entries,
+            ssr: true,
         }
     }
 

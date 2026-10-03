@@ -7,7 +7,7 @@ takes.
 |---|---|
 | A VPS or server | `wisp build`, copy the binary |
 | A container host (Fly.io, Railway, Render, Cloud Run, Azure Container Apps) | `wisp build --docker` |
-| A static host (GitHub Pages, GitLab Pages, S3) | `wisp build --static` |
+| A static host (GitHub Pages, GitLab Pages, S3) | `wisp build --static` (or `--spa`) |
 | An edge or serverless host (Cloudflare, Deno Deploy, Vercel, Netlify, Amplify, Firebase, Azure Static Web Apps) | `wisp build --target <host>` |
 | AWS Lambda | `wisp build --target lambda` |
 | Bun | `wisp build --target bun` |
@@ -69,6 +69,15 @@ fn entries() -> Vec<&'static str> {
 for several, in path order. For `[[optional]]` and `[...rest]`, an empty
 string leaves it out. A route with actions or a `+server.rs` needs a server,
 and the export warns about it.
+
+`wisp build --spa` is `--static` plus the fallback a static host answers a
+missing path with, `index.html` (Netlify: `/* /index.html 200` in
+`_redirects`; Cloudflare Pages does it with no `404.html`). A page with
+`const SSR: bool = false;` whose `[params]` have no `entries` is written
+once, its parameters `0`, to `_app/spa/N.html`, and `index.html` lists
+them: wisp.js draws the one whose route fits the address, with that
+address's parameters. Such a page gets its data from `+page.js` (its
+statements ran once, for `0`).
 
 ## Docker
 

@@ -186,12 +186,14 @@ pub fn hot_chunks(root: &Path, rel: &str) -> Result<(Vec<String>, u64, Vec<Strin
         .collect();
     let params: Vec<&str> = segs.iter().filter_map(routes::Seg::param).collect();
     // What does not scan has no fields: the build says what is wrong.
-    let fields = items.map_or_else(
+    let fields = items.as_ref().map_or_else(
         |_| Vec::new(),
-        |i| rules::fields(&i, &params, &shared_types(root)),
+        |i| rules::fields(i, &params, &shared_types(root)),
     );
     let markup = image::rewrite(&markup, root, false).map_err(|e| format!("{rel}:{e}"))?;
-    let (t, _) = parse_markup(&markup, rust, &fields, rel).map_err(|e| format!("{rel}:{e}"))?;
+    let drawn = items.as_ref().is_ok_and(rust_scan::Items::drawn) && rel.ends_with("+page.wisp");
+    let (t, _) =
+        parse_markup(&markup, rust, &fields, rel, drawn).map_err(|e| format!("{rel}:{e}"))?;
     let warnings = (t.lints.iter())
         .map(|l| format!("{rel}:{}: {}", l.line, lint_line(l)))
         .collect();
@@ -211,20 +213,22 @@ pub(crate) fn lint_line(l: &a11y::Lint) -> String {
 /// `line:col: msg`.
 pub fn parse_wisp(src: &str, rel: &str) -> Result<(template::Template, Option<String>), String> {
     let (rust, markup) = split_front(src)?;
-    parse_markup(&markup, rust, &[], rel)
+    parse_markup(&markup, rust, &[], rel, false)
 }
 
 /// The markup of a `.wisp` file `split_front` split, parsed: the fields of
 /// its action forms given the attributes the browser checks them by
-/// ([`rules::fields`]), the Rust of its block in its shape.
+/// ([`rules::fields`]), the Rust of its block in its shape. `drawn`: a page
+/// the browser draws (`const SSR: bool = false;`).
 pub(crate) fn parse_markup(
     markup: &str,
     rust: Option<String>,
     fields: &[rules::Field],
     rel: &str,
+    drawn: bool,
 ) -> Result<(template::Template, Option<String>), String> {
     let class = style::class(rel);
-    let mut t = template::parse_with(markup, fields, &class).map_err(|e| e.to_string())?;
+    let mut t = template::parse_with(markup, fields, &class, drawn).map_err(|e| e.to_string())?;
     if let Some(r) = &rust {
         t.shape ^= fnv1a(r.as_bytes()).rotate_left(1);
     }

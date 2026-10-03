@@ -849,6 +849,26 @@ declares itself, or a server value of the page, is that instead.
 `wisp check --types` types each (`declare function user(id: number):
 Promise<User>`). An app without any serves nothing more and pays nothing.
 
+## Server rendering off
+
+```html
+---
+const SSR: bool = false;
+let items = db::items().await;
+---
+<title>Items</title>
+{:#each items as item (item.id)}<p>{:item.name}</p>{:/each}
+```
+
+The server runs the page's statements and sends its layouts, its `<head>`,
+the markup as a `<template>` it does not paint, and the values the markup
+names; the browser draws the page. Its markup is browser code, as in a
+component the browser draws: `{…}`, `{#if}`, `{#each}` or a component given
+`{…}` is a build error (in `<title>` and `<head>` Rust is fine). For a page
+whose look depends on the browser (its size, `localStorage`), or that
+`+page.js` fills. `wisp build --spa` serves such pages from a static host
+(see deploy.md).
+
 ## Errors
 
 An error thrown while a client script starts, or in `+page.js`, shows the

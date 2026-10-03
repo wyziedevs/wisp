@@ -86,7 +86,63 @@
     const res = await fetch(location.href, { headers: { ...headers, ...extra } });
     const to = redirect(res);
     if (to) return go(to, { replace: true });
-    swap(await res.text(), res.status);
+    const html = await res.text();
+    swap((await drawn(html, location)) || html, res.status);
+  }
+
+  // ---- static hosts (`wisp build --spa`) -----------------------------------
+
+  // A static host answers a path it has no file for with index.html, whose
+  // #wisp-spa lists the pages the browser draws: [route, file]. The page of
+  // the route that fits `url` comes in its place, given the address's
+  // parameters. Else null.
+  async function drawn(html, url) {
+    const list = /<script type="application\/json" id="wisp-spa">([^<]*)<\/script>/.exec(html);
+    if (!list) return null;
+    for (const [route, file] of JSON.parse(list[1])) {
+      const p = fit(route, url.pathname);
+      if (!p) continue;
+      const res = await fetch(file);
+      if (!res.ok) return null;
+      const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
+      const json = doc.getElementById('wisp-live');
+      if (json) json.textContent = JSON.stringify({ ...JSON.parse(json.textContent), r: route, p }).replace(/</g, '\\u003c');
+      return '<!doctype html>' + doc.documentElement.outerHTML;
+    }
+    return null;
+  }
+
+  // The parameters of `path` when it fits `route` (`/blog/[slug]`), else null.
+  function fit(route, path) {
+    let got;
+    try {
+      got = path.split('/').filter(Boolean).map(decodeURIComponent);
+    } catch {
+      return null;
+    }
+    const p = {};
+    let i = 0;
+    for (const s of route.split('/').filter(Boolean)) {
+      const m = /^\[(\[)?(\.\.\.)?([^\]=]+)(?:=(\w+))?\]\]?$/.exec(s);
+      if (!m) {
+        if (got[i++] !== s) return null;
+        continue;
+      }
+      const [, opt, rest, name, kind] = m;
+      if (rest) {
+        p[name] = got.slice(i).join('/');
+        i = got.length;
+        continue;
+      }
+      const v = got[i];
+      if (v === undefined || (kind === 'int' && !/^\d+$/.test(v))) {
+        if (opt) continue;
+        return null;
+      }
+      p[name] = v;
+      i++;
+    }
+    return i === got.length ? p : null;
   }
 
   // ---- navigation -----------------------------------------------------------
@@ -138,7 +194,8 @@
     }
     if (my !== nav) return;
     if (!isHtml(res)) return location.assign(url); // a file: the browser shows or saves it
-    const html = await res.text();
+    let html = await res.text();
+    html = (await drawn(html, url)) || html;
     if (my !== nav) return;
     if (how.replace) history.replaceState({ k: (entry = id()) }, '', url);
     else if (!how.pop) push(url);
@@ -551,4 +608,7 @@
     }
   }
   wake();
+  // Opened at a path the host answered with index.html: that path's page.
+  if (document.getElementById('wisp-spa'))
+    drawn(document.documentElement.outerHTML, location).then((html) => html && swap(html));
 })();

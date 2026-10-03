@@ -26,7 +26,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 /// `wisp --help`: each command or option, and what it does.
-const COMMANDS: [(&str, &str); 21] = [
+const COMMANDS: [(&str, &str); 22] = [
     (
         "wisp new [name]",
         "Create an app. It asks a few questions; the options below answer them.",
@@ -46,6 +46,10 @@ const COMMANDS: [(&str, &str); 21] = [
     (
         "wisp build --static [--out dist]",
         "Write the pages as plain files, for any static host.",
+    ),
+    (
+        "wisp build --spa [--out dist]",
+        "The same, and index.html draws the SSR = false pages it could not write.",
     ),
     (
         "wisp build --docker [--force]",
@@ -257,6 +261,9 @@ fn dev_port(args: &[String]) -> Result<u16, String> {
 #[derive(Debug, Default, PartialEq)]
 struct BuildOptions {
     static_site: bool,
+    /// `--spa`: `--static`, with `index.html` the fallback that draws the
+    /// pages the browser draws (`SSR = false`) for any parameters.
+    spa: bool,
     docker: bool,
     force: bool,
     out: Option<String>,
@@ -270,12 +277,13 @@ struct BuildOptions {
 }
 
 fn build_options(args: &[String]) -> Result<BuildOptions, String> {
-    let usage = "wisp build takes --static [--out <folder>], --docker [--force], --target <host> [--out <folder>], --client ts [--out <file>] and --sourcemap.";
+    let usage = "wisp build takes --static or --spa [--out <folder>], --docker [--force], --target <host> [--out <folder>], --client ts [--out <file>] and --sourcemap.";
     let mut o = BuildOptions::default();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--static" => o.static_site = true,
+            "--spa" => (o.static_site, o.spa) = (true, true),
             "--target" | "-t" => {
                 let host = args
                     .next()
@@ -478,7 +486,7 @@ The compiler's errors are above.",
         ))
     ));
     if o.static_site {
-        return deploy::static_site(root, &exe, &out(None));
+        return deploy::static_site(root, &exe, &out(None), o.spa);
     }
     println!("    One file with the CSS and static files inside. Copy it to a server and run it.");
     Ok(())
@@ -524,6 +532,8 @@ mod tests {
         assert!(opts("--client ts --out web/api.ts").unwrap().client);
         assert!(opts("--client=ts").unwrap().client);
         assert!(opts("--sourcemap --static").unwrap().sourcemap);
+        let spa = opts("--spa --out site").unwrap();
+        assert!(spa.spa && spa.static_site && spa.out.as_deref() == Some("site"));
         assert!(opts("--sourcemap --client ts").is_err());
         for bad in ["--client", "--client js", "--client ts --static"] {
             assert!(opts(bad).is_err(), "{bad}");

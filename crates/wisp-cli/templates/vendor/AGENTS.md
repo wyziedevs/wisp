@@ -84,6 +84,11 @@ Block rules:
   all), nor an answer that sets a cookie or `cache-control: private` or
   `no-store`; not in dev. Hooks still run. The page must not read other
   headers.
+- `const SSR: bool = false;`: the browser draws the page. The server sends
+  layouts, `<head>`, the markup unpainted and the values it names; the
+  markup must be browser code (`{:x}`, `{:#each}`; Rust is a build error,
+  but in `<title>`/`<head>`). `wisp build --spa` = `--static` + an
+  `index.html` fallback that draws such pages for any params (static hosts).
 - `.await` in a page's markup, outside any block, runs with the statements
   before render: `{#each db::items().await as item}` needs no block. Not
   inside `{#if}`/`{#each}` bodies, layouts or components (build error).
@@ -486,7 +491,7 @@ takes the no-wait fast path off every route.
 
 `wisp new app` · `wisp dev` (hot reload) · `wisp test [--browser] [args]` · `wisp check [--types]` · `wisp fmt [paths]`
 (`--check`, `--stdin`; markup, `---` via rustfmt, scripts, styles) · `wisp build`
-(`--static`, `--docker`, `--target cloudflare|deno|vercel|netlify|node|bun|lambda|native`,
+(`--static`, `--spa`, `--docker`, `--target cloudflare|deno|vercel|netlify|node|bun|lambda|native`,
 `--client ts`, `--sourcemap`; in a host's CI it picks that host) · `wisp deploy init <host>`
 (GitHub Actions) · `wisp add pkg[@ver]` · `wisp remove pkg` · `wisp ui add button dialog`
 (accessible components into `src/components`, the app's to change, with stories; Button

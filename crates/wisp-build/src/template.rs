@@ -291,6 +291,10 @@ pub struct Template {
     pub lints: Vec<crate::a11y::Lint>,
     /// `'sha256-…'` of each inline script that runs (see `csp`).
     pub hashes: Vec<String>,
+    /// A page with `const SSR: bool = false;`: the group of the client
+    /// block its markup (but its `<head>`) is wrapped in, which the server
+    /// never paints, so the browser draws the page from its data.
+    pub drawn: Option<usize>,
 }
 
 impl Template {
@@ -314,28 +318,40 @@ impl std::fmt::Display for Error {
 }
 
 pub fn parse(src: &str) -> Result<Template, Error> {
-    parse_with(src, &[], "w-t")
+    parse_with(src, &[], "w-t", false)
 }
 
 /// A template, whose action forms' `fields` get the attributes the browser
 /// checks them by (`rules::Native`). With a scoped `<style>`, every element
 /// gets `class` (see `style`). `<Island>`s are made plain first (see
-/// `island`).
-pub fn parse_with(src: &str, fields: &[Field], class: &str) -> Result<Template, Error> {
+/// `island`). `drawn`: a page with `const SSR: bool = false;`, which the
+/// browser draws (see [`Template::drawn`]).
+pub fn parse_with(
+    src: &str,
+    fields: &[Field],
+    class: &str,
+    drawn: bool,
+) -> Result<Template, Error> {
     let expanded = crate::island::expand(src)?;
     let src = expanded.as_deref().unwrap_or(src);
     let styled = (src.as_bytes().windows(6)).any(|w| w.eq_ignore_ascii_case(b"<style"));
-    let t = parse_as(src, fields, styled.then_some(class))?;
+    let t = parse_as(src, fields, styled.then_some(class), drawn)?;
     if styled && t.style.is_none() {
-        return parse_as(src, fields, None);
+        return parse_as(src, fields, None, drawn);
     }
     Ok(t)
 }
 
-fn parse_as(src: &str, fields: &[Field], scope: Option<&str>) -> Result<Template, Error> {
+fn parse_as(
+    src: &str,
+    fields: &[Field],
+    scope: Option<&str>,
+    drawn: bool,
+) -> Result<Template, Error> {
     let mut p = Parser {
         src,
         fields,
+        drawn,
         scope,
         scope_tag: false,
         scoped: false,
@@ -370,7 +386,12 @@ fn parse_as(src: &str, fields: &[Field], scope: Option<&str>) -> Result<Template
         tag_attrs: false,
         directives: Vec::new(),
         tag_classes: Vec::new(),
-        templates: Vec::new(),
+        // A drawn page's markup is all one client block's.
+        templates: if drawn {
+            vec![Some(Vec::new())]
+        } else {
+            Vec::new()
+        },
         script: None,
         groups: Vec::new(),
         end: src.len(),
@@ -400,6 +421,7 @@ fn parse_as(src: &str, fields: &[Field], scope: Option<&str>) -> Result<Template
     if let Some(&Node::Text(last)) = p.root.last() {
         p.chunks[last] = p.chunks[last].trim_end().to_string();
     }
+    let drawn = drawn.then(|| p.draw()).transpose()?;
 
     let mut h = Vec::new();
     shape(&p.root, &mut h);
@@ -469,6 +491,7 @@ fn parse_as(src: &str, fields: &[Field], scope: Option<&str>) -> Result<Template
         style: p.style,
         lints: p.a11y.lints,
         hashes: p.hashes,
+        drawn,
     })
 }
 
@@ -586,6 +609,8 @@ struct Parser<'a> {
     src: &'a str,
     /// The fields of the page's actions the browser can check.
     fields: &'a [Field],
+    /// A page the browser draws: its markup is parsed as a client block's.
+    drawn: bool,
     b: &'a [u8],
     i: usize,
     ctx: Ctx,
@@ -1789,6 +1814,76 @@ impl Parser<'_> {
         (from..list.len()).find(|&k| matches!(&list[k], Node::Attr { name, .. } if name == "value"))
     }
 
+    /// At the file's top level: outside blocks, `<template>`s and heads
+    /// (a drawn page's own client block is its top level).
+    fn top(&self) -> bool {
+        self.frames.is_empty() && self.templates.len() == usize::from(self.drawn)
+    }
+
+    /// A drawn page's markup, once parsed: its root but its `<head>`s,
+    /// which the server still writes, in a client block of a group whose
+    /// test is `true`. Rust there (`{x}`, `{#if}`, a component the server
+    /// renders) is an error: the server does not render this page.
+    fn draw(&mut self) -> Result<usize, Error> {
+        let (mut heads, mut body) = (Vec::new(), Vec::new());
+        for n in std::mem::take(&mut self.root) {
+            let before = match body.last() {
+                Some(&Node::Text(j)) => Some(j),
+                _ => None,
+            };
+            match (n, before) {
+                (n @ Node::Head(_), _) => heads.push(n),
+                // Two texts meet where a head was: one node.
+                (Node::Text(k), Some(j)) => {
+                    let tail = std::mem::take(&mut self.chunks[k]);
+                    self.chunks[j].push_str(&tail);
+                }
+                (n, _) => body.push(n),
+            }
+        }
+        if let Some(line) = server_line(&body) {
+            return Err(Error {
+                line,
+                col: 1,
+                msg: "this page has `const SSR: bool = false;`, so the browser draws it and its markup is browser code: \
+                      `{…}`, `{#if}`, `{#each}` and components given `{…}` are Rust. Write `{:…}`, `{:#if}`, \
+                      `{:#each}` and `name={:…}` (Rust in its <title> or <head> is fine)"
+                    .into(),
+            });
+        }
+        let group = self.groups.len();
+        self.groups.push(Group {
+            directives: vec![Directive {
+                kind: Dir::If,
+                name: String::new(),
+                mods: Vec::new(),
+                value: Some(Code {
+                    src: "true".into(),
+                    line: 1,
+                }),
+                key: None,
+                props: Vec::new(),
+                line: 1,
+                col: 1,
+            }],
+            locals: Vec::new(),
+            nested: false,
+            line: 1,
+        });
+        let chunks = &mut self.chunks;
+        let mut text = || {
+            chunks.push(String::new());
+            Node::Text(chunks.len() - 1)
+        };
+        let mut root = vec![text()];
+        for h in heads {
+            root.extend([h, text()]);
+        }
+        root.extend([Node::Client(vec![(group, body)]), text()]);
+        self.root = root;
+        Ok(group)
+    }
+
     /// Whether what is being scanned is markup the browser renders too.
     fn in_browser(&self) -> bool {
         !self.templates.is_empty()
@@ -2042,7 +2137,7 @@ impl Parser<'_> {
     /// `codegen`).
     fn client_script(&mut self, ts: bool) -> Result<(), Error> {
         let at = self.tag_pos;
-        if !self.frames.is_empty() || !self.templates.is_empty() {
+        if !self.top() {
             return Err(self.err(
                 at,
                 "a <script> without attributes is this file's client script, which goes at the top level, outside blocks, \
@@ -2295,7 +2390,7 @@ impl Parser<'_> {
     /// build adds it to `/_app/app.css`.
     fn scoped_style(&mut self) -> Result<(), Error> {
         let at = self.tag_pos;
-        if !self.frames.is_empty() || !self.templates.is_empty() {
+        if !self.top() {
             return Err(self.err(
                 at,
                 "a <style> without attributes is scoped to this file and goes at the top level, outside blocks, \
@@ -3963,6 +4058,26 @@ pub fn client_renderable(nodes: &[Node]) -> bool {
         | Node::Snippet { .. } => true,
         Node::Client(branches) => branches.iter().all(|(_, b)| client_renderable(b)),
         _ => false,
+    })
+}
+
+/// The line of the first Rust in `nodes` that the server would run, if
+/// any: what [`client_renderable`] refuses.
+fn server_line(nodes: &[Node]) -> Option<u32> {
+    nodes.iter().find_map(|n| match n {
+        Node::Client(branches) => branches.iter().find_map(|(_, b)| server_line(b)),
+        _ if client_renderable(std::slice::from_ref(n)) => None,
+        Node::Expr(c) | Node::Html(c) | Node::Const(c) | Node::Selected(c) => Some(c.line),
+        Node::Bool { code, .. } | Node::Attr { code, .. } => Some(code.line),
+        Node::RenderSnippet { args, .. } => Some(args.line),
+        Node::If { branches, .. } => branches.first().map(|(c, _)| c.line),
+        Node::Each { iter, .. } => Some(iter.line),
+        Node::Match { scrutinee, .. } => Some(scrutinee.line),
+        Node::Component { line, .. }
+        | Node::Kept { line, .. }
+        | Node::Chosen { line, .. }
+        | Node::Problem { line, .. } => Some(*line),
+        _ => Some(1),
     })
 }
 

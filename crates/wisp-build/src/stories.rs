@@ -270,8 +270,13 @@ mod tests {
             decl("featured", "bool", Some("false")),
             decl("rows", "&[u8]", None),
         ];
-        let t = crate::template::parse_with("<Card featured title=\"x\" rows={&[]} />", &[], "w-t")
-            .unwrap();
+        let t = crate::template::parse_with(
+            "<Card featured title=\"x\" rows={&[]} />",
+            &[],
+            "w-t",
+            false,
+        )
+        .unwrap();
         let mut nodes = t.nodes;
         let values = wire(&mut nodes, "Card", &decls, false);
         assert_eq!(
@@ -298,7 +303,7 @@ mod tests {
         assert!(src("title").starts_with("cx.query_or::<String>(\"title\""));
         assert_eq!(src("rows"), "&[]");
         // The default story fills in a required prop.
-        let mut nodes = crate::template::parse_with("<Card />", &[], "w-t")
+        let mut nodes = crate::template::parse_with("<Card />", &[], "w-t", false)
             .unwrap()
             .nodes;
         let values = wire(&mut nodes, "Card", &decls, true);

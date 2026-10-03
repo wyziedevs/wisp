@@ -46,12 +46,14 @@ fn resolved(path: &Path) -> PathBuf {
 }
 
 /// Runs the built app in export mode, which writes its pages and the files
-/// they use into `out` (see `wisp::export`), then adds `static/`.
-pub fn static_site(root: &Path, exe: &Path, out: &Path) -> Result<(), String> {
+/// they use into `out` (see `wisp::export`), then adds `static/`. `spa`:
+/// with the fallback, `index.html`, that draws the pages the browser draws.
+pub fn static_site(root: &Path, exe: &Path, out: &Path, spa: bool) -> Result<(), String> {
     check_out(root, out)?;
     term::step(&format!("Exporting to {}", out.display()));
     let mut child = Command::new(exe)
         .env("WISP_EXPORT", out)
+        .env("WISP_SPA", if spa { "1" } else { "" })
         .current_dir(root)
         .stdout(Stdio::piped())
         .spawn()
@@ -76,6 +78,11 @@ pub fn static_site(root: &Path, exe: &Path, out: &Path) -> Result<(), String> {
     println!(
         "    Serve that folder from any static host: GitHub Pages, Netlify, Cloudflare Pages, S3."
     );
+    if spa {
+        println!(
+            "    Have it answer a missing path with index.html (Netlify: `/* /index.html 200` in _redirects)."
+        );
+    }
     Ok(())
 }
 
