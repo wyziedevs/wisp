@@ -6,8 +6,6 @@
 
 <p align="center">A fast, fun web framework for Rust.</p>
 
----
-
 Wisp builds web apps from files: a folder is a URL, and its `+page.wisp` is the page, markup after a short block of the Rust that loads data and handles forms. The whole app, styles and static files included, compiles into one small binary.
 
 - **Few tokens.** Apps are short to write, for people and for AI: pages and APIs take fewer tokens in Wisp than in SvelteKit, Next.js, Nuxt, Axum, FastAPI or Rails: 39% fewer than the next best, in all ([docs/tokens.md](docs/tokens.md)). [AGENTS.md](AGENTS.md) is the whole reference on one page.
