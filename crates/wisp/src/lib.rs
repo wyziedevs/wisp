@@ -29,11 +29,14 @@ pub mod edge;
 #[cfg(target_os = "linux")]
 mod epoll;
 mod export;
+#[cfg(not(target_arch = "wasm32"))]
+mod fetch;
 mod form;
 #[cfg(test)]
 mod fuzz;
 mod headers;
 mod health;
+mod guard;
 mod html;
 mod http;
 mod idem;
@@ -46,6 +49,8 @@ pub mod json;
 mod limit;
 mod live;
 mod otel;
+mod mail;
+pub mod oauth;
 pub mod password;
 mod policy;
 mod range;
@@ -64,6 +69,8 @@ mod table;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod test;
 mod timeout;
+mod token;
+pub mod totp;
 #[cfg(feature = "tower")]
 pub mod tower;
 #[cfg(target_os = "linux")]
@@ -75,7 +82,11 @@ pub use cache::{cache, uncache};
 #[cfg(not(target_arch = "wasm32"))]
 pub use channel::{Channel, Subscription, channel};
 pub use cx::{CookieOptions, Cx, Method, SameSite};
+#[cfg(target_arch = "wasm32")]
+pub use edge::fetch;
 pub use export::{Entry, ExportRoute, export};
+#[cfg(not(target_arch = "wasm32"))]
+pub use fetch::fetch;
 pub use form::{File, Form};
 pub use http::{Body, Reply, Request, handle};
 pub use image::Image;
@@ -88,11 +99,13 @@ pub use limit::RateLimit;
 pub use live::{ClientModule, Json};
 #[cfg(not(target_arch = "wasm32"))]
 pub use relay::{Deliver, Relay, relay};
+pub use mail::mail;
 pub use rest::Resource;
 pub use session::{Account, login, sign_in_page, sign_out_everywhere, signup, users};
 pub use sign::{hex, hmac_sha256};
 pub use store::{Changes, Store, store};
 pub use table::{Page, Row, Table};
+pub use token::{token, token_for, untoken, untoken_for};
 pub use wisp_macros::{Cookie, FromJson, Json, Rest, action, model};
 pub use ws::{Message, WebSocket};
 
