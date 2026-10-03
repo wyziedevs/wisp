@@ -56,6 +56,8 @@ mod table;
 pub mod test;
 #[cfg(feature = "tower")]
 pub mod tower;
+#[cfg(feature = "types")]
+pub mod ts;
 #[cfg(target_os = "linux")]
 mod uring;
 #[cfg(debug_assertions)]
@@ -142,6 +144,22 @@ macro_rules! main {
     };
 }
 
+/// What `#[derive(Json)]` adds for `wisp check --types` (the `types`
+/// feature): nothing in any other build.
+#[doc(hidden)]
+#[cfg(feature = "types")]
+#[macro_export]
+macro_rules! __ts {
+    ($($t:tt)*) => { $($t)* };
+}
+
+#[doc(hidden)]
+#[cfg(not(feature = "types"))]
+#[macro_export]
+macro_rules! __ts {
+    ($($t:tt)*) => {};
+}
+
 /// Includes the code `wisp-build` generated and brings `App` into scope,
 /// for a `main` of your own: `wisp::app!(); fn main() { setup(); wisp::run::<App>(); }`.
 /// `src/hooks.rs` is `crate::hooks`, so routes can use what it defines, and
@@ -178,6 +196,12 @@ macro_rules! app {
 /// the like) the host serves: this gets the app ready and returns.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run<A: App>() {
+    // `wisp check --types` builds the app to print its scripts' server
+    // values' types, and runs nothing else.
+    #[cfg(feature = "types")]
+    if std::env::var_os("WISP_TYPES").is_some() {
+        return print!("{{{}}}", A::types());
+    }
     // `wisp build --static` runs the app this way, to write its pages out.
     if let Some(dir) = setting::<String>("WISP_EXPORT", "a folder") {
         return export::run::<A>(&dir).unwrap_or_else(|e| fail(&e.to_string()));
@@ -283,13 +307,51 @@ pub fn state<T: Send + Sync + 'static>() -> &'static T {
 }
 
 /// A variable from the host's environment, such as an API key: the
-/// process's environment on a server, the worker's variables and secrets
-/// on an edge host.
+/// process's environment on a server, else `.env` in its working
+/// directory (read once, at start); the worker's variables and secrets on
+/// an edge host, which has no `.env`.
 pub fn env(key: &str) -> Option<String> {
     #[cfg(not(target_arch = "wasm32"))]
-    return std::env::var(key).ok();
+    return var(key, dotenv());
     #[cfg(target_arch = "wasm32")]
     return edge::env(key);
+}
+
+/// `key` from the process's environment, else from `file`'s lines.
+#[cfg(not(target_arch = "wasm32"))]
+fn var(key: &str, file: &[(String, String)]) -> Option<String> {
+    match std::env::var(key) {
+        Ok(v) => Some(v),
+        Err(std::env::VarError::NotUnicode(v)) => Some(v.to_string_lossy().into_owned()),
+        Err(std::env::VarError::NotPresent) => {
+            file.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
+        }
+    }
+}
+
+/// The variables of `.env` in the working directory, read once: the first
+/// setting `run` reads reads it. A line that is not `KEY=value` is skipped,
+/// with a warning; no file is none.
+#[cfg(not(target_arch = "wasm32"))]
+fn dotenv() -> &'static [(String, String)] {
+    static VARS: OnceLock<Vec<(String, String)>> = OnceLock::new();
+    VARS.get_or_init(|| {
+        let text = match std::fs::read_to_string(".env") {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+            Err(e) => {
+                http::log(format_args!("wisp: .env is not read: {e}"));
+                return Vec::new();
+            }
+        };
+        let (vars, bad) = wisp_shared::dotenv::parse(&text);
+        for n in bad {
+            http::log(format_args!(
+                "wisp: .env line {n} is not KEY=value, so it is skipped"
+            ));
+        }
+        vars
+    })
 }
 
 /// Runs `task` in the background: work that outlives its request. On the
@@ -498,12 +560,9 @@ pub fn address() -> SocketAddr {
 /// is not a `T` ends the process, so a typo is never silently replaced by a
 /// default.
 fn setting<T: FromStr>(name: &str, what: &str) -> Option<T> {
-    #[cfg(not(target_arch = "wasm32"))]
-    let value = std::env::var_os(name)?;
-    #[cfg(target_arch = "wasm32")]
-    let value = std::ffi::OsString::from(edge::env(name)?);
-    match value.to_str().map(|v| v.trim().parse()) {
-        Some(Ok(v)) => Some(v),
+    let value = env(name)?;
+    match value.trim().parse() {
+        Ok(v) => Some(v),
         _ => fail(&format!("{name} is {value:?}, which is not {what}")),
     }
 }
@@ -675,6 +734,12 @@ pub trait App: 'static {
     /// `/_wisp/components`.
     fn workshop() -> &'static [rt::Shelf] {
         &[]
+    }
+    /// `wisp check --types`: the TypeScript of each value a script reads
+    /// of a block, by file (see `ts`), as the members of a JSON object.
+    #[cfg(feature = "types")]
+    fn types() -> String {
+        String::new()
     }
     /// Every route, for `wisp build --static`.
     fn export_routes() -> Vec<ExportRoute> {
@@ -1749,6 +1814,20 @@ pub mod rt {
 
 #[cfg(test)]
 mod tests {
+    /// `.env` fills in what the process's environment lacks, never more.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn env_file_fills_in() {
+        let file = [("WISP_TEST_ONLY_IN_FILE", "file"), ("PATH", "file")]
+            .map(|(k, v)| (k.to_string(), v.to_string()));
+        assert_eq!(
+            super::var("WISP_TEST_ONLY_IN_FILE", &file).as_deref(),
+            Some("file")
+        );
+        assert!(super::var("PATH", &file).is_some_and(|p| p != "file"));
+        assert_eq!(super::var("WISP_TEST_NOWHERE", &file), None);
+    }
+
     /// Every number to 100 000, each power of ten and its neighbours, and
     /// the ends of the range, against `Display`, written where asked.
     #[test]

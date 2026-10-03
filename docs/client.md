@@ -125,10 +125,13 @@ a build error that says what to write instead:
 
 The build only strips. `wisp check --types` checks the types too, with the
 app's own TypeScript (`npm install -D typescript`, or `WISP_TSC` naming a
-`tsc`; without Node or it, it says so and skips). Server values are typed:
-a `#[derive(Json)]` type's fields, and a block's `let items: Vec<Item>`, as
-TypeScript interfaces; an unannotated `let`, `any`. Errors point at the
-`.wisp` file and line.
+`tsc`; without Node or it, it says so and skips). Server values are typed
+by the Rust compiler, no annotations needed: `let items = vec![Item {..}]`
+is `Item[]`, `let n = 3` is `number`, a `#[derive(Json)]` type an
+interface. For it the app is built once more (`--features wisp/types`),
+and prints the types without running a page. A value whose type has no
+TypeScript (a `Json` written by hand) is `unknown`, with a note. Errors
+point at the `.wisp` file and line.
 
 ## Environment variables
 
@@ -148,12 +151,13 @@ PUBLIC_API_URL=https://api.example.com
 ```
 
 - The values come from the build's environment, and from `.env` for the
-  names it lacks. `wisp dev` rebuilds when `.env` changes; a release build
-  has the values it was built with.
+  names it lacks (a name given twice is its last value). `wisp dev`
+  rebuilds when `.env` changes; a release build has the values it was
+  built with.
 - Only `PUBLIC_` names reach the browser. `env.DATABASE_URL` in browser
   code is a build error, so a secret can't leak: read it on the server,
-  `wisp::env("DATABASE_URL")` (which reads the process's environment, not
-  `.env`).
+  `wisp::env("DATABASE_URL")` (the process's environment, else `.env`'s,
+  read when the server starts).
 - A `PUBLIC_` name that is not set is a build error, not `undefined` at
   runtime. Set it, even to nothing (`PUBLIC_FLAG=`).
 - `env` read whole, or `env[name]`, is an error too: names are filled in
@@ -630,7 +634,8 @@ served beside it (`/_app/c/t3.js.map`, also for `src/lib` files and
 `+page.js`). DevTools then shows the `.wisp` file, and a stack trace its
 lines: each line of a script, an import or a directive maps to its line of
 the file. A release build has none (no cost), unless built with
-`wisp build --sourcemap`.
+`wisp build --sourcemap`; `--static --sourcemap` writes the maps beside
+the modules.
 
 ## Hot reload that keeps state
 

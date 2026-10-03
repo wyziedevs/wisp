@@ -10,8 +10,8 @@
 //! - CSS output: tell browsers to swap the stylesheet (a CSS tool's input
 //!   is its watcher's; a new `src/app.scss` or `postcss.config.*` changes
 //!   the watchers).
-//! - package.json and .env: rebuild, for the npm packages' versions and
-//!   browser code's `env.PUBLIC_*`.
+//! - package.json and .env: rebuild and restart, for the npm packages'
+//!   versions, browser code's `env.PUBLIC_*` and the server's `wisp::env`.
 //! - `static/`: tell browsers to reload.
 //! - anything else (Rust, Cargo.toml, new/removed routes): rebuild, restart,
 //!   and let browsers morph to the new page.

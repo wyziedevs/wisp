@@ -1,6 +1,6 @@
 //! `wisp check`: routes and templates, with no compiling.
 
-use crate::{Dir, fail, has, new_app, wisp, write};
+use crate::{Dir, fail, has, new_app, pinned_app, read, wisp, write};
 
 #[test]
 fn every_template_is_valid() {
@@ -74,4 +74,43 @@ fn a_broken_file_is_named_with_its_line() {
     has(&o.err, &["src/components"]);
     write(&app, "src/components/Card.wisp", "<div><slot /></div>\n");
     assert!(wisp(&app, &["check"]).ok);
+}
+
+/// `--types`: a block's values have the types the compiler gives them, no
+/// annotations needed, and a misuse is told at its `.wisp` line. Needs a
+/// `tsc` (`WISP_TSC`); skipped without one.
+#[test]
+fn types_come_from_the_compiler() {
+    if std::env::var_os("WISP_TSC").is_none_or(|t| !std::path::Path::new(&t).exists()) {
+        eprintln!("skipped: set WISP_TSC to a tsc to run it");
+        return;
+    }
+    let cwd = Dir::new("check-types");
+    let app = pinned_app(&cwd, "app", &["-t", "minimal"]);
+    let page = "---\n#[derive(Json)]\nstruct Item { name: String, done: Option<bool> }\n\
+                let items = vec![Item { name: \"a\".into(), done: None }];\nlet n = 3;\n---\n\
+                <p>{:n}</p>\n<script lang=\"ts\">\n  const names: string[] = items.map((i) => i.name)\n  \
+                const twice: number = n * 2\n  const wrong: string = n\n</script>\n";
+    write(&app, "src/routes/+page.wisp", page);
+    let o = wisp(&app, &["check", "--types"]);
+    assert!(!o.ok, "{}", o.out);
+    has(
+        &o.err,
+        &[
+            "src/routes/+page.wisp:11:9: error TS2322: Type 'number' is not assignable to type 'string'.",
+        ],
+    );
+    has(
+        &read(&app, ".wisp/types/src/routes/+page.wisp.ts"),
+        &[
+            "declare const items: Item[];",
+            "declare const n: number;",
+            "interface Item { name: string; done: boolean | null; }",
+        ],
+    );
+    let fixed = page.replace("  const wrong: string = n\n", "");
+    write(&app, "src/routes/+page.wisp", &fixed);
+    let o = wisp(&app, &["check", "--types"]);
+    assert!(o.ok, "{}", o.err);
+    has(&o.out, &["Types are valid."]);
 }

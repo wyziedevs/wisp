@@ -13,7 +13,7 @@ src/app.css                 served at /_app/app.css; Tailwind if it imports it
 src/app.scss                Sass instead of app.css, served the same (no Node)
 postcss.config.*            PostCSS after either (needs Node + node_modules/postcss-cli)
 package.json                npm packages for browser code: `wisp add canvas-confetti`, no Node
-.env                        PUBLIC_X=… for browser code's `env.PUBLIC_X` (build time)
+.env                        X=…: `wisp::env("X")` (start), `env.PUBLIC_X` in browser code (build)
 src/hooks.rs                fn init() once; fn before(cx) every request
 src/NAME.rs                 any module, no `mod` line: `NAME::f()` everywhere
 src/components/Card.wisp    <Card title={x}>…</Card>
@@ -220,14 +220,17 @@ stripped (spaces, so lines and columns hold), as Node's strip-types does:
 `enum`, a `namespace` with values and parameter properties are build errors
 (use `as const` objects, modules, fields). `wisp check --types` runs the
 app's tsc (`npm i -D typescript`, or `WISP_TSC`) with server values typed
-(`#[derive(Json)]` fields, `let x: T` in a block; else `any`).
+by the compiler (`let items = vec![Item{..}]` → `Item[]`; a type with no TS
+→ `unknown`, noted).
 Env: `env.PUBLIC_API_URL` in browser code (scripts, directives, `src/lib`,
 `+page.js`) is filled in at build from the process's `PUBLIC_*`, else
 `.env`'s (dev rebuilds when it changes). `env.SECRET` (no `PUBLIC_`), a
 `PUBLIC_*` that is not set, or `env` read whole is a build error. The
-server's `wisp::env("X")` reads the process's environment, not `.env`.
+server's `wisp::env("X")` reads the process's environment, else `.env`'s
+(once, at start; a bad line warns; not on edge hosts).
 Source maps: dev serves `/_app/c/t3.js.map` beside each module (the `.wisp`
-line of each line); release only with `wisp build --sourcemap`.
+line of each line); release only with `wisp build --sourcemap` (`--static`
+writes them too).
 Server values sent to JS must `#[derive(Json)]`. Full: docs/client.md.
 
 ## Endpoints (`+server.rs`)

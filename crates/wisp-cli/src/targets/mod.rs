@@ -97,7 +97,7 @@ pub fn build(root: &Path, host: &str, out: &Path) -> Result<(), String> {
         "lambda" => &[strip],
         _ => &[],
     };
-    let b = cargo::build_for(root, true, false, Some(target), env);
+    let b = cargo::build_for(root, true, false, &["--target", target], env);
     let app = b
         .exe
         .filter(|_| b.ok)

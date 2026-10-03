@@ -114,16 +114,50 @@ pub async fn export<A: App>(dir: &Path) -> io::Result<()> {
         find_assets(missing.text(), &mut assets);
         write(dir, "404.html", missing.bytes())?;
     }
-    for path in assets {
+    // A module brings what it imports, and its source map when it has one
+    // (`wisp build --sourcemap`).
+    let mut done = BTreeSet::new();
+    while let Some(path) = assets.pop_first() {
+        if !done.insert(path.clone()) {
+            continue;
+        }
         let Some(rel) = crate::http::safe_relative_path(&path) else {
             continue;
         };
         let reply = handle::<A>(Request::new("GET", &path)).await;
-        if reply.status == 200 {
+        if reply.status != 200 {
+            continue;
+        }
+        if !path.ends_with(".js") {
             write(dir, &rel, reply.bytes())?;
+            continue;
+        }
+        let js = reply.text();
+        find_assets(js, &mut assets);
+        let Some((code, map)) = source_map(js) else {
+            write(dir, &rel, reply.bytes())?;
+            continue;
+        };
+        let at = rel.rfind('/').map_or(0, |i| i + 1);
+        let found = handle::<A>(Request::new("GET", &format!("/{}{map}", &rel[..at]))).await;
+        if found.status == 200 {
+            write(dir, &format!("{}{map}", &rel[..at]), found.bytes())?;
+            write(dir, &rel, reply.bytes())?;
+        } else {
+            // No map to point at: the module without the line.
+            write(dir, &rel, code.as_bytes())?;
         }
     }
     Ok(())
+}
+
+/// A module's code before its `//# sourceMappingURL=` line, and the map's
+/// file beside it that the line names.
+fn source_map(js: &str) -> Option<(&str, &str)> {
+    let (code, tail) = js.rsplit_once("//# sourceMappingURL=")?;
+    let map = tail.lines().next()?.trim();
+    let plain = !map.is_empty() && !map.contains([':', '/', '?', '\\']) && !map.starts_with('.');
+    plain.then_some((code, map))
 }
 
 /// The pages a route makes, as path segments.
@@ -326,6 +360,18 @@ mod tests {
                 .unwrap_err()
                 .contains("does not fit")
         );
+    }
+
+    #[test]
+    fn source_maps_beside_their_module() {
+        assert_eq!(
+            source_map("let a = 1\n//# sourceMappingURL=t3.js.map\n"),
+            Some(("let a = 1\n", "t3.js.map"))
+        );
+        assert_eq!(source_map("let a = 1\n"), None);
+        for odd in ["https://x/t.map", "../t.map", "data:x", ""] {
+            assert_eq!(source_map(&format!("//# sourceMappingURL={odd}")), None);
+        }
     }
 
     #[test]

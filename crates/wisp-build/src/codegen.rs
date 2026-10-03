@@ -636,10 +636,28 @@ fn prop_decls(t: &Template, out: &mut Vec<u8>) {
 /// there. Each `<script lang="ts">` is a module of its own,
 /// `src/routes/+page.wisp.ts`, on its lines of the file, with the server
 /// values or props it reads declared at its end (a `#[derive(Json)]`
-/// type's fields as theirs, a block's `let`s as `any`); `wisp.d.ts` has
-/// the runes and helpers.
-pub fn types(input: &Input) -> Result<Vec<(String, String)>, String> {
+/// type's fields as theirs, a block's `let`s as `probed` has them, or as
+/// written, else `any`); `wisp.d.ts` has the runes and helpers.
+///
+/// `probed` is what an app built with `types` printed (see `wisp::ts`):
+/// `{"file":{"values":[[name, type]..],"decls":[[name, decl]..]}..}`. The
+/// `bool` says whether a script reads a block's values, which only it types.
+pub fn types(input: &Input, probed: &str) -> Result<(Vec<(String, String)>, bool), String> {
     let p = Project::load(input)?;
+    let probed = match probed {
+        "" => wisp_shared::json::Json::Obj(Vec::new()),
+        text => wisp_shared::json::parse(text).map_err(|e| format!("The app's types: {e}"))?,
+    };
+    let pairs = |v: Option<&wisp_shared::json::Json>| -> Vec<(String, String)> {
+        v.into_iter()
+            .flat_map(|v| v.items())
+            .filter_map(|p| {
+                let mut p = p.items().filter_map(|s| s.as_str());
+                Some((p.next()?.to_string(), p.next()?.to_string()))
+            })
+            .collect()
+    };
+    let mut wanted = false;
     let mut out = vec![("wisp.d.ts".to_string(), WISP_D_TS.to_string())];
     for t in &p.templates {
         let Some((s, written)) = (t.t.script.as_ref()).and_then(|s| Some((s, s.ts.as_deref()?)))
@@ -669,11 +687,24 @@ pub fn types(input: &Input) -> Result<Vec<(String, String)>, String> {
                 let mut fields: Vec<(String, String)> =
                     t.data.iter().map(|(n, ty)| (n.clone(), ts(ty))).collect();
                 if let Some((stmts, binds)) = &t.stmts {
+                    wanted = true;
+                    let here = probed.get(&t.rel);
+                    let known = pairs(here.and_then(|h| h.get("values")));
                     let lets = rust_scan::let_names(stmts).into_iter();
                     for n in lets.chain(rust_scan::let_names(&binds.join("\n"))) {
                         if !n.starts_with("__") && !fields.iter().any(|f| f.0 == n) {
-                            let ty = annotated(stmts, &n).map_or_else(|| "any".into(), |r| ts(&r));
+                            let ty = match known.iter().find(|(k, _)| *k == n) {
+                                Some((_, ty)) => ty.clone(),
+                                None => {
+                                    annotated(stmts, &n).map_or_else(|| "any".into(), |r| ts(&r))
+                                }
+                            };
                             fields.push((n, ty));
+                        }
+                    }
+                    for (n, d) in pairs(here.and_then(|h| h.get("decls"))) {
+                        if !decls.iter().any(|(k, _)| *k == n) {
+                            decls.push((n, d + "\n"));
                         }
                     }
                 }
@@ -713,7 +744,7 @@ pub fn types(input: &Input) -> Result<Vec<(String, String)>, String> {
         }
         out.push((format!("{}.ts", t.rel), f));
     }
-    Ok(out)
+    Ok((out, wanted))
 }
 
 /// The Rust type of `let name: T = …` in `stmts`, if it is written.
@@ -824,6 +855,7 @@ fn generate_parts<'a>(input: &Input<'a>) -> Result<(Project<'a>, Web, String, St
     let mut g = Gen {
         out: String::new(),
         release: input.release,
+        types: (!input.release).then(Vec::new),
     };
     g.modules(&p, &web)?;
     g.servers(&p);
@@ -2375,6 +2407,17 @@ impl Gen {
         self.line(1, "}");
         self.line(0, "");
 
+        if let Some(mods) = self.types.take().filter(|m| !m.is_empty()) {
+            self.line(1, "::wisp::__ts! {");
+            self.line(2, "fn types() -> String {");
+            self.line(3, "let mut __out = String::new();");
+            for m in mods {
+                self.line(3, &format!("{m}::__wisp_types(&mut __out);"));
+            }
+            self.line(3, "__out");
+            self.line(2, "}");
+            self.line(1, "}");
+        }
         // Routes for `wisp build --static`.
         self.line(1, "fn export_routes() -> Vec<::wisp::ExportRoute> {");
         self.line(2, "vec![");
@@ -3428,6 +3471,24 @@ fn names_word(src: &str, name: &str) -> bool {
     })
 }
 
+/// The names of a block's values its browser code reads, as `data.name`.
+fn data_names(client: Option<&Client>) -> Vec<&str> {
+    client
+        .iter()
+        .flat_map(|c| &c.blob)
+        .filter_map(|p| match p {
+            Piece::Value { expr, .. } => expr.strip_prefix("data."),
+            Piece::Text(_) => None,
+        })
+        .map(|rest| rest.split('.').next().unwrap_or(rest))
+        .fold(Vec::new(), |mut v, n| {
+            if !v.contains(&n) {
+                v.push(n);
+            }
+            v
+        })
+}
+
 fn opt(x: Option<usize>) -> String {
     x.map_or("None".into(), |i| format!("Some({i})"))
 }
@@ -3764,6 +3825,9 @@ fn if_condition(cond: &str, locals: &[String]) -> String {
 struct Gen {
     out: String,
     release: bool,
+    /// Dev builds: the templates' modules with a `__wisp_types`, which
+    /// only `wisp check --types` compiles (`wisp::__ts!`).
+    types: Option<Vec<String>>,
 }
 
 impl Gen {
@@ -3963,21 +4027,7 @@ impl Gen {
                 self.line(2, "let cx: &::wisp::Cx = cx;");
                 self.line(2, "__wrap(__o, cx, &|__o: &mut ::wisp::Out| {");
             }
-            // Browser code reads the statements' names as `data.name`.
-            let names: Vec<&str> = client
-                .iter()
-                .flat_map(|c| &c.blob)
-                .filter_map(|p| match p {
-                    Piece::Value { expr, .. } => expr.strip_prefix("data."),
-                    Piece::Text(_) => None,
-                })
-                .map(|rest| rest.split('.').next().unwrap_or(rest))
-                .fold(Vec::new(), |mut v, n| {
-                    if !v.contains(&n) {
-                        v.push(n);
-                    }
-                    v
-                });
+            let names = data_names(client);
             if !names.is_empty() {
                 let params: Vec<String> = (0..names.len()).map(|k| format!("T{k}")).collect();
                 let fields: Vec<String> = names
@@ -4075,6 +4125,9 @@ impl Gen {
             self.line(2, "Ok(())");
         }
         self.line(1, "}");
+        if self.types.is_some() {
+            self.probe(t, client);
+        }
         // A component the browser renders: its markup as the browser's copy
         // of it, painted from its props' JSON, for a page to show first.
         // Deep enough, a component rendering itself leaves the rest to the
@@ -4104,6 +4157,65 @@ impl Gen {
         }
         self.line(0, "}");
         self.line(0, "");
+    }
+
+    /// `wisp check --types`: `__wisp_types`, which reads the types of the
+    /// block's values the browser code reads (`items` or `data.items`) from
+    /// a closure of its statements that is never called (see `wisp::ts`).
+    fn probe(&mut self, t: &Tpl, client: Option<&Client>) {
+        let (Some((stmts, binds)), Some(mods)) = (&t.stmts, &mut self.types) else {
+            return;
+        };
+        let lets = rust_scan::let_names(&format!("{}\n{stmts}", binds.join("\n")));
+        let mut names: Vec<&str> = data_names(client);
+        for p in client.iter().flat_map(|c| &c.blob) {
+            if let Piece::Value { expr, .. } = p
+                && lets.contains(expr)
+                && !names.contains(&expr.as_str())
+            {
+                names.push(expr);
+            }
+        }
+        names.retain(|n| lets.iter().any(|l| l == n));
+        let (closure, pick) = match t.kind {
+            _ if names.is_empty() => return,
+            Kind::Page => ("|cx: &'static mut ::wisp::Cx| async move {", "page"),
+            Kind::Layout => ("|cx: &'static ::wisp::Cx| {", "layout"),
+            _ => return,
+        };
+        mods.push(match &t.user {
+            Some((u, _)) => format!("{u}::{}", t.module),
+            None => t.module.clone(),
+        });
+        let mut tail = String::from("()");
+        for n in names.iter().rev() {
+            tail = format!("((&&::wisp::ts::probe(&{n})).pick(), {tail})");
+        }
+        if t.kind == Kind::Page {
+            tail = format!("::wisp::Result::Ok({tail})");
+        }
+        self.line(1, "::wisp::__ts! {");
+        self.line(1, "#[allow(unreachable_code)]");
+        self.line(1, "pub fn __wisp_types(__out: &mut String) {");
+        self.line(2, &format!("let __f = {closure}"));
+        for b in binds {
+            self.line(3, b);
+        }
+        self.rust_lines(3, stmts, 1, &t.rel);
+        self.line(3, "use ::wisp::ts::{ViaAny as _, ViaTs as _};");
+        self.line(3, &tail);
+        self.line(2, "};");
+        let names: Vec<String> = names.iter().map(|n| lit(n)).collect();
+        self.line(
+            2,
+            &format!(
+                "::wisp::ts::{pick}(&__f, {}, &[{}], __out);",
+                lit(&t.rel),
+                names.join(", ")
+            ),
+        );
+        self.line(1, "}");
+        self.line(1, "}");
     }
 
     /// Writes `pieces`, JSON with Rust values in it, to `buf` (a `&mut String`).
@@ -7960,6 +8072,26 @@ pub fn load() -> Data { todo!() }";
     }
 
     #[test]
+    fn block_values_are_probed_for_types_in_dev_builds_only() {
+        let files = [(
+            "src/routes/+page.wisp",
+            "---\nlet n = 3;\nlet unread = 1;\n---\n<p>{:n}</p>",
+        )];
+        let dev = build("probe", &files, false).unwrap();
+        // Only what the browser reads: `n`, not `unread`.
+        assert!(dev.contains("::wisp::Result::Ok(((&&::wisp::ts::probe(&n)).pick(), ()))"));
+        assert!(
+            dev.contains("::wisp::ts::page(&__f, \"src/routes/+page.wisp\", &[\"n\"], __out);")
+        );
+        assert!(dev.contains("::wisp::__ts! {\n        fn types() -> String {"));
+        assert!(
+            !build("probe-release", &files, true)
+                .unwrap()
+                .contains("__ts!")
+        );
+    }
+
+    #[test]
     fn typescript_files_for_tsc() {
         let files = [
             (
@@ -7977,13 +8109,17 @@ pub fn load() -> Data { todo!() }";
             ),
         ];
         let out = in_dir("types", &files, |root| {
-            types(&Input {
-                root,
-                release: false,
-                maps: false,
-            })
+            types(
+                &Input {
+                    root,
+                    release: false,
+                    maps: false,
+                },
+                "",
+            )
         })
-        .unwrap();
+        .unwrap()
+        .0;
         let file = |p: &str| &out.iter().find(|(n, _)| n == p).unwrap().1;
         assert!(file("wisp.d.ts").contains("declare function $state<T>"));
         // On the lines of the file, with what it reads declared after it.

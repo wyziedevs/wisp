@@ -219,6 +219,41 @@ fn release_build_and_static_export() {
     assert!(app.join("warned/form/index.html").is_file());
     assert!(!app.join("warned/ping").exists() && !app.join("warned/[slug]").exists());
 
+    // Browser modules come with what they import; with --sourcemap, with
+    // their maps, and without it, with no line naming one.
+    write(
+        &app,
+        "src/lib/twice.js",
+        "export const twice = (n) => n * 2\n",
+    );
+    write(
+        &app,
+        "src/routes/count/+page.wisp",
+        "<p>{:n}</p>\n<script>\n  import { twice } from '$lib/twice.js'\n  let n = twice(2)\n</script>\n",
+    );
+    for (out, maps) in [("plain", false), ("mapped", true)] {
+        let mut args = vec!["build", "--static", "--out", out];
+        if maps {
+            args.push("--sourcemap");
+        }
+        let o = wisp(&app, &args);
+        assert!(o.ok, "{}", o.err);
+        let files = tree(&app.join(out));
+        let js: Vec<&String> = files.iter().filter(|f| f.ends_with(".js")).collect();
+        assert!(js.iter().any(|f| f.contains("twice")), "{files:?}");
+        for f in js {
+            let text = read(&app.join(out), f);
+            let named = text.contains("//# sourceMappingURL=");
+            let map = files.contains(&format!("{f}.map"));
+            assert_eq!(named, map, "{out}/{f}");
+            assert!(
+                !maps || f.ends_with("wisp.js") || f.ends_with("live.js") || map,
+                "{out}/{f}"
+            );
+        }
+        assert_eq!(files.iter().any(|f| f.ends_with(".map")), maps, "{files:?}");
+    }
+
     // A folder that cannot be written is a failed export.
     write(&app, "blocked", "a file, not a folder");
     let o = fail(
