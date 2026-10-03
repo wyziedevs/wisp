@@ -227,6 +227,9 @@ Both sign in. `wisp::users(&db::USERS)` in `init` makes it `cx.user()`.
 `cx.sign_out()`, `wisp::sign_out_everywhere(id)?`, `wisp::sign_in_page("/enter")`.
 `wisp::login`/`signup` are these without a Cx. Hashes: PBKDF2-SHA256, ~0.2 s
 off the worker (`RateLimit` sign-ins); by hand `wisp::password::{hash, check}`.
+`cx.need(&USERS, |u| u.admin)?` is the Row, 403 if not allowed. More:
+`docs/auth.md` (`token_for`/`untoken_for` links, `totp`, `oauth`, `mail`,
+`fetch`).
 
 ## hooks.rs
 
@@ -235,9 +238,9 @@ async fn init() -> Result {
     wisp::provide(Db::connect(&wisp::env("DB_URL").or_status(500)?).await?);
     Ok(())
 }
-fn before(cx: &mut Cx) -> Result<Option<Response>> {
-    if let Some(r) = cx.cors("*") { return Ok(Some(r)); }
-    Ok(None)
+fn before(cx: &mut Cx) -> Result {
+    cx.cors("*")?;                    // a preflight is the Err that `?` returns
+    Ok(())
 }
 ```
 No other `pub fn` here. Keep `before` sync: `async fn before` takes the

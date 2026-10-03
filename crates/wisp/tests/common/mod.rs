@@ -235,10 +235,8 @@ async fn lab(cx: &mut Cx, out: &mut Out) -> Result<()> {
         "/writes" => text(out, cx.writes().to_string()),
         "/cors" => {
             let origins = arg(cx, "o");
-            match cx.cors(&origins) {
-                Some(preflight) => send(out, preflight),
-                None => text(out, "body"),
-            }
+            cx.cors(&origins)?;
+            text(out, "body")
         }
         "/status" => {
             cx.set_status(cx.query_or("n", 200));
