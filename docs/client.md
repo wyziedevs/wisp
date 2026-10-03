@@ -451,6 +451,41 @@ Where Rust renders it, such a prop shows as the browser would show it
 (`{label}`, `title={label}`); to work with it in Rust (`{#if}`, a method),
 declare it in `{@props}` with its type.
 
+## Custom elements
+
+`{@element "x-card"}` first in a component builds it as a custom element
+too, at `/_app/c/el/x-card.js`. Any site uses it with one script tag:
+
+```html
+<!-- src/components/Card.wisp -->
+{@element "x-card"}
+{@props title: &str, count: u32 = 0, featured: bool = false}
+<h2>{:title}{:#if featured} ★{:/if}</h2>
+<button on:click="count++">{:count}</button>
+{@render children()}
+<style>h2 { color: teal }</style>
+```
+
+```html
+<!-- any page, on any site -->
+<script type="module" src="https://app.example/_app/c/el/x-card.js"></script>
+<x-card title="Hi" count="3" featured>Kids</x-card>
+```
+
+- Each prop is an attribute (`snake_case` as `snake-case`) and a property.
+  An attribute is read as the prop's Rust type: a number, a `bool`
+  (present is true, `"false"` false), text, or else JSON (`tags='["a"]'`).
+  A removed attribute goes back to the default.
+- It draws in an open shadow root, with its scoped `<style>` and those of
+  the components it draws. `{@render children()}` is a `<slot>`.
+- The browser draws it, so its markup is browser code (as a client
+  component's) and its defaults are literals; both are build errors
+  otherwise. The app still renders `<Card>` itself, server first.
+- Its module and what it imports allow any origin
+  (`access-control-allow-origin: *`), so another site can load them; only
+  an app with an element sends that header. It loads `live.js`, not
+  `wisp.js`.
+
 ## State helpers
 
 Available inside any client script. No imports.

@@ -225,6 +225,14 @@ block in components. Markup as a prop: `row: Snippet<&Post, usize>`,
 shown with `{@render row(p, i)}`, given as `<Table {row} />` or a
 `{#snippet row(p, i)}…{/snippet}` among the tag's children.
 
+`{@element "x-card"}` first in a component also builds it as a custom
+element, `/_app/c/el/x-card.js`: that one `<script type="module" src>` and
+`<x-card title="Hi" count="3">kids</x-card>` work on any site. Attributes
+read as the props' Rust types (numbers, `bool` with `"false"` false, text,
+else JSON), properties too; children go in its `<slot>`; it draws in a
+shadow root with its `<style>`. Its markup is browser code (`{:title}`,
+`{:#if}`), its defaults literals.
+
 ## Markdown pages
 
 ```markdown

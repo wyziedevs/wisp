@@ -720,6 +720,9 @@ pub trait App: 'static {
     const SCRIPT_HASHES: &'static [&'static str] = &[];
     /// The Markdown pages, for [`pages`].
     const PAGES: &'static [MdPage] = &[];
+    /// Has a component built as a custom element (`{@element "x-card"}`),
+    /// which other sites load: the browser modules allow any origin.
+    const ELEMENTS: bool = false;
     /// What the build knows of each route, by route id.
     const ROUTES: &'static [rt::RouteFacts];
     /// [`rt::RouteFacts::now`] for a request no route matched, which the

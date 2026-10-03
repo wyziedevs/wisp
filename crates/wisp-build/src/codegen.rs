@@ -13,9 +13,9 @@ use crate::model::{self, Handler, Model};
 use crate::npm::{self, Npm};
 use crate::openapi::{self, Op};
 use crate::protocol::{
-    APP_CSS_PATH, COPY_END, COPY_START, EXTRA_JS_PATH, GROUP_ATTR, IMAGES, ISLAND_MEDIA,
-    LIVE_JS_PATH, LOOP_ATTR, MODULES, NPM_MODULES, ON_FLAGS, ON_PLACED, ON_ROOT, REMOTE,
-    REMOTE_JS_PATH, SLOT_ATTR, WISP_JS_PATH,
+    APP_CSS_PATH, COPY_END, COPY_START, ELEMENT_JS_PATH, ELEMENTS, EXTRA_JS_PATH, GROUP_ATTR,
+    IMAGES, ISLAND_MEDIA, LIVE_JS_PATH, LOOP_ATTR, MODULES, NPM_MODULES, ON_FLAGS, ON_PLACED,
+    ON_ROOT, REMOTE, REMOTE_JS_PATH, SLOT_ATTR, WISP_JS_PATH,
 };
 use crate::routes::Seg;
 use crate::rust_scan::{self, FnItem, Returns};
@@ -2426,8 +2426,16 @@ impl<'a> Project<'a> {
                 }
                 None => None,
             };
-            // Components are the first templates.
-            let is_client = t.kind == Kind::Component && as_client.contains(&self.comps[k].name);
+            // Components are the first templates. One built as a custom
+            // element is drawn by the browser.
+            if let (Some((_, line)), false) = (&t.t.element, t.kind == Kind::Component) {
+                return Err(format!(
+                    "{}:{line}: {{@element}} is for components (src/components)",
+                    t.rel
+                ));
+            }
+            let is_client = t.kind == Kind::Component
+                && (as_client.contains(&self.comps[k].name) || t.t.element.is_some());
             let cx = ClientCx {
                 comps: &self.comps,
                 templates: &self.templates,
@@ -2493,6 +2501,7 @@ impl<'a> Project<'a> {
             c.source = link_comps(&c.source, url);
             c.hash.clone_from(&finals[k]);
         }
+        self.elements(&clients, &specs, &mut js_files)?;
         let mut web = Web { clients, js_files };
         let mut npm_src: Vec<(String, String)> = Vec::new();
         // A release build serves the npm modules imported, and what they
@@ -2537,6 +2546,103 @@ impl<'a> Project<'a> {
             }
         }
         Ok(web)
+    }
+
+    /// The modules of the components built as custom elements
+    /// (`{@element "x-card"}` → `/_app/c/el/x-card.js`), and the runtime
+    /// they share (`/_app/c/el.js`), onto `files`. Each defines its element
+    /// from its component's module, its props' kinds and literal defaults,
+    /// and the scoped CSS of the components it draws, for its shadow root.
+    fn elements(
+        &self,
+        clients: &[Option<Client>],
+        specs: &Specs,
+        files: &mut Vec<JsFile>,
+    ) -> Result<(), String> {
+        let mut tags: Vec<&str> = Vec::new();
+        let mut runtime: Option<String> = None;
+        for (k, t) in self.templates.iter().enumerate() {
+            let (Some((tag, line)), Some(c)) = (&t.t.element, &clients[k]) else {
+                continue;
+            };
+            let at = |msg: String| format!("{}:{line}: {msg}", t.rel);
+            if tags.contains(&tag.as_str()) {
+                return Err(at(format!(
+                    "<{tag}> is the element of another component too"
+                )));
+            }
+            tags.push(tag);
+            if !template::client_renderable(&t.t.nodes) {
+                return Err(at(format!(
+                    "<{tag}> is drawn by the browser, but its markup has server code ({{…}} or a {{#…}} block): \
+                     show props with {{:prop}} and use {{:#if}} and {{:#each}}"
+                )));
+            }
+            let mut props = Vec::new();
+            for d in &self.comps[k].props {
+                let default = match d.default.as_deref() {
+                    None => "null".to_string(),
+                    Some(src) => element_default(src).ok_or_else(|| {
+                        at(format!(
+                            "<{tag}>'s prop `{}` has a default the browser cannot know (`{src}`): make it a literal",
+                            d.name
+                        ))
+                    })?,
+                };
+                props.push(format!(
+                    "{}: [\"{}\", {default}]",
+                    js_str(&d.name),
+                    element_kind(&d.ty)
+                ));
+            }
+            // Its CSS, and that of the components it draws, at any depth.
+            let mut seen = vec![k];
+            let mut i = 0;
+            while i < seen.len() {
+                for &u in clients[seen[i]].iter().flat_map(|c| &c.uses) {
+                    if !seen.contains(&u) {
+                        seen.push(u);
+                    }
+                }
+                i += 1;
+            }
+            seen.sort_unstable();
+            let css: Vec<&str> = (seen.iter())
+                .filter_map(|&j| self.templates[j].t.style.as_deref())
+                .collect();
+            let runtime = match &runtime {
+                Some(url) => url.clone(),
+                None => {
+                    let src = rewrite_specifiers(wisp_shared::ELEMENT_JS, specs, None)?;
+                    let source = if self.release { js::runtime(&src) } else { src };
+                    let hash = format!("{:016x}", fnv1a(source.as_bytes()));
+                    let url = format!("{ELEMENT_JS_PATH}?v={hash}");
+                    files.push(JsFile {
+                        path: ELEMENT_JS_PATH.into(),
+                        hash,
+                        source,
+                        file: None,
+                    });
+                    runtime.insert(url).clone()
+                }
+            };
+            let source = format!(
+                "import {{ element }} from {};\nimport {};\nelement({}, {}, {{ {} }}, {});\n",
+                js_str(&runtime),
+                js_str(&format!("{}?v={}", c.path(), c.hash)),
+                js_str(tag),
+                js_str(&c.id),
+                props.join(", "),
+                js_str(&css.join("\n"))
+            );
+            files.push(JsFile {
+                path: format!("{ELEMENTS}{tag}.js"),
+                hash: format!("{:016x}", fnv1a(source.as_bytes())),
+                source,
+                file: None,
+            });
+        }
+        Ok(())
     }
 
     /// Per route, its page when it is the same for every request, whole, as
@@ -2954,6 +3060,9 @@ impl Gen {
         );
         let css = css.map_or("None".into(), |v| format!("Some({})", lit(v)));
         self.line(1, &format!("const CSS: Option<&'static str> = {css};"));
+        if web.js_files.iter().any(|f| f.path.starts_with(ELEMENTS)) {
+            self.line(1, "const ELEMENTS: bool = true;");
+        }
         let mut hashes = shell::hashes(&p.shell);
         hashes.extend(p.templates.iter().flat_map(|t| t.t.hashes.iter().cloned()));
         hashes.sort_unstable();
@@ -6795,6 +6904,48 @@ const call = async (path, get, names, args) => {
         );
     }
     s
+}
+
+/// How a custom element reads an attribute of a prop of Rust type `ty`
+/// (element.js): `n` a number, `b` a bool, `s` text, `j` JSON. An
+/// `Option` is its inner type's.
+fn element_kind(ty: &str) -> &'static str {
+    let ty = ty
+        .trim()
+        .trim_start_matches('&')
+        .trim_start_matches("'static ");
+    let ty = (ty.strip_prefix("Option<").and_then(|t| t.strip_suffix('>'))).unwrap_or(ty);
+    let ty = ty.trim().trim_start_matches('&').trim();
+    match ty {
+        "bool" => "b",
+        "str" | "String" | "char" | "Cow<str>" | "Cow<'static, str>" => "s",
+        "f32" | "f64" => "n",
+        t if ty::int_range(t).is_some() => "n",
+        _ => "j",
+    }
+}
+
+/// A prop's Rust default as the JSON a custom element starts from: a
+/// literal (`fold::literal`), `None`, or an empty `String` or `Vec`.
+fn element_default(src: &str) -> Option<String> {
+    let src = src.trim();
+    if let Some(l) = fold::literal(src) {
+        return Some(match l {
+            fold::Lit::Str(s) => js_str(&s),
+            fold::Lit::Int(n) => n.to_string(),
+            fold::Lit::Bool(b) => b.to_string(),
+        });
+    }
+    match src {
+        "None" => Some("null".into()),
+        "String::new()" | "\"\".into()" | "\"\".to_string()" => Some("\"\"".into()),
+        "Vec::new()" | "vec![]" => Some("[]".into()),
+        _ => src
+            .parse::<f64>()
+            .ok()
+            .filter(|f| f.is_finite() && src.contains('.'))
+            .map(|_| src.to_string()),
+    }
 }
 
 /// Where a module's import of component `ci`'s module goes, until the

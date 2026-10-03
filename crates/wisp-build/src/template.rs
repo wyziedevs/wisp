@@ -265,6 +265,39 @@ pub enum PropValue {
     },
 }
 
+/// The tag of `{@element "x-card"}`: a valid custom element name (lower
+/// case, a letter first, a `-` in it, not one HTML keeps).
+fn element_name(arg: &str) -> Result<String, String> {
+    let arg = arg.trim();
+    let Some(tag) = arg.strip_prefix('"').and_then(|a| a.strip_suffix('"')) else {
+        return Err(format!(
+            "{{@element \"x-card\"}} names its tag in quotes, found `{arg}`"
+        ));
+    };
+    let ok = tag.starts_with(|c: char| c.is_ascii_lowercase())
+        && tag.contains('-')
+        && (tag.bytes()).all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'.' | b'_')
+        })
+        && !matches!(
+            tag,
+            "annotation-xml"
+                | "color-profile"
+                | "font-face"
+                | "font-face-src"
+                | "font-face-uri"
+                | "font-face-format"
+                | "font-face-name"
+                | "missing-glyph"
+        );
+    if !ok {
+        return Err(format!(
+            "`{tag}` is not a custom element name: lower case, a letter first and a `-` in it, as `x-card`"
+        ));
+    }
+    Ok(tag.to_string())
+}
+
 /// A prop a component declares: `{@props title: &str, size: u8 = 2}`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PropDecl {
@@ -282,6 +315,9 @@ pub struct Template {
     pub uses_children: bool,
     /// `{@props …}`, which only a component has, and its line.
     pub props: Option<(Vec<PropDecl>, u32)>,
+    /// `{@element "x-card"}`: the custom element a component is also built
+    /// as, and its line.
+    pub element: Option<(String, u32)>,
     /// Browser code: the client script and every element's directives.
     pub script: Option<Script>,
     pub groups: Vec<Group>,
@@ -378,6 +414,7 @@ fn parse_as(
         opened: Vec::new(),
         uses_children: false,
         props: None,
+        element: None,
         line_starts: std::iter::once(0)
             .chain(src.match_indices('\n').map(|(i, _)| i + 1))
             .collect(),
@@ -436,6 +473,9 @@ fn parse_as(
             .as_bytes(),
         );
     }
+    if let Some((tag, _)) = &p.element {
+        h.extend_from_slice(format!("E{tag}\0").as_bytes());
+    }
     // An inline script is allowed by its hash, which the build sends.
     for x in &p.hashes {
         h.extend_from_slice(x.as_bytes());
@@ -486,6 +526,7 @@ fn parse_as(
         chunks: p.chunks,
         uses_children: p.uses_children,
         props: p.props,
+        element: p.element,
         script: p.script,
         groups: p.groups,
         style: p.style,
@@ -641,6 +682,7 @@ struct Parser<'a> {
     opened: Vec<Opened>,
     uses_children: bool,
     props: Option<(Vec<PropDecl>, u32)>,
+    element: Option<(String, u32)>,
     line_starts: Vec<usize>,
     /// Where the tag being scanned starts in `text`, how many blocks were
     /// open at its start, and whether it has any attribute (or hole).
@@ -3538,6 +3580,22 @@ impl Parser<'_> {
             self.skip_standalone(open);
             return Ok(());
         }
+        if kw == "element" {
+            if self.ctx != Ctx::Text || !self.frames.is_empty() {
+                return Err(self.err(
+                    open,
+                    "{@element \"x-card\"} goes at the top of a component, outside any tag or block"
+                        .into(),
+                ));
+            }
+            if self.element.is_some() {
+                return Err(self.err(open, "a component is one custom element".into()));
+            }
+            let tag = element_name(arg).map_err(|m| self.err(open, m))?;
+            self.element = Some((tag, self.line_of(open)));
+            self.skip_standalone(open);
+            return Ok(());
+        }
         let node = match kw {
             "html" if self.ctx != Ctx::Text => {
                 return Err(self.err(open, "{@html} is not allowed inside tags".into()));
@@ -4557,6 +4615,24 @@ mod tests {
         assert!(err("{@props children: u8}").contains("a name Wisp uses"));
         assert!(err("{@props a: u8}{@props b: u8}").contains("once"));
         assert!(err("{#if x}{@props a: u8}{/if}").contains("at the top"));
+    }
+
+    #[test]
+    fn element_tag() {
+        let t = parse("{@element \"x-card\"}\n{@props title: &str}\n<b>{:title}</b>").unwrap();
+        assert_eq!(t.element, Some(("x-card".into(), 1)));
+        assert_eq!(text(&t, &t.nodes[0]), "<b>");
+        let other = parse("{@element \"y-card\"}\n{@props title: &str}\n<b>{:title}</b>").unwrap();
+        assert_ne!(t.shape, other.shape);
+
+        let err = |src: &str| parse(src).unwrap_err().msg;
+        assert!(err("{@element x-card}").contains("in quotes"));
+        for bad in ["card", "X-card", "1-card", "x card", "font-face"] {
+            let e = err(&format!("{{@element \"{bad}\"}}"));
+            assert!(e.contains("not a custom element name"), "{bad}: {e}");
+        }
+        assert!(err("{@element \"a-b\"}{@element \"a-c\"}").contains("one custom element"));
+        assert!(err("{#if x}{@element \"a-b\"}{/if}").contains("at the top"));
     }
 
     #[test]

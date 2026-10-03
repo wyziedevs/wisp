@@ -116,6 +116,9 @@ pub const EXTRA_JS_PATH: &str = app_path!("c/extra.js");
 /// browser code calls them through the module at `REMOTE_JS_PATH`.
 pub const REMOTE: &str = app_path!("r/");
 pub const REMOTE_JS_PATH: &str = app_path!("c/remote.js");
+/// Components built as custom elements: `el/x-card.js`, and what they run.
+pub const ELEMENTS: &str = app_path!("c/el/");
+pub const ELEMENT_JS_PATH: &str = app_path!("c/el.js");
 /// The app's CSS (`src/app.css`, or what Tailwind built of it).
 pub const APP_CSS_PATH: &str = app_path!("app.css");
 /// A dev build's scoped `<style>`s, from the project root: served after

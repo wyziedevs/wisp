@@ -2931,6 +2931,9 @@ fn internal<A: App>(cx: &Cx, path: &str, out: &mut Out, reply: &mut Reply) -> bo
         _ => return false,
     };
     send_file(reply, cx, Body::Static(body), ext, etag);
+    if A::ELEMENTS && path == crate::protocol::LIVE_JS_PATH {
+        any_origin(reply);
+    }
     true
 }
 
@@ -2969,6 +2972,9 @@ fn file<A: App>(cx: &Cx, raw: &[u8], route: Option<usize>, reply: &mut Reply) ->
             ext,
             Some(m.etag),
         );
+        if A::ELEMENTS {
+            any_origin(reply);
+        }
         return true;
     }
     if crate::settings().dev {
@@ -2996,6 +3002,15 @@ fn file<A: App>(cx: &Cx, raw: &[u8], route: Option<usize>, reply: &mut Reply) ->
     };
     send_file(reply, cx, Body::Static(a.body), a.ext, Some(a.etag));
     true
+}
+
+/// Lets a page of any site load this module: a custom element's
+/// (`App::ELEMENTS`), and what it imports.
+fn any_origin(reply: &mut Reply) {
+    reply.headers.push((
+        Cow::Borrowed("access-control-allow-origin"),
+        Cow::Borrowed("*"),
+    ));
 }
 
 /// A file, cached by its `etag` (forever when the address is versioned:
