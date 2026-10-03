@@ -592,6 +592,61 @@ wisp add react react-dom react-switch     # the framework first, then the compon
   React's `createRoot`, Preact's `render`, Vue's `createApp` and Svelte's
   `mount`. A Svelte package must ship compiled JavaScript.
 
+## Web components: Shoelace, Web Awesome, Lit
+
+Custom elements need nothing from Wisp: import the element's module and
+write its tag. Directives work on them as on any element: `on:` takes
+their own events (dashes too), `bind:value` reads `value` on `input`
+events, which their inner inputs send.
+
+```sh
+wisp add @shoelace-style/shoelace
+```
+
+```html
+<sl-input label="Name" bind:value="name"></sl-input>
+<sl-switch on:sl-change="on = event.target.checked">Power</sl-switch>
+<sl-button variant="primary" on:click="save()">Save {:name}</sl-button>
+
+<script>
+  import '@shoelace-style/shoelace/dist/components/input/input.js'
+  import '@shoelace-style/shoelace/dist/components/switch/switch.js'
+  import '@shoelace-style/shoelace/dist/components/button/button.js'
+  let on = false
+  function save() {}
+</script>
+```
+
+- Import each component's own module, as above: the page loads only those.
+- Their theme is CSS: copy `cdn/themes/light.css` (or `dark.css`) from the
+  package into `static/` and `<link>` it in `src/app.html`, or `@import`
+  it from a CDN in `src/app.css` after `wisp::csp("style-src 'self'
+  'unsafe-inline' https://cdn.jsdelivr.net")` in `init`.
+- Web Awesome, Shoelace's successor, is the same with its package and
+  `wa-` tags.
+- Your own, with Lit: `wisp add lit`, then a `src/lib` module defines it
+  and a script imports it (`import '$lib/hello-tag.js'`):
+
+```js
+// src/lib/hello-tag.js
+import { LitElement, html } from 'lit'
+
+customElements.define('hello-tag', class extends LitElement {
+  static properties = { name: {} }
+  render() {
+    return html`<button @click=${() => this.dispatchEvent(new CustomEvent('greet', { detail: this.name, bubbles: true }))}>Hello, ${this.name}</button>`
+  }
+})
+```
+
+```html
+<hello-tag name="Wisp" on:greet="said = event.detail"></hello-tag>
+```
+
+The server sends the tag as written; the browser upgrades it when its module
+loads. The `click-events` accessibility lint leaves custom elements alone: their
+keyboard is inside them.
+
 ## Speed
 
 The runtime is two files: `live.js` (about 9 KB compressed), and

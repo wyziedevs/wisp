@@ -282,6 +282,10 @@ of="react:react-switch" client:visible props={:{ checked: on, onChange: (v) => (
 (`react|preact|vue|svelte`; `#Name` for a named export; `$lib/x.js` too;
 `props={rust}` sends JSON; children show until it starts; the framework
 loads only on that page).
+Web components (Shoelace, Web Awesome, Lit) just work: `wisp add @shoelace-style/shoelace`,
+`import '@shoelace-style/shoelace/dist/components/button/button.js'` in the script, then
+`<sl-button on:click="n++">`, `<sl-input bind:value="q">`, `on:sl-change="…"`; theme CSS
+into `static/`.
 TypeScript: `<script lang="ts">`, `src/lib/*.ts`, `+page.ts`. Types are
 stripped (spaces, so lines and columns hold), as Node's strip-types does:
 `enum`, a `namespace` with values and parameter properties are build errors

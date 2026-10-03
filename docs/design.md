@@ -608,7 +608,7 @@ build.
 | Name | Warns about |
 |---|---|
 | `img-alt` | `<img>` without `alt` (`alt=""` is fine: decorative) |
-| `click-events` | `on:click` on an element that is not interactive, without both a `role` and a key handler (`on:keydown`) |
+| `click-events` | `on:click` on an element that is not interactive (nor a custom element, `<sl-button>`), without both a `role` and a key handler (`on:keydown`) |
 | `label-control` | `<label>` with no `for` and no control inside |
 | `anchor-href` | `<a>` without `href`, or `href="#"` |
 | `autofocus` | `autofocus` |
