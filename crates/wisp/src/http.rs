@@ -113,7 +113,10 @@ pub(crate) fn run<A: App>(addr: SocketAddr, threads: usize) -> io::Result<()> {
         .build()?;
     main.block_on(crate::prepare::<A>())?;
 
-    let listener = bind_after_exit(addr)?;
+    let listener = match crate::setting::<u16>("WISP_PORT_TRIES", "a number of ports") {
+        Some(tries) if tries > 0 && addr.port() != 0 => bind_near(addr, tries)?,
+        _ => bind_after_exit(addr)?,
+    };
     #[cfg(target_os = "linux")]
     return run_linux::<A>(&main, listener, threads.max(1));
     #[cfg(not(target_os = "linux"))]
@@ -498,6 +501,28 @@ fn bind_after_exit(addr: SocketAddr) -> io::Result<std::net::TcpListener> {
             r => return r,
         }
     }
+}
+
+/// `wisp dev` asks for this (`WISP_PORT_TRIES`): binds `addr`, or when its
+/// port is taken the next, up to `tries` more, and keeps the listener, so no
+/// other program can take the port in between.
+#[cfg(not(target_arch = "wasm32"))]
+fn bind_near(addr: SocketAddr, tries: u16) -> io::Result<std::net::TcpListener> {
+    let last = addr.port().saturating_add(tries);
+    for port in addr.port()..=last {
+        match bind(SocketAddr::new(addr.ip(), port)) {
+            Err(e) if e.kind() == io::ErrorKind::AddrInUse => {}
+            r => return r,
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AddrInUse,
+        format!(
+            "ports {} to {last} are all in use
+  Stop what is using them, or set PORT to use another.",
+            addr.port()
+        ),
+    ))
 }
 
 fn cannot_listen(addr: SocketAddr, e: io::Error) -> io::Error {
@@ -3960,6 +3985,18 @@ pub(crate) fn stays_inside(rel: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn dev_binds_the_next_port_when_one_is_taken() {
+        let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = taken.local_addr().unwrap();
+        let next = bind_near(addr, 20).unwrap().local_addr().unwrap();
+        assert_ne!(next.port(), addr.port());
+        assert!(next.port() > addr.port() && next.port() <= addr.port() + 20);
+        let err = bind_near(addr, 0).unwrap_err();
+        assert!(err.to_string().contains("all in use"), "{err}");
+    }
 
     #[test]
     fn dates() {

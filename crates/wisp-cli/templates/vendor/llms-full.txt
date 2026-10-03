@@ -1848,6 +1848,9 @@ Setup, in the app's folder:
 - `wisp dev [--port <n> | --port=<n> | -p <n>]`; anything else is an error
   with the usage. The app gets `HOST=127.0.0.1` unless `HOST` is set, and the
   address it prints is the one shown and used for hot swaps (port 0 works).
+  A port in use moves the first start on to the next free one, up to 20 more
+  (the app binds it itself, `WISP_PORT_TRIES`, so nothing can take it between),
+  with a line saying so; `wisp build` servers never move.
 - Runs Tailwind standalone `--watch` into `.wisp/app.css` if `src/app.css`
   imports Tailwind, or Dart Sass (standalone, pinned in `~/.wisp/bin`,
   `$WISP_SASS` overrides) `--watch` if `src/app.scss` exists; with a

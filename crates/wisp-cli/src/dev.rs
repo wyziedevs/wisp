@@ -30,6 +30,8 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime};
 
+/// How many ports after the one asked for the app may try, the first start.
+const PORT_TRIES: u16 = 20;
 const POLL: Duration = Duration::from_millis(50);
 /// Editors often write a file in several steps; wait until it stops changing,
 /// but no longer than `SETTLE_MAX`, or a file written without pause (a log)
@@ -49,19 +51,17 @@ pub fn run(root: &Path, port: u16) -> Result<(), String> {
         events_port: events.port,
         child: None,
         addr: None,
-        shown: expected(port),
+        shown: None,
+        tries: PORT_TRIES,
         slot: 0,
     };
 
-    // The address the app will say it listens on, when it can be known
-    // before then; if it turns out to be another, "Ready" says so.
-    let url = app
-        .shown
-        .map(|a| format!("{}  ", term::bold(&format!("http://{a}"))));
+    // The port may move on, so "Ready" gives the address once it is known.
     println!(
-        "\n{}  {}{}\n",
+        "
+{}  {}
+",
         term::bold(&term::accent("Wisp")),
-        url.unwrap_or_default(),
         term::dim("Ctrl+C to stop")
     );
     let mut files = scan(root);
@@ -437,6 +437,8 @@ struct Server {
     root: PathBuf,
     port: u16,
     events_port: u16,
+    /// Ports the app may move on by when its own is taken; 0 once it is up.
+    tries: u16,
     child: Option<Child>,
     /// Where the running app is reached, from what it printed.
     addr: Option<SocketAddr>,
@@ -457,6 +459,7 @@ impl Server {
         cmd.current_dir(&self.root)
             .env("PORT", self.port.to_string())
             .env("WISP_DEV_EVENTS", self.events_port.to_string())
+            .env("WISP_PORT_TRIES", self.tries.to_string())
             // The app exits when its stdin closes. The Child keeps the other
             // end until the app is stopped, and when `wisp dev` is killed
             // without the chance to stop it, the system closes it, so the
@@ -493,9 +496,18 @@ impl Server {
         });
         match listening.recv_timeout(Duration::from_secs(10)) {
             Ok(addr) => {
-                self.addr = Some(reachable(
-                    addr.unwrap_or(SocketAddr::from(([127, 0, 0, 1], self.port))),
-                ));
+                let at = reachable(addr.unwrap_or(SocketAddr::from(([127, 0, 0, 1], self.port))));
+                if self.tries > 0 && self.port != 0 && at.port() != self.port {
+                    term::warn(&format!(
+                        "port {} is in use, using {}",
+                        self.port,
+                        at.port()
+                    ));
+                }
+                // Later starts keep this port, waiting for the old app to let go.
+                self.port = at.port();
+                self.tries = 0;
+                self.addr = Some(at);
                 Ok(())
             }
             Err(RecvTimeoutError::Timeout) => Err(
@@ -533,16 +545,6 @@ impl Server {
             let _ = c.wait();
         }
     }
-}
-
-/// Where the app will listen, when the CLI can tell before it starts: on
-/// `$HOST` if set, else on loopback, at the port asked for (0 is any port).
-fn expected(port: u16) -> Option<SocketAddr> {
-    let ip = match std::env::var("HOST") {
-        Ok(host) => host.parse().ok()?,
-        Err(_) => IpAddr::V4(Ipv4Addr::LOCALHOST),
-    };
-    (port != 0).then(|| reachable(SocketAddr::new(ip, port)))
 }
 
 /// The address to reach an app at from this machine. One listening on every
