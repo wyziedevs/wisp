@@ -218,7 +218,7 @@ fn run_linux<A: App>(
                     None => tokio::spawn(crate::epoll::serve(
                         listener,
                         polled::<A>,
-                        answers::<A>().then_some(on_driver::<A>),
+                        (answers::<A>() && !crate::obs::on()).then_some(on_driver::<A>),
                         ready,
                     )),
                 };
@@ -971,7 +971,10 @@ impl Handed {
 /// decided (`Holding::Deciding`).
 type Ahead = (Req, bool);
 
-/// Whether some route of `A` answers without waiting, so [`on_driver`] can help.
+/// Whether some route of `A` answers without waiting, so [`on_driver`] can
+/// help. It is not used with logs, metrics or traces on (`obs`): the
+/// connection's future has them, and a request pays nothing for them
+/// when they are off.
 #[cfg(target_os = "linux")]
 fn answers<A: App>() -> bool {
     A::NOT_FOUND_NOW || A::ROUTES.iter().any(|r| r.now)
@@ -1132,7 +1135,7 @@ async fn decider<A: App>() {
                 Job::Page(f) => {
                     render_error::<A>(f.route, cx, out, f.page).await;
                     answered(cx, reply, f.started, f.failure);
-                    tag(cx, out, reply);
+                    tag(cx, reply);
                 }
             }
         }
@@ -1173,16 +1176,10 @@ fn decide_now<A: App>(
     if crate::settings().request_id {
         cx.request_id();
     }
-    if crate::obs::on() {
-        crate::obs::begin(cx, route, &mut out.obs);
-    }
-    if !before_routes::<A>(cx, route, out, reply) {
+    if !early::<A>(cx, route, out, reply) {
         let timed = crate::settings().timed;
         let started = timed.then(Instant::now);
         out.clear();
-        if out.obs.is_some() {
-            crate::obs::hand(&out.obs);
-        }
         let Some(result) = catch_now(timed, || A::handle_now(route, cx, out)) else {
             return Some(Job::Decide(route));
         };
@@ -1197,7 +1194,7 @@ fn decide_now<A: App>(
         }
         answered(cx, reply, started, failure);
     }
-    tag(cx, out, reply);
+    tag(cx, reply);
     None
 }
 
@@ -2424,6 +2421,7 @@ pub(crate) async fn answer<A: App>(mut cx: Cx, upgrade: &mut Option<crate::ws::U
         }
     }
     if out.obs.is_some() {
+        crate::obs::tag(&out.obs, &mut reply);
         crate::obs::finish(&mut out.obs, reply.status, reply.bytes().len());
     }
     reply
@@ -2505,7 +2503,7 @@ async fn decide<A: App>(
     if crate::obs::on() {
         crate::obs::begin(cx, route, &mut out.obs);
     }
-    if !before_routes::<A>(cx, route, out, reply) {
+    if !early::<A>(cx, route, out, reply) {
         let started = crate::settings().timed.then(Instant::now);
         out.clear();
         if out.obs.is_some() {
@@ -2518,7 +2516,7 @@ async fn decide<A: App>(
         }
         answered(cx, reply, started, failure);
     }
-    tag(cx, out, reply);
+    tag(cx, reply);
 }
 
 /// Writes `res`, a handler's response, into `reply`.
@@ -2568,33 +2566,62 @@ fn settle(
     }
 }
 
-/// The reply's `x-request-id`, when the request has an id, its
-/// `traceparent`, with traces on, and its HSTS (`WISP_HSTS=on`): the last
-/// thing every answer gets.
-fn tag(cx: &Cx, out: &Out, reply: &mut Reply) {
+/// The reply's `x-request-id`, when the request has an id, and its HSTS
+/// (`WISP_HSTS=on`): the last thing every answer gets.
+fn tag(cx: &Cx, reply: &mut Reply) {
     if let Some(id) = cx.id() {
         reply
             .headers
             .push((Cow::Borrowed("x-request-id"), Cow::Owned(id.to_string())));
-    }
-    if out.obs.is_some() {
-        crate::obs::tag(&out.obs, reply);
     }
     if crate::headers::HSTS_ON.load(std::sync::atomic::Ordering::Relaxed) {
         crate::headers::hsts(reply);
     }
 }
 
+/// [`before_routes`], and the component workshop first, in debug builds.
+#[cfg(debug_assertions)]
+fn early<A: App>(cx: &Cx, route: Option<usize>, out: &mut Out, reply: &mut Reply) -> bool {
+    workshop::<A>(cx, out, reply) || before_routes::<A>(cx, route, reply)
+}
+
+#[cfg(not(debug_assertions))]
+#[inline(always)]
+fn early<A: App>(cx: &Cx, route: Option<usize>, _: &mut Out, reply: &mut Reply) -> bool {
+    before_routes::<A>(cx, route, reply)
+}
+
+/// The component workshop (`/_wisp/components`), which renders a story
+/// into `out`: in dev only.
+#[cfg(debug_assertions)]
+fn workshop<A: App>(cx: &Cx, out: &mut Out, reply: &mut Reply) -> bool {
+    use crate::workshop::Answer;
+    let get = matches!(cx.method, Method::Get | Method::Head);
+    if !(get && crate::settings().dev && cx.path().starts_with("/_wisp/components")) {
+        return false;
+    }
+    match crate::workshop::answer::<A>(cx, out) {
+        Answer::Page(html) => reply.set(
+            200,
+            "text/html; charset=utf-8",
+            Body::Bytes(html.into_bytes()),
+        ),
+        Answer::Frame => reply.set(200, "text/html; charset=utf-8", Body::Page),
+        Answer::Missing => reply.set_plain(404, "Not Found"),
+    }
+    true
+}
+
 /// What is answered before the routes: a path that is not one, Wisp's own
 /// files, a trailing slash, the app's files. Whether it was.
-fn before_routes<A: App>(cx: &Cx, route: Option<usize>, out: &mut Out, reply: &mut Reply) -> bool {
+fn before_routes<A: App>(cx: &Cx, route: Option<usize>, reply: &mut Reply) -> bool {
     // Its bytes: only a few of these need it as a `str`.
     let raw = cx.raw_path();
     if raw.first() != Some(&b'/') {
         reply.set_plain(400, "Bad Request");
         return true;
     }
-    if raw.starts_with(b"/_") && internal::<A>(cx, cx.path(), out, reply) {
+    if raw.starts_with(b"/_") && internal::<A>(cx, cx.path(), reply) {
         return true;
     }
     if raw.len() > 1 && raw.ends_with(b"/") {
@@ -2729,12 +2756,20 @@ fn route<A: App>(cx: &mut Cx) -> Option<usize> {
 /// The route of `path`, and its parameters. A path that ends in `/` is
 /// its route's without it too, when [`trailing_slash`] serves it: looked
 /// for only when the path itself matches nothing.
+#[inline(always)]
 fn find<A: App>(path: &str) -> Option<(usize, [&str; crate::cx::MAX_PARAMS])> {
     match A::route(path) {
-        None if path.len() > 1 && path.ends_with('/') && slash() != TrailingSlash::Never => {
-            A::route(&path[..path.len() - 1])
-        }
-        found => found,
+        Some(found) => Some(found),
+        None => find_slash::<A>(path),
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn find_slash<A: App>(path: &str) -> Option<(usize, [&str; crate::cx::MAX_PARAMS])> {
+    match path.len() > 1 && path.ends_with('/') && slash() != TrailingSlash::Never {
+        true => A::route(&path[..path.len() - 1]),
+        false => None,
     }
 }
 
@@ -2959,6 +2994,7 @@ fn serialize<A: App>(
         } else {
             len
         };
+        crate::obs::tag(&out.obs, reply);
         crate::obs::finish(&mut out.obs, reply.status, sent);
     }
 
@@ -3151,13 +3187,9 @@ async fn catch_made<F: Future<Output = crate::Result<()>>>(
 #[cfg(target_os = "linux")]
 fn catch_now(timed: bool, f: impl FnOnce() -> crate::Result<bool>) -> Option<crate::Result<()>> {
     let began = timed.then(Instant::now);
-    let was = crate::otel::adopt().map(crate::otel::enter);
     IN_HANDLER.set(true);
     let ran = catch_unwind(AssertUnwindSafe(f));
     IN_HANDLER.set(false);
-    if let Some(was) = was {
-        crate::otel::leave(was);
-    }
     if let Some(began) = began {
         BLOCKED.set(BLOCKED.get().max(began.elapsed()));
     }
@@ -3184,10 +3216,9 @@ fn panicked(panic: Box<dyn std::any::Any + Send>) -> Error {
 }
 
 /// Wisp's own addresses: the browser runtime, the API docs and, in dev,
-/// the dev tools. `false` for any other path. `out`: where the component
-/// workshop renders a story, in debug builds.
+/// the dev tools. `false` for any other path.
 #[cfg_attr(not(debug_assertions), allow(unused_variables))]
-fn internal<A: App>(cx: &Cx, path: &str, out: &mut Out, reply: &mut Reply) -> bool {
+fn internal<A: App>(cx: &Cx, path: &str, reply: &mut Reply) -> bool {
     if !path.starts_with("/_") {
         return false;
     }
@@ -3230,20 +3261,6 @@ fn internal<A: App>(cx: &Cx, path: &str, out: &mut Out, reply: &mut Reply) -> bo
         "/_wisp/metrics" if get && crate::obs::serve(cx, reply) => return true,
         #[cfg(debug_assertions)]
         "/_app/wisp-devtools.js" if dev => (DEVTOOLS_JS, "js", None),
-        #[cfg(debug_assertions)]
-        _ if dev && path.starts_with("/_wisp/components") => {
-            use crate::workshop::Answer;
-            match crate::workshop::answer::<A>(cx, out) {
-                Answer::Page(html) => reply.set(
-                    200,
-                    "text/html; charset=utf-8",
-                    Body::Bytes(html.into_bytes()),
-                ),
-                Answer::Frame => reply.set(200, "text/html; charset=utf-8", Body::Page),
-                Answer::Missing => reply.set_plain(404, "Not Found"),
-            }
-            return true;
-        }
         #[cfg(debug_assertions)]
         "/_wisp/dev/open" if s.dev && cx.method == Method::Post => {
             let (status, msg) = dev::open(A::ROOT, cx);
