@@ -88,3 +88,10 @@ fn a_layout_can_be_for_members() {
     assert_eq!(app.get("/t/members").status, 200);
     assert_eq!(app.post_form("/t/members?/poke", &[]).location(), Some("/t/members".into()));
 }
+
+#[test]
+fn config_reads_the_environment() {
+    let mut app = client::<Site>();
+    let page = app.get("/t/conf").text().to_string();
+    assert!(page.contains("<p id=\"conf\">false true</p>"), "{page}");
+}
