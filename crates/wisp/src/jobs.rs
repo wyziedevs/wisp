@@ -170,11 +170,12 @@ fn backoff(tries: u32) -> u64 {
     (2u64 << tries.min(11)).min(3600)
 }
 
-/// What a failed try does to the job.
-fn settle(j: &mut Job, now: u64, error: String) {
+/// What a failed try does to the job; `fatal` ones, which no try would
+/// mend, are dead at once.
+fn settle(j: &mut Job, now: u64, error: String, fatal: bool) {
     j.tries += 1;
     j.lease = 0;
-    if j.tries >= TRIES {
+    if fatal || j.tries >= TRIES {
         j.dead = true;
     }
     j.run_at = now + backoff(j.tries);
@@ -214,9 +215,20 @@ where
     Fut: Future<Output = crate::Result> + Send + 'static,
 {
     let now = crate::unix_now();
-    let due = q
-        .table
-        .find(|j| !j.dead && j.run_at <= now && j.lease <= now);
+    // The first job due, and when the next that is not will be.
+    let (mut due, mut next) = (None, u64::MAX);
+    q.table.each(|id, j| {
+        let at = j.run_at.max(j.lease);
+        if j.dead {
+        } else if at > now {
+            next = next.min(at);
+        } else if due.is_none() {
+            due = Some(crate::Row {
+                id,
+                value: j.clone(),
+            });
+        }
+    });
     let claimed = match &due {
         Some(row) => q.table.update(row.id, |j| {
             let free = !j.dead && j.lease <= now;
@@ -228,11 +240,22 @@ where
         None => None,
     };
     let (Some(row), Some(true)) = (due, claimed) else {
-        // Nothing due: a push wakes it, else look again in a second.
+        // Nothing due: a push wakes it, else when the next job is due, or in
+        // a second, when other servers may push through the store.
+        let mut wait = std::time::Duration::from_secs(next.saturating_sub(now).max(1));
+        if next == u64::MAX {
+            wait = std::time::Duration::MAX;
+        }
+        if crate::env_or("WISP_STORE_POLL", 0u64) > 0 {
+            wait = wait.min(std::time::Duration::from_secs(1));
+        }
         return crate::http::first(
             async {
                 crate::http::first(async { q.wake.notified().await }, async {
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await
+                    match wait == std::time::Duration::MAX {
+                        true => std::future::pending().await,
+                        false => tokio::time::sleep(wait).await,
+                    }
                 })
                 .await;
                 true
@@ -244,12 +267,15 @@ where
         )
         .await;
     };
-    let error = match crate::from_json::<T>(row.payload.as_bytes()) {
-        Err(e) => Some(format!("not a job of this worker: {}", e.message())),
+    let (error, fatal) = match crate::from_json::<T>(row.payload.as_bytes()) {
+        Err(e) => (
+            Some(format!("not a job of this worker: {}", e.message())),
+            true,
+        ),
         Ok(job) => match tokio::spawn(f(job)).await {
-            Ok(Ok(())) => None,
-            Ok(Err(e)) => Some(e.detail()),
-            Err(e) => Some(format!("panic: {e}")),
+            Ok(Ok(())) => (None, false),
+            Ok(Err(e)) => (Some(e.detail()), false),
+            Err(e) => (Some(format!("panic: {e}")), false),
         },
     };
     match error {
@@ -264,7 +290,7 @@ where
                 row.tries + 1
             ));
             q.table
-                .update(row.id, |j| settle(j, crate::unix_now(), error));
+                .update(row.id, |j| settle(j, crate::unix_now(), error, fatal));
         }
     }
     true
@@ -501,14 +527,22 @@ mod tests {
         };
         let waits: Vec<u64> = (1..=4)
             .map(|_| {
-                settle(&mut j, 1000, "no".into());
+                settle(&mut j, 1000, "no".into(), false);
                 assert!(!j.dead && j.lease == 0);
                 j.run_at - 1000
             })
             .collect();
         assert_eq!(waits, [4, 8, 16, 32]);
-        settle(&mut j, 1000, "last".into());
+        settle(&mut j, 1000, "last".into(), false);
         assert!(j.dead && j.error.as_deref() == Some("last"));
+        // One that no try would mend is dead on the first.
+        let mut j = Job {
+            tries: 0,
+            dead: false,
+            ..j
+        };
+        settle(&mut j, 1000, "bad".into(), true);
+        assert!(j.dead && j.tries == 1);
         assert_eq!(backoff(40), 3600);
     }
 
@@ -572,7 +606,7 @@ mod tests {
             // Out of tries: dead, until put back.
             let id = failed[0].id;
             q.table.update(id, |j| j.tries = TRIES - 1);
-            q.table.update(id, |j| settle(j, 0, "x".into()));
+            q.table.update(id, |j| settle(j, 0, "x".into(), false));
             assert_eq!(q.dead().len(), 1);
             assert!(q.retry(id) && !q.retry(id));
             assert_eq!(q.dead().len(), 0);
