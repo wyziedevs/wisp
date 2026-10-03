@@ -20,13 +20,23 @@ function encode(first, headers, body) {
 }
 
 const none = new Uint8Array();
+const settled = Promise.resolve();
 
 function decode(bytes) {
-  let end = 0;
-  while (end + 1 < bytes.length && !(bytes[end] === 10 && bytes[end + 1] === 10)) end++;
-  const [first, ...lines] = dec.decode(bytes.subarray(0, end)).split('\n');
-  const headers = lines.filter((l) => l.indexOf(':') > 0).map((l) => [l.slice(0, l.indexOf(':')), l.slice(l.indexOf(':') + 1).trim()]);
-  return { first, headers, body: bytes.slice(end + 2) };
+  let end = bytes.indexOf(10);
+  while (end >= 0 && bytes[end + 1] !== 10) end = bytes.indexOf(10, end + 1);
+  if (end < 0) end = bytes.length;
+  const text = dec.decode(bytes.subarray(0, end));
+  const nl = text.indexOf('\n');
+  const headers = [];
+  for (let i = nl < 0 ? text.length : nl + 1; i < text.length; ) {
+    let e = text.indexOf('\n', i);
+    if (e < 0) e = text.length;
+    const c = text.indexOf(':', i);
+    if (c > i && c < e) headers.push([text.slice(i, c), text.slice(c + 1, e).trim()]);
+    i = e + 1;
+  }
+  return { first: nl < 0 ? text : text.slice(0, nl), headers, body: bytes.slice(end + 2) };
 }
 
 // `wisp::edge::fetch`: status 0 is a request that got no answer.
@@ -127,12 +137,17 @@ async function stored(x, env, method, body) {
 // and later requests go to a fresh instance.
 export function wisp(module, env = {}) {
   let live = null;
+  let ready = null; // the instance that last answered: requests skip the awaits
   let next = 0;
 
   async function start() {
     // `work`: timers and fetches under way, which `idle` waits out.
     const x = { pending: new Map(), streams: new Map(), retired: false, work: 0, idlers: [] };
-    const mem = () => new Uint8Array(x.exports.memory.buffer);
+    let view; // the memory's bytes, made again only when it has grown
+    const mem = () => {
+      const b = x.exports.memory.buffer;
+      return view?.buffer === b ? view : (view = new Uint8Array(b));
+    };
     const copy = (p, n) => mem().slice(p, p + n);
     x.put = (bytes, tail = none) => {
       const n = bytes.length + tail.length;
@@ -142,7 +157,19 @@ export function wisp(module, env = {}) {
       m.set(tail, p + bytes.length);
       return n;
     };
-    x.idle = () => (x.work ? new Promise((r) => x.idlers.push(r)) : Promise.resolve());
+    // A request's head and body into the app's memory, the head encoded in place.
+    x.request = (first, headers, body) => {
+      let h = first + '\n';
+      for (const [k, v] of headers) h += `${k}: ${v}\n`;
+      h += '\n';
+      const room = h.length * 3; // the most UTF-8 can take
+      const p = x.exports.wisp_buf(room + body.length);
+      const m = mem();
+      const { written } = enc.encodeInto(h, m.subarray(p, p + room));
+      m.set(body, p + written);
+      return written + body.length;
+    };
+    x.idle = () => (x.work ? new Promise((r) => x.idlers.push(r)) : settled);
     // Runs `f` once `promise` settles, counted as work until then.
     x.later = (promise, f) => {
       x.work++;
@@ -227,7 +254,7 @@ export function wisp(module, env = {}) {
     }
     const p = live;
     const x = await p;
-    if (!x.retired) return x;
+    if (!x.retired) return (ready = x);
     if (live === p) live = null;
     return instance();
   }
@@ -237,17 +264,19 @@ export function wisp(module, env = {}) {
   // response. `idle` settles once the timers and fetches the app started
   // (`wisp::spawn`, `wisp::sleep`) are done: pass it to the host's `waitUntil`.
   async function handle({ method, target, peer = '', headers, body }) {
-    let x;
-    try {
-      x = await instance();
-    } catch (e) {
-      console.error(e);
-      return { ...failed, idle: Promise.resolve() };
+    let x = ready;
+    if (!x || x.retired) {
+      try {
+        x = await instance();
+      } catch (e) {
+        console.error(e);
+        return { ...failed, idle: settled };
+      }
     }
     const id = (next = (next + 1) & 0x7fffffff);
     const answer = new Promise((resolve) => x.pending.set(id, resolve));
     // Written into the app's memory as it is: no joined copy first.
-    x.call(() => x.exports.wisp_request(id, x.put(head(`${method} ${target} ${peer}`, headers), body)));
+    x.call(() => x.exports.wisp_request(id, x.request(`${method} ${target} ${peer}`, headers, body)));
     const r = await answer;
     const idle = x.idle();
     return r ? { status: parseInt(r.first) || 500, headers: r.headers, body: r.body, idle } : { ...failed, idle };
@@ -261,12 +290,10 @@ export function wisp(module, env = {}) {
     if (!request.headers.has('host')) headers.push(['host', url.host]);
     const body = request.body ? new Uint8Array(await request.arrayBuffer()) : none;
     const r = await handle({ method: request.method, target: url.pathname + url.search, peer, headers, body });
-    ctx?.waitUntil?.(r.idle);
+    if (r.idle !== settled) ctx?.waitUntil?.(r.idle); // only when work is under way
     const empty = r.status < 200 || r.status === 204 || r.status === 304 || request.method === 'HEAD';
     if (empty && r.body instanceof ReadableStream) r.body.cancel(); // ends the app's stream
-    const h = new Headers();
-    for (const [k, v] of r.headers) h.append(k, v);
-    return new Response(empty ? null : r.body, { status: r.status, headers: h });
+    return new Response(empty ? null : r.body, { status: r.status, headers: r.headers });
   }
 
   return { handle, fetch: serve };

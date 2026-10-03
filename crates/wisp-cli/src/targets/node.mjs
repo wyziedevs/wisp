@@ -8,6 +8,7 @@ import { pipeline } from 'node:stream/promises';
 import { pathToFileURL } from 'node:url';
 import { wisp } from './bridge.mjs';
 
+const none = new Uint8Array();
 const app = wisp(await WebAssembly.compile(readFileSync(new URL('./app.wasm', import.meta.url))), process.env);
 
 // The most of a request body read before the app sees it: WISP_BODY_LIMIT
@@ -25,6 +26,7 @@ function tooLarge(req, res) {
 
 export default async function handler(req, res) {
   let body = req.rawBody; // Firebase and Google Cloud have read it already
+  if (!body && !req.headers['content-length'] && !req.headers['transfer-encoding']) body = none; // most GETs
   if (!body) {
     if (Number(req.headers['content-length']) > limit) return tooLarge(req, res);
     const chunks = [];
@@ -39,9 +41,13 @@ export default async function handler(req, res) {
   const headers = [];
   for (let i = 0; i < req.rawHeaders.length; i += 2) headers.push([req.rawHeaders[i], req.rawHeaders[i + 1]]);
   const peer = req.socket?.remoteAddress ?? '';
-  const r = await app.handle({ method: req.method, target: req.url, peer, headers, body: new Uint8Array(body) });
-  res.writeHead(r.status, r.headers.flat());
-  if (!(r.body instanceof ReadableStream)) return res.end(req.method === 'HEAD' ? undefined : r.body);
+  const r = await app.handle({ method: req.method, target: req.url, peer, headers, body });
+  const out = r.headers.flat();
+  const whole = !(r.body instanceof ReadableStream);
+  // A whole body gets a length, so Node writes it in one piece, not chunked.
+  if (whole && r.status >= 200 && r.status !== 204 && r.status !== 304 && !r.headers.some(([k]) => k.toLowerCase() === 'content-length')) out.push('content-length', r.body.length);
+  res.writeHead(r.status, out);
+  if (whole) return res.end(req.method === 'HEAD' ? undefined : r.body);
   if (req.method === 'HEAD') return r.body.cancel().finally(() => res.end());
   // Streamed: each chunk goes out as it comes. A client that leaves
   // cancels the stream, which the app sees as its sender failing.
