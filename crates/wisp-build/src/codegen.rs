@@ -6657,7 +6657,7 @@ mod tests {
         );
         assert_eq!(facts(&code, "uploads"), ["Some(page_0::__call::UPLOADS)"]);
         for want in [
-            "pub const UPLOADS: usize = 0 + (1 * MB) as usize + (500) as usize;",
+            "pub const UPLOADS: usize = 0 + (1 * MB) as usize + (500) as usize + ::wisp::MAX_SIZE;",
             "if let Some(__v) = &__a0 { __p.check(\"pic\", ::wisp::rt_traits::max_size(__v, (1 * MB) as usize)); }",
             "use super::*;",
         ] {
