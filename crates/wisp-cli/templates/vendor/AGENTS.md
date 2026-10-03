@@ -367,11 +367,12 @@ takes the no-wait fast path off every route.
 
 `wisp new app` · `wisp dev` (hot reload) · `wisp check` · `wisp build`
 (`--static`, `--docker`, `--target cloudflare|deno|vercel|netlify|node`,
-`--client ts`) · `wisp add pkg[@ver]` · `wisp remove pkg` · `wisp
-update-docs` (this file, after upgrading Wisp) · `wisp mcp` (tools for AI
-agents: `wisp_docs(topic)`, `wisp_check`, `wisp_routes`, `wisp_components`,
-`wisp_new_route(path, kind)`; Claude Code: `claude mcp add wisp -- wisp mcp`).
-More: `wisp_docs`, or https://raw.githubusercontent.com/wyziedevs/wisp/main/llms-full.txt
-(this file and every doc).
+`--client ts`) · `wisp add pkg[@ver]` · `wisp remove pkg` · `wisp lsp` (language
+server; VS Code: editors/vscode) · `wisp update-docs` (this file, after
+upgrading Wisp) · `wisp mcp` (tools for AI agents: `wisp_docs(topic)`,
+`wisp_check`, `wisp_routes`, `wisp_components`, `wisp_new_route(path, kind)`;
+Claude Code: `claude mcp add wisp -- wisp mcp`). More: `wisp_docs`, or
+https://raw.githubusercontent.com/wyziedevs/wisp/main/llms-full.txt (this
+file and every doc).
 
 <!-- End of the Wisp reference. Notes for this app go below; wisp update-docs keeps them. -->
