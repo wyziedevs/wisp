@@ -277,6 +277,11 @@ is a build error).
 Islands: `<Chart client:visible|idle|interaction|media="(…)"|none />`.
 Server components: one with no browser code ships no JS; islands and server
 components nest in any order (an inner island wakes a waiting outer one).
+npm components: `wisp add react react-dom react-switch`, then `<Island
+of="react:react-switch" client:visible props={:{ checked: on, onChange: (v) => (on = v) }} />`
+(`react|preact|vue|svelte`; `#Name` for a named export; `$lib/x.js` too;
+`props={rust}` sends JSON; children show until it starts; the framework
+loads only on that page).
 TypeScript: `<script lang="ts">`, `src/lib/*.ts`, `+page.ts`. Types are
 stripped (spaces, so lines and columns hold), as Node's strip-types does:
 `enum`, a `namespace` with values and parameter properties are build errors

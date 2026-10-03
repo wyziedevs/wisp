@@ -10,6 +10,7 @@ members = [
     "examples/api",
     "tests/app",
     "tests/agents",
+    "tests/islands",
     "bench/load",
     "bench/run",
     "bench/app",

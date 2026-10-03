@@ -319,8 +319,11 @@ pub fn parse(src: &str) -> Result<Template, Error> {
 
 /// A template, whose action forms' `fields` get the attributes the browser
 /// checks them by (`rules::Native`). With a scoped `<style>`, every element
-/// gets `class` (see `style`).
+/// gets `class` (see `style`). `<Island>`s are made plain first (see
+/// `island`).
 pub fn parse_with(src: &str, fields: &[Field], class: &str) -> Result<Template, Error> {
+    let expanded = crate::island::expand(src)?;
+    let src = expanded.as_deref().unwrap_or(src);
     let styled = (src.as_bytes().windows(6)).any(|w| w.eq_ignore_ascii_case(b"<style"));
     let t = parse_as(src, fields, styled.then_some(class))?;
     if styled && t.style.is_none() {

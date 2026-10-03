@@ -11,6 +11,7 @@ mod i18n;
 pub mod ide;
 pub mod image;
 pub mod inspect;
+mod island;
 mod js;
 mod markdown;
 mod model;
