@@ -1638,6 +1638,65 @@ fn visible(b: &[u8], mut i: usize, also: u8) -> usize {
     i
 }
 
+/// A few bytes, at most eight, to match a word against: `key` as
+/// [`swar::word`] reads it, in its first `mask` bytes, letters in any case.
+struct Pat {
+    key: u64,
+    case: u64,
+    mask: u64,
+}
+
+impl Pat {
+    const fn of(s: &[u8]) -> Pat {
+        let (mut key, mut case, mut k) = (0, 0, 0);
+        while k < s.len() {
+            key |= (s[k] as u64) << (8 * k);
+            if s[k].is_ascii_lowercase() {
+                case |= 0x20 << (8 * k);
+            }
+            k += 1;
+        }
+        Pat {
+            key,
+            case,
+            mask: u64::MAX >> (8 * (8 - s.len())),
+        }
+    }
+
+    /// Setting bit 5 of a letter's byte makes either case its lowercase,
+    /// and nothing else that lowercase: other bytes must be the same.
+    #[inline(always)]
+    fn is(&self, x: u64) -> bool {
+        (x | self.case) & self.mask == self.key
+    }
+}
+
+/// The length of the name at `b[i..]` when it is one of the headers every
+/// request sends, with its colon after it (as a match of its bytes, it is
+/// a `tchar` name): `host`, `connection`, `content-length`, `user-agent`.
+/// 0 for others, whose bytes are then checked.
+#[inline(always)]
+fn by_name(b: &[u8], i: usize) -> usize {
+    const HOST: Pat = Pat::of(b"host:");
+    const CONTENT: Pat = Pat::of(b"content-");
+    const LENGTH: Pat = Pat::of(b"length:");
+    const CONNECTI: Pat = Pat::of(b"connecti");
+    const ON: Pat = Pat::of(b"on:");
+    const USER_AGE: Pat = Pat::of(b"user-age");
+    const NT: Pat = Pat::of(b"nt:");
+    let Some(w) = b.get(i..i + 16) else {
+        return 0;
+    };
+    let (x, y) = (swar::word(w, 0), swar::word(w, 8));
+    match x as u8 | 0x20 {
+        b'h' if HOST.is(x) => 4,
+        b'c' if CONTENT.is(x) && LENGTH.is(y) => 14,
+        b'c' if CONNECTI.is(x) && ON.is(y) => 10,
+        b'u' if USER_AGE.is(x) && NT.is(y) => 10,
+        _ => 0,
+    }
+}
+
 /// The head of `buf[at..]` when it has the usual shape: a method in
 /// capitals, a target of visible ASCII, `HTTP/1.1` or `HTTP/1.0`, lines that
 /// end in CRLF, header names of `tchar`s, and all of it here, in at most
@@ -1703,22 +1762,25 @@ fn fast_head(buf: &[u8], at: usize, headers: &mut Vec<(Span, Span)>) -> Option<H
                 http11,
             });
         }
-        // The name: letters, digits and `-` eight at a time, any other
-        // `tchar` one at a time.
+        // The name: one read most by its bytes, or else letters, digits
+        // and `-` eight at a time, any other `tchar` one at a time.
         let name = i;
-        loop {
-            if i + 8 <= b.len() {
-                let miss = swar::not_name(swar::word(b, i));
-                if miss == 0 {
-                    i += 8;
-                    continue;
+        i += by_name(b, i);
+        if i == name {
+            loop {
+                if i + 8 <= b.len() {
+                    let miss = swar::not_name(swar::word(b, i));
+                    if miss == 0 {
+                        i += 8;
+                        continue;
+                    }
+                    i += swar::first(miss);
                 }
-                i += swar::first(miss);
+                if !b.get(i).is_some_and(|&c| TOKEN[usize::from(c)]) {
+                    break;
+                }
+                i += 1;
             }
-            if !b.get(i).is_some_and(|&c| TOKEN[usize::from(c)]) {
-                break;
-            }
-            i += 1;
         }
         if i == name || b.get(i) != Some(&b':') {
             return None;
@@ -3580,6 +3642,39 @@ mod tests {
         let mut rng = Rng::new(6);
         for k in 0..30_000 {
             let mut wire = sent(&mut rng).wire;
+            let whole = k % 3 == 0;
+            if !whole {
+                mutate(&mut rng, &mut wire);
+            }
+            same(&wire, whole);
+        }
+        // The headers read by name, in any case and order, and broken.
+        let names = [
+            "Host",
+            "Content-Length",
+            "Connection",
+            "Content-Type",
+            "Hosts",
+            "Content-Lengths",
+            "Connections",
+            "Hos",
+            "User-Agent",
+            "User-Agents",
+        ];
+        for k in 0..30_000 {
+            let mut wire = b"POST /x HTTP/1.1\r\n".to_vec();
+            for _ in 0..rng.below(5) {
+                wire.extend(rng.pick(&names).bytes().map(|c| {
+                    if rng.one_in(2) {
+                        c.to_ascii_uppercase()
+                    } else {
+                        c.to_ascii_lowercase()
+                    }
+                }));
+                wire.extend_from_slice(rng.pick(&[&b": 1"[..], b":", b":\tclose"]));
+                wire.extend_from_slice(b"\r\n");
+            }
+            wire.extend_from_slice(b"\r\n");
             let whole = k % 3 == 0;
             if !whole {
                 mutate(&mut rng, &mut wire);
