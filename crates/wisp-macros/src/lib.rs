@@ -268,14 +268,31 @@ fn account(tokens: &[TokenTree]) -> Option<TokenStream> {
     let fields = named_fields(&tokens.iter().cloned().collect()).ok()?;
     let has = |f: &str| fields.iter().any(|x| x.name.to_string() == f);
     let who = ["email", "name"].into_iter().find(|f| has(f))?;
-    if !has("hash") {
-        return None;
-    }
+    // A `Password` field, or else a `hash: String`.
+    let typed = fields
+        .iter()
+        .find(|f| f.ty.rsplit("::").next().map(str::trim) == Some("Password"));
+    let (hash, set, hashed) = match typed {
+        Some(f) => {
+            let p = &f.name;
+            (
+                format!("self.{p}.as_str()"),
+                format!("self.{p} = ::wisp::Password::from_hash(hash);"),
+                format!("fn hashed(&self) -> bool {{ self.{p}.hashed() }}"),
+            )
+        }
+        None if has("hash") => (
+            "&self.hash".into(),
+            "self.hash = hash;".into(),
+            String::new(),
+        ),
+        None => return None,
+    };
     Some(parse(&format!(
         "impl ::wisp::Account for {name} {{ const WHO: &'static str = {who:?}; \
          fn who(&self) -> &str {{ ::std::convert::AsRef::<str>::as_ref(&self.{who}) }} \
-         fn hash(&self) -> &str {{ &self.hash }} \
-         fn set_hash(&mut self, hash: String) {{ self.hash = hash; }} }}"
+         fn hash(&self) -> &str {{ {hash} }} \
+         fn set_hash(&mut self, hash: String) {{ {set} }} {hashed} }}"
     )))
 }
 
@@ -349,7 +366,7 @@ pub fn derive_json(item: TokenStream) -> TokenStream {
 /// A struct with named fields may also be an action's input, `#[action] fn
 /// save(post: Post)`: its fields are read from the form by name (a blank
 /// one is missing) and checked the same way.
-#[proc_macro_derive(FromJson, attributes(validate))]
+#[proc_macro_derive(FromJson, attributes(validate, json, unique))]
 pub fn derive_from_json(item: TokenStream) -> TokenStream {
     match from_json(item) {
         Ok(code) => code,
@@ -706,12 +723,17 @@ fn from_json_with(item: TokenStream, stamped: &[&str]) -> Result<TokenStream, Er
                 slots.push_str(&format!(
                     "let mut __f{k}: ::std::option::Option<{ty}> = ::std::option::Option::None;"
                 ));
-                arms.push_str(&format!(
-                    "{} if __f{k}.is_none() => __f{k} = ::std::option::Option::Some(<{ty} as ::wisp::FromJson>::read(__d)?),",
-                    key(f)
-                ));
+                for name in std::iter::once(key(f)).chain(f.was.clone()) {
+                    arms.push_str(&format!(
+                        "{name} if __f{k}.is_none() => __f{k} = ::std::option::Option::Some(<{ty} as ::wisp::FromJson>::read(__d)?),"
+                    ));
+                }
+                let absent = match &f.default {
+                    Some(d) => format!("{{ let __v: {ty} = {d}; __v }}"),
+                    None => format!("<{ty} as ::wisp::FromJson>::missing()?"),
+                };
                 take.push_str(&format!(
-                    "let __f{k} = match __f{k} {{ ::std::option::Option::Some(v) => v, ::std::option::Option::None => <{ty} as ::wisp::FromJson>::missing()? }};"
+                    "let __f{k} = match __f{k} {{ ::std::option::Option::Some(v) => v, ::std::option::Option::None => {absent} }};"
                 ));
                 for call in &f.checks {
                     take.push_str(&format!(
@@ -750,9 +772,17 @@ fn from_json_with(item: TokenStream, stamped: &[&str]) -> Result<TokenStream, Er
             for (k, field) in named_fields(&item)?.iter().enumerate() {
                 let id = field.name.to_string();
                 let key = format!("{:?}", bare(&id));
-                let read = match stamped.contains(&id.as_str()) {
-                    true => format!("::wisp::rt::stamped(__p, __m, {key})"),
-                    false => format!("__p.field(__m, {key})"),
+                let read = match (stamped.contains(&id.as_str()), &field.default, &field.was) {
+                    (true, ..) => format!("::wisp::rt::stamped(__p, __m, {key})"),
+                    (false, None, None) => format!("__p.field(__m, {key})"),
+                    (false, default, was) => {
+                        let was = was.as_deref().unwrap_or("\"\"");
+                        let default = match default {
+                            Some(d) => format!("|| ::std::option::Option::Some({d})"),
+                            None => "|| ::std::option::Option::None".into(),
+                        };
+                        format!("__p.field_or(__m, {key}, {was}, {default})")
+                    }
                 };
                 // Placed at the field, so a type that is not `FromJson` is
                 // the one the compiler points at.
@@ -820,12 +850,34 @@ fn from_json_with(item: TokenStream, stamped: &[&str]) -> Result<TokenStream, Er
         Shape::Named(_) => format!("impl ::wisp::rt_traits::Fields for {name} {{}}"),
         _ => String::new(),
     };
+    // `#[unique]`: the saved table of the type refuses a repeat.
+    let mut unique = String::new();
+    if let Shape::Named(_) = &shape {
+        let marked: Vec<Field> = named_fields(&item)?
+            .into_iter()
+            .filter(|f| f.unique)
+            .collect();
+        if let Some(second) = marked.get(1) {
+            return Err((
+                "a type has one `#[unique]` field".into(),
+                second.name.span(),
+            ));
+        }
+        if let Some(f) = marked.first() {
+            unique = format!(
+                "const UNIQUE: ::std::option::Option<(&'static str, fn(&Self) -> &str)> = ::std::option::Option::Some(({:?}, |__v: &Self| ::std::convert::AsRef::<str>::as_ref(&__v.{})));",
+                bare(&f.name.to_string()),
+                f.name
+            );
+        }
+    }
     let template = parse(&format!(
         "impl ::wisp::FromJson for {name} {{
             fn from_json(__v: &::wisp::Value, __p: &mut ::wisp::json::Problems) -> ::std::option::Option<Self> {{
                 __wisp_write
             }}
             {direct}
+            {unique}
         }}
         {fields}"
     ));
@@ -844,7 +896,7 @@ fn from_json_with(item: TokenStream, stamped: &[&str]) -> Result<TokenStream, Er
 /// by default), `ids = "random"` (ids no one can count through), `memory`
 /// (kept in memory only). Fields named `created_at` and `updated_at` are
 /// set by Wisp: a number of seconds, or RFC 3339 text in a `String`.
-#[proc_macro_derive(Rest, attributes(validate, rest))]
+#[proc_macro_derive(Rest, attributes(validate, rest, json, unique))]
 pub fn derive_rest(item: TokenStream) -> TokenStream {
     match rest(item) {
         Ok(code) => code,
@@ -1059,6 +1111,13 @@ struct Field {
     name: Ident,
     ty: String,
     checks: Vec<String>,
+    /// `#[json(default)]`, or `#[json(default = expr)]`: the value of a field
+    /// a stored row or a body leaves out.
+    default: Option<String>,
+    /// `#[json(was = "old")]`: the name it had, which old rows still use.
+    was: Option<String>,
+    /// `#[unique]`: no two rows of a table have the same value.
+    unique: bool,
 }
 
 /// The named fields of the struct `item`, with their types and rules.
@@ -1072,11 +1131,47 @@ fn named_fields(item: &TokenStream) -> Result<Vec<Field>, Error> {
     let mut out = Vec::new();
     for field in items(group.stream()) {
         let mut checks = Vec::new();
+        let (mut default, mut was, mut unique) = (None, None, false);
         let mut rest = field.as_slice();
         while let [TokenTree::Punct(hash), TokenTree::Group(attr), after @ ..] = rest
             && hash.as_char() == '#'
         {
             let inner: Vec<TokenTree> = attr.stream().into_iter().collect();
+            match inner.as_slice() {
+                [TokenTree::Ident(id)] if id.to_string() == "unique" => unique = true,
+                [TokenTree::Ident(id), TokenTree::Group(args)] if id.to_string() == "json" => {
+                    for rule in items(args.stream()) {
+                        let value = match &rule[1..] {
+                            [TokenTree::Punct(eq), v @ ..]
+                                if eq.as_char() == '=' && !v.is_empty() =>
+                            {
+                                Some(TokenStream::from_iter(v.iter().cloned()).to_string())
+                            }
+                            _ => None,
+                        };
+                        match (&rule[0], value) {
+                            (TokenTree::Ident(n), v) if n.to_string() == "default" => {
+                                default = Some(v.unwrap_or_else(|| {
+                                    "::std::default::Default::default()".into()
+                                }));
+                            }
+                            (TokenTree::Ident(n), Some(v))
+                                if n.to_string() == "was" && v.starts_with('"') =>
+                            {
+                                was = Some(v)
+                            }
+                            (t, _) => {
+                                return Err((
+                                    "expected `default`, `default = value` or `was = \"old name\"`"
+                                        .into(),
+                                    t.span(),
+                                ));
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
             if let [TokenTree::Ident(id), TokenTree::Group(args)] = inner.as_slice()
                 && id.to_string() == "validate"
             {
@@ -1112,6 +1207,9 @@ fn named_fields(item: &TokenStream) -> Result<Vec<Field>, Error> {
             name: name.clone(),
             ty: TokenStream::from_iter(ty.iter().cloned()).to_string(),
             checks,
+            default,
+            was,
+            unique,
         });
     }
     Ok(out)

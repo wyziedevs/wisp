@@ -604,3 +604,121 @@ fn the_straight_path_reads_what_a_value_does() {
         );
     }
 }
+
+/// Rows kept in memory, to read what a saved table wrote.
+struct Mem(std::sync::Mutex<Vec<(String, u64, String)>>);
+
+impl wisp::Store for &'static Mem {
+    fn load(&self, table: &str) -> wisp::Result<Vec<(u64, String)>> {
+        let rows = self.0.lock().unwrap();
+        Ok(rows
+            .iter()
+            .filter(|r| r.0 == table)
+            .map(|r| (r.1, r.2.clone()))
+            .collect())
+    }
+
+    fn save(&self, table: &str, id: u64, json: Option<&str>) -> wisp::Result {
+        let mut rows = self.0.lock().unwrap();
+        rows.retain(|r| !(r.0 == table && r.1 == id));
+        if let Some(j) = json {
+            rows.push((table.into(), id, j.into()));
+        }
+        Ok(())
+    }
+}
+
+static KEPT: Mem = Mem(std::sync::Mutex::new(Vec::new()));
+
+#[wisp::model]
+struct Member {
+    #[unique]
+    email: wisp::Email,
+    password: wisp::Password,
+    #[json(default)]
+    age: u8,
+    #[json(was = "nick", default = "anon".to_string())]
+    name: String,
+}
+
+static MEMBERS: wisp::Table<Member> = wisp::Table::saved("members");
+
+/// `#[json(default)]` and `#[json(was)]` bring old rows and short bodies to
+/// the type, on the straight path and through a `Value` alike.
+#[test]
+fn old_rows_are_read_as_they_are_now() {
+    for (body, name, age) in [
+        (r#"{"email":"a@b.c","password":"pw"}"#, "anon", 0),
+        (
+            r#"{"email":"a@b.c","password":"pw","nick":"Al","age":3}"#,
+            "Al",
+            3,
+        ),
+        (
+            r#"{"email":"a@b.c","password":"pw","nick":"Al","name":"Bo"}"#,
+            "Bo",
+            0,
+        ),
+        (
+            r#"{"name":"Bo","nick":"Al","email":"a@b.c","password":"pw"}"#,
+            "Bo",
+            0,
+        ),
+    ] {
+        let direct = from_json::<Member>(body.as_bytes()).unwrap();
+        let by_value = through_value::<Member>(body.as_bytes()).unwrap();
+        for m in [direct, by_value] {
+            assert_eq!((m.name.as_str(), m.age), (name, age), "{body}");
+        }
+    }
+    // What is not defaulted is still required.
+    assert_eq!(problems::<Member>(r#"{"password":"pw"}"#).len(), 1);
+}
+
+/// `#[unique]` makes a saved table refuse a repeat; a `Password` is kept as
+/// its hash, shown as nothing, and signs in.
+#[test]
+fn unique_and_password_fields() {
+    wisp::store(&KEPT);
+    let kept = || {
+        KEPT.0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| r.2.clone())
+            .collect::<String>()
+    };
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    let ann = |email: &str| {
+        from_json::<Member>(format!(r#"{{"email":"{email}","password":"pw"}}"#).as_bytes()).unwrap()
+    };
+    let row = rt
+        .block_on(wisp::signup(&MEMBERS, ann("ann@x.io")))
+        .unwrap();
+    let again = rt
+        .block_on(wisp::signup(&MEMBERS, ann("ann@x.io")))
+        .err()
+        .unwrap();
+    assert_eq!(again.status(), 422);
+    assert_eq!(MEMBERS.len(), 1);
+    assert_eq!(MEMBERS.by("ann@x.io").unwrap().id, row.id);
+    assert!(MEMBERS.try_add(ann("ann@x.io")).is_err());
+
+    assert!(row.value.password.hashed());
+    assert!(
+        !to_json(&row.value).contains("$pbkdf2")
+            && to_json(&row.value).contains(r#""password":null"#)
+    );
+    let got = rt
+        .block_on(wisp::login(&MEMBERS, "ann@x.io", "pw"))
+        .unwrap();
+    assert_eq!(got.id, row.id);
+    assert!(
+        rt.block_on(wisp::login(&MEMBERS, "ann@x.io", "nope"))
+            .is_err()
+    );
+    assert!(kept().contains("$pbkdf2-sha256$") && !kept().contains(r#"":"pw""#));
+}

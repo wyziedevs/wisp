@@ -266,16 +266,16 @@ files; `wisp::store(MyDb)` in `init` uses any DB; edge: env
 ## Members
 
 ```rust
-// src/db.rs: `hash` and `email` (or `name`) make a #[model] an Account
+// src/db.rs: a `Password` field and `email` (or `name`) make a #[model] an Account
 #[model]
-pub struct User { email: Email, hash: String }
+pub struct User { #[unique] email: Email, password: Password }
 pub static USERS: Table<User> = Table::saved();
 ```
 ```html
 ---
 #[action]                                       // sign up
-fn signup(email: Email, #[validate(min_len = 8)] password: String) {
-    cx.signup(&USERS, User { email, hash: password }).await?;  // hashes it; 422 if taken
+fn signup(email: Email, #[validate(min_len = 8)] password: Password) {
+    cx.signup(&USERS, User { email, password }).await?;  // hashes it; 422 if taken
     redirect("/me")
 }
 #[action]                                       // log in
@@ -292,6 +292,7 @@ Both sign in. `wisp::users(&db::USERS)` in `init` makes it `cx.user()`.
 `cx.sign_out()`, `wisp::sign_out_everywhere(id)?`, `wisp::sign_in_page("/enter")`.
 `wisp::login`/`signup` are these without a Cx. Hashes: PBKDF2-SHA256, ~0.2 s
 off the worker (`RateLimit` sign-ins); by hand `wisp::password::{hash, check}`.
+A `Password` is stored as its hash and is `null` in any JSON out (`hash: String` still works).
 `cx.need(&USERS, |u| u.admin)?` is the Row, 403 if not allowed. More:
 `docs/auth.md` (`token`/`untoken` links, `totp`, `oauth`, `mail`,
 `fetch`).
@@ -307,7 +308,10 @@ fn before(cx: &mut Cx) -> Result {
     cx.cors("*")?;                    // a preflight is the Err that `?` returns
     Ok(())
 }
+fn after(cx: &mut Cx, reply: &mut Reply) {}   // sync, every reply: headers, logs
+fn report(cx: &mut Cx, err: &Error) {}        // sync, every 5xx: Sentry and the like
 ```
+`after`/`report` cost nothing in an app that has none (the build sets a const).
 Pages get a `content-security-policy` (`wisp::csp("img-src 'self' https://x")`
 in `init` replaces a directive; `wisp::csp_off()`); `onclick="…"` doesn't run:
 use `on:click`. `wisp::trailing_slash(Always)` in `init`: pages are `/about/`
@@ -337,8 +341,11 @@ no-wait fast path off every route.
   `wisp::env("K")`, `spawn`, `every`, `wisp::channel("x")`
   `.send/events()` (SSE)`/websocket()`, `RateLimit::per_minute(n).check(key)?`,
   `#[derive(Cookie)]`.
-- Data, files, jobs (docs/data.md): `Table::saved(n).unique("f", |v: &T| &v.f)
-  .migrate(f).live()`, `set clear by try_add`; `Upload`, `wisp::relay`,
+- Data, files, jobs (docs/data.md): `#[unique]` on a `#[model]` field of a saved
+  table (or `.unique("f", |v: &T| &v.f)`), `#[json(default)]`/`#[json(default =
+  expr)]`/`#[json(was = "old")]` for old rows, `.migrate(f)`, `.live()` (pages
+  naming a live table's static refresh themselves, via `/_wisp/live/<name>`),
+  `set clear by try_add`; `Upload`, `wisp::relay`,
   `wisp::queue(n).push(&j)` + `work(n, f)` + `cron("0 3 * * *", f)`,
   `wisp::cache(k, secs, f)`/`uncache(path)`, `WISP_ADMIN_KEY` admin page;
   rules `url one_of pattern with`.

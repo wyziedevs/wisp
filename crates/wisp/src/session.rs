@@ -129,14 +129,20 @@ fn sign_outs(id: u64) -> u64 {
 }
 
 /// A member row: who it is (`email` or `name`) and its password hash.
-/// `#[model]` implements it for a struct with a `hash: String` and an
-/// `email` or `name` field; any other type can by hand.
+/// `#[model]` implements it for a struct with a `Password` field (or a
+/// `hash: String`) and an `email` or `name` field; any other type can by
+/// hand.
 pub trait Account {
     /// The field members sign in by: errors name it.
     const WHO: &'static str;
     fn who(&self) -> &str;
     fn hash(&self) -> &str;
     fn set_hash(&mut self, hash: String);
+    /// Whether `hash` already is one: a [`Password`](crate::Password) made
+    /// by `Password::new`. [`signup`] hashes what is not.
+    fn hashed(&self) -> bool {
+        false
+    }
 }
 
 /// The member of `users` whose `who` and `password` these are, or a 422 on
@@ -158,8 +164,10 @@ pub async fn login<T: Account + Clone>(
 /// becomes its hash first; a 422 on `who`'s field when a member has that
 /// already.
 pub async fn signup<T: Account + Clone>(users: &Table<T>, mut row: T) -> Result<Row<T>> {
-    let hash = crate::password::hash(row.hash()).await?;
-    row.set_hash(hash);
+    if !row.hashed() {
+        let hash = crate::password::hash(row.hash()).await?;
+        row.set_hash(hash);
+    }
     let who = row.who().to_string();
     users
         .add_unless(|u| u.who() == who, row)
