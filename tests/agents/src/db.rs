@@ -8,9 +8,9 @@ pub struct Todo {
 }
 pub static TODOS: Table<Todo> = Table::saved();   // "todos"; Table::new() = memory
 
-// src/db.rs: `hash` and `email` (or `name`) make a #[model] an Account
+// src/db.rs: a `Password` field and `email` (or `name`) make a #[model] an Account
 #[model]
-pub struct User { email: Email, hash: String }
+pub struct User { #[unique] email: Email, password: Password }
 pub static USERS: Table<User> = Table::saved();
 
 #[model]

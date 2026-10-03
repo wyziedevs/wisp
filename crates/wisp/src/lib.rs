@@ -118,6 +118,7 @@ pub use limit::RateLimit;
 pub use live::{ClientModule, Json};
 pub use mail::mail;
 pub use otel::{SpanGuard, span, traceparent};
+pub use password::Password;
 pub use pwa::app_manifest;
 #[cfg(not(target_arch = "wasm32"))]
 pub use relay::{Deliver, Relay, relay};
@@ -151,8 +152,8 @@ pub mod prelude {
     pub use crate::TrailingSlash::{Always, Ignore, Never};
     pub use crate::{
         Config, Cookie, CookieOptions, Cx, Email, Error, FromJson, Image, Json, KB, MB, Method,
-        OrStatus, Response, Rest, Result, Row, SameSite, Shared, Table, Upload, Value, action,
-        error, invalid, model, redirect, remote,
+        OrStatus, Password, Reply, Response, Rest, Result, Row, SameSite, Shared, Table, Upload,
+        Value, action, error, invalid, model, redirect, remote,
     };
 }
 
@@ -792,6 +793,10 @@ pub trait App: 'static {
     /// The app may call [`trailing_slash`]: without it, a page's address
     /// is never redirected to end in `/`, and no request looks.
     const TRAILING_SLASH: bool = true;
+    /// `src/hooks.rs` has `after`: [`App::after`] runs on every reply.
+    const AFTER: bool = false;
+    /// `src/hooks.rs` has `report`: [`App::report`] runs on every 5xx.
+    const REPORT: bool = false;
     /// The locales of `src/locales/*.json`, by file name, sorted.
     const LOCALES: &'static [&'static str] = &[];
     /// `(path, shape)` per template id, for dev hot swapping.
@@ -848,6 +853,14 @@ pub trait App: 'static {
         status: u16,
         message: &str,
     ) -> impl Future<Output = Result<()>> + Send;
+    /// `after` from `src/hooks.rs`: the reply, before it is sent.
+    fn after(cx: &mut Cx, reply: &mut Reply) {
+        let _ = (cx, reply);
+    }
+    /// `report` from `src/hooks.rs`: the error of a 5xx, whole.
+    fn report(cx: &mut Cx, err: &Error) {
+        let _ = (cx, err);
+    }
     /// What [`App::handle`] does, for the arms the build made plain code
     /// ([`rt::RouteFacts::sync`]): `Ok(false)` for any other, having done
     /// nothing.

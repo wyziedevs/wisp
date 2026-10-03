@@ -639,6 +639,35 @@ impl Problems {
 
     /// The field `name` of an object: absent is `T::missing()`, which is a
     /// problem for anything but an `Option`.
+    /// [`Problems::field`] for a field with `#[json(was = "old")]` (`was`,
+    /// `""` for none), which old rows still name that way, and
+    /// `#[json(default)]`: `absent` is what it is when it is not there.
+    pub fn field_or<T: FromJson>(
+        &mut self,
+        members: &[(String, Value)],
+        name: &str,
+        was: &str,
+        absent: impl FnOnce() -> Option<T>,
+    ) -> Option<T> {
+        let blank = |v: &Value| matches!(v, Value::String(s) if s.trim().is_empty());
+        let has = |n: &str| {
+            members
+                .iter()
+                .any(|(k, v)| k == n && !(self.form && blank(v)))
+        };
+        let name = if !was.is_empty() && !has(name) && has(was) {
+            was
+        } else {
+            name
+        };
+        if !has(name)
+            && let Some(v) = absent()
+        {
+            return Some(v);
+        }
+        self.field(members, name)
+    }
+
     pub fn field<T: FromJson>(&mut self, members: &[(String, Value)], name: &str) -> Option<T> {
         let blank = |v: &Value| matches!(v, Value::String(s) if s.trim().is_empty());
         // A form's blank field is one left out: required, or `None`.
@@ -712,6 +741,12 @@ pub trait FromJson: Sized {
         let _ = d;
         None
     }
+
+    /// The field marked `#[unique]`: its name and how to read it, which a
+    /// saved [`Table`](crate::Table) of the type refuses a repeat of.
+    #[doc(hidden)]
+    #[allow(clippy::type_complexity)]
+    const UNIQUE: Option<(&'static str, fn(&Self) -> &str)> = None;
 }
 
 /// Reads a JSON body into a `T`. Text that is not JSON is a 400 that says
@@ -991,6 +1026,12 @@ pub mod check {
     }
 
     impl Length for String {
+        fn length(&self) -> Option<(usize, &'static str)> {
+            Some((self.chars().count(), "character"))
+        }
+    }
+
+    impl Length for crate::Password {
         fn length(&self) -> Option<(usize, &'static str)> {
             Some((self.chars().count(), "character"))
         }

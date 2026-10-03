@@ -1,8 +1,8 @@
 ---
 // @feature auth
 #[action]
-fn default(email: Email, #[validate(min_len = 8)] password: String) {
-    cx.signup(&USERS, User { email, hash: password, avatar: None }).await?;
+fn default(email: Email, #[validate(min_len = 8)] password: Password) {
+    cx.signup(&USERS, User { email, password, avatar: None }).await?;
     redirect("/dashboard")
 }
 ---
