@@ -40,14 +40,14 @@ fn sources_are_read_as_text() {
 #[test]
 fn a_wisp_file_splits_into_rust_and_markup() {
     // No block: all markup.
-    let (t, rust) = parse_wisp("<p>{a}</p>").unwrap();
+    let (t, rust) = parse_wisp("<p>{a}</p>", "x.wisp").unwrap();
     assert!(rust.is_none());
     assert_eq!(t.chunks.concat(), "<p></p>");
 
     // The block's Rust keeps its line; the markup is blanked, and the other
     // way round, so every line is on its own line in the file.
     let src = "\n\n---\nlet a = 1;\nlet b = 2;\n---\n<p>{a}{b}</p>";
-    let (t, rust) = parse_wisp(src).unwrap();
+    let (t, rust) = parse_wisp(src, "x.wisp").unwrap();
     assert_eq!(rust.as_deref(), Some("\n\n\nlet a = 1;\nlet b = 2;\n\n"));
     assert_eq!(t.chunks.concat(), "<p></p>");
     let Some(template::Node::Expr(a)) = t
@@ -64,16 +64,16 @@ fn a_wisp_file_splits_into_rust_and_markup() {
     );
 
     // A `---` that is not the first line is markup.
-    let (t, rust) = parse_wisp("<hr>\n---\n<hr>").unwrap();
+    let (t, rust) = parse_wisp("<hr>\n---\n<hr>", "x.wisp").unwrap();
     assert!(rust.is_none());
     assert!(t.chunks.concat().contains("---"));
     // A lone block is a page with no markup.
-    let (t, rust) = parse_wisp("---\nlet a = 1;\n---").unwrap();
+    let (t, rust) = parse_wisp("---\nlet a = 1;\n---", "x.wisp").unwrap();
     assert_eq!(rust.as_deref(), Some("\nlet a = 1;\n"));
     assert!(t.nodes.iter().all(|n| matches!(n, template::Node::Text(_))));
     // CRLF was read as LF by now; a block's fence may have spaces around it.
     assert!(
-        parse_wisp("  ---  \nlet a = 1;\n\t---\t\n{a}")
+        parse_wisp("  ---  \nlet a = 1;\n\t---\t\n{a}", "x.wisp")
             .unwrap()
             .1
             .is_some()
@@ -81,16 +81,16 @@ fn a_wisp_file_splits_into_rust_and_markup() {
 
     // Errors say `line:col: message`, in the file's lines.
     assert_eq!(
-        parse_wisp("\n---\nlet a = 1;\n").unwrap_err(),
+        parse_wisp("\n---\nlet a = 1;\n", "x.wisp").unwrap_err(),
         "2:1: this `---` starts a block of Rust, which needs a `---` line after it"
     );
-    let e = parse_wisp("---\nlet a = 1;\n---\n<p>\n{#if x}\n</p>").unwrap_err();
+    let e = parse_wisp("---\nlet a = 1;\n---\n<p>\n{#if x}\n</p>", "x.wisp").unwrap_err();
     assert!(e.starts_with("5:1: "), "{e}");
 }
 
 #[test]
 fn the_shape_is_what_a_running_build_cannot_change() {
-    let shape = |src: &str| parse_wisp(src).unwrap().0.shape;
+    let shape = |src: &str| parse_wisp(src, "x.wisp").unwrap().0.shape;
     // Text is not part of it; structure and code are.
     assert_eq!(
         shape("<h1>Hello {name}</h1>"),

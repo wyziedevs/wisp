@@ -147,6 +147,54 @@ fn a_release_build_bakes_in_the_static_files() {
     assert!(code.contains("Some(\"dev\")"), "{code}");
 }
 
+/// Scoped styles follow the app's CSS: written whole into a release build,
+/// to `.wisp/scoped.css` by a dev one (and by `wisp dev`, which says when
+/// they changed).
+#[test]
+fn scoped_styles_join_the_apps_css() {
+    let project = Project::new(&[
+        (
+            "src/routes/+page.wisp",
+            "<h1>a</h1><style>h1 { x: 1 }</style>",
+        ),
+        (
+            "src/components/Card.wisp",
+            "<b>b</b>\n<style>b { y: 2 }</style>",
+        ),
+        ("src/app.css", "body { margin: 0 }"),
+    ]);
+    let (page, card) = (
+        wisp_build::style::class("src/routes/+page.wisp"),
+        wisp_build::style::class("src/components/Card.wisp"),
+    );
+    let out = Project::new(&[]);
+    let run = build(Some(project.root()), Some(out.root()), Some("release"));
+    assert!(run.status.success(), "{}", text(&run.stderr));
+    let code = fs::read_to_string(out.root().join("wisp.rs")).unwrap();
+    let css = format!("body {{ margin: 0 }}\\nb.{card} {{ y: 2 }}\\nh1.{page} {{ x: 1 }}");
+    assert!(
+        code.contains(&format!("body: \"{css}\".as_bytes()")),
+        "{code}"
+    );
+    assert!(
+        code.contains(&format!("<h1 class=\\\"{page}\\\">a</h1>")),
+        "{code}"
+    );
+    let scoped = project.root().join(".wisp/scoped.css");
+    assert!(!scoped.exists());
+
+    let run = build(Some(project.root()), Some(out.root()), None);
+    assert!(run.status.success(), "{}", text(&run.stderr));
+    let dev = format!("b.{card} {{ y: 2 }}\nh1.{page} {{ x: 1 }}");
+    assert_eq!(fs::read_to_string(&scoped).unwrap(), dev);
+    assert_eq!(wisp_build::write_styles(project.root()), Ok((false, true)));
+    fs::write(project.root().join("src/routes/+page.wisp"), "<h1>a</h1>").unwrap();
+    assert_eq!(wisp_build::write_styles(project.root()), Ok((true, true)));
+    fs::write(project.root().join("src/components/Card.wisp"), "<b>b</b>").unwrap();
+    assert_eq!(wisp_build::write_styles(project.root()), Ok((true, false)));
+    assert_eq!(fs::read_to_string(&scoped).unwrap(), "");
+}
+
 #[test]
 fn a_mistake_ends_the_build_with_its_message() {
     let project = Project::new(&[("src/routes/about/page.wisp", "x")]);

@@ -473,6 +473,38 @@ its file: `Card.wisp` is `<Card>`. It declares what it takes at the top:
 Components can also be drawn by the browser (inside client blocks, or with
 `{:…}` props, `bind:` and `on:`); see [client.md](client.md).
 
+### Scoped styles
+
+```html
+<h1>Hi</h1>
+<style>
+  h1, .lead { color: rebeccapurple }
+  :global(body) { margin: 0 }
+</style>
+```
+
+- A `<style>` without attributes in a page, layout or component is that
+  file's: every element it writes gets `class="w-xxxxxx"` (six letters or
+  digits from a hash of its path), and each selector gets `.w-xxxxxx` on its
+  last compound that is not `:global(…)`, before any pseudo-class or
+  pseudo-element: `.card p:hover` → `.card p.w-xxxxxx:hover`. Ancestors
+  may come from anywhere (a layout, `<html class="dark">`); the element
+  styled is this file's. A component's elements are its own, not the page's.
+- `:global(x)` is `x`, unscoped. A `<style>` with any attribute
+  (`<style global>`, `media="print"`) is copied as written. `@media`,
+  `@supports`, `@container`, `@layer` and nesting (`&:hover`, `h2 {}` in a
+  rule) are scoped inside; `@keyframes`, `@font-face` and their names stay
+  global. `@import` is a build error: it goes in `src/app.css`.
+- It goes at the top level (not in a block, `<template>` or `<head>`), and
+  a file may have several. The class is not put on `<html>`, `<head>`,
+  `<body>`, `<title>`, `<meta>`, `<link>`, `<base>`, `<script>`, `<style>`
+  or `<template>`; a `class` the browser sets (`class={:x}`) keeps it.
+- The CSS is appended to `/_app/app.css`, after the app's own: no other
+  request. A release build embeds it; a dev build reads it from
+  `.wisp/scoped.css`, which `wisp dev` rewrites on a template save and the
+  browser swaps in like any CSS change, no compile.
+- Cost: the class's bytes on each element, nothing at run time.
+
 ### Snippets
 
 A snippet is markup a file renders more than once, or gives to a component:

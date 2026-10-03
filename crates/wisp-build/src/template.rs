@@ -282,6 +282,8 @@ pub struct Template {
     /// Browser code: the client script and every element's directives.
     pub script: Option<Script>,
     pub groups: Vec<Group>,
+    /// Its bare `<style>`s, scoped: CSS for `/_app/app.css`.
+    pub style: Option<String>,
 }
 
 impl Template {
@@ -305,15 +307,29 @@ impl std::fmt::Display for Error {
 }
 
 pub fn parse(src: &str) -> Result<Template, Error> {
-    parse_with(src, &[])
+    parse_with(src, &[], "w-t")
 }
 
-/// A page's template, whose action forms' `fields` get the attributes the
-/// browser checks them by (`rules::Native`).
-pub fn parse_with(src: &str, fields: &[Field]) -> Result<Template, Error> {
+/// A template, whose action forms' `fields` get the attributes the browser
+/// checks them by (`rules::Native`). With a scoped `<style>`, every element
+/// gets `class` (see `style`).
+pub fn parse_with(src: &str, fields: &[Field], class: &str) -> Result<Template, Error> {
+    let styled = (src.as_bytes().windows(6)).any(|w| w.eq_ignore_ascii_case(b"<style"));
+    let t = parse_as(src, fields, styled.then_some(class))?;
+    if styled && t.style.is_none() {
+        return parse_as(src, fields, None);
+    }
+    Ok(t)
+}
+
+fn parse_as(src: &str, fields: &[Field], scope: Option<&str>) -> Result<Template, Error> {
     let mut p = Parser {
         src,
         fields,
+        scope,
+        scope_tag: false,
+        scoped: false,
+        style: None,
         b: src.as_bytes(),
         i: 0,
         ctx: Ctx::Text,
@@ -433,6 +449,7 @@ pub fn parse_with(src: &str, fields: &[Field]) -> Result<Template, Error> {
         props: p.props,
         script: p.script,
         groups: p.groups,
+        style: p.style,
     })
 }
 
@@ -631,6 +648,12 @@ struct Parser<'a> {
     tag_nodes: usize,
     /// The `<textarea>` or `<select>` of an action's form that is open.
     keep: Option<Keep>,
+    /// The file's class, when it has a scoped `<style>`; whether the tag
+    /// being scanned gets it and still needs it; the scoped CSS so far.
+    scope: Option<&'a str>,
+    scope_tag: bool,
+    scoped: bool,
+    style: Option<String>,
 }
 
 /// A `<textarea>` or `<select>` of an action's form, till its end tag:
@@ -737,6 +760,7 @@ impl Parser<'_> {
                         }
                         self.end_value(self.i)?;
                         if self.attr == "class" {
+                            self.write_scope(true);
                             self.write_classes()?;
                         }
                         self.push_byte(c);
@@ -1100,6 +1124,14 @@ impl Parser<'_> {
         } else {
             self.server_classes(end)
         };
+        // What the file's scoped `<style>` may style: its elements, not
+        // what goes in the head.
+        self.scoped = self.scope.is_some()
+            && !closing
+            && !UNSCOPED.contains(&name.as_str())
+            && (!name.starts_with("wisp:") || name == "wisp:element")
+            && !self.frames.iter().any(|f| matches!(f, Frame::Head { .. }));
+        self.scope_tag = self.scoped;
         // `<wisp:window on:resize="…" />` and the like: a `<template>` whose
         // directives go on the window; `<wisp:element this="tag">`, an
         // element whose tag the browser sets.
@@ -1452,6 +1484,9 @@ impl Parser<'_> {
         if self.tag == "script" && !self.closing && !self.tag_attrs {
             return self.client_script();
         }
+        if self.tag == "style" && !self.closing && !self.tag_attrs {
+            return self.scoped_style();
+        }
         // Any other inline `<script>` is a module: it has a scope of its
         // own, so its top-level names need no `(() => { ... })()` around
         // them, and it runs once the page is parsed, so everything it looks
@@ -1473,7 +1508,7 @@ impl Parser<'_> {
                     return Err(self.err(self.tag_pos, "no expressions in the `content` of a refresh: it is a URL that may run script; redirect from the server instead".into()));
                 }
             }
-            if !self.tag_classes.is_empty() {
+            if !self.tag_classes.is_empty() || self.scoped {
                 // No `class` attribute to put them in: write one.
                 let slash = self.last == b'/' && self.text.ends_with('/');
                 if slash {
@@ -1481,6 +1516,7 @@ impl Parser<'_> {
                     self.text.truncate(self.text.trim_end().len());
                 }
                 self.text.push_str(" class=\"");
+                self.write_scope(false);
                 self.write_classes()?;
                 self.text.push('"');
                 if slash {
@@ -2185,11 +2221,68 @@ impl Parser<'_> {
         Ok(())
     }
 
+    /// The file's class, once, into the `class` value being written (after
+    /// what is in it already, `after`).
+    fn write_scope(&mut self, after: bool) {
+        if let Some(class) = self.scope.filter(|_| std::mem::take(&mut self.scoped)) {
+            if after {
+                self.text.push(' ');
+            }
+            self.text.push_str(class);
+        }
+    }
+
+    /// A `<style>` without attributes is scoped to this file: it leaves the
+    /// HTML, its selectors get the file's class (`style::scope`), and the
+    /// build adds it to `/_app/app.css`.
+    fn scoped_style(&mut self) -> Result<(), Error> {
+        let at = self.tag_pos;
+        if !self.frames.is_empty() || !self.templates.is_empty() {
+            return Err(self.err(
+                at,
+                "a <style> without attributes is scoped to this file and goes at the top level, outside blocks, \
+                 <template> and <wisp:head>. For CSS that is not scoped, write <style global>"
+                    .into(),
+            ));
+        }
+        self.text.truncate(self.tag_text);
+        let body = self.i + 1;
+        let hay = &self.src[body..];
+        let n = (hay.as_bytes().windows(7))
+            .position(|w| w.eq_ignore_ascii_case(b"</style"))
+            .ok_or_else(|| self.err(at, "unclosed <style>".into()))?;
+        let end = hay[n..].find('>').map_or(hay.len(), |e| n + e + 1);
+        let css = match self.scope {
+            Some(class) => crate::style::scope(&hay[..n], class)
+                .map_err(|(off, msg)| self.err(body + off, msg))?,
+            None => hay[..n].to_string(),
+        };
+        let all = self.style.get_or_insert_with(String::new);
+        if !all.is_empty() {
+            all.push('\n');
+        }
+        all.push_str(&css);
+        self.i = body + end;
+        self.ctx = Ctx::Text;
+        Ok(())
+    }
+
     /// The tag being closed, if it has directives, gets a `Live` node just
     /// before its `>` (or `/>`). A `<template>` also starts or ends the
     /// names its `each` gives the elements inside it.
     fn live_element(&mut self) -> Result<(), Error> {
         let mut directives = std::mem::take(&mut self.directives);
+        // A `class` the browser sets keeps the file's.
+        if let Some(class) = self.scope.filter(|_| self.scope_tag) {
+            let sets_class = |d: &&mut Directive| d.kind == Dir::Attr && d.name == "class";
+            for v in directives
+                .iter_mut()
+                .filter(sets_class)
+                .filter_map(|d| d.value.as_mut())
+            {
+                v.src = format!("`${{({}) ?? ''}} {class}`", v.src);
+            }
+        }
         // Where the rest go, when they start, and the tag come first: the
         // runtime reads them before the others.
         directives.sort_by_key(|d| !matches!(d.kind, Dir::At | Dir::Wait | Dir::Tag));
@@ -3085,7 +3178,7 @@ impl Parser<'_> {
         // A whole attribute value: `None` leaves the attribute out.
         // (`name = {x}` with spaces cannot be taken back, and is written as text.)
         if unquoted
-            && (self.attr != "class" || self.tag_classes.is_empty())
+            && (self.attr != "class" || (self.tag_classes.is_empty() && !self.scoped))
             && self.unwrite_attr_name(open).is_ok()
         {
             let name = self.attr.clone();
@@ -3118,6 +3211,9 @@ impl Parser<'_> {
         self.push_node(open, Node::Expr(code(t)))?;
         if unquoted {
             self.end_value(open)?;
+            if self.attr == "class" {
+                self.write_scope(true);
+            }
             self.write_classes()?;
             self.text.push('"');
         }
@@ -3697,6 +3793,12 @@ fn has_line_comment(code: &str) -> bool {
     }
     false
 }
+
+/// Tags a scoped `<style>` leaves be: the document's own, what only goes
+/// in its head, and those that show nothing of their own.
+const UNSCOPED: [&str; 10] = [
+    "html", "head", "body", "title", "meta", "link", "base", "script", "style", "template",
+];
 
 /// HTML's boolean attributes: present means on, whatever the value.
 pub(crate) const BOOLEAN_ATTRS: [&str; 25] = [
@@ -4476,14 +4578,45 @@ mod tests {
     #[test]
     fn script_style_comment_are_raw() {
         let t = parse(
-            "<style>a { color: red }</style><script defer>if (a) { b() }</script><!-- {x} -->done",
+            "<style global>a { color: red }</style><script defer>if (a) { b() }</script><!-- {x} -->done",
         )
         .unwrap();
         assert_eq!(t.nodes.len(), 1);
+        assert_eq!(t.style, None);
         assert_eq!(
             text(&t, &t.nodes[0]),
-            "<style>a { color: red }</style><script defer type=\"module\">if (a) { b() }</script>done"
+            "<style global>a { color: red }</style><script defer type=\"module\">if (a) { b() }</script>done"
         );
+    }
+
+    #[test]
+    fn a_bare_style_is_scoped() {
+        let (html, t) = flat(
+            "<h1>Hi</h1>\n<p class=\"a\" class:on={x}>x</p><img src=\"x.png\" />\
+             <b class={c}>b</b><title>T</title>\n<STYLE>\n  h1, p::after { color: red }\n</STYLE>",
+        );
+        assert_eq!(
+            t.style.as_deref(),
+            Some("h1.w-t, p.w-t::after { color: red }")
+        );
+        assert_eq!(
+            html,
+            "<h1 class=\"w-t\">Hi</h1>\n<p class=\"a w-t?\">x</p><img src=\"x.png\" class=\"w-t\"/>\
+             <b class=\"? w-t\">b</b>?"
+        );
+        // A class the browser sets keeps it too.
+        let (html, t) = flat("<p class=\"a {:b}\">x</p><style>p {}</style>");
+        assert_eq!(html, "<p class=\"a  w-t\"[0]>x</p>");
+        let v = &t.groups[0].directives[0].value.as_ref().unwrap().src;
+        assert_eq!(v, "`${(`a ${(b) ?? ''}`) ?? ''} w-t`");
+        // Without one, nothing changes; with one in a block, it is an error.
+        let (html, t) = flat("<h1>Hi</h1><style media=\"print\">h1 {}</style>");
+        assert_eq!(html, "<h1>Hi</h1><style media=\"print\">h1 {}</style>");
+        assert_eq!(t.style, None);
+        let e = parse("{#if a}<style>p {}</style>{/if}").unwrap_err();
+        assert!(e.msg.contains("<style global>"), "{}", e.msg);
+        let e = parse("<p>x</p>\n<style>\np { color: red }\n@import 'x';\n</style>").unwrap_err();
+        assert_eq!((e.line, e.msg.contains("@import")), (4, true));
     }
 
     #[test]

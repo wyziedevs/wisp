@@ -199,7 +199,7 @@ fn quietly(f: impl FnOnce(&mut Vec<String>)) {
 
 /// The fast, in-memory parts: the template parser and the Rust scanner.
 fn parse_all(src: &str) {
-    let _ = wisp_build::parse_wisp(src);
+    let _ = wisp_build::parse_wisp(src, "x.wisp");
     let _ = wisp_build::template::parse(src);
     let _ = wisp_build::rust_scan::scan(src);
     let (items, stmts) = wisp_build::rust_scan::split_items(src);

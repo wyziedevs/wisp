@@ -63,6 +63,7 @@ pub fn run(root: &Path, port: u16) -> Result<(), String> {
     let mut files = scan(root);
     term::step("Building");
     rebuild(&mut app, &events, root, true);
+    let mut had_styles = wisp_build::write_styles(root).is_ok_and(|(_, any)| any);
 
     loop {
         sleep(POLL);
@@ -119,6 +120,18 @@ pub fn run(root: &Path, port: u16) -> Result<(), String> {
             }
         }
 
+        if !rebuild_needed && !templates.is_empty() {
+            // Scoped styles: a stylesheet swap, or a build when the app
+            // gains its first or loses its last (its pages' <link>).
+            match wisp_build::write_styles(root) {
+                Ok((changed, any)) => {
+                    rebuild_needed = any != had_styles;
+                    had_styles = any;
+                    css |= changed;
+                }
+                Err(e) => term::failed(&e),
+            }
+        }
         if !rebuild_needed && !templates.is_empty() {
             match hot_swap(&app, &templates) {
                 Swap::Done => {

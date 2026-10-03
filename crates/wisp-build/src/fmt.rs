@@ -821,8 +821,8 @@ mod tests {
     fn fmt(src: &str) -> String {
         let once = format(src, "2024");
         assert_eq!(format(&once, "2024"), once, "not idempotent for:\n{src}");
-        let (a, _) = crate::parse_wisp(src).unwrap();
-        let (b, _) = crate::parse_wisp(&once).unwrap();
+        let (a, _) = crate::parse_wisp(src, "x.wisp").unwrap();
+        let (b, _) = crate::parse_wisp(&once, "x.wisp").unwrap();
         assert!(key(a) == key(b), "meaning changed:\n{src}\n---\n{once}");
         once
     }

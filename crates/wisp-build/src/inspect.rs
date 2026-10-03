@@ -117,7 +117,7 @@ pub fn components(root: &Path) -> Result<Vec<(String, String, Vec<PropDecl>)>, S
         let rel = file.strip_prefix(root).unwrap_or(file);
         let rel = rel.to_string_lossy().replace('\\', "/");
         let src = crate::read_source(file).map_err(|e| format!("{rel}: {e}"))?;
-        let (t, _) = crate::parse_wisp(&src).map_err(|e| format!("{rel}:{e}"))?;
+        let (t, _) = crate::parse_wisp(&src, &rel).map_err(|e| format!("{rel}:{e}"))?;
         let name = file.file_stem().unwrap_or_default().to_string_lossy();
         out.push((
             name.into_owned(),
