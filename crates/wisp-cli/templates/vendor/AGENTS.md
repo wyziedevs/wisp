@@ -365,7 +365,8 @@ takes the no-wait fast path off every route.
 
 ## Commands
 
-`wisp new app` · `wisp dev` (hot reload) · `wisp check` · `wisp build`
+`wisp new app` · `wisp dev` (hot reload) · `wisp check` · `wisp fmt [paths]`
+(`--check`; markup, `---` via rustfmt, scripts, styles) · `wisp build`
 (`--static`, `--docker`, `--target cloudflare|deno|vercel|netlify|node`,
 `--client ts`) · `wisp add pkg[@ver]` · `wisp remove pkg` · `wisp lsp` (language
 server; VS Code: editors/vscode) · `wisp update-docs` (this file, after
