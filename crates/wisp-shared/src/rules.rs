@@ -268,6 +268,8 @@ pub struct Native {
     pub max_len: Option<u64>,
     pub min: Option<f64>,
     pub max: Option<f64>,
+    /// An `Image`: its form is `multipart/form-data`, its input takes images.
+    pub upload: bool,
 }
 
 impl Native {
@@ -322,6 +324,7 @@ impl Native {
                     add("max", &m.to_string());
                 }
             }
+            "file" if self.upload => add("accept", "image/*"),
             _ => {}
         }
         out

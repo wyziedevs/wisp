@@ -538,6 +538,13 @@ fn members_sign_in_and_upload_a_picture() {
         "{}",
         big.text()
     );
+    // The form is multipart and its input takes images, said nowhere.
+    let form = app.get("/me").text().to_string();
+    assert!(
+        form.contains("<form action=\"?/avatar\" method=\"post\" enctype=\"multipart/form-data\">")
+            && form.contains("<input type=\"file\" name=\"avatar\" required accept=\"image/*\">"),
+        "{form}"
+    );
     let none = app.send(upload("/me?/avatar", "other", gif));
     assert!(none.status == 422 && none.text().contains("choose an image"));
     assert_eq!(app.get("/avatars/1").bytes(), gif, "kept as it was");
