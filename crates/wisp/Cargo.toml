@@ -43,6 +43,8 @@ wisp-shared.workspace = true
 
 [features]
 tower = ["dep:bytes", "dep:http", "dep:http-body", "dep:tower-service"]
+# `wisp::test::browser`: tests in a headless Chrome or Edge. No deps.
+browser = []
 
 # The workspace's `forbid(unsafe_code)`, loosened to `deny` for three
 # modules: the edge build's exports and imports (`src/edge.rs`, wasm32

@@ -478,6 +478,10 @@ edition = "2024"
 [build-dependencies]
 {wisp-build}
 
+# `cargo test --features browser` runs the tests in a headless Chrome or Edge.
+[features]
+browser = ["wisp/browser"]
+
 # Dev builds near release speed, and rebuilds as fast as unoptimized ones.
 [profile.dev]
 debug = "line-tables-only"

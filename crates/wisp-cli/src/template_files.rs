@@ -22,7 +22,7 @@ pub type Layer = (&'static str, fn(&str) -> bool);
 /// the same path. The demo and the API are the examples of those names, so
 /// the two can never drift. The minimal template is the demo's shell (main,
 /// build script, app.html, static files) in the axum example's styles, with
-/// pages of its own.
+/// pages of its own (and none of the demo's tests of its pages).
 pub const TEMPLATES: [(&str, &[Layer]); 3] = [
     ("DEMO", &[("demo", all)]),
     ("API", &[("api", all)]),
@@ -41,7 +41,7 @@ fn all(_: &str) -> bool {
 }
 
 fn not_pages(path: &str) -> bool {
-    !path.starts_with("src/routes/") && path != "src/app.css"
+    !path.starts_with("src/routes/") && path != "src/app.css" && path != "src/tests.rs"
 }
 
 fn only_css(path: &str) -> bool {
