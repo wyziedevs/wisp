@@ -6,7 +6,8 @@
 //! - `.wisp` / `app.html` text edits: hot swap into the running app, no
 //!   compile. If the template's shape changed, fall through to a rebuild.
 //! - CSS output: tell browsers to swap the stylesheet (a CSS tool's input
-//!   is its watcher's).
+//!   is its watcher's; a new `src/app.scss` or `postcss.config.*` changes
+//!   the watchers).
 //! - package.json: rebuild, for the npm packages' versions.
 //! - `static/`: tell browsers to reload.
 //! - anything else (Rust, Cargo.toml, new/removed routes): rebuild, restart,
@@ -36,7 +37,8 @@ const SETTLE_MAX: Duration = Duration::from_secs(1);
 pub fn run(root: &Path, port: u16) -> Result<(), String> {
     let events =
         Events::start(port).map_err(|e| format!("Could not start the reload server: {e}."))?;
-    let _css = css::watch(root)?;
+    let mut style = css::detect(root);
+    let mut watchers = css::watch(root, &style)?;
     let mut app = Server {
         root: root.to_path_buf(),
         port,
@@ -79,6 +81,18 @@ pub fn run(root: &Path, port: u16) -> Result<(), String> {
         }
         let changed = diff(&files, &now);
         files = now;
+        // What builds the CSS changed: new watchers, which build it first.
+        if changed.iter().any(|(rel, _)| css::decides(rel)) {
+            let now = css::detect(root);
+            if now != style {
+                drop(std::mem::take(&mut watchers));
+                style = now;
+                match css::watch(root, &style) {
+                    Ok(w) => watchers = w,
+                    Err(e) => term::failed(&e),
+                }
+            }
+        }
         let started = Instant::now();
         let names: Vec<_> = changed.iter().map(|(p, _)| p.as_str()).collect();
         let names = names.join(", ");
@@ -93,11 +107,10 @@ pub fn run(root: &Path, port: u16) -> Result<(), String> {
                 } else {
                     rebuild_needed = true
                 }
-            } else if rel == ".wisp/app.css" || (rel == "src/app.css" && css::detect(root).plain())
-            {
+            } else if rel == ".wisp/app.css" || (rel == "src/app.css" && style.plain()) {
                 css = true;
-            } else if rel == "src/app.css" || rel.ends_with(".scss") {
-                // A CSS tool is watching it and will write .wisp/app.css.
+            } else if style.owns(rel) || css::POSTCSS_CONFIGS.contains(&rel.as_str()) {
+                // A CSS watcher reads it and will write .wisp/app.css.
             } else if rel.starts_with("static/") {
                 full = true;
             } else {
@@ -277,8 +290,7 @@ struct Server {
 impl Server {
     fn restart(&mut self, exe: &Path) -> Result<(), String> {
         let dir = self.root.join(".wisp").join("run");
-        fs::create_dir_all(&dir)
-            .map_err(|e| format!("Could not create {}: {e}.", dir.display()))?;
+        crate::make_dir(&dir)?;
         self.slot ^= 1;
         let copy = dir.join(format!("app-{}{}", self.slot, std::env::consts::EXE_SUFFIX));
         fs::copy(exe, &copy).map_err(|e| format!("Could not copy {}: {e}.", exe.display()))?;
@@ -460,7 +472,8 @@ fn scan(root: &Path) -> Snapshot {
     let mut out = Snapshot::new();
     walk(root, &root.join("src"), &mut out);
     walk(root, &root.join("static"), &mut out);
-    for f in ["Cargo.toml", "build.rs", ".wisp/app.css", "package.json"] {
+    let top = ["Cargo.toml", "build.rs", ".wisp/app.css", "package.json"];
+    for f in top.iter().chain(&css::POSTCSS_CONFIGS) {
         if let Ok(meta) = fs::metadata(root.join(f))
             && let Ok(m) = meta.modified()
         {

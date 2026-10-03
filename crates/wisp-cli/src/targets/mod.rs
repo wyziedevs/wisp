@@ -44,9 +44,9 @@ pub fn build(root: &Path, host: &str, out: &Path) -> Result<(), String> {
             "The {host} build needs Rust's WebAssembly target.\nInstall it with rustup target add {WASM_TARGET}, then run this again."
         ));
     }
-    wisp_build::check(root)?;
+    let imports = wisp_build::check(root)?;
     css::build(root)?;
-    npm::vendor(root)?;
+    npm::vendor(root, &imports)?;
     let started = Instant::now();
     term::step(&format!("Building for {host} (WebAssembly)"));
     let b = cargo::build_for(root, true, false, Some(WASM_TARGET));

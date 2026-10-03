@@ -36,7 +36,8 @@ pages, layouts and components, and runs once for each place the file is shown.
   from 'canvas-confetti'` (also `'pkg/sub'`, `'@scope/pkg'`), in scripts
   and `src/lib`. Dev loads it from esm.sh; `wisp build` downloads it once
   into `.wisp/npm` and the binary serves it from `/_app/c/npm/`: no CDN.
-  A package `package.json` lacks is a build error.
+  A package `package.json` lacks, or one with a range (`^1.0`) rather
+  than a version, is a build error.
 - Errors point at the real `.wisp` file and line.
 
 A `<script>` with `type` or `src` stays plain HTML, as before.

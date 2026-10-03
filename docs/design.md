@@ -93,7 +93,7 @@ my-app/
   src/app.html        document shell with %wisp.head% and %wisp.body%
   src/app.css         optional; Tailwind if it contains @import "tailwindcss"
   src/app.scss        optional; Sass, instead of src/app.css
-  postcss.config.*    optional; PostCSS (npx) after either, or on src/app.css
+  postcss.config.*    optional; PostCSS (node) after either, or on src/app.css
   package.json        optional; npm packages (`wisp add`), for bare imports
   src/hooks.rs        optional; `init` at start, `before` every request
   src/components/...  optional; Card.wisp is <Card>
@@ -1094,8 +1094,8 @@ after the import, so utility classes still win over them.
 
 `wisp dev` is one std-only process:
 
-- Polls `src/`, `static/`, `Cargo.toml`, `build.rs` and `package.json`
-  mtimes every 50 ms (no `notify`). Editors' swap, backup and lock files
+- Polls `src/`, `static/`, `Cargo.toml`, `build.rs`, `package.json` and
+  `postcss.config.*` mtimes every 50 ms (no `notify`). Editors' swap, backup and lock files
   are ignored, and a burst of changes settles for at most a second.
 - `wisp dev [--port <n> | --port=<n> | -p <n>]`; anything else is an error
   with the usage. The app gets `HOST=127.0.0.1` unless `HOST` is set, and the
@@ -1103,14 +1103,27 @@ after the import, so utility classes still win over them.
 - Runs Tailwind standalone `--watch` into `.wisp/app.css` if `src/app.css`
   imports Tailwind, or Dart Sass (standalone, pinned in `~/.wisp/bin`,
   `$WISP_SASS` overrides) `--watch` if `src/app.scss` exists; with a
-  `postcss.config.*`, the tool writes `.wisp/pre.css` and `npx postcss
-  --watch` makes `.wisp/app.css` of it (or of a plain `src/app.css`).
-  Otherwise `src/app.css` is served as written. `wisp build` runs each
-  once, minified (`--minify`, `--style=compressed`).
+  `postcss.config.*`, the tool writes `.wisp/pre.css` and the app's
+  `node_modules/postcss-cli` (run by `node`, no npx) `--watch` makes
+  `.wisp/app.css` of it (or of a plain `src/app.css`). Otherwise
+  `src/app.css` is served as written. A watcher makes the first build
+  itself; adding or removing `src/app.scss` or a `postcss.config.*`
+  replaces the watchers. `wisp build` runs each once, minified
+  (`--minify`, `--style=compressed`).
+- Every child of `wisp dev` dies when its stdin, a pipe `wisp dev` holds,
+  closes: however `wisp dev` ends, even killed, the system closes it. The
+  app exits by itself (`exit_with_parent`); a CSS watcher runs under
+  `wisp __child <exe> <args…>`, which kills the tool at that point.
 - Bare imports (`'canvas-confetti'`) are npm packages: `package.json`
-  pins them (`wisp add`), dev imports `https://esm.sh/pkg@v?target=es2022`,
-  and a release build serves `.wisp/npm`, which `wisp build` fills from
-  esm.sh (each module and what it imports, once) before compiling.
+  pins them to exact versions (`wisp add`), dev imports
+  `https://esm.sh/pkg@v?target=es2022`, and a release build serves
+  `.wisp/npm`, which `wisp build` fills from esm.sh before compiling: the
+  modules `wisp check` finds imported and what they import, a level at a
+  time, 16 at once, only those not there yet. Each is saved with its
+  imports pointed at `/_app/c/npm/`, and an import of esm.sh's re-export
+  stub at the module it re-exports. The build embeds the files
+  (`include_str!`); their paths name their versions, so they are cached
+  for good without a `?v=`.
 - Builds with `cargo build`, copies the exe to `.wisp/run/` (so the next build can
   overwrite the original while the old server keeps serving), then restarts it.
   The app is ready when it prints its `listening on` line; the CLI reads the

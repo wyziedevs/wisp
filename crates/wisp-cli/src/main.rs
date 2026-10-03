@@ -119,10 +119,12 @@ fn main() -> ExitCode {
         Some("check") => no_options("check", &args[1..])
             .and_then(|()| project())
             .and_then(|root| {
-                wisp_build::check(root).map(|()| term::done("Routes and templates are valid."))
+                wisp_build::check(root).map(|_| term::done("Routes and templates are valid."))
             }),
         Some("add") => project().and_then(|root| npm::add(root, &args[1..])),
         Some("remove") => project().and_then(|root| npm::remove(root, &args[1..])),
+        // Not in --help: how `wisp dev` runs a tool that must end with it.
+        Some("__child") => css::child(&args[1..]),
         Some("-h" | "--help" | "help") | None => {
             print!("{}", usage());
             Ok(())
@@ -258,6 +260,11 @@ fn no_options(command: &str, args: &[String]) -> Result<(), String> {
     }
 }
 
+/// `dir` and the folders above it, made if missing.
+fn make_dir(dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("Could not create {}: {e}.", dir.display()))
+}
+
 /// The current directory, if it looks like a Wisp app.
 fn project() -> Result<&'static Path, String> {
     let root = Path::new(".");
@@ -277,8 +284,7 @@ fn build(root: &Path, o: &BuildOptions) -> Result<(), String> {
         }
         let out = o.out.as_deref().unwrap_or("client.ts");
         if let Some(dir) = Path::new(out).parent() {
-            std::fs::create_dir_all(dir)
-                .map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
+            make_dir(dir)?;
         }
         std::fs::write(out, ts).map_err(|e| format!("Could not write {out}: {e}"))?;
         term::done(&format!("Wrote {out}"));
@@ -299,9 +305,10 @@ fn build(root: &Path, o: &BuildOptions) -> Result<(), String> {
     if let Some(host) = &o.target {
         return targets::build(root, host, &out(Some(host)));
     }
+    let imports = wisp_build::check(root)?;
+    css::build(root)?;
+    npm::vendor(root, &imports)?;
     if o.docker {
-        css::build(root)?;
-        npm::vendor(root)?;
         deploy::docker(
             root,
             &cargo::package_name(root).ok_or("Cargo.toml has no package name.")?,
@@ -311,9 +318,6 @@ fn build(root: &Path, o: &BuildOptions) -> Result<(), String> {
             return Ok(());
         }
     }
-    wisp_build::check(root)?;
-    css::build(root)?;
-    npm::vendor(root)?;
     let started = Instant::now();
     term::step("Building for release");
     let b = cargo::build(root, true, false);

@@ -676,7 +676,7 @@ fn a_package_import_needs_the_package() {
     );
     let p = Project::new(&[page, lib, json]);
     assert_eq!(
-        wisp_build::npm_used(p.root()).unwrap(),
+        wisp_build::check(p.root()).unwrap(),
         [
             "/canvas-confetti@1.9.3/x?target=es2022",
             "/canvas-confetti@1.9.3?target=es2022"
