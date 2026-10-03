@@ -15,6 +15,7 @@ mod mcp;
 mod net;
 mod new;
 mod npm;
+mod recipe;
 mod routes_cmd;
 mod scaffold;
 mod targets;
@@ -29,7 +30,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 /// `wisp --help`: each command or option, and what it does.
-const COMMANDS: [(&str, &str); 25] = [
+const COMMANDS: [(&str, &str); 26] = [
     (
         "wisp new [name]",
         "Create an app. It asks a few questions; the options below answer them.",
@@ -102,6 +103,10 @@ const COMMANDS: [(&str, &str); 25] = [
     (
         "wisp add <pkg>[@version]",
         "Add an npm package to package.json, for import x from 'pkg'. No Node needed.",
+    ),
+    (
+        "wisp add [name] [--force]",
+        "Apply the recipe add/<name>/recipe (deps, .env.example, files); no name lists them.",
     ),
     (
         "wisp remove <pkg>",
@@ -195,7 +200,13 @@ fn main() -> ExitCode {
         }),
         Some("test") => project().and_then(|root| test(root, &args[1..])),
         Some("fmt") => fmt::run(&args[1..]),
-        Some("add") => project().and_then(|root| npm::add(root, &args[1..])),
+        Some("add") => project().and_then(|root| {
+            if recipe::is_recipe(root, &args[1..]) {
+                recipe::run(root, &args[1..])
+            } else {
+                npm::add(root, &args[1..])
+            }
+        }),
         Some("remove") => project().and_then(|root| npm::remove(root, &args[1..])),
         Some("ui") => ui::run(project, &args[1..]),
         Some("lsp") => no_options("lsp", &args[1..]).and_then(|()| lsp::run()),

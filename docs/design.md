@@ -545,6 +545,67 @@ its file: `Card.wisp` is `<Card>`. It declares what it takes at the top:
 Components can also be drawn by the browser (inside client blocks, or with
 `{:…}` props, `bind:` and `on:`); see [client.md](client.md).
 
+### Recipes: `wisp add <name>`
+
+A recipe is the app's own, in `add/<name>/`: Wisp ships none and has no
+runtime part in it. `wisp add` lists the recipes, `wisp add sqlite` applies
+one; a name with no recipe is an npm package, as before.
+`add/<name>/recipe` is lines of `dep` (a line for `[dependencies]`), `env` (a
+line for `.env.example`), `file <path>` (copies `add/<name>/<path>` to
+`<path>`), `note` (printed after); `#` comments. Nothing runs and nothing is
+downloaded. It is idempotent: a crate or key already there is skipped, a file
+already there stays unless `--force`, a path outside the app is refused, and
+every file is checked before any is written. A recipe wires in an existing
+crate; the app never gets homegrown database or auth code. Example, sqlx
+and SQLite:
+
+```text
+# add/sqlite/recipe
+dep sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
+env DATABASE_URL=sqlite://app.db?mode=rwc
+file src/db.rs
+file src/routes/api/time/+server.rs
+note Call crate::db::open().await? in init (src/hooks.rs), then GET /api/time.
+```
+
+```rust
+// add/sqlite/src/db.rs: `pub` items of src/db.rs are in every route
+pub type Pool = sqlx::SqlitePool;
+pub async fn open() -> Result {
+    let url = wisp::env("DATABASE_URL").or_status(500)?;
+    wisp::provide(Pool::connect(&url).await?);
+    Ok(())
+}
+pub fn pool() -> &'static Pool { wisp::state::<Pool>() }
+
+// add/sqlite/src/routes/api/time/+server.rs
+async fn get() -> Result<Response> {
+    let (now,): (String,) = sqlx::query_as("select datetime('now')").fetch_one(pool()).await?;
+    Ok(Response::text(now))
+}
+```
+
+More, each `add/<name>/recipe` (the files it names beside it):
+
+```text
+# add/postgres: db.rs as above with sqlx::PgPool and `now()::text`
+dep sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres"] }
+env DATABASE_URL=postgres://user:pass@localhost/app
+file src/db.rs
+
+# add/redis: src/cache.rs does wisp::provide(redis::Client::open(url)?)
+dep redis = { version = "0.27", features = ["tokio-comp"] }
+env REDIS_URL=redis://127.0.0.1/
+file src/cache.rs
+
+# add/tailwind: src/app.css is `@import "tailwindcss";`
+file src/app.css
+note Wisp builds app.css with Tailwind when it imports it.
+```
+
+Wisp does not ship or maintain integrations: recipes are yours, to write,
+change and share as folders.
+
 ### A component kit: `wisp ui add`
 
 ```sh
@@ -1623,7 +1684,7 @@ content-security-policy: default-src 'self'; script-src 'self' 'sha256-…';
 No homegrown auth, ORM or job system, now or later: Wisp gives the tools
 (cookies, sessions, the `Store` trait, hooks, `wisp::spawn` from `init`)
 and the app builds on them. Integrations wire in existing, maintained
-crates (`wisp add sqlite`, `wisp add postgres` scaffold the glue). Also out:
+crates (a recipe in `add/`, `wisp add sqlite`, scaffolds the glue). Also out:
 HTTP/2 in process, Windows services.
 
 ## Milestones

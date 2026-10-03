@@ -22,6 +22,7 @@ src/app.html                shell with %wisp.head% %wisp.body% (optional)
 src/app.css | app.scss      served at /_app/app.css (Tailwind if it imports it; Sass, no Node)
 postcss.config.*            PostCSS after either (needs Node + postcss-cli)
 package.json                npm packages for browser code: `wisp add canvas-confetti`
+add/<name>/recipe           `wisp add <name>`: lines `dep <Cargo line>`, `env K=v` (.env.example), `file <path>` (copied from add/<name>/<path>), `note`; idempotent, `--force` replaces files; `wisp add` lists
 .env                        X=…: `wisp::env("X")`, `env.PUBLIC_X` in browser code
 src/hooks.rs                fn init() once; fn before(cx) every request
 src/db.rs                   models and tables; its `pub` items are in every route file
@@ -415,7 +416,7 @@ devtools; `/_wisp/components` workshop of `*.stories.wisp`) Â· `wisp test
 cloudflare|deno|vercel|netlify|node|bun|lambda|native`, `--client ts`,
 `--sourcemap`) Â· `wisp deploy init <host>` (a GitHub Actions workflow; or
 `fly|render|railway`: that host's config) Â· `wisp routes` Â· `wisp new-route
-/path page|server|rest` Â· `wisp add|remove pkg` Â· `wisp ui
+/path page|server|rest` Â· `wisp add|remove pkg` (`wisp add` alone: the recipes in `add/`) Â· `wisp ui
 add button dialog` (accessible components into `src/components`) Â· `wisp lsp`
 Â· `wisp update-docs` Â· `wisp mcp` (`claude mcp add wisp -- wisp mcp`). Docs:
 README.md, docs/design.md, client.md, api.md, deploy.md, embed.md, tokens.md,
