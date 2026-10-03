@@ -788,6 +788,9 @@ pub trait App: 'static {
     /// [`rt::RouteFacts::now`] for a request no route matched, which the
     /// root error page answers.
     const NOT_FOUND_NOW: bool = false;
+    /// The app may call [`trailing_slash`]: without it, a page's address
+    /// is never redirected to end in `/`, and no request looks.
+    const TRAILING_SLASH: bool = true;
     /// The locales of `src/locales/*.json`, by file name, sorted.
     const LOCALES: &'static [&'static str] = &[];
     /// `(path, shape)` per template id, for dev hot swapping.
