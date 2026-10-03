@@ -39,21 +39,23 @@ enum Kind {
 }
 
 /// A component: `src/components/Card.wisp` is `<Card>`.
-struct Comp {
-    name: String,
-    module: String,
-    props: Vec<PropDecl>,
+pub struct Comp {
+    /// Its file, from the project root: `src/components/Card.wisp`.
+    pub rel: String,
+    pub name: String,
+    pub module: String,
+    pub props: Vec<PropDecl>,
     /// Shows its children: `{@render children()}`.
-    children: bool,
+    pub children: bool,
     /// The props a parent may `bind:`: those its script's `$props()`
     /// marks `$bindable`, or any, without one.
-    bindable: Option<Vec<String>>,
+    pub bindable: Option<Vec<String>>,
     /// Takes any prop (its `$props()` has `...rest`): the ones it does not
     /// name go in its `__rest`.
-    rest: bool,
+    pub rest: bool,
     /// Has browser code, so `client:visible` and the like have a module
     /// to load late.
-    live: bool,
+    pub live: bool,
 }
 
 struct Tpl {
@@ -796,6 +798,7 @@ impl<'a> Project<'a> {
                     .collect()
             });
             self.comps.push(Comp {
+                rel,
                 name,
                 module: module.clone(),
                 rest: props.iter().any(|d| d.name == REST),
@@ -2868,6 +2871,16 @@ fn opt(x: Option<usize>) -> String {
     x.map_or("None".into(), |i| format!("Some({i})"))
 }
 
+/// The components of the app at `root`, as `check` reads them.
+pub(crate) fn components(root: &Path) -> Result<Vec<Comp>, String> {
+    let mut p = Project::new(&Input {
+        root,
+        release: false,
+    })?;
+    p.components()?;
+    Ok(p.comps)
+}
+
 fn check_no_children(t: &Template, rel: &str) -> Result<(), String> {
     if t.uses_children {
         Err(format!(
@@ -2914,7 +2927,7 @@ fn inferred_props(r: &js::PropsRune) -> Vec<PropDecl> {
 }
 
 /// Every component used in `nodes` exists and is given what it takes.
-fn check_components(
+pub(crate) fn check_components(
     nodes: &[Node],
     t: &Template,
     comps: &[Comp],

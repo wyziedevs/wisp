@@ -1,0 +1,37 @@
+{
+  "name": "Wisp",
+  "scopeName": "text.html.wisp",
+  "fileTypes": ["wisp"],
+  "patterns": [
+    { "include": "#block" },
+    { "include": "#script-ts" },
+    { "include": "text.html.basic" }
+  ],
+  "repository": {
+    "block": {
+      "comment": "The `---` block of Rust a page or layout starts with.",
+      "begin": "\\A\\s*(---)\\s*$",
+      "end": "^\\s*(---)\\s*$",
+      "beginCaptures": { "1": { "name": "punctuation.definition.tag.wisp" } },
+      "endCaptures": { "1": { "name": "punctuation.definition.tag.wisp" } },
+      "contentName": "source.rust",
+      "patterns": [{ "include": "source.rust" }]
+    },
+    "script-ts": {
+      "begin": "(<)(script)\\b(?=[^>]*\\blang=[\"']ts[\"'])([^>]*)(>)",
+      "end": "(</)(script)\\s*(>)",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.tag.begin.html" },
+        "2": { "name": "entity.name.tag.html" },
+        "4": { "name": "punctuation.definition.tag.end.html" }
+      },
+      "endCaptures": {
+        "1": { "name": "punctuation.definition.tag.begin.html" },
+        "2": { "name": "entity.name.tag.html" },
+        "3": { "name": "punctuation.definition.tag.end.html" }
+      },
+      "contentName": "source.ts",
+      "patterns": [{ "include": "source.ts" }]
+    }
+  }
+}
