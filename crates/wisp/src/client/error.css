@@ -1,0 +1,50 @@
+/* The default error page, on Wisp's tokens (tokens.css) and laid out as the
+   demo's: the status, a line, centered. Under `wisp dev` it also has the
+   request and a way home. */
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  background: radial-gradient(56rem 28rem at 50% -6rem, var(--wisp-glow), transparent 70%) no-repeat, var(--wisp-paper);
+  color: var(--wisp-ink);
+  font: 400 1rem/1.5 var(--wisp-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+.wisp-error {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1rem;
+  width: 100%;
+  max-width: var(--wisp-column);
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 1rem;
+  text-align: center;
+}
+
+.wisp-error h1 {
+  margin: 0;
+  font-size: 2rem;
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+
+.wisp-error p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.wisp-error .wisp-ref {
+  color: var(--wisp-ash);
+  font: 400 0.8125rem/1.5 var(--wisp-mono);
+}
+
+.wisp-error .wisp-actions {
+  display: flex;
+  justify-content: center;
+}

@@ -538,10 +538,37 @@ fn errors_by_status_and_format() {
         "application/json"
     );
     assert_eq!(
-        header(&get("/apiary", &[]), "content-type"),
+        header(&get("/apiary", &[("accept", "text/html")]), "content-type"),
         "text/html; charset=utf-8",
         "only /api and what is below it"
     );
+    // The message is the status's name unless the error has its own.
+    let bare = get("/nothing-here", &[("accept", "application/json")]);
+    says(&json(&bare), 404, "Not Found");
+    // With no `Accept` a request is an API client's, unless it is a browser
+    // navigating; one that prefers HTML gets the page, one that prefers
+    // JSON the JSON.
+    let none = get("/nothing-here", &[]);
+    says(&json(&none), 404, "Not Found");
+    let page = |headers: &[(&str, &str)]| {
+        header(&get("/nothing-here", headers), "content-type").to_string()
+    };
+    assert_eq!(
+        page(&[("sec-fetch-mode", "navigate")]),
+        "text/html; charset=utf-8"
+    );
+    assert_eq!(page(&[("accept", "*/*")]), "text/html; charset=utf-8");
+    assert_eq!(
+        page(&[("accept", "application/json, text/html")]),
+        "application/json"
+    );
+    assert_eq!(
+        page(&[("accept", "text/html, application/json")]),
+        "text/html; charset=utf-8"
+    );
+    // Its headers are a page's, JSON or not.
+    assert_eq!(header(&none, "x-content-type-options"), "nosniff");
+    assert!(none.header("referrer-policy").is_some());
     // A browser that also takes HTML gets the page.
     let browser = get(
         "/err?k=teapot",
@@ -603,17 +630,24 @@ fn errors_by_status_and_format() {
 
 #[test]
 fn the_built_in_error_page_escapes_what_it_shows() {
-    let page = get("/default-error?a=<script>alert(1)</script>", &[]);
+    let page = get(
+        "/default-error?a=<script>alert(1)</script>",
+        &[("accept", "text/html")],
+    );
     assert_eq!(page.status, 404);
     let html = page.text();
     assert!(html.contains("class=\"wisp-error\""), "{html}");
     assert!(html.contains("<title>Not Found</title>"), "{html}");
     assert!(html.contains("gone"));
     assert!(!html.contains("<script>alert"), "{html}");
-    assert!(
-        !html.contains("href="),
-        "the page is the status alone: {html}"
-    );
+    // Release: the status and a line, on the dark tokens. Dev (a debug
+    // build): the request and a way home too.
+    assert!(html.contains("--wisp-paper:#141414") || html.contains("--wisp-paper: #141414"));
+    assert!(!html.contains("light"), "dark only: {html}");
+    let rich = html.contains("href=\"/\"");
+    assert_eq!(rich, cfg!(debug_assertions), "{html}");
+    assert_eq!(html.contains("class=\"wisp-ref\""), rich, "{html}");
+    assert_eq!(html.contains("<h1>404 Not Found</h1>"), rich, "{html}");
 }
 
 #[test]
@@ -1115,7 +1149,11 @@ fn a_form_post_must_come_from_this_site() {
     let refused = client().send(request(
         "POST",
         "/form",
-        &[host, ("origin", "https://evil.example")],
+        &[
+            host,
+            ("origin", "https://evil.example"),
+            ("accept", "text/html"),
+        ],
         b"",
     ));
     assert!(

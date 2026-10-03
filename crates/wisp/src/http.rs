@@ -70,7 +70,14 @@ const DEV_JS: &[u8] = include_bytes!("client/wisp-dev.js");
 #[cfg(debug_assertions)]
 const DEVTOOLS_JS: &[u8] = include_bytes!("client/wisp-devtools.js");
 /// Also inlined into the API docs page and the workshop.
-pub(crate) const UI_CSS: &str = include_str!("client/ui.css");
+pub(crate) const UI_CSS: &str = concat!(
+    include_str!("client/tokens.css"),
+    include_str!("client/ui.css")
+);
+/// The tokens alone, which the plain error page starts from.
+pub(crate) const TOKENS_CSS: &str = include_str!("client/tokens.css");
+/// The default error page's own styles.
+pub(crate) const ERROR_CSS: &str = include_str!("client/error.css");
 const DIALOG_CSS: &[u8] = include_bytes!("client/dialog.css");
 
 /// The page at `/_wisp/docs` that lists the app's endpoints and sends
@@ -2574,6 +2581,10 @@ fn settle<A: App>(
     {
         A::report(cx, e);
     }
+    // Consts: an app with pages and no endpoint-only prefix has no check.
+    if (A::API_ONLY || !A::API_PREFIXES.is_empty()) && result.is_err() {
+        endpoint_error::<A>(cx);
+    }
     settle_plain(cx, out, reply, result)
 }
 
@@ -2934,21 +2945,21 @@ fn error_reply(
 ) -> (Option<String>, Option<(u16, Cow<'static, str>)>) {
     let failure = (e.status >= 500).then(|| e.detail());
     // 5xx details can leak internals; only dev shows them. An error that
-    // says no more than its status's name gets a sentence about the status
-    // instead.
-    let message = if (e.status >= 500 && !crate::settings().dev)
-        || e.message.is_empty()
-        || e.message.eq_ignore_ascii_case(reason(e.status))
-    {
-        Cow::Borrowed(sentence(e.status))
-    } else {
-        std::mem::take(&mut e.message)
-    };
+    // says no more than its status's name has no message of its own.
+    let own = (e.status < 500 || crate::settings().dev)
+        && !e.message.is_empty()
+        && !e.message.eq_ignore_ascii_case(reason(e.status));
     out.clear();
     // The headers of the page that failed go with it; the `before` hook's
     // stay.
     cx.drop_page_headers();
-    let page = if wants_json(cx) {
+    crate::headers::page(cx);
+    let page = if error_json(cx) {
+        // The message, else the status's name.
+        let message = match own {
+            true => std::mem::take(&mut e.message),
+            false => Cow::Borrowed(title(e.status)),
+        };
         let problem = crate::settings().problem_json
             || cx
                 .known(Known::Accept)
@@ -2961,7 +2972,13 @@ fn error_reply(
         reply.set(e.status, kind, Body::Bytes(body));
         None
     } else {
-        crate::headers::page(cx);
+        // A page says a sentence on the status instead; in dev, with what
+        // caused the error.
+        let message = match (own, crate::settings().dev) {
+            (false, _) => Cow::Borrowed(sentence(e.status)),
+            (true, true) => Cow::Owned(e.detail()),
+            (true, false) => std::mem::take(&mut e.message),
+        };
         reply.set(e.status, "text/html; charset=utf-8", Body::Page);
         Some((e.status, message))
     };
@@ -2971,9 +2988,10 @@ fn error_reply(
     (failure, page)
 }
 
-/// Whether an error goes back as JSON rather than an error page: a request
-/// under `/api`, one that sent JSON, one that asks for JSON and not HTML,
-/// or one to a `+server.rs` endpoint from anything but a browser page.
+/// Whether a client wants JSON rather than a page, to be told it must sign
+/// in: a request under `/api`, one that sent JSON, one that asks for JSON
+/// and not HTML, or one to a `+server.rs` endpoint from anything but a
+/// browser page.
 pub(crate) fn wants_json(cx: &Cx) -> bool {
     let path = cx.path();
     path == "/api"
@@ -2984,6 +3002,43 @@ pub(crate) fn wants_json(cx: &Cx) -> bool {
             && !cx
                 .known(Known::Accept)
                 .is_some_and(|a| a.contains("text/html")))
+}
+
+/// Whether an error goes back as JSON rather than an error page: whatever
+/// [`wants_json`] says, any request to an endpoint (a `+server.rs` route,
+/// or a path where only those are, or in an app of nothing else), one that
+/// prefers JSON to HTML by its `Accept`, or one with none that is not a
+/// browser navigating.
+fn error_json(cx: &Cx) -> bool {
+    wants_json(cx)
+        || cx.api()
+        || match cx.known(Known::Accept) {
+            Some(accept) => prefers_json(accept),
+            None => cx.header("sec-fetch-mode") != Some("navigate"),
+        }
+}
+
+/// Whether `accept` names JSON before it names HTML, or names JSON alone.
+fn prefers_json(accept: &str) -> bool {
+    match (accept.find("json"), accept.find("text/html")) {
+        (Some(j), Some(h)) => j < h,
+        (j, _) => j.is_some(),
+    }
+}
+
+/// An error where only endpoints are, or in an app of nothing else, is an
+/// endpoint's: JSON. The routes were found already; only an unmatched
+/// path looks at its first segment.
+fn endpoint_error<A: App>(cx: &mut Cx) {
+    if A::API_ONLY {
+        return cx.set_api();
+    }
+    let path = cx.path();
+    let first = path.strip_prefix('/').unwrap_or(path);
+    let first = first.split('/').next().unwrap_or("");
+    if A::route(path).is_none() && A::API_PREFIXES.contains(&first) {
+        cx.set_api();
+    }
 }
 
 /// Whether `name` is framing, which the host writes itself: an app's own

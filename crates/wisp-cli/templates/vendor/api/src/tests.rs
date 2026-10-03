@@ -78,7 +78,7 @@ fn problems_are_json() {
             missing.status,
             missing.json::<Value>().get("error").and_then(Value::as_str)
         ),
-        (404, Some("There is nothing at this address."))
+        (404, Some("Not Found"))
     );
     assert_eq!(app.get("/api/notes/abc").status, 404, "ids are numbers");
 

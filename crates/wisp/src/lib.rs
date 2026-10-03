@@ -792,6 +792,11 @@ pub trait App: 'static {
     /// [`rt::RouteFacts::now`] for a request no route matched, which the
     /// root error page answers.
     const NOT_FOUND_NOW: bool = false;
+    /// The app has no page, only `+server.rs` endpoints: every error is JSON.
+    const API_ONLY: bool = false;
+    /// The first path segments under which there are `+server.rs` endpoints
+    /// and nothing else: an unmatched path there is an endpoint's error.
+    const API_PREFIXES: &'static [&'static str] = &[];
     /// The app may call [`trailing_slash`]: without it, a page's address
     /// is never redirected to end in `/`, and no request looks.
     const TRAILING_SLASH: bool = true;
@@ -1939,10 +1944,14 @@ pub mod rt {
     }
 
     /// Used when no `+error.wisp` applies, or when rendering one failed: the
-    /// status and one line, centered, with its own few styles (the app's CSS
-    /// may not exist yet). The line is the status's name unless the error
-    /// says something more specific.
-    pub fn default_error(_cx: &Cx, out: &mut Out, status: u16, message: &str) {
+    /// status and one line, centered, on Wisp's dark tokens, with its own
+    /// few styles (the app's CSS may not exist yet). The line is the
+    /// status's name unless the error says something more specific. Under
+    /// `wisp dev` it is [`dev_error`]'s page instead.
+    pub fn default_error(cx: &Cx, out: &mut Out, status: u16, message: &str) {
+        if crate::settings().dev {
+            return dev_error(cx, out, status, message);
+        }
         let title = crate::http::title(status);
         let line = if message.is_empty() || message == crate::http::sentence(status) {
             title
@@ -1952,7 +1961,8 @@ pub mod rt {
         out.head.push_str("<title>");
         text(&mut out.head, title);
         out.head.push_str("</title><style>");
-        out.head.push_str(ERROR_CSS);
+        out.head.push_str(crate::http::TOKENS_CSS);
+        out.head.push_str(crate::http::ERROR_CSS);
         out.head.push_str("</style>");
         out.body.push_str("<main class=\"wisp-error\"><h1>");
         text(&mut out.body, &status);
@@ -1961,7 +1971,35 @@ pub mod rt {
         out.body.push_str("</p></main>");
     }
 
-    const ERROR_CSS: &str = "body{margin:0;color-scheme:light dark;font:400 0.875rem/1.5 system-ui,sans-serif}.wisp-error{display:flex;align-items:center;justify-content:center;gap:1.25rem;min-height:100vh;padding:0 1rem;box-sizing:border-box}.wisp-error h1{margin:0;padding-right:1.25rem;border-right:1px solid color-mix(in srgb,currentColor 30%,transparent);font-size:1.5rem;font-weight:500}.wisp-error p{margin:0;overflow-wrap:anywhere}";
+    /// The page of `wisp dev`: the status and its name, the message (in dev
+    /// a 5xx's own, with what caused it), the request, and a way home. It
+    /// brings Wisp's UI styles; release builds never reach it.
+    fn dev_error(cx: &Cx, out: &mut Out, status: u16, message: &str) {
+        let title = crate::http::title(status);
+        out.head.push_str("<title>");
+        text(&mut out.head, title);
+        out.head.push_str("</title><style>");
+        out.head.push_str(crate::http::UI_CSS);
+        out.head.push_str(crate::http::ERROR_CSS);
+        out.head.push_str("</style>");
+        out.body.push_str("<main class=\"wisp-error\"><h1>");
+        text(&mut out.body, &status);
+        out.body.push(' ');
+        text(&mut out.body, title);
+        out.body.push_str("</h1><p>");
+        text(&mut out.body, message);
+        out.body.push_str("</p><p class=\"wisp-ref\">");
+        text(&mut out.body, cx.method.as_str());
+        out.body.push(' ');
+        text(&mut out.body, cx.path());
+        if !cx.query_string().is_empty() {
+            out.body.push('?');
+            text(&mut out.body, cx.query_string());
+        }
+        out.body.push_str(
+            "</p><div class=\"wisp-actions\"><a class=\"wisp-button wisp-primary\" href=\"/\">Go to the Home Page</a></div></main>",
+        );
+    }
 }
 
 #[cfg(test)]

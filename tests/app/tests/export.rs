@@ -20,7 +20,7 @@ fn writes_pages_and_assets() {
     assert!(read("login/index.html").contains("<form"));
     assert!(read("post/hello/index.html").contains("<h1>Post hello</h1>"));
     assert!(read("post/second-post/index.html").contains("Post second-post"));
-    assert!(read("404.html").contains("<p>Not Found</p>"));
+    assert!(read("404.html").contains("Not Found"));
     assert!(read("_app/wisp.js").len() > 100);
     // A redirect, and an endpoint, are not pages.
     assert!(!dir.join("admin").exists() && !dir.join("echo").exists());

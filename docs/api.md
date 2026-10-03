@@ -329,9 +329,11 @@ sends any value with the status you give it (`.with_status(202)`).
 
 ## Errors are JSON
 
-An error on a request under `/api`, or one that sent JSON, or one whose
-`Accept` asks for JSON and not HTML, is answered as JSON instead of an error
-page:
+An error is answered as JSON instead of an error page when the request
+targets an endpoint (a `+server.rs`, or an unmatched path under a first
+segment that has endpoints and no pages), or is under `/api`, or sent JSON,
+or prefers JSON to HTML by its `Accept`, or has no `Accept` and is not a
+browser navigating. An app with no pages at all always answers in JSON:
 
 ```json
 {"status": 422, "code": "invalid", "error": "title: must have at least 1 character",
@@ -344,8 +346,10 @@ to match on: the status's (`bad_request`, `unauthorized`, `forbidden`,
 `too_large`, `unsupported_media_type`, `invalid`, `rate_limited`,
 `internal`, `unavailable`...), or one of your own:
 `Err(Error::new(409, "That email is taken").with_code("email_taken"))`.
-A `+server.rs` answers every other client in JSON too, whatever its path;
-only a browser page (whose `accept` has `text/html`) gets the error page.
+`error` is the message you gave, else the status's name (`Not Found`).
+Every other client gets the app's `+error.wisp`, or Wisp's own page: dark,
+the status and a line, and under `wisp dev` also the request, what failed
+and a link home.
 
 A client whose `accept` asks for `application/problem+json`, or every
 client with `WISP_PROBLEM_JSON=on`, gets RFC 9457's form instead:

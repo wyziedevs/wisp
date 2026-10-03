@@ -54,6 +54,10 @@ impl Reply {
     }
 }
 
+/// What a browser asks for when it shows a page: an error is then a page,
+/// where a request with no `Accept` is taken for an API client's.
+const PAGE: &str = "text/html,*/*;q=0.8";
+
 pub struct Client<A> {
     runtime: tokio::runtime::Runtime,
     cookies: Vec<(String, String)>,
@@ -94,7 +98,9 @@ pub fn client<A: App>() -> Client<A> {
 
 impl<A: App> Client<A> {
     pub fn get(&mut self, target: &str) -> Reply {
-        self.send(Request::new("GET", target))
+        let mut req = Request::new("GET", target);
+        req.header("accept", PAGE);
+        self.send(req)
     }
 
     /// A form post, as a browser sends one: `app.post_form("/login", &[("name", "ada")])`.
@@ -111,6 +117,7 @@ impl<A: App> Client<A> {
             }
         };
         let mut req = Request::new("POST", target);
+        req.header("accept", PAGE);
         req.header("content-type", "application/x-www-form-urlencoded");
         let mut body = String::new();
         for (i, (name, value)) in fields.iter().enumerate() {
@@ -130,6 +137,7 @@ impl<A: App> Client<A> {
     pub fn upload(&mut self, target: &str, field: &str, mime: &str, bytes: &[u8]) -> Reply {
         const BOUNDARY: &str = "----wisp-test-boundary";
         let mut req = Request::new("POST", target);
+        req.header("accept", PAGE);
         req.header(
             "content-type",
             &format!("multipart/form-data; boundary={BOUNDARY}"),
@@ -255,6 +263,8 @@ impl<A: App> Client<A> {
     /// [`Client::send`], and the WebSocket handler the route made, if any.
     fn exchange(&mut self, mut req: Request) -> (Reply, Option<crate::ws::Upgrade>) {
         for (n, v) in std::mem::take(&mut self.next) {
+            // One given for this request wins over a default.
+            req.headers.retain(|(k, _)| !k.eq_ignore_ascii_case(&n));
             req.header(&n, &v);
         }
         if let Some(auth) = &self.auth

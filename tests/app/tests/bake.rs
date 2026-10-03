@@ -164,7 +164,7 @@ fn pages_carry_the_content_security_policy() {
     assert!(!policy.contains("esm.sh"), "{policy}");
     assert!(header(&page, "etag").is_some(), "baked");
     for path in ["/cached", "/cached", "/login", "/nope"] {
-        let other = get(&s, path, "");
+        let other = get(&s, path, "accept: text/html\r\n");
         assert_eq!(
             header(&other, "content-security-policy"),
             Some(policy),

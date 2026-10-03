@@ -1,77 +1,11 @@
 /*
- * Wisp's own UI: its tokens, its buttons, and the error page every app falls
- * back to. The build error dialog (dialog.css) is built on this, so the two
- * are one family.
- *
- * Kinetrix roles and values, light and dark, with Wisp violet as the one
- * accent. Everything is a --wisp-* token or a .wisp-* class, so an app's own
- * CSS and this never touch.
+ * Wisp's own UI: its buttons, as the demo site's. The tokens are
+ * tokens.css, which comes first (see `UI_CSS`). The build error dialog
+ * (dialog.css) is built on this, so the two are one family.
  */
 
-:root,
-:host {
-  --wisp-paper: #f4f4f4;
-  --wisp-panel: #ffffff;
-  --wisp-panel-hover: #f4f4f4;
-  --wisp-inset: #f4f4f4;
-  --wisp-inset-hover: #e8e8e8;
-  --wisp-line: #bcbcbc;
-  --wisp-line-strong: #949494;
-  --wisp-ink: #141414;
-  --wisp-slate: #565656;
-  --wisp-ash: #6f6f6f;
-  /* Violet: 5.2:1 under white text, and as text on the panel. */
-  --wisp-accent: #7456d6;
-  --wisp-accent-edge: #6545c8;
-  --wisp-accent-hover: #6545c8;
-  --wisp-on-accent: #ffffff;
-  --wisp-danger: #bc2e24;
-
-  --wisp-raised: 0 1px 2px rgb(0 0 0 / 0.04), 0 6px 16px -4px rgb(0 0 0 / 0.03);
-  --wisp-overlay: 0 16px 40px rgb(0 0 0 / 0.1), 0 4px 12px rgb(0 0 0 / 0.06);
-
-  --wisp-sans: "Open Sans Variable", "Open Sans", "Segoe UI Variable", "Segoe UI", -apple-system,
-    BlinkMacSystemFont, system-ui, sans-serif;
-  --wisp-mono: "Cascadia Code", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-
-  /* Arrive on the emphasized deceleration, leave on an ease out, change in
-     place on a quartic ease out. */
-  --wisp-enter: cubic-bezier(0.05, 0.7, 0.1, 1);
-  --wisp-exit: cubic-bezier(0.33, 1, 0.68, 1);
-  --wisp-change: cubic-bezier(0.25, 1, 0.5, 1);
-
-  color-scheme: light;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root,
-  :host {
-    --wisp-paper: #141414;
-    --wisp-panel: #1f1f1f;
-    --wisp-panel-hover: #2e2e2e;
-    --wisp-inset: #1a1a1a;
-    --wisp-inset-hover: #2e2e2e;
-    --wisp-line: #4b4b4b;
-    --wisp-line-strong: #6f6f6f;
-    --wisp-ink: #fafafa;
-    --wisp-slate: #a8a8a8;
-    --wisp-ash: #949494;
-    /* Dark text on violet: 4.6:1, where white would be 4.0:1. */
-    --wisp-accent: #896ce0;
-    --wisp-accent-edge: #7456d6;
-    --wisp-accent-hover: #9f8ce7;
-    --wisp-on-accent: #141414;
-    --wisp-danger: #ef8780;
-
-    --wisp-raised: 0 1px 2px rgb(0 0 0 / 0.22), 0 6px 16px -4px rgb(0 0 0 / 0.17);
-    --wisp-overlay: 0 16px 40px rgb(0 0 0 / 0.3), 0 4px 12px rgb(0 0 0 / 0.23);
-
-    color-scheme: dark;
-  }
-}
-
 /* ---- Buttons --------------------------------------------------------------
-   36px tall, always edged so every variant is the same size. A hover
+   40px tall, always edged so every variant is the same size. A hover
    changes fill and edge, a press lays down a wash of the button's own ink,
    and nothing moves. */
 
@@ -110,7 +44,7 @@
 }
 
 .wisp-button.wisp-primary {
-  border-color: var(--wisp-accent-edge);
+  border-color: var(--wisp-accent);
   background-color: var(--wisp-accent);
   color: var(--wisp-on-accent);
 }
