@@ -403,7 +403,7 @@ no-wait fast path off every route.
 devtools; `/_wisp/components` workshop of `*.stories.wisp`) Â· `wisp test
 [--browser]` Â· `wisp check [--types]` Â· `wisp fmt [--check]` Â· `wisp build`
 (`--static`, `--spa`, `--docker`, `--target
-cloudflare|deno|vercel|netlify|node|bun|lambda|native`, `--client ts`,
+cloudflare|pages|deno|vercel|netlify|node|bun|lambda|native`, `--client ts`,
 `--sourcemap`) Â· `wisp deploy init <host>` (a GitHub Actions workflow; or
 `fly|render|railway`: that host's config) Â· `wisp routes` Â· `wisp new-route
 /path page|server|rest` Â· `wisp add|remove pkg` (`wisp add` alone: the recipes in `add/`) Â· `wisp ui

@@ -193,7 +193,8 @@ and no other tool to install.
 
 | Target | For | Deploy from `dist/<target>` |
 |---|---|---|
-| `cloudflare` | Cloudflare Workers and Pages | `npx wrangler deploy` |
+| `cloudflare` | Cloudflare Workers | `npx wrangler deploy` |
+| `pages` | Cloudflare Pages | `npx wrangler pages deploy .` |
 | `deno` | Deno Deploy | `deployctl deploy --entrypoint main.ts` |
 | `vercel` | Vercel | `npx vercel deploy --prebuilt` |
 | `netlify` | Netlify | `npx netlify deploy --prod` |
@@ -210,6 +211,12 @@ request body and answers 413 past it; raise it for a route whose own
 
 **Cloudflare.** `wisp build --target cloudflare`, then `npx wrangler deploy`
 in `dist/cloudflare`. Secrets: `npx wrangler secret put WISP_SECRET`.
+
+**Cloudflare Pages.** `wisp build --target pages`, then `npx wrangler pages
+deploy .` in `dist/pages`. It writes `_worker.js` (the bridge and the worker in
+one module, importing `app.wasm`), `_routes.json` (the app's `static/` files
+skip the worker) and the static files. The wasm is built with `opt-level = "z"`
+to stay small. Set `WISP_SECRET` under Settings, Variables and Secrets.
 
 **Deno Deploy.** `wisp build --target deno`, then `deployctl deploy
 --entrypoint main.ts` in `dist/deno`. To try it locally: `deno run -A
