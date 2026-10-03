@@ -8,6 +8,7 @@ mod deploy;
 mod dev;
 mod events;
 mod fmt;
+mod images;
 mod lsp;
 mod mcp;
 mod net;
@@ -434,6 +435,7 @@ fn build(root: &Path, o: &BuildOptions) -> Result<(), String> {
     }
     let imports = check(root)?;
     css::build(root)?;
+    images::build(root);
     npm::vendor(root, &imports)?;
     if o.docker {
         deploy::docker(

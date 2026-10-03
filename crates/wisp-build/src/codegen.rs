@@ -13,13 +13,14 @@ use crate::model::{self, Handler, Model};
 use crate::npm::{self, Npm};
 use crate::openapi::{self, Op};
 use crate::protocol::{
-    APP_CSS_PATH, COPY_END, COPY_START, EXTRA_JS_PATH, GROUP_ATTR, ISLAND_MEDIA, LIVE_JS_PATH,
-    LOOP_ATTR, MODULES, NPM_MODULES, ON_FLAGS, ON_PLACED, ON_ROOT, SLOT_ATTR, WISP_JS_PATH,
+    APP_CSS_PATH, COPY_END, COPY_START, EXTRA_JS_PATH, GROUP_ATTR, IMAGES, ISLAND_MEDIA,
+    LIVE_JS_PATH, LOOP_ATTR, MODULES, NPM_MODULES, ON_FLAGS, ON_PLACED, ON_ROOT, SLOT_ATTR,
+    WISP_JS_PATH,
 };
 use crate::routes::Seg;
 use crate::rust_scan::{self, FnItem, Returns};
 use crate::template::{self, Code, Dir, Directive, Node, PropDecl, PropValue, Template};
-use crate::{fnv1a, fold, js, rules, shell, sourcemap, stories, ty};
+use crate::{fnv1a, fold, image, js, rules, shell, sourcemap, stories, ty};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1044,7 +1045,8 @@ impl<'a> Project<'a> {
         fields: &[rules::Field],
     ) -> Result<(Template, Option<String>), String> {
         let at = |e: String| format!("{}:{e}", self.rel(p));
-        let (t, rust) = crate::parse_markup(markup, front, fields, &self.rel(p)).map_err(at)?;
+        let markup = image::rewrite(markup, self.root, self.release).map_err(at)?;
+        let (t, rust) = crate::parse_markup(&markup, front, fields, &self.rel(p)).map_err(at)?;
         if let Some((_, line)) = t.props {
             return Err(at(format!(
                 "{line}: only components, in src/components, take props"
@@ -1178,8 +1180,10 @@ impl<'a> Project<'a> {
                     other.module
                 ));
             }
-            let (mut t, rust) =
-                crate::parse_wisp(&self.read(&file)?, &rel).map_err(|e| format!("{rel}:{e}"))?;
+            let at = |e: String| format!("{rel}:{e}");
+            let (rust, markup) = crate::split_front(&self.read(&file)?).map_err(at)?;
+            let markup = image::rewrite(&markup, self.root, self.release).map_err(at)?;
+            let (mut t, rust) = crate::parse_markup(&markup, rust, &[], &rel).map_err(at)?;
             if rust.is_some() {
                 return Err(format!(
                     "{rel}: a component takes what it shows as {{@props …}}; a `---` block of Rust is for pages and layouts"
@@ -2243,6 +2247,7 @@ impl Gen {
                 files.push((url, f.clone(), etag?));
             }
         }
+        images(p.root, &mut files);
         for (i, (_, file, etag)) in files.iter().enumerate() {
             let ext = file
                 .extension()
@@ -3788,6 +3793,42 @@ fn hash_files(files: &[PathBuf]) -> Vec<Result<String, String>> {
             .flat_map(|p| p.join().expect("hashing a file does not panic"))
             .collect()
     })
+}
+
+/// The templates' images a release build serves from `/_app/img/`: a
+/// `src/lib` one's original, and the WebP widths `wisp build` wrote, when
+/// all are there (as `image::rewrite` names them).
+fn images(root: &Path, files: &mut Vec<(String, PathBuf, String)>) {
+    let dir = root.join(image::DIR);
+    for found in image::sources(root) {
+        let Ok(bytes) = fs::read(&found.file) else {
+            continue;
+        };
+        let hash = image::hash(&bytes);
+        let mut add = |url: String, file: PathBuf, etag: String| {
+            if !files.iter().any(|f| f.0 == url) {
+                files.push((url, file, etag));
+            }
+        };
+        if found.lib {
+            add(
+                image::lib_url(&hash, &found.file),
+                found.file.clone(),
+                hash.clone(),
+            );
+        }
+        let Some(size) = image::size(&bytes).filter(|s| found.webp && !s.turned) else {
+            continue;
+        };
+        let widths = image::widths(size.width);
+        let names: Vec<String> = widths.iter().map(|&w| image::webp_name(&hash, w)).collect();
+        if names.iter().all(|n| dir.join(n).is_file()) {
+            for n in names {
+                let etag = n.trim_end_matches(".webp").to_string();
+                add(format!("{IMAGES}{n}"), dir.join(n), etag);
+            }
+        }
+    }
 }
 
 pub(crate) fn list_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {

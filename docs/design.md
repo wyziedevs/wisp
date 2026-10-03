@@ -585,6 +585,35 @@ build.
 that lint there (several names may follow). A value set by an expression
 (`alt={x}`, `:alt="x"`, `{...attrs}`) counts as set. The examples have none.
 
+### Images
+
+`<img src="$lib/photo.jpg" alt="…">` (a file of `src/lib`) or
+`src="/photo.jpg"` (one of `static/`), a JPEG, PNG or WebP with a quoted
+`src`, is filled in by the compiler before it parses the template (in
+`wisp-build/src/image.rs`, on the same lines):
+
+- Always: `width` and `height` from the file's header (a small reader for
+  the three formats, EXIF orientation included; no image crate), unless
+  the tag sets either. The page does not shift as images load.
+- `wisp build`: each image is written as WebP at up to three widths (640,
+  1280, 1920, never wider than it) into `.wisp/img/<hash>-<w>.webp`, by a
+  pinned cwebp (libwebp 1.6.0, downloaded once to `~/.wisp/bin` and checked
+  by SHA-256, as Tailwind is; `$WISP_CWEBP` overrides it). The names are
+  the content's hash, so a second build encodes nothing. The release build
+  embeds them, a `src/lib` original too, served under `/_app/img/` as
+  immutable, and adds `srcset`, `sizes="100vw"`, `loading="lazy"` and
+  `decoding="async"`. An attribute the tag has stays as written.
+- Durable: without cwebp (no network, no build for the platform, a failed
+  encode) the build warns, and the tag gets no `srcset`: the original is
+  served, sized. A JPEG whose EXIF turns it gets no WebP (cwebp would not
+  turn it). A `$lib/` file that is not there is a build error.
+- Dev serves the original (`/_app/img/lib/photo.jpg` from `src/lib`),
+  adding only `width` and `height`: nothing to encode on a save.
+- `<img data-wisp-raw …>` stays as written (a `$lib/` src still gets its
+  URL). A `src` with a hole, or another site's, is left alone.
+- Cost: none for an app without local images; a header read per image per
+  build.
+
 ### Snippets
 
 A snippet is markup a file renders more than once, or gives to a component:

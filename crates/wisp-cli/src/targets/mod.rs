@@ -4,7 +4,7 @@
 //! `bridge.mjs`, the host's config and the static files for its CDN. For
 //! `lambda`, the app's own binary for Linux, zipped as Lambda's `bootstrap`.
 
-use crate::{cargo, css, deploy, npm, term};
+use crate::{cargo, css, deploy, images, npm, term};
 use std::path::Path;
 use std::time::Instant;
 
@@ -85,6 +85,7 @@ pub fn build(root: &Path, host: &str, out: &Path) -> Result<(), String> {
     }
     let imports = crate::check(root)?;
     css::build(root)?;
+    images::build(root);
     npm::vendor(root, &imports)?;
     let started = Instant::now();
     term::step(&format!("Building for {host} ({what})"));
