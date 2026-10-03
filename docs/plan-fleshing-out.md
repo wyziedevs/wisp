@@ -80,12 +80,17 @@ Each feature is one agent task in its own worktree off `fleshing-out`, with a
 review and simplify pass before merging back. Benchmarks run on the Linux VPS
 after each phase.
 
-## Open questions
+## Decisions
 
-- **Image dep:** is the `image` crate acceptable as a CLI-only dep, or should
-  we shell out to a pinned standalone tool, as with Tailwind and Sass?
-- **Markdown dep:** is `pulldown-cmark` acceptable, or do we write a CommonMark
-  subset ourselves?
-- **E2E API:** is a Rust-only test API enough, or do we also need a JS test
-  file format?
-- **i18n:** is the design doc's v0 non-goal lifted? This plan assumes yes.
+- **Images:** a pinned standalone `cwebp` (libwebp), downloaded to ~/.wisp/bin
+  the way Tailwind and Sass are, with sha256 checked and a `$WISP_CWEBP`
+  override.
+  - It resizes and encodes lossy WebP. The `image` crate only writes lossless
+    WebP, and it would add compile time.
+  - If the tool can't be had, the build warns and serves the original image.
+- **Markdown:** `pulldown-cmark`. It is CommonMark compliant and among the
+  fastest parsers. It runs at build time only, so the runtime gets no dep.
+- **E2E:** Rust only, next to the HTTP tests. One language means fewer tokens,
+  and the same `wisp::test` API.
+- **i18n:** lifted from the v0 non-goals. The framework supports translations.
+  Wisp's own docs and messages stay English.

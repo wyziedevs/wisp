@@ -1194,7 +1194,7 @@ expression or `.rs` edit rebuilds and restarts in 0.3 s.
 
 ## v0 non-goals
 
-ORM, auth, background jobs, i18n, HTTP/2 in process, Windows services.
+ORM, auth, background jobs, HTTP/2 in process, Windows services.
 Each is either a library users pick or a later version. A job runner can be
 started from `init` with `wisp::spawn`.
 
