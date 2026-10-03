@@ -88,7 +88,7 @@ async fn from_http<A: App, B: http_body::Body>(req: http::Request<B>) -> Reply {
         .map(|(n, v)| (n.as_str(), v.as_bytes()))
         .chain(host);
     match Cx::from_request::<A>(parts.method.as_str(), target, headers, &body, peer) {
-        Ok(cx) => answer::<A>(cx).await,
+        Ok(cx) => answer::<A>(cx, &mut None).await,
         Err(status) => Reply::plain(status),
     }
 }

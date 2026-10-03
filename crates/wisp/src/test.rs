@@ -170,7 +170,7 @@ impl<A: App> Client<A> {
         ] {
             req.header(n, v);
         }
-        let (reply, upgrade) = crate::ws::capture(|| self.send(req));
+        let (reply, upgrade) = self.exchange(req);
         match upgrade {
             // The 501 is what `handle` makes of an upgrade; any other
             // status is the handshake's refusal.
@@ -221,7 +221,12 @@ impl<A: App> Client<A> {
     }
 
     /// Any request, with the client's cookies (and bearer token) added.
-    pub fn send(&mut self, mut req: Request) -> Reply {
+    pub fn send(&mut self, req: Request) -> Reply {
+        self.exchange(req).0
+    }
+
+    /// [`Client::send`], and the WebSocket handler the route made, if any.
+    fn exchange(&mut self, mut req: Request) -> (Reply, Option<crate::ws::Upgrade>) {
         for (n, v) in std::mem::take(&mut self.next) {
             req.header(&n, &v);
         }
@@ -241,7 +246,10 @@ impl<A: App> Client<A> {
                 .collect();
             req.header("cookie", &jar.join("; "));
         }
-        let reply = self.runtime.block_on(crate::handle::<A>(req));
+        let mut upgrade = None;
+        let reply = self
+            .runtime
+            .block_on(crate::http::handle_keeping::<A>(req, &mut upgrade));
         for (_, set) in reply
             .headers
             .iter()
@@ -256,7 +264,7 @@ impl<A: App> Client<A> {
                 self.cookies.push((name.to_string(), value.to_string()));
             }
         }
-        reply
+        (reply, upgrade)
     }
 
     /// The next chunk of a streamed reply; `None` once it has ended.

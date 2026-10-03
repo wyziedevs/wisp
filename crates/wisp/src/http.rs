@@ -2344,21 +2344,36 @@ impl Request {
 /// routing, hooks and error pages as the built-in server. Run
 /// [`crate::prepare`] once first, so `init` has run.
 pub async fn handle<A: App>(req: Request) -> Reply {
+    handle_keeping::<A>(req, &mut None).await
+}
+
+/// [`handle`], leaving in `upgrade` the WebSocket handler that `handle`
+/// answers 501 for, for the test client.
+pub(crate) async fn handle_keeping<A: App>(
+    req: Request,
+    upgrade: &mut Option<crate::ws::Upgrade>,
+) -> Reply {
     let headers = req.headers.iter().map(|(n, v)| (n.as_str(), v.as_bytes()));
     match Cx::from_request::<A>(&req.method, &req.target, headers, &req.body, req.peer) {
-        Ok(cx) => answer::<A>(cx).await,
+        Ok(cx) => answer::<A>(cx, upgrade).await,
         Err(status) => Reply::plain(status),
     }
 }
 
 /// [`decide`] for a request of its own, with the page rendered and the
 /// framing as [`serialize`] has it on the wire.
-pub(crate) async fn answer<A: App>(mut cx: Cx) -> Reply {
+/// A WebSocket handler is left in `upgrade`, as [`handle_keeping`] says.
+pub(crate) async fn answer<A: App>(mut cx: Cx, upgrade: &mut Option<crate::ws::Upgrade>) -> Reply {
     setup::<A>();
     let (mut out, mut reply) = (Out::default(), Reply::default());
     decide::<A>(&mut cx, &mut out, &mut reply, None).await;
     match reply.body {
-        Body::WebSocket(_) => reply.set_plain(501, "WebSockets need Wisp's own server"),
+        Body::WebSocket(_) => {
+            if let Body::WebSocket(kept) = std::mem::replace(&mut reply.body, Body::Static(b"")) {
+                *upgrade = Some(kept);
+            }
+            reply.set_plain(501, "WebSockets need Wisp's own server");
+        }
         Body::Page => reply.body = Body::Bytes(page::<A>(&mut out).concat().into_bytes()),
         Body::Made(_) => crate::bake::unpack(&mut reply),
         _ => {}
