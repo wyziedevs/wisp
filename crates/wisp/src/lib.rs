@@ -223,6 +223,8 @@ macro_rules! app {
             include!(concat!(env!("OUT_DIR"), "/wisp.rs"));
         }
         #[allow(unused_imports)]
+        use __wisp::__comps::*;
+        #[allow(unused_imports)]
         use __wisp::__mods::*;
         use __wisp::App;
         #[allow(unused_imports)]
