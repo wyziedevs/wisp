@@ -1261,8 +1261,11 @@ fn generate_web(input: &Input) -> Result<Output, String> {
 /// The app read, its browser half, the generated Rust and the TypeScript
 /// client.
 fn generate_parts<'a>(input: &Input<'a>) -> Result<(Project<'a>, Web, String, String), String> {
-    let p = Project::load(input)?;
+    let mut p = Project::load(input)?;
     let web = p.browser()?;
+    if input.release {
+        p.stamp();
+    }
     let mut g = Gen {
         out: String::new(),
         release: input.release,
@@ -1359,6 +1362,27 @@ impl Web {
 }
 
 impl<'a> Project<'a> {
+    /// A release build's id, in a `<meta name="wisp-build">` of the shell:
+    /// a hash of its templates and Rust. Baked in, so a request does no more
+    /// for it; wisp.js reads it from the page it fetches, and loads a page
+    /// of another build whole (see `go` in wisp.js) instead of swapping it
+    /// into scripts that are not its own.
+    fn stamp(&mut self) {
+        let mut h = fnv1a(crate::runtime_version().as_bytes());
+        for t in &self.templates {
+            h = h.rotate_left(7) ^ t.t.shape;
+            for c in &t.t.chunks {
+                h = h.rotate_left(7) ^ fnv1a(c.as_bytes());
+            }
+        }
+        let rust = self.user_mods.iter().chain(&self.mods).chain(&self.hooks);
+        for m in rust {
+            h = h.rotate_left(7) ^ fnv1a(&fs::read(&m.file).unwrap_or_default());
+        }
+        let meta = format!("<meta name=\"wisp-build\" content=\"{h:016x}\">\n");
+        self.shell[0].push_str(&meta);
+    }
+
     fn new(input: &Input<'a>) -> Result<Project<'a>, String> {
         let root = input.root;
         let tree = crate::routes::scan(&root.join("src").join("routes"))?;
@@ -2468,6 +2492,10 @@ impl<'a> Project<'a> {
                     server_handlers(&items, segs, &mut shims).map_err(|e| format!("{rel}:{e}"))?;
                 before |= add_guard(&mut shims, &guard, before);
                 let waits = items.fns.iter().any(|f| f.is_async);
+                // Unsafe methods refuse another site's `Origin`, unless the
+                // file takes other sites by `CORS`, or says `CSRF = false`.
+                let csrf = self.flag(&items, "CSRF", &file, &mut shims)? != Some(false)
+                    && items.constant("CORS").is_none();
                 (self.user_mods).push(UserMod::new(
                     module.clone(),
                     file.clone(),
@@ -2486,6 +2514,7 @@ impl<'a> Project<'a> {
                         before,
                         types: items.types.into(),
                         waits,
+                        csrf,
                     },
                 });
                 servers.len() - 1
@@ -2515,6 +2544,7 @@ impl<'a> Project<'a> {
             before: sf.before,
             types: sf.types.clone(),
             waits: sf.waits,
+            csrf: sf.csrf,
         });
         Ok(())
     }
@@ -3101,6 +3131,7 @@ impl Gen {
             lit(crate::runtime_version())
         ));
         self.line(0, "");
+        self.out.push_str(&typed_routes(&p.tree.routes));
         match &p.hooks {
             None => self.line(0, "pub mod hooks {}"),
             Some(h) => {
@@ -3114,6 +3145,7 @@ impl Gen {
         // every route file and as `crate::notes` (see `wisp::app!`).
         self.line(0, "#[doc(hidden)]");
         self.line(0, "pub mod __mods {");
+        self.line(1, "pub use super::routes;");
         for m in &p.mods {
             self.user_mod(m, &p.rel(&m.file), "super::*")?;
             if !m.calls().is_empty() {
@@ -4275,9 +4307,13 @@ impl Gen {
                     serve = kept(serve);
                 }
                 let (open, close) = within(r, m);
+                let csrf = match s.csrf && h.op.method != "get" {
+                    true => "::wisp::rt::check_origin(cx)?; ",
+                    false => "",
+                };
                 self.line(
                     3,
-                    &format!("({i}, {variants}) => {open}{{ ::wisp::rt::endpoint(cx); {before}{serve} Ok(()) }}{close}{}", if open.is_empty() { "" } else { "," }),
+                    &format!("({i}, {variants}) => {open}{{ ::wisp::rt::endpoint(cx); {csrf}{before}{serve} Ok(()) }}{close}{}", if open.is_empty() { "" } else { "," }),
                 );
                 allow.push(allowed);
             }
@@ -8419,6 +8455,82 @@ fn server_path(path: &[String]) -> Vec<String> {
     p
 }
 
+/// `pub mod routes`: a function per route, so `routes::blog_post(slug)` is
+/// the path `/blog/<slug>` and a link to a route that is gone, or without a
+/// parameter it needs, does not compile. Named by the pattern: `/` is
+/// `home`, `/blog/[slug]` is `blog_slug`; a name taken gets `_2`, `_3`.
+fn typed_routes(routes: &[crate::routes::Route]) -> String {
+    let ident = |s: &str| {
+        let s: String = s
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+            .collect();
+        match s.starts_with(|c: char| c.is_ascii_digit()) {
+            true => format!("r_{s}"),
+            false => rust_place(&[s]),
+        }
+    };
+    let mut out = String::from(
+        "/// A function per route: `routes::blog_slug(slug)` is `/blog/<slug>`.\n\
+         #[allow(dead_code)]\npub mod routes {\n",
+    );
+    let mut taken: Vec<String> = Vec::new();
+    for r in routes {
+        let mut name = match r.segs.is_empty() {
+            true => "home".to_string(),
+            false => (r.segs.iter())
+                .map(|s| match s {
+                    Seg::Static(n) | Seg::Param(n, _) | Seg::Optional(n, _) | Seg::Rest(n) => {
+                        n.replace(['-', '.'], "_")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("_"),
+        };
+        let base = name.clone();
+        for k in 2.. {
+            if !taken.contains(&name) {
+                break;
+            }
+            name = format!("{base}_{k}");
+        }
+        taken.push(name.clone());
+        let mut args = Vec::new();
+        let mut body = String::from("let mut s = String::new();");
+        for seg in &r.segs {
+            match seg {
+                Seg::Static(n) => body.push_str(&format!(" s.push_str({});", lit(&format!("/{n}")))),
+                Seg::Param(n, _) | Seg::Rest(n) | Seg::Optional(n, _) => {
+                    let (n, rest) = (ident(n), matches!(seg, Seg::Rest(_)));
+                    match seg {
+                        Seg::Optional(..) => {
+                            args.push(format!("{n}: Option<impl ::core::fmt::Display>"));
+                            body.push_str(&format!(
+                                " if let Some({n}) = {n} {{ s.push('/'); ::wisp::rt::path_param(&mut s, &{n}, false); }}"
+                            ));
+                        }
+                        _ => {
+                            args.push(format!("{n}: impl ::core::fmt::Display"));
+                            body.push_str(&format!(
+                                " s.push('/'); ::wisp::rt::path_param(&mut s, &{n}, {rest});"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        body.push_str(" if s.is_empty() { s.push('/'); } s");
+        out.push_str(&format!(
+            "    /// `{}`\n    pub fn {}({}) -> String {{ {body} }}\n",
+            r.pattern(),
+            ident(&name),
+            args.join(", ")
+        ));
+    }
+    out.push_str("}\n\n");
+    out
+}
+
 /// `data.type` is `data.r#type` in Rust.
 fn rust_place(path: &[String]) -> String {
     const KEYWORDS: [&str; 38] = [
@@ -8884,6 +8996,63 @@ mod tests {
         assert_eq!(waits("now-plain", &files), [false, false]);
         let code = app("now-plain", &files).unwrap();
         assert_eq!(facts(&code, "now"), ["true", "true"]);
+    }
+
+    #[test]
+    fn release_builds_have_an_id_for_version_skew() {
+        let id = |name: &str, page: &'static str, release: bool| {
+            let page = ("src/routes/+page.wisp", page);
+            let code = build(name, &[page], release).unwrap();
+            let at = code.find("name=\\\"wisp-build\\\" content=\\\"").map(|i| i + 31);
+            at.map(|i| code[i..i + 16].to_string())
+        };
+        let (a, b) = (id("id-a", "x", true).unwrap(), id("id-b", "y", true).unwrap());
+        assert_ne!(a, b);
+        assert_eq!(a, id("id-c", "x", true).unwrap());
+        assert_eq!(id("id-dev", "x", false), None);
+    }
+
+    #[test]
+    fn routes_are_typed_functions() {
+        let code = app(
+            "typed",
+            &[
+                ("src/routes/+page.wisp", "x"),
+                ("src/routes/blog/[slug]/+page.wisp", "x"),
+                ("src/routes/blog/[slug]/edit-it/+page.wisp", "x"),
+                ("src/routes/files/[...path]/+page.wisp", "x"),
+                ("src/routes/type/[[type]]/+page.wisp", "x"),
+                ("src/routes/api/+server.rs", "fn get() {}"),
+                ("src/routes/blog_slug/+page.wisp", "x"),
+            ],
+        )
+        .unwrap();
+        for want in [
+            "pub fn home() -> String { let mut s = String::new(); if s.is_empty()",
+            "pub fn blog_slug(slug: impl ::core::fmt::Display) -> String { let mut s = String::new(); s.push_str(\"/blog\"); s.push('/'); ::wisp::rt::path_param(&mut s, &slug, false);",
+            "pub fn blog_slug_edit_it(slug: impl",
+            "pub fn files_path(path: impl ::core::fmt::Display) -> String { let mut s = String::new(); s.push_str(\"/files\"); s.push('/'); ::wisp::rt::path_param(&mut s, &path, true);",
+            "pub fn type_type(r#type: Option<impl ::core::fmt::Display>)",
+            "pub fn api() -> String",
+            "pub fn blog_slug_2() -> String",
+            "pub use super::routes;",
+        ] {
+            assert!(code.contains(want), "{want}\n{code}");
+        }
+    }
+
+    #[test]
+    fn endpoints_check_the_origin_of_unsafe_methods() {
+        let code = |rs: &'static str| {
+            app("csrf", &[("src/routes/api/+server.rs", rs)])
+                .unwrap()
+                .replace("Method::*", "")
+        };
+        let check = "endpoint(cx); ::wisp::rt::check_origin(cx)?;";
+        let on = code("fn get() {}\nfn post() {}\nfn delete() {}");
+        assert_eq!(on.matches(check).count(), 2, "{on}");
+        assert!(!code("const CSRF: bool = false;\nfn post() {}").contains("check_origin(cx)"));
+        assert!(!code("const CORS: &str = \"*\";\nfn post() {}").contains("check_origin(cx)"));
     }
 
     #[test]
@@ -10008,7 +10177,7 @@ fn report(cx: &mut Cx, err: &Error) {}",
             "pub const CACHE: u32 = super::CACHE_PUBLIC;",
             "(0, Get | Head) => { ::wisp::rt::endpoint(cx); if ::wisp::rt::cached::<false>(cx, __o, true) { return Ok(()); } \
              ::wisp::rt::respond(__o, server_0::__call::get(cx).await?); ::wisp::rt::keep::<Self, false>(cx, __o, server_0::__call::CACHE, true); Ok(()) }",
-            "(0, Post) => { ::wisp::rt::endpoint(cx); if ::wisp::rt::idempotent(cx, __o) { return Ok(()); } \
+            "(0, Post) => { ::wisp::rt::endpoint(cx); ::wisp::rt::check_origin(cx)?; if ::wisp::rt::idempotent(cx, __o) { return Ok(()); } \
              server_0::__call::post(cx).await?; ::wisp::rt::no_content(__o); Ok(()) }",
             // The same, sync, with no future: what `handle_now` answers.
             "now: true, sync: ::wisp::Method::Get.bit() | ::wisp::Method::Head.bit() | ::wisp::Method::Post.bit(),",

@@ -115,6 +115,8 @@ pub struct Server {
     /// The types it defines, for the OpenAPI document: one copy, which
     /// each route it serves shares.
     pub types: std::rc::Rc<[TypeItem]>,
+    /// Its unsafe methods refuse a request from another site (`Origin`).
+    pub csrf: bool,
     /// It has an `async fn`.
     pub waits: bool,
 }

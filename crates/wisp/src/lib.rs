@@ -1543,6 +1543,15 @@ pub mod rt {
         BadCookie, CookieReader, CookieWriter, MAX_PARAMS, MAX_SEGS, decode, split,
     };
     pub use crate::dev::{chunk, marks};
+    /// A route parameter in the path a typed route (`routes::post(id)`)
+    /// builds: percent-encoded, a rest parameter keeping its `/`s.
+    pub fn path_param(out: &mut String, v: &dyn std::fmt::Display, rest: bool) {
+        let keep: fn(u8) -> bool = match rest {
+            true => |b| crate::cx::unreserved(b) || b == b'/',
+            false => crate::cx::unreserved,
+        };
+        let _ = crate::cx::encode(out, &v.to_string(), keep);
+    }
     /// A `#[derive(Rest)]` type's handlers and hooks (see `rest.rs`).
     pub mod rest {
         pub use crate::rest::{Hooks, Kind, create, delete, get, list, patch, put};
