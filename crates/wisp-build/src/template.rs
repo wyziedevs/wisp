@@ -1575,7 +1575,7 @@ impl Parser<'_> {
     /// what was wrong (`Node::Problem`), unless the file shows that field's
     /// problem itself. A password or file is not sent back; its problem is.
     fn form_defaults(&mut self) -> Result<(), Error> {
-        let mut method = false;
+        let (mut method, mut multipart) = (false, false);
         if self.tag == "form" {
             let action = self.attr_prefix(self.tag_pos, "action");
             let to_action = action.and_then(|v| v.strip_prefix("?/"));
@@ -1594,6 +1594,11 @@ impl Parser<'_> {
                 Some(v) => Some(self.action_of(v)),
                 None => to_default.then(|| "default".to_string()),
             };
+            // A form whose action takes an upload is multipart.
+            multipart = self.seen("enctype").is_none()
+                && posts.as_ref().is_some_and(|a| {
+                    (self.fields.iter()).any(|f| f.native.upload && f.action == *a)
+                });
             self.forms.push(posts);
         }
         // A button that posts to another action skips this form's browser
@@ -1637,7 +1642,7 @@ impl Parser<'_> {
             && !in_browser
             && self.seen("selected").is_none()
             && self.keep.as_ref().is_some_and(|k| !k.textarea);
-        if !method && name.is_none() && !chosen && !novalidate {
+        if !method && !multipart && name.is_none() && !chosen && !novalidate {
             return Ok(());
         }
         // Added before a self-closing tag's `/`.
@@ -1648,6 +1653,9 @@ impl Parser<'_> {
         self.text.truncate(self.text.trim_end().len());
         if method {
             self.text.push_str(" method=\"post\"");
+        }
+        if multipart {
+            self.text.push_str(" enctype=\"multipart/form-data\"");
         }
         if novalidate {
             self.text.push_str(" formnovalidate");

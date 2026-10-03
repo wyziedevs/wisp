@@ -9,8 +9,11 @@
 //!
 //! Its type is what its bytes say, not what the browser claimed: PNG, JPEG,
 //! GIF, WebP or AVIF, by their first bytes. Anything else, SVG among them
-//! (it can carry script), is a 422 by the field. `max_size` makes the
-//! route's body limit room enough for it, at build time.
+//! (it can carry script), is a 422 by the field. At most 2 MB
+//! ([`MAX_SIZE`](crate::MAX_SIZE)) unless `max_size` says otherwise; the
+//! route's body limit has room enough for it, made at build time. The
+//! form needs no `enctype`, nor its file input `accept="image/*"`: the
+//! build adds them.
 //!
 //! It is kept in a table as a `data:` URL, which is also its JSON, and a
 //! `+server.rs` handler returns it as it is (`-> Option<Image>`): the bytes,

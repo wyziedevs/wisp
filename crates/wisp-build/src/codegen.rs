@@ -235,6 +235,11 @@ fn shim(f: &FnItem, kind: Shim) -> Result<String, String> {
                     lets.push_str(&checks(name, v, rules).map_err(|e| format!("{}: {e}", f.line))?);
                 }
             }
+            if unsized_upload(f, name) {
+                lets.push_str(
+                    &checks(name, v, DEFAULT_SIZE).map_err(|e| format!("{}: {e}", f.line))?,
+                );
+            }
         }
         let names: Vec<&str> = read.iter().map(|(_, v, ..)| v.as_str()).collect();
         let some: String = names.iter().map(|v| format!("Some({v}), ")).collect();
@@ -327,6 +332,17 @@ fn checks(name: &str, v: &str, rules: &str) -> Result<String, String> {
     Ok(format!("if let Some(__v) = &{v} {{ {each}}} "))
 }
 
+/// What an upload with no `max_size` is held to: `::wisp::MAX_SIZE`.
+const DEFAULT_SIZE: &str = "max_size = ::wisp::MAX_SIZE";
+
+/// Whether parameter `p` of `f` is an upload with no `max_size` of its own.
+fn unsized_upload(f: &FnItem, p: &str) -> bool {
+    let upload = f.params.iter().any(|(n, t)| n == p && rules::is_upload(t));
+    upload
+        && !(f.checks.iter())
+            .any(|(c, r)| c == p && rules::parse(r).is_ok_and(|v| v.max_size.is_some()))
+}
+
 /// The bytes the uploads of a page's actions may take in all, from their
 /// `#[validate(max_size = …)]`, as code (`0 + (1 * MB)`), which the route's
 /// body limit makes room for; `None` when none says. `max_size` on a
@@ -342,6 +358,9 @@ fn upload_sizes(fns: &[FnItem]) -> Result<Option<String>, String> {
             if let Some(size) = rules.max_size {
                 let _ = write!(sum, " + ({size}) as usize");
             }
+        }
+        for _ in f.params.iter().filter(|(p, _)| unsized_upload(f, p)) {
+            sum.push_str(" + ::wisp::MAX_SIZE");
         }
     }
     Ok((!sum.is_empty()).then(|| format!("0{sum}")))
@@ -6486,6 +6505,34 @@ mod tests {
         }
         assert_eq!(code.matches("::__call::__ready();").count(), 3, "{code}");
         assert!(!code.contains("C.ready()"), "{code}");
+    }
+
+    #[test]
+    fn an_upload_is_held_to_a_size() {
+        let page = |src: &'static str| ("src/routes/+page.wisp", src);
+        let none = "---\n#[action]\nfn a(img: Image, b: Option<Image>) {}\n---\n<form action=\"?/a\"><input name=\"img\" type=\"file\"></form>";
+        let code = app("size-default", &[page(none)]).unwrap();
+        assert!(
+            code.contains("max_size(__v, (::wisp::MAX_SIZE) as usize)"),
+            "{code}"
+        );
+        assert!(
+            code.contains("UPLOADS: usize = 0 + ::wisp::MAX_SIZE + ::wisp::MAX_SIZE;"),
+            "{code}"
+        );
+        assert!(
+            code.contains(
+                r#"<form action=\"?/a\" method=\"post\" enctype=\"multipart/form-data\">"#
+            ),
+            "{code}"
+        );
+        let own = "---\n#[action]\nfn a(#[validate(max_size = 3 * MB)] img: Image) {}\n---\nx";
+        let code = app("size-own", &[page(own)]).unwrap();
+        assert!(
+            code.contains("UPLOADS: usize = 0 + (3 * MB) as usize;"),
+            "{code}"
+        );
+        assert!(!code.contains("MAX_SIZE"), "{code}");
     }
 
     #[test]

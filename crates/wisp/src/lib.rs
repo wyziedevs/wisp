@@ -121,6 +121,10 @@ impl<T> Shared<T> {
 pub const KB: usize = 1024;
 pub const MB: usize = 1024 * KB;
 
+/// The most an `Image` parameter takes unless it has a `#[validate(max_size
+/// = …)]` of its own: 2 MB. The route's body limit makes room for it.
+pub const MAX_SIZE: usize = 2 * MB;
+
 /// The whole `main.rs` of an app that needs nothing before it starts:
 /// [`app!`] plus a `main` that calls [`run`].
 #[macro_export]

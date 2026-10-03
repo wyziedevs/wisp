@@ -41,6 +41,7 @@ pub fn native(ty: &str, rules: &[Rule], whole: bool) -> Native {
         return n;
     }
     n.email = last == "Email";
+    n.upload = is_upload(t);
     for r in rules {
         r.native(&mut n, text, number);
     }
@@ -148,8 +149,12 @@ mod tests {
             ("f64 | min = 0.5", "input number", " required"),
             ("u32 | min = 1", "input", " required"),
             ("u32 | min = LOW", "input number", " required"),
-            ("Image | max_size = 1 * MB", "input file", " required"),
-            ("Option<Image> |", "input file", ""),
+            (
+                "Image | max_size = 1 * MB",
+                "input file",
+                " required accept=\"image/*\"",
+            ),
+            ("Option<Image> |", "input file", " accept=\"image/*\""),
             ("String | min_len = 1", "select", " required"),
             ("bool |", "input checkbox", ""),
             ("Vec<String> | len = 1..", "select", ""),
