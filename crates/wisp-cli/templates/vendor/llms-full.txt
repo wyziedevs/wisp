@@ -214,6 +214,8 @@ npm: `wisp add canvas-confetti`, then `import confetti from 'canvas-confetti'`
 (esm.sh in dev; `wisp build` puts it in the binary, no CDN; one not in package.json
 is a build error).
 Islands: `<Chart client:visible|idle|interaction|media="(…)"|none />`.
+Source maps: dev serves `/_app/c/t3.js.map` beside each module (the `.wisp`
+line of each line); release only with `wisp build --sourcemap`.
 Server values sent to JS must `#[derive(Json)]`. Full: docs/client.md.
 
 ## Endpoints (`+server.rs`)
@@ -393,7 +395,7 @@ takes the no-wait fast path off every route.
 `wisp new app` · `wisp dev` (hot reload) · `wisp check` · `wisp fmt [paths]`
 (`--check`, `--stdin`; markup, `---` via rustfmt, scripts, styles) · `wisp build`
 (`--static`, `--docker`, `--target cloudflare|deno|vercel|netlify|node|bun|lambda|native`,
-`--client ts`; in a host's CI it picks that host) · `wisp deploy init <host>`
+`--client ts`, `--sourcemap`; in a host's CI it picks that host) · `wisp deploy init <host>`
 (GitHub Actions) · `wisp add pkg[@ver]` · `wisp remove pkg` · `wisp lsp` (language
 server; setup per editor: editors/README.md) · `wisp update-docs` (this file, after
 upgrading Wisp) · `wisp mcp` (tools for AI agents: `wisp_docs(topic)`,
@@ -1848,7 +1850,7 @@ pages, layouts and components, and runs once for each place the file is shown.
   into `.wisp/npm` and the binary serves it from `/_app/c/npm/`: no CDN.
   A package `package.json` lacks, or one with a range (`^1.0`) rather
   than a version, is a build error.
-- Errors point at the real `.wisp` file and line.
+- Errors point at the real `.wisp` file and line (see [Source maps](#source-maps)).
 
 A `<script>` with `type` or `src` stays plain HTML, as before.
 
@@ -2365,6 +2367,15 @@ on the first load and after every navigation. It does not run on the server.
 An error thrown while a client script starts, or in `+page.js`, shows the
 nearest `+error.wisp`, as a server error would. Errors inside handlers show in
 the console with the `.wisp` file and line.
+
+### Source maps
+
+In dev, every browser module ends with `//# sourceMappingURL=t3.js.map`,
+served beside it (`/_app/c/t3.js.map`, also for `src/lib` files and
+`+page.js`). DevTools then shows the `.wisp` file, and a stack trace its
+lines: each line of a script, an import or a directive maps to its line of
+the file. A release build has none (no cost), unless built with
+`wisp build --sourcemap`.
 
 ## Devtools and the component workshop
 

@@ -2856,11 +2856,17 @@ fn file<A: App>(cx: &Cx, raw: &[u8], route: Option<usize>, reply: &mut Reply) ->
     if raw.starts_with(crate::protocol::MODULES.as_bytes())
         && let Some(m) = A::client_module(cx.path())
     {
+        // A module's source map (`t3.js.map`) is JSON.
+        let ext = if m.path.ends_with(".map") {
+            "json"
+        } else {
+            "js"
+        };
         send_file(
             reply,
             cx,
             Body::Static(m.source.as_bytes()),
-            "js",
+            ext,
             Some(m.etag),
         );
         return true;

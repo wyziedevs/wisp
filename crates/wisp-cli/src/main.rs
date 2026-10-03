@@ -23,7 +23,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 /// `wisp --help`: each command or option, and what it does.
-const COMMANDS: [(&str, &str); 17] = [
+const COMMANDS: [(&str, &str); 18] = [
     (
         "wisp new [name]",
         "Create an app. It asks a few questions; the options below answer them.",
@@ -35,6 +35,10 @@ const COMMANDS: [(&str, &str); 17] = [
     (
         "wisp build",
         "Build one release binary with the CSS and static files inside (in a host's CI: for that host).",
+    ),
+    (
+        "wisp build --sourcemap",
+        "The same, with source maps for browser code, as wisp dev serves.",
     ),
     (
         "wisp build --static [--out dist]",
@@ -219,10 +223,12 @@ struct BuildOptions {
     target: Option<String>,
     /// `--client ts`: write the TypeScript client of the app's endpoints.
     client: bool,
+    /// `--sourcemap`: source maps for the browser modules, as in dev.
+    sourcemap: bool,
 }
 
 fn build_options(args: &[String]) -> Result<BuildOptions, String> {
-    let usage = "wisp build takes --static [--out <folder>], --docker [--force], --target <host> [--out <folder>] and --client ts [--out <file>].";
+    let usage = "wisp build takes --static [--out <folder>], --docker [--force], --target <host> [--out <folder>], --client ts [--out <file>] and --sourcemap.";
     let mut o = BuildOptions::default();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
@@ -237,6 +243,7 @@ fn build_options(args: &[String]) -> Result<BuildOptions, String> {
             _ if arg.starts_with("--target=") => target(&mut o, &arg["--target=".len()..])?,
             "--docker" => o.docker = true,
             "--force" => o.force = true,
+            "--sourcemap" => o.sourcemap = true,
             "--client" | "--client=ts" => {
                 if arg == "--client" && args.next().map(String::as_str) != Some("ts") {
                     return Err(format!(
@@ -270,6 +277,8 @@ fn build_options(args: &[String]) -> Result<BuildOptions, String> {
         && !o.client
     {
         Some("--out goes with --static, --target or --client.")
+    } else if o.sourcemap && (o.client || o.target.is_some()) {
+        Some("--sourcemap goes with a binary build, or --static.")
     } else if o.force && !o.docker {
         Some("--force goes with --docker.")
     } else {
@@ -393,7 +402,13 @@ fn build(root: &Path, o: &BuildOptions) -> Result<(), String> {
     }
     let started = Instant::now();
     term::step("Building for release");
-    let b = cargo::build(root, true, false);
+    // `--sourcemap`: build.rs writes the browser modules' maps.
+    let maps: &[(&str, &str)] = if o.sourcemap {
+        &[("WISP_SOURCEMAP", "1")]
+    } else {
+        &[]
+    };
+    let b = cargo::build_for(root, true, false, None, maps);
     let exe = b.exe.filter(|_| b.ok).ok_or(
         "The build failed.
 The compiler's errors are above.",
@@ -440,6 +455,8 @@ mod tests {
         assert!(opts("--docker --force").unwrap().force);
         assert!(opts("--client ts --out web/api.ts").unwrap().client);
         assert!(opts("--client=ts").unwrap().client);
+        assert!(opts("--sourcemap --static").unwrap().sourcemap);
+        assert!(opts("--sourcemap --client ts").is_err());
         for bad in ["--client", "--client js", "--client ts --static"] {
             assert!(opts(bad).is_err(), "{bad}");
         }

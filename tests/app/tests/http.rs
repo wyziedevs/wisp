@@ -600,9 +600,17 @@ fn browser_code() {
         js.contains("[\"each\", () => (notes), [\"note\", \"n\"], null]"),
         "{js}"
     );
+    // In dev it names its source map, served beside it, which names the file.
     assert!(
-        js.ends_with("//# sourceURL=wisp:///src/routes/live/+page.wisp\n"),
+        js.ends_with(&format!("//# sourceMappingURL={page_id}.js.map\n")),
         "{js}"
+    );
+    let map = s.request("GET", &format!("/_app/c/{page_id}.js.map"), "", b"");
+    assert_eq!(header(&map, "content-type"), Some("application/json"));
+    assert!(
+        body(&map).contains("\"sources\":[\"wisp:///src/routes/live/+page.wisp\"]"),
+        "{}",
+        body(&map)
     );
     // The script keeps its line numbers: `let open` is on line 14 of the
     // file. It is state: a signal.
@@ -974,7 +982,10 @@ fn first_paint() {
     let tree = js
         .lines()
         .filter_map(|l| l.strip_prefix("import \"")?.strip_suffix("\";"))
-        .find(|u| body(&s.request("GET", u, "", b"")).contains("Tree.wisp"))
+        .find(|u| {
+            let map = format!("{}.map", &u[..u.find('?').unwrap()]);
+            body(&s.request("GET", &map, "", b"")).contains("Tree.wisp")
+        })
         .expect("the tree's module")
         .to_string();
     let src = body(&s.request("GET", &tree, "", b"")).to_string();
