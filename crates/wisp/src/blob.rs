@@ -30,6 +30,10 @@ pub const PREFIX: &str = "/_wisp/blob/";
 
 /// A place files are kept: a bucket, another disk. A file is its SHA-256 in
 /// hex (64 characters) and its bytes.
+///
+/// `put` and `get` run on the thread that serves the request, and wait for
+/// the place to answer: keep them to what a disk or a nearby cache does,
+/// and have a slow store (a remote bucket) answer from a local copy.
 pub trait Blobs: Send + Sync + 'static {
     /// Keeps `bytes` under `hash`, unless it has them already.
     fn put(&self, hash: &str, bytes: &[u8]) -> Result;
@@ -62,8 +66,21 @@ impl Blobs for Folder {
             "{hash}.{}.tmp",
             crate::hex(&crate::sign::random::<4>())
         ));
-        std::fs::write(&tmp, bytes).map_err(io)?;
-        std::fs::rename(&tmp, &path).map_err(|e| {
+        // On the disk before the rename: a crash must not leave an empty
+        // file under a hash, which `put` would then take for the file.
+        let kept = (|| {
+            use std::io::Write;
+            let mut f = std::fs::File::create(&tmp)?;
+            f.write_all(bytes)?;
+            f.sync_all()?;
+            drop(f);
+            std::fs::rename(&tmp, &path)?;
+            // The rename reaches the disk with the folder's entry.
+            #[cfg(unix)]
+            std::fs::File::open(&self.0)?.sync_all()?;
+            Ok(())
+        })();
+        kept.map_err(|e| {
             let _ = std::fs::remove_file(&tmp);
             io(e)
         })
@@ -140,12 +157,10 @@ pub fn get(hash: &str) -> Option<Vec<u8>> {
 
 /// The file at `/_wisp/blob/<hash>` as a response, cached for good; `None`
 /// for any other path, or a file there is not.
-pub fn serve(path: &str) -> Option<Response> {
+pub(crate) fn serve(path: &str) -> Option<Response> {
     let hash = path.strip_prefix(PREFIX)?;
     let bytes = get(hash)?;
-    let sniffed = bytes.len().min(512);
-    let kind = crate::Image::new(bytes[..sniffed].to_vec())
-        .map_or("application/octet-stream", |i| i.kind());
+    let kind = crate::image::sniff(&bytes).unwrap_or("application/octet-stream");
     Some(
         Response::new(kind, bytes)
             .with_header("etag", format!("\"{hash}\""))

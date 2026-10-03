@@ -47,8 +47,9 @@ DOCS.add(Doc { title, file: Upload::new(&file, "pdf csv")? });  // 422 on `file`
 
 Files go in `WISP_BLOBS` (default: `blobs` beside the data folder; memory
 where tables are); `wisp::blobs(impl Blobs)` puts them in S3 or elsewhere.
-`wisp::blob::serve(path)` answers `/_wisp/blob/<hash>`: typed by its bytes
-(images) or as opaque data, `nosniff`, cached for good.
+The server answers `/_wisp/blob/<hash>` itself: typed by its bytes
+(images) or as opaque data, `nosniff`, cached for good, `Range` and
+`If-None-Match` honored; GET and HEAD only.
 
 ## Rules
 

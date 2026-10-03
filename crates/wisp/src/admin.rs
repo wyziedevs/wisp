@@ -7,7 +7,7 @@
 //! `#[validate]`) run, only that the JSON is a row of the table's type
 //! (and, for a unique field, free). Keep the key to people who may do that.
 
-use crate::{Cx, Method, Response, Result};
+use crate::{Cx, Method, RateLimit, Response, Result};
 use std::fmt::Write;
 
 /// Where the admin page is.
@@ -37,13 +37,29 @@ pub(crate) fn register(table: &'static dyn Admin) {
 
 /// The admin page's answer for a request to `path`; `None` when the path is
 /// not under `/_wisp/admin` or the page is off.
-pub fn serve(cx: &Cx, path: &str) -> Option<Response> {
-    let key = crate::env("WISP_ADMIN_KEY").filter(|k| !k.is_empty())?;
+pub(crate) fn serve(cx: &Cx, path: &str) -> Option<Response> {
+    static KEY: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    static TRIES: RateLimit = RateLimit::per_minute(60);
+    let key = KEY
+        .get_or_init(|| crate::env("WISP_ADMIN_KEY").filter(|k| !k.is_empty()))
+        .as_deref()?;
     let rest = path.strip_prefix(PATH)?;
     if !(rest.is_empty() || rest.starts_with('/')) {
         return None;
     }
-    Some(answer(cx, rest.trim_matches('/'), &key))
+    // Before the key is looked at, so guessing it is slow whoever is right.
+    Some(match tries(&TRIES, cx) {
+        Some(refused) => refused,
+        None => answer(cx, rest.trim_matches('/'), key),
+    })
+}
+
+/// The answer to a client that has used up its requests, if it has.
+fn tries(limit: &RateLimit, cx: &Cx) -> Option<Response> {
+    limit.check(cx.client_ip()).err().map(|_| {
+        page(429, "Slow down", "<p>Too many requests; wait a minute.</p>")
+            .with_header("retry-after", "60")
+    })
 }
 
 fn answer(cx: &Cx, rest: &str, key: &str) -> Response {
@@ -254,6 +270,15 @@ mod tests {
             path.strip_prefix(PATH).unwrap().trim_matches('/'),
             "sesame",
         )
+    }
+
+    #[test]
+    fn a_client_that_asks_too_much_is_refused() {
+        let limit = RateLimit::per_minute(2);
+        let cx = Cx::for_test("GET /_wisp/admin HTTP/1.1\r\nhost: h.test\r\n\r\n", &[]);
+        assert!(tries(&limit, &cx).is_none() && tries(&limit, &cx).is_none());
+        let r = tries(&limit, &cx).expect("refused");
+        assert_eq!(r.status, 429);
     }
 
     fn body(r: &Response) -> String {

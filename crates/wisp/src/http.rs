@@ -3037,12 +3037,22 @@ fn internal<A: App>(cx: &Cx, path: &str, reply: &mut Reply) -> bool {
             return true;
         }
         _ if path.starts_with("/_wisp/blob/") || path.starts_with("/_wisp/admin") => {
-            let found = match path.starts_with("/_wisp/blob/") {
-                true => crate::blob::serve(path),
+            let blob = path.starts_with("/_wisp/blob/");
+            let found = match blob {
+                true => get.then(|| crate::blob::serve(path)).flatten(),
                 false => crate::admin::serve(cx, path),
             };
             let Some(res) = found else { return false };
+            let etag = res
+                .headers
+                .iter()
+                .find(|(n, _)| n == "etag")
+                .map(|(_, v)| v.clone());
             put(cx, reply, res);
+            // A file is the same bytes always: a video can be sought in.
+            if blob && reply.status == 200 {
+                crate::range::apply(cx, reply, etag.as_deref());
+            }
             return true;
         }
         _ if s.dev && path.starts_with("/_wisp/") => {

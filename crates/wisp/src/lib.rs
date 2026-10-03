@@ -15,9 +15,9 @@
 // compiles by too.
 use wisp_shared::{contexts, protocol};
 
-pub mod admin;
+mod admin;
 mod bake;
-pub mod blob;
+mod blob;
 mod cache;
 #[cfg(not(target_arch = "wasm32"))]
 mod channel;
