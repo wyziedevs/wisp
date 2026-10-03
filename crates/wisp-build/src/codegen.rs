@@ -895,6 +895,9 @@ struct Project<'a> {
     shelves: Vec<Shelf>,
     /// The `PUBLIC_*` variables, for browser code's `env.PUBLIC_X`.
     env: Vec<(String, String)>,
+    /// The Markdown pages, by route pattern, with their front matter: what
+    /// `wisp::pages` lists.
+    md_pages: Vec<(String, Vec<(String, String)>)>,
 }
 
 /// The browser's half: the modules of templates (by template), and the
@@ -952,6 +955,7 @@ impl<'a> Project<'a> {
             shared: crate::shared_types(root),
             shelves: Vec::new(),
             env: crate::public_env(root),
+            md_pages: Vec::new(),
         })
     }
 
@@ -1474,10 +1478,18 @@ impl<'a> Project<'a> {
     /// The `+page.wisp` of route `i`, and its Rust.
     fn page(&mut self, i: usize, route: &mut model::Route) -> Result<(), String> {
         let r = &self.tree.routes[i];
-        let (dir, page_rs, page_js) = (r.dir.clone(), r.page_rs, r.page_js);
-        let file = dir.join("+page.wisp");
+        let (dir, page_rs, page_js, md) = (r.dir.clone(), r.page_rs, r.page_js, r.md.clone());
+        let file = md.clone().unwrap_or_else(|| dir.join("+page.wisp"));
         // Its Rust first: its actions' fields get the browser's checks.
-        let src = self.read(&file)?;
+        let src = match md {
+            Some(_) => {
+                let m = crate::markdown::page(&self.read(&file)?, &self.comps)
+                    .map_err(|e| format!("{}:{e}", self.rel(&file)))?;
+                self.md_pages.push((route.pattern.clone(), m.fields));
+                m.wisp
+            }
+            None => self.read(&file)?,
+        };
         let (front, markup) =
             crate::split_front(&src).map_err(|e| format!("{}:{e}", self.rel(&file)))?;
         let mut lg = self.logic(page_rs.then(|| dir.join("+page.rs")), &file, front.clone())?;
@@ -2305,6 +2317,25 @@ impl Gen {
                     all.join(", ")
                 ),
             );
+        }
+        if !p.md_pages.is_empty() {
+            self.line(1, "const PAGES: &'static [::wisp::MdPage] = &[");
+            for (path, fields) in md_order(&p.md_pages) {
+                let get = |k: &str| fields.iter().find(|(n, _)| n == k).map_or("", |(_, v)| v);
+                let all: Vec<String> = (fields.iter())
+                    .map(|(k, v)| format!("({}, {})", lit(k), lit(v)))
+                    .collect();
+                self.line(
+                    2,
+                    &format!(
+                        "::wisp::MdPage {{ path: {}, title: {}, fields: &[{}] }},",
+                        lit(path),
+                        lit(get("title")),
+                        all.join(", ")
+                    ),
+                );
+            }
+            self.line(1, "];");
         }
         self.routes(p, assets);
         // Template 0 is the shell.
@@ -3506,6 +3537,22 @@ pub(crate) fn components(root: &Path) -> Result<Vec<Comp>, String> {
     })?;
     p.components()?;
     Ok(p.comps)
+}
+
+/// The Markdown pages in the order `wisp::pages` gives them: by folder,
+/// then newest `date` first, then by path.
+fn md_order(pages: &[(String, Vec<(String, String)>)]) -> Vec<&(String, Vec<(String, String)>)> {
+    let dir = |p: &str| p.rsplit_once('/').map_or("", |(d, _)| d).to_string();
+    let date = |f: &[(String, String)]| {
+        (f.iter().find(|(k, _)| k == "date")).map_or(String::new(), |(_, v)| v.clone())
+    };
+    let mut out: Vec<_> = pages.iter().collect();
+    out.sort_by(|a, b| {
+        (dir(&a.0).cmp(&dir(&b.0)))
+            .then_with(|| date(&b.1).cmp(&date(&a.1)))
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    out
 }
 
 fn check_no_children(t: &Template, rel: &str) -> Result<(), String> {
@@ -7490,6 +7537,42 @@ mod tests {
         assert!(
             wrong.contains("+page.wisp:3: `max_size` is for an upload, and `pic` is a `String`"),
             "{wrong}"
+        );
+    }
+
+    #[test]
+    fn markdown_pages_bake_and_list() {
+        let post = "{@props title: &str}<article>{title}{@render children()}</article>";
+        let files = [
+            ("src/components/Post.wisp", post),
+            (
+                "src/routes/blog/a.md",
+                "---\ndate: 2026-01-01\n---\n# First",
+            ),
+            (
+                "src/routes/blog/b.md",
+                "---\nlayout: Post\ntitle: Second\ndate: 2026-02-01\n---\nText {x}",
+            ),
+            ("src/routes/+page.md", "Home"),
+        ];
+        let code = app("markdown", &files).unwrap();
+        for want in [
+            "static BAKED_0",
+            "static BAKED_1",
+            "static BAKED_2",
+            r"<article>Second\n<p>Text &#123;x&#125;</p>\n</article>",
+            r#"::wisp::MdPage { path: "/", title: "", fields: &[] },"#,
+            r#"::wisp::MdPage { path: "/blog/b", title: "Second", fields: &[("layout", "Post"), ("title", "Second"), ("date", "2026-02-01")] },"#,
+            r#"::wisp::MdPage { path: "/blog/a", title: "First", fields: &[("date", "2026-01-01"), ("title", "First")] },"#,
+        ] {
+            assert!(code.contains(want), "{want}\n{code}");
+        }
+        assert!(code.find("/blog/b\", title") < code.find("/blog/a\", title"));
+        let bad = [("src/routes/a.md", "---\nlayout: Nope\n---\n")];
+        let err = app("markdown-bad", &bad).unwrap_err();
+        assert!(
+            err.starts_with("src/routes/a.md:1: `layout: Nope`"),
+            "{err}"
         );
     }
 

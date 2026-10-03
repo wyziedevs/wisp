@@ -28,7 +28,7 @@ pub fn routes(root: &Path) -> Result<Vec<RouteInfo>, String> {
     let mut out = Vec::new();
     for r in &tree.routes {
         let pattern = r.pattern();
-        let page = (r.page || r.page_rs).then(|| page_items(&r.dir));
+        let page = (r.md.is_none() && (r.page || r.page_rs)).then(|| page_items(&r.dir));
         let actions = page
             .iter()
             .flat_map(|i| i.fns.iter().filter(|f| f.action))

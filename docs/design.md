@@ -22,7 +22,8 @@ This document is the contract for v0. When code and doc disagree, fix one of the
    Routes compile to one `match`. Buffers are reused per connection. No boxing,
    no dynamic dispatch, no allocation on the hot path after warm-up.
 3. **Minimal dependencies.** The runtime depends on `tokio` and `httparse`. The
-   build crate and CLI depend on nothing but std. Every new dependency needs a
+   build crate and CLI depend on nothing but std (and `pulldown-cmark`, for
+   Markdown pages at build time). Every new dependency needs a
    written reason in this file.
 4. **Boring code.** Plain functions and plain data. Abstractions only where they
    remove more code than they add. Invariants are asserted, not assumed.
@@ -46,6 +47,7 @@ This document is the contract for v0. When code and doc disagree, fix one of the
 | tokio       | wisp           | Async runtime; the entire DB/client ecosystem assumes it.          |
 | httparse    | wisp           | Zero-dep, fuzzed HTTP/1.x header parser (the one hyper uses).      |
 | bytes, http, http-body, tower-service | wisp, feature `tower` only | The vocabulary types of the tower ecosystem, so Wisp can be a service. Off by default. |
+| pulldown-cmark | wisp-build | Markdown pages, rendered at build time. CommonMark has many edge cases; this parser is compliant, among the fastest, and only its HTML writer is on. The runtime gets nothing. |
 
 Deliberately *not* used by default: hyper, axum, tower, serde, a TOML parser, `notify`,
 a proc-macro stack (`syn`/`quote`). Things we write ourselves instead: the
@@ -118,6 +120,7 @@ Directory names are URL segments. Files that start with `+` are route files.
 | File           | Meaning                                                           |
 |----------------|-------------------------------------------------------------------|
 | `+page.wisp`   | The page at this path: markup, after an optional `---` block of Rust. |
+| `+page.md`     | A Markdown page instead (see below); so is each `x.md`, at `x`. |
 | `+page.rs`     | Optional, instead of the block: `load` and `#[action]` functions. |
 | `+layout.wisp` | Wraps this page and every page below it. `<slot />` or `{@render children()}`. |
 | `+layout.rs`   | Optional, instead of a block: `load` for the layout.              |
@@ -152,6 +155,47 @@ under `src/routes` without its `+`, which would otherwise be ignored; a
 top-level `_app` or `_wisp` directory, which Wisp's own files use; a
 `(group)` that is not exactly one name in parentheses; a route deeper than
 32 segments. Editors' swap and backup files are skipped.
+
+### Markdown pages
+
+`+page.md`, and each `x.md` in a route folder (a page at `x`), is turned
+into markup at build time by `pulldown-cmark` (CommonMark, tables,
+strikethrough, task lists, footnotes), then compiled like a `.wisp` page:
+the folder's layouts wrap it, and with no Rust in it, it is baked.
+
+```markdown
+---
+title: Hello
+layout: Post
+date: 2026-10-01
+---
+Text, and a component:
+
+<Card title="x">
+
+**Markdown** inside, between blank lines.
+
+</Card>
+```
+
+- Front matter is `name: value` lines (quotes optional). `title` (else the
+  first `# heading`) is the `<title>`. `layout` names a component in
+  `src/components` that shows the page as its children; it gets each field
+  its `{@props}` declare (`&str`/`String`, `bool`, a number, `Option` of
+  one). A field it requires that the page lacks, or a value of the wrong
+  type, is a build error. `noindex: true` adds `<meta name="robots"
+  content="noindex">`.
+- `{`/`}` in text and code are written as `&#123;`/`&#125;`, so no hole
+  comes from them; raw HTML (components) is the template's own.
+- Fenced code is highlighted at build time by a small highlighter in
+  `wisp-build` (rust, js/ts, html, css, json, bash): `<span
+  class="hl-k|s|c|n|t|a">` (keyword, string, comment, number, type or tag,
+  attribute) in `<pre><code class="language-x">`. The app's CSS colors
+  them; other languages keep the class, unhighlighted.
+- `wisp::pages("blog")` gives the `MdPage`s (`path`, `title`,
+  `get("date")`) of a folder's Markdown pages, newest `date` first, for an
+  index page: `{#each wisp::pages("blog") as p}<a href={p.path}>{p.title}</a>{/each}`.
+  It is a `static` slice the build wrote: no I/O, no allocation.
 
 ### Page logic
 

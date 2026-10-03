@@ -33,6 +33,7 @@ src/routes/…/+page.wisp     page: optional `---` Rust block, then markup
 src/routes/…/+layout.wisp   wraps pages below; must <slot /> (or {@render children()})
 src/routes/…/+error.wisp    error page; has `status`, `message`, `cx`
 src/routes/…/+server.rs     endpoints: fn get/post/put/patch/delete/list
+src/routes/…/+page.md       Markdown page (also `blog/x.md` = /blog/x), see below
 src/routes/…/+page.js       optional browser `load({data,url,params,fetch})` (or +page.ts)
 static/…                    served at /
 ```
@@ -190,6 +191,27 @@ typed and checked at build; one without a default is required. No `---`
 block in components. Markup as a prop: `row: Snippet<&Post, usize>`,
 shown with `{@render row(p, i)}`, given as `<Table {row} />` or a
 `{#snippet row(p, i)}…{/snippet}` among the tag's children.
+
+## Markdown pages
+
+```markdown
+---
+title: Hello            (else the first `# heading`)
+layout: Post            (a component; the page is its children)
+date: 2026-10-01        (any field: data, and a prop if Post declares it)
+---
+Text. <Card title="x">
+
+**Markdown** in a component, between blank lines.
+
+</Card>
+```
+Built at build time (pulldown-cmark), baked. `{`/`}` in text are text.
+Fenced rust/js/ts/html/css/json/bash is highlighted: `<span class="hl-k">`
+(k keyword, s string, c comment, n number, t type/tag, a attribute); color
+them in app.css. `noindex: true` adds a robots noindex meta. Index page:
+`{#each wisp::pages("blog") as p}<a href={p.path}>{p.title}</a> {p.get("date")}{/each}`
+(newest `date` first).
 
 ## Browser code (JavaScript, same file)
 
