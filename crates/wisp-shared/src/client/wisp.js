@@ -15,7 +15,8 @@
 // Events on the document: `wisp:navigate` before a navigation, `wisp:update`
 // after each morph (live.js restarts browser code on it). Dispatching
 // `wisp:refresh` morphs in the current URL's page again (`wisp dev` does it
-// after every rebuild), `wisp:goto` navigates. A form gets `wisp:submit`
+// after every rebuild), `wisp:goto` navigates, `wisp:push` adds a history
+// entry with state on the page shown (`wisp:pop` when one comes back). A form gets `wisp:submit`
 // (cancelable) before it is sent and `wisp:result` after. An element with
 // `data-wisp-keep` is left as it is, for a widget that owns its own DOM.
 // Nodes that browser code made (marked __w) are left too.
@@ -188,9 +189,16 @@
   });
   document.addEventListener('touchstart', (e) => preload(link(e)), { passive: true });
 
-  // Back/forward across entries we pushed: show that URL's page.
+  // Back/forward across entries we pushed: show that URL's page. An entry
+  // pushState made on the page shown (`p`) needs no request.
   addEventListener('popstate', () => {
-    if (key(location.href) !== shown) go(location.href, { pop: true });
+    if ((history.state?.p ?? key(location.href)) !== shown) go(location.href, { pop: true });
+    else send('wisp:pop');
+  });
+  // pushState(url, state) and replaceState in a script (live.js).
+  document.addEventListener('wisp:push', (e) => {
+    const { url, state: s, replace } = e.detail;
+    history[replace ? 'replaceState' : 'pushState']({ ...(replace && history.state), p: shown, s }, '', url);
   });
 
   document.addEventListener('wisp:goto', (e) => go(e.detail.url, e.detail).finally(e.detail.done));

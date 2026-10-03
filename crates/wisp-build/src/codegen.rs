@@ -801,7 +801,9 @@ declare function invalidate(): Promise<void>;
 declare function matches(text: unknown, q: unknown): boolean;
 declare function enhance(form: HTMLFormElement, submit?: (e: any) => any): void;
 declare function context<T = any>(): [() => T, (value: T) => void];
-declare const page: { value: { url: URL; status: number; form: any } };
+declare function pushState(url: string | URL, state?: any): void;
+declare function replaceState(url: string | URL, state?: any): void;
+declare const page: { value: { url: URL; status: number; form: any; state: any } };
 declare const navigating: { value: { from: URL; to: URL } | null };
 declare const env: { readonly [name: `PUBLIC_${string}`]: string };
 declare module 'wisp' {
@@ -820,7 +822,9 @@ declare module 'wisp' {
   export function goto(url: string | URL, opts?: { replace?: boolean }): Promise<void>;
   export function invalidate(): Promise<void>;
   export function matches(text: unknown, q: unknown): boolean;
-  export const page: Store<{ url: URL; status: number; form: any }>;
+  export function pushState(url: string | URL, state?: any): void;
+  export function replaceState(url: string | URL, state?: any): void;
+  export const page: Store<{ url: URL; status: number; form: any; state: any }>;
   export const navigating: Store<{ from: URL; to: URL } | null>;
 }
 // An npm package or a URL: what it exports is not known here.
@@ -5335,7 +5339,7 @@ struct JsFile {
 /// no import for them.
 const HELPERS: &str = "tick, untrack, setTimeout, setInterval, requestAnimationFrame, addEventListener, listen, onMount, onDestroy, effect, watch, \
                        derived, store, persisted, emit, setContext, getContext, goto, invalidate, matches, page, navigating, enhance, \
-                       context, portal, __wisp_s, __wisp_r, __wisp_d, __wisp_e, __wisp_ep, __wisp_snap, __wisp_props, __wisp_eq";
+                       pushState, replaceState, context, portal,__wisp_s, __wisp_r, __wisp_d, __wisp_e, __wisp_ep, __wisp_snap, __wisp_props, __wisp_eq";
 
 /// What `client` needs to know beyond the template.
 struct ClientCx<'a> {
