@@ -153,6 +153,7 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
 | `{#if c}…{:else if c}…{:else}…{/if}` | `if let Some(x) = y` works |
 | `{#each list as item, i}…{:else}…{/each}` | `{:else}` when empty |
 | `{#match e}{:case P}…{/match}` | match |
+| `{#await f}…{:then v}…{:catch e}…{/await}` | page only: sent pending, `v`/`e` streamed in later |
 | `{@const x = expr}` | let |
 | `{#snippet row(a, b)}…{/snippet}` `{@render row(x, 1)}` | local markup fn |
 | `{@pager posts}` | Newer/Older links of a `Table::page` |
@@ -172,6 +173,15 @@ items}}"}`), `{t("hi", name = user.name)}`, `t('n', c)` in scripts; keys
 checked across locales at build. Locale: `[[lang=locale]]`, cookie `lang`,
 `Accept-Language`, first; `cx.locale()`, `wisp::locales()`,
 `wisp::localize(cx.path(), "fr")`, `wisp::default_locale("fr")?`.
+
+`{#await stats(id)}<p>…</p>{:then s}<p>{s.posts}</p>{:catch e}{e}{/await}`:
+the page goes out at once; each answer follows in the same response as it
+comes, moved in place (no JS: at the end). `f` is a future (not awaited),
+`Send + 'static`: no `cx` or borrowed locals in it or its branches. `v` is a
+`Result`'s `Ok` or the value; `e` the error's text; no `{:catch}` or a
+panic → "Something went wrong". Not in layouts, components, `<head>`,
+attributes; no browser code in branches; not with `CACHE`. A page without
+one is answered as ever.
 
 Holes can't go in `on*` attrs, tag names, `javascript:` URLs, SVG animation
 values or `<meta http-equiv>`; `<script>`/`<style>` bodies have none.
@@ -292,7 +302,7 @@ Both sign in. `wisp::users(&db::USERS)` in `init` makes it `cx.user()`.
 `cx.sign_out()`, `wisp::sign_out_everywhere(id)?`, `wisp::sign_in_page("/enter")`.
 `wisp::login`/`signup` are these without a Cx. Hashes: PBKDF2-SHA256, ~0.2 s
 off the worker (`RateLimit` sign-ins); by hand `wisp::password::{hash, check}`.
-A `Password` is stored as its hash and is `null` in any JSON out (`hash: String` still works).
+A `Password` is `Plain` as typed (never sniffed, even if it looks like a hash) and `Hashed` once a table (add/update/set) or `signup` hashes it, once; stores hold and load only hashes. It is `null` in any JSON out (`hash: String` still works).
 `cx.need(&USERS, |u| u.admin)?` is the Row, 403 if not allowed. More:
 `docs/auth.md` (`token`/`untoken` links, `totp`, `oauth`, `mail`,
 `fetch`).

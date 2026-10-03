@@ -78,6 +78,7 @@ mod sign;
 mod store;
 mod swar;
 mod table;
+mod tail;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod test;
 mod timeout;
@@ -890,6 +891,8 @@ pub struct Out {
     pub lang: u8,
     /// The request, while logs, metrics or traces watch it.
     obs: Option<obs::Pending>,
+    /// A page's `{#await}` answers still to come (see `tail`).
+    tails: Vec<tail::Tail>,
 }
 
 impl Out {
@@ -1524,6 +1527,10 @@ impl<T, E: fmt::Display> OrStatus<T> for std::result::Result<T, E> {
 pub mod rt {
     pub use crate::envconf::{config, config_error, config_opt};
     pub use crate::i18n::{Arg, Case, Count, Msg, Part, Tr};
+    pub use crate::tail::{
+        AnyResult, Settled, Value, WispResult, begin as await_begin, defer, failed,
+        failed_html as await_failed, finish as await_finish,
+    };
     pub use crate::timeout::within;
 
     /// The request's locale, by index: for `Out::lang`.

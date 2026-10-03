@@ -1235,3 +1235,57 @@ fn after_and_report_hooks() {
     let after = s.request("GET", "/nope", "", b"");
     assert_eq!(header(&after, "x-reports"), Some("1 so far"), "{after}");
 }
+
+/// `{#await}`: the page goes out at once, each pending markup in place, and
+/// each answer follows in the same chunked response as it comes; an error is
+/// its `{:catch}`, a panic the default text. A page without one is sent
+/// whole, with its length, as ever.
+#[test]
+fn awaits_stream_after_the_page() {
+    let s = start();
+    let r = s.request("GET", "/await", "", b"");
+    assert_eq!(status(&r), 200, "{r}");
+    assert_eq!(header(&r, "transfer-encoding"), Some("chunked"), "{r}");
+    assert_eq!(header(&r, "content-length"), None);
+    assert!(header(&r, "content-security-policy").is_some_and(|p| p.contains("'sha256-")));
+    // The page is a chunk of its own, the awaits' pending markup in place.
+    let (page, tail) = r.split_once("</html>").unwrap_or_else(|| panic!("{r}"));
+    assert!(
+        tail.trim_start().starts_with(char::is_alphanumeric),
+        "a chunk's size: {tail}"
+    );
+    assert!(
+        page.contains("<h1>Awaits</h1>")
+            && page
+                .contains("<wisp-await id=\"wisp-await-0\"><p id=\"a\">Loading a</p></wisp-await>")
+            && page.contains(
+                "<div id=\"c\"><wisp-await id=\"wisp-await-2\"><p>Loading c</p></wisp-await></div>"
+            )
+            && page.contains("<p id=\"end\">End</p>")
+            && !page.contains("data-wisp-await"),
+        "{page}"
+    );
+    let at = |k: u32| {
+        tail.find(&format!("<div data-wisp-await=\"{k}\">"))
+            .expect("each answer")
+    };
+    assert!(
+        tail.contains("<div data-wisp-await=\"0\"><p id=\"a\">Got 7</p></div><script>")
+            && tail.contains("<p id=\"b\">Failed: no luck</p>")
+            && tail.contains(
+                "<div data-wisp-await=\"2\"><p role=\"alert\">Something went wrong</p></div>"
+            )
+            && tail.contains("<div data-wisp-await=\"3\"><p id=\"d\">Quick</p></div>")
+            && tail.ends_with("0\r\n\r\n"),
+        "{tail}"
+    );
+    // As they come: the slow one last.
+    assert!(at(3) < at(0) && at(1) < at(0) && at(2) < at(0), "{tail}");
+    // The worker that ran the panic answers on.
+    let plain = s.request("GET", "/await/plain", "", b"");
+    assert!(plain.contains("<p id=\"w\">later</p></div>"), "{plain}");
+    let whole = s.request("GET", "/signup", "", b"");
+    assert!(
+        header(&whole, "content-length").is_some() && header(&whole, "transfer-encoding").is_none()
+    );
+}

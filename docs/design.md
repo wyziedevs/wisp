@@ -435,6 +435,7 @@ async fn load(slug: String) -> Result<Data> {
 | `{#if c}…{:else if c}…{:else}…{/if}` | `if`/`else`; `if let` works as in Rust        |
 | `{#each e as pat[, i]}…{:else}…{/each}` | `for`; a plain place like `data.posts` is borrowed |
 | `{#match e}{:case pat}…{/match}` | `match`; a plain place is borrowed               |
+| `{#await f}…{:then v}…{:catch e}…{/await}` | a page streams `v` or `e` in later ([Streaming a page](#streaming-a-page-await)) |
 | `{@render children()}` or `<slot />` | layout or component slot                   |
 | `{#snippet row(item, i)}…{/snippet}` | markup to render later, in this file or a component |
 | `{@render row(x, 0)}`          | renders a snippet                                  |
@@ -1026,6 +1027,50 @@ fn get() -> Response {
     })
 }
 ```
+
+### Streaming a page: `{#await}`
+
+A slow part of a page need not hold the rest back:
+
+```html
+<h1>{user.name}</h1>
+{#await stats(user.id)}
+  <p>Counting…</p>
+{:then s}
+  <p>{s.posts} posts</p>
+{:catch e}
+  <p>No stats: {e}</p>
+{/await}
+```
+
+The page goes out at once, each `{#await}`'s pending markup in place inside
+a `<wisp-await>`. The response stays open (chunked), and as each future is
+done its `{:then}` or `{:catch}` follows, after `</html>`, as
+`<div data-wisp-await="K">…</div>` and a one-line script that moves it into
+place. Answers go out in the order they come, so a quick one never waits
+for a slow one. Without JS the answers stay at the end of the page, where
+the browser shows them. wisp.js puts them in place itself when it navigates
+to the page, and the inline script has its hash in the CSP like any other.
+
+- The expression is a future, not awaited: `stats(id)`, `async { … }`. It
+  runs after the page is sent, so it is `Send + 'static`: it owns what it
+  reads (no `cx`, no borrowed locals), as does each branch, which also sees
+  statics and the value. `{:then v}` gets a `Result`'s `Ok` value or any
+  other value as it is; `{:catch e}` gets an `Err` as text (a
+  `wisp::Error`'s message). `{:then}` and `{:catch}` may leave out the name,
+  or the branch.
+- A future that fails with no `{:catch}`, or that panics (whatever its
+  branches), shows `Something went wrong`. Neither touches the worker or
+  the rest of the response. A client that leaves stops the futures.
+- Only a page's own markup awaits: not a layout, component, error page,
+  snippet, `<head>`, attribute, browser block or another `{#await}`. The
+  branches have no browser code (`{:x}`, `on:`), since they arrive after the
+  page's. A page with `CACHE`, or drawn by the browser (`SSR = false`), is
+  a build error. `PRERENDER`, `--static` and `--spa` wait for every answer
+  and write it into the file.
+- The choice is made at build, per page. A page without `{#await}` is built
+  and answered exactly as before: one buffered write with its
+  `content-length`, no extra branch on the way.
 
 ### Client code
 

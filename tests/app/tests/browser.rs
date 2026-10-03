@@ -98,3 +98,26 @@ fn islands_inside_server_components_inside_islands() {
     b.click("#lazy .tally");
     assert_eq!(b.text("#lazy .tally"), "1");
 }
+
+/// `{#await}`: each answer takes its pending markup's place, on a load and
+/// on a navigation wisp.js makes.
+#[test]
+fn awaits_answer_in_place() {
+    let mut b = wisp::browser!(Site);
+    let placed =
+        "[...document.querySelectorAll('h1 ~ p, #c > p')].map((p) => p.id || p.textContent).join()";
+    let want = "a,b,Something went wrong,d,end";
+    b.goto("/await");
+    assert_eq!(b.text("#a"), "Got 7");
+    assert_eq!(b.eval(placed).as_str(), Some(want));
+    assert_eq!(
+        b.count("wisp-await, [data-wisp-await], body > script:not([src])"),
+        0
+    );
+    b.goto("/await/plain");
+    assert_eq!(b.text("#w"), "later");
+    b.click("#go");
+    assert_eq!(b.text("#a"), "Got 7");
+    assert_eq!(b.eval(placed).as_str(), Some(want));
+    assert_eq!(b.count("wisp-await, [data-wisp-await]"), 0);
+}

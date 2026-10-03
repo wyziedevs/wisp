@@ -89,6 +89,16 @@ pub const HEADER_LOCATION: &str = "x-wisp-location";
 /// Browser code failed to start: wisp.js asks for the route's error page.
 pub const HEADER_ERROR: &str = "x-wisp-error";
 
+/// `{#await}` in a page: its pending markup goes out inside
+/// `<wisp-await id="wisp-await-K">`; each answer comes after the page, as
+/// `<div data-wisp-await="K">…</div>` and this script, which moves it in
+/// place (one text, so one CSP hash). Without JS the answers stay at the
+/// end; wisp.js moves them itself in a page it navigates to.
+pub const AWAIT_OPEN: &str = "<wisp-await id=\"wisp-await-";
+pub const AWAIT_CLOSE: &str = "</wisp-await>";
+pub const AWAIT_ANSWER: &str = "<div data-wisp-await=\"";
+pub const AWAIT_JS: &str = "(s=>{let d=s.previousElementSibling,a=document.getElementById('wisp-await-'+d.dataset.wispAwait);a&&a.replaceWith(...d.childNodes);d.remove();s.remove()})(document.currentScript)";
+
 /// `/_app/<file>`, where Wisp serves its own files, as a literal: for a
 /// `concat!` that builds a tag once, at compile time.
 #[macro_export]
@@ -164,6 +174,8 @@ mod tests {
             format!("how[0] == '{ISLAND_MEDIA}'"),
             format!("startsWith({})", q(APP_PREFIX)),
             "for (const [I, , P, , how] of".into(),
+            "querySelectorAll('[data-wisp-await]')".into(),
+            "getElementById('wisp-await-' + d.dataset.wispAwait)".into(),
         ];
         for want in &in_live {
             assert!(live.contains(want.as_str()), "live.js reads `{want}`");
@@ -184,6 +196,8 @@ mod tests {
         // The instance list's pieces.
         assert!(LIVE_OPEN.contains(&format!("id=\"{LIVE_ID}\"")));
         assert_eq!((&COPY_START[..4], &COPY_END[5..]), ("<!--", "-->"));
+        assert!(AWAIT_OPEN.ends_with("id=\"wisp-await-") && AWAIT_JS.contains("'wisp-await-'"));
+        assert!(AWAIT_ANSWER.contains("data-wisp-await") && AWAIT_JS.contains("dataset.wispAwait"));
     }
 
     /// `document` and `outside`, which both listen on the document.

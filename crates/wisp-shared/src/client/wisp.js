@@ -32,6 +32,12 @@
   // `back`: the history entry whose snapshot goes back in (a pop).
   function swap(html, status = 200, back) {
     const doc = new DOMParser().parseFromString(html, 'text/html');
+    // `{#await}` answers, streamed after the page: each in its place.
+    for (const d of doc.querySelectorAll('[data-wisp-await]')) {
+      doc.getElementById('wisp-await-' + d.dataset.wispAwait)?.replaceWith(...d.childNodes);
+      d.nextElementSibling?.remove();
+      d.remove();
+    }
     if (doc.title) document.title = doc.title;
     const next = [...doc.head.children];
     served = served.filter((n) => {

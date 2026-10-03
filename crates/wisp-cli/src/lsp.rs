@@ -535,7 +535,7 @@ const NAMES: [(&str, &[&str]); 5] = [
 ];
 
 /// The template blocks: what to write, and what it does.
-const BLOCKS: [(&str, &str, &str); 19] = [
+const BLOCKS: [(&str, &str, &str); 20] = [
     (
         "{#if",
         "{#if ${1:cond}}\n\t$0\n{/if}",
@@ -550,6 +550,11 @@ const BLOCKS: [(&str, &str, &str); 19] = [
         "{#match",
         "{#match ${1:value}}\n{:case ${2:pattern}}\n\t$0\n{/match}",
         "`{#match e}{:case P}…{/match}`: a Rust match.",
+    ),
+    (
+        "{#await",
+        "{#await ${1:future}}\n\t$0\n{:then ${2:value}}\n{:catch e}\n{/await}",
+        "`{#await f}…{:then v}…{:catch e}…{/await}`: a page sends the rest first, then `v` or `e`.",
     ),
     (
         "{#snippet",
