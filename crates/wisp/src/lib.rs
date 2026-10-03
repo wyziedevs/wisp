@@ -104,7 +104,7 @@ pub use cx::{CookieOptions, Cx, Method, SameSite};
 pub use edge::fetch;
 pub use export::{Entry, ExportRoute, export, prerender};
 #[cfg(not(target_arch = "wasm32"))]
-pub use fetch::fetch;
+pub use fetch::{fetch, on_fetch};
 pub use form::{File, Form};
 pub use http::{Body, Reply, Request, TrailingSlash, handle, trailing_slash};
 pub use i18n::{default_locale, locales, localize};
@@ -866,6 +866,13 @@ pub trait App: 'static {
     /// `report` from `src/hooks.rs`: the error of a 5xx, whole.
     fn report(cx: &mut Cx, err: &Error) {
         let _ = (cx, err);
+    }
+    /// `src/hooks.rs` has `reroute`: [`App::reroute`] sees every path first.
+    const REROUTE: bool = false;
+    /// `reroute` from `src/hooks.rs`: the path to look a route up by, a part
+    /// of `path` (or one with no parameters). Never called without it.
+    fn reroute(path: &str) -> &str {
+        path
     }
     /// What [`App::handle`] does, for the arms the build made plain code
     /// ([`rt::RouteFacts::sync`]): `Ok(false)` for any other, having done

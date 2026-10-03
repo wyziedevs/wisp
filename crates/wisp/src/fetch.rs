@@ -30,9 +30,21 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 /// The most of a reply read, head and body.
 const MAX: usize = 16 << 20;
 
+static HOOK: std::sync::OnceLock<fn(&mut Request)> = std::sync::OnceLock::new();
+
+/// `wisp::on_fetch(|req| req.header("x-key", KEY))` in `init`: every
+/// [`fetch`] passes through it first, to add a header, change a host or
+/// refuse. Once; without it a call looks at nothing.
+pub fn on_fetch(hook: fn(&mut Request)) {
+    let _ = HOOK.set(hook);
+}
+
 /// Makes an HTTP request: to an API, a webhook, an OAuth provider.
 /// `req.target` is the whole URL.
-pub async fn fetch(req: Request) -> Result<Reply> {
+pub async fn fetch(mut req: Request) -> Result<Reply> {
+    if let Some(hook) = HOOK.get() {
+        hook(&mut req);
+    }
     let url = Url::parse(&req.target)
         .ok_or_else(|| Error::new(500, "fetch needs an http:// or https:// URL"))?;
     let fail = |why: &str| Error::new(502, format!("fetch to {} failed: {why}", url.host));

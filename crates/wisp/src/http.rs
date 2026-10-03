@@ -2854,6 +2854,10 @@ fn route<A: App>(cx: &mut Cx) -> Option<usize> {
     }
     let mut params = [Span::default(); crate::cx::MAX_PARAMS];
     for k in 0..names.len() {
+        // `reroute` may hand back a path of its own: no parameter to give.
+        if A::REROUTE && !Span::within(&cx.wire.buf, raw[k].as_bytes()) {
+            return None;
+        }
         params[k] = Span::of(&cx.wire.buf, raw[k].as_bytes());
     }
     cx.set_params(names, &params[..names.len()]);
@@ -2865,6 +2869,8 @@ fn route<A: App>(cx: &mut Cx) -> Option<usize> {
 /// for only when the path itself matches nothing.
 #[inline(always)]
 fn find<A: App>(path: &str) -> Option<(usize, [&str; crate::cx::MAX_PARAMS])> {
+    // A const: without `reroute` in `hooks.rs`, the path as it is.
+    let path = if A::REROUTE { A::reroute(path) } else { path };
     match A::route(path) {
         Some(found) => Some(found),
         None => find_slash::<A>(path),

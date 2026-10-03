@@ -38,3 +38,8 @@ fn after(_cx: &mut Cx, reply: &mut Reply) {
     let n = REPORTS.load(std::sync::atomic::Ordering::Relaxed);
     reply.headers.push(("x-reports".into(), format!("{n} so far").into()));
 }
+
+/// `/rr/x` is `/x`: a prefix the router never sees.
+fn reroute(path: &str) -> &str {
+    path.strip_prefix("/rr").filter(|p| p.starts_with('/')).unwrap_or(path)
+}

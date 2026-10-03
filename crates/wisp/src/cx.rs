@@ -103,6 +103,12 @@ impl Span {
         }
     }
 
+    /// `part` is a subslice of `buf` (or empty), which [`Span::of`] needs.
+    pub fn within(buf: &[u8], part: &[u8]) -> bool {
+        let (b, p) = (buf.as_ptr() as usize, part.as_ptr() as usize);
+        part.is_empty() || (p >= b && p + part.len() <= b + buf.len())
+    }
+
     pub fn range(self) -> std::ops::Range<usize> {
         self.start as usize..(self.start + self.len) as usize
     }

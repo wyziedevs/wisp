@@ -3145,6 +3145,7 @@ impl Gen {
         // every route file and as `crate::notes` (see `wisp::app!`).
         self.line(0, "#[doc(hidden)]");
         self.line(0, "pub mod __mods {");
+        self.line(1, "#[allow(unused_imports)]");
         self.line(1, "pub use super::routes;");
         for m in &p.mods {
             self.user_mod(m, &p.rel(&m.file), "super::*")?;
@@ -4007,9 +4008,16 @@ impl Gen {
         }
         // `after` and `report` in `src/hooks.rs`: the server calls them only
         // when these say so (consts, so an app without them has no check).
-        for name in ["after", "report"] {
+        for name in ["after", "report", "reroute"] {
             if p.has_hook(name) {
                 self.line(1, &format!("const {}: bool = true;", name.to_uppercase()));
+                if name == "reroute" {
+                    self.line(
+                        1,
+                        "fn reroute(path: &str) -> &str { hooks::__call::reroute(path) }",
+                    );
+                    continue;
+                }
                 let (sig, args) = match name {
                     "after" => ("reply: &mut ::wisp::Reply", "cx, reply"),
                     _ => ("err: &::wisp::Error", "cx, err"),
@@ -4908,6 +4916,12 @@ fn hooks(root: &Path) -> Result<(Option<UserMod>, bool), String> {
                 shims.push(shim(f, Shim::Answer).map_err(|e| format!("src/hooks.rs:{e}"))?);
             }
             // Plain functions, which the server calls itself when they are there.
+            "reroute" => {
+                if f.params.len() != 1 || f.is_async || !f.params[0].1.contains("str") {
+                    return Err(at("`reroute` is `fn reroute(path: &str) -> &str`: sync, it runs on every request's path before the route is looked for, and returns a part of `path` (or a path with no parameters)".into()));
+                }
+                shims.push("pub fn reroute(path: &str) -> &str { super::reroute(path) }".into());
+            }
             "after" | "report" => {
                 let after = f.name == "after";
                 let ty = if after { "Reply" } else { "Error" };
@@ -4932,7 +4946,7 @@ fn hooks(root: &Path) -> Result<(Option<UserMod>, bool), String> {
             }
             name if f.public => {
                 return Err(at(format!(
-                    "`{name}` is not a hook: src/hooks.rs has `init`, `before`, `after` and `report`. Make it private if it is a helper."
+                    "`{name}` is not a hook: src/hooks.rs has `init`, `before`, `after`, `report` and `reroute`. Make it private if it is a helper."
                 )));
             }
             _ => {}
@@ -9010,6 +9024,27 @@ mod tests {
         assert_ne!(a, b);
         assert_eq!(a, id("id-c", "x", true).unwrap());
         assert_eq!(id("id-dev", "x", false), None);
+    }
+
+    #[test]
+    fn reroute_costs_nothing_unless_defined() {
+        let page = ("src/routes/+page.wisp", "x");
+        let hooks = |src: &'static str| ("src/hooks.rs", src);
+        let none = app("no-reroute", &[page, hooks("fn init() {}")]).unwrap();
+        assert!(!none.contains("REROUTE"), "{none}");
+        let code = app(
+            "reroute",
+            &[page, hooks("fn reroute(path: &str) -> &str { path }")],
+        )
+        .unwrap();
+        for want in [
+            "const REROUTE: bool = true;",
+            "fn reroute(path: &str) -> &str { hooks::__call::reroute(path) }",
+        ] {
+            assert!(code.contains(want), "{want}\n{code}");
+        }
+        let err = app("reroute-bad", &[page, hooks("fn reroute(cx: &mut Cx) {}")]).err();
+        assert!(err.unwrap().contains("`reroute` is `fn reroute(path: &str) -> &str`"));
     }
 
     #[test]
