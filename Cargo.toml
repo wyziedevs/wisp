@@ -9,6 +9,7 @@ members = [
     "examples/demo",
     "examples/api",
     "tests/app",
+    "tests/agents",
     "bench/load",
     "bench/run",
     "bench/app",
