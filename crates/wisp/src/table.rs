@@ -184,7 +184,11 @@ impl<T: Send + Sync> crate::admin::Admin for Table<T> {
         self.saved.as_ref().map_or("", |s| s.name)
     }
 
-    fn rows(&self) -> Vec<(u64, String)> {
+    fn len(&self) -> usize {
+        Table::len(self)
+    }
+
+    fn rows(&self, after: u64, limit: usize) -> Vec<(u64, String)> {
         let Some(saved) = &self.saved else {
             return Vec::new();
         };
@@ -194,7 +198,16 @@ impl<T: Send + Sync> crate::admin::Admin for Table<T> {
             (saved.write)(v, &mut out);
             out
         };
-        rows.map.iter().map(|(&id, v)| (id, json(v))).collect()
+        let from = after.saturating_add(1);
+        let range = rows.map.range(from..).take(limit);
+        range.map(|(&id, v)| (id, json(v))).collect()
+    }
+
+    fn row(&self, id: u64) -> Option<String> {
+        let saved = self.saved.as_ref()?;
+        let mut out = String::new();
+        (saved.write)(self.read().map.get(&id)?, &mut out);
+        Some(out)
     }
 
     fn put(&self, id: u64, json: &str) -> Result<bool> {
@@ -1365,7 +1378,7 @@ mod tests {
         // The admin page's view of it: stored JSON in, rows out.
         use crate::admin::Admin;
         assert_eq!(
-            Admin::rows(&t)[0],
+            Admin::rows(&t, 0, 10)[0],
             (2, r#"{"email":"b@x","age":1}"#.to_string())
         );
         assert!(Admin::put(&t, 2, r#"{"email":"z@x","age":3}"#).unwrap());

@@ -16,8 +16,12 @@ pub const PATH: &str = "/_wisp/admin";
 /// A saved table, whatever its row type, as the admin page reads it.
 pub(crate) trait Admin: Sync {
     fn name(&self) -> &'static str;
-    /// Each row as its id and JSON.
-    fn rows(&self) -> Vec<(u64, String)>;
+    /// How many rows there are.
+    fn len(&self) -> usize;
+    /// Up to `limit` rows with ids past `after`, each as its id and JSON.
+    fn rows(&self, after: u64, limit: usize) -> Vec<(u64, String)>;
+    /// Row `id`'s JSON.
+    fn row(&self, id: u64) -> Option<String>;
     /// Replaces row `id` with the row `json` is; `false` when there is none.
     fn put(&self, id: u64, json: &str) -> Result<bool>;
     /// Removes row `id`.
@@ -88,7 +92,7 @@ fn answer(cx: &Cx, rest: &str, key: &str) -> Response {
     let table = |name: &str| tables.iter().find(|t| t.name() == name).copied();
     match (parts.as_slice(), post) {
         ([], false) => index(&tables),
-        ([t], false) => table(t).map_or_else(not_found, rows),
+        ([t], false) => table(t).map_or_else(not_found, |t| rows(cx, t)),
         ([t, id], false) => match (table(t), id.parse()) {
             (Some(t), Ok(id)) => edit(t, id, None),
             _ => not_found(),
@@ -161,7 +165,7 @@ fn index(tables: &[&'static dyn Admin]) -> Response {
         let _ = write!(
             body,
             "<tr><td><a href=\"{PATH}/{name}\">{name}</a><td>{}",
-            t.rows().len()
+            t.len()
         );
     }
     body.push_str("</table>");
@@ -171,10 +175,17 @@ fn index(tables: &[&'static dyn Admin]) -> Response {
     page(200, "Tables", &body)
 }
 
-fn rows(t: &dyn Admin) -> Response {
+/// Rows a page lists.
+const PAGE: usize = 100;
+
+fn rows(cx: &Cx, t: &dyn Admin) -> Response {
     let name = escaped(t.name());
     let mut body = format!("<p><a href=\"{PATH}\">Tables</a></p><table><tr><th>Id<th>Row<th>");
-    for (id, json) in t.rows() {
+    let after = cx.query("after").and_then(|a| a.parse().ok()).unwrap_or(0);
+    let mut list = t.rows(after, PAGE + 1);
+    let more = list.len() > PAGE;
+    list.truncate(PAGE);
+    for (id, json) in &list {
         let short: String = json.chars().take(120).collect();
         let more = if short.len() < json.len() { "…" } else { "" };
         let _ = write!(
@@ -186,12 +197,18 @@ fn rows(t: &dyn Admin) -> Response {
         );
     }
     body.push_str("</table>");
+    if let (true, Some((last, _))) = (more, list.last()) {
+        let _ = write!(
+            body,
+            "<p><a href=\"{PATH}/{name}?after={last}\">More</a></p>"
+        );
+    }
     page(200, &name, &body)
 }
 
 fn edit(t: &dyn Admin, id: u64, problem: Option<(&str, &str)>) -> Response {
     let name = escaped(t.name());
-    let Some((_, json)) = t.rows().into_iter().find(|(i, _)| *i == id) else {
+    let Some(json) = t.row(id) else {
         return not_found();
     };
     let (shown, error) = match problem {
@@ -233,8 +250,19 @@ mod tests {
         fn name(&self) -> &'static str {
             "fake"
         }
-        fn rows(&self) -> Vec<(u64, String)> {
-            self.0.lock().unwrap().clone()
+        fn len(&self) -> usize {
+            self.0.lock().unwrap().len()
+        }
+        fn rows(&self, after: u64, limit: usize) -> Vec<(u64, String)> {
+            let all = self.0.lock().unwrap();
+            all.iter()
+                .filter(|r| r.0 > after)
+                .take(limit)
+                .cloned()
+                .collect()
+        }
+        fn row(&self, id: u64) -> Option<String> {
+            (self.0.lock().unwrap().iter().find(|r| r.0 == id)).map(|r| r.1.clone())
         }
         fn put(&self, id: u64, json: &str) -> Result<bool> {
             if !json.starts_with('{') {
@@ -270,6 +298,23 @@ mod tests {
             path.strip_prefix(PATH).unwrap().trim_matches('/'),
             "sesame",
         )
+    }
+
+    #[test]
+    fn a_long_table_is_listed_a_page_at_a_time() {
+        let many = Fake(std::sync::Mutex::new(
+            (1..=150).map(|i| (i, format!("{{\"n\":{i}}}"))).collect(),
+        ));
+        let at = |target: &str| {
+            let raw = format!("GET {target} HTTP/1.1\r\nhost: h.test\r\n\r\n");
+            body(&rows(&Cx::for_test(&raw, &[]), &many))
+        };
+        let first = at("/_wisp/admin/fake");
+        assert!(first.contains("Delete row 100?") && !first.contains("Delete row 101?"));
+        assert!(first.contains("fake?after=100"));
+        let rest = at("/_wisp/admin/fake?after=100");
+        assert!(rest.contains("Delete row 150?") && !rest.contains("Delete row 100?"));
+        assert!(!rest.contains("More"));
     }
 
     #[test]
@@ -340,19 +385,19 @@ mod tests {
             "json=%7B%22t%22%3A%22new%22%7D",
         );
         assert_eq!(r.status, 303);
-        assert_eq!(fake.rows()[1].1, r#"{"t":"new"}"#);
+        assert_eq!(fake.rows(0, 10)[1].1, r#"{"t":"new"}"#);
         let r = post("/_wisp/admin/fake/2", Some("sesame"), same, "json=nope");
         assert!(
             r.status == 422 && body(&r).contains("is not an object"),
             "{}",
             body(&r)
         );
-        assert_eq!(fake.rows()[1].1, r#"{"t":"new"}"#, "left as it was");
+        assert_eq!(fake.rows(0, 10)[1].1, r#"{"t":"new"}"#, "left as it was");
         assert_eq!(
             post("/_wisp/admin/fake/1/delete", Some("sesame"), own, "").status,
             303
         );
-        assert_eq!(fake.rows().len(), 1);
+        assert_eq!(fake.rows(0, 10).len(), 1);
         assert_eq!(
             request("PUT", "/_wisp/admin/fake/1", Some("sesame"), "", "").status,
             405
