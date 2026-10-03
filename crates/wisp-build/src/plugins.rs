@@ -19,6 +19,15 @@ const MARK: &str = "*\n# made by wisp from a plugin crate\n";
 pub(crate) fn sync(root: &Path) -> Result<Vec<PathBuf>, String> {
     let toml = fs::read_to_string(root.join("Cargo.toml")).unwrap_or_default();
     let names = used(&toml);
+    // A crate's name, so never a path: `..` or `/` would reach outside.
+    if let Some(n) = names.iter().find(|n| {
+        n.is_empty()
+            || !n
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    }) {
+        return Err(format!("plugin `{n}`: not a crate name"));
+    }
     let ids: Vec<String> = names.iter().map(|n| n.replace('-', "_")).collect();
     for sub in ["routes", "components"] {
         for e in fs::read_dir(root.join("src").join(sub))
@@ -96,10 +105,9 @@ fn find(root: &Path, toml: &str, name: &str) -> Result<PathBuf, String> {
         let inline = sect.ends_with("dependencies]")
             && (l.strip_prefix(name)).is_some_and(|r| r.trim_start().starts_with(['=', '.']));
         if (table || inline)
-            && l.contains('"')
-            && let Some(k) = l.find("path")
+            && let Some(p) = path_of(l)
         {
-            return Ok(root.join(l[k..].split('"').nth(1).unwrap_or("")));
+            return Ok(root.join(p));
         }
     }
     let lock = fs::read_to_string(root.join("Cargo.lock")).unwrap_or_default();
@@ -135,6 +143,31 @@ fn find(root: &Path, toml: &str, name: &str) -> Result<PathBuf, String> {
     ))
 }
 
+/// The `path = "..."` (or `'...'`) of a TOML line.
+fn path_of(line: &str) -> Option<String> {
+    let mut rest = line;
+    while let Some(k) = rest.find("path") {
+        let word = rest[..k]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '-');
+        rest = &rest[k + 4..];
+        let Some(v) = rest.trim_start().strip_prefix('=').filter(|_| !word) else {
+            continue;
+        };
+        let v = v.trim_start();
+        let q = v.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+        let v = &v[1..];
+        let v = &v[..v.find(q)?];
+        return Some(if q == '"' {
+            v.replace("\\\\", "\\")
+        } else {
+            v.into()
+        });
+    }
+    None
+}
+
 /// Makes `to` hold exactly the files of `from` (all of them, recursively),
 /// writing only what differs. With `own`, a `.wisp` file whose name is
 /// already a component of the app outside `own` is left out: the app wins.
@@ -158,11 +191,19 @@ fn copy(from: &Path, to: &Path, own: Option<&Path>) -> Result<(), String> {
     }
     let mut have = Vec::new();
     files(to, to, &mut have, 0);
+    // A folder of the app's own is never replaced.
+    let ours = fs::read_to_string(to.join(".gitignore")).is_ok_and(|s| s == MARK);
+    if !have.is_empty() && !ours {
+        return Err(format!(
+            "{} is the app's own, and a plugin's files go there: rename it",
+            to.display()
+        ));
+    }
     let same = want.len() == have.len()
         && want
             .iter()
             .all(|(r, p)| fs::read(p).is_ok_and(|a| fs::read(to.join(r)).is_ok_and(|b| a == b)))
-        && (want.is_empty() || to.join(".gitignore").is_file());
+        && (want.is_empty() || ours);
     if same {
         return Ok(());
     }
@@ -205,6 +246,22 @@ mod tests {
             Path::new("/r/../kit")
         );
         assert!(find(Path::new("/r"), t, "y").is_err());
+        // Another key holding "path", single quotes, a Windows path.
+        assert_eq!(
+            path_of(r#"k = { git = "https://x/path", path = 'a/b' }"#),
+            Some("a/b".into())
+        );
+        assert_eq!(path_of(r#"k = { xpath = "no" }"#), None);
+        assert_eq!(path_of(r#"k.path = "..\kit""#), Some(r"..\kit".into()));
+        let d = std::env::temp_dir().join(format!("wisp-plugin-name-{}", std::process::id()));
+        fs::create_dir_all(&d).unwrap();
+        fs::write(
+            d.join("Cargo.toml"),
+            "[package.metadata.wisp]\nuse = [\"../x\"]\n",
+        )
+        .unwrap();
+        assert!(sync(&d).unwrap_err().contains("not a crate name"));
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -235,6 +292,12 @@ mod tests {
         let t = fs::metadata(&page).unwrap().modified().unwrap();
         sync(&app).unwrap();
         assert_eq!(fs::metadata(&page).unwrap().modified().unwrap(), t);
+        // A folder of the app's own where a plugin's go: refused, untouched.
+        let own = app.join("src/components/kit");
+        fs::remove_file(own.join(".gitignore")).unwrap();
+        assert!(sync(&app).unwrap_err().contains("the app's own"));
+        assert!(own.join("Badge.wisp").is_file());
+        fs::write(own.join(".gitignore"), MARK).unwrap();
         // Dropped from `use`: gone, and the app's own stays.
         fs::write(app.join("Cargo.toml"), "[package]\n").unwrap();
         sync(&app).unwrap();
