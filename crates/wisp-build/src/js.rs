@@ -1218,7 +1218,8 @@ fn refs(
 ///   `$state.raw(x)` is not deep. `$state.snapshot(x)` is a plain copy.
 /// - `$derived(expr)` and `$derived.by(fn)`: a value worked out from others.
 /// - `$effect(fn)` and `$effect.pre(fn)`: code that runs again when what
-///   it read changes. `$inspect(a, b)` logs them as they change, in
+///   it read changes. `$effect.root(fn)` makes effects that end with the
+///   function it returns; `$effect.tracking()` is whether a read is tracked. `$inspect(a, b)` logs them as they change, in
 ///   development; in release it is gone.
 /// - `$name`, for a store `name`, is `name.value`.
 ///
@@ -1415,6 +1416,8 @@ pub fn script(
         match (word, member) {
             ("$effect", None) if called => edits.push(with("__wisp_e")),
             ("$effect", Some("pre")) if called => edits.push(with("__wisp_ep")),
+            ("$effect", Some("root")) if called => edits.push(with("__wisp_er")),
+            ("$effect", Some("tracking")) if called => edits.push(with("__wisp_et")),
             ("$state", Some("snapshot")) if called => edits.push(with("__wisp_snap")),
             ("$inspect", None) if called => {
                 let c = close(&t, callee_end);
@@ -1460,7 +1463,7 @@ pub fn script(
             ("$effect", _) => {
                 return Err((
                     tok.start,
-                    "`$effect(fn)` and `$effect.pre(fn)` run fn again when what it reads changes"
+                    "`$effect(fn)`, `$effect.pre(fn)` and `$effect.root(fn)` run fn again when what it reads changes; `$effect.tracking()` says whether a read is tracked"
                         .into(),
                 ));
             }
@@ -3436,7 +3439,7 @@ mod tests {
             ("let { a } = $state(x)", "$state"),
             ("let d = $derived(1)\nd = 2", "d"),
             ("let d = $derived(1)\nfunction f() { d++ }", "d"),
-            ("$effect.root(() => {})", "$effect"),
+            ("$effect.x(() => {})", "$effect"),
             ("$inspect(x).with(f)", "$inspect"),
             ("$host()", "$host"),
             ("let { a } = $props()", "$props"),

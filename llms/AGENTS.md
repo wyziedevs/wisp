@@ -267,8 +267,8 @@ so a live search needs no script: `<input bind:value="q">` `{:#each items.filter
 q)) as i}…{:/each}`. Directives `on:click` (`.prevent .once .debounce.300ms`…),
 `bind:value|checked|this`, `:attr="js"`, `:text`, `class:x="js"`,
 `transition:fade`, `use:action`; client blocks `{:#if}` `{:#each}`; runes
-`$state $derived $effect $props`; helpers `onMount listen goto invalidate
-matches`. Values sent to JS must be `#[model]` or `#[derive(Json)]`.
+`$state $derived $effect(.pre .root .tracking) $props`; helpers `onMount listen goto
+invalidate matches tick flushSync onError tweened spring crossfade`. Values sent to JS must be `#[model]` or `#[derive(Json)]`.
 `pushState('?tab=2', {tab: 2})`: shallow routing, `page.value.state`; changed
 fields are restored with history. `import('$lib/x.js')` loads on demand.
 `<script lang="ts">`, `src/lib/*.ts`, `+page.ts` (types stripped; `wisp check
