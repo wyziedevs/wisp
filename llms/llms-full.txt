@@ -471,7 +471,8 @@ no-wait fast path off every route.
 ## Commands
 
 `wisp new app [--template demo|minimal|api]` · `wisp dev` (hot reload keeps
-`$state`; `Alt+Shift+W` devtools; `/_wisp/components` workshop of
+`$state`; error dialog opens `file:line` in the editor; `Alt+Shift+W` devtools
+with routes table; `/_wisp/components` workshop of
 `*.stories.wisp`) · `wisp test [--browser]` · `wisp check [--types]` · `wisp
 fmt [--check]` · `wisp build` (`--static`, `--spa`, `--docker`, `--target
 cloudflare|pages|deno|vercel|netlify|node|bun|lambda|native` (`--edge` with
@@ -1094,10 +1095,14 @@ statement other than declarations, logging, writes to its own names and
 instance-ending helpers (`$effect`, `onMount`, `setInterval`…; `init()`,
 `if`, `new X()`, `window.x = 1` could run twice), or the swap throws.
 Components match by creation order, so a reordering list may trade states.
+Build errors show in a dialog whose `src/…:line` lines open in the editor;
+an error the page's code throws (also what `onError` hears) shows there too.
+The next successful build closes it.
 None of this is in release builds.
 
 `Alt+Shift+W` opens dev-only devtools: component tree with live props and
-state (editable), stores, route and server values, timings; "Open" uses
+state (editable), stores, the route (params, server values, the page's
+forms), a table of all the app's routes, timings; "Open" uses
 `$WISP_EDITOR` or `$EDITOR`, else `code -g`. `/_wisp/components` is the
 workshop: `Card.stories.wisp` beside `Card.wisp` holds
 `{#story "Featured"}<Card featured title="Tea" />{/story}` examples, each

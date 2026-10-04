@@ -21,7 +21,7 @@
   const host = document.createElement('wisp-dev');
   const root = host.attachShadow({ mode: 'open' });
   root.innerHTML = `
-    <style>:host { all: initial; }</style>
+    <style>:host { all: initial; } .wisp-code pre a { color: var(--wisp-accent); text-decoration: none; } .wisp-code pre a:hover { text-decoration: underline; }</style>
     <link rel="stylesheet" href="/_app/wisp-ui.css">
     <link rel="stylesheet" href="/_app/wisp-dialog.css">
     <div class="wisp-wait" hidden></div>
@@ -80,12 +80,44 @@
     root.getElementById('title').textContent = title;
     root.getElementById('summary').textContent = summary;
     root.getElementById('label').textContent = label;
-    pre.textContent = text;
+    // `src/routes/+page.rs:4:5` opens in the editor, as the devtools' "Open" does.
+    pre.replaceChildren();
+    let at = 0;
+    for (const m of text.matchAll(/\b((?:src|static|tests?|examples)\/[^\s:'"`<>]+\.\w+):(\d+)/g)) {
+      pre.append(text.slice(at, m.index));
+      const a = document.createElement('a');
+      a.href = '#';
+      a.textContent = m[0];
+      a.title = 'Open in the editor';
+      a.onclick = (e) => {
+        e.preventDefault();
+        fetch('/_wisp/dev/open', { method: 'POST', headers: { 'x-wisp-dev': '1' }, body: `${m[1]}\n${m[2]}` });
+      };
+      pre.append(a);
+      at = m.index + m[0].length;
+    }
+    pre.append(text.slice(at));
     if (!dialog.open) {
       dialog.showModal();
       if (matchMedia('(pointer: fine)').matches) close.classList.add('wisp-ring');
     }
   }
+
+  // ---- runtime errors ---------------------------------------------------------
+
+  // What the page's code throws, and what onError hears: the same dialog,
+  // closed by the next successful build. A build error on show is kept.
+  let broken = false;
+  function runtime(e) {
+    if (dialog.open && !broken) return;
+    const err = e instanceof Error ? e : new Error(String(e));
+    meta = ['Runtime Error', err.message.split('\n')[0], 'Browser Console'];
+    showError(err.stack || err.message);
+    broken = true;
+  }
+  addEventListener('error', (e) => runtime(e.error ?? e.message));
+  addEventListener('unhandledrejection', (e) => runtime(e.reason));
+  document.addEventListener('wisp:error', (e) => runtime(e.detail?.error));
 
   // ---- the waiting line -------------------------------------------------------
 
@@ -143,6 +175,7 @@
     waiting(false);
     // Said with a rebuild's `reload`: why its modules swap whole.
     if (globalThis.__wisp_dev) __wisp_dev.full = kind === 'reload' ? data : '';
+    broken = false;
     if (kind === 'error') return showError(data);
     dialog.close();
     if (kind === 'reload') document.dispatchEvent(new Event('wisp:refresh'));
