@@ -1,0 +1,7 @@
+---
+export const prerender = false;
+const items = Array.from({ length: 1000 }, (_, i) => `Item <${i + 1}> & co`);
+---
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8" /><title>List</title></head>
+<body><h1>List</h1><ul>{items.map((s) => <li>{s}</li>)}</ul></body></html>

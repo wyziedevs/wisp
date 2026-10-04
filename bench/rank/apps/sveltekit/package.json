@@ -1,0 +1,15 @@
+{
+  "name": "rank-sveltekit",
+  "type": "module",
+  "private": true,
+  "scripts": { "build": "vite build" },
+  "devDependencies": {
+    "@sveltejs/adapter-cloudflare": "latest",
+    "@sveltejs/adapter-node": "latest",
+    "@sveltejs/kit": "latest",
+    "@sveltejs/vite-plugin-svelte": "latest",
+    "svelte": "latest",
+    "vite": "latest",
+    "wrangler": "latest"
+  }
+}

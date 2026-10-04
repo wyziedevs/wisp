@@ -1,0 +1,10 @@
+import express from 'express';
+import cookieParser from 'cookie-parser';
+import { items, page, rows } from './data.mjs';
+const app = express();
+app.use(cookieParser());
+app.get('/', (req, res) => res.send('hello'));
+app.get('/list1000', (req, res) => res.send(page(items(1000))));
+app.get('/json-big', (req, res) => res.json(rows()));
+app.get('/params/:id', (req, res) => res.type('text').send(`id=${req.params.id} q=${req.query.q} sid=${req.cookies.sid ?? 'none'}`));
+app.listen(Number(process.env.PORT), '127.0.0.1');

@@ -1,0 +1,10 @@
+{
+  "name": "rank-astro",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "@astrojs/cloudflare": "latest",
+    "astro": "latest",
+    "wrangler": "latest"
+  }
+}

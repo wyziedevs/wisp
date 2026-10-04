@@ -1,0 +1,10 @@
+import Fastify from 'fastify';
+import cookies from '@fastify/cookie';
+import { items, page, rows } from './data.mjs';
+const app = Fastify();
+await app.register(cookies);
+app.get('/', (req, reply) => reply.type('text/plain').send('hello'));
+app.get('/list1000', (req, reply) => reply.type('text/html').send(page(items(1000))));
+app.get('/json-big', () => rows());
+app.get('/params/:id', (req, reply) => reply.type('text/plain').send(`id=${req.params.id} q=${req.query.q} sid=${req.cookies.sid ?? 'none'}`));
+await app.listen({ port: Number(process.env.PORT), host: '127.0.0.1' });
