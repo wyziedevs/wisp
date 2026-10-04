@@ -142,10 +142,14 @@ pub async fn prerender<A: App>(dir: &Path) -> io::Result<()> {
 pub async fn export<A: App>(dir: &Path, spa: bool) -> io::Result<()> {
     crate::prepare::<A>().await?;
     let mut assets = BTreeSet::new();
+    let site_url = std::env::var_os("SITE_URL").is_some_and(|s| !s.is_empty());
     // Pattern and file of each page the fallback draws.
     let mut drawn: Vec<(&str, String)> = Vec::new();
     for r in A::export_routes() {
-        if r.server {
+        // The sitemap, robots and feed are written below when `SITE_URL` is set.
+        let site_file =
+            site_url && matches!(r.pattern, "/sitemap.xml" | "/robots.txt" | "/feed.xml");
+        if r.server && !site_file {
             println!(
                 "warn {} has a +server.rs, which needs a server, so it is not exported",
                 r.pattern
@@ -208,7 +212,7 @@ pub async fn export<A: App>(dir: &Path, spa: bool) -> io::Result<()> {
         write(dir, "404.html", missing.bytes())?;
     }
     // A static host has no request host: the sitemap needs `SITE_URL`.
-    if std::env::var_os("SITE_URL").is_some_and(|s| !s.is_empty()) {
+    if site_url {
         for f in ["sitemap.xml", "robots.txt", "feed.xml"] {
             let reply = handle::<A>(page(&format!("/{f}"))).await;
             if reply.status == 200 {
@@ -398,6 +402,11 @@ pub(crate) fn url(segs: &[String]) -> String {
     for seg in segs {
         s.push('/');
         let _ = crate::cx::encode(&mut s, seg, crate::cx::unreserved);
+    }
+    // Under `trailing_slash(Always)` the other form is a 308, not a page.
+    let file = segs.last().is_some_and(|l| l.contains('.'));
+    if crate::http::slash() == crate::http::TrailingSlash::Always && !file {
+        s.push('/');
     }
     s
 }
