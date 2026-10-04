@@ -69,6 +69,8 @@ fn on_uring(s: &Server) -> bool {
 fn undated(answer: String) -> String {
     answer
         .split("\r\n")
+        // Dev builds time every answer: the value differs run to run.
+        .filter(|l| !l.starts_with("server-timing: "))
         .map(|l| {
             if l.len() == 35 && l.starts_with("date: ") {
                 "date: -"
