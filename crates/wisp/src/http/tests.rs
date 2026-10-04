@@ -52,12 +52,8 @@ fn decimals() {
 fn headers_that_would_split_a_response_are_left_out() {
     let mut w = Vec::new();
     let mut put = |n: &'static str, v: &'static str| {
-        for h in [(n.into(), v.into()), (n.into(), v.to_string().into())] {
-            // checked, then known; then checked
-            if checked(&h) {
-                put_line(&mut w, &h.0, &h.1);
-            }
-        }
+        header(&mut w, &(n.into(), v.into())); // checked, then known
+        header(&mut w, &(n.into(), v.to_string().into())); // checked
     };
     put("x-a", "1");
     put("x-b", "2\r\nset-cookie: x=1");

@@ -287,10 +287,14 @@ pub(super) fn emit<A: App, const OBS: bool, const H2: bool>(
             // HTTP/1.0 closes after each response unless told otherwise.
             w.extend_from_slice(b"connection: keep-alive\r\n");
         }
-        fields(reply, head_only, |n, v| put_line(w, n, v));
+        fields(reply, head_only, |h| header(w, h));
         w.extend_from_slice(b"\r\n");
     } else {
-        fields(reply, head_only, &mut sink);
+        fields(reply, head_only, |(n, v)| {
+            if valid_header(n, v) {
+                sink(n, v)
+            }
+        });
     }
 
     let body = std::mem::replace(&mut reply.body, Body::Static(b""));
@@ -365,14 +369,19 @@ pub(super) fn h2_head(reply: &Reply, length: Option<usize>, sink: &mut impl FnMu
 #[inline(always)]
 pub(super) fn h2_head(_: &Reply, _: Option<usize>, _: &mut impl FnMut(&str, &str)) {}
 
-/// The app's own header fields of `reply` that go out, each to `sink`:
-/// all but framing (see `framing`) and any that would split the response
-/// (see `checked`). HTTP/1 writes them to the wire, HTTP/2 to its encoder.
+/// A header field as a reply holds it.
+type Field = (Cow<'static, str>, Cow<'static, str>);
+
+/// The app's own header fields of `reply` that go out, each to `sink`: all
+/// but framing (see `framing`). The sink leaves out any that would split
+/// the response: HTTP/1 writes the rest to the wire (`header`), HTTP/2 to
+/// its encoder. The field comes whole, so the HTTP/1 sink can keep its
+/// check of `'static` pairs.
 #[inline(always)]
-pub(super) fn fields(reply: &Reply, head_only: bool, mut sink: impl FnMut(&str, &str)) {
+pub(super) fn fields(reply: &Reply, head_only: bool, mut sink: impl FnMut(&Field)) {
     for h in &reply.headers {
-        if !framing(&h.0, head_only) && checked(h) {
-            sink(&h.0, &h.1);
+        if !framing(&h.0, head_only) {
+            sink(h);
         }
     }
 }
@@ -413,15 +422,18 @@ pub(super) fn parts<'a, A: App>(
 /// of the last few such pairs: such a string never changes, so its address
 /// and length say it is the same.
 #[inline(always)]
-pub(super) fn checked((name, value): &(Cow<'static, str>, Cow<'static, str>)) -> bool {
+pub(super) fn header(w: &mut Vec<u8>, (name, value): &Field) {
     /// The pairs a thread keeps checked: a response's few static headers.
     const KEPT: usize = 4;
     thread_local! {
         static VALID: [Cell<[usize; 4]>; KEPT] = const { [const { Cell::new([0; 4]) }; KEPT] };
         static NEXT: Cell<usize> = const { Cell::new(0) };
     }
-    if name == "content-type" && type_line(value).is_some() {
-        return true;
+    if name == "content-type"
+        && let Some(line) = type_line(value)
+    {
+        w.extend_from_slice(line);
+        return;
     }
     let key = match (name, value) {
         (Cow::Borrowed(n), Cow::Borrowed(v)) => {
@@ -431,26 +443,13 @@ pub(super) fn checked((name, value): &(Cow<'static, str>, Cow<'static, str>)) ->
     };
     if !key.is_some_and(|k| VALID.with(|v| v.iter().any(|c| c.get() == k))) {
         if !valid_header(name, value) {
-            return false;
+            return;
         }
         if let Some(k) = key {
             let next = NEXT.get();
             VALID.with(|v| v[next].set(k));
             NEXT.set((next + 1) % KEPT);
         }
-    }
-    true
-}
-
-/// Writes the header line `name: value`, a known `content-type` in one
-/// piece.
-#[inline(always)]
-pub(super) fn put_line(w: &mut Vec<u8>, name: &str, value: &str) {
-    if name == "content-type"
-        && let Some(line) = type_line(value)
-    {
-        w.extend_from_slice(line);
-        return;
     }
     w.extend_from_slice(name.as_bytes());
     w.extend_from_slice(b": ");
