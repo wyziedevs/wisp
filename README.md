@@ -21,4 +21,4 @@ let name = cx.query_or("name", "world".to_string());
 
 Docs, guides and benchmarks: https://wispweb.dev
 
-MIT license. AI agents: [llms/AGENTS.md](llms/AGENTS.md).
+Made by [Wyzie LLC](https://wyzie.io). MIT license. AI agents: [llms/AGENTS.md](llms/AGENTS.md).
