@@ -8,10 +8,10 @@ export default function Contact() {
   return (
     <form action={action}>
       <title>Contact</title>
-      <input name="name" defaultValue={state.name} />
-      {state.errors?.name && <p>{state.errors.name}</p>}
-      <input name="email" defaultValue={state.email} />
-      {state.errors?.email && <p>{state.errors.email}</p>}
+      <label>Name <input name="name" required minLength={1} maxLength={50} defaultValue={state.name} />
+        {state.errors?.name && <small className="problem">{state.errors.name}</small>}</label>
+      <label>Email <input name="email" type="email" required defaultValue={state.email} />
+        {state.errors?.email && <small className="problem">{state.errors.email}</small>}</label>
       <button>Send</button>
     </form>
   );

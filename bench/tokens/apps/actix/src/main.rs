@@ -2,6 +2,7 @@
 use actix_web::{App, HttpResponse, HttpServer, get, post, web};
 use serde::Deserialize;
 use tera::{Context, Tera};
+use validator::Validate;
 
 mod db;
 
@@ -35,9 +36,11 @@ async fn list(tera: web::Data<Tera>) -> HttpResponse {
 }
 
 // @feature form
-#[derive(Deserialize)]
+#[derive(Deserialize, Validate)]
 struct ContactForm {
+    #[validate(length(min = 1, max = 50, message = "Name must be 1 to 50 characters"))]
     name: String,
+    #[validate(email(message = "Enter a valid email"))]
     email: String,
 }
 
@@ -48,14 +51,11 @@ async fn contact(tera: web::Data<Tera>) -> HttpResponse {
 
 #[post("/contact")]
 async fn send(tera: web::Data<Tera>, web::Form(f): web::Form<ContactForm>) -> HttpResponse {
-    let mut cx = Context::new();
-    if f.name.is_empty() || f.name.len() > 50 {
-        cx.insert("name_error", "Name must be 1 to 50 characters");
-    }
-    if !f.email.contains('@') {
-        cx.insert("email_error", "Enter a valid email");
-    }
-    if cx.contains_key("name_error") || cx.contains_key("email_error") {
+    if let Err(e) = f.validate() {
+        let mut cx = Context::new();
+        for (field, errors) in e.field_errors() {
+            cx.insert(format!("{field}_error"), &errors[0].message);
+        }
         cx.insert("name", &f.name);
         cx.insert("email", &f.email);
         let body = page(&tera, "contact.html", &cx);

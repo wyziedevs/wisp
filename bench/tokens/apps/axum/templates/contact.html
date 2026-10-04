@@ -3,10 +3,10 @@
 {% block title %}Contact{% endblock %}
 {% block content %}
 <form method="post">
-  <input name="name" value="{{ name }}">
-  {% if let Some(e) = name_error %}<p>{{ e }}</p>{% endif %}
-  <input name="email" value="{{ email }}">
-  {% if let Some(e) = email_error %}<p>{{ e }}</p>{% endif %}
+  <label>Name <input name="name" required minlength="1" maxlength="50" value="{{ name }}">
+    {% if let Some(e) = name_error %}<small class="problem">{{ e }}</small>{% endif %}</label>
+  <label>Email <input name="email" type="email" required value="{{ email }}">
+    {% if let Some(e) = email_error %}<small class="problem">{{ e }}</small>{% endif %}</label>
   <button>Send</button>
 </form>
 {% endblock %}
