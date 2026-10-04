@@ -35,3 +35,23 @@ pub const EXTRA_JS: &str = include_str!("client/extra.js");
 /// runs (`/_app/c/el.js`), which its module (`/_app/c/el/x-card.js`)
 /// imports: `wisp-build` writes it out.
 pub const ELEMENT_JS: &str = include_str!("client/element.js");
+
+/// A cron schedule as one path segment, for the address a host's trigger
+/// requests (`/_wisp/cron/<slug>`): its fields joined by `_`, and `/` as `~`,
+/// so `*/5 * * * *` is `*~5_*_*_*_*`. `wisp build` writes it into each
+/// host's config and the app finds its tasks by it.
+pub fn cron_slug(expr: &str) -> String {
+    let fields: Vec<&str> = expr.split_whitespace().collect();
+    fields.join("_").replace('/', "~")
+}
+
+#[cfg(test)]
+mod cron_tests {
+    use super::cron_slug;
+
+    #[test]
+    fn a_schedule_is_one_path_segment() {
+        assert_eq!(cron_slug("0 3 * * *"), "0_3_*_*_*");
+        assert_eq!(cron_slug(" */5  * * * 1-5 "), "*~5_*_*_*_1-5");
+    }
+}

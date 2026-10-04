@@ -48,7 +48,6 @@ mod i18n;
 mod idem;
 mod image;
 mod input;
-#[cfg(not(target_arch = "wasm32"))]
 mod jobs;
 pub mod json;
 #[cfg(not(target_arch = "wasm32"))]
@@ -110,7 +109,6 @@ pub use http::{Body, Reply, Request, TrailingSlash, handle, trailing_slash};
 pub use i18n::{default_locale, locales, localize};
 pub use image::Image;
 pub use input::Email;
-#[cfg(not(target_arch = "wasm32"))]
 pub use jobs::{Queue, cron, queue, work};
 pub use json::{FromJson, Value, from_json, to_json};
 pub use limit::RateLimit;
