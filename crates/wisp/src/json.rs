@@ -1039,6 +1039,56 @@ pub mod check {
     pub trait Number {
         /// The value as a number, or `None` when it is absent (an absent field passes).
         fn number(&self) -> Option<f64>;
+        /// The value as an exact integer, for an integer type that fits
+        /// `i128`: `min` and `max` compare it so, past 2^53 too.
+        fn exact(&self) -> Option<i128> {
+            None
+        }
+    }
+
+    /// A `min` or `max` bound: an integer (compared exactly with an
+    /// integer field) or a float.
+    pub trait Bound: std::fmt::Display {
+        /// The bound as an exact integer, when it is one.
+        fn exact(&self) -> Option<i128>;
+        /// The bound as a float.
+        fn float(&self) -> f64;
+    }
+
+    macro_rules! bounds {
+        (int $($t:ty)*) => {$(
+            impl Bound for $t {
+                fn exact(&self) -> Option<i128> {
+                    i128::try_from(*self).ok()
+                }
+                fn float(&self) -> f64 {
+                    *self as f64
+                }
+            }
+        )*};
+        (float $($t:ty)*) => {$(
+            impl Bound for $t {
+                fn exact(&self) -> Option<i128> {
+                    None
+                }
+                fn float(&self) -> f64 {
+                    *self as f64
+                }
+            }
+        )*};
+    }
+
+    bounds!(int u8 u16 u32 u64 u128 usize i8 i16 i32 i64 i128 isize);
+    bounds!(float f32 f64);
+
+    /// How `v` compares to `b`: exactly when both are integers; `None` for
+    /// `NaN`, which is in no range.
+    fn compare(v: &impl Number, b: &impl Bound) -> Option<Option<std::cmp::Ordering>> {
+        let n = v.number()?;
+        Some(match (v.exact(), b.exact()) {
+            (Some(i), Some(j)) => Some(i.cmp(&j)),
+            _ => n.partial_cmp(&b.float()),
+        })
     }
 
     /// Something with a length, for `min_len` and `max_len`: a string in
@@ -1055,7 +1105,17 @@ pub mod check {
     }
 
     macro_rules! numbers {
-        ($($t:ty)*) => {$(
+        (int $($t:ty)*) => {$(
+            impl Number for $t {
+                fn number(&self) -> Option<f64> {
+                    Some(*self as f64)
+                }
+                fn exact(&self) -> Option<i128> {
+                    i128::try_from(*self).ok()
+                }
+            }
+        )*};
+        (float $($t:ty)*) => {$(
             impl Number for $t {
                 fn number(&self) -> Option<f64> {
                     Some(*self as f64)
@@ -1064,11 +1124,15 @@ pub mod check {
         )*};
     }
 
-    numbers!(u8 u16 u32 u64 u128 usize i8 i16 i32 i64 i128 isize f32 f64);
+    numbers!(int u8 u16 u32 u64 u128 usize i8 i16 i32 i64 i128 isize);
+    numbers!(float f32 f64);
 
     impl<T: Number> Number for Option<T> {
         fn number(&self) -> Option<f64> {
             self.as_ref()?.number()
+        }
+        fn exact(&self) -> Option<i128> {
+            self.as_ref()?.exact()
         }
     }
 
@@ -1116,18 +1180,19 @@ pub mod check {
         }
     }
 
-    /// `None` when `v` is at least `min` or absent, else the message `must be at least N`.
-    pub fn min(v: &impl Number, min: f64) -> Option<String> {
+    /// `None` when `v` is at least `min` or absent, else the message
+    /// `must be at least N`. Integers compare exactly, past 2^53 too.
+    pub fn min(v: &impl Number, min: impl Bound) -> Option<String> {
         // `NaN` (a form says "NaN" to an `f64`) is below nothing and above
         // nothing: it must not pass for a number in range.
-        let n = v.number()?;
-        (n.is_nan() || n < min).then(|| format!("must be at least {min}"))
+        let below = compare(v, &min)?.is_none_or(|o| o.is_lt());
+        below.then(|| format!("must be at least {min}"))
     }
 
     /// `None` when `v` is at most `max` or absent, else the message `must be at most N`.
-    pub fn max(v: &impl Number, max: f64) -> Option<String> {
-        let n = v.number()?;
-        (n.is_nan() || n > max).then(|| format!("must be at most {max}"))
+    pub fn max(v: &impl Number, max: impl Bound) -> Option<String> {
+        let above = compare(v, &max)?.is_none_or(|o| o.is_gt());
+        above.then(|| format!("must be at most {max}"))
     }
 
     /// `None` when `v` has at least `min` characters or items, or is absent, else a message.
@@ -1232,6 +1297,18 @@ pub mod check {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn integers_past_2_pow_53_are_checked_exactly() {
+        let big = 9_007_199_254_740_993i64;
+        assert_eq!(check::max(&big, 9_007_199_254_740_993i128), None);
+        assert!(check::max(&(big + 1), 9_007_199_254_740_993i128).is_some());
+        assert!(check::max(&big, 9_007_199_254_740_992i128).is_some());
+        assert!(check::min(&(big - 1), 9_007_199_254_740_993i128).is_some());
+        assert!(check::max(&u64::MAX, i64::MAX).is_some());
+        assert!(check::min(&Some(1u8), 1.5).is_some());
+        assert_eq!(check::max(&2.5f64, 3), None);
+    }
 
     #[test]
     fn nan_is_in_no_range() {

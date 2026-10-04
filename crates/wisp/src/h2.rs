@@ -753,6 +753,14 @@ fn request(fields: Vec<(Vec<u8>, Vec<u8>)>) -> Result<(Request, Option<u64>), Co
             let s = std::str::from_utf8(&v).map_err(|_| Code::Protocol)?;
             length = Some(s.parse::<u64>().map_err(|_| Code::Protocol)?);
         }
+        // Crumbs of `cookie` (RFC 9113 8.2.3) are one header to the app.
+        if name == "cookie"
+            && let Some((_, all)) = r.headers.iter_mut().find(|(n, _)| n == "cookie")
+        {
+            all.extend_from_slice(b"; ");
+            all.extend_from_slice(&v);
+            continue;
+        }
         r.headers.push((name, v));
     }
     if r.method.is_empty() || r.path.is_empty() || !scheme || r.method == "CONNECT" {
@@ -1571,6 +1579,26 @@ mod tests {
         s.head(1, 200, &[(b"content-length", b"2")], false);
         assert_eq!(s.data(1, b"ok", true), 2);
         assert!(!s.open(1));
+    }
+
+    /// RFC 9113 8.2.3: a client may split `cookie` into crumbs, one field
+    /// each; the app reads them as one header.
+    #[test]
+    fn cookie_crumbs_are_one_header() {
+        let mut b = get("/");
+        for c in ["a=1", "b=2"] {
+            b.push(0x0f); // literal not indexed, name index 32 (`cookie`)
+            b.push(32 - 15);
+            encode_string(&mut b, c.as_bytes());
+        }
+        let (mut s, _) = run(&[
+            frame(SETTINGS, 0, 0, &[]),
+            frame(HEADERS, END_HEADERS | END_STREAM, 1, &b),
+        ]);
+        let r = s.take(1).unwrap();
+        let cookies: Vec<_> = r.headers.iter().filter(|(n, _)| n == "cookie").collect();
+        assert_eq!(cookies.len(), 1);
+        assert_eq!(cookies[0].1, b"a=1; b=2");
     }
 
     /// A POST on stream 3 and `n` DATA frames of 16384 bytes after it, read
