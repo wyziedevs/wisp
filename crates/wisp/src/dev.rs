@@ -154,7 +154,7 @@ fn routes<A: App>() -> &'static str {
 
 /// `POST /_wisp/dev/open`, body `file\nline` (`file` from the project
 /// root, `/`-separated): opens the project's file at that line, for the
-/// devtools and the workshop. Only a loopback peer that sends `x-wisp-dev`
+/// devtools. Only a loopback peer that sends `x-wisp-dev`
 /// is answered: a page of another site cannot send that header without
 /// asking first (CORS), and is never told yes, so no site can open files.
 #[cfg(debug_assertions)]

@@ -73,7 +73,7 @@ const DEV_JS: &[u8] = b"";
 /// The devtools overlay (`Alt+Shift+W`): debug builds only.
 #[cfg(debug_assertions)]
 const DEVTOOLS_JS: &[u8] = include_bytes!("client/wisp-devtools.js");
-/// Also inlined into the API docs page and the workshop.
+/// Also inlined into the API docs page.
 pub(crate) const UI_CSS: &str = concat!(
     include_str!("client/tokens.css"),
     include_str!("client/ui.css")
