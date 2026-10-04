@@ -130,6 +130,10 @@ pub(crate) fn reply(cx: &Cx, made: Made, reply: &mut Reply) {
             return;
         }
     };
+    #[cfg(target_arch = "wasm32")]
+    if matches!(made, Made::Baked(_)) {
+        crate::edge::constant(cx);
+    }
     if !fresh {
         // A kept page has its policy in its head already.
         if let (Made::Baked(_), Some(policy)) = (&made, crate::csp::header()) {

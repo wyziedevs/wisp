@@ -1,0 +1,12 @@
+[package]
+name = "img"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+# `wisp/img`: the `/_img` resizing route (src/routes/_img/+server.rs).
+[dependencies]
+wisp = { workspace = true, features = ["img"] }
+
+[build-dependencies]
+wisp-build.workspace = true

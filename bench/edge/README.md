@@ -2,7 +2,8 @@
 
 Wisp's wasm build against Hono, SvelteKit (adapter-node) and Next.js
 (standalone) on the same runtime. Three routes, the same output in each:
-`GET /` ("hello", text), `GET /list` (HTML, 50 escaped items), `GET /json`.
+`GET /` ("hello", text), `GET /list` (HTML, 50 escaped items), `GET /json`; and the
+realistic routes at the end.
 `apps/` has the four apps. Load: `oha`, 10 s, 64 connections, 3 s warmup, median
 of 3. Not measured: Bun and Deno (not installed here; their shims use the same raw driver).
 
@@ -107,3 +108,100 @@ Cold start: in Node, compile 1 ms (lazy), instantiate 0.1 ms, `main` 1 ms,
 the first request's code compiled on first use most of the rest. Instantiating
 synchronously on the first request measured no better in workerd (31 vs 37 ms,
 noise about 6 ms), so it was dropped. `app.wasm` here: 511 KB (499 KB before).
+
+## Realistic routes
+
+`/list1000` (HTML, 1,000 escaped items), `/json-big` (200 objects of five
+fields, one a list) and `/params/42?q=hello%20world&x=1` with `cookie: sid=abc123;
+theme=dark` (a route param, a query value and a cookie read, answered as text).
+The JSON and text are byte-identical in the two apps; the HTML differs in the
+page head Wisp wraps around it (as `/list` always did), not in the items.
+`workerd.mjs` and `run.mjs` take `--routes list1000,json-big,params` to run
+only these. c=64; req/s (p99 ms), and workerd's CPU us/request. The machine
+was shared (other processes move a result by 15 to 30%); the two apps
+alternate within a run.
+
+workerd, 8 s, median of 5:
+
+| | `/list1000` | `/json-big` | `/params` |
+|---|---|---|---|
+| Wisp | 5,114 (27) 200 | 8,829 (11.7) 114 | 14,353 (10.6) 69 |
+| Hono | 1,884 (63) 538 | 11,387 (9.7) 90 | 17,769 (28) 58 |
+
+Node, 10 s, median of 3:
+
+| | `/list1000` | `/json-big` | `/params` |
+|---|---|---|---|
+| Wisp (raw sockets) | 7,428 (14) | 18,295 (6.4) | 107,692 (1.1) |
+| Hono | 1,776 (91) | 15,596 (17) | 49,016 (3.6) |
+
+Wisp builds the big page 2.7 to 4 times as fast (the escape and the list are
+one pass over bytes, Hono's are string work and a join). It is behind Hono
+on workerd where the work is native there: `JSON.stringify` serializes the 200
+objects in V8's C++ while Wisp's serializer runs in wasm (-22%), and a cookie
+is a call out of the wasm into the Request's headers on top of the entry
+(-19%). On Node, which has no entry cost, Wisp is ahead on all three.
+
+## Cold start and wasm size, measured again
+
+Cold start is process start to the first complete response, median of 9, three
+rounds alternating the builds (the noise of one is about 6 ms; of a median of
+9, 1 ms). Wisp 26 to 27 ms, Hono 21 to 23 ms, before and after every change
+below. `app.wasm` of this bench's app (all routes above), `strip`ped, opt-level 3:
+
+| | wasm | cold start |
+|---|---|---|
+| main | 527,151 | 27 ms |
+| no dev-only files in the wasm32 build | 515,508 | 27 ms |
+
+(Later main, with its newer features and the constant-path code below: 550,541 before, 540,872 after; 27 to 28 ms both.)
+
+Kept: the dev reload script and the build-error dialog (`wisp-dev.js`,
+`dialog.css`, 11.6 KB) are not linked on wasm32 (`http.rs`): the edge build has
+no dev mode to serve them to. Measured and dropped:
+
+- A request through a throwaway instance at module scope (compiles the request
+  path before the first one): 45 ms, against 28. Instantiating twice costs more than
+  the compiling it saves, and `env` (secrets, `WISP_STORE`) is not there yet to
+  start the real instance.
+- `obs` (log, metrics, traces), which never runs on wasm32, as a constant
+  `None` there: 1.6 KB, and it changed the native `.text` (inlining of the
+  functions around it), which has to stay as it is.
+- `panic=abort`: already what wasm32-unknown-unknown builds (same bytes with it
+  set); `lto = "fat"` and `codegen-units = 1` are in `wisp new`'s Cargo.toml.
+
+Where the rest is (symbol sizes of the unstripped wasm; `cargo bloat` does not
+read wasm, so the name section was read directly): 410 KB of code, 104 KB of data. Code:
+alloc 62 KB, `wisp::edge` 56 KB, std 52 KB, core 50 KB, `wisp::http` 39 KB, then
+`bake`, `cx`, `input`, `hashbrown`, `admin` (11 to 13 KB each). Data: 15 KB is
+`wisp.js`, 6 KB the API docs page, 4 KB the error styles. There is no unused
+subsystem left worth a flag: each remaining one is under 1% of the file, and
+the edge build already leaves out the server's sockets, jobs and fetch.
+
+## Paths that never change
+
+A baked page (one the build proved constant, or prerendered) and a
+trailing-slash redirect have one answer for every request, when the app has no
+`before`, `after` or `reroute` hook, the route no guard (`RATE_LIMIT`, `CORS`,
+`MIDDLEWARE`, `SIGNED_IN`, in the page or a layout), the app read no header but
+`if-none-match` and `x-wisp-error`, and the request has no query. The app marks
+the first answer `200 const` (its head's first line); `serve` in `bridge.js`
+(the web `fetch` of Workers, Deno, Netlify, Vercel) keeps it, asks the app once
+for that path's 304 (so the head is the app's own, not rebuilt by hand), and
+answers GET, HEAD and `if-none-match` itself from then on, without entering the
+wasm. Everything else goes to the wasm. `tests/platform/tests/fast.rs` compares
+every header, the status and the body with the native server's for each case
+(GET twice, HEAD, `if-none-match` with the ETag, `*`, a weak list, a wrong tag,
+an empty one, `/about/`'s 308), and that an app with hooks, a query, a guard or
+`x-wisp-error` never skips the wasm.
+
+`/about` (a baked page) on workerd, c=64, same run, alternating: 13,101 req/s and
+77 us CPU a request before, 16,387 and 64 after (best CPU of the runs: 75 and 54
+us). Hono's `/about` is about the same as the new Wisp's (18,031 against 18,709
+in a quiet run). The machine was shared; take the ratio, not the numbers.
+
+Not covered, and why: Wisp's own files (`/_app/wisp.js`, the CSS) vary on
+`accept-encoding` and `range`; `static/` is served by the host before the
+worker; `CACHE` answers vary by cookie; the Node, Bun and Deno raw-socket path
+hands the bytes to the app, which parses and answers in about 1 us, so a table
+there would first have to parse HTTP in JS (not built, not measured).

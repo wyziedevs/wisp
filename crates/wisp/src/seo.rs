@@ -110,7 +110,8 @@ fn atom(base: &str, all: &[crate::MdPage], slashed: bool) -> Option<String> {
 
 /// A page's Open Graph and Twitter card tags, for its head:
 /// `{@html wisp::og("Hello", "A first post", "/cover.png")}`. Escaped; an
-/// empty `image` leaves that tag out.
+/// empty `image` leaves that tag out. `"auto"` is an SVG, or with the
+/// `og-png` feature (also on `wisp-cli`) a PNG, which crawlers take more often.
 pub fn og(title: &str, description: &str, image: &str) -> String {
     // `"auto"`: the picture `wisp build` made of this title (SVG, see `wisp_shared::og`).
     let auto = wisp_shared::og::url(title);

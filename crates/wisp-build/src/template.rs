@@ -887,6 +887,9 @@ impl Frame {
     }
 }
 
+/// The `name` of a client frame that is a `{:@const}`.
+const CONST: &str = "@const";
+
 struct Parser<'a> {
     src: &'a str,
     /// The fields of the page's actions the browser can check.
@@ -1562,6 +1565,7 @@ impl Parser<'_> {
                 return Err(self.err(start, format!("</{name}> takes nothing but its name")));
             }
             self.i = j + 1;
+            self.close_consts(start)?;
             if matches!(self.frames.last(), Some(Frame::Client { kind: "comp", name: open, .. }) if *open == name)
             {
                 return self.client_close(start);
@@ -3231,13 +3235,45 @@ impl Parser<'_> {
         Ok(())
     }
 
+    /// `{:@const name = expr}` in a client block: `name` for the rest of the
+    /// block, a one-item `{:#each}` that its end (or `{:else}`) closes.
+    fn client_const(&mut self, open: usize, arg: &str) -> Result<(), Error> {
+        let Some((name, e)) = arg
+            .split_once('=')
+            .map(|(n, e)| (n.trim(), e.trim()))
+            .filter(|(n, e)| is_ident(n) && !js::is_reserved(n) && !e.is_empty())
+        else {
+            return Err(self.err(open, "expected {:@const name = expr}".into()));
+        };
+        if !matches!(self.frames.last(), Some(Frame::Client { .. })) {
+            return Err(self.err(
+                open,
+                "{:@const} goes inside a {:#if}, {:#each}, {:#key}, {:#await} or {:#try} block"
+                    .into(),
+            ));
+        }
+        self.client_open(open, "each", &format!("[{e}] as {name}"))?;
+        if let Some(Frame::Client { name, .. }) = self.frames.last_mut() {
+            *name = CONST.into();
+        }
+        Ok(())
+    }
+
+    /// Ends the `{:@const}`s the block being closed or branched holds.
+    fn close_consts(&mut self, pos: usize) -> Result<(), Error> {
+        while matches!(self.frames.last(), Some(Frame::Client { name, .. }) if name == CONST) {
+            self.client_close(pos)?;
+        }
+        Ok(())
+    }
+
     /// `{:expr}` in text: an anchor the browser puts the value after, what
     /// the server knows of it, and the end of it.
-    fn live_text(&mut self, open: usize, js: &str) -> Result<(), Error> {
+    fn live_text(&mut self, open: usize, js: &str, html: bool) -> Result<(), Error> {
         let (line, col) = (self.line_of(open), self.col_of(open));
         let d = Directive {
             kind: Dir::Hole,
-            name: String::new(),
+            name: if html { "html".into() } else { String::new() },
             mods: Vec::new(),
             value: Some(Code {
                 src: js.to_string(),
@@ -3253,7 +3289,8 @@ impl Parser<'_> {
         let group = self.groups.len() - 1;
         self.text.push_str("</template>");
         self.push_node(open, Node::Hole { group })?;
-        self.text.push_str("<!---->");
+        self.text
+            .push_str(if html { "<!--h-->" } else { "<!---->" });
         Ok(())
     }
 
@@ -3417,6 +3454,15 @@ impl Parser<'_> {
             if let Some(call) = rest.strip_prefix("@render") {
                 return self.client_render(open, call.trim());
             }
+            if let Some(e) = rest
+                .strip_prefix("@html ")
+                .filter(|_| self.ctx == Ctx::Text)
+            {
+                return self.live_text(open, e.trim(), true);
+            }
+            if let Some(c) = rest.strip_prefix("@const ") {
+                return self.client_const(open, c.trim());
+            }
             if let Some(block) = rest.strip_prefix('#') {
                 let (kw, arg) = split_word(block);
                 if arg.is_empty() && kw != "try" {
@@ -3426,6 +3472,7 @@ impl Parser<'_> {
             }
             if let Some(kw) = rest.strip_prefix('/') {
                 let kw = kw.trim();
+                self.close_consts(open)?;
                 let top = match self.frames.last() {
                     Some(Frame::Client { kind, .. }) => block_of(kind),
                     _ => "",
@@ -3442,6 +3489,9 @@ impl Parser<'_> {
                 return Ok(());
             }
             let (kw, arg) = split_word(rest);
+            if matches!(kw, "else" | "then" | "catch") {
+                self.close_consts(open)?;
+            }
             if matches!(kw, "then" | "catch")
                 && matches!(self.frames.last(), Some(Frame::Await { .. }))
             {
@@ -3473,7 +3523,7 @@ impl Parser<'_> {
                     ));
                 }
                 return match self.ctx {
-                    Ctx::Text => self.live_text(open, js),
+                    Ctx::Text => self.live_text(open, js, false),
                     Ctx::Quoted(q) => self.live_value(open, q),
                     Ctx::Tag if self.last == b'=' => {
                         self.check_live_attr(open)?;
@@ -5188,7 +5238,9 @@ mod tests {
     fn blocks_nest_only_so_deep() {
         let deep = |n: usize| format!("{}x{}", "{#if a}".repeat(n), "{/if}".repeat(n));
         assert!(parse(&deep(MAX_NEST - 1)).is_ok());
-        let e = parse(&deep(100_000)).expect_err("too deep");
+        let Err(e) = parse(&deep(100_000)) else {
+            panic!("too deep")
+        };
         assert!(e.msg.contains("nested more than"), "{}", e.msg);
     }
 
@@ -6149,6 +6201,28 @@ mod tests {
         assert!(client_renderable(&t.nodes));
 
         let err = |src: &str| parse(src).unwrap_err().msg;
+        // `{:@html}` is a hole that ends in `<!--h-->`; `{:@const}` is a
+        // one-item each that its block's end closes.
+        let t = parse("{:#if a}{:@const b = a + 1}{:@const c = b * 2}<i>{:c}</i>{:@html h}{:else}{:@const d = 1}{:d}{:/if}{:#each xs as x}{:@const y = x}{:/each}").unwrap();
+        let ds = |k: Dir| {
+            t.groups
+                .iter()
+                .flat_map(|g| &g.directives)
+                .filter(|d| d.kind == k)
+                .count()
+        };
+        assert_eq!((ds(Dir::Each), ds(Dir::Hole)), (5, 3));
+        let html = t
+            .groups
+            .iter()
+            .flat_map(|g| &g.directives)
+            .find(|d| d.name == "html");
+        assert_eq!(html.unwrap().value.as_ref().unwrap().src, "h");
+        assert!(client_renderable(&t.nodes));
+        assert!(err("{:@const x = 1}").contains("goes inside"));
+        assert!(err("{:#if a}{:@const x}{:/if}").contains("expected {:@const name = expr}"));
+        assert!(err("{:#if a}{:@const x.y = 1}{:/if}").contains("expected {:@const"));
+        assert!(parse("<p {:@html h}>").is_err());
         assert!(err("{#snippet r(a)}{@render r(a)}{/snippet}").contains("renders itself"));
         assert!(err("{#snippet a()}x{/snippet}{#snippet b()}{@render a()}{/snippet}{#snippet a()}{@render b()}{/snippet}{@render a()}").contains("already defined"));
         assert!(err("{#snippet r(a)}x{/snippet}{@render r(1, 2)}").contains("takes 1 argument"));

@@ -9,6 +9,7 @@ members = [
     "examples/demo",
     "examples/api",
     "examples/jobs",
+    "examples/img",
     "tests/app",
     "tests/agents",
     "tests/islands",

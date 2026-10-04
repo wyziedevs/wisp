@@ -174,7 +174,9 @@ host; a page's `description` field is its summary); none without a dated
 page; `--static` writes it too. `wisp::og(title, description, image)` is
 the Open Graph and Twitter card tags of a page's head, escaped:
 `{@html wisp::og("Hello", "A first post", "/cover.png")}`. With the image
-`"auto"` and a literal title and description, `wisp build` (`og.rs` in the
+`"auto"` (with the opt-in `og-png` feature on `wisp` and `wisp-cli`, which
+renders each picture to a PNG with `resvg`, system fonts, and names that)
+and a literal title and description, `wisp build` (`og.rs` in the
 CLI, drawing in `wisp-shared`'s `og.rs`) writes `static/og/<slug>.svg`: 1200
 by 630, title, description, the app's name, in `src/app.css`'s `--bg`, `--ink`
 and `--accent` (else Wisp's). It is SVG because nothing in Wisp's dependencies
@@ -807,6 +809,22 @@ behavior is in [client.md](client.md#phones-and-flaky-networks).
   turn it). A `$lib/` file that is not there is a build error.
 - Dev serves the original (`/_app/img/lib/photo.jpg` from `src/lib`),
   adding only `width` and `height`: nothing to encode on a save.
+- `<img priority …>` (bare, as in next/image) is above the fold: the
+  attribute goes, `fetchpriority="high"` comes, and the tag is not lazy.
+- Opt-in `avif` feature (`wisp-cli` and `wisp-build`, off by default, so the
+  default dependency tree is unchanged): `wisp build` also writes AVIF
+  widths, in process with `ravif` and `image` (pure Rust, slow, which is
+  why it is opt-in), and the tag becomes
+  `<picture><source type="image/avif" srcset sizes>…<img …></picture>`.
+  Without the files nothing changes.
+- Opt-in `img` feature (`wisp`, off by default; deps `image` with the png,
+  jpeg and webp decoders only, reason: resizing needs decoders): a route
+  file `src/routes/_img/+server.rs` with `wisp::img::serve::<crate::App>(cx)`
+  answers `/_img?src=/photo.jpg&w=640&q=75`. Only `static/` files (embedded
+  in a release binary), `w` from a fixed list (next/image's), `q` 1 to 100,
+  no `..`, files over 10 MB or 40 megapixels refused, a decoder panic is a
+  400, results cached in memory (64 MB). It is a route like any other: the
+  hot path has no code for it, and nothing is compiled without the feature.
 - `<img data-wisp-raw …>` stays as written (a `$lib/` src still gets its
   URL). A `src` with a hole, or another site's, is left alone.
 - Cost: none for an app without local images; a header read per image per
@@ -1567,6 +1585,12 @@ The built-in server is one front end. `respond` decides an answer as a
 - `wisp build --static` runs `handle` for each page and writes files.
 - `wisp build --target` compiles the same code to WebAssembly
   (`crates/wisp/src/edge.rs`), driven by a small JS bridge: no wasm-bindgen.
+  A path whose answer cannot change (a baked page, a trailing-slash
+  redirect) is marked `const` by the app, in an app with no `before`, `after`
+  or `reroute` hook, when it read no header but `if-none-match` and
+  `x-wisp-error` and had no query. The bridge's web `fetch` keeps the first
+  answer and its 304 and replays them (GET, HEAD, `if-none-match`) without
+  entering the wasm; `tests/platform/tests/fast.rs` pins them to native's.
 
 Every path uses the same request parser and limits. See [embed.md](embed.md)
 and [deploy.md](deploy.md).
