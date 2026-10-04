@@ -805,7 +805,10 @@ mod tests {
         assert!(md.wisp.contains("Some &#123;braces&#125;"), "{}", md.wisp);
         // A footnote's label goes in `href` and `id` as it is.
         let f = page("a[^{x}]\n\n[^{x}]: note\n", &[], false).unwrap().wisp;
-        assert!(!f.contains(['{', '}']) && f.contains("href=\"#%7Bx%7D\""), "{f}");
+        assert!(
+            !f.contains(['{', '}']) && f.contains("href=\"#%7Bx%7D\""),
+            "{f}"
+        );
         assert!(
             md.wisp.contains("<code>code &#123;x&#125;</code>"),
             "{}",
