@@ -5,6 +5,19 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/a2/download": {
+      "get": {
+        "operationId": "get_a2_download",
+        "responses": {
+          "200": {
+            "description": "A response"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
     "/avatars/{id}": {
       "get": {
         "operationId": "get_avatars_id",
