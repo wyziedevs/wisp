@@ -157,13 +157,13 @@
   addEventListener('online', stale);
 
   async function refresh(extra) {
-    const [my, at] = [nav, location.href];
+    const [my, at] = [ctl, location.href];
     const res = await fetch(at, { headers: { ...headers, ...extra } });
     const to = redirect(res);
-    if (my !== nav || key(at) !== key(location.href)) return; // the page moved on (a #hash link did not)
+    if (my != ctl || key(at) !== key(location.href)) return; // the page moved on (a #hash link did not)
     if (to) return go(to, { replace: true });
     const html = await res.text();
-    if (my !== nav || key(at) !== key(location.href)) return;
+    if (my != ctl || key(at) !== key(location.href)) return;
     swap((await drawn(html, location)) || html, res.status);
   }
 
@@ -224,7 +224,8 @@
 
   // ---- navigation -----------------------------------------------------------
 
-  let nav = 0; // the latest navigation; an older one that finishes late is dropped
+  let ctl; // the latest navigation's controller: the next aborts it, and an older one that finishes late is dropped
+  const begin = () => (ctl?.abort(), ctl = new AbortController());
   const pre = new Map(); // url -> [when, response promise], from hovering
   addEventListener('pagehide', () => {
     save(entry);
@@ -280,7 +281,7 @@
         try { res = await fetch(to, { headers }); } catch { return; }
         if (!res.ok || !isHtml(res)) return;
         const html = await res.text();
-        if (my !== nav) return true; // a newer navigation took over
+        if (my != ctl) return true; // a newer navigation took over
         el.innerHTML = new DOMParser().parseFromString(html, 'text/html').body.innerHTML;
         push(url);
         return true;
@@ -294,31 +295,29 @@
     if (url.origin !== location.origin) return location.assign(url);
     // A pop is over: the browser has gone there, so it cannot be canceled.
     if (!send('wisp:navigate', { from: location.href, to: url.href, pop: !!how.pop }) && !how.pop) return;
-    const my = ++nav;
-    if (!how.pop && document.querySelector('[data-wisp-cut]') && (await cut(url, my))) return my === nav && send('wisp:stay');
+    const my = begin();
+    if (!how.pop && document.querySelector('[data-wisp-cut]') && (await cut(url, my))) return my == ctl && send('wisp:stay');
     if (!how.pop) history.replaceState({ ...history.state, x: scrollX, y: scrollY }, '');
     const undo = views.length && !how.pop && !pre.has(key(url)) && wait(url);
-    let res;
+    let res, html;
     try {
       const early = pre.get(key(url));
       pre.delete(key(url));
-      res = (early && Date.now() - early[0] < 10000 && (await early[1])) || (await fetch(url, { headers }));
+      res = (early && Date.now() - early[0] < 10000 && (await early[1])) || (await fetch(url, { headers, signal: my.signal }));
       for (let n = 0, to; n < 5 && (to = redirect(res)); n++) {
         if (to.origin !== location.origin) return location.assign(to);
         url = to;
         if (res.redirected) break;
         res = await fetch(to, { headers });
       }
+      if (isHtml(res)) html = await res.text(), html = (await drawn(html, url)) || html;
     } catch {
-      return location.assign(url);
+      return my != ctl || location.assign(url);
     }
-    if (my !== nav) return;
+    if (my != ctl) return; // a prefetch, a read body
     // A file: the browser shows or saves it. A download leaves the page
     // where it is: `wisp:stay` says the navigation is over.
-    if (!isHtml(res)) return location.assign(url), attachment(res) && (undo?.(), send('wisp:stay'));
-    let html = await res.text();
-    html = (await drawn(html, url)) || html;
-    if (my !== nav) return;
+    if (html == null) return location.assign(url), attachment(res) && (undo?.(), send('wisp:stay'));
     if (how.replace) history.replaceState({ k: (entry = id()) }, '', url);
     else if (!how.pop) push(url);
     const show = () => {
@@ -348,7 +347,7 @@
     const w = [];
     send('wisp:leave', { from: location.href, to: url.href, w });
     const after = await Promise.all(w);
-    if (my !== nav) return;
+    if (my != ctl) return;
     if (document.startViewTransition && !how.novt && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
       // Its animation is skipped, rejecting these, when the tab is hidden.
       const vt = document.startViewTransition(show);
@@ -648,7 +647,7 @@
     busy.add(form);
     form.setAttribute('aria-busy', 'true');
     if (btn) btn.disabled = true;
-    const my = nav;
+    const my = ctl;
     let res, html, to, sent;
     const result = { ok: false, status: 0 };
     try {
@@ -656,7 +655,7 @@
       sent = true;
       Object.assign(result, { ok: res.ok, status: res.status });
       pre.clear(); // what was fetched ahead may be out of date now
-      if (my !== nav) return send('wisp:result', result, form); // a navigation since: its page stays
+      if (my != ctl) return send('wisp:result', result, form); // a navigation since: its page stays
       to = redirect(res);
       if (to) result.location = to.href;
       const type = res.headers.get('content-type') || '';
