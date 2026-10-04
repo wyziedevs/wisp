@@ -223,6 +223,19 @@ const tests = {
     assert.equal(p.calls.head.length, 2);
     assert.equal(p.calls.head[1].attrs.src, 'http://t.test/b.js');
   },
+  'vitals: only with the meta tag, and one beacon when hidden'() {
+    const p = page();
+    p.doc.visibilityState = 'hidden';
+    p.event('visibilitychange');
+    assert.equal(p.calls.beacon.length, 0);
+    const q = page({ vitals: { content: '/vitals' } });
+    q.event('visibilitychange');
+    assert.equal(q.calls.beacon.length, 0);
+    q.doc.visibilityState = 'hidden';
+    q.event('visibilitychange');
+    assert.equal(q.calls.beacon[0][0], '/vitals');
+    assert.equal(JSON.parse(q.calls.beacon[0][1]).path, '/');
+  },
 };
 
 (async () => {

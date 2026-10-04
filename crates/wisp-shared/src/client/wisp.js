@@ -27,7 +27,8 @@
 // (cancelable) before it is sent and `wisp:result` after. An element with
 // `data-wisp-keep` is left as it is, for a widget that owns its own DOM.
 // Nodes that browser code made (marked __w) are left too.
-// `<script src type="wisp/idle">` (or `wisp/interaction`) loads a script late.
+// `<script src type="wisp/idle">` (or `wisp/interaction`) loads a script
+// late; `<meta name="wisp-vitals" content="/path">` reports web vitals.
 (() => {
   const headers = { 'x-wisp': '1' };
   const key = (u) => String(u).split('#')[0];
@@ -676,7 +677,7 @@
   addEventListener('online', drain);
   if (queue().length) drain();
 
-  // ---- third-party scripts --------------------------------------
+  // ---- third-party scripts, web vitals --------------------------------------
 
   // `<script src="…" type="wisp/idle">` loads when the browser is idle,
   // `type="wisp/interaction"` at the first pointer, key or scroll. Plain
@@ -698,6 +699,26 @@
   }
   for (const t of ['pointerdown', 'keydown', 'scroll', 'touchstart'])
     addEventListener(t, () => later.splice(0).forEach((f) => f()), { passive: true });
+
+  // `<meta name="wisp-vitals" content="/vitals">`: this page load's LCP, CLS,
+  // INP and TTFB (ms, CLS a score) go to that path as JSON by sendBeacon
+  // when the page is hidden.
+  const vitals = document.querySelector('meta[name=wisp-vitals]')?.content;
+  if (vitals && globalThis.PerformanceObserver) {
+    const v = { path: location.pathname, ttfb: performance.getEntriesByType('navigation')[0]?.responseStart };
+    let cls = 0;
+    const watch = (type, f, o) => {
+      try { new PerformanceObserver((l) => l.getEntries().forEach(f)).observe({ type, buffered: true, ...o }); } catch {}
+    };
+    watch('largest-contentful-paint', (e) => (v.lcp = e.startTime));
+    watch('layout-shift', (e) => e.hadRecentInput || (v.cls = cls += e.value));
+    watch('event', (e) => e.interactionId && e.duration > (v.inp || 0) && (v.inp = e.duration), { durationThreshold: 40 });
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState != 'hidden') return;
+      for (const k in v) if (typeof v[k] == 'number') v[k] = Math.round(v[k] * 1000) / 1000;
+      navigator.sendBeacon(vitals, JSON.stringify(v));
+    });
+  }
 
   // ---- islands --------------------------------------------------------------
 

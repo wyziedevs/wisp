@@ -378,6 +378,16 @@ Pick when one loads (`src`, so no code of yours): in the head, plain
 browser is idle (also on a client navigation), `type="wisp/interaction"` at the
 first pointer, key or scroll. Other attributes (`async`, `data-*`) are copied.
 
+## Web vitals
+
+`<meta name="wisp-vitals" content="/vitals">` (in `src/app.html`) is opt-in:
+when the page is hidden, wisp.js sends that path one beacon (`sendBeacon`, a
+POST) of JSON: `{"path":"/x","ttfb":12,"lcp":480.5,"cls":0.02,"inp":64}`
+(ms, `cls` a score; a metric the browser never measured is left out; one
+per page load, client navigations are not counted). Receive it with
+`vitals/+server.rs`: `fn post(cx: &mut Cx) -> Result<()>` reading `cx.body()`.
+No page that does not name the tag runs any of it.
+
 ## Loading code on demand
 
 `import()` loads when reached:

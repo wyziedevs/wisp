@@ -1278,6 +1278,10 @@ branches).
   `module`/`javascript` ones); `lazy()` in wisp.js, run by `wake()`, makes
   the real `<script>` on idle or on the first pointer, key or scroll. Plain
   `<script src>` and `defer` need no code. About 270 bytes gzipped.
+- **Web vitals.** Opt-in by `<meta name="wisp-vitals" content="/path">`: wisp.js
+  watches LCP, layout shifts and event timing with `PerformanceObserver` and
+  sends one `sendBeacon` on `visibilitychange` hidden. Server side it is an
+  ordinary route. About 430 bytes gzipped.
 - **Version skew.** A release build puts `<meta name="wisp-build" content=ID>`
   in the shell (a hash of templates and Rust: baked, nothing per request).
   wisp.js compares it with the page a navigation fetched, as it does

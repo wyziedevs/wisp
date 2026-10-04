@@ -269,6 +269,8 @@ Router API (`import {...} from 'wisp'`): `beforeNavigate(({cancel})=>)`,
 Third-party scripts: `<script src=… type="wisp/idle">` loads when idle,
 `type="wisp/interaction"` at the first pointer/key/scroll; plain `<script src>`
 blocks (before-interactive), `defer` is after.
+Web vitals: `<meta name="wisp-vitals" content="/vitals">` sends one
+`sendBeacon` JSON `{path,ttfb,lcp,cls,inp}` per load to that route.
 Stores, islands, the rest: docs/client.md.
 
 ## Endpoints (`+server.rs`)
