@@ -110,7 +110,7 @@ const http = createServer(handler);
 const IDLE = 60_000;
 let raws = 0;
 
-function accept(socket) {
+function accept(socket, first) {
   const c = app.conn(
     {
       // A view of the app's memory: copied here, small ones as a string, which
@@ -125,14 +125,29 @@ function accept(socket) {
     },
     socket.remoteAddress ?? '',
   );
-  if (!c) return http.emit('connection', socket);
+  if (!c) return first ? socket.destroy() : http.emit('connection', socket);
   raws++;
   socket.setTimeout(IDLE, () => socket.destroy());
   socket.on('data', c.data);
   socket.on('drain', () => (socket.resume(), c.drain()));
   socket.on('close', c.close);
   socket.on('error', () => {}); // 'close' follows
+  if (first) (socket.resume(), c.data(first));
 }
+
+// An upgrade node:http saw (raw sockets are off, or the app was not live
+// yet): the socket is the app's, and reads the handshake again from the
+// request's text.
+http.on('upgrade', async (req, socket, head) => {
+  try {
+    await app.up();
+  } catch {
+    return socket.destroy();
+  }
+  let text = `${req.method} ${req.url} HTTP/${req.httpVersion}\r\n`;
+  for (let i = 0; i < req.rawHeaders.length; i += 2) text += `${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}\r\n`;
+  accept(socket, Buffer.concat([Buffer.from(text + '\r\n', 'latin1'), head]));
+});
 
 // Whether raw sockets answer: a probe server on loopback, asked as a client would.
 async function verified() {

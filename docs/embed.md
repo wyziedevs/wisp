@@ -66,8 +66,9 @@ fn get() -> Response {
   1009. `before` runs first (cookies, hooks). A page on another site is 403
   as for a cross-site form (`Origin` must name the host, or `ORIGIN` when
   set); a non-upgrade request gets 426.
-- Only the built-in server upgrades; `tower`, edge targets and the test
-  client answer 501.
+- The built-in server upgrades, and so do the `node`, `bun`, `deno`,
+  `cloudflare` and `pages` builds (docs/deploy.md); `tower`, `vercel`,
+  `netlify`, `lambda` and the test client answer 501.
 
 Browser side: `new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`)`
 with `onmessage`, `onopen`, `onclose`.

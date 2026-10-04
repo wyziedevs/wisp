@@ -183,7 +183,7 @@ objects of the host's. At startup a request over loopback must be answered as
 the app answers it (twice, on one connection); if not, or with
 `WISP_NODE_HTTP=1`, they serve with `node:http`, `Bun.serve` or `Deno.serve`
 (one stderr line says which). Deno Deploy has no sockets and always uses
-`Deno.serve`. WebSockets are not served on any edge build (501). Only the
+`Deno.serve`. WebSockets are upgraded by the same parser (see below). Only the
 `node:http` path reads at most `WISP_BODY_LIMIT` (default 1 MB) of a body and
 answers 413 past it.
 
@@ -243,7 +243,8 @@ No threads, sockets or files:
   (`std::env::var` sees nothing; no `.env`).
 - Streaming (`Response::stream`, `Response::events`) is live on Cloudflare,
   Deno, Netlify, Vercel, Node; a leaving client fails `send`.
-- `Response::websocket` is 501 on every edge target (and `tower`); use SSE.
+- `Response::websocket`: see WebSockets below. Hosts that cannot hold a
+  socket answer 501; use SSE there.
 - `wisp::channel`, `wisp::every`, `RateLimit` are not in the edge build (it
   won't compile with them): use the host's queues, cron, rate limiting.
 - Jobs: `wisp::cron` and `wisp::work` are the same code on every host.
@@ -268,3 +269,32 @@ No threads, sockets or files:
   ```
 
 - A panic fails only that request (500). No `Date` header from Wisp.
+
+### WebSockets
+
+`Response::websocket` (embed.md) is the same code on every host that can hold
+a socket, and answers 501 ("WebSockets need a host with sockets") on the rest:
+
+| Host | WebSockets | Made by |
+|---|---|---|
+| binary, Docker | yes | Wisp's server |
+| `node` | yes | Wisp's parser on the raw socket; with `node:http`, its `upgrade` event hands the socket over |
+| `bun` | yes | Wisp's parser on `Bun.listen`; with `Bun.serve`, `server.upgrade` |
+| `deno` | yes | Wisp's parser on `Deno.listen`; with `Deno.serve` and on Deploy, `Deno.upgradeWebSocket` |
+| `cloudflare`, `pages` | yes | `WebSocketPair` |
+| `vercel`, `netlify`, `lambda`, `tower` | 501 | no sockets there: use SSE |
+
+On raw sockets the codec is the native server's, so the handshake, fragments,
+pings, the idle ping and close (`WISP_WS_IDLE`), the `BODY_LIMIT` message
+limit (close 1009) and the protocol errors are the same. Where the host's own
+socket frames the messages (`Bun.serve`, `Deno.serve`, Deploy, Workers) the
+host answers pings and fragments and keeps its own idle time; Wisp still
+refuses a message past the limit and closes with 1009 (1000 on Deno, whose
+`close` takes no other code). `before` and the origin check run on the
+upgrade request as for any route.
+
+A connection lives in one instance: on Cloudflare in one isolate, so what an
+app keeps in memory is not shared across connections that land elsewhere.
+Wisp has no Durable Object built in; for state shared by connections use a
+Durable Object of your own, or `WISP_STORE`. `wisp::channel` is native only.
+`examples/websocket` is an echo that runs on all of the above.
