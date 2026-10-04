@@ -51,9 +51,16 @@ pub fn slug(title: &str) -> String {
     format!("{out}-{:08x}", hash as u32)
 }
 
-/// Where the picture of `title` is served.
+/// Where the picture of `title` is served: the SVG, or with the `og-png`
+/// feature the PNG `wisp build` renders from it (crawlers take it more
+/// often than SVG).
 pub fn url(title: &str) -> String {
-    format!("/og/{}.svg", slug(title))
+    let ext = if cfg!(feature = "og-png") {
+        "png"
+    } else {
+        "svg"
+    };
+    format!("/og/{}.{ext}", slug(title))
 }
 
 /// `text` in lines of at most `n` characters, at most `max` of them (the

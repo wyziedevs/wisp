@@ -49,6 +49,8 @@ mod http;
 mod i18n;
 mod idem;
 mod image;
+#[cfg(feature = "img")]
+pub mod img;
 mod input;
 #[cfg(not(target_arch = "wasm32"))]
 mod jobs;

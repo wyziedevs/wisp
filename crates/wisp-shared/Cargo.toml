@@ -9,3 +9,7 @@ repository.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+# `wisp::og(.., "auto")` names PNG pictures, not SVG (`wisp build` renders them with the cli's `og-png`).
+og-png = []
