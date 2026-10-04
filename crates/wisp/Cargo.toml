@@ -46,7 +46,6 @@ allocation-counter = "0.8"
 
 # Minifies the browser runtime for release builds (build.rs).
 [build-dependencies]
-wisp-build.workspace = true
 wisp-shared.workspace = true
 
 [features]

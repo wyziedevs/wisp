@@ -26,9 +26,28 @@ pub mod sha256;
 /// The browser runtime as written: `wisp.js`, which every page links (form
 /// actions, links that morph the page in place), and `live.js`, linked by a
 /// page with browser code. `wisp`'s build minifies them for release builds,
-/// and their hash is their `?v=` (`wisp_build::runtime_version`).
+/// and their hash is their `?v=` ([`runtime_version`]).
 pub const WISP_JS: &str = include_str!("client/wisp.js");
 pub const LIVE_JS: &str = include_str!("client/live.js");
+/// [`WISP_JS`] and [`LIVE_JS`] as release builds serve them
+/// (`wisp_build::minify_js`), kept in the repo so `wisp`'s build script
+/// needs no `wisp-build` and compiles beside it, not after it. A test in
+/// `wisp-build` proves they match, and rewrites them when they don't.
+pub const WISP_MIN_JS: &str = include_str!("client/wisp.min.js");
+pub const LIVE_MIN_JS: &str = include_str!("client/live.min.js");
+
+/// The `?v=` of the browser runtime (`/_app/wisp.js`, `/_app/live.js`):
+/// the version and a hash of both files, so a changed runtime has a new
+/// address and no browser keeps an old one from its cache.
+pub fn runtime_version() -> String {
+    // FNV-1a, 64-bit, over both files.
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in WISP_JS.bytes().chain(LIVE_JS.bytes()) {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{}-{:08x}", env!("CARGO_PKG_VERSION"), h as u32)
+}
 /// The less used half of live.js (`/_app/c/extra.js`), which a generated
 /// module imports when it uses it: `wisp-build` writes it out.
 pub const EXTRA_JS: &str = include_str!("client/extra.js");

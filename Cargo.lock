@@ -1573,7 +1573,6 @@ dependencies = [
  "tokio-rustls",
  "tower-service",
  "webpki-roots",
- "wisp-build",
  "wisp-macros",
  "wisp-shared",
 ]

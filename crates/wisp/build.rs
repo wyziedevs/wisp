@@ -1,7 +1,8 @@
 //! Release builds serve the browser runtime (`wisp_shared::WISP_JS`,
 //! `LIVE_JS`) minified: no comments, only the whitespace JavaScript needs,
-//! and short names (see `wisp_build::minify_js`). Dev builds serve the
-//! files as written, for debugging, so they minify nothing.
+//! and short names (`wisp_shared::WISP_MIN_JS`, made by `wisp_build::minify_js`).
+//! Dev builds serve the files as written, for debugging. No `wisp-build`
+//! here: it would make this crate wait for it to compile.
 
 use std::path::Path;
 
@@ -11,10 +12,10 @@ fn main() {
     // into the modules it generates.
     println!(
         "cargo:rustc-env=WISP_RUNTIME_V={}",
-        wisp_build::runtime_version()
+        wisp_shared::runtime_version()
     );
     // The base path the app is served under (see `protocol::BASE`).
-    println!("cargo:rustc-env=WISP_BASE={}", wisp_build::BASE);
+    println!("cargo:rustc-env=WISP_BASE={}", wisp_shared::protocol::BASE);
     // `WISP_REQUEST_ONLY=1` (`wisp build` sets it for Cloudflare, Pages, Vercel
     // and Netlify, whose hosts hand over whole requests): the wasm32 build
     // leaves out the server loop for raw connections, 25 KB it never runs.
@@ -29,10 +30,9 @@ fn main() {
     }
     let out = std::env::var("OUT_DIR").expect("cargo sets OUT_DIR");
     for (name, js) in [
-        ("wisp.js", wisp_shared::WISP_JS),
-        ("live.js", wisp_shared::LIVE_JS),
+        ("wisp.js", wisp_shared::WISP_MIN_JS),
+        ("live.js", wisp_shared::LIVE_MIN_JS),
     ] {
-        std::fs::write(Path::new(&out).join(name), wisp_build::minify_js(js))
-            .expect("OUT_DIR is writable");
+        std::fs::write(Path::new(&out).join(name), js).expect("OUT_DIR is writable");
     }
 }

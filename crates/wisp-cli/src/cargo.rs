@@ -189,6 +189,27 @@ pub fn build(root: &Path, release: bool, quiet: bool) -> Build {
     build_for(root, release, quiet, &[], &[])
 }
 
+/// What a build does to `WISP_BASE`, the base path compiled in.
+#[derive(Debug, PartialEq)]
+enum BaseEnv {
+    Keep,
+    Set(String),
+    Unset,
+}
+
+/// A release build's base is the environment's, else Cargo.toml's
+/// (`[package.metadata.wisp] base`). `wisp dev` serves at `/`: the variable
+/// unset, not set empty, since cargo reruns `wisp-shared`'s build script
+/// (and rebuilds every Wisp crate) when it goes from unset to empty, and a
+/// plain `cargo build` or the editor's `cargo check` leaves it unset.
+fn base_env(release: bool, set: bool, app_base: impl FnOnce() -> Option<String>) -> BaseEnv {
+    match (release, set) {
+        (true, true) | (false, false) => BaseEnv::Keep,
+        (true, false) => app_base().map_or(BaseEnv::Keep, BaseEnv::Set),
+        (false, true) => BaseEnv::Unset,
+    }
+}
+
 /// [`build`] with more of cargo's arguments, such as `--target
 /// wasm32-unknown-unknown` (whose "executable" is the `.wasm` file), and
 /// `env` set for cargo.
@@ -200,19 +221,15 @@ pub fn build_for(
     env: &[(&str, &str)],
 ) -> Build {
     let mut cmd = Command::new("cargo");
-    // The base path the app is served under, compiled in (`WISP_BASE`): a
-    // release build's, from Cargo.toml (`[package.metadata.wisp] base`) when
-    // the environment names none; `wisp dev` serves at `/`.
-    match release {
-        true => {
-            if std::env::var_os("WISP_BASE").is_none()
-                && let Some(base) = wisp_build::app_base(root)
-            {
-                cmd.env("WISP_BASE", base);
-            }
+    match base_env(release, std::env::var_os("WISP_BASE").is_some(), || {
+        wisp_build::app_base(root)
+    }) {
+        BaseEnv::Keep => {}
+        BaseEnv::Set(base) => {
+            cmd.env("WISP_BASE", base);
         }
-        false => {
-            cmd.env("WISP_BASE", "");
+        BaseEnv::Unset => {
+            cmd.env_remove("WISP_BASE");
         }
     }
     cmd.envs(env.iter().copied());
@@ -595,6 +612,17 @@ pub fn strip_ansi(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dev_leaves_the_base_unset_so_wisp_crates_stay_built() {
+        let none = || None;
+        assert_eq!(base_env(false, false, none), BaseEnv::Keep);
+        assert_eq!(base_env(false, true, none), BaseEnv::Unset);
+        assert_eq!(base_env(true, true, none), BaseEnv::Keep);
+        assert_eq!(base_env(true, false, none), BaseEnv::Keep);
+        let app = || Some("/app".to_string());
+        assert_eq!(base_env(true, false, app), BaseEnv::Set("/app".into()));
+    }
 
     #[test]
     fn stale_cli() {

@@ -539,14 +539,7 @@ pub const BASE: &str = protocol::BASE;
 /// address and no browser keeps an old one from its cache.
 pub fn runtime_version() -> &'static str {
     static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    V.get_or_init(|| {
-        let js = [wisp_shared::WISP_JS, wisp_shared::LIVE_JS].concat();
-        format!(
-            "{}-{:08x}",
-            env!("CARGO_PKG_VERSION"),
-            fnv1a(js.as_bytes()) as u32
-        )
-    })
+    V.get_or_init(wisp_shared::runtime_version)
 }
 
 /// FNV-1a, 64-bit. Used for shape and asset hashes, not for security.
@@ -576,5 +569,34 @@ mod tests {
         assert_eq!(super::fnv1a(b""), 0xcbf29ce484222325);
         assert_eq!(super::fnv1a(b"a"), 0xaf63dc4c8601ec8c);
         assert_eq!(super::fnv1a(b"foobar"), 0x85944171f73967e8);
+    }
+
+    /// The minified runtime `wisp` serves in release builds is kept in the
+    /// repo (`wisp_shared::WISP_MIN_JS`). A stale copy is rewritten here, and
+    /// the test fails until the next run builds with the new one.
+    #[test]
+    fn minified_runtime_is_current() {
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../wisp-shared/src/client");
+        let mut stale = Vec::new();
+        for (name, src, kept) in [
+            (
+                "wisp.min.js",
+                wisp_shared::WISP_JS,
+                wisp_shared::WISP_MIN_JS,
+            ),
+            (
+                "live.min.js",
+                wisp_shared::LIVE_JS,
+                wisp_shared::LIVE_MIN_JS,
+            ),
+        ] {
+            let min = super::minify_js(src);
+            if min != kept {
+                std::fs::write(dir.join(name), &min).unwrap();
+                stale.push(name);
+            }
+        }
+        assert!(stale.is_empty(), "rewrote {stale:?}: run the tests again");
     }
 }
