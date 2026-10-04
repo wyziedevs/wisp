@@ -13,6 +13,7 @@ import { wisp } from './bridge.mjs';
 // What `accept` answers when Bun has the request (the fetch handler then
 // returns nothing).
 const upgraded = new Response();
+const skip = (res) => (res === upgraded ? undefined : res);
 let server;
 function accept(request) {
   const ws = new EventTarget();
@@ -112,9 +113,10 @@ if (raw) {
     port,
     hostname,
     websocket,
-    fetch: async (request, s) => {
-      const res = await app.fetch(request, s.requestIP(request)?.address ?? '');
-      return res === upgraded ? undefined : res;
+    // A plain Response when the app answers at once: Bun takes one without a Promise.
+    fetch: (request, s) => {
+      const res = app.fetch(request, s.requestIP(request)?.address ?? '');
+      return res instanceof Response ? skip(res) : res.then(skip);
     },
   });
   console.log(`wisp: listening on http://${hostname}:${port}`);
