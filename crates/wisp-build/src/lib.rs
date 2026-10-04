@@ -447,7 +447,18 @@ pub fn check(root: &Path) -> Result<(Vec<String>, Vec<String>), String> {
     })
 }
 
-pub use codegen::{Hot, HotTemplate};
+pub use codegen::{Hot, HotTemplate, Weight};
+
+/// For `wisp build --analyze`: each route's browser files as a release
+/// build serves them.
+pub fn analyze(root: &Path) -> Result<Vec<(String, Vec<Weight>)>, String> {
+    codegen::analyze(&codegen::Input {
+        root,
+        release: true,
+        maps: false,
+        prerendered: None,
+    })
+}
 
 /// For `wisp dev`: the app as its dev build compiles it, as far as a
 /// running dev build can take it without a compile, and its accessibility

@@ -859,6 +859,109 @@ pub fn check(input: &Input) -> Result<(Vec<String>, Vec<String>), String> {
     Ok((o.web.imports(npm::ESM), o.warnings))
 }
 
+/// One file a page of a route loads, for `wisp build --analyze`.
+pub struct Weight {
+    /// `js`, `css` or `wasm`.
+    pub kind: &'static str,
+    pub name: String,
+    pub bytes: Vec<u8>,
+}
+
+/// `wisp build --analyze`: per route (its pattern), the browser files a
+/// page of it loads as they are served: the runtime, the modules of its
+/// templates and what they import, the CSS, and the `static/` `.wasm` files
+/// its JavaScript names. A route with no page is left out.
+pub fn analyze(input: &Input) -> Result<Vec<(String, Vec<Weight>)>, String> {
+    let p = Project::load(input)?;
+    let web = p.browser()?;
+    let js = |name: &str, src: &str| Weight {
+        kind: "js",
+        name: name.into(),
+        bytes: crate::minify_js(src).into_bytes(),
+    };
+    let mut css = match css_source(p.root)? {
+        Some(f) => fs::read(&f).map_err(|e| format!("{}: {e}", f.display()))?,
+        None => Vec::new(),
+    };
+    css.extend_from_slice(p.styles().as_bytes());
+    let mut wasm = Vec::new();
+    let static_dir = p.root.join("static");
+    if static_dir.is_dir() {
+        list_files(&static_dir, &mut wasm)?;
+        wasm.retain(|f| f.extension().is_some_and(|e| e == "wasm"));
+    }
+    let served = |f: &JsFile| match &f.file {
+        Some(file) => fs::read_to_string(file).unwrap_or_default(),
+        None => f.source.clone(),
+    };
+    let mut out = Vec::new();
+    for r in &p.model.routes {
+        let Some(page) = &r.page else { continue };
+        let tpls: Vec<usize> = (r.layouts.iter().map(|&l| p.model.layouts[l].tpl))
+            .chain([page.tpl])
+            .collect();
+        let mut files = vec![js(WISP_JS_PATH, wisp_shared::WISP_JS)];
+        let mut urls = Vec::new();
+        let mut live = false;
+        for c in tpls.iter().filter_map(|&t| web.clients[t].as_ref()) {
+            live = true;
+            urls.push(format!("{}?v={}", c.path(), c.hash));
+            urls.extend(c.preload.iter().cloned());
+            files.push(Weight {
+                kind: "js",
+                name: c.path(),
+                bytes: c.source.clone().into_bytes(),
+            });
+        }
+        if live {
+            files.push(js(LIVE_JS_PATH, wisp_shared::LIVE_JS));
+        }
+        urls.sort();
+        urls.dedup();
+        for f in &web.js_files {
+            let url = match f.file {
+                Some(_) => f.path.clone(),
+                None => format!("{}?v={}", f.path, f.hash),
+            };
+            if urls.contains(&url) && !files.iter().any(|w| w.name == f.path) {
+                files.push(Weight {
+                    kind: "js",
+                    name: f.path.clone(),
+                    bytes: served(f).into_bytes(),
+                });
+            }
+        }
+        if !css.is_empty() {
+            files.push(Weight {
+                kind: "css",
+                name: APP_CSS_PATH.into(),
+                bytes: css.clone(),
+            });
+        }
+        let text: String = files
+            .iter()
+            .filter(|w| w.kind == "js")
+            .map(|w| String::from_utf8_lossy(&w.bytes).into_owned())
+            .collect();
+        for f in &wasm {
+            let name = f
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if text.contains(&name) {
+                let bytes = fs::read(f).map_err(|e| format!("{}: {e}", f.display()))?;
+                files.push(Weight {
+                    kind: "wasm",
+                    name,
+                    bytes,
+                });
+            }
+        }
+        out.push((r.pattern.clone(), files));
+    }
+    Ok(out)
+}
+
 /// For `wisp dev`: what a running dev build takes without a compile, and a
 /// fingerprint of the rest.
 pub struct Hot {

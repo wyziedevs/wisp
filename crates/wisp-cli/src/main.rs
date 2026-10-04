@@ -1,5 +1,6 @@
 //! The `wisp` command.
 
+mod analyze;
 mod ask;
 mod cargo;
 mod ci;
@@ -30,7 +31,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 /// `wisp --help`: each command or option, and what it does.
-const COMMANDS: [(&str, &str); 26] = [
+const COMMANDS: [(&str, &str); 27] = [
     (
         "wisp new [name]",
         "Create an app. It asks a few questions; the options below answer them.",
@@ -46,6 +47,10 @@ const COMMANDS: [(&str, &str); 26] = [
     (
         "wisp build --sourcemap",
         "The same, with source maps for browser code, as wisp dev serves.",
+    ),
+    (
+        "wisp build --analyze",
+        "Print each route's JS, CSS and wasm bytes, raw and gzipped, largest first. Builds nothing.",
     ),
     (
         "wisp build --static [--out dist]",
@@ -300,6 +305,8 @@ struct BuildOptions {
     target: Option<String>,
     /// `--client ts`: write the TypeScript client of the app's endpoints.
     client: bool,
+    /// `--analyze`: print what each route sends to the browser, build nothing.
+    analyze: bool,
     /// `--sourcemap`: source maps for the browser modules, as in dev.
     sourcemap: bool,
     /// `--edge`: Vercel's or Netlify's edge runtime, not their Node functions.
@@ -307,7 +314,7 @@ struct BuildOptions {
 }
 
 fn build_options(args: &[String]) -> Result<BuildOptions, String> {
-    let usage = "wisp build takes --static or --spa [--out <folder>], --docker [--force], --target <host> [--edge] [--out <folder>], --client ts [--out <file>] and --sourcemap.";
+    let usage = "wisp build takes --static or --spa [--out <folder>], --docker [--force], --target <host> [--edge] [--out <folder>], --client ts [--out <file>], --sourcemap and --analyze.";
     let mut o = BuildOptions::default();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
@@ -324,6 +331,7 @@ fn build_options(args: &[String]) -> Result<BuildOptions, String> {
             "--docker" => o.docker = true,
             "--force" => o.force = true,
             "--sourcemap" => o.sourcemap = true,
+            "--analyze" => o.analyze = true,
             "--edge" => o.edge = true,
             "--client" | "--client=ts" => {
                 if arg == "--client" && args.next().map(String::as_str) != Some("ts") {
@@ -358,6 +366,10 @@ fn build_options(args: &[String]) -> Result<BuildOptions, String> {
         && !o.client
     {
         Some("--out goes with --static, --target or --client.")
+    } else if o.analyze
+        && (o.client || o.static_site || o.docker || o.target.is_some() || o.out.is_some())
+    {
+        Some("--analyze goes alone.")
     } else if o.sourcemap && (o.client || o.target.is_some()) {
         Some("--sourcemap goes with a binary build, or --static.")
     } else if o.edge && !matches!(o.target.as_deref(), Some("vercel" | "netlify")) {
@@ -436,6 +448,9 @@ fn project() -> Result<&'static Path, String> {
 
 fn build(root: &Path, o: &BuildOptions) -> Result<(), String> {
     cargo::warn_if_stale(root);
+    if o.analyze {
+        return analyze::run(root);
+    }
     if o.client {
         let ts = wisp_build::client_ts(root)?;
         if ts.is_empty() {
@@ -570,6 +585,8 @@ mod tests {
         assert!(opts("--client ts --out web/api.ts").unwrap().client);
         assert!(opts("--client=ts").unwrap().client);
         assert!(opts("--sourcemap --static").unwrap().sourcemap);
+        assert!(opts("--analyze").unwrap().analyze);
+        assert!(opts("--analyze --static").is_err());
         let spa = opts("--spa --out site").unwrap();
         assert!(spa.spa && spa.static_site && spa.out.as_deref() == Some("site"));
         assert!(opts("--sourcemap --client ts").is_err());

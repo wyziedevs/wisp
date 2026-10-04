@@ -1282,6 +1282,13 @@ branches).
   watches LCP, layout shifts and event timing with `PerformanceObserver` and
   sends one `sendBeacon` on `visibilitychange` hidden. Server side it is an
   ordinary route. About 430 bytes gzipped.
+- **Bundle analyzer.** `wisp build --analyze` (`analyze.rs` in the CLI, `codegen::analyze`)
+  reads the app like a release build, builds nothing, and for each page route
+  sums the files that page loads as served (wisp.js and live.js minified, its
+  templates' modules and their static imports, app.css, the `static/` `.wasm`
+  files its JavaScript names), raw and gzipped, sorted largest first, with the
+  files of the heaviest. The gzip size is counted with Wisp's own compressor
+  (fixed Huffman, a hash-chain matcher), without writing the bits.
 - **Version skew.** A release build puts `<meta name="wisp-build" content=ID>`
   in the shell (a hash of templates and Rust: baked, nothing per request).
   wisp.js compares it with the page a navigation fetched, as it does
