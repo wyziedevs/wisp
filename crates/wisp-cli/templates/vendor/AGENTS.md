@@ -72,6 +72,7 @@ fn add(todo: Todo) {
 
 let count = TODOS.len();
 ---
+
 <title>Todos ({count})</title>
 <form action="?/add" fields><button>Add</button></form>
 {#each TODOS.all() as todo}
@@ -125,8 +126,8 @@ Block rules:
 ```rust
 #[action]
 fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<String>) {
-    cx.flash("Liked");                  // cx is added when the body uses it
-    redirect("/")                       // 303; or end in `;` to re-render the page
+    cx.flash("Liked"); // cx is added when the body uses it
+    redirect("/") // 303; or end in `;` to re-render the page
 }
 ```
 
@@ -359,18 +360,19 @@ pub static USERS: Table<User> = Table::saved();
 ```
 ```html
 ---
-#[action]                                       // sign up
+#[action] // sign up
 fn signup(email: Email, #[validate(min_len = 8)] password: Password) {
-    cx.signup(User { email, password }).await?;  // hashes it; 422 if taken
+    cx.signup(User { email, password }).await?; // hashes it; 422 if taken
     redirect("/me")
 }
-#[action]                                       // log in
+#[action] // log in
 fn login(email: Email, password: String) {
-    cx.login(&email, &password).await?;         // 422 for either wrong, equally slow
+    cx.login(&email, &password).await?; // 422 for either wrong, equally slow
     redirect("/me")
 }
-let me = cx.user()?;                            // Row<User>, or 303 to /login
+let me = cx.user()?; // Row<User>, or 303 to /login
 ---
+
 <h1>{me.email}</h1>
 ```
 Both sign in. `user`, `login` and `signup` take the table for you: the only
