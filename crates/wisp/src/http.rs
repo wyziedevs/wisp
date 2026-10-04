@@ -3667,11 +3667,13 @@ async fn pump(
                 },
                 async {
                     loop {
-                        if early.len() >= KEEP_CAPACITY {
-                            std::future::pending::<()>().await;
-                        }
                         match stream.read(early).await {
                             Ok(0) | Err(_) => return Next::Gone,
+                            // More than a connection keeps, sent behind an
+                            // answer still streaming: the connection ends.
+                            // Not reading on would miss the client leaving,
+                            // and hold a quiet stream open for good.
+                            Ok(_) if early.len() > KEEP_CAPACITY => return Next::Gone,
                             Ok(_) => {}
                         }
                     }

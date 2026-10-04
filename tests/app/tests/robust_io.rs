@@ -136,3 +136,31 @@ fn http_1_1_must_name_one_host() {
     );
     assert_eq!(sent(b"GET / HTTP/1.0\r\n\r\n"), 200);
 }
+
+#[test]
+fn a_client_that_leaves_a_quiet_stream_after_sending_much_frees_its_connection() {
+    // Behind a stream that sends nothing more, a client sends more than a
+    // connection keeps, then goes: its leaving is still heard, and its
+    // connection freed, though the stream never writes again.
+    let s = start(&[("WISP_MAX_CONNS", "1")]);
+    let mut c = BufReader::new(connect(s.port));
+    c.get_mut()
+        .write_all(b"GET /t/quiet HTTP/1.1\r\nhost: x\r\n\r\n")
+        .unwrap();
+    let head = read_head(&mut c);
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+    let held = s.send(b"GET / HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n");
+    assert_ne!(status(&held), 200, "the cap holds while it is open: {held}");
+    let _ = c.get_mut().write_all(&vec![b'x'; 200_000]);
+    std::thread::sleep(Duration::from_millis(100));
+    drop(c);
+    let until = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let answer = s.send(b"GET / HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n");
+        if status(&answer) == 200 {
+            break;
+        }
+        assert!(std::time::Instant::now() < until, "still held: {answer}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}

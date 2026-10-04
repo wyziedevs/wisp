@@ -908,6 +908,19 @@
         }
       }
     },
+    "/t/quiet": {
+      "get": {
+        "operationId": "get_t_quiet",
+        "responses": {
+          "200": {
+            "description": "A response"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
     "/t/stuck": {
       "get": {
         "operationId": "get_t_stuck",
