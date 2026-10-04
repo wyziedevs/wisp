@@ -624,6 +624,28 @@ fn walk(
 /// GET of the route when `get` is its `/[id]`'s.
 pub const HANDLERS: [&str; 6] = ["get", "post", "put", "patch", "delete", "list"];
 
+/// A file's `const RUNTIME: wisp::Runtime = wisp::Runtime::Edge;`: whether it
+/// is Edge, none without one. The error is a message for the file's line.
+pub fn edge(items: &crate::rust_scan::Items) -> Result<Option<bool>, (usize, String)> {
+    let Some(c) = items.constant("RUNTIME") else {
+        return Ok(None);
+    };
+    let value = c.value.replace(' ', "");
+    let name = value.rsplit("::").next().unwrap_or("");
+    let path = value.trim_end_matches(name).trim_end_matches("::");
+    let ok = !c.is_static
+        && c.ty.replace(' ', "").rsplit("::").next() == Some("Runtime")
+        && matches!(path, "wisp::Runtime" | "::wisp::Runtime" | "Runtime");
+    match (ok, name) {
+        (true, "Edge") => Ok(Some(true)),
+        (true, "Node") => Ok(Some(false)),
+        _ => Err((
+            c.line,
+            "the build reads `RUNTIME`: write `const RUNTIME: wisp::Runtime = wisp::Runtime::Edge;` (or `Node`), as a literal".into(),
+        )),
+    }
+}
+
 /// Whether handler `f` serves its route's `/[id]`: it takes an `id` that
 /// the route (`segs`) does not have.
 pub fn is_member(f: &crate::rust_scan::FnItem, segs: &[Seg]) -> bool {
