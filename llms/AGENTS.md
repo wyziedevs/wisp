@@ -447,7 +447,7 @@ no-wait fast path off every route.
   + `.with_status(s) .with_header(n, v)`.
 - `Response::websocket(|ws| async move { while let Some(m) = ws.recv().await {
   ws.send(m).await?; } Ok(()) })`: binary, node, bun, deno, cloudflare, pages;
-  vercel, netlify, lambda, tower answer 501 (docs/deploy.md). On the edge a
+  vercel, netlify, lambda, tower answer 501 (https://wispweb.dev/docs/deploy). On the edge a
   connection lives in one instance: no state shared by connections (a Durable
   Object's job on Cloudflare); `wisp::channel` is native only.
 - State: `Table<T>`: `add(v)→id get(id) all() find(f) filter(f) update(id, f)

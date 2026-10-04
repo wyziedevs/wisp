@@ -359,7 +359,13 @@ mod tests {
             .str("text")
             .unwrap()
             .to_string();
-        assert!(text.starts_with("## AGENTS.md > hooks.rs"), "{text}");
+        // AGENTS.md alone, or the site's design page too (it ranks first when present).
+        let title = text.lines().next().unwrap_or_default();
+        assert!(
+            title.starts_with("## ") && title.contains("hooks"),
+            "{text}"
+        );
+        assert!(text.lines().count() > 2, "{text}");
         let bad = reply(r#"{"jsonrpc":"2.0","id":3,"method":"nope"}"#);
         assert_eq!(
             bad.get("error").unwrap().get("code"),
