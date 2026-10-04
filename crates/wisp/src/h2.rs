@@ -10,7 +10,12 @@
 //! HTTP/1: a stream's HEADERS and DATA become an HTTP/1.1 request
 //! (`Cx::from_request`), and the HTTP/1.1 answer becomes HEADERS and DATA.
 //!
-//! Streams are answered one at a time, in the order they end. HPACK is our
+//! Streams are answered at once: each stream's handler runs as its own
+//! future on the connection, and DATA from every answer in flight is
+//! interleaved a frame at a time, within the stream and connection
+//! windows. Frames are read all the while, so WINDOW_UPDATE, PING, new
+//! HEADERS and RST_STREAM (which drops that stream's handler or body) are
+//! taken during a long stream. HPACK is our
 //! own (static and dynamic tables, Huffman), so the feature adds no
 //! dependency. Limits: 100 concurrent streams, 16 KiB header lists, 16 KiB
 //! frames, a 4 KiB dynamic table; a reset flood, a CONTINUATION flood, an
@@ -75,7 +80,6 @@ pub(crate) enum Code {
 /// A request whose stream ended: what [`serve`] answers.
 #[derive(Debug, Default)]
 pub(crate) struct Request {
-    pub id: u32,
     pub method: String,
     pub path: String,
     pub authority: String,
@@ -120,6 +124,8 @@ pub(crate) struct Session {
     /// Whether the preface came.
     greeted: bool,
     resets: u32,
+    /// Streams we ended: a reset one never counts, so a client cannot
+    /// start handlers and cancel them past `RESET_BUDGET`.
     answered: u32,
     idle: u32,
     /// The largest body a request may have (per path, see `limit`).
@@ -266,7 +272,12 @@ impl Session {
                 let mut b = unpad(flags, p)?;
                 if flags & PRIORITY_FLAG != 0 {
                     if b.len() < 5 {
-                        return Err(Conn(Code::FrameSize));
+                        // Padding that took the priority's room.
+                        let code = match flags & PADDED {
+                            0 => Code::FrameSize,
+                            _ => Code::Protocol,
+                        };
+                        return Err(Conn(code));
                     }
                     let dep = u32::from_be_bytes([b[0], b[1], b[2], b[3]]) & 0x7fff_ffff;
                     b = &b[5..];
@@ -463,7 +474,10 @@ impl Session {
         let id = b.id;
         if let Some(i) = self.find(id) {
             // Trailers: they must end the stream, and are dropped.
-            if self.streams[i].ended || !b.end_stream {
+            if self.streams[i].ended {
+                return Err(Fault::Stream(id, Code::StreamClosed));
+            }
+            if !b.end_stream {
                 return Err(Fault::Conn(Code::Protocol));
             }
             if fields.iter().any(|(n, _)| n.starts_with(b":")) {
@@ -478,7 +492,7 @@ impl Session {
         if self.streams.len() >= MAX_STREAMS {
             return Err(Fault::Stream(id, Code::Refused));
         }
-        let (req, length) = request(id, fields).map_err(|c| Fault::Stream(id, c))?;
+        let (req, length) = request(fields).map_err(|c| Fault::Stream(id, c))?;
         self.streams.push(Stream {
             id,
             send: self.peer_window,
@@ -521,7 +535,6 @@ impl Session {
     /// The request of `id`, to answer: `None` when it was reset meanwhile.
     pub(crate) fn take(&mut self, id: u32) -> Option<Request> {
         let i = self.find(id)?;
-        self.answered += 1;
         self.idle = 0;
         Some(std::mem::take(&mut self.streams[i].req))
     }
@@ -560,8 +573,15 @@ impl Session {
             }
         }
         if end {
-            self.forget(id);
+            self.finish(id);
         }
+    }
+
+    /// We ended stream `id`: one answered.
+    fn finish(&mut self, id: u32) {
+        self.answered += 1;
+        self.idle = 0;
+        self.forget(id);
     }
 
     /// Sends what of `data` the windows let through on `id`: how much.
@@ -586,7 +606,7 @@ impl Session {
             at += n;
             if last {
                 if end {
-                    self.forget(id);
+                    self.finish(id);
                 }
                 return at;
             }
@@ -651,11 +671,8 @@ fn connection_specific(n: &[u8]) -> bool {
 }
 
 /// A request from a stream's decoded header fields (RFC 9113 §8.3).
-fn request(id: u32, fields: Vec<(Vec<u8>, Vec<u8>)>) -> Result<(Request, Option<u64>), Code> {
-    let mut r = Request {
-        id,
-        ..Request::default()
-    };
+fn request(fields: Vec<(Vec<u8>, Vec<u8>)>) -> Result<(Request, Option<u64>), Code> {
+    let mut r = Request::default();
     let (mut scheme, mut regular, mut length) = (false, false, None);
     let text = |v: Vec<u8>| String::from_utf8(v).map_err(|_| Code::Protocol);
     for (n, v) in fields {
@@ -1044,23 +1061,61 @@ pub(super) use driver::serve;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod driver {
-    use super::{Code, Request, Session};
+    use super::{Request, Session};
     use crate::App;
     use crate::cx::Cx;
     use crate::cx::Method;
-    use crate::http::{Buffers, Conn, body_limit, decide, read, seconds, serialize};
-    use crate::policy::{self, KEEP_CAPACITY};
+    use crate::http::{
+        Buffers, Conn, body_limit, decide, give_buffers, read, seconds, serialize, take_buffers,
+    };
+    use crate::policy;
+    use std::future::{Future, poll_fn};
     use std::io;
+    use std::net::SocketAddr;
+    use std::pin::{Pin, pin};
+    use std::task::{Context, Poll};
+    use tokio::sync::mpsc::Receiver;
+
+    /// What a stream's handler made: the head of its answer and the body.
+    struct Prepared {
+        status: u16,
+        /// Lowercase names.
+        headers: Vec<(Vec<u8>, Vec<u8>)>,
+        /// The body, or its start when `body` streams the rest.
+        rest: Vec<u8>,
+        body: Option<Receiver<Vec<u8>>>,
+    }
+
+    /// A stream being answered: its handler running, then its body going.
+    enum Phase<F> {
+        Deciding(Pin<Box<F>>),
+        /// `bytes[at..]` waits for the windows; `body` brings more, and
+        /// when it is `None` the last of `bytes` ends the stream.
+        Sending {
+            bytes: Vec<u8>,
+            at: usize,
+            body: Option<Receiver<Vec<u8>>>,
+        },
+    }
+
+    struct Job<F> {
+        id: u32,
+        phase: Phase<F>,
+    }
 
     /// Serves an HTTP/2 connection whose first bytes (the preface, maybe
-    /// more) are in `b.cx.wire.buf`, until it closes.
+    /// more) are in `b.cx.wire.buf`, until it closes. Each whole request
+    /// becomes a [`Job`] polled beside the read, so one long answer holds
+    /// back no other stream.
     pub(in crate::http) async fn serve<A: App>(
         stream: &mut Conn,
         b: &mut Buffers,
-        mut timer: std::pin::Pin<&mut tokio::time::Sleep>,
+        mut timer: Pin<&mut tokio::time::Sleep>,
     ) {
         let mut s = Session::new(body_limit::<A>);
         let mut inbuf = std::mem::take(&mut b.cx.wire.buf);
+        let peer = b.cx.wire.peer;
+        let mut jobs = Vec::new();
         loop {
             let used = s.feed(&inbuf);
             inbuf.drain(..used);
@@ -1069,133 +1124,185 @@ mod driver {
                     break;
                 }
                 let Some(req) = s.take(id) else { continue };
-                if answer::<A>(stream, &mut s, &mut inbuf, b, req, timer.as_mut())
-                    .await
-                    .is_err()
-                {
-                    return;
+                if req.too_large {
+                    s.head(id, 413, &[], true);
+                    continue;
                 }
+                let phase = Phase::Deciding(Box::pin(prepare::<A>(req, peer)));
+                jobs.push(Job { id, phase });
             }
+            // A reset stream's job goes: its handler or body is dropped.
+            jobs.retain(|j| s.open(j.id));
+            pump(&mut s, &mut jobs);
             if !s.out.is_empty() && stream.write(&mut s.out).await.is_err() {
                 return;
             }
-            if s.done || crate::http::stopping() {
+            if s.done || jobs.is_empty() && crate::http::stopping() {
                 stream.shutdown().await;
                 return;
             }
             inbuf.reserve(super::MAX_FRAME + 9);
-            let deadline = policy::idle_deadline(seconds());
-            match read(stream, &mut inbuf, timer.as_mut(), deadline).await {
-                Ok(n) if n > 0 => {}
-                _ => return,
+            // Only the windows hold the answers back (or there are none):
+            // the client owes us frames, so it has the idle deadline.
+            let owed = jobs.iter().all(|j| match &j.phase {
+                Phase::Deciding(_) => false,
+                Phase::Sending { bytes, at, body } => *at < bytes.len() || body.is_none(),
+            });
+            let event = match owed {
+                true => {
+                    let deadline = policy::idle_deadline(seconds());
+                    let rd = read(stream, &mut inbuf, timer.as_mut(), deadline);
+                    wait(rd, &mut s, &mut jobs).await
+                }
+                false => wait(stream.read(&mut inbuf), &mut s, &mut jobs).await,
+            };
+            match event {
+                None | Some(Ok(1..)) => {}
+                Some(_) => return,
             }
         }
     }
 
-    /// Answers `req` through the HTTP/1 path, onto its stream.
-    async fn answer<A: App>(
-        stream: &mut Conn,
+    /// Waits for frames from the client (`Some`, what the read gave) or for
+    /// a job to move (`None`). The read is safe to drop unfinished.
+    async fn wait<F: Future<Output = Prepared>>(
+        rd: impl Future<Output = io::Result<usize>>,
         s: &mut Session,
-        inbuf: &mut Vec<u8>,
-        b: &mut Buffers,
-        req: Request,
-        mut timer: std::pin::Pin<&mut tokio::time::Sleep>,
-    ) -> io::Result<()> {
-        let id = req.id;
-        if req.too_large {
-            s.head(id, 413, &[], true);
-            return Ok(());
+        jobs: &mut [Job<F>],
+    ) -> Option<io::Result<usize>> {
+        let mut rd = pin!(rd);
+        poll_fn(|cx| {
+            if let Poll::Ready(r) = rd.as_mut().poll(cx) {
+                return Poll::Ready(Some(r));
+            }
+            match progress(s, jobs, cx) {
+                true => Poll::Ready(None),
+                false => Poll::Pending,
+            }
+        })
+        .await
+    }
+
+    /// Polls each job once: whether one moved (a head ready, a chunk come,
+    /// a body ended).
+    fn progress<F: Future<Output = Prepared>>(
+        s: &mut Session,
+        jobs: &mut [Job<F>],
+        cx: &mut Context,
+    ) -> bool {
+        let mut moved = false;
+        for j in jobs.iter_mut() {
+            match &mut j.phase {
+                Phase::Deciding(f) => {
+                    let Poll::Ready(p) = f.as_mut().poll(cx) else {
+                        continue;
+                    };
+                    moved = true;
+                    let list: Vec<(&[u8], &[u8])> =
+                        p.headers.iter().map(|(n, v)| (&n[..], &v[..])).collect();
+                    let end = p.rest.is_empty() && p.body.is_none();
+                    s.head(j.id, p.status, &list, end);
+                    j.phase = Phase::Sending {
+                        bytes: p.rest,
+                        at: 0,
+                        body: p.body,
+                    };
+                }
+                Phase::Sending { bytes, at, body } => {
+                    let Some(rx) = body else { continue };
+                    if *at < bytes.len() {
+                        continue;
+                    }
+                    match rx.poll_recv(cx) {
+                        Poll::Ready(Some(chunk)) => {
+                            *bytes = chunk;
+                            *at = 0;
+                        }
+                        Poll::Ready(None) => *body = None,
+                        Poll::Pending => continue,
+                    }
+                    moved = true;
+                }
+            }
         }
+        moved
+    }
+
+    /// Sends what the windows let through, a frame per stream in turn, so
+    /// the answers in flight share the connection. Ended jobs go.
+    fn pump<F>(s: &mut Session, jobs: &mut Vec<Job<F>>) {
+        loop {
+            let mut moved = false;
+            for j in jobs.iter_mut() {
+                let Phase::Sending { bytes, at, body } = &mut j.phase else {
+                    continue;
+                };
+                let end = body.is_none();
+                if *at == bytes.len() && !end {
+                    continue;
+                }
+                let n = (bytes.len() - *at).min(s.peer_frame);
+                let whole = *at + n == bytes.len();
+                let sent = s.data(j.id, &bytes[*at..*at + n], end && whole);
+                *at += sent;
+                moved |= sent > 0 || !s.open(j.id);
+                if *at == bytes.len() && !end {
+                    // The chunk went: its memory goes with it.
+                    *bytes = Vec::new();
+                    *at = 0;
+                }
+            }
+            jobs.retain(|j| s.open(j.id));
+            if !moved {
+                return;
+            }
+        }
+    }
+
+    /// Answers `req` through the HTTP/1 path, in buffers of its own, so the
+    /// streams in flight never share one.
+    async fn prepare<A: App>(req: Request, peer: SocketAddr) -> Prepared {
+        let bare = |status| Prepared {
+            status,
+            headers: Vec::new(),
+            rest: Vec::new(),
+            body: None,
+        };
         let host = req.authority.as_bytes();
         let headers = req
             .headers
             .iter()
             .map(|(n, v)| (n.as_str(), &v[..]))
             .chain((!host.is_empty()).then_some(("host", host)));
-        let peer = b.cx.wire.peer;
         let mut cx = match Cx::from_request::<A>(&req.method, &req.path, headers, &req.body, peer) {
             Ok(cx) => cx,
-            Err(status) => {
-                s.head(id, status, &[], true);
-                return Ok(());
-            }
+            Err(status) => return bare(status),
         };
+        let mut b = take_buffers(peer);
         let Buffers {
             wbuf, out, reply, ..
-        } = b;
+        } = &mut *b;
         decide::<A>(&mut cx, out, reply, None).await;
         let head_only = cx.method == Method::Head;
         wbuf.clear();
         let body = serialize::<A, true>(wbuf, reply, out, true, true, head_only);
         let mut fields = [httparse::EMPTY_HEADER; 128];
         let mut parsed = httparse::Response::new(&mut fields);
-        let (status, at) = match parsed.parse(wbuf) {
-            Ok(httparse::Status::Complete(at)) => (parsed.code.unwrap_or(500), at),
-            _ => {
-                s.goaway(Code::Internal);
-                return Ok(());
-            }
+        let p = match parsed.parse(wbuf) {
+            Ok(httparse::Status::Complete(at)) => Prepared {
+                status: parsed.code.unwrap_or(500),
+                headers: parsed
+                    .headers
+                    .iter()
+                    .map(|h| (h.name.to_ascii_lowercase().into_bytes(), h.value.to_vec()))
+                    .collect(),
+                rest: wbuf[at..].to_vec(),
+                body: body.map(|b| b.body),
+            },
+            _ => bare(500),
         };
-        let mut names: Vec<Vec<u8>> = Vec::with_capacity(parsed.headers.len());
-        for h in parsed.headers.iter() {
-            names.push(h.name.to_ascii_lowercase().into_bytes());
-        }
-        let list: Vec<(&[u8], &[u8])> = names
-            .iter()
-            .zip(parsed.headers.iter())
-            .map(|(n, h)| (&n[..], h.value))
-            .collect();
-        let rest = &wbuf[at..];
-        let end = rest.is_empty() && body.is_none();
-        s.head(id, status, &list, end);
-        drop(list);
-        if end {
-            return Ok(());
-        }
-        let rest = wbuf[at..].to_vec();
-        send(stream, s, inbuf, id, &rest, body.is_none(), timer.as_mut()).await?;
-        if let Some(mut body) = body.map(|b| b.body) {
-            while let Some(chunk) = body.recv().await {
-                if !s.open(id) {
-                    return Ok(());
-                }
-                send(stream, s, inbuf, id, &chunk, false, timer.as_mut()).await?;
-            }
-            send(stream, s, inbuf, id, &[], true, timer.as_mut()).await?;
-        }
-        Ok(())
-    }
-
-    /// Sends `data` on stream `id` as the windows allow, reading the
-    /// client's frames (WINDOW_UPDATE among them) while it waits.
-    async fn send(
-        stream: &mut Conn,
-        s: &mut Session,
-        inbuf: &mut Vec<u8>,
-        id: u32,
-        data: &[u8],
-        end: bool,
-        mut timer: std::pin::Pin<&mut tokio::time::Sleep>,
-    ) -> io::Result<()> {
-        let mut at = 0;
-        loop {
-            at += s.data(id, &data[at..], end);
-            if at == data.len() && (!end || !s.open(id)) || s.done {
-                if s.out.len() >= KEEP_CAPACITY {
-                    stream.write(&mut s.out).await?;
-                }
-                return Ok(());
-            }
-            stream.write(&mut s.out).await?;
-            let deadline = policy::idle_deadline(seconds());
-            match read(stream, inbuf, timer.as_mut(), deadline).await {
-                Ok(n) if n > 0 => {}
-                Ok(_) => return Err(io::ErrorKind::UnexpectedEof.into()),
-                Err(e) => return Err(e),
-            }
-            let used = s.feed(inbuf);
-            inbuf.drain(..used);
-        }
+        give_buffers(b);
+        p
     }
 }
 
@@ -1687,5 +1794,55 @@ mod tests {
         let first = (s.out[1] as usize) << 8 | s.out[2] as usize;
         assert_eq!(first, MAX_FRAME);
         assert_eq!(s.out[9 + first + 3], CONTINUATION);
+    }
+
+    #[test]
+    fn a_stalled_stream_holds_back_no_other() {
+        let (mut s, _) = run(&[
+            frame(HEADERS, END_HEADERS | END_STREAM, 1, &get("/big")),
+            frame(HEADERS, END_HEADERS | END_STREAM, 3, &get("/small")),
+        ]);
+        s.take(1);
+        s.take(3);
+        s.head(1, 200, &[], false);
+        s.head(3, 200, &[], false);
+        // Stream 1 shrinks to a 10-byte window; the connection's is open.
+        let mut w = frame(SETTINGS, 0, 0, &[0, 4, 0, 0, 0, 10]);
+        w.extend(frame(WINDOW_UPDATE, 0, 3, &[0, 0, 0xff, 0xf5]));
+        assert_eq!(s.feed(&w), w.len());
+        assert_eq!(s.data(1, &[1; 100], false), 10, "stalled at its window");
+        assert_eq!(s.data(1, &[1; 90], false), 0);
+        assert_eq!(s.data(3, b"done", true), 4, "the other stream goes on");
+        assert!(!s.open(3));
+        // An update resumes it.
+        let w = frame(WINDOW_UPDATE, 0, 1, &[0, 0, 0, 90]);
+        assert_eq!(s.feed(&w), w.len());
+        assert_eq!(s.data(1, &[1; 90], true), 90);
+        assert!(!s.open(1));
+    }
+
+    #[test]
+    fn a_reset_ends_a_streaming_answer() {
+        let (mut s, _) = run(&[frame(HEADERS, END_HEADERS | END_STREAM, 1, &get("/events"))]);
+        s.take(1);
+        s.head(1, 200, &[], false);
+        assert_eq!(s.data(1, b"data: 1\n\n", false), 9);
+        let r = frame(RST_STREAM, 0, 1, &[0, 0, 0, 8]);
+        assert_eq!(s.feed(&r), r.len());
+        assert!(!s.open(1), "the driver drops its body");
+        s.out.clear();
+        assert_eq!(s.data(1, b"data: 2\n\n", false), 9, "taken, not sent");
+        assert!(s.out.is_empty());
+        assert!(!s.done);
+        // Handlers started and then reset never earn reset budget.
+        let mut s = Session::new(limit);
+        s.feed(PREFACE);
+        for i in 0..400u32 {
+            let id = 2 * i + 1;
+            s.feed(&frame(HEADERS, END_HEADERS | END_STREAM, id, &get("/")));
+            assert!(s.take(id).is_some() || s.done);
+            s.feed(&frame(RST_STREAM, 0, id, &[0, 0, 0, 8]));
+        }
+        assert!(s.done, "a reset flood of taken streams ends the connection");
     }
 }

@@ -1619,6 +1619,19 @@
         }
       }
     },
+    "/ticker": {
+      "get": {
+        "operationId": "get_ticker",
+        "responses": {
+          "200": {
+            "description": "A response"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
     "/traced": {
       "get": {
         "operationId": "get_traced",
