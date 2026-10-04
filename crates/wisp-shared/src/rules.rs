@@ -62,13 +62,26 @@ struct Def {
     native: fn(n: &mut Native, x: &str, k: Kind),
 }
 
+/// A `min` or `max` bound as Rust: an integer literal as an `i128`, so one
+/// past `i32` compiles and integer fields compare to it exactly; a float or
+/// a const as it is.
+fn bound(x: &str) -> String {
+    let t = x.trim();
+    let digits = t.strip_prefix('-').unwrap_or(t);
+    if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit() || b == b'_') {
+        format!("{t}i128")
+    } else {
+        t.to_string()
+    }
+}
+
 /// Every rule.
 const DEFS: [Def; 10] = [
     Def {
         key: Key::Min,
         name: "min",
         takes: Takes::Value,
-        check: |v, x| format!("::wisp::json::check::min({v}, ({x}) as f64)"),
+        check: |v, x| format!("::wisp::json::check::min({v}, {})", bound(x)),
         native: |n, x, k| {
             if k.number {
                 n.min = plain(x);
@@ -79,7 +92,7 @@ const DEFS: [Def; 10] = [
         key: Key::Max,
         name: "max",
         takes: Takes::Value,
-        check: |v, x| format!("::wisp::json::check::max({v}, ({x}) as f64)"),
+        check: |v, x| format!("::wisp::json::check::max({v}, {})", bound(x)),
         native: |n, x, k| {
             if k.number {
                 n.max = plain(x);
@@ -471,8 +484,9 @@ mod tests {
         assert!(rule("max_size", Some("1")).is_err());
         // Each rule: what it checks with, and the error it gives.
         for (rules, want) in [
-            ("min = -2", Ok("::wisp::json::check::min(&x, (-2) as f64)")),
-            ("max = N", Ok("::wisp::json::check::max(&x, (N) as f64)")),
+            ("min = -2", Ok("::wisp::json::check::min(&x, -2i128)")),
+            ("max = N", Ok("::wisp::json::check::max(&x, N)")),
+            ("max = 1.5", Ok("::wisp::json::check::max(&x, 1.5)")),
             ("min_len = 1", Ok("::wisp::json::check::min_len(&x, 1)")),
             ("max_len = 9", Ok("::wisp::json::check::max_len(&x, 9)")),
             ("len = 1..=9", Ok("::wisp::rt_traits::len(&x, 1..=9)")),
