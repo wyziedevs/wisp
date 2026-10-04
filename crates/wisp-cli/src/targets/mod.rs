@@ -8,6 +8,9 @@ use crate::{cargo, css, deploy, images, npm, term};
 use jobs::Jobs;
 use std::path::Path;
 use std::time::Instant;
+use wisp_build::routes::Seg;
+
+mod runtime;
 
 mod jobs;
 
@@ -22,7 +25,7 @@ const BUN: &str = include_str!("bun.mjs");
 
 /// Vercel's `config.json`: static files first, then the one function, and
 /// the app's cron schedules, which Vercel requests by their path.
-fn vercel_config(jobs: &Jobs) -> String {
+fn vercel_config(jobs: &Jobs, to_edge: &str) -> String {
     let crons: Vec<_> = jobs
         .triggers()
         .into_iter()
@@ -33,7 +36,7 @@ fn vercel_config(jobs: &Jobs) -> String {
         false => format!(r#","crons":[{}]"#, crons.join(",")),
     };
     format!(
-        r#"{{"version":3,"routes":[{{"handle":"filesystem"}},{{"src":"/(.*)","dest":"/index"}}]{crons}}}"#
+        r#"{{"version":3,"routes":[{{"handle":"filesystem"}},{to_edge}{{"src":"/(.*)","dest":"/index"}}]{crons}}}"#
     )
 }
 
@@ -109,6 +112,12 @@ pub fn build(root: &Path, host: &str, edge: bool, out: &Path) -> Result<(), Stri
         ));
     }
     let imports = crate::check(root)?;
+    // Routes with `RUNTIME = Edge`: only a host with both runtimes has any
+    // use for them, and `--edge` puts every route there.
+    let edges = match host {
+        "vercel" | "netlify" if !edge => runtime::edge_routes(root)?,
+        _ => Vec::new(),
+    };
     css::build(root)?;
     images::build(root);
     npm::vendor(root, &imports)?;
@@ -131,10 +140,30 @@ pub fn build(root: &Path, host: &str, edge: bool, out: &Path) -> Result<(), Stri
         .filter(|_| b.ok)
         .ok_or("The build failed.\nThe compiler's errors are above.")?;
     let app = std::fs::read(&app).map_err(|e| format!("{}: {e}", app.display()))?;
+    // The same app again for the edge function, built smaller.
+    let edge_app = match edges.is_empty() {
+        true => None,
+        false => {
+            term::step(&format!(
+                "Building the edge function for {} routes",
+                edges.len()
+            ));
+            let env = [("CARGO_PROFILE_RELEASE_OPT_LEVEL", "s"), strip];
+            let b = cargo::build_for(root, true, false, &["--target", target], &env);
+            let exe = b
+                .exe
+                .filter(|_| b.ok)
+                .ok_or("The edge build failed.\nThe compiler's errors are above.")?;
+            Some(std::fs::read(&exe).map_err(|e| format!("{}: {e}", exe.display()))?)
+        }
+    };
     let package = cargo::package_name(root).ok_or("Cargo.toml has no package name.")?;
     let has_static = root.join("static").is_dir();
     let skips = skips(&root.join("static"));
     let mut layout = layout(host, &package, app, has_static, edge, &skips, &jobs)?;
+    if let Some(wasm) = edge_app {
+        add_edge(&mut layout, host, wasm, &skips, &edges, &jobs);
+    }
     if host == "pages" {
         layout
             .files
@@ -215,7 +244,7 @@ fn layout(
         },
         "vercel" if edge => Layout {
             files: vec![
-                (".vercel/output/config.json", vercel_config(jobs).into_bytes()),
+                (".vercel/output/config.json", vercel_config(jobs, "").into_bytes()),
                 (".vercel/output/functions/index.func/.vc-config.json", text(r#"{"runtime":"edge","entrypoint":"index.mjs"}"#)),
                 (".vercel/output/functions/index.func/index.mjs", text(VERCEL_EDGE)),
                 (".vercel/output/functions/index.func/bridge.mjs", bridge()),
@@ -240,7 +269,7 @@ fn layout(
         "vercel" => {
             Layout {
                 files: vec![
-                    (".vercel/output/config.json", vercel_config(jobs).into_bytes()),
+                    (".vercel/output/config.json", vercel_config(jobs, "").into_bytes()),
                     (
                         ".vercel/output/functions/index.func/.vc-config.json",
                         text(r#"{"runtime":"nodejs22.x","handler":"index.mjs","launcherType":"Nodejs","shouldAddHelpers":false,"supportsResponseStreaming":true}"#),
@@ -308,6 +337,62 @@ fn netlify_cron(expr: &str) -> String {
         "// Netlify scheduled function: runs the app's `wisp::cron` tasks of this schedule.\nimport app from './wisp.mjs';\n\nexport default async () => {{\n  const headers = {{ authorization: `Bearer ${{process.env.CRON_SECRET}}` }};\n  const res = await app(new Request('https://wisp.invalid{}', {{ headers }}), {{}});\n  if (!res.ok) throw new Error(`cron {expr}: ${{res.status}}`);\n}};\n\nexport const config = {{ schedule: '{expr}' }};\n",
         jobs::path(expr)
     )
+}
+
+/// Both runtimes from one app: the Node function `layout` has, and an edge
+/// function for the routes `edges` (see `runtime`), which the host's routing
+/// sends there. Static files are the CDN's either way.
+fn add_edge(
+    layout: &mut Layout,
+    host: &str,
+    wasm: Vec<u8>,
+    skips: &[String],
+    edges: &[Vec<Seg>],
+    jobs: &Jobs,
+) {
+    let quoted = |f: fn(&[Seg]) -> String, q: char| -> Vec<String> {
+        let mut v: Vec<_> = edges.iter().map(|s| f(s)).collect();
+        v.sort();
+        v.dedup();
+        v.into_iter()
+            .map(|p| format!("{q}{}{q}", p.replace('\\', "\\\\")))
+            .collect()
+    };
+    let bridge = BRIDGE.as_bytes().to_vec();
+    if host == "vercel" {
+        let to_edge: String = quoted(runtime::vercel, '"')
+            .iter()
+            .map(|p| format!("{{\"src\":{p},\"dest\":\"/edge\"}},"))
+            .collect();
+        let config = vercel_config(jobs, &to_edge);
+        layout
+            .files
+            .retain(|(p, _)| *p != ".vercel/output/config.json");
+        layout.files.extend([
+            (".vercel/output/config.json", config.into_bytes()),
+            (
+                ".vercel/output/functions/edge.func/.vc-config.json",
+                br#"{"runtime":"edge","entrypoint":"index.mjs"}"#.to_vec(),
+            ),
+            (
+                ".vercel/output/functions/edge.func/index.mjs",
+                VERCEL_EDGE.as_bytes().to_vec(),
+            ),
+            (".vercel/output/functions/edge.func/bridge.mjs", bridge),
+            (".vercel/output/functions/edge.func/app.wasm", wasm),
+        ]);
+    } else {
+        let paths = quoted(runtime::netlify, '\'').join(", ");
+        let skip: Vec<_> = skips.iter().map(|s| format!("'{s}'")).collect();
+        let entry = NETLIFY_EDGE
+            .replace("path: '/*'", &format!("path: [{paths}]"))
+            .replace("/*SKIP*/", &skip.join(", "));
+        layout.files.extend([
+            ("netlify/edge-functions/wisp.mjs", entry.into_bytes()),
+            ("netlify/edge-functions/bridge.mjs", bridge),
+            ("netlify/edge-functions/app.wasm", wasm),
+        ]);
+    }
 }
 
 /// Pages' `_worker.js`: one module, the worker's entry and the bridge, which
@@ -480,6 +565,96 @@ listens on $PORT. Set WISP_SECRET under Variables.
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn text<'a>(l: &'a Layout, path: &str) -> std::borrow::Cow<'a, str> {
+        let f = l.files.iter().find(|(p, _)| *p == path);
+        String::from_utf8_lossy(&f.unwrap_or_else(|| panic!("no {path}")).1)
+    }
+
+    #[test]
+    fn one_app_two_runtimes() {
+        let edges = vec![
+            vec![Seg::Static("blog".into()), Seg::Param("slug".into(), None)],
+            vec![Seg::Static("api".into()), Seg::Rest("p".into())],
+        ];
+        let skips = ["/logo.png".to_string()];
+        let mut v = layout(
+            "vercel",
+            "s",
+            b"node".to_vec(),
+            true,
+            false,
+            &skips,
+            &Jobs::default(),
+        )
+        .unwrap();
+        add_edge(
+            &mut v,
+            "vercel",
+            b"edge".to_vec(),
+            &skips,
+            &edges,
+            &Jobs::default(),
+        );
+        let config = text(&v, ".vercel/output/config.json");
+        let want = r#"{"version":3,"routes":[{"handle":"filesystem"},{"src":"^/api(?:/.*)?/?$","dest":"/edge"},{"src":"^/blog/[^/]+/?$","dest":"/edge"},{"src":"/(.*)","dest":"/index"}]}"#;
+        assert_eq!(config, want);
+        assert_eq!(
+            text(&v, ".vercel/output/functions/edge.func/.vc-config.json"),
+            r#"{"runtime":"edge","entrypoint":"index.mjs"}"#
+        );
+        assert!(text(&v, ".vercel/output/functions/index.func/.vc-config.json").contains("nodejs"));
+        assert_eq!(
+            v.files
+                .iter()
+                .filter(|(p, _)| p.ends_with("config.json") && !p.contains("func"))
+                .count(),
+            1
+        );
+        let mut n = layout(
+            "netlify",
+            "s",
+            b"node".to_vec(),
+            true,
+            false,
+            &skips,
+            &Jobs::default(),
+        )
+        .unwrap();
+        add_edge(
+            &mut n,
+            "netlify",
+            b"edge".to_vec(),
+            &skips,
+            &edges,
+            &Jobs::default(),
+        );
+        let edge = text(&n, "netlify/edge-functions/wisp.mjs");
+        assert!(
+            edge.contains("path: ['/api/*', '/blog/:slug'], excludedPath: ['/logo.png']"),
+            "{edge}"
+        );
+        assert!(text(&n, "functions/wisp.mjs").contains("path: '/*'"));
+        assert!(n.files.iter().any(|(p, _)| *p == "functions/app.wasm.js"));
+        // The routes sent to the edge function keep Vercel's crons.
+        let mut v = layout(
+            "vercel",
+            "s",
+            b"node".to_vec(),
+            true,
+            false,
+            &skips,
+            &jobs(),
+        )
+        .unwrap();
+        add_edge(&mut v, "vercel", b"edge".to_vec(), &skips, &edges, &jobs());
+        let config = text(&v, ".vercel/output/config.json");
+        assert!(
+            config.contains(r#""dest":"/edge"}"#)
+                && config.contains(r#""crons":[{"path":"/_wisp/cron/0_3_*_*_*""#),
+            "{config}"
+        );
+    }
 
     #[test]
     fn every_host_has_its_entry_and_the_app() {

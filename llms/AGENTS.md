@@ -267,8 +267,8 @@ so a live search needs no script: `<input bind:value="q">` `{:#each items.filter
 q)) as i}…{:/each}`. Directives `on:click` (`.prevent .once .debounce.300ms`…),
 `bind:value|checked|this`, `:attr="js"`, `:text`, `class:x="js"`,
 `transition:fade`, `use:action`; client blocks `{:#if}` `{:#each}`; runes
-`$state $derived $effect $props`; helpers `onMount listen goto invalidate
-matches`. Values sent to JS must be `#[model]` or `#[derive(Json)]`.
+`$state $derived $effect(.pre .root .tracking) $props`; helpers `onMount listen goto
+invalidate matches tick flushSync onError tweened spring crossfade`. Values sent to JS must be `#[model]` or `#[derive(Json)]`.
 `pushState('?tab=2', {tab: 2})`: shallow routing, `page.value.state`; changed
 fields are restored with history. `import('$lib/x.js')` loads on demand.
 `<script lang="ts">`, `src/lib/*.ts`, `+page.ts` (types stripped; `wisp check
@@ -480,7 +480,8 @@ no-wait fast path off every route.
 `*.stories.wisp`) · `wisp test [--browser]` · `wisp check [--types]` · `wisp
 fmt [--check]` · `wisp build` (`--static`, `--spa`, `--docker`, `--target
 cloudflare|pages|deno|vercel|netlify|node|bun|lambda|native` (`--edge` with
-vercel or netlify: their edge runtime), `--client ts`, `--sourcemap`, `--analyze`: per-route JS/CSS/wasm bytes, raw and
+vercel or netlify: their edge runtime; or per route, `const RUNTIME: wisp::Runtime =
+wisp::Runtime::Edge;` in its +page.rs/+server.rs: both functions from one app, other hosts ignore it), `--client ts`, `--sourcemap`, `--analyze`: per-route JS/CSS/wasm bytes, raw and
 gzip, no build) · `wisp
 deploy init <host>` (a GitHub Actions workflow; or `fly|render|railway`: that
 host's config) · `wisp routes` · `wisp new-route /path page|server|rest` ·
