@@ -261,8 +261,8 @@ pub(super) fn emit<A: App, const OBS: bool, const H2: bool>(
     // See `framing`.
     let own_length = head_only && reply.header("content-length").is_some();
     let made = matches!(reply.body, Body::Made(_));
-    let length = !made && !chunked && !stream && !bodiless && !own_length;
     if H2 {
+        let length = !made && !chunked && !stream && !bodiless && !own_length;
         h2_head(reply, length.then_some(len), &mut sink);
     } else if let Body::Made(m) = &reply.body {
         w.extend_from_slice(m.head()); // status line and length included
@@ -280,6 +280,7 @@ pub(super) fn emit<A: App, const OBS: bool, const H2: bool>(
         }
     }
     if !H2 {
+        let length = !made && !chunked && !stream && !bodiless && !own_length;
         length_and_date(w, length.then_some(len)); // a 205's is in its status line
         if !keep_alive {
             w.extend_from_slice(b"connection: close\r\n");
