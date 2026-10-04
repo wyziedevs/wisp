@@ -1604,7 +1604,7 @@ file and the static files; no wasm-bindgen or other tool.
 | `bun` | Bun (`Bun.serve`) | `bun server.mjs` |
 | `lambda` | AWS Lambda | below |
 
-Vercel and Netlify Edge: add `--edge` (`--target vercel --edge`, `--target netlify --edge`); the wasm app runs as a module (`opt-level = "z"`), Netlify skips `static/` via `excludedPath`. Edge limits apply.
+Vercel and Netlify Edge: add `--edge` (`--target vercel --edge`, `--target netlify --edge`); the wasm app runs as a module (`opt-level = "s"`, for their size limits), Netlify skips `static/` via `excludedPath`. Edge limits apply.
 
 The `node` server reads at most `WISP_BODY_LIMIT` (default 1 MB) of a body
 and answers 413 past it; raise it for a route with a larger `BODY_LIMIT`.
