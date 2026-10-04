@@ -476,9 +476,23 @@ pub fn highlight(lang: &str, code: &str) -> Option<String> {
         "css" | "scss" => &CSS,
         "json" => &JSON,
         "bash" | "sh" | "shell" | "zsh" | "console" => &BASH,
-        "html" | "xml" | "svg" | "wisp" => return Some(markup(code)),
+        "wisp" => return Some(wisp(code)),
+        "html"
+            if code.starts_with(
+                "---
+",
+            ) =>
+        {
+            return Some(wisp(code));
+        }
+        "html" | "xml" | "svg" => return Some(markup(code)),
         _ => return None,
     };
+    Some(lex(lang, code))
+}
+
+/// `code` in `lang`: comments, strings, numbers, keywords and types.
+fn lex(lang: &Lang, code: &str) -> String {
     let b = code.as_bytes();
     let mut out = String::with_capacity(code.len() * 2);
     let mut i = 0;
@@ -545,7 +559,92 @@ pub fn highlight(lang: &str, code: &str) -> Option<String> {
         out.push_str(&text(ch.encode_utf8(&mut [0; 4])));
         i += ch.len_utf8();
     }
-    Some(out)
+    out
+}
+
+/// A `.wisp` file: the Rust between the `---` lines as Rust, the rest as
+/// markup with its `{...}` expressions as Rust.
+fn wisp(code: &str) -> String {
+    let fence = "<span class=\"hl-c\">---</span>";
+    let Some(body) = code.strip_prefix(
+        "---
+",
+    ) else {
+        return markup(code);
+    };
+    let at = if body.starts_with("---") {
+        Some(0)
+    } else {
+        body.find(
+            "
+---",
+        )
+        .map(|e| e + 1)
+    };
+    let Some(at) = at else {
+        return format!(
+            "{fence}
+{}",
+            lex(&RUST, body)
+        );
+    };
+    format!(
+        "{fence}
+{}{fence}{}",
+        lex(&RUST, &body[..at]),
+        markup(&body[at + 3..])
+    )
+}
+
+/// The end of the `{...}` that `s` starts with, strings and nesting aside.
+fn close(s: &str) -> Option<usize> {
+    let (mut depth, mut quote, mut skip) = (0, false, false);
+    for (i, c) in s.char_indices() {
+        match c {
+            _ if skip => skip = false,
+            '\\' if quote => skip = true,
+            '"' => quote = !quote,
+            '{' if !quote => depth += 1,
+            '}' if !quote => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Markup text or an attribute value with `{expr}`, `{#each x as y}`,
+/// `{:else}` and `{/if}` in it: the braces' insides as Rust.
+fn braces(out: &mut String, mut s: &str) {
+    while let Some(open) = s.find('{') {
+        let Some(end) = close(&s[open..]) else { break };
+        out.push_str(&text(&s[..open]));
+        let inner = &s[open + 1..open + end];
+        out.push_str("&#123;");
+        let sigil = inner.starts_with(['#', ':', '/', '@']);
+        if sigil {
+            out.push_str(&text(&inner[..1]));
+        }
+        let inner = &inner[sigil as usize..];
+        let word = if sigil {
+            inner
+                .find(|c: char| !c.is_ascii_alphanumeric())
+                .unwrap_or(inner.len())
+        } else {
+            0
+        };
+        if word > 0 {
+            out.push_str(&format!("<span class=\"hl-k\">{}</span>", &inner[..word]));
+        }
+        out.push_str(&lex(&RUST, &inner[word..]));
+        out.push_str("&#125;");
+        s = &s[open + end + 1..];
+    }
+    out.push_str(&text(s));
 }
 
 /// HTML: comments, tag names, attribute names and quoted values.
@@ -556,7 +655,7 @@ fn markup(code: &str) -> String {
         out.push_str(&format!("<span class=\"hl-{class}\">{}</span>", text(s)));
     };
     while let Some(lt) = rest.find('<') {
-        out.push_str(&text(&rest[..lt]));
+        braces(&mut out, &rest[..lt]);
         rest = &rest[lt..];
         if rest.starts_with("<!--") {
             let end = rest.find("-->").map_or(rest.len(), |e| e + 3);
@@ -585,6 +684,11 @@ fn markup(code: &str) -> String {
                     span(&mut out, "s", &rest[..end]);
                     rest = &rest[end..];
                 }
+                '{' if close(rest).is_some() => {
+                    let end = close(rest).map_or(1, |e| e + 1);
+                    braces(&mut out, &rest[..end]);
+                    rest = &rest[end..];
+                }
                 _ if c.is_alphabetic() || c == ':' || c == '@' => {
                     let end = rest
                         .find(|c: char| c.is_whitespace() || matches!(c, '=' | '>' | '/'))
@@ -599,7 +703,7 @@ fn markup(code: &str) -> String {
             }
         }
     }
-    out.push_str(&text(rest));
+    braces(&mut out, rest);
     out
 }
 
@@ -683,6 +787,51 @@ mod tests {
                 .starts_with("<head><meta name=\"robots\" content=\"noindex\"></head>\n"),
             "{}",
             md.wisp
+        );
+    }
+
+    #[test]
+    fn wisp_blocks_highlight_rust_and_expressions() {
+        let h = highlight(
+            "wisp",
+            "---
+let n = 1;
+---
+<p class={c}>{#each xs as x}{x}{/each}</p>",
+        )
+        .unwrap();
+        assert!(
+            h.starts_with(
+                "<span class=\"hl-c\">---</span>
+<span class=\"hl-k\">let</span> n = <span class=\"hl-n\">1</span>;
+<span class=\"hl-c\">---</span>"
+            ),
+            "{h}"
+        );
+        assert!(
+            h.contains(
+                "&#123;#<span class=\"hl-k\">each</span> xs <span class=\"hl-k\">as</span> x&#125;"
+            ),
+            "{h}"
+        );
+        assert!(
+            h.contains("<span class=\"hl-a\">class</span>=&#123;c&#125;"),
+            "{h}"
+        );
+        assert_eq!(
+            highlight("html", "<b>{x}</b>").unwrap(),
+            "&lt;<span class=\"hl-t\">b</span>&gt;&#123;x&#125;&lt;/<span class=\"hl-t\">b</span>&gt;"
+        );
+        assert!(
+            highlight(
+                "html",
+                "---
+fn a() {}
+---
+"
+            )
+            .unwrap()
+            .contains("hl-k\">fn")
         );
     }
 
