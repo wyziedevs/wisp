@@ -793,7 +793,7 @@ impl Decoder {
             let field = if c & 0x80 != 0 {
                 let i = int(&mut b, 7)?;
                 self.get(i)?
-            } else if c & 0x20 != 0 {
+            } else if c & 0xe0 == 0x20 {
                 // A table size update: only at the start of a block.
                 if !first {
                     return Err(Code::Compression);
@@ -1339,6 +1339,23 @@ mod tests {
         d.decode(&hex("8286 8441 8cf1 e3c2 e5f2 3a6b a0ab 90f4 ff"), &mut out)
             .unwrap();
         assert_eq!(out[3].1, b"www.example.com");
+    }
+
+    #[test]
+    fn hpack_indexed_names_past_31() {
+        // A literal with indexing whose name index sets bit 5 (`user-agent`,
+        // 58) is no table size update; nor is one without indexing (`via`).
+        let mut d = Decoder::new();
+        let mut out = Vec::new();
+        let mut b = vec![0x7a];
+        encode_string(&mut b, b"curl");
+        b.extend_from_slice(&[0x0f, 0x2d]);
+        encode_string(&mut b, b"proxy");
+        d.decode(&b, &mut out).unwrap();
+        assert_eq!(out[0], (b"user-agent".to_vec(), b"curl".to_vec()));
+        assert_eq!(out[1], (b"via".to_vec(), b"proxy".to_vec()));
+        // A size update after a field is an error.
+        assert!(d.decode(&[0x82, 0x20], &mut Vec::new()).is_err());
     }
 
     #[test]
