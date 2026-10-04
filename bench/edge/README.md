@@ -95,7 +95,13 @@ any other header when it reads it (`wisp_request_lazy`, imports `header` and
 `headers`), so `/` and `/json` read none. Within 1 to 4% of Hono; the rest is
 the first wasm entry of each request (about 3 us in workerd; later entries in
 the same request cost 0.8 us). One difference from native: a request with
-more than 100 headers is not refused with 431 on this path.
+more than 100 headers is not refused with 431 on this path (a web `Headers`
+has no count without iterating it, which is the cost removed; Cloudflare
+refuses request heads over its own 128 KB limit).
+
+The first wasm entry: an empty export (`wisp_current`) called once per
+request costs as much as ten calls (about 2 to 4 us in workerd, 0.1 us in
+Node), so it is workerd's per-request cost of entering wasm, not the app's.
 
 Cold start: in Node, compile 1 ms (lazy), instantiate 0.1 ms, `main` 1 ms,
 the first request's code compiled on first use most of the rest. Instantiating
