@@ -474,7 +474,8 @@ fn civil(days: i64) -> (i64, u32, u32) {
 /// A cron expression: minute, hour, day of month, month, day of week
 /// (0 or 7 is Sunday), each `*`, a number, `a-b`, `*/n`, `a-b/n` or a
 /// comma list of those. A day matches when its day of month and its day
-/// of week both do, or either, if both are restricted.
+/// of week both do, or either, if both are restricted (neither starts
+/// with `*`, as in Vixie cron: `*/2` restricts nothing for this rule).
 #[derive(Debug, PartialEq)]
 pub(crate) struct Cron {
     minute: u64,
@@ -529,7 +530,9 @@ impl Cron {
             dom: field(dom, 1, 31)?,
             month: field(mon, 1, 12)?,
             dow: dow_set,
-            both: dom != "*" && dow != "*",
+            // As Vixie cron: a field that starts with `*` (`*/2` too) is not
+            // a restriction, so the other day field alone decides.
+            both: !dom.starts_with('*') && !dow.starts_with('*'),
         })
     }
 
@@ -645,6 +648,11 @@ mod tests {
             next("0 0 3 * 2", JAN1_2024),
             D,
             "Tuesday the 2nd, before the 3rd"
+        );
+        assert_eq!(
+            next("0 0 */2 * 1", JAN1_2024),
+            14 * D,
+            "a starred day field is not a restriction: odd days that are Mondays"
         );
         assert_eq!(next("10-20/5 * * * *", JAN1_2024), 10 * 60);
         assert_eq!(

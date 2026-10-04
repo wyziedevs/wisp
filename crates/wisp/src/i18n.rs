@@ -516,14 +516,18 @@ fn best(header: &str, list: &[&str]) -> Option<usize> {
         let tag = it.next().unwrap_or("").trim();
         let q = it
             .find_map(|p| p.trim().strip_prefix("q="))
-            .map_or(1.0, |q| q.trim().parse().unwrap_or(0.0));
+            .map_or(1.0, |q| q.trim().parse::<f32>().unwrap_or(0.0));
+        // `NaN`, `inf` or above 1 is no weight a client may send.
+        let q = if (0.0..=1.0).contains(&q) { q } else { 0.0 };
         if q <= 0.0 || tag.is_empty() || tag == "*" || best.is_some_and(|(b, _)| b >= q) {
             continue;
         }
+        // As bytes: a tag of the client's need not split where a locale does.
         let base = |a: &str, b: &str| {
+            let (a, b) = (a.as_bytes(), b.as_bytes());
             a.len() > b.len()
                 && a[..b.len()].eq_ignore_ascii_case(b)
-                && matches!(a.as_bytes()[b.len()], b'-' | b'_')
+                && matches!(a[b.len()], b'-' | b'_')
         };
         let found = (list.iter().position(|l| l.eq_ignore_ascii_case(tag)))
             .or_else(|| list.iter().position(|l| base(tag, l) || base(l, tag)));
@@ -588,6 +592,9 @@ mod tests {
         assert_eq!(b("de, *;q=0.1"), None);
         assert_eq!(b("fr;q=0, en"), Some("en"));
         assert_eq!(b(""), None);
+        assert_eq!(b("e\u{e9}-x"), None, "a split inside a character, no panic");
+        assert_eq!(b("fr;q=NaN, en;q=0.5"), Some("en"));
+        assert_eq!(b("fr;q=9, en;q=0.5"), Some("en"));
     }
 
     #[test]

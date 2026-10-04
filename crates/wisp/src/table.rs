@@ -732,10 +732,12 @@ impl<T> Table<T> {
         if !rows.map.contains_key(&id) {
             return Ok(None);
         }
-        self.save(rows, id, None)?;
+        // Row 0 first: a crash between the two saves then leaves the row
+        // there, never an id the store would give again.
         if id == rows.last && !self.random {
             self.save(rows, 0, Some(&id.to_string()))?;
         }
+        self.save(rows, id, None)?;
         let gone = rows.map.remove(&id);
         if let (Some((_, key)), Some(v)) = (self.unique, &gone) {
             rows.index.remove(key(v));
@@ -1181,6 +1183,19 @@ mod tests {
                 rows,
             }))
         }
+    }
+
+    #[test]
+    fn the_last_id_is_kept_before_its_row_goes() {
+        store::memory();
+        let mem: &'static Mem = Box::leak(Box::new(Mem(Mutex::new(Vec::new()))));
+        let t: Table<String> = Table::saved("last_id_before_its_row");
+        t.load(&mut t.rows.write().unwrap(), Some(mem));
+        t.add("a".into());
+        t.remove(1);
+        let log = mem.0.lock().unwrap();
+        let order: Vec<u64> = log.iter().skip(1).map(|(_, id, _)| *id).collect();
+        assert_eq!(order, [0, 1], "a crash between the saves gives no id twice");
     }
 
     #[test]
