@@ -465,7 +465,7 @@ fn path_uri(p: &Path) -> String {
 
 /// The `const` knobs of a route file's Rust block and what each does (hover).
 /// A test keeps it in step with the reference: every `const NAME` it shows is here.
-const KNOBS: [(&str, &str); 13] = [
+const KNOBS: [(&str, &str); 14] = [
     (
         "CACHE",
         "`const CACHE: u32 = 60;` (page or `+server.rs`): keeps a GET's answer 60 s per worker (ETag, 304). Never for a request with a cookie or `authorization`, nor one that sets a cookie. Not in dev.",
@@ -517,6 +517,10 @@ const KNOBS: [(&str, &str); 13] = [
     (
         "BODY_LIMIT",
         "`const BODY_LIMIT: usize = 20 * wisp::MB;`: the largest request body this route accepts (413 beyond it; 1 MB by default).",
+    ),
+    (
+        "RUNTIME",
+        "`const RUNTIME: wisp::Runtime = wisp::Runtime::Edge;`: on `--target vercel` or `netlify` the route also gets an edge function. An edge route that uses `std::fs`, threads, processes, net or WebSockets fails the build.",
     ),
 ];
 

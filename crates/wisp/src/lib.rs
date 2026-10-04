@@ -188,8 +188,10 @@ pub const MB: usize = 1024 * KB;
 /// `+server.rs`. `wisp build` reads it; other hosts and `cargo run` ignore it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Runtime {
+    /// The Node function: full std, files, threads, WebSockets (the default).
     #[default]
     Node,
+    /// The edge function: no `std::fs`, thread, process, net or WebSockets.
     Edge,
 }
 
