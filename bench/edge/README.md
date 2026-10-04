@@ -448,3 +448,73 @@ Measured and not kept (`/json-big`, cold start median of 21, a noisy machine):
 Left: `/json-big` is wasm compute (the bench app's `format!` and dlmalloc,
 above; a faster allocator needs a dependency with `unsafe`), cold start is the
 module load and the first request's lazy compile.
+
+### Linux, quiet box: Hono, wasm-opt, and where cold start goes (2026-10-04)
+
+The Windows machine had other builds running, so this ran on a 4-core Linux
+VPS (workerd from npm `workerd@latest`, node 24, oha 1.16). It is slower than
+the desktop but nothing else ran on it. Same `workerd.mjs`, c=64, median of
+5 x 10 s, cold start median of 21:
+
+| | `/` req/s (CPU us) | `/json-big` req/s (CPU us) | cold start |
+|---|---|---|---|
+| Wisp (with the plain-text `Response`) | 6,670 (152.7) | 3,464 (294.6) | 60 ms |
+| Hono | 7,377 (139.9) | 3,766 (269.9) | 43 ms |
+
+**Cold start, split.** The time from spawn until the inspector answers is
+`up`: the config is loaded and every module compiled. Then the first request
+runs under the CPU profiler. Median of 15, ms:
+
+| | up | first request | second request |
+|---|---|---|---|
+| a worker with no wasm (`new Response('x')`) | 33.7 | 3.1 | 1.3 |
+| the same, with `app.wasm` listed as a module | 40.2 | 2.4 | 1.1 |
+| Wisp | 38-41 | 17-18 | 2.5 |
+| Hono | 34-38 | 6.7-8 | 1.3-2.2 |
+
+So about 6 ms is workerd compiling (validating) the 527 KB module at load,
+and about 11 ms is the first request. That 11 ms is not Wisp's init. In node
+(same V8), a second instance of the same compiled module answers its first
+request (instantiate, `main`, `prepare`, the request) in 0.8-2 ms, against
+11-13 ms for the first instance. It is V8 lazily compiling the wasm functions
+the first request touches. The profile's top frames are the big inlined ones
+(`edge::poll` 3.5 ms, the `request` closure 2.0, `http::decide` 0.9,
+`edge::start`'s closure 0.7). Hono's 7 ms is the same thing for its JS
+(router building and lazy JS compile).
+
+**wasm-opt (binaryen version_133) does not pay**, so `wisp build` does not run
+it. Every level shrinks the file but slows the first request: it inlines into
+bigger functions, which V8 then compiles whole. `/json-big` does not move
+(in-process, alternating rounds, median us/request: rustc 127.5, -O1 130.8,
+-O2 124.5, -O3 132.1, -Os 126.4, -Oz 125.5; noise about 3%). Cold start, ms:
+
+| | bytes | up | first request | cold total |
+|---|---|---|---|---|
+| rustc (opt-level 3) | 526,774 | 38.0-41.3 | 16.9-18.3 | 55-59 |
+| -O1 | 482,861 | 38.7 | 19.3 | 58.0 |
+| -O2 | 476,581 | 40.1 | 22.0 | 62.1 |
+| -O3 | 458,701 | 37.1-43.0 | 20.4-24.1 | 57.5-67.1 |
+| -O4 | 460,640 | 37.2-42.1 | 20.5-22.6 | 57.7-64.6 |
+| -Os | 458,243 | 38.9 | 20.6 | 59.5 |
+| -Oz | 457,882 | 42.2 | 21.8 | 64.0 |
+
+`--converge` with -O3 and -O4 gives 457,769 and 459,747 bytes, with the same
+times.
+
+**opt-level `s`** for the Cloudflare wasm: cold start 51-56 against 58-59 ms,
+but `/json-big` 140 against 130 us in wasm (-8%). Level `2` brings no cold
+start gain and is 14% slower. The speed is the rule, so `3` stays.
+
+**`/json-big`**: the serializer already writes into one reused buffer
+(`Response::json_of` takes `http::spare()`) with no intermediate `String`s,
+so there is nothing to cut there. `["user-", &i.to_string()].concat()` in
+place of `format!("user-{i}")` measured the same (Windows, both orders), so
+the docs keep `format!`. What is left, per request:
+
+- the app's own allocations, 600 `String`s and 200 `Vec`s made and dropped:
+  dlmalloc `free` 6.1 us, `malloc` 2.0, `unlink_chunk` 1.8, drop 2.4;
+- `fmt` 13.5 us;
+- the escape 7.4 us (12 ns a string).
+
+A per-request arena would remove most of the allocator's share, but a
+`GlobalAlloc` needs `unsafe`.
