@@ -154,6 +154,8 @@ below. `app.wasm` of this bench's app (all routes above), `strip`ped, opt-level 
 | main | 527,151 | 27 ms |
 | no dev-only files in the wasm32 build | 515,508 | 27 ms |
 
+(Later main, with its newer features and the constant-path code below: 550,541 before, 540,872 after; 27 to 28 ms both.)
+
 Kept: the dev reload script and the build-error dialog (`wisp-dev.js`,
 `dialog.css`, 11.6 KB) are not linked on wasm32 (`http.rs`): the edge build has
 no dev mode to serve them to. Measured and dropped:
@@ -175,3 +177,31 @@ alloc 62 KB, `wisp::edge` 56 KB, std 52 KB, core 50 KB, `wisp::http` 39 KB, then
 `wisp.js`, 6 KB the API docs page, 4 KB the error styles. There is no unused
 subsystem left worth a flag: each remaining one is under 1% of the file, and
 the edge build already leaves out the server's sockets, jobs and fetch.
+
+## Paths that never change
+
+A baked page (one the build proved constant, or prerendered) and a
+trailing-slash redirect have one answer for every request, when the app has no
+`before`, `after` or `reroute` hook, the route no guard (`RATE_LIMIT`, `CORS`,
+`MIDDLEWARE`, `SIGNED_IN`, in the page or a layout), the app read no header but
+`if-none-match` and `x-wisp-error`, and the request has no query. The app marks
+the first answer `200 const` (its head's first line); `serve` in `bridge.js`
+(the web `fetch` of Workers, Deno, Netlify, Vercel) keeps it, asks the app once
+for that path's 304 (so the head is the app's own, not rebuilt by hand), and
+answers GET, HEAD and `if-none-match` itself from then on, without entering the
+wasm. Everything else goes to the wasm. `tests/platform/tests/fast.rs` compares
+every header, the status and the body with the native server's for each case
+(GET twice, HEAD, `if-none-match` with the ETag, `*`, a weak list, a wrong tag,
+an empty one, `/about/`'s 308), and that an app with hooks, a query, a guard or
+`x-wisp-error` never skips the wasm.
+
+`/about` (a baked page) on workerd, c=64, same run, alternating: 13,101 req/s and
+77 us CPU a request before, 16,387 and 64 after (best CPU of the runs: 75 and 54
+us). Hono's `/about` is about the same as the new Wisp's (18,031 against 18,709
+in a quiet run). The machine was shared; take the ratio, not the numbers.
+
+Not covered, and why: Wisp's own files (`/_app/wisp.js`, the CSS) vary on
+`accept-encoding` and `range`; `static/` is served by the host before the
+worker; `CACHE` answers vary by cookie; the Node, Bun and Deno raw-socket path
+hands the bytes to the app, which parses and answers in about 1 us, so a table
+there would first have to parse HTTP in JS (not built, not measured).
