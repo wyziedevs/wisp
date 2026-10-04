@@ -38,7 +38,7 @@ struct Answers {
     yes: bool,
 }
 
-const REPO: &str = "https://github.com/wyziedevs/wisp";
+const REPO: &str = "https://wisp.ar0.eu";
 
 pub fn run(args: &[String]) -> Result<(), String> {
     let mut a = parse(args)?;
@@ -420,7 +420,7 @@ pub fn update_docs(root: &Path) -> Result<(), String> {
 /// Where new apps get Wisp from, until it is on crates.io: the `wisp` and
 /// `wisp-build` dependency lines. A `wisp` built from a clone (`cargo install
 /// --path`) points apps at that clone, so changes to Wisp reach them at once.
-/// One installed with `cargo install --git` points them at GitHub, since the
+/// One installed with `cargo install --git` points them at the repository, since the
 /// checkout Cargo built it from is Cargo's to delete.
 fn wisp_source() -> (String, String) {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");

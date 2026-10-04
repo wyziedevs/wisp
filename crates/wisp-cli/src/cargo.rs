@@ -146,7 +146,7 @@ fn outdated(cli: (&str, &str), app: &App) -> Option<String> {
             let dir = dir.strip_prefix(r"\\?\").unwrap_or(&dir);
             format!("cargo install --path {dir}/crates/wisp-cli --force")
         }
-        None => "cargo install wisp-cli --force".to_string(),
+        None => "cargo install --git https://wisp.ar0.eu wisp-cli --force".to_string(),
     };
     Some(format!(
         "The wisp CLI is older than this app's wisp crate.\nCLI {}, app {}.\nUpdate it: {fix}\nWISP_NO_UPDATE_CHECK=1 silences this.",
@@ -644,7 +644,10 @@ mod tests {
         let told = outdated(cli, &app("0.2.0", false, "")).unwrap();
         assert!(told.contains("CLI 0.1.0, build 10-aaaaaaa"), "{told}");
         assert!(told.contains("app 0.2.0"), "{told}");
-        assert!(told.contains("cargo install wisp-cli --force"), "{told}");
+        assert!(
+            told.contains("cargo install --git https://wisp.ar0.eu wisp-cli --force"),
+            "{told}"
+        );
         assert!(told.contains("WISP_NO_UPDATE_CHECK=1"), "{told}");
         // The same version by path: by commits.
         let told = outdated(cli, &app("0.1.0", true, "12-bbbbbbb")).unwrap();
