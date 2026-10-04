@@ -211,6 +211,10 @@ prop an argument, no children (none for a component named like a prelude type,
 Cargo.toml copies the dependency's `wisp/routes` and `wisp/components` into
 `src/routes/(kit)/` and `src/components/kit/` at build (git-ignored; the
 app's own same-named component wins; `path` or registry dependency, not git).
+Layers: `extends = ["../base", "ui-kit"]` there inherits another app's (a
+path, or a dependency) `src/routes` (into `(layer_base)`; a route at the same
+path in yours wins), `src/components`, `static/` and `src/app.css` (plain CSS,
+first). Not its Rust (`db.rs`, `hooks.rs`) or `fonts.txt`.
 
 ## Markdown pages
 

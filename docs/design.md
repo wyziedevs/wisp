@@ -1308,6 +1308,16 @@ branches).
   shell's head. Metrics are read from TrueType and OpenType files only (WOFF2
   is brotli, which Wisp has no decoder for): a local `.woff2` gets the swap
   and the preload, and its fallback face when `.wisp/fonts/<name>.ttf` exists.
+- **Layers.** `extends = ["../base"]` beside `use` in `[package.metadata.wisp]`
+  (`plugins.rs`): a path or a dependency with an app's layout. Its `src/routes`
+  and `src/components` are copied as a plugin's are (`(layer_<dir>)` group,
+  `components/layer_<dir>/`, git-ignored, kept in step, stale ones removed),
+  minus a route file the app has at the same path and a component it has by
+  name; `static/` is listed after the app's own in `static_files` (the app's
+  URL wins); `src/app.css` goes first in `app.css` (`join_styles`, plain CSS,
+  no Sass or Tailwind pass over it). A layer's root `+layout.wisp` wraps only
+  the layer's own pages (it sits in the group). All build-time: an app with no
+  `extends` runs none of it.
 - **Version skew.** A release build puts `<meta name="wisp-build" content=ID>`
   in the shell (a hash of templates and Rust: baked, nothing per request).
   wisp.js compares it with the page a navigation fetched, as it does

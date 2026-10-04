@@ -273,7 +273,7 @@ pub(crate) fn parse_markup(
 /// the same text from the build and from `wisp dev`.
 pub(crate) fn join_styles(root: &Path, mut styles: Vec<(&str, &str)>) -> String {
     styles.sort_unstable();
-    let mut css = vec![fonts::css(root)];
+    let mut css = vec![plugins::layer_css(root), fonts::css(root)];
     css.retain(|f| !f.is_empty());
     css.extend(styles.iter().map(|s| s.1.to_string()));
     css.join("\n")

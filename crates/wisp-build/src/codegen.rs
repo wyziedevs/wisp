@@ -3535,19 +3535,10 @@ impl Gen {
             let file = css.clone().unwrap_or_else(|| PathBuf::from("app.css"));
             files.push((APP_CSS_PATH.into(), file, h.clone()));
         }
-        let static_dir = p.root.join("static");
-        if static_dir.is_dir() {
-            let mut all = Vec::new();
-            list_files(&static_dir, &mut all)?;
-            all.sort();
-            for (f, etag) in all.iter().zip(hash_files(&all)) {
-                let path = f.strip_prefix(&static_dir).unwrap_or(f);
-                let url = format!(
-                    "/{}",
-                    encode_path(&path.to_string_lossy().replace('\\', "/"))
-                );
-                files.push((url, f.clone(), etag?));
-            }
+        let found = static_files(p.root)?;
+        let paths: Vec<PathBuf> = found.iter().map(|f| f.1.clone()).collect();
+        for ((url, f), etag) in found.into_iter().zip(hash_files(&paths)) {
+            files.push((url, f, etag?));
         }
         images(p.root, &mut files);
         for (i, (_, file, etag)) in files.iter().enumerate() {
@@ -5444,6 +5435,29 @@ pub(crate) fn check_components(
         }
     }
     Ok(())
+}
+
+/// The files served from `static/`, by URL: the app's, then its layers'
+/// (`extends`), a file the app has winning.
+fn static_files(root: &Path) -> Result<Vec<(String, PathBuf)>, String> {
+    let mut found: Vec<(String, PathBuf)> = Vec::new();
+    let dirs = std::iter::once(root.to_path_buf()).chain(crate::plugins::layers(root));
+    for dir in dirs.map(|d| d.join("static")).filter(|d| d.is_dir()) {
+        let mut all = Vec::new();
+        list_files(&dir, &mut all)?;
+        all.sort();
+        for f in all {
+            let path = f.strip_prefix(&dir).unwrap_or(&f);
+            let url = format!(
+                "/{}",
+                encode_path(&path.to_string_lossy().replace('\\', "/"))
+            );
+            if !found.iter().any(|(u, _)| *u == url) {
+                found.push((url, f));
+            }
+        }
+    }
+    Ok(found)
 }
 
 /// The CSS to serve at `/_app/app.css`: the CSS tool's output if present,
@@ -8989,6 +9003,28 @@ fn pattern_names(pat: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn static_files_of_the_app_and_its_layers() {
+        let d = std::env::temp_dir().join(format!("wisp-static-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let (app, base) = (d.join("app"), d.join("base"));
+        for (dir, f, s) in [
+            (&base, "static/logo.svg", "base"),
+            (&base, "static/fonts/a.woff2", "base"),
+            (&app, "static/logo.svg", "own"),
+        ] {
+            fs::create_dir_all(dir.join(f).parent().unwrap()).unwrap();
+            fs::write(dir.join(f), s).unwrap();
+        }
+        let toml = "[package.metadata.wisp]\nextends = [\"../base\"]\n";
+        fs::write(app.join("Cargo.toml"), toml).unwrap();
+        let found = static_files(&app).unwrap();
+        let urls: Vec<&str> = found.iter().map(|f| f.0.as_str()).collect();
+        assert_eq!(urls, ["/logo.svg", "/fonts/a.woff2"]);
+        assert_eq!(fs::read_to_string(&found[0].1).unwrap(), "own");
+        let _ = fs::remove_dir_all(&d);
+    }
 
     #[test]
     fn field_paths() {
