@@ -36,7 +36,7 @@ pub(crate) fn run<A: App>(api: &str) {
         let (id, event) = call(api, "GET", NEXT, b"")
             .unwrap_or_else(|e| crate::fail(&format!("Lambda's runtime API at {api}: {e}")));
         let (path, answer) = match request(&event) {
-            Some((req, v2)) => {
+            Some((req, shape)) => {
                 let reply = rt.block_on(async {
                     let mut reply = crate::handle::<A>(req).await;
                     if let Body::Stream(rx) = &mut reply.body {
@@ -48,7 +48,7 @@ pub(crate) fn run<A: App>(api: &str) {
                     }
                     reply
                 });
-                ("response", reply_json(&reply, v2))
+                ("response", reply_json(&reply, shape))
             }
             None => ("error", error_json("the event is not an HTTP request")),
         };
@@ -92,12 +92,24 @@ fn call(api: &str, method: &str, path: &str, body: &[u8]) -> std::io::Result<(St
     Ok((id, all[n..].to_vec()))
 }
 
-/// The request an HTTP event holds, and whether it is payload 2.0.
-fn request(event: &[u8]) -> Option<(Request, bool)> {
+/// The shape an event came in, which its reply goes back in.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Shape {
+    /// Payload 2.0: `cookies`, one value per header.
+    V2,
+    /// Payload 1.0 with `multiValueHeaders` (REST APIs, ALBs that ask for them).
+    Multi,
+    /// Payload 1.0 with `headers` only (an ALB without multi-value headers).
+    Single,
+}
+
+/// The request an HTTP event holds, and the shape of its payload.
+fn request(event: &[u8]) -> Option<(Request, Shape)> {
     let v = json::parse(std::str::from_utf8(event).ok()?).ok()?;
     let ctx = v.get("requestContext");
     let http = ctx.and_then(|c| c.get("http"));
     let v2 = http.is_some();
+    let mut single = false;
     let method = match http {
         Some(h) => h.get("method"),
         None => v.get("httpMethod"),
@@ -146,6 +158,9 @@ fn request(event: &[u8]) -> Option<(Request, bool)> {
             v.get("headers")
         };
         each(headers, |n, value| req.header(n, value));
+        // An ALB with multi-value headers off ignores `multiValueHeaders`
+        // in the reply, and so loses every header.
+        single = !multi.is_some_and(|m| !m.is_null());
     }
     let ip = match http {
         Some(h) => h.get("sourceIp"),
@@ -168,7 +183,12 @@ fn request(event: &[u8]) -> Option<(Request, bool)> {
     } else {
         body.as_bytes().to_vec()
     };
-    Some((req, v2))
+    let shape = match (v2, single) {
+        (true, _) => Shape::V2,
+        (false, true) => Shape::Single,
+        (false, false) => Shape::Multi,
+    };
+    Some((req, shape))
 }
 
 fn list(v: Option<&Value>) -> impl Iterator<Item = &Value> {
@@ -207,13 +227,14 @@ fn encode(out: &mut String, s: &str) {
 /// The reply as Lambda takes it: payload 2.0 has `cookies` and one value
 /// per header, 1.0 has `multiValueHeaders`. A body that is not UTF-8 goes
 /// as base64.
-fn reply_json(reply: &Reply, v2: bool) -> String {
+fn reply_json(reply: &Reply, shape: Shape) -> String {
+    let v2 = shape == Shape::V2;
     let mut out = format!("{{\"statusCode\":{},", reply.status);
     let cookie = |n: &str| v2 && n.eq_ignore_ascii_case("set-cookie");
-    out.push_str(if v2 {
-        "\"headers\":{"
-    } else {
+    out.push_str(if shape == Shape::Multi {
         "\"multiValueHeaders\":{"
+    } else {
+        "\"headers\":{"
     });
     let mut first = true;
     for (i, (name, _)) in reply.headers.iter().enumerate() {
@@ -226,18 +247,30 @@ fn reply_json(reply: &Reply, v2: bool) -> String {
         if !std::mem::take(&mut first) {
             out.push(',');
         }
-        name.to_ascii_lowercase().json(&mut out);
         let values: Vec<&str> = reply
             .headers
             .iter()
             .filter(|(n, _)| n.eq_ignore_ascii_case(name))
             .map(|(_, v)| &**v)
             .collect();
-        out.push(':');
-        if v2 {
-            values.join(", ").json(&mut out);
+        if shape == Shape::Single && name.eq_ignore_ascii_case("set-cookie") {
+            // One value per key: the cookies go under keys that differ in case.
+            for (k, value) in values.iter().enumerate() {
+                if k > 0 {
+                    out.push(',');
+                }
+                alternate("set-cookie", k).json(&mut out);
+                out.push(':');
+                value.json(&mut out);
+            }
         } else {
-            values.json(&mut out);
+            name.to_ascii_lowercase().json(&mut out);
+            out.push(':');
+            if shape == Shape::Multi {
+                values.json(&mut out);
+            } else {
+                values.join(", ").json(&mut out);
+            }
         }
     }
     out.push('}');
@@ -266,6 +299,22 @@ fn reply_json(reply: &Reply, v2: bool) -> String {
     out
 }
 
+/// `name` with the case of its letters set by the bits of `k`: a different
+/// key for each `k`, which a client reads as the same header.
+fn alternate(name: &str, k: usize) -> String {
+    let mut letter = 0;
+    name.chars()
+        .map(|c| {
+            if !c.is_ascii_alphabetic() {
+                return c;
+            }
+            let up = letter < usize::BITS && k >> letter & 1 == 1;
+            letter += 1;
+            if up { c.to_ascii_uppercase() } else { c }
+        })
+        .collect()
+}
+
 fn error_json(message: &str) -> String {
     let mut out = String::from("{\"errorType\":\"Wisp\",\"errorMessage\":");
     message.json(&mut out);
@@ -283,8 +332,8 @@ mod tests {
             "headers":{"content-type":"text/plain","x-many":"a,b"},
             "requestContext":{"http":{"method":"POST","sourceIp":"203.0.113.9"}},
             "body":"aGk=","isBase64Encoded":true}"#;
-        let (req, v2) = request(event).unwrap();
-        assert!(v2);
+        let (req, shape) = request(event).unwrap();
+        assert_eq!(shape, Shape::V2);
         assert_eq!(
             (req.method.as_str(), req.target.as_str()),
             ("POST", "/a b?x=1&y=%20")
@@ -299,8 +348,8 @@ mod tests {
     fn reads_rest_api_and_alb_events() {
         let event = br#"{"httpMethod":"GET","path":"/p","multiValueQueryStringParameters":{"q":["a b","c"]},
             "multiValueHeaders":{"accept":["text/html"]},"requestContext":{"identity":{"sourceIp":"::1"}},"body":null}"#;
-        let (req, v2) = request(event).unwrap();
-        assert!(!v2);
+        let (req, shape) = request(event).unwrap();
+        assert_eq!(shape, Shape::Multi);
         assert_eq!(req.target, "/p?q=a%20b&q=c");
         assert_eq!(
             req.headers,
@@ -309,6 +358,40 @@ mod tests {
         let alb = br#"{"httpMethod":"GET","path":"/","queryStringParameters":{"q":"a%20b"},"requestContext":{"elb":{}}}"#;
         assert_eq!(request(alb).unwrap().0.target, "/?q=a%20b");
         assert!(request(b"{\"source\":\"aws.events\"}").is_none());
+    }
+
+    #[test]
+    fn an_alb_without_multi_value_headers_is_answered_with_headers() {
+        let event = br#"{"httpMethod":"GET","path":"/","headers":{"accept":"*/*"},"requestContext":{"elb":{}}}"#;
+        let (_, shape) = request(event).unwrap();
+        assert_eq!(shape, Shape::Single);
+        let reply = Reply {
+            status: 200,
+            headers: vec![
+                ("Content-Type".into(), "text/plain".into()),
+                ("set-cookie".into(), "a=1".into()),
+                ("set-cookie".into(), "b=2".into()),
+                ("set-cookie".into(), "c=3".into()),
+            ],
+            body: Body::Bytes(b"hi".to_vec()),
+        };
+        let out = reply_json(&reply, shape);
+        let v = json::parse(&out).unwrap();
+        let headers = v.get("headers").expect("headers, not multiValueHeaders");
+        assert!(v.get("multiValueHeaders").is_none());
+        assert_eq!(
+            headers.get("content-type").and_then(Value::as_str),
+            Some("text/plain")
+        );
+        let cookies: Vec<&str> = match headers {
+            Value::Object(m) => m
+                .iter()
+                .filter(|(n, _)| n.eq_ignore_ascii_case("set-cookie"))
+                .filter_map(|(_, v)| v.as_str())
+                .collect(),
+            _ => Vec::new(),
+        };
+        assert_eq!(cookies, ["a=1", "b=2", "c=3"], "{out}");
     }
 
     #[test]
@@ -323,12 +406,12 @@ mod tests {
             body: Body::Bytes(b"hi \"there\"".to_vec()),
         };
         assert_eq!(
-            reply_json(&reply, true),
+            reply_json(&reply, Shape::V2),
             r#"{"statusCode":200,"headers":{"content-type":"text/plain"},"cookies":["a=1","b=2"],"body":"hi \"there\"","isBase64Encoded":false}"#
         );
         reply.body = Body::Bytes(vec![0xff, 0]);
         assert_eq!(
-            reply_json(&reply, false),
+            reply_json(&reply, Shape::Multi),
             r#"{"statusCode":200,"multiValueHeaders":{"content-type":["text/plain"],"set-cookie":["a=1","b=2"]},"body":"/wA=","isBase64Encoded":true}"#
         );
     }
