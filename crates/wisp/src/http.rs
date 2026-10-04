@@ -962,6 +962,10 @@ fn trim_buffers(b: &mut Buffers) {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+#[path = "edge_conn.rs"]
+pub(crate) mod edge_conn;
+
 /// What the epoll driver received for a connection and leaves to its
 /// future (see [`on_driver`]): the buffers, how much of `cx.wire.buf` is
 /// answered, and the request after that when the driver got that far with

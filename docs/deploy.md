@@ -131,13 +131,21 @@ file and the static files; no wasm-bindgen or other tool.
 | `vercel` | Vercel | `npx vercel deploy --prebuilt` (env var `WISP_SECRET`) |
 | `netlify` | Netlify | `npx netlify deploy --prod` |
 | `node` | Amplify, Firebase, Azure, Stormkit, Zeabur, any Node host | `npm start` |
-| `bun` | Bun (`Bun.serve`) | `bun server.mjs` |
+| `bun` | Bun (`Bun.listen`) | `bun server.mjs` |
 | `lambda` | AWS Lambda | below |
 
 Vercel and Netlify Edge: add `--edge` (`--target vercel --edge`, `--target netlify --edge`); the wasm app runs as a module (`opt-level = "s"`, for their size limits), Netlify skips `static/` via `excludedPath`. Edge limits apply.
 
-The `node` server reads at most `WISP_BODY_LIMIT` (default 1 MB) of a body
-and answers 413 past it; raise it for a route with a larger `BODY_LIMIT`.
+The `node`, `bun` and local `deno` servers read raw sockets and the app's own
+HTTP/1.1 parser answers (pipelining, keep-alive, chunked bodies, 413, 431 and
+each route's `BODY_LIMIT`, as the native server has them), with no per-request
+objects of the host's. At startup a request over loopback must be answered as
+the app answers it (twice, on one connection); if not, or with
+`WISP_NODE_HTTP=1`, they serve with `node:http`, `Bun.serve` or `Deno.serve`
+(one stderr line says which). Deno Deploy has no sockets and always uses
+`Deno.serve`. WebSockets are not served on any edge build (501). Only the
+`node:http` path reads at most `WISP_BODY_LIMIT` (default 1 MB) of a body and
+answers 413 past it.
 
 - **Amplify, Firebase, Azure Static Web Apps, Stormkit, Zeabur:** `--target
   node` (`npm start`); the output's `hosts/*.md` has each host's manifest or

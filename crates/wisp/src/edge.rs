@@ -20,6 +20,12 @@
 //!   so a streamed body's sender fails.
 //! - `wisp_pull(id)`: request `id`'s stream wants chunks again.
 //!
+//! - `wisp_conn_open(id, len)`, `wisp_conn_data(id, len)`, `wisp_conn_close(id)`,
+//!   `wisp_conn_pull(id)`: a connection the host accepted, whose raw bytes
+//!   Wisp parses and answers itself (see [`crate::http::Raw`]): `open` with
+//!   the peer's address as text, `data` with the bytes read, `close` when the
+//!   client left, `pull` when it takes writes again after `conn_write`
+//!   returned 0. Ids are below `1 << 30`.
 //! - `wisp_current() -> id`: after a trap, the task that trapped: a
 //!   request's id, or `u32::MAX` for `init`.
 //! - `wisp_poll()`: after a trap, polls the tasks woken meanwhile.
@@ -29,10 +35,13 @@
 //! among the heads sent, `u32::MAX` if not kept; a first line `200 stream` means the
 //! body follows as `chunk(id, ptr, len)` calls, the last one empty; a chunk
 //! returns 0 when the client is behind, and none follows until `wisp_pull`),
-//! `fetch(id, ptr, len)` (a request, its target a URL), `timer(id, ms)`.
+//! `fetch(id, ptr, len)` (a request, its target a URL), `timer(id, ms)`,
+//! `conn_write(id, ptr, len) -> ok` (bytes for connection `id`, copied before
+//! it returns; an empty write ends the connection; 0 when the client is
+//! behind, and none follows until `wisp_conn_pull`).
 //!
-//! Tasks: a request's has its id; `init`'s is `u32::MAX`; those of
-//! `wisp::spawn` count up from `1 << 31`.
+//! Tasks: a request's has its id; a connection's is `1 << 30` and its id;
+//! `init`'s is `u32::MAX`; those of `wisp::spawn` count up from `1 << 31`.
 //!
 //! Tasks are polled when the host calls in, and never between: every
 //! wakeup comes from a request or a fetch arriving. A panic traps, which
@@ -43,6 +52,7 @@
 // numbers; memory crosses only as buffers Rust owns and hands out by address.
 #![allow(unsafe_code)]
 
+use crate::http::edge_conn::{Raw, Step, Stream};
 use crate::{App, Reply, Request};
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -73,6 +83,7 @@ unsafe extern "C" {
     #[link_name = "chunk"]
     safe fn send_chunk(id: u32, ptr: *const u8, len: usize) -> u32;
     safe fn timer(id: u32, ms: u32);
+    safe fn conn_write(id: u32, ptr: *const u8, len: usize) -> u32;
     /// Seconds since 1970, the host's clock (`std`'s has none here).
     safe fn now() -> f64;
 }
@@ -96,9 +107,25 @@ type Handler = fn(u32, Vec<u8>);
 const INIT: u32 = u32::MAX;
 
 static HANDLER: OnceLock<Handler> = OnceLock::new();
+/// Starts the task of a connection that has bytes.
+static DRIVE: OnceLock<fn(u32, Raw) -> Task> = OnceLock::new();
+
+/// A connection's task is `CONN` and its id.
+const CONN: u32 = 1 << 30;
+/// What a client may send while its connection waits on the app: more is
+/// a flood, and the connection is closed.
+const AHEAD: usize = 1 << 20;
+
+/// A connection: idle (its `Raw` here) or being driven (the task has it,
+/// and what arrives meanwhile waits in `inbox`).
+struct Conn {
+    raw: Option<Raw>,
+    inbox: Vec<u8>,
+}
 
 thread_local! {
     static IN: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    static CONNS: RefCell<HashMap<u32, Conn>> = RefCell::new(HashMap::new());
     static ENV: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
     static TASKS: RefCell<HashMap<u32, Task>> = RefCell::new(HashMap::new());
     static WOKEN: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
@@ -160,6 +187,118 @@ pub extern "C" fn wisp_request(id: u32, len: usize) {
     match HANDLER.get() {
         Some(start) => start(id, bytes),
         None => spawn(id, Box::pin(finish(id, Reply::plain(500)))),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wisp_conn_open(id: u32, len: usize) {
+    let at = IN.with_borrow(|b| std::str::from_utf8(&b[..len]).map_or(LOCAL, peer));
+    CONNS.with_borrow_mut(|c| {
+        c.insert(
+            id,
+            Conn {
+                raw: Some(Raw::new(at)),
+                inbox: Vec::new(),
+            },
+        )
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wisp_conn_data(id: u32, len: usize) {
+    let idle = CONNS.with_borrow_mut(|c| {
+        let conn = c.get_mut(&id)?;
+        match conn.raw.take() {
+            Some(mut raw) => {
+                IN.with_borrow(|b| raw.feed(&b[..len]));
+                Some(Some(raw))
+            }
+            None => {
+                IN.with_borrow(|b| conn.inbox.extend_from_slice(&b[..len]));
+                (conn.inbox.len() <= AHEAD).then_some(None)
+            }
+        }
+    });
+    match (idle, DRIVE.get()) {
+        (Some(Some(raw)), Some(drive)) => spawn(CONN + id, drive(id, raw)),
+        (Some(None), _) => {}
+        // A flood, a connection never opened, or an app not started.
+        _ => wisp_conn_close(id, true),
+    }
+}
+
+/// `wisp_conn_close`: the client left. With `end`, the app ends it.
+#[unsafe(no_mangle)]
+pub extern "C" fn wisp_conn_close(id: u32, end: bool) {
+    if CONNS.with_borrow_mut(|c| c.remove(&id)).is_some() && end {
+        conn_write(id, std::ptr::null(), 0);
+    }
+    let task = TASKS.with_borrow_mut(|t| t.remove(&(CONN + id)));
+    drop(task); // outside the borrow: dropping it may wake others
+    run();
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wisp_conn_pull(id: u32) {
+    done(&PULLS, CONN + id);
+}
+
+/// Sends what `raw` wrote; false when the client is behind.
+fn flush(id: u32, raw: &mut Raw) -> bool {
+    let w = raw.out();
+    let ok = w.is_empty() || conn_write(id, w.as_ptr(), w.len()) != 0;
+    raw.sent();
+    ok
+}
+
+/// The task of connection `id`, with bytes in `raw`: answers them, and what
+/// comes while it does, then hands `raw` back to the connection.
+async fn connection<A: App>(id: u32, mut raw: Raw) {
+    loop {
+        Ready.await;
+        let step = match READY.get() {
+            1 => raw.step::<A>().await,
+            _ => raw.refuse::<A>(500),
+        };
+        flush(id, &mut raw);
+        match step {
+            Step::Flush => {}
+            Step::Idle => {
+                let more =
+                    CONNS.with_borrow_mut(|c| c.get_mut(&id).map(|c| std::mem::take(&mut c.inbox)));
+                match more {
+                    Some(more) if more.is_empty() => {
+                        raw.rest();
+                        CONNS.with_borrow_mut(|c| c.get_mut(&id).map(|c| c.raw = Some(raw)));
+                        return;
+                    }
+                    Some(more) => raw.feed(&more),
+                    None => return,
+                }
+            }
+            Step::Close => return wisp_conn_close(id, true),
+            Step::Stream(Stream {
+                mut body,
+                chunked,
+                close,
+            }) => {
+                while let Some(chunk) = body.recv().await {
+                    if chunk.is_empty() {
+                        continue; // it would read as the end
+                    }
+                    raw.frame(chunked, &chunk);
+                    if !flush(id, &mut raw) {
+                        PULLS.with_borrow_mut(|p| p.insert(CONN + id, None));
+                        Wait(&PULLS, CONN + id).await;
+                    }
+                }
+                raw.end_stream(chunked);
+                flush(id, &mut raw);
+                if close {
+                    return wisp_conn_close(id, true);
+                }
+            }
+        }
     }
 }
 
@@ -252,6 +391,7 @@ pub(crate) fn start<A: App>() {
     if HANDLER.set(request::<A>).is_err() {
         return;
     }
+    let _ = DRIVE.set(|id, raw| Box::pin(connection::<A>(id, raw)));
     let init = async {
         // Saved tables' rows, before `init`, which may set a store of its own.
         let opened = match env("WISP_STORE") {

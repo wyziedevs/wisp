@@ -158,6 +158,8 @@ async function stored(x, env, method, body) {
   }
 }
 
+const CONN = 1 << 30;
+
 // `module` is a compiled WebAssembly.Module; `env` the host's variables
 // (only strings are passed on). A panic fails its own request with a 500,
 // and later requests go to a fresh instance.
@@ -174,7 +176,7 @@ export function wisp(module, env = {}, sink) {
 
   async function start() {
     // `work`: timers and fetches under way, which `idle` waits out.
-    const x = { pending: new Map(), heads: [], streams: new Map(), retired: false, work: 0, idlers: [] };
+    const x = { pending: new Map(), heads: [], streams: new Map(), conns: new Map(), retired: false, work: 0, idlers: [] };
     let view; // the memory's bytes, made again only when it has grown
     const mem = () => {
       const b = x.exports.memory.buffer;
@@ -242,6 +244,9 @@ export function wisp(module, env = {}, sink) {
           x.pending.delete(id);
           x.streams.get(id)?.error(e);
           x.streams.delete(id);
+          // A connection's task (`1 << 30` and its id): the socket goes.
+          const io = id >= CONN && id < 0x80000000 ? x.conns.get(id - CONN) : null;
+          if (io) x.conns.delete(id - CONN), io.destroy();
         };
         if (id !== 0xffffffff) {
           // One task trapped (a request's, or a `wisp::spawn`'s): the others go on.
@@ -291,6 +296,16 @@ export function wisp(module, env = {}, sink) {
           const [method, url] = r.first.split(' ', 2);
           const answer = url === 'wisp:store' ? stored(x, env, method, r.body) : outbound(r);
           x.later(answer, (b) => x.call(() => x.exports.wisp_fetched(id, x.put(b))));
+        },
+        // A connection's bytes, copied before this returns: 0 when it is behind.
+        // An empty write ends it.
+        conn_write: (id, p, n) => {
+          const io = x.conns.get(id);
+          if (!io) return 1;
+          if (n) return io.write(mem().subarray(p, p + n)) ? 1 : 0;
+          x.conns.delete(id);
+          io.end();
+          return 1;
         },
         timer: (id, ms) => x.later(new Promise((r) => setTimeout(r, ms)), () => x.call(() => x.exports.wisp_timer(id))),
       },
@@ -365,6 +380,44 @@ export function wisp(module, env = {}, sink) {
     return true;
   }
 
+  // A socket the host accepted, whose bytes Wisp parses and answers itself
+  // (the instance's `Raw`): `io` is { write(bytes) -> false when behind,
+  // end(), destroy() }, `bytes` a view of the app's memory, good only until
+  // `write` returns. Returns { data(bytes), drain(), close() } for the host's
+  // read, drain and close events, or null with no live instance: use `fetch`.
+  let conns = 0;
+  function conn(io, peer = '') {
+    const x = ready;
+    if (!x || x.retired) return void instance().catch(() => {}); // the next one finds it
+    let id;
+    do id = conns = (conns + 1) & (CONN - 1);
+    while (x.conns.has(id));
+    x.conns.set(id, io);
+    x.call(x.exports.wisp_conn_open, id, x.write(enc.encode(peer)));
+    return {
+      data: (bytes) => x.call(x.exports.wisp_conn_data, id, x.write(bytes)),
+      drain: () => x.call(x.exports.wisp_conn_pull, id),
+      close: () => x.conns.delete(id) && x.call(x.exports.wisp_conn_close, id, 0),
+    };
+  }
+
+  // Whether the server at `url` answers `GET /` over a real HTTP client as
+  // the app does itself, twice (the second on the kept-alive connection).
+  async function check(url) {
+    try {
+      const want = await handle({ method: 'GET', target: '/', headers: [['host', new URL(url).host]], body: none });
+      if (want.body instanceof ReadableStream) want.body.cancel();
+      for (let i = 0; i < 2; i++) {
+        const got = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(5000) });
+        await got.arrayBuffer();
+        if (got.status !== want.status) return false;
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   // A web `Request` to a web `Response`: Workers, Deno, Netlify. `ctx` is
   // the host's context, whose `waitUntil` keeps background work alive.
   async function serve(request, peer = '', ctx) {
@@ -379,5 +432,5 @@ export function wisp(module, env = {}, sink) {
     return new Response(empty ? null : r.body, { status: r.status, headers: r.headers });
   }
 
-  return { handle, direct, fetch: serve };
+  return { handle, direct, fetch: serve, conn, check };
 }

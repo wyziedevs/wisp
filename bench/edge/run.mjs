@@ -15,7 +15,9 @@ const PORT = 4200;
 // name -> [cwd, command, args, env]
 const servers = {
   'wisp-node': ['wisp-node', node, ['server.mjs']],
+  'wisp-node-http': ['wisp-node', node, ['server.mjs'], { WISP_NODE_HTTP: '1' }],
   'hono-node': ['hono', node, ['node.mjs']],
+  'hello-node': ['hello', node, ['node.mjs']],
   'sveltekit-node': ['sk', node, ['build/index.js']],
   'next-node': ['next', node, ['.next/standalone/server.js'], { HOSTNAME: '127.0.0.1' }],
   'wisp-cf': ['wisp-cf', node, [wrangler, 'dev', '--local', '--log-level', 'error', '--port', String(PORT)]],

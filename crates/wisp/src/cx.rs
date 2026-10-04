@@ -213,7 +213,6 @@ impl Cx {
     /// Clears what a request left, once it is answered; the next one's
     /// spans are set by the parser. The edge build answers each request in
     /// a `Cx` of its own.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn reset(&mut self) {
         self.idem = None;
         self.clear_params();
