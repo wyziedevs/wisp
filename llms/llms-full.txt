@@ -12,6 +12,7 @@ src/app.html                shell with %wisp.head% %wisp.body% (optional)
 src/app.css | app.scss      served at /_app/app.css (Tailwind if it imports it; Sass, no Node)
 postcss.config.*            PostCSS after either (needs Node + postcss-cli)
 package.json                npm packages for browser code: `wisp add canvas-confetti`
+add/<name>/recipe           `wisp add <name>`: lines `dep <Cargo line>`, `env K=v` (.env.example), `file <path>` (copied from add/<name>/<path>), `note`; idempotent, `--force` replaces files; `wisp add` lists
 .env                        X=…: `wisp::env("X")`, `env.PUBLIC_X` in browser code
 src/hooks.rs                fn init() once; fn before(cx) every request
 src/db.rs                   models and tables; its `pub` items are in every route file
@@ -163,8 +164,8 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
 
 `<style>h1 { color: red }</style>` (top level, no attributes) styles this
 file only (`:global(x)` opts out; `<style global>`); it joins app.css.
-Accessibility lints warn, never fail (img alt, label control, `<a href>`,
-heading order, button text...); `<!-- wisp-ignore a11y-img-alt -->` silences
+Accessibility lints warn, never fail (img alt, input label, link and button
+name, `<a href>`, heading order, tabindex...); `<!-- wisp-ignore a11y-img-alt -->` silences
 one. Images: `<img src="$lib/p.jpg" alt="">` or `src="/x.png"` gets
 `width`/`height`; `wisp build` adds WebP `srcset` (cwebp, cached), lazy.
 `data-wisp-raw` opts out. Translations: `src/locales/en.json` (`{"hi":
@@ -210,7 +211,9 @@ app's own same-named component wins; `path` or registry dependency, not git).
 page is the children of, any field `date: 2026-10-01`); text may use
 `<Card>` between blank lines. Built at build time; fenced code is
 highlighted (`hl-k hl-s hl-c hl-n hl-t hl-a`; color them). `noindex: true`
-leaves the sitemap. Index: `{#each wisp::pages("blog") as p}<a
+leaves the sitemap. `/feed.xml` is an Atom feed of pages with a `date`
+(`description` is the summary). `{@html wisp::og(title, desc, image)}` in a
+head: Open Graph tags. Index: `{#each wisp::pages("blog") as p}<a
 href={p.path}>{p.title}</a>{/each}` (newest `date` first).
 
 ## Browser code (JavaScript, same file)
@@ -238,6 +241,14 @@ props={:{...}} />` (`react|preact|vue|svelte`); web components just work.
 reject with `status`, `message`, `errors`. PWA: `src/manifest.json` (or
 `wisp::app_manifest(json)?`) is `/manifest.webmanifest`, icons from
 `static/icon.png`; `"offline": true` adds a service worker.
+Phones: `<body data-wisp-revalidate>` refetches on focus/online; `<form
+data-wisp-queue>` (safe to repeat) waits offline and is sent after; a
+navigation focuses the h1 and announces the title.
+Router API (`import {...} from 'wisp'`): `beforeNavigate(({cancel})=>)`,
+`afterNavigate`, `onNavigate` (may return a promise, then a function),
+`preloadData(url)`, `preloadCode(url)`, `invalidate(key)` (+page.js loads that
+`depends(key)`), `invalidateAll()`, `updated` store; links take
+`data-wisp-noscroll|keepfocus|replacestate`.
 Stores, islands, the rest: docs/client.md.
 
 ## Endpoints (`+server.rs`)
@@ -395,6 +406,21 @@ no-wait fast path off every route.
 
 ## Commands
 
+<<<<<<< HEAD
+`wisp new app` Â· `wisp dev` (hot reload keeps `$state`; `Alt+Shift+W`
+devtools; `/_wisp/components` workshop of `*.stories.wisp`) Â· `wisp test
+[--browser]` Â· `wisp check [--types]` Â· `wisp fmt [--check]` Â· `wisp build`
+(`--static`, `--spa`, `--docker`, `--target
+cloudflare|pages|deno|vercel|netlify|node|bun|lambda|native` (`--edge` with vercel or netlify: their edge
+runtime), `--client ts`,
+`--sourcemap`) Â· `wisp deploy init <host>` (a GitHub Actions workflow; or
+`fly|render|railway`: that host's config) Â· `wisp routes` Â· `wisp new-route
+/path page|server|rest` Â· `wisp add|remove pkg` (`wisp add` alone: the recipes in `add/`) Â· `wisp ui
+add button dialog` (accessible components into `src/components`) Â· `wisp lsp`
+Â· `wisp update-docs` Â· `wisp mcp` (`claude mcp add wisp -- wisp mcp`). Docs:
+README.md, docs/design.md, client.md, api.md, deploy.md, embed.md, tokens.md,
+or llms-full.txt (this file, client, api, deploy and embed).
+=======
 `wisp new app [--template demo|minimal|api] [--[no-]tailwind|git|install] [-y]`,
 `wisp dev [--port N]` (hot reload keeps `$state`; `Alt+Shift+W` devtools;
 `/_wisp/components` workshop of `*.stories.wisp`), `wisp test [--browser]`,
@@ -408,6 +434,7 @@ dialog` (accessible components into `src/components`), `wisp lsp`, `wisp
 update-docs`, `wisp mcp` (`claude mcp add wisp -- wisp mcp`). Docs: README.md,
 docs/design.md, client.md, api.md, deploy.md, embed.md, tokens.md, or
 llms-full.txt (this file, client, api, deploy and embed).
+>>>>>>> 941a5e5 (Shrink the AI-facing docs and fix stale facts (commands, prelude, mojibake))
 
 
 <!-- docs/client.md -->
@@ -840,6 +867,10 @@ export a script may have:
   export const snapshot = { capture: () => open, restore: (v) => (open = v) }  // capture: any JSON
 </script>
 ```
+
+`data-wisp-noscroll`, `data-wisp-keepfocus`, `data-wisp-replacestate` (on or around a link) keep scroll, keep focus, replace history; `goto(url, { noscroll, keepfocus, replace })` too. Hooks from `'wisp'` return an unsubscribe: `beforeNavigate(({ from, to, pop, cancel }) => ..)`, `afterNavigate`, `onNavigate` (after fetch, before the swap; a returned promise is awaited, a returned function runs after), `preloadData(url)`, `preloadCode(url)`, `invalidateAll()`, `updated.value` (a newer wisp.js exists). `cancel()` does not stop back/forward. `+page.js` `load` gets `depends(key)` (a `fetch`ed URL counts); `invalidate('key')` reruns only those loads, no page request.
+
+Phones: pages leave with `pagehide` (back/forward cache; scroll restored). `<body data-wisp-revalidate="30">` refetches data when the tab or network returns (at most every N s, default 30; the morph keeps focus, scroll, typed text). Offline, `<form data-wisp-queue>` (safe to send twice) waits in `sessionStorage`, is sent in order when back, then the page refreshes (`wisp:sent`); other forms show "You are offline" and fire `wisp:result` with `error: "offline"`. Only urlencoded forms queue. A navigation focuses the `<h1>` (else `<main>`) and announces the title; view transitions skip under `prefers-reduced-motion`.
 
 ## Forms: `use:enhance`
 
@@ -1564,13 +1595,16 @@ file and the static files; no wasm-bindgen or other tool.
 
 | Target | For | From `dist/<target>` |
 |---|---|---|
-| `cloudflare` | Workers, Pages | `npx wrangler deploy` (secrets: `npx wrangler secret put WISP_SECRET`) |
+| `cloudflare` | Workers | `npx wrangler deploy` (secrets: `npx wrangler secret put WISP_SECRET`) |
+| `pages` | Cloudflare Pages | `npx wrangler pages deploy .` in `dist/pages` (`_worker.js`, `_routes.json`; `WISP_SECRET` under Settings) |
 | `deno` | Deno Deploy | `deployctl deploy --entrypoint main.ts` (local: `deno run -A main.ts`) |
 | `vercel` | Vercel | `npx vercel deploy --prebuilt` (env var `WISP_SECRET`) |
 | `netlify` | Netlify | `npx netlify deploy --prod` |
 | `node` | Amplify, Firebase, Azure, Stormkit, Zeabur, any Node host | `npm start` |
 | `bun` | Bun (`Bun.serve`) | `bun server.mjs` |
 | `lambda` | AWS Lambda | below |
+
+Vercel and Netlify Edge: add `--edge` (`--target vercel --edge`, `--target netlify --edge`); the wasm app runs as a module (`opt-level = "z"`), Netlify skips `static/` via `excludedPath`. Edge limits apply.
 
 The `node` server reads at most `WISP_BODY_LIMIT` (default 1 MB) of a body
 and answers 413 past it; raise it for a route with a larger `BODY_LIMIT`.
