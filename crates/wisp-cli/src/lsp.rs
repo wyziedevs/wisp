@@ -1264,7 +1264,14 @@ mod tests {
     /// a hover (what an author sees is what the docs say).
     #[test]
     fn hover_covers_the_reference() {
-        let docs = include_str!("../templates/vendor/llms-full.txt");
+        // The reference apps get, and the docs site pages when its checkout
+        // (WISP_DOCS_DIR, default ../wisp-docs) is there; else just the first.
+        let mut docs = include_str!("../templates/vendor/llms-full.txt").to_string();
+        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        for (_, path) in crate::template_files::docs_files(&crate::template_files::repo(base)) {
+            docs.push_str(&crate::template_files::read_text(&path).unwrap_or_default());
+        }
+        let docs = docs.as_str();
         let words = |pre: &str, ok: fn(char) -> bool| {
             let mut all: Vec<&str> = docs
                 .match_indices(pre)

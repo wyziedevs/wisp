@@ -156,8 +156,59 @@ pub fn repo(base: &Path) -> PathBuf {
     base.join("../..")
 }
 
-/// The docs `llms-full.txt` holds after AGENTS.md, in order.
-pub const DOCS: [&str; 4] = ["client", "api", "deploy", "embed"];
+/// The docs site checkout (`wisp-docs`): `WISP_DOCS_DIR`, else the folder
+/// beside the repository. `None` when it has no `src/routes/docs`.
+pub fn docs_pages(repo: &Path) -> Option<PathBuf> {
+    let dir = match std::env::var_os("WISP_DOCS_DIR") {
+        Some(d) => PathBuf::from(d),
+        None => repo.join("../wisp-docs"),
+    };
+    let pages = dir.join("src/routes/docs");
+    pages.is_dir().then_some(pages)
+}
+
+/// The site's pages (`<slug>/+page.md`), by slug, in order.
+fn pages(dir: &Path, slug: &str, out: &mut Vec<(String, PathBuf)>) -> io::Result<()> {
+    let page = dir.join("+page.md");
+    // `plan` is the project's own planning page, not reference.
+    if page.is_file() && !slug.is_empty() && slug != "plan" {
+        out.push((slug.to_string(), page));
+    }
+    let mut subs: Vec<_> = fs::read_dir(dir)?.collect::<Result<_, _>>()?;
+    subs.sort_by_key(|e| e.file_name());
+    for e in subs {
+        if e.path().is_dir() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let slug = if slug.is_empty() {
+                name
+            } else {
+                format!("{slug}/{name}")
+            };
+            pages(&e.path(), &slug, out)?;
+        }
+    }
+    Ok(())
+}
+
+/// Every docs page of the site checkout (see [`docs_pages`]), by slug.
+pub fn docs_files(repo: &Path) -> Vec<(String, PathBuf)> {
+    let mut out = Vec::new();
+    if let Some(dir) = docs_pages(repo) {
+        let _ = pages(&dir, "", &mut out);
+    }
+    out
+}
+
+/// A page without its front matter (the `---` block at the top).
+fn body(text: &str) -> &str {
+    match text
+        .strip_prefix("---\n")
+        .and_then(|t| t.split_once("\n---\n"))
+    {
+        Some((_, rest)) => rest,
+        None => text,
+    }
+}
 
 /// A text file with `\r\n` as `\n`, as a checkout on Windows may have it.
 pub fn read_text(path: &Path) -> io::Result<String> {
@@ -188,15 +239,20 @@ fn reference(text: &str) -> String {
     out
 }
 
-/// `llms-full.txt`: the app's AGENTS.md, then each of [`DOCS`], one file.
-pub fn llms_full(repo: &Path) -> io::Result<String> {
+/// `llms-full.txt`: the app's AGENTS.md, then each docs page of the site
+/// checkout, one file. `None` without the checkout (the committed copy stays).
+pub fn llms_full(repo: &Path) -> io::Result<Option<String>> {
+    let files = docs_files(repo);
+    if files.is_empty() {
+        return Ok(None);
+    }
     let mut out = reference(&read_text(&repo.join("llms/AGENTS.md"))?);
-    for doc in DOCS {
-        out.push_str(&format!("\n\n<!-- docs/{doc}.md -->\n\n"));
-        out.push_str(read_text(&repo.join(format!("docs/{doc}.md")))?.trim_end());
+    for (slug, path) in files {
+        out.push_str(&format!("\n\n<!-- docs/{slug}.md -->\n\n"));
+        out.push_str(body(&read_text(&path)?).trim());
         out.push('\n');
     }
-    Ok(out)
+    Ok(Some(out))
 }
 
 /// Writes `text` to `path` unless it is there already.

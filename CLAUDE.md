@@ -14,6 +14,6 @@ Hard rules, in order:
 
 Carmack-style code, minimal deps, no `unsafe` (workspace lint), match the surrounding style. Never hand-edit `crates/wisp-cli/templates/vendor` (build.rs regenerates it). Never commit `todo.txt`.
 
-Rules load by path from `.claude/rules/` (runtime, build, cli, tests-bench). Writing a Wisp app: skill `wisp-app`. `llms/AGENTS.md` is the framework reference for app authors and other tools (read it only for app work or when asked); `docs/design.md` is the contract.
+Rules load by path from `.claude/rules/` (runtime, build, cli, tests-bench). Writing a Wisp app: skill `wisp-app`. `llms/AGENTS.md` is the framework reference for app authors and other tools (read it only for app work or when asked); the contract is https://wispweb.dev/docs/design (repo `../wisp-docs`).
 
-Docs move with code: a change to the API, syntax, CLI or behavior updates, in the same change, the `///` docs, the LSP hover tables (`crates/wisp-cli/src/lsp.rs`), `llms/AGENTS.md`, `docs/*.md`, `examples/` and the vendored copies (rule `.claude/rules/docs-sync.md`).
+Docs move with code: a change to the API, syntax, CLI or behavior updates, in the same change, the `///` docs, the LSP hover tables (`crates/wisp-cli/src/lsp.rs`), `llms/AGENTS.md`, `examples/` and the vendored copies (rule `.claude/rules/docs-sync.md`). Human docs live in the sibling repo `../wisp-docs` (`src/routes/docs/<slug>/+page.md`, site https://wispweb.dev, deploys from its `main`): update it in the same change.

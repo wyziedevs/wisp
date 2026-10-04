@@ -300,7 +300,7 @@ Third-party scripts: `<script src=… type="wisp/idle">` loads when idle,
 blocks (before-interactive), `defer` is after.
 Web vitals: `<meta name="wisp-vitals" content="/vitals">` sends one
 `sendBeacon` JSON `{path,ttfb,lcp,cls,inp}` per load to that route.
-Stores, islands, the rest: docs/client.md.
+Stores, islands, the rest: https://wispweb.dev/docs/client.
 
 ## Endpoints (`+server.rs`)
 
@@ -323,7 +323,7 @@ fn before_create(note: &mut Note) -> Result { Ok(()) }  // also before_update, a
 ```
 → GET/POST `/api/notes`, GET/PUT/PATCH/DELETE `/api/notes/[id]`; rows are
 `{"id":1,…}`; 201, 404, 422 by field. Filters, sorting, pages, ETags, ndjson,
-RFC 9457, webhooks, OpenAPI, TypeScript client: docs/api.md. A
+RFC 9457, webhooks, OpenAPI, TypeScript client: https://wispweb.dev/docs/api. A
 handler the file writes replaces that one; by hand:
 
 ```rust
@@ -378,7 +378,7 @@ Both sign in. `user`, `login` and `signup` take the table for you: the only
 off the worker (`RateLimit` sign-ins); by hand `wisp::password::{hash, check}`.
 A `Password` is `Plain` as typed (never sniffed, even if it looks like a hash) and `Hashed` once a table (add/update/set) or `signup` hashes it, once; stores hold and load only hashes. It is `null` in any JSON out (`hash: String` still works).
 `cx.need(&USERS, |u| u.admin)?` is the Row, 403 if not allowed. More:
-`docs/auth.md` (`token`/`untoken` links, `totp`, `oauth`,
+https://wispweb.dev/docs/auth (`token`/`untoken` links, `totp`, `oauth`,
 `fetch`).
 
 ## hooks.rs
@@ -441,7 +441,7 @@ no-wait fast path off every route.
   `wisp::env("K")`, `spawn`, `every`, `wisp::channel("x")`
   `.send/events()` (SSE)`/websocket()`, `RateLimit::per_minute(n).check(key)?`,
   `#[derive(Cookie)]`.
-- Data, jobs (docs/data.md): `#[unique]` on a `#[model]` field of a saved
+- Data, jobs (https://wispweb.dev/docs/data): `#[unique]` on a `#[model]` field of a saved
   table (or `.unique("f", |v: &T| &v.f)`), `#[json(default)]`/`#[json(default =
   expr)]`/`#[json(was = "old")]` for old rows, `.migrate(f)`, `.live()` (pages
   naming a live table's static refresh themselves, via `/_wisp/live/<name>`),
@@ -462,7 +462,7 @@ no-wait fast path off every route.
   `METRICS_KEY=k` (`/_wisp/metrics`, Prometheus), `OTEL_EXPORTER_OTLP_ENDPOINT`
   (spans; `wisp::span("x")`, `wisp::traceparent()`).
 
-- Serve extras (docs/serve.md): embedded files gzip + `Range`; pages get
+- Serve extras (https://wispweb.dev/docs/serve): embedded files gzip + `Range`; pages get
   `nosniff` and `referrer-policy` (`WISP_HSTS=on`, `WISP_SECURE_HEADERS=off`);
   `/_wisp/health`; `WISP_HANDLER_TIMEOUT=secs` is a 503.
 
@@ -500,7 +500,7 @@ daemon; Windows: a startup scheduled task) · `wisp routes` · `wisp new-route /
 add|list button dialog` (accessible components into `src/components`; `clientonly`:
 `<ClientOnly fallback="…">` draws its children only in the browser) · `wisp
 lsp` · `wisp update-docs` · `wisp mcp` (`claude mcp add wisp -- wisp mcp`).
-Docs: README.md, docs/design.md, client.md, api.md, deploy.md, embed.md,
-tokens.md, or llms-full.txt (this file, client, api, deploy and embed).
+Docs: https://wispweb.dev/docs (client, api, data, auth, serve, deploy,
+embed), the design and tokens pages, or llms-full.txt (this file and the site's pages).
 
 <!-- End of the Wisp reference. Notes for this app go below; wisp update-docs keeps them. -->

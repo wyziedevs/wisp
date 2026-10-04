@@ -8,14 +8,14 @@ AGENTS.md is the complete, compact reference: read it before writing Wisp code. 
 
 - [AGENTS.md](https://raw.githubusercontent.com/wyziedevs/wisp/main/llms/AGENTS.md): every syntax form, API and gotcha on one page
 - [llms-full.txt](https://raw.githubusercontent.com/wyziedevs/wisp/main/llms/llms-full.txt): AGENTS.md and all the docs, one file
-- [Design](https://raw.githubusercontent.com/wyziedevs/wisp/main/docs/design.md): routes, page logic, templates, components, forms, cookies, hooks, runtime, build
-- [Client code](https://raw.githubusercontent.com/wyziedevs/wisp/main/docs/client.md): scripts, runes, directives, client blocks, components, stores, router, islands, npm packages
-- [APIs](https://raw.githubusercontent.com/wyziedevs/wisp/main/docs/api.md): resources and queries, storage, endpoints, validation, errors, auth, webhooks, rate limits, streams, jobs, OpenAPI
-- [Deploy](https://raw.githubusercontent.com/wyziedevs/wisp/main/docs/deploy.md): binary, static, Docker, Cloudflare, Deno, Vercel, Netlify, Node
-- [Embedding and tests](https://raw.githubusercontent.com/wyziedevs/wisp/main/docs/embed.md): in-process tests, tower, axum, Lambda
+- [Design](https://wispweb.dev/docs/design): routes, page logic, templates, components, forms, cookies, hooks, runtime, build
+- [Client code](https://wispweb.dev/docs/client): scripts, runes, directives, client blocks, components, stores, router, islands, npm packages
+- [APIs](https://wispweb.dev/docs/api): resources and queries, storage, endpoints, validation, errors, auth, webhooks, rate limits, streams, jobs, OpenAPI
+- [Deploy](https://wispweb.dev/docs/deploy): binary, static, Docker, Cloudflare, Deno, Vercel, Netlify, Node
+- [Embedding and tests](https://wispweb.dev/docs/embed): in-process tests, tower, axum, Lambda
 
 ## Optional
 
-- [README](https://raw.githubusercontent.com/wyziedevs/wisp/main/README.md): overview and quick start
-- [Token counts](https://raw.githubusercontent.com/wyziedevs/wisp/main/docs/tokens.md): the same apps in Wisp and other frameworks
+- [Website](https://wispweb.dev): overview, quick start and the docs
+- [Token counts](https://wispweb.dev/docs/tokens): the same apps in Wisp and other frameworks
 - [Examples](https://github.com/wyziedevs/wisp/tree/main/examples): demo app, JSON API, Wisp inside axum

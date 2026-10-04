@@ -1,5 +1,5 @@
 //! Wisp: a fast, fun web framework for Rust. File-based routes, `.wisp`
-//! templates, form actions, one binary. See `docs/design.md` for the whole picture.
+//! templates, form actions, one binary. See <https://wispweb.dev/docs/design> for the whole picture.
 //!
 //! An app's `main.rs` is `wisp::main!();`; everything else is generated
 //! from `src/routes` by `wisp-build`.
