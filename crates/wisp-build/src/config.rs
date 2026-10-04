@@ -17,7 +17,7 @@
 //! parameters a `[name]` of `from`. A header is `pattern name: value`.
 //! None declared, none compiled: the server does nothing for them.
 
-use crate::routes::{Seg, Tree};
+use crate::routes::{MAX_PARAMS, Seg, Tree};
 use std::path::Path;
 
 #[derive(Default)]
@@ -34,7 +34,7 @@ pub fn load(root: &Path, tree: &Tree) -> Result<Rules, String> {
 
 fn parse(toml: &str, tree: &Tree) -> Result<Rules, String> {
     let mut rules = Rules::default();
-    for e in strings(toml, "redirects") {
+    for e in strings(toml, "redirects")? {
         let at = |m: &str| format!("Cargo.toml: redirects = [\"{e}\"]: {m}");
         let mut w = e.split_whitespace();
         let (Some(from), Some(to)) = (w.next(), w.next()) else {
@@ -77,7 +77,8 @@ fn parse(toml: &str, tree: &Tree) -> Result<Rules, String> {
         }
         rules.redirects.push((from.into(), to.into(), status));
     }
-    for e in strings(toml, "rewrites") {
+    rules.no_redirect_loop()?;
+    for e in strings(toml, "rewrites")? {
         let at = |m: &str| format!("Cargo.toml: rewrites = [\"{e}\"]: {m}");
         let w: Vec<&str> = e.split_whitespace().collect();
         let [from, to] = w[..] else {
@@ -106,10 +107,17 @@ fn parse(toml: &str, tree: &Tree) -> Result<Rules, String> {
                     "the route takes `{p}`: `{from}` has no `[{p}]`"
                 )));
             }
+            // One segment into a rest, or a rest into one, is not what either asked.
+            let rest = format!("[...{p}]");
+            if from.contains(&rest) != to.contains(&rest) {
+                return Err(at(&format!(
+                    "`{p}` is `[...{p}]` in only one of `{from}` and `{to}`"
+                )));
+            }
         }
         rules.rewrites.push((from.into(), id, params));
     }
-    for e in strings(toml, "headers") {
+    for e in strings(toml, "headers")? {
         let at = |m: &str| format!("Cargo.toml: headers = [\"{e}\"]: {m}");
         let Some((from, header)) = e.split_once(char::is_whitespace) else {
             return Err(at("write `pattern name: value`"));
@@ -151,6 +159,9 @@ fn pattern(p: &str) -> Result<Vec<&str>, String> {
     let segs: Vec<&str> = p[1..].split('/').collect();
     let mut names: Vec<&str> = Vec::new();
     for (i, s) in segs.iter().enumerate() {
+        if s.is_empty() && p.len() > 1 {
+            return Err(format!("`{p}` has an empty segment: no `//`, no end `/`"));
+        }
         let hole = s.strip_prefix('[').and_then(|s| s.strip_suffix(']'));
         let Some(h) = hole else {
             if s.contains(['[', ']']) {
@@ -175,6 +186,9 @@ fn pattern(p: &str) -> Result<Vec<&str>, String> {
         }
         names.push(name);
     }
+    if names.len() > MAX_PARAMS {
+        return Err(format!("`{p}` has more than {MAX_PARAMS} parameters"));
+    }
     Ok(names)
 }
 
@@ -190,51 +204,110 @@ fn holes(s: &str) -> Vec<&str> {
     out
 }
 
-/// The strings of `key = [...]` in `[package.metadata.wisp]`; a `[` or `]`
-/// inside one is text.
-pub fn strings(toml: &str, key: &str) -> Vec<String> {
-    let mut on = false;
-    let mut start = None;
+/// The strings of `key = [...]` in `[package.metadata.wisp]`, or what is
+/// wrong with the list. A `[` or `]` inside a string is text.
+fn strings(toml: &str, key: &str) -> Result<Vec<String>, String> {
+    let bad = |m: &str| format!("Cargo.toml: {key} = [...]: {m}");
+    let (mut on, mut start, mut at) = (false, None, 0);
     for l in toml.split_inclusive('\n') {
-        let t = l.trim();
+        let t = l.split('#').next().unwrap_or("").trim();
         if t.starts_with('[') && !t.starts_with("[\"") {
             on = t == "[package.metadata.wisp]";
         } else if on
             && let Some(r) = t.strip_prefix(key).map(str::trim_start)
-            && let Some(r) = r.strip_prefix('=')
+            && r.starts_with('=')
         {
-            start = Some(r.as_ptr() as usize - toml.as_ptr() as usize);
+            start = Some(at + (l.len() - l.trim_start().len()) + key.len());
             break;
         }
+        at += l.len();
     }
     let Some(start) = start else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
-    let (mut out, mut open, mut comment) = (Vec::new(), false, false);
-    let mut quoted: Option<String> = None;
-    for c in toml[start..].chars() {
-        if let Some(s) = &mut quoted {
-            match c {
-                '"' => out.extend(quoted.take()),
-                c => s.push(c),
-            }
-        } else if comment {
-            comment = c != '\n';
-        } else {
-            match c {
-                '#' => comment = true,
-                '"' => quoted = Some(String::new()),
-                '[' if !open => open = true,
-                ']' => break,
-                c if !open && !c.is_whitespace() => break,
-                _ => {}
+    let mut c = toml[start..].chars().peekable();
+    let skip = |c: &mut std::iter::Peekable<std::str::Chars>| {
+        while let Some(&ch) = c.peek() {
+            match ch {
+                '#' => c.by_ref().take_while(|&x| x != '\n').for_each(drop),
+                _ if ch.is_whitespace() => drop(c.next()),
+                _ => break,
             }
         }
+    };
+    skip(&mut c);
+    let eq = c.next();
+    skip(&mut c);
+    if (eq, c.next()) != (Some('='), Some('[')) {
+        return Err(bad("write a list of strings: [\"…\", \"…\"]"));
     }
-    out
+    let mut out = Vec::new();
+    let mut comma = true;
+    loop {
+        skip(&mut c);
+        match c.next() {
+            None => return Err(bad("the list has no closing `]`")),
+            Some(']') => return Ok(out),
+            Some(',') => comma = true,
+            Some(_) if !comma => return Err(bad("a comma goes between strings")),
+            Some(q @ ('"' | '\'')) => {
+                let mut s = String::new();
+                loop {
+                    match c.next() {
+                        Some(x) if x == q => break,
+                        Some('\\') if q == '"' => match c.next() {
+                            Some(x @ ('"' | '\\')) => s.push(x),
+                            Some('t') => s.push('\t'),
+                            _ => {
+                                return Err(bad(
+                                    "a string's escapes are \\\" and \\\\: or use 'single quotes'",
+                                ));
+                            }
+                        },
+                        Some('\n') | None => return Err(bad("a string has no closing quote")),
+                        Some(x) => s.push(x),
+                    }
+                }
+                out.push(s);
+                comma = false;
+            }
+            Some(_) => return Err(bad("the list holds strings: \"from to\"")),
+        }
+    }
 }
 
 impl Rules {
+    /// A redirect whose `to` leads, rule by rule, back to where it began:
+    /// the browser would be sent round for ever. Judged with each `[name]`
+    /// of a `to` as `x`; a loop that needs other values goes unseen.
+    fn no_redirect_loop(&self) -> Result<(), String> {
+        for (k, (from, _, _)) in self.redirects.iter().enumerate() {
+            let mut seen = vec![k];
+            let mut at = k;
+            while self.redirects[at].1.starts_with('/') {
+                let to = self.redirects[at].1.split(['?', '#']).next().unwrap_or("");
+                let to = concrete(to);
+                let Some(next) = self.redirects.iter().position(|r| fits(&r.0, &to)) else {
+                    break;
+                };
+                if seen.contains(&next) {
+                    if next != k {
+                        break; // a loop that does not include `k` is its own rule's to report
+                    }
+                    let way: Vec<&str> =
+                        seen.iter().map(|&i| self.redirects[i].0.as_str()).collect();
+                    return Err(format!(
+                        "Cargo.toml: redirects: `{from}` goes round for ever: {} -> {from}",
+                        way.join(" -> ")
+                    ));
+                }
+                seen.push(next);
+                at = next;
+            }
+        }
+        Ok(())
+    }
+
     /// The `impl App` items (one per line) of the rules there are.
     pub fn emit(&self) -> Vec<String> {
         let lit = |s: &str| format!("{s:?}");
@@ -286,4 +359,35 @@ impl Rules {
         }
         out
     }
+}
+
+/// `path` with each `[name]` or `[...name]` as `x`.
+fn concrete(path: &str) -> String {
+    let (mut out, mut rest) = (String::new(), path);
+    while let Some(i) = rest.find('[') {
+        out += &rest[..i];
+        out.push('x');
+        rest = rest[i..].split_once(']').map_or("", |r| r.1);
+    }
+    out + rest
+}
+
+/// Whether `path` is one of `pattern`'s.
+fn fits(pattern: &str, path: &str) -> bool {
+    let p: Vec<&str> = pattern.split('/').collect();
+    let r: Vec<&str> = path.split('/').collect();
+    for (k, s) in p.iter().enumerate() {
+        if s.starts_with("[...") {
+            return r.len() + 1 >= p.len();
+        }
+        let ok = match r.get(k) {
+            Some(x) if s.starts_with('[') => !x.is_empty(),
+            Some(x) => x == s,
+            None => false,
+        };
+        if !ok {
+            return false;
+        }
+    }
+    p.len() == r.len()
 }

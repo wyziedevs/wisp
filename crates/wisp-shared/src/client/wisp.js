@@ -742,11 +742,11 @@
 
   // `<meta name="wisp-vitals" content="/vitals">`: this page load's LCP, CLS,
   // INP and TTFB (ms, CLS a score) go to that path as JSON by sendBeacon
-  // when the page is hidden.
+  // when the page is hidden, again only when they have changed.
   const vitals = document.querySelector('meta[name=wisp-vitals]')?.content;
   if (vitals && globalThis.PerformanceObserver) {
     const v = { path: location.pathname, ttfb: performance.getEntriesByType('navigation')[0]?.responseStart };
-    let cls = 0;
+    let cls = 0, sent = '';
     const watch = (type, f, o) => {
       try { new PerformanceObserver((l) => l.getEntries().forEach(f)).observe({ type, buffered: true, ...o }); } catch {}
     };
@@ -756,7 +756,9 @@
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState != 'hidden') return;
       for (const k in v) if (typeof v[k] == 'number') v[k] = Math.round(v[k] * 1000) / 1000;
-      navigator.sendBeacon(vitals, JSON.stringify(v));
+      // Hiding happens again and again (every tab switch): only what is new is sent.
+      const body = JSON.stringify(v);
+      try { if (body != sent && navigator.sendBeacon(vitals, body)) sent = body; } catch {}
     });
   }
 

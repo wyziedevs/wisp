@@ -52,6 +52,8 @@ the script runs once; writes batch in a microtask.
 | `$derived(expr)`, `$derived.by(fn)` | Recomputed when read after an input changed; assigning is a build error. |
 | `$effect(fn)` | After the DOM is drawn and when what it read changes; may return a cleanup. |
 | `$effect.pre(fn)` | Same, before the DOM is drawn. |
+| `$effect.root(fn)` | Effects made in `fn` end with the function it returns, not with the component. |
+| `$effect.tracking()` | Whether the code running is tracking what it reads (inside an effect or a binding). |
 | `let { a, b = 1, c: d, ...rest } = $props()` | Component props with browser defaults (absent or `null`); needs no `{@props}`. |
 | `$bindable(default)` | A prop a parent may `bind:`; with `$props()` only these bind. |
 | `$inspect(a, b)` | Logs on change; gone in release. |
@@ -282,6 +284,11 @@ setInterval(() => n++, 1000)                       // also setTimeout, requestAn
                                                    // addEventListener: stopped for you
 listen('/events', (data) => { last = data })       // server-sent events
 await tick()                                       // after the redraw
+flushSync()                                        // redraw now, not at the end of the task
+onError((e) => report(e))                          // each uncaught error and rejection, and each error no {:#try} took
+const w = tweened(0, { duration: 400 })            // w.value = 5 runs there; numbers, arrays, objects of numbers
+const s = spring({ x: 0, y: 0 })                   // s.set({ x: 9, y: 4 }) with momentum; { hard: true } jumps
+const [send, receive] = crossfade({ duration: 400 })   // out:send={{ key: id }} in:receive={{ key: id }}
 ```
 
 ### Shared state

@@ -21,9 +21,8 @@ pub fn tag(tree: &Tree, root: &std::path::Path) -> Result<String, String> {
         let src = crate::read_source(file).map_err(|e| format!("{rel}: {e}"))?;
         let html = src.trim();
         if html.starts_with("---")
-            || ["{#", "{@", "{:", "<script"]
-                .iter()
-                .any(|b| html.contains(b))
+            || html.to_ascii_lowercase().contains("<script")
+            || ["{#", "{@", "{:"].iter().any(|b| html.contains(b))
         {
             return Err(format!(
                 "{rel}: a loading view is static HTML (a `<style>` is fine): no `---` block, script, `{{…}}` holes or components, which wisp.js shows before the page's own code is there"

@@ -58,6 +58,7 @@ impl Reply {
 /// where a request with no `Accept` is taken for an API client's.
 const PAGE: &str = "text/html,*/*;q=0.8";
 
+/// A test client over an app: calls routes in process, with cookies kept between calls. Made by `wisp::test::client`.
 pub struct Client<A> {
     runtime: tokio::runtime::Runtime,
     cookies: Vec<(String, String)>,
@@ -97,6 +98,7 @@ pub fn client<A: App>() -> Client<A> {
 }
 
 impl<A: App> Client<A> {
+    /// A `GET` of `target`, such as `"/about"`; `Reply` is what came back.
     pub fn get(&mut self, target: &str) -> Reply {
         let mut req = Request::new("GET", target);
         req.header("accept", PAGE);
@@ -224,14 +226,17 @@ impl<A: App> Client<A> {
         self.send_json("POST", target, json)
     }
 
+    /// A `PUT` with a JSON body.
     pub fn put_json(&mut self, target: &str, json: &str) -> Reply {
         self.send_json("PUT", target, json)
     }
 
+    /// A `PATCH` with a JSON body.
     pub fn patch_json(&mut self, target: &str, json: &str) -> Reply {
         self.send_json("PATCH", target, json)
     }
 
+    /// A `DELETE` of `target`.
     pub fn delete(&mut self, target: &str) -> Reply {
         self.send(Request::new("DELETE", target))
     }
