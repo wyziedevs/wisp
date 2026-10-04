@@ -633,16 +633,28 @@ impl Cx {
 
     /// The client's IP address. Behind a proxy, set `WISP_CLIENT_IP_HEADER`
     /// to the header it puts the address in (`x-forwarded-for`, whose last
-    /// entry the proxy added, or `x-real-ip`, `cf-connecting-ip`...). Without
+    /// entry of its last line the proxy added, or `x-real-ip`,
+    /// `cf-connecting-ip`...). Without
     /// it, or when that header holds no address, this is the peer's address:
     /// a header any client can send is never trusted by default.
     pub fn client_ip(&self) -> IpAddr {
         let from_proxy = crate::settings()
             .client_ip_header
             .as_deref()
-            .and_then(|h| self.header(h))
-            .and_then(|v| v.rsplit(',').next()?.trim().parse().ok());
+            .and_then(|h| self.proxy_ip(h));
         from_proxy.unwrap_or(self.wire.peer.ip())
+    }
+
+    /// The last address in the last `header` line: the one the proxy
+    /// added. A proxy that appends its own line (HAProxy's `forwardfor`)
+    /// leaves the client's forged line first.
+    fn proxy_ip(&self, header: &str) -> Option<IpAddr> {
+        let v = self
+            .headers()
+            .filter(|(n, _)| n.eq_ignore_ascii_case(header))
+            .last()?
+            .1;
+        v.rsplit(',').next()?.trim().parse().ok()
     }
 
     /// Status for a rendered page. Endpoints set it on their `Response`.
@@ -1387,6 +1399,16 @@ mod tests {
             ["Cookie", "Content-Type"]
         );
         assert_eq!(cx.client_ip(), cx.peer().ip());
+    }
+
+    #[test]
+    fn proxy_ip_is_the_last_line_the_proxy_added() {
+        let cx = Cx::for_test(
+            "GET / HTTP/1.1\r\nX-Forwarded-For: 6.6.6.6\r\nx-forwarded-for: 10.0.0.1, 1.2.3.4\r\n\r\n",
+            &[],
+        );
+        assert_eq!(cx.proxy_ip("x-forwarded-for"), "1.2.3.4".parse().ok());
+        assert_eq!(cx.proxy_ip("x-real-ip"), None);
     }
 
     #[test]
