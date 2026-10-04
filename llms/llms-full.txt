@@ -849,7 +849,7 @@ Each param but `cx` is read by name: route param, then form field or JSON object
 | `Option<T>` | JSON, 204 for `Some(())`, 404 for `None` |
 | any of these in a `Result` | same, or the error |
 
-`Response::created(&v)` is 201; `Response::json_of(&v).with_status(202)`; `.with_header(name, value)` adds a header (also on `Error`, and `cx.set_header` in a page). A single-valued one (`content-type`, `cache-control`, `location`, `etag`, any case) replaces what was set before instead of going out twice: `Response::text(xml).with_header("content-type", "application/rss+xml")` sends one `content-type`. `content-length` and `transfer-encoding` are the server's and are left out. In a page, `cx.set_status(404)` sets the status.
+`Response::created(&v)` is 201; `Response::json_of(&v).with_status(202)`; `.with_header(name, value)` adds a header (also on `Error`, and `cx.set_header` in a page). A single-valued one (`content-type`, `cache-control`, `location`, `etag`, any case) replaces what was set before instead of going out twice: `Response::text(xml).with_header("content-type", "application/rss+xml")` sends one `content-type`. `content-length` and `transfer-encoding` are the server's and are left out. `Response::text` and its kin take a `String` or a `&str` (the `IntoText` trait); anything else is a compile error. In a page, `cx.set_status(404)` sets the status.
 
 Query: `cx.query("q")`, `cx.query_or("page", 1)` (parsed, else the default), `cx.query_string()` (raw, no `?`). `cx.request_id()` is the request's id, sent back as `x-request-id`.
 
@@ -1890,6 +1890,7 @@ let post = db::post(&slug).await?;
 - Before that (`cargo run`, other targets) each worker keeps the first render.
 - One render serves all, so `cx` in statements, markup or `load` is a build error. Its layouts render once, as for a request without cookies.
 - `--static` prerenders every page.
+- Under the hood the build calls `wisp::prerender` on the app; you never call it yourself.
 
 ## Service
 
@@ -2700,7 +2701,7 @@ So `fn load(q: Option<String>, page: Option<u32>)` and `#[action] fn add(text: S
 
 ## Errors, Actions, Validation
 
-- `?` on any `std::error::Error` is a 500 (details only in dev). `return error(404, "…")` stops with that status and message; `return redirect("/…")` is a 303. Both are `Err`s, so they end a function returning a `Result`. `Error::new(status, "…")` is the error itself (for `ok_or`, `map_err`); `Error::redirect(status, "/…")` takes another status. `Err(error(..))` is a build error telling you to write `return error(..)`. `Option::or_404()` is the shortcut.
+- `?` on any `std::error::Error` is a 500 (details only in dev). `return error(404, "…")` stops with that status and message; `return redirect("/…")` is a 303. Both are `Err`s, so they end a function returning a `Result`. `Error::new(status, "…")` is the error itself (for `ok_or`, `map_err`); `Error::redirect(status, "/…")` takes another status. `Err(error(..))` is a build error telling you to write `return error(..)`. `Option::or_404()` is the shortcut; `or_status(409)` on an `Option` or `Result` (the `OrStatus` trait, in the prelude) takes any status.
 - An action returns nothing (or `Result<()>`) and the page renders; or a `Response` (CSV, a file) sent instead of the page; or an `Option<Response>` to do that sometimes.
 - Validation: the action returns `invalid(field, problem)`; the page renders again as a 422 with the form still there, each input showing what was typed and what is wrong ([Actions](/docs/design-forms/)). A param that does not parse (`email: Email`, `age: u8`) is the same 422 by field. An action written without `->` returns `Result`, so it may end in `redirect(..)`. `{cx.problem(field)}` places one message elsewhere; `cx.input(field)` reads what was sent. Any other error shows the error page. For more than a message, `cx.fail(status, value)` keeps a value for the load, which takes it with `cx.take()`.
 
