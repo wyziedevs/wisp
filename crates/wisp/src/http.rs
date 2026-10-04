@@ -3813,20 +3813,38 @@ fn parse_decimal(s: &[u8]) -> Option<usize> {
 // header has no finer resolution, and timeouts are swept once a second. The
 // same tradeoff nginx makes with its cached time.
 
-/// The current unix second, for the Date header.
-static NOW: AtomicU64 = AtomicU64::new(0);
-/// Seconds since the clock started, from the monotonic clock: what request
-/// deadlines are counted in.
-static SECONDS: AtomicU64 = AtomicU64::new(0);
+/// The clock in one word, so a reader never sees the two halves out of
+/// step: the unix second (for the Date header) in the high 32 bits, seconds
+/// since the clock started (monotonic, what request deadlines are counted
+/// in) in the low 32. 0 until the clock starts.
+static TICK: AtomicU64 = AtomicU64::new(0);
+
+/// One `TICK` word from its unix second and elapsed seconds.
+#[inline(always)]
+fn tick(unix: u64, elapsed: u64) -> u64 {
+    (unix << 32) | (elapsed & 0xffff_ffff)
+}
+
+/// The unix second of a `TICK` word.
+#[inline(always)]
+fn tick_unix(t: u64) -> u64 {
+    t >> 32
+}
+
+/// The elapsed seconds of a `TICK` word.
+#[inline(always)]
+fn tick_elapsed(t: u64) -> u64 {
+    t & 0xffff_ffff
+}
 
 pub(crate) fn seconds() -> u64 {
-    SECONDS.load(Ordering::Relaxed)
+    tick_elapsed(TICK.load(Ordering::Relaxed))
 }
 
 /// The unix second: the clock's, when the server keeps one, else the
 /// system's (a host other than the built-in server).
 pub(crate) fn now() -> u64 {
-    match NOW.load(Ordering::Relaxed) {
+    match tick_unix(TICK.load(Ordering::Relaxed)) {
         0 => crate::unix_now(),
         n => n,
     }
@@ -3845,15 +3863,15 @@ fn instant(deadline: u64) -> tokio::time::Instant {
 pub(crate) fn start_clock() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        NOW.store(crate::unix_now(), Ordering::Relaxed);
+        TICK.store(tick(crate::unix_now(), 0), Ordering::Relaxed);
         let start = *START.get_or_init(Instant::now);
         std::thread::Builder::new()
             .name("wisp-clock".into())
             .spawn(move || {
                 loop {
                     std::thread::sleep(Duration::from_secs(1));
-                    NOW.store(crate::unix_now(), Ordering::Relaxed);
-                    SECONDS.store(start.elapsed().as_secs(), Ordering::Relaxed);
+                    let t = tick(crate::unix_now(), start.elapsed().as_secs());
+                    TICK.store(t, Ordering::Relaxed);
                 }
             })
             .expect("failed to start clock thread");
@@ -3888,7 +3906,7 @@ fn length_and_date(w: &mut Vec<u8>, length: Option<usize>) {
 
 #[inline(always)]
 fn date_line() -> [u8; DATE_LINE] {
-    let now = NOW.load(Ordering::Relaxed);
+    let now = tick_unix(TICK.load(Ordering::Relaxed));
     DATE.with(|c| {
         let (secs, line) = c.get();
         if secs == now {
@@ -4073,6 +4091,14 @@ pub(crate) fn stays_inside(rel: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_clock_word_holds_both_halves() {
+        let t = tick(1_790_000_000, 12_345);
+        assert_eq!((tick_unix(t), tick_elapsed(t)), (1_790_000_000, 12_345));
+        assert_eq!(tick_unix(tick(4_000_000_000, 0)), 4_000_000_000);
+        assert_eq!(tick_elapsed(tick(0, u32::MAX as u64)), u32::MAX as u64);
+    }
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
