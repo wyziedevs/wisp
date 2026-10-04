@@ -963,7 +963,7 @@ pub fn derive_rest(item: TokenStream) -> TokenStream {
 
 /// What the app reads from its environment once, at start: each field of
 /// the struct from the variable of its name in capitals (`api_key` from
-/// `API_KEY`, or `.env`), any `FromStr` type, an `Option` one may be unset.
+/// `API_KEY`, or `.env`; `r#type` from `TYPE`), any `FromStr` type, an `Option` one may be unset.
 /// `Config::get().api_key` reads it anywhere. A variable missing or not
 /// parsing stops the server when it starts (the build calls `Config::load()`
 /// before `init`), naming each one, never a request.

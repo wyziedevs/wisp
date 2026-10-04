@@ -177,7 +177,7 @@ function webSink(c, h, body) {
     const r = c.up?.(c) ?? new Response('WebSockets are not available on this host', { status: 501 });
     return c.resolve ? c.resolve(r) : (c.res = r);
   }
-  const empty = c.empty || h.status < 200 || h.status === 204 || h.status === 304;
+  const empty = c.empty || h.status < 200 || h.status === 204 || h.status === 205 || h.status === 304;
   if (empty && h.stream) body.cancel(); // ends the app's stream
   const text = !empty && h.text ? asText(body) : body;
   const r = h.plain && !empty && typeof text === 'string' ? new Response(text) : new Response(empty ? null : text, (h.init ??= init(h)));
@@ -671,7 +671,7 @@ export function wisp(module, env = {}, sink, accept) {
     const r = await handle({ method: request.method, target: url.pathname + url.search, peer, headers, body });
     if (r.status === 101) return accept ? takeover(r.x, r.id, request) : new Response('WebSockets are not available on this host', { status: 501 });
     if (r.idle !== settled) ctx?.waitUntil?.(r.idle); // only when work is under way
-    const empty = r.status < 200 || r.status === 204 || r.status === 304 || request.method === 'HEAD';
+    const empty = r.status < 200 || r.status === 204 || r.status === 205 || r.status === 304 || request.method === 'HEAD';
     if (empty && r.body instanceof ReadableStream) r.body.cancel(); // ends the app's stream
     return new Response(empty ? null : r.body, { status: r.status, headers: r.headers });
   }
