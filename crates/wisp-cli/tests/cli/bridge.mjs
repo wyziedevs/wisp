@@ -22,6 +22,7 @@ globalThis.WebAssembly.instantiate = async (_, imports) => {
     exports: {
       memory,
       wisp_buf: () => 0,
+      wisp_body_limit: () => 1 << 20,
       wisp_env(len) {
         envs.push(new TextDecoder().decode(bytes().slice(0, len)));
       },
