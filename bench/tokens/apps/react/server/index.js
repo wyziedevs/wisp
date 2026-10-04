@@ -11,15 +11,12 @@ app.get('/api/items', async (req, res) => {
 })
 
 // @feature form
-const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-
 app.post('/api/contact', (req, res) => {
-  const name = String(req.body.name ?? '')
-  const email = String(req.body.email ?? '')
+  const { name, email } = req.body
   const errors = {}
-  if (name.length < 1 || name.length > 50) errors.name = 'Name must be 1 to 50 characters'
-  if (!EMAIL.test(email)) errors.email = 'Enter a valid email'
-  if (errors.name || errors.email) return res.status(422).json({ errors })
+  if (!name || name.length > 50) errors.name = 'must have 1 to 50 characters'
+  if (!/^\S+@\S+\.\S+$/.test(email)) errors.email = 'must be an email address'
+  if (Object.keys(errors).length) return res.status(422).json({ errors })
   console.log(`${name} <${email}>`)
   res.json({ ok: true })
 })
