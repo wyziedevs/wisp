@@ -2213,17 +2213,24 @@ impl<'a> Project<'a> {
         Ok(())
     }
 
-    /// The slots of layout `i`, which its markup must draw.
+    /// The slots of layout `i`, which its markup must draw, and draw only.
     fn slot_names(&self, i: usize, t: &Template, file: &Path) -> Result<Vec<String>, String> {
-        fn draws(nodes: &[Node], name: &str) -> bool {
-            nodes.iter().any(|n| {
-                matches!(n, Node::RenderSnippet { name: n, local: false, .. } if n == name)
-                    || inside(n).into_iter().any(|l| draws(l, name))
-            })
+        fn drawn<'a>(nodes: &'a [Node], out: &mut Vec<&'a str>) {
+            for n in nodes {
+                if let Node::RenderSnippet {
+                    name, local: false, ..
+                } = n
+                {
+                    out.push(name);
+                }
+                inside(n).into_iter().for_each(|l| drawn(l, out));
+            }
         }
-        let mut names = Vec::new();
-        for s in self.tree.slots.iter().filter(|s| s.layout == i) {
-            if !draws(&t.nodes, &s.name) {
+        let (mut calls, mut names) = (Vec::new(), Vec::new());
+        drawn(&t.nodes, &mut calls);
+        let mine = self.tree.slots.iter().filter(|s| s.layout == i);
+        for s in mine {
+            if !calls.contains(&s.name.as_str()) {
                 return Err(format!(
                     "{}: the folder @{} is a slot of this layout: draw it with {{@render {}()}}",
                     self.rel(file),
@@ -2232,6 +2239,13 @@ impl<'a> Project<'a> {
                 ));
             }
             names.push(s.name.clone());
+        }
+        // A layout's own snippets are in its file; the rest is a slot, or nothing.
+        if let Some(c) = calls.iter().find(|c| !names.iter().any(|n| n == *c)) {
+            return Err(format!(
+                "{}: {{@render {c}()}} draws a slot, and there is no folder @{c} in this layout's folder",
+                self.rel(file)
+            ));
         }
         Ok(names)
     }
@@ -9375,6 +9389,25 @@ name = \"a\"
                 "not a header to set",
             ),
             ("headers = [\"/a\"]", "write `pattern name: value`"),
+            ("redirects = [\"/a /a\"]", "goes round for ever: /a -> /a"),
+            ("redirects = [\"/a /b\", \"/b /a\"]", "/a -> /b -> /a"),
+            ("redirects = [\"/a/[...p] /a/b/[...p]\"]", "goes round"),
+            ("redirects = [\"/a /b\", \"/b /a x\"]", "the status is"),
+            ("redirects = [\"/a//b /c\"]", "empty segment"),
+            (
+                "redirects = [\"/a /b\" \"/c /d\"]",
+                "a comma goes between strings",
+            ),
+            ("redirects = [\"/a /b\"", "no closing `]`"),
+            ("redirects = \"/a /b\"", "a list of strings"),
+            ("redirects = [\"/a /b]", "no closing quote"),
+            ("redirects = [\"/a /b\\q\"]", "escapes"),
+            ("headers = ['/a x: a	b']", "control character"),
+            (
+                "redirects = [\"/[a]/[b]/[c]/[d]/[e]/[f]/[g]/[h]/[i] /x\"]",
+                "more than 8",
+            ),
+            ("rewrites = [\"/g/[p] /docs/[...p]\"]", "only one of"),
         ] {
             let e = with("rules-bad", rules).err().unwrap_or_default();
             assert!(e.contains(err), "{rules}: {e}");
@@ -12420,6 +12453,35 @@ pub fn load() -> Data { todo!() }";
             ),
             "{code}"
         );
+    }
+
+    #[test]
+    fn slots_loading_and_interceptions_are_checked() {
+        let lay = (
+            "src/routes/+layout.wisp",
+            "<main>{@render children()}{@render modal()}</main>",
+        );
+        let page = ("src/routes/+page.wisp", "<p>hi</p>");
+        let e = app("slot-missing", &[lay, page]).unwrap_err();
+        assert!(
+            e.contains("{@render modal()} draws a slot") && e.contains("no folder @modal"),
+            "{e}"
+        );
+        let slot = ("src/routes/@modal/+page.wisp", "");
+        let cut = ("src/routes/@modal/(.)nope/+page@.wisp", "x");
+        let e = app("cut-nowhere", &[lay, page, slot, cut]).unwrap_err();
+        assert!(
+            e.contains("it intercepts /nope, which is not a page"),
+            "{e}"
+        );
+        let lay = (
+            "src/routes/+layout.wisp",
+            "<main>{@render children()}</main>",
+        );
+        let load = |src| ("src/routes/+loading.wisp", src);
+        assert!(app("loading-ok", &[lay, page, load("<i>l</i>")]).is_ok());
+        let e = app("loading-script", &[lay, page, load("<SCRIPT>1</SCRIPT>")]).unwrap_err();
+        assert!(e.contains("a loading view is static HTML"), "{e}");
     }
 
     #[test]

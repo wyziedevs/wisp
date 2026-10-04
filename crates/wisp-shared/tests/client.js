@@ -279,6 +279,13 @@ const tests = {
     q.event('visibilitychange');
     assert.equal(q.calls.beacon[0][0], '/vitals');
     assert.equal(JSON.parse(q.calls.beacon[0][1]).path, '/');
+    // Hidden again with nothing new: not sent twice. A beacon that throws is not an error.
+    q.event('visibilitychange');
+    assert.equal(q.calls.beacon.length, 1);
+    const r = page({ vitals: { content: '/vitals' } });
+    r.nav.sendBeacon = () => { throw new Error('no'); };
+    r.doc.visibilityState = 'hidden';
+    r.event('visibilitychange');
   },
 };
 
