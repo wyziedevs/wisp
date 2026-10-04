@@ -26,6 +26,7 @@
         "id": "wisp",
         "aliases": ["Wisp"],
         "extensions": [".wisp"],
+        "icon": { "light": "./icons/wisp.svg", "dark": "./icons/wisp.svg" },
         "configuration": "./language-configuration.json"
       }
     ],
