@@ -425,7 +425,7 @@ export function store(value) {
       s.v = v;
     },
     set: (v) => (s.v = v),
-    update: (f) => (s.v = f(s.x)),
+    update: (f) => (notify(s.subs, 2), (s.v = f(s.x))), // in place too
     subscribe: (f) => sub(() => s.v, f),
   };
 }
@@ -1327,7 +1327,7 @@ function bind(sc, el, L, a, get, set) {
   on(sc, el, a == 'checked' || el.localName == 'select' ? 'change' : 'input', () => set(L, read()));
   // A form reset (wisp.js resets a form its post succeeded with) moves
   // the field to its new default; the variable follows it.
-  if (el.form) on(sc, el.form, 'reset', () => queueMicrotask(() => set(L, read())));
+  if (el.form) on(sc, el.form, 'reset', () => setTimeout(() => set(L, read())));
   // Compared with the element, not the last value: a handler may change
   // the target before the input's own batch.
   node(sc, () => {
@@ -1337,7 +1337,7 @@ function bind(sc, el, L, a, get, set) {
       else if (a == 'checked') el.checked = !!v;
       else if (read() !== v) el.value = v ?? '';
     });
-  });
+  }, el.localName == 'select'); // an effect: its options may be drawn in this batch
 }
 
 // {:#each}, {:#if}, {:#key} (and <template each|if>): one copy of the
@@ -1395,7 +1395,7 @@ function clones(sc, inst, tpl, L, quiet, kind, get, names, keyOf) {
       // Where the block ends, found before any copy leaves.
       const tail = (list.at(-1)?.last || pre.at(-1)?.last || tpl).nextSibling;
       const old = new Map();
-      list.forEach((c, i) => ((c.i = i), old.set(c.key, c)));
+      list.forEach((c, i) => ((c.i = i), (c.d = old.has(c.key)), c.d || old.set(c.key, c)));
       const next = items.map((item, i) => {
         const key = keys ? keys[i] : i;
         const c = old.get(key);
@@ -1411,7 +1411,7 @@ function clones(sc, inst, tpl, L, quiet, kind, get, names, keyOf) {
         return n;
       });
       // Leaving: all at once when nothing plays out.
-      const gone = [...old.values()];
+      const gone = list.filter((c) => c.d || old.get(c.key) === c); // a key twice leaves its later copies
       for (const c of gone) end(c.sc);
       const quick = gone.filter((c) => !c.t);
       if (quick.length == list.length) cut(quick);
