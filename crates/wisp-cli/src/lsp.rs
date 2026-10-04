@@ -526,7 +526,7 @@ const KNOBS: [(&str, &str); 14] = [
 
 /// Wisp attributes (inside a tag) and what each does (hover). A test keeps it
 /// in step with the reference: every `data-wisp-*` it shows is here.
-const ATTRS: [(&str, &str); 14] = [
+const ATTRS: [(&str, &str); 15] = [
     (
         "fields",
         "`<form fields>`: writes a labelled input per param of the action (`Email` is `type=email`, `Image` a file, `bool` a checkbox, numbers `number`). `fields={post}` starts a struct param's fields from `post`.",
@@ -582,6 +582,10 @@ const ATTRS: [(&str, &str); 14] = [
     (
         "data-wisp-raw",
         "`<img data-wisp-raw>`: stays as written, not turned into a resized `<picture>`.",
+    ),
+    (
+        "priority",
+        "`<img priority>`: above the fold; `fetchpriority=\"high\"` and not lazy.",
     ),
 ];
 

@@ -202,7 +202,11 @@ Accessibility lints warn, never fail (img alt, input label, link and button
 name, `<a href>`, heading order, tabindex...); `<!-- wisp-ignore a11y-img-alt -->` silences
 one. Images: `<img src="$lib/p.jpg" alt="">` or `src="/x.png"` gets
 `width`/`height`; `wisp build` adds WebP `srcset` (cwebp, cached), lazy.
-`data-wisp-raw` opts out. Translations: `src/locales/en.json` (`{"hi":
+`<img priority>` (above the fold) gets `fetchpriority="high"`, not lazy.
+`data-wisp-raw` opts out. Opt-in features: `wisp-cli/avif` (AVIF `<picture>`),
+`wisp/img` (a route `_img/+server.rs`: `wisp::img::serve::<crate::App>(cx)`
+answers `/_img?src=/p.jpg&w=640&q=75`, `static/` only, fixed widths),
+`og-png` on `wisp` and `wisp-cli` (PNG for `wisp::og`). Translations: `src/locales/en.json` (`{"hi":
 "Hello, {name}!", "n": "{count, plural, =0 {None} one {# item} other {#
 items}}"}`), `{t("hi", name = user.name)}`, `t('n', c)` in scripts; keys
 checked across locales at build. Locale: `[[lang=locale]]`, cookie `lang`,
