@@ -73,6 +73,8 @@ impl Blobs for Folder {
             let mut f = std::fs::File::create(&tmp)?;
             f.write_all(bytes)?;
             f.sync_all()?;
+            // Closed before the rename (wasm's `File` has nothing to drop).
+            #[cfg(not(target_arch = "wasm32"))]
             drop(f);
             std::fs::rename(&tmp, &path)?;
             // The rename reaches the disk with the folder's entry.

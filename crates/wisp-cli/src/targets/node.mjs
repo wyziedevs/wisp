@@ -1,8 +1,14 @@
 // A Node server for a Wisp app: `node server.mjs` listens on $PORT (3000)
 // and $HOST (0.0.0.0). `handler` is the same app as a Node (req, res)
 // function, for Vercel, Firebase and anything built on node:http.
+//
+// The server reads and writes raw sockets and the app's own HTTP parser
+// answers: no node:http objects per request. It is used once a request over
+// loopback has been answered as the app answers it; WISP_NODE_HTTP=1, or a
+// failed check, serves with node:http instead.
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { createServer as tcp } from 'node:net';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { pathToFileURL } from 'node:url';
@@ -98,8 +104,58 @@ async function slow(req, res) {
 
 export { app };
 
+// A socket's bytes to the app and its answers back. A connection the app
+// cannot take (no live instance) goes to node:http, as it is.
+const http = createServer(handler);
+const IDLE = 60_000;
+let raws = 0;
+
+function accept(socket) {
+  const c = app.conn(
+    {
+      // A view of the app's memory: copied here, small ones as a string, which
+      // Node writes without a Buffer.
+      write(v) {
+        const ok = socket.write(v.length < 16384 ? latin1.call(v, 0, v.length) : Buffer.from(v), v.length < 16384 ? 'latin1' : undefined);
+        if (!ok) socket.pause();
+        return ok;
+      },
+      end: () => socket.end(),
+      destroy: () => socket.destroy(),
+    },
+    socket.remoteAddress ?? '',
+  );
+  if (!c) return http.emit('connection', socket);
+  raws++;
+  socket.setTimeout(IDLE, () => socket.destroy());
+  socket.on('data', c.data);
+  socket.on('drain', () => (socket.resume(), c.drain()));
+  socket.on('close', c.close);
+  socket.on('error', () => {}); // 'close' follows
+}
+
+// Whether raw sockets answer: a probe server on loopback, asked as a client would.
+async function verified() {
+  const sockets = new Set();
+  const probe = tcp({ noDelay: true }, (s) => (sockets.add(s), s.on('close', () => sockets.delete(s)), accept(s)));
+  try {
+    await new Promise((ok, no) => probe.once('error', no).listen(0, '127.0.0.1', ok));
+    raws = 0;
+    return (await app.check(`http://127.0.0.1:${probe.address().port}/`)) && raws > 0;
+  } catch {
+    return false;
+  } finally {
+    sockets.forEach((s) => s.destroy());
+    probe.close();
+  }
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const port = Number(process.env.PORT) || 3000;
   const host = process.env.HOST || '0.0.0.0';
-  createServer(handler).listen(port, host, () => console.log(`wisp: listening on http://${host}:${port}`));
+  const forced = process.env.WISP_NODE_HTTP === '1';
+  const raw = !forced && (await verified());
+  console.error(`wisp: node serves with ${raw ? 'raw sockets' : 'node:http'} (${raw ? 'checked' : forced ? 'WISP_NODE_HTTP=1' : 'the check failed'})`);
+  const server = raw ? tcp({ noDelay: true }, accept) : http;
+  server.listen(port, host, () => console.log(`wisp: listening on http://${host}:${port}`));
 }

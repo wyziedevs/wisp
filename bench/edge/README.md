@@ -4,7 +4,7 @@ Wisp's wasm build against Hono, SvelteKit (adapter-node) and Next.js
 (standalone) on the same runtime. Three routes, the same output in each:
 `GET /` ("hello", text), `GET /list` (HTML, 50 escaped items), `GET /json`.
 `apps/` has the four apps. Load: `oha`, 10 s, 64 connections, 3 s warmup, median
-of 3. Not measured: Deno (not installed here).
+of 3. Not measured: Bun and Deno (not installed here; their shims use the same raw driver).
 
 Setup (from a bench dir, say `C:/wb`):
 
@@ -27,8 +27,11 @@ request for the asset check before the worker runs.
 
 ## Results (Windows 10, 16 cores, Node 26, workerd via `wrangler dev --local`)
 
-req/s, p99 in ms. Hono's Node adapter answers a plain Response without
-building a Request, which is why it leads on `/` and `/json` there.
+req/s, p99 in ms. Wisp's Node server reads raw sockets and the app's own HTTP parser
+answers (no `node:http` objects per request), which is why it is above the
+`node:http` floor; `WISP_NODE_HTTP=1` serves through `node:http` instead.
+`run.mjs` has both (`wisp-node`, `wisp-node-http`) and the floor (`hello-node`,
+`apps/hello`).
 
 Inside the wasm a request costs about 1 us (1.5 us before the app's parts were
 borrowed from the host's bytes, the reply head was sent by number and a task
@@ -40,8 +43,10 @@ limit is 3 MB gzipped.
 
 | Runtime | Framework | `/` | `/list` | `/json` |
 |---|---|---|---|---|
-| Node | Wisp | 77,327 (1.4) | 48,679 (2.2) | 75,678 (1.5) |
-| Node | Hono | 83,717 (1.3) | 37,619 (2.8) | 80,523 (1.4) |
+| Node | Wisp (raw sockets) | 127,810 (0.8) | 73,176 (1.6) | 128,582 (0.8) |
+| Node | Wisp (`WISP_NODE_HTTP=1`) | 71,758 (1.8) | 45,876 (2.5) | 73,933 (1.5) |
+| Node | Hono | 83,157 (1.3) | 38,076 (3.0) | 80,715 (1.4) |
+| Node | node:http "hello" floor | 90,201 (1.2) | 90,508 (1.2) | 89,809 (1.2) |
 | Node | SvelteKit | 16,720 (6.9) | 5,773 (23.5) | 15,463 (7.7) |
 | Node | Next.js | 3,443 (78) | 861 (87) | 3,306 (86) |
 | workerd | Wisp | 1,735 (146) | 1,381 (196) | 1,692 (160) |
