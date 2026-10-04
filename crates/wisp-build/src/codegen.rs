@@ -6911,7 +6911,11 @@ impl Gen {
                     .value
                     .as_ref()
                     .map_or("", |v| v.src.as_str());
-                if let Some(put) = paint_value(cx, *group, js).and_then(|v| v.text(&buf)) {
+                let html = g.directives[0].name == "html";
+                if let Some(put) = paint_value(cx, *group, js)
+                    .filter(|_| !html)
+                    .and_then(|v| v.text(&buf))
+                {
                     self.line(ind, &format!("{put} // {}:{}", cx.rel, g.line));
                 }
             }
@@ -7735,6 +7739,7 @@ fn is_extra(d: &Directive) -> bool {
             | Dir::Wait
             | Dir::Comp
     ) || (d.kind == Dir::Bind && !matches!(d.name.as_str(), "value" | "checked" | "this"))
+        || (d.kind == Dir::Hole && d.name == "html")
 }
 
 /// A place in a script, as a line and column of its file.
@@ -8896,6 +8901,7 @@ fn binding(d: &Directive, names: &mut Names) -> Result<String, String> {
         }
         Dir::Attr => format!("[\"attr\", {name}, {}]", getter(value(), names)?),
         Dir::Text => format!("[\"text\", {}]", getter(value(), names)?),
+        Dir::Hole if d.name == "html" => format!("[\"html\", {}]", getter(value(), names)?),
         Dir::Hole => format!("[\"hole\", {}]", getter(value(), names)?),
         Dir::Class => format!("[\"class\", {name}, {}]", getter(value(), names)?),
         Dir::Style => format!("[\"style\", {name}, {}]", getter(value(), names)?),
@@ -12056,6 +12062,18 @@ pub fn load() -> Data { todo!() }";
             "if ::wisp::rt::marks() { __o.body.push_str(\"<!--w:src/routes/+page.wisp-->\"); }";
         assert!(build("marks", &page, false).unwrap().contains(mark));
         assert!(!build("marks", &page, true).unwrap().contains("marks()"));
+    }
+
+    #[test]
+    fn html_and_const_in_client_blocks() {
+        let src = "<script>\n  let items = [1, 2]\n  let h = '<b>x</b>'\n</script>\n{:#each items as n}{:@const sq = n * n}<i>{:sq}</i>{:/each}<div>{:@html h}</div>";
+        let c = page_client(src, true).unwrap();
+        assert!(c.source.contains("[\"html\", "), "{}", c.source);
+        assert!(c.source.contains("[n * n]"), "{}", c.source);
+        assert!(c.source.contains("import \"/_app/c/extra.js\";"));
+        // A page without {:@html} does not load extra.js for it.
+        let c = page_client("<script>let h = 'x'</script><p>{:h}</p>", true).unwrap();
+        assert!(!c.source.contains("extra.js"), "{}", c.source);
     }
 
     #[test]

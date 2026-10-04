@@ -471,7 +471,8 @@ returns and the test passes, skipped. `wisp::test::browser::<App>()` is an
 All of this works in the binary, Docker, Lambda and `tower`. The edge
 (`--target cloudflare` etc.) runs each request in an instance that may be
 its own: `wisp::channel`, `wisp::every`, `RateLimit` are not there,
-WebSockets answer 501 (use the host's queues, cron, rate limiting), and
+WebSockets answer 501 (use the host's rate limiting), jobs (`cron`, `work`)
+run from the host's cron triggers (docs/deploy.md), and
 tables are per-instance memory. JSON, validation, errors, CORS, auth,
 webhooks and docs work everywhere.
 

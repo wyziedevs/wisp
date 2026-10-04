@@ -260,7 +260,8 @@ toggles (`open = !open`: false) or counts (`n++`: 0) a name nothing declares,
 so a live search needs no script: `<input bind:value="q">` `{:#each items.filter((i) => matches(i.name,
 q)) as i}…{:/each}`. Directives `on:click` (`.prevent .once .debounce.300ms`…),
 `bind:value|checked|this`, `:attr="js"`, `:text`, `class:x="js"`,
-`transition:fade`, `use:action`; client blocks `{:#if}` `{:#each}`; runes
+`transition:fade`, `use:action`; client blocks `{:#if}` `{:#each}`, in them `{:@const x = e}`
+and `{:@html h}`; runes
 `$state $derived $effect(.pre .root .tracking) $props`; helpers `onMount listen goto
 invalidate matches tick flushSync onError tweened spring crossfade`. Values sent to JS must be `#[model]` or `#[derive(Json)]`.
 `pushState('?tab=2', {tab: 2})`: shallow routing, `page.value.state`; changed
@@ -434,7 +435,9 @@ no-wait fast path off every route.
   expr)]`/`#[json(was = "old")]` for old rows, `.migrate(f)`, `.live()` (pages
   naming a live table's static refresh themselves, via `/_wisp/live/<name>`),
   `set clear by try_add`; `Upload`, `wisp::relay`,
-  `wisp::queue(n).push(&j)` + `work(n, f)` + `cron("0 3 * * *", f)`,
+  `wisp::queue(n).push(&j)` + `work(n, f)` + `cron("0 3 * * *", f)` (on
+  Cloudflare/Vercel/Netlify the build writes the host's cron trigger from the
+  literal schedule; set `CRON_SECRET`, `WISP_STORE`),
   `wisp::cache(k, secs, f)`/`uncache(path)`, `WISP_ADMIN_KEY` admin page;
   rules `url one_of pattern with`.
 - Static export: `fn entries() -> Vec<&'static str>` in a `[param]` page.
@@ -476,7 +479,9 @@ vercel or netlify: their edge runtime; or per route, `const RUNTIME: wisp::Runti
 wisp::Runtime::Edge;` in its +page.rs/+server.rs: both functions from one app, other hosts ignore it), `--client ts`, `--sourcemap`, `--analyze`: per-route JS/CSS/wasm bytes, raw and
 gzip, no build) · `wisp
 deploy init <host>` (a GitHub Actions workflow; or `fly|render|railway`: that
-host's config) · `wisp openapi [-o openapi.json]` (`--check`: CI fails when the file is stale) · `wisp routes` · `wisp new-route /path page|server|rest` ·
+host's config) · `wisp openapi [-o openapi.json]` (`--check`: CI fails when the file is stale) · `wisp service install|uninstall|start|stop|status [--user u]
+[--port n] [--dry-run]` (run the release binary as a systemd unit or launchd
+daemon; Windows: a startup scheduled task) · `wisp routes` · `wisp new-route /path page|server|rest` ·
 `wisp add|remove pkg` (`wisp add` alone: the recipes in `add/`) · `wisp ui
 add|list button dialog` (accessible components into `src/components`; `clientonly`:
 `<ClientOnly fallback="…">` draws its children only in the browser) · `wisp

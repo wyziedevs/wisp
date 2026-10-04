@@ -36,6 +36,10 @@
 //!   request's id, or `u32::MAX` for `init`.
 //! - `wisp_poll()`: after a trap, polls the tasks woken meanwhile.
 //!
+//! A request for `/_wisp/cron/<schedule>` is a host's cron trigger: it runs
+//! the app's `wisp::cron` tasks of that schedule and the queues' due jobs
+//! (see `jobs`), and answers 204 only with `Authorization: Bearer $CRON_SECRET`.
+//!
 //! Imports (module `wisp`): `random(ptr, len)`, `now() -> f64` (seconds since 1970), `log(ptr, len)`, `reply(id, head, head_len, head_id, body, body_len)` (the reply to
 //! request `id`: its head, `status` and `name: value` lines, and its number
 //! among the heads sent, `u32::MAX` if not kept; a first line `200 stream` means the
@@ -445,7 +449,12 @@ fn request<A: App>(id: u32, bytes: Vec<u8>, lazy: bool) {
                         match crate::Cx::from_request::<A>(method, target, headers, body, peer) {
                             Ok(mut cx) => {
                                 cx.lazy = lazy.then(|| Lazy::new(id));
-                                crate::http::answer::<A>(cx, &mut None).await
+                                // The host's cron trigger; out of the way of the routes.
+                                if cx.raw_path().starts_with(b"/_wisp/cron/") {
+                                    crate::jobs::trigger(&cx).await
+                                } else {
+                                    crate::http::answer::<A>(cx, &mut None).await
+                                }
                             }
                             Err(status) => Reply::plain(status),
                         }

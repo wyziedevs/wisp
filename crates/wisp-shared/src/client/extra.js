@@ -193,7 +193,7 @@ X.spread = (sc, inst, el, L, quiet, [, a]) => {
   let had = {};
   watch(sc, a, L, (v, first) => {
     v = v || {};
-    for (const k in had) if (!(k in v)) k.startsWith('on') ? el.removeEventListener(k.slice(2), had[k]) : el.removeAttribute(k);
+    for (const k in had) if (!(k in v)) k.startsWith('on') ? typeof had[k] == 'function' && el.removeEventListener(k.slice(2), had[k]) : held(el.localName, k) || el.removeAttribute(k);
     for (const k in v) {
       const x = v[k];
       if (!k.startsWith('on')) held(el.localName, k) || attr(x, first, el, k, sc);
@@ -260,7 +260,7 @@ X.bind = (sc, el, L, a, get, set) => {
   }
   const read =
     a == 'group'
-      ? () => (el.type == 'checkbox' ? [...document.querySelectorAll(`input[name="${el.name}"]`)].filter((i) => i.checked).map((i) => i.value) : el.checked ? el.value : get(L))
+      ? () => (el.type == 'checkbox' ? [...document.getElementsByName(el.name)].filter((i) => i.checked).map((i) => i.value) : el.checked ? el.value : get(L))
       : a == 'online'
         ? () => navigator.onLine
         : () => el[a];
@@ -278,6 +278,20 @@ X.bind = (sc, el, L, a, get, set) => {
     });
   });
 };
+
+// {:@html expr}: the markup after the anchor, up to its <!--h--> end comment,
+// made again when the value changes. Not escaped, as on the server.
+X.html = (sc, inst, el, L, quiet, [, a]) =>
+  watch(
+    sc,
+    a,
+    L,
+    (v) => {
+      for (let n; (n = el.nextSibling) && !(n.nodeType == 8 && n.data == 'h'); ) n.remove();
+      el.after(Object.assign(document.createElement('template'), { innerHTML: v }).content);
+    },
+    1,
+  );
 
 // ---- components, forms, collections -------------------------------------------
 
