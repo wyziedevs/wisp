@@ -35,6 +35,9 @@
 (() => {
   const headers = { 'x-wisp': '1' };
   const key = (u) => String(u).split('#')[0];
+  // A navigation lands at once, as a page load does, even under
+  // `scroll-behavior: smooth`.
+  const jump = (x, y) => scrollTo({ left: x, top: y, behavior: 'instant' });
   let shown = key(location.href);
   const me = document.currentScript?.src;
   // The path the app is served under (`/app`, or none), from this script's.
@@ -323,9 +326,9 @@
       const at = how.pop && history.state;
       let to;
       try { to = url.hash && document.getElementById(decodeURIComponent(url.hash.slice(1))); } catch {} // not valid percent-encoding: nowhere to go
-      if (at?.x != null) scrollTo(at.x, at.y || 0);
-      else if (to) to.scrollIntoView();
-      else if (!how.noscroll) scrollTo(0, 0);
+      if (at?.x != null) jump(at.x, at.y || 0);
+      else if (to) to.scrollIntoView({ behavior: 'instant' });
+      else if (!how.noscroll) jump(0, 0);
       // Focus starts over, as on a page load, unless the page asks for it.
       const auto = document.querySelector('[autofocus]');
       if (auto) auto.focus();
@@ -406,7 +409,7 @@
     save(entry);
     entry = mark();
     if ((history.state?.p ?? key(location.href)) !== shown) go(location.href, { pop: true });
-    else restore(entry), history.state?.x != null && scrollTo(history.state.x, history.state.y || 0), send('wisp:pop');
+    else restore(entry), history.state?.x != null && jump(history.state.x, history.state.y || 0), send('wisp:pop');
   });
   // pushState(url, state) and replaceState in a script (live.js).
   document.addEventListener('wisp:push', (e) => {
@@ -662,7 +665,7 @@
         if (to.origin !== location.origin || to.pathname !== location.pathname) res = null;
         else {
           push(to);
-          scrollTo(0, 0);
+          jump(0, 0);
           if (!res.redirected) res = await fetch(to, { headers });
         }
       } else if (type.includes('json') && form.__wispEnhance) {
