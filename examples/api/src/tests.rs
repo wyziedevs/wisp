@@ -127,6 +127,25 @@ fn other_sites_and_tools() {
     );
 }
 
+/// The committed `openapi.json` (`wisp openapi -o openapi.json`, which CI can
+/// check with `wisp openapi --check`) says what the app does now.
+#[test]
+fn the_committed_spec_is_current() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/openapi.json");
+    let Ok(file) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let committed = wisp::from_json::<Value>(file.as_bytes()).unwrap();
+    let served = client::<App>().get("/_wisp/openapi.json").json::<Value>();
+    for part in ["paths", "components"] {
+        assert_eq!(
+            served.get(part),
+            committed.get(part),
+            "{part}: run wisp openapi -o openapi.json"
+        );
+    }
+}
+
 #[test]
 fn events_as_notes_change() {
     let mut app = client::<App>();

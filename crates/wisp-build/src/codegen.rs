@@ -854,6 +854,42 @@ pub fn generate_all(input: &Input) -> Result<(String, String), String> {
     generate_web(input).map(|o| (o.code, o.client))
 }
 
+/// What `fn before` of `src/hooks.rs` asks of requests: a bearer token, a
+/// signed-in member, and whether it looks at `cx.writes()` (only changes
+/// need it). A guess from its text, for the document's `security`.
+fn hooks_gate(root: &Path) -> (bool, bool, bool) {
+    let src = crate::read_source(&root.join("src").join("hooks.rs")).unwrap_or_default();
+    let Ok(items) = rust_scan::scan(&src) else {
+        return (false, false, false);
+    };
+    match items.fns.iter().find(|f| f.name == "before") {
+        Some(f) => (f.bearer, f.session, src.contains(".writes()")),
+        None => (false, false, false),
+    }
+}
+
+/// The OpenAPI 3.1 document of the app's endpoints, pages and actions
+/// (empty without any), for `wisp openapi`.
+pub fn openapi(input: &Input) -> Result<String, String> {
+    generate_web(input).map(|o| o.spec)
+}
+
+/// `key = "value"` of Cargo.toml's `[package]`.
+fn package_field(toml: &str, key: &str) -> Option<String> {
+    let mut in_package = false;
+    for line in toml.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_package = line == "[package]";
+        } else if in_package
+            && let Some((k, v)) = line.split_once('=')
+            && k.trim() == key
+        {
+            return Some(v.trim().trim_matches('"').to_string());
+        }
+    }
+    None
+}
+
 /// [`generate`] for `wisp check`: what the app's browser code imports of
 /// its npm packages, as esm.sh paths (for `wisp build` to download), and
 /// the templates' accessibility warnings.
@@ -1347,6 +1383,7 @@ declare module '*';
 pub struct Output {
     pub code: String,
     client: String,
+    spec: String,
     web: Web,
     pub styles: String,
     /// `file:line: what (a11y-name)`, in file order.
@@ -1354,10 +1391,11 @@ pub struct Output {
 }
 
 fn generate_web(input: &Input) -> Result<Output, String> {
-    let (p, web, code, client) = generate_parts(input)?;
+    let (p, web, code, docs) = generate_parts(input)?;
     Ok(Output {
         code,
-        client,
+        client: docs.0,
+        spec: docs.1,
         styles: p.styles(),
         warnings: p.warnings(),
         web,
@@ -1366,7 +1404,9 @@ fn generate_web(input: &Input) -> Result<Output, String> {
 
 /// The app read, its browser half, the generated Rust and the TypeScript
 /// client.
-fn generate_parts<'a>(input: &Input<'a>) -> Result<(Project<'a>, Web, String, String), String> {
+fn generate_parts<'a>(
+    input: &Input<'a>,
+) -> Result<(Project<'a>, Web, String, (String, String)), String> {
     let mut p = Project::load(input)?;
     let web = p.browser()?;
     if input.release {
@@ -1382,8 +1422,8 @@ fn generate_parts<'a>(input: &Input<'a>) -> Result<(Project<'a>, Web, String, St
     g.modules(&p, &web)?;
     g.servers(&p);
     let assets = g.assets(&p)?;
-    let client = g.app(&p, &web, &assets)?;
-    Ok((p, web, g.out, client))
+    let docs = g.app(&p, &web, &assets)?;
+    Ok((p, web, g.out, docs))
 }
 
 /// The app, as far as it has been read.
@@ -3731,7 +3771,7 @@ impl Gen {
     }
 
     /// The `wisp::App` impl, and the TypeScript client of the endpoints.
-    fn app(&mut self, p: &Project, web: &Web, assets: &Assets) -> Result<String, String> {
+    fn app(&mut self, p: &Project, web: &Web, assets: &Assets) -> Result<(String, String), String> {
         let css = match &assets.css_hash {
             Some(h) if p.release => Some(h.as_str()),
             Some(_) => Some("dev"),
@@ -3875,7 +3915,7 @@ impl Gen {
         for l in p.rules.emit() {
             self.line(1, &l);
         }
-        let client = self.api(p)?;
+        let docs = self.api(p)?;
         self.init(p);
         self.workshop(p);
 
@@ -4005,7 +4045,7 @@ impl Gen {
         self.handle_now(p);
         self.error(p);
         self.line(0, "}");
-        Ok(client)
+        Ok(docs)
     }
 
     /// The router. A path with no parameter in it is matched whole: by its
@@ -4345,41 +4385,80 @@ impl Gen {
     }
 
     /// The OpenAPI document and TypeScript client of the `+server.rs`
-    /// endpoints; the client comes back.
-    fn api(&mut self, p: &Project) -> Result<String, String> {
+    /// endpoints, and the pages and their actions the document adds; the
+    /// client and the document come back (empty without any).
+    fn api(&mut self, p: &Project) -> Result<(String, String), String> {
         // Types an endpoint names but does not define may be in the app's own
         // modules (`src/models.rs`).
         let shared = &p.shared;
-        let types: Vec<(&crate::routes::Route, Vec<Op>, Vec<rust_scan::TypeItem>)> =
+        let (bearer, session, writes) = hooks_gate(p.root);
+        let mut types: Vec<(&crate::routes::Route, Vec<Op>, Vec<rust_scan::TypeItem>)> =
             (p.tree.routes.iter().zip(&p.model.routes))
                 .filter_map(|(route, r)| {
                     let server = r.server.as_ref()?;
-                    let ops = server.handlers.iter().map(|h| h.op.clone()).collect();
+                    // A route and its `/[id]` share the file: each answers its own.
+                    let ops = (server.handlers.iter())
+                        .filter(|h| h.member == route.member)
+                        .map(|h| h.op.clone())
+                        .collect();
                     let types = server.types.iter().chain(shared).cloned().collect();
                     Some((route, ops, types))
                 })
                 .collect();
+        for op in types.iter_mut().flat_map(|(_, ops, _)| ops) {
+            let gated = !writes || op.method != "get";
+            op.bearer |= bearer && gated;
+            op.session |= session && gated;
+        }
         let endpoints: Vec<crate::openapi::Endpoint> = (types.iter())
             .map(|(route, ops, types)| crate::openapi::Endpoint { route, ops, types })
             .collect();
-        if endpoints.is_empty() {
-            return Ok(String::new());
+        let mut actions: Vec<(&crate::routes::Route, Vec<crate::openapi::Action>)> =
+            (p.tree.routes.iter().zip(&p.model.routes))
+                .filter(|(route, _)| !route.member)
+                .filter_map(|(route, r)| {
+                    let page = r.page.as_ref()?;
+                    Some((
+                        route,
+                        page.actions().map(crate::openapi::Action::of).collect(),
+                    ))
+                })
+                .collect();
+        for a in actions.iter_mut().flat_map(|(_, actions)| actions) {
+            a.bearer |= bearer;
+            a.session |= session;
         }
+        if endpoints.is_empty() && actions.iter().all(|(_, a)| a.is_empty()) {
+            return Ok((String::new(), String::new()));
+        }
+        let pages: Vec<crate::openapi::Page> = (actions.iter())
+            .map(|(route, actions)| crate::openapi::Page {
+                route,
+                actions,
+                types: shared,
+            })
+            .collect();
         let client = crate::openapi::typescript(&endpoints);
-        self.line(1, "fn client_ts() -> &'static str {");
-        self.line(2, &lit(&client));
-        self.line(1, "}");
-        let var = |k: &str, or: &str| std::env::var(k).unwrap_or_else(|_| or.into());
-        let spec = crate::openapi::spec(
-            &var("CARGO_PKG_NAME", "app"),
-            &var("CARGO_PKG_VERSION", "0.1.0"),
-            &endpoints,
-        );
+        if !endpoints.is_empty() {
+            self.line(1, "fn client_ts() -> &'static str {");
+            self.line(2, &lit(&client));
+            self.line(1, "}");
+        }
+        // Cargo.toml, so `wisp openapi` and the build agree; Cargo's own
+        // for what it inherits from the workspace (`version.workspace`).
+        let toml = fs::read_to_string(p.root.join("Cargo.toml")).unwrap_or_default();
+        let package = |key: &str, or: &str| {
+            package_field(&toml, key)
+                .or_else(|| std::env::var(format!("CARGO_PKG_{}", key.to_uppercase())).ok())
+                .unwrap_or_else(|| or.into())
+        };
+        let (name, version) = (package("name", "app"), package("version", "0.1.0"));
+        let spec = crate::openapi::spec(&name, &version, &endpoints, &pages);
         self.line(1, "fn openapi() -> &'static str {");
         self.line(2, &lit(&spec));
         self.line(1, "}");
         self.line(0, "");
-        Ok(client)
+        Ok((client, spec))
     }
 
     /// Dev builds: what `/_wisp/components` shows, each story with the
@@ -4771,6 +4850,8 @@ fn server_handlers(
     use crate::routes::{HANDLERS, is_member, rest_type};
     let mut handlers: Vec<Handler> = Vec::new();
     let mut before = false;
+    // What `fn before` asks of every request: a token, a member.
+    let mut gate = (false, false);
     for f in &items.fns {
         let at = |msg: String| format!("{}: {msg}", f.line);
         if f.action {
@@ -4789,6 +4870,7 @@ fn server_handlers(
             check_before(f).map_err(at)?;
             shims.push(shim(f, Shim::Answer)?);
             before = true;
+            gate = (f.bearer, f.session);
             continue;
         }
         if !HANDLERS.contains(&name) {
@@ -4885,11 +4967,20 @@ fn server_handlers(
             shims.push(format!(
                 "pub async fn {shim}(cx: &mut ::wisp::Cx) -> ::wisp::Result<::wisp::Response> {{ ::wisp::rt::rest::{what}::<super::{ty}>(cx, &__REST_HOOKS) }}"
             ));
+            // Keys of `#[rest(...)]`: a read needs `key`, a write `write` or
+            // `key`, a delete `admin` too.
+            let keys = items.types.iter().find(|t| t.name == ty).map(|t| &t.rest);
+            let key = |k: &str| keys.is_some_and(|r| r.iter().any(|(n, _)| n == k));
+            let bearer = key("key")
+                || (method != "get" && key("write"))
+                || (method == "delete" && key("admin"));
             let op = Op {
                 method,
                 inputs,
                 value,
-                fallible: false,
+                bearer,
+                session: false,
+                rest: Some((what, ty.to_string())),
             };
             // A list is JSON, or NDJSON for `accept: application/x-ndjson`.
             let by_accept = what == "list";
@@ -4902,6 +4993,10 @@ fn server_handlers(
                 empty: false,
             });
         }
+    }
+    for h in &mut handlers {
+        h.op.bearer |= gate.0;
+        h.op.session |= gate.1;
     }
     if handlers.is_empty() {
         return Err(

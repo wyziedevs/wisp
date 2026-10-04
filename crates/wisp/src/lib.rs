@@ -819,8 +819,9 @@ pub trait App: 'static {
         let _ = path;
         None
     }
-    /// The OpenAPI document of the app's `+server.rs` endpoints, served at
-    /// `/_wisp/openapi.json`; empty without any.
+    /// The OpenAPI 3.1 document of the app's `+server.rs` endpoints, pages
+    /// and form actions, served at `/_wisp/openapi.json` (`wisp openapi`
+    /// prints it); empty without endpoints and actions.
     fn openapi() -> &'static str {
         ""
     }
