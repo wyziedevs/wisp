@@ -29,7 +29,8 @@
 // Nodes that browser code made (marked __w) are left too.
 // `<script src type="wisp/idle">` (or `wisp/interaction`) loads a script
 // late; `<meta name="wisp-vitals" content="/path">` reports web vitals.
-// A folder's `+loading.wisp` shows in <main> while its page is fetched.
+// A folder's `+loading.wisp` shows in <main> while its page is fetched; a
+// `(.)route` page inside a `@slot` folder shows in the slot instead of it.
 (() => {
   const headers = { 'x-wisp': '1' };
   const key = (u) => String(u).split('#')[0];
@@ -243,9 +244,10 @@
   // `+loading.wisp`: the build lists each folder's view (`[prefix, html]`);
   // a navigation not already fetched ahead shows the deepest one that fits
   // in <main> at once, and the page that arrives morphs over it.
-  const views = (() => {
-    try { return JSON.parse(document.getElementById('wisp-loading')?.text || '[]'); } catch { return []; }
-  })();
+  const data = (id) => {
+    try { return JSON.parse(document.getElementById(id)?.text || '[]'); } catch { return []; }
+  };
+  const views = data('wisp-loading');
   function wait(url) {
     const hit = views.filter(([p]) => fit(p + '/[...r]', url.pathname)).sort((a, b) => b[0].length - a[0].length)[0];
     const main = hit && document.querySelector('main');
@@ -255,12 +257,33 @@
     main.setAttribute('aria-busy', 'true');
   }
 
+  // `@slot/(.)photo/[id]/+page@.wisp`: a navigation to `/photo/7` from a page
+  // that draws the slot (`data-wisp-cut`: `[[target, own URL]]`) fetches
+  // that page's own URL and shows it in the slot; the address changes and
+  // the page stays. A reload of that address is the route's real page.
+  async function cut(url) {
+    for (const el of document.querySelectorAll('[data-wisp-cut]')) {
+      for (const [target, own] of JSON.parse(el.getAttribute('data-wisp-cut'))) {
+        const p = fit(target, url.pathname);
+        if (!p) continue;
+        const to = base + own.replace(/\[\[?(?:\.\.\.)?([^\]=]+)(?:=\w+)?\]\]?/g, (_, n) => String(p[n] ?? '').split('/').map(encodeURIComponent).join('/'));
+        let res;
+        try { res = await fetch(to, { headers }); } catch { return; }
+        if (!res.ok || !isHtml(res)) return;
+        el.innerHTML = new DOMParser().parseFromString(await res.text(), 'text/html').body.innerHTML;
+        push(url);
+        return true;
+      }
+    }
+  }
+
   async function go(url, how = {}) {
     url = new URL(url, location.href);
     if (script(url)) return; // goto(text from a visitor) runs nothing
     if (url.origin !== location.origin) return location.assign(url);
     // A pop is over: the browser has gone there, so it cannot be canceled.
     if (!send('wisp:navigate', { from: location.href, to: url.href, pop: !!how.pop }) && !how.pop) return;
+    if (!how.pop && document.querySelector('[data-wisp-cut]') && (await cut(url))) return;
     const my = ++nav;
     if (!how.pop) history.replaceState({ ...history.state, x: scrollX, y: scrollY }, '');
     if (views.length && !how.pop && !pre.has(key(url))) wait(url);

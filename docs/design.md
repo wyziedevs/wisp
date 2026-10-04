@@ -1336,6 +1336,25 @@ branches).
   prefix that `fit` (the SPA fallback's own matcher) accepts and fills `<main>`.
   Streaming `{#await}` needs none of it: it is for the whole page, and a
   streamed page is read whole by a client navigation. About 290 bytes gzipped.
+- **Slots (parallel routes).** A `@name` folder with a `+page.wisp` beside a
+  `+layout.wisp` is an ordinary route at `/dir/@name` (no router change) that
+  the layout draws: `Tree::slots` records it, the layout's `render` gets a
+  `name: &dyn Fn(&mut Out)` parameter, `{@render name()}` calls it (a
+  non-local snippet, so the template needed nothing), and `wrap_layouts`
+  passes `|o| page_K::render(o, cx, &sK)` where `serve_page_N` loaded `sK` (the
+  slot's `+page.rs`) after the layouts' own loads. A slot page cannot have
+  statements (its render is sync inside a sync layout). Every page below the
+  layout draws it; a layout with no slot has the signature it had.
+- **Intercepting routes.** `(.)`, `(..)`, `(...)` before a segment inside a
+  slot (`Tree::intercepts`, from the route's segments; only `+page@.wisp`, so
+  the page has no layouts) name the route it intercepts. The slot a route
+  intercepts into is wrapped in `<div data-wisp-cut='[[target, own URL]]'>`
+  (only that layout's pages carry it, nothing in the shell); `cut()` in
+  wisp.js, on a click whose URL fits a target of an element the page has,
+  fetches the own URL, puts its `<body>` in the element and pushes the
+  target's URL. The page stays, `history.back()` closes it (the pop morphs the old
+  page's empty slot back), and a load of the URL is the route's own page.
+  About 310 bytes gzipped, none of it run on a page with no such element.
 - **Version skew.** A release build puts `<meta name="wisp-build" content=ID>`
   in the shell (a hash of templates and Rust: baked, nothing per request).
   wisp.js compares it with the page a navigation fetched, as it does

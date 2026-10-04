@@ -84,8 +84,53 @@ fn client_only_sends_its_fallback_and_keeps_the_children_inert() {
     // The ClientOnly component (`wisp ui add clientonly`): children in a
     // `<template>`, drawn on mount; what is visible is the fallback.
     let page = app.get("/t/clientonly").text().to_string();
-    assert!(page.contains("<template data-w=\"0.0\"><p>secret inside</p></template>"), "{page}");
-    assert!(page.contains("<span class=\"client-only\"><template data-w=\"2\"></template>wait<!----></span>"), "{page}");
+    assert!(
+        page.contains("<template data-w=\"0.0\"><p>secret inside</p></template>"),
+        "{page}"
+    );
+    assert!(
+        page.contains(
+            "<span class=\"client-only\"><template data-w=\"2\"></template>wait<!----></span>"
+        ),
+        "{page}"
+    );
+}
+
+#[test]
+fn a_slot_is_drawn_inside_its_layout_with_its_own_load() {
+    let mut app = client::<Site>();
+    // `@stats/+page.wisp` (+ `+page.rs`) beside the layout's `{@render stats()}`.
+    for path in ["/t/dash", "/t/dash/more"] {
+        let page = app.get(path).text().to_string();
+        assert!(
+            page.contains("<aside><p>stats 42</p>\n</aside>")
+                || page.contains("<aside><p>stats 42</p></aside>"),
+            "{path}: {page}"
+        );
+    }
+    assert!(app.get("/t/dash/more").text().contains("<h2>more</h2>"));
+}
+
+#[test]
+fn an_intercepting_page_is_a_fragment_for_the_slot_and_a_reload_is_the_page() {
+    let mut app = client::<Site>();
+    // The layout draws `@modal` in a place wisp.js finds, and says what it shows.
+    let list = app.get("/t/gal").text().to_string();
+    let cut = "<div data-wisp-cut=\"[[&quot;/t/gal/item/[id]&quot;,&quot;/t/gal/@modal/(.)item/[id]&quot;]]\"></div>";
+    assert!(list.contains(cut), "{list}");
+    // What a client navigation to `/t/gal/item/7` fetches: no layouts.
+    let part = app.get("/t/gal/@modal/(.)item/7").text().to_string();
+    assert!(
+        part.contains("<dialog open><p>modal 7</p></dialog>"),
+        "{part}"
+    );
+    assert!(!part.contains("data-wisp-cut"), "{part}");
+    // The address itself, loaded whole, is the route's own page.
+    let full = app.get("/t/gal/item/7").text().to_string();
+    assert!(
+        full.contains("<h1>item 7</h1>") && !full.contains("<dialog"),
+        "{full}"
+    );
 }
 
 #[test]

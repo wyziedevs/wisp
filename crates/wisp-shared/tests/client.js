@@ -18,7 +18,7 @@ const res = (body, type = 'text/html', status = 200) => ({
 });
 
 // A fresh page with wisp.js running in it. `fetches` records each call.
-function page({ online = true, scripts = [], vitals = null, views = null, main = null } = {}) {
+function page({ online = true, scripts = [], vitals = null, views = null, main = null, cuts = null } = {}) {
   const win = new EventTarget();
   const doc = new EventTarget();
   const fetches = [];
@@ -40,8 +40,8 @@ function page({ online = true, scripts = [], vitals = null, views = null, main =
     title: '',
     activeElement: { blur() {} },
     getElementById: (id) => (id == 'wisp-loading' && views ? { text: JSON.stringify(views) } : null),
-    querySelectorAll: (s) => (s.includes('wisp/') ? scripts : []),
-    querySelector: (s) => (s == 'h1' ? h1 : s == 'main' ? main : s.includes('wisp-vitals') ? vitals : null),
+    querySelectorAll: (s) => (s.includes('wisp/') ? scripts : s.includes('data-wisp-cut') ? cuts || [] : []),
+    querySelector: (s) => (s == 'h1' ? h1 : s == 'main' ? main : s.includes('data-wisp-cut') ? cuts?.[0] ?? null : s.includes('wisp-vitals') ? vitals : null),
     visibilityState: 'visible',
     createElement: () => Object.assign(new EventTarget(), { style: {}, attrs: {}, setAttribute(k, v) { this.attrs[k] = v; }, isConnected: true }),
     hidden: false,
@@ -71,7 +71,7 @@ function page({ online = true, scripts = [], vitals = null, views = null, main =
     DOMParser: class {
       parseFromString(html) {
         const t = /<title>(.*?)<\/title>/.exec(html);
-        return { title: t ? t[1] : '', head: { children: [] }, body: { nodeType: 3, nodeValue: '' }, querySelectorAll: () => [], querySelector: () => null, getElementById: () => null };
+        return { title: t ? t[1] : '', head: { children: [] }, body: { nodeType: 3, nodeValue: '', innerHTML: html }, querySelectorAll: () => [], querySelector: () => null, getElementById: () => null };
       }
     },
     fetch: async (u, o = {}) => {
@@ -246,6 +246,26 @@ const tests = {
     p.click({}, '/shop/7');
     assert.equal(main.html, '<i>item</i>');
     release();
+    await tick();
+  },
+  async 'intercept: a navigation shows the slot page in place and changes the address'() {
+    const slot = { innerHTML: '', getAttribute: () => JSON.stringify([['/gal/item/[id]', '/gal/@modal/(.)item/[id]']]) };
+    const p = page({ cuts: [slot] });
+    p.g.reply = () => res('<b>photo 7</b>');
+    p.click({}, '/gal/item/7');
+    await tick();
+    assert.equal(p.fetches.length, 1);
+    assert.equal(p.fetches[0].url, '/gal/@modal/(.)item/7');
+    assert.equal(slot.innerHTML, '<b>photo 7</b>');
+    assert.equal(p.loc.href, 'http://x.test/gal/item/7');
+    // Another route, or a page without the slot: an ordinary navigation.
+    p.click({}, '/other');
+    await tick();
+    assert.equal(p.fetches[1].url, 'http://x.test/other');
+    const bare = page();
+    bare.click({}, '/gal/item/7');
+    await tick();
+    assert.equal(bare.fetches[0].url, 'http://x.test/gal/item/7');
   },
   'vitals: only with the meta tag, and one beacon when hidden'() {
     const p = page();

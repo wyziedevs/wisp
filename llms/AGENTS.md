@@ -51,6 +51,13 @@ Folders: `blog` static, `[slug]` param, `[[lang]]` optional, `[...rest]`
 rest, `[id=int]` digits (u64), `[x=word]` custom matcher, `[[lang=locale]]`
 one of `src/locales`, `(group)` not in URL. `+page.rs` (`struct Data` + `fn load(..) -> Data`, which the markup reads
 by name) and `+layout.rs` work instead of a block.
+Slots: `dash/@stats/+page.wisp` (`+page.rs` for its data; an empty file will do
+as a default) beside `dash/+layout.wisp` with `{@render stats()}`: that page is
+drawn inside the layout around every page below `dash` (it is also served at
+`/dash/@stats`). Intercepting: `feed/@modal/(.)photo/[id]/+page@.wisp` (`(.)`
+same level as `feed`, `(..)` one up, `(...)` the root) is what a client
+navigation to `/feed/photo/7` shows in the layout's `{@render modal()}`, the
+address changing and the page staying; a reload loads `feed/photo/[id]` whole.
 `/sitemap.xml` (pages without params, or with `entries()`; not `(private)`
 groups or `noindex` pages; host from env `SITE_URL`, else the request) and
 `/robots.txt` are made; a route or `static/` file of that name wins.

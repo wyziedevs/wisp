@@ -102,6 +102,9 @@ struct Tpl {
     t: Template,
     /// Its markup calls `t("key")`, which reads the request's locale.
     i18n: bool,
+    /// A layout's slots (`@name` folders): each a parameter `name` of its
+    /// render, which `{@render name()}` calls.
+    slots: Vec<String>,
 }
 
 impl Tpl {
@@ -1548,6 +1551,7 @@ impl<'a> Project<'a> {
         p.layouts()?;
         p.error_pages()?;
         p.routes()?;
+        p.slots()?;
         if !p.release {
             p.stories()?;
         }
@@ -1832,6 +1836,7 @@ impl<'a> Project<'a> {
             stmts: None,
             t,
             i18n: false,
+            slots: Vec::new(),
         });
         self.templates.last_mut().expect("just pushed")
     }
@@ -2110,9 +2115,11 @@ impl<'a> Project<'a> {
             }
             let load = load.is_some();
             let data = lg.items.data_fields();
+            let slots = self.slot_names(i, &t, &file)?;
             let tpl = self.add_tpl(format!("tpl_layout_{i}"), &file, Kind::Layout, t);
             tpl.user = user;
             tpl.data = data;
+            tpl.slots = slots;
             tpl.stmts = lg.stmts.map(|s| (s, Vec::new()));
             let tpl = self.templates.len() - 1;
             self.model.layouts.push(model::Layout {
@@ -2123,6 +2130,50 @@ impl<'a> Project<'a> {
             });
         }
         Ok(())
+    }
+
+    /// The slots' pages are drawn inside a layout, so they render without
+    /// waiting: no statements (their data is a `+page.rs`'s `load`), and
+    /// they stay out of the sitemap.
+    fn slots(&mut self) -> Result<(), String> {
+        for s in &self.tree.slots {
+            let page = self.model.routes[s.route].page.as_ref();
+            let tpl = &self.templates[page.expect("a slot is a page").tpl];
+            if tpl.stmts.is_some() || tpl.load_js.is_some() {
+                return Err(format!(
+                    "{}: a slot page is drawn inside its layout and cannot wait: no statements in its `---` block (or `+page.js`); load its data with `fn load(cx: &mut Cx)` in a `+page.rs`",
+                    tpl.rel
+                ));
+            }
+            self.model.routes[s.route].indexed = false;
+        }
+        for i in &self.tree.intercepts {
+            self.model.routes[i.route].indexed = false;
+        }
+        Ok(())
+    }
+
+    /// The slots of layout `i`, which its markup must draw.
+    fn slot_names(&self, i: usize, t: &Template, file: &Path) -> Result<Vec<String>, String> {
+        fn draws(nodes: &[Node], name: &str) -> bool {
+            nodes.iter().any(|n| {
+                matches!(n, Node::RenderSnippet { name: n, local: false, .. } if n == name)
+                    || inside(n).into_iter().any(|l| draws(l, name))
+            })
+        }
+        let mut names = Vec::new();
+        for s in self.tree.slots.iter().filter(|s| s.layout == i) {
+            if !draws(&t.nodes, &s.name) {
+                return Err(format!(
+                    "{}: the folder @{} is a slot of this layout: draw it with {{@render {}()}}",
+                    self.rel(file),
+                    s.name,
+                    s.name
+                ));
+            }
+            names.push(s.name.clone());
+        }
+        Ok(names)
     }
 
     fn error_pages(&mut self) -> Result<(), String> {
@@ -3234,8 +3285,10 @@ impl<'a> Project<'a> {
     }
 
     /// `layout_0::tpl_layout_0::render(__o, &d0, &|__o| tpl_layout_3::render(__o, &|__o| inner))`:
-    /// `inner` inside `layouts`.
-    fn wrap_layouts(&self, layouts: &[usize], inner: String) -> String {
+    /// `inner` inside `layouts`. A layout's slots are drawn from their pages
+    /// (`s{route}` is a loaded slot's data), or left empty (`drawn` false:
+    /// an error page).
+    fn wrap_layouts(&self, layouts: &[usize], inner: String, drawn: bool) -> String {
         layouts.iter().rev().fold(inner, |acc, &l| {
             let layout = &self.model.layouts[l];
             let data = if layout.load {
@@ -3243,8 +3296,43 @@ impl<'a> Project<'a> {
             } else {
                 String::new()
             };
+            let slots: String = (self.tree.slots.iter().filter(|s| s.layout == l))
+                .map(|s| match drawn {
+                    true => {
+                        let page = self.model.routes[s.route].page.as_ref();
+                        let page = page.expect("a slot is a page");
+                        let data = if page.load() {
+                            format!(", &s{}", s.route)
+                        } else {
+                            String::new()
+                        };
+                        let path = self.templates[page.tpl].path();
+                        // A slot something intercepts into is a place wisp.js
+                        // finds, which names what goes in it: `data-wisp-cut`
+                        // holds `[[target, own URL]]`.
+                        let cuts: Vec<String> = (self.tree.intercepts.iter())
+                            .filter(|i| {
+                                i.slot == s.name && self.tree.routes[i.route].dir.starts_with(&s.dir)
+                            })
+                            .map(|i| format!("[{},{}]", crate::json_str(&i.target), crate::json_str(&i.inner)))
+                            .collect();
+                        let open = (!cuts.is_empty()).then(|| {
+                            let list = format!("[{}]", cuts.join(","));
+                            format!("<div data-wisp-cut=\"{}\">", list.replace('&', "&amp;").replace('"', "&quot;"))
+                        });
+                        match open {
+                            Some(o) => format!(
+                                ", &|__o: &mut ::wisp::Out| {{ __o.body.push_str({}); {path}::render(__o, cx{data}); __o.body.push_str(\"</div>\"); }}",
+                                lit(&o)
+                            ),
+                            None => format!(", &|__o: &mut ::wisp::Out| {path}::render(__o, cx{data})"),
+                        }
+                    }
+                    false => ", &|_: &mut ::wisp::Out| {}".to_string(),
+                })
+                .collect();
             format!(
-                "{}::render(__o, cx{data}, &|__o: &mut ::wisp::Out| {acc})",
+                "{}::render(__o, cx{data}, &|__o: &mut ::wisp::Out| {acc}{slots})",
                 self.templates[layout.tpl].path()
             )
         })
@@ -3270,7 +3358,12 @@ impl Gen {
             lit(crate::runtime_version())
         ));
         self.line(0, "");
-        self.out.push_str(&typed_routes(&p.tree.routes));
+        let slots = &p.tree.slots;
+        let cuts = &p.tree.intercepts;
+        let linked = (p.tree.routes.iter().enumerate()).filter(|(i, _)| {
+            !slots.iter().any(|s| s.route == *i) && !cuts.iter().any(|c| c.route == *i)
+        });
+        self.out.push_str(&typed_routes(linked.map(|r| r.1)));
         match &p.hooks {
             None => self.line(0, "pub mod hooks {}"),
             Some(h) => {
@@ -3390,6 +3483,19 @@ impl Gen {
                     &format!("let d{l} = layout_{l}::__call::load(cx).await?;"),
                 );
             }
+            // The slots of the layouts around it, each with its own load.
+            for s in p
+                .tree
+                .slots
+                .iter()
+                .filter(|s| route.layouts.contains(&s.layout))
+            {
+                let slot = m.routes[s.route].page.as_ref().expect("a slot is a page");
+                if slot.load() {
+                    let k = s.route;
+                    self.line(1, &format!("let s{k} = page_{k}::__call::load(cx).await?;"));
+                }
+            }
             let page_load = pg.load();
             if page_load {
                 self.line(1, &format!("let d = page_{i}::__call::load(cx).await?;"));
@@ -3413,7 +3519,7 @@ impl Gen {
             if page.stmts.is_some() {
                 // The page runs its statements, then hands its render to this
                 // closure, which puts it inside the layouts.
-                let wrap = p.wrap_layouts(&route.layouts, "__p(__o)".into());
+                let wrap = p.wrap_layouts(&route.layouts, "__p(__o)".into(), true);
                 let end = if pg.streams { "?;" } else { "" };
                 self.line(1, &format!(
                     "{}::render(cx, __o, |__o: &mut ::wisp::Out, cx: &::wisp::Cx, __p: &dyn Fn(&mut ::wisp::Out)| {wrap}).await{end}",
@@ -3423,7 +3529,10 @@ impl Gen {
                 let data = if page_load { ", &d" } else { "" };
                 let inner = format!("{}::render(__o, cx{data})", page.path());
                 self.line(1, "let cx: &::wisp::Cx = cx;");
-                self.line(1, &format!("{};", p.wrap_layouts(&route.layouts, inner)));
+                self.line(
+                    1,
+                    &format!("{};", p.wrap_layouts(&route.layouts, inner, true)),
+                );
             }
             if pg.streams {
                 self.line(1, "__aw.finish::<App>(cx, __o);");
@@ -3452,7 +3561,7 @@ impl Gen {
                 p.templates[e.tpl].path()
             );
             self.line(1, "let cx: &::wisp::Cx = cx;");
-            self.line(1, &format!("{};", p.wrap_layouts(&e.layouts, inner)));
+            self.line(1, &format!("{};", p.wrap_layouts(&e.layouts, inner, false)));
             self.line(1, "Ok(())");
             self.line(0, "}");
             self.line(0, "");
@@ -5926,9 +6035,14 @@ impl Gen {
                  __wrap: impl FnOnce(&mut ::wisp::Out, &::wisp::Cx, &dyn Fn(&mut ::wisp::Out))) -> ::wisp::Result<()>"
                 .into(),
             Kind::Page => format!("pub fn render(__o: &mut ::wisp::Out, cx: &::wisp::Cx{data})"),
-            Kind::Layout => format!(
-                "pub fn render(__o: &mut ::wisp::Out, cx: &::wisp::Cx{data}, children: &dyn Fn(&mut ::wisp::Out))"
-            ),
+            Kind::Layout => {
+                let slots: String = (t.slots.iter())
+                    .map(|s| format!(", {s}: &dyn Fn(&mut ::wisp::Out)"))
+                    .collect();
+                format!(
+                    "pub fn render(__o: &mut ::wisp::Out, cx: &::wisp::Cx{data}, children: &dyn Fn(&mut ::wisp::Out){slots})"
+                )
+            }
             Kind::Error => {
                 "pub fn render(__o: &mut ::wisp::Out, cx: &::wisp::Cx, status: u16, message: &str)"
                     .into()
@@ -8738,7 +8852,7 @@ fn server_path(path: &[String]) -> Vec<String> {
 /// the path `/blog/<slug>` and a link to a route that is gone, or without a
 /// parameter it needs, does not compile. Named by the pattern: `/` is
 /// `home`, `/blog/[slug]` is `blog_slug`; a name taken gets `_2`, `_3`.
-fn typed_routes(routes: &[crate::routes::Route]) -> String {
+fn typed_routes<'a>(routes: impl IntoIterator<Item = &'a crate::routes::Route>) -> String {
     let ident = |s: &str| {
         let s: String = s
             .chars()
@@ -10109,6 +10223,73 @@ fn report(cx: &mut Cx, err: &Error) {}",
     }
 
     #[test]
+    fn slots_are_drawn_by_their_layout() {
+        let layout = (
+            "src/routes/d/+layout.wisp",
+            "<aside>{@render stats()}</aside>{@render children()}",
+        );
+        let slot = ("src/routes/d/@stats/+page.wisp", "<p>s</p>");
+        let page = ("src/routes/d/+page.wisp", "<h1>d</h1>");
+        let code = app("slot-ok", &[layout, slot, page]).unwrap();
+        // The layout takes it as a parameter, the page's route gives it.
+        assert!(
+            code.contains("children: &dyn Fn(&mut ::wisp::Out), stats: &dyn Fn(&mut ::wisp::Out))"),
+            "{code}"
+        );
+        assert!(
+            code.contains(", &|__o: &mut ::wisp::Out| tpl_page_"),
+            "{code}"
+        );
+        // Without a slot, a layout's render has no extra parameter.
+        let plain = app(
+            "slot-none",
+            &[("src/routes/d/+layout.wisp", "{@render children()}"), page],
+        )
+        .unwrap();
+        assert!(!code_has_slot(&plain), "{plain}");
+        for (name, files, want) in [
+            (
+                "slot-nolayout",
+                vec![slot, page],
+                "a slot needs a +layout.wisp",
+            ),
+            (
+                "slot-undrawn",
+                vec![
+                    ("src/routes/d/+layout.wisp", "{@render children()}"),
+                    slot,
+                    page,
+                ],
+                "draw it with {@render stats()}",
+            ),
+            (
+                "slot-waits",
+                vec![
+                    layout,
+                    (
+                        "src/routes/d/@stats/+page.wisp",
+                        "---\nlet n = 1;\n---\n<p>{n}</p>",
+                    ),
+                    page,
+                ],
+                "cannot wait",
+            ),
+            (
+                "slot-name",
+                vec![layout, ("src/routes/d/@children/+page.wisp", "x"), page],
+                "is not a slot name",
+            ),
+        ] {
+            let err = app(name, &files).unwrap_err();
+            assert!(err.contains(want), "{name}: {err}");
+        }
+    }
+
+    fn code_has_slot(code: &str) -> bool {
+        code.contains(": &dyn Fn(&mut ::wisp::Out))") && code.contains("stats:")
+    }
+
+    #[test]
     fn named_middleware_is_resolved_into_the_route() {
         let mw = (
             "src/middleware.rs",
@@ -11027,6 +11208,7 @@ pub fn load() -> Data { todo!() }";
             stmts: None,
             t: template::parse(src).unwrap(),
             i18n: false,
+            slots: Vec::new(),
         };
         // The script's bare imports are the app's npm packages.
         let deps = vec![("a".into(), "1".into()), ("b".into(), "2".into())];
