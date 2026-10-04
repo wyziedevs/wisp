@@ -152,6 +152,52 @@ const tests = {
     assert.deepEqual(p.fetches.slice(1, 3).map((f) => f.body), ['n=1', 'n=2']);
     assert.deepEqual(JSON.parse(p.store['wisp:q']), []);
   },
+  async 'a post that was answered is never posted again by the browser'() {
+    const p = page();
+    let again = 0;
+    p.g.HTMLFormElement.prototype.requestSubmit = () => again++;
+    p.g.reply = () => ({ ...res(''), text: async () => { throw new Error('body cut off'); } });
+    p.submit(p.form({}, [['a', '1']]));
+    await tick();
+    assert.equal(p.fetches.filter((f) => f.method == 'POST').length, 1);
+    assert.equal(again, 0);
+    // One that never got an answer is the browser's to send.
+    const q = page();
+    q.g.HTMLFormElement.prototype.requestSubmit = () => again++;
+    globalThis.fetch = async () => { throw new TypeError('network'); };
+    q.submit(q.form({}, [['a', '1']]));
+    await tick();
+    assert.equal(again, 1);
+  },
+  async 'a fragment that is not valid percent-encoding does not break a navigation'() {
+    const p = page();
+    p.click({}, '/next#%E0%A4%A');
+    await tick();
+    assert.equal(p.calls.assign, undefined);
+    assert.equal(p.loc.href, 'http://x.test/next#%E0%A4%A');
+  },
+  async 'a page that cannot be shown is loaded whole'() {
+    const p = page();
+    p.g.reply = () => ({ ...res(''), text: async () => { throw new Error('cut off'); } });
+    p.click();
+    await tick();
+    assert.equal(p.calls.assign, 'http://x.test/next');
+  },
+  async 'spread: dropping an on* key that was no function leaves the rest working'() {
+    const extra = fs.readFileSync(path.join(__dirname, '../src/client/extra.js'), 'utf8').replace(/\r\n/g, '\n');
+    const from = extra.indexOf('const held =');
+    const code = extra.slice(from, extra.indexOf('\n};\n', extra.indexOf('X.spread =', from)) + 4);
+    const set = [];
+    const el = { localName: 'div', removeEventListener(t, f) { if (typeof f != 'function') throw new TypeError('not a listener'); }, addEventListener() {}, removeAttribute: (k) => set.push('-' + k) };
+    let push;
+    const X = {};
+    new Function('X', 'watch', 'attr', code)(X, (sc, a, L, f) => (push = f), (x, first, e, k) => set.push(k));
+    X.spread(0, 0, el, 0, 0, [0, 0]);
+    push({ onclick: 'alert(1)', id: 'a', srcdoc: 'x', ONCLICK: 'y' });
+    assert.deepEqual(set, ['id']); // only the safe key
+    push({ id: 'a' }); // must not throw on the string under onclick
+    assert.deepEqual(set, ['id', 'id']);
+  },
   async 'a click navigates and focus moves to the h1'() {
     const p = page();
     const e = p.click();

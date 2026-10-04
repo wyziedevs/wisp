@@ -312,7 +312,9 @@
       swap(html, res.status, how.pop && entry);
       const at = how.pop && history.state;
       if (at) scrollTo(at.x || 0, at.y || 0);
-      else if (url.hash) document.getElementById(decodeURIComponent(url.hash.slice(1)))?.scrollIntoView();
+      else if (url.hash) {
+        try { document.getElementById(decodeURIComponent(url.hash.slice(1)))?.scrollIntoView(); } catch {} // not valid percent-encoding: nowhere to go
+      }
       else if (!how.noscroll) scrollTo(0, 0);
       // Focus starts over, as on a page load, unless the page asks for it.
       const auto = document.querySelector('[autofocus]');
@@ -353,7 +355,8 @@
     if (a.href.includes('#') && key(url) === key(location.href)) return;
     e.preventDefault();
     const has = (n) => !!a.closest(`[data-wisp-${n}]`);
-    go(url, { replace: has('replacestate'), noscroll: has('noscroll'), keepfocus: has('keepfocus') });
+    // A page that cannot be shown here (bad HTML, a throwing hook) is loaded whole.
+    go(url, { replace: has('replacestate'), noscroll: has('noscroll'), keepfocus: has('keepfocus') }).catch(() => location.assign(url));
   });
 
   // Fetches a page ahead, used if it is followed within 10s.
@@ -374,10 +377,7 @@
     if (code && res?.ok) {
       const m = /id="wisp-live"[^>]*>([^<]*)/.exec(await res.clone().text());
       for (const href of Object.values((m && JSON.parse(m[1]).m) || {})) {
-        const l = document.createElement('link');
-        l.rel = 'modulepreload';
-        l.href = href;
-        document.head.append(l);
+        document.head.append(Object.assign(document.createElement('link'), { rel: 'modulepreload', href }));
       }
     }
     done?.();
@@ -478,12 +478,13 @@
     if (a.hasAttribute('data-wisp-keep')) return;
     // Attributes. Setting value/checked/selected attributes only moves the
     // live state if the user has not changed it, which is what we want.
+    // Whether a <details> or <dialog> is open is the visitor's, not the page's.
     for (let i = a.attributes.length - 1; i >= 0; i--) {
       const name = a.attributes[i].name;
-      if (!b.hasAttribute(name)) a.removeAttribute(name);
+      if (!b.hasAttribute(name) && name != 'open') a.removeAttribute(name);
     }
     for (const { name, value } of b.attributes) {
-      if (a.getAttribute(name) !== value) a.setAttribute(name, value);
+      if (a.getAttribute(name) !== value && name != 'open') a.setAttribute(name, value);
     }
     if (a.nodeName === 'TEMPLATE') children(a.content, b.content);
     children(a, b);
@@ -620,12 +621,11 @@
     const data = new FormData(form, btn);
     if (!send('wisp:submit', { data, submitter: btn, action: url }, form)) return;
     const multipart = (attr('enctype') || '').toLowerCase() === 'multipart/form-data';
-    const body = multipart ? data : new URLSearchParams([...data].map(([k, v]) => [k, typeof v === 'string' ? v : v.name]));
+    const body = multipart ? data : new URLSearchParams([...data].map(([k, v]) => [k, v.name ?? v]));
     if (!navigator.onLine) {
       // `data-wisp-queue` says sending it twice is safe (the server takes the
       // same post once): it waits for the network. Any other form says so.
-      const text = typeof body === 'string' || body instanceof URLSearchParams;
-      if (form.hasAttribute('data-wisp-queue') && text) {
+      if (form.hasAttribute('data-wisp-queue') && !multipart) {
         enqueue([url.href, String(body)]);
         say('Saved: it is sent when you are back online.');
       } else say('You are offline. Try again when you are back.');
@@ -635,10 +635,11 @@
     busy.add(form);
     form.setAttribute('aria-busy', 'true');
     if (btn) btn.disabled = true;
-    let res, html, to;
+    let res, html, to, sent;
     const result = { ok: false, status: 0 };
     try {
       res = await fetch(url, { method: 'POST', body, headers });
+      sent = true;
       Object.assign(result, { ok: res.ok, status: res.status });
       to = redirect(res);
       if (to) result.location = to.href;
@@ -673,7 +674,8 @@
       if (res) html = await res.text();
     } catch (err) {
       result.error = err;
-      res = undefined;
+      // Only a post that never got an answer is the browser's to send again.
+      res = sent ? null : undefined;
     } finally {
       // Before the morph, so the new page decides what is busy or disabled.
       busy.delete(form);
@@ -689,7 +691,7 @@
     }
     if (result.ok && !result.data) form_.reset.call(form); // fields fall back to the server's new defaults
     if (html != null) swap(html, res.status);
-    else if (to && !result.data) await go(to, { replace: false });
+    else if (to) await go(to);
     send('wisp:result', result, form);
   });
 
