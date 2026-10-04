@@ -463,6 +463,8 @@ no-wait fast path off every route.
 - `{#each x as y}` borrows a field path; `.iter()` other expressions.
 - In `+server.rs`, a param named `id` (no `[id]` folder) serves `/[id]`: use
   `list` for the folder's GET. `#[validate]` on params is for actions.
+- HTTP/2 in process is opt-in: `wisp = { .., features = ["h2"] }` (h2c with
+  prior knowledge, no TLS); app code is the same.
 - A field added to a saved type (`Rest`, `Table::saved`) must be `Option`,
   `Vec` or `bool`, so rows saved before it still read.
 

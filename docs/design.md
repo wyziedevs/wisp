@@ -1565,9 +1565,26 @@ branches).
   than panicking.
 - `Date` is cached per thread and reformatted once per second.
 - A panic in a handler becomes a 500 for that request; the connection survives.
-- HTTP/2, TLS and compression belong to the reverse proxy / CDN (Caddy, nginx,
+- TLS and compression belong to the reverse proxy / CDN (Caddy, nginx,
   Cloudflare). This keeps the binary small and the hot path simple. (Or run
   Wisp as a tower service under hyper or axum: [embed.md](embed.md).)
+- HTTP/2 too, unless the `h2` feature is on (off by default; nothing of it
+  is compiled without it). Then a connection that opens with the HTTP/2
+  preface is served as h2c with prior knowledge (`src/h2.rs`): our own
+  HPACK (static and dynamic tables, Huffman), no new dependency. It is
+  noticed only where the HTTP/1 parser already refused the bytes
+  (`PRI * HTTP/2.0`), so HTTP/1 requests pay nothing, with the feature on or
+  off. Each stream's HEADERS and DATA become an HTTP/1.1 request through
+  `Cx::from_request` and the same `decide`/`serialize`; the answer goes back
+  as HEADERS and DATA. Streams are answered one at a time, in the order they
+  end. Limits: 100 concurrent streams (more are refused), 16 KiB header
+  lists and frames, a 4 KiB HPACK table, the route's body limit (413).
+  Flow control both ways, SETTINGS, PING, GOAWAY, RST_STREAM. A reset flood
+  (resets beyond answers + 200), a CONTINUATION flood (64 pieces or 16 KiB),
+  1000 frames that ask no request, or an HPACK bomb (a decoded list over 16
+  KiB) end the connection with GOAWAY `ENHANCE_YOUR_CALM`. No `Upgrade: h2c`
+  and no ALPN: the `tls` feature is the client's (`wisp::fetch`), the server
+  has no TLS.
 
 ### One request entry point
 
@@ -1933,7 +1950,7 @@ No homegrown auth, ORM or job system, now or later: Wisp gives the tools
 (cookies, sessions, the `Store` trait, hooks, `wisp::spawn` from `init`)
 and the app builds on them. Integrations wire in existing, maintained
 crates (a recipe in `add/`, `wisp add sqlite`, scaffolds the glue). Also out:
-HTTP/2 in process, Windows services.
+Windows services. (HTTP/2 in process is the opt-in `h2` feature: h2c only.)
 
 ## Milestones
 

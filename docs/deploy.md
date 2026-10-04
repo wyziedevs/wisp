@@ -27,6 +27,16 @@ fly|render|railway` writes that host's config (and a Dockerfile if none).
 `wisp build`: one release binary with static files and styles inside,
 listening on `$HOST:$PORT` (`0.0.0.0:3000` in release).
 
+HTTP/2 without a proxy in front: the `h2` feature serves h2c with prior
+knowledge on the same port (a proxy that speaks h2c to its backend, or
+`curl --http2-prior-knowledge`); HTTP/1 is unchanged and pays nothing.
+There is no TLS in the server, so browsers still want the proxy.
+
+```toml
+# Cargo.toml
+wisp = { version = "..", features = ["h2"] }
+```
+
 `wisp build --static [--out site]` writes `dist/`: every parameterless page
 as `about/index.html`, plus `static/` and the `/_app` files (with
 `--sourcemap`, their `.map`s). A `[params]` route lists its pages:

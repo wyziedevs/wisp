@@ -9,3 +9,8 @@ wisp.workspace = true
 
 [build-dependencies]
 wisp-build.workspace = true
+
+# `cargo run -p api --features h2`, then
+# `curl --http2-prior-knowledge http://127.0.0.1:3000/`.
+[features]
+h2 = ["wisp/h2"]
