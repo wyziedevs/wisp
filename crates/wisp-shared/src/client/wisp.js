@@ -154,10 +154,13 @@
   addEventListener('online', stale);
 
   async function refresh(extra) {
-    const res = await fetch(location.href, { headers: { ...headers, ...extra } });
+    const [my, at] = [nav, location.href];
+    const res = await fetch(at, { headers: { ...headers, ...extra } });
     const to = redirect(res);
+    if (my !== nav || at !== location.href) return; // the page moved on
     if (to) return go(to, { replace: true });
     const html = await res.text();
+    if (my !== nav || at !== location.href) return;
     swap((await drawn(html, location)) || html, res.status);
   }
 
@@ -264,7 +267,7 @@
   // that draws the slot (`data-wisp-cut`: `[[target, own URL]]`) fetches
   // that page's own URL and shows it in the slot; the address changes and
   // the page stays. A reload of that address is the route's real page.
-  async function cut(url) {
+  async function cut(url, my) {
     for (const el of document.querySelectorAll('[data-wisp-cut]')) {
       for (const [target, own] of JSON.parse(el.getAttribute('data-wisp-cut'))) {
         const p = fit(target, url.pathname);
@@ -273,7 +276,9 @@
         let res;
         try { res = await fetch(to, { headers }); } catch { return; }
         if (!res.ok || !isHtml(res)) return;
-        el.innerHTML = new DOMParser().parseFromString(await res.text(), 'text/html').body.innerHTML;
+        const html = await res.text();
+        if (my !== nav) return true; // a newer navigation took over
+        el.innerHTML = new DOMParser().parseFromString(html, 'text/html').body.innerHTML;
         push(url);
         return true;
       }
@@ -286,8 +291,8 @@
     if (url.origin !== location.origin) return location.assign(url);
     // A pop is over: the browser has gone there, so it cannot be canceled.
     if (!send('wisp:navigate', { from: location.href, to: url.href, pop: !!how.pop }) && !how.pop) return;
-    if (!how.pop && document.querySelector('[data-wisp-cut]') && (await cut(url))) return send('wisp:stay');
     const my = ++nav;
+    if (!how.pop && document.querySelector('[data-wisp-cut]') && (await cut(url, my))) return my === nav && send('wisp:stay');
     if (!how.pop) history.replaceState({ ...history.state, x: scrollX, y: scrollY }, '');
     const undo = views.length && !how.pop && !pre.has(key(url)) && wait(url);
     let res;
@@ -316,10 +321,10 @@
     const show = () => {
       swap(html, res.status, how.pop && entry);
       const at = how.pop && history.state;
-      if (at) scrollTo(at.x || 0, at.y || 0);
-      else if (url.hash) {
-        try { document.getElementById(decodeURIComponent(url.hash.slice(1)))?.scrollIntoView(); } catch {} // not valid percent-encoding: nowhere to go
-      }
+      let to;
+      try { to = url.hash && document.getElementById(decodeURIComponent(url.hash.slice(1))); } catch {} // not valid percent-encoding: nowhere to go
+      if (at?.x != null) scrollTo(at.x, at.y || 0);
+      else if (to) to.scrollIntoView();
       else if (!how.noscroll) scrollTo(0, 0);
       // Focus starts over, as on a page load, unless the page asks for it.
       const auto = document.querySelector('[autofocus]');
@@ -357,7 +362,7 @@
     if (!a || e.defaultPrevented || e.button || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || !ours(a)) return;
     const url = new URL(a.href);
     // Same page, another #place (or a bare `#`): the browser scrolls there.
-    if (a.href.includes('#') && key(url) === key(location.href)) return;
+    if (a.href.includes('#') && key(url) === key(location.href)) return history.replaceState({ ...history.state, x: scrollX, y: scrollY }, ''); // where back returns to
     e.preventDefault();
     const has = (n) => !!a.closest(`[data-wisp-${n}]`);
     // A page that cannot be shown here (bad HTML, a throwing hook) is loaded whole.
@@ -401,7 +406,7 @@
     save(entry);
     entry = mark();
     if ((history.state?.p ?? key(location.href)) !== shown) go(location.href, { pop: true });
-    else restore(entry), send('wisp:pop');
+    else restore(entry), history.state?.x != null && scrollTo(history.state.x, history.state.y || 0), send('wisp:pop');
   });
   // pushState(url, state) and replaceState in a script (live.js).
   document.addEventListener('wisp:push', (e) => {
@@ -640,12 +645,15 @@
     busy.add(form);
     form.setAttribute('aria-busy', 'true');
     if (btn) btn.disabled = true;
+    const my = nav;
     let res, html, to, sent;
     const result = { ok: false, status: 0 };
     try {
       res = await fetch(url, { method: 'POST', body, headers });
       sent = true;
       Object.assign(result, { ok: res.ok, status: res.status });
+      pre.clear(); // what was fetched ahead may be out of date now
+      if (my !== nav) return send('wisp:result', result, form); // a navigation since: its page stays
       to = redirect(res);
       if (to) result.location = to.href;
       const type = res.headers.get('content-type') || '';
@@ -674,7 +682,7 @@
           a.click();
           setTimeout(() => URL.revokeObjectURL(a.href), 60000);
         }
-        return;
+        return send('wisp:result', result, form);
       }
       if (res) html = await res.text();
     } catch (err) {

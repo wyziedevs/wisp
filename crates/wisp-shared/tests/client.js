@@ -341,6 +341,78 @@ const tests = {
     await tick();
     assert.equal(bare.fetches[0].url, 'http://x.test/gal/item/7');
   },
+  async 'a fragment with no element on the page starts at the top'() {
+    const p = page();
+    p.click({}, '/next#missing');
+    await tick();
+    assert.deepEqual(p.calls.scroll, [[0, 0]]);
+  },
+  async 'back to an entry on the same page puts its scroll back'() {
+    const p = page();
+    p.g.history.state = { k: 'a', x: 5, y: 300 };
+    p.win.dispatchEvent(new Event('popstate'));
+    await tick();
+    assert.deepEqual(p.calls.scroll, [[5, 300]]);
+  },
+  async 'a download from a form still ends with wisp:result'() {
+    const p = page();
+    URL.createObjectURL = () => 'blob:x';
+    p.g.reply = () => ({ ...res('hi', 'text/plain'), blob: async () => ({ size: 2 }) });
+    let got;
+    const f = p.form({}, [['a', '1']]);
+    f.addEventListener('wisp:result', (e) => (got = e.detail));
+    p.submit(f);
+    await tick();
+    assert.equal(got?.status, 200);
+  },
+  async 'a slot answer that comes after a newer navigation is dropped'() {
+    const slot = { innerHTML: '', getAttribute: () => JSON.stringify([['/gal/item/[id]', '/gal/@modal/(.)item/[id]']]) };
+    const p = page({ cuts: [slot] });
+    let release;
+    p.g.reply = (u) => (u.includes('@modal') ? new Promise((r) => (release = () => r(res('<b>photo</b>')))) : res('<title>Other</title>'));
+    p.click({}, '/gal/item/7');
+    await tick();
+    p.click({}, '/other');
+    await tick();
+    release();
+    await tick();
+    assert.equal(slot.innerHTML, '');
+    assert.equal(p.loc.href, 'http://x.test/other');
+  },
+  async 'a refresh that answers after a navigation is dropped'() {
+    const p = page();
+    let release;
+    p.g.reply = (u) => (u == 'http://x.test/' ? new Promise((r) => (release = () => r(res('<title>Old</title>')))) : res('<title>Next</title>'));
+    p.doc.dispatchEvent(new CustomEvent('wisp:refresh'));
+    await tick();
+    p.click();
+    await tick();
+    release();
+    await tick();
+    assert.equal(p.doc.title, 'Next');
+  },
+  async 'a post that answers after a newer navigation is not shown'() {
+    const p = page();
+    let release;
+    p.g.reply = (u) => (u.endsWith('/save') ? new Promise((r) => (release = () => r(res('<title>Posted</title>')))) : res('<title>Next</title>'));
+    p.submit(p.form({}, [['a', '1']]));
+    await tick();
+    p.click();
+    await tick();
+    release();
+    await tick();
+    assert.equal(p.doc.title, 'Next');
+  },
+  async 'a post drops what was fetched ahead'() {
+    const p = page();
+    p.event('wisp:preload', { detail: { url: '/next' } });
+    await tick();
+    p.submit(p.form({}, [['a', '1']]));
+    await tick();
+    p.click();
+    await tick();
+    assert.equal(p.fetches.filter((f) => f.url == 'http://x.test/next').length, 2);
+  },
   'vitals: only with the meta tag, and one beacon when hidden'() {
     const p = page();
     p.doc.visibilityState = 'hidden';
