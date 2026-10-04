@@ -9,7 +9,14 @@
 import { wisp } from './bridge.mjs';
 
 const wasm = await Deno.readFile(new URL('./app.wasm', import.meta.url));
-const app = wisp(await WebAssembly.compile(wasm), Deno.env.toObject());
+// A WebSocket the app answered, where Deno.serve holds it (raw sockets are
+// upgraded by Wisp's own parser).
+function upgrade(request: Request) {
+  const { socket, response } = Deno.upgradeWebSocket(request);
+  return { ws: socket, response };
+}
+
+const app = wisp(await WebAssembly.compile(wasm), Deno.env.toObject(), undefined, upgrade);
 
 const HIGH = 1 << 16;
 const IDLE = 60_000;
@@ -98,12 +105,15 @@ const deploy = Deno.env.get('DENO_DEPLOYMENT_ID') !== undefined;
 const forced = Deno.env.get('WISP_NODE_HTTP') === '1';
 const raw = !deploy && !forced && (await verified());
 if (!deploy) console.error(`wisp: deno serves with ${raw ? 'raw sockets' : 'Deno.serve'} (${raw ? 'checked' : forced ? 'WISP_NODE_HTTP=1' : 'the check failed'})`);
+const port = Number(Deno.env.get('PORT')) || 8000;
+const hostname = Deno.env.get('HOST') || '0.0.0.0';
 if (raw) {
-  const port = Number(Deno.env.get('PORT')) || 8000;
-  const hostname = Deno.env.get('HOST') || '0.0.0.0';
   const listener = Deno.listen({ hostname, port });
   console.log(`wisp: listening on http://${hostname}:${port}`);
   await serve(listener);
 } else {
-  Deno.serve((request, info) => app.fetch(request, (info.remoteAddr as Deno.NetAddr).hostname));
+  const handler = (request: Request, info: Deno.ServeHandlerInfo) => app.fetch(request, (info.remoteAddr as Deno.NetAddr).hostname);
+  // Deploy picks its own address.
+  if (deploy) Deno.serve(handler);
+  else Deno.serve({ port, hostname, onListen: () => console.log(`wisp: listening on http://${hostname}:${port}`) }, handler);
 }

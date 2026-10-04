@@ -32,6 +32,11 @@
 //!   the peer's address as text, `data` with the bytes read, `close` when the
 //!   client left, `pull` when it takes writes again after `conn_write`
 //!   returned 0. Ids are below `1 << 30`.
+//! - `wisp_ws_message(id, kind, len)`, `wisp_ws_close(id)`: a WebSocket a host
+//!   accepted for request `id` (answered `101`, when `WISP_WS=1` says the host
+//!   has `accept`): a whole message, `kind` 1 text or 2 binary, then the
+//!   socket closing. A raw connection's WebSocket needs neither: the
+//!   connection's bytes are its frames.
 //! - `wisp_current() -> id`: after a trap, the task that trapped: a
 //!   request's id, or `u32::MAX` for `init`.
 //! - `wisp_poll()`: after a trap, polls the tasks woken meanwhile.
@@ -51,7 +56,9 @@
 //! `fetch(id, ptr, len)` (a request, its target a URL), `timer(id, ms)`,
 //! `conn_write(id, ptr, len) -> ok` (bytes for connection `id`, copied before
 //! it returns; an empty write ends the connection; 0 when the client is
-//! behind, and none follows until `wisp_conn_pull`).
+//! behind, and none follows until `wisp_conn_pull`), `ws(id, op, ptr, len)`
+//! (a message for the WebSocket of request `id`: `op` 1 text, 2 binary, 8 a
+//! close, whose payload is a code and a reason).
 //!
 //! Tasks: a request's has its id; a connection's is `1 << 30` and its id;
 //! `init`'s is `u32::MAX`; those of `wisp::spawn` count up from `1 << 31`.
@@ -65,7 +72,8 @@
 // numbers; memory crosses only as buffers Rust owns and hands out by address.
 #![allow(unsafe_code)]
 
-use crate::http::edge_conn::{Raw, Step, Stream};
+use crate::http::edge_conn::{Raw, Step, Stream, Upgraded};
+use crate::ws::Sock;
 use crate::{App, Reply, Request};
 use std::borrow::Cow;
 use std::cell::{Cell, OnceCell, RefCell};
@@ -97,6 +105,8 @@ unsafe extern "C" {
     safe fn send_chunk(id: u32, ptr: *const u8, len: usize) -> u32;
     safe fn timer(id: u32, ms: u32);
     safe fn conn_write(id: u32, ptr: *const u8, len: usize) -> u32;
+    #[link_name = "ws"]
+    safe fn ws_send(id: u32, op: u32, ptr: *const u8, len: usize);
     /// Seconds since 1970, the host's clock (`std`'s has none here).
     safe fn now() -> f64;
     #[link_name = "header"]
@@ -235,11 +245,15 @@ const AHEAD: usize = 1 << 20;
 struct Conn {
     raw: Option<Raw>,
     inbox: Vec<u8>,
+    /// Upgraded: what arrives is the WebSocket's.
+    ws: Option<Arc<Sock>>,
 }
 
 thread_local! {
     static IN: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     static CONNS: RefCell<HashMap<u32, Conn>> = RefCell::new(HashMap::new());
+    /// WebSockets a host accepted, by request.
+    static SOCKS: RefCell<HashMap<u32, Arc<Sock>>> = RefCell::new(HashMap::new());
     static ENV: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
     static TASKS: RefCell<HashMap<u32, Task>> = RefCell::new(HashMap::new());
     static WOKEN: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
@@ -331,6 +345,7 @@ pub extern "C" fn wisp_conn_open(id: u32, len: usize) {
             Conn {
                 raw: Some(Raw::new(at)),
                 inbox: Vec::new(),
+                ws: None,
             },
         )
     });
@@ -346,6 +361,12 @@ pub extern "C" fn wisp_conn_data(id: u32, len: usize) {
                 IN.with_borrow(|b| raw.feed(&b[..len]));
                 Some(Some(raw))
             }
+            None if conn.ws.is_some() => {
+                if let Some(ws) = &conn.ws {
+                    IN.with_borrow(|b| ws.feed(&b[..len]));
+                }
+                Some(None)
+            }
             None => {
                 IN.with_borrow(|b| conn.inbox.extend_from_slice(&b[..len]));
                 (conn.inbox.len() <= AHEAD).then_some(None)
@@ -354,7 +375,7 @@ pub extern "C" fn wisp_conn_data(id: u32, len: usize) {
     });
     match (idle, DRIVE.get()) {
         (Some(Some(raw)), Some(drive)) => spawn(CONN + id, drive(id, raw)),
-        (Some(None), _) => {}
+        (Some(None), _) => run(), // a WebSocket may have what to read
         // A flood, a connection never opened, or an app not started.
         _ => wisp_conn_close(id, true),
     }
@@ -363,8 +384,14 @@ pub extern "C" fn wisp_conn_data(id: u32, len: usize) {
 /// `wisp_conn_close`: the client left. With `end`, the app ends it.
 #[unsafe(no_mangle)]
 pub extern "C" fn wisp_conn_close(id: u32, end: bool) {
-    if CONNS.with_borrow_mut(|c| c.remove(&id)).is_some() && end {
+    let conn = CONNS.with_borrow_mut(|c| c.remove(&id));
+    if conn.is_some() && end {
         conn_write(id, std::ptr::null(), 0);
+    }
+    // A WebSocket's handler goes on: its `recv` ends, as on the wire.
+    if let Some(ws) = conn.and_then(|c| c.ws) {
+        ws.gone();
+        return run();
     }
     let task = TASKS.with_borrow_mut(|t| t.remove(&(CONN + id)));
     drop(task); // outside the borrow: dropping it may wake others
@@ -411,6 +438,30 @@ async fn connection<A: App>(id: u32, mut raw: Raw) {
                 }
             }
             Step::Close => return wisp_conn_close(id, true),
+            Step::Upgrade(up) => {
+                let Upgraded {
+                    upgrade,
+                    early,
+                    limit,
+                    path,
+                } = *up;
+                raw.rest(); // the buffers go back: a socket holds none
+                let sock = Sock::new(id, false, limit, early);
+                let more = CONNS.with_borrow_mut(|c| {
+                    c.get_mut(&id).map(|c| {
+                        c.ws = Some(sock.clone());
+                        std::mem::take(&mut c.inbox)
+                    })
+                });
+                let Some(more) = more else { return };
+                sock.feed(&more);
+                crate::ws::serve_edge(sock, upgrade, &path).await;
+                // Closed by the client already: nothing to end.
+                if CONNS.with_borrow_mut(|c| c.remove(&id)).is_some() {
+                    conn_write(id, std::ptr::null(), 0);
+                }
+                return;
+            }
             Step::Stream(Stream {
                 mut body,
                 chunked,
@@ -439,8 +490,11 @@ async fn connection<A: App>(id: u32, mut raw: Raw) {
 /// The task of request `id`: borrows its parts from `bytes`, and answers.
 fn request<A: App>(id: u32, bytes: Vec<u8>, lazy: bool) {
     let task = async move {
+        let mut upgrade = None;
+        let mut route = "";
         let reply = match view(&bytes) {
             Some((method, target, peer, headers, body)) => {
+                route = target;
                 Ready.await;
                 match READY.get() {
                     1 => {
@@ -452,7 +506,7 @@ fn request<A: App>(id: u32, bytes: Vec<u8>, lazy: bool) {
                                 if cx.raw_path().starts_with(b"/_wisp/cron/") {
                                     crate::jobs::trigger(&cx).await
                                 } else {
-                                    crate::http::answer::<A>(cx, &mut None).await
+                                    crate::http::answer::<A>(cx, &mut upgrade).await
                                 }
                             }
                             Err(status) => Reply::plain(status),
@@ -463,9 +517,78 @@ fn request<A: App>(id: u32, bytes: Vec<u8>, lazy: bool) {
             }
             None => Reply::plain(400),
         };
-        finish(id, reply).await;
+        match upgrade {
+            Some(upgrade) => socket::<A>(id, upgrade, route, reply).await,
+            None => finish(id, reply).await,
+        }
     };
     spawn(id, Box::pin(task));
+}
+
+/// The WebSocket of request `id`, which the app upgraded: the host is told
+/// (a reply of 101) and, once it has a socket, sends its messages. A host
+/// without `accept` (no `WISP_WS`) gets `refused`, the 501 `answer` made.
+async fn socket<A: App>(id: u32, upgrade: crate::ws::Upgrade, target: &str, mut refused: Reply) {
+    if env("WISP_WS").as_deref() != Some("1") {
+        refused.set_plain(
+            501,
+            "WebSockets need a host with sockets (see docs/deploy.md)",
+        );
+        return finish(id, refused).await;
+    }
+    if !crate::edge_store::Saved.await {
+        return finish(id, Reply::plain(500)).await;
+    }
+    let path = target.split(['?', '#']).next().unwrap_or(target);
+    let sock = Sock::new(id, true, crate::http::body_limit::<A>(path), Vec::new());
+    SOCKS.with_borrow_mut(|s| s.insert(id, sock.clone()));
+    let _kept = Kept(id);
+    send(id, &Reply::plain(101));
+    crate::ws::serve_edge(sock, upgrade, path).await;
+}
+
+/// Takes request `id`'s socket out of `SOCKS` when its task ends or is dropped.
+struct Kept(u32);
+
+impl Drop for Kept {
+    fn drop(&mut self) {
+        SOCKS.with_borrow_mut(|s| s.remove(&self.0));
+    }
+}
+
+/// Host export: the `len` bytes in the input buffer are a message from the WebSocket of request `id`, text (`kind` 1) or binary.
+#[unsafe(no_mangle)]
+pub extern "C" fn wisp_ws_message(id: u32, kind: u32, len: usize) {
+    let bytes = take_in(len);
+    if let Some(sock) = SOCKS.with_borrow(|s| s.get(&id).cloned()) {
+        sock.message(kind == 1, bytes);
+    }
+    run();
+}
+
+/// Host export: the WebSocket of request `id` closed.
+#[unsafe(no_mangle)]
+pub extern "C" fn wisp_ws_close(id: u32) {
+    if let Some(sock) = SOCKS.with_borrow(|s| s.get(&id).cloned()) {
+        sock.gone();
+    }
+    run();
+}
+
+/// Bytes for connection `id`; false when the client is behind.
+pub(crate) fn conn_out(id: u32, bytes: &[u8]) -> bool {
+    conn_write(id, bytes.as_ptr(), bytes.len()) != 0
+}
+
+/// A message for the WebSocket of request `id`.
+pub(crate) fn ws_write(id: u32, op: u8, payload: &[u8]) {
+    ws_send(id, op.into(), payload.as_ptr(), payload.len());
+}
+
+/// Waits until the host takes connection `id`'s writes again.
+pub(crate) async fn pulled(id: u32) {
+    PULLS.with_borrow_mut(|p| p.insert(CONN + id, None));
+    Wait(&PULLS, CONN + id).await;
 }
 
 /// Sends `reply`, once its changes to saved tables are in `WISP_STORE`.

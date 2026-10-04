@@ -683,7 +683,6 @@ pub(crate) struct Settings {
     pub old_secret: Option<String>,
     /// `WISP_WS_IDLE`: seconds a WebSocket client may stay quiet (60; 0
     /// never closes). It is pinged halfway.
-    #[cfg(not(target_arch = "wasm32"))] // no upgrades there
     pub ws_idle: std::time::Duration,
     /// `WISP_MAX_CONNS`: open connections, WebSockets too, past which the
     /// built-in server answers new ones 503 and closes them (10000; 0 is
@@ -741,7 +740,6 @@ pub(crate) fn settings() -> &'static Settings {
             Some(s)
         };
         let (secret, old_secret) = (secret("WISP_SECRET"), secret("WISP_SECRET_OLD"));
-        #[cfg(not(target_arch = "wasm32"))]
         let ws_idle = std::time::Duration::from_secs(setting::<u64>("WISP_WS_IDLE", "a number of seconds").unwrap_or(60));
         #[cfg(not(target_arch = "wasm32"))]
         let max_conns = match setting::<usize>("WISP_MAX_CONNS", "a number of connections") {
@@ -759,7 +757,6 @@ pub(crate) fn settings() -> &'static Settings {
         let timeout_ms = setting::<u64>("WISP_HANDLER_TIMEOUT", "a number of seconds").map_or(0, |s| s.saturating_mul(1000));
         Settings {
             dev, body_limit, origin, client_ip_header, secret, old_secret, api_docs, request_id, problem_json, secure_headers, timed, timeout_ms,
-            #[cfg(not(target_arch = "wasm32"))]
             ws_idle,
             #[cfg(not(target_arch = "wasm32"))]
             max_conns,

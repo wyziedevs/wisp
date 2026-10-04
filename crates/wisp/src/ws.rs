@@ -1,16 +1,16 @@
 //! WebSockets (RFC 6455) on the built-in server: the handshake, with its
 //! own SHA-1, and the frame codec. A `+server.rs` answers with
-//! [`Response::websocket`]; other hosts (tower, the edge build, the test
-//! client) answer that with a 501.
+//! [`Response::websocket`]; tower and the test client answer that with a
+//! 501, and so does an edge host that cannot hold a socket.
 //!
 //! What the codec does: unmasks what the client sends (which must be
 //! masked), puts fragmented messages back together, answers pings, echoes
 //! a close, checks text is UTF-8, and refuses a message larger than the
 //! route's body limit. No extensions (compression) are offered.
 //!
-//! The edge build has no connections to upgrade: it keeps the codec, and
-//! answers an upgrade 501 without running it.
-#![cfg_attr(target_arch = "wasm32", allow(dead_code))]
+//! The edge build runs the same codec on what its host hands over: a raw
+//! socket's bytes (Node, Bun, Deno) or whole messages (a Workers or Deno
+//! WebSocket), see `edge` below.
 
 use crate::{Cx, Error, Gone, Method, Response, Result};
 use std::borrow::Cow;
@@ -91,8 +91,9 @@ impl Response {
     /// ```
     ///
     /// A request that is not an upgrade gets a 426, and one from a page on
-    /// another site a 403, as a cross-site form post would. Only the
-    /// built-in server upgrades: tower and edge hosts answer 501.
+    /// another site a 403, as a cross-site form post would. The built-in
+    /// server upgrades, and so do the edge builds on Node, Bun, Deno and
+    /// Cloudflare Workers; tower, Vercel, Netlify and Lambda answer 501.
     pub fn websocket<F, Fut>(handler: F) -> Response
     where
         F: FnOnce(WebSocket) -> Fut + Send + 'static,
@@ -389,23 +390,11 @@ pub struct WebSocket(Conn);
 
 #[cfg(not(target_arch = "wasm32"))]
 type Conn = std::sync::Arc<native::Conn>;
-/// No host upgrades in the edge build, so there is never one.
 #[cfg(target_arch = "wasm32")]
-type Conn = std::convert::Infallible;
+type Conn = std::sync::Arc<edge::Sock>;
 
 #[cfg(target_arch = "wasm32")]
-impl WebSocket {
-    /// Never returns on this target: a WebSocket cannot exist here.
-    pub async fn recv(&self) -> Option<Message> {
-        match self.0 {}
-    }
-
-    /// Never sends on this target: a WebSocket cannot exist here.
-    pub async fn send(&self, msg: impl Into<Message>) -> std::result::Result<(), Gone> {
-        let _ = msg;
-        match self.0 {}
-    }
-}
+pub(crate) use edge::{Sock, serve as serve_edge};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use native::serve;
@@ -590,6 +579,277 @@ mod native {
             }
         };
         let _ = conn.frame(CLOSE, &code.to_be_bytes()).await;
+    }
+}
+
+/// The edge build's sockets. `Raw` hosts (Node, Bun, Deno) hand over a
+/// connection's bytes, which [`Inbox`] parses and [`frame`] answers; the
+/// others (Workers, `Deno.serve`, `Bun.serve`) hand over whole messages and
+/// take whole messages, their own socket doing the framing, pings and
+/// closing (and where a host will not send 1009, closing with 1000).
+#[cfg(target_arch = "wasm32")]
+mod edge {
+    use super::*;
+    use crate::edge as host;
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+    use std::task::{Context, Poll, Waker};
+    use std::time::Duration;
+
+    /// What an unread connection may hold beyond the largest message.
+    const SLACK: usize = 64 * 1024;
+
+    pub(crate) struct Sock {
+        id: u32,
+        /// The host does the framing (`wisp_ws_message`), not Wisp.
+        host: bool,
+        /// One writer at a time, so only one waits for the host to drain.
+        out: tokio::sync::Mutex<()>,
+        st: Mutex<State>,
+    }
+
+    struct State {
+        inbox: Inbox,
+        events: VecDeque<Event>,
+        wakers: Vec<Waker>,
+        /// Something came since the last look.
+        dirty: bool,
+        /// Closed by either side: nothing more is sent.
+        closed: bool,
+        wbuf: Vec<u8>,
+        heard: Duration,
+        pinged: bool,
+    }
+
+    /// What `recv` does next.
+    enum Next {
+        Event(Event),
+        Ping,
+        Idle,
+        Closed,
+        Wait(Option<Duration>),
+    }
+
+    impl Sock {
+        /// A socket for connection or request `id`; `early` is what the
+        /// client sent after its handshake. `limit` is the largest message.
+        pub(crate) fn new(id: u32, host: bool, limit: usize, early: Vec<u8>) -> Arc<Sock> {
+            Arc::new(Sock {
+                id,
+                host,
+                out: tokio::sync::Mutex::new(()),
+                st: Mutex::new(State {
+                    inbox: Inbox {
+                        buf: early,
+                        at: 0,
+                        partial: None,
+                        limit,
+                    },
+                    events: VecDeque::new(),
+                    wakers: Vec::new(),
+                    dirty: true,
+                    closed: false,
+                    wbuf: Vec::new(),
+                    heard: host::clock(),
+                    pinged: false,
+                }),
+            })
+        }
+
+        fn state(&self) -> MutexGuard<'_, State> {
+            self.st.lock().unwrap_or_else(PoisonError::into_inner)
+        }
+
+        fn wake(st: &mut State) {
+            st.dirty = true;
+            st.wakers.drain(..).for_each(Waker::wake);
+        }
+
+        /// Bytes from the client (a raw connection).
+        pub(crate) fn feed(&self, bytes: &[u8]) {
+            let mut st = self.state();
+            let held = st.inbox.buf.len() - st.inbox.at;
+            let most = st.inbox.limit.saturating_mul(2).saturating_add(SLACK);
+            if held.saturating_add(bytes.len()) > most {
+                st.closed = true; // a flood nobody reads
+            } else if !st.closed {
+                st.inbox.buf.extend_from_slice(bytes);
+                st.heard = host::clock();
+                st.pinged = false;
+            }
+            Self::wake(&mut st);
+        }
+
+        /// A whole message from the client (a host's socket).
+        pub(crate) fn message(&self, text: bool, bytes: Vec<u8>) {
+            let mut st = self.state();
+            let event = if bytes.len() > st.inbox.limit {
+                Event::Fail(TOO_BIG)
+            } else if !text {
+                Event::Message(Message::Binary(bytes))
+            } else {
+                match String::from_utf8(bytes) {
+                    Ok(t) => Event::Message(Message::Text(t)),
+                    Err(_) => Event::Fail(NOT_UTF8),
+                }
+            };
+            st.events.push_back(event);
+            Self::wake(&mut st);
+        }
+
+        /// The client left, or the host closed the socket: what was read
+        /// is still delivered, then `recv` ends.
+        pub(crate) fn gone(&self) {
+            let mut st = self.state();
+            st.closed = true;
+            Self::wake(&mut st);
+        }
+
+        fn next(&self, idle: Duration) -> Next {
+            let mut st = self.state();
+            st.dirty = false;
+            if let Some(e) = st.events.pop_front() {
+                return Next::Event(e);
+            }
+            if let Some(e) = st.inbox.next() {
+                return Next::Event(e);
+            }
+            if st.closed {
+                return Next::Closed;
+            }
+            if idle.is_zero() {
+                return Next::Wait(None);
+            }
+            let quiet = host::clock().saturating_sub(st.heard);
+            if quiet >= idle {
+                return Next::Idle;
+            }
+            if !st.pinged && quiet >= idle / 2 {
+                st.pinged = true;
+                return Next::Ping;
+            }
+            Next::Wait(Some((if st.pinged { idle } else { idle / 2 }) - quiet))
+        }
+
+        /// One frame (or message) to the client. A close is sent once; after
+        /// it nothing is. Waits while the host is behind.
+        async fn send(&self, op: u8, payload: &[u8]) -> std::result::Result<(), Gone> {
+            let _turn = self.out.lock().await;
+            let behind = {
+                let mut st = self.state();
+                if st.closed {
+                    return Err(Gone);
+                }
+                st.closed = op == CLOSE;
+                if self.host {
+                    host::ws_write(self.id, op, payload);
+                    false
+                } else {
+                    let mut buf = std::mem::take(&mut st.wbuf);
+                    frame(&mut buf, op, payload);
+                    let sent = host::conn_out(self.id, &buf);
+                    buf.clear();
+                    buf.shrink_to(crate::policy::KEEP_CAPACITY);
+                    st.wbuf = buf;
+                    !sent
+                }
+            };
+            if behind {
+                host::pulled(self.id).await;
+            }
+            Ok(())
+        }
+    }
+
+    /// Waits for the socket to have something new, or for `timer`.
+    struct Parked<'a> {
+        sock: &'a Sock,
+        timer: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
+    }
+
+    impl Future for Parked<'_> {
+        type Output = ();
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<()> {
+            if let Some(t) = &mut self.timer
+                && t.as_mut().poll(cx).is_ready()
+            {
+                return Poll::Ready(());
+            }
+            let mut st = self.sock.state();
+            if st.dirty {
+                return Poll::Ready(());
+            }
+            st.wakers.push(cx.waker().clone());
+            Poll::Pending
+        }
+    }
+
+    impl WebSocket {
+        /// The next message, or `None` once the client has closed or gone.
+        /// Pings are answered meanwhile. A raw client quiet for half of
+        /// `WISP_WS_IDLE` is pinged, and one quiet for all of it is closed
+        /// with 1001; a host's socket keeps its own time.
+        pub async fn recv(&self) -> Option<Message> {
+            let sock = &*self.0;
+            let idle = if sock.host {
+                Duration::ZERO
+            } else {
+                crate::settings().ws_idle
+            };
+            loop {
+                match sock.next(idle) {
+                    Next::Event(Event::Message(m)) => return Some(m),
+                    Next::Event(Event::Ping(p)) => {
+                        let _ = sock.send(PONG, &p).await;
+                    }
+                    Next::Event(Event::Close(p)) => {
+                        let _ = sock.send(CLOSE, &p).await;
+                        return None;
+                    }
+                    Next::Event(Event::Fail(code)) => {
+                        let _ = sock.send(CLOSE, &code.to_be_bytes()).await;
+                        return None;
+                    }
+                    Next::Idle => {
+                        let _ = sock.send(CLOSE, &GOING_AWAY.to_be_bytes()).await;
+                        return None;
+                    }
+                    Next::Ping => {
+                        let _ = sock.send(PING, b"").await;
+                    }
+                    Next::Closed => return None,
+                    Next::Wait(after) => {
+                        let timer = after.map(|d| {
+                            Box::pin(host::sleep(d)) as Pin<Box<dyn Future<Output = ()> + Send>>
+                        });
+                        Parked { sock, timer }.await;
+                    }
+                }
+            }
+        }
+
+        /// Sends `msg`: a `String` or `&str` as text, a `Vec<u8>` or
+        /// `&[u8]` as binary. Fails once the connection is closed: stop
+        /// sending then.
+        pub async fn send(&self, msg: impl Into<Message>) -> std::result::Result<(), Gone> {
+            match msg.into() {
+                Message::Text(t) => self.0.send(TEXT, t.as_bytes()).await,
+                Message::Binary(b) => self.0.send(BINARY, &b).await,
+            }
+        }
+    }
+
+    /// Runs the handler on an upgraded connection, then closes it.
+    pub(crate) async fn serve(sock: Arc<Sock>, upgrade: Upgrade, path: &str) {
+        let result = crate::http::catch((upgrade.0)(WebSocket(sock.clone()))).await;
+        let code = match result {
+            Ok(()) => NORMAL,
+            Err(e) => {
+                crate::http::log(format_args!("wisp: WebSocket {path}: {}", e.detail()));
+                SERVER_ERROR
+            }
+        };
+        let _ = sock.send(CLOSE, &code.to_be_bytes()).await;
     }
 }
 
