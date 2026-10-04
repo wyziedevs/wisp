@@ -96,6 +96,8 @@ pub fn google() -> Provider {
 pub async fn oidc(name: &'static str, issuer: &str) -> Result<Provider> {
     static FOUND: std::sync::Mutex<Vec<(String, Provider)>> = std::sync::Mutex::new(Vec::new());
     let issuer = issuer.trim_end_matches('/');
+    // Discovery names where the client secret goes: only over https.
+    secure_endpoint(issuer)?;
     let find = || {
         let found = FOUND.lock().unwrap_or_else(|e| e.into_inner());
         (found.iter().find(|(i, _)| i == issuer)).map(|(_, p)| Provider { name, ..p.clone() })
@@ -108,6 +110,9 @@ pub async fn oidc(name: &'static str, issuer: &str) -> Result<Provider> {
         &format!("{issuer}/.well-known/openid-configuration"),
     ))
     .await?;
+    if reply.status != 200 {
+        return Err(unreachable_provider());
+    }
     let found: Value = from_json(reply.bytes()).map_err(|_| unreachable_provider())?;
     let get = |k: &str| found.get(k).and_then(Value::as_str).map(str::to_string);
     // The document must be the issuer's own, or any site could claim to be.
@@ -387,6 +392,18 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    /// Discovery over plain http would let anyone name where the secret goes.
+    #[test]
+    fn oidc_needs_an_https_issuer() {
+        let e = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(oidc("x", "http://login.example.com"))
+            .err()
+            .unwrap();
+        assert_eq!(e.status(), 500);
+    }
 
     /// A provider on this machine that answers each request in turn with
     /// the next of `answers`, and keeps what it was sent.
