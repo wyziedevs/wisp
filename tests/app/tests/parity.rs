@@ -340,3 +340,116 @@ fn a_streamed_body_is_chunked_and_the_connection_goes_on() {
     assert!(a[0].contains('3'), "{a:?}");
     assert_eq!(b, a);
 }
+
+/// Drives `bridge.js`'s `fetch` (Workers, Deno, Netlify) with web Requests,
+/// one per line of stdin (`method target`, then `name: value` headers joined
+/// by `\t`, then the body after `\t\t`), and answers each as `fast status
+/// content-type location etag`, the body, and a NUL. `fast`: the Response
+/// came back at once (the bodyless path), not as a Promise.
+const FETCH: &str = r#"
+import { readFileSync } from 'node:fs';
+import { wisp } from './bridge.mjs';
+const app = wisp(new WebAssembly.Module(readFileSync(new URL('./app.wasm', import.meta.url))), process.env);
+let out = '';
+for (const line of readFileSync(0, 'utf8').split('\n').filter(Boolean)) {
+  const [head, body] = line.split('\t\t');
+  const [first, ...hs] = head.split('\t');
+  const [method, target] = first.split(' ');
+  const headers = hs.map((h) => [h.slice(0, h.indexOf(':')), h.slice(h.indexOf(':') + 1).trim()]);
+  const req = new Request('http://127.0.0.1' + target, { method, headers, body: body || undefined, redirect: 'manual' });
+  const got = app.fetch(req, '127.0.0.1');
+  const fast = !(got instanceof Promise);
+  const r = await got;
+  const h = (n) => JSON.stringify(r.headers.get(n) ?? '');
+  out += `${fast} ${r.status} ${h('content-type')} ${h('location')} ${h('etag')}\n${await r.text()}\0`;
+}
+process.stdout.write(out);
+"#;
+
+/// Requests answered through `bridge.js`'s `fetch`, whose bodyless ones
+/// read their headers from the Request only as the app asks for them: the
+/// same answers as native, the bodyless ones at once and the others later.
+#[test]
+fn fetch_answers_as_native_with_headers_read_lazily() {
+    let Some((dir, _server)) = edge_app("node") else {
+        return;
+    };
+    std::fs::write(dir.join("fetch.mjs"), FETCH).unwrap();
+    let native = common::start(&[]);
+    let asset = native.request("GET", "/_app/wisp.js", "", b"");
+    let etag = header(&asset, "etag").expect("an etag").to_string();
+    let html = "accept: text/html\r\n";
+    let cases: Vec<(&str, &str, String, &str)> = vec![
+        ("GET", "/", String::new(), ""),
+        ("GET", "/", String::new(), ""),
+        ("HEAD", "/", String::new(), ""),
+        ("GET", "/nope", String::new(), ""),
+        ("GET", "/nope", html.into(), ""),
+        ("GET", "/admin", "cookie: user=forged; a=b\r\n".into(), ""),
+        ("GET", "/login/?a=1", html.into(), ""),
+        ("GET", "/_app/wisp.js", String::new(), ""),
+        (
+            "GET",
+            "/_app/wisp.js",
+            format!("if-none-match: {etag}\r\n"),
+            "",
+        ),
+        ("POST", "/echo", String::new(), "hello"),
+        ("POST", "/echo", FORM.into(), "a=1&b=two"),
+    ];
+    let mut stdin = String::new();
+    for (method, target, headers, body) in &cases {
+        stdin += &format!("{method} {target}");
+        for h in headers.split("\r\n").filter(|h| !h.is_empty()) {
+            stdin += &format!("\t{h}");
+        }
+        stdin += &format!("\t\t{body}\n");
+    }
+    let mut child = Command::new("node")
+        .arg(dir.join("fetch.mjs"))
+        .env("WISP_SECRET", SECRET)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("start node");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stdin.as_bytes())
+        .unwrap();
+    let mut said = String::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut said)
+        .unwrap();
+    assert!(child.wait().unwrap().success(), "node failed");
+    let answers: Vec<&str> = said.split('\0').filter(|a| !a.is_empty()).collect();
+    assert_eq!(answers.len(), cases.len(), "{said}");
+    for (i, ((method, target, headers, body), got)) in cases.iter().zip(answers).enumerate() {
+        let raw = native.request(method, target, headers, body.as_bytes());
+        let h = |n| format!("{:?}", header(&raw, n).unwrap_or(""));
+        let text = if *method == "HEAD" {
+            ""
+        } else {
+            common::body(&raw)
+        };
+        let want = format!(
+            "{} {} {} {}\n{text}",
+            status(&raw),
+            h("content-type"),
+            h("location"),
+            h("etag")
+        );
+        let (fast, got) = got.split_once(' ').unwrap();
+        assert_eq!(got, want, "{method} {target} {headers:?}");
+        // The first request starts the instance, so it waits.
+        assert_eq!(
+            fast == "true",
+            i > 0 && body.is_empty() && *method != "POST",
+            "{method} {target}"
+        );
+    }
+}

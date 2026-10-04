@@ -202,7 +202,7 @@ export function wisp(module, env = {}, sink) {
 
   async function start() {
     // `work`: timers and fetches under way, which `idle` waits out.
-    const x = { pending: new Map(), heads: [], streams: new Map(), conns: new Map(), retired: false, work: 0, idlers: [] };
+    const x = { pending: new Map(), asked: new Map(), heads: [], streams: new Map(), conns: new Map(), retired: false, work: 0, idlers: [] };
     let view; // the memory's bytes, made again only when it has grown
     const mem = () => {
       const b = x.exports.memory.buffer;
@@ -250,6 +250,12 @@ export function wisp(module, env = {}, sink) {
       mem().set(bytes, p);
       return bytes.length;
     };
+    // `text` into the app's memory at `out` when it fits in `cap`; its length.
+    const give = (text, out, cap) => {
+      const b = enc.encode(text);
+      if (b.length <= cap) mem().set(b, out);
+      return b.length;
+    };
     x.idle = () => (x.work ? new Promise((r) => x.idlers.push(r)) : settled);
     // Runs `f` once `promise` settles, counted as work until then.
     x.later = (promise, f) => {
@@ -268,6 +274,7 @@ export function wisp(module, env = {}, sink) {
           if (typeof done === 'function') done(null);
           else if (done !== undefined) sink(done, failedHead, failed.body);
           x.pending.delete(id);
+          x.asked.delete(id);
           x.streams.get(id)?.error(e);
           x.streams.delete(id);
           // A connection's task (`1 << 30` and its id): the socket goes.
@@ -293,6 +300,7 @@ export function wisp(module, env = {}, sink) {
         reply: (id, hp, hn, hid, bp, bn) => {
           const done = x.pending.get(id);
           x.pending.delete(id);
+          x.asked.delete(id);
           const m = mem();
           if (typeof done === 'function' || done === undefined) {
             const all = new Uint8Array(hn + 1 + bn); // the head ends in a line, then a blank one
@@ -332,6 +340,28 @@ export function wisp(module, env = {}, sink) {
           x.conns.delete(id);
           io.end();
           return 1;
+        },
+        // A `wisp_request_lazy` request's header, or all of them as lines
+        // (but the framing ones, `host` added if it has none): the length,
+        // written to `out` if it fits in `cap`; 2**32 - 1 for none.
+        header: (id, np, nn, out, cap) => {
+          let v = null;
+          try {
+            v = x.asked.get(id)?.headers.get(dec.decode(mem().subarray(np, np + nn))) ?? null;
+          } catch {} // not a header's name
+          return v === null ? 0xffffffff : give(v, out, cap);
+        },
+        headers: (id, out, cap) => {
+          const r = x.asked.get(id);
+          if (!r) return 0xffffffff;
+          let t = '';
+          let host = false;
+          for (const [k, v] of r.headers) {
+            if (k === 'content-length' || k === 'transfer-encoding') continue;
+            host ||= k === 'host';
+            t += `${k}: ${v}\n`;
+          }
+          return give(host ? t : t + `host: ${r.host}\n`, out, cap);
         },
         timer: (id, ms) => x.later(new Promise((r) => setTimeout(r, ms)), () => x.call(() => x.exports.wisp_timer(id))),
       },
@@ -447,25 +477,18 @@ export function wisp(module, env = {}, sink) {
   // A web `Request` to a web `Response`: Workers, Deno, Netlify. `ctx` is
   // the host's context, whose `waitUntil` keeps background work alive.
   // A request without a body goes straight to the app and, when the app
-  // answers at once, comes back as a Response with no Promise made.
+  // answers at once, comes back as a Response with no Promise made. Its
+  // headers but `host` are not read here: the app asks for those it reads.
   function serve(request, peer = '', ctx) {
     const x = ready;
+    if (!x || x.retired || request.body) return slow(request, peer, ctx);
     const method = request.method;
-    const plain = method === 'GET' || method === 'HEAD'; // no `request.body` to look at
-    if (!x || x.retired || (!plain && request.body)) return slow(request, peer, ctx);
     const url = request.url;
     const s = url.indexOf('//') + 2;
     const at = url.indexOf('/', s);
-    let h = `${method} ${at < 0 ? '/' : url.slice(at)} ${peer}\n`;
-    let host = false;
-    let body = false;
-    for (const [k, v] of request.headers) {
-      h += `${k}: ${v}\n`;
-      if (k === 'host') host = true;
-      else if (k === 'transfer-encoding' || (k === 'content-length' && v !== '0')) body = true;
-    }
-    if (plain && body && request.body) return slow(request, peer, ctx); // a GET that has one
-    if (!host) h += `host: ${url.slice(s, at < 0 ? url.length : at)}\n`;
+    const headers = request.headers;
+    const host = headers.get('host') ?? url.slice(s, at < 0 ? url.length : at);
+    const h = `${method} ${at < 0 ? '/' : url.slice(at)} ${peer}\nhost: ${host}\n`;
     let bytes = sent.get(h);
     if (!bytes) {
       if (sent.size > 64) sent.clear();
@@ -474,7 +497,8 @@ export function wisp(module, env = {}, sink) {
     const c = { res: null, resolve: null, empty: method === 'HEAD' };
     const id = (next = (next + 1) & 0x7fffffff);
     x.pending.set(id, c);
-    x.call(x.exports.wisp_request, id, x.write(bytes));
+    x.asked.set(id, { headers, host });
+    x.call(x.exports.wisp_request_lazy, id, x.write(bytes));
     if (x.work) ctx?.waitUntil?.(x.idle());
     return c.res ?? new Promise((resolve) => (c.resolve = resolve));
   }

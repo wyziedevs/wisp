@@ -178,6 +178,10 @@ pub struct Cx {
     /// The `Idempotency-Key` this request answers first, kept with its
     /// answer (see `idem.rs`).
     pub(crate) idem: Option<crate::idem::Key>,
+    /// The edge host's request, whose headers but `host` it is asked for
+    /// as they are read (see `edge::Lazy`).
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) lazy: Option<crate::edge::Lazy>,
 }
 
 impl Cx {
@@ -207,6 +211,8 @@ impl Cx {
             id: std::sync::OnceLock::new(),
             api: false,
             idem: None,
+            #[cfg(target_arch = "wasm32")]
+            lazy: None,
         }
     }
 
@@ -368,6 +374,10 @@ impl Cx {
     /// [`Cx::header`] of a [`Known`] header, with no search.
     pub(crate) fn known(&self, k: Known) -> Option<&str> {
         if self.wire.knows & 1 << k as usize == 0 {
+            #[cfg(target_arch = "wasm32")]
+            if let Some(lazy) = &self.lazy {
+                return lazy.known(k);
+            }
             return None;
         }
         std::str::from_utf8(&self.wire.buf[self.wire.known[k as usize].range()]).ok()
@@ -375,6 +385,14 @@ impl Cx {
 
     /// Request header by case-insensitive name. Non-UTF-8 values are `None`.
     pub fn header(&self, name: &str) -> Option<&str> {
+        #[cfg(target_arch = "wasm32")]
+        if let Some(lazy) = &self.lazy
+            && !["host", "content-length", "transfer-encoding"]
+                .iter()
+                .any(|n| n.eq_ignore_ascii_case(name))
+        {
+            return lazy.header(name);
+        }
         let (_, v) = self
             .wire
             .headers
@@ -513,6 +531,7 @@ impl Cx {
 
     /// Every request header as `(name, value)`, in the order sent. Values
     /// that are not UTF-8 are left out.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn headers(&self) -> impl Iterator<Item = (&str, &str)> {
         self.wire.headers.iter().filter_map(|(n, v)| {
             Some((
@@ -520,6 +539,28 @@ impl Cx {
                 std::str::from_utf8(&self.wire.buf[v.range()]).ok()?,
             ))
         })
+    }
+
+    /// Every request header as `(name, value)`, in the order sent. Values
+    /// that are not UTF-8 are left out.
+    #[cfg(target_arch = "wasm32")]
+    pub fn headers(&self) -> impl Iterator<Item = (&str, &str)> {
+        // A lazy request's wire has `host`, which the host's list has too,
+        // and `content-length`, which it has not.
+        let lazy = self.lazy.as_ref();
+        let fetched = lazy.map_or(&[][..], |l| l.all()).iter();
+        fetched.map(|(n, v)| (&**n, &**v)).chain(
+            self.wire
+                .headers
+                .iter()
+                .filter_map(|(n, v)| {
+                    Some((
+                        std::str::from_utf8(&self.wire.buf[n.range()]).ok()?,
+                        std::str::from_utf8(&self.wire.buf[v.range()]).ok()?,
+                    ))
+                })
+                .filter(move |(n, _)| lazy.is_none() || n.eq_ignore_ascii_case("content-length")),
+        )
     }
 
     /// A cookie's value: the one this request set with `set_cookie`, else

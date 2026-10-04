@@ -13,6 +13,12 @@
 //! - `wisp_env(len)`: the environment, `KEY=value` entries ended by NUL.
 //! - `wisp_request(id, len)`: a request, `METHOD target peer` then headers,
 //!   `name: value` a line each, an empty line and the body.
+//! - `wisp_request_lazy(id, len)`: the same with only `host` among the
+//!   headers and no body; the app asks for the others as it reads them,
+//!   through `header(id, name, name_len, out, cap)` (the value's length, at
+//!   most `cap` of it written to `out`; `u32::MAX`: none) and
+//!   `headers(id, out, cap)` (every one but `content-length` and
+//!   `transfer-encoding`, as `name: value` lines; its length, as `header`).
 //! - `wisp_fetched(id, len)`: the answer to import `fetch`, `status`, then as
 //!   above (status 0: failed, the body says why).
 //! - `wisp_timer(id)`: import `timer`'s time has come.
@@ -55,7 +61,7 @@
 use crate::http::edge_conn::{Raw, Step, Stream};
 use crate::{App, Reply, Request};
 use std::borrow::Cow;
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashMap;
 use std::future::Future;
 use std::net::SocketAddr;
@@ -86,6 +92,97 @@ unsafe extern "C" {
     safe fn conn_write(id: u32, ptr: *const u8, len: usize) -> u32;
     /// Seconds since 1970, the host's clock (`std`'s has none here).
     safe fn now() -> f64;
+    #[link_name = "header"]
+    safe fn get_header(id: u32, name: *const u8, name_len: usize, out: *mut u8, cap: usize) -> u32;
+    #[link_name = "headers"]
+    safe fn get_headers(id: u32, out: *mut u8, cap: usize) -> u32;
+}
+
+/// What `fill(out, cap)` writes, given room for it: `None` for `u32::MAX`.
+fn fetched(fill: impl Fn(*mut u8, usize) -> u32) -> Option<String> {
+    let mut b = vec![0; 256];
+    loop {
+        let n = fill(b.as_mut_ptr(), b.len());
+        if n == u32::MAX {
+            return None;
+        }
+        if n as usize <= b.len() {
+            b.truncate(n as usize);
+            return String::from_utf8(b).ok();
+        }
+        b = vec![0; n as usize];
+    }
+}
+
+/// A header asked for by name, and its value if it has one.
+type Named = (Box<str>, Option<Box<str>>);
+
+/// Names [`Lazy`] asks for by name, kept with their values.
+const NAMED: usize = 8;
+
+/// The headers of a `wisp_request_lazy` request, fetched from the host as
+/// they are read, each once: what `Cx` reads where the wire has none.
+pub(crate) struct Lazy {
+    id: u32,
+    known: [OnceCell<Option<Box<str>>>; crate::cx::KNOWN],
+    named: [OnceCell<Named>; NAMED],
+    all: OnceCell<Vec<(Box<str>, Box<str>)>>,
+}
+
+impl Lazy {
+    fn new(id: u32) -> Lazy {
+        Lazy {
+            id,
+            known: [const { OnceCell::new() }; crate::cx::KNOWN],
+            named: [const { OnceCell::new() }; NAMED],
+            all: OnceCell::new(),
+        }
+    }
+
+    fn get(&self, name: &str) -> Option<Box<str>> {
+        fetched(|out, cap| get_header(self.id, name.as_ptr(), name.len(), out, cap)).map(Into::into)
+    }
+
+    pub(crate) fn known(&self, k: crate::cx::Known) -> Option<&str> {
+        use crate::cx::Known::*;
+        let name = match k {
+            IdempotencyKey => "idempotency-key",
+            IfNoneMatch => "if-none-match",
+            ContentType => "content-type",
+            Accept => "accept",
+            WispError => crate::protocol::HEADER_ERROR,
+            Origin => "origin",
+            SecFetchSite => "sec-fetch-site",
+        };
+        self.known[k as usize]
+            .get_or_init(|| self.get(name))
+            .as_deref()
+    }
+
+    /// Any header but `host`, `content-length` and `transfer-encoding`,
+    /// which the wire has.
+    pub(crate) fn header(&self, name: &str) -> Option<&str> {
+        for slot in &self.named {
+            let (n, v) = slot.get_or_init(|| (name.into(), self.get(name)));
+            if n.eq_ignore_ascii_case(name) {
+                return v.as_deref();
+            }
+        }
+        let mut all = self.all().iter();
+        all.find(|(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, v)| &**v)
+    }
+
+    /// Every header, `host` among them, in the order the host has them.
+    pub(crate) fn all(&self) -> &[(Box<str>, Box<str>)] {
+        self.all.get_or_init(|| {
+            let text = fetched(|out, cap| get_headers(self.id, out, cap)).unwrap_or_default();
+            text.lines()
+                .filter_map(|l| cut(l, b':'))
+                .map(|(n, v)| (n.trim().into(), v.trim().into()))
+                .collect()
+        })
+    }
 }
 
 /// Whole seconds since 1970.
@@ -100,7 +197,7 @@ pub(crate) fn clock() -> std::time::Duration {
 
 type Task = Pin<Box<dyn Future<Output = ()>>>;
 /// Starts the task of request `id`, given the bytes the host wrote.
-type Handler = fn(u32, Vec<u8>);
+type Handler = fn(u32, Vec<u8>, bool);
 
 /// The task that runs `init`; request ids come from the host and never
 /// reach it.
@@ -183,9 +280,18 @@ pub extern "C" fn wisp_env(len: usize) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wisp_request(id: u32, len: usize) {
+    start_request(id, len, false);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wisp_request_lazy(id: u32, len: usize) {
+    start_request(id, len, true);
+}
+
+fn start_request(id: u32, len: usize, lazy: bool) {
     let bytes = take_in(len);
     match HANDLER.get() {
-        Some(start) => start(id, bytes),
+        Some(start) => start(id, bytes, lazy),
         None => spawn(id, Box::pin(finish(id, Reply::plain(500)))),
     }
 }
@@ -303,7 +409,7 @@ async fn connection<A: App>(id: u32, mut raw: Raw) {
 }
 
 /// The task of request `id`: borrows its parts from `bytes`, and answers.
-fn request<A: App>(id: u32, bytes: Vec<u8>) {
+fn request<A: App>(id: u32, bytes: Vec<u8>, lazy: bool) {
     let task = async move {
         let reply = match view(&bytes) {
             Some((method, target, peer, headers, body)) => {
@@ -311,7 +417,13 @@ fn request<A: App>(id: u32, bytes: Vec<u8>) {
                 match READY.get() {
                     1 => {
                         let headers = headers.map(|(n, v)| (n, v.as_bytes()));
-                        crate::http::handle_parts::<A>(method, target, headers, body, peer).await
+                        match crate::Cx::from_request::<A>(method, target, headers, body, peer) {
+                            Ok(mut cx) => {
+                                cx.lazy = lazy.then(|| Lazy::new(id));
+                                crate::http::answer::<A>(cx, &mut None).await
+                            }
+                            Err(status) => Reply::plain(status),
+                        }
                     }
                     _ => Reply::plain(500),
                 }

@@ -75,7 +75,9 @@ Windows 10, 16 cores, c=64, 10 s, median of 3; req/s (p99 ms), CPU us/request:
 | | `/` | `/list` | `/json` | cold start |
 |---|---|---|---|---|
 | Wisp before | 14,745 (32.5) 70 | 11,026 (35.4) 94 | 13,820 (31.3) 75 | 27 ms |
-| Wisp now | 17,813 (5.1) 59 | 15,153 (6.2) 67 | 17,165 (5.2) 60 | 28 ms |
+| Wisp sync | 17,813 (5.1) 59 | 15,153 (6.2) 67 | 17,165 (5.2) 60 | 28 ms |
+| Wisp lazy headers | 20,294 (3.3) 50 | 16,665 (4.1) 62 | 20,693 (3.3) 50 | 27 ms |
+| Hono (same run) | 21,112 (3.9) 49 | 16,877 (5.9) 62 | 20,826 (4.0) 49 | 23 ms |
 | Hono | 20,582 (4.5) 49 | 15,842 (7.9) 66 | 19,786 (27) 53 | 22 ms |
 
 What moved Wisp (`bridge.js` `serve`): a request without a body goes to the app
@@ -88,5 +90,14 @@ the Uint8Array (no faster). `strip` takes the wasm from 508 KB to 466 KB and
 compiling the module, and about 4 ms more is its first calls (`main`, then the
 first request's code, compiled on first use).
 
-Still behind Hono by 10 to 15% on `/` and `/json`: iterating the request's
-headers (about 2 us in workerd) and the wasm call are what Hono does not do.
+Lazy headers: `serve` passes only `host`; the app asks the Request for
+any other header when it reads it (`wisp_request_lazy`, imports `header` and
+`headers`), so `/` and `/json` read none. Within 1 to 4% of Hono; the rest is
+the first wasm entry of each request (about 3 us in workerd; later entries in
+the same request cost 0.8 us). One difference from native: a request with
+more than 100 headers is not refused with 431 on this path.
+
+Cold start: in Node, compile 1 ms (lazy), instantiate 0.1 ms, `main` 1 ms,
+the first request's code compiled on first use most of the rest. Instantiating
+synchronously on the first request measured no better in workerd (31 vs 37 ms,
+noise about 6 ms), so it was dropped. `app.wasm` here: 511 KB (499 KB before).
