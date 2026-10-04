@@ -3975,7 +3975,7 @@ pub(crate) fn start_clock() {
 const DATE_LINE: usize = 37;
 
 thread_local! {
-    /// (unix second, its `date` line), formatted at most once a second.
+    /// (`TICK` word, its `date` line), formatted at most once a second.
     static DATE: Cell<(u64, [u8; DATE_LINE])> = const { Cell::new((u64::MAX, [0; DATE_LINE])) };
 }
 
@@ -3999,17 +3999,17 @@ fn length_and_date(w: &mut Vec<u8>, length: Option<usize>) {
 
 #[inline(always)]
 fn date_line() -> [u8; DATE_LINE] {
-    let now = tick_unix(TICK.load(Ordering::Relaxed));
+    let tick = TICK.load(Ordering::Relaxed);
     DATE.with(|c| {
-        let (secs, line) = c.get();
-        if secs == now {
+        let (kept, line) = c.get();
+        if kept == tick {
             return line;
         }
         let mut line = [0; DATE_LINE];
         line[..6].copy_from_slice(b"date: ");
-        line[6..35].copy_from_slice(&http_date(now));
+        line[6..35].copy_from_slice(&http_date(tick_unix(tick)));
         line[35..].copy_from_slice(b"\r\n");
-        c.set((now, line));
+        c.set((tick, line));
         line
     })
 }
