@@ -144,8 +144,8 @@ fn run_tokio<A: App>(
 
     main.block_on(async {
         let listener = TcpListener::from_std(listener)?;
-        started(listener.local_addr()?);
         let mut signal = std::pin::pin!(stop_signal());
+        started(listener.local_addr()?);
         let max = crate::settings().max_conns;
         let open: std::sync::Arc<[AtomicUsize]> =
             workers.iter().map(|_| AtomicUsize::new(0)).collect();
@@ -248,9 +248,13 @@ fn run_linux<A: App>(
         // Only a worker that ended (and with it the process) sends nothing.
         let _ = all_ready.recv();
     }
+    let signal = {
+        let _in = main.enter();
+        stop_signal()
+    };
     started(addr);
     main.block_on(async {
-        stop_signal().await;
+        signal.await;
         stop(&workers).await; // the workers close their listeners
         Ok(())
     })
@@ -368,25 +372,32 @@ pub(crate) fn send_under_way(began: bool) {
 }
 
 /// SIGTERM, which is how systemd, Docker and Kubernetes stop a server, or
-/// Ctrl+C (SIGINT).
+/// Ctrl+C (SIGINT). On Unix both are caught from the call on, not from the
+/// first poll: made before `listening` is said, a signal sent as soon as it
+/// is (a test's, a supervisor's) stops the server rather than killing it
+/// mid-response. Called within a runtime.
 #[cfg(not(target_arch = "wasm32"))]
-async fn stop_signal() {
-    async fn ctrl_c() {
+fn stop_signal() -> impl Future<Output = ()> {
+    #[cfg(unix)]
+    let caught = {
+        use tokio::signal::unix::{SignalKind, signal};
+        (signal(SignalKind::terminate()).ok()).zip(signal(SignalKind::interrupt()).ok())
+    };
+    async move {
+        #[cfg(unix)]
+        if let Some((mut term, mut int)) = caught {
+            let term = async {
+                term.recv().await;
+            };
+            let int = async {
+                int.recv().await;
+            };
+            return first(term, int).await;
+        }
         if tokio::signal::ctrl_c().await.is_err() {
             std::future::pending::<()>().await;
         }
     }
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{SignalKind, signal};
-        if let Ok(mut term) = signal(SignalKind::terminate()) {
-            let term = async {
-                term.recv().await;
-            };
-            return first(term, ctrl_c()).await;
-        }
-    }
-    ctrl_c().await
 }
 
 /// Runs two futures at once and returns the output of the first to finish.

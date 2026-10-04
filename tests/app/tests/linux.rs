@@ -434,6 +434,24 @@ fn streams_end_properly_and_sockets_hear_the_server_is_going_away() {
     }
 }
 
+#[test]
+fn a_stop_signal_as_soon_as_it_listens_stops_it_cleanly() {
+    // The signal is caught before `listening` is said: one sent at once
+    // stops the server (exit 0) rather than killing it, which ended a
+    // stream without its last chunk (the flaky test above, under load).
+    for env in BACKENDS {
+        for _ in 0..20 {
+            let mut s = common::start(env);
+            let sent = Command::new("kill")
+                .args(["-TERM", &s.child.id().to_string()])
+                .status()
+                .unwrap();
+            assert!(sent.success());
+            assert!(exits_within(&mut s.child, 5).success());
+        }
+    }
+}
+
 fn streams_end_properly_on(env: &[(&str, &str)]) {
     // A stream with no end of its own: it is ended, and its last chunk sent.
     let mut s = common::start(env);
