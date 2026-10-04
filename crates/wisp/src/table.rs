@@ -758,37 +758,6 @@ impl<T> Table<T> {
         }
     }
 
-    /// Changes the row in place: `NOTES.update(id, |n| n.done = true)`.
-    /// `None` when there is none.
-    pub fn update<R>(&self, id: u64, f: impl FnOnce(&mut T) -> R) -> Option<R> {
-        let mut rows = self.write();
-        let row = rows.map.get_mut(&id)?;
-        let before = self.unique.map(|(_, key)| key(row).to_owned());
-        let r = f(row);
-        // A password set here is hashed with the table locked: hash it
-        // first (`Password::new`) to keep the wait off it.
-        self.seal(row);
-        if let (Some((field, key)), Some(before)) = (self.unique, before) {
-            let now = key(&rows.map[&id]);
-            if now != before {
-                if rows.index.get(now).is_some_and(|&o| o != id) {
-                    // Half changed, as after a closure that panicked.
-                    panic!("{field} is taken: change a unique field with try_update");
-                }
-                let now = now.to_owned();
-                rows.index.remove(&before);
-                rows.index.insert(now, id);
-            }
-        }
-        let json = self.encode(&rows, &rows.map[&id]);
-        if let Err(e) = self.save(&mut rows, id, Some(&json)) {
-            Self::failed(rows, e);
-        }
-        drop(rows);
-        self.notify();
-        Some(r)
-    }
-
     /// Replaces the row with `value`; `None` when there is none. A repeat
     /// of another row's unique field panics: see [`Table::try_set`].
     pub fn set(&self, id: u64, value: T) -> Option<()> {
@@ -901,12 +870,22 @@ impl<T: Clone> Table<T> {
         })
     }
 
-    /// Like [`Table::update`], but on a copy, so a unique field changed to
-    /// another row's is a 422 on that field and the row stays as it was.
+    /// Changes the row: `NOTES.update(id, |n| n.done = true)`. `None` when
+    /// there is none. The change is made on a copy and kept once saved, so
+    /// a failed save or a repeat of another row's unique field (both panic,
+    /// a 500: see [`Table::try_update`]) leaves the row as it was.
+    pub fn update<R>(&self, id: u64, f: impl FnOnce(&mut T) -> R) -> Option<R> {
+        self.try_update(id, f)
+            .unwrap_or_else(|e| panic!("{}", e.message()))
+    }
+
+    /// Like [`Table::update`], but a unique field changed to another row's
+    /// is a 422 on that field, and a failed save an `Err`.
     pub fn try_update<R>(&self, id: u64, f: impl FnOnce(&mut T) -> R) -> Result<Option<R>> {
         // Read, changed and put back with the table locked: two at once
-        // (`n.count += 1`) must both count. Hashing a password set here
-        // waits on the lock too, as in `update`.
+        // (`n.count += 1`) must both count. A password set here is hashed
+        // with the table locked: hash it first (`Password::new`) to keep
+        // the wait off it.
         let mut rows = self.write();
         let Some(mut v) = rows.map.get(&id).cloned() else {
             return Ok(None);
@@ -1183,6 +1162,36 @@ mod tests {
                 rows,
             }))
         }
+    }
+
+    #[test]
+    fn a_failed_save_leaves_the_row_as_it_was() {
+        store::memory();
+        let mem: &'static Mem = Box::leak(Box::new(Mem(Mutex::new(Vec::new()))));
+        let t: Table<String> = Table::saved("failed_update_keeps_row");
+        t.load(&mut t.rows.write().unwrap(), Some(mem));
+        t.add("a".into());
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            t.update(1, |s| *s = "fail".into())
+        }));
+        assert!(r.is_err(), "the store's error is the request's 500");
+        assert_eq!(t.get(1).unwrap().value, "a", "memory matches the disk");
+    }
+
+    #[test]
+    fn an_update_that_clashes_leaves_the_row_as_it_was() {
+        let t: Table<User> = Table::new().unique("email", |u: &User| &u.email);
+        let a = t.add(user("a@x", 1));
+        t.add(user("b@x", 2));
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            t.update(a, |u| {
+                u.email = "b@x".into();
+                u.age = 9;
+            })
+        }));
+        assert!(r.is_err(), "a repeat is a 500");
+        assert_eq!(t.get(a).unwrap().value, user("a@x", 1), "not half changed");
+        assert_eq!(t.by("a@x").map(|r| r.id), Some(a));
     }
 
     #[test]
