@@ -5188,7 +5188,7 @@ mod tests {
     fn blocks_nest_only_so_deep() {
         let deep = |n: usize| format!("{}x{}", "{#if a}".repeat(n), "{/if}".repeat(n));
         assert!(parse(&deep(MAX_NEST - 1)).is_ok());
-        let e = parse(&deep(100_000)).expect_err("too deep");
+        let Err(e) = parse(&deep(100_000)) else { panic!("too deep") };
         assert!(e.msg.contains("nested more than"), "{}", e.msg);
     }
 
