@@ -291,7 +291,7 @@ fields are restored with history. `import('$lib/x.js')` loads on demand.
 props={:{...}} />` (`react|preact|vue|svelte`); web components just work. Own esbuild/vite
 bundle in `static/`: `<div data-wisp-keep use:widget="{x}">`, script
 `widget(el, p)` does `import('/w.js')`, returns `{update, destroy}`.
-`data-wisp-notransition` (link or `<body>`) skips the nav view transition.
+`data-wisp-notransition` (link or `<body>`) skips the nav view transition; `goto(url, { novt: true })` too.
 `#[remote] fn user(id: u64) -> Result<User>` (page block or `src/*.rs`) is
 `await user(5)` in any script (`src/lib`: `import { user } from
 'wisp:remote'`): POST to `/_app/r/<hash>`, `#[remote(get)]` a GET; errors

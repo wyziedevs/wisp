@@ -1,0 +1,12 @@
+[package]
+name = "snippets"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+# Snippet props, `{:@html}` and `{:@const}` (src/routes/+page.wisp).
+[dependencies]
+wisp.workspace = true
+
+[build-dependencies]
+wisp-build.workspace = true
