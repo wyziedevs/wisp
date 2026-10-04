@@ -206,6 +206,19 @@ impl Fold<'_> {
             true => Some(()),
             false => self.layers(inner, doc),
         };
+        // The innermost `<title>` is the one written: an outer one is left out.
+        if t.has_title() && inner.iter().any(|t| t.has_title()) {
+            let nodes: Vec<Node> = (t.nodes.iter())
+                .filter(|n| !t.is_title(n))
+                .map(|n| match n {
+                    Node::Head(b) => {
+                        Node::Head(b.iter().filter(|n| !t.is_title(n)).cloned().collect())
+                    }
+                    n => n.clone(),
+                })
+                .collect();
+            return self.nodes(&nodes, t, &[], doc, false, &slot);
+        }
         self.nodes(&t.nodes, t, &[], doc, false, &slot)
     }
 
@@ -438,6 +451,22 @@ mod tests {
             depth: Default::default(),
         }
         .page(&refs)
+    }
+
+    #[test]
+    fn one_title_the_innermost() {
+        let layout =
+            "<head><title>L</title><meta name=\"a\"></head><main>{@render children()}</main>";
+        let doc = page(&[layout, "<title>P</title><p>x</p>"], &[]).unwrap();
+        assert_eq!(doc.head, "<meta name=\"a\"><title>P</title>");
+        let doc = page(
+            &[layout, "<title>Q</title>{@render children()}", "<p>x</p>"],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(doc.head, "<meta name=\"a\"><title>Q</title>");
+        let doc = page(&[layout, "<p>x</p>"], &[]).unwrap();
+        assert_eq!(doc.head, "<title>L</title><meta name=\"a\">");
     }
 
     #[test]

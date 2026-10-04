@@ -191,7 +191,7 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
 | `{@const x = expr}` | let |
 | `{#snippet row(a, b)}…{/snippet}` `{@render row(x, 1)}` | local markup fn |
 | `{@pager posts}` | Newer/Older links of a `Table::page` |
-| `<head>…</head>` | into the document head; a top-level `<title>` goes there alone |
+| `<head>…</head>` | into the document head; a top-level `<title>` goes there alone; one `<title>` per page: the innermost page or layout with one writes it |
 | `<slot />` or `{@render children()}` | layout/component slot |
 | `cx` | the request (`&Cx`) in pages, layouts, error pages |
 
@@ -257,7 +257,8 @@ first). Not its Rust (`db.rs`, `hooks.rs`) or `fonts.txt`.
 ## Markdown pages
 
 `+page.md` with `---` front matter (`title`, `layout: Post` a component the
-page is the children of, any field `date: 2026-10-01`); text may use
+page is the children of, any field `date: 2026-10-01`; `title` is the
+`<title>` unless a layout writes one, which can wrap it from `wisp::pages`); text may use
 `<Card>` between blank lines. Built at build time; fenced code is
 highlighted (`hl-k hl-s hl-c hl-n hl-t hl-a`; color them); headings get
 ids (`## Install and Run` is `#install-and-run`). `noindex: true`

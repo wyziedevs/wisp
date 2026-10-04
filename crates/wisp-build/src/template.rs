@@ -349,6 +349,20 @@ impl Template {
     pub fn is_live(&self) -> bool {
         self.script.is_some() || !self.groups.is_empty()
     }
+
+    /// `n` is a `<title>` (the head of its own the parser gives one).
+    pub fn is_title(&self, n: &Node) -> bool {
+        matches!(n, Node::Head(b) if matches!(b.first(), Some(&Node::Text(i)) if self.chunks[i].starts_with("<title")))
+    }
+
+    /// Writes a `<title>`, at the top level or in its `<head>`. Of a page
+    /// and its layouts the innermost that does writes the one title.
+    pub fn has_title(&self) -> bool {
+        self.nodes.iter().any(|n| match n {
+            Node::Head(b) => self.is_title(n) || b.iter().any(|n| self.is_title(n)),
+            _ => false,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1405,8 +1419,14 @@ impl Parser<'_> {
             }
         }
         // A `<title>` at the top level goes in the head, as it would with
-        // `<head>` around it.
-        if name == "title" && !closing && self.svg == 0 && self.frames.is_empty() {
+        // `<head>` around it; one in a `<head>` is a head of its own, so
+        // codegen knows the title apart (`Node::is_title`).
+        if name == "title"
+            && !closing
+            && self.svg == 0
+            && !self.auto_head
+            && (self.frames.is_empty() || matches!(self.frames.last(), Some(Frame::Head { .. })))
+        {
             self.begin(start)?;
             self.open(Frame::Head {
                 pos: start,
