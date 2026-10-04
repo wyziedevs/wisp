@@ -56,6 +56,28 @@ impl App for Site {
                     Some(crate::Response::html("hi").with_header("referrer-policy", "no-referrer"));
                 return Ok(());
             }
+            // A single-valued header set twice, or over the framework's own.
+            "rss" => {
+                out.response = Some(
+                    crate::Response::text("<rss/>")
+                        .with_header("Content-Type", "application/rss+xml")
+                        .with_header("cache-control", "no-cache")
+                        .with_header("Cache-Control", "max-age=60"),
+                );
+                return Ok(());
+            }
+            "cxtype" => {
+                cx.set_header("content-type", "application/rss+xml");
+                cx.set_header("cache-control", "no-cache");
+                out.response = Some(
+                    crate::Response::text("<rss/>").with_header("cache-control", "max-age=60"),
+                );
+                return Ok(());
+            }
+            "err" => {
+                let e = crate::Error::new(429, "slow down");
+                return Err(e.with_header("content-type", "text/plain; charset=utf-8"));
+            }
             _ => {}
         }
         out.body.push_str("hello");
@@ -230,5 +252,30 @@ fn a_page_header_the_app_set_is_sent_once() {
         assert_eq!(count("referrer-policy"), 1, "{q}");
         assert_eq!(page.header("referrer-policy"), Some("no-referrer"), "{q}");
         assert_eq!(count("x-content-type-options"), 1, "{q}");
+    }
+}
+
+#[test]
+fn a_single_valued_header_set_again_replaces_the_first() {
+    let mut app = crate::test::client::<Site>();
+    for (q, ty, cache) in [
+        ("/?rss", "application/rss+xml", Some("max-age=60")),
+        ("/?cxtype", "application/rss+xml", Some("no-cache")),
+        ("/?err", "text/plain; charset=utf-8", None),
+    ] {
+        let r = app.get(q);
+        let count = |name: &str| {
+            let named = r
+                .headers
+                .iter()
+                .filter(|(n, _)| n.eq_ignore_ascii_case(name));
+            named.count()
+        };
+        assert_eq!(count("content-type"), 1, "{q}");
+        assert_eq!(r.header("content-type"), Some(ty), "{q}");
+        if cache.is_some() {
+            assert_eq!(count("cache-control"), 1, "{q}");
+            assert_eq!(r.header("cache-control"), cache, "{q}");
+        }
     }
 }

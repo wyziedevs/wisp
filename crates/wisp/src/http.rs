@@ -3026,7 +3026,7 @@ fn redirect_reply(cx: &Cx, e: Error, reply: &mut Reply) {
         } else {
             name
         };
-        reply.headers.push((Cow::Borrowed(name), Cow::Owned(value)));
+        crate::cx::put_one(&mut reply.headers, name, value);
     }
 }
 
@@ -3095,7 +3095,7 @@ fn error_reply(
         Some((e.status, message))
     };
     if let Some((name, value)) = e.header.take().map(|h| *h) {
-        reply.headers.push((Cow::Borrowed(name), Cow::Owned(value)));
+        crate::cx::put_one(&mut reply.headers, name, value);
     }
     (failure, page)
 }

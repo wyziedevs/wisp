@@ -445,7 +445,10 @@ no-wait fast path off every route.
   `std::error::Error` via `?` → 500.
 - `Response::`: `json_of(&v) created(&v) text html empty(s) download(name,
   bytes) file_in(dir, name).await stream ndjson events websocket`
-  + `.with_status(s) .with_header(n, v)`.
+  + `.with_status(s) .with_header(n, v)`. A single-valued header
+  (`content-type cache-control location etag`) set again replaces the
+  first, here, on `Error` and in `cx.set_header`; `content-length` and
+  `transfer-encoding` are the server's.
 - `Response::websocket(|ws| async move { while let Some(m) = ws.recv().await {
   ws.send(m).await?; } Ok(()) })`: binary, node, bun, deno, cloudflare, pages;
   vercel, netlify, lambda, tower answer 501 (https://wispweb.dev/docs/deploy). On the edge a

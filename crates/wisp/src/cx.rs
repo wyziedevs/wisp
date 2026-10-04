@@ -176,6 +176,9 @@ pub struct Cx {
     /// error page; a handler's are dropped with the page it did not finish.
     /// A `u32` packs it with the fields beside it.
     kept_headers: u32,
+    /// [`Cx::set_header`] set a [`single`] header, which takes the place of
+    /// the response's own when it is sent.
+    replaces: bool,
     /// Signed cookies whose signature held, as (name, cookie as read): each
     /// is checked once a request.
     verified: std::sync::Mutex<Vec<(String, String)>>,
@@ -214,6 +217,7 @@ impl Cx {
             status: 200,
             out_headers: Vec::new(),
             kept_headers: 0,
+            replaces: false,
             verified: std::sync::Mutex::new(Vec::new()),
             locals: Vec::new(),
             json: std::sync::OnceLock::new(),
@@ -232,6 +236,7 @@ impl Cx {
         self.status = 200;
         self.out_headers.clear();
         self.kept_headers = 0;
+        self.replaces = false;
         self.verified
             .get_mut()
             .unwrap_or_else(|e| e.into_inner())
@@ -652,14 +657,24 @@ impl Cx {
         self.status = status;
     }
 
-    /// Adds a response header. Panics on CR/LF, which would allow header
-    /// injection; building a header from unchecked input is a bug.
+    /// Adds a response header. A single-valued one (`content-type`,
+    /// `cache-control`, `location`, `etag`, any case) replaces what was set
+    /// before, here or on the `Response`, instead of going out twice:
+    /// `cx.set_header("content-type", "application/rss+xml")`.
+    /// `content-length` and `transfer-encoding` are the server's and are
+    /// left out. Panics on CR/LF, which would allow header injection;
+    /// building a header from unchecked input is a bug.
     pub fn set_header(&mut self, name: impl Into<Cow<'static, str>>, value: impl Into<String>) {
         let (name, value) = (name.into(), value.into());
         assert!(
             valid_header(&name, &value),
             "invalid header {name:?}: {value:?}"
         );
+        if single(&name) {
+            self.out_headers
+                .retain(|(n, _)| !n.eq_ignore_ascii_case(&name));
+            self.replaces = true;
+        }
         self.out_headers.push((name, Cow::Owned(value)));
     }
 
@@ -724,7 +739,17 @@ impl Cx {
     /// Moves every header set onto the end of `to`.
     #[inline]
     pub(crate) fn send_headers(&mut self, to: &mut Vec<(Cow<'static, str>, Cow<'static, str>)>) {
+        if self.replaces {
+            self.drop_replaced(to);
+        }
         to.append(&mut self.out_headers);
+    }
+
+    /// Drops from `to` the single-valued headers [`Cx::set_header`] set again.
+    #[cold]
+    fn drop_replaced(&self, to: &mut Vec<(Cow<'static, str>, Cow<'static, str>)>) {
+        let set = |n: &str| (self.out_headers.iter()).any(|(o, _)| o.eq_ignore_ascii_case(n));
+        to.retain(|(n, _)| !(single(n) && set(n)));
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1012,6 +1037,29 @@ fn new_id() -> String {
     let seed = *SEED.get_or_init(|| u32::from_le_bytes(crate::sign::random()));
     let n = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     crate::hex(&(u64::from(seed) << 32 | u64::from(n)).to_be_bytes())
+}
+
+/// A header the response has one of, which a second set replaces:
+/// `content-type`, `cache-control`, `location`, `etag`, in any case.
+/// (`content-length` and `transfer-encoding` the server writes itself and
+/// leaves an app's out.)
+pub(crate) fn single(name: &str) -> bool {
+    ["content-type", "cache-control", "location", "etag"]
+        .iter()
+        .any(|s| name.eq_ignore_ascii_case(s))
+}
+
+/// Pushes `(name, value)` onto `headers`, in place of one of the same name
+/// when it is [`single`].
+pub(crate) fn put_one(
+    headers: &mut Vec<(Cow<'static, str>, Cow<'static, str>)>,
+    name: &'static str,
+    value: String,
+) {
+    if single(name) {
+        headers.retain(|(n, _)| !n.eq_ignore_ascii_case(name));
+    }
+    headers.push((Cow::Borrowed(name), Cow::Owned(value)));
 }
 
 /// A name of visible ASCII but `:`, and a value with no CR, LF or NUL,
