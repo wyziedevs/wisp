@@ -463,6 +463,124 @@ fn path_uri(p: &Path) -> String {
     out
 }
 
+/// The `const` knobs of a route file's Rust block and what each does (hover).
+/// A test keeps it in step with the reference: every `const NAME` it shows is here.
+const KNOBS: [(&str, &str); 13] = [
+    (
+        "CACHE",
+        "`const CACHE: u32 = 60;` (page or `+server.rs`): keeps a GET's answer 60 s per worker (ETag, 304). Never for a request with a cookie or `authorization`, nor one that sets a cookie. Not in dev.",
+    ),
+    (
+        "CACHE_PUBLIC",
+        "`const CACHE_PUBLIC: u32 = 60;`: like `CACHE`, for every request, cookies or not.",
+    ),
+    (
+        "CACHE_STALE",
+        "`const CACHE_STALE: u32 = 600;`: seconds past `CACHE` the old answer is still sent while one request makes a new one.",
+    ),
+    (
+        "CACHE_TAGS",
+        "`const CACHE_TAGS: &[&str] = &[\"posts\"];`: names for this answer; `wisp::revalidate_tag(\"posts\")` drops it.",
+    ),
+    (
+        "RATE_LIMIT",
+        "`const RATE_LIMIT: u32 = 60;` (page, `+server.rs` or `src/hooks.rs`): requests a minute per client address, then a 429.",
+    ),
+    (
+        "CORS",
+        "`const CORS: &str = \"*\";`: the same as `cx.cors(\"*\")?` before the handler.",
+    ),
+    (
+        "TIMEOUT",
+        "`const TIMEOUT: u32 = 5;` (page or `+server.rs`): a 503 after 5 seconds.",
+    ),
+    (
+        "MIDDLEWARE",
+        "`const MIDDLEWARE: &[&str] = &[\"auth\"];`: runs those `pub fn auth(cx: &mut Cx) -> Result` of `src/middleware.rs` first, in order; an `Err` answers.",
+    ),
+    (
+        "SIGNED_IN",
+        "`const SIGNED_IN: bool = true;` in a `+layout.wisp` block: its pages and actions are for members (303 to sign in, 401 for JSON).",
+    ),
+    (
+        "PRERENDER",
+        "`const PRERENDER: bool = true;`: `wisp build` renders the page once and the binary serves those bytes. `fn entries()` lists the params. `cx` in it is a build error.",
+    ),
+    (
+        "SSR",
+        "`const SSR: bool = false;`: the browser draws the page; the markup must be browser code (`{:x}`, `{:#each}`).",
+    ),
+    (
+        "CSRF",
+        "`const CSRF: bool = false;`: opts the file out of the cross-site refusal of POST, PUT, PATCH and DELETE.",
+    ),
+    (
+        "BODY_LIMIT",
+        "`const BODY_LIMIT: usize = 20 * wisp::MB;`: the largest request body this route accepts (413 beyond it; 1 MB by default).",
+    ),
+];
+
+/// Wisp attributes (inside a tag) and what each does (hover). A test keeps it
+/// in step with the reference: every `data-wisp-*` it shows is here.
+const ATTRS: [(&str, &str); 14] = [
+    (
+        "fields",
+        "`<form fields>`: writes a labelled input per param of the action (`Email` is `type=email`, `Image` a file, `bool` a checkbox, numbers `number`). `fields={post}` starts a struct param's fields from `post`.",
+    ),
+    (
+        "action",
+        "`action=\"?/name\"`: posts to `fn name` of this page (`method=\"post\"` is added). On a `<button>` outside a form it is a one-button form: `action=\"?/rm&id={x.id}\"`.",
+    ),
+    (
+        "formaction",
+        "`formaction=\"?/other\"`: this button posts to another action and skips the browser's checks.",
+    ),
+    (
+        "use:enhance",
+        "`use:enhance=\"submit\"`: the form posts without a page load. `submit({ formData, cancel })` runs first; what it returns runs with the result, after the page updated.",
+    ),
+    (
+        "data-wisp-reset",
+        "On an element: its islands start fresh after a navigation or action, not kept.",
+    ),
+    (
+        "data-wisp-preload",
+        "`data-wisp-preload=\"off\"`: no prefetch on hover or touch for this link.",
+    ),
+    (
+        "data-wisp-reload",
+        "On a link or its parent: a full page load, not a fetch and morph.",
+    ),
+    (
+        "data-wisp-noscroll",
+        "On or around a link: navigation keeps the scroll position.",
+    ),
+    (
+        "data-wisp-keepfocus",
+        "On or around a link: navigation keeps the focus.",
+    ),
+    (
+        "data-wisp-replacestate",
+        "On or around a link: navigation replaces the history entry.",
+    ),
+    (
+        "data-wisp-revalidate",
+        "`<body data-wisp-revalidate=\"30\">`: refetch the data when the tab or network returns, at most every N seconds.",
+    ),
+    (
+        "data-wisp-queue",
+        "`<form data-wisp-queue>`: offline, the post waits and is sent in order when back. Only for forms safe to send twice.",
+    ),
+    (
+        "data-wisp-keep",
+        "On an element: the morph keeps it as it is.",
+    ),
+    (
+        "data-wisp-raw",
+        "`<img data-wisp-raw>`: stays as written, not turned into a resized `<picture>`.",
+    ),
+];
+
 /// The directives and their docs (hover, completion).
 const DIRECTIVES: [(&str, &str); 9] = [
     (
@@ -535,7 +653,7 @@ const NAMES: [(&str, &[&str]); 5] = [
 ];
 
 /// The template blocks: what to write, and what it does.
-const BLOCKS: [(&str, &str, &str); 20] = [
+const BLOCKS: [(&str, &str, &str); 25] = [
     (
         "{#if",
         "{#if ${1:cond}}\n\t$0\n{/if}",
@@ -621,6 +739,33 @@ const BLOCKS: [(&str, &str, &str); 20] = [
         "{:@render",
         "{:@render ${1:snippet}(${2})}",
         "`{:@render s(x)}`: a snippet the browser renders.",
+    ),
+    (
+        "{@pager",
+        "{@pager ${1:posts}}",
+        "`{@pager posts}`: Newer and Older links for a `Table::page`.",
+    ),
+    (
+        "{@element",
+        "{@element \"${1:x-card}\"}",
+        "`{@element \"x-card\"}` first in a component: also builds it as a custom element.",
+    ),
+    (
+        "{#story",
+        "{#story \"${1:Name}\"}
+	$0
+{/story}",
+        "`{#story \"Featured\"}<Card featured />{/story}`: a named example in a `*.stories.wisp`, shown in the dev workshop.",
+    ),
+    (
+        "{:then",
+        "{:then ${1:value}}",
+        "The part of `{#await}` that shows the value once it is ready.",
+    ),
+    (
+        "{:catch",
+        "{:catch ${1:e}}",
+        "The part of `{#await}` or `{:#try}` that shows the error.",
     ),
     ("{/", "", "Closes the block."),
     ("{:/", "", "Closes the browser block."),
@@ -710,7 +855,11 @@ impl<'a> At<'a> {
 
     fn hover(&self) -> Option<String> {
         let word = &self.text()[self.word.0..self.word.1];
-        let md = if let Some((_, _, doc)) = self.block() {
+        let ident = word.trim_matches(|c: char| !is_word(c));
+        let find = |t: &'static [(&str, &str)]| t.iter().find(|e| e.0 == ident).map(|e| e.1);
+        let md = if self.tag.is_some() && self.text()[..self.word.0].ends_with("?/") {
+            ATTRS[1].1.to_string()
+        } else if let Some((_, _, doc)) = self.block() {
             doc.to_string()
         } else if let (true, Some(c)) = (self.on_tag_name(), self.comp()) {
             comp_doc(c)
@@ -723,9 +872,13 @@ impl<'a> At<'a> {
                 prop_sig(p),
                 self.tag?.1
             )
+        } else if let (Some(_), Some(doc)) = (self.tag, find(&ATTRS)) {
+            doc.to_string()
         } else if let (Some(_), Some((_, doc))) =
             (self.tag, DIRECTIVES.iter().find(|d| word.starts_with(d.0)))
         {
+            doc.to_string()
+        } else if let Some(doc) = find(&KNOBS) {
             doc.to_string()
         } else {
             let params = ide::route_params(&self.doc.rel);
@@ -1059,5 +1212,78 @@ mod tests {
             &[Seg::Static("a".into()), Seg::Rest("r".into())],
             &["a", "b", "c"]
         ));
+    }
+
+    /// The hover at `mark` (the character after `|`) of `text`.
+    fn hover_at(text: &str) -> String {
+        let off = text.find('|').unwrap();
+        let doc = Doc {
+            text: text.replacen('|', "", 1),
+            root: None,
+            rel: "src/routes/+page.wisp".into(),
+        };
+        At::new(&doc, None, off).hover().unwrap_or_default()
+    }
+
+    #[test]
+    fn hovers_wisp_syntax() {
+        let cases = [
+            ("<form fi|elds>", "labelled input"),
+            ("<form action=\"?/a|dd\">", "posts to `fn name`"),
+            ("<form act|ion=\"?/add\">", "posts to `fn name`"),
+            ("<form use:enh|ance=\"go\">", "formData"),
+            ("<a data-wisp-no|scroll>", "scroll position"),
+            ("<form data-wisp-qu|eue>", "safe to send twice"),
+            ("const CA|CHE: u32 = 60;", "per worker"),
+            ("const RATE_LIM|IT: u32 = 60;", "429"),
+            ("{#ea|ch xs as x}", "for loop"),
+            ("<button on:cl|ick=\"n++\">", "runs JavaScript"),
+        ];
+        for (text, want) in cases {
+            let h = hover_at(text);
+            assert!(h.contains(want), "{text}: {want} not in {h}");
+        }
+    }
+
+    /// Every knob, `data-wisp-*` attribute and block the reference shows has
+    /// a hover (what an author sees is what the docs say).
+    #[test]
+    fn hover_covers_the_reference() {
+        let docs = include_str!("../templates/vendor/llms-full.txt");
+        let words = |pre: &str, ok: fn(char) -> bool| {
+            let mut all: Vec<&str> = docs
+                .match_indices(pre)
+                .map(|(i, _)| {
+                    let rest = &docs[i + pre.len()..];
+                    &docs[i + pre.len()..i + pre.len() + rest.find(|c| !ok(c)).unwrap_or(0)]
+                })
+                .filter(|w| !w.is_empty())
+                .collect();
+            all.sort_unstable();
+            all.dedup();
+            all
+        };
+        for k in words("const ", |c| c.is_ascii_uppercase() || c == '_') {
+            if k.len() > 2 {
+                assert!(KNOBS.iter().any(|e| e.0 == k), "no hover for const {k}");
+            }
+        }
+        // Made by the build for its own pages: not written by authors.
+        let own = ["await", "cut"];
+        for a in words("data-wisp-", |c| c.is_ascii_lowercase()) {
+            let name = format!("data-wisp-{a}");
+            let known = ATTRS.iter().any(|e| e.0 == name) || own.contains(&a);
+            assert!(known, "no hover for {name}");
+        }
+        let ok = |c: char| matches!(c, '#' | ':' | '@') || c.is_ascii_lowercase();
+        let missing: Vec<String> = words("{", ok)
+            .into_iter()
+            .filter(|b| {
+                b.len() > 2 && (b.starts_with(['#', '@']) || matches!(*b, ":then" | ":catch"))
+            })
+            .map(|b| format!("{{{b}"))
+            .filter(|k| !BLOCKS.iter().any(|e| e.0 == k))
+            .collect();
+        assert!(missing.is_empty(), "no hover for {missing:?}");
     }
 }

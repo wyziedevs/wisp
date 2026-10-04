@@ -109,6 +109,7 @@ struct Buckets {
 }
 
 impl RateLimit {
+    /// At most `requests` per `window` for each key (panics when `requests` is 0).
     pub const fn new(requests: u32, window: Duration) -> RateLimit {
         assert!(requests > 0, "a rate limit allows at least one request");
         RateLimit {
@@ -123,14 +124,17 @@ impl RateLimit {
         }
     }
 
+    /// At most `requests` per second.
     pub const fn per_second(requests: u32) -> RateLimit {
         RateLimit::new(requests, Duration::from_secs(1))
     }
 
+    /// At most `requests` per minute.
     pub const fn per_minute(requests: u32) -> RateLimit {
         RateLimit::new(requests, Duration::from_secs(60))
     }
 
+    /// At most `requests` per hour.
     pub const fn per_hour(requests: u32) -> RateLimit {
         RateLimit::new(requests, Duration::from_secs(3600))
     }

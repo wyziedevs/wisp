@@ -23,6 +23,7 @@ pub struct File<'a> {
     /// As the browser sent it; `application/octet-stream` when it sent none.
     /// Visitor input too: check the bytes if the type matters.
     pub content_type: &'a str,
+    /// The file's bytes.
     pub bytes: &'a [u8],
 }
 
@@ -62,6 +63,7 @@ impl<'a> Form<'a> {
         }
     }
 
+    /// The value of field `name`, or `None` when the form has none of that name.
     pub fn get(&self, name: &str) -> Option<Cow<'a, str>> {
         self.iter().find(|(k, _)| k == name).map(|(_, v)| v)
     }
