@@ -25,7 +25,7 @@ fn an_older_cli_warns_on_stderr_and_goes_on() {
     for said in [
         "older than this app's wisp crate",
         "app 999.0.0",
-        "cargo install wisp-cli --force",
+        "cargo install --git https://wisp.ar0.eu wisp-cli --force",
         "WISP_NO_UPDATE_CHECK=1",
     ] {
         assert!(o.err.contains(said), "wanted {said:?} in {}", o.err);

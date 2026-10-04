@@ -5,7 +5,7 @@ A fast, fun web framework for Rust.
 File routes, `.wisp` templates compiled to Rust, form actions that work without JavaScript, one binary.
 
 ```sh
-cargo install --git https://github.com/wyziedevs/wisp wisp-cli
+cargo install --git https://wisp.ar0.eu wisp-cli
 wisp new my-app
 cd my-app
 wisp dev

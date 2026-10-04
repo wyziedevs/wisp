@@ -159,7 +159,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
 {targets}      - uses: Swatinem/rust-cache@v2
-      - run: cargo install --locked --git https://github.com/wyziedevs/wisp wisp-cli
+      - run: cargo install --locked --git https://wisp.ar0.eu wisp-cli
       - run: wisp build {build}
 {deploy}"
     )
