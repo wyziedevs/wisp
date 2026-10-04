@@ -1329,3 +1329,26 @@ fn an_await_gives_up_with_the_handler_timeout() {
     let quick = s.request("GET", "/await/slow/0", "", b"");
     assert!(quick.contains("<p id=\"s\">Done</p>"), "{quick}");
 }
+
+#[test]
+fn redirect_rules_never_split_the_answer() {
+    // A rule's `[slug]` and the kept query come from the request: a line
+    // break in either, raw or encoded, must not become a header of its own.
+    let s = start();
+    for target in [
+        "/old/a%0D%0Aset-cookie:%20x=1",
+        "/old/a?%0d%0aset-cookie:x=1",
+        "/old/a\rset-cookie:x=1",
+        "/old/a?x\nset-cookie:x=1",
+    ] {
+        let raw = format!("GET {target} HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n");
+        let answer = s.send(raw.as_bytes());
+        let head = answer.split("\r\n\r\n").next().unwrap_or("");
+        assert!(
+            !head
+                .lines()
+                .any(|l| l.to_ascii_lowercase().starts_with("set-cookie")),
+            "{target:?}: {answer}"
+        );
+    }
+}
