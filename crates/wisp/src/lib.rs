@@ -1228,7 +1228,7 @@ impl Response {
             self.content_type = Cow::Owned(value);
             return self;
         }
-        if cx::single(&name) {
+        if crate::headers::single(&name) {
             self.headers.retain(|(n, _)| !n.eq_ignore_ascii_case(&name));
         }
         self.headers.push((name, value));

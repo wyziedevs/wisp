@@ -6,6 +6,7 @@
 //! borrowing it) keeps `Cx` free of lifetimes: handlers take `&mut Cx`.
 
 use crate::form::{Form, pairs};
+use crate::headers::Headers;
 use crate::sign;
 use std::any::{Any, TypeId};
 use std::borrow::Cow;
@@ -171,14 +172,9 @@ pub struct Cx {
     /// The response's headers, `set-cookie` among them: `cookie` reads what
     /// this request set before what it sent, so a page's `load` sees what
     /// its action just stored.
-    out_headers: Vec<(Cow<'static, str>, Cow<'static, str>)>,
-    /// How many of `out_headers` the `before` hook set. Those stay on an
-    /// error page; a handler's are dropped with the page it did not finish.
-    /// A `u32` packs it with the fields beside it.
-    kept_headers: u32,
-    /// [`Cx::set_header`] set a [`single`] header, which takes the place of
-    /// the response's own when it is sent.
-    replaces: bool,
+    /// Marked after the `before` hook: its headers stay on an error page;
+    /// a handler's are dropped with the page it did not finish.
+    out_headers: Headers,
     /// Signed cookies whose signature held, as (name, cookie as read): each
     /// is checked once a request.
     verified: std::sync::Mutex<Vec<(String, String)>>,
@@ -215,9 +211,7 @@ impl Cx {
             params: [Span::default(); MAX_PARAMS],
             decoded: [const { None }; MAX_PARAMS],
             status: 200,
-            out_headers: Vec::new(),
-            kept_headers: 0,
-            replaces: false,
+            out_headers: Headers::default(),
             verified: std::sync::Mutex::new(Vec::new()),
             locals: Vec::new(),
             json: std::sync::OnceLock::new(),
@@ -235,8 +229,6 @@ impl Cx {
         self.clear_params();
         self.status = 200;
         self.out_headers.clear();
-        self.kept_headers = 0;
-        self.replaces = false;
         self.verified
             .get_mut()
             .unwrap_or_else(|e| e.into_inner())
@@ -671,27 +663,17 @@ impl Cx {
             valid_header(&name, &value),
             "invalid header {name:?}: {value:?}"
         );
-        if single(&name) {
-            // The `before` hook's stays below the kept boundary, shadowed,
-            // so a failed page brings it back (see `Cx::shadow`).
-            let (kept, mut at) = (self.kept_headers as usize, 0);
-            self.out_headers.retain(|(n, _)| {
-                at += 1;
-                at <= kept || !n.eq_ignore_ascii_case(&name)
-            });
-            self.replaces = true;
-        }
-        self.out_headers.push((name, Cow::Owned(value)));
+        self.out_headers.set(name, Cow::Owned(value));
     }
 
     /// Whether a header of `name` is set.
     pub(crate) fn has_out(&self, name: &str) -> bool {
-        (self.out_headers.iter()).any(|(n, _)| n.eq_ignore_ascii_case(name))
+        self.out_headers.has(name)
     }
 
     /// Adds a response header whose value is known to be one.
     pub(crate) fn put(&mut self, name: impl Into<Cow<'static, str>>, value: Cow<'static, str>) {
-        self.out_headers.push((name.into(), value));
+        self.out_headers.append(name.into(), value);
     }
 
     // The response so far, as the server reads it: the status, the headers
@@ -719,13 +701,13 @@ impl Cx {
     /// page.
     #[inline]
     pub(crate) fn keep_headers(&mut self) {
-        self.kept_headers = self.out_headers.len() as u32;
+        self.out_headers.mark();
     }
 
     /// The headers the handler set, after the `before` hook's.
     #[inline]
     pub(crate) fn page_headers(&self) -> &[(Cow<'static, str>, Cow<'static, str>)] {
-        &self.out_headers[self.kept_headers as usize..]
+        self.out_headers.since_mark()
     }
 
     /// Takes [`Cx::page_headers`] out.
@@ -733,49 +715,19 @@ impl Cx {
     pub(crate) fn take_page_headers(
         &mut self,
     ) -> std::vec::Drain<'_, (Cow<'static, str>, Cow<'static, str>)> {
-        if self.replaces {
-            self.shadow();
-        }
-        self.out_headers.drain(self.kept_headers as usize..)
-    }
-
-    /// Drops the `before` hook's single-valued headers the handler set
-    /// again: the page worked, so the handler's stand.
-    #[cold]
-    fn shadow(&mut self) {
-        let kept = self.kept_headers as usize;
-        let (hook, page) = self.out_headers.split_at(kept);
-        let set = |n: &str| (page.iter()).any(|(o, _)| o.eq_ignore_ascii_case(n));
-        let gone: Vec<bool> = hook.iter().map(|(n, _)| single(n) && set(n)).collect();
-        let mut at = 0;
-        self.out_headers.retain(|_| {
-            at += 1;
-            !gone.get(at - 1).copied().unwrap_or(false)
-        });
-        self.kept_headers -= gone.iter().filter(|g| **g).count() as u32;
+        self.out_headers.take_since_mark()
     }
 
     /// Drops [`Cx::page_headers`], with the page that failed.
     #[inline]
     pub(crate) fn drop_page_headers(&mut self) {
-        self.out_headers.truncate(self.kept_headers as usize);
+        self.out_headers.rollback();
     }
 
     /// Moves every header set onto the end of `to`.
     #[inline]
     pub(crate) fn send_headers(&mut self, to: &mut Vec<(Cow<'static, str>, Cow<'static, str>)>) {
-        if self.replaces {
-            self.shadow();
-            self.drop_replaced(to);
-        }
-        to.append(&mut self.out_headers);
-    }
-
-    /// Drops from `to` the single-valued headers [`Cx::set_header`] set again.
-    #[cold]
-    fn drop_replaced(&self, to: &mut Vec<(Cow<'static, str>, Cow<'static, str>)>) {
-        let set = |n: &str| (self.out_headers.iter()).any(|(o, _)| o.eq_ignore_ascii_case(n));
-        to.retain(|(n, _)| !(single(n) && set(n)));
+        self.out_headers.send(to);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1063,29 +1015,6 @@ fn new_id() -> String {
     let seed = *SEED.get_or_init(|| u32::from_le_bytes(crate::sign::random()));
     let n = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     crate::hex(&(u64::from(seed) << 32 | u64::from(n)).to_be_bytes())
-}
-
-/// A header the response has one of, which a second set replaces:
-/// `content-type`, `cache-control`, `location`, `etag`, in any case.
-/// (`content-length` and `transfer-encoding` the server writes itself and
-/// leaves an app's out.)
-pub(crate) fn single(name: &str) -> bool {
-    ["content-type", "cache-control", "location", "etag"]
-        .iter()
-        .any(|s| name.eq_ignore_ascii_case(s))
-}
-
-/// Pushes `(name, value)` onto `headers`, in place of one of the same name
-/// when it is [`single`].
-pub(crate) fn put_one(
-    headers: &mut Vec<(Cow<'static, str>, Cow<'static, str>)>,
-    name: &'static str,
-    value: String,
-) {
-    if single(name) {
-        headers.retain(|(n, _)| !n.eq_ignore_ascii_case(name));
-    }
-    headers.push((Cow::Borrowed(name), Cow::Owned(value)));
 }
 
 /// A name of visible ASCII but `:`, and a value with no CR, LF or NUL,
