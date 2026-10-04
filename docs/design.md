@@ -399,6 +399,30 @@ async fn load(slug: String) -> Result<Data> {
 
   The build checks that it is a `const` `u32`, one of the two names, set
   once per route, and not in a layout.
+- Three more consts beside `CACHE`, none costing a request that does not use
+  them (they fold away; the hit path is the same code):
+  - `const CACHE_STALE: u32 = 600;` is stale-while-revalidate: for 600 s
+    after the answer is old, it is still sent at once, and the first request
+    that finds it so makes a new one in the background (the app's own
+    `handle`, as a GET from peer port 0, which a client never has), so no
+    visitor waits for a render and a burst makes one. Single-flight per
+    worker: workers do not share what they keep, so each refreshes for
+    itself, once. A refresh that errors keeps the old answer and is tried
+    again by the next request, until the window ends.
+  - `const CACHE_TAGS: &[&str] = &["posts"];`, or `cx.cache_tag("post-7")`
+    in a handler, names what is kept. `wisp::revalidate_tag("posts")` drops
+    every answer under it on every worker before it next answers from what
+    it keeps (as `uncache` does for paths). Each worker has a tag-to-keys
+    index written only when a tagged answer is kept and when a tag is
+    dropped; a lookup never touches it.
+  - Draft mode: `cx.enter_draft()` (call it from an endpoint of your own
+    that checks who may; `cx.exit_draft()` ends it) sets the signed cookie
+    `wisp-draft`, and `cx.draft()` says whether the request has it. For a
+    `CACHE_PUBLIC` route a draft request is never answered from what is
+    kept, nor is its answer kept: the check runs only on that route's hit
+    branch, behind "has a cookie", in a cold function. A `CACHE` route
+    already renders for any request with a cookie. A page the build baked
+    whole reads nothing of the request, so it has no draft.
 - A page that reads nothing of the request needs no `CACHE`: when it and
   its layouts have no load, statements or `+page.js`, and every hole in them
   is a literal or a component's prop given as one (`<Card title="Hi" />`,
@@ -604,6 +628,17 @@ file src/db.rs
 dep redis = { version = "0.27", features = ["tokio-comp"] }
 env REDIS_URL=redis://127.0.0.1/
 file src/cache.rs
+
+# add/redis-store: src/store.rs is `impl wisp::Store` over redis (HSET/HDEL on a
+# hash per table, HGETALL to load), and init calls wisp::store(RedisStore::new(url))
+dep redis = { version = "0.27", features = ["tokio-comp"] }
+env REDIS_URL=redis://127.0.0.1/
+file src/store.rs
+
+# add/kv-store: src/store.rs is `impl wisp::Store` over a KV's REST API
+# (a key per row, `table/id`), with `changes` from a list of recent keys
+env KV_URL=https://example.invalid/kv
+file src/store.rs
 
 # add/tailwind: src/app.css is `@import "tailwindcss";`
 file src/app.css
@@ -1101,6 +1136,12 @@ fn before(cx: &mut Cx) -> Result<()> {
   `cx.take::<T>()` moves it out, so it need not be `Clone`.
 - `cx.bearer()` is the token of an `Authorization: Bearer` header, `cx.host()`
   the `Host`, and `cx.delete_cookie(name)` removes a cookie.
+- `cx.after(|| …)` runs a closure once the handler is through, on the
+  connection's thread when it is next free (`wisp::spawn`, then a yield), for
+  a log line or a `revalidate_tag` the visitor should not wait for. It adds
+  nothing to a request that does not call it, and nothing to the request
+  path. At the edge it is `wisp::spawn`, so the host keeps the instance
+  alive until it is done (`waitUntil` on Cloudflare).
 - `cx.flash("Saved")` leaves a message for the next page the visitor sees
   (after a `redirect`, say), whose `load` reads it once with `cx.flashed()`.
 - `src/hooks.rs` is `crate::hooks`, so routes can use its `pub` types. Like

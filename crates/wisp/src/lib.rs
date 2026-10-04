@@ -93,7 +93,7 @@ mod workshop;
 mod ws;
 
 pub use blob::{Blobs, Upload, blobs};
-pub use cache::{cache, uncache};
+pub use cache::{cache, revalidate_tag, uncache};
 #[cfg(not(target_arch = "wasm32"))]
 pub use channel::{Channel, Subscription, channel};
 pub use content::{MdPage, pages};
@@ -1551,7 +1551,7 @@ pub mod rt {
     pub fn pick_locale(cx: &crate::Cx) -> u8 {
         crate::i18n::pick(cx)
     }
-    pub use crate::bake::{Baked, baked, cached, keep};
+    pub use crate::bake::{Baked, CacheMore, baked, cached, keep};
     pub use crate::cx::{
         BadCookie, CookieReader, CookieWriter, MAX_PARAMS, MAX_SEGS, decode, split,
     };
