@@ -224,7 +224,7 @@ fn builds_serves_and_follows_the_files() {
     has(&e, &["src/routes/+page.wisp:2:4: unclosed {"]);
     events.next(
         "Build Failed
-data: src/routes/+page.wisp, line 2. Save a fix and the page updates.",
+data: src/routes/+page.wisp, line 2.",
     );
     events.next("Template Check");
     assert!(get(&addr, "/").1.contains("<h1>second</h1>"));

@@ -297,15 +297,14 @@ fn place(e: &str) -> Option<(String, usize)> {
     Some((file.to_string(), line))
 }
 
-/// The dialog's sentence: where to look, and what to do.
+/// The dialog's sentence: where to look.
 fn summary(first: Option<(String, usize)>, count: usize) -> String {
-    let fix = "Save a fix and the page updates.";
     match first {
         Some((file, line)) if count > 1 => {
-            format!("{count} errors. The first is in {file}, line {line}. {fix}")
+            format!("{count} errors. The first is in {file}, line {line}.")
         }
-        Some((file, line)) => format!("{file}, line {line}. {fix}"),
-        None => fix.to_string(),
+        Some((file, line)) => format!("{file}, line {line}."),
+        None => String::new(),
     }
 }
 

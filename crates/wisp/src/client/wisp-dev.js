@@ -75,10 +75,11 @@
   let meta = null;
 
   function showError(text) {
-    const [title, summary, label] = meta ?? ['Build Failed', 'Save a fix to rebuild.', 'Compiler Output'];
+    const [title, summary, label] = meta ?? ['Build Failed', '', 'Compiler Output'];
     meta = null;
     root.getElementById('title').textContent = title;
     root.getElementById('summary').textContent = summary;
+    root.getElementById('summary').hidden = !summary;
     root.getElementById('label').textContent = label;
     // `src/routes/+page.rs:4:5` opens in the editor, as the devtools' "Open" does.
     pre.replaceChildren();

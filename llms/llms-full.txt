@@ -249,7 +249,8 @@ first). Not its Rust (`db.rs`, `hooks.rs`) or `fonts.txt`.
 `+page.md` with `---` front matter (`title`, `layout: Post` a component the
 page is the children of, any field `date: 2026-10-01`); text may use
 `<Card>` between blank lines. Built at build time; fenced code is
-highlighted (`hl-k hl-s hl-c hl-n hl-t hl-a`; color them). `noindex: true`
+highlighted (`hl-k hl-s hl-c hl-n hl-t hl-a`; color them); headings get
+ids (`## Install and Run` is `#install-and-run`). `noindex: true`
 leaves the sitemap. `/feed.xml` is an Atom feed of pages with a `date`
 (`description` is the summary). `{@html wisp::og(title, desc, image)}` in a
 head: Open Graph tags; image `"auto"` (literal title and description) is an SVG
@@ -523,7 +524,7 @@ embed), the design and tokens pages, or llms-full.txt (this file and the site's 
 
 An API is a folder of `+server.rs` files beside pages, one binary. Start one: `wisp new my-api --api`, `wisp dev`, then `/_wisp/docs`. Template: [examples/api](https://github.com/wyziedevs/wisp/tree/main/examples/api).
 
-## An endpoint
+## An Endpoint
 
 ```rust
 // src/routes/api/notes/+server.rs
@@ -547,7 +548,7 @@ fn post(body: NewNote) -> Response {
 - OPTIONS is Wisp's (204 + `Allow`); a method the route lacks is 405 + `Allow`.
 - A handler may also take `cx: &mut Cx` and return `Result<Response>`.
 
-### A folder and its `[id]`
+### A Folder and Its `[id]`
 A handler with a param `id` in a folder whose URL has none answers at `/[id]` below it (`[id=int]` when numeric); `list` is the folder's GET:
 
 ```rust
@@ -561,7 +562,7 @@ fn delete(id: u64) -> Option<()> { db::remove(id) }           // 204, or 404
 
 A folder with its own `[id]` still works; two files answering the same URLs is a build error.
 
-## A resource
+## A Resource
 
 ```rust
 #[derive(Rest)]
@@ -637,7 +638,7 @@ Where rows are kept, custom stores and paging: [/docs/api-tables](/docs/api-tabl
 
 <!-- docs/api-openapi.md -->
 
-## OpenAPI and docs page
+## OpenAPI and Docs Page
 The build describes the app as OpenAPI 3.1 at `/_wisp/openapi.json`; `/_wisp/docs` lists it with a try-it form. On in dev, off in release; `WISP_API_DOCS=on|off` overrides. Nothing to annotate:
 
 - Every `+server.rs` endpoint, and a `#[derive(Rest)]` type's routes and its `/[id]`: path, query and header parameters, `body: T` (JSON) or form fields by name and type, what it returns (`Option` adds a 404, `()` a 204), and `default`, 400, 401, 422 error answers (`Error`, and RFC 9457 `Problem`).
@@ -649,7 +650,7 @@ The build describes the app as OpenAPI 3.1 at `/_wisp/openapi.json`; `/_wisp/doc
 
 `wisp openapi` prints the same document, indented (`-o openapi.json` writes it). Commit that file and run `wisp openapi --check` in CI: it fails with the command to run when the file is not what the app describes now.
 
-### TypeScript client
+### TypeScript Client
 Typed, from the same description, no dependencies: `/_wisp/client.ts`, or `wisp build --client ts [--out web/api.ts]`:
 
 ```ts
@@ -682,7 +683,7 @@ fn notes() {
 - `header(name, value)` applies to the next request only (`if-match`, `idempotency-key`).
 - Tables are in memory.
 
-### In a browser
+### In a Browser
 With feature `browser` (new apps have it; `wisp test --browser`) a test drives real headless Chrome or Edge over the DevTools protocol; no Node.
 
 ```rust
@@ -702,7 +703,7 @@ fn counter() {
 - Browser: `$WISP_BROWSER`, else Chrome, Edge, Chromium or Brave; none: `browser!` returns and the test passes, skipped. `wisp::test::browser::<App>()` is an `Option<Browser>`.
 - `--no-sandbox` on Linux.
 
-## Where it runs
+## Where It Runs
 All of this works in the binary, Docker, Lambda and `tower`. JSON, validation, errors, CORS, auth, webhooks and docs work everywhere. The edge (`--target cloudflare` etc.) runs each request in an instance that may be its own:
 
 - `wisp::channel`, `wisp::every`, `RateLimit` are not there; WebSockets answer 501 (use the host's rate limiting).
@@ -738,7 +739,7 @@ fn before(cx: &mut Cx) -> Result<()> {
 }
 ```
 
-## Rate limits
+## Rate Limits
 
 ```rust
 static LOGINS: RateLimit = RateLimit::per_minute(10);
@@ -753,7 +754,7 @@ fn post(cx: &mut Cx, name: String, password: String) -> Result<()> {
 - Behind a proxy set `WISP_CLIENT_IP_HEADER`.
 - `BODY_LIMIT` caps bodies per route.
 
-## Live updates
+## Live Updates
 
 ```rust
 wisp::channel("notes").send(wisp::to_json(&note));     // anywhere
@@ -765,7 +766,7 @@ fn get() -> Response { wisp::channel("chat").websocket() }     // both ways
 - `subscribe()` (`recv().await`) feeds your own `Response::events` or `websocket`; `connect(&ws)` joins an existing socket.
 - Channels are per process: relay between servers (Redis pub/sub, Postgres `LISTEN`) from a task started in `init`.
 
-## Background jobs
+## Background Jobs
 
 ```rust
 // src/hooks.rs
@@ -778,7 +779,7 @@ fn init() {
 - `wisp::spawn` runs one task. Durable queues, cron: [/docs/data](/docs/data).
 - A health check is a route: `fn get() -> &'static str { "ok" }` (`/_wisp/health` exists).
 
-## Configuration and databases
+## Configuration and Databases
 - `wisp::env("KEY")`: process env, else `.env` in the working directory, read once at start; the process wins; bad lines skipped with a warning; edge: the worker's env, no `.env`.
 - `wisp::env_or("WORKERS", 4)` parses with a default.
 - Read settings once in `init`: `wisp::provide(v)`, then `wisp::state::<T>()` (or `#[derive(Config)]`, AGENTS.md).
@@ -846,7 +847,7 @@ Each param but `cx` is read by name: route param, then form field or JSON object
 
 Query: `cx.query("q")`, `cx.query_or("page", 1)` (parsed, else the default), `cx.query_string()` (raw, no `?`). `cx.request_id()` is the request's id, sent back as `x-request-id`.
 
-## Errors are JSON
+## Errors Are JSON
 An error is JSON (else the app's `+error.wisp`, else Wisp's default page) when the request:
 
 - targets a `+server.rs` (or an unmatched path under a first segment with endpoints and no pages);
@@ -880,10 +881,10 @@ fn post(cx: &mut Cx, body: Value) -> Result {
 - Stripe's `stripe-signature` (`t=…,v1=…`) signs the time too and is refused after five minutes.
 - Other schemes: `wisp::hex(&wisp::hmac_sha256(secret, message))`, `wisp::secure_eq`.
 
-## Idempotent retries
+## Idempotent Retries
 A POST with `Idempotency-Key` retried gets the first answer back with `idempotent-replayed: true`, kept a day per key, path and `authorization`. The same key with another body is 422, one still in progress 409. No header, nothing kept.
 
-## Big lists
+## Big Lists
 
 ```rust
 fn get() -> Response {
@@ -918,7 +919,7 @@ Saved before memory changes, read at first use: a log file per table (`note.log`
 
 Tables hold every row in memory; for larger data or database-side queries write the handlers.
 
-## Any database
+## Any Database
 `wisp::store(Db)` in `init`: implement `wisp::Store`:
 
 - `load(&self, table) -> Result<Vec<(u64, String)>>`: id and JSON of each row.
@@ -930,7 +931,7 @@ E.g. over `Mutex<rusqlite::Connection>` (`create table if not exists {table} (id
 - A POST of an array goes through `save_many(table, &[(id, json)])` (default: each in turn, undoing earlier ones on failure; override with one transaction); failure is a 500 and nothing is kept.
 - On the edge each instance has its own memory: tables are caches; use D1/KV through `wisp::edge::fetch`, or env `WISP_STORE=d1:DB|deno-kv|libsql://…`.
 
-## A page's own table
+## A Page's Own Table
 `static TODOS: Table<Todo> = Table::saved();` (named from the static; `Table::saved("todos")` names it).
 
 - A field added to a saved type must be `Option`, `Vec` or `bool`.
@@ -968,7 +969,7 @@ fn before(cx: &mut Cx) -> Result {
 
 A preflight is answered with a 204 and the headers, carried as the `Err` that `?` returns. A site not listed gets no `access-control-allow-origin`.
 
-## Signed tokens (reset, verify, magic link)
+## Signed Tokens (Reset, Verify, Magic Link)
 
 ```rust
 let t = wisp::token("reset", &user.id, Duration::from_secs(3600));
@@ -979,7 +980,7 @@ let id: u64 = wisp::untoken("reset", &t)?;   // 400 for any failure, the same on
 - The payload is readable, not forgeable; keep secrets out of it.
 - A token works until it expires: for a reset, put something in it that changes when it is used (the password hash's first bytes) and compare.
 
-## Two-factor codes
+## Two-Factor Codes
 
 ```rust
 let secret = wisp::totp::secret();                       // keep with the user
@@ -1031,7 +1032,7 @@ Kept safe by:
 - only a provider-verified email returned (match accounts on `id`, not email, unless you want a sign-in to join an existing account);
 - every failure the same 400.
 
-## Not here
+## Not Here
 Distributed `RateLimit` waits for the relay (S2). Automatic `/_wisp/oauth/...` routes need `http.rs`; the two small routes above do the same. SMTP, SES.
 
 
@@ -1047,7 +1048,7 @@ cargo run -r -p bench-run -- --paths fortunes
 
 You need Rust. `bench/README.md` lists every option, the frameworks compared, and how each path is checked for identical output before it is measured. Results depend on the machine: read them as a comparison on one machine, not as absolutes.
 
-## What is checked
+## What Is Checked
 
 | Check | What it does |
 |---|---|
@@ -1100,7 +1101,7 @@ Writing cost is measured by a program in the repository: `cargo run -p wisp-toke
 | `wisp mcp` | docs, routes, components and checks for AI agents (MCP, stdio) |
 | `wisp --help` | this list (`-h`, `help`) |
 
-## Options for wisp new
+## Options for Wisp New
 
 | Option | What it does |
 |---|---|
@@ -1110,7 +1111,7 @@ Writing cost is measured by a program in the repository: `cargo run -p wisp-toke
 | `--install`, `--no-install` | download and compile dependencies now, or later |
 | `-y, --yes` | take the defaults for anything not given |
 
-## CLI older than the app
+## CLI Older than the App
 
 App commands warn on stderr when the installed `wisp` is older than the app's `wisp` crate, and in a terminal ask before going on. `WISP_NO_UPDATE_CHECK=1` silences it. More: [CLI, dev loop and security](/docs/design-cli).
 
@@ -1126,7 +1127,7 @@ Pages work without JavaScript; a script and directives in the same `.wisp` file 
 </script>
 ```
 
-## The script
+## The Script
 A bare `<script>` (no attributes; one per file) works in pages, layouts and components and runs once per place the file is shown. `<script type|src>` stays plain HTML. Errors point at the `.wisp` line.
 
 - Top-level `let`s are state: assigning one, or changing an object, array, `Map` or `Set` in it (`todos.push(t)`, `todo.done = true`), redraws. A `let` set to a string, number or boolean and never assigned is a constant.
@@ -1179,7 +1180,7 @@ A write redraws only the bindings that read what changed (no virtual DOM); the s
 
 `wisp check --types` also type-checks with the app's TypeScript (`npm install -D typescript`, or `WISP_TSC` naming a `tsc`; else skipped). Server values are typed by Rust (`Vec<Item>` is `Item[]`, a `#[derive(Json)]` type an interface; hand-written `Json` is `unknown`).
 
-## Environment variables
+## Environment Variables
 `env.PUBLIC_NAME` in browser code (script, directive, `src/lib`, `+page.js`) is written in at build (no `env` object exists).
 
 - Values: the build's environment, then `.env` for names it lacks; `wisp dev` rebuilds when `.env` changes.
@@ -1221,7 +1222,7 @@ A write redraws only the bindings that read what changed (no virtual DOM); the s
 <div on:keydown.ctrl.s.prevent.window="save">…</div>
 ```
 
-### Event modifiers
+### Event Modifiers
 - `.prevent .stop .once .self .capture .passive`
 - `.window`, `.document`: listen there. `.outside`.
 - `.debounce[.300ms]` (default 250 ms).
@@ -1233,7 +1234,7 @@ Unknown ones are a build error. A bound input starts from what the server render
 
 <!-- docs/client-components.md -->
 
-## Client components
+## Client Components
 A component inside a client block, or given `{:…}`, `bind:` or `on:`, is drawn by the browser.
 
 ```html
@@ -1264,7 +1265,7 @@ A component inside a client block, or given `{:…}`, `bind:` or `on:`, is drawn
 ```
 `<Pill label="new" tone="warm" title="Just in" />` (`title` goes to `rest`).
 
-## Custom elements
+## Custom Elements
 `{@element "x-card"}` first in a component also builds it as a custom element at `/_app/c/el/x-card.js` (AGENTS.md has the form). Any site:
 
 ```html
@@ -1277,7 +1278,7 @@ A component inside a client block, or given `{:…}`, `bind:` or `on:`, is drawn
 - Markup is browser code and defaults are literals (build errors otherwise); the app still renders `<Card>` server first.
 - The module sends `access-control-allow-origin: *` and loads `live.js`, not `wisp.js`.
 
-## State helpers
+## State Helpers
 In any client script, no imports:
 
 ```js
@@ -1296,7 +1297,7 @@ const s = spring({ x: 0, y: 0 })                   // s.set({ x: 9, y: 4 }) with
 const [send, receive] = crossfade({ duration: 400 })   // out:send={{ key: id }} in:receive={{ key: id }}
 ```
 
-### Shared state
+### Shared State
 A store outlives components and navigation; put it in `src/lib/`:
 
 ```js
@@ -1348,7 +1349,7 @@ A page ships JS only for files with client code; a component can wait:
 - `client:*` as for any island; children show until it starts. Other attributes (`class`, `id`) go on its `<div>`, which morphs leave alone.
 - The framework must be in `package.json` (else a build error); it loads only on pages with an island of it, one shared copy. A Svelte package must ship compiled JS.
 
-### Web components
+### Web Components
 Import the module, write the tag (Shoelace, Web Awesome `wa-`, Lit). `on:` takes their events (dashes too); `bind:value` listens for `input`.
 
 ```html
@@ -1366,7 +1367,7 @@ Import the module, write the tag (Shoelace, Web Awesome `wa-`, Lit). `on:` takes
 - Your own with Lit: `wisp add lit`, `customElements.define('hello-tag', class extends LitElement {…})` in a `src/lib` module a script imports.
 - The `click-events` a11y lint skips custom elements.
 
-## Your own bundle (npm UI libraries)
+## Your Own Bundle (npm UI Libraries)
 For a widget `wisp add` cannot serve (React, Svelte, a charting kit): bundle it with your own tool, no Wisp dependency, into `static/`, and mount it from a `use:` action. `data-wisp-keep` stops a morph from touching what the widget draws.
 
 ```sh
@@ -1388,7 +1389,7 @@ esbuild src/widget.js --bundle --minify --format=esm --outfile=static/widget.js 
 - To share a library between bundles, a `<script type="importmap">` in `src/app.html` maps `"react"` to a file in `static/`.
 - Packages `wisp add` serves need none of this: `<Island of="react:name">`.
 
-## Third-party scripts
+## Third-Party Scripts
 Pick when one loads (`src`, so no code of yours). In the head:
 
 | Tag | Loads |
@@ -1400,14 +1401,14 @@ Pick when one loads (`src`, so no code of yours). In the head:
 
 Other attributes (`async`, `data-*`) are copied.
 
-## Loading views
+## Loading Views
 `src/routes/blog/+loading.wisp` is static HTML (a `<style>` is fine; no `---` block, holes or components). A client navigation to `/blog` or any page below it shows it in `<main>` the moment the link is followed, until the page arrives and morphs over it (`aria-busy` is set meanwhile).
 
 - The deepest folder that fits wins; `routes/+loading.wisp` is for every page.
 - None for a page already fetched ahead (hover), back or forward, or a full page load.
 - The build writes the views as JSON into the shell's head: an app with no `+loading.wisp` has none of it, and no request is made for one.
 
-## Web vitals
+## Web Vitals
 `<meta name="wisp-vitals" content="/vitals">` (in `src/app.html`) is opt-in: when the page is hidden, wisp.js sends that path one beacon (`sendBeacon`, a POST) of JSON: `{"path":"/x","ttfb":12,"lcp":480.5,"cls":0.02,"inp":64}`.
 
 - Times in ms, `cls` a score; a metric the browser never measured is left out.
@@ -1415,7 +1416,7 @@ Other attributes (`async`, `data-*`) are copied.
 - Receive it with `vitals/+server.rs`: `fn post(cx: &mut Cx) -> Result<()>` reading `cx.body()`.
 - No page that does not name the tag runs any of it.
 
-## Loading code on demand
+## Loading Code on Demand
 `import()` loads when reached:
 
 ```html
@@ -1429,7 +1430,7 @@ Other attributes (`async`, `data-*`) are copied.
 
 <!-- docs/client-pwa.md -->
 
-## Installable and offline (PWA)
+## Installable and Offline (PWA)
 `src/manifest.json` is served at `/manifest.webmanifest` and linked by every page; nothing is emitted without it.
 
 ```json
@@ -1451,7 +1452,7 @@ self.addEventListener('install', (e) => {
 })
 ```
 
-## Dev: hot reload
+## Dev: Hot Reload
 `wisp dev` applies a `.wisp` save with no compile when only browser code or static text changed:
 
 - A script or `{:…}` change swaps the file's module (instances rerun it, keeping `$state` by name, focus, selection and field values).
@@ -1477,7 +1478,7 @@ Components match by creation order, so a reordering list may trade states. Build
 
 <!-- docs/client-router.md -->
 
-## Morphs and the router
+## Morphs and the Router
 Same-origin clicks and back/forward fetch and morph, no full reload. A form action or navigation morphs the page; layouts stay mounted.
 
 ```js
@@ -1498,7 +1499,7 @@ replaceState('', { tab: 3 })         // this entry's state ('' keeps the URL)
 - `pushState(url, state)` (shallow routing, for tabs and modals) adds an entry at `url` (`''`: this one) and loads nothing; `page.value.state` is reactive (`{}` on other entries). Back/forward restores it with no request; a reload keeps it only at its URL.
 - `document` events: `wisp:navigate wisp:update wisp:goto wisp:refresh wisp:error wisp:push wisp:pop`; forms: `wisp:submit` (cancelable), `wisp:result`.
 
-### Link and navigation options
+### Link and Navigation Options
 `data-wisp-noscroll`, `data-wisp-keepfocus`, `data-wisp-replacestate`, `data-wisp-notransition` (on or around a link) keep scroll, keep focus, replace history, skip the view transition. `goto(url, { noscroll, keepfocus, replace, novt })` does the same.
 
 Hooks from `'wisp'` return an unsubscribe:
@@ -1524,7 +1525,7 @@ Back, forward and reload restore each changed `<input>`, `<textarea>`, `<select>
 </script>
 ```
 
-### Phones and offline
+### Phones and Offline
 - Pages leave with `pagehide` (back/forward cache; scroll restored).
 - `<body data-wisp-revalidate="30">` refetches data when the tab or network returns (at most every N s, default 30; the morph keeps focus, scroll, typed text).
 - Offline, `<form data-wisp-queue>` (safe to send twice) waits in `sessionStorage`, is sent in order when back, then the page refreshes (`wisp:sent`). Only urlencoded forms queue.
@@ -1565,7 +1566,7 @@ With a server `load` the whole `Data` is sent (`#[derive(Json)]`). `params.slug`
 
 <!-- docs/client-server.md -->
 
-## Server functions
+## Server Functions
 `#[remote]` on a Rust fn in a page block or `src/*.rs` makes it callable from browser code: no endpoint, fetch or import. In `src/lib`: `import { user } from 'wisp:remote'`.
 
 ```html
@@ -1588,14 +1589,14 @@ fn user(id: u64) -> Result<User> {
 - `#[remote(get)]`: GET, arguments as JSON in the query (`?id=5&q=%22tea%22`; non-JSON text is a string), with an `etag` (304).
 - Names are global to browser code: a duplicate, or one JS/Wisp has (`fetch`, `goto`), is a build error; a script's own or a page's server value of that name wins. `wisp check --types` types each.
 
-## Server rendering off
+## Server Rendering Off
 `const SSR: bool = false;` in the block: the server runs the statements and sends layouts, `<head>`, the markup as an unpainted `<template>` and the values it names; the browser draws it.
 
 - The markup is browser code (`{:x}`, `{:#each}`): `{…}`, `{#if}`, `{#each}` or a component given `{…}` is a build error (Rust is fine in `<title>`/`<head>`).
 - For pages that depend on the browser (size, `localStorage`) or that `+page.js` fills.
 - `wisp build --spa` serves them from a static host.
 
-## Errors and source maps
+## Errors and Source Maps
 - An error thrown while a script starts, or in `+page.js`, shows the nearest `+error.wisp`; handler errors go to the console with file and line.
 - In dev each browser module has `//# sourceMappingURL=t3.js.map` (also `src/lib`, `+page.js`), so DevTools shows the `.wisp` file.
 - Release has none unless `wisp build --sourcemap` (`--static --sourcemap` writes them beside the modules).
@@ -1603,7 +1604,7 @@ fn user(id: u64) -> Result<User> {
 
 <!-- docs/client-templates.md -->
 
-## Server values in the browser
+## Server Values in the Browser
 Any Rust value client code mentions is sent, only the mentioned parts.
 
 ```html
@@ -1625,10 +1626,10 @@ Any Rust value client code mentions is sent, only the mentioned parts.
 {:#each items.filter((i) => matches(i.name, q)) as item}<p>{:item.name}</p>{:/each}
 ```
 
-## `{:expr}` holes
+## `{:expr}` Holes
 A live JS expression anywhere in markup: `<p>Hi {:name}</p>`, `<p class="card {:mood}" data-id={:item.id}>`, `<a href={:url}>`. Mixing `{…}` and `{:…}` in one attribute value is a build error.
 
-## Client blocks
+## Client Blocks
 
 ```html
 {:#if open}<p>Open</p>{:else if name}<p>{:name}</p>{:else}<p>Closed</p>{:/if}
@@ -1653,7 +1654,7 @@ A live JS expression anywhere in markup: `<p>Hi {:name}</p>`, `<p class="card {:
 - Also `<template each="item, i in list">` and `<template if="cond">`.
 - The server paints key blocks, an await's pending branch and a try body.
 
-### Special elements
+### Special Elements
 Each takes directives for its target and closes itself:
 
 ```html
@@ -1693,7 +1694,7 @@ A component the browser draws takes snippets as props, by name (`<List items={:x
 <div>{:@html post.body}</div>
 ```
 
-## First paint
+## First Paint
 The server renders what it can know into the page (it works before JS and without it); the browser takes those nodes over and keeps them live.
 
 - Known: server values, props, Rust loop values; literals (`0 'text' true null [1,2] {id:1}`); script variables first set to those (`let todos = data.todos`); an `{:#each}` item/index inside it; `!`, `&&`, `||`, `.length` of those; a boolean directive like `:hidden="!open"` with `let open = false`.
@@ -1705,7 +1706,7 @@ Next: [components, custom elements and state helpers](/docs/client-components).
 
 <!-- docs/config.md -->
 
-## const knobs
+## Const Knobs
 
 A `const` in a page's `---` block, `+page.rs`, `+server.rs` or a layout. The build reads them; nothing runs per request that you did not ask for.
 
@@ -1740,7 +1741,7 @@ Lists of strings in `Cargo.toml`, checked and baked at build.
 | `use = [...]` | plugin crates the build loads |
 | `extends = ["../base"]` | layers: an app's layout, components and static files under yours |
 
-## Cargo features
+## Cargo Features
 
 | Feature | What it does |
 |---|---|
@@ -1753,7 +1754,7 @@ Lists of strings in `Cargo.toml`, checked and baked at build.
 | `types` (wisp) | used by `wisp check --types`; never in a served build |
 | `avif` (wisp-cli) | AVIF widths for images in `wisp build`, beside WebP |
 
-## Smaller public types
+## Smaller Public Types
 
 | Name | What it is |
 |---|---|
@@ -1993,7 +1994,7 @@ Other hosts:
 | Railway, Render | `--docker`, point at the repo, set `WISP_SECRET` |
 | Cloud Run | `--docker`, `gcloud run deploy --source .` |
 
-## Edge runtime per route
+## Edge Runtime per Route
 
 Vercel and Netlify Edge: add `--edge` (`--target vercel --edge`, `--target netlify --edge`). The wasm app runs as a module (`opt-level = "s"`, for their size limits), and Netlify skips `static/` via `excludedPath`. Edge limits apply.
 
@@ -2009,7 +2010,7 @@ const RUNTIME: wisp::Runtime = wisp::Runtime::Edge;   // default: Node
 - Other hosts ignore it; `--edge` puts every route there.
 - The build stops, naming the route, if an Edge route uses what WebAssembly lacks (`std::fs`, `std::thread`, `std::process`, `std::net`, websockets).
 
-## Servers on node, bun and local deno
+## Servers on Node, Bun and Local Deno
 
 They read raw sockets and the app's own HTTP/1.1 parser answers (pipelining, keep-alive, chunked bodies, 413, 431 and each route's `BODY_LIMIT`, as the native server has them), with none of the host's per-request objects.
 
@@ -2034,7 +2035,7 @@ aws lambda update-function-code --function-name my-app --zip-file fileb://dist/l
 - Saved tables go in `/tmp`, per instance: use `wisp::store` for lasting data.
 - The `tower` feature with `lambda_http` also works ([embed](/docs/embed)).
 
-## What works on the edge
+## What Works on the Edge
 
 No threads, sockets or files.
 
@@ -2048,7 +2049,7 @@ No threads, sockets or files.
 | Not in the edge build | `wisp::channel`, `wisp::every`, `RateLimit` (it won't compile with them): use the host's queues, cron, rate limiting. |
 | Panics | A panic fails only that request (500). No `Date` header from Wisp. |
 
-### Saved tables
+### Saved Tables
 
 `Rest` and `Table::saved` are per-instance memory unless `WISP_STORE` is set (no app code):
 
@@ -2091,7 +2092,7 @@ let reply = wisp::edge::fetch(req).await?;
 
 Wisp is a fast, fun web framework for Rust: server-rendered HTML, file routes, `.wisp` templates, form actions without a client framework, one binary. This page is the contract for v0; when code and doc disagree, fix one.
 
-## An app
+## An App
 
 ```
 my-app/
@@ -2142,11 +2143,11 @@ fn matches(s: &str) -> bool {
 - Two routes with the same pattern are a build error. `/about/` redirects (308) to `/about`.
 - Other build errors: a `.wisp`, `page.rs`, `layout.rs` or `server.rs` under `src/routes` without its `+`; a top-level `_app` or `_wisp` directory (Wisp's own); a `(group)` not exactly one name in parentheses; a route deeper than 32 segments. Editor swap and backup files are skipped.
 
-### Trailing slash
+### Trailing Slash
 
 `/about/` gets a 308 to `/about`, query kept. `wisp::trailing_slash(Always)` in `init` flips it (`/about` to `/about/`, GET and HEAD of pages; endpoints and paths with a `.` in the last segment are left alone); `Ignore` serves both. The other form is matched only after no route matched, so the default costs nothing. The build warns of a literal `href="/…"` in a template the setting would redirect.
 
-### Sitemap, robots, feed, og
+### Sitemap, Robots, Feed, Og
 
 `/sitemap.xml` and `/robots.txt` are made from the route tree, answered only for a GET no route and no file matched. A file of the same name in `static/`, or a route, wins.
 
@@ -2158,9 +2159,9 @@ fn matches(s: &str) -> bool {
 - `wisp::og(title, description, image)` gives escaped Open Graph and Twitter card tags: `{@html wisp::og("Hello", "A first post", "/cover.png")}`.
 - Image `"auto"` with a literal title and description: `wisp build` (`og.rs` in the CLI, drawing in `wisp-shared`'s `og.rs`) writes `static/og/<slug>.svg`, 1200 by 630, with title, description and app name in `src/app.css`'s `--bg`, `--ink`, `--accent` (else Wisp's). It is SVG because nothing in Wisp's dependencies rasterizes, and X and Facebook want PNG: convert in CI (`rsvg-convert -o static/og/x.png static/og/x.svg`, or resvg) and pass `"/og/x.png"`. The opt-in `og-png` feature on `wisp` and `wisp-cli` renders each picture to a PNG with `resvg` (system fonts) and names that. A non-literal title (a database row) needs your own image.
 
-## Markdown pages
+## Markdown Pages
 
-`+page.md` and each `x.md` (a page at `x`) is turned into markup at build time by `pulldown-cmark` (CommonMark, tables, strikethrough, task lists, footnotes), then compiled like a `.wisp` page. The folder's layouts wrap it; with no Rust in it, it is baked.
+`+page.md` and each `x.md` (a page at `x`) is turned into markup at build time by `pulldown-cmark` (CommonMark, tables, strikethrough, task lists, footnotes), then compiled like a `.wisp` page. The folder's layouts wrap it; with no Rust in it, it is baked. Each heading gets an id from its text, GitHub style (`## Install and Run` is `#install-and-run`, a repeat gets `-2`), so section links work with no JavaScript.
 
 ```markdown
 ---
@@ -2184,7 +2185,7 @@ Text, and a component:
 - Fenced code is highlighted at build time by `wisp-build` (rust, js/ts, html, css, json, bash) as `<span class="hl-k|s|c|n|t|a">` (keyword, string, comment, number, type or tag, attribute) in `<pre><code class="language-x">`. Your CSS colors them; other languages keep the class, unhighlighted.
 - `wisp::pages("blog")` gives a folder's `MdPage`s (`path`, `title`, `get("date")`), newest `date` first: `{#each wisp::pages("blog") as p}<a href={p.path}>{p.title}</a>{/each}`. A `static` slice the build wrote: no I/O, no allocation.
 
-## Config rules
+## Config Rules
 
 `redirects`, `rewrites` and `headers` in `[package.metadata.wisp]` (Cargo.toml) are lists of strings, as Next.js's next.config has them. The build checks and bakes them into tables; the server reaches them only through the consts `App::REDIRECTS`, `REWRITES`, `HEADERS`, so an app with none runs no code for them. A pattern is a route's: text, `[name]`, a last `[...name]`. Anything malformed fails the build, naming the entry.
 
@@ -2208,7 +2209,7 @@ In order: ultra fast, cheap, durable, flexible; developer happiness last.
 8. **Fast dev loop**: editing markup never waits for `cargo`; editing Rust rebuilds only the app crate.
 9. **Works without JavaScript**: forms and links are real; `wisp.js` enhances, never required.
 
-## Dependency budget
+## Dependency Budget
 
 Crate | Used by | Why
 ---|---|---
@@ -2284,7 +2285,7 @@ One std-only process. `wisp dev [--port <n> | --port=<n> | -p <n>]`; anything el
 - **Output.** Cargo progress on the first build, then one line per change (`~ src/routes/+page.wisp  swapped in 0ms`, `✓ Rebuilt in 0.3s`). Compiler errors have paths relative to the app and no generated module names (`Data`, not `page_3::Data`). An error rustc finds in template-generated code is retold against the template's line; an action that returns a value is caught before compiling, against `+page.rs`.
 - **Request log.** The app logs each request in dev (`GET /nope  404  0.1ms`, yellow 4xx, red 5xx) and a handler's panic once, with where. Release builds log only 5xx.
 
-### CSS tools
+### CSS Tools
 
 | Setup | What runs |
 |---|---|
@@ -2295,11 +2296,11 @@ One std-only process. `wisp dev [--port <n> | --port=<n> | -p <n>]`; anything el
 
 A watcher makes the first build itself; adding or removing `src/app.scss` or a `postcss.config.*` replaces the watchers. `wisp build` runs each once, minified (`--minify`, `--style=compressed`).
 
-### npm imports
+### npm Imports
 
 Bare imports (`'canvas-confetti'`) are npm packages. `package.json` pins exact versions (`wisp add`). Dev imports `https://esm.sh/pkg@v?target=es2022`. A release build serves `.wisp/npm`, which `wisp build` fills from esm.sh before compiling: the modules `wisp check` finds imported and what they import, a level at a time, 16 at once, only those missing. Each is saved with imports pointed at `/_app/c/npm/`, and an import of esm.sh's re-export stub at the module it re-exports. The build embeds the files (`include_str!`); paths name versions, so they are cached for good without `?v=`.
 
-### Template hot swap
+### Template Hot Swap
 
 In debug builds every static HTML chunk of every template is read through a table (`wisp::dev::chunk`) instead of being a literal. On a `.wisp` save the CLI re-parses the file. If its shape (holes, blocks, expressions, everything except static text) is unchanged, it POSTs the new chunks to the app (`/_wisp/dev/swap`, loopback only) and the browser morphs: no compile. If the shape changed, it is a normal rebuild. Release builds have no table.
 
@@ -2316,7 +2317,7 @@ In debug builds every static HTML chunk of every template is read through a tabl
 - Text, holes, `<pre>` and `<textarea>` are never touched.
 - Markup that does not balance, or would not parse to the same template, is left as written. Formatting twice equals formatting once.
 
-## CLI older than the app
+## CLI Older than the App
 
 When the installed `wisp` is older than the app's `wisp` crate (the CLI's stamp against the app's), app commands print a warning on stderr first. In a terminal it asks `Continue anyway? [y/N]`; the default N exits with 1. In CI or a pipe it warns and continues. `WISP_NO_UPDATE_CHECK=1` silences it. Without git, the stamp check stays silent.
 
@@ -2354,7 +2355,7 @@ content-security-policy: default-src 'self'; script-src 'self' 'sha256-…';
 - `wisp::csp("img-src 'self' https://cdn.example; font-src https://f.example")` in `init`: each directive replaces the default of its name, or is added. `script-src` keeps the hashes (unless it has `'unsafe-inline'`, which a hash would turn off). `wisp::csp_off()` sends none, for an app that sets its own.
 - Not covered: endpoints and `Response::html` (not pages), `/_wisp/docs`, and `wisp build --static` (files have no headers; the host sets them). A script put in by `{@html}` or an `onclick="..."` attribute does not run; use a file, or `on:click`.
 
-## Non-goals and milestones
+## Non-Goals and Milestones
 
 No homegrown auth, ORM or job system, now or later. Wisp gives the tools (cookies, sessions, the `Store` trait, hooks, `wisp::spawn` from `init`) and the app builds on them. Integrations wire in existing, maintained crates (a recipe in `add/`; `wisp add sqlite` scaffolds the glue). Also out: Windows services. (HTTP/2 in process is the opt-in `h2` feature: h2c only.)
 
@@ -2372,7 +2373,7 @@ claude mcp add wisp -- wisp mcp    # Claude Code
 wisp update-docs                   # refresh AGENTS.md to the installed Wisp
 ```
 
-## AI agents
+## AI Agents
 
 Every app is written with `AGENTS.md`, the whole reference in one short page, and a pointer to it for each agent that reads a file of its own: `CLAUDE.md`, `.github/copilot-instructions.md`, `.cursor/rules/wisp.mdc`.
 
@@ -2445,7 +2446,7 @@ All build-time, a const or a cold path: a request that uses none of them runs no
 | Intercepting routes | `(.)`, `(..)`, `(...)` in a slot |
 | Version skew | `<meta name="wisp-build">`, `wisp:stale` |
 
-## Base path
+## Base Path
 
 `WISP_BASE=/app` (cargo env, or `base = "/app"` under `[package.metadata.wisp]` for `wisp build`; `wisp dev` always serves at `/`) is compiled into `wisp-shared` (`protocol::BASE`, set by a `build.rs`), so every crate sees one const.
 
@@ -2461,7 +2462,7 @@ All build-time, a const or a cold path: a request that uses none of them runs no
 - `wisp::on_fetch(f)` (once, in `init`) is `handleFetch`: `wisp::fetch` calls it before a request goes out. The edge build's `fetch` does not.
 - No hook is on a path that has none.
 
-## Routing and options
+## Routing and Options
 
 - **Layout reset.** `+page@.wisp` has no layouts above it. `+page@group.wisp` has those down to the `group` (or `(group)`) directory's `+layout.wisp` (`routes.rs`: `Route::page_file`, `layouts`).
 - **Layout options.** `CACHE`/`CACHE_PUBLIC`, `SSR` and `PRERENDER` in a layout apply to its pages (`Project::layout_opts`). The nearest layout wins; a page's own const wins over all. The cache refers to the layout's module in the generated arm, so the request does what a page's own `CACHE` does. A layout's `RATE_LIMIT`, `CORS` and `TIMEOUT` still do nothing and are errors. `trailing_slash` is the app's, not a page's.
@@ -2470,14 +2471,14 @@ All build-time, a const or a cold path: a request that uses none of them runs no
 - **Typed routes.** The build writes `pub mod routes` (re-exported by `__mods`): a function per route named from its pattern (`/` is `home`, `/blog/[slug]` is `blog_slug`, `_2` for a taken name). Each parameter is `impl Display` (optional ones `Option<..>`), percent-encoded (`rt::path_param`; a rest parameter keeps its `/`).
 - **Named middleware.** `const MIDDLEWARE: &[&str] = &["auth"];` in a page, `+server.rs` or `+layout` is checked against `src/middleware.rs` (a `pub fn` per name) and written by `middleware()` in codegen into the same statements `RATE_LIMIT` and `CORS` make: the page's or layout's `__guard`, the endpoint's `before`. They run first, so no dispatch changed (`http.rs` untouched) and a route naming none has nothing extra. `src/hooks.rs`'s `before` is the global one; `MIDDLEWARE` there is an error.
 
-## Client features
+## Client Features
 
 - **Script strategies.** `<script src type="wisp/idle">` and `wisp/interaction` are inert to the browser (and to the navigation morph, which only re-creates `module`/`javascript` ones). `lazy()` in wisp.js, run by `wake()`, makes the real `<script>` on idle or on the first pointer, key or scroll. Plain `<script src>` and `defer` need no code. About 270 bytes gzipped.
 - **Web vitals.** Opt-in with `<meta name="wisp-vitals" content="/path">`. wisp.js watches LCP, layout shifts and event timing with `PerformanceObserver` and sends one `sendBeacon` on `visibilitychange` hidden. Server side it is an ordinary route. About 430 bytes gzipped.
 - **Loading views.** `+loading.wisp` (a known route file; `Tree::loading` holds its folder's pattern) is read by `loading.rs` and written into the shell's head as `<script type="application/json" id="wisp-loading">[[prefix,html]]`: static bytes in every page of an app that has one, nothing otherwise. It does not run, so no CSP hash. `wait()` in wisp.js, before the fetch of a navigation not fetched ahead and not a pop, finds the deepest prefix that `fit` (the SPA fallback's matcher) accepts and fills `<main>`. Streaming `{#await}` needs none of it (it is for the whole page; a streamed page is read whole by a client navigation). About 290 bytes gzipped.
 - **Version skew.** A release build puts `<meta name="wisp-build" content=ID>` in the shell (a hash of templates and Rust: baked, nothing per request). wisp.js compares it with the page a navigation fetched, as it does `wisp.js?v=` (which only changes with the runtime), and sends `wisp:stale` (the `updated` store).
 
-## Slots and intercepting routes
+## Slots and Intercepting Routes
 
 **Slots (parallel routes).** A `@name` folder with a `+page.wisp` beside a `+layout.wisp` is an ordinary route at `/dir/@name` (no router change) that the layout draws.
 
@@ -2493,7 +2494,7 @@ All build-time, a const or a cold path: a request that uses none of them runs no
 - The page stays; `history.back()` closes it (the pop morphs the old page's empty slot back). A load of the URL is the route's own page.
 - About 310 bytes gzipped, none of it run on a page with no such element.
 
-## Build tools
+## Build Tools
 
 - **Bundle analyzer.** `wisp build --analyze` (`analyze.rs` in the CLI, `codegen::analyze`) reads the app like a release build, builds nothing, and for each page route sums the files that page loads as served: wisp.js and live.js minified, its templates' modules and static imports, app.css, the `static/` `.wasm` files its JavaScript names. Raw and gzipped, largest first, with the files of the heaviest. Gzip is counted with Wisp's own compressor (fixed Huffman, hash-chain matcher), without writing the bits.
 - **Layers.** `extends = ["../base"]` beside `use` in `[package.metadata.wisp]` (`plugins.rs`): a path or a dependency with an app's layout.
@@ -2567,7 +2568,7 @@ Browser-side checks come from the same rules (`wisp_build::rules::Native`). A fi
 
 A textarea gets only `required` (line breaks are sent as two characters). The server still checks everything.
 
-## Request flow
+## Request Flow
 
 1. Same-origin check: `Origin`, if present, must match `Host` (else 403). Without it, `Sec-Fetch-Site` other than `same-origin` or `none` is 403. A client sending neither (curl) passes.
 2. The action runs. `redirect("/...")` is a 303; other errors go to the error page. For `wisp.js` (requests carry `x-wisp`) a redirect is a 200 with `x-wisp-location` and the script navigates itself (fetch would follow with the post's headers, and not at all to another site).
@@ -2585,7 +2586,7 @@ A textarea gets only `required` (line breaks are sent as two characters). The se
 - `data-wisp-keep` on an element leaves its children and attributes alone (a map, a rich text editor).
 - A post that redirects loads the page so its scripts run as on any load. A script a morph brings into the same page (inside an `{#if}`) runs once, the first time it appears.
 
-## Forms and files
+## Forms and Files
 
 - `cx.form()` reads urlencoded and multipart bodies (`enctype="multipart/form-data"` for files). Text fields read the same either way.
 - `cx.form().file("photo")` is the file of `<input type="file" name="photo">` (`None` when none): `name` as sent, `content_type`, `bytes`. `files("photo")` is every file of a `multiple` input.
@@ -2602,7 +2603,7 @@ A textarea gets only `required` (line breaks are sent as two characters). The se
 - Cloning shares the bytes. In a saved table it is a `data:` URL (its JSON).
 - As a response: `fn get(id: u64) -> Option<Image> { USERS.get(id)?.value.avatar }` in `avatars/[id=int]/+server.rs` sends bytes and type with an ETag (304 when matched), `no-cache`, `nosniff`. Any response with an `etag` answers a matching `if-none-match` GET with 304.
 
-### Serving files
+### Serving Files
 
 ```rust
 // [...name]/+server.rs
@@ -2614,7 +2615,7 @@ async fn get(name: String) -> Result<Response> {
 - `Response::file_in(dir, name)` reads without blocking, typed by extension. A name reaching outside the directory (`..`, absolute path, drive) is a 404, like a missing file. The name may come straight from the URL.
 - `Response::download("report.csv", bytes)` sends bytes the browser saves as that file name.
 
-## Built-in UI
+## Built-In UI
 
 Wisp draws a few things from one design system: Kinetrix's roles and values (dark, as the demo site), Wisp violet (`#896ce0`) as the one accent, only on what is interactive. One-pixel hairlines, two shadow steps, one type scale, one focus ring.
 
@@ -2625,7 +2626,7 @@ Styles live in `crates/wisp/src/client/tokens.css` (the one source of tokens), `
 | Error page | For apps without `+error.wisp`. Status and one line (status name, or the error's message when it says more), centered, dark tokens, styles inlined. No links or buttons; write a `+error.wisp` for those. Errors for endpoints and API clients are JSON (see [api](/docs/api)). |
 | Error page in `wisp dev` | Adds the status name, the request, what caused a 5xx and a link home. |
 | Server errors in dev | Every answer has `Server-Timing: total;dur=ms`. A 5xx dev page holds its message (a panic says `file:line`) in `<template id="wisp-server-error">`, which `wisp-dev.js` opens in the dialog below. Debug builds only. |
-| Build error dialog (dev) | Title, one sentence on where to look (`src/routes/+page.rs, line 7. Save a fix and the page updates.`), then the error in a code block with Copy. Lives in a shadow root off `<html>`, so app CSS and morphs cannot touch it. Closes when the next build succeeds. |
+| Build error dialog (dev) | Title, one sentence on where to look (`src/routes/+page.rs, line 7.`), then the error in a code block with Copy. Lives in a shadow root off `<html>`, so app CSS and morphs cannot touch it. Closes when the next build succeeds. |
 | Rebuild bar | A two-pixel accent line across the top once a rebuild has taken 200 ms. |
 | Terminal | Every status line has a mark and words: `✓` done (green), `!` needs a look (yellow), `✗` failed (red), `›` under way and `~` changed (dim). Violet is only for what can be typed. A failure is a sentence, then the reason or fix indented under it. |
 
@@ -2661,7 +2662,7 @@ async fn load(slug: String) -> Result<Data> {
 }
 ```
 
-## The block
+## The Block
 
 - Items (`fn`, `struct`, `use`, `static`, `const`, `impl`, `#[action]`...) go in the page's module. Statements are its load: they run per request before the markup renders, and the markup reads their names (`post`).
 - Statements run in an `async` function returning a `Result`: `.await`, `?`, `return redirect("/")`, `return error(404, "…")` work. `cx` is `&mut Cx`. Each route param is a local: `slug: String` for `[slug]` and `[...rest]`, `id: u64` for `[id=int]`, `Option<String>` (or `Option<u64>`) for `[[lang]]`. A page with no Rust reads them too: `<h1>{slug}</h1>`.
@@ -2674,7 +2675,7 @@ async fn load(slug: String) -> Result<Data> {
 - `fn entries() -> Vec<…>` in a page under `[params]` lists the pages `wisp build --static` writes ([deploy](/docs/deploy)).
 - The build checks that `load` returns `Data` (plain or in a `Result`), that every parameter but `cx` has a plain name, and that `#[action]` (by any path, `wisp::action` too) marks only top-level functions of a page.
 
-## Signatures and inputs
+## Signatures and Inputs
 
 - `load`, actions and `+server.rs` endpoints may be `fn` or `async fn`; take `cx: &mut Cx`, `cx: &Cx` or none; return their value (`Data`, `()`, `Response`) plain or in a `Result` (`Result` alone is `Result<()>`). The build reads which from the signature; rustc checks types.
 - An `#[action]` whose body uses `cx` without taking it gets `cx: &mut Cx`: `#[action] fn increment() { cx.set_cookie("n", n + 1) }`.
@@ -2690,7 +2691,7 @@ Type | Behavior
 
 So `fn load(q: Option<String>, page: Option<u32>)` and `#[action] fn add(text: String, done: bool)` need no `cx`. `cx.form()` reads anything else, files too; `cx.input(name)` finds one by name the same way (in a block's statements, say).
 
-## Errors, actions, validation
+## Errors, Actions, Validation
 
 - `?` on any `std::error::Error` is a 500 (details only in dev). `return error(404, "…")` stops with that status and message; `return redirect("/…")` is a 303. Both are `Err`s, so they end a function returning a `Result`. `Error::new(status, "…")` is the error itself (for `ok_or`, `map_err`); `Error::redirect(status, "/…")` takes another status. `Err(error(..))` is a build error telling you to write `return error(..)`. `Option::or_404()` is the shortcut.
 - An action returns nothing (or `Result<()>`) and the page renders; or a `Response` (CSV, a file) sent instead of the page; or an `Option<Response>` to do that sometimes.
@@ -2714,7 +2715,7 @@ fn signup(name: String, email: Email) {
 
 - `+server.rs` method: the `Response` it returns; any other value as JSON (`#[derive(Json)]`); nothing is a 204; `Option<Response>` `None` is a 404. `body: T` (not a string) is the JSON body read as a `FromJson` type. An error on a request under `/api`, or one that sent or asks for JSON, is answered as JSON ([api](/docs/api)).
 
-## Limits and caching
+## Limits and Caching
 
 `const BODY_LIMIT: usize = 20 * wisp::MB;` in a page or `+server.rs`: largest body the route takes (default 1 MB, or `WISP_BODY_LIMIT`); larger is a 413 as soon as its head arrives.
 
@@ -2807,7 +2808,7 @@ Behind a proxy:
 - Form posts are checked against `Host`, the proxy's `X-Forwarded-Host` (a page on another site cannot set it), or `ORIGIN` when set. The first refused post logs how to fix a proxy that changes `Host`.
 - `cx.client_ip()` trusts only the header `WISP_CLIENT_IP_HEADER` names (for `x-forwarded-for`, the entry the proxy added), else the peer's address.
 
-### I/O drivers
+### I/O Drivers
 
 **io_uring** (Linux 6.1+, `crates/wisp/src/uring.rs`):
 
@@ -2828,7 +2829,7 @@ Other systems accept on the main thread and hand connections out, on tokio's soc
 
 The io_uring and epoll drivers are the `unsafe` modules of a native build (ring setup, memory shared with the kernel, socket calls std lacks), each block with why it holds. An earlier io_uring prototype that waited in `io_uring_enter` with no deferred task work measured level with plain tokio (bench/README.md).
 
-### Connections and limits
+### Connections and Limits
 
 - One task per connection. `Cx` owns the read buffer; the task also owns a write buffer and an `Out { head, body }` pair of `String`s, all reused across requests.
 - A connection holds them only while it has a request. An idle one (tokio's or epoll's; not yet the ring's), a WebSocket and a streamed response give them back to the thread's pool, so an idle keep-alive connection costs about 4 KB on Windows (task and socket). A wakeup with nothing to read (tokio on Windows reports every new socket readable) gives them back again.
@@ -2861,7 +2862,7 @@ Off by default; the `h2` feature compiles it (nothing of it otherwise). A connec
 - GOAWAY `ENHANCE_YOUR_CALM` ends the connection on: a reset flood (resets beyond answers + 200), a CONTINUATION flood (64 pieces or 16 KiB), 1000 frames asking no request, an HPACK bomb (decoded list over 16 KiB).
 - No `Upgrade: h2c`, no ALPN: the `tls` feature is the client's (`wisp::fetch`); the server has no TLS.
 
-## One request entry point
+## One Request Entry Point
 
 The built-in server is one front end. `respond` decides an answer as a `Reply { status, headers, body }`; the HTTP/1.1 writer adds `content-length`, `date` and `connection`. Everything else calls the same code, with the same parser and limits ([embed](/docs/embed), [deploy](/docs/deploy)):
 
@@ -2877,7 +2878,7 @@ The built-in server is one front end. `respond` decides an answer as a `Reply { 
 
 Edge detail: the app marks a path `const` when its answer cannot change (a baked page, a trailing-slash redirect), in an app with no `before`, `after` or `reroute` hook, when it read no header but `if-none-match` and `x-wisp-error` and had no query. The bridge's web `fetch` keeps the first answer and its 304 and replays them (GET, HEAD, `if-none-match`) without entering the wasm. `tests/platform/tests/fast.rs` pins them to native's.
 
-### The `App` trait
+### The `App` Trait
 
 Generated code implements one trait:
 
@@ -2900,7 +2901,7 @@ Less Rust in templates:
 - An `Option` attribute (`aria-current={current}`) is left out when `None`.
 - `#[derive(Json)]` gives JSON without serde: an endpoint returns the value, or `Response::json_of(&value)`.
 
-## What `wisp build` does
+## What `wisp build` Does
 
 `wisp_build::run()` (in the app's `build.rs`):
 
@@ -2952,14 +2953,14 @@ let me = cx.user()?;                      // members' page: signed-in row or red
 - `Secure` is added when the request came over HTTPS through a proxy (`x-forwarded-proto: https`) or `ORIGIN` is `https://`, and always with `SameSite=None` (browsers require it).
 - `#[derive(Cookie)]` puts a struct in one cookie via `Display` and `FromStr`: fields in order, separated by `|`, each escaped (`42|cranesloth|pi`). A fieldless enum is its variant name. The derive reads only type and field names, no `syn`. The value is visitor input: check rules beyond field types after reading (Wisple's `Game::valid`).
 
-## Signed cookies
+## Signed Cookies
 
 - `cx.set_signed_cookie(name, value)` adds an HMAC-SHA256 signature of name and value (`value.signature`), keyed with `WISP_SECRET`.
 - `cx.signed_cookie(name)` returns the value only if the signature holds: a visitor can read it but not forge it, change it, or move it to another cookie name.
 - A release build without `WISP_SECRET` fails the request that signs or checks, saying to set it. Dev builds keep a secret in `.wisp/secret` so sessions survive restarts.
 - Rotate without signing everyone out: move the old secret to `WISP_SECRET_OLD`. Signatures it made still hold (nothing new is signed with it) until removed; 30 days on for sign-ins.
 
-## Signing in
+## Signing In
 
 | Call | What it does |
 |---|---|
@@ -2975,7 +2976,7 @@ let me = cx.user()?;                      // members' page: signed-in row or red
 - `user`, `login` and `signup` take the users table for you: the lone `Table` of a model with a `Password` field in `src/db.rs`, else the one `wisp::users(&db::USERS)` names in `init` (the build adds it; `&USERS` first still works, and is how a second table is used).
 - The page at `/login` is the convention; `wisp::sign_in_page("/enter")` in `init` names another.
 
-### Sign out everywhere
+### Sign Out Everywhere
 
 A signed session is valid wherever sent, so `cx.sign_out()` cannot end a stolen copy. `wisp::sign_out_everywhere(id)` can:
 
@@ -2998,7 +2999,7 @@ A signed session is valid wherever sent, so `cx.sign_out()` cannot end a stolen 
 
 <!-- docs/design-state.md -->
 
-## Hooks and state
+## Hooks and State
 
 `src/hooks.rs` holds what runs outside any one route:
 
@@ -3066,7 +3067,7 @@ fn get() -> Response {
 - `Response::events(|events| ...)` is the same for server-sent events (uncached, unbuffered by proxies). `Sender::event` writes one event whatever lines it has. A page listens with `listen(url, ...)` or `new EventSource(url)`.
 - A send fails once the client has gone, so `?` stops the closure. On server stop, open streams end properly.
 
-## Streaming a page: `{#await}`
+## Streaming a Page: `{#await}`
 
 ```html
 <h1>{user.name}</h1>
@@ -3096,7 +3097,7 @@ Rules:
 - Only a page's own markup awaits: not a layout, component, error page, snippet, `<head>`, attribute, browser block or another `{#await}`. A page with `CACHE`, or drawn by the browser (`SSR = false`), is a build error. `PRERENDER`, `--static` and `--spa` wait for every answer and write it into the file.
 - Chosen at build, per page. A page without `{#await}` is built and answered as before: one buffered write with `content-length`, no extra branch, nothing in `Out`. Deferred answers wait in a thread-local list only an await page touches.
 
-## Client code
+## Client Code
 
 Browser reactivity is in [client](/docs/client): a bare `<script>` per file, directives (`on:`, `bind:`, `:attr`, `class:`, `use:`, `transition:`), `{:expr}` holes, client `{:#if}` and `{:#each}`, client components, stores, a client router and `use:enhance`.
 
@@ -3161,7 +3162,7 @@ Syntax | Compiles to
 - Braces are Rust on the server; a quoted directive value or `{:expr}` is JavaScript in the browser. No Rust expression goes inside `<script>`: use the Rust name or `data.x` (sent as JSON) there, or `data-*` attributes.
 - A block (and each branch) must begin and end in the same place (text, one tag, one attribute value), or `{x}` after it could be escaped for the wrong place.
 
-### Escaping and refused places
+### Escaping and Refused Places
 
 Escaping covers `& < > " '`, safe in text and quoted attributes; unquoted `attr={…}` is always quoted. The parser tracks where each hole lands and refuses:
 
@@ -3227,7 +3228,7 @@ Markup a file renders more than once, or gives to a component:
 - A component takes one as a prop of type `Snippet<A, B>` (`Snippet` for none), which is `&dyn Fn(&mut Out, A, B)`: `{row}` or `row={row}` in its tag, or a `{#snippet row(…)}` among its children; it renders with `{@render row(…)}`.
 - `{:@render row(x)}` has the browser draw it: arguments are JavaScript, the body uses its parameters in `{:…}` ([client](/docs/client)). A component the browser draws takes snippets the same way (`<List items={:xs} {row} />`, or `{#snippet row(x)}` among children) and draws one with `{:@render row(x)}` where `row` is a prop. The body is a block before the tag (`Dir::Snip`, which `snip` in extra.js binds), found among the anchors right before the component's own, so no first paint for a component given one.
 
-## Scoped styles
+## Scoped Styles
 
 ```html
 <h1>Hi</h1>
@@ -3309,7 +3310,7 @@ note Wisp builds app.css with Tailwind when it imports it.
 
 Wisp does not ship or maintain integrations: recipes are yours to write, change and share as folders.
 
-## Component kit: `wisp ui add`
+## Component Kit: `wisp ui add`
 
 ```sh
 wisp ui list                     # what there is
@@ -3402,7 +3403,7 @@ Setting | Behavior
 
 The app is a function from request to reply.
 
-## In process
+## In Process
 
 ```rust
 wisp::prepare::<App>().await?;                        // runs `init`, once
@@ -3413,7 +3414,7 @@ let reply = wisp::handle::<App>(req).await;           // reply.status, .headers 
 
 Same parser, limits, hooks and CSRF check as the server.
 
-## Testing an app
+## Testing an App
 
 `wisp::test::client` needs no port and keeps cookies like a browser:
 
@@ -3467,7 +3468,7 @@ fn get() -> Response {
 
 Browser side: `new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`)` with `onmessage`, `onopen`, `onclose`.
 
-## The `tower` feature
+## The `tower` Feature
 
 Wisp becomes a `tower::Service`; the default build keeps its two deps.
 
@@ -3517,7 +3518,7 @@ async fn main() -> Result<(), lambda_http::Error> {
 }
 ```
 
-### axum inside Wisp
+### Axum Inside Wisp
 
 Send paths to an axum `Router` from `before` (or a catch-all `+server.rs`). `before` may return `Result<Option<Response>>` (`Some` answers instead of the route). `async fn before` takes every route off the no-wait fast path.
 
@@ -3572,7 +3573,7 @@ Read once at start. Switches take `on`/`off` (also `1`/`0`, `true`/`false`). You
 
 `#[derive(Rest)]` bearer tokens and OAuth client ids and secrets are read from the names their attributes give.
 
-## Logs and traces
+## Logs and Traces
 
 | Name | What it does |
 |---|---|
@@ -3584,7 +3585,7 @@ Read once at start. Switches take `on`/`off` (also `1`/`0`, `true`/`false`). You
 | `OTEL_SERVICE_NAME` | service name on spans |
 | `OTEL_BSP_SCHEDULE_DELAY` | batch delay in ms (5000) |
 
-## CLI and tests
+## CLI and Tests
 
 | Name | What it does |
 |---|---|
@@ -3662,7 +3663,7 @@ All on the built-in server; each costs nothing for what does not use it.
 
 Most app code is written by AI, so an app's cost is measured in tokens, and keeping it low is a Wisp principle ([design](/docs/design)). Run `cargo run -q -p wisp-tokens --release` for the numbers. The four-app comparison against six frameworks: [Tokens, app by app](/docs/tokens-apps).
 
-## Five features, counted by `wisp-tokens`
+## Five Features, Counted by `wisp-tokens`
 
 `bench/tokens/apps` holds the same five features as a complete app in each stack:
 
@@ -3684,7 +3685,7 @@ Most app code is written by AI, so an app's cost is measured in tokens, and keep
 
 Wisp's `data` is longer than JavaScript's: a Rust type with its fields' types and `pub`s. Everything else is shorter, the form most of all. Of what is left, 60 tokens are file paths, 115 the Rust type and data, and the rest is markup every stack writes.
 
-## A real app: auth, CRUD, upload, live, a component
+## A Real App: Auth, CRUD, Upload, Live, a Component
 
 `bench/tokens/real` is sign up and in, a posts table with validation, edit, delete, pages and live refresh, an avatar upload and a toggle component: 10 files, **995** tokens in Wisp, 3.4x less than SvelteKit 3 and 3.2x less than Next.js 15. Its tests check every feature.
 
@@ -3708,7 +3709,7 @@ Competitor versions: SvelteKit 2 with Svelte 5 runes and `use:enhance`; Next.js 
 
 Method and the five-feature table: [Tokens](/docs/tokens).
 
-## The four apps
+## The Four Apps
 
 - **counter**: a button that counts clicks.
 - **todo**: a list kept in memory, a form that adds an item (1 to 100 characters; otherwise a 422 that shows the problem and keeps what was typed), and a delete button per item.
@@ -3740,7 +3741,7 @@ What a real API adds in Wisp:
 - a hook such as `fn before_create(note: &mut Note) -> Result { Ok(()) }`: 22 with its body
 - every table in SQLite instead of log files: a `wisp::Store` of 373 (docs/api.md), written once per app
 
-## The Wisp versions
+## The Wisp Versions
 
 ```rust
 // api: src/routes/api/notes/+server.rs
@@ -3792,7 +3793,7 @@ let post = posts::POSTS.iter().find(|p| p.slug == slug).or_404()?;
 
 <!-- docs/why.md -->
 
-## Short code that reads like the page
+## Short Code That Reads Like the Page
 
 A folder is a URL, and its `+page.wisp` is the page: a block of Rust that loads data and handles forms, then markup. A model, a saved table, a validated action, a form and a list fit in about twenty lines. No imports (a prelude brings the usual names), no router file, no handler wiring. See [Getting started](/docs).
 
@@ -3800,7 +3801,7 @@ A folder is a URL, and its `+page.wisp` is the page: a block of Rust that loads 
 
 Zero cost on the request hot path: a route pays only for the features it uses, and a change that touches the path is checked by an instructions-per-request A/B before it lands. See [Benchmarks](/docs/benchmarks).
 
-## Cheap to write
+## Cheap to Write
 
 AI writes most code now, and every token costs time and money. Wisp uses conventions over configuration, types the compiler infers, and forms that write their own inputs and errors.
 

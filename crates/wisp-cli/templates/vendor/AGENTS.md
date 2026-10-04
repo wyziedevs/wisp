@@ -249,7 +249,8 @@ first). Not its Rust (`db.rs`, `hooks.rs`) or `fonts.txt`.
 `+page.md` with `---` front matter (`title`, `layout: Post` a component the
 page is the children of, any field `date: 2026-10-01`); text may use
 `<Card>` between blank lines. Built at build time; fenced code is
-highlighted (`hl-k hl-s hl-c hl-n hl-t hl-a`; color them). `noindex: true`
+highlighted (`hl-k hl-s hl-c hl-n hl-t hl-a`; color them); headings get
+ids (`## Install and Run` is `#install-and-run`). `noindex: true`
 leaves the sitemap. `/feed.xml` is an Atom feed of pages with a `date`
 (`description` is the summary). `{@html wisp::og(title, desc, image)}` in a
 head: Open Graph tags; image `"auto"` (literal title and description) is an SVG
