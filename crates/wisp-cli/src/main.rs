@@ -18,6 +18,7 @@ mod net;
 mod new;
 mod npm;
 mod og;
+mod openapi_cmd;
 mod recipe;
 mod routes_cmd;
 mod scaffold;
@@ -33,7 +34,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 /// `wisp --help`: each command or option, and what it does.
-const COMMANDS: [(&str, &str); 27] = [
+const COMMANDS: [(&str, &str); 29] = [
     (
         "wisp new [name]",
         "Create an app. It asks a few questions; the options below answer them.",
@@ -73,6 +74,14 @@ const COMMANDS: [(&str, &str); 27] = [
     (
         "wisp build --client ts [--out client.ts]",
         "Write a typed TypeScript client of the app's +server.rs endpoints.",
+    ),
+    (
+        "wisp openapi [-o openapi.json]",
+        "Print the app's OpenAPI 3.1 document (endpoints, pages, form actions), or write it to a file.",
+    ),
+    (
+        "wisp openapi --check [-o openapi.json]",
+        "Fail if the committed file is not what the app describes now, for CI.",
     ),
     (
         "wisp deploy init <host> [--force]",
@@ -196,6 +205,7 @@ fn main() -> ExitCode {
             Some("fly" | "render" | "railway") => scaffold::deploy(root, &args[1..]),
             _ => ci::run(root, &args[1..]),
         }),
+        Some("openapi") => project().and_then(|root| openapi_cmd::run(root, &args[1..])),
         Some("routes") => project().and_then(|root| routes_cmd::list(root, &args[1..])),
         Some("new-route") => project().and_then(|root| routes_cmd::new_route(root, &args[1..])),
         Some("check") => check_types(&args[1..]).and_then(|types| {

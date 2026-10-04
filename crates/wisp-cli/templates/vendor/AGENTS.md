@@ -471,7 +471,7 @@ cloudflare|pages|deno|vercel|netlify|node|bun|lambda|native` (`--edge` with
 vercel or netlify: their edge runtime), `--client ts`, `--sourcemap`, `--analyze`: per-route JS/CSS/wasm bytes, raw and
 gzip, no build) · `wisp
 deploy init <host>` (a GitHub Actions workflow; or `fly|render|railway`: that
-host's config) · `wisp routes` · `wisp new-route /path page|server|rest` ·
+host's config) · `wisp openapi [-o openapi.json]` (`--check`: CI fails when the file is stale) · `wisp routes` · `wisp new-route /path page|server|rest` ·
 `wisp add|remove pkg` (`wisp add` alone: the recipes in `add/`) · `wisp ui
 add|list button dialog` (accessible components into `src/components`; `clientonly`:
 `<ClientOnly fallback="…">` draws its children only in the browser) · `wisp
