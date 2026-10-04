@@ -47,6 +47,7 @@ thread_local! {
 pub struct Awaits(());
 
 impl Awaits {
+    /// Starts holding the deferred parts of a page.
     pub fn begin() -> Awaits {
         Awaits(())
     }
@@ -229,6 +230,7 @@ async fn answers(mut tails: Vec<Tail>, pipe: &mut Pipe<'_>) -> Result<(), Gone> 
 pub struct Settled<T>(Cell<Option<T>>);
 
 impl<T> Settled<T> {
+    /// Wraps the value the build is about to settle.
     pub fn new(v: T) -> Settled<T> {
         Settled(Cell::new(Some(v)))
     }
@@ -238,8 +240,11 @@ impl<T> Settled<T> {
     }
 }
 
+/// Settles a `Result<T, wisp::Error>`: the value, or the error's message.
 pub trait WispResult {
+    /// What a success holds.
     type Value;
+    /// The value, or the error as text.
     fn settle(&self) -> Result<Self::Value, String>;
 }
 
@@ -250,8 +255,11 @@ impl<T> WispResult for &&Settled<crate::Result<T>> {
     }
 }
 
+/// Settles any other `Result<T, E: Display>`: the value, or the error as text.
 pub trait AnyResult {
+    /// What a success holds.
     type Value;
+    /// The value, or the error as text.
     fn settle(&self) -> Result<Self::Value, String>;
 }
 
@@ -262,8 +270,11 @@ impl<T, E: Display> AnyResult for &Settled<Result<T, E>> {
     }
 }
 
+/// Settles any value that is not a `Result`: always the value.
 pub trait Value {
+    /// The value's type.
     type Value;
+    /// Always `Ok` with the value.
     fn settle(&self) -> Result<Self::Value, String>;
 }
 

@@ -33,6 +33,7 @@ use std::path::Path;
 pub struct ExportRoute {
     /// `/blog/[slug]`.
     pub pattern: &'static str,
+    /// The route has a page (`+page.wisp`).
     pub page: bool,
     /// The page has actions, which need a server.
     pub actions: bool,
@@ -51,6 +52,7 @@ pub struct ExportRoute {
 
 /// What `entries` returns a `Vec` of.
 pub trait Entry {
+    /// The values of one set of route parameters, in the order of the route's `[param]`s.
     fn params(self) -> Vec<String>;
 }
 

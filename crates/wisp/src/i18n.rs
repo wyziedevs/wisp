@@ -13,27 +13,36 @@ use wisp_shared::plural;
 /// A piece of a message: text, a placeholder (by its index among the
 /// key's), or a plural on one, by case.
 pub enum Part {
+    /// Literal text.
     Text(&'static str),
+    /// Placeholder number `n` (an index among the key's arguments).
     Arg(u8),
+    /// Plural on argument `n`: the first case that matches its count.
     Plural(u8, &'static [(Case, &'static [Part])]),
 }
 
 /// A plural's case: `=N`, or a CLDR category (`wisp_shared::plural`).
 pub enum Case {
+    /// Matches exactly this count (`=N`).
     Is(u64),
+    /// Matches a CLDR plural category by number (`wisp_shared::plural`).
     Cat(u8),
 }
 
 /// A message in one locale, with that locale's plural rule.
 pub struct Msg {
+    /// The locale's plural rule, as `wisp_shared::plural` numbers them.
     pub rule: u8,
+    /// The message, in pieces.
     pub parts: &'static [Part],
 }
 
 /// A placeholder's value: a count (what a plural picks its case by), or
 /// anything else that displays.
 pub enum Arg<'a> {
+    /// A whole number: what a plural counts.
     Num(i128),
+    /// Anything that displays.
     Text(&'a dyn fmt::Display),
 }
 
@@ -43,6 +52,7 @@ pub enum Arg<'a> {
     label = "the value of a `{{n, plural, …}}` placeholder"
 )]
 pub trait Count {
+    /// The value as a whole number.
     fn count(&self) -> i128;
 }
 
@@ -73,6 +83,7 @@ pub struct Tr<'a, const N: usize> {
 }
 
 impl<'a, const N: usize> Tr<'a, N> {
+    /// A translated message with its arguments; made by the generated code.
     #[inline]
     pub fn new(msg: &'static Msg, args: [Arg<'a>; N]) -> Self {
         Tr { msg, args }

@@ -4,7 +4,7 @@
 // {:#await} and {:#try}, <wisp:element>, {:...spread}, client:* on an
 // element, bind: on anything but value and checked, components drawn in
 // the browser, use:enhance, $state.snapshot, persisted stores, Maps and
-// Sets as state, and pages' own snapshots.
+// Sets as state, tweened, spring and crossfade, and pages' own snapshots.
 // It adds its kinds of binding and helpers to live.js's `__wisp`, which
 // calls them.
 import { __wisp as X, page, store } from 'wisp';
@@ -401,6 +401,139 @@ X.coll = {
     if (k == 'clear') return () => t.size && (t.clear(), m.s?.forEach(bump), changed(m, null, 1));
     return (...a) => (track(verOf(m)), f.apply(t, a));
   },
+};
+
+// ---- motion -------------------------------------------------------------------
+
+// A number, an array or an object of numbers, as a list of them and back.
+const nums = (v) => (typeof v == 'number' ? [v] : Object.values(v));
+const shape = (v, a) => (typeof v == 'number' ? a[0] : Array.isArray(v) ? a : Object.fromEntries(Object.keys(v).map((k, i) => [k, a[i]])));
+const cubic = (t) => 1 - (1 - t) ** 3;
+
+// tweened(value, { duration = 400, delay, easing }): a store whose value
+// runs to what it is set to (`t.value = 5`, `t.set(5, { duration: 0 })`),
+// as numbers, arrays or objects of them. set() resolves once it is there
+// (or something newer replaced it). Reduced motion jumps.
+X.shared.tweened = (v, o = {}) => {
+  const s = store(v);
+  let id = 0;
+  let stop;
+  let to = v;
+  const set = (x, p = {}) => {
+    cancelAnimationFrame(id);
+    stop?.();
+    const a = nums(s.value);
+    const b = nums((to = x));
+    const d = reduce.matches ? 0 : (p.duration ?? o.duration ?? 400);
+    const e = p.easing || o.easing || cubic;
+    const t0 = performance.now() + (p.delay ?? o.delay ?? 0);
+    return new Promise((done) => {
+      stop = done;
+      const step = (now) => {
+        const k = d > 0 ? Math.min(1, Math.max(0, (now - t0) / d)) : 1;
+        s.value = k < 1 ? shape(x, a.map((n, i) => n + (b[i] - n) * e(k))) : x;
+        if (k < 1) id = requestAnimationFrame(step);
+        else done();
+      };
+      d > 0 ? (id = requestAnimationFrame(step)) : step(t0);
+    });
+  };
+  return {
+    get value() {
+      return s.value;
+    },
+    set value(x) {
+      set(x);
+    },
+    set,
+    update: (f, p) => set(f(to), p),
+    subscribe: s.subscribe,
+  };
+};
+
+// spring(value, { stiffness = 0.15, damping = 0.8, precision = 0.01 }): a
+// store whose value is pulled to its target, with momentum, as numbers,
+// arrays or objects of them. set(x, { hard: true }) jumps; set() resolves
+// at rest.
+X.shared.spring = (v, o = {}) => {
+  const s = store(v);
+  let id = 0;
+  let to = v;
+  let vel = nums(v).map(() => 0);
+  let last = 0;
+  let wake;
+  const step = (now) => {
+    const f = Math.min((now - last) / 16.7, 4);
+    last = now;
+    const b = nums(to);
+    let rest = 1;
+    const a = nums(s.value).map((n, i) => {
+      const d = b[i] - n;
+      vel[i] += (d * (o.stiffness ?? 0.15) - vel[i] * (o.damping ?? 0.8)) * f;
+      if (Math.abs(vel[i]) < (o.precision ?? 0.01) && Math.abs(d) < (o.precision ?? 0.01)) return b[i];
+      rest = 0;
+      return n + vel[i] * f;
+    });
+    s.value = rest ? to : shape(to, a);
+    if (rest) (vel = vel.map(() => 0)), (id = 0), wake?.();
+    else id = requestAnimationFrame(step);
+  };
+  const set = (x, p = {}) => {
+    wake?.();
+    to = x;
+    if (p.hard || reduce.matches) {
+      cancelAnimationFrame(id);
+      id = 0;
+      vel = nums(x).map(() => 0);
+      s.value = x;
+      return Promise.resolve();
+    }
+    return new Promise((done) => {
+      wake = done;
+      if (!id) (last = performance.now()), (id = requestAnimationFrame(step));
+    });
+  };
+  return {
+    get value() {
+      return s.value;
+    },
+    set value(x) {
+      set(x);
+    },
+    set,
+    update: (f, p) => set(f(to), p),
+    subscribe: s.subscribe,
+  };
+};
+
+// const [send, receive] = crossfade({ duration, easing }): transitions for
+// an element that leaves one place and one that comes in another with the
+// same key (`out:send={{ key: id }}`, `in:receive={{ key: id }}`): the
+// newcomer starts where the leaver was. One with no partner fades.
+X.shared.crossfade = (o = {}) => {
+  const seen = [new Map(), new Map()];
+  const one = (me) => (el, p) => {
+    const r = el.getBoundingClientRect();
+    const at = performance.now();
+    const op = +getComputedStyle(el).opacity;
+    seen[me].set(p.key, { r, at });
+    return {
+      duration: p.duration ?? o.duration ?? 400,
+      easing: p.easing || o.easing || cubic,
+      tick(t) {
+        const w = seen[1 - me].get(p.key);
+        const u = 1 - t;
+        const st = el.style;
+        if (t >= 1) return void (st.opacity = st.transform = st.transformOrigin = '');
+        st.opacity = w && at - w.at < 100 ? op : t * op;
+        if (!w || at - w.at >= 100) return;
+        const a = w.r;
+        st.transformOrigin = 'top left';
+        st.transform = `translate(${u * (a.left - r.left)}px, ${u * (a.top - r.top)}px) scale(${t + (u * a.width) / (r.width || 1)}, ${t + (u * a.height) / (r.height || 1)})`;
+      },
+    };
+  };
+  return [one(0), one(1)];
 };
 
 // ---- snapshots ----------------------------------------------------------------
