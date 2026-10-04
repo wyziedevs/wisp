@@ -80,9 +80,28 @@ fn implicit_cx(item: TokenStream) -> TokenStream {
     else {
         return tokens.into_iter().collect();
     };
-    let params = tokens[f..]
-        .iter()
-        .position(|t| matches!(t, TokenTree::Group(g) if g.delimiter() == Delimiter::Parenthesis));
+    // The first `(…)` after the name and its generics: `<F: Fn(u8) -> u8>` has
+    // groups of its own.
+    let (mut angle, mut dash) = (0i32, false);
+    let params = tokens[f..].iter().position(|t| match t {
+        TokenTree::Punct(p) => {
+            match p.as_char() {
+                '<' => angle += 1,
+                '>' if !dash => angle -= 1,
+                _ => {}
+            }
+            dash = p.as_char() == '-';
+            false
+        }
+        TokenTree::Group(g) => {
+            dash = false;
+            angle <= 0 && g.delimiter() == Delimiter::Parenthesis
+        }
+        _ => {
+            dash = false;
+            false
+        }
+    });
     let body = tokens
         .iter()
         .rposition(|t| matches!(t, TokenTree::Group(g) if g.delimiter() == Delimiter::Brace));
@@ -159,8 +178,25 @@ fn returns_done(body: TokenStream) -> TokenStream {
             TokenTree::Punct(p) if p.as_char() == ';' => inner_fn = false,
             TokenTree::Ident(id) if id.to_string() == "return" => {
                 // Up to the statement's `;`, the arm's `,` or the block's end.
+                // A `,` inside a turbofish (`f::<A, B>()`) does not end it.
+                let (mut angle, mut path) = (0i32, false);
                 let end = (i + 1..tokens.len())
-                    .find(|&j| matches!(&tokens[j], TokenTree::Punct(p) if matches!(p.as_char(), ';' | ',')))
+                    .find(|&j| match &tokens[j] {
+                        TokenTree::Punct(p) => {
+                            let c = p.as_char();
+                            match c {
+                                '<' if path => angle += 1,
+                                '>' if angle > 0 && !matches!(&tokens[j - 1], TokenTree::Punct(d) if d.as_char() == '-') => angle -= 1,
+                                _ => {}
+                            }
+                            path = c == ':';
+                            c == ';' || (c == ',' && angle == 0)
+                        }
+                        _ => {
+                            path = false;
+                            false
+                        }
+                    })
                     .unwrap_or(tokens.len());
                 let value: TokenStream = tokens[i + 1..end].iter().cloned().collect();
                 let value = if value.is_empty() {
@@ -927,7 +963,7 @@ pub fn derive_rest(item: TokenStream) -> TokenStream {
 
 /// What the app reads from its environment once, at start: each field of
 /// the struct from the variable of its name in capitals (`api_key` from
-/// `API_KEY`, or `.env`), any `FromStr` type, an `Option` one may be unset.
+/// `API_KEY`, or `.env`; `r#type` from `TYPE`), any `FromStr` type, an `Option` one may be unset.
 /// `Config::get().api_key` reads it anywhere. A variable missing or not
 /// parsing stops the server when it starts (the build calls `Config::load()`
 /// before `init`), naming each one, never a request.
@@ -950,8 +986,14 @@ fn config(item: TokenStream) -> Result<TokenStream, Error> {
     }
     let (mut reads, mut some, mut list) = (String::new(), String::new(), String::new());
     for f in &fields {
-        let (n, key) = (&f.name, f.name.to_string().to_uppercase());
-        let helper = if f.ty.starts_with("Option") {
+        // `r#type` is read from `TYPE`.
+        let (n, key) = (&f.name, f.name.to_string().replace("r#", "").to_uppercase());
+        let ty: String = f.ty.chars().filter(|c| !c.is_whitespace()).collect();
+        let ty = ty.strip_prefix("::").unwrap_or(&ty);
+        let helper = if ["Option<", "option::Option<", "std::option::Option<"]
+            .iter()
+            .any(|p| ty.starts_with(p))
+        {
             "config_opt"
         } else {
             "config"

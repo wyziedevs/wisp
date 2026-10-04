@@ -5,6 +5,7 @@
 //! lowest optimization, so the dependencies compile once and every later
 //! test (and run) only compiles its own small app.
 
+mod bridge;
 mod build;
 mod check;
 mod dev;
