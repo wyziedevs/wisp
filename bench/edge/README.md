@@ -142,6 +142,22 @@ objects in V8's C++ while Wisp's serializer runs in wasm (-22%), and a cookie
 is a call out of the wasm into the Request's headers on top of the entry
 (-19%). On Node, which has no entry cost, Wisp is ahead on all three.
 
+## Where json-big and params lose on workerd (measured)
+
+Windows workerd runs the same wasm about 1.8x slower than Node (`/jb-ser`, the
+200 rows' JSON of a prebuilt list: 19 us in Node, about 40 us over `/` in
+workerd; building the rows with `format!`, 27 us in Node), and that does not
+change over 25 s, so it is not tiering. `/json-big` is the sum of the two
+(147 us against 116 for build alone and 107 for serialize alone, `/` 65): there
+is no extra cost at the boundary, the body copy included. The gap to Hono there
+is wasm compute (malloc, `fmt`, the serializer), not the bridge.
+
+Kept (`bridge.js`, the `header` import): a header's name is read byte by byte
+(ASCII) instead of through a `TextDecoder`, and its value is encoded straight
+into the app's buffer instead of into a new array first. In Node, `serve` with
+a cookie, fastest of 10 runs: 8.9 to 7.5 us. On workerd the 1 us is inside the
+noise of a shared machine (15%), so no req/s claim is made.
+
 ## Cold start and wasm size, measured again
 
 Cold start is process start to the first complete response, median of 9, three
