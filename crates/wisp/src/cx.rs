@@ -1729,7 +1729,7 @@ mod tests {
         // A kept (`CACHE`) page takes the handler's; the hook's does not go
         // out beside it.
         let mut cx = hooked();
-        assert_eq!(pairs(cx.page_headers()), [public.clone()]);
+        assert_eq!(pairs(cx.page_headers()), std::slice::from_ref(&public));
         let page: Vec<_> = cx.take_page_headers().collect();
         assert_eq!(pairs(&page), [public]);
         assert_eq!(pairs(&cx.out_headers), [own("x-hook", "1")]);

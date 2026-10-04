@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 /// Every environment variable Wisp reads, and whether an author sets it.
 /// A read the scan finds that is not here fails the test: classify it.
-const ENV: [(&str, bool); 98] = [
+const ENV: [(&str, bool); 99] = [
     ("AWS_LAMBDA_RUNTIME_API", true),
     ("CRON_SECRET", true),
     ("EDITOR", true),
