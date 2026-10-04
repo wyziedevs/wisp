@@ -24,7 +24,7 @@ tower-service = { version = "0.3", optional = true }
 # JavaScript host's WebAssembly: no sockets, files, signals or threads.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio.workspace = true
-# The `tls` feature: `https://` for `wisp::fetch` (and so OAuth and mail).
+# The `tls` feature: `https://` for `wisp::fetch` (and so OAuth).
 # Off by default; the web's root certificates, no OpenSSL.
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"], optional = true }
 webpki-roots = { version = "1", optional = true }

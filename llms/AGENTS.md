@@ -344,7 +344,7 @@ Both sign in. `user`, `login` and `signup` take the table for you: the only
 off the worker (`RateLimit` sign-ins); by hand `wisp::password::{hash, check}`.
 A `Password` is `Plain` as typed (never sniffed, even if it looks like a hash) and `Hashed` once a table (add/update/set) or `signup` hashes it, once; stores hold and load only hashes. It is `null` in any JSON out (`hash: String` still works).
 `cx.need(&USERS, |u| u.admin)?` is the Row, 403 if not allowed. More:
-`docs/auth.md` (`token`/`untoken` links, `totp`, `oauth`, `mail`,
+`docs/auth.md` (`token`/`untoken` links, `totp`, `oauth`,
 `fetch`).
 
 ## hooks.rs

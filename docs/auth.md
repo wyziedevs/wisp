@@ -65,15 +65,7 @@ certificates, no OpenSSL). One request per connection, no redirects, 30 s,
 
 ## Email
 
-```rust
-wisp::mail("ann@example.com", "Your link", &html).await?;
-```
-
-Set `MAIL_FROM` and `RESEND_API_KEY` or `POSTMARK_TOKEN` (needs `tls`).
-In dev with neither, the mail is printed to the log. Outside dev with
-neither it is a 500. The recipient is one address; a subject with a line
-break is refused. SMTP and SES are not built in: call their HTTP APIs with
-`fetch`.
+Not built in: send mail from an action with `wisp::fetch` or any HTTP client.
 
 ## Sign in with GitHub, Google or OpenID Connect
 
