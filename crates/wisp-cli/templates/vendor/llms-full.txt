@@ -470,6 +470,9 @@ no-wait fast path off every route.
 - Serve extras (https://wispweb.dev/docs/serve): embedded files gzip + `Range`; pages get
   `nosniff` and `referrer-policy` (`WISP_HSTS=on`, `WISP_SECURE_HEADERS=off`);
   `/_wisp/health`; `WISP_HANDLER_TIMEOUT=secs` is a 503.
+- Reference tables: every command and flag https://wispweb.dev/docs/cli, every env
+  var https://wispweb.dev/docs/env, knobs, Cargo.toml keys and cargo features
+  https://wispweb.dev/docs/config.
 
 ## Gotchas
 
@@ -839,7 +842,9 @@ Each param but `cx` is read by name: route param, then form field or JSON object
 | `Option<T>` | JSON, 204 for `Some(())`, 404 for `None` |
 | any of these in a `Result` | same, or the error |
 
-`Response::created(&v)` is 201; `Response::json_of(&v).with_status(202)`.
+`Response::created(&v)` is 201; `Response::json_of(&v).with_status(202)`; `.with_header(name, value)` adds a header (also on `Error`). In a page, `cx.set_status(404)` sets the status.
+
+Query: `cx.query("q")`, `cx.query_or("page", 1)` (parsed, else the default), `cx.query_string()` (raw, no `?`). `cx.request_id()` is the request's id, sent back as `x-request-id`.
 
 ## Errors are JSON
 An error is JSON (else the app's `+error.wisp`, else Wisp's default page) when the request:
@@ -938,6 +943,8 @@ E.g. over `Mutex<rusqlite::Connection>` (`create table if not exists {table} (id
 {#each posts as post}<p>{post.title}</p>{/each}
 {#if let Some(href) = posts.next}<a {href}>Older</a>{/if}
 ```
+
+`{@pager posts}` writes both links. `TABLE.add_unless(|t| t.slug == slug, value)` keeps `value` only if no row is taken (checked locked); `None` if one is.
 
 
 <!-- docs/auth.md -->
@@ -1051,6 +1058,61 @@ You need Rust. `bench/README.md` lists every option, the frameworks compared, an
 ## Tokens
 
 Writing cost is measured by a program in the repository: `cargo run -p wisp-tokens --release`. See [Tokens](/docs/tokens).
+
+
+<!-- docs/cli.md -->
+
+`wisp --help` prints the same list. App commands run from the app's folder.
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `wisp new [name]` | create an app; asks a few questions, the options below answer them |
+| `wisp dev [--port\|-p <n>]` | run the app, rebuild and reload on every save (port 3000) |
+| `wisp build` | one release binary with CSS and static files inside |
+| `wisp build --sourcemap` | the same, with source maps for browser code |
+| `wisp build --analyze` | each route's JS, CSS and wasm bytes, raw and gzipped; builds nothing |
+| `wisp build --static [--out dist]` | the pages as plain files, for any static host |
+| `wisp build --spa [--out dist]` | the same, and `index.html` draws the `SSR = false` pages |
+| `wisp build --docker [--force]` | write a `Dockerfile` and `.dockerignore` |
+| `wisp build --target\|-t <host> [--edge] [--out\|-o <dir>]` | a folder for cloudflare, pages, deno, vercel, netlify, node, bun or lambda; `--edge` uses edge functions on vercel or netlify |
+| `wisp build --client ts [--out client.ts]` | a typed TypeScript client of the `+server.rs` endpoints |
+| `wisp openapi [-o\|--out openapi.json]` | print the OpenAPI 3.1 document, or write it |
+| `wisp openapi --check` | fail if the committed file is stale (CI) |
+| `wisp check [--types]` | check routes and templates without compiling; `--types` runs `tsc` too |
+| `wisp test [--browser] [args]` | `cargo test` with its args; `--browser` runs browser tests too |
+| `wisp fmt [paths]` | format `.wisp` files (markup, the `---` block, scripts, styles) |
+| `wisp fmt --check` | name unformatted files and fail if any |
+| `wisp fmt --stdin [path]` | format stdin to stdout, as the file at path (editors) |
+| `wisp routes` | each route's methods, URL and file |
+| `wisp new-route <path> [page\|server\|rest]` | write a page, endpoint or REST resource |
+| `wisp deploy init <host> [--force]` | a GitHub Actions workflow that deploys on push |
+| `wisp deploy init fly\|render\|railway [--force]` | that host's config (and a `Dockerfile`) |
+| `wisp add <pkg>[@version]` | add an npm package to `package.json`; no Node needed |
+| `wisp add [name] [--force]` | apply the recipe `add/<name>/recipe`; no name lists them |
+| `wisp remove <pkg>` | take an npm package out |
+| `wisp ui add <name…> [--force]` | copy components (button, dialog, tabs…) into `src/components` |
+| `wisp ui list` | the components `wisp ui add` has |
+| `wisp service install\|uninstall\|start\|stop\|status` | run the release binary as a systemd, launchd or Windows service; `--name`, `--user`, `--port`, `--dry-run` |
+| `wisp lsp` | the language server, over stdio |
+| `wisp update-docs` | bring `AGENTS.md` up to this Wisp |
+| `wisp mcp` | docs, routes, components and checks for AI agents (MCP, stdio) |
+| `wisp --help` | this list (`-h`, `help`) |
+
+## Options for wisp new
+
+| Option | What it does |
+|---|---|
+| `-t, --template demo\|minimal\|api` | an app to learn from, one empty page, or a JSON API (also `--api`) |
+| `--tailwind`, `--no-tailwind` | add Tailwind CSS, or leave it out |
+| `--git`, `--no-git` | create a git repository, or not |
+| `--install`, `--no-install` | download and compile dependencies now, or later |
+| `-y, --yes` | take the defaults for anything not given |
+
+## CLI older than the app
+
+App commands warn on stderr when the installed `wisp` is older than the app's `wisp` crate, and in a terminal ask before going on. `WISP_NO_UPDATE_CHECK=1` silences it. More: [CLI, dev loop and security](/docs/design-cli).
 
 
 <!-- docs/client.md -->
@@ -1641,6 +1703,72 @@ The server renders what it can know into the page (it works before JS and withou
 Next: [components, custom elements and state helpers](/docs/client-components).
 
 
+<!-- docs/config.md -->
+
+## const knobs
+
+A `const` in a page's `---` block, `+page.rs`, `+server.rs` or a layout. The build reads them; nothing runs per request that you did not ask for.
+
+| Knob | What it does |
+|---|---|
+| `const CACHE: u32 = 60;` | keep a GET's answer 60 s per worker (ETag, 304); never with cookies or `authorization`; not in dev |
+| `const CACHE_PUBLIC: u32 = 60;` | like `CACHE`, for every request |
+| `const CACHE_STALE: u32 = 600;` | seconds past `CACHE` the old answer is sent while one request renews it |
+| `const CACHE_TAGS: &[&str] = &["posts"];` | names for the answer; `wisp::revalidate_tag("posts")` drops it |
+| `const RATE_LIMIT: u32 = 60;` | requests a minute per client address, then 429 (page, `+server.rs` or `src/hooks.rs`) |
+| `const CORS: &str = "*";` | the same as `cx.cors("*")?` before the handler |
+| `const CSRF: bool = false;` | opt out of the cross-site refusal of POST, PUT, PATCH, DELETE |
+| `const TIMEOUT: u32 = 5;` | 503 after 5 seconds |
+| `const MIDDLEWARE: &[&str] = &["auth"];` | run those functions of `src/middleware.rs` first; an `Err` answers |
+| `const SIGNED_IN: bool = true;` | in a layout: its pages and actions are for members (303 to sign in, 401 for JSON) |
+| `const PRERENDER: bool = true;` | render at build; `fn entries()` lists params |
+| `const SSR: bool = false;` | the browser draws the page |
+| `const BODY_LIMIT: usize = 20 * wisp::MB;` | largest body the route takes (413 past it; 1 MB) |
+| `const RUNTIME: wisp::Runtime = wisp::Runtime::Edge;` | on `--target vercel` or `netlify`, also an edge function |
+
+## [package.metadata.wisp]
+
+Lists of strings in `Cargo.toml`, checked and baked at build.
+
+| Key | What it does |
+|---|---|
+| `base = "/app"` | serve under a base path (`WISP_BASE`) |
+| `redirects = [...]` | `"from to [status]"` (308 by default; [design](/docs/design)) |
+| `rewrites = [...]` | serve one path from another |
+| `headers = [...]` | headers by path |
+| `i18n = [...]` | locale routing: `default`, `prefix`, `domain`, `missing` ([translations](/docs/design-tooling)) |
+| `use = [...]` | plugin crates the build loads |
+| `extends = ["../base"]` | layers: an app's layout, components and static files under yours |
+
+## Cargo features
+
+| Feature | What it does |
+|---|---|
+| `tls` (wisp) | `https://` for `wisp::fetch` (rustls, no OpenSSL) |
+| `h2` (wisp) | HTTP/2 with prior knowledge (h2c) on the built-in server |
+| `img` (wisp) | `wisp::img::serve`: `/_img?src=&w=&q=` resizes a picture of `static/` |
+| `og-png` (wisp and wisp-cli) | PNG Open Graph pictures for `wisp::og(.., "auto")` |
+| `tower` (wisp) | the app as a Tower service ([embed](/docs/embed)) |
+| `browser` (wisp) | `wisp::test::browser`: tests in headless Chrome or Edge |
+| `types` (wisp) | used by `wisp check --types`; never in a served build |
+| `avif` (wisp-cli) | AVIF widths for images in `wisp build`, beside WebP |
+
+## Smaller public types
+
+| Name | What it is |
+|---|---|
+| `Channel`, `Subscription` | `wisp::channel(name)` and what its `subscribe()` receives |
+| `Queue` | a named job queue from `wisp::queue` |
+| `SpanGuard` | from `wisp::span`; the span ends when it drops |
+| `TrailingSlash` | `Always`, `Never`, `Ignore` for `wisp::trailing_slash` |
+| `Prefix` | `Optional`, `Always`, `AsNeeded`: what `wisp::prefix()` returns |
+| `AsDate` | what `format_date` takes: epoch seconds, `"2026-10-04"` or `(y, m, d)` |
+| `Resource` | the trait `#[derive(Rest)]` implements |
+| `ClientModule`, `ExportRoute` | made by the generated code; apps do not write them |
+
+`wisp::native_name("fr")` is a locale's name in its own language (`Français`).
+
+
 <!-- docs/data.md -->
 
 Everything here is opt-in: an app that uses none of it pays nothing.
@@ -1657,8 +1785,9 @@ pub static USERS: Table<User> = Table::saved("users")
 
 - `set(id, v) -> Option<()>` replaces a row; `clear()` takes every row out (ids are not given again).
 - `unique`: `by(&email)` finds the row without a scan. `try_add`, `try_set` and `try_update` return a 422 on the field (`email: is taken`), for an action to return with `?`. `add`, `set` and `update` panic (a 500) instead. Use `try_update` to change a unique field.
+- On a `#[model]` field: `#[unique]` is the same as `.unique(..)`; `#[json(default)]` or `#[json(default = expr)]` fills a field old rows lack; `#[json(was = "old")]` reads it under its old name.
 - `migrate(|v: &mut Value| ..)` runs on each stored row's JSON when it is read (at load, and by `WISP_STORE_POLL`), before it becomes the type.
-- `live()`: after each change, `wisp::channel(name).send("change")`, only when someone listens. A page listens with `listen('/users/events', invalidate)` and a `+server.rs` of `wisp::channel("users").events()`.
+- `live()`: after each change, `wisp::channel(name).send("change")`, only when someone listens. A page listens with `listen('/users/events', invalidate)` and a `+server.rs` of `wisp::channel("users").events()`. A page that names a live table's static rows refreshes itself through `/_wisp/live/<name>`.
 - Several servers on one store: a `Store` may answer `changes(table, since)`, and with `WISP_STORE_POLL=5` (seconds) every table follows it.
 - Tables are whole in memory: the store's size is the RAM bound.
 
@@ -1852,7 +1981,7 @@ The app compiles to WebAssembly in a folder with the host's config, an entry fil
 | `netlify` | Netlify | `npx netlify deploy --prod` |
 | `node` | Amplify, Firebase, Azure, Stormkit, Zeabur, any Node host | `npm start` |
 | `bun` | Bun (`Bun.listen`) | `bun server.mjs` |
-| `lambda` | AWS Lambda | [below](#aws-lambda) |
+| `lambda` | AWS Lambda | [below](/docs/deploy-targets) |
 
 Other hosts:
 
@@ -2565,7 +2694,7 @@ So `fn load(q: Option<String>, page: Option<u32>)` and `#[action] fn add(text: S
 
 - `?` on any `std::error::Error` is a 500 (details only in dev). `return error(404, "…")` stops with that status and message; `return redirect("/…")` is a 303. Both are `Err`s, so they end a function returning a `Result`. `Error::new(status, "…")` is the error itself (for `ok_or`, `map_err`); `Error::redirect(status, "/…")` takes another status. `Err(error(..))` is a build error telling you to write `return error(..)`. `Option::or_404()` is the shortcut.
 - An action returns nothing (or `Result<()>`) and the page renders; or a `Response` (CSV, a file) sent instead of the page; or an `Option<Response>` to do that sometimes.
-- Validation: the action returns `invalid(field, problem)`; the page renders again as a 422 with the form still there, each input showing what was typed and what is wrong ([Actions](/docs/design-forms#actions)). A param that does not parse (`email: Email`, `age: u8`) is the same 422 by field. An action written without `->` returns `Result`, so it may end in `redirect(..)`. `{cx.problem(field)}` places one message elsewhere; `cx.input(field)` reads what was sent. Any other error shows the error page. For more than a message, `cx.fail(status, value)` keeps a value for the load, which takes it with `cx.take()`.
+- Validation: the action returns `invalid(field, problem)`; the page renders again as a 422 with the form still there, each input showing what was typed and what is wrong ([Actions](/docs/design-forms)). A param that does not parse (`email: Email`, `age: u8`) is the same 422 by field. An action written without `->` returns `Result`, so it may end in `redirect(..)`. `{cx.problem(field)}` places one message elsewhere; `cx.input(field)` reads what was sent. Any other error shows the error page. For more than a message, `cx.fail(status, value)` keeps a value for the load, which takes it with `cx.take()`.
 
 ```html
 ---
@@ -2608,7 +2737,7 @@ Draft mode | `cx.enter_draft()` (from your own endpoint that checks who may; `cx
 
 The build checks that each is a `const` `u32` of one of the names, set once per route, not in a layout (`BODY_LIMIT`: a `usize`, same rules).
 
-A page reading nothing of the request needs no `CACHE`: when it and its layouts have no load, statements or `+page.js`, and every hole is a literal or a component prop given as one (`<Card title="Hi" />`, `{#if featured}` on a flag), the build writes the whole response into the binary ([Build](/docs/design-runtime#what-wisp-build-does)).
+A page reading nothing of the request needs no `CACHE`: when it and its layouts have no load, statements or `+page.js`, and every hole is a literal or a component prop given as one (`<Card title="Hi" />`, `{#if featured}` on a flag), the build writes the whole response into the binary ([Build](/docs/design-runtime)).
 
 ## Accessibility
 
@@ -2635,7 +2764,7 @@ The rest is CSS, the client script and the starters, adding nothing to a request
 - A navigation moves focus to the `<h1>` and says the title in an `aria-live` region.
 - View transitions and `--change` (every component's transition time) go to nothing under `prefers-reduced-motion`; `tokens.css` turns lines and quiet text up under `prefers-contrast: more`.
 - Starters carry a skip link (`.skip`, `<main id="main">`), `:focus-visible` rings, 44px buttons on coarse pointers, `forced-colors` borders, `viewport-fit=cover` with `env(safe-area-inset-*)`, `100dvh`, fluid `clamp()` tokens (`--wisp-step-0..3`, `--wisp-space-s..xl`).
-- `Dialog` and `Menu` are native `<dialog>` and popover (focus trap, Escape, focus returned); `Input`, `Textarea`, `Select` set `aria-invalid` and `aria-describedby` from `problem`/`hint`; `Card` answers its own width with `@container`. Phones: [client](/docs/client-router#phones-and-offline).
+- `Dialog` and `Menu` are native `<dialog>` and popover (focus trap, Escape, focus returned); `Input`, `Textarea`, `Select` set `aria-invalid` and `aria-describedby` from `problem`/`hint`; `Card` answers its own width with `@container`. Phones: [client](/docs/client-router).
 
 Template syntax, components, snippets and scoped styles: [Template syntax and styles](/docs/design-syntax).
 
@@ -2808,7 +2937,7 @@ let me = cx.user()?;                      // members' page: signed-in row or red
 
 - `cx.set_cookie(name, value)`: site-wide, 400 days, `HttpOnly`, `SameSite=Lax`. The value is any `Display`; an empty one deletes it.
 - `cx.cookie(name)` reads within the same request, so the `load` after an action sees what the action stored.
-- `cx.cookie_or(name, default)` parses as any `FromStr`.
+- `cx.cookie_or(name, default)` parses as any `FromStr`; `cx.signed_cookie_or(name, default)` the same for signed ones.
 - `cx.delete_cookie(name)` removes one.
 - `cx.set_cookie_with(name, value, CookieOptions { ... })`:
 
@@ -3017,7 +3146,7 @@ Syntax | Compiles to
 `{#if c}…{:else if c}…{:else}…{/if}` | `if`/`else`; `if let` works
 `{#each e as pat[, i]}…{:else}…{/each}` | `for`; a plain place like `data.posts` is borrowed
 `{#match e}{:case pat}…{/match}` | `match`; a plain place is borrowed
-`{#await f}…{:then v}…{:catch e}…{/await}` | Page streams `v` or `e` later ([Streaming a page](/docs/design-state#streaming-a-page-await))
+`{#await f}…{:then v}…{:catch e}…{/await}` | Page streams `v` or `e` later ([Streaming a page](/docs/design-state))
 `{@render children()}` or `<slot />` | Layout or component slot
 `{#snippet row(item, i)}…{/snippet}` | Markup to render later, here or in a component
 `{@render row(x, 0)}` | Renders a snippet
@@ -3404,6 +3533,70 @@ async fn before(cx: &mut Cx) -> Result<Option<Response>> {
 ```
 
 
+<!-- docs/env.md -->
+
+Read once at start. Switches take `on`/`off` (also `1`/`0`, `true`/`false`). Your own: `wisp::env("KEY")`, `wisp::env_or("KEY", 4)`, or `#[derive(Config)]`.
+
+## Server
+
+| Name | What it does |
+|---|---|
+| `HOST`, `PORT` | listen address (`0.0.0.0:3000` in release, `127.0.0.1` in dev) |
+| `WISP_DEV` | dev mode: on in debug builds (5xx details, `static/` from disk, dev log) |
+| `WISP_THREADS` | worker threads, one per CPU |
+| `WISP_IO` | Linux: `epoll` instead of io_uring; `uring` fails at start where it does not work |
+| `WISP_MAX_CONNS` | open connections before new ones get a 503 (10000; 0 no cap) |
+| `WISP_BODY_LIMIT` | largest request body in bytes (1 MB); `const BODY_LIMIT` per route |
+| `WISP_HANDLER_TIMEOUT` | handler timeout in seconds |
+| `WISP_WS_IDLE` | seconds a quiet WebSocket lives (60; 0 never) |
+| `WISP_CLIENT_IP_HEADER` | header with the client address behind a proxy |
+| `WISP_SECURE_HEADERS` | `off` leaves out `nosniff` and `referrer-policy` |
+| `WISP_HSTS` | `on` adds `strict-transport-security` |
+| `WISP_PROBLEM_JSON` | `on`: errors as RFC 9457 problem JSON |
+| `WISP_REQUEST_ID` | `on`: every request gets an id (`cx.request_id()`), echoed as `x-request-id` |
+| `WISP_API_DOCS` | serve `/_wisp/openapi.json` and `/_wisp/docs` (on in dev) |
+| `WISP_SECRET`, `WISP_SECRET_OLD` | key for signed cookies and tokens, and the one before (rotation) |
+| `WISP_DATA` | folder for table files |
+| `WISP_FSYNC` | `second` (default), `always`, `off` |
+| `WISP_STORE` | a store for tables: `d1:DB`, `deno-kv`, `libsql://…` |
+| `WISP_STORE_TOKEN` | bearer token for a `libsql://` store |
+| `WISP_STORE_POLL` | seconds between store change polls (several servers) |
+| `WISP_BASE` | base path, set at build (`/app`) |
+| `SITE_URL` | site address for sitemaps, feeds and absolute links |
+| `SITE_TITLE` | feed title |
+| `METRICS_KEY` | bearer key for `/_wisp/metrics` |
+| `CRON_SECRET` | bearer key hosts send to `/_wisp/cron/<schedule>` |
+| `WISP_NODE_HTTP` | `1`: Node, Bun and Deno targets serve with the runtime's own HTTP server |
+| `AWS_LAMBDA_RUNTIME_API` | set by Lambda: the binary answers its runtime API |
+| `WISP_EDITOR`, `EDITOR` | what the dev error dialog's Open runs (`code -g`) |
+
+`#[derive(Rest)]` bearer tokens and OAuth client ids and secrets are read from the names their attributes give.
+
+## Logs and traces
+
+| Name | What it does |
+|---|---|
+| `WISP_LOG` | `json`: a JSON line per request |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP/HTTP traces to `<endpoint>/v1/traces` |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | the traces URL, as is |
+| `OTEL_EXPORTER_OTLP_HEADERS` | `api-key=…,x=…` |
+| `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | the same, for traces only (wins) |
+| `OTEL_SERVICE_NAME` | service name on spans |
+| `OTEL_BSP_SCHEDULE_DELAY` | batch delay in ms (5000) |
+
+## CLI and tests
+
+| Name | What it does |
+|---|---|
+| `WISP_NO_UPDATE_CHECK` | `1` silences the CLI-older-than-app warning |
+| `WISP_PORT_TRIES` | how many next ports `wisp dev` tries when one is taken (20) |
+| `WISP_CWEBP` | the `cwebp` `wisp build` uses for images |
+| `WISP_SASS` | the Dart Sass for `src/app.scss` |
+| `WISP_TSC` | the `tsc` for `wisp check --types` |
+| `WISP_BROWSER` | Chrome or Edge for browser tests |
+| `NO_COLOR` | plain CLI output |
+
+
 <!-- docs/overview.md -->
 
 Wisp is the framework for the AI age: ultra fast to run, cheap in AI tokens to write, durable, and flexible.
@@ -3484,9 +3677,6 @@ Most app code is written by AI, so an app's cost is measured in tokens, and keep
 | Stack | list | form | api | layout | search | data | setup | total | chars / 4 | files |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | **Wisp** | 58 | 89 | 31 | 60 | 111 | 115 | 0 | **464** | 283 | 6 |
-| Wisp, before the sugar round | 60 | 118 | 35 | 60 | 106 | 115 | 0 | 494 | 298 | 6 |
-| Wisp, before this round | 74 | 127 | 35 | 60 | 120 | 115 | 0 | 531 | 321 | 6 |
-| Wisp, two rounds ago | 74 | 149 | 35 | 60 | 134 | 115 | 0 | 567 | 341 | 6 |
 | SvelteKit 2 | 128 | 396 | 57 | 83 | 192 | 72 | 0 | 928 | 596 | 9 |
 | Next.js 15 | 107 | 363 | 44 | 108 | 241 | 71 | 0 | 934 | 674 | 8 |
 | Axum 0.8 + askama | 145 | 455 | 29 | 104 | 217 | 123 | 257 | 1330 | 924 | 7 |
@@ -3494,35 +3684,9 @@ Most app code is written by AI, so an app's cost is measured in tokens, and keep
 
 Wisp's `data` is longer than JavaScript's: a Rust type with its fields' types and `pub`s. Everything else is shorter, the form most of all. Of what is left, 60 tokens are file paths, 115 the Rust type and data, and the rest is markup every stack writes.
 
-## What the last rounds cut
-
-Each cut makes the code say less of what the framework knows, not say it more tersely.
-
-| Was | Now | Saves |
-|---|---|---|
-| `---` `let items = db::items().await;` `---`, then `{#each items as item}` | `{#each db::items().await as item}`: an `.await` in a page's markup, outside any block, runs before the page renders | 14 on the list |
-| `data.items.filter((i) => i.name.toLowerCase().includes(q.toLowerCase()))` | `items.filter((i) => matches(i.name, q))`: a page's Rust names are browser values by name, and `matches` is the case-blind test | 14 on the search |
-| `#[validate(email)] email: String` | `email: Email`: a parameter's type checks it, and one that does not parse is a 422 by field | 7 |
-| `fn default(..) -> Result { …; redirect("/") }`, `Ok(())` at the end | `fn default(..) { …; redirect("/") }`: an action without `->` returns `Result` | 2, and `Ok(())` |
-| `{cx.problem("name")}` after each input | an action form's input shows its own problem after it, `<small class="problem">…</small>`; a file that writes `cx.problem` places them itself | 11 per input |
-| a `<form method="post">` (to `default`) kept nothing | it keeps what was typed, as a `?/name` form does | `value={cx.input("x")}` per input |
-| `<script>let q = ''</script>` for `bind:value="q"` | a bound name nothing declares is declared by the binding, as state | the script |
-
-An action form's page is now baked whole when nothing else in it reads the request: what was typed and what was wrong are never there on a GET.
-
 ## A real app: auth, CRUD, upload, live, a component
 
-`bench/tokens/real` is sign up and in, a posts table with validation, edit, delete, pages and live refresh, an avatar upload and a toggle component: 10 files, **995** tokens in Wisp (was 1160), 3.4x less than SvelteKit 3 and 3.2x less than Next.js 15. Its tests check every feature. This round's cuts:
-
-| Was | Now | Saves |
-|---|---|---|
-| `#[action]` on each action | left out for a lone `fn default` and each fn the markup posts to (`?/name`) | 3 each |
-| `<form method="post" fields>` | `<form fields>`: posts to `fn default` | 4 |
-| two inputs and a textarea, each `aria-label="x" name="x"` | `<form fields><button>Save</button></form>`; `body`, `message`, `bio`… are textareas | 30 |
-| an edit form with `value={post.title}` per input | `<form fields={post}>` starts each field from `post` | 35 |
-| `POSTS.update(id, ..)` with a closure that assigns the post | `POSTS.set(id, post)` | 6 |
-| `cx.login(&USERS, ..)`, `cx.signup(&USERS, ..)`, `cx.user(&USERS)` | the table is the lone account table of `src/db.rs` | 3 each |
-| `<script>let open = false</script>` for `open = !open` | a handler that toggles or counts a name nothing declares declares it | 11 |
+`bench/tokens/real` is sign up and in, a posts table with validation, edit, delete, pages and live refresh, an avatar upload and a toggle component: 10 files, **995** tokens in Wisp, 3.4x less than SvelteKit 3 and 3.2x less than Next.js 15. Its tests check every feature.
 
 ## Method
 
@@ -3558,8 +3722,6 @@ Estimated tokens (files):
 | Framework | counter | todo | api | blog | total |
 |---|---:|---:|---:|---:|---:|
 | **Wisp** | **44** (1) | **191** (1) | **59** (1) | **292** (4) | **586** |
-| Wisp, previous version | 44 (1) | 307 (1) | 606 (4) | 302 (4) | 1259 |
-| Wisp, before blocks | 44 (1) | 385 (2) | 670 (5) | 381 (6) | 1480 |
 | SvelteKit | 49 (1) | 373 (2) | 622 (4) | 389 (5) | 1433 |
 | Next.js | 77 (1) | 501 (4) | 722 (4) | 461 (4) | 1761 |
 | Nuxt | 49 (1) | 473 (5) | 572 (7) | 332 (5) | 1426 |
@@ -3568,7 +3730,7 @@ Estimated tokens (files):
 | Rails | 132 (3) | 340 (5) | 132 (4) | 357 (7) | 961 |
 | Rails, api by hand | 132 (3) | 340 (5) | 357 (4) | 357 (7) | 1186 |
 
-Wisp is the shortest on every app, and in all 39% shorter than the next (Rails with its scaffold) and 54% shorter than it was. The api is a type: Rails' scaffold is the only other that comes close, with a generator command, a model, a route and a controller to edit. Characters / 4 ranks them the same way (Wisp 346, Rails 726, SvelteKit 959).
+Wisp is the shortest on every app, and in all 39% shorter than the next (Rails with its scaffold). The api is a type: Rails' scaffold is the only other that comes close, with a generator command, a model, a route and a controller to edit. Characters / 4 ranks them the same way (Wisp 346, Rails 726, SvelteKit 959).
 
 The apps are not equal in what they do, and the difference favors Wisp's api. Its 59 tokens keep the notes across restarts and crashes (a log file per table in `WISP_DATA`); of the others only Rails does (SQLite, through Active Record), and the rest keep them in memory, as the task allows. The same 59 tokens also answer filters by field, sorting, cursor pages, field selection, ETags with 304 and 412, bulk creates and idempotent retries, which no other version here has.
 
@@ -3577,32 +3739,6 @@ What a real API adds in Wisp:
 - a `created_at: String` field: 6 tokens
 - a hook such as `fn before_create(note: &mut Note) -> Result { Ok(()) }`: 22 with its body
 - every table in SQLite instead of log files: a `wisp::Store` of 373 (docs/api.md), written once per app
-
-## What changed to get here
-
-Where Wisp cost more, the framework changed, not the apps. Every old form still works, but for one: a `+server.rs` handler that took an `id` from the query, in a folder with no `[id]`, now answers at `/[id]`.
-
-| Was | Now | Saves |
-|---|---|---|
-| a store, a model, two `+server.rs` with five handlers, an auth hook | `#[derive(Rest)]` on the struct, `#[rest(write = "API_KEY")]`, saved across restarts | 547 of the api's 606 |
-| `[id=int]/+server.rs` beside `+server.rs` | a handler that takes `id` serves `/[id]`; `list` is the folder's GET | a file, its path, its imports |
-| `if text.trim().is_empty() \|\| text.len() > 100 { return invalid(..) }` | `#[validate(len = 1..=100)] text: String` on the action | the check and its message |
-| `<form method="post" action="?/add">` | `<form action="?/add">` | 5 per form |
-| `value={cx.input("text")}` | nothing: an action form's inputs keep what was sent | 12 per input |
-| `{#if let Some(e) = cx.problem("text")}<p>{e}</p>{/if}` | `{cx.problem("text")}`: an `Option` shows nothing for `None` | 21 |
-| `<form …><button name="id" value={t.id}>x</button></form>` | `<button action="?/remove&id={t.id}">x</button>` | 11 |
-| `Shared<Vec<String>>`, indexes | `Table<String>`: ids, `add`, `all`, `remove` | 8, and stable ids |
-| `<head><title>…</title></head>` | `<title>…</title>` | 6 |
-| `{@render children()}` | `<slot />` | 4 |
-| `+page.rs` beside `+page.wisp` | one `+page.wisp`, Rust in a `---` block | a file and its path |
-| `struct Data { … }`, `fn load(cx: &mut Cx) -> Data { Data { … } }` | the block's statements are the load; the markup reads their names | every field name twice, and its type |
-| `fn load(slug: String) -> Data { Data { slug } }` | route parameters are locals, with no Rust at all | the whole file |
-| `#[action] fn add(cx: &mut Cx, …)` | `#[action] fn add(…)`, `cx` added when the body uses it | `cx: &mut Cx` per action |
-| `cx.fail(422, P(..))` + `cx.take()` in `load` + a `Data` field | `return invalid("f", "…")`; `cx.problem("f")`, `cx.input("f")` in markup | the plumbing |
-| `-> Result<()>` | `-> Result` | 3 per function |
-| `Mutex` import, `.lock().unwrap()` | `Shared<T>` in the prelude, `.lock()` | the import and each `unwrap` |
-| `mod notes;` in `main.rs`, `use crate::notes::…` | `src/notes.rs` is a module; routes say `notes::` | a file edit and `crate::` |
-| `<wisp:head>` | `<head>` | 4 per page |
 
 ## The Wisp versions
 

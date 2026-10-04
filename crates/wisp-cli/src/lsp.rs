@@ -465,7 +465,7 @@ fn path_uri(p: &Path) -> String {
 
 /// The `const` knobs of a route file's Rust block and what each does (hover).
 /// A test keeps it in step with the reference: every `const NAME` it shows is here.
-const KNOBS: [(&str, &str); 14] = [
+pub(crate) const KNOBS: [(&str, &str); 14] = [
     (
         "CACHE",
         "`const CACHE: u32 = 60;` (page or `+server.rs`): keeps a GET's answer 60 s per worker (ETag, 304). Never for a request with a cookie or `authorization`, nor one that sets a cookie. Not in dev.",
@@ -526,7 +526,7 @@ const KNOBS: [(&str, &str); 14] = [
 
 /// Wisp attributes (inside a tag) and what each does (hover). A test keeps it
 /// in step with the reference: every `data-wisp-*` it shows is here.
-const ATTRS: [(&str, &str); 16] = [
+pub(crate) const ATTRS: [(&str, &str); 16] = [
     (
         "fields",
         "`<form fields>`: writes a labelled input per param of the action (`Email` is `type=email`, `Image` a file, `bool` a checkbox, numbers `number`). `fields={post}` starts a struct param's fields from `post`.",
@@ -594,7 +594,7 @@ const ATTRS: [(&str, &str); 16] = [
 ];
 
 /// The directives and their docs (hover, completion).
-const DIRECTIVES: [(&str, &str); 9] = [
+pub(crate) const DIRECTIVES: [(&str, &str); 9] = [
     (
         "on:",
         "`on:click=\"count++\"`: runs JavaScript on the event. Modifiers: `.prevent .stop .once .self .capture .passive .window .document .outside .debounce.300ms .enter .escape .ctrl .shift .alt .meta`.",
@@ -665,7 +665,7 @@ const NAMES: [(&str, &[&str]); 5] = [
 ];
 
 /// The template blocks: what to write, and what it does.
-const BLOCKS: [(&str, &str, &str); 26] = [
+pub(crate) const BLOCKS: [(&str, &str, &str); 26] = [
     (
         "{#if",
         "{#if ${1:cond}}\n\t$0\n{/if}",

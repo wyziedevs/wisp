@@ -480,6 +480,9 @@ no-wait fast path off every route.
 - Serve extras (https://wispweb.dev/docs/serve): embedded files gzip + `Range`; pages get
   `nosniff` and `referrer-policy` (`WISP_HSTS=on`, `WISP_SECURE_HEADERS=off`);
   `/_wisp/health`; `WISP_HANDLER_TIMEOUT=secs` is a 503.
+- Reference tables: every command and flag https://wispweb.dev/docs/cli, every env
+  var https://wispweb.dev/docs/env, knobs, Cargo.toml keys and cargo features
+  https://wispweb.dev/docs/config.
 
 ## Gotchas
 

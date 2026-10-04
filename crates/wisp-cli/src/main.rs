@@ -4,6 +4,8 @@ mod analyze;
 mod ask;
 mod cargo;
 mod ci;
+#[cfg(test)]
+mod coverage;
 mod css;
 mod deploy;
 mod dev;
@@ -41,7 +43,7 @@ const COMMANDS: [(&str, &str); 30] = [
         "Create an app. It asks a few questions; the options below answer them.",
     ),
     (
-        "wisp dev [--port <n>]",
+        "wisp dev [--port|-p <n>]",
         "Run the app, rebuilding and reloading on every save. Port 3000 by default.",
     ),
     (
@@ -69,15 +71,15 @@ const COMMANDS: [(&str, &str); 30] = [
         "Write a Dockerfile and .dockerignore.",
     ),
     (
-        "wisp build --target <host> [--out dist/<host>]",
-        "Write a folder for cloudflare, pages, deno, vercel, netlify, node, bun or lambda.",
+        "wisp build --target|-t <host> [--edge] [--out|-o dist/<host>]",
+        "Write a folder for cloudflare, pages, deno, vercel, netlify, node, bun or lambda; --edge: edge functions on vercel or netlify.",
     ),
     (
         "wisp build --client ts [--out client.ts]",
         "Write a typed TypeScript client of the app's +server.rs endpoints.",
     ),
     (
-        "wisp openapi [-o openapi.json]",
+        "wisp openapi [-o|--out openapi.json]",
         "Print the app's OpenAPI 3.1 document (endpoints, pages, form actions), or write it to a file.",
     ),
     (
@@ -135,7 +137,7 @@ const COMMANDS: [(&str, &str); 30] = [
     ),
     ("wisp ui list", "Name the components wisp ui add has."),
     (
-        "wisp service install|uninstall|start|stop|status [--user u] [--port n] [--dry-run]",
+        "wisp service install|uninstall|start|stop|status [--name s] [--user u] [--port n] [--dry-run]",
         "Run the built release binary as a systemd, launchd or Windows startup service.",
     ),
     (
@@ -154,7 +156,7 @@ const COMMANDS: [(&str, &str); 30] = [
 
 const NEW_OPTIONS: [(&str, &str); 5] = [
     (
-        "--template demo|minimal|api",
+        "-t, --template demo|minimal|api",
         "An app to learn from, one empty page, or a JSON API (also --api).",
     ),
     ("--[no-]tailwind", "Add Tailwind CSS, or leave it out."),
