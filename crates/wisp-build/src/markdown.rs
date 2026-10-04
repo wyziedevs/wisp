@@ -73,10 +73,11 @@ pub fn front(src: &str) -> Result<(Vec<(String, String)>, usize), String> {
     Err("1: this `---` starts the front matter, which needs a `---` line after it".into())
 }
 
-/// The page at `src` as markup: its `<title>`, its body in its `layout`
+/// The page at `src` as markup: its `<title>` (none when `layout_title`:
+/// a layout above writes the one title), its body in its `layout`
 /// component (one of `comps`) given the fields it takes as props. Errors
 /// are `line: msg`.
-pub fn page(src: &str, comps: &[Comp]) -> Result<Md, String> {
+pub fn page(src: &str, comps: &[Comp], layout_title: bool) -> Result<Md, String> {
     let (mut fields, start) = front(src)?;
     let body: String = src.split('\n').skip(start).collect::<Vec<_>>().join("\n");
     let (html, h1) = render(&body);
@@ -92,9 +93,10 @@ pub fn page(src: &str, comps: &[Comp]) -> Result<Md, String> {
         Some(v) => return Err(format!("1: `noindex: {v}`: write true or false")),
     };
     let mut out = String::new();
-    if get("title").is_some() || noindex {
+    let title = get("title").filter(|_| !layout_title);
+    if title.is_some() || noindex {
         out.push_str("<head>");
-        if let Some(t) = get("title") {
+        if let Some(t) = title {
             out.push_str(&format!("<title>{}</title>", text(t)));
         }
         if noindex {
@@ -637,7 +639,12 @@ mod tests {
 
     #[test]
     fn renders_with_braces_as_references() {
-        let md = page("Some {braces} and `code {x}`\n\n```\nfn a() {}\n```\n", &[]).unwrap();
+        let md = page(
+            "Some {braces} and `code {x}`\n\n```\nfn a() {}\n```\n",
+            &[],
+            false,
+        )
+        .unwrap();
         assert!(!md.wisp.contains(['{', '}']), "{}", md.wisp);
         assert!(md.wisp.contains("Some &#123;braces&#125;"), "{}", md.wisp);
         assert!(
@@ -655,7 +662,7 @@ mod tests {
 
     #[test]
     fn title_from_front_matter_or_first_heading() {
-        let md = page("# Hello `there`\n\ntext\n\n# Second", &[]).unwrap();
+        let md = page("# Hello `there`\n\ntext\n\n# Second", &[], false).unwrap();
         assert_eq!(md.fields, [("title".into(), "Hello there".into())]);
         assert!(
             md.wisp.starts_with(
@@ -664,11 +671,19 @@ mod tests {
             "{}",
             md.wisp
         );
-        let md = page("---\ntitle: A <b>\nnoindex: true\n---\n# Other", &[]).unwrap();
+        let md = page("---\ntitle: A <b>\nnoindex: true\n---\n# Other", &[], false).unwrap();
         assert!(md.wisp.starts_with(
             "<head><title>A &lt;b&gt;</title><meta name=\"robots\" content=\"noindex\"></head>\n"
         ), "{}", md.wisp);
-        assert!(page("---\nnoindex: yes\n---\n", &[]).is_err());
+        assert!(page("---\nnoindex: yes\n---\n", &[], false).is_err());
+        // A layout above writes the one title (it reads this one).
+        let md = page("---\ntitle: A\nnoindex: true\n---\n", &[], true).unwrap();
+        assert!(
+            md.wisp
+                .starts_with("<head><meta name=\"robots\" content=\"noindex\"></head>\n"),
+            "{}",
+            md.wisp
+        );
     }
 
     #[test]
@@ -676,6 +691,7 @@ mod tests {
         let md = page(
             "## Install and Run\n\n## `wisp::pages()`, again!\n\n## Install and Run\n\n## ?",
             &[],
+            false,
         )
         .unwrap();
         for h in [
@@ -691,7 +707,7 @@ mod tests {
     #[test]
     fn components_and_links_pass_through() {
         let src = "<Card title=\"x\">\n\nSome *markdown*.\n\n</Card>\n\n[a {b}](/x \"t\") ![alt {c}](/i.png) <me@x.org>";
-        let md = page(src, &[]).unwrap();
+        let md = page(src, &[], false).unwrap();
         assert!(
             md.wisp
                 .contains("<Card title=\"x\">\n<p>Some <em>markdown</em>.</p>\n</Card>"),
@@ -744,6 +760,7 @@ mod tests {
         let md = page(
             "---\nlayout: Post\ntitle: Hi {x}\nn: 3\ndraft: true\nextra: y\n---\nBody",
             &comps,
+            false,
         )
         .unwrap();
         assert!(
@@ -753,7 +770,7 @@ mod tests {
             md.wisp
         );
         assert_eq!(md.fields.len(), 5);
-        let e = |src: &str| page(src, &comps).unwrap_err();
+        let e = |src: &str| page(src, &comps, false).unwrap_err();
         assert!(e("---\nlayout: Post\n---\n").contains("needs `title`"));
         assert!(
             e("---\nlayout: Post\ntitle: a\nn: x\n---\n").contains("cannot be Post's `n: u32`")
@@ -790,7 +807,7 @@ mod tests {
             assert!(highlight(lang, "/* x */ \"y\" 1 true").is_some());
         }
         assert!(
-            page("```rust\nlet x = 1;\n```", &[])
+            page("```rust\nlet x = 1;\n```", &[], false)
                 .unwrap()
                 .wisp
                 .contains("<pre><code class=\"language-rust\"><span class=\"hl-k\">let</span>")

@@ -302,7 +302,7 @@ pub fn write_styles(root: &Path) -> Result<(bool, bool), String> {
             true => {
                 let comps =
                     comps.get_or_insert_with(|| codegen::components(root).unwrap_or_default());
-                markdown::page(&s, comps).map(|m| m.wisp)
+                markdown::page(&s, comps, false).map(|m| m.wisp)
             }
             false => Ok(s),
         };

@@ -2387,7 +2387,11 @@ impl<'a> Project<'a> {
         // Its Rust first: its actions' fields get the browser's checks.
         let src = match md {
             Some(_) => {
-                let m = crate::markdown::page(&self.read(&file)?, &self.comps)
+                // A layout's `<title>` stands for its `title` (read through
+                // `wisp::pages`, which it can wrap).
+                let titled = (r.layouts.iter())
+                    .any(|&l| self.templates[self.model.layouts[l].tpl].t.has_title());
+                let m = crate::markdown::page(&self.read(&file)?, &self.comps, titled)
                     .map_err(|e| format!("{}:{e}", self.rel(&file)))?;
                 self.md_pages.push((route.pattern.clone(), m.fields));
                 m.wisp
@@ -3344,10 +3348,16 @@ pub const MORE: ::wisp::rt::CacheMore = ::wisp::rt::CacheMore::NONE;"
     /// `layout_0::tpl_layout_0::render(__o, &d0, &|__o| tpl_layout_3::render(__o, &|__o| inner))`:
     /// `inner` inside `layouts`. A layout's slots are drawn from their pages
     /// (`s{route}` is a loaded slot's data), or left empty (`drawn` false:
-    /// an error page).
-    fn wrap_layouts(&self, layouts: &[usize], inner: String, drawn: bool) -> String {
+    /// an error page). `titled`: `inner` writes a `<title>`, so no layout
+    /// around it does (`render::<false>`); else the innermost layout with one.
+    fn wrap_layouts(&self, layouts: &[usize], inner: String, titled: bool, drawn: bool) -> String {
+        let mut titled = titled;
         layouts.iter().rev().fold(inner, |acc, &l| {
             let layout = &self.model.layouts[l];
+            let gate = match self.templates[layout.tpl].t.has_title() {
+                true => format!("::<{}>", !std::mem::replace(&mut titled, true)),
+                false => String::new(),
+            };
             let data = if layout.load {
                 format!(", &d{l}")
             } else {
@@ -3389,7 +3399,7 @@ pub const MORE: ::wisp::rt::CacheMore = ::wisp::rt::CacheMore::NONE;"
                 })
                 .collect();
             format!(
-                "{}::render(__o, cx{data}, &|__o: &mut ::wisp::Out| {acc}{slots})",
+                "{}::render{gate}(__o, cx{data}, &|__o: &mut ::wisp::Out| {acc}{slots})",
                 self.templates[layout.tpl].path()
             )
         })
@@ -3580,7 +3590,8 @@ impl Gen {
             if page.stmts.is_some() {
                 // The page runs its statements, then hands its render to this
                 // closure, which puts it inside the layouts.
-                let wrap = p.wrap_layouts(&route.layouts, "__p(__o)".into(), true);
+                let wrap =
+                    p.wrap_layouts(&route.layouts, "__p(__o)".into(), page.t.has_title(), true);
                 let end = if pg.streams { "?;" } else { "" };
                 self.line(1, &format!(
                     "{}::render(cx, __o, |__o: &mut ::wisp::Out, cx: &::wisp::Cx, __p: &dyn Fn(&mut ::wisp::Out)| {wrap}).await{end}",
@@ -3592,7 +3603,10 @@ impl Gen {
                 self.line(1, "let cx: &::wisp::Cx = cx;");
                 self.line(
                     1,
-                    &format!("{};", p.wrap_layouts(&route.layouts, inner, true)),
+                    &format!(
+                        "{};",
+                        p.wrap_layouts(&route.layouts, inner, page.t.has_title(), true)
+                    ),
                 );
             }
             if pg.streams {
@@ -3622,7 +3636,13 @@ impl Gen {
                 p.templates[e.tpl].path()
             );
             self.line(1, "let cx: &::wisp::Cx = cx;");
-            self.line(1, &format!("{};", p.wrap_layouts(&e.layouts, inner, false)));
+            self.line(
+                1,
+                &format!(
+                    "{};",
+                    p.wrap_layouts(&e.layouts, inner, p.templates[e.tpl].t.has_title(), false)
+                ),
+            );
             self.line(1, "Ok(())");
             self.line(0, "}");
             self.line(0, "");
@@ -6120,8 +6140,10 @@ impl Gen {
                 let slots: String = (t.slots.iter())
                     .map(|s| format!(", {s}: &dyn Fn(&mut ::wisp::Out)"))
                     .collect();
+                // `TITLE`: no page or layout inside writes a `<title>`.
+                let title = if t.t.has_title() { "<const TITLE: bool>" } else { "" };
                 format!(
-                    "pub fn render(__o: &mut ::wisp::Out, cx: &::wisp::Cx{data}, children: &dyn Fn(&mut ::wisp::Out){slots})"
+                    "pub fn render{title}(__o: &mut ::wisp::Out, cx: &::wisp::Cx{data}, children: &dyn Fn(&mut ::wisp::Out){slots})"
                 )
             }
             Kind::Error => {
@@ -6221,6 +6243,7 @@ impl Gen {
             inert: false,
             paint: false,
             has_cx: t.kind != Kind::Component,
+            gated: t.kind == Kind::Layout && t.t.has_title(),
             locals: t
                 .stmts
                 .as_ref()
@@ -6724,6 +6747,14 @@ impl Gen {
                 then,
                 catch,
             } => self.await_block(future, pending, then, catch, ind, cx),
+            Node::Head(body) if cx.gated && cx.template.is_title(n) => {
+                let prev = cx.target;
+                cx.target = "head";
+                self.line(ind, "if TITLE {");
+                self.nodes(body, ind + 1, cx);
+                self.line(ind, "}");
+                cx.target = prev;
+            }
             Node::Head(body) => {
                 let prev = cx.target;
                 cx.target = "head";
@@ -7465,6 +7496,9 @@ struct Emit<'a> {
     /// so an action's form shows what it refused (`Node::Kept`). A
     /// component has none.
     has_cx: bool,
+    /// A layout with a `<title>`: it writes it when its `TITLE` is true,
+    /// which its callers decide at build time (nothing inside has one).
+    gated: bool,
     /// The names a `---` block's statements bind, borrowed where they are
     /// iterated or matched on.
     locals: Vec<String>,
@@ -9937,6 +9971,31 @@ name = \"a\"
         let live = wisp_shared::LIVE_JS;
         assert!(HELPERS.contains(" matches,"));
         assert!(live.contains("export const matches = ") && live.contains("  matches,"));
+    }
+
+    #[test]
+    fn one_title_decided_at_build() {
+        // A layout's `<title>` stands when nothing inside writes one.
+        let code = app(
+            "one-title",
+            &[
+                ("src/routes/+layout.wisp", "---\nlet p = cx.path();\n---\n<head><title>{p}</title><meta name=\"a\"></head>{@render children()}"),
+                ("src/routes/+page.wisp", "---\nlet n = 1;\n---\n<title>Home {n}</title><p>x</p>"),
+                ("src/routes/about/+page.wisp", "---\nlet n = 1;\n---\n<p>{n}</p>"),
+                ("src/routes/docs/+page.md", "---\ntitle: Docs\n---\nBody"),
+            ],
+        )
+        .unwrap();
+        for want in [
+            "pub fn render<const TITLE: bool>(",
+            "if TITLE {",
+            "layout_0::render::<false>(",
+            "layout_0::render::<true>(",
+        ] {
+            assert!(code.contains(want), "{want}\n{code}");
+        }
+        // The Markdown page's title is the layout's to write.
+        assert!(!code.contains("<title>Docs"), "{code}");
     }
 
     #[test]
