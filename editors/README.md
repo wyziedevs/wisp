@@ -3,7 +3,8 @@
 Two pieces, both in this folder:
 
 - **`wisp lsp`**, the language server in the `wisp` CLI: problems as you
-  type, hovers, go to definition, completion, formatting. Any editor with
+  type, hovers (the `const` knobs, `data-wisp-*`, Rust attributes such as
+  `#[validate(len = 1..=9)]`), go to definition, completion, formatting. Any editor with
   LSP runs it over stdio: command `wisp`, argument `lsp`.
 - **[tree-sitter-wisp](tree-sitter-wisp)**, the grammar: highlighting with
   Rust, JavaScript, TypeScript and CSS embedded where they belong.

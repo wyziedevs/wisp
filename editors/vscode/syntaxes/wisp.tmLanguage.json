@@ -1,37 +1,206 @@
 {
   "name": "Wisp",
   "scopeName": "text.html.wisp",
-  "fileTypes": ["wisp"],
+  "fileTypes": [
+    "wisp"
+  ],
   "patterns": [
-    { "include": "#block" },
-    { "include": "#script-ts" },
-    { "include": "text.html.basic" }
+    {
+      "include": "#block"
+    },
+    {
+      "include": "#script-ts"
+    },
+    {
+      "include": "text.html.basic"
+    }
   ],
   "repository": {
     "block": {
       "comment": "The `---` block of Rust a page or layout starts with.",
       "begin": "\\A\\s*(---)\\s*$",
       "end": "^\\s*(---)\\s*$",
-      "beginCaptures": { "1": { "name": "punctuation.definition.tag.wisp" } },
-      "endCaptures": { "1": { "name": "punctuation.definition.tag.wisp" } },
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.tag.wisp"
+        }
+      },
+      "endCaptures": {
+        "1": {
+          "name": "punctuation.definition.tag.wisp"
+        }
+      },
       "contentName": "source.rust",
-      "patterns": [{ "include": "source.rust" }]
+      "patterns": [
+        {
+          "include": "#attribute"
+        },
+        {
+          "include": "source.rust"
+        }
+      ]
+    },
+    "attribute": {
+      "comment": "`#[action]`, `#![allow(x)]`, `#[wisp::model]`, `#[validate(len = 1..=100, email)]`: the name, then its arguments.",
+      "begin": "(#)(!?)(\\[)\\s*((?:::)?[A-Za-z_]\\w*(?:::[A-Za-z_]\\w*)*)",
+      "end": "\\]",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.attribute.rust"
+        },
+        "2": {
+          "name": "punctuation.definition.attribute.rust"
+        },
+        "3": {
+          "name": "punctuation.brackets.attribute.rust"
+        },
+        "4": {
+          "name": "entity.name.function.attribute.rust support.function.attribute.rust"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.brackets.attribute.rust"
+        }
+      },
+      "name": "meta.attribute.rust",
+      "patterns": [
+        {
+          "include": "#attribute-args"
+        }
+      ]
+    },
+    "attribute-args": {
+      "patterns": [
+        {
+          "include": "#attribute-string"
+        },
+        {
+          "comment": "A parenthesized group: `(len = 1..=100, email)`, nested as deep as written.",
+          "begin": "\\(",
+          "end": "\\)",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.parenthesis.attribute.rust"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.parenthesis.attribute.rust"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#attribute-args"
+            }
+          ]
+        },
+        {
+          "begin": "\\[",
+          "end": "\\]",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.brackets.attribute.rust"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.brackets.attribute.rust"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#attribute-args"
+            }
+          ]
+        },
+        {
+          "comment": "A key or rule: `min`, `len`, `write`, a derive's name.",
+          "match": "\\b([A-Za-z_]\\w*)\\b(?=\\s*(?:=(?!=)|[,)\\]]|\\())",
+          "captures": {
+            "1": {
+              "name": "variable.parameter.attribute.rust"
+            }
+          }
+        },
+        {
+          "match": "\\b\\d[\\d_]*(?:\\.\\d[\\d_]*)?(?:[eE][+-]?\\d+)?(?:[iu](?:8|16|32|64|128|size)|f32|f64)?\\b",
+          "name": "constant.numeric.rust"
+        },
+        {
+          "match": "\\b(?:true|false)\\b",
+          "name": "constant.language.boolean.rust"
+        },
+        {
+          "match": "\\.\\.=?|=|::",
+          "name": "keyword.operator.rust"
+        },
+        {
+          "match": "\\b[A-Z][A-Z0-9_]*\\b",
+          "name": "constant.other.rust"
+        },
+        {
+          "match": "\\b[A-Z]\\w*\\b",
+          "name": "entity.name.type.rust"
+        },
+        {
+          "match": "\\b[a-z_]\\w*\\b",
+          "name": "variable.other.rust"
+        }
+      ]
+    },
+    "attribute-string": {
+      "begin": "\"",
+      "end": "\"",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.begin.rust"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.end.rust"
+        }
+      },
+      "name": "string.quoted.double.rust",
+      "patterns": [
+        {
+          "match": "\\\\.",
+          "name": "constant.character.escape.rust"
+        }
+      ]
     },
     "script-ts": {
       "begin": "(<)(script)\\b(?=[^>]*\\blang=[\"']ts[\"'])([^>]*)(>)",
       "end": "(</)(script)\\s*(>)",
       "beginCaptures": {
-        "1": { "name": "punctuation.definition.tag.begin.html" },
-        "2": { "name": "entity.name.tag.html" },
-        "4": { "name": "punctuation.definition.tag.end.html" }
+        "1": {
+          "name": "punctuation.definition.tag.begin.html"
+        },
+        "2": {
+          "name": "entity.name.tag.html"
+        },
+        "4": {
+          "name": "punctuation.definition.tag.end.html"
+        }
       },
       "endCaptures": {
-        "1": { "name": "punctuation.definition.tag.begin.html" },
-        "2": { "name": "entity.name.tag.html" },
-        "3": { "name": "punctuation.definition.tag.end.html" }
+        "1": {
+          "name": "punctuation.definition.tag.begin.html"
+        },
+        "2": {
+          "name": "entity.name.tag.html"
+        },
+        "3": {
+          "name": "punctuation.definition.tag.end.html"
+        }
       },
       "contentName": "source.ts",
-      "patterns": [{ "include": "source.ts" }]
+      "patterns": [
+        {
+          "include": "source.ts"
+        }
+      ]
     }
   }
 }

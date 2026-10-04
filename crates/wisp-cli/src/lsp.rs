@@ -593,6 +593,138 @@ pub(crate) const ATTRS: [(&str, &str); 16] = [
     ),
 ];
 
+/// Rust attributes of a route file's block and of `src/*.rs`, and what each
+/// does (hover, completion). `name(arg)` is an argument or helper of `name`:
+/// a `#[validate]` rule, a `#[rest]` key, a `derive(Rest)`. A test keeps it in
+/// step with the macros and the rules: every one of them is here.
+pub(crate) const RUST_ATTRS: [(&str, &str); 32] = [
+    (
+        "action",
+        "`#[action] fn add(title: String) {}`: a form action of this page, posted as `?/add`. `cx` and `async` are implied; takes no arguments.",
+    ),
+    (
+        "remote",
+        "`#[remote] fn user(id: u64) -> Result<User>`: browser code calls it as `await user(1)` (POST to `/_app/r/<hash>`); `#[remote(get)]` makes it a GET.",
+    ),
+    (
+        "model",
+        "`#[model] struct Post { title: String }`: `Json`, `FromJson` and `Clone` derived, fields `pub`: a table's row, an action's input and a template's value.",
+    ),
+    (
+        "validate",
+        "`#[validate(len = 1..=100, email)]` on a field or an action param: checked on the server (422 with the messages) and mirrored as native input attributes.",
+    ),
+    (
+        "validate(min)",
+        "`#[validate(min = 0)]`: the number is at least this; `<input min>` too.",
+    ),
+    (
+        "validate(max)",
+        "`#[validate(max = 100)]`: the number is at most this; `<input max>` too.",
+    ),
+    (
+        "validate(min_len)",
+        "`#[validate(min_len = 8)]`: the text has at least this many characters.",
+    ),
+    (
+        "validate(max_len)",
+        "`#[validate(max_len = 200)]`: the text has at most this many characters.",
+    ),
+    (
+        "validate(len)",
+        "`#[validate(len = 1..=100)]`: the text's length lies in the range (`min_len` and `max_len` at once).",
+    ),
+    (
+        "validate(email)",
+        "`#[validate(email)]`: the text is an email address (`type=email`).",
+    ),
+    (
+        "validate(url)",
+        "`#[validate(url)]`: the text is an `http` or `https` address.",
+    ),
+    (
+        "validate(one_of)",
+        "`#[validate(one_of = \"a b c\")]`: the value is one of these words.",
+    ),
+    (
+        "validate(pattern)",
+        "`#[validate(pattern = \"^[a-z]+$\")]`: the text matches this regular expression (compiled once).",
+    ),
+    (
+        "validate(with)",
+        "`#[validate(with = my_check)]`: your `fn(&T) -> Option<String>`, the problem or `None`.",
+    ),
+    (
+        "validate(max_size)",
+        "`#[validate(max_size = 5 * MB)]` on an `Image` or `File` param: the largest upload (2 MB by default).",
+    ),
+    (
+        "derive(Rest)",
+        "`#[derive(Rest)] struct Note { .. }`: `Json` + `FromJson` + a saved table, and `src/routes/api/notes/+server.rs` serves the whole JSON API from it. Tune with `#[rest(..)]`.",
+    ),
+    (
+        "derive(Json)",
+        "`#[derive(Json)]`: the type writes itself as JSON; values sent to browser code are `#[model]` or `Json`.",
+    ),
+    (
+        "derive(FromJson)",
+        "`#[derive(FromJson)]`: the type reads itself from JSON or a form post; its fields take `#[validate]`, `#[json]` and `#[unique]`.",
+    ),
+    (
+        "derive(Cookie)",
+        "`#[derive(Cookie)] struct Prefs { .. }`: the struct lives in one cookie (fields in order, via `Display` and `FromStr`). The value is visitor input: check it after reading.",
+    ),
+    (
+        "derive(Config)",
+        "`#[derive(Config)] struct Conf { api_key: String, port: Option<u16> }`: each field is read from the environment (`API_KEY`, `PORT`); an `Option` may be missing.",
+    ),
+    (
+        "rest",
+        "`#[rest(write = \"API_KEY\")]` on a `#[derive(Rest)]` type: keys `key`, `write`, `admin`, `table`, `ids` and `memory`.",
+    ),
+    (
+        "rest(key)",
+        "`#[rest(key = \"API_KEY\")]`: every request needs `Authorization: Bearer $API_KEY`.",
+    ),
+    (
+        "rest(write)",
+        "`#[rest(write = \"API_KEY\")]`: reads are open, writes need `Bearer $API_KEY`.",
+    ),
+    (
+        "rest(admin)",
+        "`#[rest(admin = \"ADMIN_KEY\")]`: deletes need `Bearer $ADMIN_KEY`.",
+    ),
+    (
+        "rest(table)",
+        "`#[rest(table = \"notes\")]`: the saved table's name (the type name lowercased by default).",
+    ),
+    (
+        "rest(ids)",
+        "`#[rest(ids = \"random\")]`: uncountable random ids below 2^53.",
+    ),
+    ("rest(memory)", "`#[rest(memory)]`: memory only, not saved."),
+    (
+        "json",
+        "`#[json(default)]`, `#[json(default = expr)]`, `#[json(was = \"old\")]` on a field: how an older saved row or a short body fills it.",
+    ),
+    (
+        "json(default)",
+        "`#[json(default = 0)]`: the value when the field is missing (`default` alone is `Default::default()`).",
+    ),
+    (
+        "json(was)",
+        "`#[json(was = \"old_name\")]`: the field's former name, read from old saved rows.",
+    ),
+    (
+        "unique",
+        "`#[unique] email: Email`: the type's saved table refuses a second row with the same value (one per type).",
+    ),
+    (
+        "derive",
+        "`#[derive(Rest)]`: Wisp's derives are `Rest`, `Json`, `FromJson`, `Cookie` and `Config`.",
+    ),
+];
+
 /// The directives and their docs (hover, completion).
 pub(crate) const DIRECTIVES: [(&str, &str); 9] = [
     (
@@ -868,11 +1000,48 @@ impl<'a> At<'a> {
         })
     }
 
+    /// The Rust attribute the cursor is in, `#[validate(mi|n = 3)]`: where
+    /// its name starts and the name (`wisp::` and `::wisp::` left off).
+    fn rust_attr(&self) -> Option<(usize, &'a str)> {
+        let t = self.text();
+        let line_start = t[..self.off].rfind('\n').map_or(0, |i| i + 1);
+        let line = &t[line_start..self.off];
+        let open = line.rfind("#[")? + 2;
+        let count = |c| line[open..].matches(c).count();
+        if count(']') > count('[') {
+            return None;
+        }
+        let rest = &t[line_start + open..];
+        let rest = rest.strip_prefix("::").unwrap_or(rest);
+        let path = rest.strip_prefix("wisp::").unwrap_or(rest);
+        let end = path.find(|c: char| !is_word(c)).unwrap_or(path.len());
+        Some((t.len() - path.len(), &path[..end]))
+    }
+
+    /// The docs of the attribute, rule or key under the cursor in `#[..]`.
+    fn attr_doc(&self) -> Option<&'static str> {
+        let (name_at, name) = self.rust_attr()?;
+        let t = self.text();
+        let word_at = t[..self.off]
+            .rfind(|c: char| !is_word(c))
+            .map_or(0, |i| i + 1);
+        let word_end = self.off + t[self.off..].find(|c: char| !is_word(c)).unwrap_or(0);
+        let word = &t[word_at..word_end];
+        let key = if word_at == name_at {
+            name.to_string()
+        } else {
+            format!("{name}({word})")
+        };
+        RUST_ATTRS.iter().find(|e| e.0 == key).map(|e| e.1)
+    }
+
     fn hover(&self) -> Option<String> {
         let word = &self.text()[self.word.0..self.word.1];
         let ident = word.trim_matches(|c: char| !is_word(c));
         let find = |t: &'static [(&str, &str)]| t.iter().find(|e| e.0 == ident).map(|e| e.1);
-        let md = if self.tag.is_some() && self.text()[..self.word.0].ends_with("?/") {
+        let md = if let Some(doc) = self.attr_doc() {
+            doc.to_string()
+        } else if self.tag.is_some() && self.text()[..self.word.0].ends_with("?/") {
             ATTRS[1].1.to_string()
         } else if let Some((_, _, doc)) = self.block() {
             doc.to_string()
@@ -991,6 +1160,12 @@ impl<'a> At<'a> {
         } else if let Some((start, _, "href")) = in_value {
             for (pattern, ..) in self.app.iter().flat_map(|a| &a.routes) {
                 item(pattern, 17, start, pattern, "A route.");
+            }
+        } else if let Some((start, _)) = self.rust_attr().filter(|_| in_value.is_none()) {
+            if !t[start..self.off].contains(|c: char| !is_word(c)) {
+                for (name, doc) in RUST_ATTRS.iter().filter(|e| !e.0.contains('(')) {
+                    item(name, 14, start, name, doc);
+                }
             }
         } else if in_value.is_some() || self.tag.is_none() {
             return Some("[]".into());
@@ -1252,11 +1427,73 @@ mod tests {
             ("const CA|CHE: u32 = 60;", "per worker"),
             ("const RATE_LIM|IT: u32 = 60;", "429"),
             ("{#ea|ch xs as x}", "for loop"),
+            ("#[act|ion]\nfn add() {}", "form action"),
+            ("#[::wisp::mod|el]", "`Json`, `FromJson`"),
+            ("#[validate(min_|len = 8)]", "at least this many"),
+            ("#[validate(em|ail)]", "email address"),
+            ("#[derive(Debug, Re|st)]", "saved table"),
+            ("#[rest(wr|ite = \"K\")]", "writes need"),
+            ("#[json(wa|s = \"a\")]", "former name"),
             ("<button on:cl|ick=\"n++\">", "runs JavaScript"),
         ];
         for (text, want) in cases {
             let h = hover_at(text);
             assert!(h.contains(want), "{text}: {want} not in {h}");
+        }
+    }
+
+    /// Every attribute macro, derive, helper attribute, `#[validate]` rule and
+    /// `#[rest]` key of the macros has a hover, and each attribute a completion.
+    #[test]
+    fn attrs_are_all_hovered() {
+        let macros = include_str!("../../wisp-macros/src/lib.rs");
+        let rules = include_str!("../../wisp-shared/src/rules.rs");
+        let words = |s: &str| -> Vec<String> {
+            let cut = |c: char| !(c.is_alphanumeric() || c == '_');
+            s.split(cut)
+                .filter(|w| !w.is_empty())
+                .map(String::from)
+                .collect()
+        };
+        let first = |s: &str| words(s).into_iter().next().unwrap_or_default();
+        let mut want: Vec<String> = macros
+            .split("#[proc_macro_attribute]\npub fn ")
+            .skip(1)
+            .map(first)
+            .collect();
+        for d in macros.split("#[proc_macro_derive(").skip(1) {
+            let mut parts = words(d.split(")]").next().unwrap_or("")).into_iter();
+            want.extend(parts.next().map(|n| format!("derive({n})")));
+            want.extend(parts.filter(|w| w != "attributes"));
+        }
+        want.extend(
+            rules
+                .split("name: \"")
+                .skip(1)
+                .map(|r| format!("validate({})", first(r))),
+        );
+        want.push("validate(max_size)".into());
+        let keys = macros.split("const REST_TAKES").nth(1).unwrap_or("");
+        let keys = keys.split(";\n").next().unwrap_or("");
+        for k in ["key", "write", "admin", "table", "ids", "memory"] {
+            assert!(keys.contains(k), "REST_TAKES lost {k}");
+            want.push(format!("rest({k})"));
+        }
+        for w in &want {
+            assert!(RUST_ATTRS.iter().any(|e| e.0 == w), "no hover for {w}");
+        }
+        for e in RUST_ATTRS.iter().filter(|e| !e.0.contains('(')) {
+            let text = format!("#[{}", &e.0[..2]);
+            let doc = Doc {
+                text: text.clone(),
+                root: None,
+                rel: "src/routes/+page.wisp".into(),
+            };
+            let done = At::new(&doc, None, text.len())
+                .completion()
+                .unwrap_or_default();
+            let label = format!("\"label\":\"{}\"", e.0);
+            assert!(done.contains(&label), "no completion for {}", e.0);
         }
     }
 
@@ -1296,6 +1533,13 @@ mod tests {
             let name = format!("data-wisp-{a}");
             let known = ATTRS.iter().any(|e| e.0 == name) || own.contains(&a);
             assert!(known, "no hover for {name}");
+        }
+        // Rust attributes the docs write: Wisp's have a hover, the
+        // language's own need none.
+        let plain = ["cfg", "allow", "test", "inline", "default", "doc", "tokio"];
+        for a in words("#[", |c| c.is_ascii_lowercase() || c == '_') {
+            let known = RUST_ATTRS.iter().any(|e| e.0 == a) || plain.contains(&a);
+            assert!(known, "no hover for #[{a}]");
         }
         let ok = |c: char| matches!(c, '#' | ':' | '@') || c.is_ascii_lowercase();
         let missing: Vec<String> = words("{", ok)

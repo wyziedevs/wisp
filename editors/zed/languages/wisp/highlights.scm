@@ -1,5 +1,9 @@
 ; Patterns do not overlap, so editors that let the first match win and
 ; editors that let the last win agree.
+;
+; Rust attributes (`#[action]`, `#[validate(min = 3)]`, `#![allow(x)]`) sit in the
+; injected Rust of the `---` block (injections.scm): the Rust highlights give
+; them @attribute, their paths and their arguments, so none is repeated here.
 
 (comment) @comment
 
