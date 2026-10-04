@@ -177,6 +177,16 @@ mod tests {
                 " required minlength=\"1\" pattern=\"[\\s\\S]{0,100}\"",
             ),
             ("String | len = 1..=100", "textarea", " required"),
+            (
+                "String | len = 5..=100",
+                "textarea",
+                " required minlength=\"5\"",
+            ),
+            (
+                "Option<String> | min_len = 5",
+                "textarea",
+                " minlength=\"5\"",
+            ),
             ("Option<String> | len = 1..", "input", " minlength=\"1\""),
             ("Password |", "input password", " required"),
             (
@@ -281,5 +291,22 @@ mod tests {
             .map(|&(a, n, r)| (a.into(), n.into(), r))
             .collect();
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn minlength_never_refuses_what_the_server_takes() {
+        // `minlength` counts UTF-16 units, at least the characters the
+        // server counts: one emoji is two units, so the browser lets it
+        // through where `min_len = 2` refuses it (the server then answers
+        // with its problem), and never the reverse.
+        let n = native("String", &parse("min_len = 2").unwrap().rules, false);
+        for tag in ["input", "textarea"] {
+            assert!(
+                n.attrs(tag, "", &|_| false).contains(" minlength=\"2\""),
+                "{tag}"
+            );
+        }
+        let emoji = "\u{1F600}";
+        assert!(emoji.encode_utf16().count() >= emoji.chars().count());
     }
 }
