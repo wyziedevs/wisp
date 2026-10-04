@@ -250,9 +250,7 @@ pub fn parse(rules: &str) -> Result<Validate, String> {
 pub fn rule(name: &str, value: Option<&str>) -> Result<Rule, String> {
     let Some(def) = DEFS.iter().find(|d| d.name == name) else {
         if name == MAX_SIZE {
-            return Err(
-                "`max_size` is for an upload: an action's `Image` or `Upload` parameter".into(),
-            );
+            return Err("`max_size` is for an upload: an action's `Image` parameter".into());
         }
         return Err(format!(
             "#[validate] has no `{name}`: it takes len, min, max, min_len, max_len, email, url, one_of, pattern, with and max_size"
@@ -375,8 +373,6 @@ pub struct Native {
     pub max: Option<f64>,
     /// An `Image`: its form is `multipart/form-data`, its input takes images.
     pub upload: bool,
-    /// An `Upload`: any file, so no `accept`.
-    pub blob: bool,
 }
 
 impl Native {
@@ -431,7 +427,7 @@ impl Native {
                     add("max", &m.to_string());
                 }
             }
-            "file" if self.upload && !self.blob => add("accept", "image/*"),
+            "file" if self.upload => add("accept", "image/*"),
             _ => {}
         }
         out

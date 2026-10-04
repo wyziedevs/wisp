@@ -28,7 +28,6 @@ pub mod rules;
 pub mod rust_scan;
 mod shell;
 mod sourcemap;
-mod stories;
 pub mod style;
 pub mod template;
 mod ty;

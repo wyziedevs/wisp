@@ -678,9 +678,6 @@ fn operation(
         }
         _ => {}
     }
-    if op.method == "post" {
-        params.push(param("idempotency-key", "header", false, J::of("string")));
-    }
     let sends = !params.iter().all(|p| !is_query(p));
     let mut out = J::obj([("operationId", J::str(&operation_id(e, op, short)))]);
     if !params.is_empty() {
@@ -1798,7 +1795,6 @@ fn post(body: New) {}",
             "\"oneOf\":[{\"$ref\":\"#/components/schemas/Note\"},{\"type\":\"array\"",
             "\"201\":{\"description\":\"Created\"",
             "\"location\":{\"schema\":{\"type\":\"string\"}}",
-            "{\"name\":\"idempotency-key\",\"in\":\"header\"",
             "\"security\":[{\"bearer\":[]}]",
             "\"securitySchemes\":{\"bearer\":{\"type\":\"http\",\"scheme\":\"bearer\"}}",
         ] {

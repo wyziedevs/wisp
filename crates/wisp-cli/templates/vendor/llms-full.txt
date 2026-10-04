@@ -88,7 +88,7 @@ Block rules:
 - Route params are locals: `slug: String`, `[id=int]` → `id: u64`,
   `[[lang]]` → `Option<String>`. Even with no block.
 - No `use` lines: prelude = `Cx Response Result Error Email Image Json
-  FromJson Rest Config Upload Cookie CookieOptions SameSite Method Value Shared Table Row RateLimit OrStatus Password Reply KB MB
+  FromJson Rest Config Cookie CookieOptions SameSite Method Value Shared Table Row RateLimit OrStatus Password Reply KB MB
   action remote error invalid model redirect Always Never Ignore` and `src/db.rs`'s `pub` items (local
   names win). `Result` alone = `Result<()>`.
 - `const CACHE: u32 = 60;` (page or `+server.rs`) keeps a GET's answer 60 s
@@ -152,8 +152,7 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
   WebP or AVIF by its bytes (not SVG), else 422; at most 2 MB
   (`wisp::MAX_SIZE`) unless `#[validate(max_size = 5 * MB)]`. The form gets
   `enctype="multipart/form-data"` and the file input `accept="image/*"`.
-  `doc: Upload` is any file kept as a blob once all inputs pass (`doc.name`,
-  `doc.url()`, shows its URL; https://wispweb.dev/docs/data). Keep an image in a table field, serve it with `fn get(id: u64) -> Option<Image> {
+  Keep an image in a table field, serve it with `fn get(id: u64) -> Option<Image> {
   USERS.get(id)?.value.avatar }` in `avatars/[id=int]/+server.rs`.
 - Rules: `#[validate(len = 1..=100)]` (also `min max min_len max_len email`)
   or `return invalid("field", "msg")` → 422, the page re-rendered listing
@@ -324,7 +323,7 @@ fn before_create(note: &mut Note) -> Result { Ok(()) }  // also before_update, a
 ```
 → GET/POST `/api/notes`, GET/PUT/PATCH/DELETE `/api/notes/[id]`; rows are
 `{"id":1,…}`; 201, 404, 422 by field. Filters, sorting, pages, ETags, ndjson,
-idempotency, RFC 9457, webhooks, OpenAPI, TypeScript client: https://wispweb.dev/docs/api. A
+RFC 9457, webhooks, OpenAPI, TypeScript client: https://wispweb.dev/docs/api. A
 handler the file writes replaces that one; by hand:
 
 ```rust
@@ -436,21 +435,26 @@ no-wait fast path off every route.
 - `Response::`: `json_of(&v) created(&v) text html empty(s) download(name,
   bytes) file_in(dir, name).await stream ndjson events websocket`
   + `.with_status(s) .with_header(n, v)`.
+- `Response::websocket(|ws| async move { while let Some(m) = ws.recv().await {
+  ws.send(m).await?; } Ok(()) })`: binary, node, bun, deno, cloudflare, pages;
+  vercel, netlify, lambda, tower answer 501 (docs/deploy.md). On the edge a
+  connection lives in one instance: no state shared by connections (a Durable
+  Object's job on Cloudflare); `wisp::channel` is native only.
 - State: `Table<T>`: `add(v)→id get(id) all() find(f) filter(f) update(id, f)
   set(id, v) remove(id) len() page(cx, 10)`; rows are `Row { id, value }` that read as
   the value. `Shared<T>` (`.lock()`), `wisp::provide(v)`/`state::<T>()`,
   `wisp::env("K")`, `spawn`, `every`, `wisp::channel("x")`
   `.send/events()` (SSE)`/websocket()`, `RateLimit::per_minute(n).check(key)?`,
   `#[derive(Cookie)]`.
-- Data, files, jobs (https://wispweb.dev/docs/data): `#[unique]` on a `#[model]` field of a saved
+- Data, jobs (https://wispweb.dev/docs/data): `#[unique]` on a `#[model]` field of a saved
   table (or `.unique("f", |v: &T| &v.f)`), `#[json(default)]`/`#[json(default =
   expr)]`/`#[json(was = "old")]` for old rows, `.migrate(f)`, `.live()` (pages
   naming a live table's static refresh themselves, via `/_wisp/live/<name>`),
-  `set clear by try_add`; `Upload`, `wisp::relay`,
+  `set clear by try_add`;
   `wisp::queue(n).push(&j)` + `work(n, f)` + `cron("0 3 * * *", f)` (on
   Cloudflare/Vercel/Netlify the build writes the host's cron trigger from the
   literal schedule; set `CRON_SECRET`, `WISP_STORE`),
-  `wisp::cache(k, secs, f)`/`uncache(path)`, `WISP_ADMIN_KEY` admin page;
+  `wisp::cache(k, secs, f)`/`uncache(path)`;
   rules `url one_of pattern with`.
 - Static export: `fn entries() -> Vec<&'static str>` in a `[param]` page.
   Test: `let mut app = wisp::test::client::<App>(); app.get("/").text()`,
@@ -478,17 +482,19 @@ no-wait fast path off every route.
 - In `+server.rs`, a param named `id` (no `[id]` folder) serves `/[id]`: use
   `list` for the folder's GET. `#[validate]` on params is for actions.
 - HTTP/2 in process is opt-in: `wisp = { .., features = ["h2"] }` (h2c with
-  prior knowledge, no TLS); app code is the same.
+  prior knowledge, no TLS); app code is the same. Streams on a connection
+  are answered at once: an open SSE or stream holds back no other request.
 - A field added to a saved type (`Rest`, `Table::saved`) must be `Option`,
   `Vec` or `bool`, so rows saved before it still read.
 
 ## Commands
 
 `wisp new app [--template demo|minimal|api]` · `wisp dev` (hot reload keeps
-`$state`; error dialog opens `file:line` in the editor, also for a handler's panic;
+`$state`; every open tab updates after each rebuild, once the new app answers,
+a tab that missed one reloads on reconnecting, a failed build's error shows in
+tabs opened later; error dialog opens `file:line` in the editor, also for a handler's panic;
 `Server-Timing` on every dev response; `Alt+Shift+W` devtools
-with routes table; `/_wisp/components` workshop of
-`*.stories.wisp`) · `wisp test [--browser]` · `wisp check [--types]` · `wisp
+with routes table) · `wisp test [--browser]` · `wisp check [--types]` · `wisp
 fmt [--check]` · `wisp build` (`--static`, `--spa`, `--docker`, `--target
 cloudflare|pages|deno|vercel|netlify|node|bun|lambda|native` (`--edge` with
 vercel or netlify: their edge runtime; or per route, `const RUNTIME: wisp::Runtime =
@@ -686,13 +692,13 @@ The build describes the app as OpenAPI 3.1 at `/_wisp/openapi.json`;
   `/[id]`: path, query and header parameters, `body: T` (JSON) or form fields
   by name and type, what it returns (`Option` adds a 404, `()` a 204), and
   `default`, 400, 401, 422 error answers (`Error`, and RFC 9457 `Problem`).
-  A resource also has its `if-match`/`if-none-match`/`idempotency-key`
+  A resource also has its `if-match`/`if-none-match`
   headers, `etag`, `location` and `x-total-count`, a filter parameter per
   plain field, and a 201 for POST.
 - Every page as a GET of `text/html`, and each `#[action]` of its `+page.rs`
   as a POST: `/contact` for `fn default`, `/contact?/send` for the others
   (OpenAPI has no other place for `?/name`), a form body (`multipart/form-data`
-  with an `Image` or `Upload`), checks from `#[validate]`, 200/303/422.
+  with an `Image`), checks from `#[validate]`, 200/303/422.
 - Types from the route file or `src/*.rs` by field: structs as objects (`Option`
   is also `null`, `#[validate]` limits become `minLength`, `maximum`, `format:
   email`...), an enum without fields as its variant names. Others are named and
@@ -742,7 +748,7 @@ fn notes() {
 ```
 
 Also `get put_json patch_json delete post_form send_json(method, url, json)`,
-`header(name, value)` (next request only: `if-match`, `idempotency-key`),
+`header(name, value)` (next request only: `if-match`),
 `send(Request)`, `next_chunk` (events as sent). Tables are in memory.
 
 ### In a browser
@@ -845,8 +851,7 @@ fn get() -> Response { wisp::channel("chat").websocket() }     // both ways
 
 `subscribe()` (`recv().await`) feeds your own `Response::events` or
 `websocket`; `connect(&ws)` joins an existing socket. Channels are per
-process: relay between servers (Redis pub/sub, Postgres `LISTEN`) from a task
-started in `init`.
+process: carry them between servers with a task started in `init`.
 
 ## Background jobs
 
@@ -968,13 +973,6 @@ HMAC-SHA256 of the body with the secret in that variable, hex (with or
 without `sha256=`) or base64 (Shopify). Stripe's `stripe-signature`
 (`t=…,v1=…`) signs the time too and is refused after five minutes. Other
 schemes: `wisp::hex(&wisp::hmac_sha256(secret, message))`, `wisp::secure_eq`.
-
-## Idempotent retries
-
-A POST with `Idempotency-Key` retried gets the first answer back with
-`idempotent-replayed: true`, kept a day per key, path and `authorization`;
-the same key with another body is 422, one still in progress 409. No header,
-nothing kept.
 
 ## Big lists
 
@@ -1100,7 +1098,7 @@ failure the same 400.
 
 ## Not here
 
-Distributed `RateLimit` waits for the relay (S2). Automatic
+Distributed `RateLimit` is not here. Automatic
 `/_wisp/oauth/...` routes need `http.rs`; the two small routes above do the
 same. SMTP, SES.
 
@@ -1408,12 +1406,7 @@ state (editable), stores, the route (params, server values, the page's
 forms), a table of all the app's routes, timings (dev responses carry
 `Server-Timing: total;dur=…`); a server panic or other 5xx opens the same
 error dialog with its message and `file:line`; "Open" uses
-`$WISP_EDITOR` or `$EDITOR`, else `code -g`. `/_wisp/components` is the
-workshop: `Card.stories.wisp` beside `Card.wisp` holds
-`{#story "Featured"}<Card featured title="Tea" />{/story}` examples, each
-rendered at `/_wisp/components/Card/featured` with controls for `&str`,
-`String`, number and `bool` props (`?title=Mint`); a component without
-stories gets a "Default" one when its required props are all such types.
+`$WISP_EDITOR` or `$EDITOR`, else `code -g`.
 
 
 <!-- docs/client-router.md -->
@@ -1758,7 +1751,7 @@ them, scripts and `+page.js`.
 
 <!-- docs/data.md -->
 
-Everything here is opt-in: an app that uses none of it pays nothing.
+Everything here is opt-in: an app that uses none of it pays nothing. File storage, an admin UI and a cross-server relay are the app's: use a crate or a service.
 
 ## Tables
 
@@ -1784,37 +1777,6 @@ pub static USERS: Table<User> = Table::saved("users")
 - Several servers on one store: a `Store` may answer `changes(table,
   since)`, and with `WISP_STORE_POLL=5` (seconds) every table follows it.
   Tables are whole in memory: the store's size is the RAM bound.
-
-## Relay
-
-`wisp::relay(impl Relay)` in `init` carries every channel's messages to the
-other servers (Redis `PUBLISH`, Postgres `NOTIFY`, NATS): two methods,
-`publish(channel, text)` and `subscribe(deliver)`. Each message carries the
-sender's id, so a broker that echoes back is fine.
-
-## Files
-
-`Upload` keeps any file as a blob, by the hash of its bytes (one copy of
-equal files); a row holds its hash, name, type and size, and it shows as its
-URL: `<a href={doc.file}>`.
-
-```rust
-let file = cx.form().file("file").or_status(400)?;
-DOCS.add(Doc { title, file: Upload::new(&file, "pdf csv")? });  // 422 on `file`
-```
-
-An action takes one by name, no code: `#[action] fn add(title: String, file:
-Upload) { DOCS.add(Doc { title, file }); }`. Any kind of file, at most
-`wisp::MAX_SIZE` (`#[validate(max_size = ..)]`; raise `BODY_LIMIT` with it);
-none chosen is a 422 on the field, and `<form fields>` writes its file input.
-The bytes are kept as the action reads them, so a form refused for another
-field leaves its file in the store.
-
-Files go in `WISP_BLOBS` (default: `blobs` beside the data folder; memory
-where tables are); `wisp::blobs(impl Blobs)` puts them in S3 or elsewhere.
-The server answers `/_wisp/blob/<hash>` itself: typed by its bytes
-(images) or as opaque data, `nosniff`, cached for good, `Range` and
-`If-None-Match` honored; GET and HEAD only.
 
 ## Rules
 
@@ -1854,13 +1816,6 @@ See deploy.md.
 answer for 60 s per process. `wisp::uncache("/posts")` forgets cache keys
 starting with it and the pages `const CACHE` keeps, on every worker, for
 `/posts` and below (`/` is all).
-
-## Admin
-
-With `WISP_ADMIN_KEY` set, `/_wisp/admin` (HTTP basic auth, the key as the
-password) lists the saved tables, edits a row's JSON and deletes rows. It
-writes rows directly: no hooks run, only that the JSON is a row of the type
-(and unique fields are free). Form posts need this site's own `Origin`.
 
 
 <!-- docs/deploy.md -->
@@ -4027,13 +3982,12 @@ change and share as folders.
 
 ```sh
 wisp ui list                     # what there is
-wisp ui add button dialog tabs   # into src/components, with stories
+wisp ui add button dialog tabs   # into src/components
 ```
 
 `wisp ui add` copies components into `src/components`: the source is in the
 CLI, the copy is the app's, to change as it likes. A file already there is
-the app's and stays; `--force` writes over it. Each comes with a
-`Name.stories.wisp` for the workshop at `/_wisp/components`.
+the app's and stays; `--force` writes over it.
 
 | Component | Use | Browser code |
 |---|---|---|
@@ -4358,7 +4312,7 @@ Wisp is the framework for the AI age: ultra fast to run, cheap in AI tokens to w
 
 - A language server (`wisp lsp`) with a VS Code extension, plus Zed, tree-sitter and Prettier.
 - `wisp fmt`, `wisp check`, `wisp test` and `wisp test --browser`.
-- Devtools on `Alt+Shift+W` and a component workshop in dev.
+- Devtools on `Alt+Shift+W` in dev.
 
 **Deploy**
 
@@ -4566,7 +4520,7 @@ api. Its 59 tokens keep the notes across restarts and crashes (a log file
 per table in `WISP_DATA`); of the others only Rails does (SQLite, through
 Active Record), and the rest keep them in memory, as the task allows. The
 same 59 tokens also answer filters by field, sorting, cursor pages, field
-selection, ETags with 304 and 412, bulk creates and idempotent retries,
+selection, ETags with 304 and 412, bulk creates,
 which no other version here has. Asked of the others, those would cost
 them more tokens; in Wisp they cost none. What a real API adds in Wisp is
 counted in the usual way: a `created_at: String` field is 6 tokens, a hook

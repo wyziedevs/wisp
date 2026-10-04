@@ -665,7 +665,7 @@ const NAMES: [(&str, &[&str]); 5] = [
 ];
 
 /// The template blocks: what to write, and what it does.
-const BLOCKS: [(&str, &str, &str); 27] = [
+const BLOCKS: [(&str, &str, &str); 26] = [
     (
         "{#if",
         "{#if ${1:cond}}\n\t$0\n{/if}",
@@ -761,13 +761,6 @@ const BLOCKS: [(&str, &str, &str); 27] = [
         "{@element",
         "{@element \"${1:x-card}\"}",
         "`{@element \"x-card\"}` first in a component: also builds it as a custom element.",
-    ),
-    (
-        "{#story",
-        "{#story \"${1:Name}\"}
-	$0
-{/story}",
-        "`{#story \"Featured\"}<Card featured />{/story}`: a named example in a `*.stories.wisp`, shown in the dev workshop.",
     ),
     (
         "{:then",

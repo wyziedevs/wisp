@@ -17,9 +17,7 @@
 // compiles by too.
 use wisp_shared::{contexts, protocol};
 
-mod admin;
 mod bake;
-mod blob;
 mod cache;
 #[cfg(not(target_arch = "wasm32"))]
 mod channel;
@@ -47,7 +45,6 @@ mod health;
 mod html;
 mod http;
 mod i18n;
-mod idem;
 mod image;
 #[cfg(feature = "img")]
 pub mod img;
@@ -66,8 +63,6 @@ pub mod password;
 mod policy;
 mod pwa;
 mod range;
-#[cfg(not(target_arch = "wasm32"))]
-mod relay;
 mod remote;
 mod rest;
 #[doc(hidden)]
@@ -93,11 +88,8 @@ pub mod tower;
 pub mod ts;
 #[cfg(target_os = "linux")]
 mod uring;
-#[cfg(debug_assertions)]
-mod workshop;
 mod ws;
 
-pub use blob::{Blobs, Upload, blobs};
 pub use cache::{cache, revalidate_tag, uncache};
 #[cfg(not(target_arch = "wasm32"))]
 pub use channel::{Channel, Subscription, channel};
@@ -124,8 +116,6 @@ pub use live::{ClientModule, Json};
 pub use otel::{SpanGuard, span, traceparent};
 pub use password::Password;
 pub use pwa::app_manifest;
-#[cfg(not(target_arch = "wasm32"))]
-pub use relay::{Deliver, Relay, relay};
 pub use rest::Resource;
 pub use seo::og;
 pub use session::{Account, login, sign_in_page, sign_out_everywhere, signup, users};
@@ -158,8 +148,8 @@ pub mod prelude {
     pub use crate::TrailingSlash::{Always, Ignore, Never};
     pub use crate::{
         Config, Cookie, CookieOptions, Cx, Email, Error, FromJson, Image, Json, KB, MB, Method,
-        OrStatus, Password, Reply, Response, Rest, Result, Row, SameSite, Shared, Table, Upload,
-        Value, action, error, invalid, model, redirect, remote,
+        OrStatus, Password, Reply, Response, Rest, Result, Row, SameSite, Shared, Table, Value,
+        action, error, invalid, model, redirect, remote,
     };
 }
 
@@ -600,7 +590,17 @@ pub(crate) fn digits(buf: &mut [u8], end: usize, mut n: u64) -> usize {
 pub(crate) fn decimal(out: &mut String, n: u64) {
     let mut buf = [0u8; 20];
     let start = digits(&mut buf, 20, n);
+    #[cfg(not(target_arch = "wasm32"))]
     out.push_str(std::str::from_utf8(&buf[start..]).unwrap_or_default());
+    // In wasm `from_utf8` is an outlined call that checks bytes known to be
+    // ASCII digits: pushing them one by one is shorter.
+    #[cfg(target_arch = "wasm32")]
+    {
+        out.reserve(20 - start);
+        for &d in &buf[start..] {
+            out.push(char::from(d));
+        }
+    }
 }
 
 /// Values given to [`provide`], leaked: they live as long as the process.
@@ -683,7 +683,6 @@ pub(crate) struct Settings {
     pub old_secret: Option<String>,
     /// `WISP_WS_IDLE`: seconds a WebSocket client may stay quiet (60; 0
     /// never closes). It is pinged halfway.
-    #[cfg(not(target_arch = "wasm32"))] // no upgrades there
     pub ws_idle: std::time::Duration,
     /// `WISP_MAX_CONNS`: open connections, WebSockets too, past which the
     /// built-in server answers new ones 503 and closes them (10000; 0 is
@@ -741,7 +740,6 @@ pub(crate) fn settings() -> &'static Settings {
             Some(s)
         };
         let (secret, old_secret) = (secret("WISP_SECRET"), secret("WISP_SECRET_OLD"));
-        #[cfg(not(target_arch = "wasm32"))]
         let ws_idle = std::time::Duration::from_secs(setting::<u64>("WISP_WS_IDLE", "a number of seconds").unwrap_or(60));
         #[cfg(not(target_arch = "wasm32"))]
         let max_conns = match setting::<usize>("WISP_MAX_CONNS", "a number of connections") {
@@ -759,7 +757,6 @@ pub(crate) fn settings() -> &'static Settings {
         let timeout_ms = setting::<u64>("WISP_HANDLER_TIMEOUT", "a number of seconds").map_or(0, |s| s.saturating_mul(1000));
         Settings {
             dev, body_limit, origin, client_ip_header, secret, old_secret, api_docs, request_id, problem_json, secure_headers, timed, timeout_ms,
-            #[cfg(not(target_arch = "wasm32"))]
             ws_idle,
             #[cfg(not(target_arch = "wasm32"))]
             max_conns,
@@ -858,11 +855,6 @@ pub trait App: 'static {
     /// `/_wisp/client.ts`; empty without any.
     fn client_ts() -> &'static str {
         ""
-    }
-    /// Dev builds: the components and their stories, for the workshop at
-    /// `/_wisp/components`.
-    fn workshop() -> &'static [rt::Shelf] {
-        &[]
     }
     /// `wisp check --types`: the TypeScript of each value a script reads
     /// of a block, by file (see `ts`), as the members of a JSON object.
@@ -1711,44 +1703,6 @@ pub mod rt {
             None => Some(T::now()),
         }
     }
-    /// A component in the workshop at `/_wisp/components` (dev builds).
-    pub struct Shelf {
-        pub name: &'static str,
-        pub file: &'static str,
-        pub props: &'static [ShelfProp],
-        /// From its `Name.stories.wisp`, or the default story.
-        pub stories: &'static [Story],
-        /// Why it has no story, when it has none.
-        pub note: &'static str,
-    }
-
-    pub struct ShelfProp {
-        pub name: &'static str,
-        pub ty: &'static str,
-        /// How the workshop edits it, if it can.
-        pub control: Option<Control>,
-    }
-
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    pub enum Control {
-        Text,
-        Number,
-        Check,
-    }
-
-    pub struct Story {
-        pub name: &'static str,
-        pub slug: &'static str,
-        /// Where it is: its stories file, or for the default story the
-        /// component's.
-        pub file: &'static str,
-        pub line: u32,
-        /// The props' first values, where the story writes literals.
-        pub values: &'static [(&'static str, &'static str)],
-        /// Renders it, its simple props from the query.
-        pub render: fn(&mut crate::Out, &crate::Cx),
-    }
-
     /// The app's service worker and web app manifest ([`crate::App::PWA`]),
     /// as the build made them.
     pub struct Pwa {
@@ -1959,23 +1913,6 @@ pub mod rt {
     /// The answer of a handler that returns nothing: a 204.
     pub fn no_content(out: &mut Out) {
         out.made = Some(crate::bake::Made::NoContent);
-    }
-
-    /// A POST the hooks let through, with an `Idempotency-Key`: true when
-    /// its answer is decided already, the first one again or a refusal, in
-    /// `out`; else it is answered as usual, and that answer kept.
-    pub fn idempotent(cx: &mut Cx, out: &mut Out) -> bool {
-        match crate::idem::start(cx) {
-            crate::idem::Start::Skip => false,
-            crate::idem::Start::Fresh(key) => {
-                cx.idem = Some(key);
-                false
-            }
-            crate::idem::Start::Answered(r) => {
-                respond(out, r);
-                true
-            }
-        }
     }
 
     /// The route has a guard (a rate limit, `CORS`, a middleware), which runs

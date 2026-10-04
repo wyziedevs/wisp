@@ -11,6 +11,7 @@ members = [
     "examples/jobs",
     "examples/img",
     "examples/i18n",
+    "examples/websocket",
     "tests/app",
     "tests/agents",
     "tests/islands",

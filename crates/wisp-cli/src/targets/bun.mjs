@@ -7,7 +7,39 @@
 // failed check, serves with Bun.serve instead.
 import { wisp } from './bridge.mjs';
 
-const app = wisp(await WebAssembly.compile(await Bun.file(`${import.meta.dir}/app.wasm`).arrayBuffer()), process.env);
+// A WebSocket the app answered, where Bun.serve holds it (raw sockets are
+// upgraded by Wisp's own parser): `server.upgrade` makes it, and an
+// EventTarget gives the bridge the events of Bun's `websocket` handlers.
+// What `accept` answers when Bun has the request (the fetch handler then
+// returns nothing).
+const upgraded = new Response();
+let server;
+function accept(request) {
+  const ws = new EventTarget();
+  ws.readyState = 0;
+  ws.send = (data) => ws.raw.send(data);
+  ws.close = (code, reason) => ws.raw.close(code, reason);
+  if (!server.upgrade(request, { data: ws })) throw new Error('not an upgrade');
+  return { ws, response: upgraded };
+}
+const websocket = {
+  open(raw) {
+    raw.data.raw = raw;
+    raw.data.readyState = 1;
+    raw.data.dispatchEvent(new Event('open'));
+  },
+  message(raw, data) {
+    const e = new Event('message');
+    e.data = typeof data === 'string' ? data : new Uint8Array(data);
+    raw.data.dispatchEvent(e);
+  },
+  close(raw) {
+    raw.data.readyState = 3;
+    raw.data.dispatchEvent(new Event('close'));
+  },
+};
+
+const app = wisp(await WebAssembly.compile(await Bun.file(`${import.meta.dir}/app.wasm`).arrayBuffer()), process.env, undefined, accept);
 let raws = 0;
 
 // A socket's bytes to the app and its answers back. `write` may take only
@@ -76,10 +108,14 @@ if (raw) {
   Bun.listen({ hostname, port, socket: sockets });
   console.log(`wisp: listening on http://${hostname}:${port}`);
 } else {
-  Bun.serve({
+  server = Bun.serve({
     port,
     hostname,
-    fetch: (request, server) => app.fetch(request, server.requestIP(request)?.address ?? ''),
+    websocket,
+    fetch: async (request, s) => {
+      const res = await app.fetch(request, s.requestIP(request)?.address ?? '');
+      return res === upgraded ? undefined : res;
+    },
   });
   console.log(`wisp: listening on http://${hostname}:${port}`);
 }

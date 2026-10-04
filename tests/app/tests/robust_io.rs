@@ -2,6 +2,8 @@
 //! misbehave or merely sit there: memory per idle connection, answers that
 //! must arrive even when the client keeps sending, HTTP/1.0 rules.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 mod common;
 
 use common::*;

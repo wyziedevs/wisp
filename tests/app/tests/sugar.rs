@@ -1,6 +1,8 @@
 //! `src/routes/t/sugar`: an action without `->`, an `Email` input, `.await`
 //! in markup and a block's name read by browser code, working together.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 use wisp::test::client;
 use wisp_test_app::Site;
 
@@ -131,21 +133,6 @@ fn an_intercepting_page_is_a_fragment_for_the_slot_and_a_reload_is_the_page() {
         full.contains("<h1>item 7</h1>") && !full.contains("<dialog"),
         "{full}"
     );
-}
-
-#[test]
-fn an_upload_param_keeps_any_file() {
-    let mut app = client::<Site>();
-    let page = app.get("/t/docs").text().to_string();
-    assert!(page.contains("enctype=\"multipart/form-data\""), "{page}");
-    assert!(
-        page.contains("<input name=\"doc\" type=\"file\" required>"),
-        "{page}"
-    );
-    let r = app.upload("/t/docs?/add", "doc", "application/pdf", b"%PDF-1 hi");
-    assert_eq!(r.status, 303, "{}", r.text());
-    let none = app.post_form("/t/docs?/add", &[]);
-    assert_eq!(none.status, 422);
 }
 
 #[test]

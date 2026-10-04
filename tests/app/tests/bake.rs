@@ -2,6 +2,8 @@
 //! nothing of the request, baked at build time, and responses `CACHE`
 //! keeps.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 mod common;
 
 use common::{Server, body, header, start, status};

@@ -3,6 +3,8 @@
 //! limits, streamed responses and browser code (client scripts and
 //! directives), each checked on the wire.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 mod common;
 #[path = "../../../tests/shared/ws.rs"]
 mod ws;

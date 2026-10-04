@@ -192,16 +192,6 @@
       },
       "post": {
         "operationId": "post_api_notes",
-        "parameters": [
-          {
-            "name": "idempotency-key",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
         "requestBody": {
           "required": true,
           "content": {

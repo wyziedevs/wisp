@@ -232,29 +232,3 @@ fn a_page_header_the_app_set_is_sent_once() {
         assert_eq!(count("x-content-type-options"), 1, "{q}");
     }
 }
-
-#[test]
-fn a_blob_is_served_whole_in_part_and_not_again() {
-    let file = crate::File {
-        name: "a.txt".into(),
-        content_type: "text/plain",
-        bytes: b"0123456789",
-    };
-    let hash = crate::Upload::new(&file, "").unwrap().hash;
-    let path = format!("{}{hash}", crate::blob::PREFIX);
-    let with = |method: &str, h: &[(&str, &str)]| {
-        let mut req = Request::new(method, &path);
-        for (n, v) in h {
-            req.header(n, v);
-        }
-        crate::test::client::<Site>().send(req)
-    };
-    let whole = with("GET", &[]);
-    assert_eq!((whole.status, whole.bytes()), (200, &b"0123456789"[..]));
-    assert_eq!(whole.header("accept-ranges"), Some("bytes"));
-    let part = with("GET", &[("range", "bytes=2-4")]);
-    assert_eq!((part.status, part.bytes()), (206, &b"234"[..]));
-    let etag = whole.header("etag").unwrap().to_owned();
-    assert_eq!(with("GET", &[("if-none-match", &etag)]).status, 304);
-    assert_ne!(with("POST", &[]).status, 200);
-}

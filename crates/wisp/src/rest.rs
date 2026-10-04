@@ -356,8 +356,8 @@ impl View<'_> {
     }
 }
 
-/// A 64-bit hash of `parts`, eight bytes at a step, for ETags and
-/// idempotency keys: quick, and not for secrets. Each step is a bijection
+/// A 64-bit hash of `parts`, eight bytes at a step, for ETags:
+/// quick, and not for secrets. Each step is a bijection
 /// of the state, so bodies of one length that differ never share a hash.
 pub(crate) fn hash(parts: &[&[u8]]) -> u64 {
     const K: u64 = 0x517c_c1b7_2722_0a95;

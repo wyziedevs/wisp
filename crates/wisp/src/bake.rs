@@ -124,7 +124,6 @@ pub(crate) fn reply(cx: &Cx, made: Made, reply: &mut Reply) {
     let fresh = match &made {
         Made::Baked(b) => crate::http::fresh(cx, b.etag),
         Made::Kept(k) => crate::http::fresh(cx, &k.etag),
-        // As bytes, which an `Idempotency-Key` keeps.
         Made::NoContent => {
             (reply.status, reply.body) = (204, Body::Static(b""));
             return;

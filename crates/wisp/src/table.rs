@@ -183,55 +183,6 @@ impl<T: Send + Sync> Poll for Table<T> {
     }
 }
 
-/// The admin page reads and changes a saved table through its stored JSON.
-impl<T: Send + Sync> crate::admin::Admin for Table<T> {
-    fn name(&self) -> &'static str {
-        self.saved.as_ref().map_or("", |s| s.name)
-    }
-
-    fn len(&self) -> usize {
-        Table::len(self)
-    }
-
-    fn rows(&self, after: u64, limit: usize) -> Vec<(u64, String)> {
-        let Some(saved) = &self.saved else {
-            return Vec::new();
-        };
-        let rows = self.read();
-        let json = |v: &T| {
-            let mut out = String::new();
-            (saved.write)(v, &mut out);
-            out
-        };
-        let from = after.saturating_add(1);
-        let range = rows.map.range(from..).take(limit);
-        range.map(|(&id, v)| (id, json(v))).collect()
-    }
-
-    fn row(&self, id: u64) -> Option<String> {
-        let saved = self.saved.as_ref()?;
-        let mut out = String::new();
-        (saved.write)(self.read().map.get(&id)?, &mut out);
-        Some(out)
-    }
-
-    fn put(&self, id: u64, json: &str) -> Result<bool> {
-        let Some(saved) = &self.saved else {
-            return Ok(false);
-        };
-        let value = (saved.read)(json.as_bytes())?;
-        Ok(self.try_set(id, value)?.is_some())
-    }
-
-    fn drop_row(&self, id: u64) -> Result<bool> {
-        let mut rows = self.write();
-        let gone = self.delete(&mut rows, id)?.is_some();
-        drop(rows);
-        self.notify();
-        Ok(gone)
-    }
-}
-
 /// The names of the `.live()` tables `ready` has seen: what `/_wisp/live/NAME`
 /// serves, which the pages reading them listen to.
 static LIVE: Shared<Vec<&'static str>> = Shared::new(Vec::new());
@@ -444,7 +395,7 @@ impl<T> Table<T> {
         drop(self.write());
         let mut every = EVERY.lock();
         // Once: a second `ready` (each test client makes one) would have the
-        // table polled and listed in the admin page twice.
+        // table polled twice.
         if every.iter().any(|t| std::ptr::addr_eq(*t, self)) {
             return;
         }
@@ -458,9 +409,6 @@ impl<T> Table<T> {
         }
         if polling() {
             POLLED.lock().push(self);
-        }
-        if crate::admin::enabled() {
-            crate::admin::register(self);
         }
     }
 
@@ -1482,21 +1430,5 @@ mod tests {
             t.by("b@x").is_some() && t.by("z@x").is_none(),
             "none applied"
         );
-
-        // The admin page's view of it: stored JSON in, rows out.
-        use crate::admin::Admin;
-        assert_eq!(
-            Admin::rows(&t, 0, 10)[0],
-            (2, r#"{"email":"b@x","age":1}"#.to_string())
-        );
-        assert!(Admin::put(&t, 2, r#"{"email":"z@x","age":3}"#).unwrap());
-        assert!(
-            Admin::put(&t, 3, r#"{"email":"z@x","age":3}"#).is_err(),
-            "unique"
-        );
-        assert!(Admin::put(&t, 2, "nope").is_err());
-        assert!(!Admin::put(&t, 9, r#"{"email":"q@x","age":3}"#).unwrap());
-        assert!(Admin::drop_row(&t, 2).unwrap() && !Admin::drop_row(&t, 2).unwrap());
-        assert_eq!(t.by("z@x"), None);
     }
 }

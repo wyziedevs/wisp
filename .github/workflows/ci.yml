@@ -17,4 +17,4 @@ jobs:
       - run: cargo clippy --workspace -- -D warnings
       - run: cargo test --workspace
       # Native-only code must not leak into edge builds.
-      - run: cargo check -p wisp-test-app --target wasm32-unknown-unknown
+      - run: cargo clippy -p wisp-test-app --all-targets --target wasm32-unknown-unknown -- -D warnings

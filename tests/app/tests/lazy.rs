@@ -2,6 +2,8 @@
 //! static import does, a page preloads what it imports statically and not
 //! what it imports later, and code two pages import is one module.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 use wisp::test::{Client, client};
 use wisp_test_app::Site;
 

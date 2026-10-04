@@ -1,6 +1,8 @@
 //! Layout resets and inherited options, typed routes, `reroute`, and the
 //! origin check of `+server.rs` endpoints.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 mod common;
 
 use wisp::test::client;
