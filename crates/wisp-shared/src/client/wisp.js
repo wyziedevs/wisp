@@ -21,7 +21,7 @@
 // waits for; live.js's onNavigate), `wisp:preload` (`{url, code, done}`),
 // `wisp:stale` when a page names a newer wisp.js, `wisp:update`
 // after each morph (live.js restarts browser code on it), `wisp:stay`
-// when a navigation ends in a download and the page stays. Dispatching
+// when a navigation ends in a download or a `data-wisp-cut` slot and the page stays. Dispatching
 // `wisp:refresh` morphs in the current URL's page again (`wisp dev` does it
 // after every rebuild), `wisp:goto` navigates, `wisp:push` adds a history
 // entry with state on the page shown (`wisp:pop` when one comes back). A form gets `wisp:submit`
@@ -253,9 +253,11 @@
     const hit = views.filter(([p]) => fit(p + '/[...r]', url.pathname)).sort((a, b) => b[0].length - a[0].length)[0];
     const main = hit && document.querySelector('main');
     if (!main) return;
+    const old = [...main.childNodes];
     main.replaceChildren();
     main.insertAdjacentHTML('beforeend', hit[1]);
     main.setAttribute('aria-busy', 'true');
+    return () => (main.replaceChildren(...old), main.removeAttribute('aria-busy'));
   }
 
   // `@slot/(.)photo/[id]/+page@.wisp`: a navigation to `/photo/7` from a page
@@ -284,10 +286,10 @@
     if (url.origin !== location.origin) return location.assign(url);
     // A pop is over: the browser has gone there, so it cannot be canceled.
     if (!send('wisp:navigate', { from: location.href, to: url.href, pop: !!how.pop }) && !how.pop) return;
-    if (!how.pop && document.querySelector('[data-wisp-cut]') && (await cut(url))) return;
+    if (!how.pop && document.querySelector('[data-wisp-cut]') && (await cut(url))) return send('wisp:stay');
     const my = ++nav;
     if (!how.pop) history.replaceState({ ...history.state, x: scrollX, y: scrollY }, '');
-    if (views.length && !how.pop && !pre.has(key(url))) wait(url);
+    const undo = views.length && !how.pop && !pre.has(key(url)) && wait(url);
     let res;
     try {
       const early = pre.get(key(url));
@@ -305,7 +307,7 @@
     if (my !== nav) return;
     // A file: the browser shows or saves it. A download leaves the page
     // where it is: `wisp:stay` says the navigation is over.
-    if (!isHtml(res)) return location.assign(url), attachment(res) && send('wisp:stay');
+    if (!isHtml(res)) return location.assign(url), attachment(res) && (undo?.(), send('wisp:stay'));
     let html = await res.text();
     html = (await drawn(html, url)) || html;
     if (my !== nav) return;

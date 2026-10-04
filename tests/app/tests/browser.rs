@@ -163,3 +163,27 @@ fn components_draw_the_snippets_they_are_given() {
     );
     assert_eq!(b.text("#note i"), "raw");
 }
+
+/// A download from a page with a `+loading.wisp` view: the loading view
+/// goes and the page's own content comes back.
+#[test]
+fn a_download_with_a_loading_view_restores_the_page() {
+    let mut b = wisp::browser!(Site);
+    b.goto("/a2/stay");
+    b.click("#save");
+    b.eval("new Promise((r) => setTimeout(r, 300))");
+    assert_eq!(b.text("#h"), "Stay");
+    assert_eq!(b.text("#nav"), "here");
+}
+
+/// A navigation into a `@slot` (the gallery's modal) leaves the page where
+/// it is, and `navigating` is cleared.
+#[test]
+fn a_slot_navigation_ends_the_navigation() {
+    let mut b = wisp::browser!(Site);
+    b.goto("/t/gal");
+    b.click("a[href='/t/gal/item/7']");
+    b.eval("new Promise((r) => setTimeout(r, 300))");
+    assert_eq!(b.text("dialog"), "modal 7");
+    assert_eq!(b.text("#nav"), "here");
+}

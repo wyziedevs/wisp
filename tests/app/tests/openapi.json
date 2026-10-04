@@ -18,6 +18,19 @@
         }
       }
     },
+    "/a2/stay/file": {
+      "get": {
+        "operationId": "get_a2_stay_file",
+        "responses": {
+          "200": {
+            "description": "A response"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
     "/avatars/{id}": {
       "get": {
         "operationId": "get_avatars_id",
@@ -2839,6 +2852,29 @@
             "description": "Done: on to the page it names",
             "headers": {
               "location": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/a2/stay": {
+      "get": {
+        "operationId": "page_a2_stay",
+        "tags": [
+          "pages"
+        ],
+        "responses": {
+          "200": {
+            "description": "The page",
+            "content": {
+              "text/html": {
                 "schema": {
                   "type": "string"
                 }

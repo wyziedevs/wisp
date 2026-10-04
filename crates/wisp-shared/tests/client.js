@@ -8,11 +8,11 @@ const path = require('node:path');
 const src = fs.readFileSync(path.join(__dirname, '../src/client/wisp.js'), 'utf8');
 
 const tick = () => new Promise((r) => setTimeout(r, 10));
-const res = (body, type = 'text/html', status = 200) => ({
+const res = (body, type = 'text/html', status = 200, disposition = null) => ({
   ok: status < 400,
   status,
   redirected: false,
-  headers: { get: (k) => (k == 'content-type' ? type : null) },
+  headers: { get: (k) => (k == 'content-type' ? type : k == 'content-disposition' ? disposition : null) },
   text: async () => body,
   clone() { return this; },
 });
@@ -282,7 +282,7 @@ const tests = {
     assert.equal(p.calls.head[1].attrs.src, 'http://t.test/b.js');
   },
   async 'loading: the deepest folder view shows in main until the page arrives'() {
-    const main = { html: '', attrs: {}, replaceChildren() { this.html = ''; }, insertAdjacentHTML(_, h) { this.html += h; }, setAttribute(k, v) { this.attrs[k] = v; } };
+    const main = { html: '', nodes: ['page'], attrs: {}, get childNodes() { return this.nodes; }, replaceChildren(...n) { this.html = ''; this.nodes = n; }, insertAdjacentHTML(_, h) { this.html += h; }, setAttribute(k, v) { this.attrs[k] = v; }, removeAttribute(k) { delete this.attrs[k]; } };
     const p = page({ views: [['', '<i>all</i>'], ['/blog', '<i>blog</i>'], ['/shop/[id=int]', '<i>item</i>']], main });
     let release;
     p.g.reply = () => new Promise((r) => (release = () => r(res('<title>B</title><h1>B</h1>'))));
@@ -306,12 +306,28 @@ const tests = {
     release();
     await tick();
   },
+  async 'loading: a download puts the page back, and navigating ends'() {
+    const main = { html: '', nodes: ['page'], attrs: {}, get childNodes() { return this.nodes; }, replaceChildren(...n) { this.html = ''; this.nodes = n; }, insertAdjacentHTML(_, h) { this.html += h; }, setAttribute(k, v) { this.attrs[k] = v; }, removeAttribute(k) { delete this.attrs[k]; } };
+    const p = page({ views: [['', '<i>all</i>']], main });
+    let stayed = 0;
+    p.doc.addEventListener('wisp:stay', () => stayed++);
+    p.g.reply = () => res('hi', 'text/plain', 200, 'attachment; filename="a.txt"');
+    p.click({}, '/file');
+    assert.equal(main.html, '<i>all</i>');
+    await tick();
+    assert.deepEqual(main.nodes, ['page']);
+    assert.equal(main.attrs['aria-busy'], undefined);
+    assert.equal(stayed, 1);
+  },
   async 'intercept: a navigation shows the slot page in place and changes the address'() {
     const slot = { innerHTML: '', getAttribute: () => JSON.stringify([['/gal/item/[id]', '/gal/@modal/(.)item/[id]']]) };
     const p = page({ cuts: [slot] });
+    let stayed = 0;
+    p.doc.addEventListener('wisp:stay', () => stayed++);
     p.g.reply = () => res('<b>photo 7</b>');
     p.click({}, '/gal/item/7');
     await tick();
+    assert.equal(stayed, 1); // the page stays: navigating ends
     assert.equal(p.fetches.length, 1);
     assert.equal(p.fetches[0].url, '/gal/@modal/(.)item/7');
     assert.equal(slot.innerHTML, '<b>photo 7</b>');
