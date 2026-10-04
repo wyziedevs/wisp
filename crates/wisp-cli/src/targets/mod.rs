@@ -878,6 +878,8 @@ mod tests {
             "wisp_timer",
             "wisp_cancel",
             "wisp_pull",
+            "wisp_ws_message",
+            "wisp_ws_close",
             "main",
         ] {
             assert!(BRIDGE.contains(&format!("exports.{export}")), "{export}");

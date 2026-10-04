@@ -167,6 +167,11 @@ const CONN = 1 << 30;
 function webSink(c, h, body) {
   if (h.same && c.fast) keep(c, h, body);
   if (c.quiet) return;
+  if (h.status === 101) {
+    // The app upgraded: the host's own socket takes the request over.
+    const r = c.up?.(c) ?? new Response('WebSockets are not available on this host', { status: 501 });
+    return c.resolve ? c.resolve(r) : (c.res = r);
+  }
   const empty = c.empty || h.status < 200 || h.status === 204 || h.status === 304;
   if (empty && h.stream) body.cancel(); // ends the app's stream
   const r = new Response(empty ? null : body, (h.init ??= init(h)));
@@ -212,15 +217,38 @@ function init({ status, headers: flat }) {
   return { status, headers: twice ? list : record };
 }
 
+// A message for a WebSocket the host made: `op` 1 text, 2 binary, 8 a close
+// (a code and a reason). A host that will not send a code (Deno's takes only
+// 1000 and 3000 to 4999) gets 1000.
+function put(ws, op, bytes) {
+  try {
+    if (op === 1) ws.send(dec.decode(bytes));
+    else if (op === 2) ws.send(bytes);
+    else if (op === 8) {
+      const code = bytes.length > 1 ? (bytes[0] << 8) | bytes[1] : 1000;
+      try {
+        ws.close(code, dec.decode(bytes.subarray(2)));
+      } catch {
+        ws.close(1000);
+      }
+    }
+  } catch {} // closed already
+}
+
 // `module` is a compiled WebAssembly.Module; `env` the host's variables
-// (only strings are passed on). A panic fails its own request with a 500,
+// (only strings are passed on). `accept(request)`, for a host that holds
+// WebSockets in a fetch handler, makes one: { ws, response }, `ws` a
+// WebSocket (send, close, addEventListener 'message' 'close' 'error' and
+// 'open', readyState) and `response` what the handler returns (Workers'
+// `new Response(null, { status: 101, webSocket })`, Deno.upgradeWebSocket's).
+// Without it the app answers a WebSocket request 501. A panic fails its own request with a 500,
 // and later requests go to a fresh instance.
 //
 // `sink(ctx, head, body)` is the answer to `direct`: a head `{ status,
 // headers: [name, value, ...] }` (shared: read it, never change it) and a
 // body that is a view of the app's memory, good only until the sink returns,
 // or a ReadableStream.
-export function wisp(module, env = {}, sink) {
+export function wisp(module, env = {}, sink, accept) {
   let live = null;
   let ready = null; // the instance that last answered: requests skip the awaits
   let next = 0;
@@ -231,7 +259,7 @@ export function wisp(module, env = {}, sink) {
 
   async function start() {
     // `work`: timers and fetches under way, which `idle` waits out.
-    const x = { pending: new Map(), asked: new Map(), heads: [], streams: new Map(), conns: new Map(), retired: false, work: 0, idlers: [] };
+    const x = { pending: new Map(), asked: new Map(), heads: [], streams: new Map(), conns: new Map(), socks: new Map(), retired: false, work: 0, idlers: [] };
     let view; // the memory's bytes, made again only when it has grown
     const mem = () => {
       const b = x.exports.memory.buffer;
@@ -407,11 +435,20 @@ export function wisp(module, env = {}, sink) {
           }
           return give(host ? t : t + `host: ${r.host}\n`, out, cap);
         },
+        // A message for the WebSocket of request `id`, copied: sent when the host has made it.
+        ws: (id, op, p, n) => {
+          let s = x.socks.get(id);
+          if (!s) x.socks.set(id, (s = { ws: null, q: [] }));
+          const bytes = copy(p, n);
+          if (s.ws && s.ws.readyState !== 0) put(s.ws, op, bytes);
+          else s.q.push([op, bytes]);
+        },
         timer: (id, ms) => x.later(new Promise((r) => setTimeout(r, ms)), () => x.call(() => x.exports.wisp_timer(id))),
       },
     };
     x.exports = (await WebAssembly.instantiate(module, imports)).exports;
-    const vars = Object.entries(env).filter(([, v]) => typeof v === 'string');
+    const vars = Object.entries(env).filter(([k, v]) => typeof v === 'string' && k !== 'WISP_WS');
+    vars.push(['WISP_WS', accept ? '1' : '0']);
     const len = x.put(enc.encode(vars.map(([k, v]) => `${k}=${v}\0`).join('')));
     x.call(() => x.exports.wisp_env(len));
     x.call(() => x.exports.main(0, 0));
@@ -454,7 +491,40 @@ export function wisp(module, env = {}, sink) {
     x.call(x.exports.wisp_request, id, x.request(h + '\n', body));
     const r = await answer;
     const idle = x.idle();
-    return r ? { status: parseInt(r.first) || 500, headers: r.headers, body: r.body, idle } : { ...failed, idle };
+    return r ? { status: parseInt(r.first) || 500, headers: r.headers, body: r.body, idle, id, x } : { ...failed, idle };
+  }
+
+  // The app answered `request` 101: the host's `accept` makes the socket, and
+  // the app's messages and the client's go between them. Returns what the
+  // host's handler returns.
+  function takeover(x, id, request) {
+    let ws, response;
+    try {
+      ({ ws, response } = accept(request));
+    } catch {
+      x.call(() => x.exports.wisp_cancel(id)); // not an upgrade after all
+      return new Response('Bad Request', { status: 400 });
+    }
+    let s = x.socks.get(id);
+    if (!s) x.socks.set(id, (s = { ws: null, q: [] }));
+    s.ws = ws;
+    try {
+      ws.binaryType = 'arraybuffer';
+    } catch {}
+    const flush = () => {
+      if (ws.readyState !== 0) for (const [op, bytes] of s.q.splice(0)) put(ws, op, bytes);
+    };
+    ws.addEventListener('open', flush);
+    ws.addEventListener('message', (e) => {
+      const text = typeof e.data === 'string';
+      const bytes = text ? enc.encode(e.data) : new Uint8Array(e.data);
+      x.call(() => x.exports.wisp_ws_message(id, text ? 1 : 2, x.put(bytes)));
+    });
+    const end = () => x.socks.delete(id) && x.call(() => x.exports.wisp_ws_close(id));
+    ws.addEventListener('close', end);
+    ws.addEventListener('error', end);
+    flush();
+    return response;
   }
 
   // A bodyless request, headers as Node's `rawHeaders` (name, value, name, ...),
@@ -518,6 +588,8 @@ export function wisp(module, env = {}, sink) {
     }
   }
 
+  const up = accept && ((c) => takeover(ready, c.id, c.request));
+
   // A web `Request` to a web `Response`: Workers, Deno, Netlify. `ctx` is
   // the host's context, whose `waitUntil` keeps background work alive.
   // A request without a body goes straight to the app and, when the app
@@ -542,7 +614,7 @@ export function wisp(module, env = {}, sink) {
       }
     }
     const host = headers.get('host') ?? url.slice(s, at < 0 ? url.length : at);
-    const c = { res: null, resolve: null, empty: method === 'HEAD', fast: get && !path.includes('?') ? fast : null, path, probe };
+    const c = { res: null, resolve: null, empty: method === 'HEAD', fast: get && !path.includes('?') ? fast : null, path, probe, request, up, id: 0 };
     enter(x, method, path, peer, host, headers, c);
     if (x.work) ctx?.waitUntil?.(x.idle());
     return c.res ?? new Promise((resolve) => (c.resolve = resolve));
@@ -558,6 +630,7 @@ export function wisp(module, env = {}, sink) {
       sent.set(h, (bytes = enc.encode(h + '\n')));
     }
     const id = (next = (next + 1) & 0x7fffffff);
+    c.id = id;
     x.pending.set(id, c);
     x.asked.set(id, { headers, host });
     x.call(x.exports.wisp_request_lazy, id, x.write(bytes));
@@ -579,11 +652,12 @@ export function wisp(module, env = {}, sink) {
     if (!request.headers.has('host')) headers.push(['host', url.host]);
     const body = request.body ? new Uint8Array(await request.arrayBuffer()) : none;
     const r = await handle({ method: request.method, target: url.pathname + url.search, peer, headers, body });
+    if (r.status === 101) return accept ? takeover(r.x, r.id, request) : new Response('WebSockets are not available on this host', { status: 501 });
     if (r.idle !== settled) ctx?.waitUntil?.(r.idle); // only when work is under way
     const empty = r.status < 200 || r.status === 204 || r.status === 304 || request.method === 'HEAD';
     if (empty && r.body instanceof ReadableStream) r.body.cancel(); // ends the app's stream
     return new Response(empty ? null : r.body, { status: r.status, headers: r.headers });
   }
 
-  return { handle, direct, fetch: serve, conn, check };
+  return { handle, direct, fetch: serve, conn, check, up: instance };
 }

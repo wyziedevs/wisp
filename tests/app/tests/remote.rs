@@ -1,6 +1,8 @@
 //! `#[remote]` functions (`src/remote.rs`, and a page's block in
 //! `src/routes/remote`), called as the browser's `remote.js` calls them.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 use wisp::Value;
 use wisp::test::{Client, client};
 use wisp_test_app::Site;

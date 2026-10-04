@@ -1,6 +1,7 @@
 //! A page with `const SSR: bool = false;`, drawn by a headless Chrome or
 //! Edge from the data the server sent (`cargo test -p wisp-test-app
 //! --features browser`; skipped where there is none).
+#![cfg(not(target_arch = "wasm32"))]
 #![cfg(feature = "browser")]
 
 use wisp_test_app::Site;

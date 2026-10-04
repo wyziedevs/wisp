@@ -4,6 +4,8 @@
 //! `$ref` resolves, every `{param}` of a path is declared, operation ids are
 //! unique, each operation answers, each security scheme it names exists.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 use std::path::Path;
 use wisp::test::client;
 use wisp::{Value, from_json};

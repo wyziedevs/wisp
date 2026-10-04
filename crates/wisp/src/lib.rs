@@ -600,7 +600,17 @@ pub(crate) fn digits(buf: &mut [u8], end: usize, mut n: u64) -> usize {
 pub(crate) fn decimal(out: &mut String, n: u64) {
     let mut buf = [0u8; 20];
     let start = digits(&mut buf, 20, n);
+    #[cfg(not(target_arch = "wasm32"))]
     out.push_str(std::str::from_utf8(&buf[start..]).unwrap_or_default());
+    // In wasm `from_utf8` is an outlined call that checks bytes known to be
+    // ASCII digits: pushing them one by one is shorter.
+    #[cfg(target_arch = "wasm32")]
+    {
+        out.reserve(20 - start);
+        for &d in &buf[start..] {
+            out.push(char::from(d));
+        }
+    }
 }
 
 /// Values given to [`provide`], leaked: they live as long as the process.
@@ -683,7 +693,6 @@ pub(crate) struct Settings {
     pub old_secret: Option<String>,
     /// `WISP_WS_IDLE`: seconds a WebSocket client may stay quiet (60; 0
     /// never closes). It is pinged halfway.
-    #[cfg(not(target_arch = "wasm32"))] // no upgrades there
     pub ws_idle: std::time::Duration,
     /// `WISP_MAX_CONNS`: open connections, WebSockets too, past which the
     /// built-in server answers new ones 503 and closes them (10000; 0 is
@@ -741,7 +750,6 @@ pub(crate) fn settings() -> &'static Settings {
             Some(s)
         };
         let (secret, old_secret) = (secret("WISP_SECRET"), secret("WISP_SECRET_OLD"));
-        #[cfg(not(target_arch = "wasm32"))]
         let ws_idle = std::time::Duration::from_secs(setting::<u64>("WISP_WS_IDLE", "a number of seconds").unwrap_or(60));
         #[cfg(not(target_arch = "wasm32"))]
         let max_conns = match setting::<usize>("WISP_MAX_CONNS", "a number of connections") {
@@ -759,7 +767,6 @@ pub(crate) fn settings() -> &'static Settings {
         let timeout_ms = setting::<u64>("WISP_HANDLER_TIMEOUT", "a number of seconds").map_or(0, |s| s.saturating_mul(1000));
         Settings {
             dev, body_limit, origin, client_ip_header, secret, old_secret, api_docs, request_id, problem_json, secure_headers, timed, timeout_ms,
-            #[cfg(not(target_arch = "wasm32"))]
             ws_idle,
             #[cfg(not(target_arch = "wasm32"))]
             max_conns,

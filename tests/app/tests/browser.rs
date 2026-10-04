@@ -1,5 +1,6 @@
 //! Client features in a headless Chrome or Edge (`cargo test -p
 //! wisp-test-app --features browser`; skipped where there is none).
+#![cfg(not(target_arch = "wasm32"))]
 #![cfg(feature = "browser")]
 
 use wisp_test_app::Site;

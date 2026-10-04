@@ -1,5 +1,6 @@
 //! HTTP/2 with prior knowledge on the wire (`--features h2`): raw frames,
 //! and curl where it is installed. HTTP/1 on the same port is unchanged.
+#![cfg(not(target_arch = "wasm32"))]
 #![cfg(feature = "h2")]
 
 mod common;

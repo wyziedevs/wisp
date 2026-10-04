@@ -1,6 +1,8 @@
 //! Timings, run by hand: `cargo test -r -p wisp-test-app --test speed --
 //! --ignored --nocapture`.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 use std::hint::black_box;
 use std::time::Instant;
 use wisp::App;

@@ -5,6 +5,8 @@
 //! record reaches the elements. Skipped quietly with no Node. A change to
 //! what pages carry is a change to the fixture: `WISP_BLESS=1` writes it.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 use wisp::test::client;
 use wisp_test_app::Site;
 

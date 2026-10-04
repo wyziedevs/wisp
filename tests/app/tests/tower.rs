@@ -1,4 +1,5 @@
 //! The test app as a tower service, as axum, hyper or Lambda would call it.
+#![cfg(not(target_arch = "wasm32"))]
 #![cfg(feature = "tower")]
 
 #[path = "../../../tests/shared/tower.rs"]

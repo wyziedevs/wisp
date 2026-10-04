@@ -1,6 +1,8 @@
 //! The test app answering in process, through `wisp::test::client`: the
 //! same parser, limits, hooks and pages as on the wire, with no server.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 mod common;
 
 use common::{MULTIPART, multipart};

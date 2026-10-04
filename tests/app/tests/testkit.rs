@@ -1,6 +1,8 @@
 //! The test client's helpers: `location`, `upload`, `sign_in`, `modules`
 //! and `websocket`.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 use wisp::test::client;
 use wisp_test_app::Site;
 

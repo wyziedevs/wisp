@@ -436,6 +436,11 @@ no-wait fast path off every route.
 - `Response::`: `json_of(&v) created(&v) text html empty(s) download(name,
   bytes) file_in(dir, name).await stream ndjson events websocket`
   + `.with_status(s) .with_header(n, v)`.
+- `Response::websocket(|ws| async move { while let Some(m) = ws.recv().await {
+  ws.send(m).await?; } Ok(()) })`: binary, node, bun, deno, cloudflare, pages;
+  vercel, netlify, lambda, tower answer 501 (docs/deploy.md). On the edge a
+  connection lives in one instance: no state shared by connections (a Durable
+  Object's job on Cloudflare); `wisp::channel` is native only.
 - State: `Table<T>`: `add(v)→id get(id) all() find(f) filter(f) update(id, f)
   set(id, v) remove(id) len() page(cx, 10)`; rows are `Row { id, value }` that read as
   the value. `Shared<T>` (`.lock()`), `wisp::provide(v)`/`state::<T>()`,
@@ -486,7 +491,9 @@ no-wait fast path off every route.
 ## Commands
 
 `wisp new app [--template demo|minimal|api]` · `wisp dev` (hot reload keeps
-`$state`; error dialog opens `file:line` in the editor, also for a handler's panic;
+`$state`; every open tab updates after each rebuild, once the new app answers,
+a tab that missed one reloads on reconnecting, a failed build's error shows in
+tabs opened later; error dialog opens `file:line` in the editor, also for a handler's panic;
 `Server-Timing` on every dev response; `Alt+Shift+W` devtools
 with routes table; `/_wisp/components` workshop of
 `*.stories.wisp`) · `wisp test [--browser]` · `wisp check [--types]` · `wisp
@@ -1650,7 +1657,7 @@ returns and the test passes, skipped. `wisp::test::browser::<App>()` is an
 All of this works in the binary, Docker, Lambda and `tower`. The edge
 (`--target cloudflare` etc.) runs each request in an instance that may be
 its own: `wisp::channel`, `wisp::every`, `RateLimit` are not there,
-WebSockets answer 501 (use the host's rate limiting), jobs (`cron`, `work`)
+WebSockets work on Node, Bun, Deno, Cloudflare and Pages (501 on Vercel, Netlify, Lambda; docs/deploy.md; use the host's rate limiting), jobs (`cron`, `work`)
 run from the host's cron triggers (docs/deploy.md), and
 tables are per-instance memory. JSON, validation, errors, CORS, auth,
 webhooks and docs work everywhere.
@@ -1847,7 +1854,7 @@ objects of the host's. At startup a request over loopback must be answered as
 the app answers it (twice, on one connection); if not, or with
 `WISP_NODE_HTTP=1`, they serve with `node:http`, `Bun.serve` or `Deno.serve`
 (one stderr line says which). Deno Deploy has no sockets and always uses
-`Deno.serve`. WebSockets are not served on any edge build (501). Only the
+`Deno.serve`. WebSockets are upgraded by the same parser (see below). Only the
 `node:http` path reads at most `WISP_BODY_LIMIT` (default 1 MB) of a body and
 answers 413 past it.
 
@@ -1907,7 +1914,8 @@ No threads, sockets or files:
   (`std::env::var` sees nothing; no `.env`).
 - Streaming (`Response::stream`, `Response::events`) is live on Cloudflare,
   Deno, Netlify, Vercel, Node; a leaving client fails `send`.
-- `Response::websocket` is 501 on every edge target (and `tower`); use SSE.
+- `Response::websocket`: see WebSockets below. Hosts that cannot hold a
+  socket answer 501; use SSE there.
 - `wisp::channel`, `wisp::every`, `RateLimit` are not in the edge build (it
   won't compile with them): use the host's queues, cron, rate limiting.
 - Jobs: `wisp::cron` and `wisp::work` are the same code on every host.
@@ -1932,6 +1940,35 @@ No threads, sockets or files:
   ```
 
 - A panic fails only that request (500). No `Date` header from Wisp.
+
+### WebSockets
+
+`Response::websocket` (embed.md) is the same code on every host that can hold
+a socket, and answers 501 ("WebSockets need a host with sockets") on the rest:
+
+| Host | WebSockets | Made by |
+|---|---|---|
+| binary, Docker | yes | Wisp's server |
+| `node` | yes | Wisp's parser on the raw socket; with `node:http`, its `upgrade` event hands the socket over |
+| `bun` | yes | Wisp's parser on `Bun.listen`; with `Bun.serve`, `server.upgrade` |
+| `deno` | yes | Wisp's parser on `Deno.listen`; with `Deno.serve` and on Deploy, `Deno.upgradeWebSocket` |
+| `cloudflare`, `pages` | yes | `WebSocketPair` |
+| `vercel`, `netlify`, `lambda`, `tower` | 501 | no sockets there: use SSE |
+
+On raw sockets the codec is the native server's, so the handshake, fragments,
+pings, the idle ping and close (`WISP_WS_IDLE`), the `BODY_LIMIT` message
+limit (close 1009) and the protocol errors are the same. Where the host's own
+socket frames the messages (`Bun.serve`, `Deno.serve`, Deploy, Workers) the
+host answers pings and fragments and keeps its own idle time; Wisp still
+refuses a message past the limit and closes with 1009 (1000 on Deno, whose
+`close` takes no other code). `before` and the origin check run on the
+upgrade request as for any route.
+
+A connection lives in one instance: on Cloudflare in one isolate, so what an
+app keeps in memory is not shared across connections that land elsewhere.
+Wisp has no Durable Object built in; for state shared by connections use a
+Durable Object of your own, or `WISP_STORE`. `wisp::channel` is native only.
+`examples/websocket` is an echo that runs on all of the above.
 
 
 <!-- docs/embed.md -->
@@ -2004,8 +2041,9 @@ fn get() -> Response {
   1009. `before` runs first (cookies, hooks). A page on another site is 403
   as for a cross-site form (`Origin` must name the host, or `ORIGIN` when
   set); a non-upgrade request gets 426.
-- Only the built-in server upgrades; `tower`, edge targets and the test
-  client answer 501.
+- The built-in server upgrades, and so do the `node`, `bun`, `deno`,
+  `cloudflare` and `pages` builds (docs/deploy.md); `tower`, `vercel`,
+  `netlify`, `lambda` and the test client answer 501.
 
 Browser side: `new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`)`
 with `onmessage`, `onopen`, `onclose`.

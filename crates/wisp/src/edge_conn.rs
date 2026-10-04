@@ -54,6 +54,17 @@ pub(crate) enum Step {
     Close,
     /// A streamed body follows what is written, as the client takes it.
     Stream(Stream),
+    /// The 101 is written: the rest of the connection is a WebSocket's.
+    Upgrade(Box<Upgraded>),
+}
+
+/// A connection upgraded to a WebSocket: what runs on it, and what the
+/// client sent after its handshake.
+pub(crate) struct Upgraded {
+    pub(crate) upgrade: crate::ws::Upgrade,
+    pub(crate) early: Vec<u8>,
+    pub(crate) limit: usize,
+    pub(crate) path: String,
 }
 
 /// A streamed body, to send as it comes: framed in chunks (HTTP/1.1) or
@@ -172,21 +183,31 @@ impl Raw {
                     if !crate::edge_store::Saved.await {
                         *reply = Reply::plain(500);
                     }
-                    // As `answer` has it: only Wisp's own server upgrades.
-                    if matches!(reply.body, Body::WebSocket(_)) {
-                        reply.set_plain(501, "WebSockets need Wisp's own server");
-                    }
+                    // Only as a 101: a hook may have answered otherwise.
+                    let upgrade = reply.take_websocket().filter(|_| reply.status == 101);
                     let streamed = serialize::<A, true>(
                         wbuf,
                         reply,
                         out,
                         cx.wire.http11,
-                        req.keep_alive,
+                        req.keep_alive || upgrade.is_some(),
                         cx.method == Method::Head,
                     );
                     cx.reset();
                     used += req.len;
                     self.continued = false;
+                    if let Some(upgrade) = upgrade {
+                        // The rest of the connection is the WebSocket's.
+                        let early = cx.wire.buf[used..].to_vec();
+                        let (limit, path) = (body_limit::<A>(cx.path()), cx.path().to_owned());
+                        used = cx.wire.buf.len();
+                        break Step::Upgrade(Box::new(Upgraded {
+                            upgrade,
+                            early,
+                            limit,
+                            path,
+                        }));
+                    }
                     if let Some(s) = streamed {
                         break Step::Stream(Stream {
                             body: s.body,

@@ -3,7 +3,11 @@
 //! does: the same status, content type, redirect and body. Skipped, with a
 //! note, when Node or Rust's wasm32 target is not there.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 mod common;
+#[path = "../../../tests/shared/ws.rs"]
+mod ws;
 
 use common::{SECRET, Server, Temp, header, status};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -144,10 +148,11 @@ fn host(runtime: &str, env: &[(&str, &str)]) -> Option<(Server, Temp)> {
     BufReader::new(child.stdout.take().unwrap())
         .read_line(&mut line)
         .unwrap();
-    let want = if env.is_empty() {
-        "raw sockets"
-    } else {
-        "node:http"
+    let want = match (env.iter().any(|(k, _)| *k == "WISP_NODE_HTTP"), runtime) {
+        (false, _) => "raw sockets",
+        (true, "bun") => "Bun.serve",
+        (true, "deno") => "Deno.serve",
+        (true, _) => "node:http",
     };
     assert!(said.contains(want), "node said {said:?}");
     assert!(line.contains("listening"), "node said {line:?}");
@@ -451,5 +456,303 @@ fn fetch_answers_as_native_with_headers_read_lazily() {
             i > 0 && body.is_empty() && *method != "POST",
             "{method} {target}"
         );
+    }
+}
+
+const UPGRADE: &str = "upgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-version: 13\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\n";
+
+/// The status line and headers of an upgrade's answer, off the wire.
+fn read_head(c: &mut std::net::TcpStream) -> String {
+    let mut head = Vec::new();
+    while !head.ends_with(b"\r\n\r\n") {
+        let mut b = [0u8];
+        c.read_exact(&mut b).unwrap();
+        head.push(b[0]);
+    }
+    String::from_utf8(head).unwrap()
+}
+
+/// What is left of a connection once the server has closed it.
+fn ended(c: &mut std::net::TcpStream) -> usize {
+    let mut rest = Vec::new();
+    c.read_to_end(&mut rest).map(|_| rest.len()).unwrap_or(0)
+}
+
+/// What a client sees of `/ws` on `port`, a line for each thing: the same on
+/// every host that holds WebSockets.
+fn ws_session(port: u16) -> Vec<String> {
+    let mut log = Vec::new();
+    let hello = || {
+        format!(
+            "GET /ws HTTP/1.1\r\nhost: 127.0.0.1:{port}\r\norigin: http://127.0.0.1:{port}\r\n{UPGRADE}\r\n"
+        )
+    };
+    // Messages, fragments with a ping between them, binary (one large), a
+    // frame in pieces, and a close that is echoed. (A client sends its first
+    // frame after the 101: a packet with both is the raw hosts' to read.)
+    let mut c = common::connect(port);
+    c.write_all(hello().as_bytes()).unwrap();
+    let h = read_head(&mut c);
+    c.write_all(&ws::frame(0x81, b"first")).unwrap();
+    log.push(format!(
+        "{} {:?} {:?} {:?}",
+        status(&h),
+        header(&h, "upgrade"),
+        header(&h, "connection").map(str::to_lowercase),
+        header(&h, "sec-websocket-accept")
+    ));
+    log.push(format!("{:?}", ws::read(&mut c)));
+    let mut more = ws::frame(0x01, b"frag");
+    more.extend(ws::frame(0x89, b"are you there"));
+    more.extend(ws::frame(0x80, b"mented"));
+    more.extend(ws::frame(0x82, &[0xab; 300]));
+    more.extend(ws::frame(0x82, &vec![0xcd; 70_000]));
+    c.write_all(&more).unwrap();
+    for _ in 0..4 {
+        let (op, data) = ws::read(&mut c);
+        log.push(format!("{op:#x} {}", data.len()));
+    }
+    for byte in ws::frame(0x81, b"slowly") {
+        c.write_all(&[byte]).unwrap();
+    }
+    log.push(format!("{:?}", ws::read(&mut c)));
+    c.write_all(&ws::frame(0x88, &1000u16.to_be_bytes()))
+        .unwrap();
+    log.push(format!("{:?} {}", ws::read(&mut c), ended(&mut c)));
+    // Broken: unmasked, not UTF-8, a message past the route's limit, an
+    // unknown opcode.
+    let mut big = vec![0x82, 0xff];
+    big.extend((2u64 << 20).to_be_bytes());
+    big.extend([1, 2, 3, 4]);
+    for bad in [
+        vec![0x81, 0x02, b'h', b'i'],
+        ws::frame(0x81, &[0xff, 0xfe]),
+        big,
+        ws::frame(0x03, b""),
+    ] {
+        let mut c = common::connect(port);
+        c.write_all(hello().as_bytes()).unwrap();
+        read_head(&mut c);
+        c.write_all(&bad).unwrap();
+        log.push(format!("{:?} {}", ws::read(&mut c), ended(&mut c)));
+    }
+    log
+}
+
+/// What is refused, as every host refuses it: another site's page, a plain
+/// request, another version.
+fn ws_refusals(port: u16) -> Vec<String> {
+    let refused = |headers: &str| {
+        let mut c = common::connect(port);
+        let raw = format!(
+            "GET /ws HTTP/1.1\r\nhost: 127.0.0.1:{port}\r\nconnection: close\r\n{headers}\r\n"
+        );
+        c.write_all(raw.as_bytes()).unwrap();
+        let mut got = String::new();
+        let _ = c.read_to_string(&mut got);
+        format!("{} {:?}", status(&got), header(&got, "upgrade"))
+    };
+    vec![
+        refused(&format!("origin: https://evil.example\r\n{UPGRADE}")),
+        refused(""),
+        refused(&UPGRADE.replace("version: 13", "version: 8")),
+    ]
+}
+
+/// What a client sees where the host's own socket frames messages (Bun.serve,
+/// Deno.serve; Workers is the same): echoes, and a message past the limit,
+/// which closes the socket with 1009, or with 1000 where the host will not
+/// send that.
+fn ws_messages(port: u16) -> Vec<String> {
+    let mut log = Vec::new();
+    let mut c = common::connect(port);
+    let hello = format!(
+        "GET /ws HTTP/1.1\r\nhost: 127.0.0.1:{port}\r\norigin: http://127.0.0.1:{port}\r\n{UPGRADE}\r\n"
+    );
+    c.write_all(hello.as_bytes()).unwrap();
+    log.push(status(&read_head(&mut c)).to_string());
+    for (op, payload) in [
+        (0x81, vec![b'a'; 5]),
+        (0x82, vec![0xab; 300]),
+        (0x82, vec![0xcd; 70_000]),
+    ] {
+        c.write_all(&ws::frame(op, &payload)).unwrap();
+        let (got, data) = ws::read(&mut c);
+        log.push(format!("{got:#x} {}", data.len()));
+    }
+    for byte in ws::frame(0x81, b"slowly") {
+        c.write_all(&[byte]).unwrap();
+    }
+    log.push(format!("{:?}", ws::read(&mut c)));
+    c.write_all(&ws::frame(0x82, &vec![0; 2 << 20])).unwrap();
+    let (op, data) = ws::read(&mut c);
+    let code = u16::from_be_bytes([data[0], data[1]]);
+    log.push(format!("{op:#x} {}", [1009, 1000].contains(&code)));
+    log
+}
+
+/// A WebSocket on raw sockets (and over node:http's upgrade) behaves as the
+/// native server's: handshake, echo, fragments, ping, close, and the
+/// protocol errors and the size limit that close it.
+#[test]
+fn websockets_behave_as_native_on_every_raw_host() {
+    let native = common::start(&[]);
+    let want = ws_session(native.port);
+    assert!(want[0].starts_with("101 "), "{want:?}");
+    let too_big = 1009u16.to_be_bytes().to_vec();
+    assert!(
+        want.iter().any(|l| l.contains(&format!("{too_big:?}"))),
+        "1009: {want:?}"
+    );
+    let http = &[("WISP_NODE_HTTP", "1")][..];
+    let refusals = ws_refusals(native.port);
+    assert_eq!(refusals[0].split(' ').next(), Some("403"), "{refusals:?}");
+    for (runtime, env) in [
+        ("node", &[][..]),
+        ("node", http),
+        ("bun", &[][..]),
+        ("deno", &[][..]),
+    ] {
+        let Some((server, _dir)) = host(runtime, env) else {
+            continue;
+        };
+        eprintln!("parity: websockets on {runtime} {env:?}");
+        assert_eq!(ws_session(server.port), want, "{runtime} {env:?}");
+        assert_eq!(ws_refusals(server.port), refusals, "{runtime} {env:?}");
+    }
+    // Where the host frames the messages: echoes, then 1009 (the native
+    // server is not asked: it closes without reading the 2 MB, and a client
+    // that is still writing may see the connection reset first).
+    let messages = [
+        "101",
+        "0x81 5",
+        "0x82 300",
+        "0x82 70000",
+        "(129, [115, 108, 111, 119, 108, 121])",
+        "0x88 true",
+    ];
+    for runtime in ["bun", "deno"] {
+        let Some((server, _dir)) = host(runtime, http) else {
+            continue;
+        };
+        eprintln!("parity: websockets on {runtime} {http:?}");
+        assert_eq!(ws_messages(server.port), messages, "{runtime} {http:?}");
+        assert_eq!(ws_refusals(server.port), refusals, "{runtime} {http:?}");
+    }
+}
+
+/// A quiet client is pinged halfway through `WISP_WS_IDLE` and closed with
+/// 1001 at the end of it, on the host's timers.
+#[test]
+fn a_quiet_websocket_is_pinged_then_closed_as_native_does() {
+    let Some((server, _dir)) = host("node", &[("WISP_WS_IDLE", "2")]) else {
+        return;
+    };
+    let mut c = common::connect(server.port);
+    c.write_all(format!("GET /ws HTTP/1.1\r\nhost: x\r\n{UPGRADE}\r\n").as_bytes())
+        .unwrap();
+    read_head(&mut c);
+    let t = std::time::Instant::now();
+    assert_eq!(ws::read(&mut c), (0x89, Vec::new()));
+    c.write_all(&ws::frame(0x8a, b"")).unwrap();
+    assert_eq!(ws::read(&mut c), (0x89, Vec::new()));
+    assert_eq!(ws::read(&mut c), (0x88, 1001u16.to_be_bytes().to_vec()));
+    let waited = t.elapsed().as_secs_f64();
+    assert!((2.5..3.8).contains(&waited), "{waited}"); // ping at 1, pong, ping at 2, close at 3
+}
+
+/// Drives `bridge.js`'s `fetch` with WebSocket requests and a host that makes
+/// the socket (Workers' pair, Deno's `upgradeWebSocket`): a stand-in takes
+/// messages in and out, as those do.
+const SOCKET: &str = r#"
+import { readFileSync } from 'node:fs';
+import { wisp } from './bridge.mjs';
+const module = new WebAssembly.Module(readFileSync(new URL('./app.wasm', import.meta.url)));
+class Sock extends EventTarget {
+  readyState = 1;
+  sent = [];
+  send(d) { this.sent.push(typeof d === 'string' ? d : [...d]); }
+  close(code, reason) { this.closed = [code, reason]; this.readyState = 3; queueMicrotask(() => this.dispatchEvent(new Event('close'))); }
+  say(data) { const e = new Event('message'); e.data = data; this.dispatchEvent(e); }
+}
+const headers = { host: '127.0.0.1', upgrade: 'websocket', connection: 'Upgrade', 'sec-websocket-version': '13', 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==' };
+const ask = (app, extra = {}) => app.fetch(new Request('http://127.0.0.1/ws', { headers: { ...headers, ...extra } }), '127.0.0.1');
+const tick = () => new Promise((r) => setTimeout(r, 20));
+const out = [];
+let ws;
+const app = wisp(module, process.env, undefined, () => ((ws = new Sock()), { ws, response: new Response('upgraded') }));
+// The first request is slow (the instance starts), the second is not.
+for (const round of [1, 2]) {
+  const res = await ask(app);
+  out.push(`${round} ${await res.text()}`);
+  ws.say('hi');
+  ws.say(new Uint8Array([1, 2, 3]).buffer);
+  ws.say('x'.repeat(2 << 20));
+  await tick();
+  out.push(JSON.stringify([ws.sent, ws.closed]));
+}
+// The client leaves: the handler ends, and nothing more is sent.
+const res = await ask(app);
+await res.text();
+ws.dispatchEvent(new Event('close'));
+await tick();
+out.push(JSON.stringify(ws.sent));
+// Not an upgrade, and another site's page.
+out.push(`${(await app.fetch(new Request('http://127.0.0.1/ws'), '')).status}`);
+out.push(`${(await ask(app, { origin: 'https://evil.example' })).status}`);
+// A host with no sockets says so.
+const bare = wisp(module, process.env);
+const no = await ask(bare);
+out.push(`${no.status} ${await no.text()}`);
+process.stdout.write(out.join('\n'));
+"#;
+
+#[test]
+fn a_host_made_websocket_carries_the_apps_messages() {
+    let Some((dir, _server)) = edge_app("node") else {
+        return;
+    };
+    std::fs::write(dir.join("socket.mjs"), SOCKET).unwrap();
+    let done = Command::new("node")
+        .arg(dir.join("socket.mjs"))
+        .env("WISP_SECRET", SECRET)
+        .output()
+        .expect("start node");
+    let said = String::from_utf8_lossy(&done.stdout);
+    let err = String::from_utf8_lossy(&done.stderr);
+    assert!(done.status.success(), "{said} {err}");
+    let echoed = r#"[["hi",[1,2,3]],[1009,""]]"#;
+    let lines: Vec<&str> = said.lines().collect();
+    assert_eq!(lines[0], "1 upgraded", "{said} {err}");
+    assert_eq!(lines[1], echoed, "{said}");
+    assert_eq!(lines[2], "2 upgraded", "{said}");
+    assert_eq!(lines[3], echoed, "{said}");
+    assert_eq!(lines[4], "[]", "{said}");
+    assert_eq!(lines[5], "426", "{said}");
+    assert_eq!(lines[6], "403", "{said}");
+    assert!(
+        lines[7].starts_with("501 WebSockets need a host with sockets"),
+        "{said}"
+    );
+}
+
+/// What a client sends right behind its handshake is read, on raw sockets and
+/// over node:http's upgrade (whose `head` it is).
+#[test]
+fn a_frame_sent_with_the_handshake_is_read_on_node() {
+    for env in [&[][..], &[("WISP_NODE_HTTP", "1")][..]] {
+        let Some((server, _dir)) = host("node", env) else {
+            return;
+        };
+        let mut c = common::connect(server.port);
+        let mut raw = format!(
+            "GET /ws HTTP/1.1\r\nhost: 127.0.0.1:{}\r\n{UPGRADE}\r\n",
+            server.port
+        )
+        .into_bytes();
+        raw.extend(ws::frame(0x81, b"first"));
+        c.write_all(&raw).unwrap();
+        assert_eq!(status(&read_head(&mut c)), 101, "{env:?}");
+        assert_eq!(ws::read(&mut c), (0x81, b"first".to_vec()), "{env:?}");
     }
 }

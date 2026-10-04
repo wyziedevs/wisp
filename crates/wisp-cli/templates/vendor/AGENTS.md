@@ -436,6 +436,11 @@ no-wait fast path off every route.
 - `Response::`: `json_of(&v) created(&v) text html empty(s) download(name,
   bytes) file_in(dir, name).await stream ndjson events websocket`
   + `.with_status(s) .with_header(n, v)`.
+- `Response::websocket(|ws| async move { while let Some(m) = ws.recv().await {
+  ws.send(m).await?; } Ok(()) })`: binary, node, bun, deno, cloudflare, pages;
+  vercel, netlify, lambda, tower answer 501 (docs/deploy.md). On the edge a
+  connection lives in one instance: no state shared by connections (a Durable
+  Object's job on Cloudflare); `wisp::channel` is native only.
 - State: `Table<T>`: `add(v)→id get(id) all() find(f) filter(f) update(id, f)
   set(id, v) remove(id) len() page(cx, 10)`; rows are `Row { id, value }` that read as
   the value. `Shared<T>` (`.lock()`), `wisp::provide(v)`/`state::<T>()`,
@@ -486,7 +491,9 @@ no-wait fast path off every route.
 ## Commands
 
 `wisp new app [--template demo|minimal|api]` · `wisp dev` (hot reload keeps
-`$state`; error dialog opens `file:line` in the editor, also for a handler's panic;
+`$state`; every open tab updates after each rebuild, once the new app answers,
+a tab that missed one reloads on reconnecting, a failed build's error shows in
+tabs opened later; error dialog opens `file:line` in the editor, also for a handler's panic;
 `Server-Timing` on every dev response; `Alt+Shift+W` devtools
 with routes table; `/_wisp/components` workshop of
 `*.stories.wisp`) · `wisp test [--browser]` · `wisp check [--types]` · `wisp

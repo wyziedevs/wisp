@@ -1,6 +1,8 @@
 //! `src/routes/t/forms`: an action that takes a struct, inputs that show
 //! their own value or what was sent, and every problem at once.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 use wisp::test::client;
 use wisp_test_app::Site;
 
