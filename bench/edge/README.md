@@ -546,3 +546,9 @@ us per request, dlmalloc (std's) / rlsf `SmallGlobalTlsf` / talc 5.1
 `WasmDynamicTalc`: `/json-big` 46.3-47.9 / 53.6-61.1 / 47.8-49.3, `/` 4.77 /
 5.06 / 5.47, `/params/42` 7.25 / - / 12.98. Both shrink the wasm by 54-59 KB;
 neither is faster, so dlmalloc stays.
+
+**Tried, no gain: per-crate opt-levels.** `opt-level = "s"` for every
+dependency and `3` for `wisp` and the app: 523,345 against 525,535 bytes
+(-0.4%), `/json-big` 45.5-47.2 against 45.5-48.1 us (noise). With fat LTO
+and one codegen unit the merged module is optimized again at the top level,
+so per-crate levels barely reach the output; `wisp build` keeps `3`.
