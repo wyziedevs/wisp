@@ -69,6 +69,7 @@ pub fn run(root: &Path, args: &[String]) -> Result<(), String> {
     let dir =
         std::fs::canonicalize(root).map_err(|e| format!("Cannot read the app folder: {e}."))?;
     let dir = clean(&dir);
+    check_path(&dir)?;
     let exe = dir.join("target/release").join(exe_name(&package));
     if action == Action::Install && !o.dry_run && !exe.exists() {
         return Err(format!(
@@ -156,6 +157,30 @@ fn check_name(s: &str) -> Result<(), String> {
     }
 }
 
+/// The app folder goes into unit files and a `cmd` line: no control
+/// characters, quotes or `%`, which no quoting there carries safely.
+fn check_path(p: &Path) -> Result<(), String> {
+    let s = p.to_string_lossy();
+    match s.chars().any(|c| c.is_control() || matches!(c, '"' | '%')) {
+        true => Err(format!(
+            "{s} has a quote, % or control character in it.\nMove the app to a plainer folder."
+        )),
+        false => Ok(()),
+    }
+}
+
+/// `s` as one systemd command-line word: quoted, so spaces stay in it.
+fn systemd_word(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\"))
+}
+
+/// `s` as XML text.
+fn xml(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 fn exe_name(package: &str) -> String {
     match cfg!(windows) {
         true => format!("{package}.exe"),
@@ -211,7 +236,7 @@ fn unit(name: &str, dir: &Path, exe: &Path, o: &Options) -> String {
     let mut s = format!(
         "[Unit]\nDescription={name} (Wisp app)\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nWorkingDirectory={}\nExecStart={}\nEnvironmentFile=-/etc/{name}.env\n",
         dir.display(),
-        exe.display()
+        systemd_word(&exe.to_string_lossy())
     );
     if let Some(port) = o.port {
         s += &format!("Environment=PORT={port}\n");
@@ -273,8 +298,8 @@ fn mac(action: Action, name: &str, dir: &Path, exe: &Path, o: &Options) -> Plan 
             });
             let text = format!(
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\">\n<dict>\n  <key>Label</key>\n  <string>{label}</string>\n  <key>ProgramArguments</key>\n  <array><string>{}</string></array>\n  <key>WorkingDirectory</key>\n  <string>{}</string>\n{env}{user}  <key>RunAtLoad</key>\n  <true/>\n  <key>KeepAlive</key>\n  <dict><key>SuccessfulExit</key><false/></dict>\n  <key>SoftResourceLimits</key>\n  <dict><key>NumberOfFiles</key><integer>65536</integer></dict>\n</dict>\n</plist>\n",
-                exe.display(),
-                dir.display()
+                xml(&exe.to_string_lossy()),
+                xml(&dir.to_string_lossy())
             );
             p.files.push((path.clone(), text, false));
             p.cmds = vec![cmd(&["launchctl", "bootstrap", "system", &path])];
@@ -345,6 +370,28 @@ mod tests {
     }
 
     #[test]
+    fn odd_paths() {
+        let d = Path::new("/srv/my app & co");
+        let e = Path::new("/srv/my app & co/target/release/x");
+        let o = Options::default();
+        let u = unit("x", d, e, &o);
+        assert!(
+            u.contains("ExecStart=\"/srv/my app & co/target/release/x\"\n"),
+            "{u}"
+        );
+        let p = plan(Os::Mac, Action::Install, "x", d, e, &o);
+        assert!(
+            p.files[0]
+                .1
+                .contains("<string>/srv/my app &amp; co</string>")
+        );
+        for bad in ["/a\nExecStartPre=/bin/sh", "/a%h", "/a\"b"] {
+            assert!(check_path(Path::new(bad)).is_err(), "{bad}");
+        }
+        assert!(check_path(d).is_ok());
+    }
+
+    #[test]
     fn systemd_unit() {
         let (d, e) = (
             Path::new("/srv/blog"),
@@ -353,7 +400,7 @@ mod tests {
         let u = unit("blog", d, e, &opts(Some(80), Some("www")));
         for want in [
             "WorkingDirectory=/srv/blog\n",
-            "ExecStart=/srv/blog/target/release/blog\n",
+            "ExecStart=\"/srv/blog/target/release/blog\"\n",
             "EnvironmentFile=-/etc/blog.env\n",
             "Environment=PORT=80\n",
             "User=www\n",
