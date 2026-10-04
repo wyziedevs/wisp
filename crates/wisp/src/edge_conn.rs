@@ -4,6 +4,11 @@
 
 use super::*;
 
+/// The host's clock, in whole seconds.
+fn now() -> u64 {
+    crate::edge::clock().as_secs()
+}
+
 /// Buffers for a request from `peer`, the warmest set a thread has.
 fn take(peer: SocketAddr) -> Box<Buffers> {
     let mut b = POOL.with_borrow_mut(Vec::pop).unwrap_or_else(|| {
@@ -84,6 +89,13 @@ pub(crate) struct Raw {
     peer: SocketAddr,
     b: Option<Box<Buffers>>,
     continued: bool,
+    /// When the unfinished request's head, and its body, started coming.
+    head_since: Option<u64>,
+    body_since: Option<u64>,
+    /// When the rest of it must have come by, as on the wire: a client that
+    /// sends a request a byte a minute is refused when the next comes late.
+    /// The host closes a connection quiet for a minute.
+    deadline: Option<u64>,
 }
 
 impl Raw {
@@ -92,6 +104,9 @@ impl Raw {
             peer,
             b: None,
             continued: false,
+            head_since: None,
+            body_since: None,
+            deadline: None,
         }
     }
 
@@ -159,6 +174,10 @@ impl Raw {
 
     /// Answers the whole requests in what the client sent, into [`Raw::out`].
     pub(crate) async fn step<A: App>(&mut self) -> Step {
+        if self.deadline.is_some_and(|d| now() > d) {
+            self.deadline = None;
+            return self.refuse::<A>(408);
+        }
         let Some(b) = self.b.as_mut() else {
             return Step::Idle;
         };
@@ -196,6 +215,7 @@ impl Raw {
                     cx.reset();
                     used += req.len;
                     self.continued = false;
+                    (self.head_since, self.body_since, self.deadline) = (None, None, None);
                     if let Some(upgrade) = upgrade {
                         // The rest of the connection is the WebSocket's.
                         let early = cx.wire.buf[used..].to_vec();
@@ -220,8 +240,17 @@ impl Raw {
                     }
                 }
                 Parsed::Partial {
-                    expect_continue, ..
+                    expect_continue,
+                    body,
+                    ..
                 } => {
+                    let (now, have) = (now(), cx.wire.buf.len() - used);
+                    self.deadline = Some(match body {
+                        true => {
+                            policy::body_deadline(now, *self.body_since.get_or_insert(now), have)
+                        }
+                        false => policy::head_deadline(*self.head_since.get_or_insert(now)),
+                    });
                     if expect_continue && !self.continued {
                         wbuf.extend_from_slice(b"HTTP/1.1 100 Continue\r\n\r\n");
                         self.continued = true;
