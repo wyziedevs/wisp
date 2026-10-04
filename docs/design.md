@@ -1813,7 +1813,11 @@ the nearest folder above it with `Cargo.toml` and `build.rs`.
   at the first. A panic in a request is answered as an error; the server
   goes on.
 - Hover: a component's `{@props}`, a prop's type and default, directive and
-  block docs, a route param's type.
+  block docs, a route param's type, the `const` knobs (`CACHE`, `RATE_LIMIT`,
+  `SSR`, ...), `<form fields>`, `action="?/x"`, `use:enhance` and the
+  `data-wisp-*` attributes (tables in `lsp.rs`; a test fails when the
+  reference shows one they lack). Rust items carry `///` docs
+  (`#![deny(missing_docs)]` in `wisp`) for rust-analyzer.
 - Go to definition: `<Card>` → its file, `'$lib/x.js'` → `src/lib/x.js`, a
   literal `href="/x"` → the route's `+page.wisp` (or `+page.rs`, `+server.rs`).
 - Completion: components (with their required props), props, directives,

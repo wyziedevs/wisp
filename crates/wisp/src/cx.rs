@@ -13,6 +13,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 use std::time::Duration;
 
+/// The most route parameters one route can have.
 pub const MAX_PARAMS: usize = 8;
 /// The deepest path a `[...rest]` route matches.
 pub const MAX_SEGS: usize = 32;
@@ -35,15 +36,24 @@ pub fn split<'a, 'b, const N: usize>(
     Some(&segs[..n])
 }
 
+/// The request's HTTP method.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Method {
+    /// `GET`.
     Get,
+    /// `HEAD`: a `GET` without the body.
     Head,
+    /// `POST`.
     Post,
+    /// `PUT`.
     Put,
+    /// `PATCH`.
     Patch,
+    /// `DELETE`.
     Delete,
+    /// `OPTIONS`.
     Options,
+    /// Any other method.
     Other,
 }
 
@@ -67,6 +77,7 @@ impl Method {
         1 << self as u8
     }
 
+    /// The method's name in capitals: `"GET"`.
     pub fn as_str(self) -> &'static str {
         match self {
             Method::Get => "GET",
@@ -147,7 +158,9 @@ pub(crate) struct Wire {
     pub peer: SocketAddr,
 }
 
+/// One request, as a page, action, endpoint or hook sees it: `cx.param("id")`, `cx.query("q")`, `cx.cookie("sid")`, `cx.header("accept")`, `cx.set_header(..)`, `cx.set_cookie(..)`, `cx.set(value)` and `cx.get::<T>()` for values handed along, `cx.json()` for the body. In a route file it is the `cx` you name in the signature.
 pub struct Cx {
+    /// The request's method.
     pub method: Method,
     pub(crate) wire: Wire,
     names: &'static [&'static str],
@@ -1023,6 +1036,7 @@ pub struct CookieOptions {
     /// Lets the page's scripts read it (`document.cookie`). Off by default,
     /// so a script injected into a page cannot steal it.
     pub script_readable: bool,
+    /// `SameSite` of the cookie: `Lax` by default.
     pub same_site: SameSite,
     /// The paths it is sent to, `/` and everything below by default.
     pub path: &'static str,

@@ -24,9 +24,13 @@ use std::cmp::Ordering;
 /// What JSON a field holds, for filters and sorting.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
+    /// A string.
     Text,
+    /// A number.
     Number,
+    /// A bool.
     Bool,
+    /// Anything else (objects, arrays, `null`).
     Other,
 }
 
@@ -43,6 +47,7 @@ pub trait Resource: Json + FromJson + 'static {
     const ADMIN: Option<&'static str> = None;
     /// Its fields, in order, with the JSON each holds.
     const FIELDS: &'static [(&'static str, Kind)];
+    /// The table the type's rows live in.
     fn table() -> &'static Table<Self>;
     /// Writes field `name` as JSON; false when it has none of that name.
     fn field(&self, name: &str, out: &mut String) -> bool;
@@ -58,15 +63,22 @@ pub trait Resource: Json + FromJson + 'static {
 /// A `before_` hook's error stops the change; an `after_` hook runs once it
 /// is saved.
 pub struct Hooks<T> {
+    /// Runs before a `POST`: may change the new value; an `Err` stops it.
     pub before_create: Option<fn(&mut Cx, &mut T) -> Result>,
+    /// Runs before a `PATCH` or `PUT`, with the row id and the new value; an `Err` stops it.
     pub before_update: Option<fn(&mut Cx, u64, &mut T) -> Result>,
+    /// Runs before a `DELETE`; an `Err` stops it.
     pub before_delete: Option<fn(&mut Cx, &Row<T>) -> Result>,
+    /// Runs after a row was created.
     pub after_create: Option<fn(&mut Cx, &Row<T>) -> Result>,
+    /// Runs after a row was updated.
     pub after_update: Option<fn(&mut Cx, &Row<T>) -> Result>,
+    /// Runs after a row was deleted.
     pub after_delete: Option<fn(&mut Cx, &Row<T>) -> Result>,
 }
 
 impl<T> Hooks<T> {
+    /// No hooks.
     pub const NONE: Hooks<T> = Hooks {
         before_create: None,
         before_update: None,

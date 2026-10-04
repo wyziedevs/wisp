@@ -97,6 +97,7 @@ pub trait Store: Send + Sync + 'static {
 pub struct Changes {
     /// Where to read from next time.
     pub cursor: u64,
+    /// The changed rows: `(id, Some(json))` for a write, `(id, None)` for a delete.
     pub rows: Vec<(u64, Option<String>)>,
 }
 

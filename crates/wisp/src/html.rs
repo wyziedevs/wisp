@@ -24,11 +24,15 @@ impl Write for Escaper<'_> {
 /// so a type with a `Direct` impl never reaches `Formatted`.
 pub struct Text<'a, T: ?Sized>(pub &'a T);
 
+/// Writes a value straight into the output (integers, `bool`, `char`, strings).
 pub trait Direct {
+    /// Appends the value, escaped for HTML text.
     fn put(&self, out: &mut String);
 }
 
+/// Writes any other value through its `Display`.
 pub trait Formatted {
+    /// Appends the formatted value, escaped for HTML text.
     fn put(&self, out: &mut String);
 }
 
@@ -143,13 +147,19 @@ float!(f32 f64);
 /// compile time, as for `Text`.
 pub struct Attr<'a, T: ?Sized>(pub &'a T);
 
+/// Reads an `Option`-like attribute value: `Some` when the attribute is written (the `Option` is `Some`).
 pub trait Maybe {
+    /// What the attribute holds.
     type Value: ?Sized;
+    /// The value, or `None` to leave the attribute out.
     fn get(&self) -> Option<&Self::Value>;
 }
 
+/// Reads a value that is always there (anything but an `Option`); the other case of [`Maybe`].
 pub trait Always {
+    /// What the attribute holds.
     type Value: ?Sized;
+    /// Always `Some`: the value.
     fn get(&self) -> Option<&Self::Value>;
 }
 

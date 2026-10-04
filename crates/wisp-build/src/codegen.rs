@@ -10884,7 +10884,8 @@ x",
             "pub const CACHE: u32 = super::CACHE_PUBLIC;",
             "(0, Get | Head) => { ::wisp::rt::endpoint(cx); if ::wisp::rt::cached::<false>(cx, __o, true) { return Ok(()); } \
              ::wisp::rt::respond(__o, server_0::__call::get(cx).await?); ::wisp::rt::keep::<Self, false>(cx, __o, server_0::__call::CACHE, true, server_0::__call::MORE); Ok(()) }",
-            "(0, Post) => { ::wisp::rt::endpoint(cx); ::wisp::rt::check_origin(cx)?;              server_0::__call::post(cx).await?; ::wisp::rt::no_content(__o); Ok(()) }",
+            "(0, Post) => { ::wisp::rt::endpoint(cx); ::wisp::rt::check_origin(cx)?; \
+             server_0::__call::post(cx).await?; ::wisp::rt::no_content(__o); Ok(()) }",
             // The same, sync, with no future: what `handle_now` answers.
             "now: true, sync: ::wisp::Method::Get.bit() | ::wisp::Method::Head.bit() | ::wisp::Method::Post.bit(),",
             "(0, Get | Head) => { ::wisp::rt::hooked(cx); ::wisp::rt::endpoint(cx); \

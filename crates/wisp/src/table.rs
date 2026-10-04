@@ -88,7 +88,9 @@ impl<T> Rows<T> {
 /// JSON it is the value's object with `"id"` first.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Row<T> {
+    /// The row's id: unique in its table, never reused.
     pub id: u64,
+    /// The value stored.
     pub value: T,
 }
 
@@ -849,10 +851,12 @@ impl<T> Table<T> {
         }
     }
 
+    /// How many rows there are.
     pub fn len(&self) -> usize {
         self.read().map.len()
     }
 
+    /// There are no rows.
     pub fn is_empty(&self) -> bool {
         self.read().map.is_empty()
     }
@@ -979,6 +983,7 @@ impl<T: Clone> Table<T> {
 /// on either side: `None` at the ends.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Page<T> {
+    /// The rows of this page.
     pub rows: Vec<Row<T>>,
     /// Which page it is, from 1.
     pub number: usize,
@@ -1425,6 +1430,5 @@ mod tests {
             t.by("b@x").is_some() && t.by("z@x").is_none(),
             "none applied"
         );
-
     }
 }

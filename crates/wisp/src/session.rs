@@ -135,8 +135,11 @@ fn sign_outs(id: u64) -> u64 {
 pub trait Account {
     /// The field members sign in by: errors name it.
     const WHO: &'static str;
+    /// The value members sign in by (the email or name), as stored.
     fn who(&self) -> &str;
+    /// The stored password hash.
     fn hash(&self) -> &str;
+    /// Replaces the stored hash (an upgrade at sign-in).
     fn set_hash(&mut self, hash: String);
     /// Whether `hash` already is one: a [`Password`](crate::Password) made
     /// by `Password::new`. [`signup`] hashes what is not.

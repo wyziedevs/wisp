@@ -10,6 +10,8 @@
     not(any(target_arch = "wasm32", target_os = "linux")),
     forbid(unsafe_code)
 )]
+// Every public item says what it is: an editor's hover shows it.
+#![deny(missing_docs)]
 
 // The HTML context rules and the live-page wire protocol, which wisp-build
 // compiles by too.
@@ -154,6 +156,7 @@ pub mod prelude {
 pub struct Shared<T>(std::sync::Mutex<T>);
 
 impl<T> Shared<T> {
+    /// A shared value, e.g. `static COUNT: Shared<u32> = Shared::new(0);`. Const, so a `static` can hold it.
     pub const fn new(value: T) -> Shared<T> {
         Shared(std::sync::Mutex::new(value))
     }
@@ -167,6 +170,7 @@ impl<T> Shared<T> {
 
 /// Sizes for `BODY_LIMIT`: `const BODY_LIMIT: usize = 20 * wisp::MB;`
 pub const KB: usize = 1024;
+/// A megabyte in bytes, for `#[validate(max_size = 5 * MB)]` and `BODY_LIMIT`.
 pub const MB: usize = 1024 * KB;
 
 /// Where a route runs on a host with both (`--target vercel`, `netlify`):
@@ -174,8 +178,10 @@ pub const MB: usize = 1024 * KB;
 /// `+server.rs`. `wisp build` reads it; other hosts and `cargo run` ignore it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Runtime {
+    /// The Node function: full std, files, threads, WebSockets (the default).
     #[default]
     Node,
+    /// The edge function: no `std::fs`, thread, process, net or WebSockets.
     Edge,
 }
 
@@ -300,6 +306,7 @@ pub(crate) fn lambda_api() -> Option<String> {
         .filter(|a| !a.is_empty())
 }
 
+/// Starts the app on an edge host (wasm32). The generated `main` calls it.
 #[cfg(target_arch = "wasm32")]
 pub fn run<A: App>() {
     edge::start::<A>();
@@ -811,7 +818,9 @@ pub trait App: 'static {
 
     /// The route of `path` and its parameters, slices of it.
     fn route(path: &str) -> Option<(usize, [&str; cx::MAX_PARAMS])>;
+    /// The page shell split around `%wisp.head%` and `%wisp.body%`: head start, between, end.
     fn shell() -> [&'static str; 3];
+    /// The embedded file served at `path`, if any.
     fn asset(path: &str) -> Option<&'static Asset>;
     /// The browser module of a template with client code, by its path
     /// (`/_app/c/t3.js`).
@@ -848,6 +857,7 @@ pub trait App: 'static {
         cx: &mut Cx,
         out: &mut Out,
     ) -> impl Future<Output = Result<()>> + Send;
+    /// Renders the error page for `status` and `message`, from `+error.wisp` of `route` or the nearest above.
     fn error(
         route: Option<usize>,
         cx: &mut Cx,
@@ -905,7 +915,9 @@ pub trait App: 'static {
 /// or a complete response from a `+server.rs` endpoint.
 #[derive(Default)]
 pub struct Out {
+    /// HTML for the document's `<head>`.
     pub head: String,
+    /// HTML for the document's `<body>`.
     pub body: String,
     response: Option<Response>,
     /// A response made before, sent as its bytes: a baked page, or one
@@ -934,17 +946,24 @@ impl Out {
 
 /// A file embedded in a release binary.
 pub struct Asset {
+    /// The file's bytes.
     pub body: &'static [u8],
+    /// The file extension, which sets its content type.
     pub ext: &'static str,
+    /// Its ETag, for `304` answers.
     pub etag: &'static str,
 }
 
 /// A complete response: from a `+server.rs` endpoint, or from an action or
 /// the `before` hook, in place of the page.
 pub struct Response {
+    /// The HTTP status code.
     pub status: u16,
+    /// The `Content-Type` header.
     pub content_type: Cow<'static, str>,
+    /// Other headers, as `(name, value)`.
     pub headers: Vec<(Cow<'static, str>, String)>,
+    /// The body.
     pub body: Vec<u8>,
     /// For [`Response::stream`]: the body, as it is made.
     stream: Option<tokio::sync::mpsc::Receiver<Vec<u8>>>,
@@ -955,6 +974,7 @@ pub struct Response {
 }
 
 impl Response {
+    /// A `200` with `content_type` and `body`: `Response::new("image/png", bytes)`.
     pub fn new(content_type: impl Into<Cow<'static, str>>, body: impl Into<Vec<u8>>) -> Response {
         Response {
             status: 200,
@@ -1118,10 +1138,12 @@ impl Response {
             .with_header("x-accel-buffering", "no")
     }
 
+    /// A `200` with `text/plain; charset=utf-8`: `Response::text("ok")`.
     pub fn text(body: impl IntoText) -> Response {
         Response::new("text/plain; charset=utf-8", body.into_text())
     }
 
+    /// A `200` with `text/html; charset=utf-8`: `Response::html("<p>hi</p>")`. Not escaped.
     pub fn html(body: impl IntoText) -> Response {
         let mut res = Response::new("text/html; charset=utf-8", body.into_text());
         res.page = true;
@@ -1146,6 +1168,7 @@ impl Response {
         Response::json_of(value).with_status(201)
     }
 
+    /// The same response with `status` (100 to 999; panics outside it): `Response::text("gone").with_status(410)`.
     pub fn with_status(mut self, status: u16) -> Response {
         assert!((100..=999).contains(&status), "invalid status {status}");
         self.status = status;
@@ -1176,6 +1199,7 @@ impl Response {
     message = "a response's text is a `String` or a `&str`, not `{Self}`"
 )]
 pub trait IntoText {
+    /// The bytes of the body.
     fn into_text(self) -> Vec<u8>;
 }
 
@@ -1310,6 +1334,7 @@ pub struct Error {
 }
 
 impl Error {
+    /// An error with an HTTP `status` and a `message` shown to the visitor: `Error::new(403, "not yours")`.
     pub fn new(status: u16, message: impl Into<Cow<'static, str>>) -> Error {
         assert!(
             (400..=599).contains(&status),
@@ -1468,10 +1493,12 @@ impl Error {
         Error::raw(status, Cow::Borrowed("")).with_header("location", location)
     }
 
+    /// The HTTP status code.
     pub fn status(&self) -> u16 {
         self.status
     }
 
+    /// The message shown to the visitor.
     pub fn message(&self) -> &str {
         &self.message
     }
@@ -1532,8 +1559,10 @@ impl fmt::Debug for Error {
 
 /// Turns `Option`/`Result` into HTTP errors: `db.find(id).await?.or_404()?`.
 pub trait OrStatus<T> {
+    /// `Err` with `status` (and a default message) when `self` is `None` or `Err`: `x.or_status(409)?`.
     fn or_status(self, status: u16) -> Result<T>;
 
+    /// `or_status(404)`.
     fn or_404(self) -> Result<T>
     where
         Self: Sized,
