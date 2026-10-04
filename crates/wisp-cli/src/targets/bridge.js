@@ -52,7 +52,8 @@ function parsed(text) {
   let h = heads.get(text);
   if (h) return h;
   const nl = text.indexOf('\n');
-  h = { status: parseInt(text) || 500, headers: [], stream: text.slice(0, nl < 0 ? text.length : nl).endsWith(' stream') };
+  const first = text.slice(0, nl < 0 ? text.length : nl);
+  h = { status: parseInt(text) || 500, headers: [], stream: first.endsWith(' stream'), same: first.endsWith(' const') };
   for (let i = nl < 0 ? text.length : nl + 1; i < text.length; ) {
     let e = text.indexOf('\n', i);
     if (e < 0) e = text.length;
@@ -164,11 +165,38 @@ const CONN = 1 << 30;
 // Promise or kept for `serve` to return. Response's constructor copies the
 // body, so the app's memory view is safe to pass.
 function webSink(c, h, body) {
+  if (h.same && c.fast) keep(c, h, body);
+  if (c.quiet) return;
   const empty = c.empty || h.status < 200 || h.status === 204 || h.status === 304;
   if (empty && h.stream) body.cancel(); // ends the app's stream
   const r = new Response(empty ? null : body, (h.init ??= init(h)));
   if (c.resolve) c.resolve(r);
   else c.res = r;
+}
+// A reply the app sent as `const` (`wisp::edge::constant`) is the same for
+// every request for its path that has no query, sends no `x-wisp-error` and
+// answers `if-none-match` by the ETag, whatever else it sends: a baked page, a
+// trailing-slash redirect. `serve` keeps the first, and its 304 (a probe of
+// the app, so the head is the app's own), and answers the path from them.
+function keep(c, h, body) {
+  if (c.entry) {
+    if (h.status === 304) c.entry.nm = h.init ??= init(h);
+    return;
+  }
+  if (c.fast.has(c.path) || c.fast.size >= 128 || body.length > 1 << 18) return;
+  let etag = null;
+  for (let i = 0; i < h.headers.length; i += 2) if (h.headers[i] === 'etag') etag = h.headers[i + 1];
+  const entry = { init: (h.init ??= init(h)), body: body.slice(), etag, nm: null };
+  c.fast.set(c.path, entry);
+  if (etag) queueMicrotask(() => c.probe(entry));
+}
+// Whether an `if-none-match` header names `tag`: `*`, or a list that has it, weakly.
+function names(header, tag) {
+  return header.split(',').some((t) => {
+    t = t.trim();
+    while (t.startsWith('W/')) t = t.slice(2);
+    return t === '*' || t === tag;
+  });
 }
 // What `new Response` takes for a head, made once: a plain object is the
 // quickest way in, unless a name comes twice (`set-cookie`).
@@ -198,6 +226,7 @@ export function wisp(module, env = {}, sink) {
   let next = 0;
   const seen = new Map();
   const sent = new Map(); // request text -> its bytes, for `serve`
+  const fast = new Map(); // path -> what `keep` made of its `const` reply
   sink ??= webSink;
 
   async function start() {
@@ -252,9 +281,24 @@ export function wisp(module, env = {}, sink) {
     };
     // `text` into the app's memory at `out` when it fits in `cap`; its length.
     const give = (text, out, cap) => {
-      const b = enc.encode(text);
-      if (b.length <= cap) mem().set(b, out);
-      return b.length;
+      const m = mem();
+      if (cap >= text.length) {
+        // Written in place when it fits (each UTF-16 unit takes at most 3 bytes: retry if short).
+        const { read, written } = enc.encodeInto(text, m.subarray(out, out + cap));
+        if (read === text.length) return written;
+      }
+      return enc.encode(text).length;
+    };
+    // A header name in the app's memory: ASCII is read a byte at a time (quicker than a TextDecoder).
+    const named = (p, n) => {
+      const m = mem();
+      let s = '';
+      for (let i = 0; i < n; i++) {
+        const c = m[p + i];
+        if (c > 127) return dec.decode(m.subarray(p, p + n));
+        s += String.fromCharCode(c);
+      }
+      return s;
     };
     x.idle = () => (x.work ? new Promise((r) => x.idlers.push(r)) : settled);
     // Runs `f` once `promise` settles, counted as work until then.
@@ -347,7 +391,7 @@ export function wisp(module, env = {}, sink) {
         header: (id, np, nn, out, cap) => {
           let v = null;
           try {
-            v = x.asked.get(id)?.headers.get(dec.decode(mem().subarray(np, np + nn))) ?? null;
+            v = x.asked.get(id)?.headers.get(named(np, nn)) ?? null;
           } catch {} // not a header's name
           return v === null ? 0xffffffff : give(v, out, cap);
         },
@@ -487,20 +531,46 @@ export function wisp(module, env = {}, sink) {
     const s = url.indexOf('//') + 2;
     const at = url.indexOf('/', s);
     const headers = request.headers;
+    const path = at < 0 ? '/' : url.slice(at);
+    const get = method === 'GET';
+    if ((get || method === 'HEAD') && fast.size) {
+      const f = fast.get(path);
+      if (f && !headers.has('x-wisp-error')) {
+        const tags = f.etag && headers.get('if-none-match');
+        if (!tags) return new Response(get ? f.body : null, f.init);
+        if (f.nm) return names(tags, f.etag) ? new Response(null, f.nm) : new Response(get ? f.body : null, f.init);
+      }
+    }
     const host = headers.get('host') ?? url.slice(s, at < 0 ? url.length : at);
-    const h = `${method} ${at < 0 ? '/' : url.slice(at)} ${peer}\nhost: ${host}\n`;
+    const c = { res: null, resolve: null, empty: method === 'HEAD', fast: get && !path.includes('?') ? fast : null, path, probe };
+    enter(x, method, path, peer, host, headers, c);
+    if (x.work) ctx?.waitUntil?.(x.idle());
+    return c.res ?? new Promise((resolve) => (c.resolve = resolve));
+  }
+
+  // The request `method path`, its other headers read from `headers` as the
+  // app asks for them, answered through `c`.
+  function enter(x, method, path, peer, host, headers, c) {
+    const h = `${method} ${path} ${peer}\nhost: ${host}\n`;
     let bytes = sent.get(h);
     if (!bytes) {
       if (sent.size > 64) sent.clear();
       sent.set(h, (bytes = enc.encode(h + '\n')));
     }
-    const c = { res: null, resolve: null, empty: method === 'HEAD' };
     const id = (next = (next + 1) & 0x7fffffff);
     x.pending.set(id, c);
     x.asked.set(id, { headers, host });
     x.call(x.exports.wisp_request_lazy, id, x.write(bytes));
-    if (x.work) ctx?.waitUntil?.(x.idle());
-    return c.res ?? new Promise((resolve) => (c.resolve = resolve));
+  }
+
+  // Asks the app for the 304 of a kept path (the first, only, time).
+  function probe(entry) {
+    const x = ready;
+    if (!x || x.retired || !entry.etag) return;
+    const path = [...fast].find(([, e]) => e === entry)?.[0];
+    if (path === undefined) return;
+    const headers = new Headers({ host: 'wisp.invalid', 'if-none-match': entry.etag });
+    enter(x, 'GET', path, '', 'wisp.invalid', headers, { quiet: true, fast, entry, path });
   }
 
   async function slow(request, peer, ctx) {

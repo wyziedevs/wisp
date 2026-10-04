@@ -1,3 +1,6 @@
 Wisp TODO
 =========
 
+
+- Publish the VS Code extension (editors/vscode): create a Marketplace publisher (and Open VSX), then run: npx @vscode/vsce publish --skip-license -p TOKEN
+- Make the website for wispweb.dev: the landing page for the Wisp framework (use the Wisp UI design, violet accent, the ghost; built with Wisp itself)

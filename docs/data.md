@@ -53,6 +53,12 @@ At least once: a job running when the process died runs again a minute
 later. One at a time per queue, in order. `cron` takes five fields (`*`,
 `n`, `a-b`, `*/n`, lists; Sunday is 0 or 7).
 
+On Cloudflare, Vercel and Netlify (`wisp build --target ...`) the same code
+runs from the host's cron: `wisp build` writes each `cron` schedule (a string
+literal) into its trigger config, and a trigger also runs the queues' due jobs
+(each minute if the app has `work`). Set `CRON_SECRET` and `WISP_STORE` there.
+See deploy.md.
+
 ## Cache
 
 `wisp::cache("top", 60, || async { top_posts().await }).await` keeps an

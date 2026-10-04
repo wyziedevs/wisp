@@ -152,6 +152,52 @@ const tests = {
     assert.deepEqual(p.fetches.slice(1, 3).map((f) => f.body), ['n=1', 'n=2']);
     assert.deepEqual(JSON.parse(p.store['wisp:q']), []);
   },
+  async 'a post that was answered is never posted again by the browser'() {
+    const p = page();
+    let again = 0;
+    p.g.HTMLFormElement.prototype.requestSubmit = () => again++;
+    p.g.reply = () => ({ ...res(''), text: async () => { throw new Error('body cut off'); } });
+    p.submit(p.form({}, [['a', '1']]));
+    await tick();
+    assert.equal(p.fetches.filter((f) => f.method == 'POST').length, 1);
+    assert.equal(again, 0);
+    // One that never got an answer is the browser's to send.
+    const q = page();
+    q.g.HTMLFormElement.prototype.requestSubmit = () => again++;
+    globalThis.fetch = async () => { throw new TypeError('network'); };
+    q.submit(q.form({}, [['a', '1']]));
+    await tick();
+    assert.equal(again, 1);
+  },
+  async 'a fragment that is not valid percent-encoding does not break a navigation'() {
+    const p = page();
+    p.click({}, '/next#%E0%A4%A');
+    await tick();
+    assert.equal(p.calls.assign, undefined);
+    assert.equal(p.loc.href, 'http://x.test/next#%E0%A4%A');
+  },
+  async 'a page that cannot be shown is loaded whole'() {
+    const p = page();
+    p.g.reply = () => ({ ...res(''), text: async () => { throw new Error('cut off'); } });
+    p.click();
+    await tick();
+    assert.equal(p.calls.assign, 'http://x.test/next');
+  },
+  async 'spread: dropping an on* key that was no function leaves the rest working'() {
+    const extra = fs.readFileSync(path.join(__dirname, '../src/client/extra.js'), 'utf8').replace(/\r\n/g, '\n');
+    const from = extra.indexOf('const held =');
+    const code = extra.slice(from, extra.indexOf('\n};\n', extra.indexOf('X.spread =', from)) + 4);
+    const set = [];
+    const el = { localName: 'div', removeEventListener(t, f) { if (typeof f != 'function') throw new TypeError('not a listener'); }, addEventListener() {}, removeAttribute: (k) => set.push('-' + k) };
+    let push;
+    const X = {};
+    new Function('X', 'watch', 'attr', code)(X, (sc, a, L, f) => (push = f), (x, first, e, k) => set.push(k));
+    X.spread(0, 0, el, 0, 0, [0, 0]);
+    push({ onclick: 'alert(1)', id: 'a', srcdoc: 'x', ONCLICK: 'y' });
+    assert.deepEqual(set, ['id']); // only the safe key
+    push({ id: 'a' }); // must not throw on the string under onclick
+    assert.deepEqual(set, ['id', 'id']);
+  },
   async 'a click navigates and focus moves to the h1'() {
     const p = page();
     const e = p.click();
@@ -195,6 +241,18 @@ const tests = {
     p.click();
     await new Promise((r) => setTimeout(r, 60));
     assert.deepEqual(order, ['wait', 'update', 'after']);
+  },
+  async 'view transitions run on a navigation, not under data-wisp-notransition'() {
+    const p = page();
+    let vts = 0;
+    p.doc.startViewTransition = (f) => (vts++, { ready: Promise.resolve(), finished: Promise.resolve(), updateCallbackDone: Promise.resolve(f()) });
+    globalThis.matchMedia = () => ({ matches: false });
+    p.click();
+    await tick();
+    assert.equal(vts, 1);
+    p.click({ 'data-wisp-notransition': '' });
+    await tick();
+    assert.equal(vts, 1);
   },
   async 'preloadData fetches the page once, and the click uses it'() {
     const p = page();
@@ -290,11 +348,11 @@ const tests = {
 };
 
 // extra.js's motion helpers, with `wisp` and the clock stood in for.
-function motion() {
+function motion(more = {}) {
   const code = fs.readFileSync(path.join(__dirname, '../src/client/extra.js'), 'utf8').replace(/^import .*$/m, '');
   let now = 0;
   let frames = [];
-  const X = { shared: {}, outs: 0, flips: 0 };
+  const X = { shared: {}, outs: 0, flips: 0, watch: (sc, get, L, f, flags) => f(String(get(L) ?? '')), ...more };
   const store = (v) => {
     const o = { v, subs: [], get value() { return this.v; }, set value(x) { this.v = x; }, subscribe() {} };
     return o;
@@ -357,6 +415,55 @@ Object.assign(tests, {
     receive(c, { key: 9 }).tick(0.5);
     assert.equal(c.style.transform, undefined);
     assert.equal(c.style.opacity, 0.5);
+  },
+});
+
+Object.assign(tests, {
+  '{:@html} swaps what lies between its anchor and its end comment'() {
+    const { X } = motion();
+    // The anchor, the markup (a comment among it), the end (data 'h'), the rest.
+    const end = { nodeType: 8, data: 'h' };
+    const nodes = [{ nodeType: 1 }, { nodeType: 1, html: 'old' }, { nodeType: 8, data: '' }, end, { nodeType: 3 }];
+    const link = () => nodes.forEach((n, i) => ((n.nextSibling = nodes[i + 1] || null), (n.remove = () => (nodes.splice(nodes.indexOf(n), 1), link()))));
+    link();
+    nodes[0].after = (c) => (nodes.splice(1, 0, { nodeType: 1, html: c }), link());
+    const doc = globalThis.document;
+    globalThis.document = Object.assign(Object.create(doc), { createElement: () => ({ set innerHTML(v) { this.content = v; } }) });
+    X.html(null, null, nodes[0], null, 0, ['html', () => '<b>x</b>']);
+    globalThis.document = doc;
+    assert.deepEqual(nodes.map((n) => n.html), [undefined, '<b>x</b>', undefined, undefined]);
+    assert.equal(nodes[2], end);
+  },
+});
+
+Object.assign(tests, {
+  'a snippet given to a component is drawn after its anchor, with the arguments as parameters'() {
+    class Sig { constructor(v) { this.v = v; } }
+    const drawn = [];
+    const { X } = motion({
+      Sig,
+      node: (sc, f) => f(),
+      scope: (up, c) => ({ up, c }),
+      end() {},
+      untrack: (f) => f(),
+      range: (c) => [c],
+      place: (at, el, cs, inst, L, q) => (drawn.push({ at, el, inst, L }), { drawn: drawn.length }),
+    });
+    const el = {};
+    const parent = { who: 'page' };
+    X.snip(null, parent, el, { page: 1 }, 0, ['snip', 'row', ['x', 'i']]);
+    assert.equal(el.__sn[0], 'row');
+    const stops = [];
+    let args = ['a', 0];
+    X.draw({ stops }, null, 'anchor', {}, 0, ['draw', () => el.__sn[1], () => args]);
+    assert.equal(stops.length, 1);
+    const d = drawn[0];
+    assert.equal(d.at, 'anchor');
+    assert.equal(d.inst, parent);
+    assert.deepEqual([d.L.page, d.L.x, d.L.i], [1, 'a', 0]);
+    // No snippet given: nothing drawn.
+    X.draw({ stops }, null, 'anchor', {}, 0, ['draw', () => undefined, () => args]);
+    assert.equal(drawn.length, 1);
   },
 });
 

@@ -207,6 +207,32 @@ works on the server.
 {:#each tags as tag (tag)}{:@render chip(tag)}{:/each}
 ```
 
+A component the browser draws takes snippets as props, by name
+(`<List items={:xs} {row} />`, `row={other}`) or among its children, and draws
+one with `{:@render row(x)}` where `row` is one of its props
+(`{@props row: Snippet<&Item>}` or `$props()`). The body sees the page's
+names and its parameters, and is drawn after `{:@render}`; none given draws
+nothing. It loads `extra.js`, and the server paints no copy of the component.
+
+```html
+<!-- src/components/List.wisp -->
+{@props items: Vec<String>, row: Snippet<&String, usize>}
+<ul>{:#each items as item, i}<li>{:@render row(item, i)}</li>{:/each}</ul>
+```
+```html
+<List items={:fruits}>{#snippet row(name, i)}<b>{:i}</b> {:name}{/snippet}</List>
+```
+
+`{:@const name = expr}` names a value for the rest of its block (it ends at
+`{:/…}` or `{:else}`); `{:@html expr}` puts markup in unescaped, as `{@html}`
+does on the server (trusted markup only), redrawn when the value changes.
+The server paints neither; `{:@html}` loads `extra.js`.
+
+```html
+{:#each items as item}{:@const total = item.price * item.qty}<li>{:total}</li>{:/each}
+<div>{:@html post.body}</div>
+```
+
 ### First paint
 
 The server renders what it can know into the page (it works before JS and
@@ -377,6 +403,32 @@ Theme CSS: copy `cdn/themes/light.css` into `static/` and `<link>` it in
 LitElement {…})` in a `src/lib` module a script imports. The
 `click-events` a11y lint skips custom elements.
 
+## Your own bundle (npm UI libraries)
+
+For a widget `wisp add` cannot serve (React, Svelte, a charting kit): bundle it
+with your own tool, no Wisp dependency, into `static/`, and mount it from a
+`use:` action. `data-wisp-keep` stops a morph from touching what the widget draws.
+
+```sh
+esbuild src/widget.js --bundle --minify --format=esm --outfile=static/widget.js   # or vite build
+```
+
+```html
+<div data-wisp-keep use:widget="{ label }"></div>
+<script>
+  function widget(el, props) {            // mount(el, props), update(props), destroy()
+    let w
+    import('/widget.js').then((m) => (w = m.mount(el, props)))
+    return { update: (p) => w?.update(p), destroy: () => w?.destroy() }
+  }
+</script>
+```
+
+`destroy` runs when the element leaves the page (a navigation or `{:#if}`).
+To share a library between bundles, a `<script type="importmap">` in
+`src/app.html` maps `"react"` to a file in `static/`. Packages `wisp add`
+serves need none of this: `<Island of="react:name">`.
+
 ## Third-party scripts
 
 Pick when one loads (`src`, so no code of yours): in the head, plain
@@ -430,7 +482,11 @@ element around it starts it fresh. Layouts stay mounted.
 Same-origin clicks and back/forward fetch and morph, no full reload.
 Prefetch on hover (60 ms) and touch (`data-wisp-preload="off"` opts out).
 Scroll is restored; focus moves to `[autofocus]`; view transitions when
-available. `data-wisp-reload` on a link or parent forces a full load; links
+available (`data-wisp-notransition` on a link, or on `<body>` for the app,
+skips them; reduced motion skips them too). Global stores (`store`,
+`persisted`) are module state: they outlive every navigation. A component
+instance on an element the morph keeps keeps its state; `data-wisp-reset`
+starts it fresh. `data-wisp-reload` on a link or parent forces a full load; links
 with `target`, `download`, `rel="external"` and `/_app/` are left alone.
 
 ```js
@@ -463,7 +519,7 @@ export a script may have:
 </script>
 ```
 
-`data-wisp-noscroll`, `data-wisp-keepfocus`, `data-wisp-replacestate` (on or around a link) keep scroll, keep focus, replace history; `goto(url, { noscroll, keepfocus, replace })` too. Hooks from `'wisp'` return an unsubscribe: `beforeNavigate(({ from, to, pop, cancel }) => ..)`, `afterNavigate`, `onNavigate` (after fetch, before the swap; a returned promise is awaited, a returned function runs after), `preloadData(url)`, `preloadCode(url)`, `invalidateAll()`, `updated.value` (a newer wisp.js or build exists). `cancel()` does not stop back/forward. `+page.js` `load` gets `depends(key)` (a `fetch`ed URL counts); `invalidate('key')` reruns only those loads, no page request.
+`data-wisp-noscroll`, `data-wisp-keepfocus`, `data-wisp-replacestate`, `data-wisp-notransition` (on or around a link) keep scroll, keep focus, replace history, skip the view transition; `goto(url, { noscroll, keepfocus, replace, novt })` too. Hooks from `'wisp'` return an unsubscribe: `beforeNavigate(({ from, to, pop, cancel }) => ..)`, `afterNavigate`, `onNavigate` (after fetch, before the swap; a returned promise is awaited, a returned function runs after), `preloadData(url)`, `preloadCode(url)`, `invalidateAll()`, `updated.value` (a newer wisp.js or build exists). `cancel()` does not stop back/forward. `+page.js` `load` gets `depends(key)` (a `fetch`ed URL counts); `invalidate('key')` reruns only those loads, no page request.
 
 Phones: pages leave with `pagehide` (back/forward cache; scroll restored). `<body data-wisp-revalidate="30">` refetches data when the tab or network returns (at most every N s, default 30; the morph keeps focus, scroll, typed text). Offline, `<form data-wisp-queue>` (safe to send twice) waits in `sessionStorage`, is sent in order when back, then the page refreshes (`wisp:sent`); other forms show "You are offline" and fire `wisp:result` with `error: "offline"`. Only urlencoded forms queue. A navigation focuses the `<h1>` (else `<main>`) and announces the title; view transitions skip under `prefers-reduced-motion`.
 
@@ -590,8 +646,14 @@ statement other than declarations, logging, writes to its own names and
 instance-ending helpers (`$effect`, `onMount`, `setInterval`…; `init()`,
 `if`, `new X()`, `window.x = 1` could run twice), or the swap throws.
 Components match by creation order, so a reordering list may trade states.
+Build errors show in a dialog whose `src/…:line` lines open in the editor;
+an error the page's code throws (also what `onError` hears) shows there too.
+The next successful build closes it.
 None of this is in release builds.
 
 `Alt+Shift+W` opens dev-only devtools: component tree with live props and
-state (editable), stores, route and server values, timings; "Open" uses
+state (editable), stores, the route (params, server values, the page's
+forms), a table of all the app's routes, timings (dev responses carry
+`Server-Timing: total;dur=…`); a server panic or other 5xx opens the same
+error dialog with its message and `file:line`; "Open" uses
 `$WISP_EDITOR` or `$EDITOR`, else `code -g`.

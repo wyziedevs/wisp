@@ -26,6 +26,8 @@ workspace = true
 [features]
 # `tests/tower.rs`: the app as a tower service.
 tower = ["wisp/tower"]
+# `tests/h2.rs`: HTTP/2 with prior knowledge, raw and with curl.
+h2 = ["wisp/h2"]
 # `tests/hot.rs`: `wisp dev`'s hot swaps in a headless Chrome or Edge.
 browser = ["wisp/browser"]
 

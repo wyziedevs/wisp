@@ -526,7 +526,7 @@ const KNOBS: [(&str, &str); 14] = [
 
 /// Wisp attributes (inside a tag) and what each does (hover). A test keeps it
 /// in step with the reference: every `data-wisp-*` it shows is here.
-const ATTRS: [(&str, &str); 14] = [
+const ATTRS: [(&str, &str); 16] = [
     (
         "fields",
         "`<form fields>`: writes a labelled input per param of the action (`Email` is `type=email`, `Image` a file, `bool` a checkbox, numbers `number`). `fields={post}` starts a struct param's fields from `post`.",
@@ -568,6 +568,10 @@ const ATTRS: [(&str, &str); 14] = [
         "On or around a link: navigation replaces the history entry.",
     ),
     (
+        "data-wisp-notransition",
+        "On or around a link (`<body>` for the whole app): navigation skips `document.startViewTransition`; `goto(url, { novt: true })` too.",
+    ),
+    (
         "data-wisp-revalidate",
         "`<body data-wisp-revalidate=\"30\">`: refetch the data when the tab or network returns, at most every N seconds.",
     ),
@@ -582,6 +586,10 @@ const ATTRS: [(&str, &str); 14] = [
     (
         "data-wisp-raw",
         "`<img data-wisp-raw>`: stays as written, not turned into a resized `<picture>`.",
+    ),
+    (
+        "priority",
+        "`<img priority>`: above the fold; `fetchpriority=\"high\"` and not lazy.",
     ),
 ];
 
@@ -657,7 +665,7 @@ const NAMES: [(&str, &[&str]); 5] = [
 ];
 
 /// The template blocks: what to write, and what it does.
-const BLOCKS: [(&str, &str, &str); 24] = [
+const BLOCKS: [(&str, &str, &str); 26] = [
     (
         "{#if",
         "{#if ${1:cond}}\n\t$0\n{/if}",
@@ -742,7 +750,7 @@ const BLOCKS: [(&str, &str, &str); 24] = [
     (
         "{:@render",
         "{:@render ${1:snippet}(${2})}",
-        "`{:@render s(x)}`: a snippet the browser renders.",
+        "`{:@render s(x)}`: a snippet the browser renders; in a component, a snippet prop its parent gave.",
     ),
     (
         "{@pager",
@@ -763,6 +771,16 @@ const BLOCKS: [(&str, &str, &str); 24] = [
         "{:catch",
         "{:catch ${1:e}}",
         "The part of `{#await}` or `{:#try}` that shows the error.",
+    ),
+    (
+        "{:@const",
+        "{:@const ${1:name} = ${2:expr}}",
+        "`{:@const x = e}`: a name for the rest of the browser block.",
+    ),
+    (
+        "{:@html",
+        "{:@html ${1:markup}}",
+        "`{:@html h}`: unescaped markup the browser draws (trusted only).",
     ),
     ("{/", "", "Closes the block."),
     ("{:/", "", "Closes the browser block."),

@@ -201,12 +201,24 @@ Accessibility lints warn, never fail (img alt, input label, link and button
 name, `<a href>`, heading order, tabindex...); `<!-- wisp-ignore a11y-img-alt -->` silences
 one. Images: `<img src="$lib/p.jpg" alt="">` or `src="/x.png"` gets
 `width`/`height`; `wisp build` adds WebP `srcset` (cwebp, cached), lazy.
-`data-wisp-raw` opts out. Translations: `src/locales/en.json` (`{"hi":
+`<img priority>` (above the fold) gets `fetchpriority="high"`, not lazy.
+`data-wisp-raw` opts out. Opt-in features: `wisp-cli/avif` (AVIF `<picture>`),
+`wisp/img` (a route `_img/+server.rs`: `wisp::img::serve::<crate::App>(cx)`
+answers `/_img?src=/p.jpg&w=640&q=75`, `static/` only, fixed widths),
+`og-png` on `wisp` and `wisp-cli` (PNG for `wisp::og`). Translations: `src/locales/en.json` (`{"hi":
 "Hello, {name}!", "n": "{count, plural, =0 {None} one {# item} other {#
 items}}"}`), `{t("hi", name = user.name)}`, `t('n', c)` in scripts; keys
 checked across locales at build. Locale: `[[lang=locale]]`, cookie `lang`,
 `Accept-Language`, first; `cx.locale()`, `wisp::locales()`,
-`wisp::localize(cx.path(), "fr")`, `wisp::default_locale("fr")?`.
+`wisp::localize(cx.path(), "fr")`, `wisp::default_locale("fr")?`. Cargo.toml
+`[package.metadata.wisp] i18n = ["prefix as-needed", "default en", "domain
+example.fr fr", "missing warn"]`: `prefix always` redirects `/x` to `/en/x`,
+`as-needed` leaves the default bare, `domain` picks by host, `missing warn`
+falls back to the default's message (else a build error). `<html dir>` is
+set for ar, he, fa…; `wisp::dir(l)`. Head: `{@html wisp::alternates(cx)}`
+(canonical, hreflang); nav: `{@html wisp::switcher(cx)}`; numbers:
+`wisp::format_number format_money(n, "EUR", l) format_date format_date_long(d, l)`
+with `cx.locale()`. Sitemap and `--static` list every locale.
 
 `{#await stats(id)}<p>…</p>{:then s}<p>{s.posts}</p>{:catch e}{e}{/await}`:
 the page goes out at once; each answer follows in the same response, moved
@@ -265,7 +277,9 @@ toggles (`open = !open`: false) or counts (`n++`: 0) a name nothing declares,
 so a live search needs no script: `<input bind:value="q">` `{:#each items.filter((i) => matches(i.name,
 q)) as i}…{:/each}`. Directives `on:click` (`.prevent .once .debounce.300ms`…),
 `bind:value|checked|this`, `:attr="js"`, `:text`, `class:x="js"`,
-`transition:fade`, `use:action`; client blocks `{:#if}` `{:#each}`; runes
+`transition:fade`, `use:action`; client blocks `{:#if}` `{:#each}`, in them `{:@const x = e}`
+and `{:@html h}`; `{:@render row(x)}` draws a `{#snippet}` or, in a component, a snippet prop
+(`<List items={:xs} {row} />` or `{#snippet row(x)}` among its children); runes
 `$state $derived $effect(.pre .root .tracking) $props`; helpers `onMount listen goto
 invalidate matches tick flushSync onError tweened spring crossfade`. Values sent to JS must be `#[model]` or `#[derive(Json)]`.
 `pushState('?tab=2', {tab: 2})`: shallow routing, `page.value.state`; changed
@@ -273,7 +287,10 @@ fields are restored with history. `import('$lib/x.js')` loads on demand.
 `<script lang="ts">`, `src/lib/*.ts`, `+page.ts` (types stripped; `wisp check
 --types`). `env.PUBLIC_X` is filled at build. Dev source maps; `--sourcemap`.
 `npm`: `wisp add pkg`; `<Island of="react:react-switch" client:visible
-props={:{...}} />` (`react|preact|vue|svelte`); web components just work.
+props={:{...}} />` (`react|preact|vue|svelte`); web components just work. Own esbuild/vite
+bundle in `static/`: `<div data-wisp-keep use:widget="{x}">`, script
+`widget(el, p)` does `import('/w.js')`, returns `{update, destroy}`.
+`data-wisp-notransition` (link or `<body>`) skips the nav view transition.
 `#[remote] fn user(id: u64) -> Result<User>` (page block or `src/*.rs`) is
 `await user(5)` in any script (`src/lib`: `import { user } from
 'wisp:remote'`): POST to `/_app/r/<hash>`, `#[remote(get)]` a GET; errors
@@ -439,7 +456,9 @@ no-wait fast path off every route.
   expr)]`/`#[json(was = "old")]` for old rows, `.migrate(f)`, `.live()` (pages
   naming a live table's static refresh themselves, via `/_wisp/live/<name>`),
   `set clear by try_add`;
-  `wisp::queue(n).push(&j)` + `work(n, f)` + `cron("0 3 * * *", f)`,
+  `wisp::queue(n).push(&j)` + `work(n, f)` + `cron("0 3 * * *", f)` (on
+  Cloudflare/Vercel/Netlify the build writes the host's cron trigger from the
+  literal schedule; set `CRON_SECRET`, `WISP_STORE`),
   `wisp::cache(k, secs, f)`/`uncache(path)`;
   rules `url one_of pattern with`.
 - Static export: `fn entries() -> Vec<&'static str>` in a `[param]` page.
@@ -467,20 +486,26 @@ no-wait fast path off every route.
 - `{#each x as y}` borrows a field path; `.iter()` other expressions.
 - In `+server.rs`, a param named `id` (no `[id]` folder) serves `/[id]`: use
   `list` for the folder's GET. `#[validate]` on params is for actions.
+- HTTP/2 in process is opt-in: `wisp = { .., features = ["h2"] }` (h2c with
+  prior knowledge, no TLS); app code is the same.
 - A field added to a saved type (`Rest`, `Table::saved`) must be `Option`,
   `Vec` or `bool`, so rows saved before it still read.
 
 ## Commands
 
 `wisp new app [--template demo|minimal|api]` · `wisp dev` (hot reload keeps
-`$state`; `Alt+Shift+W` devtools) · `wisp test [--browser]` · `wisp check [--types]` · `wisp
+`$state`; error dialog opens `file:line` in the editor, also for a handler's panic;
+`Server-Timing` on every dev response; `Alt+Shift+W` devtools
+with routes table) · `wisp test [--browser]` · `wisp check [--types]` · `wisp
 fmt [--check]` · `wisp build` (`--static`, `--spa`, `--docker`, `--target
 cloudflare|pages|deno|vercel|netlify|node|bun|lambda|native` (`--edge` with
 vercel or netlify: their edge runtime; or per route, `const RUNTIME: wisp::Runtime =
 wisp::Runtime::Edge;` in its +page.rs/+server.rs: both functions from one app, other hosts ignore it), `--client ts`, `--sourcemap`, `--analyze`: per-route JS/CSS/wasm bytes, raw and
 gzip, no build) · `wisp
 deploy init <host>` (a GitHub Actions workflow; or `fly|render|railway`: that
-host's config) · `wisp routes` · `wisp new-route /path page|server|rest` ·
+host's config) · `wisp openapi [-o openapi.json]` (`--check`: CI fails when the file is stale) · `wisp service install|uninstall|start|stop|status [--user u]
+[--port n] [--dry-run]` (run the release binary as a systemd unit or launchd
+daemon; Windows: a startup scheduled task) · `wisp routes` · `wisp new-route /path page|server|rest` ·
 `wisp add|remove pkg` (`wisp add` alone: the recipes in `add/`) · `wisp ui
 add|list button dialog` (accessible components into `src/components`; `clientonly`:
 `<ClientOnly fallback="…">` draws its children only in the browser) · `wisp

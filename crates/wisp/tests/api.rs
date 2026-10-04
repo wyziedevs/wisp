@@ -628,6 +628,29 @@ fn errors_by_status_and_format() {
     assert_eq!(app.get("/err?k=none").status, 200);
 }
 
+/// Debug builds time every answer, and a handler's panic reaches the dev
+/// error page's overlay payload with its message and where it was.
+#[cfg(debug_assertions)]
+#[test]
+fn dev_server_timing_and_panic_overlay() {
+    let mut app = client();
+    let ok = app.get("/err?k=none");
+    let t = ok.header("server-timing").expect("server-timing");
+    assert!(t.starts_with("total;dur="), "{t}");
+    let page = app.get("/default-error/panic");
+    assert!(page.header("server-timing").is_some());
+    let body = page.text();
+    let at = body
+        .find("<template id=\"wisp-server-error\">")
+        .unwrap_or_else(|| panic!("{body}"));
+    let payload = &body[at..];
+    assert!(payload.contains("kaboom"), "{payload}");
+    assert!(
+        payload.replace('\\', "/").contains("common/mod.rs:303"),
+        "{payload}"
+    );
+}
+
 #[test]
 fn the_built_in_error_page_escapes_what_it_shows() {
     let page = get(

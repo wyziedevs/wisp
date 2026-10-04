@@ -99,7 +99,7 @@
     panel.addEventListener('pointerdown', () => (pressed = true));
     addEventListener('pointerup', () => (pressed = false), true);
     root.querySelector('nav').append(
-      ...['Components', 'Stores', 'Route', 'Timings'].map((t) => h('button', { role: 'tab', textContent: t, onclick: () => ((tab = t), draw()) })),
+      ...['Components', 'Stores', 'Route', 'Routes', 'Timings'].map((t) => h('button', { role: 'tab', textContent: t, onclick: () => ((tab = t), draw()) })),
     );
     // Shown once Wisp's styles are in, so it never flashes unstyled.
     panel.style.visibility = 'hidden';
@@ -121,7 +121,7 @@
     const dev = globalThis.__wisp_dev;
     const body = root.querySelector('.body');
     const top = body.scrollTop;
-    const parts = tab === 'Components' ? components(dev) : tab === 'Stores' ? stores(dev) : tab === 'Route' ? route(dev) : timings();
+    const parts = tab === 'Components' ? components(dev) : tab === 'Stores' ? stores(dev) : tab === 'Route' ? route(dev) : tab === 'Routes' ? routes() : timings();
     body.replaceChildren(...parts.flat().filter((p) => p != null && p !== false));
     body.scrollTop = top;
   }
@@ -282,7 +282,37 @@
       const vals = Object.entries(i.P || {});
       out.push(vals.length ? vals.map(([k, s]) => row(k, s)) : none('It reads no server value in the browser.'));
     }
+    // The page's forms: where each posts, and the fields it sends.
+    out.push(h('h3', { textContent: 'Forms' }));
+    const forms = [...document.forms];
+    out.push(
+      forms.length
+        ? forms.map((f) => {
+            const names = [...f.elements].map((e) => e.name).filter(Boolean);
+            return h('div', { className: 'row' }, h('span', { className: 'key', textContent: f.method.toUpperCase() + ' ' + (f.getAttribute('action') || where()) }), h('code', { textContent: names.join(', ') || 'no fields' }));
+          })
+        : none('None on this page.'),
+    );
     return out;
+  }
+
+  // ---- routes -------------------------------------------------------------------
+
+  let table = null; // the app's routes, fetched once: [pattern, has a page]
+
+  function routes() {
+    if (!table) {
+      table = [];
+      fetch('/_wisp/dev/routes')
+        .then((r) => r.json())
+        .then((t) => ((table = t), draw()))
+        .catch(() => (table = null));
+      return [none('Loading…')];
+    }
+    const here = globalThis.__wisp_dev?.route().id;
+    return table.map(([pattern, page]) =>
+      h('div', { className: 'row' }, h('span', { className: 'key', textContent: pattern, title: page ? 'page' : 'endpoint' }), h('code', { textContent: (page ? 'page' : 'endpoint') + (pattern === here ? ' (here)' : '') })),
+    );
   }
 
   // ---- timings ------------------------------------------------------------------

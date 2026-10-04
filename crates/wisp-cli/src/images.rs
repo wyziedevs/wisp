@@ -57,6 +57,83 @@ struct Job {
 /// Writes the WebP widths that are not there yet. Never fails the build:
 /// what cannot be encoded is served as it is, with a warning.
 pub fn build(root: &Path) {
+    webp(root);
+    #[cfg(feature = "avif")]
+    avif(root);
+}
+
+/// The `avif` feature: the same widths as AVIF, in this process (a pure
+/// Rust encoder: slow, so named by content hash and kept between builds).
+#[cfg(feature = "avif")]
+fn avif(root: &Path) {
+    let dir = root.join(image::DIR);
+    let mut jobs = Vec::new();
+    for found in image::sources(root).into_iter().filter(|f| f.webp) {
+        let Ok(bytes) = std::fs::read(&found.file) else {
+            continue;
+        };
+        let Some(size) = image::size(&bytes).filter(|s| !s.turned) else {
+            continue;
+        };
+        let hash = image::hash(&bytes);
+        for width in image::widths(size.width) {
+            let to = dir.join(image::avif_name(&hash, width));
+            if !to.is_file() {
+                jobs.push((found.file.clone(), width, to));
+            }
+        }
+    }
+    if jobs.is_empty() {
+        return;
+    }
+    if let Err(e) = crate::make_dir(&dir) {
+        return term::warn(&format!("The images get no AVIF widths.\n    {e}"));
+    }
+    term::step(&format!(
+        "Encoding {} AVIF images into .wisp/img",
+        jobs.len()
+    ));
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let per = jobs.len().div_ceil(cores);
+    let fails: Vec<String> = std::thread::scope(|s| {
+        let parts: Vec<_> = (jobs.chunks(per))
+            .map(|part| {
+                s.spawn(move || {
+                    let mut fails = Vec::new();
+                    for (from, width, to) in part {
+                        let done = image::encode_avif(from, *width).and_then(|b| {
+                            let mut tmp = to.clone().into_os_string();
+                            tmp.push(format!(".{}.tmp", std::process::id()));
+                            let tmp = PathBuf::from(tmp);
+                            let r = std::fs::write(&tmp, b)
+                                .and_then(|()| std::fs::rename(&tmp, to))
+                                .map_err(|e| format!("{}: {e}.", to.display()));
+                            let _ = std::fs::remove_file(&tmp);
+                            r
+                        });
+                        fails.extend(done.err());
+                    }
+                    fails
+                })
+            })
+            .collect();
+        (parts.into_iter())
+            .flat_map(|p| {
+                p.join()
+                    .unwrap_or_else(|_| vec!["an AVIF thread stopped".into()])
+            })
+            .collect()
+    });
+    if let Some(first) = fails.first() {
+        term::warn(&format!(
+            "{} of {} AVIF images could not be written; those images get no AVIF.\n    {first}",
+            fails.len(),
+            jobs.len()
+        ));
+    }
+}
+
+fn webp(root: &Path) {
     let dir = root.join(image::DIR);
     let mut jobs = Vec::new();
     for found in image::sources(root).into_iter().filter(|f| f.webp) {

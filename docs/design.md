@@ -174,7 +174,9 @@ host; a page's `description` field is its summary); none without a dated
 page; `--static` writes it too. `wisp::og(title, description, image)` is
 the Open Graph and Twitter card tags of a page's head, escaped:
 `{@html wisp::og("Hello", "A first post", "/cover.png")}`. With the image
-`"auto"` and a literal title and description, `wisp build` (`og.rs` in the
+`"auto"` (with the opt-in `og-png` feature on `wisp` and `wisp-cli`, which
+renders each picture to a PNG with `resvg`, system fonts, and names that)
+and a literal title and description, `wisp build` (`og.rs` in the
 CLI, drawing in `wisp-shared`'s `og.rs`) writes `static/og/<slug>.svg`: 1200
 by 630, title, description, the app's name, in `src/app.css`'s `--bg`, `--ink`
 and `--accent` (else Wisp's). It is SVG because nothing in Wisp's dependencies
@@ -806,6 +808,22 @@ behavior is in [client.md](client.md#phones-and-flaky-networks).
   turn it). A `$lib/` file that is not there is a build error.
 - Dev serves the original (`/_app/img/lib/photo.jpg` from `src/lib`),
   adding only `width` and `height`: nothing to encode on a save.
+- `<img priority …>` (bare, as in next/image) is above the fold: the
+  attribute goes, `fetchpriority="high"` comes, and the tag is not lazy.
+- Opt-in `avif` feature (`wisp-cli` and `wisp-build`, off by default, so the
+  default dependency tree is unchanged): `wisp build` also writes AVIF
+  widths, in process with `ravif` and `image` (pure Rust, slow, which is
+  why it is opt-in), and the tag becomes
+  `<picture><source type="image/avif" srcset sizes>…<img …></picture>`.
+  Without the files nothing changes.
+- Opt-in `img` feature (`wisp`, off by default; deps `image` with the png,
+  jpeg and webp decoders only, reason: resizing needs decoders): a route
+  file `src/routes/_img/+server.rs` with `wisp::img::serve::<crate::App>(cx)`
+  answers `/_img?src=/photo.jpg&w=640&q=75`. Only `static/` files (embedded
+  in a release binary), `w` from a fixed list (next/image's), `q` 1 to 100,
+  no `..`, files over 10 MB or 40 megapixels refused, a decoder panic is a
+  400, results cached in memory (64 MB). It is a route like any other: the
+  hot path has no code for it, and nothing is compiled without the feature.
 - `<img data-wisp-raw …>` stays as written (a `$lib/` src still gets its
   URL). A `src` with a hole, or another site's, is left alone.
 - Cost: none for an app without local images; a header read per image per
@@ -844,7 +862,12 @@ A snippet is markup a file renders more than once, or gives to a component:
   `{@render row(…)}`.
 - `{:@render row(x)}` has the browser draw it: the arguments are
   JavaScript, and the body uses its parameters in `{:…}` (see
-  [client.md](client.md)).
+  [client.md](client.md)). A component the browser draws takes snippets
+  the same way (`<List items={:xs} {row} />`, or `{#snippet row(x)}` among
+  its children) and draws one with `{:@render row(x)}` where `row` is a
+  prop: the snippet's body is a block before the tag (`Dir::Snip`, which
+  `snip` in extra.js binds), and the component finds it among the anchors
+  right before its own, so no first paint for a component given one.
 
 ### Translations
 
@@ -883,9 +906,56 @@ One JSON file per locale in `src/locales`, flat or nested keys:
 - A page's scripts get only the messages they use, in its locale, with
   the page; their plurals follow `Intl.PluralRules`. `src/lib` modules
   cannot call `t`: pass them the text.
-- Switchers: `{#each wisp::locales().iter() as l}<a
+- Switchers: `{@html wisp::switcher(cx)}` is a `<nav class="wisp-locales">`
+  of links to the page in each locale, named in its own language; or
+  `{#each wisp::locales().iter() as l}<a
   href={wisp::localize(cx.path(), l)}>{l}</a>{/each}` (`/fr/about` →
   `/en/about`).
+
+Locale routing and the rest are opt-in, in `[package.metadata.wisp]` of the
+app's Cargo.toml as `i18n = [...]`, each string `name value`, baked at build
+(an app that says nothing has no code for them):
+
+```toml
+i18n = ["default en", "prefix as-needed", "domain example.fr fr", "missing warn"]
+```
+
+- `prefix optional` (what it is without one): `/about` and `/fr/about` both
+  answer. `prefix always`: every page has its locale, and `/about` redirects
+  (307, GET and HEAD, keeping the query) to the visitor's by cookie then
+  `Accept-Language`, `/fr/about`. `prefix as-needed`: the default locale has
+  no prefix and is what a page without one gets (no detection: a URL names
+  one language), `/en/about` redirects (308) to `/about`. `wisp::localize`
+  follows it, so links and the switcher need no change. The redirect is
+  emitted only in pages under `[[lang=locale]]`: other routes pay nothing.
+- `domain example.fr fr` (one per locale): the locale of a request is its
+  `Host`'s, `localize` gives `//example.fr/about`, and the redirects are off.
+  The `[[lang=locale]]` segment still wins when a URL has one.
+- `default fr`: the locale for a request that names none, instead of the
+  first file (`wisp::default_locale` in `init` still overrides).
+- `missing warn`: a locale without a key the default has uses the default's
+  message and the build warns (`file:line: "key" is missing`); a key the
+  default lacks, or a placeholder that differs, is still an error. `missing
+  error` is the default.
+- `{@html wisp::alternates(cx)}` in a head writes `<link rel="canonical">`,
+  an `alternate` with `hreflang` per locale and `x-default`; addresses start
+  with `SITE_URL`, else the request's host (a domain's host for its locale).
+- `/sitemap.xml` lists every page in every locale, each with its
+  `xhtml:link` alternates (the default's without a prefix under
+  `as-needed`; `prefix optional` lists the prefixed pages). `wisp build
+  --static` writes each locale's pages (`index.html`, `fr/index.html`) with
+  the unprefixed ones too unless `prefix always`. `entries()` of a page under
+  `[[lang=locale]]` lists the values of its other parameters.
+- `<html lang>` and, for a right-to-left language (ar, he, fa, ur…), `dir` are
+  set per request; `wisp::dir("ar")` says `rtl` for your own elements. Pages
+  under `[[lang=locale]]` are not baked: they say their language.
+- Formatting, small tables and no dependency: `wisp::format_number(n, l)`
+  (`1,234.5`, `1 234,5`, `1.234,5`), `format_money(n, "EUR", l)`,
+  `format_date(d, l)` (`10/4/2026`, `04/10/2026`, `4.10.2026`) and
+  `format_date_long(d, l)` (`October 4, 2026`, `4 octobre 2026`), `d` being Unix
+  seconds, `"2026-10-04"` or `(2026, 10, 4)`; `l` is `cx.locale()`. A language
+  without a table is written as `en` (numbers) or ISO 8601 (dates).
+- The example is `examples/i18n`.
 
 ### Actions and `wisp.js`
 
@@ -1279,6 +1349,10 @@ and `.wisp-*` classes, so they never touch an app's own CSS.
   also has the status's name, the request, what caused a 5xx and a link home.
   Its styles come inlined, since the app's own CSS may not exist yet. Errors
   for endpoints and API clients are JSON instead (see docs/api.md).
+- **Server errors in dev**: every answer carries `Server-Timing: total;dur=ms`,
+  and a 5xx's dev error page holds its message (a handler's panic says
+  `file:line`) in a `<template id="wisp-server-error">` that `wisp-dev.js`
+  opens in the dialog below. Debug builds only.
 - **The build error dialog** in dev: a title and one sentence saying where to
   look (`src/routes/+page.rs, line 7. Save a fix and the page updates.`), then
   the error text in a code block with a Copy control. It lives in a shadow
@@ -1546,9 +1620,26 @@ branches).
   than panicking.
 - `Date` is cached per thread and reformatted once per second.
 - A panic in a handler becomes a 500 for that request; the connection survives.
-- HTTP/2, TLS and compression belong to the reverse proxy / CDN (Caddy, nginx,
+- TLS and compression belong to the reverse proxy / CDN (Caddy, nginx,
   Cloudflare). This keeps the binary small and the hot path simple. (Or run
   Wisp as a tower service under hyper or axum: [embed.md](embed.md).)
+- HTTP/2 too, unless the `h2` feature is on (off by default; nothing of it
+  is compiled without it). Then a connection that opens with the HTTP/2
+  preface is served as h2c with prior knowledge (`src/h2.rs`): our own
+  HPACK (static and dynamic tables, Huffman), no new dependency. It is
+  noticed only where the HTTP/1 parser already refused the bytes
+  (`PRI * HTTP/2.0`), so HTTP/1 requests pay nothing, with the feature on or
+  off. Each stream's HEADERS and DATA become an HTTP/1.1 request through
+  `Cx::from_request` and the same `decide`/`serialize`; the answer goes back
+  as HEADERS and DATA. Streams are answered one at a time, in the order they
+  end. Limits: 100 concurrent streams (more are refused), 16 KiB header
+  lists and frames, a 4 KiB HPACK table, the route's body limit (413).
+  Flow control both ways, SETTINGS, PING, GOAWAY, RST_STREAM. A reset flood
+  (resets beyond answers + 200), a CONTINUATION flood (64 pieces or 16 KiB),
+  1000 frames that ask no request, or an HPACK bomb (a decoded list over 16
+  KiB) end the connection with GOAWAY `ENHANCE_YOUR_CALM`. No `Upgrade: h2c`
+  and no ALPN: the `tls` feature is the client's (`wisp::fetch`), the server
+  has no TLS.
 
 ### One request entry point
 
@@ -1566,6 +1657,12 @@ The built-in server is one front end. `respond` decides an answer as a
 - `wisp build --static` runs `handle` for each page and writes files.
 - `wisp build --target` compiles the same code to WebAssembly
   (`crates/wisp/src/edge.rs`), driven by a small JS bridge: no wasm-bindgen.
+  A path whose answer cannot change (a baked page, a trailing-slash
+  redirect) is marked `const` by the app, in an app with no `before`, `after`
+  or `reroute` hook, when it read no header but `if-none-match` and
+  `x-wisp-error` and had no query. The bridge's web `fetch` keeps the first
+  answer and its 304 and replays them (GET, HEAD, `if-none-match`) without
+  entering the wasm; `tests/platform/tests/fast.rs` pins them to native's.
 
 Every path uses the same request parser and limits. See [embed.md](embed.md)
 and [deploy.md](deploy.md).
@@ -1908,7 +2005,7 @@ No homegrown auth, ORM or job system, now or later: Wisp gives the tools
 (cookies, sessions, the `Store` trait, hooks, `wisp::spawn` from `init`)
 and the app builds on them. Integrations wire in existing, maintained
 crates (a recipe in `add/`, `wisp add sqlite`, scaffolds the glue). Also out:
-HTTP/2 in process, Windows services.
+Windows services. (HTTP/2 in process is the opt-in `h2` feature: h2c only.)
 
 ## Milestones
 

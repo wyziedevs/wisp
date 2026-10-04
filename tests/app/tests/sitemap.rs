@@ -15,7 +15,10 @@ fn sitemap_and_robots() {
     );
     let text = map.text().to_string();
     for want in [
-        "<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">",
+        "<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\" xmlns:xhtml=\"http://www.w3.org/1999/xhtml\">",
+        // A page under `[[lang=locale]]`, in each locale, with its alternates.
+        "<url><loc>https://example.com/en/i18n</loc><xhtml:link rel=\"alternate\" hreflang=\"en\" href=\"https://example.com/en/i18n\"/><xhtml:link rel=\"alternate\" hreflang=\"fr\" href=\"https://example.com/fr/i18n\"/><xhtml:link rel=\"alternate\" hreflang=\"x-default\" href=\"https://example.com/en/i18n\"/></url>",
+        "<url><loc>https://example.com/fr/i18n</loc>",
         "<url><loc>https://example.com/</loc></url>",
         "<url><loc>https://example.com/blog/hello</loc></url>",
         // `entries()` of a `[slug]` page.

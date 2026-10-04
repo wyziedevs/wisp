@@ -14,6 +14,15 @@ path = "src/main.rs"
 [dependencies]
 wisp-build.workspace = true
 wisp-shared.workspace = true
+# The `og-png` feature: `wisp build` renders each Open Graph SVG to a PNG.
+# Off by default; text only (system fonts), no raster images.
+resvg = { version = "0.48", default-features = false, features = ["text", "system-fonts"], optional = true }
+
+[features]
+# AVIF widths for images in `wisp build`, beside the WebP ones. Off by default.
+avif = ["wisp-build/avif"]
+# PNG Open Graph pictures (set `wisp/og-png` in the app too). Off by default.
+og-png = ["dep:resvg", "wisp-shared/og-png"]
 
 [lints]
 workspace = true

@@ -135,6 +135,12 @@ impl Route {
         }
     }
 
+    /// Whether it has `[[lang=locale]]`, the segment the app's locales go in.
+    pub fn has_locale(&self) -> bool {
+        let is = |s: &Seg| matches!(s, Seg::Optional(n, Some(m)) if n == "lang" && m == "locale");
+        self.segs.iter().any(is)
+    }
+
     pub fn params(&self) -> Vec<&str> {
         self.segs.iter().filter_map(Seg::param).collect()
     }

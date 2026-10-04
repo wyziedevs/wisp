@@ -126,8 +126,30 @@ pub(crate) fn endpoint<A: App>(
             Ok(()) => (200, "swapped"),
             Err(e) => (409, e),
         },
+        #[cfg(debug_assertions)]
+        (Method::Get, "/_wisp/dev/routes") => (200, routes::<A>()),
         _ => (404, "Not Found"),
     }
+}
+
+/// The app's routes as JSON for the devtools' Routes tab: one
+/// `[pattern, has a page]` per route.
+/// Built once and leaked: the routes of a build never change.
+#[cfg(debug_assertions)]
+fn routes<A: App>() -> &'static str {
+    static JSON: OnceLock<&'static str> = OnceLock::new();
+    JSON.get_or_init(|| {
+        let mut s = String::from("[");
+        for (i, r) in A::ROUTES.iter().enumerate() {
+            if i > 0 {
+                s.push(',');
+            }
+            let pattern = r.pattern.replace(['\\', '"'], "");
+            s.push_str(&format!("[\"{pattern}\",{}]", r.page));
+        }
+        s.push(']');
+        Box::leak(s.into_boxed_str())
+    })
 }
 
 /// `POST /_wisp/dev/open`, body `file\nline` (`file` from the project

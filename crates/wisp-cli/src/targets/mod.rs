@@ -5,11 +5,14 @@
 //! `lambda`, the app's own binary for Linux, zipped as Lambda's `bootstrap`.
 
 use crate::{cargo, css, deploy, images, npm, term};
+use jobs::Jobs;
 use std::path::Path;
 use std::time::Instant;
 use wisp_build::routes::Seg;
 
 mod runtime;
+
+mod jobs;
 
 const BRIDGE: &str = include_str!("bridge.js");
 const NODE: &str = include_str!("node.mjs");
@@ -20,9 +23,22 @@ const VERCEL_EDGE: &str = include_str!("vercel_edge.mjs");
 const NETLIFY_EDGE: &str = include_str!("netlify_edge.mjs");
 const BUN: &str = include_str!("bun.mjs");
 
-/// Static files first, then the one function.
-const VERCEL_CONFIG: &str =
-    r#"{"version":3,"routes":[{"handle":"filesystem"},{"src":"/(.*)","dest":"/index"}]}"#;
+/// Vercel's `config.json`: static files first, then the one function, and
+/// the app's cron schedules, which Vercel requests by their path.
+fn vercel_config(jobs: &Jobs, to_edge: &str) -> String {
+    let crons: Vec<_> = jobs
+        .triggers()
+        .into_iter()
+        .map(|e| format!(r#"{{"path":"{}","schedule":"{e}"}}"#, jobs::path(e)))
+        .collect();
+    let crons = match crons.is_empty() {
+        true => String::new(),
+        false => format!(r#","crons":[{}]"#, crons.join(",")),
+    };
+    format!(
+        r#"{{"version":3,"routes":[{{"handle":"filesystem"}},{to_edge}{{"src":"/(.*)","dest":"/index"}}]{crons}}}"#
+    )
+}
 
 const WASM_TARGET: &str = "wasm32-unknown-unknown";
 /// Static, so it runs on any Linux: `provided.al2023` and older.
@@ -73,6 +89,8 @@ pub fn build(root: &Path, host: &str, edge: bool, out: &Path) -> Result<(), Stri
         _ => out.to_path_buf(),
     };
     crate::deploy::check_out(root, &written)?;
+    let jobs = jobs::scan(root)?;
+    jobs::check(host, edge, &jobs)?;
     let (target, what) = match host {
         "lambda" => (LAMBDA_TARGET, "Linux x86_64"),
         _ => (WASM_TARGET, "WebAssembly"),
@@ -142,9 +160,9 @@ pub fn build(root: &Path, host: &str, edge: bool, out: &Path) -> Result<(), Stri
     let package = cargo::package_name(root).ok_or("Cargo.toml has no package name.")?;
     let has_static = root.join("static").is_dir();
     let skips = skips(&root.join("static"));
-    let mut layout = layout(host, &package, app, has_static, edge, &skips)?;
+    let mut layout = layout(host, &package, app, has_static, edge, &skips, &jobs)?;
     if let Some(wasm) = edge_app {
-        add_edge(&mut layout, host, wasm, &skips, &edges);
+        add_edge(&mut layout, host, wasm, &skips, &edges, &jobs);
     }
     if host == "pages" {
         layout
@@ -172,11 +190,22 @@ pub fn build(root: &Path, host: &str, edge: bool, out: &Path) -> Result<(), Stri
     ));
     println!("    Deploy it from that folder: {}", layout.deploy);
     println!("    Set WISP_SECRET there if the app signs cookies.");
+    if jobs.any() {
+        println!(
+            "    Set CRON_SECRET there (any long random text): the host's cron triggers send it."
+        );
+        if jobs.work {
+            println!(
+                "    Queued jobs are kept in the app's tables: set WISP_STORE there too, or they are lost."
+            );
+        }
+    }
     Ok(())
 }
 
 /// `wasm` is the built app: `app.wasm`, or for Lambda its Linux binary.
-/// `edge` is `--edge` (Vercel, Netlify); `skips` the static paths.
+/// `edge` is `--edge` (Vercel, Netlify); `skips` the static paths; `jobs`
+/// what the app asks of the host's cron (see [`jobs::check`]).
 fn layout(
     host: &str,
     package: &str,
@@ -184,13 +213,19 @@ fn layout(
     has_static: bool,
     edge: bool,
     skips: &[String],
+    jobs: &Jobs,
 ) -> Result<Layout, String> {
     let bridge = || BRIDGE.as_bytes().to_vec();
     let text = |s: &str| s.as_bytes().to_vec();
     Ok(match host {
         "cloudflare" => {
             let assets = if has_static { "\n# Served before the worker runs.\n[assets]\ndirectory = \"public\"\n" } else { "" };
-            let wrangler = format!("name = \"{package}\"\nmain = \"worker.js\"\ncompatibility_date = \"2025-09-01\"\n{assets}");
+            let triggers: Vec<_> = jobs.triggers().iter().map(|e| format!("\"{e}\"")).collect();
+            let triggers = match triggers.is_empty() {
+                true => String::new(),
+                false => format!("\n# The app's wisp::cron schedules, and each minute for its queues.\n[triggers]\ncrons = [{}]\n", triggers.join(", ")),
+            };
+            let wrangler = format!("name = \"{package}\"\nmain = \"worker.js\"\ncompatibility_date = \"2025-09-01\"\n{triggers}{assets}");
             Layout {
                 files: vec![("worker.js", text(WORKER)), ("bridge.mjs", bridge()), ("app.wasm", wasm), ("wrangler.toml", wrangler.into_bytes())],
                 statics: has_static.then_some("public"),
@@ -209,7 +244,7 @@ fn layout(
         },
         "vercel" if edge => Layout {
             files: vec![
-                (".vercel/output/config.json", text(VERCEL_CONFIG)),
+                (".vercel/output/config.json", vercel_config(jobs, "").into_bytes()),
                 (".vercel/output/functions/index.func/.vc-config.json", text(r#"{"runtime":"edge","entrypoint":"index.mjs"}"#)),
                 (".vercel/output/functions/index.func/index.mjs", text(VERCEL_EDGE)),
                 (".vercel/output/functions/index.func/bridge.mjs", bridge()),
@@ -234,7 +269,7 @@ fn layout(
         "vercel" => {
             Layout {
                 files: vec![
-                    (".vercel/output/config.json", text(VERCEL_CONFIG)),
+                    (".vercel/output/config.json", vercel_config(jobs, "").into_bytes()),
                     (
                         ".vercel/output/functions/index.func/.vc-config.json",
                         text(r#"{"runtime":"nodejs22.x","handler":"index.mjs","launcherType":"Nodejs","shouldAddHelpers":false,"supportsResponseStreaming":true}"#),
@@ -247,16 +282,20 @@ fn layout(
                 deploy: "npx vercel deploy --prebuilt",
             }
         }
-        "netlify" => Layout {
-            files: vec![
+        "netlify" => {
+            let mut files = vec![
                 ("netlify.toml", text("[build]\npublish = \"public\"\n\n[functions]\ndirectory = \"functions\"\n")),
                 ("functions/wisp.mjs", text(NETLIFY)),
                 ("functions/bridge.mjs", bridge()),
                 ("functions/app.wasm.js", format!("export default \"{}\";\n", base64(&wasm)).into_bytes()),
-            ],
-            statics: Some("public"),
-            deploy: "npx netlify deploy --prod",
-        },
+            ];
+            // A scheduled function has one schedule: one each, which asks the app.
+            for (n, e) in jobs.triggers().into_iter().enumerate() {
+                let path = format!("functions/wisp-cron-{n}.mjs");
+                files.push((Box::leak(path.into_boxed_str()), netlify_cron(e).into_bytes()));
+            }
+            Layout { files, statics: Some("public"), deploy: "npx netlify deploy --prod" }
+        }
         "node" => Layout {
             files: vec![
                 ("server.mjs", text(NODE)),
@@ -291,10 +330,26 @@ fn layout(
     })
 }
 
+/// A Netlify scheduled function: at `expr` it asks the app's function for
+/// `/_wisp/cron/<expr>`, as the other hosts' triggers do.
+fn netlify_cron(expr: &str) -> String {
+    format!(
+        "// Netlify scheduled function: runs the app's `wisp::cron` tasks of this schedule.\nimport app from './wisp.mjs';\n\nexport default async () => {{\n  const headers = {{ authorization: `Bearer ${{process.env.CRON_SECRET}}` }};\n  const res = await app(new Request('https://wisp.invalid{}', {{ headers }}), {{}});\n  if (!res.ok) throw new Error(`cron {expr}: ${{res.status}}`);\n}};\n\nexport const config = {{ schedule: '{expr}' }};\n",
+        jobs::path(expr)
+    )
+}
+
 /// Both runtimes from one app: the Node function `layout` has, and an edge
 /// function for the routes `edges` (see `runtime`), which the host's routing
 /// sends there. Static files are the CDN's either way.
-fn add_edge(layout: &mut Layout, host: &str, wasm: Vec<u8>, skips: &[String], edges: &[Vec<Seg>]) {
+fn add_edge(
+    layout: &mut Layout,
+    host: &str,
+    wasm: Vec<u8>,
+    skips: &[String],
+    edges: &[Vec<Seg>],
+    jobs: &Jobs,
+) {
     let quoted = |f: fn(&[Seg]) -> String, q: char| -> Vec<String> {
         let mut v: Vec<_> = edges.iter().map(|s| f(s)).collect();
         v.sort();
@@ -309,9 +364,7 @@ fn add_edge(layout: &mut Layout, host: &str, wasm: Vec<u8>, skips: &[String], ed
             .iter()
             .map(|p| format!("{{\"src\":{p},\"dest\":\"/edge\"}},"))
             .collect();
-        let config = format!(
-            "{{\"version\":3,\"routes\":[{{\"handle\":\"filesystem\"}},{to_edge}{{\"src\":\"/(.*)\",\"dest\":\"/index\"}}]}}"
-        );
+        let config = vercel_config(jobs, &to_edge);
         layout
             .files
             .retain(|(p, _)| *p != ".vercel/output/config.json");
@@ -525,8 +578,24 @@ mod tests {
             vec![Seg::Static("api".into()), Seg::Rest("p".into())],
         ];
         let skips = ["/logo.png".to_string()];
-        let mut v = layout("vercel", "s", b"node".to_vec(), true, false, &skips).unwrap();
-        add_edge(&mut v, "vercel", b"edge".to_vec(), &skips, &edges);
+        let mut v = layout(
+            "vercel",
+            "s",
+            b"node".to_vec(),
+            true,
+            false,
+            &skips,
+            &Jobs::default(),
+        )
+        .unwrap();
+        add_edge(
+            &mut v,
+            "vercel",
+            b"edge".to_vec(),
+            &skips,
+            &edges,
+            &Jobs::default(),
+        );
         let config = text(&v, ".vercel/output/config.json");
         let want = r#"{"version":3,"routes":[{"handle":"filesystem"},{"src":"^/api(?:/.*)?/?$","dest":"/edge"},{"src":"^/blog/[^/]+/?$","dest":"/edge"},{"src":"/(.*)","dest":"/index"}]}"#;
         assert_eq!(config, want);
@@ -542,8 +611,24 @@ mod tests {
                 .count(),
             1
         );
-        let mut n = layout("netlify", "s", b"node".to_vec(), true, false, &skips).unwrap();
-        add_edge(&mut n, "netlify", b"edge".to_vec(), &skips, &edges);
+        let mut n = layout(
+            "netlify",
+            "s",
+            b"node".to_vec(),
+            true,
+            false,
+            &skips,
+            &Jobs::default(),
+        )
+        .unwrap();
+        add_edge(
+            &mut n,
+            "netlify",
+            b"edge".to_vec(),
+            &skips,
+            &edges,
+            &Jobs::default(),
+        );
         let edge = text(&n, "netlify/edge-functions/wisp.mjs");
         assert!(
             edge.contains("path: ['/api/*', '/blog/:slug'], excludedPath: ['/logo.png']"),
@@ -551,6 +636,24 @@ mod tests {
         );
         assert!(text(&n, "functions/wisp.mjs").contains("path: '/*'"));
         assert!(n.files.iter().any(|(p, _)| *p == "functions/app.wasm.js"));
+        // The routes sent to the edge function keep Vercel's crons.
+        let mut v = layout(
+            "vercel",
+            "s",
+            b"node".to_vec(),
+            true,
+            false,
+            &skips,
+            &jobs(),
+        )
+        .unwrap();
+        add_edge(&mut v, "vercel", b"edge".to_vec(), &skips, &edges, &jobs());
+        let config = text(&v, ".vercel/output/config.json");
+        assert!(
+            config.contains(r#""dest":"/edge"}"#)
+                && config.contains(r#""crons":[{"path":"/_wisp/cron/0_3_*_*_*""#),
+            "{config}"
+        );
     }
 
     #[test]
@@ -559,7 +662,16 @@ mod tests {
             .into_iter()
             .filter(|h| !["lambda", "pages"].contains(h))
         {
-            let l = layout(host, "site", b"\0asm".to_vec(), true, false, &[]).unwrap();
+            let l = layout(
+                host,
+                "site",
+                b"\0asm".to_vec(),
+                true,
+                false,
+                &[],
+                &Jobs::default(),
+            )
+            .unwrap();
             let paths: Vec<_> = l.files.iter().map(|(p, _)| *p).collect();
             assert!(paths.iter().any(|p| p.ends_with("bridge.mjs")), "{host}");
             assert!(
@@ -569,7 +681,16 @@ mod tests {
                 "{host}"
             );
         }
-        let cf = layout("cloudflare", "site", Vec::new(), true, false, &[]).unwrap();
+        let cf = layout(
+            "cloudflare",
+            "site",
+            Vec::new(),
+            true,
+            false,
+            &[],
+            &Jobs::default(),
+        )
+        .unwrap();
         let wrangler = &cf
             .files
             .iter()
@@ -579,14 +700,105 @@ mod tests {
         assert!(String::from_utf8_lossy(wrangler).contains("name = \"site\""));
         assert!(
             !String::from_utf8_lossy(
-                &layout("cloudflare", "site", Vec::new(), false, false, &[])
-                    .unwrap()
-                    .files[3]
+                &layout(
+                    "cloudflare",
+                    "site",
+                    Vec::new(),
+                    false,
+                    false,
+                    &[],
+                    &Jobs::default()
+                )
+                .unwrap()
+                .files[3]
                     .1
             )
             .contains("[assets]")
         );
-        assert!(layout("heroku", "site", Vec::new(), true, false, &[]).is_err());
+        assert!(
+            layout(
+                "heroku",
+                "site",
+                Vec::new(),
+                true,
+                false,
+                &[],
+                &Jobs::default()
+            )
+            .is_err()
+        );
+    }
+
+    /// The text of the file `path` in `host`'s folder.
+    fn file(host: &str, edge: bool, jobs: &Jobs, path: &str) -> String {
+        let l = layout(host, "site", Vec::new(), false, edge, &[], jobs).unwrap();
+        let (_, bytes) = l.files.iter().find(|(p, _)| *p == path).unwrap();
+        String::from_utf8(bytes.clone()).unwrap()
+    }
+
+    fn jobs() -> Jobs {
+        Jobs {
+            crons: vec!["0 3 * * *".into(), "*/5 * * * *".into()],
+            work: true,
+        }
+    }
+
+    #[test]
+    fn cloudflare_gets_cron_triggers_and_a_worker_that_takes_them() {
+        let wrangler = file("cloudflare", false, &jobs(), "wrangler.toml");
+        assert!(
+            wrangler
+                .contains("[triggers]\ncrons = [\"0 3 * * *\", \"*/5 * * * *\", \"* * * * *\"]")
+        );
+        assert!(!file("cloudflare", false, &Jobs::default(), "wrangler.toml").contains("triggers"));
+        let worker = file("cloudflare", false, &jobs(), "worker.js");
+        assert!(
+            worker.contains("async scheduled(event, env, ctx)") && worker.contains("/_wisp/cron/")
+        );
+        assert!(worker.contains(".join('_').replaceAll('/', '~')"));
+    }
+
+    #[test]
+    fn vercel_gets_crons_in_its_config_on_both_runtimes() {
+        let want = r#""crons":[{"path":"/_wisp/cron/0_3_*_*_*","schedule":"0 3 * * *"},{"path":"/_wisp/cron/*~5_*_*_*_*","schedule":"*/5 * * * *"},{"path":"/_wisp/cron/*_*_*_*_*","schedule":"* * * * *"}]}"#;
+        for edge in [false, true] {
+            let c = file("vercel", edge, &jobs(), ".vercel/output/config.json");
+            assert!(
+                c.starts_with(r#"{"version":3,"routes":["#) && c.ends_with(want),
+                "{c}"
+            );
+        }
+        let plain = file(
+            "vercel",
+            false,
+            &Jobs::default(),
+            ".vercel/output/config.json",
+        );
+        assert_eq!(
+            plain,
+            r#"{"version":3,"routes":[{"handle":"filesystem"},{"src":"/(.*)","dest":"/index"}]}"#
+        );
+    }
+
+    #[test]
+    fn netlify_gets_a_scheduled_function_for_each_schedule() {
+        let f = file("netlify", false, &jobs(), "functions/wisp-cron-1.mjs");
+        assert!(
+            f.contains("schedule: '*/5 * * * *'")
+                && f.contains("https://wisp.invalid/_wisp/cron/*~5_*_*_*_*")
+        );
+        assert!(f.contains("import app from './wisp.mjs'"));
+        let l = layout(
+            "netlify",
+            "site",
+            Vec::new(),
+            false,
+            false,
+            &[],
+            &Jobs::default(),
+        )
+        .unwrap();
+        assert!(!l.files.iter().any(|(p, _)| p.contains("cron")));
     }
 
     #[test]
@@ -609,7 +821,16 @@ mod tests {
     #[test]
     fn lambda_gets_an_executable_bootstrap_zip() {
         assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
-        let l = layout("lambda", "site", b"\x7fELF".to_vec(), true, false, &[]).unwrap();
+        let l = layout(
+            "lambda",
+            "site",
+            b"\x7fELF".to_vec(),
+            true,
+            false,
+            &[],
+            &Jobs::default(),
+        )
+        .unwrap();
         let (path, z) = &l.files[0];
         assert_eq!(*path, "bootstrap.zip");
         assert!(z.starts_with(b"PK\x03\x04") && z.windows(13).any(|w| w == b"bootstrap\x7fELF"));

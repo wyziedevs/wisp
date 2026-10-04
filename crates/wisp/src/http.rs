@@ -65,7 +65,11 @@ const LIVE_JS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/live.js"));
 /// Live reload and the build error dialog, with the dialog's styles. Served
 /// and linked only by debug builds, so none of it ships in a release
 /// binary's pages.
+#[cfg(not(target_arch = "wasm32"))]
 const DEV_JS: &[u8] = include_bytes!("client/wisp-dev.js");
+/// The edge build has no dev mode to serve them to: 12 KB less in the wasm.
+#[cfg(target_arch = "wasm32")]
+const DEV_JS: &[u8] = b"";
 /// The devtools overlay (`Alt+Shift+W`): debug builds only.
 #[cfg(debug_assertions)]
 const DEVTOOLS_JS: &[u8] = include_bytes!("client/wisp-devtools.js");
@@ -78,7 +82,10 @@ pub(crate) const UI_CSS: &str = concat!(
 pub(crate) const TOKENS_CSS: &str = include_str!("client/tokens.css");
 /// The default error page's own styles.
 pub(crate) const ERROR_CSS: &str = include_str!("client/error.css");
+#[cfg(not(target_arch = "wasm32"))]
 const DIALOG_CSS: &[u8] = include_bytes!("client/dialog.css");
+#[cfg(target_arch = "wasm32")]
+const DIALOG_CSS: &[u8] = b"";
 
 /// The page at `/_wisp/docs` that lists the app's endpoints and sends
 /// requests to them, with Wisp's own styles.
@@ -966,6 +973,11 @@ fn trim_buffers(b: &mut Buffers) {
 #[path = "edge_conn.rs"]
 pub(crate) mod edge_conn;
 
+/// HTTP/2 with prior knowledge (the `h2` feature): see `h2.rs`.
+#[cfg(feature = "h2")]
+#[path = "h2.rs"]
+mod h2;
+
 /// What the epoll driver received for a connection and leaves to its
 /// future (see [`on_driver`]): the buffers, how much of `cx.wire.buf` is
 /// answered, and the request after that when the driver got that far with
@@ -1403,6 +1415,13 @@ async fn requests<A: App>(mut stream: Conn, peer: SocketAddr, held: &mut Option<
                     break;
                 }
                 Parsed::Invalid(status) => {
+                    // No HTTP/1 request, but HTTP/2's preface: an HTTP/1
+                    // request never comes this way, so it pays nothing.
+                    #[cfg(feature = "h2")]
+                    if used == 0 && cx.wire.buf.starts_with(&h2::PREFACE[..18]) {
+                        h2::serve::<A>(&mut stream, b, timer.as_mut()).await;
+                        return;
+                    }
                     reply.set_plain(status, reason(status));
                     serialize::<A, true>(wbuf, reply, out, true, false, false);
                     (close, refused) = (true, true);
@@ -2795,6 +2814,8 @@ fn answered(cx: &mut Cx, reply: &mut Reply, started: Option<Instant>, failure: O
     cx.send_headers(&mut reply.headers);
     let method = cx.method.as_str();
     if let Some(started) = started {
+        #[cfg(debug_assertions)]
+        server_timing(reply, started.elapsed());
         let blocked = Some(BLOCKED.replace(Duration::ZERO)).filter(|&b| b >= BLOCKING);
         let (path, id) = (cx.path(), cx.id());
         dev::log_request(
@@ -2814,6 +2835,16 @@ fn answered(cx: &mut Cx, reply: &mut Reply, started: Option<Instant>, failure: O
             cx.path()
         ));
     }
+}
+
+/// Dev builds: `Server-Timing: total;dur=1.2` on every answered request,
+/// for the devtools' timings and the browser's own network panel.
+#[cfg(debug_assertions)]
+fn server_timing(reply: &mut Reply, took: Duration) {
+    let ms = took.as_secs_f64() * 1000.0;
+    reply
+        .headers
+        .push(("server-timing".into(), format!("total;dur={ms:.2}").into()));
 }
 
 /// `path` (a span of `buf`) without the base path: the same when it is not
@@ -2949,6 +2980,8 @@ fn slash_redirect(cx: &Cx, reply: &mut Reply, trailing: bool) {
     reply
         .headers
         .push((Cow::Borrowed("location"), Cow::Owned(location)));
+    #[cfg(target_arch = "wasm32")]
+    crate::edge::constant(cx);
 }
 
 /// Whether `res`, a 200 to a GET or HEAD with an `etag` (an [`crate::Image`],
@@ -3254,7 +3287,7 @@ fn parts<'a, A: App>(
     let [s0, s1, s2] = A::shell();
     let tags = HEAD_TAGS.get().map_or("", String::as_str);
     // `<html lang="…">` says the request's locale, in an app with some.
-    let lang = A::LOCALES.get(lang as usize).copied().unwrap_or("");
+    let lang = A::HTML_LANGS.get(lang as usize).copied().unwrap_or("");
     let (a, b) = match (!lang.is_empty())
         .then(|| crate::i18n::lang_value(s0))
         .flatten()

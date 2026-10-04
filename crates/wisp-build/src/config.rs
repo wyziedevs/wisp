@@ -206,7 +206,7 @@ fn holes(s: &str) -> Vec<&str> {
 
 /// The strings of `key = [...]` in `[package.metadata.wisp]`, or what is
 /// wrong with the list. A `[` or `]` inside a string is text.
-fn strings(toml: &str, key: &str) -> Result<Vec<String>, String> {
+pub fn strings(toml: &str, key: &str) -> Result<Vec<String>, String> {
     let bad = |m: &str| format!("Cargo.toml: {key} = [...]: {m}");
     let (mut on, mut start, mut at) = (false, None, 0);
     for l in toml.split_inclusive('\n') {

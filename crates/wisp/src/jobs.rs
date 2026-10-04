@@ -18,11 +18,22 @@
 //! run again a minute later. Jobs of a queue run one at a time, in the order
 //! of their ids. Several servers of one app may work a queue if they share a
 //! store that all see changes of (`WISP_STORE_POLL`); each job is claimed.
-//! Not in the edge build, which has no background work: use the host's cron
-//! triggers.
+//!
+//! The edge and serverless builds (`wisp build --target cloudflare`, `vercel`,
+//! `netlify`) have no background, so the same code runs from the host's cron
+//! trigger: `wisp build` reads each `wisp::cron("...")` of `src/` (its
+//! schedule a string literal) and writes it into the host's config
+//! (`wrangler.toml` `[triggers]`, `vercel.json` `crons`, a Netlify scheduled
+//! function). A trigger runs the tasks of its schedule, then every queue's due
+//! jobs, so an app with `work` gets a trigger each minute. The trigger is a
+//! request to `/_wisp/cron/<schedule>` that needs `Authorization: Bearer
+//! $CRON_SECRET`; without that variable set it answers 404. Queued jobs live in
+//! the app's table, so set `WISP_STORE` there.
 
 use crate::json::{FromJson, Problems};
 use crate::{Json, Table, Value};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Tries a job gets, the first included.
@@ -173,7 +184,10 @@ fn backoff(tries: u32) -> u64 {
 /// What a failed try does to the job; `fatal` ones, which no try would
 /// mend, are dead at once.
 fn settle(j: &mut Job, now: u64, error: String, fatal: bool) {
-    j.tries += 1;
+    // On the edge the try was counted when it was claimed.
+    if cfg!(not(target_arch = "wasm32")) {
+        j.tries += 1;
+    }
     j.lease = 0;
     if fatal || j.tries >= TRIES {
         j.dead = true;
@@ -182,12 +196,67 @@ fn settle(j: &mut Job, now: u64, error: String, fatal: bool) {
     j.error = Some(error);
 }
 
+/// How one try of a job ended.
+enum Outcome {
+    Done,
+    /// To be tried again later.
+    Failed(String),
+    /// No try would mend it: dead at once.
+    Fatal(String),
+}
+
+type Tried = Pin<Box<dyn Future<Output = Outcome> + Send>>;
+
+/// A queue's worker as the table sees it: a job's payload to its try.
+type Runner = Box<dyn FnMut(&str) -> Tried + Send>;
+
+/// `f` as a [`Runner`]: a payload that is not a `T` is fatal.
+fn runner<T, F, Fut>(mut f: F) -> Runner
+where
+    T: FromJson + Send + 'static,
+    F: FnMut(T) -> Fut + Send + 'static,
+    Fut: Future<Output = crate::Result> + Send + 'static,
+{
+    Box::new(
+        move |payload| match crate::from_json::<T>(payload.as_bytes()) {
+            Err(e) => {
+                let why = format!("not a job of this worker: {}", e.message());
+                Box::pin(std::future::ready(Outcome::Fatal(why)))
+            }
+            Ok(job) => Box::pin(attempt(f(job))),
+        },
+    )
+}
+
+/// A try on its own task, so a panic fails the job and not the worker.
+#[cfg(not(target_arch = "wasm32"))]
+async fn attempt(fut: impl Future<Output = crate::Result> + Send + 'static) -> Outcome {
+    match tokio::spawn(fut).await {
+        Ok(Ok(())) => Outcome::Done,
+        Ok(Err(e)) => Outcome::Failed(e.detail()),
+        Err(e) => Outcome::Failed(format!("panic: {e}")),
+    }
+}
+
+/// A panic traps the edge instance (see [`claim`] for what keeps such a job
+/// from being run for ever).
+#[cfg(target_arch = "wasm32")]
+async fn attempt(fut: impl Future<Output = crate::Result> + Send + 'static) -> Outcome {
+    match fut.await {
+        Ok(()) => Outcome::Done,
+        Err(e) => Outcome::Failed(e.detail()),
+    }
+}
+
 /// Runs `f` on each job pushed on the queue `name`, one at a time, from
 /// now on: `wisp::work("mail", |m: Mail| async move { send(&m).await })`.
 /// `Ok` ends the job; `Err` or a panic has it tried again later (see the
 /// module). A job that is not a `T` is dead at once. Call it once per queue,
 /// in `init`.
-pub fn work<T, F, Fut>(name: &str, mut f: F)
+///
+/// On the edge and on serverless hosts there is no background, so the jobs
+/// are run when the host's cron trigger comes (see the module).
+pub fn work<T, F, Fut>(name: &str, f: F)
 where
     T: FromJson + Send + 'static,
     F: FnMut(T) -> Fut + Send + 'static,
@@ -198,23 +267,35 @@ where
         !q.worked.swap(true, Ordering::Relaxed),
         "queue {name:?} already has a worker"
     );
+    #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
+    let mut run = runner(f);
+    #[cfg(target_arch = "wasm32")]
+    HOSTED.lock().push((q, run));
+    #[cfg(not(target_arch = "wasm32"))]
     crate::spawn(async move {
         loop {
-            if !step(q, &mut f).await {
+            if !step(q, &mut run).await {
                 return;
             }
         }
     });
 }
 
-/// Runs the next due job of `q`, or waits for one: `false` once the server is stopping.
-async fn step<T, F, Fut>(q: &'static Queue, f: &mut F) -> bool
-where
-    T: FromJson + Send + 'static,
-    F: FnMut(T) -> Fut,
-    Fut: Future<Output = crate::Result> + Send + 'static,
-{
-    let now = crate::unix_now();
+/// What [`claim`] found.
+enum Claim {
+    Job(crate::Row<Job>),
+    /// Nothing is due, or another worker took it: when the next job is due
+    /// (`u64::MAX`: none).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    Idle(u64),
+}
+
+/// The first job of `q` that is due, claimed for [`LEASE`] seconds.
+///
+/// On the edge a try that panics traps the instance and is never settled,
+/// so there a try counts when it is claimed: a job claimed [`TRIES`] times
+/// without being settled is dead, and does not trap the host for ever.
+fn claim(q: &Queue, now: u64) -> Claim {
     // The first job due, and when the next that is not will be.
     let (mut due, mut next) = (None, u64::MAX);
     q.table.each(|id, j| {
@@ -229,71 +310,152 @@ where
             });
         }
     });
-    let claimed = match &due {
-        Some(row) => q.table.update(row.id, |j| {
-            let free = !j.dead && j.lease <= now;
-            if free {
-                j.lease = now + LEASE;
+    let Some(row) = due else {
+        return Claim::Idle(next);
+    };
+    let claimed = q.table.update(row.id, |j| {
+        if j.dead || j.lease > now {
+            return false;
+        }
+        if cfg!(target_arch = "wasm32") {
+            if j.tries >= TRIES {
+                j.dead = true;
+                j.error = Some("it stopped the instance every time".into());
+                return false;
             }
-            free
-        }),
-        None => None,
-    };
-    let (Some(row), Some(true)) = (due, claimed) else {
-        // Nothing due: a push wakes it, else when the next job is due, or in
-        // a second, when other servers may push through the store.
-        let mut wait = std::time::Duration::from_secs(next.saturating_sub(now).max(1));
-        if next == u64::MAX {
-            wait = std::time::Duration::MAX;
+            j.tries += 1;
         }
-        if crate::env_or("WISP_STORE_POLL", 0u64) > 0 {
-            wait = wait.min(std::time::Duration::from_secs(1));
+        j.lease = now + LEASE;
+        true
+    });
+    match claimed {
+        Some(true) => Claim::Job(row),
+        _ => Claim::Idle(next),
+    }
+}
+
+/// Records how the claimed job `id` of `q`, which had `tries` before, went:
+/// gone if it is done, else kept for another try, or dead.
+fn settled(q: &Queue, id: u64, tries: u32, outcome: Outcome) {
+    let (error, fatal) = match outcome {
+        Outcome::Done => {
+            q.table.remove(id);
+            return;
         }
-        return crate::http::first(
-            async {
-                crate::http::first(async { q.wake.notified().await }, async {
-                    match wait == std::time::Duration::MAX {
-                        true => std::future::pending().await,
-                        false => tokio::time::sleep(wait).await,
-                    }
-                })
-                .await;
-                true
-            },
-            async {
-                crate::http::stopped().await;
-                false
-            },
-        )
-        .await;
+        Outcome::Failed(e) => (e, false),
+        Outcome::Fatal(e) => (e, true),
     };
-    let (error, fatal) = match crate::from_json::<T>(row.payload.as_bytes()) {
-        Err(e) => (
-            Some(format!("not a job of this worker: {}", e.message())),
-            true,
-        ),
-        Ok(job) => match tokio::spawn(f(job)).await {
-            Ok(Ok(())) => (None, false),
-            Ok(Err(e)) => (Some(e.detail()), false),
-            Err(e) => (Some(format!("panic: {e}")), false),
+    crate::http::log(format_args!(
+        "wisp: job {id} of queue {} failed (try {}): {error}",
+        q.name,
+        tries + 1
+    ));
+    q.table
+        .update(id, |j| settle(j, crate::unix_now(), error, fatal));
+}
+
+/// Runs the next due job of `q`, or waits for one: `false` once the server is stopping.
+#[cfg(not(target_arch = "wasm32"))]
+async fn step(q: &'static Queue, run: &mut Runner) -> bool {
+    let now = crate::unix_now();
+    let next = match claim(q, now) {
+        Claim::Job(row) => {
+            let outcome = run(&row.payload).await;
+            settled(q, row.id, row.tries, outcome);
+            return true;
+        }
+        Claim::Idle(next) => next,
+    };
+    // Nothing due: a push wakes it, else when the next job is due, or in
+    // a second, when other servers may push through the store.
+    let mut wait = std::time::Duration::from_secs(next.saturating_sub(now).max(1));
+    if next == u64::MAX {
+        wait = std::time::Duration::MAX;
+    }
+    if crate::env_or("WISP_STORE_POLL", 0u64) > 0 {
+        wait = wait.min(std::time::Duration::from_secs(1));
+    }
+    crate::http::first(
+        async {
+            crate::http::first(async { q.wake.notified().await }, async {
+                match wait == std::time::Duration::MAX {
+                    true => std::future::pending().await,
+                    false => tokio::time::sleep(wait).await,
+                }
+            })
+            .await;
+            true
         },
-    };
-    match error {
-        None => {
-            q.table.remove(row.id);
-        }
-        Some(error) => {
-            crate::http::log(format_args!(
-                "wisp: job {} of queue {} failed (try {}): {error}",
-                row.id,
-                q.name,
-                row.tries + 1
-            ));
-            q.table
-                .update(row.id, |j| settle(j, crate::unix_now(), error, fatal));
+        async {
+            crate::http::stopped().await;
+            false
+        },
+    )
+    .await
+}
+
+/// The workers of a host that has no background (the edge, serverless):
+/// run when its trigger comes, by [`drain`].
+#[cfg(any(target_arch = "wasm32", test))]
+static HOSTED: crate::Shared<Vec<(&'static Queue, Runner)>> = crate::Shared::new(Vec::new());
+
+/// Runs every job that is due, of every queue that has a worker.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) async fn drain() {
+    let queues = HOSTED.lock().len();
+    for i in 0..queues {
+        let q = HOSTED.lock()[i].0;
+        while let Claim::Job(row) = claim(q, crate::unix_now()) {
+            // Called with the lock held, awaited without it.
+            let tried = (HOSTED.lock()[i].1)(&row.payload);
+            settled(q, row.id, row.tries, tried.await);
         }
     }
-    true
+}
+
+/// A cron task of a host that has no background: run when its trigger comes.
+#[cfg(any(target_arch = "wasm32", test))]
+type Hosted = Box<dyn FnMut() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
+
+/// The schedules of the app, by their [`wisp_shared::cron_slug`].
+#[cfg(any(target_arch = "wasm32", test))]
+static SCHEDULED: crate::Shared<Vec<(String, Hosted)>> = crate::Shared::new(Vec::new());
+
+/// What a host's trigger does: `slug` is the schedule that fired (see
+/// [`wisp_shared::cron_slug`]). Runs its tasks one after the other, then
+/// the queues' due jobs.
+#[cfg(any(target_arch = "wasm32", test))]
+async fn fire(slug: &str) {
+    let n = SCHEDULED.lock().len();
+    for i in 0..n {
+        let task = {
+            let mut all = SCHEDULED.lock();
+            let (at, task) = &mut all[i];
+            (at == slug).then(task)
+        };
+        if let Some(task) = task {
+            task.await;
+        }
+    }
+    drain().await;
+}
+
+/// The reply to a request for `/_wisp/cron/<slug>`: the host's trigger.
+/// Only with `Authorization: Bearer <CRON_SECRET>` (the variable Vercel
+/// sends its crons with); else it is not there, and without that variable
+/// set nothing is.
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn trigger(cx: &crate::Cx) -> crate::Reply {
+    let slug = cx.path().strip_prefix("/_wisp/cron/").unwrap_or("");
+    let secret = crate::env("CRON_SECRET").filter(|s| !s.is_empty());
+    let sent = cx.bearer().unwrap_or("");
+    match secret {
+        Some(s) if crate::secure_eq(&s, sent) => {
+            fire(slug).await;
+            crate::Reply::plain(204)
+        }
+        _ => crate::Reply::plain(404),
+    }
 }
 
 /// Days since 1970-01-01 to (year, month 1-12, day 1-31).
@@ -406,6 +568,8 @@ impl Cron {
 /// takes longer than the gap to the next skips the minutes it overran; one
 /// that panics runs again at the next match, as with [`every`](crate::every).
 /// Several servers each run it: have one do it (a job on a [`queue`] once).
+/// On the edge and serverless hosts the host's trigger runs it (see the
+/// module), so `expr` must be a string literal in the source.
 pub fn cron<F, Fut>(expr: &str, mut task: F)
 where
     F: FnMut() -> Fut + Send + 'static,
@@ -413,6 +577,12 @@ where
 {
     let cron = Cron::parse(expr).unwrap_or_else(|e| panic!("wisp::cron: {e}"));
     assert!(cron.next(0).is_some(), "wisp::cron: {expr:?} never comes");
+    #[cfg(target_arch = "wasm32")]
+    SCHEDULED.lock().push((
+        wisp_shared::cron_slug(expr),
+        Box::new(move || Box::pin(task())),
+    ));
+    #[cfg(not(target_arch = "wasm32"))]
     crate::spawn(async move {
         loop {
             let now = crate::unix_now();
@@ -613,5 +783,43 @@ mod tests {
         });
         let again = std::panic::catch_unwind(|| work("test-mail", |_: String| async { Ok(()) }));
         assert!(again.is_err(), "one worker per queue");
+    }
+
+    #[test]
+    fn a_host_trigger_runs_its_schedule_and_drains_the_queues() {
+        crate::store::memory();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let log = std::sync::Arc::new(crate::Shared::new(Vec::<String>::new()));
+        let (cron_log, job_log) = (log.clone(), log.clone());
+        SCHEDULED.lock().push((
+            wisp_shared::cron_slug("*/5 * * * *"),
+            Box::new(move || {
+                let log = cron_log.clone();
+                Box::pin(async move { log.lock().push("cron".into()) })
+            }),
+        ));
+        let q = queue("test-host");
+        HOSTED.lock().push((
+            q,
+            runner(move |n: String| {
+                let log = job_log.clone();
+                async move {
+                    if n == "bad" {
+                        return crate::error(500, "no luck");
+                    }
+                    log.lock().push(n);
+                    Ok(())
+                }
+            }),
+        ));
+        q.push(&"a".to_string());
+        q.push(&"bad".to_string());
+        rt.block_on(fire("0_3_*_*_*"));
+        assert_eq!(*log.lock(), ["a"], "another schedule: no cron, the jobs");
+        assert_eq!(q.pending(), 1, "the failed one waits to be tried again");
+        rt.block_on(fire("*~5_*_*_*_*"));
+        assert_eq!(*log.lock(), ["a", "cron"]);
     }
 }
