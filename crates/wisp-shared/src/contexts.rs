@@ -409,6 +409,50 @@ mod tests {
         }
     }
 
+    /// Random URLs from pieces of hidden schemes, against how a browser
+    /// reads one: leading spaces and controls dropped, tabs and newlines
+    /// ignored, the scheme the letters before `:`. One that runs script is
+    /// always blocked, and escaped text never holds a raw `<"'`.
+    #[test]
+    fn random_urls_that_run_script_are_blocked() {
+        const PIECES: [&str; 18] = [
+            "java", "JaVa", "script", "SCRIPT", "vb", ":", "\t", "\n", "\r", " ", "\u{1}", "&",
+            "#58;", "x", "/", "<", "\"", "'",
+        ];
+        let browser_runs = |url: &str| {
+            let s: String = url
+                .trim_start_matches(|c: char| c <= ' ')
+                .chars()
+                .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+                .collect();
+            let Some((name, _)) = s.split_once(':') else {
+                return false;
+            };
+            let name = name.to_ascii_lowercase();
+            name == "javascript" || name == "vbscript"
+        };
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for _ in 0..50_000 {
+            let n = next() % 8;
+            let url: String = (0..n).map(|_| PIECES[(next() % 18) as usize]).collect();
+            let mut s = String::from("<a href=\"");
+            let start = s.len();
+            escape(&mut s, &url);
+            guard_url(&mut s, start);
+            let out = &s[start..];
+            if browser_runs(&url) {
+                assert_eq!(out, BLOCKED, "{url:?}");
+            }
+            assert!(!out.contains(['<', '"', '\'']), "{url:?}");
+        }
+    }
+
     /// `s` as a JavaScript string literal.
     fn js(s: &str) -> String {
         let mut out = String::from("\"");

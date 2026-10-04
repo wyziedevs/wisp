@@ -1077,7 +1077,7 @@ fn handlers_may_wait() {
 fn the_dev_endpoint_swaps_templates_for_loopback_only() {
     let (path, shape) = TEMPLATE;
     let swap = |peer: &str, body: String| {
-        let dev = [("x-wisp-dev", "1")];
+        let dev = [("x-wisp-dev", "1"), ("host", "localhost:5173")];
         let mut req = request("POST", "/_wisp/dev/swap", &dev, body.as_bytes());
         req.peer = peer.parse().unwrap();
         let reply = client().send(req);
@@ -1090,6 +1090,11 @@ fn the_dev_endpoint_swaps_templates_for_loopback_only() {
     let mut unasked = request("POST", "/_wisp/dev/swap", &[], good(shape).as_bytes());
     unasked.peer = "127.0.0.1:1".parse().unwrap();
     assert_eq!(client().send(unasked).status, 403);
+    // A site whose name was rebound to 127.0.0.1 may send it, to its own Host.
+    let rebound = [("x-wisp-dev", "1"), ("host", "evil.example:5173")];
+    let mut rebound = request("POST", "/_wisp/dev/swap", &rebound, good(shape).as_bytes());
+    rebound.peer = "127.0.0.1:1".parse().unwrap();
+    assert_eq!(client().send(rebound).status, 403);
     assert_eq!(wisp::rt::chunk(0, 1, "compiled"), "compiled");
     let strangers = swap("8.8.8.8:1", good(shape));
     assert_eq!(strangers.0, 404, "only this machine may swap");
@@ -1129,7 +1134,7 @@ fn the_dev_endpoint_swaps_templates_for_loopback_only() {
     let mut not_utf8 = request(
         "POST",
         "/_wisp/dev/swap",
-        &[("x-wisp-dev", "1")],
+        &[("x-wisp-dev", "1"), ("host", "127.0.0.1")],
         &[0xff, 0xfe],
     );
     not_utf8.peer = "127.0.0.1:1".parse().unwrap();
