@@ -671,7 +671,7 @@
           jump(0, 0);
           if (!res.redirected) res = await fetch(to, { headers });
         }
-      } else if (type.includes('json') && form.__wispEnhance) {
+      } else if (type.includes('json') && form.__wispEnhance === true) {
         result.data = await res.json(); // an action's answer, for use:enhance
         res = null;
       } else if (!isHtml(res)) {
@@ -701,7 +701,7 @@
       form.removeAttribute('aria-busy');
       if (btn) btn.disabled = false;
     }
-    if (res === undefined && !form.__wispEnhance) {
+    if (res === undefined && form.__wispEnhance !== true) {
       // Network trouble: let the browser post it, and show what went wrong.
       native = form;
       form_.requestSubmit.call(form, btn);

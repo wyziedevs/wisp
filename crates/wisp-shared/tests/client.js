@@ -373,6 +373,20 @@ const tests = {
     await tick();
     assert.equal(got?.status, 200);
   },
+  async 'a field named __wispEnhance does not make a form use:enhance'() {
+    const p = page();
+    URL.createObjectURL = () => 'blob:x';
+    let json = 0;
+    p.g.reply = () => ({ ...res('{}', 'application/json'), json: async () => (json++, {}), blob: async () => ({ size: 2 }) });
+    let got;
+    const f = p.form({}, [['a', '1']]);
+    f.__wispEnhance = { name: '__wispEnhance' }; // what the input clobbers it with
+    f.addEventListener('wisp:result', (e) => (got = e.detail));
+    p.submit(f);
+    await tick();
+    assert.equal(json, 0);
+    assert.equal(got?.data, undefined);
+  },
   async 'a slot answer that comes after a newer navigation is dropped'() {
     const slot = { innerHTML: '', getAttribute: () => JSON.stringify([['/gal/item/[id]', '/gal/@modal/(.)item/[id]']]) };
     const p = page({ cuts: [slot] });
