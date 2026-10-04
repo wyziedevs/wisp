@@ -82,6 +82,13 @@ async function outbound({ first, headers, body }) {
   }
 }
 
+// The status `GET url` gets, by `fetch` (the default client of `check`).
+async function fetched(url) {
+  const got = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(5000) });
+  await got.arrayBuffer();
+  return got.status;
+}
+
 // Saved tables (crates/wisp/src/edge_store.rs), kept where WISP_STORE says:
 // `d1:BINDING`, `deno-kv[:path]`, or a libSQL server over HTTP (`libsql://`
 // or `https://`, with WISP_STORE_TOKEN). Rows are [table, id, json].
@@ -602,15 +609,13 @@ export function wisp(module, env = {}, sink, accept) {
 
   // Whether the server at `url` answers `GET /` over a real HTTP client as
   // the app does itself, twice (the second on the kept-alive connection).
-  async function check(url) {
+  // `get(url)` is that client, resolving to the status: `fetch` unless the
+  // host has a cheaper one (Node's loads undici, tens of ms, at first use).
+  async function check(url, get = fetched) {
     try {
       const want = await handle({ method: 'GET', target: '/', headers: [['host', new URL(url).host]], body: none });
       if (want.body instanceof ReadableStream) want.body.cancel();
-      for (let i = 0; i < 2; i++) {
-        const got = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(5000) });
-        await got.arrayBuffer();
-        if (got.status !== want.status) return false;
-      }
+      for (let i = 0; i < 2; i++) if ((await get(url)) !== want.status) return false;
       return true;
     } catch {
       return false;

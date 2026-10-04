@@ -7,7 +7,7 @@
 // loopback has been answered as the app answers it; WISP_NODE_HTTP=1, or a
 // failed check, serves with node:http instead.
 import { readFileSync } from 'node:fs';
-import { createServer } from 'node:http';
+import { Agent, createServer, get } from 'node:http';
 import { createServer as tcp } from 'node:net';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -149,17 +149,25 @@ http.on('upgrade', async (req, socket, head) => {
   accept(socket, Buffer.concat([Buffer.from(text + '\r\n', 'latin1'), head]));
 });
 
-// Whether raw sockets answer: a probe server on loopback, asked as a client would.
+// Whether raw sockets answer: a probe server on loopback, asked as a client
+// would. The client is node:http's, already loaded: `fetch` would load undici.
 async function verified() {
   const sockets = new Set();
   const probe = tcp({ noDelay: true }, (s) => (sockets.add(s), s.on('close', () => sockets.delete(s)), accept(s)));
+  const agent = new Agent({ keepAlive: true, maxSockets: 1 });
+  const status = (url) =>
+    new Promise((ok, no) => {
+      const req = get(url, { agent, timeout: 5000 }, (res) => res.resume().on('end', () => ok(res.statusCode)).on('error', no));
+      req.on('timeout', () => req.destroy(new Error('timed out'))).on('error', no);
+    });
   try {
     await new Promise((ok, no) => probe.once('error', no).listen(0, '127.0.0.1', ok));
     raws = 0;
-    return (await app.check(`http://127.0.0.1:${probe.address().port}/`)) && raws > 0;
+    return (await app.check(`http://127.0.0.1:${probe.address().port}/`, status)) && raws > 0;
   } catch {
     return false;
   } finally {
+    agent.destroy();
     sockets.forEach((s) => s.destroy());
     probe.close();
   }
