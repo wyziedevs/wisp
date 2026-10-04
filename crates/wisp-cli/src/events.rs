@@ -19,6 +19,18 @@ pub struct Events {
     pub port: u16,
     clients: Arc<Mutex<Vec<TcpStream>>>,
     origins: Arc<Mutex<Vec<String>>>,
+    state: Arc<Mutex<State>>,
+}
+
+/// What a browser that connects late, or reconnects, needs to catch up.
+#[derive(Default)]
+struct State {
+    /// How many updates (reload, hot, full, css) have been sent: a tab that
+    /// was away (asleep, or reconnecting) sees it differs and reloads.
+    updates: u64,
+    /// The frames of the build error on show, sent again to every new
+    /// connection: a page loaded after the failed build shows it too.
+    error: String,
 }
 
 impl Events {
@@ -37,20 +49,30 @@ impl Events {
             port,
             clients: clients.clone(),
             origins,
+            state: Arc::default(),
         };
         events.allow(SocketAddr::from(([127, 0, 0, 1], app_port)));
         let list = clients.clone();
         let origins = events.origins.clone();
+        let state = events.state.clone();
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 // Off the accept thread, so a connection that never sends its
                 // request cannot keep the next one waiting.
                 let list = list.clone();
                 let origins = origins.clone();
+                let state = state.clone();
                 thread::spawn(move || {
                     let allowed = origins.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                    if let Some(s) = accept(stream, &allowed) {
-                        list.lock().unwrap_or_else(|e| e.into_inner()).push(s);
+                    if let Some(mut s) = accept(stream, &allowed) {
+                        // Under the list's lock, so no update falls between
+                        // what it is told and the ones that follow.
+                        let mut list = list.lock().unwrap_or_else(|e| e.into_inner());
+                        let state = state.lock().unwrap_or_else(|e| e.into_inner());
+                        let hello = frame("hello", &state.updates.to_string()) + &state.error;
+                        if s.write_all(hello.as_bytes()).is_ok() {
+                            list.push(s);
+                        }
                     }
                 });
             }
@@ -79,16 +101,34 @@ impl Events {
     /// A client that takes too long to take it is dropped, since the file
     /// watcher waits on this.
     pub fn send(&self, kind: &str, data: &str) {
-        let mut msg = format!("data: {kind}\n");
-        for line in data.lines() {
-            msg.push_str("data: ");
-            msg.push_str(line);
-            msg.push('\n');
-        }
-        msg.push('\n');
+        let msg = frame(kind, data);
         let mut clients = self.clients.lock().unwrap_or_else(|e| e.into_inner());
+        {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            match kind {
+                "title" => state.error = msg.clone(),
+                "error" => state.error.push_str(&msg),
+                "building" => {}
+                _ => {
+                    state.error.clear();
+                    state.updates += 1;
+                }
+            }
+        }
         clients.retain_mut(|c| c.write_all(msg.as_bytes()).is_ok());
     }
+}
+
+/// One event: `kind`, then `data`, a line each.
+fn frame(kind: &str, data: &str) -> String {
+    let mut msg = format!("data: {kind}\n");
+    for line in data.lines() {
+        msg.push_str("data: ");
+        msg.push_str(line);
+        msg.push('\n');
+    }
+    msg.push('\n');
+    msg
 }
 
 fn accept(mut s: TcpStream, allowed: &[String]) -> Option<TcpStream> {
@@ -144,6 +184,7 @@ mod tests {
             port: 0,
             clients: Arc::default(),
             origins: Arc::default(),
+            state: Arc::default(),
         };
         e.allow(SocketAddr::from(([127, 0, 0, 1], 3000)));
         e.origins.lock().unwrap().clone()
@@ -154,6 +195,45 @@ mod tests {
             &format!("GET / HTTP/1.1\r\nhost: x\r\n{origin}\r\n\r\n"),
             &allowed(),
         )
+    }
+
+    /// Reads from the stream until `needle` has come.
+    fn read_until(c: &mut TcpStream, needle: &str) -> String {
+        let mut got = String::new();
+        let mut buf = [0u8; 1024];
+        while !got.contains(needle) {
+            let n = c.read(&mut buf).expect("the stream stays open");
+            assert!(n > 0, "closed before {needle:?}: {got:?}");
+            got.push_str(&String::from_utf8_lossy(&buf[..n]));
+        }
+        got
+    }
+
+    #[test]
+    fn a_late_tab_hears_the_error_on_show_and_how_many_updates_it_missed() {
+        let e = Events::start(3000).unwrap();
+        e.send("reload", "");
+        e.send("title", "Old\nOld\nOld");
+        e.send("error", "old");
+        e.send("title", "Build Failed\nSummary\nCompiler Output");
+        e.send("error", "boom");
+        let mut c = TcpStream::connect(("127.0.0.1", e.port)).unwrap();
+        c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        c.write_all(b"GET /events HTTP/1.1\r\nhost: x\r\n\r\n")
+            .unwrap();
+        let got = read_until(&mut c, "data: error\ndata: boom\n\n");
+        assert!(got.contains("data: hello\ndata: 1\n\n"), "{got:?}");
+        assert!(got.contains("data: title\ndata: Build Failed\n"), "{got:?}");
+        assert!(!got.contains("old"), "only the error on show: {got:?}");
+        // A fix ends it: the next tab sees the update count, and no error.
+        e.send("reload", "");
+        read_until(&mut c, "data: reload\n\n");
+        let mut d = TcpStream::connect(("127.0.0.1", e.port)).unwrap();
+        d.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        d.write_all(b"GET /events HTTP/1.1\r\nhost: x\r\n\r\n")
+            .unwrap();
+        let got = read_until(&mut d, "data: hello\ndata: 2\n\n");
+        assert!(!got.contains("boom"), "{got:?}");
     }
 
     #[test]

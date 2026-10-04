@@ -495,7 +495,9 @@ no-wait fast path off every route.
 ## Commands
 
 `wisp new app [--template demo|minimal|api]` · `wisp dev` (hot reload keeps
-`$state`; error dialog opens `file:line` in the editor, also for a handler's panic;
+`$state`; every open tab updates after each rebuild, once the new app answers,
+a tab that missed one reloads on reconnecting, a failed build's error shows in
+tabs opened later; error dialog opens `file:line` in the editor, also for a handler's panic;
 `Server-Timing` on every dev response; `Alt+Shift+W` devtools
 with routes table; `/_wisp/components` workshop of
 `*.stories.wisp`) · `wisp test [--browser]` · `wisp check [--types]` · `wisp
