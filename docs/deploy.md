@@ -215,8 +215,7 @@ in `dist/cloudflare`. Secrets: `npx wrangler secret put WISP_SECRET`.
 **Cloudflare Pages.** `wisp build --target pages`, then `npx wrangler pages
 deploy .` in `dist/pages`. It writes `_worker.js` (the bridge and the worker in
 one module, importing `app.wasm`), `_routes.json` (the app's `static/` files
-skip the worker) and the static files. The wasm is built with `opt-level = "z"`
-to stay small. Set `WISP_SECRET` under Settings, Variables and Secrets.
+skip the worker) and the static files. Set `WISP_SECRET` under Settings, Variables and Secrets.
 
 **Deno Deploy.** `wisp build --target deno`, then `deployctl deploy
 --entrypoint main.ts` in `dist/deno`. To try it locally: `deno run -A
@@ -231,7 +230,7 @@ in `dist/netlify`.
 **Vercel Edge and Netlify Edge.** Add `--edge`: `wisp build --target vercel
 --edge` or `--target netlify --edge`. The same wasm app runs in their edge
 runtimes, imported as a module (`app.wasm?module`) and built with
-`opt-level = "z"`. Vercel gets `functions/index.func` with `"runtime":"edge"`;
+`opt-level = "s"`, for their size limits. Vercel gets `functions/index.func` with `"runtime":"edge"`;
 Netlify gets `netlify/edge-functions/wisp.mjs`, whose `config` skips the
 `static/` files (`excludedPath`) that the publish folder serves. Deploy as
 above. The edge limits on what works apply (see What works on the edge).

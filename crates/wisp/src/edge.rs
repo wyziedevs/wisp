@@ -8,6 +8,7 @@
 //! - `main()`: std's; runs the app's `main`, whose `wisp::run` lands in
 //!   [`start`] and begins `init`. Call once, after `wisp_env`.
 //! - `wisp_buf(len) -> ptr`: room for `len` bytes, which the host writes
+//!   (the same address, while it asks for no more than it has)
 //!   before the call that reads them.
 //! - `wisp_env(len)`: the environment, `KEY=value` entries ended by NUL.
 //! - `wisp_request(id, len)`: a request, `METHOD target peer` then headers,
@@ -23,8 +24,9 @@
 //!   request's id, or `u32::MAX` for `init`.
 //! - `wisp_poll()`: after a trap, polls the tasks woken meanwhile.
 //!
-//! Imports (module `wisp`): `random(ptr, len)`, `now() -> f64` (seconds since 1970), `log(ptr, len)`, `reply(id, ptr, len)` (the reply to
-//! request `id`, as `wisp_fetched` has it; a first line `200 stream` means the
+//! Imports (module `wisp`): `random(ptr, len)`, `now() -> f64` (seconds since 1970), `log(ptr, len)`, `reply(id, head, head_len, head_id, body, body_len)` (the reply to
+//! request `id`: its head, `status` and `name: value` lines, and its number
+//! among the heads sent, `u32::MAX` if not kept; a first line `200 stream` means the
 //! body follows as `chunk(id, ptr, len)` calls, the last one empty; a chunk
 //! returns 0 when the client is behind, and none follows until `wisp_pull`),
 //! `fetch(id, ptr, len)` (a request, its target a URL), `timer(id, ms)`.
@@ -48,6 +50,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll, Wake, Waker};
 
@@ -57,7 +60,14 @@ unsafe extern "C" {
     #[link_name = "log"]
     safe fn log_line(ptr: *const u8, len: usize);
     #[link_name = "reply"]
-    safe fn send_reply(id: u32, ptr: *const u8, len: usize);
+    safe fn send_reply(
+        id: u32,
+        head: *const u8,
+        head_len: usize,
+        head_id: u32,
+        body: *const u8,
+        body_len: usize,
+    );
     #[link_name = "fetch"]
     safe fn send_fetch(id: u32, ptr: *const u8, len: usize);
     #[link_name = "chunk"]
@@ -78,7 +88,8 @@ pub(crate) fn clock() -> std::time::Duration {
 }
 
 type Task = Pin<Box<dyn Future<Output = ()>>>;
-type Handler = fn(Request) -> Pin<Box<dyn Future<Output = Reply>>>;
+/// Starts the task of request `id`, given the bytes the host wrote.
+type Handler = fn(u32, Vec<u8>);
 
 /// The task that runs `init`; request ids come from the host and never
 /// reach it.
@@ -103,21 +114,32 @@ thread_local! {
     /// `init` has finished: 0 not yet, 1 well, 2 failed.
     static READY: Cell<u8> = const { Cell::new(0) };
     static WAITING: RefCell<Vec<Waker>> = const { RefCell::new(Vec::new()) };
+    /// The waker polls hand out: one `Arc` for every task that does not keep it.
+    static WAKE: RefCell<Arc<Wakeup>> = RefCell::new(Arc::new(Wakeup(AtomicU32::new(0))));
+    /// The reply's head, written here, and the heads sent so far: a route
+    /// answers with the same head each time, so the host is sent its number.
+    static HEAD: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    static HEADS: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
+    /// The last peer text and what it parsed to.
+    static PEER: RefCell<(String, SocketAddr)> = const { RefCell::new((String::new(), LOCAL)) };
 }
+
+const LOCAL: SocketAddr = SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 0);
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wisp_buf(len: usize) -> *mut u8 {
     IN.with_borrow_mut(|b| {
-        b.clear();
-        b.resize(len, 0);
+        if b.len() < len {
+            b.resize(len, 0);
+        }
         b.as_mut_ptr()
     })
 }
 
+/// The first `len` bytes the host wrote. The buffer stays where it is, so a
+/// host that was given its address may write the next request there.
 fn take_in(len: usize) -> Vec<u8> {
-    let mut b = IN.take();
-    b.truncate(len);
-    b
+    IN.with_borrow(|b| b[..len].to_vec())
 }
 
 #[unsafe(no_mangle)]
@@ -135,35 +157,49 @@ pub extern "C" fn wisp_env(len: usize) {
 #[unsafe(no_mangle)]
 pub extern "C" fn wisp_request(id: u32, len: usize) {
     let bytes = take_in(len);
+    match HANDLER.get() {
+        Some(start) => start(id, bytes),
+        None => spawn(id, Box::pin(finish(id, Reply::plain(500)))),
+    }
+}
+
+/// The task of request `id`: borrows its parts from `bytes`, and answers.
+fn request<A: App>(id: u32, bytes: Vec<u8>) {
     let task = async move {
-        let mut reply = match parse_request(&bytes) {
-            Some(req) => {
+        let reply = match view(&bytes) {
+            Some((method, target, peer, headers, body)) => {
                 Ready.await;
                 match READY.get() {
-                    1 => HANDLER.get().expect("wisp::run registers the app")(req).await,
+                    1 => {
+                        let headers = headers.map(|(n, v)| (n, v.as_bytes()));
+                        crate::http::handle_parts::<A>(method, target, headers, body, peer).await
+                    }
                     _ => Reply::plain(500),
                 }
             }
             None => Reply::plain(400),
         };
-        // Its changes to saved tables are in `WISP_STORE` before it is answered.
-        if !crate::edge_store::Saved.await {
-            reply = Reply::plain(500);
-        }
-        let wire = encode_reply(&reply);
-        send_reply(id, wire.as_ptr(), wire.len());
-        // A stream's chunks go out as they come; an empty one ends it.
-        if let crate::Body::Stream(mut rx) = reply.body {
-            while let Some(chunk) = rx.recv().await {
-                if !chunk.is_empty() && send_chunk(id, chunk.as_ptr(), chunk.len()) == 0 {
-                    PULLS.with_borrow_mut(|p| p.insert(id, None));
-                    Wait(&PULLS, id).await;
-                }
-            }
-            send_chunk(id, std::ptr::null(), 0);
-        }
+        finish(id, reply).await;
     };
     spawn(id, Box::pin(task));
+}
+
+/// Sends `reply`, once its changes to saved tables are in `WISP_STORE`.
+async fn finish(id: u32, mut reply: Reply) {
+    if !crate::edge_store::Saved.await {
+        reply = Reply::plain(500);
+    }
+    send(id, &reply);
+    // A stream's chunks go out as they come; an empty one ends it.
+    if let crate::Body::Stream(mut rx) = reply.body {
+        while let Some(chunk) = rx.recv().await {
+            if !chunk.is_empty() && send_chunk(id, chunk.as_ptr(), chunk.len()) == 0 {
+                PULLS.with_borrow_mut(|p| p.insert(id, None));
+                Wait(&PULLS, id).await;
+            }
+        }
+        send_chunk(id, std::ptr::null(), 0);
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -212,11 +248,8 @@ pub extern "C" fn wisp_poll() {
 
 /// `wisp::run` in the edge build: remembers the app and starts `init`.
 pub(crate) fn start<A: App>() {
-    fn handler<A: App>(req: Request) -> Pin<Box<dyn Future<Output = Reply>>> {
-        Box::pin(crate::handle::<A>(req))
-    }
     log_panics();
-    if HANDLER.set(handler::<A>).is_err() {
+    if HANDLER.set(request::<A>).is_err() {
         return;
     }
     let init = async {
@@ -341,18 +374,40 @@ impl Future for Ready {
     }
 }
 
-struct Wakeup(u32);
+/// Wakes the task whose id it holds.
+struct Wakeup(AtomicU32);
 
 impl Wake for Wakeup {
     fn wake(self: Arc<Self>) {
-        WOKEN.with_borrow_mut(|w| w.push(self.0));
+        WOKEN.with_borrow_mut(|w| w.push(self.0.load(Relaxed)));
     }
 }
 
+/// Polls a new task at once: most are done in that poll, and never stored.
 fn spawn(id: u32, task: Task) {
-    TASKS.with_borrow_mut(|t| t.insert(id, task));
-    WOKEN.with_borrow_mut(|w| w.push(id));
+    poll(id, task);
     run();
+}
+
+/// One poll of task `id`, which is kept if it is pending.
+fn poll(id: u32, mut task: Task) {
+    let shared = WAKE.with_borrow(Arc::clone);
+    shared.0.store(id, Relaxed);
+    let waker = Waker::from(Arc::clone(&shared));
+    CURRENT.set(id);
+    let pending = task
+        .as_mut()
+        .poll(&mut Context::from_waker(&waker))
+        .is_pending();
+    drop(waker);
+    CURRENT.set(INIT); // a trap outside any task fails them all
+    // A clone the task kept must go on waking it: the next poll gets a new one.
+    if Arc::strong_count(&shared) > 2 {
+        WAKE.with_borrow_mut(|w| *w = Arc::new(Wakeup(AtomicU32::new(0))));
+    }
+    if pending {
+        TASKS.with_borrow_mut(|t| t.insert(id, task));
+    }
 }
 
 /// `wisp::spawn`: polled first by the `run` under way, since it is
@@ -422,41 +477,44 @@ fn run() {
 
 fn poll_woken() {
     while let Some(id) = WOKEN.with_borrow_mut(Vec::pop) {
-        let Some(mut task) = TASKS.with_borrow_mut(|t| t.remove(&id)) else {
-            continue;
-        };
-        let waker = Waker::from(Arc::new(Wakeup(id)));
-        CURRENT.set(id);
-        if task
-            .as_mut()
-            .poll(&mut Context::from_waker(&waker))
-            .is_pending()
-        {
-            TASKS.with_borrow_mut(|t| t.insert(id, task));
+        if let Some(task) = TASKS.with_borrow_mut(|t| t.remove(&id)) {
+            poll(id, task);
         }
-        CURRENT.set(INIT); // a trap outside any task fails them all
     }
 }
 
-fn parse_request(bytes: &[u8]) -> Option<Request> {
+/// A request's parts: method, target, peer, headers and body.
+#[allow(clippy::type_complexity)]
+fn view(
+    bytes: &[u8],
+) -> Option<(
+    &str,
+    &str,
+    SocketAddr,
+    impl Iterator<Item = (&str, &str)>,
+    &[u8],
+)> {
     let (first, headers, body) = split(bytes)?;
-    let mut parts = first.split(' ');
-    let (method, target) = (parts.next()?, parts.next()?);
-    let peer = parts
-        .next()
-        .and_then(|p| p.parse().ok())
-        .map_or(SocketAddr::from(([127, 0, 0, 1], 0)), |ip| {
-            SocketAddr::new(ip, 0)
-        });
-    let headers = headers
-        .map(|(n, v)| (n.to_string(), v.to_string()))
-        .collect();
-    Some(Request {
-        method: method.into(),
-        target: target.into(),
-        headers,
-        body: body.to_vec(),
-        peer,
+    let (method, rest) = cut(first, b' ')?;
+    let (target, at) = cut(rest, b' ').unwrap_or((rest, ""));
+    Some((method, target, peer(at), headers, body))
+}
+
+/// `s` around its first `byte`, an ASCII one: a byte search, quicker than a
+/// `char` pattern's.
+fn cut(s: &str, byte: u8) -> Option<(&str, &str)> {
+    let i = s.bytes().position(|b| b == byte)?;
+    Some((&s[..i], &s[i + 1..]))
+}
+
+fn peer(text: &str) -> SocketAddr {
+    PEER.with_borrow_mut(|(last, addr)| {
+        if last != text {
+            *addr = text.parse().ok().map_or(LOCAL, |ip| SocketAddr::new(ip, 0));
+            last.clear();
+            last.push_str(text);
+        }
+        *addr
     })
 }
 
@@ -467,7 +525,7 @@ fn split(bytes: &[u8]) -> Option<(&str, impl Iterator<Item = (&str, &str)>, &[u8
     let (first, rest) = head.split_once('\n').unwrap_or((head, ""));
     let headers = rest
         .lines()
-        .filter_map(|l| l.split_once(':'))
+        .filter_map(|l| cut(l, b':'))
         .map(|(n, v)| (n.trim(), v.trim()));
     Some((first, headers, &bytes[end + 2..]))
 }
@@ -486,17 +544,37 @@ fn push_headers<'a>(
     w.extend_from_slice(body);
 }
 
-/// The reply's status, headers and body; a stream's head only, marked.
-fn encode_reply(reply: &Reply) -> Vec<u8> {
-    let mark = match reply.body {
-        crate::Body::Stream(_) => " stream",
-        _ => "",
-    };
-    let mut w = format!("{}{mark}\n", reply.status).into_bytes();
-    push_headers(
-        &mut w,
-        reply.headers.iter().map(|(n, v)| (&**n, &**v)),
-        reply.bytes(),
-    );
-    w
+/// Sends the reply: its head, `status` (then ` stream` for a stream, whose
+/// body follows as chunks) and `name: value` lines, and its number among the
+/// heads sent; then its body, where it is, uncopied.
+fn send(id: u32, reply: &Reply) {
+    let (ptr, len, head_id) = HEAD.with_borrow_mut(|w| {
+        w.clear();
+        crate::http::push_decimal(w, reply.status.into());
+        if matches!(reply.body, crate::Body::Stream(_)) {
+            w.extend_from_slice(b" stream");
+        }
+        w.push(b'\n');
+        for (n, v) in &reply.headers {
+            for part in [n.as_bytes(), b": ", v.as_bytes(), b"\n"] {
+                w.extend_from_slice(part);
+            }
+        }
+        (w.as_ptr(), w.len(), head_number(w))
+    });
+    let body = reply.bytes();
+    send_reply(id, ptr, len, head_id, body.as_ptr(), body.len());
+}
+
+/// Where `head` is among those sent, added if new; `u32::MAX` when there are
+/// too many (a head that changes each time) to keep.
+fn head_number(head: &[u8]) -> u32 {
+    HEADS.with_borrow_mut(|heads| match heads.iter().position(|h| h == head) {
+        Some(i) => i as u32,
+        None if heads.len() < 64 => {
+            heads.push(head.to_vec());
+            heads.len() as u32 - 1
+        }
+        None => u32::MAX,
+    })
 }

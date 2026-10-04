@@ -30,10 +30,18 @@ request for the asset check before the worker runs.
 req/s, p99 in ms. Hono's Node adapter answers a plain Response without
 building a Request, which is why it leads on `/` and `/json` there.
 
+Inside the wasm a request costs about 1 us (1.5 us before the app's parts were
+borrowed from the host's bytes, the reply head was sent by number and a task
+that ends in its first poll was never stored). Optimization level: `3` for every
+host but Vercel and Netlify `--edge`, which get `s`; `z` was 40% slower and no
+smaller than `s`, and `+simd128,+bulk-memory` measured no faster. `app.wasm` for
+this bench: 508 KB (178 KB gzipped) at `3`, 427 KB (159 KB) at `s`; Cloudflare's
+limit is 3 MB gzipped.
+
 | Runtime | Framework | `/` | `/list` | `/json` |
 |---|---|---|---|---|
-| Node | Wisp | 70,086 (1.5) | 46,202 (2.3) | 69,016 (1.6) |
-| Node | Hono | 83,430 (1.3) | 38,663 (2.9) | 82,658 (1.3) |
+| Node | Wisp | 77,327 (1.4) | 48,679 (2.2) | 75,678 (1.5) |
+| Node | Hono | 83,717 (1.3) | 37,619 (2.8) | 80,523 (1.4) |
 | Node | SvelteKit | 16,720 (6.9) | 5,773 (23.5) | 15,463 (7.7) |
 | Node | Next.js | 3,443 (78) | 861 (87) | 3,306 (86) |
 | workerd | Wisp | 1,735 (146) | 1,381 (196) | 1,692 (160) |

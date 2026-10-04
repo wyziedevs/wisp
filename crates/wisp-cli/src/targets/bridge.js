@@ -40,25 +40,13 @@ function decode(bytes) {
   return { first: nl < 0 ? text : text.slice(0, nl), headers, body: bytes.slice(end + 2) };
 }
 
-// Response heads seen so far, by their text: a route answers with the same
-// head each time. { status, headers: [name, value, ...], stream }.
+// Response heads seen so far, by their text (and, in an instance, by the
+// number the app gave them): a route answers with the same head each time. { status, headers: [name, value, ...], stream }.
 const heads = new Map();
 function same(a, b) {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
   return true;
-}
-const recent = [];
-function known(bytes) {
-  for (let i = 0; i < recent.length; i++) {
-    const h = recent[i];
-    if (h.bytes.length === bytes.length && Buffer.compare(h.bytes, bytes) === 0) return h;
-  }
-  const h = parsed(dec.decode(bytes));
-  h.bytes = bytes.slice();
-  if (recent.length > 16) recent.length = 0;
-  recent.push(h);
-  return h;
 }
 function parsed(text) {
   let h = heads.get(text);
@@ -186,16 +174,26 @@ export function wisp(module, env = {}, sink) {
 
   async function start() {
     // `work`: timers and fetches under way, which `idle` waits out.
-    const x = { pending: new Map(), streams: new Map(), retired: false, work: 0, idlers: [] };
+    const x = { pending: new Map(), heads: [], streams: new Map(), retired: false, work: 0, idlers: [] };
     let view; // the memory's bytes, made again only when it has grown
     const mem = () => {
       const b = x.exports.memory.buffer;
       return view?.buffer === b ? view : (view = new Uint8Array(b));
     };
     const copy = (p, n) => mem().slice(p, p + n);
+    // Room for `n` bytes the app will read: its buffer stays put until more is asked.
+    let ptr = 0;
+    let cap = 0;
+    const room = (n) => {
+      if (n > cap) {
+        ptr = x.exports.wisp_buf(n); // may grow memory: view it after
+        cap = n;
+      }
+      return ptr;
+    };
     x.put = (bytes, tail = none) => {
       const n = bytes.length + tail.length;
-      const p = x.exports.wisp_buf(n); // may grow memory: view it after
+      const p = room(n);
       const m = mem();
       m.set(bytes, p);
       m.set(tail, p + bytes.length);
@@ -203,10 +201,10 @@ export function wisp(module, env = {}, sink) {
     };
     // A request's head and body into the app's memory, the head encoded in place.
     x.request = (h, body) => {
-      const room = h.length * 3; // the most UTF-8 can take
-      const p = x.exports.wisp_buf(room + body.length);
+      const span = h.length * 3; // the most UTF-8 can take
+      const p = room(span + body.length);
       const m = mem();
-      const { written } = enc.encodeInto(h, m.subarray(p, p + room));
+      const { written } = enc.encodeInto(h, m.subarray(p, p + span));
       m.set(body, p + written);
       return written + body.length;
     };
@@ -220,7 +218,7 @@ export function wisp(module, env = {}, sink) {
       });
     // Request bytes already encoded, as they are into the app's memory.
     x.write = (bytes) => {
-      const p = x.exports.wisp_buf(bytes.length);
+      const p = room(bytes.length);
       mem().set(bytes, p);
       return bytes.length;
     };
@@ -259,21 +257,23 @@ export function wisp(module, env = {}, sink) {
         random: (p, n) => void crypto.getRandomValues(mem().subarray(p, p + n)),
         now: () => Date.now() / 1000,
         log: (p, n) => console.error(dec.decode(copy(p, n))),
-        reply: (id, p, n) => {
+        // The head's text, its number among the app's (`2**32 - 1`: not kept),
+        // and the body, all in the app's memory.
+        reply: (id, hp, hn, hid, bp, bn) => {
           const done = x.pending.get(id);
           x.pending.delete(id);
           const m = mem();
           if (typeof done === 'function' || done === undefined) {
-            const r = decode(m.subarray(p, p + n)); // only its body is copied
+            const all = new Uint8Array(hn + 1 + bn); // the head ends in a line, then a blank one
+            all.set(m.subarray(hp, hp + hn));
+            all.set(m.subarray(bp, bp + bn), hn + 1);
+            all[hn] = 10;
+            const r = decode(all);
             if (r.first.endsWith(' stream')) r.body = x.stream(id);
             return done?.(r);
           }
-          const stop = p + n;
-          let end = m.indexOf(10, p);
-          while (end >= 0 && end < stop && m[end + 1] !== 10) end = m.indexOf(10, end + 1);
-          if (end < 0 || end >= stop) end = stop;
-          const h = known(m.subarray(p, end));
-          sink(done, h, h.stream ? x.stream(id) : m.subarray(Math.min(end + 2, stop), stop));
+          const h = hid === 0xffffffff ? parsed(dec.decode(m.subarray(hp, hp + hn))) : (x.heads[hid] ??= parsed(dec.decode(m.subarray(hp, hp + hn))));
+          sink(done, h, h.stream ? x.stream(id) : m.subarray(bp, bp + bn));
         },
         // 0 when the client is behind: the app waits for `wisp_pull`.
         chunk: (id, p, n) => {

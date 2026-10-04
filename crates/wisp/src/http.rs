@@ -2411,6 +2411,22 @@ pub async fn handle<A: App>(req: Request) -> Reply {
     handle_keeping::<A>(req, &mut None).await
 }
 
+/// [`handle`] for a request not yet made into a [`Request`]: the edge host's
+/// parts, borrowed from the bytes it wrote.
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn handle_parts<'a, A: App>(
+    method: &str,
+    target: &str,
+    headers: impl IntoIterator<Item = (&'a str, &'a [u8])>,
+    body: &[u8],
+    peer: SocketAddr,
+) -> Reply {
+    match Cx::from_request::<A>(method, target, headers, body, peer) {
+        Ok(cx) => answer::<A>(cx, &mut None).await,
+        Err(status) => Reply::plain(status),
+    }
+}
+
 /// [`handle`], leaving in `upgrade` the WebSocket handler that `handle`
 /// answers 501 for, for the test client.
 pub(crate) async fn handle_keeping<A: App>(
@@ -3706,7 +3722,7 @@ fn push_hex(w: &mut Vec<u8>, n: u64) {
     }
 }
 
-fn push_decimal(w: &mut Vec<u8>, n: u64) {
+pub(crate) fn push_decimal(w: &mut Vec<u8>, n: u64) {
     let mut buf = [0u8; 20];
     let start = crate::digits(&mut buf, 20, n);
     w.extend_from_slice(&buf[start..]);
