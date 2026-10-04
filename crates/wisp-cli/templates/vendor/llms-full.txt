@@ -219,7 +219,8 @@ page is the children of, any field `date: 2026-10-01`); text may use
 highlighted (`hl-k hl-s hl-c hl-n hl-t hl-a`; color them). `noindex: true`
 leaves the sitemap. `/feed.xml` is an Atom feed of pages with a `date`
 (`description` is the summary). `{@html wisp::og(title, desc, image)}` in a
-head: Open Graph tags. Index: `{#each wisp::pages("blog") as p}<a
+head: Open Graph tags; image `"auto"` (literal title and description) is an SVG
+`wisp build` writes to `static/og/<slug>.svg`, in your `--bg --ink --accent`. Index: `{#each wisp::pages("blog") as p}<a
 href={p.path}>{p.title}</a>{/each}` (newest `date` first).
 
 ## Browser code (JavaScript, same file)

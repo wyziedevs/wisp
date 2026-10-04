@@ -173,7 +173,14 @@ a `date` front matter field, newest first (title `SITE_TITLE`, else the
 host; a page's `description` field is its summary); none without a dated
 page; `--static` writes it too. `wisp::og(title, description, image)` is
 the Open Graph and Twitter card tags of a page's head, escaped:
-`{@html wisp::og("Hello", "A first post", "/cover.png")}`.
+`{@html wisp::og("Hello", "A first post", "/cover.png")}`. With the image
+`"auto"` and a literal title and description, `wisp build` (`og.rs` in the
+CLI, drawing in `wisp-shared`'s `og.rs`) writes `static/og/<slug>.svg`: 1200
+by 630, title, description, the app's name, in `src/app.css`'s `--bg`, `--ink`
+and `--accent` (else Wisp's). It is SVG because nothing in Wisp's dependencies
+rasterizes, and X and Facebook want PNG: convert it in CI (`rsvg-convert -o
+static/og/x.png static/og/x.svg`, or resvg) and pass `"/og/x.png"` as the image.
+A title that is not a literal (a database row) needs an image of your own.
 
 ### Markdown pages
 

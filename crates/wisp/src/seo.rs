@@ -92,6 +92,9 @@ fn atom(base: &str, all: &[crate::MdPage]) -> Option<String> {
 /// `{@html wisp::og("Hello", "A first post", "/cover.png")}`. Escaped; an
 /// empty `image` leaves that tag out.
 pub fn og(title: &str, description: &str, image: &str) -> String {
+    // `"auto"`: the picture `wisp build` made of this title (SVG, see `wisp_shared::og`).
+    let auto = wisp_shared::og::url(title);
+    let image = if image == "auto" { &auto } else { image };
     let mut out = String::new();
     let mut tag = |name: &str, v: &str| {
         out.push_str(&format!("<meta property=\"{name}\" content=\""));
@@ -205,6 +208,7 @@ mod tests {
         assert!(tags.contains("og:title\" content=\"A &quot;b&quot;\""));
         assert!(!tags.contains("og:image") && tags.contains("\"summary\""));
         assert!(og("t", "d", "/c.png").contains("og:image\" content=\"/c.png\""));
+        assert!(og("Hi there", "d", "auto").contains("og:image\" content=\"/og/hi-there.svg\""));
     }
 
     #[test]

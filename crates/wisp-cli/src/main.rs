@@ -16,6 +16,7 @@ mod mcp;
 mod net;
 mod new;
 mod npm;
+mod og;
 mod recipe;
 mod routes_cmd;
 mod scaffold;
@@ -500,6 +501,7 @@ fn build(root: &Path, o: &BuildOptions) -> Result<(), String> {
     let imports = check(root)?;
     css::build(root)?;
     images::build(root);
+    og::build(root);
     npm::vendor(root, &imports)?;
     if o.docker {
         deploy::docker(
