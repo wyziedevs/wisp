@@ -11,12 +11,13 @@
 //! never holds a response that sets a cookie or says `private` or
 //! `no-store`. Hooks still run on every request. Dev mode keeps nothing.
 
-use crate::http::{Body, Reply};
+use crate::http::{Body, Reply, Request};
 use crate::{App, Cx, Out};
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::{HashMap, HashSet};
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// A page the compiler found constant, as it goes on the wire: the status
@@ -34,13 +35,43 @@ impl Baked {
     }
 }
 
+/// What a route's `CACHE` has besides its seconds: `const CACHE_STALE: u32`,
+/// the seconds after it ends that the old answer is still sent while one
+/// request makes a new one, and `const CACHE_TAGS: &[&str]`, names for
+/// `wisp::revalidate_tag`. Consts, so a route with neither costs nothing.
+#[derive(Clone, Copy)]
+pub struct CacheMore {
+    stale: u32,
+    tags: &'static [&'static str],
+}
+
+impl CacheMore {
+    pub const NONE: CacheMore = CacheMore::new(0, &[]);
+
+    pub const fn new(stale: u32, tags: &'static [&'static str]) -> CacheMore {
+        CacheMore { stale, tags }
+    }
+}
+
+/// How a stale answer is made again: the app's own `handle`.
+type Refresh = fn(Request) -> Pin<Box<dyn Future<Output = Reply> + Send>>;
+
+fn refresh_with<A: App>(req: Request) -> Pin<Box<dyn Future<Output = Reply> + Send>> {
+    Box::pin(crate::http::handle::<A>(req))
+}
+
 /// A response `CACHE` keeps: head then body in `wire`, split at `head`,
-/// and the unix second it is fresh until.
+/// the unix second it is fresh until, and the one it may still be sent
+/// until (`CACHE_STALE`), while `refreshing` says a request is making it
+/// again.
 pub struct Kept {
     wire: Box<[u8]>,
     head: usize,
     etag: Box<str>,
     until: u64,
+    dies: u64,
+    refreshing: AtomicBool,
+    refresh: Option<Refresh>,
 }
 
 /// A made response, as a reply holds it.
@@ -162,6 +193,10 @@ struct Store {
     key: Vec<u8>,
     /// How many `uncache` calls this worker has seen.
     purged: u64,
+    /// The keys kept under each tag: written when a tagged response is
+    /// kept and when a tag is dropped, never when one is looked up. It may
+    /// name a key that has gone; dropping that is a no-op.
+    tags: HashMap<Box<str>, HashSet<Box<[u8]>>>,
 }
 
 /// How many times `uncache` was called, and the last of its prefixes with
@@ -172,6 +207,12 @@ static PURGES: Mutex<Vec<(u64, String)>> = Mutex::new(Vec::new());
 
 /// The most prefixes remembered: a worker further behind drops everything.
 const PURGES_KEPT: usize = 64;
+
+/// Has every worker drop what is kept under `tag` (a tag goes in the list
+/// of prefixes behind a NUL, which no path starts with).
+pub(crate) fn purge_tag(tag: &str) {
+    purge(&format!("\0{tag}"));
+}
 
 /// Has every worker drop the kept pages under `prefix`, a path: that page
 /// and those below it (`/posts` and `/posts/1`, not `/postscript`);
@@ -207,6 +248,7 @@ impl Store {
             budget,
             key: Vec::new(),
             purged: PURGED.load(Ordering::Acquire),
+            tags: HashMap::new(),
         }
     }
 
@@ -221,10 +263,29 @@ impl Store {
             self.kept.clear();
         } else {
             for (_, prefix) in all.iter().filter(|(n, _)| *n > self.purged) {
-                self.kept.retain(|key, _| !under(key, prefix));
+                match prefix.strip_prefix('\0') {
+                    Some(tag) => {
+                        for key in self.tags.remove(tag).iter().flatten() {
+                            self.kept.remove(key);
+                        }
+                    }
+                    None => self.kept.retain(|key, _| !under(key, prefix)),
+                }
             }
         }
         self.purged = now;
+        self.prune();
+    }
+
+    /// Forgets the tag entries of keys that are gone, and counts the bytes.
+    fn prune(&mut self) {
+        if !self.tags.is_empty() {
+            let kept = &self.kept;
+            self.tags.retain(|_, keys| {
+                keys.retain(|k| kept.contains_key(k));
+                !keys.is_empty()
+            });
+        }
         self.bytes = self.kept.iter().map(|(key, k)| size(key, k)).sum();
     }
 
@@ -232,23 +293,93 @@ impl Store {
     fn get<const ACCEPT: bool>(&mut self, cx: &Cx, now: u64) -> Option<Arc<Kept>> {
         self.sync();
         let k = self.kept.get(key::<ACCEPT>(&mut self.key, cx))?;
-        (k.until > now).then(|| k.clone())
+        if k.until > now {
+            return Some(k.clone());
+        }
+        match k.dies > now {
+            true => stale(cx, k),
+            false => None,
+        }
     }
 
     /// Keeps `k` under `key`, in place of what was there, if it fits the
-    /// budget once the stale ones are gone.
-    fn insert(&mut self, key: Box<[u8]>, k: Arc<Kept>, now: u64) {
+    /// budget once the dead ones are gone; whether it did.
+    fn insert(&mut self, key: Box<[u8]>, k: Arc<Kept>, now: u64) -> bool {
         let need = size(&key, &k);
         if self.bytes + need > self.budget {
-            self.kept.retain(|_, k| k.until > now);
-            self.bytes = self.kept.iter().map(|(key, k)| size(key, k)).sum();
+            self.kept.retain(|_, k| k.dies > now);
+            self.prune();
         }
         let old = self.kept.get(&key).map_or(0, |old| size(&key, old));
-        if self.bytes - old + need <= self.budget {
+        let fits = self.bytes - old + need <= self.budget;
+        if fits {
             self.bytes = self.bytes - old + need;
             self.kept.insert(key, k);
         }
+        fits
     }
+
+    /// Files `key` under each of `tags`.
+    #[cold]
+    fn tag(&mut self, key: &[u8], tags: Vec<String>) {
+        for t in tags {
+            self.tags.entry(t.into()).or_default().insert(key.into());
+        }
+    }
+}
+
+/// A kept answer past its time but within its `CACHE_STALE`: sent as it is,
+/// and made again, by one request at a time, in the background. The
+/// request that does so (its peer is port 0, which a client never has)
+/// is answered with a new one instead. Cold: only past the fresh time.
+#[cold]
+#[inline(never)]
+fn stale(cx: &Cx, k: &Arc<Kept>) -> Option<Arc<Kept>> {
+    if cx.peer().port() == 0 {
+        return None;
+    }
+    if let Some(refresh) = k.refresh
+        && !k.refreshing.swap(true, Ordering::Relaxed)
+    {
+        let mut req = Request::new("GET", &target(cx));
+        req.headers = cx.headers().map(|(n, v)| (n.into(), v.into())).collect();
+        req.peer = ([0, 0, 0, 0], 0).into();
+        let k = k.clone();
+        crate::spawn(async move {
+            refresh(req).await;
+            // A refresh that kept nothing (an error) may be tried again.
+            k.refreshing.store(false, Ordering::Relaxed);
+        });
+    }
+    Some(k.clone())
+}
+
+/// The request's path and query.
+fn target(cx: &Cx) -> String {
+    match cx.query_string() {
+        "" => cx.path().to_owned(),
+        q => format!("{}?{q}", cx.path()),
+    }
+}
+
+/// The tags a response is kept under, besides its route's: see
+/// `Cx::cache_tag`.
+#[derive(Default)]
+pub(crate) struct Tags(pub Vec<String>);
+
+/// Whether this request is a draft one (see `Cx::draft`) to a route that
+/// shares its answer with those who have cookies: it gets a render of its
+/// own. A cookie-less request is not, and a route that does not share by
+/// cookie never gets here with one: its cookie keeps it apart already.
+#[inline(always)]
+fn drafting(cx: &Cx, public: bool) -> bool {
+    public && cx.header("cookie").is_some() && drafted(cx)
+}
+
+#[cold]
+#[inline(never)]
+fn drafted(cx: &Cx) -> bool {
+    cx.draft()
 }
 
 /// The key of `cx` in `buf`: `Host`, a NUL, then the path and query; and
@@ -321,6 +452,9 @@ pub fn cached<const ACCEPT: bool>(cx: &Cx, out: &mut Out, public: bool) -> bool 
     out.made = STORE
         .with_borrow_mut(|s| s.get::<ACCEPT>(cx, now))
         .map(Made::Kept);
+    if out.made.is_some() && drafting(cx, public) {
+        out.made = None;
+    }
     out.made.is_some()
 }
 
@@ -330,8 +464,19 @@ pub fn cached<const ACCEPT: bool>(cx: &Cx, out: &mut Out, public: bool) -> bool 
 /// those of the `before` hook, which runs every time, are not. `ACCEPT`
 /// as for [`cached`].
 #[inline(always)]
-pub fn keep<A: App, const ACCEPT: bool>(cx: &mut Cx, out: &mut Out, secs: u32, public: bool) {
-    if secs == 0 || cx.status() != 200 || out.made.is_some() || !shared(cx, public) {
+pub fn keep<A: App, const ACCEPT: bool>(
+    cx: &mut Cx,
+    out: &mut Out,
+    secs: u32,
+    public: bool,
+    more: CacheMore,
+) {
+    if secs == 0
+        || cx.status() != 200
+        || out.made.is_some()
+        || !shared(cx, public)
+        || drafting(cx, public)
+    {
         return;
     }
     if cx.page_headers().iter().any(|(n, v)| personal(n, v)) {
@@ -390,17 +535,38 @@ pub fn keep<A: App, const ACCEPT: bool>(cx: &mut Cx, out: &mut Out, secs: u32, p
     let split = head.len();
     head.extend_from_slice(&body);
     let now = crate::http::now();
+    let until = now + u64::from(secs);
     let kept = Arc::new(Kept {
         wire: head.into_boxed_slice(),
         head: split,
         etag: etag.into_boxed_str(),
-        until: now + u64::from(secs),
+        until,
+        dies: until + u64::from(more.stale),
+        refreshing: AtomicBool::new(false),
+        refresh: (more.stale > 0).then_some(refresh_with::<A> as Refresh),
     });
+    let tags = tags_of(cx, more);
     STORE.with_borrow_mut(|s| {
-        let key = key::<ACCEPT>(&mut s.key, cx).into();
-        s.insert(key, kept.clone(), now);
+        let key: Box<[u8]> = key::<ACCEPT>(&mut s.key, cx).into();
+        let tagged = (!tags.is_empty()).then(|| key.clone());
+        if s.insert(key, kept.clone(), now)
+            && let Some(key) = tagged
+        {
+            s.tag(&key, tags);
+        }
     });
     out.made = Some(Made::Kept(kept));
+}
+
+/// The route's tags and those the handler gave: none for a route with
+/// neither.
+#[inline(always)]
+fn tags_of(cx: &mut Cx, more: CacheMore) -> Vec<String> {
+    let mut all: Vec<String> = more.tags.iter().map(|t| (*t).to_owned()).collect();
+    if let Some(t) = cx.take::<Tags>() {
+        all.extend(t.0);
+    }
+    all
 }
 
 /// Adds `name: value` to a head, unless it would split the response or is
@@ -448,6 +614,9 @@ mod tests {
             head: 0,
             etag: "".into(),
             until,
+            dies: until,
+            refreshing: AtomicBool::new(false),
+            refresh: None,
         })
     }
 
@@ -494,6 +663,76 @@ mod tests {
         assert_eq!(fresh.kept.len(), 1);
     }
 
+    fn put_for(s: &mut Store, cx: &Cx, until: u64, dies: u64) {
+        let key: Box<[u8]> = key::<false>(&mut Vec::new(), cx).into();
+        let k = Arc::new(Kept {
+            wire: vec![b'x'; 4].into(),
+            head: 0,
+            etag: "".into(),
+            until,
+            dies,
+            refreshing: AtomicBool::new(false),
+            refresh: None,
+        });
+        assert!(s.insert(key, k, 0));
+    }
+
+    #[test]
+    fn stale_is_sent_inside_its_window_and_the_refresher_gets_a_miss() {
+        let mut s = Store::new(1 << 20);
+        let c = cx(&[]);
+        put_for(&mut s, &c, 100, 130);
+        assert!(s.get::<false>(&c, 99).is_some(), "fresh");
+        assert!(s.get::<false>(&c, 100).is_some(), "stale, in its window");
+        assert!(s.get::<false>(&c, 130).is_none(), "past the window");
+        let refresher =
+            Cx::from_request::<Fuzz>("GET", "/p?q=1", [], b"", ([0, 0, 0, 0], 0).into()).unwrap();
+        assert!(s.get::<false>(&refresher, 110).is_none(), "refresh renders");
+        assert!(s.get::<false>(&refresher, 99).is_some(), "fresh is fresh");
+        // Past its window, an entry is dropped to make room; a stale one stays.
+        let mut s = Store::new(30);
+        put_for(&mut s, &c, 100, 130);
+        let other =
+            Cx::from_request::<Fuzz>("GET", "/o", [], b"", ([1, 1, 1, 1], 1).into()).unwrap();
+        let key: Box<[u8]> = key::<false>(&mut Vec::new(), &other).into();
+        assert!(
+            !s.insert(key.clone(), kept(25, 500), 110),
+            "stale one stays"
+        );
+        assert!(s.insert(key, kept(25, 500), 131), "a dead one goes");
+    }
+
+    #[test]
+    fn tags_drop_what_is_filed_under_them() {
+        let mut s = Store::new(1 << 20);
+        for key in [&b"h /t-a"[..], b"h /t-b", b"h /t-c"] {
+            assert!(s.insert(key.into(), kept(1, u64::MAX), 0));
+        }
+        s.tag(b"h /t-a", vec!["t-posts".into(), "t-home".into()]);
+        s.tag(b"h /t-b", vec!["t-posts".into()]);
+        purge_tag("t-posts");
+        s.sync();
+        assert_eq!(s.kept.len(), 1);
+        assert!(s.kept.contains_key(&b"h /t-c"[..]));
+        assert!(s.tags.is_empty(), "the index forgets keys that are gone");
+        assert_eq!(s.bytes, size(b"h /t-c", &kept(1, 0)));
+    }
+
+    #[test]
+    fn draft_mode_is_a_signed_cookie() {
+        let mut c = cx(&[]);
+        assert!(!c.draft());
+        c.enter_draft();
+        assert!(c.draft());
+        c.exit_draft();
+        assert!(!c.draft());
+        // A forged one is not it.
+        assert!(!cx(&[("cookie", "wisp-draft=1.AAAA")]).draft());
+        assert!(!drafting(&cx(&[]), true), "no cookie, no look");
+        assert!(!drafting(&cx(&[("cookie", "a=1")]), true));
+        assert!(!drafting(&cx(&[("cookie", "wisp-draft=1.AAAA")]), false));
+    }
+
     #[test]
     fn made_replies_and_their_304() {
         let mut r = Reply::default();
@@ -536,6 +775,9 @@ mod tests {
             head: head.len(),
             etag: "\"k\"".into(),
             until: u64::MAX,
+            dies: u64::MAX,
+            refreshing: AtomicBool::new(false),
+            refresh: None,
         });
         reply(&cx(&[("if-none-match", "\"k\"")]), Made::Kept(k), &mut r);
         let headers: Vec<(&str, &str)> = r.headers.iter().map(|(n, v)| (&**n, &**v)).collect();

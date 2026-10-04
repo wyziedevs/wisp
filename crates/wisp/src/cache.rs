@@ -65,6 +65,14 @@ pub fn uncache(prefix: &str) {
     crate::bake::purge(prefix);
 }
 
+/// Drops every page `CACHE` keeps under `tag` (`const CACHE_TAGS` of its
+/// route, or `cx.cache_tag` in its handler), on every worker thread, before
+/// each next answers from what it keeps: `wisp::revalidate_tag("posts")`
+/// after a post changes. Costs nothing to a lookup.
+pub fn revalidate_tag(tag: &str) {
+    crate::bake::purge_tag(tag);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

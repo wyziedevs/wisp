@@ -94,6 +94,11 @@ Block rules:
 - `const CACHE: u32 = 60;` (page or `+server.rs`) keeps a GET's answer 60 s
   per worker (ETag, 304), but never for a request with a cookie or
   `authorization` (`CACHE_PUBLIC`: all), nor one that sets a cookie; not in dev.
+  `const CACHE_STALE: u32 = 600;` serves it stale that long more while one
+  request renews it; `const CACHE_TAGS: &[&str] = &["posts"];` or
+  `cx.cache_tag(t)` + `wisp::revalidate_tag("posts")` drops by tag;
+  `cx.enter_draft()`/`exit_draft()`/`draft()` (signed cookie) bypass a
+  `CACHE_PUBLIC` page; `cx.after(|| ..)` runs after the reply.
 - `const RATE_LIMIT: u32 = 60;` (page, `+server.rs` or `src/hooks.rs`) is 60
   requests a minute per client address, then a 429; `const CORS: &str = "*";`
   is `cx.cors("*")?`; `const TIMEOUT: u32 = 5;` (page or `+server.rs`) a 503

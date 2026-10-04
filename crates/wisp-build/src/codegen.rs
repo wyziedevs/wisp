@@ -2074,7 +2074,7 @@ impl<'a> Project<'a> {
                         ));
                     }
                     opts.cache = Some(c.name == "CACHE_PUBLIC");
-                    guarded.push(format!("pub const CACHE: u32 = super::{};", c.name));
+                    guarded.push(cache_shim(&lg.items, &c.name));
                 }
                 (Some(_), Some(c)) => {
                     return Err(format!(
@@ -2286,7 +2286,7 @@ impl<'a> Project<'a> {
         }
         let cache = model::Cache { module, public };
         set_once(&mut route.cache, cache, &c.name, page).map_err(|e| at(&e))?;
-        shims.push(format!("pub const CACHE: u32 = super::{};", c.name));
+        shims.push(cache_shim(items, &c.name));
         Ok(())
     }
 
@@ -2610,7 +2610,11 @@ impl<'a> Project<'a> {
             module: format!("page_{i}"),
             public: true,
         });
-        shims.push("pub const CACHE: u32 = u32::MAX;".into());
+        shims.push(
+            "pub const CACHE: u32 = u32::MAX;
+pub const MORE: ::wisp::rt::CacheMore = ::wisp::rt::CacheMore::NONE;"
+                .into(),
+        );
         Ok(())
     }
 
@@ -4475,7 +4479,7 @@ impl Gen {
                     let by = r.by_accept();
                     format!(
                         "if ::wisp::rt::cached::<{by}>(cx, __o, {public}) {{ return Ok(()); }} {serve} \
-                         ::wisp::rt::keep::<Self, {by}>(cx, __o, {m}::__call::CACHE, {public});"
+                         ::wisp::rt::keep::<Self, {by}>(cx, __o, {m}::__call::CACHE, {public}, {m}::__call::MORE);"
                     )
                 }
                 None => serve,
@@ -4628,7 +4632,7 @@ impl Gen {
                     let (m, public, by) = (&c.module, c.public, r.by_accept());
                     serve = format!(
                         "if ::wisp::rt::cached::<{by}>(cx, __o, {public}) {{ return Ok(true); }} {serve} \
-                         ::wisp::rt::keep::<Self, {by}>(cx, __o, {m}::__call::CACHE, {public});"
+                         ::wisp::rt::keep::<Self, {by}>(cx, __o, {m}::__call::CACHE, {public}, {m}::__call::MORE);"
                     );
                 }
                 self.line(
@@ -5136,6 +5140,22 @@ fn within(r: &model::Route, module: &str) -> (String, &'static str) {
 /// `before`): a `Response` it hands back is sent instead of the page.
 fn answer(shim: &str) -> String {
     format!("if let Some(r) = {shim}(cx).await? {{ ::wisp::rt::respond(__o, r); return Ok(()); }}")
+}
+
+/// The shims of a route's `CACHE` (or `CACHE_PUBLIC`, named `name`): its
+/// seconds, and what `CACHE_STALE` and `CACHE_TAGS` add, if the module sets
+/// them.
+fn cache_shim(items: &rust_scan::Items, name: &str) -> String {
+    let stale = items
+        .constant("CACHE_STALE")
+        .map_or("0", |_| "super::CACHE_STALE");
+    let tags = items
+        .constant("CACHE_TAGS")
+        .map_or("&[]", |_| "super::CACHE_TAGS");
+    format!(
+        "pub const CACHE: u32 = super::{name};
+pub const MORE: ::wisp::rt::CacheMore = ::wisp::rt::CacheMore::new({stale}, {tags});"
+    )
 }
 
 /// Sets a route's `BODY_LIMIT` or `CACHE`, which its page (in file
@@ -10744,6 +10764,36 @@ fn report(cx: &mut Cx, err: &Error) {}",
     }
 
     #[test]
+    fn cache_stale_and_tags_are_consts_the_shim_passes() {
+        let plain = (
+            "src/routes/+page.wisp",
+            "---
+const CACHE: u32 = 60;
+---
+x",
+        );
+        let code = app("cache-more-none", &[plain]).unwrap();
+        assert!(
+            code.contains("CacheMore::new(0, &[])"),
+            "no window, no tags: {code}"
+        );
+        let more = (
+            "src/routes/+page.wisp",
+            "---
+const CACHE: u32 = 60;
+const CACHE_STALE: u32 = 600;
+const CACHE_TAGS: &[&str] = &[\"posts\"];
+---
+x",
+        );
+        let code = app("cache-more", &[more]).unwrap();
+        assert!(
+            code.contains("CacheMore::new(super::CACHE_STALE, super::CACHE_TAGS)"),
+            "{code}"
+        );
+    }
+
+    #[test]
     fn cache_keeps_gets() {
         let page = (
             "src/routes/+page.wisp",
@@ -10760,7 +10810,7 @@ fn report(cx: &mut Cx, err: &Error) {}",
         for want in [
             "pub const CACHE: u32 = super::CACHE;",
             "(0, Get | Head) => { ::wisp::rt::browser_ok(cx)?; { if ::wisp::rt::cached::<false>(cx, __o, false) { return Ok(()); } \
-             serve_page_0(cx, __o).await?; ::wisp::rt::keep::<Self, false>(cx, __o, page_0::__call::CACHE, false); Ok(()) } },",
+             serve_page_0(cx, __o).await?; ::wisp::rt::keep::<Self, false>(cx, __o, page_0::__call::CACHE, false, page_0::__call::MORE); Ok(()) } },",
         ] {
             assert!(code.contains(want), "{want}\n{code}");
         }
@@ -10774,7 +10824,7 @@ fn report(cx: &mut Cx, err: &Error) {}",
         for want in [
             "pub const CACHE: u32 = super::CACHE_PUBLIC;",
             "(0, Get | Head) => { ::wisp::rt::endpoint(cx); if ::wisp::rt::cached::<false>(cx, __o, true) { return Ok(()); } \
-             ::wisp::rt::respond(__o, server_0::__call::get(cx).await?); ::wisp::rt::keep::<Self, false>(cx, __o, server_0::__call::CACHE, true); Ok(()) }",
+             ::wisp::rt::respond(__o, server_0::__call::get(cx).await?); ::wisp::rt::keep::<Self, false>(cx, __o, server_0::__call::CACHE, true, server_0::__call::MORE); Ok(()) }",
             "(0, Post) => { ::wisp::rt::endpoint(cx); ::wisp::rt::check_origin(cx)?; if ::wisp::rt::idempotent(cx, __o) { return Ok(()); } \
              server_0::__call::post(cx).await?; ::wisp::rt::no_content(__o); Ok(()) }",
             // The same, sync, with no future: what `handle_now` answers.
@@ -10782,7 +10832,7 @@ fn report(cx: &mut Cx, err: &Error) {}",
             "(0, Get | Head) => { ::wisp::rt::hooked(cx); ::wisp::rt::endpoint(cx); \
              if ::wisp::rt::cached::<false>(cx, __o, true) { return Ok(true); } \
              ::wisp::rt::respond(__o, server_0::__call::get_now(cx)?); \
-             ::wisp::rt::keep::<Self, false>(cx, __o, server_0::__call::CACHE, true); Ok(true) }",
+             ::wisp::rt::keep::<Self, false>(cx, __o, server_0::__call::CACHE, true, server_0::__call::MORE); Ok(true) }",
             "(0, Post) => { ::wisp::rt::hooked(cx); ::wisp::rt::endpoint(cx); \
              if ::wisp::rt::idempotent(cx, __o) { return Ok(true); } \
              server_0::__call::post_now(cx)?; ::wisp::rt::no_content(__o); Ok(true) }",
@@ -10872,7 +10922,7 @@ fn report(cx: &mut Cx, err: &Error) {}",
         for want in [
             "(0, Get | Head) => { ::wisp::rt::endpoint(cx); if ::wisp::rt::cached::<true>(cx, __o, false) { return Ok(()); } \
              ::wisp::rt::respond(__o, server_0::__call::__rest_list(cx).await?); \
-             ::wisp::rt::keep::<Self, true>(cx, __o, server_0::__call::CACHE, false); Ok(()) }",
+             ::wisp::rt::keep::<Self, true>(cx, __o, server_0::__call::CACHE, false, server_0::__call::MORE); Ok(()) }",
             "(1, Get | Head) => { ::wisp::rt::endpoint(cx); if ::wisp::rt::cached::<false>(cx, __o, false) {",
         ] {
             assert!(code.contains(want), "{want}\n{code}");
