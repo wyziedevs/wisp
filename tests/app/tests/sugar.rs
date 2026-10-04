@@ -1,6 +1,8 @@
 //! `src/routes/t/sugar`: an action without `->`, an `Email` input, `.await`
 //! in markup and a block's name read by browser code, working together.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 use wisp::test::client;
 use wisp_test_app::Site;
 

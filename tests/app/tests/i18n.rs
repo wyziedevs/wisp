@@ -1,6 +1,8 @@
 //! Translations: `src/locales/en.json` and `fr.json`, the page
 //! `[[lang=locale]]/i18n`, and the locale each request gets.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 use wisp::test::client;
 use wisp_test_app::Site;
 

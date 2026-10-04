@@ -1,5 +1,7 @@
 //! Markdown pages (`src/routes/blog/*.md`) and the index that lists them.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 use wisp::test::client;
 use wisp_test_app::Site;
 
