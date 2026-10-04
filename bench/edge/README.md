@@ -563,3 +563,43 @@ dependency and `3` for `wisp` and the app: 523,345 against 525,535 bytes
 (-0.4%), `/json-big` 45.5-47.2 against 45.5-48.1 us (noise). With fat LTO
 and one codegen unit the merged module is optimized again at the top level,
 so per-crate levels barely reach the output; `wisp build` keeps `3`.
+
+## workerd on Linux, pinned, 2026-10-04 (VPS, 4 vCPU, idle)
+
+workerd 2026-10-04 on core 0, `oha -c 16` on cores 2-3, 7 s runs, Wisp and Hono
+alternating, median of 7 (`/`) and 5 (`/json-big`). Per request: user
+instructions (`perf stat`, the stable measure here: CPU time and cycles swing
+20% between runs of the same build on this host), workerd's CPU and req/s.
+
+| | `/` instr | `/` CPU, req/s | `/json-big` instr | `/json-big` CPU, req/s |
+|---|---|---|---|---|
+| Hono | 265 k | 217 us, 4,592 | 714 k | 346 us, 2,884 |
+| Wisp | 221 k | 200 us, 5,003 | 999 k | 359 us, 2,789 |
+| `new Response('hello')`, no framework | 205 k | | | |
+
+On a quiet machine Wisp's `/` is ahead of Hono's; the 10% behind of the
+Windows tables above was that machine's noise. A profile (`perf record -g`, V8's
+`--perf-basic-prof` through the config's `v8Flags`) of `/`, Wisp over Hono, in
+us a request: the app's wasm +8 (turbofan code; nothing left in Liftoff), the
+bridge's JS +4 (`serve`, `reply`, `enter`, the `subarray` and string concat),
+tcmalloc +2; Hono's own JS (object literals, property definition: V8's
+`PropertyDescriptor`, `MigrateToMap`, dictionary adds) costs it more than that.
+The rest (kj's event loop, `IoContext`, `Headers`) moves by 5 us between runs of
+one build, both ways.
+
+`/json-big` (wasm function names from the same build unstripped), share of
+workerd's CPU: the route's closure in `http::decide` 9%, `fmt` (`write`,
+`write_fmt`, `Display`, `pad_integral`, the app's `format!`) 8%, `live::string`
+5%, dlmalloc 3.5%, dropping the rows 2.4%. The Hono app builds the same rows
+with the same strings, so the two do the same work.
+
+Measured and kept as they are:
+
+- Compatibility date 2025-01-01 (Hono's `wrangler.toml`) for Wisp, against
+  2025-09-01: 225 k against 221 k instructions, no gain. Neither sets flags.
+- The warm-up at load. Start to first response, then a second one, median of 15:
+  as it is 74.4 ms, 4.3; without it 70.8 ms, 4.8; deferred into `ctx.waitUntil`
+  after the first request 76.8 ms, 4.7 (Hono 53.4). With 30 ms idle before the
+  first request (a TLS handshake), the first request takes 8.6 ms with the
+  warm-up, 23.8 without and 26.1 deferred (Hono 12.2). That idle time is what
+  Cloudflare has, so the warm-up stays at load.
