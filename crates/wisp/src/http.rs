@@ -2497,11 +2497,15 @@ pub(crate) async fn answer<A: App>(mut cx: Cx, upgrade: &mut Option<crate::ws::U
     reply
         .headers
         .retain(|(n, v)| valid_header(n, v) && !framing(n, head));
-    // HEAD gets the headers of a GET and no body; 204 and 304 have none.
+    // HEAD gets the headers of a GET and no body; 204, 205 and 304 have
+    // none, and a 205 says so.
     if head || bodiless {
         let len = (!matches!(reply.body, Body::Stream(_))).then(|| reply.bytes().len());
+        let len = if reply.status == 205 { Some(0) } else { len };
         reply.body = Body::Static(b"");
-        if let Some(len) = len.filter(|_| reply.header("content-length").is_none() && !bodiless) {
+        if let Some(len) = len.filter(|_| {
+            reply.header("content-length").is_none() && (!bodiless || reply.status == 205)
+        }) {
             reply
                 .headers
                 .push((Cow::Borrowed("content-length"), Cow::Owned(len.to_string())));
@@ -3168,11 +3172,12 @@ fn framing(name: &str, head: bool) -> bool {
     }
 }
 
-/// A status whose response has no body, and no `content-length` (RFC 9110
-/// §8.6, §15): informational, 204 and 304. A body the app gave one is dropped
-/// rather than sent where the client does not expect it.
+/// A status whose response has no body (RFC 9110 §8.6, §15): informational,
+/// 204, 205 and 304. A body the app gave one is dropped rather than sent
+/// where the client does not expect it. None has a `content-length` but
+/// 205, which says `0` (§15.3.6) so a client does not wait for content.
 fn bodiless(status: u16) -> bool {
-    status < 200 || status == 204 || status == 304
+    status < 200 || matches!(status, 204 | 205 | 304)
 }
 
 /// A response whose body is still being made, for the connection to send.
@@ -3235,8 +3240,14 @@ fn serialize<A: App, const OBS: bool>(
             w.extend_from_slice(b"transfer-encoding: chunked\r\n");
         }
     }
-    let length = !made && !chunked && !stream && !bodiless && !own_length;
-    length_and_date(w, length.then_some(len));
+    let length = !made && !chunked && !stream && !own_length;
+    length_and_date(
+        w,
+        match bodiless {
+            false => length.then_some(len),
+            true => (length && reply.status == 205).then_some(0),
+        },
+    );
     if !keep_alive {
         w.extend_from_slice(b"connection: close\r\n");
     } else if !http11 {
@@ -4673,6 +4684,27 @@ mod tests {
         let text = String::from_utf8(w).unwrap().to_ascii_lowercase();
         assert!(text.contains("content-length: 2\r\n") && text.contains("connection: keep-alive"));
         assert!(!text.contains("99") && !text.contains("chunked"), "{text}");
+    }
+
+    /// RFC 9110 §15.3.6: a 205 has no content, and says so with
+    /// `content-length: 0`, else a client may wait for one; 204 and 304
+    /// carry no length at all.
+    #[test]
+    fn reset_content_is_bodiless_with_a_zero_length() {
+        let mut out = Out::default();
+        for (status, length) in [(205, Some("0")), (204, None), (304, None)] {
+            let mut w = Vec::new();
+            let mut reply = Reply::plain(status);
+            reply.body = Body::Bytes(b"dropped".to_vec());
+            serialize::<Fuzz, true>(&mut w, &mut reply, &mut out, true, true, false);
+            let text = String::from_utf8(w).unwrap().to_ascii_lowercase();
+            let (head, body) = text.split_once("\r\n\r\n").unwrap();
+            assert_eq!(body, "", "{status}");
+            let len = head
+                .lines()
+                .find_map(|l| l.strip_prefix("content-length: "));
+            assert_eq!(len, length, "{status}: {head}");
+        }
     }
 
     #[test]

@@ -660,7 +660,8 @@ impl Cx {
     /// Adds a response header. A single-valued one (`content-type`,
     /// `cache-control`, `location`, `etag`, any case) replaces what was set
     /// before, here or on the `Response`, instead of going out twice:
-    /// `cx.set_header("content-type", "application/rss+xml")`.
+    /// `cx.set_header("content-type", "application/rss+xml")`. One the
+    /// `before` hook set comes back if the page then fails.
     /// `content-length` and `transfer-encoding` are the server's and are
     /// left out. Panics on CR/LF, which would allow header injection;
     /// building a header from unchecked input is a bug.
@@ -671,8 +672,13 @@ impl Cx {
             "invalid header {name:?}: {value:?}"
         );
         if single(&name) {
-            self.out_headers
-                .retain(|(n, _)| !n.eq_ignore_ascii_case(&name));
+            // The `before` hook's stays below the kept boundary, shadowed,
+            // so a failed page brings it back (see `Cx::shadow`).
+            let (kept, mut at) = (self.kept_headers as usize, 0);
+            self.out_headers.retain(|(n, _)| {
+                at += 1;
+                at <= kept || !n.eq_ignore_ascii_case(&name)
+            });
             self.replaces = true;
         }
         self.out_headers.push((name, Cow::Owned(value)));
@@ -727,7 +733,26 @@ impl Cx {
     pub(crate) fn take_page_headers(
         &mut self,
     ) -> std::vec::Drain<'_, (Cow<'static, str>, Cow<'static, str>)> {
+        if self.replaces {
+            self.shadow();
+        }
         self.out_headers.drain(self.kept_headers as usize..)
+    }
+
+    /// Drops the `before` hook's single-valued headers the handler set
+    /// again: the page worked, so the handler's stand.
+    #[cold]
+    fn shadow(&mut self) {
+        let kept = self.kept_headers as usize;
+        let (hook, page) = self.out_headers.split_at(kept);
+        let set = |n: &str| (page.iter()).any(|(o, _)| o.eq_ignore_ascii_case(n));
+        let gone: Vec<bool> = hook.iter().map(|(n, _)| single(n) && set(n)).collect();
+        let mut at = 0;
+        self.out_headers.retain(|_| {
+            at += 1;
+            !gone.get(at - 1).copied().unwrap_or(false)
+        });
+        self.kept_headers -= gone.iter().filter(|g| **g).count() as u32;
     }
 
     /// Drops [`Cx::page_headers`], with the page that failed.
@@ -740,6 +765,7 @@ impl Cx {
     #[inline]
     pub(crate) fn send_headers(&mut self, to: &mut Vec<(Cow<'static, str>, Cow<'static, str>)>) {
         if self.replaces {
+            self.shadow();
             self.drop_replaced(to);
         }
         to.append(&mut self.out_headers);
@@ -1664,5 +1690,48 @@ mod tests {
     #[should_panic(expected = "invalid cookie value")]
     fn cookie_value_is_checked() {
         cx_for("GET / HTTP/1.1\r\n\r\n").set_cookie("a", "x;y");
+    }
+
+    /// A handler's single-valued header replaces the hook's on the page it
+    /// makes, and a failed page brings the hook's back, alone.
+    #[test]
+    fn a_hook_header_a_handler_replaced_comes_back_on_an_error_page() {
+        let pairs = |h: &[(Cow<'static, str>, Cow<'static, str>)]| -> Vec<(String, String)> {
+            h.iter()
+                .map(|(n, v)| (n.to_string(), v.to_string()))
+                .collect()
+        };
+        let own = |n: &str, v: &str| (n.to_string(), v.to_string());
+        let hooked = || {
+            let mut cx = cx_for("GET / HTTP/1.1\r\n\r\n");
+            cx.set_header("x-hook", "1");
+            cx.set_header("cache-control", "private, no-store");
+            cx.keep_headers();
+            cx.set_header("Cache-Control", "public, max-age=3600");
+            cx
+        };
+        // The page failed: the hook's headers go out, the handler's do not.
+        let mut cx = hooked();
+        cx.drop_page_headers();
+        let mut sent = Vec::new();
+        cx.send_headers(&mut sent);
+        let hook = [
+            own("x-hook", "1"),
+            own("cache-control", "private, no-store"),
+        ];
+        assert_eq!(pairs(&sent), hook);
+        // The page worked: the handler's goes out alone.
+        let mut cx = hooked();
+        let mut sent = Vec::new();
+        cx.send_headers(&mut sent);
+        let public = own("Cache-Control", "public, max-age=3600");
+        assert_eq!(pairs(&sent), [own("x-hook", "1"), public.clone()]);
+        // A kept (`CACHE`) page takes the handler's; the hook's does not go
+        // out beside it.
+        let mut cx = hooked();
+        assert_eq!(pairs(cx.page_headers()), [public.clone()]);
+        let page: Vec<_> = cx.take_page_headers().collect();
+        assert_eq!(pairs(&page), [public]);
+        assert_eq!(pairs(&cx.out_headers), [own("x-hook", "1")]);
     }
 }
