@@ -10,6 +10,7 @@ members = [
     "examples/api",
     "examples/jobs",
     "examples/img",
+    "examples/i18n",
     "tests/app",
     "tests/agents",
     "tests/islands",

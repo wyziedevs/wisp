@@ -3300,7 +3300,7 @@ fn parts<'a, A: App>(
     let [s0, s1, s2] = A::shell();
     let tags = HEAD_TAGS.get().map_or("", String::as_str);
     // `<html lang="…">` says the request's locale, in an app with some.
-    let lang = A::LOCALES.get(lang as usize).copied().unwrap_or("");
+    let lang = A::HTML_LANGS.get(lang as usize).copied().unwrap_or("");
     let (a, b) = match (!lang.is_empty())
         .then(|| crate::i18n::lang_value(s0))
         .flatten()
