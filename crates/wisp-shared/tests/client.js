@@ -242,6 +242,18 @@ const tests = {
     await new Promise((r) => setTimeout(r, 60));
     assert.deepEqual(order, ['wait', 'update', 'after']);
   },
+  async 'view transitions run on a navigation, not under data-wisp-notransition'() {
+    const p = page();
+    let vts = 0;
+    p.doc.startViewTransition = (f) => (vts++, { ready: Promise.resolve(), finished: Promise.resolve(), updateCallbackDone: Promise.resolve(f()) });
+    globalThis.matchMedia = () => ({ matches: false });
+    p.click();
+    await tick();
+    assert.equal(vts, 1);
+    p.click({ 'data-wisp-notransition': '' });
+    await tick();
+    assert.equal(vts, 1);
+  },
   async 'preloadData fetches the page once, and the click uses it'() {
     const p = page();
     let done = 0;

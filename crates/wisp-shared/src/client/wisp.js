@@ -14,7 +14,7 @@
 //
 // A link takes data-wisp-noscroll (stay where the page is),
 // data-wisp-keepfocus (focus stays) and data-wisp-replacestate (no history
-// entry), on it or around it.
+// entry), data-wisp-notransition (no view transition), on it or around it.
 //
 // Events on the document: `wisp:navigate` before a navigation (cancelable),
 // `wisp:leave` before the page changes (`detail.w` collects promises it
@@ -336,7 +336,7 @@
     send('wisp:leave', { from: location.href, to: url.href, w });
     const after = await Promise.all(w);
     if (my !== nav) return;
-    if (document.startViewTransition && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    if (document.startViewTransition && !how.novt && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
       // Its animation is skipped, rejecting these, when the tab is hidden.
       const vt = document.startViewTransition(show);
       vt.ready.catch(() => {});
@@ -356,7 +356,7 @@
     e.preventDefault();
     const has = (n) => !!a.closest(`[data-wisp-${n}]`);
     // A page that cannot be shown here (bad HTML, a throwing hook) is loaded whole.
-    go(url, { replace: has('replacestate'), noscroll: has('noscroll'), keepfocus: has('keepfocus') }).catch(() => location.assign(url));
+    go(url, { replace: has('replacestate'), noscroll: has('noscroll'), keepfocus: has('keepfocus'), novt: has('notransition') }).catch(() => location.assign(url));
   });
 
   // Fetches a page ahead, used if it is followed within 10s.

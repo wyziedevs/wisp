@@ -278,7 +278,10 @@ fields are restored with history. `import('$lib/x.js')` loads on demand.
 `<script lang="ts">`, `src/lib/*.ts`, `+page.ts` (types stripped; `wisp check
 --types`). `env.PUBLIC_X` is filled at build. Dev source maps; `--sourcemap`.
 `npm`: `wisp add pkg`; `<Island of="react:react-switch" client:visible
-props={:{...}} />` (`react|preact|vue|svelte`); web components just work.
+props={:{...}} />` (`react|preact|vue|svelte`); web components just work. Own esbuild/vite
+bundle in `static/`: `<div data-wisp-keep use:widget="{x}">`, script
+`widget(el, p)` does `import('/w.js')`, returns `{update, destroy}`.
+`data-wisp-notransition` (link or `<body>`) skips the nav view transition.
 `#[remote] fn user(id: u64) -> Result<User>` (page block or `src/*.rs`) is
 `await user(5)` in any script (`src/lib`: `import { user } from
 'wisp:remote'`): POST to `/_app/r/<hash>`, `#[remote(get)]` a GET; errors
@@ -908,6 +911,32 @@ Theme CSS: copy `cdn/themes/light.css` into `static/` and `<link>` it in
 LitElement {…})` in a `src/lib` module a script imports. The
 `click-events` a11y lint skips custom elements.
 
+## Your own bundle (npm UI libraries)
+
+For a widget `wisp add` cannot serve (React, Svelte, a charting kit): bundle it
+with your own tool, no Wisp dependency, into `static/`, and mount it from a
+`use:` action. `data-wisp-keep` stops a morph from touching what the widget draws.
+
+```sh
+esbuild src/widget.js --bundle --minify --format=esm --outfile=static/widget.js   # or vite build
+```
+
+```html
+<div data-wisp-keep use:widget="{ label }"></div>
+<script>
+  function widget(el, props) {            // mount(el, props), update(props), destroy()
+    let w
+    import('/widget.js').then((m) => (w = m.mount(el, props)))
+    return { update: (p) => w?.update(p), destroy: () => w?.destroy() }
+  }
+</script>
+```
+
+`destroy` runs when the element leaves the page (a navigation or `{:#if}`).
+To share a library between bundles, a `<script type="importmap">` in
+`src/app.html` maps `"react"` to a file in `static/`. Packages `wisp add`
+serves need none of this: `<Island of="react:name">`.
+
 ## Third-party scripts
 
 Pick when one loads (`src`, so no code of yours): in the head, plain
@@ -961,7 +990,11 @@ element around it starts it fresh. Layouts stay mounted.
 Same-origin clicks and back/forward fetch and morph, no full reload.
 Prefetch on hover (60 ms) and touch (`data-wisp-preload="off"` opts out).
 Scroll is restored; focus moves to `[autofocus]`; view transitions when
-available. `data-wisp-reload` on a link or parent forces a full load; links
+available (`data-wisp-notransition` on a link, or on `<body>` for the app,
+skips them; reduced motion skips them too). Global stores (`store`,
+`persisted`) are module state: they outlive every navigation. A component
+instance on an element the morph keeps keeps its state; `data-wisp-reset`
+starts it fresh. `data-wisp-reload` on a link or parent forces a full load; links
 with `target`, `download`, `rel="external"` and `/_app/` are left alone.
 
 ```js
@@ -994,7 +1027,7 @@ export a script may have:
 </script>
 ```
 
-`data-wisp-noscroll`, `data-wisp-keepfocus`, `data-wisp-replacestate` (on or around a link) keep scroll, keep focus, replace history; `goto(url, { noscroll, keepfocus, replace })` too. Hooks from `'wisp'` return an unsubscribe: `beforeNavigate(({ from, to, pop, cancel }) => ..)`, `afterNavigate`, `onNavigate` (after fetch, before the swap; a returned promise is awaited, a returned function runs after), `preloadData(url)`, `preloadCode(url)`, `invalidateAll()`, `updated.value` (a newer wisp.js or build exists). `cancel()` does not stop back/forward. `+page.js` `load` gets `depends(key)` (a `fetch`ed URL counts); `invalidate('key')` reruns only those loads, no page request.
+`data-wisp-noscroll`, `data-wisp-keepfocus`, `data-wisp-replacestate`, `data-wisp-notransition` (on or around a link) keep scroll, keep focus, replace history, skip the view transition; `goto(url, { noscroll, keepfocus, replace, novt })` too. Hooks from `'wisp'` return an unsubscribe: `beforeNavigate(({ from, to, pop, cancel }) => ..)`, `afterNavigate`, `onNavigate` (after fetch, before the swap; a returned promise is awaited, a returned function runs after), `preloadData(url)`, `preloadCode(url)`, `invalidateAll()`, `updated.value` (a newer wisp.js or build exists). `cancel()` does not stop back/forward. `+page.js` `load` gets `depends(key)` (a `fetch`ed URL counts); `invalidate('key')` reruns only those loads, no page request.
 
 Phones: pages leave with `pagehide` (back/forward cache; scroll restored). `<body data-wisp-revalidate="30">` refetches data when the tab or network returns (at most every N s, default 30; the morph keeps focus, scroll, typed text). Offline, `<form data-wisp-queue>` (safe to send twice) waits in `sessionStorage`, is sent in order when back, then the page refreshes (`wisp:sent`); other forms show "You are offline" and fire `wisp:result` with `error: "offline"`. Only urlencoded forms queue. A navigation focuses the `<h1>` (else `<main>`) and announces the title; view transitions skip under `prefers-reduced-motion`.
 

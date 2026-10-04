@@ -278,7 +278,10 @@ fields are restored with history. `import('$lib/x.js')` loads on demand.
 `<script lang="ts">`, `src/lib/*.ts`, `+page.ts` (types stripped; `wisp check
 --types`). `env.PUBLIC_X` is filled at build. Dev source maps; `--sourcemap`.
 `npm`: `wisp add pkg`; `<Island of="react:react-switch" client:visible
-props={:{...}} />` (`react|preact|vue|svelte`); web components just work.
+props={:{...}} />` (`react|preact|vue|svelte`); web components just work. Own esbuild/vite
+bundle in `static/`: `<div data-wisp-keep use:widget="{x}">`, script
+`widget(el, p)` does `import('/w.js')`, returns `{update, destroy}`.
+`data-wisp-notransition` (link or `<body>`) skips the nav view transition.
 `#[remote] fn user(id: u64) -> Result<User>` (page block or `src/*.rs`) is
 `await user(5)` in any script (`src/lib`: `import { user } from
 'wisp:remote'`): POST to `/_app/r/<hash>`, `#[remote(get)]` a GET; errors
