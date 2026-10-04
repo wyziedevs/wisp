@@ -196,7 +196,12 @@ fn text(s: &str) -> String {
 
 /// A URL for an attribute: escaped, braces percent-encoded.
 fn url(s: &str) -> String {
-    text(&s.replace('{', "%7B").replace('}', "%7D"))
+    text(&no_braces(s))
+}
+
+/// `s` with its braces percent-encoded.
+fn no_braces(s: &str) -> String {
+    s.replace('{', "%7B").replace('}', "%7D")
 }
 
 /// The body as HTML, and the text of its first `# h1`.
@@ -325,6 +330,15 @@ fn render(body: &str) -> (String, Option<String>) {
                     "<a href=\"{mailto}{}\"{title}>",
                     url(&dest_url)
                 ))));
+            }
+            // A footnote's label is written into `href="#…"` and `id="…"`
+            // as it is: its braces would be expressions.
+            Event::FootnoteReference(l) => {
+                events.push(Event::FootnoteReference(CowStr::from(no_braces(&l))));
+            }
+            Event::Start(Tag::FootnoteDefinition(l)) => {
+                let l = CowStr::from(no_braces(&l));
+                events.push(Event::Start(Tag::FootnoteDefinition(l)));
             }
             e => events.push(e),
         }
@@ -789,6 +803,9 @@ mod tests {
         .unwrap();
         assert!(!md.wisp.contains(['{', '}']), "{}", md.wisp);
         assert!(md.wisp.contains("Some &#123;braces&#125;"), "{}", md.wisp);
+        // A footnote's label goes in `href` and `id` as it is.
+        let f = page("a[^{x}]\n\n[^{x}]: note\n", &[], false).unwrap().wisp;
+        assert!(!f.contains(['{', '}']) && f.contains("href=\"#%7Bx%7D\""), "{f}");
         assert!(
             md.wisp.contains("<code>code &#123;x&#125;</code>"),
             "{}",
