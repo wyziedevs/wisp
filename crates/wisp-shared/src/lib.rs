@@ -9,6 +9,7 @@
 pub mod base64;
 pub mod contexts;
 pub mod dotenv;
+pub mod fonts;
 pub mod json;
 pub mod manifest;
 pub mod og;

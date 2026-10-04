@@ -9,6 +9,7 @@ mod deploy;
 mod dev;
 mod events;
 mod fmt;
+mod fonts;
 mod git_head;
 mod images;
 mod lsp;
@@ -501,6 +502,7 @@ fn build(root: &Path, o: &BuildOptions) -> Result<(), String> {
     let imports = check(root)?;
     css::build(root)?;
     images::build(root);
+    fonts::build(root);
     og::build(root);
     npm::vendor(root, &imports)?;
     if o.docker {

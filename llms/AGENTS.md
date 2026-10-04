@@ -32,6 +32,7 @@ src/components/Card.wisp    <Card title={x}>…</Card>
 src/lib/*.js (or .ts)       browser modules, `import … from '$lib/x.js'`
 src/params/word.rs          fn matches(s: &str) -> bool, for [x=word]
 src/locales/en.json         messages, fr.json etc.: {t("key")}
+src/fonts.txt               fonts, a line each: `Inter inter.woff2 100-900` (file in static/fonts), `Open_Sans google 400 700 [italic] [serif|mono]` (opt-in: wisp build downloads the Latin subset once into static/fonts); swap, size-adjusted fallback, preload; CSS `font-family: var(--font-inter)`
 src/manifest.json           web app manifest: {"name": "Notes", "offline": true}
 src/service-worker.js       registered for you: import { build, files, version } from 'wisp/sw'
 src/routes/…/+page.wisp     page: optional `---` Rust block, then markup

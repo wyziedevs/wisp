@@ -1296,6 +1296,18 @@ branches).
   files its JavaScript names), raw and gzipped, sorted largest first, with the
   files of the heaviest. The gzip size is counted with Wisp's own compressor
   (fixed Huffman, a hash-chain matcher), without writing the bits.
+- **Fonts.** `src/fonts.txt` (`wisp_shared::fonts`): a line per font file in
+  `static/fonts`, or `google` and weights, which is the opt-in to download
+  (`fonts.rs` in the CLI, once, the Latin subset as WOFF2 plus a TrueType copy
+  in `.wisp/fonts` for metrics; a failure only warns). The build puts first in
+  `app.css` (`join_styles`, so dev too) an `@font-face` per file with
+  `font-display: swap`, per family a fallback face (`size-adjust`,
+  `ascent-override`, `descent-override`, `line-gap-override` from the font's
+  `hhea` and `OS/2` over Arial, Times New Roman or Courier New's average width)
+  and `--font-<name>`; and a `preload` link per WOFF/WOFF2 at the start of the
+  shell's head. Metrics are read from TrueType and OpenType files only (WOFF2
+  is brotli, which Wisp has no decoder for): a local `.woff2` gets the swap
+  and the preload, and its fallback face when `.wisp/fonts/<name>.ttf` exists.
 - **Version skew.** A release build puts `<meta name="wisp-build" content=ID>`
   in the shell (a hash of templates and Rust: baked, nothing per request).
   wisp.js compares it with the page a navigation fetched, as it does

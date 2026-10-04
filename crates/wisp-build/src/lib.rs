@@ -7,6 +7,7 @@ mod codegen;
 pub mod csp;
 pub mod fmt;
 mod fold;
+mod fonts;
 mod i18n;
 pub mod ide;
 pub mod image;
@@ -76,6 +77,7 @@ pub fn run() {
         "package.json",
         ".wisp/npm",
         ".wisp/img",
+        ".wisp/fonts",
         ".env",
     ] {
         if root.join(p).exists() {
@@ -269,9 +271,11 @@ pub(crate) fn parse_markup(
 
 /// The scoped `<style>`s of the templates, `(path, css)`, in path order:
 /// the same text from the build and from `wisp dev`.
-pub(crate) fn join_styles(mut styles: Vec<(&str, &str)>) -> String {
+pub(crate) fn join_styles(root: &Path, mut styles: Vec<(&str, &str)>) -> String {
     styles.sort_unstable();
-    let css: Vec<&str> = styles.iter().map(|s| s.1).collect();
+    let mut css = vec![fonts::css(root)];
+    css.retain(|f| !f.is_empty());
+    css.extend(styles.iter().map(|s| s.1.to_string()));
     css.join("\n")
 }
 
@@ -310,6 +314,7 @@ pub fn write_styles(root: &Path) -> Result<(bool, bool), String> {
         }
     }
     let css = join_styles(
+        root,
         found
             .iter()
             .map(|(r, s)| (r.as_str(), s.as_str()))

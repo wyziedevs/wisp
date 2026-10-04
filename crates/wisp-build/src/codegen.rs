@@ -1509,6 +1509,9 @@ impl<'a> Project<'a> {
                 }
             }
         }
+        // The fonts' preload links come first in the head.
+        let faces = crate::fonts::load(root)?;
+        shell[0].push_str(&wisp_shared::fonts::preloads(&faces, crate::protocol::BASE));
         let t_used = vec![false; i18n.as_ref().map_or(0, i18n::Locales::key_count)];
         Ok(Project {
             root,
@@ -1658,6 +1661,7 @@ impl<'a> Project<'a> {
     /// The scoped `<style>`s of every template, for `/_app/app.css`.
     fn styles(&self) -> String {
         crate::join_styles(
+            self.root,
             (self.templates.iter())
                 .filter_map(|t| Some((t.rel.as_str(), t.t.style.as_deref()?)))
                 .collect(),
