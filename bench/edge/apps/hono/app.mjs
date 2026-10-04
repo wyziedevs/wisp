@@ -1,8 +1,14 @@
 import { Hono } from 'hono';
+import { getCookie } from 'hono/cookie';
 const esc = (s) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-const items = Array.from({ length: 50 }, (_, i) => `Item <${i + 1}> & co`);
+const items = (n) => Array.from({ length: n }, (_, i) => `Item <${i + 1}> & co`);
+const page = (xs) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>List</title></head><body><h1>List</h1><ul>${xs.map((s) => `<li>${esc(s)}</li>`).join('')}</ul></body></html>`;
+const rows = () => Array.from({ length: 200 }, (_, k) => ({ id: k + 1, name: `user-${k + 1}`, active: (k + 1) % 3 !== 0, score: ((k + 1) * 37) % 101, tags: ['a', `t${(k + 1) % 7}`] }));
 export const app = new Hono();
 app.get('/', (c) => c.text('hello'));
-app.get('/list', (c) => c.html(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>List</title></head><body><h1>List</h1><ul>${items.map((s) => `<li>${esc(s)}</li>`).join('')}</ul></body></html>`));
+app.get('/list', (c) => c.html(page(items(50))));
 app.get('/json', (c) => c.json({ ok: true, name: 'hono', n: 42 }));
+app.get('/list1000', (c) => c.html(page(items(1000))));
+app.get('/json-big', (c) => c.json(rows()));
+app.get('/params/:id', (c) => c.text(`id=${c.req.param('id')} q=${c.req.query('q')} sid=${getCookie(c, 'sid') ?? 'none'}`));
 export default app;

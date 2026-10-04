@@ -1,6 +1,6 @@
 // Edge bench: Wisp's wasm build against Hono, SvelteKit and Next.js, on the
 // same runtime, with oha as the load generator. See README.md for setup.
-//   node run.mjs [--dir <bench dir>] [--only wisp-node,hono-cf] [--secs 10] [--conns 64] [--runs 3]
+//   node run.mjs [--dir <bench dir>] [--only wisp-node,hono-cf] [--secs 10] [--conns 64] [--runs 3] [--routes list,json]
 import { spawn, execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 
@@ -23,10 +23,12 @@ const servers = {
   'wisp-cf': ['wisp-cf', node, [wrangler, 'dev', '--local', '--log-level', 'error', '--port', String(PORT)]],
   'hono-cf': ['hono', node, [wrangler, 'dev', '--local', '--log-level', 'error', '--port', String(PORT)]],
 };
-const routes = ['/', '/list', '/json'];
+const jar = 'sid=abc123; theme=dark';
+const routes = ['/', '/list', '/json', '/list1000', '/json-big', '/params/42?q=hello%20world&x=1'].filter((r) => !arg('routes', '') || arg('routes', '').split(',').some((m) => r.includes(m)));
+const hdr = (p) => (p.startsWith('/params') ? { cookie: jar } : {});
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const get = (p) => fetch(`http://127.0.0.1:${PORT}${p}`, { headers: { connection: "close" } }).then((r) => r.text());
+const get = (p) => fetch(`http://127.0.0.1:${PORT}${p}`, { headers: { connection: 'close', ...hdr(p) } }).then((r) => r.text());
 
 async function waitUp(child) {
   for (let i = 0; i < 120; i++) {
@@ -37,7 +39,7 @@ async function waitUp(child) {
 }
 
 function oha(path, s) {
-  const out = execFileSync('oha', ['-z', `${s}s`, '-c', conns, '--no-tui', '--output-format', 'json', `http://127.0.0.1:${PORT}${path}`], { maxBuffer: 1 << 26 });
+  const out = execFileSync('oha', ['-z', `${s}s`, '-c', conns, '--no-tui', '--output-format', 'json', ...(path.startsWith('/params') ? ['-H', `cookie: ${jar}`] : []), `http://127.0.0.1:${PORT}${path}`], { maxBuffer: 1 << 26 });
   const j = JSON.parse(out);
   const bad = Object.entries(j.statusCodeDistribution).filter(([c]) => c !== '200').length;
   return { rps: j.summary.requestsPerSec, p99: j.latencyPercentiles.p99 * 1000, bad };

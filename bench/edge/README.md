@@ -2,7 +2,8 @@
 
 Wisp's wasm build against Hono, SvelteKit (adapter-node) and Next.js
 (standalone) on the same runtime. Three routes, the same output in each:
-`GET /` ("hello", text), `GET /list` (HTML, 50 escaped items), `GET /json`.
+`GET /` ("hello", text), `GET /list` (HTML, 50 escaped items), `GET /json`; and the
+realistic routes at the end.
 `apps/` has the four apps. Load: `oha`, 10 s, 64 connections, 3 s warmup, median
 of 3. Not measured: Bun and Deno (not installed here; their shims use the same raw driver).
 
@@ -107,3 +108,36 @@ Cold start: in Node, compile 1 ms (lazy), instantiate 0.1 ms, `main` 1 ms,
 the first request's code compiled on first use most of the rest. Instantiating
 synchronously on the first request measured no better in workerd (31 vs 37 ms,
 noise about 6 ms), so it was dropped. `app.wasm` here: 511 KB (499 KB before).
+
+## Realistic routes
+
+`/list1000` (HTML, 1,000 escaped items), `/json-big` (200 objects of five
+fields, one a list) and `/params/42?q=hello%20world&x=1` with `cookie: sid=abc123;
+theme=dark` (a route param, a query value and a cookie read, answered as text).
+The JSON and text are byte-identical in the two apps; the HTML differs in the
+page head Wisp wraps around it (as `/list` always did), not in the items.
+`workerd.mjs` and `run.mjs` take `--routes list1000,json-big,params` to run
+only these. c=64; req/s (p99 ms), and workerd's CPU us/request. The machine
+was shared (other processes move a result by 15 to 30%); the two apps
+alternate within a run.
+
+workerd, 8 s, median of 5:
+
+| | `/list1000` | `/json-big` | `/params` |
+|---|---|---|---|
+| Wisp | 5,114 (27) 200 | 8,829 (11.7) 114 | 14,353 (10.6) 69 |
+| Hono | 1,884 (63) 538 | 11,387 (9.7) 90 | 17,769 (28) 58 |
+
+Node, 10 s, median of 3:
+
+| | `/list1000` | `/json-big` | `/params` |
+|---|---|---|---|
+| Wisp (raw sockets) | 7,428 (14) | 18,295 (6.4) | 107,692 (1.1) |
+| Hono | 1,776 (91) | 15,596 (17) | 49,016 (3.6) |
+
+Wisp builds the big page 2.7 to 4 times as fast (the escape and the list are
+one pass over bytes, Hono's are string work and a join). It is behind Hono
+on workerd where the work is native there: `JSON.stringify` serializes the 200
+objects in V8's C++ while Wisp's serializer runs in wasm (-22%), and a cookie
+is a call out of the wasm into the Request's headers on top of the entry
+(-19%). On Node, which has no entry cost, Wisp is ahead on all three.
