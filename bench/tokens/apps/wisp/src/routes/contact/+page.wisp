@@ -6,4 +6,4 @@ fn default(#[validate(len = 1..=50)] name: String, email: Email) {
 }
 ---
 <title>Contact</title>
-<form method="post" fields><button>Send</button></form>
+<form fields><button>Send</button></form>

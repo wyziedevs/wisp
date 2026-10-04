@@ -1,6 +1,5 @@
 ---
 // @feature crud
-#[action]
 fn remove(id: u64) {
     POSTS.remove(id);
 }

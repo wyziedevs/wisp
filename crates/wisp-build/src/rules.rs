@@ -70,6 +70,16 @@ pub struct Field {
     pub name: String,
     pub ty: String,
     pub native: Native,
+    /// A field of a struct parameter (`post: Post`), not a parameter itself.
+    pub whole: bool,
+}
+
+/// A text field a form asks for in a `<textarea>`: one named for long text.
+pub fn is_long(name: &str, ty: &str) -> bool {
+    matches!(
+        name,
+        "body" | "bio" | "message" | "comment" | "description" | "notes" | "content"
+    ) && ty::is_maybe_text(ty)
 }
 
 /// The `type` an `<input>` for a field takes (`<form fields>` writes it):
@@ -101,13 +111,14 @@ pub fn input_type(name: &str, ty: &str) -> &'static str {
 /// the form, gives that.
 pub fn fields(items: &Items, params: &[&str], shared: &[TypeItem]) -> Vec<Field> {
     let mut out = Vec::new();
-    let mut push = |action: &str, name: String, ty: &str, native: Native| {
+    let mut push = |action: &str, name: String, ty: &str, native: Native, whole: bool| {
         if !params.contains(&name.as_str()) {
             out.push(Field {
                 action: action.to_string(),
                 name,
                 ty: ty.to_string(),
                 native,
+                whole,
             });
         }
     };
@@ -126,7 +137,13 @@ pub fn fields(items: &Items, params: &[&str], shared: &[TypeItem]) -> Vec<Field>
                     let rules = (s.rules.iter().filter(|(n, _)| n == name))
                         .flat_map(|(_, r)| parse(r).unwrap_or_default().rules)
                         .collect::<Vec<_>>();
-                    push(&f.name, name.to_string(), ft, native(ft, &rules, true));
+                    push(
+                        &f.name,
+                        name.to_string(),
+                        ft,
+                        native(ft, &rules, true),
+                        true,
+                    );
                 }
                 continue;
             }
@@ -137,7 +154,7 @@ pub fn fields(items: &Items, params: &[&str], shared: &[TypeItem]) -> Vec<Field>
             let rules = (f.checks.iter().filter(|(c, _)| c == p))
                 .flat_map(|(_, r)| parse(r).unwrap_or_default().rules)
                 .collect::<Vec<_>>();
-            push(&f.name, p.clone(), t, native(t, &rules, false));
+            push(&f.name, p.clone(), t, native(t, &rules, false), false);
         }
     }
     out

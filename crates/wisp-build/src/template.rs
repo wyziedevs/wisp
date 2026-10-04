@@ -392,8 +392,11 @@ fn pagers(src: &str) -> Option<String> {
 
 /// `<form action="?/add" fields>` with a labelled `<input>` for each
 /// parameter of that action written in (`rules::input_type` gives its
-/// `type`), all on the tag's line, so the lines of the file stay where they
-/// are. `None` when no form says `fields`.
+/// `type`; a text field named like `body` is a `<textarea>`), all on the
+/// tag's line, so the lines of the file stay where they are. A form with no
+/// `action` or `method` posts to `fn default` (`method="post"` is added);
+/// `fields={post}` starts each field of a struct parameter from `post`.
+/// `None` when no form says `fields`.
 fn form_fields(src: &str, fields: &[Field]) -> Result<Option<String>, Error> {
     use std::fmt::Write as _;
     if !src.contains("fields") {
@@ -439,18 +442,25 @@ fn form_fields(src: &str, fields: &[Field]) -> Result<Option<String>, Error> {
             }
             attrs.push((name, value, at, j.min(b.len())));
         }
-        let Some(&(_, _, tok, tok_end)) = attrs
-            .iter()
-            .find(|a| a.0 == "fields" && a.1.is_empty() && !src[a.2..a.3].contains('='))
-        else {
+        let Some(&(_, given, tok, tok_end)) = attrs.iter().find(|a| {
+            a.0 == "fields"
+                && (a.1.is_empty() && !src[a.2..a.3].contains('=')
+                    || a.1.starts_with('{') && a.1.ends_with('}'))
+        }) else {
             continue;
         };
+        let start_from = given.strip_prefix('{').and_then(|v| v.strip_suffix('}'));
         let value = |n: &str| attrs.iter().find(|a| a.0 == n).map(|a| a.1);
+        let mut implied = false;
         let action = match (value("action"), value("method")) {
             (Some(a), _) => a
                 .strip_prefix("?/")
                 .map(|a| a.split('&').next().unwrap_or(a)),
             (None, Some(m)) if m.eq_ignore_ascii_case("post") => Some("default"),
+            (None, None) => {
+                implied = true;
+                Some("default")
+            }
             _ => None,
         };
         let line = src[..start].matches('\n').count() as u32 + 1;
@@ -466,28 +476,48 @@ fn form_fields(src: &str, fields: &[Field]) -> Result<Option<String>, Error> {
         let mut inputs = String::new();
         for f in fields.iter().filter(|f| f.action == action) {
             let kind = crate::rules::input_type(&f.name, &f.ty);
-            let kind = if kind.is_empty() {
-                String::new()
-            } else {
-                format!(" type=\"{kind}\"")
-            };
             let mut label = f.name.replace('_', " ");
             if let Some(first) = label.get_mut(..1) {
                 first.make_ascii_uppercase();
             }
-            let _ = write!(
-                inputs,
-                "<label>{label} <input name=\"{}\"{kind}></label>",
-                f.name
-            );
+            let from = (start_from.filter(|_| f.whole)).map(|e| format!("{e}.{}", f.name));
+            let _ = if kind.is_empty() && crate::rules::is_long(&f.name, &f.ty) {
+                let text = from.map(|e| format!("{{{e}}}")).unwrap_or_default();
+                write!(
+                    inputs,
+                    "<label>{label} <textarea name=\"{}\">{text}</textarea></label>",
+                    f.name
+                )
+            } else {
+                let typed = if kind.is_empty() {
+                    String::new()
+                } else {
+                    format!(" type=\"{kind}\"")
+                };
+                let start = match (kind, from) {
+                    ("password" | "file", _) | (_, None) => String::new(),
+                    ("checkbox", Some(e)) => format!(" checked={{{e}}}"),
+                    (_, Some(e)) => format!(" value={{{e}}}"),
+                };
+                write!(
+                    inputs,
+                    "<label>{label} <input name=\"{}\"{typed}{start}></label>",
+                    f.name
+                )
+            };
         }
         if inputs.is_empty() {
-            return Err(fail(
-                "`fields`: this action takes nothing a form could ask for (a `#[action]` of this page, with parameters)",
-            ));
+            return Err(fail(if implied {
+                "`<form fields>` posts to `fn default`, and this page has none with parameters: write one, or `action=\"?/name\"`"
+            } else {
+                "`fields`: this action takes nothing a form could ask for (a `#[action]` of this page, with parameters)"
+            }));
         }
         let end = (j + 1 + usize::from(src[j..].starts_with("/>"))).min(src.len());
         out.push_str(&src[from..src[..tok].trim_end().len()]);
+        if implied {
+            out.push_str(" method=\"post\"");
+        }
         out.push_str(&src[tok_end..end]);
         out.push_str(&inputs);
         (from, i) = (end, end);
@@ -5517,7 +5547,52 @@ mod tests {
             name: name.into(),
             ty: ty.into(),
             native: crate::rules::native(ty, &[], false),
+            whole: false,
         }
+    }
+
+    #[test]
+    fn fields_alone_post_to_default_and_start_from_a_value() {
+        let whole = |name: &str, ty: &str| Field {
+            whole: true,
+            ..field("default", name, ty)
+        };
+        let fields = [
+            whole("title", "String"),
+            whole("body", "String"),
+            whole("done", "bool"),
+            whole("secret", "Password"),
+            field("default", "note", "String"),
+        ];
+        let plain = form_fields("<form fields><button>Go</button></form>", &fields);
+        assert_eq!(
+            plain.unwrap().unwrap(),
+            "<form method=\"post\">\
+             <label>Title <input name=\"title\"></label>\
+             <label>Body <textarea name=\"body\"></textarea></label>\
+             <label>Done <input name=\"done\" type=\"checkbox\"></label>\
+             <label>Secret <input name=\"secret\" type=\"password\"></label>\
+             <label>Note <input name=\"note\"></label><button>Go</button></form>"
+        );
+        let edit = form_fields("<form fields={post}></form>", &fields);
+        assert_eq!(
+            edit.unwrap().unwrap(),
+            "<form method=\"post\">\
+             <label>Title <input name=\"title\" value={post.title}></label>\
+             <label>Body <textarea name=\"body\">{post.body}</textarea></label>\
+             <label>Done <input name=\"done\" type=\"checkbox\" checked={post.done}></label>\
+             <label>Secret <input name=\"secret\" type=\"password\"></label>\
+             <label>Note <input name=\"note\"></label></form>"
+        );
+        // A page with no `fn default` to post to says so.
+        let other = [Field {
+            action: "join".into(),
+            ..field("join", "q", "String")
+        }];
+        let err = form_fields("<form fields></form>", &other).unwrap_err();
+        assert!(err.msg.contains("fn default"), "{}", err.msg);
+        // A form that gets says nothing is no action's.
+        assert!(form_fields("<form method=\"get\" fields></form>", &fields).is_err());
     }
 
     #[test]
@@ -5593,7 +5668,12 @@ mod tests {
     #[test]
     fn fields_need_an_action_with_params() {
         let err = |src: &str| form_fields(src, &[field("a", "x", "String")]).unwrap_err();
-        assert!(err("<form fields></form>").msg.contains("named action"));
+        assert!(err("<form fields></form>").msg.contains("fn default"));
+        assert!(
+            err("<form method=\"get\" fields></form>")
+                .msg
+                .contains("named action")
+        );
         assert!(
             err("<form action=\"/x\" fields></form>")
                 .msg

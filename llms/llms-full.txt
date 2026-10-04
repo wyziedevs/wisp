@@ -114,14 +114,17 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
 
 - No `->`: returns `Result` (`?`, `return error(..)`, end in `redirect(..)`
   or `;`); `.await` makes it async. Or return `Response`/`Option<Response>`
-  to answer instead of the page. A lone `fn default` needs no `#[action]`.
+  to answer instead of the page. `#[action]` is left out for a lone `fn
+  default` and each fn the markup posts to (`?/name`).
 - `<form action="?/like">` posts (`method="post"` is added); `<form
   method="post">` → `fn default`; `<button action="?/rm&id={x.id}">` outside
   a form is a one-button form.
-- `<form action="?/join" fields>` writes a labelled input per param: `Email`
-  → `type=email`, `password`/`*_password` → password, `Image` → file, `bool`
-  → checkbox, numbers → number, else text. Add your own button; for a
-  textarea or select write the inputs yourself.
+- `<form fields>` (posts to `fn default`; or `action="?/join" fields`) writes
+  a labelled input per param: `Email` → `type=email`, `password`/`*_password`
+  → password, `Image` → file, `bool` → checkbox, numbers → number, text named
+  `body message bio comment description notes content` → textarea, else text.
+  Add your own button. `fields={post}` starts a struct param's fields from
+  `post` (an edit form). For a select write the inputs yourself.
 - Params by name: route param, then form, then query. `T` required (400
   missing; not a `T` → 422 by field), `Option<T>` missing/blank → None,
   `bool` checkbox, `Vec<T>` repeated, `&str`, `Email`, or a `#[model]`
@@ -225,8 +228,9 @@ href={p.path}>{p.title}</a>{/each}` (newest `date` first).
 
 `<button on:click="count++">{:count}</button>` with `<script>let count = 0</script>`
 (top-level lets are state). A page's Rust names are browser values by name (`items`, `data.items`).
-`bind:value="q"` with no `let q` declares it, so a live search needs no
-script: `<input bind:value="q">` `{:#each items.filter((i) => matches(i.name,
+`bind:value="q"` with no `let q` declares it, and so does a handler that
+toggles (`open = !open`: false) or counts (`n++`: 0) a name nothing declares,
+so a live search needs no script: `<input bind:value="q">` `{:#each items.filter((i) => matches(i.name,
 q)) as i}…{:/each}`. Directives `on:click` (`.prevent .once .debounce.300ms`…),
 `bind:value|checked|this`, `:attr="js"`, `:text`, `class:x="js"`,
 `transition:fade`, `use:action`; client blocks `{:#if}` `{:#each}`; runes
@@ -309,19 +313,21 @@ pub static USERS: Table<User> = Table::saved();
 ---
 #[action]                                       // sign up
 fn signup(email: Email, #[validate(min_len = 8)] password: Password) {
-    cx.signup(&USERS, User { email, password }).await?;  // hashes it; 422 if taken
+    cx.signup(User { email, password }).await?;  // hashes it; 422 if taken
     redirect("/me")
 }
 #[action]                                       // log in
 fn login(email: Email, password: String) {
-    cx.login(&USERS, &email, &password).await?; // 422 for either wrong, equally slow
+    cx.login(&email, &password).await?;         // 422 for either wrong, equally slow
     redirect("/me")
 }
-let me = cx.user(&USERS)?;                      // Row<User>, or 303 to /login
+let me = cx.user()?;                            // Row<User>, or 303 to /login
 ---
 <h1>{me.email}</h1>
 ```
-Both sign in. `wisp::users(&db::USERS)` in `init` makes it `cx.user()`.
+Both sign in. `user`, `login` and `signup` take the table for you: the only
+`Table` of a model with a `Password` field in `src/db.rs`, else the one
+`wisp::users(&db::USERS)` names in `init`; or pass `&USERS` first.
 `cx.signed_in()?` is the id (`.ok()`: no redirect; JSON clients get 401),
 `cx.sign_out()`, `wisp::sign_out_everywhere(id)?`, `wisp::sign_in_page("/enter")`.
 `wisp::login`/`signup` are these without a Cx. Hashes: PBKDF2-SHA256, ~0.2 s
@@ -381,7 +387,7 @@ no-wait fast path off every route.
   bytes) file_in(dir, name).await stream ndjson events websocket`
   + `.with_status(s) .with_header(n, v)`.
 - State: `Table<T>`: `add(v)→id get(id) all() find(f) filter(f) update(id, f)
-  remove(id) len() page(cx, 10)`; rows are `Row { id, value }` that read as
+  set(id, v) remove(id) len() page(cx, 10)`; rows are `Row { id, value }` that read as
   the value. `Shared<T>` (`.lock()`), `wisp::provide(v)`/`state::<T>()`,
   `wisp::env("K")`, `spawn`, `every`, `wisp::channel("x")`
   `.send/events()` (SSE)`/websocket()`, `RateLimit::per_minute(n).check(key)?`,
@@ -424,35 +430,19 @@ no-wait fast path off every route.
 
 ## Commands
 
-<<<<<<< HEAD
-`wisp new app` Â· `wisp dev` (hot reload keeps `$state`; `Alt+Shift+W`
-devtools; `/_wisp/components` workshop of `*.stories.wisp`) Â· `wisp test
-[--browser]` Â· `wisp check [--types]` Â· `wisp fmt [--check]` Â· `wisp build`
-(`--static`, `--spa`, `--docker`, `--target
-cloudflare|pages|deno|vercel|netlify|node|bun|lambda|native` (`--edge` with vercel or netlify: their edge
-runtime), `--client ts`,
-`--sourcemap`) Â· `wisp deploy init <host>` (a GitHub Actions workflow; or
-`fly|render|railway`: that host's config) Â· `wisp routes` Â· `wisp new-route
-/path page|server|rest` Â· `wisp add|remove pkg` (`wisp add` alone: the recipes in `add/`) Â· `wisp ui
-add button dialog` (accessible components into `src/components`) Â· `wisp lsp`
-Â· `wisp update-docs` Â· `wisp mcp` (`claude mcp add wisp -- wisp mcp`). Docs:
-README.md, docs/design.md, client.md, api.md, deploy.md, embed.md, tokens.md,
-or llms-full.txt (this file, client, api, deploy and embed).
-=======
-`wisp new app [--template demo|minimal|api] [--[no-]tailwind|git|install] [-y]`,
-`wisp dev [--port N]` (hot reload keeps `$state`; `Alt+Shift+W` devtools;
-`/_wisp/components` workshop of `*.stories.wisp`), `wisp test [--browser]`,
-`wisp check [--types]`, `wisp fmt [--check]`, `wisp build` (`--static`,
-`--spa`, `--docker [--force]`, `--target cloudflare|deno|vercel|netlify|node|bun|lambda|native`,
-`--client ts [--out f]`, `--sourcemap`), `wisp deploy init <host>` (GitHub
-Actions workflow for cloudflare deno vercel netlify lambda fly pages; or
-`fly|render|railway`: that host's config), `wisp routes`, `wisp new-route
-/path page|server|rest`, `wisp add|remove pkg`, `wisp ui add|list button
-dialog` (accessible components into `src/components`), `wisp lsp`, `wisp
-update-docs`, `wisp mcp` (`claude mcp add wisp -- wisp mcp`). Docs: README.md,
-docs/design.md, client.md, api.md, deploy.md, embed.md, tokens.md, or
-llms-full.txt (this file, client, api, deploy and embed).
->>>>>>> 941a5e5 (Shrink the AI-facing docs and fix stale facts (commands, prelude, mojibake))
+`wisp new app [--template demo|minimal|api]` · `wisp dev` (hot reload keeps
+`$state`; `Alt+Shift+W` devtools; `/_wisp/components` workshop of
+`*.stories.wisp`) · `wisp test [--browser]` · `wisp check [--types]` · `wisp
+fmt [--check]` · `wisp build` (`--static`, `--spa`, `--docker`, `--target
+cloudflare|pages|deno|vercel|netlify|node|bun|lambda|native` (`--edge` with
+vercel or netlify: their edge runtime), `--client ts`, `--sourcemap`) · `wisp
+deploy init <host>` (a GitHub Actions workflow; or `fly|render|railway`: that
+host's config) · `wisp routes` · `wisp new-route /path page|server|rest` ·
+`wisp add|remove pkg` (`wisp add` alone: the recipes in `add/`) · `wisp ui
+add|list button dialog` (accessible components into `src/components`) · `wisp
+lsp` · `wisp update-docs` · `wisp mcp` (`claude mcp add wisp -- wisp mcp`).
+Docs: README.md, docs/design.md, client.md, api.md, deploy.md, embed.md,
+tokens.md, or llms-full.txt (this file, client, api, deploy and embed).
 
 
 <!-- docs/client.md -->
@@ -1320,7 +1310,7 @@ cookies); a site not allowed gets no CORS headers. Some paths only:
 - Sessions: `cx.sign_in(id)` after `wisp::password::check(&typed,
   user_hash).await?` (`None` for no such user, as slow; `hash(&password)
   .await?`; both on hashing threads), then `cx.signed_in()?` or
-  `cx.user(&USERS)?` (`cx.login`/`signup`: docs/auth.md) where only members
+  `cx.user()?` (`cx.login`/`signup`: docs/auth.md) where only members
   go: signed out, a page 303s to `/login` (`wisp::sign_in_page("/x")`), an
   endpoint or JSON client gets 401 (`signed_out`). `cx.sign_out()` ends it
   here. The id is in a signed cookie for 30 days; each `sign_in` sets a new

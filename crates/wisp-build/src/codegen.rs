@@ -1665,6 +1665,7 @@ impl<'a> Project<'a> {
         rs: Option<PathBuf>,
         wisp: &Path,
         front: Option<String>,
+        markup: &str,
     ) -> Result<Logic, String> {
         let Some(code) = front else {
             let items = match &rs {
@@ -1687,7 +1688,7 @@ impl<'a> Project<'a> {
                     .unwrap_or_default()
             ));
         }
-        let code = rust_scan::mark_default(&code).unwrap_or(code);
+        let code = rust_scan::mark_actions(&code, markup).unwrap_or(code);
         let (items_src, stmts) = rust_scan::split_items(&code);
         let at = |e: String| format!("{}:{e}", self.rel(wisp));
         let items = rust_scan::scan(&items_src).map_err(at)?;
@@ -1909,7 +1910,7 @@ impl<'a> Project<'a> {
                 ));
             }
             let rs = self.tree.layouts[i].has_rs.then(|| dir.join("+layout.rs"));
-            let lg = self.logic(rs, &file, front)?;
+            let lg = self.logic(rs, &file, front, "")?;
             let where_ = lg.file.as_deref().map(|f| self.rel(f)).unwrap_or_default();
             if let Some(a) = lg.items.fns.iter().find(|f| f.action) {
                 return Err(format!(
@@ -2189,7 +2190,12 @@ impl<'a> Project<'a> {
         route.indexed &= !noindex(&src);
         let (front, markup) =
             crate::split_front(&src).map_err(|e| format!("{}:{e}", self.rel(&file)))?;
-        let mut lg = self.logic(page_rs.then(|| dir.join("+page.rs")), &file, front.clone())?;
+        let mut lg = self.logic(
+            page_rs.then(|| dir.join("+page.rs")),
+            &file,
+            front.clone(),
+            &markup,
+        )?;
         let fields = rules::fields(&lg.items, &self.tree.routes[i].params(), &self.shared);
         let rs = lg.file.clone().unwrap_or_else(|| dir.join("+page.rs"));
         let mut shims = Vec::new();
@@ -3159,6 +3165,11 @@ impl Gen {
                 let src = crate::read_source(&h.file).map_err(|e| format!("{rel}: {e}"))?;
                 self.users = rust_scan::users_table(&src).map_err(|e| format!("{rel}: {e}"))?;
             }
+        }
+        if let (None, Some(db)) = (&self.users, p.mods.iter().find(|m| m.name == "db")) {
+            let src =
+                crate::read_source(&db.file).map_err(|e| format!("{}: {e}", p.rel(&db.file)))?;
+            self.users = rust_scan::account_table(&src);
         }
         self.db = p.mods.iter().any(|m| m.name == "db");
         // Modules of the app's own (`src/notes.rs`), reachable by name from
@@ -5046,6 +5057,22 @@ fn app_mods(root: &Path) -> Result<(Vec<UserMod>, Vec<RemoteFn>), String> {
 }
 
 /// Whether `src` has `mod NAME;` (`pub mod`, with attributes, anywhere).
+/// The state a handler that does nothing else makes of its name: `open =
+/// !open` is `open`, starting ` = false`; `n++` or `n--`, ` = 0`.
+fn state_of(handler: &str) -> Option<(&str, &str)> {
+    let h = handler.trim().trim_end_matches(';').trim_end();
+    let counted = (h.strip_suffix("++").or_else(|| h.strip_suffix("--")))
+        .map(str::trim_end)
+        .or_else(|| (h.strip_prefix("++").or_else(|| h.strip_prefix("--"))).map(str::trim_start));
+    if let Some(n) = counted {
+        return ty::is_ident(n).then_some((n, " = 0"));
+    }
+    let (name, rest) = h.split_once('=')?;
+    let name = name.trim_end();
+    let flipped = rest.trim_start().strip_prefix('!')?.trim();
+    (ty::is_ident(name) && flipped == name).then_some((name, " = false"))
+}
+
 fn declares_mod(src: &str, name: &str) -> bool {
     src.match_indices("mod ").any(|(i, _)| {
         let before = src[..i].chars().next_back();
@@ -5504,7 +5531,8 @@ struct Gen {
     /// Dev builds: the templates' modules with a `__wisp_types`, which
     /// only `wisp check --types` compiles (`wisp::__ts!`).
     types: Option<Vec<String>>,
-    /// The users table `init` names (`db::USERS`), which `cx.user()` reads.
+    /// The users table `init` names, else the one account table of `src/db.rs`
+    /// (`db::USERS`), which `cx.user()`, `login` and `signup` take.
     users: Option<String>,
     /// There is a `src/db.rs`, whose `pub` items every route file sees.
     db: bool,
@@ -7464,13 +7492,26 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
         .chain(rest.clone())
         .collect();
     // `bind:value="q"` with no `q` anywhere declares it: `let q` at the end
-    // of the script (or as the whole script), so offsets in it hold.
+    // of the script (or as the whole script), so offsets in it hold. So
+    // does a handler that only toggles (`open = !open`: false) or counts
+    // (`n++`: 0) a name nothing else has.
     let mut src = src.to_string();
     let mut bound: Vec<&str> = Vec::new();
+    let mut started: Vec<(String, String)> = Vec::new();
     for (g, scope) in tt.groups.iter().zip(&scopes) {
-        for d in g.directives.iter().filter(|d| d.kind == Dir::Bind) {
+        for d in g
+            .directives
+            .iter()
+            .filter(|d| matches!(d.kind, Dir::Bind | Dir::On))
+        {
             let Some(v) = d.value.as_ref().map(|c| c.src.trim()) else {
                 continue;
+            };
+            let (v, start) = if d.kind == Dir::On {
+                let Some(state) = state_of(v) else { continue };
+                state
+            } else {
+                (v, "")
             };
             let free = ty::is_ident(v)
                 && !js::is_reserved(v)
@@ -7484,7 +7525,11 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
             if free {
                 bound.push(v);
                 src.push_str("\nlet ");
+                if !start.is_empty() {
+                    started.push((v.to_string(), start[3..].to_string()));
+                }
                 src.push_str(v);
+                src.push_str(start);
             }
         }
     }
@@ -7643,6 +7688,8 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
         .collect();
     // A prop `$props()` renames is its prop, to the first paint.
     let mut declared: Vec<String> = declared.into_iter().map(|(n, _)| n).collect();
+    declared.extend(started.iter().map(|(n, _)| n.clone()));
+    lets.extend(started);
     for p in rune
         .iter()
         .flat_map(|r| &r.props)
@@ -9755,6 +9802,13 @@ fn report(cx: &mut Cx, err: &Error) {}",
         let code = app("user-some", &[page, hooks, db]).unwrap();
         assert!(code.contains("cx.user(&db::USERS)?"), "{code}");
         assert!(code.contains("Table::saved(\"users\")"), "{code}");
+        // Without `init`, the one table of a model with a password.
+        let db = (
+            "src/db.rs",
+            "#[model]\npub struct User { email: Email, password: Password }\npub static USERS: Table<User> = Table::saved();",
+        );
+        let code = app("user-lone", &[page, db]).unwrap();
+        assert!(code.contains("cx.user(&db::USERS)?"), "{code}");
     }
 
     #[test]
@@ -11342,6 +11396,17 @@ pub fn load() -> Data { todo!() }";
             "{}",
             c.source
         );
+    }
+
+    #[test]
+    fn a_toggle_or_a_count_is_state() {
+        assert_eq!(state_of("open = !open"), Some(("open", " = false")));
+        assert_eq!(state_of(" n++ "), Some(("n", " = 0")));
+        assert_eq!(state_of("--n;"), Some(("n", " = 0")));
+        assert_eq!(state_of("open = !shut"), None);
+        assert_eq!(state_of("a.b++"), None);
+        assert_eq!(state_of("n = 1"), None);
+        assert_eq!(state_of("open == !open"), None);
     }
 
     #[test]

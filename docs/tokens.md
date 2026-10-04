@@ -21,7 +21,7 @@ with the workspace, and its tests check each feature.
 
 | Stack | list | form | api | layout | search | data | setup | total | chars / 4 | files |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| **Wisp** | 58 | 94 | 31 | 60 | 104 | 115 | 0 | **462** | 281 | 6 |
+| **Wisp** | 58 | 89 | 31 | 60 | 111 | 115 | 0 | **464** | 283 | 6 |
 | Wisp, before the sugar round | 60 | 118 | 35 | 60 | 106 | 115 | 0 | 494 | 298 | 6 |
 | Wisp, before this round | 74 | 127 | 35 | 60 | 120 | 115 | 0 | 531 | 321 | 6 |
 | Wisp, two rounds ago | 74 | 149 | 35 | 60 | 134 | 115 | 0 | 567 | 341 | 6 |
@@ -56,6 +56,23 @@ The round before:
 
 An action form's page is now baked whole when nothing else in it reads the
 request: what was typed and what was wrong are never there on a GET.
+
+## A real app: auth, CRUD, upload, live, a component
+
+`bench/tokens/real` is sign up and in, a posts table with validation, edit,
+delete, pages and live refresh, an avatar upload and a toggle component:
+10 files, **995** tokens in Wisp (was 1160), 3.4x less than SvelteKit 3 and
+3.2x less than Next.js 15. Its tests check every feature. This round's cuts:
+
+| Was | Now | Saves |
+|---|---|---|
+| `#[action]` on each action | left out for a lone `fn default` and each fn the markup posts to (`?/name`) | 3 each |
+| `<form method="post" fields>` | `<form fields>`: posts to `fn default` | 4 |
+| two inputs and a textarea, each `aria-label="x" name="x"` | `<form fields><button>Save</button></form>`; `body`, `message`, `bio`… are textareas | 30 |
+| an edit form with `value={post.title}` per input | `<form fields={post}>` starts each field from `post` | 35 |
+| `POSTS.update(id, ..)` with a closure that assigns the post | `POSTS.set(id, post)` | 6 |
+| `cx.login(&USERS, ..)`, `cx.signup(&USERS, ..)`, `cx.user(&USERS)` | the table is the lone account table of `src/db.rs` | 3 each |
+| `<script>let open = false</script>` for `open = !open` | a handler that toggles or counts a name nothing declares declares it | 11 |
 
 ## Four apps, against six frameworks
 
@@ -138,7 +155,7 @@ Where Wisp cost more, the framework changed, not the apps. This version:
 |---|---|---|
 | a store, a model, two `+server.rs` with five handlers, an auth hook | `#[derive(Rest)]` on the struct, `#[rest(write = "API_KEY")]`, saved across restarts | 547 of the api's 606 |
 | `[id=int]/+server.rs` beside `+server.rs` | a handler that takes `id` serves `/[id]`; `list` is the folder's GET | a file, its path, its imports |
-| `if text.trim().is_empty() \|\| text.len() > 100 { return invalid(..) }` | `#[validate(len = 1..=100)] text: String` on the action | the check and its message |
+| `if text.trim().is_empty() || text.len() > 100 { return invalid(..) }` | `#[validate(len = 1..=100)] text: String` on the action | the check and its message |
 | `<form method="post" action="?/add">` | `<form action="?/add">` | 5 per form |
 | `value={cx.input("text")}` | nothing: an action form's inputs keep what was sent | 12 per input |
 | `{#if let Some(e) = cx.problem("text")}<p>{e}</p>{/if}` | `{cx.problem("text")}`: an `Option` shows nothing for `None` | 21 |

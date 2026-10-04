@@ -805,27 +805,59 @@ pub fn split_items(code: &str) -> (String, String) {
     (keep(true), keep(false))
 }
 
-/// A `---` block's `fn default`, when it is the only one and the block has
-/// no `#[action]`, is the page's default action: the block with `#[action]`
-/// put before it, on its line, or `None` when that is not so. One that
-/// returns data is a function of the page's own, not an action.
-pub fn mark_default(code: &str) -> Option<String> {
+/// The actions a `---` block does not mark: its `fn default`, when it is the
+/// only one and the block has no `#[action]`, and each function the markup
+/// posts to (`action="?/name"`, `formaction`). The block with `#[action]`
+/// put before each, on its line, or `None` when there is none. A function
+/// that returns data is the page's own, not an action; one name twice is
+/// left for the build to refuse.
+pub fn mark_actions(code: &str, markup: &str) -> Option<String> {
     let items = scan(&split_items(code).0).ok()?;
-    if items.fns.iter().any(|f| f.action) {
-        return None;
+    let marked = items.fns.iter().any(|f| f.action);
+    let posted = posted_to(markup);
+    let mut lines: Vec<usize> = items
+        .fns
+        .iter()
+        .filter(|f| {
+            let once = items.fns.iter().filter(|g| g.name == f.name).count() == 1;
+            let wanted = posted.contains(&f.name.as_str()) || (f.name == "default" && !marked);
+            let gives_none =
+                f.returns.is_empty() || f.fallible || f.returns_kind() != Returns::Other;
+            !f.action && f.remote.is_none() && once && wanted && gives_none
+        })
+        .map(|f| f.line)
+        .collect();
+    lines.sort_unstable_by(|a, b| b.cmp(a));
+    let mut out = code.to_string();
+    for line in &lines {
+        let start: usize = code
+            .split_inclusive('\n')
+            .take(line - 1)
+            .map(str::len)
+            .sum();
+        let at = code.len() - code[start..].trim_start_matches([' ', '\t']).len();
+        out.insert_str(at, "#[action] ");
     }
-    let mut lone = items.fns.iter().filter(|f| f.name == "default");
-    let f = lone.next().filter(|_| lone.next().is_none())?;
-    if !(f.returns.is_empty() || f.fallible || f.returns_kind() != Returns::Other) {
-        return None;
+    (!lines.is_empty()).then_some(out)
+}
+
+/// The names `action="?/name"` and `formaction="?/name"` post to in `markup`.
+fn posted_to(markup: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    for (at, _) in markup.match_indices("action=") {
+        let rest = &markup[at + 7..];
+        let Some(rest) = rest
+            .strip_prefix(['"', '\''])
+            .and_then(|r| r.strip_prefix("?/"))
+        else {
+            continue;
+        };
+        let end = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        out.push(&rest[..end]);
     }
-    let line: usize = code
-        .split_inclusive('\n')
-        .take(f.line - 1)
-        .map(str::len)
-        .sum();
-    let at = code.len() - code[line..].trim_start_matches([' ', '\t']).len();
-    Some(format!("{}#[action] {}", &code[..at], &code[at..]))
+    out
 }
 
 /// The names the top-level `let`s of `stmts` bind: `let (a, mut b) = …`
@@ -1090,9 +1122,34 @@ pub fn users_table(src: &str) -> Result<Option<String>, String> {
     Ok(Some(arg.trim().to_string()))
 }
 
-/// `src` with each `cx.user()` made `cx.user(&TABLE)` (the table
-/// `wisp::users` names in `init`), or `None` if there is none. An error
-/// when there is one but no table.
+/// The users table of a `db.rs` with exactly one: a `static` `Table<M>`
+/// whose model `M` has a `Password` field, as `db::NAME`.
+pub fn account_table(src: &str) -> Option<String> {
+    let items = scan(&split_items(src).0).ok()?;
+    let mut found = items.consts.iter().filter(|c| {
+        let model =
+            c.ty.split_once('<')
+                .map(|(_, m)| m.trim_end_matches('>').trim());
+        c.is_static
+            && last_segment(&c.ty) == "Table"
+            && model.is_some_and(|m| {
+                (items.types.iter()).any(|t| {
+                    t.name == m
+                        && t.fields
+                            .iter()
+                            .any(|(_, ty)| last_segment(ty) == "Password")
+                })
+            })
+    });
+    let one = found.next()?;
+    found.next().is_none().then(|| format!("db::{}", one.name))
+}
+
+/// `src` with each `cx.user()`, `cx.login(email, password)` and
+/// `cx.signup(row)` given the users table (the one `wisp::users` names in
+/// `init`, else the lone account table of `db.rs`): `cx.user(&db::USERS)`.
+/// `None` if there is none of them; an error when there is one but no
+/// table. The calls that name a table are left alone.
 pub fn bind_user(src: &str, table: Option<&str>) -> Result<Option<String>, String> {
     let b = src.as_bytes();
     let (mut out, mut from, mut i) = (String::new(), 0, 0);
@@ -1102,19 +1159,53 @@ pub fn bind_user(src: &str, table: Option<&str>) -> Result<Option<String>, Strin
             continue;
         }
         let end = ident_end(b, i);
-        if &src[i..end] == "cx" && src[end..].starts_with(".user()") && (i == 0 || b[i - 1] != b'.')
+        let call = &src[end..];
+        let short = [(".user(", 0), (".login(", 2), (".signup(", 1)]
+            .into_iter()
+            .find(|(name, args)| {
+                call.starts_with(name) && args_of(b, end + name.len() - 1) == Some(*args)
+            });
+        if &src[i..end] == "cx"
+            && (i == 0 || b[i - 1] != b'.')
+            && let Some((name, args)) = short
         {
             let Some(table) = table else {
-                return Err("`cx.user()` needs `wisp::users(&db::USERS)` in `init` (src/hooks.rs), naming the users table".into());
+                return Err(format!(
+                    "`cx{}{}` needs the users table: one `static` `Table` of a model with a `Password` field in src/db.rs, or `wisp::users(&db::USERS)` in `init` (src/hooks.rs) naming it",
+                    name,
+                    if args == 0 { ")" } else { "…)" }
+                ));
             };
-            out.push_str(&src[from..end + 6]);
-            let _ = write!(out, "&{table}");
-            from = end + 6;
+            let at = end + name.len();
+            out.push_str(&src[from..at]);
+            let _ = write!(out, "&{table}{}", if args == 0 { "" } else { ", " });
+            from = at;
         }
         i = end;
     }
     out.push_str(&src[from..]);
     Ok((from > 0).then_some(out))
+}
+
+/// How many arguments the call whose `(` is at `open` has.
+fn args_of(b: &[u8], open: usize) -> Option<usize> {
+    let (mut depth, mut commas, mut seen, mut i) = (1, 0, false, open + 1);
+    while i < b.len() {
+        match b[i] {
+            b'(' | b'[' | b'{' => (depth, seen) = (depth + 1, true),
+            b')' | b']' | b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(commas + usize::from(seen));
+                }
+            }
+            b',' if depth == 1 => (commas, seen) = (commas + 1, false),
+            c if !c.is_ascii_whitespace() => seen = true,
+            _ => {}
+        }
+        i = skip_literal(b, i) + 1;
+    }
+    None
 }
 
 /// `s` with its comments blanked out.
@@ -1775,11 +1866,34 @@ fn a() {}"
         assert_eq!(bind_user(src, Some("db::USERS")), Ok(Some(want.into())));
         assert_eq!(bind_user("cx.user(&T)", None), Ok(None));
         assert!(bind_user(src, None).unwrap_err().contains("wisp::users"));
+        // Login and sign-up too, unless they already name the table.
+        let src = "cx.login(&email, &password).await?; cx.signup(U { a: 1, b }).await?; cx.login(&T, &e, &p); cx.signup(&T, u)";
+        let want = "cx.login(&db::U, &email, &password).await?; cx.signup(&db::U, U { a: 1, b }).await?; cx.login(&T, &e, &p); cx.signup(&T, u)";
+        assert_eq!(bind_user(src, Some("db::U")), Ok(Some(want.into())));
+        assert_eq!(bind_user("cx.login(&T, &e, &p)", None), Ok(None));
+        assert!(
+            bind_user("cx.login(a, b)", None)
+                .unwrap_err()
+                .contains("Password")
+        );
     }
 
     #[test]
-    fn a_lone_default_is_an_action() {
-        let marked = |c| mark_default(c);
+    fn the_users_table_is_the_lone_account_table() {
+        let db = "#[model]\nstruct User { email: Email, password: Password }\n#[model]\nstruct Post { t: String }\n\
+                  pub static USERS: Table<User> = Table::saved();\npub static POSTS: Table<Post> = Table::saved();";
+        assert_eq!(account_table(db), Some("db::USERS".into()));
+        let two = format!("{db}\npub static ADMINS: Table<User> = Table::saved();");
+        assert_eq!(account_table(&two), None);
+        assert_eq!(
+            account_table("pub static POSTS: Table<Post> = Table::saved();"),
+            None
+        );
+    }
+
+    #[test]
+    fn an_action_is_a_lone_default_or_posted_to() {
+        let marked = |c| mark_actions(c, "");
         assert_eq!(
             marked("let a = 1;\n    pub async fn default(x: u8) {}\n").as_deref(),
             Some("let a = 1;\n    #[action] pub async fn default(x: u8) {}\n")
@@ -1791,6 +1905,19 @@ fn a() {}"
         assert_eq!(marked("fn default() -> u32 { 1 }"), None);
         assert_eq!(marked("fn other() {}"), None);
         assert_eq!(marked("#[action]\nfn default() {}"), None);
+        // The markup says which: each function it posts to.
+        let form = "<form action=\"?/add\"></form><button formaction='?/rm&id=1'>x</button>";
+        let code = "fn add() {}\nfn rm(id: u64) {}\nfn size() -> u8 { 1 }\n#[action]\nfn old() {}";
+        assert_eq!(
+            mark_actions(code, form).as_deref(),
+            Some(
+                "#[action] fn add() {}\n#[action] fn rm(id: u64) {}\nfn size() -> u8 { 1 }\n#[action]\nfn old() {}"
+            )
+        );
+        assert_eq!(
+            mark_actions("fn size() -> u8 { 1 }", "<form action=\"?/size\">"),
+            None
+        );
     }
 
     #[test]

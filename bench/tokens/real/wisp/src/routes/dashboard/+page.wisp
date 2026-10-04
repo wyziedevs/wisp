@@ -1,12 +1,11 @@
 ---
 // @feature auth
-#[action]
 fn logout() {
     cx.sign_out();
     redirect("/login")
 }
 
-let user = cx.user(&USERS)?;
+let user = cx.user()?;
 ---
 <title>Dashboard</title>
 <p>Signed in as {user.email}</p>

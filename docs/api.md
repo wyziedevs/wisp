@@ -291,7 +291,7 @@ cookies); a site not allowed gets no CORS headers. Some paths only:
 - Sessions: `cx.sign_in(id)` after `wisp::password::check(&typed,
   user_hash).await?` (`None` for no such user, as slow; `hash(&password)
   .await?`; both on hashing threads), then `cx.signed_in()?` or
-  `cx.user(&USERS)?` (`cx.login`/`signup`: docs/auth.md) where only members
+  `cx.user()?` (`cx.login`/`signup`: docs/auth.md) where only members
   go: signed out, a page 303s to `/login` (`wisp::sign_in_page("/x")`), an
   endpoint or JSON client gets 401 (`signed_out`). `cx.sign_out()` ends it
   here. The id is in a signed cookie for 30 days; each `sign_in` sets a new

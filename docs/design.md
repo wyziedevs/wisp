@@ -966,16 +966,19 @@ made still hold (nothing new is signed with it) until it is removed, 30 days
 on for sign-ins.
 
 Signing in is built on that. For a `#[model]` with a `hash` field and an
-`email` or `name` (an `Account`), `cx.signup(&USERS, row).await?` hashes the
+`email` or `name` (an `Account`), `cx.signup(row).await?` hashes the
 password in `row.hash`, refuses a taken name with a 422 and signs in, and
-`cx.login(&USERS, &email, &password).await?` checks it as slowly for a name
+`cx.login(&email, &password).await?` checks it as slowly for a name
 no one has; `wisp::signup` and `wisp::login` do the same without a `Cx`. `cx.sign_in(id)` (a row id of the app's users)
 sets the signed cookie `session` to the id and the time, for 30 days;
 `cx.signed_in()?` is the id, and signed out (or 30 days on) it is the error
 that sends the visitor to sign in: a 303 to `/login`, or a 401 for a JSON
-client. `cx.user(&USERS)?` is the row itself, the same way. A members' page
-starts with `let me = cx.user(&USERS)?;` (`cx.user()` when `init` names the
-table: `wisp::users(&db::USERS)`); `cx.signed_in().ok()` asks without
+client. `cx.user()?` is the row itself, the same way. A members' page
+starts with `let me = cx.user()?;`. `user`, `login` and `signup` take the
+users table for you: the lone `Table` of a model with a `Password` field in
+`src/db.rs`, else the one `wisp::users(&db::USERS)` names in `init`; the build
+adds it (`&USERS` first still works, and is how a second table is used).
+`cx.signed_in().ok()` asks without
 sending anyone anywhere; `cx.sign_out()` ends it. The page at `/login` is
 the convention; `wisp::sign_in_page("/enter")` in `init` names another.
 `sign_in` always sets a new session, so one planted on a visitor before

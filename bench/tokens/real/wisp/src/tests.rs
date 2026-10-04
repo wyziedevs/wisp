@@ -121,7 +121,7 @@ fn posts_crud_live_and_component() {
     assert_eq!(bad.status, 422);
     let page = bad.text();
     assert!(
-        page.contains("<textarea aria-label=\"body\" name=\"body\" required>Kept body</textarea>"),
+        page.contains("<textarea name=\"body\" required>Kept body</textarea>"),
         "{page}"
     );
     assert!(
