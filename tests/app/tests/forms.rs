@@ -13,7 +13,7 @@ fn an_edit_form() {
     for want in [
         // The browser checks first what it can of the rules.
         "<input aria-label=\"title\" name=\"title\" value=\"First\" required minlength=\"1\" pattern=\"[\\s\\S]{0,20}\">",
-        "<textarea aria-label=\"body\" name=\"body\" required>Hello</textarea>",
+        "<textarea aria-label=\"body\" name=\"body\" required minlength=\"3\">Hello</textarea>",
         "<option value=\"a\">A</option><option value=\"b\" selected>B</option>",
         "<input aria-label=\"stars\" name=\"stars\" value=\"3\" required>",
         "<input aria-label=\"note\" name=\"note\">",
@@ -35,7 +35,7 @@ fn an_edit_form() {
     let html = bad.text();
     for want in [
         "<input aria-label=\"title\" name=\"title\" value=\" \" required minlength=\"1\" pattern=\"[\\s\\S]{0,20}\"><small class=\"problem\">is required</small>",
-        "<textarea aria-label=\"body\" name=\"body\" required>hi</textarea><small class=\"problem\">must have at least 3 characters</small>",
+        "<textarea aria-label=\"body\" name=\"body\" required minlength=\"3\">hi</textarea><small class=\"problem\">must have at least 3 characters</small>",
         "<option value=\"a\" selected>A</option><option value=\"b\">B</option></select>",
         "<input aria-label=\"stars\" name=\"stars\" value=\"x\" required><small class=\"problem\">expected a whole number</small>",
     ] {

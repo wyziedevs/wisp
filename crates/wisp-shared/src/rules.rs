@@ -413,6 +413,14 @@ impl Native {
         if self.required && !has("multiple") {
             add("required", "");
         }
+        if tag == "textarea" {
+            // A pattern does not apply to it, so no maximum; a minimum of
+            // one is `required`.
+            if let Some(n) = self.min_len.filter(|&n| n > 1) {
+                add("minlength", &n.to_string());
+            }
+            return out;
+        }
         if tag != "input" {
             return out;
         }

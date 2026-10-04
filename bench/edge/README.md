@@ -518,3 +518,31 @@ the docs keep `format!`. What is left, per request:
 
 A per-request arena would remove most of the allocator's share, but a
 `GlobalAlloc` needs `unsafe`.
+
+### Warm-up at load, and what did not pay (2026-10-04)
+
+**Kept: a warm-up request while the worker loads** (`worker.js`). V8
+compiles wasm lazily, a function at its first call, and every instance of a
+module shares that code. So the worker makes a throwaway instance at module
+scope and sends it one request (`/_wisp/warm`, a 404 that runs the request
+path); the real instance, made at the first `fetch` with its `env`, then runs
+compiled code. Linux VPS (busy: another build ran), workerd, `/json`, median
+of 15, ms, two runs each (`up` is spawn to the port open; then 50 ms of
+quiet; `first` is the first request):
+
+| | up | first request | spawn to first response, no pause |
+|---|---|---|---|
+| Wisp before | 27.4-29.3 | 16.2-17.5 | 50.4-56.4 |
+| Wisp, warm-up | 28.9-30.8 | 4.8-5.8 | 55.4-57.5 |
+| Hono | 23.7-25.7 | 6.8-8.3 | 38.2-40.9 |
+
+On Cloudflare a worker is started during the TLS handshake, so what a user
+waits for is the first request: Wisp now answers it faster than Hono. A
+request that arrives before the load is done waits for the warm-up as before
+(the last column: the same within noise). Steady state does not change.
+
+**Tried, slower: another allocator.** In node, fastest of 40 x 2,000 calls,
+us per request, dlmalloc (std's) / rlsf `SmallGlobalTlsf` / talc 5.1
+`WasmDynamicTalc`: `/json-big` 46.3-47.9 / 53.6-61.1 / 47.8-49.3, `/` 4.77 /
+5.06 / 5.47, `/params/42` 7.25 / - / 12.98. Both shrink the wasm by 54-59 KB;
+neither is faster, so dlmalloc stays.
