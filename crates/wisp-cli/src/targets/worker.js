@@ -8,7 +8,7 @@ let app;
 // Warm-up: V8 compiles wasm lazily, a function at its first call, and every
 // instance of the module shares that code. A throwaway instance answers one
 // request while the worker loads (during the TLS handshake on Cloudflare), so
-// the first real request runs compiled code: 8 ms to 1.7 (bench/edge).
+// the runtime's part of the first real request runs compiled code (bench/edge).
 // `WISP_WARM_UP` has the runtime answer it with no app code (no `init`,
 // hook, handler or log) and nothing a global scope may not do (I/O, random).
 wisp(module, { WISP_WARM_UP: '1' }).fetch(new Request('https://wisp.invalid/'), '').catch(() => {});

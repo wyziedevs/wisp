@@ -704,6 +704,8 @@ pub(crate) fn start<A: App>() {
         return;
     }
     if warm {
+        crate::prepare_warm::<A>();
+        log_panics();
         READY.set(1);
         return;
     }

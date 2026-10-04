@@ -536,6 +536,17 @@ quiet; `first` is the first request):
 | Wisp, warm-up | 28.9-30.8 | 4.8-5.8 | 55.4-57.5 |
 | Hono | 23.7-25.7 | 6.8-8.3 | 38.2-40.9 |
 
+**Since narrowed: the warm-up runs no app code.** That request went through
+the app's `init`, `before` hook, logs and error page, on a phantom request at
+global scope, where Workers forbid random numbers and I/O. The warm-up
+instance is now given `WISP_WARM_UP=1`: the runtime skips `init` and the
+sessions, and answers the request itself (parse, route, the page shell,
+serialize, the reply to the host). Same VPS, busy, `/json`, median of 15, ms,
+first request: none 16.5 / 23.9-25.1, the old warm-up 5.5 / 7.9-8.8, the
+narrowed one 11.5 / 16.1-18.1. It keeps about half the gain; the rest is the
+app's own code (`handle`, which runs the `before` hook first, and the
+templates), which a warm-up must not run.
+
 On Cloudflare a worker is started during the TLS handshake, so what a user
 waits for is the first request: Wisp now answers it faster than Hono. A
 request that arrives before the load is done waits for the warm-up as before

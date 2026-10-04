@@ -2917,10 +2917,12 @@ fn route<A: App>(cx: &mut Cx) -> Option<usize> {
 /// handler), so V8 has compiled that much before the first real request.
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn warm<A: App>(cx: &mut Cx) -> Reply {
-    let found = A::route(cx.path()).is_some();
+    let _ = A::route(cx.path());
     crate::headers::page(cx);
     let mut reply = Reply::default();
-    reply.set_plain(if found { 204 } else { 404 }, "");
+    reply.set_plain(404, "");
+    // The page's shell around an empty body: the runtime's, no template.
+    reply.body = Body::Bytes(page::<A>(&mut Out::default()).concat().into_bytes());
     cx.send_headers(&mut reply.headers);
     reply
 }
@@ -3253,14 +3255,8 @@ fn serialize<A: App, const OBS: bool>(
             w.extend_from_slice(b"transfer-encoding: chunked\r\n");
         }
     }
-    let length = !made && !chunked && !stream && !own_length;
-    length_and_date(
-        w,
-        match bodiless {
-            false => length.then_some(len),
-            true => (length && reply.status == 205).then_some(0),
-        },
-    );
+    let length = !made && !chunked && !stream && !bodiless && !own_length;
+    length_and_date(w, length.then_some(len)); // a 205's is in its status line
     if !keep_alive {
         w.extend_from_slice(b"connection: close\r\n");
     } else if !http11 {
@@ -3944,15 +3940,19 @@ macro_rules! statuses {
         pub(crate) fn reason(status: u16) -> &'static str {
             match status {
                 $($code => $reason,)*
+                205 => "Reset Content",
                 _ => "",
             }
         }
 
-        /// `HTTP/1.1 200 OK\r\n`; `None` for a status not named here.
+        /// `HTTP/1.1 200 OK\r\n`; `None` for a status not named here. A
+        /// 205's says its content is empty (RFC 9110 §15.3.6), which costs
+        /// the other statuses nothing.
         #[inline(always)]
         fn status_line(status: u16) -> Option<&'static [u8]> {
             Some(match status {
                 $($code => concat!("HTTP/1.1 ", $code, " ", $reason, "\r\n").as_bytes(),)*
+                205 => b"HTTP/1.1 205 Reset Content\r\ncontent-length: 0\r\n",
                 _ => return None,
             })
         }

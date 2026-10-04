@@ -344,6 +344,20 @@ pub async fn prepare<A: App>() -> std::io::Result<()> {
     Ok(())
 }
 
+/// [`prepare`] with no app code and nothing a worker's global scope does not
+/// allow: no `init`, no sessions (whose secret may be random). For an edge
+/// warm-up instance (`edge::warming`).
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn prepare_warm<A: App>() {
+    settings();
+    http::setup::<A>();
+    csp::ready(
+        A::SCRIPT_HASHES,
+        A::PWA.is_some_and(|p| !p.worker.is_empty()),
+    );
+    content::ready(A::PAGES);
+}
+
 /// Makes `value` available to every request through [`state`]: a database
 /// pool, an HTTP client, anything built once. Call it from `init` in
 /// `src/hooks.rs` (or from your own `main`, before [`run`]). Providing a
