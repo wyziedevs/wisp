@@ -673,17 +673,13 @@ fn parse_as(
         snippets: Vec::new(),
         rendering: Vec::new(),
         elements: Vec::new(),
-        forms: Vec::new(),
+        form: Forms::default(),
         svg: 0,
         auto_head: false,
-        button_form: false,
-        problem: None,
-        shown: Vec::new(),
-        keep: None,
     };
     p.run()?;
-    if !p.shown.is_empty() {
-        drop_shown(&mut p.root, &mut p.chunks, &p.shown);
+    if !p.form.shown.is_empty() {
+        drop_shown(&mut p.root, &mut p.chunks, &p.form.shown);
     }
 
     // Trim the template as a whole; inner whitespace was already collapsed.
@@ -936,23 +932,12 @@ struct Parser<'a> {
     rendering: Vec<String>,
     /// The groups of the `<wisp:element>`s open, innermost last.
     elements: Vec<usize>,
-    /// One per open `<form>`: the action it posts to (`?/name`, `default`
-    /// for a `method="post"` one), `""` when that is not plain, `None` for
-    /// one that posts to none.
-    forms: Vec<Option<String>>,
+    /// The forms open and what they give back (see `form_defaults`).
+    form: Forms,
     /// Depth of `<svg>`, whose `<title>` is its own.
     svg: u32,
     /// A top-level `<title>` is open, in the head it opened.
     auto_head: bool,
-    /// A `<button action="?/name">` is open, in the form it opened.
-    button_form: bool,
-    /// The input just scanned, whose problem goes after it (`Node::Problem`).
-    problem: Option<String>,
-    /// The fields whose problem the file shows itself, `{cx.problem("x")}`:
-    /// none goes after their inputs.
-    shown: Vec<String>,
-    /// The `<textarea>` or `<select>` of an action's form that is open.
-    keep: Option<Keep>,
     /// The file's class, when it has a scoped `<style>`, and the scoped CSS so far.
     scope: Option<&'a str>,
     style: Option<String>,
@@ -1017,6 +1002,25 @@ impl Default for Tag {
             scoped: false,
         }
     }
+}
+
+/// What forms posting to an action need while their markup is scanned:
+/// the sent values go back in their fields and the problems after them.
+#[derive(Default)]
+struct Forms {
+    /// One per open `<form>`: the action it posts to (`?/name`, `default`
+    /// for a `method="post"` one), `""` when that is not plain, `None` for
+    /// one that posts to none.
+    open: Vec<Option<String>>,
+    /// A `<button action="?/name">` is open, in the form it opened.
+    button: bool,
+    /// The input just scanned, whose problem goes after it (`Node::Problem`).
+    problem: Option<String>,
+    /// The fields whose problem the file shows itself, `{cx.problem("x")}`:
+    /// none goes after their inputs (`drop_shown`).
+    shown: Vec<String>,
+    /// The `<textarea>` or `<select>` of an action's form that is open.
+    keep: Option<Keep>,
 }
 
 /// A `<textarea>` or `<select>` of an action's form, till its end tag:
@@ -1102,7 +1106,7 @@ impl Parser<'_> {
                                 continue;
                             }
                             self.t.attr = raw.to_ascii_lowercase();
-                            if self.button_form
+                            if self.form.button
                                 && self.t.name == "button"
                                 && self.t.attr == "action"
                             {
@@ -1457,13 +1461,13 @@ impl Parser<'_> {
         // `formaction`.
         if name == "button"
             && !closing
-            && self.forms.is_empty()
+            && self.form.open.is_empty()
             && self
                 .attr_prefix(start, "action")
                 .is_some_and(|v| v.starts_with("?/"))
         {
             self.text.push_str("<form method=\"post\">");
-            self.button_form = true;
+            self.form.button = true;
         }
 
         // A page is inside `<body>`, so its `<head>` can only mean what goes
@@ -1971,19 +1975,19 @@ impl Parser<'_> {
         let self_closed = self.t.last == b'/' && self.text.ends_with('/');
         self.push_byte(b'>');
         self.ctx = Ctx::Text;
-        if let Some(name) = self.problem.take() {
+        if let Some(name) = self.form.problem.take() {
             let line = self.line_of(self.t.pos);
             let auto = true;
             self.push_node(self.t.pos, Node::Problem { name, line, auto })?;
         }
         if !self.t.closing
             && self.t.name == "textarea"
-            && self.keep.as_ref().is_some_and(|k| !k.bound)
+            && self.form.keep.as_ref().is_some_and(|k| !k.bound)
         {
             // Its content starts in a list of its own.
             self.flush()?;
             let at = self.list().len();
-            if let Some(k) = &mut self.keep {
+            if let Some(k) = &mut self.form.keep {
                 k.at = at;
             }
         }
@@ -1994,10 +1998,10 @@ impl Parser<'_> {
                     self.templates.pop();
                 }
                 "form" => {
-                    self.forms.pop();
+                    self.form.open.pop();
                 }
                 "svg" => self.svg = self.svg.saturating_sub(1),
-                "button" if std::mem::take(&mut self.button_form) => self.text.push_str("</form>"),
+                "button" if std::mem::take(&mut self.form.button) => self.text.push_str("</form>"),
                 "title" if std::mem::take(&mut self.auto_head) => {
                     if !matches!(self.frames.last(), Some(Frame::Head { .. })) {
                         return Err(self.unexpected_close(self.t.pos, "</title>"));
@@ -2072,7 +2076,7 @@ impl Parser<'_> {
                 && posts.as_ref().is_some_and(|a| {
                     (self.fields.iter()).any(|f| f.native.upload && f.action == *a)
                 });
-            self.forms.push(posts);
+            self.form.open.push(posts);
         }
         // A button that posts to another action skips this form's browser
         // checks: they are this form's action's, not that one's.
@@ -2082,7 +2086,7 @@ impl Parser<'_> {
                 .and_then(|v| v.strip_prefix("?/"))
                 .is_some_and(|v| {
                     let to = self.action_of(v);
-                    (self.forms.last())
+                    (self.form.open.last())
                         .is_some_and(|f| f.as_ref().is_some_and(|f| *f != to || to.is_empty()))
                 });
         let in_browser = self.in_browser();
@@ -2112,11 +2116,15 @@ impl Parser<'_> {
             .seen("name")
             .flatten()
             .map(String::from)
-            .filter(|_| problem && self.forms.iter().any(Option::is_some) && !in_browser);
+            .filter(|_| problem && self.form.open.iter().any(Option::is_some) && !in_browser);
         let chosen = self.t.name == "option"
             && !in_browser
             && self.seen("selected").is_none()
-            && self.keep.as_ref().is_some_and(|k| !k.textarea && !k.bound);
+            && self
+                .form
+                .keep
+                .as_ref()
+                .is_some_and(|k| !k.textarea && !k.bound);
         if !method && !multipart && name.is_none() && !chosen && !novalidate {
             return Ok(());
         }
@@ -2139,7 +2147,7 @@ impl Parser<'_> {
             self.choose_option()?;
         }
         if let Some(name) = name {
-            let action = self.forms.iter().rev().find_map(Option::as_deref);
+            let action = self.form.open.iter().rev().find_map(Option::as_deref);
             let field =
                 (self.fields.iter()).find(|f| Some(f.action.as_str()) == action && f.name == name);
             if let Some(f) = field {
@@ -2150,12 +2158,12 @@ impl Parser<'_> {
                 if keeps && !bound {
                     self.keep_value(&name)?;
                 }
-                self.problem = Some(name);
+                self.form.problem = Some(name);
             } else {
                 if self.t.name == "select" && !bound {
                     self.choose(&name)?;
                 }
-                self.keep = Some(Keep {
+                self.form.keep = Some(Keep {
                     name,
                     textarea: self.t.name == "textarea",
                     bound,
@@ -2403,7 +2411,7 @@ impl Parser<'_> {
     /// textarea's content is what was sent, when the action refused it,
     /// else its own; the problem goes after the end tag.
     fn end_keep(&mut self, pos: usize, textarea: bool) -> Result<(), Error> {
-        let Some(k) = self.keep.take_if(|k| k.textarea == textarea) else {
+        let Some(k) = self.form.keep.take_if(|k| k.textarea == textarea) else {
             return Ok(());
         };
         if textarea && !k.bound && self.frames.len() == k.frames {
@@ -2423,7 +2431,7 @@ impl Parser<'_> {
                 line,
             });
         }
-        self.problem = Some(k.name);
+        self.form.problem = Some(k.name);
         Ok(())
     }
 
@@ -3882,7 +3890,7 @@ impl Parser<'_> {
         // `{cx.problem("x")}` in text: the element an input's problem gets.
         if let Some(name) = problem_call(t).filter(|_| self.ctx == Ctx::Text) {
             let line = self.line_of(open);
-            self.shown.push(name.clone());
+            self.form.shown.push(name.clone());
             let auto = false;
             return self.push_node(open, Node::Problem { name, line, auto });
         }
