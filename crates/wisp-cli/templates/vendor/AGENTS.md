@@ -256,6 +256,9 @@ Router API (`import {...} from 'wisp'`): `beforeNavigate(({cancel})=>)`,
 `preloadData(url)`, `preloadCode(url)`, `invalidate(key)` (+page.js loads that
 `depends(key)`), `invalidateAll()`, `updated` store; links take
 `data-wisp-noscroll|keepfocus|replacestate`.
+Third-party scripts: `<script src=… type="wisp/idle">` loads when idle,
+`type="wisp/interaction"` at the first pointer/key/scroll; plain `<script src>`
+blocks (before-interactive), `defer` is after.
 Stores, islands, the rest: docs/client.md.
 
 ## Endpoints (`+server.rs`)

@@ -1273,6 +1273,11 @@ branches).
   `/blog/[slug]` `blog_slug`, `_2` for a name taken), taking each parameter
   as `impl Display` (optional ones `Option<..>`), percent-encoding it
   (`rt::path_param`; a rest parameter keeps its `/`).
+- **Script strategies.** `<script src type="wisp/idle">` and `wisp/interaction`
+  are inert to the browser (and to the navigation morph, which only re-creates
+  `module`/`javascript` ones); `lazy()` in wisp.js, run by `wake()`, makes
+  the real `<script>` on idle or on the first pointer, key or scroll. Plain
+  `<script src>` and `defer` need no code. About 270 bytes gzipped.
 - **Version skew.** A release build puts `<meta name="wisp-build" content=ID>`
   in the shell (a hash of templates and Rust: baked, nothing per request).
   wisp.js compares it with the page a navigation fetched, as it does

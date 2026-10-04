@@ -18,11 +18,11 @@ const res = (body, type = 'text/html', status = 200) => ({
 });
 
 // A fresh page with wisp.js running in it. `fetches` records each call.
-function page({ online = true } = {}) {
+function page({ online = true, scripts = [], vitals = null } = {}) {
   const win = new EventTarget();
   const doc = new EventTarget();
   const fetches = [];
-  const calls = { scroll: [], say: [] };
+  const calls = { scroll: [], say: [], head: [], beacon: [] };
   const h1 = Object.assign(new EventTarget(), {
     attrs: {},
     style: {},
@@ -34,20 +34,22 @@ function page({ online = true } = {}) {
   const body = { nodeType: 3, nodeValue: '', dataset: {}, children: [], append(e) { calls.say.push(e); } };
   Object.assign(doc, {
     scripts: [],
-    head: { children: [], append() {} },
+    head: { children: [], append: (e) => calls.head.push(e) },
     body,
     currentScript: null,
     title: '',
     activeElement: { blur() {} },
     getElementById: () => null,
-    querySelectorAll: () => [],
-    querySelector: (s) => (s == 'h1' ? h1 : null),
-    createElement: () => Object.assign(new EventTarget(), { style: {}, setAttribute() {}, isConnected: true }),
+    querySelectorAll: (s) => (s.includes('wisp/') ? scripts : []),
+    querySelector: (s) => (s == 'h1' ? h1 : s.includes('wisp-vitals') ? vitals : null),
+    visibilityState: 'visible',
+    createElement: () => Object.assign(new EventTarget(), { style: {}, attrs: {}, setAttribute(k, v) { this.attrs[k] = v; }, isConnected: true }),
     hidden: false,
   });
   const store = {};
-  const nav = { onLine: online };
-  const loc = { href: 'http://x.test/', origin: 'http://x.test', assign: (u) => calls.assign = String(u) };
+  const nav = { onLine: online, sendBeacon: (u, b) => calls.beacon.push([u, b]) };
+  const idle = [];
+  const loc = { href: 'http://x.test/', origin: 'http://x.test', pathname: '/', assign: (u) => calls.assign = String(u) };
   class Anchor {}
   class Form {}
   Form.prototype.reset = () => {};
@@ -59,6 +61,7 @@ function page({ online = true } = {}) {
     history: { state: null, replaceState(s, _, u) { this.state = s; if (u) loc.href = String(u); }, pushState(s, _, u) { this.state = s; loc.href = String(u); } },
     sessionStorage: Object.assign(store, { getItem: (k) => store[k] ?? null, setItem: (k, v) => { store[k] = v; }, removeItem: (k) => { delete store[k]; } }),
     addEventListener: (t, f) => win.addEventListener(t, f),
+    requestIdleCallback: (f) => idle.push(f),
     scrollX: 0,
     scrollY: 0,
     scrollTo: (...a) => calls.scroll.push(a),
@@ -102,7 +105,7 @@ function page({ online = true } = {}) {
   });
   let link_;
   const click = (attrs, href) => event('click', { target: (link_ = link(attrs, href)), button: 0 });
-  return { win, doc, g, h1, fetches, calls, store, nav, event, form, click, loc, submit: (f) => event('submit', { target: f }) };
+  return { idle, win, doc, g, h1, fetches, calls, store, nav, event, form, click, loc, submit: (f) => event('submit', { target: f }) };
 }
 
 const tests = {
@@ -207,6 +210,18 @@ const tests = {
     p.event('wisp:preload', { detail: { url: 'http://other.test/', done: () => done++ } });
     await tick();
     assert.equal(p.fetches.length, 1); // another site: nothing
+  },
+  'scripts: idle ones load when idle, interaction ones at the first key'() {
+    const script = (src, type) => ({ src, type, attributes: [{ name: 'src', value: src }, { name: 'type', value: type }, { name: 'async', value: '' }] });
+    const p = page({ scripts: [script('http://t.test/a.js', 'wisp/idle'), script('http://t.test/b.js', 'wisp/interaction')] });
+    assert.equal(p.calls.head.length, 0);
+    p.idle.forEach((f) => f());
+    assert.equal(p.calls.head.length, 1);
+    assert.deepEqual(p.calls.head[0].attrs, { src: 'http://t.test/a.js', async: '' });
+    p.win.dispatchEvent(new Event('keydown'));
+    p.win.dispatchEvent(new Event('keydown'));
+    assert.equal(p.calls.head.length, 2);
+    assert.equal(p.calls.head[1].attrs.src, 'http://t.test/b.js');
   },
 };
 

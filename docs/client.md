@@ -370,6 +370,14 @@ Theme CSS: copy `cdn/themes/light.css` into `static/` and `<link>` it in
 LitElement {…})` in a `src/lib` module a script imports. The
 `click-events` a11y lint skips custom elements.
 
+## Third-party scripts
+
+Pick when one loads (`src`, so no code of yours): in the head, plain
+`<script src>` is before-interactive and `<script defer src>` after-interactive;
+`<script src="https://t.example/a.js" type="wisp/idle">` loads when the
+browser is idle (also on a client navigation), `type="wisp/interaction"` at the
+first pointer, key or scroll. Other attributes (`async`, `data-*`) are copied.
+
 ## Loading code on demand
 
 `import()` loads when reached:

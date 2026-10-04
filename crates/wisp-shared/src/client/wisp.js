@@ -27,6 +27,7 @@
 // (cancelable) before it is sent and `wisp:result` after. An element with
 // `data-wisp-keep` is left as it is, for a widget that owns its own DOM.
 // Nodes that browser code made (marked __w) are left too.
+// `<script src type="wisp/idle">` (or `wisp/interaction`) loads a script late.
 (() => {
   const headers = { 'x-wisp': '1' };
   const key = (u) => String(u).split('#')[0];
@@ -675,6 +676,29 @@
   addEventListener('online', drain);
   if (queue().length) drain();
 
+  // ---- third-party scripts --------------------------------------
+
+  // `<script src="…" type="wisp/idle">` loads when the browser is idle,
+  // `type="wisp/interaction"` at the first pointer, key or scroll. Plain
+  // `<script src>` in the head is before-interactive; `defer` after.
+  const lazied = new Set();
+  const later = [];
+  function lazy() {
+    for (const old of document.querySelectorAll('script[src][type^="wisp/"]')) {
+      if (lazied.has(old.src)) continue;
+      lazied.add(old.src);
+      const load = () => {
+        const s = document.createElement('script');
+        for (const { name, value } of old.attributes) name == 'type' || s.setAttribute(name, value);
+        document.head.append(s);
+      };
+      if (old.type == 'wisp/interaction') later.push(load);
+      else (globalThis.requestIdleCallback || setTimeout)(load);
+    }
+  }
+  for (const t of ['pointerdown', 'keydown', 'scroll', 'touchstart'])
+    addEventListener(t, () => later.splice(0).forEach((f) => f()), { passive: true });
+
   // ---- islands --------------------------------------------------------------
 
   // A component marked client:visible, client:idle, client:media or
@@ -685,6 +709,7 @@
   let woke; // ends the last page's waits
 
   function wake() {
+    lazy();
     woke?.abort();
     woke = new AbortController();
     const { signal } = woke;
