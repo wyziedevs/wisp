@@ -4,6 +4,7 @@
 
 mod a11y;
 mod codegen;
+mod config;
 pub mod csp;
 pub mod fmt;
 mod fold;

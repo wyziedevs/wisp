@@ -231,6 +231,22 @@ serves both. The other form is matched only after its own path matched
 no route, so the default costs nothing. The build warns of a literal
 `href="/…"` in a template that the setting would redirect.
 
+Config rules: `redirects`, `rewrites` and `headers` in `[package.metadata.wisp]`
+(Cargo.toml), lists of strings, as Next.js's next.config has them. The build
+checks them and bakes them into tables; the server calls in only through the
+consts `App::REDIRECTS`, `REWRITES` and `HEADERS`, so an app with none runs no
+code for them. A pattern is a route's: text, `[name]`, a last `[...name]`.
+`redirects = ["/old/[id] /new/[id] 301"]`: `from to [status]` (308 by default),
+`to` a path of the app (under the base path, the query kept) or an
+`http(s)://` URL; checked first in `before_routes`, after Wisp's own `/_`
+paths. `rewrites = ["/g/[...p] /docs/[...p]"]`: the request is served by that
+route (named by its pattern as is, no matcher or optional segment; its
+parameters are `[name]`s of `from`), the address kept; tried only for a path no
+route matches and no file of the app serves, in `find`'s miss path, so a
+matched path pays nothing. `headers = ["/api/[...p] x-a: b"]` set on every
+reply of a matching path, replacing the reply's own, in `tag`. Anything
+malformed fails the build, naming the entry.
+
 ### Page logic
 
 A page's Rust goes at the top of its `.wisp`, between two `---` lines:

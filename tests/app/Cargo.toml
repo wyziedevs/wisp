@@ -28,3 +28,9 @@ workspace = true
 tower = ["wisp/tower"]
 # `tests/hot.rs`: `wisp dev`'s hot swaps in a headless Chrome or Edge.
 browser = ["wisp/browser"]
+
+# `tests/rules.rs`.
+[package.metadata.wisp]
+redirects = ["/old/[slug] /post/[slug] 301", "/off https://example.com/x"]
+rewrites = ["/p/[slug] /post/[slug]"]
+headers = ["/post/[...p] x-rule: yes"]

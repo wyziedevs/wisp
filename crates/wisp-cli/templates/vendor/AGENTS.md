@@ -395,6 +395,11 @@ Pages get a `content-security-policy` (`wisp::csp("img-src 'self' https://x")`
 in `init` replaces a directive; `wisp::csp_off()`); `onclick="…"` doesn't run:
 use `on:click`. `wisp::trailing_slash(Always)` in `init`: pages are `/about/`
 (`/about` gets a 308; `Never`, the default; `Ignore` both; sitemap follows).
+Config rules in Cargo.toml `[package.metadata.wisp]`: `redirects = ["/old/[id] /new/[id] 301"]`
+(`from to [status]`, 308 default, `to` a path or `https://` URL), `rewrites = ["/g/[...p] /docs/[...p]"]`
+(served by that route, address kept; for paths no route matches; the route is
+named as it is, its params `[name]`s of `from`), `headers = ["/api/[...p] x-a: b"]`.
+Checked at build; none declared costs nothing.
 `#[derive(Config)] struct Conf { api_key: String, port: Option<u16> }` (any
 `src/*.rs`) reads `API_KEY`, `PORT` (env or `.env`) before `init`; one wrong
 stops the start, naming it; `Conf::get().api_key` anywhere. No other `pub fn` here. Keep `before` sync: `async fn before` takes the
