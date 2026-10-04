@@ -1,0 +1,19 @@
+<!-- @feature search -->
+<%- include('header') %>
+<input id="q" placeholder="Search">
+<ul id="found">
+  <% items.forEach((item) => { %>
+    <li><%= item.name %></li>
+  <% }) %>
+</ul>
+<script>
+  const items = <%- JSON.stringify(items) %>;
+  const list = document.getElementById('found');
+  document.getElementById('q').addEventListener('input', (e) => {
+    const q = e.target.value.toLowerCase();
+    list.replaceChildren(...items
+      .filter((i) => i.name.toLowerCase().includes(q))
+      .map((i) => Object.assign(document.createElement('li'), { textContent: i.name })));
+  });
+</script>
+<%- include('footer') %>

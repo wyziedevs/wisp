@@ -8,7 +8,7 @@
 //! marker, belong to NAME. Lines above a file's first marker belong to it too,
 //! and so does the file's path: writing a file means naming it. Files with no
 //! marker (what a generator writes: `wisp new`, `sv create`,
-//! `create-next-app`, `cargo new`) are not counted, nor the lines after a
+//! `create-next-app`, `npm create`, `npm init`, `cargo new`) are not counted, nor the lines after a
 //! `@generated` marker (a `[package]` table below the `[dependencies]` one
 //! has to write).
 //!
@@ -39,6 +39,9 @@ const SUITES: [Suite; 2] = [
             ("wisp", "**Wisp**"),
             ("sveltekit", "SvelteKit"),
             ("nextjs", "Next.js"),
+            ("nuxt", "Nuxt (Vue)"),
+            ("react", "React (Vite + Express)"),
+            ("express", "Express (Node.js)"),
             ("axum", "Axum + askama"),
             ("actix", "Actix + tera"),
         ],
@@ -153,7 +156,14 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         if path.is_dir() {
             if !matches!(
                 &*name,
-                "target" | "node_modules" | ".svelte-kit" | ".next" | ".wisp"
+                "target"
+                    | "node_modules"
+                    | ".svelte-kit"
+                    | ".next"
+                    | ".nuxt"
+                    | ".output"
+                    | "dist"
+                    | ".wisp"
             ) {
                 walk(&path, out);
             }

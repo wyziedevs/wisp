@@ -1,0 +1,10 @@
+<!-- @feature form -->
+<%- include('header') %>
+<form method="POST">
+  <label>Name <input name="name" required minlength="1" maxlength="50" value="<%= name %>">
+    <% if (errors.name) { %><small class="problem"><%= errors.name %></small><% } %></label>
+  <label>Email <input name="email" type="email" required value="<%= email %>">
+    <% if (errors.email) { %><small class="problem"><%= errors.email %></small><% } %></label>
+  <button>Send</button>
+</form>
+<%- include('footer') %>

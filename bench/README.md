@@ -498,8 +498,8 @@ email; a 422 that shows each problem and keeps what was typed, else a
 redirect), a JSON endpoint of the list, a layout with a nav, and a live
 search filtered in the browser; `data` is the list's type and source,
 `setup` the dependencies and wiring a stack needs. Only hand-written files
-count, with their paths; what `wisp new`, `sv create`, `create-next-app` or
-`cargo new` writes does not. The Wisp app is a workspace member, with tests
+count, with their paths; what `wisp new`, `sv create`, `create-next-app`,
+`npm create`, `npm init` or `cargo new` writes does not. The Wisp app is a workspace member, with tests
 that each feature works.
 
 | Stack | list | form | api | layout | search | data | setup | total | chars / 4 | files |
@@ -507,11 +507,14 @@ that each feature works.
 | **Wisp** | 58 | 89 | 31 | 60 | 111 | 115 | 0 | **464** | 283 | 6 |
 | SvelteKit | 128 | 470 | 57 | 83 | 192 | 72 | 0 | 1002 | 644 | 9 |
 | Next.js | 107 | 439 | 44 | 108 | 241 | 71 | 0 | 1010 | 725 | 8 |
+| Nuxt (Vue) | 96 | 472 | 22 | 96 | 158 | 71 | 0 | 915 | 623 | 8 |
+| React (Vite + Express) | 108 | 560 | 32 | 268 | 191 | 161 | 102 | 1422 | 1023 | 8 |
+| Express (Node.js) | 128 | 465 | 34 | 116 | 291 | 69 | 95 | 1198 | 724 | 7 |
 | Axum + askama | 145 | 553 | 29 | 104 | 217 | 123 | 285 | 1456 | 1020 | 7 |
 | Actix + tera | 164 | 565 | 46 | 104 | 237 | 123 | 292 | 1531 | 1061 | 7 |
 
-SvelteKit and Next.js take 2.2x Wisp's tokens, Axum and Actix 3.1x and
-3.3x. The estimate and what changed to get here:
+Nuxt takes 2.0x Wisp's tokens, SvelteKit and Next.js 2.2x, Express (EJS)
+2.6x, React (Vite + an Express API) and Axum 3.1x, Actix 3.3x. The estimate and what changed to get here:
 [the tokens page](https://wispweb.dev/docs/tokens).
 
 ## Caveats

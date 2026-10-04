@@ -1,0 +1,8 @@
+<!-- @feature list -->
+<%- include('header') %>
+<ul>
+  <% items.forEach((item) => { %>
+    <li><%= item.name %>: $<%= item.price %></li>
+  <% }) %>
+</ul>
+<%- include('footer') %>
