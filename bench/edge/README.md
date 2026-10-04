@@ -741,6 +741,15 @@ VPS). The `Bun.serve`, `Deno.serve` and `node:http` variants pay the host's
 Bun `/`, 47% on Deno `/`): the raw path is the default, so those rows are the
 "portable" option, not the headline.
 
+**Shims after the lighter bridge (2026-10-05, same method, Wisp shim and Hono only).**
+`Bun.serve` `/` 28,870 vs Hono 46,402 (38% behind, was 45%), `/params` 21,071 vs
+29,678 (29%); `Deno.serve` `/` 29,784 vs 46,393 (36%, was 47%), `/params` 20,589
+vs 31,131 (34%, was 44%). Server instructions a request on Deno (`perf stat`):
+`/` 55k to 50k (Hono 32.5k), `/params` 77.5k to 73.7k (Hono 54k). What is left
+(perf, `--perf-basic-prof`): the app's wasm, about 9k instructions for `/`, and
+V8's wasm/JS crossings; on Bun `server.requestIP` alone is 16% of the profile, and
+the peer is read eagerly by `Cx`.
+
 **Where Wisp does not place 3rd or ahead of Hono.** Throughput: workerd `/`
 (5% behind Hono), `/json-big` (9%), `/params` (12%); Deno `/` (8% raw, 47%
 `Deno.serve`), Deno `Deno.serve` `/json-big` (4th, 9% behind Hono) and `/params`
