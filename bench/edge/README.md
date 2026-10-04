@@ -158,6 +158,18 @@ into the app's buffer instead of into a new array first. In Node, `serve` with
 a cookie, fastest of 10 runs: 8.9 to 7.5 us. On workerd the 1 us is inside the
 noise of a shared machine (15%), so no req/s claim is made.
 
+Profiled again (Node, names kept, `/json-big`): the app's own `format!`
+(`user-{i}`, `t{}`) is about 30% (`fmt::write`, `Display`, `pad_integral`),
+dlmalloc and dropping the rows 20%, `live::string` 13%. Kept: in wasm,
+`decimal` pushes its ASCII digits instead of calling `from_utf8` (3% of the
+profile): `serve` fastest of 40 x 2000 calls, 36.2 to 33.9 us; `/` and
+`/params` unchanged (1.0, 1.3 us). Native is unchanged (`cfg`). Tried, no gain:
+`+simd128`; reusing the reply body across requests on edge (36.4 to 36.7 us).
+Not possible: a bump or arena allocator, since `GlobalAlloc` needs `unsafe`.
+Cold start in Node: compile 0.9 ms, instantiate 0.05 ms, first request 5 ms
+(lazy compile of the big `poll`/`request` functions, about 3 ms); `wasm-opt` is
+not installed here, so not tried. workerd A/B was inside the noise (2x swings).
+
 ## Cold start and wasm size, measured again
 
 Cold start is process start to the first complete response, median of 9, three
