@@ -2090,6 +2090,12 @@ impl<'a> Project<'a> {
                     c.line
                 ));
             }
+            if let Some(c) = lg.items.constant("RUNTIME") {
+                return Err(format!(
+                    "{where_}:{}: a layout's `RUNTIME` does nothing; set it in the page or +server.rs that runs there",
+                    c.line
+                ));
+            }
             if let Some(c) = ["RATE_LIMIT", "CORS", "TIMEOUT"]
                 .iter()
                 .find_map(|n| lg.items.constant(n))
@@ -2315,6 +2321,23 @@ impl<'a> Project<'a> {
         Ok(Some(value))
     }
 
+    /// A route's `RUNTIME`, checked; the shim keeps it used. `wisp build`
+    /// reads it (see `routes::edge`).
+    fn runtime(
+        &self,
+        items: &rust_scan::Items,
+        file: &Path,
+        shims: &mut Vec<String>,
+    ) -> Result<(), String> {
+        if let Err((line, msg)) = crate::routes::edge(items) {
+            return Err(format!("{}:{line}: {msg}", self.rel(file)));
+        }
+        if items.constant("RUNTIME").is_some() {
+            shims.push("const _: ::wisp::Runtime = super::RUNTIME;".into());
+        }
+        Ok(())
+    }
+
     /// A route's `CACHE` (or `CACHE_PUBLIC`), checked: a `u32`, one of the
     /// two, set once.
     fn cache(
@@ -2459,6 +2482,7 @@ impl<'a> Project<'a> {
             t.hashes.push(crate::csp::hash(AWAIT_JS));
         }
         // The page comes first: nothing set these before it.
+        self.runtime(&lg.items, &rs, &mut shims)?;
         self.body_limit(route, &lg.items, &rs, format!("page_{i}"), "", &mut shims)?;
         self.cache(route, &lg.items, &rs, format!("page_{i}"), "", &mut shims)?;
         let (rel, module) = (self.rel(&rs), format!("page_{i}"));
@@ -2729,6 +2753,7 @@ pub const MORE: ::wisp::rt::CacheMore = ::wisp::rt::CacheMore::NONE;"
                 }
                 let module = format!("server_{i}");
                 let mut shims = Vec::new();
+                self.runtime(&items, &file, &mut shims)?;
                 self.body_limit(route, &items, &file, module.clone(), page_file, &mut shims)?;
                 self.cache(route, &items, &file, module.clone(), page_file, &mut shims)?;
                 let cache = (route.cache.as_ref())
@@ -10514,6 +10539,41 @@ fn report(cx: &mut Cx, err: &Error) {}",
         let numbers = "---\nconst MIDDLEWARE: &[&str] = &[\"1x\"];\n---\nx";
         let err = app("mw-ident", &[mw, (page.0, numbers)]).unwrap_err();
         assert!(err.contains("is not a function name"), "{err}");
+    }
+
+    #[test]
+    fn runtime_is_a_checked_literal() {
+        let page = ("src/routes/+page.wisp", "x");
+        let ok = |v: &'static str| vec![page, ("src/routes/+page.rs", v)];
+        let code = app(
+            "runtime-ok",
+            &ok("const RUNTIME: wisp::Runtime = wisp::Runtime::Edge;"),
+        )
+        .unwrap();
+        assert!(
+            code.contains("const _: ::wisp::Runtime = super::RUNTIME;"),
+            "{code}"
+        );
+        let e = app("runtime-bad", &ok("const RUNTIME: wisp::Runtime = pick();")).unwrap_err();
+        assert!(
+            e.contains("+page.rs:1") && e.contains("as a literal"),
+            "{e}"
+        );
+        let e = app("runtime-ty", &ok("const RUNTIME: bool = true;")).unwrap_err();
+        assert!(e.contains("as a literal"), "{e}");
+        let layout = [
+            ("src/routes/+layout.wisp", "{@render children()}"),
+            (
+                "src/routes/+layout.rs",
+                "pub const RUNTIME: wisp::Runtime = wisp::Runtime::Edge;",
+            ),
+            page,
+        ];
+        assert!(
+            app("runtime-layout", &layout)
+                .unwrap_err()
+                .contains("a layout's `RUNTIME` does nothing")
+        );
     }
 
     #[test]

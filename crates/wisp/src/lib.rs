@@ -179,6 +179,16 @@ impl<T> Shared<T> {
 pub const KB: usize = 1024;
 pub const MB: usize = 1024 * KB;
 
+/// Where a route runs on a host with both (`--target vercel`, `netlify`):
+/// `const RUNTIME: wisp::Runtime = wisp::Runtime::Edge;` in its `+page.rs` or
+/// `+server.rs`. `wisp build` reads it; other hosts and `cargo run` ignore it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Runtime {
+    #[default]
+    Node,
+    Edge,
+}
+
 /// The most an `Image` parameter takes unless it has a `#[validate(max_size
 /// = …)]` of its own: 2 MB. The route's body limit makes room for it.
 pub const MAX_SIZE: usize = 2 * MB;
