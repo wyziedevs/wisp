@@ -607,7 +607,9 @@ None of this is in release builds.
 
 `Alt+Shift+W` opens dev-only devtools: component tree with live props and
 state (editable), stores, the route (params, server values, the page's
-forms), a table of all the app's routes, timings; "Open" uses
+forms), a table of all the app's routes, timings (dev responses carry
+`Server-Timing: total;dur=…`); a server panic or other 5xx opens the same
+error dialog with its message and `file:line`; "Open" uses
 `$WISP_EDITOR` or `$EDITOR`, else `code -g`. `/_wisp/components` is the
 workshop: `Card.stories.wisp` beside `Card.wisp` holds
 `{#story "Featured"}<Card featured title="Tea" />{/story}` examples, each

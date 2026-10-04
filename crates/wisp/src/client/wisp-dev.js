@@ -119,6 +119,17 @@
   addEventListener('unhandledrejection', (e) => runtime(e.reason));
   document.addEventListener('wisp:error', (e) => runtime(e.detail?.error));
 
+  // A 5xx of the server (a handler's panic with its `file:line`, say): the
+  // dev error page carries the message, and it opens in the same dialog.
+  const served = document.getElementById('wisp-server-error');
+  if (served) {
+    const text = served.content.textContent;
+    meta = ['Server Error', text.split('
+')[0], 'Server'];
+    showError(text);
+    broken = true;
+  }
+
   // ---- the waiting line -------------------------------------------------------
 
   // Shown once a rebuild has taken 200ms, so a quick one draws nothing, and

@@ -471,7 +471,8 @@ no-wait fast path off every route.
 ## Commands
 
 `wisp new app [--template demo|minimal|api]` · `wisp dev` (hot reload keeps
-`$state`; error dialog opens `file:line` in the editor; `Alt+Shift+W` devtools
+`$state`; error dialog opens `file:line` in the editor, also for a handler's panic;
+`Server-Timing` on every dev response; `Alt+Shift+W` devtools
 with routes table; `/_wisp/components` workshop of
 `*.stories.wisp`) · `wisp test [--browser]` · `wisp check [--types]` · `wisp
 fmt [--check]` · `wisp build` (`--static`, `--spa`, `--docker`, `--target

@@ -1298,6 +1298,10 @@ and `.wisp-*` classes, so they never touch an app's own CSS.
   also has the status's name, the request, what caused a 5xx and a link home.
   Its styles come inlined, since the app's own CSS may not exist yet. Errors
   for endpoints and API clients are JSON instead (see docs/api.md).
+- **Server errors in dev**: every answer carries `Server-Timing: total;dur=ms`,
+  and a 5xx's dev error page holds its message (a handler's panic says
+  `file:line`) in a `<template id="wisp-server-error">` that `wisp-dev.js`
+  opens in the dialog below. Debug builds only.
 - **The build error dialog** in dev: a title and one sentence saying where to
   look (`src/routes/+page.rs, line 7. Save a fix and the page updates.`), then
   the error text in a code block with a Copy control. It lives in a shadow

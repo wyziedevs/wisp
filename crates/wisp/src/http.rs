@@ -2839,6 +2839,8 @@ fn answered(cx: &mut Cx, reply: &mut Reply, started: Option<Instant>, failure: O
     cx.send_headers(&mut reply.headers);
     let method = cx.method.as_str();
     if let Some(started) = started {
+        #[cfg(debug_assertions)]
+        server_timing(reply, started.elapsed());
         let blocked = Some(BLOCKED.replace(Duration::ZERO)).filter(|&b| b >= BLOCKING);
         let (path, id) = (cx.path(), cx.id());
         dev::log_request(
@@ -2858,6 +2860,16 @@ fn answered(cx: &mut Cx, reply: &mut Reply, started: Option<Instant>, failure: O
             cx.path()
         ));
     }
+}
+
+/// Dev builds: `Server-Timing: total;dur=1.2` on every answered request,
+/// for the devtools' timings and the browser's own network panel.
+#[cfg(debug_assertions)]
+fn server_timing(reply: &mut Reply, took: Duration) {
+    let ms = took.as_secs_f64() * 1000.0;
+    reply
+        .headers
+        .push(("server-timing".into(), format!("total;dur={ms:.2}").into()));
 }
 
 /// `path` (a span of `buf`) without the base path: the same when it is not

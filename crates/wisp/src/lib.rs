@@ -2097,6 +2097,12 @@ pub mod rt {
         out.body.push_str(
             "</p><div class=\"wisp-actions\"><a class=\"wisp-button wisp-primary\" href=\"/\">Go to the Home Page</a></div></main>",
         );
+        // What `wisp-dev.js` opens in its dialog, with `src/..:line` as editor links.
+        if status >= 500 {
+            out.body.push_str("<template id=\"wisp-server-error\">");
+            text(&mut out.body, message);
+            out.body.push_str("</template>");
+        }
     }
 }
 

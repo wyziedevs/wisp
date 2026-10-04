@@ -300,6 +300,7 @@ async fn lab(cx: &mut Cx, out: &mut Out) -> Result<()> {
             _ => text(out, "no error"),
         },
         "/default-error" => error(404, "gone"),
+        "/default-error/panic" => panic!("kaboom"),
         "/json" => match arg(cx, "k").as_str() {
             "created" => send(out, Response::created(&vec![1u8, 2])),
             _ => send(out, Response::json_of(&vec!["a\"b", "c"])),
