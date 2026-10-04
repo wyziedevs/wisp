@@ -119,6 +119,7 @@ mod tests {
     #[test]
     fn kept_until_it_expires_or_is_dropped() {
         let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+        KEPT.lock().clear(); // a full one (the eviction test's) would evict these
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();
@@ -147,6 +148,7 @@ mod tests {
     #[test]
     fn an_answer_made_across_an_uncache_is_not_kept() {
         let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+        KEPT.lock().clear(); // a full one (the eviction test's) would evict these
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();
@@ -169,6 +171,7 @@ mod tests {
     #[test]
     fn the_one_that_expires_first_goes_when_it_is_full() {
         let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+        KEPT.lock().clear(); // a full one (the eviction test's) would evict these
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();

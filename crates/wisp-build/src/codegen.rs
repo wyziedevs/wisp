@@ -1393,6 +1393,8 @@ struct Project<'a> {
     maps: bool,
     prerendered: Option<&'a Path>,
     tree: crate::routes::Tree,
+    /// `redirects`, `rewrites` and `headers` of Cargo.toml.
+    rules: crate::config::Rules,
     /// `src/app.html` (or the default) in its three pieces.
     shell: [String; 3],
     comps: Vec<Comp>,
@@ -1492,6 +1494,7 @@ impl<'a> Project<'a> {
     fn new(input: &Input<'a>) -> Result<Project<'a>, String> {
         let root = input.root;
         let tree = crate::routes::scan(&root.join("src").join("routes"))?;
+        let rules = crate::config::load(root, &tree)?;
         let shell_path = root.join("src").join("app.html");
         let shell_src = match shell_path.exists() {
             true => crate::read_source(&shell_path).map_err(|e| format!("src/app.html: {e}"))?,
@@ -1523,6 +1526,7 @@ impl<'a> Project<'a> {
             maps: input.maps,
             prerendered: input.prerendered,
             tree,
+            rules,
             shell,
             comps: Vec::new(),
             templates: Vec::new(),
@@ -3868,6 +3872,9 @@ impl Gen {
         }
         self.line(0, "");
         self.router(p);
+        for l in p.rules.emit() {
+            self.line(1, &l);
+        }
         let client = self.api(p)?;
         self.init(p);
         self.workshop(p);
@@ -9272,6 +9279,66 @@ mod tests {
         assert_eq!(urls, ["/logo.svg", "/fonts/a.woff2"]);
         assert_eq!(fs::read_to_string(&found[0].1).unwrap(), "own");
         let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn config_rules_are_baked_or_refused() {
+        let page = ("src/routes/docs/[...p]/+page.wisp", "<p>{p}</p>");
+        let with = |name: &str, rules: &str| {
+            let toml = format!(
+                "[package]
+name = \"a\"
+[package.metadata.wisp]
+{rules}
+"
+            );
+            app(name, &[page, ("Cargo.toml", &toml)])
+        };
+        let none = app("rules-none", &[page]).unwrap();
+        for w in ["REDIRECTS", "REWRITES", "HEADERS"] {
+            assert!(!none.contains(&format!("const {w}")), "{w}");
+        }
+        let code = with(
+            "rules-all",
+            "redirects = [\"/old/[id] /docs/[id] 301\", \"/x https://x.dev/y\"]
+             rewrites = [
+  \"/guide/[...p] /docs/[...p]\",
+]
+             headers = [\"/[...p] x-frame-options: DENY\"]",
+        )
+        .unwrap();
+        for want in [
+            "const REDIRECTS: bool = true;",
+            "(\"/old/[id]\", \"/docs/[id]\", 301), (\"/x\", \"https://x.dev/y\", 308)",
+            "const REWRITES: bool = true;",
+            "(\"/guide/[...p]\", 0, &[\"p\"])",
+            "const HEADERS: bool = true;",
+            "(\"/[...p]\", \"x-frame-options\", \"DENY\")",
+        ] {
+            assert!(
+                code.contains(want),
+                "{want}
+{code}"
+            );
+        }
+        for (rules, err) in [
+            ("redirects = [\"/a\"]", "write `from to`"),
+            ("redirects = [\"/a /b 200\"]", "the status is"),
+            ("redirects = [\"a /b\"]", "starts with a `/`"),
+            ("redirects = [\"/a /b/[id]\"]", "`[id]` is not in `/a`"),
+            ("redirects = [\"/a //evil.example\"]", "a path of the app"),
+            ("redirects = [\"/[h] https://[h].dev\"]", "host"),
+            ("rewrites = [\"/g/[...p] /nope\"]", "not a route"),
+            ("rewrites = [\"/g /docs/[...p]\"]", "has no `[p]`"),
+            (
+                "headers = [\"/a content-length: 1\"]",
+                "not a header to set",
+            ),
+            ("headers = [\"/a\"]", "write `pattern name: value`"),
+        ] {
+            let e = with("rules-bad", rules).err().unwrap_or_default();
+            assert!(e.contains(err), "{rules}: {e}");
+        }
     }
 
     #[test]

@@ -34,6 +34,10 @@ pub(crate) fn sync(root: &Path) -> Result<Vec<PathBuf>, String> {
         .map(|e| layer_dir(root, &toml, e).map(|d| (e, d)))
         .map(|r| {
             r.and_then(|(e, d)| match d.join("src").is_dir() {
+                // The app as its own layer would copy its routes into itself.
+                true if d.canonicalize().ok() == root.canonicalize().ok() => {
+                    Err(format!("extends `{e}`: the app cannot extend itself"))
+                }
                 true => Ok(d),
                 false => Err(format!("extends `{e}`: no `src` folder there (a layer has `src/routes`, `src/components`, `static`)")),
             })
@@ -472,6 +476,16 @@ mod tests {
         )
         .unwrap();
         assert!(sync(&app).unwrap_err().contains("no `src` folder"));
+        // Itself, however it is spelled, is refused.
+        for me in [".", "../app", "./"] {
+            let toml = format!(
+                "[package.metadata.wisp]
+extends = [\"{me}\"]
+"
+            );
+            fs::write(app.join("Cargo.toml"), toml).unwrap();
+            assert!(sync(&app).unwrap_err().contains("itself"), "{me}");
+        }
         let _ = fs::remove_dir_all(&d);
     }
 }
