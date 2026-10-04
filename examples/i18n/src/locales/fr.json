@@ -1,0 +1,11 @@
+{
+  "nav": { "home": "Accueil", "about": "À propos" },
+  "home": {
+    "title": "Bonjour le monde",
+    "cart": "{count, plural, =0 {Votre panier est vide} one {# article dans votre panier} other {# articles dans votre panier}}"
+  },
+  "about": {
+    "title": "À propos de ce site",
+    "body": "Écrit pour {name}, en français."
+  }
+}

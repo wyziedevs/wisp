@@ -9,9 +9,9 @@
 //! without `<meta name="robots" content="noindex">`. Addresses start with
 //! `SITE_URL`, else the request's host.
 
-use crate::export::{ExportRoute, paths, url};
+use crate::export::{ExportRoute, has_locale, pages, paths, url};
 use crate::{App, Cx};
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 /// The body and type of `/sitemap.xml` or `/robots.txt`; `None` for
@@ -145,7 +145,7 @@ fn robots(base: &str) -> String {
 
 /// `https://example.com`: `SITE_URL` without its last `/`, else the
 /// request's scheme and host (and base path); `None` with neither.
-fn base(cx: &Cx) -> Option<String> {
+pub(crate) fn base(cx: &Cx) -> Option<String> {
     if let Ok(site) = std::env::var("SITE_URL")
         && !site.is_empty()
     {
@@ -170,23 +170,82 @@ fn base(cx: &Cx) -> Option<String> {
 /// The sitemap of `routes`' indexed pages, each address once, in order;
 /// `slashed`: each ends in `/`, as `trailing_slash(Always)` serves them.
 fn xml(base: &str, routes: &[ExportRoute], slashed: bool) -> String {
-    let mut urls = BTreeSet::new();
+    // Each address, and the `xhtml:link`s that go with it.
+    let mut urls: BTreeMap<String, String> = BTreeMap::new();
+    let locales = crate::locales();
+    let end = |u: &str| if slashed && u != "/" { "/" } else { "" };
     for r in routes.iter().filter(|r| r.page && r.indexed) {
         // A route whose `entries()` panics or does not fit is left out.
-        if let Ok(Ok(all)) = catch_unwind(AssertUnwindSafe(|| paths(r))) {
-            urls.extend(all.iter().map(|segs| url(segs)));
+        if has_locale(r) && !locales.is_empty() {
+            urls.extend(locale_urls(base, r, &end));
+        } else if let Ok(Ok(all)) = catch_unwind(AssertUnwindSafe(|| paths(r))) {
+            let all = all.iter().map(|segs| url(segs));
+            urls.extend(all.map(|u| (format!("{base}{u}{}", end(&u)), String::new())));
         }
     }
     let mut out = String::from(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n",
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\"",
     );
-    for u in urls.into_iter().take(MAX_URLS) {
+    if urls.values().any(|alts| !alts.is_empty()) {
+        out.push_str(" xmlns:xhtml=\"http://www.w3.org/1999/xhtml\"");
+    }
+    out.push_str(">\n");
+    for (loc, alts) in urls.into_iter().take(MAX_URLS) {
         out.push_str("<url><loc>");
-        let end = if slashed && u != "/" { "/" } else { "" };
-        esc(&mut out, &format!("{base}{u}{end}"));
-        out.push_str("</loc></url>\n");
+        esc(&mut out, &loc);
+        out.push_str("</loc>");
+        out.push_str(&alts);
+        out.push_str("</url>\n");
     }
     out.push_str("</urlset>\n");
+    out
+}
+
+/// The addresses of a page under `[[lang=locale]]`, one per locale and
+/// entry, each with the `xhtml:link` of every locale's (and `x-default`,
+/// the default's), as search engines want them.
+fn locale_urls(
+    base: &str,
+    r: &ExportRoute,
+    end: &dyn Fn(&str) -> &'static str,
+) -> Vec<(String, String)> {
+    let locales = crate::locales();
+    let mut cols = Vec::new();
+    for l in locales {
+        let got = catch_unwind(AssertUnwindSafe(|| pages(r, crate::i18n::segment(l))));
+        match got {
+            Ok(Ok(all)) => cols.push(all.iter().map(|s| url(s)).collect::<Vec<_>>()),
+            _ => return Vec::new(),
+        }
+    }
+    // An `entries()` that gave another list each time is left out.
+    if cols.iter().any(|c| c.len() != cols[0].len()) {
+        return Vec::new();
+    }
+    let at = |l: usize, j: usize| {
+        let u = &cols[l][j];
+        format!("{}{u}{}", crate::i18n::site_for(base, locales[l]), end(u))
+    };
+    let default = (locales.iter())
+        .position(|l| *l == crate::i18n::default_name())
+        .unwrap_or(0);
+    let mut out = Vec::new();
+    for j in 0..cols[0].len() {
+        let mut alts = String::new();
+        let mut link = |lang: &str, href: String| {
+            alts.push_str(&format!(
+                "<xhtml:link rel=\"alternate\" hreflang=\"{}\" href=\"",
+                lang.replace('_', "-")
+            ));
+            esc(&mut alts, &href);
+            alts.push_str("\"/>");
+        };
+        for (l, name) in locales.iter().enumerate() {
+            link(name, at(l, j));
+        }
+        link("x-default", at(default, j));
+        out.extend((0..locales.len()).map(|l| (at(l, j), alts.clone())));
+    }
     out
 }
 

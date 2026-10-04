@@ -302,13 +302,36 @@ fn source_map(js: &str) -> Option<(&str, &str)> {
     plain.then_some((code, map))
 }
 
-/// The pages a route makes, as path segments.
+/// The segment a route puts the app's locales in.
+const LOCALE: &str = "[[lang=locale]]";
+
+/// Whether the route has `[[lang=locale]]`.
+pub(crate) fn has_locale(r: &ExportRoute) -> bool {
+    r.pattern.split('/').any(|s| s == LOCALE)
+}
+
+/// The pages a route makes, as path segments: [`pages`] in each of the
+/// locales' ways of writing the address (see `i18n::variants`) when it
+/// is under `[[lang=locale]]`.
 pub(crate) fn paths(r: &ExportRoute) -> Result<Vec<Vec<String>>, String> {
-    let params: Vec<&str> = r
-        .pattern
-        .split('/')
+    if !has_locale(r) {
+        return pages(r, "");
+    }
+    let mut all = Vec::new();
+    for lang in crate::i18n::variants() {
+        all.extend(pages(r, lang)?);
+    }
+    Ok(all)
+}
+
+/// The pages a route makes, as path segments. `lang` is what goes in its
+/// `[[lang=locale]]` ("" leaves it out), which `entries` does not list.
+pub(crate) fn pages(r: &ExportRoute, lang: &str) -> Result<Vec<Vec<String>>, String> {
+    let all: Vec<&str> = (r.pattern.split('/'))
         .filter(|s| s.starts_with('['))
         .collect();
+    let locale_at = all.iter().position(|s| *s == LOCALE);
+    let params: Vec<&str> = all.iter().copied().filter(|s| *s != LOCALE).collect();
     let entries = match r.entries {
         Some(entries) => entries(),
         None if params.iter().all(|p| p.starts_with("[[")) => {
@@ -324,7 +347,12 @@ pub(crate) fn paths(r: &ExportRoute) -> Result<Vec<Vec<String>>, String> {
     entries
         .iter()
         .map(|e| {
-            segments(r.pattern, e).ok_or_else(|| {
+            let mut values = e.clone();
+            // `entries` came with one value fewer than the pattern has.
+            if let Some(at) = locale_at.filter(|at| *at <= values.len()) {
+                values.insert(at, lang.to_string());
+            }
+            segments(r.pattern, &values).ok_or_else(|| {
                 format!(
                     "{}: entries() gave {e:?}, which does not fit the route",
                     r.pattern

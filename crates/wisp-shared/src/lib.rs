@@ -3,11 +3,12 @@
 //! in a page and how it is escaped there (`contexts`), the marks and
 //! headers of a live page (`protocol`), and the browser runtime itself;
 //! and what more than one of them needs: SHA-256 (`sha256`), base64
-//! (`base64`), JSON (`json`), `.env` files (`dotenv`), plural rules (`plural`), the seeded generator of the property tests (`rng`). `std` only, so the compiler
+//! (`base64`), JSON (`json`), `.env` files (`dotenv`), plural rules (`plural`), text direction (`dir`), the seeded generator of the property tests (`rng`). `std` only, so the compiler
 //! stays small to build.
 
 pub mod base64;
 pub mod contexts;
+pub mod dir;
 pub mod dotenv;
 pub mod fonts;
 pub mod gzip;

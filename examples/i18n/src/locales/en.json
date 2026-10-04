@@ -1,0 +1,11 @@
+{
+  "nav": { "home": "Home", "about": "About" },
+  "home": {
+    "title": "Hello, world",
+    "cart": "{count, plural, =0 {Your cart is empty} one {# item in your cart} other {# items in your cart}}"
+  },
+  "about": {
+    "title": "About this site",
+    "body": "Written for {name}, in English."
+  }
+}

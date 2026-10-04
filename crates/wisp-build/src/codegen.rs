@@ -1655,6 +1655,13 @@ impl<'a> Project<'a> {
             })
             .collect();
         warnings.extend(self.slash_lints());
+        if let Some(l) = &self.i18n {
+            warnings.extend(
+                l.warnings
+                    .iter()
+                    .map(|(f, n, w)| (f.as_str(), *n, w.clone())),
+            );
+        }
         warnings.sort();
         (warnings.into_iter())
             .map(|(rel, line, w)| format!("{rel}:{line}: {w}"))
@@ -3406,8 +3413,12 @@ pub const MORE: ::wisp::rt::CacheMore = ::wisp::rt::CacheMore::NONE;"
         );
         let [s0, s1, s2] = &self.shell;
         let m = &self.model;
-        (m.routes.iter())
-            .map(|r| {
+        (m.routes.iter().zip(&self.tree.routes))
+            .map(|(r, tr)| {
+                // A page in a locale says it (`<html lang>`, the prefix).
+                if self.i18n.is_some() && tr.has_locale() {
+                    return None;
+                }
                 let tpl = |&l: &usize| &self.templates[m.layouts[l].tpl];
                 let mut layers: Vec<&Tpl> = r.layouts.iter().map(tpl).collect();
                 layers.push(&self.templates[r.page.as_ref()?.tpl]);
@@ -3617,6 +3628,10 @@ impl Gen {
             }
             if p.i18n.is_some() {
                 self.line(1, "__o.lang = ::wisp::rt::pick_locale(cx);");
+                // The prefix `i18n = ["prefix …"]` asks for, or not.
+                if r.has_locale() {
+                    self.line(1, "::wisp::rt::locale_redirect(cx)?;");
+                }
             }
             for l in route.layouts.iter().filter(layout_load) {
                 self.line(
@@ -3955,6 +3970,9 @@ impl Gen {
                     names.join(", ")
                 ),
             );
+            if let Some(langs) = l.html_langs(&p.shell[0]) {
+                self.line(1, &langs);
+            }
         }
         self.line(0, "");
         self.router(p);
@@ -4565,6 +4583,9 @@ impl Gen {
 
     fn init(&mut self, p: &Project) {
         self.line(1, "async fn init() -> ::wisp::Result<()> {");
+        if let Some(l) = &p.i18n {
+            self.line(2, &l.config());
+        }
         // What `#[derive(Config)]` reads is there for `init`.
         let mods = p.mods.iter().map(|m| (m, "__mods::"));
         let own = p.hooks.iter().chain(&p.user_mods).map(|m| (m, ""));

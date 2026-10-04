@@ -201,7 +201,15 @@ answers `/_img?src=/p.jpg&w=640&q=75`, `static/` only, fixed widths),
 items}}"}`), `{t("hi", name = user.name)}`, `t('n', c)` in scripts; keys
 checked across locales at build. Locale: `[[lang=locale]]`, cookie `lang`,
 `Accept-Language`, first; `cx.locale()`, `wisp::locales()`,
-`wisp::localize(cx.path(), "fr")`, `wisp::default_locale("fr")?`.
+`wisp::localize(cx.path(), "fr")`, `wisp::default_locale("fr")?`. Cargo.toml
+`[package.metadata.wisp] i18n = ["prefix as-needed", "default en", "domain
+example.fr fr", "missing warn"]`: `prefix always` redirects `/x` to `/en/x`,
+`as-needed` leaves the default bare, `domain` picks by host, `missing warn`
+falls back to the default's message (else a build error). `<html dir>` is
+set for ar, he, fa…; `wisp::dir(l)`. Head: `{@html wisp::alternates(cx)}`
+(canonical, hreflang); nav: `{@html wisp::switcher(cx)}`; numbers:
+`wisp::format_number format_money(n, "EUR", l) format_date format_date_long(d, l)`
+with `cx.locale()`. Sitemap and `--static` list every locale.
 
 `{#await stats(id)}<p>…</p>{:then s}<p>{s.posts}</p>{:catch e}{e}{/await}`:
 the page goes out at once; each answer follows in the same response, moved
