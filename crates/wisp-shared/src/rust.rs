@@ -50,10 +50,12 @@ pub fn skip_char(b: &[u8], i: usize) -> usize {
     }
 }
 
-/// If `b[i]` starts a raw string (`r"`, `r#"`, `br"`), returns the hash count.
+/// If `b[i]` starts a raw string (`r"`, `r#"`, `br"`, `cr"`), returns the
+/// hash count.
 pub fn raw_str_start(b: &[u8], i: usize) -> Option<usize> {
-    let prefix_ok =
-        i == 0 || !is_word(b[i - 1]) || (b[i - 1] == b'b' && (i == 1 || !is_word(b[i - 2])));
+    let prefix_ok = i == 0
+        || !is_word(b[i - 1])
+        || (matches!(b[i - 1], b'b' | b'c') && (i == 1 || !is_word(b[i - 2])));
     if b[i] != b'r' || !prefix_ok {
         return None;
     }
@@ -156,4 +158,21 @@ pub fn awaits(code: &str) -> bool {
         i = skip_literal(b, i) + 1;
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raw_strings_of_each_prefix() {
+        // A raw string's `\` escapes nothing, so its `"` ends it.
+        for src in [r#"r"\" }"#, r#"br"\" }"#, r#"cr"\" }"#] {
+            let b = src.as_bytes();
+            let at = src.find('r').unwrap();
+            assert_eq!(raw_str_start(b, at), Some(0), "{src}");
+            assert_eq!(skip_literal(b, at), src.find(" }").unwrap() - 1, "{src}");
+        }
+        assert_eq!(raw_str_start(br#"xr"""#, 1), None);
+    }
 }
