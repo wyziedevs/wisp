@@ -11,6 +11,9 @@
     forbid(unsafe_code)
 )]
 
+// Every public item says what it is: an editor's hover shows it.
+#![deny(missing_docs)]
+
 // The HTML context rules and the live-page wire protocol, which wisp-build
 // compiles by too.
 use wisp_shared::{contexts, protocol};
