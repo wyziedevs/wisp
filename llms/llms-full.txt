@@ -456,7 +456,8 @@ gzip, no build) · `wisp
 deploy init <host>` (a GitHub Actions workflow; or `fly|render|railway`: that
 host's config) · `wisp routes` · `wisp new-route /path page|server|rest` ·
 `wisp add|remove pkg` (`wisp add` alone: the recipes in `add/`) · `wisp ui
-add|list button dialog` (accessible components into `src/components`) · `wisp
+add|list button dialog` (accessible components into `src/components`; `clientonly`:
+`<ClientOnly fallback="…">` draws its children only in the browser) · `wisp
 lsp` · `wisp update-docs` · `wisp mcp` (`claude mcp add wisp -- wisp mcp`).
 Docs: README.md, docs/design.md, client.md, api.md, deploy.md, embed.md,
 tokens.md, or llms-full.txt (this file, client, api, deploy and embed).

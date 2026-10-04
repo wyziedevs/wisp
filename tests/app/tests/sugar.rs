@@ -79,6 +79,16 @@ fn named_middleware_runs_first_in_a_page_and_a_layout() {
 }
 
 #[test]
+fn client_only_sends_its_fallback_and_keeps_the_children_inert() {
+    let mut app = client::<Site>();
+    // The ClientOnly component (`wisp ui add clientonly`): children in a
+    // `<template>`, drawn on mount; what is visible is the fallback.
+    let page = app.get("/t/clientonly").text().to_string();
+    assert!(page.contains("<template data-w=\"0.0\"><p>secret inside</p></template>"), "{page}");
+    assert!(page.contains("<span class=\"client-only\"><template data-w=\"2\"></template>wait<!----></span>"), "{page}");
+}
+
+#[test]
 fn an_upload_param_keeps_any_file() {
     let mut app = client::<Site>();
     let page = app.get("/t/docs").text().to_string();

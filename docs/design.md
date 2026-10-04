@@ -634,6 +634,7 @@ the app's and stays; `--force` writes over it. Each comes with a
 | `Checkbox`, `Switch` | `<Switch label="Dark" name="dark" checked />` (a checkbox, `role="switch"`) | none |
 | `Select` | `<Select label="Drink" name="drink"><option>Tea</option></Select>` (native) | none |
 | `Accordion` | `<Accordion title="Q" group="faq">A</Accordion>` (`<details name>`) | none |
+| `ClientOnly` | `<ClientOnly fallback="Loading…"><Chart /></ClientOnly>`: the server sends the fallback, the children wait in an inert `<template>` and are drawn on mount | `onMount` |
 | `Dialog` | `<Dialog id="d" title="Sure?" trigger="Delete">…</Dialog>` (`<dialog>`, `commandfor`) | none |
 | `Menu` | `<Menu id="m" label="Actions"><button role="menuitem">Edit</button></Menu>` (popover) | arrow keys |
 | `Tabs` | `<Tabs id="t" labels={["A", "B"]}><div>…</div><div>…</div></Tabs>` | arrow keys |
@@ -646,7 +647,7 @@ the app's and stays; `--force` writes over it. Each comes with a
   `--danger`, `--success` and `--warning` are read the same way.
 - Native elements first (`<dialog>`, `popover`, `<details>`, `<select>`,
   checkboxes): the browser's keyboard, focus and screen reader support,
-  and no JavaScript for ten of the fourteen. The rest follow the WAI-ARIA
+  and no JavaScript for ten of the fifteen. The rest follow the WAI-ARIA
   patterns. A test builds all of them with no accessibility warnings.
 
 ### Scoped styles
