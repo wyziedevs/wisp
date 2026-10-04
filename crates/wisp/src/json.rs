@@ -16,11 +16,17 @@ use std::hash::BuildHasher;
 /// appears twice the last one counts, as in JavaScript.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
+    /// `null`.
     Null,
+    /// `true` or `false`.
     Bool(bool),
+    /// A number, kept as the text it was written as (no precision lost).
     Number(String),
+    /// A string.
     String(String),
+    /// An array.
     Array(Vec<Value>),
+    /// An object: its members in the order they were written.
     Object(Vec<(String, Value)>),
 }
 
@@ -33,6 +39,7 @@ impl Value {
         }
     }
 
+    /// The string, or `None` when this is not one.
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Value::String(s) => Some(s),
@@ -40,6 +47,7 @@ impl Value {
         }
     }
 
+    /// The bool, or `None` when this is not one.
     pub fn as_bool(&self) -> Option<bool> {
         match self {
             Value::Bool(b) => Some(*b),
@@ -47,6 +55,7 @@ impl Value {
         }
     }
 
+    /// The number as `f64`, or `None` when this is not a number.
     pub fn as_f64(&self) -> Option<f64> {
         match self {
             Value::Number(n) => n.parse().ok(),
@@ -54,6 +63,7 @@ impl Value {
         }
     }
 
+    /// The number as `i64`, or `None` when this is not a whole number in range.
     pub fn as_i64(&self) -> Option<i64> {
         match self {
             Value::Number(n) => n.parse().ok(),
@@ -61,6 +71,7 @@ impl Value {
         }
     }
 
+    /// The items, or `None` when this is not an array.
     pub fn as_array(&self) -> Option<&[Value]> {
         match self {
             Value::Array(items) => Some(items),
@@ -68,6 +79,7 @@ impl Value {
         }
     }
 
+    /// This is `null`.
     pub fn is_null(&self) -> bool {
         matches!(self, Value::Null)
     }
@@ -698,6 +710,7 @@ impl Problems {
         }
     }
 
+    /// No problem was found.
     pub fn is_empty(&self) -> bool {
         self.list.is_empty()
     }
@@ -1024,17 +1037,20 @@ impl<T: FromJson, S: BuildHasher + Default> FromJson for HashMap<String, T, S> {
 pub mod check {
     /// A number, for `min` and `max`.
     pub trait Number {
+        /// The value as a number, or `None` when it is absent (an absent field passes).
         fn number(&self) -> Option<f64>;
     }
 
     /// Something with a length, for `min_len` and `max_len`: a string in
     /// characters, a list in items.
     pub trait Length {
+        /// The length and its unit (`"character"`, `"item"`), or `None` when absent.
         fn length(&self) -> Option<(usize, &'static str)>;
     }
 
     /// Text, for `email`.
     pub trait Text {
+        /// The text, or `None` when absent.
         fn text(&self) -> Option<&str>;
     }
 
@@ -1100,6 +1116,7 @@ pub mod check {
         }
     }
 
+    /// `None` when `v` is at least `min` or absent, else the message `must be at least N`.
     pub fn min(v: &impl Number, min: f64) -> Option<String> {
         // `NaN` (a form says "NaN" to an `f64`) is below nothing and above
         // nothing: it must not pass for a number in range.
@@ -1107,16 +1124,19 @@ pub mod check {
         (n.is_nan() || n < min).then(|| format!("must be at least {min}"))
     }
 
+    /// `None` when `v` is at most `max` or absent, else the message `must be at most N`.
     pub fn max(v: &impl Number, max: f64) -> Option<String> {
         let n = v.number()?;
         (n.is_nan() || n > max).then(|| format!("must be at most {max}"))
     }
 
+    /// `None` when `v` has at least `min` characters or items, or is absent, else a message.
     pub fn min_len(v: &impl Length, min: usize) -> Option<String> {
         let (n, unit) = v.length()?;
         (n < min).then(|| format!("must have at least {}", plural(min, unit)))
     }
 
+    /// `None` when `v` has at most `max` characters or items, or is absent, else a message.
     pub fn max_len(v: &impl Length, max: usize) -> Option<String> {
         let (n, unit) = v.length()?;
         (n > max).then(|| format!("must have at most {}", plural(max, unit)))

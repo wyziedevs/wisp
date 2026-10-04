@@ -50,6 +50,7 @@ impl Image {
         self.kind
     }
 
+    /// The image's bytes as uploaded.
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
     }
@@ -59,6 +60,7 @@ impl Image {
         self.bytes.len()
     }
 
+    /// No bytes: the visitor left the file input empty.
     pub fn is_empty(&self) -> bool {
         self.bytes.is_empty()
     }

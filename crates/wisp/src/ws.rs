@@ -20,7 +20,9 @@ use std::pin::Pin;
 /// A message from or to the client.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Message {
+    /// A text message.
     Text(String),
+    /// A binary message.
     Binary(Vec<u8>),
 }
 
