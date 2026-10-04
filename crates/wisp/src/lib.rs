@@ -1496,14 +1496,22 @@ impl Error {
 
     /// A redirect with a status other than [`redirect`]'s 303, such as 308
     /// for a page that moved for good: `return Err(Error::redirect(308, "/new"))`.
-    /// Panics on CR/LF in `location`.
+    /// A `location` with CR/LF (header injection) is refused, not sent: the
+    /// visitor gets a 500 and the reason is logged. Panics on a status outside
+    /// 300..=308, a mistake in the code, caught in its first test.
     pub fn redirect(status: u16, location: impl Into<String>) -> Error {
         assert!(
             (300..=308).contains(&status),
             "redirect status must be 3xx, got {status}"
         );
-        // A path of the app's own is under its base path, when it has one.
         let location = location.into();
+        if !cx::valid_header("location", &location) {
+            crate::http::log(format_args!(
+                "wisp: refused redirect {status} to {location:?}: CR/LF in the location"
+            ));
+            return Error::raw(500, Cow::Borrowed("Internal Server Error"));
+        }
+        // A path of the app's own is under its base path, when it has one.
         let location = match crate::protocol::BASE.is_empty() {
             true => location,
             false => crate::protocol::based(&location).into_owned(),
@@ -1547,7 +1555,8 @@ pub fn invalid<T>(field: impl Into<String>, problem: impl Into<String>) -> Resul
 
 /// `return redirect("/login")`: 303 See Other, which sends the browser
 /// to `location` with a GET, whether it came with a form post or a link.
-/// [`Error::redirect`] takes other statuses. Panics on CR/LF in `location`.
+/// [`Error::redirect`] takes other statuses. CR/LF in `location` is refused
+/// with a 500, not a panic.
 pub fn redirect<T>(location: impl Into<String>) -> Result<T> {
     Err(Error::redirect(303, location))
 }
@@ -2065,6 +2074,16 @@ pub mod rt {
 
 #[cfg(test)]
 mod tests {
+    /// A location with CR/LF is a 500 and no panic; a good one keeps its header.
+    #[test]
+    fn a_bad_redirect_is_a_500_not_a_panic() {
+        let e = super::Error::redirect(303, "/x\r\nset-cookie: a=b");
+        assert_eq!((e.status(), e.header.is_none()), (500, true));
+        let e = super::Error::redirect(308, "/new");
+        assert_eq!(e.status(), 308);
+        assert!(e.header.is_some());
+    }
+
     /// `.env` fills in what the process's environment lacks, never more.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]

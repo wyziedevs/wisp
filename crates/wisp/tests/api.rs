@@ -713,7 +713,6 @@ fn nothing_splits_a_response() {
         let _ = wisp::Response::text("x").with_header("x", "a\r\nb");
     });
     assert!(builders.is_err());
-    assert!(std::panic::catch_unwind(|| wisp::Error::redirect(303, "/a\r\nb")).is_err());
     assert!(
         std::panic::catch_unwind(|| wisp::Error::new(400, "x").with_header("x", "a\nb")).is_err()
     );
