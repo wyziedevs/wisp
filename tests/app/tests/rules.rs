@@ -1,6 +1,8 @@
 //! `redirects`, `rewrites` and `headers` of `[package.metadata.wisp]` in
 //! this app's Cargo.toml.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 use wisp::test::client;
 use wisp_test_app::Site;
 

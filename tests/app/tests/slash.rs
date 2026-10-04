@@ -1,6 +1,8 @@
 //! `wisp::trailing_slash`, set as `init` would: in a process of its own,
 //! since it holds for the whole app.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 use wisp::TrailingSlash::{Always, Ignore, Never};
 use wisp::test::client;
 use wisp_test_app::Site;

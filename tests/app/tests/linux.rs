@@ -5,6 +5,7 @@
 //!
 //! Other systems compile this file to nothing; the Linux run of the
 //! workspace's tests (`scratchpad/linux-test.sh`) is where it counts.
+#![cfg(not(target_arch = "wasm32"))]
 #![cfg(target_os = "linux")]
 
 mod common;

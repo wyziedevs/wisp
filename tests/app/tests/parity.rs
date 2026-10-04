@@ -3,6 +3,8 @@
 //! does: the same status, content type, redirect and body. Skipped, with a
 //! note, when Node or Rust's wasm32 target is not there.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 mod common;
 
 use common::{SECRET, Server, Temp, header, status};

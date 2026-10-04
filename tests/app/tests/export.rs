@@ -1,5 +1,7 @@
 //! `wisp build --static`'s export of the test app, into a temp folder.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 mod common;
 
 use common::Temp;

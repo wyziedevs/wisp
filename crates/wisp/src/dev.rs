@@ -484,6 +484,23 @@ mod tests {
     use super::*;
     use crate::fuzz::{Fuzz, Rng, TEMPLATE, mutate};
 
+    /// The browser scripts of dev parse. One that does not (a stray newline
+    /// in a string once did) is dead on arrival, and reload with it. Skipped
+    /// without `node` to ask.
+    #[test]
+    fn dev_scripts_parse() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/client");
+        for name in ["wisp-dev.js", "wisp-devtools.js"] {
+            let out = std::process::Command::new("node")
+                .arg("--check")
+                .arg(dir.join(name))
+                .output();
+            let Ok(out) = out else { return };
+            let err = String::from_utf8_lossy(&out.stderr);
+            assert!(out.status.success(), "{name}: {err}");
+        }
+    }
+
     /// A template's `$lib/` image is `src/lib`'s, and only an image.
     #[test]
     fn lib_images_are_read_from_src_lib() {

@@ -1,6 +1,8 @@
 //! What the test app's binary tells an operator: `WISP_LOG=json` lines,
 //! `/_wisp/metrics`, and OTLP traces to a fake collector.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 mod common;
 
 use common::{Server, body, command, header, start, status};

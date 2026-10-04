@@ -36,7 +36,10 @@ const POLL: Duration = Duration::from_millis(50);
 /// Editors often write a file in several steps; wait until it stops changing,
 /// but no longer than `SETTLE_MAX`, or a file written without pause (a log)
 /// would hold up every other change.
-const SETTLE: Duration = Duration::from_millis(20);
+const SETTLE: Duration = Duration::from_millis(60);
+/// How long a restarted app has to answer a request before the build is
+/// called failed, and before any browser is told to reload.
+const HEALTH_WAIT: Duration = Duration::from_secs(10);
 const SETTLE_MAX: Duration = Duration::from_secs(1);
 
 pub fn run(root: &Path, port: u16) -> Result<(), String> {
@@ -250,6 +253,22 @@ fn rebuild(
             }
             if let Some(a) = app.addr {
                 events.allow(a);
+            }
+            // The app says it is listening a moment before it answers; a
+            // browser told sooner would fetch from a server not there yet.
+            if let Some(a) = app.addr
+                && !healthy(a, HEALTH_WAIT)
+            {
+                let e = "The app is listening but does not answer requests.\nIts output is in the terminal.";
+                term::failed(e);
+                show_error(
+                    events,
+                    "App Didn't Start",
+                    e.lines().next().unwrap_or_default(),
+                    "Startup",
+                    e,
+                );
+                return None;
             }
             events.send("reload", why);
             Some(hot)
@@ -569,6 +588,21 @@ impl Drop for Server {
     }
 }
 
+/// Whether the app at `addr` answers an HTTP request, tried for up to
+/// `wait`. Its own script (served without touching any route) is the request.
+fn healthy(addr: SocketAddr, wait: Duration) -> bool {
+    let deadline = Instant::now() + wait;
+    loop {
+        if request(addr, "GET", "/_app/wisp-dev.js", &[]).is_some() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        sleep(Duration::from_millis(25));
+    }
+}
+
 /// A minimal HTTP/1.1 request to the app; returns the status. The connect
 /// timeout keeps a dead app from costing Windows' 2s refusal.
 fn request(addr: SocketAddr, method: &str, path: &str, body: &[u8]) -> Option<u16> {
@@ -703,6 +737,35 @@ mod tests {
         for name in ["+page.wisp", "+page.rs", "app.css", "words.txt", "4913.txt"] {
             assert!(!scratch(name), "{name}");
         }
+    }
+
+    #[test]
+    fn health_waits_for_an_answer_not_for_a_connection() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        // Connects at once (the backlog takes it), answers 300ms later: an
+        // app that is listening but not serving yet.
+        let app = std::thread::spawn(move || {
+            sleep(Duration::from_millis(300));
+            if let Ok((mut s, _)) = listener.accept() {
+                let mut head = [0u8; 512];
+                let _ = s.read(&mut head);
+                let _ = s.write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                );
+            }
+        });
+        let started = Instant::now();
+        assert!(healthy(addr, Duration::from_secs(10)));
+        assert!(started.elapsed() >= Duration::from_millis(250));
+        app.join().unwrap();
+        // Nothing there: false once the time is up, not before.
+        let dead = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let gone = dead.local_addr().unwrap();
+        drop(dead);
+        let started = Instant::now();
+        assert!(!healthy(gone, Duration::from_millis(200)));
+        assert!(started.elapsed() >= Duration::from_millis(200));
     }
 
     #[test]
