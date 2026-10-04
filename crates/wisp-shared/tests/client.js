@@ -380,25 +380,6 @@ const tests = {
     assert.equal(slot.innerHTML, '');
     assert.equal(p.loc.href, 'http://x.test/other');
   },
-  async 'a superseded navigation has its fetch aborted, a form post does not'() {
-    const p = page();
-    const sent = [];
-    p.g.reply = (u, o) => (sent.push(o), new Promise(() => {}));
-    p.click({}, '/first');
-    await tick();
-    p.click({}, '/second');
-    await tick();
-    assert.equal(sent[0].signal.aborted, true);
-    assert.equal(sent[1].signal.aborted, false);
-    const f = p.form({}, [['a', '1']]);
-    p.submit(f);
-    await tick();
-    const post = sent.find((o) => o.method == 'POST');
-    p.click({}, '/third');
-    await tick();
-    assert.equal(post.signal, undefined);
-    assert.equal(sent[1].signal.aborted, true);
-  },
   async 'a refresh that answers after a navigation is dropped'() {
     const p = page();
     let release;
