@@ -107,6 +107,9 @@ struct Block {
     end_stream: bool,
     bytes: Vec<u8>,
     frames: u32,
+    /// The stream was reset as its HEADERS came (it depends on itself):
+    /// the block is decoded, for the table, and opens nothing.
+    reset: bool,
 }
 
 /// One HTTP/2 connection's protocol state.
@@ -283,6 +286,10 @@ impl Session {
                     b = &b[5..];
                     if dep == id {
                         self.block_start(id, flags, b)?;
+                        // Its CONTINUATION, still to come, must not open it.
+                        if let Some(b) = &mut self.block {
+                            b.reset = true;
+                        }
                         return Err(St(id, Code::Protocol));
                     }
                 }
@@ -454,6 +461,7 @@ impl Session {
             end_stream: flags & END_STREAM != 0,
             bytes: b.to_vec(),
             frames: 0,
+            reset: false,
         });
         match flags & END_HEADERS != 0 {
             true => self.block_end(),
@@ -472,6 +480,10 @@ impl Session {
             return Err(Fault::Conn(code));
         }
         let id = b.id;
+        if b.reset {
+            self.last = self.last.max(id);
+            return Ok(());
+        }
         if let Some(i) = self.find(id) {
             // Trailers: they must end the stream, and are dropped.
             if self.streams[i].ended {
@@ -1736,6 +1748,16 @@ mod tests {
         // Priority on itself.
         let (_, f) = run(&[frame(PRIORITY, 0, 1, &[0, 0, 0, 1, 16])]);
         assert_eq!(rst_code(&f), Some(Code::Protocol as u32));
+        // HEADERS that depend on themselves, in pieces: the stream is reset,
+        // and its CONTINUATION does not open it after all.
+        let mut p = vec![0, 0, 0, 1, 16];
+        p.extend(get("/"));
+        let (s, f) = run(&[
+            frame(HEADERS, END_STREAM | PRIORITY_FLAG, 1, &p),
+            frame(CONTINUATION, END_HEADERS, 1, &[]),
+        ]);
+        assert_eq!(rst_code(&f), Some(Code::Protocol as u32));
+        assert!(!s.done && s.ready.is_empty() && !s.open(1));
         // Data after the stream ended.
         let (_, f) = run(&[
             frame(HEADERS, END_HEADERS | END_STREAM, 1, &get("/")),

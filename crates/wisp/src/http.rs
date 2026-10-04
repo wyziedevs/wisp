@@ -377,6 +377,7 @@ pub(crate) fn send_under_way(began: bool) {
 /// is (a test's, a supervisor's) stops the server rather than killing it
 /// mid-response. Called within a runtime.
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::manual_async_fn)] // eager on Unix, where the catching comes first
 fn stop_signal() -> impl Future<Output = ()> {
     #[cfg(unix)]
     let caught = {
