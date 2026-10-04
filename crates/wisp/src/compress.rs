@@ -61,9 +61,11 @@ fn takes_gzip(value: &str) -> bool {
         let mut p = part.split(';');
         let name = p.next().unwrap_or("").trim();
         (name.eq_ignore_ascii_case("gzip") || name.eq_ignore_ascii_case("x-gzip"))
-            && p.all(|q| {
-                let q = q.trim();
-                !(q.starts_with("q=0") && q[3..].trim_start_matches(['.', '0']).is_empty())
+            && p.all(|q| match q.trim().split_once('=') {
+                Some((k, v)) if k.trim().eq_ignore_ascii_case("q") => {
+                    v.trim().parse::<f32>().is_ok_and(|q| q > 0.0)
+                }
+                _ => true,
             })
     })
 }
@@ -484,6 +486,9 @@ pub(crate) mod tests {
         assert!(takes_gzip("br;q=1, gzip;q=0.5"));
         assert!(!takes_gzip("gzip;q=0"));
         assert!(!takes_gzip("gzip;q=0.0, br"));
+        assert!(!takes_gzip("gzip;Q=0"), "the parameter is any case");
+        assert!(!takes_gzip("gzip; q=0.000"));
+        assert!(takes_gzip("GZIP;q=0.001"));
         assert!(!takes_gzip("br, identity"));
     }
 

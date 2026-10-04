@@ -11,12 +11,16 @@ use crate::Shared;
 use std::any::Any;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
 /// Most answers kept: past it, the expired go, then the oldest key.
 const MAX: usize = 1024;
 
 /// An answer and the unix second it is kept until.
 type Kept = (u64, Arc<dyn Any + Send + Sync>);
+
+/// Counts `uncache`s: an answer made across one is stale, and not kept.
+static FORGOTTEN: AtomicU64 = AtomicU64::new(0);
 
 static KEPT: Shared<BTreeMap<String, Kept>> = Shared::new(BTreeMap::new());
 
@@ -39,8 +43,12 @@ where
     if let Some(v) = hit {
         return v;
     }
+    let forgotten = FORGOTTEN.load(Relaxed);
     let v = make().await;
     let mut kept = KEPT.lock();
+    if secs == 0 || FORGOTTEN.load(Relaxed) != forgotten {
+        return v;
+    }
     if kept.len() >= MAX && !kept.contains_key(key) {
         kept.retain(|_, (until, _)| *until > now);
         // Still full: the one that expires first goes.
@@ -61,7 +69,10 @@ where
 /// keeps (on every worker thread) whose path is `prefix` or below it
 /// (`/posts` is `/posts` and `/posts/1`, not `/postscript`; `/` is all).
 pub fn uncache(prefix: &str) {
-    KEPT.lock().retain(|k, _| !k.starts_with(prefix));
+    let mut kept = KEPT.lock();
+    FORGOTTEN.fetch_add(1, Relaxed);
+    kept.retain(|k, _| !k.starts_with(prefix));
+    drop(kept);
     crate::bake::purge(prefix);
 }
 
@@ -70,8 +81,13 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
 
+    /// The tests share `KEPT` (a flood in one evicts another's keys, an
+    /// `uncache` drops what is being made): one at a time.
+    static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn kept_until_it_expires_or_is_dropped() {
+        let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();
@@ -98,7 +114,22 @@ mod tests {
     }
 
     #[test]
+    fn an_answer_made_across_an_uncache_is_not_kept() {
+        let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let v = rt.block_on(cache("stale-a", 60, || async {
+            uncache("stale-a");
+            1u8
+        }));
+        assert_eq!(v, 1, "the caller still gets it");
+        assert!(!KEPT.lock().contains_key("stale-a"));
+    }
+
+    #[test]
     fn the_one_that_expires_first_goes_when_it_is_full() {
+        let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();

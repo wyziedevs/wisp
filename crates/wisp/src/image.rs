@@ -233,4 +233,22 @@ mod tests {
         assert_eq!(header("x-content-type-options"), Some("nosniff"));
         assert!(header("etag").is_some_and(|t| t.len() == 18));
     }
+
+    /// Bytes that are not a whole image never panic, whatever their length.
+    #[test]
+    fn short_and_odd_input_is_refused() {
+        let mut ftyp = b"\0\0\0\x10ftypavif\0\0\0\0".to_vec();
+        for n in 0..ftyp.len() {
+            let _ = sniff(&ftyp[..n]);
+        }
+        ftyp[3] = 0xff; // a size past the end
+        assert_eq!(sniff(&ftyp), Some("image/avif"));
+        ftyp[3] = 0; // a size under the header
+        let _ = sniff(&ftyp);
+        for data in ["", "=", "AA", "A", "AAAAA", "====", "\u{e9}\u{e9}"] {
+            let mut p = Problems::default();
+            let v = Value::String(format!("data:image/png;base64,{data}"));
+            assert!(Image::from_json(&v, &mut p).is_none(), "{data:?}");
+        }
+    }
 }

@@ -140,7 +140,12 @@ impl Channel {
     pub fn events(&self) -> crate::Response {
         let mut sub = self.subscribe();
         crate::Response::events(|out| async move {
-            while let Some(message) = sub.recv().await {
+            // A client that left while nothing was sent must not stay subscribed.
+            let gone = || async {
+                out.0.closed().await;
+                None
+            };
+            while let Some(message) = http::first(sub.recv(), gone()).await {
                 out.event(&message).await?;
             }
             Ok(())
@@ -228,6 +233,28 @@ mod tests {
             }
             assert_eq!(sub.recv().await, Some("5".into()), "a slow one skips ahead");
             assert!(other.0.try_recv().is_err());
+        });
+    }
+
+    #[test]
+    fn an_event_stream_unsubscribes_when_the_client_leaves() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let c = channel("test-leaver");
+            let mut res = c.events();
+            tokio::task::yield_now().await;
+            assert_eq!(c.subscribers(), 1);
+            drop(res.stream.take()); // the client leaves; nothing was sent
+            for _ in 0..100 {
+                if c.subscribers() == 0 {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            assert_eq!(c.subscribers(), 0);
         });
     }
 
