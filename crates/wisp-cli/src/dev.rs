@@ -748,13 +748,12 @@ mod tests {
         // app that is listening but not serving yet.
         let app = std::thread::spawn(move || {
             sleep(Duration::from_millis(300));
-            while let Ok((mut s, _)) = listener.accept() {
+            if let Ok((mut s, _)) = listener.accept() {
                 let mut head = [0u8; 512];
                 let _ = s.read(&mut head);
                 let _ = s.write_all(
                     b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
                 );
-                break;
             }
         });
         let started = Instant::now();
