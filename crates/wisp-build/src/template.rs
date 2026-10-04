@@ -997,6 +997,8 @@ struct Parser<'a> {
 struct Keep {
     name: String,
     textarea: bool,
+    /// Bound (`bind:value`): the value is the page's, only its problem is added.
+    bound: bool,
     /// Where its content begins: the frame depth and the list's length.
     frames: usize,
     at: usize,
@@ -1935,7 +1937,7 @@ impl Parser<'_> {
             let auto = true;
             self.push_node(self.tag_pos, Node::Problem { name, line, auto })?;
         }
-        if !self.closing && self.tag == "textarea" && self.keep.is_some() {
+        if !self.closing && self.tag == "textarea" && self.keep.as_ref().is_some_and(|k| !k.bound) {
             // Its content starts in a list of its own.
             self.flush()?;
             let at = self.list().len();
@@ -2001,6 +2003,8 @@ impl Parser<'_> {
     /// refused it (`Node::Kept`; else its own value, if any), and after it
     /// what was wrong (`Node::Problem`), unless the file shows that field's
     /// problem itself. A password or file is not sent back; its problem is.
+    /// A field with `bind:value` keeps its value (the page's), and still gets
+    /// the browser's checks and its problem.
     fn form_defaults(&mut self) -> Result<(), Error> {
         let (mut method, mut multipart) = (false, false);
         if self.tag == "form" {
@@ -2061,14 +2065,15 @@ impl Parser<'_> {
             .directives
             .iter()
             .any(|d| d.name == "value" || d.kind == Dir::Spread);
-        let name =
-            self.seen("name").flatten().map(String::from).filter(|_| {
-                problem && self.forms.iter().any(Option::is_some) && !in_browser && !bound
-            });
+        let name = self
+            .seen("name")
+            .flatten()
+            .map(String::from)
+            .filter(|_| problem && self.forms.iter().any(Option::is_some) && !in_browser);
         let chosen = self.tag == "option"
             && !in_browser
             && self.seen("selected").is_none()
-            && self.keep.as_ref().is_some_and(|k| !k.textarea);
+            && self.keep.as_ref().is_some_and(|k| !k.textarea && !k.bound);
         if !method && !multipart && name.is_none() && !chosen && !novalidate {
             return Ok(());
         }
@@ -2099,17 +2104,18 @@ impl Parser<'_> {
                 self.text.push_str(&attrs);
             }
             if self.tag == "input" {
-                if keeps {
+                if keeps && !bound {
                     self.keep_value(&name)?;
                 }
                 self.problem = Some(name);
             } else {
-                if self.tag == "select" {
+                if self.tag == "select" && !bound {
                     self.choose(&name)?;
                 }
                 self.keep = Some(Keep {
                     name,
                     textarea: self.tag == "textarea",
+                    bound,
                     frames: self.frames.len(),
                     at: 0,
                 });
@@ -2357,7 +2363,7 @@ impl Parser<'_> {
         let Some(k) = self.keep.take_if(|k| k.textarea == textarea) else {
             return Ok(());
         };
-        if textarea && self.frames.len() == k.frames {
+        if textarea && !k.bound && self.frames.len() == k.frames {
             self.flush()?;
             let line = self.line_of(pos);
             // (A `{:else}` inside it moved on to a list of its own.)
@@ -5731,6 +5737,37 @@ mod tests {
             ty: ty.into(),
             native: crate::rules::native(ty, &[], false),
             whole: false,
+        }
+    }
+
+    #[test]
+    fn a_bound_field_gets_its_checks_and_problem_but_not_its_value() {
+        let fields = [Field {
+            native: crate::rules::native(
+                "String",
+                &crate::rules::parse("min_len = 2").unwrap().rules,
+                false,
+            ),
+            ..field("send", "message", "String")
+        }];
+        for tag in ["textarea", "input", "select"] {
+            let src = format!(
+                "<form action=\"?/send\"><{tag} name=\"message\" bind:value=\"m\"></{tag}></form>"
+            );
+            let t = parse_with(&src, &fields, "w-t", false).unwrap();
+            let html: String = t.chunks.concat();
+            let kept = t
+                .nodes
+                .iter()
+                .any(|n| matches!(n, Node::Kept { .. } | Node::Chosen { .. }));
+            let problem = t.nodes.iter().any(|n| matches!(n, Node::Problem { .. }));
+            assert!(problem && !kept, "{tag}: problem {problem}, kept {kept}");
+            if tag != "select" {
+                assert!(
+                    html.contains("required") || html.contains("minlength"),
+                    "{tag}: {html}"
+                );
+            }
         }
     }
 
