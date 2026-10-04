@@ -14,7 +14,7 @@ tokio.workspace = true
 wisp-build.workspace = true
 
 # How locales show in URLs and what a missing message does (see
-# docs/design.md, Translations): English has no prefix, the others do
+# the design page, Translations): English has no prefix, the others do
 # (`/fr/about`), and a locale that lacks a message gets English's, with a
 # build warning, instead of a build error.
 [package.metadata.wisp]

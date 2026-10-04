@@ -614,7 +614,10 @@ mod tests {
             "templates/vendor/AGENTS.md is stale"
         );
         assert!(!AGENTS_MD.contains("<!-- repo") && !AGENTS_MD.contains("Carmack"));
-        let full = llms_full(&repo(base)).unwrap();
+        // Without the docs site checkout (WISP_DOCS_DIR) the committed copy stays.
+        let Some(full) = llms_full(&repo(base)).unwrap() else {
+            return;
+        };
         assert!(full == read_text(&vendor(base).join("llms-full.txt")).unwrap());
         let path = repo(base).join("llms/llms-full.txt");
         if read_text(&path).ok().as_deref() != Some(full.as_str()) {

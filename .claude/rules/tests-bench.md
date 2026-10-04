@@ -10,4 +10,4 @@ paths:
 - Speed claims: an instructions-per-request A/B (`perf stat -e instructions`, c=64, GET and POST) against the parent commit. Throughput is noisy (ranks swing 20% between runs, c=512 worst): never claim a win from one run; use `--rounds 6` or more, compare CPU per request, and say what stayed within noise.
 - Windows cannot judge server changes: the load generator saturates first.
 - `cargo run -r -p bench-run -- --only wisp,actix --rounds 6`; servers whose toolchain is missing are skipped.
-- Token bench: `cargo run -q -p wisp-tokens --release` (tables in docs/tokens.md). A feature that makes app code longer is a regression.
+- Token bench: `cargo run -q -p wisp-tokens --release` (tables on the tokens page of the docs site). A feature that makes app code longer is a regression.

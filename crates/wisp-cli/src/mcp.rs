@@ -7,7 +7,7 @@ use std::io::{self, BufRead, Write};
 use std::path::Path;
 use wisp_shared::json::{self, Json};
 
-/// AGENTS.md and docs/, as one file (the repository's llms-full.txt).
+/// AGENTS.md and the docs site pages, as one file (the repository's llms-full.txt).
 const DOCS: &str = include_str!("../templates/vendor/llms-full.txt");
 
 /// What the protocol's `tools/list` answers: each tool and its input,
@@ -375,11 +375,8 @@ mod tests {
             all.iter()
                 .any(|s| s.0 == "AGENTS.md > Actions (form posts)")
         );
-        assert!(
-            all.iter()
-                .any(|s| s.0 == "client.md > Directives > Event modifiers")
-        );
-        assert!(docs("").contains("api.md > Webhooks"));
+        assert!(all.iter().any(|s| s.0.ends_with("> Event modifiers")));
+        assert!(docs("").contains("> Webhooks"));
         assert!(docs("zzqq").starts_with("Nothing"));
     }
 

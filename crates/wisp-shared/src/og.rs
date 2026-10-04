@@ -3,7 +3,7 @@
 //! file into `static/og/` for each such call whose title and description are
 //! literals in a template. The same functions serve the runtime (the URL)
 //! and the build (the picture). The picture is SVG: no rasterizer is in
-//! Wisp's dependencies, and many crawlers want PNG (docs/design.md says how
+//! Wisp's dependencies, and many crawlers want PNG (the design page says how
 //! to convert).
 
 /// What the picture is drawn with: CSS colors and the name shown in a corner.

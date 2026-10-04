@@ -406,7 +406,7 @@ request, mean of 2 rounds; run-to-run noise was about 10%):
 None beat tokio then. The io_uring prototype waited in `io_uring_enter` for
 each completion, with no deferred task work, and rearmed a receive per
 request; Wisp's Linux workers now use a driver without those costs
-(`crates/wisp/src/uring.rs`, see docs/design.md), and `WISP_IO=epoll` runs
+(`crates/wisp/src/uring.rs`, see https://wispweb.dev/docs/design), and `WISP_IO=epoll` runs
 the same design on epoll (`crates/wisp/src/epoll.rs`).
 
 ## Results on Windows
@@ -508,7 +508,7 @@ that each feature works.
 
 SvelteKit and Next.js take 2.0x Wisp's tokens, Axum and Actix 2.9x and
 3.2x. The estimate and what changed to get here:
-[docs/tokens.md](../docs/tokens.md).
+[the tokens page](https://wispweb.dev/docs/tokens).
 
 ## Caveats
 

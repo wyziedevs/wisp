@@ -9,6 +9,6 @@ paths:
 - Linux drivers: io_uring (6.1+), else an epoll per worker (`WISP_IO=epoll|uring`). Chosen by a startup self-test that runs the real code; one stderr line says which and why. Never pick a fast path by guessing; fall back, never crash at runtime.
 - `unsafe` only in `uring.rs`, `epoll.rs` and the edge exports; the workspace lint forbids it elsewhere.
 - `App::now`: routes the build proved never wait are answered on the driver (`http::on_driver`); the rest are handed to the connection future. An `async fn before` in hooks.rs takes every route off it, so keep `before` sync. Logs, metrics and traces keep the epoll fast path off, not a hook in it.
-- Deps: only `tokio` and `httparse`. A new dependency needs a written reason in docs/design.md.
+- Deps: only `tokio` and `httparse`. A new dependency needs a written reason on the design page of the docs site.
 - Errors after startup return a response (`Error`), never `unwrap` or panic. Fuzz and robust-I/O tests (`fuzz.rs`, `tests/app/tests/robust_io.rs`) stay green.
-- Behavior change: update docs/design.md (the contract), and llms/AGENTS.md if app authors see it.
+- Behavior change: update the design page of the docs site (the contract), and llms/AGENTS.md if app authors see it.

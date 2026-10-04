@@ -29,7 +29,7 @@ fn main() {
     }
     // The AI reference apps get (`wisp new`, `wisp update-docs`, `wisp
     // mcp`): the repository's AGENTS.md, less its part for work on Wisp,
-    // and llms-full.txt (that and docs/).
+    // and llms-full.txt (that and the docs site checkout, WISP_DOCS_DIR).
     let repo = template_files::repo(&base);
     // The commit this CLI is built from, for the check that an app using the
     // framework by path is not ahead of it. Empty when there is no checkout.
@@ -43,15 +43,16 @@ fn main() {
             "cargo:rerun-if-changed={}",
             repo.join("llms/AGENTS.md").display()
         );
-        for doc in template_files::DOCS {
-            let path = repo.join(format!("docs/{doc}.md"));
+        println!("cargo:rerun-if-env-changed=WISP_DOCS_DIR");
+        for (_, path) in template_files::docs_files(&repo) {
             println!("cargo:rerun-if-changed={}", path.display());
         }
         let vendor = template_files::vendor(&base);
-        let files = [
-            ("AGENTS.md", Ok(template_files::app_agents(&agents))),
-            ("llms-full.txt", template_files::llms_full(&repo)),
-        ];
+        let mut files = vec![("AGENTS.md", Ok(template_files::app_agents(&agents)))];
+        // Without the docs checkout the committed llms-full.txt stays.
+        if let Some(full) = template_files::llms_full(&repo).transpose() {
+            files.push(("llms-full.txt", full));
+        }
         for (file, text) in files {
             let to = vendor.join(file);
             if let Err(e) = text.and_then(|t| template_files::write_if_changed(&to, &t)) {
