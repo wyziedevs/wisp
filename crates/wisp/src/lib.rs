@@ -1193,6 +1193,12 @@ impl Response {
         self
     }
 
+    /// The same response with a header: `.with_header("x-robots-tag", "none")`.
+    /// A single-valued one (`content-type`, `cache-control`, `location`,
+    /// `etag`, any case) replaces what was set before instead of going out
+    /// twice, so `Response::text(xml).with_header("content-type",
+    /// "application/rss+xml")` sends one `content-type`. `content-length`
+    /// and `transfer-encoding` are the server's and are left out.
     /// Panics on CR/LF in the value (header injection).
     pub fn with_header(
         mut self,
@@ -1204,6 +1210,13 @@ impl Response {
             cx::valid_header(&name, &value),
             "invalid header {name:?}: {value:?}"
         );
+        if name.eq_ignore_ascii_case("content-type") {
+            self.content_type = Cow::Owned(value);
+            return self;
+        }
+        if cx::single(&name) {
+            self.headers.retain(|(n, _)| !n.eq_ignore_ascii_case(&name));
+        }
         self.headers.push((name, value));
         self
     }
@@ -1444,7 +1457,8 @@ impl Error {
     }
 
     /// A header to send with the error, such as `retry-after` on a 429.
-    /// Panics on CR/LF in the value.
+    /// A single-valued one (`content-type`, `cache-control`, `location`,
+    /// `etag`) replaces the error page's own. Panics on CR/LF in the value.
     pub fn with_header(mut self, name: &'static str, value: impl Into<String>) -> Error {
         let value = value.into();
         assert!(
