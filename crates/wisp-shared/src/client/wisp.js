@@ -160,10 +160,10 @@
     const [my, at] = [nav, location.href];
     const res = await fetch(at, { headers: { ...headers, ...extra } });
     const to = redirect(res);
-    if (my !== nav || at !== location.href) return; // the page moved on
+    if (my !== nav || key(at) !== key(location.href)) return; // the page moved on (a #hash link did not)
     if (to) return go(to, { replace: true });
     const html = await res.text();
-    if (my !== nav || at !== location.href) return;
+    if (my !== nav || key(at) !== key(location.href)) return;
     swap((await drawn(html, location)) || html, res.status);
   }
 

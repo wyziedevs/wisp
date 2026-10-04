@@ -392,6 +392,17 @@ const tests = {
     await tick();
     assert.equal(p.doc.title, 'Next');
   },
+  async 'a refresh still lands after a #hash link on the same page'() {
+    const p = page();
+    let release;
+    p.g.reply = (u) => (u == 'http://x.test/' ? new Promise((r) => (release = () => r(res('<title>Fresh</title>')))) : res('<title>Other</title>'));
+    p.doc.dispatchEvent(new CustomEvent('wisp:refresh'));
+    await tick();
+    p.loc.href = 'http://x.test/#part'; // what the browser does for the link
+    release();
+    await tick();
+    assert.equal(p.doc.title, 'Fresh');
+  },
   async 'a post that answers after a newer navigation is not shown'() {
     const p = page();
     let release;
