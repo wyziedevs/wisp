@@ -465,6 +465,35 @@ fn fetch_answers_as_native_with_headers_read_lazily() {
     }
 }
 
+/// A body with no length that never ends, through `bridge.js`'s `fetch`.
+const ENDLESS: &str = r#"
+import { readFileSync } from 'node:fs';
+import { wisp } from './bridge.mjs';
+const app = wisp(new WebAssembly.Module(readFileSync(new URL('./app.wasm', import.meta.url))), process.env);
+let sent = 0;
+const body = new ReadableStream({ pull: (c) => { sent += 4096; c.enqueue(new Uint8Array(4096)); } });
+const r = await app.fetch(new Request('http://127.0.0.1/echo', { method: 'POST', body, duplex: 'half' }), '127.0.0.1');
+process.stdout.write(`${r.status} ${sent < 1 << 20}`);
+"#;
+
+/// A body past the route's limit is not read whole before the 413: a stream
+/// that never ends is answered once it passes the limit.
+#[test]
+fn fetch_stops_reading_a_body_past_the_limit() {
+    let Some((dir, _server)) = edge_app("node") else {
+        return;
+    };
+    std::fs::write(dir.join("endless.mjs"), ENDLESS).unwrap();
+    let done = Command::new("node")
+        .arg(dir.join("endless.mjs"))
+        .env("WISP_SECRET", SECRET)
+        .output()
+        .expect("start node");
+    let said = String::from_utf8_lossy(&done.stdout);
+    let err = String::from_utf8_lossy(&done.stderr);
+    assert_eq!(said, "413 true", "{err}");
+}
+
 const UPGRADE: &str = "upgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-version: 13\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\n";
 
 /// The status line and headers of an upgrade's answer, off the wire.
