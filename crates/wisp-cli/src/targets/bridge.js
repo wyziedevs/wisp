@@ -64,6 +64,8 @@ function parsed(text) {
     i = e + 1;
   }
   for (let i = 0; i < h.headers.length; i += 2) if (h.headers[i] === 'content-type') h.text = !h.stream && /text|json|javascript|xml/.test(h.headers[i + 1]);
+  // A 200 whose only header is plain UTF-8 text: what `new Response(string)` sends by itself, and an init costs workerd 2.5 us (bench/edge).
+  h.plain = h.status === 200 && h.text && h.headers.length === 2 && h.headers[1] === 'text/plain; charset=utf-8';
   if (heads.size > 256) heads.clear();
   heads.set(text, h);
   return h;
@@ -177,7 +179,8 @@ function webSink(c, h, body) {
   }
   const empty = c.empty || h.status < 200 || h.status === 204 || h.status === 304;
   if (empty && h.stream) body.cancel(); // ends the app's stream
-  const r = new Response(empty ? null : h.text ? asText(body) : body, (h.init ??= init(h)));
+  const text = !empty && h.text ? asText(body) : body;
+  const r = h.plain && !empty && typeof text === 'string' ? new Response(text) : new Response(empty ? null : text, (h.init ??= init(h)));
   if (c.resolve) c.resolve(r);
   else c.res = r;
 }

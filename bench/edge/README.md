@@ -420,3 +420,31 @@ What is left, from the profiles (self time, us per request):
   run in V8's C++ and JIT.
 - Cold start: 25 against 19 ms; unchanged by this (the module load and the
   first request's lazy compile, as measured above).
+
+### `/` without an init, and what did not pay (2026-10-04)
+
+A 200 whose only header is `content-type: text/plain; charset=utf-8` goes to
+workerd as `new Response(string)` with no init, as Hono's `c.text` does:
+workerd adds `text/plain;charset=UTF-8` itself (the same type), and the init
+was the 2.5 us the profile above found. `app.wasm` byte-identical (no Rust
+changed, native untouched). Same busy machine, alternating, c=64, median of
+5 x 10 s, req/s (CPU us):
+
+| `/` | before | after |
+|---|---|---|
+| after second | 14,960 (67.3) | 15,477 (68.5) |
+| after first | 14,274 (70.6) | 14,925 (67.7) |
+
++3.5% and +4.6%, both orders (the second of a pair runs about 1.5% better).
+
+Measured and not kept (`/json-big`, cold start median of 21, a noisy machine):
+
+- `opt-level = "s"` for the Cloudflare wasm: 527 to 410 KB, cold start 40 to
+  39 ms, `/json-big` -2%. Inside the noise; the speed is the rule.
+- `wasm-opt -O3` (binaryen, via npx, not a dependency): 527 to 459 KB, cold
+  start 42 to 41 ms; `/json-big` too noisy to call (best run 108.5 to 101.5
+  CPU us). About 1 ms of cold start, not the 6 ms gap.
+
+Left: `/json-big` is wasm compute (the bench app's `format!` and dlmalloc,
+above; a faster allocator needs a dependency with `unsafe`), cold start is the
+module load and the first request's lazy compile.
