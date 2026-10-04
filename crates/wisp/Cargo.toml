@@ -20,6 +20,9 @@ http = { version = "1", optional = true }
 http-body = { version = "1", optional = true }
 tower-service = { version = "0.3", optional = true }
 
+# The `img` feature: `wisp::img`, the `/_img` resizing route. Off by default.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"], optional = true }
+
 # The edge build (`wisp build --target cloudflare` and the like) runs in a
 # JavaScript host's WebAssembly: no sockets, files, signals or threads.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -47,6 +50,10 @@ wisp-shared.workspace = true
 
 [features]
 tls = ["dep:tokio-rustls", "dep:webpki-roots"]
+# `wisp::img::serve`: `/_img?src=&w=&q=` resizes a picture of `static/`.
+img = ["dep:image"]
+# `wisp::og(.., "auto")` names PNG pictures (build with the cli's `og-png`).
+og-png = ["wisp-shared/og-png"]
 tower = ["dep:bytes", "dep:http", "dep:http-body", "dep:tower-service"]
 # `wisp::test::browser`: tests in a headless Chrome or Edge. No deps.
 browser = []

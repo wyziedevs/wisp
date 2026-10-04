@@ -49,6 +49,8 @@ mod http;
 mod i18n;
 mod idem;
 mod image;
+#[cfg(feature = "img")]
+pub mod img;
 mod input;
 #[cfg(not(target_arch = "wasm32"))]
 mod jobs;
@@ -817,6 +819,9 @@ pub trait App: 'static {
     /// The app may call [`trailing_slash`]: without it, a page's address
     /// is never redirected to end in `/`, and no request looks.
     const TRAILING_SLASH: bool = true;
+    /// `src/hooks.rs` has `before`. Nothing in the server reads it; the edge
+    /// build (`edge.rs`) does, since a hook can change any answer.
+    const BEFORE: bool = false;
     /// `src/hooks.rs` has `after`: [`App::after`] runs on every reply.
     const AFTER: bool = false;
     /// `src/hooks.rs` has `report`: [`App::report`] runs on every 5xx.
@@ -1953,6 +1958,13 @@ pub mod rt {
                 true
             }
         }
+    }
+
+    /// The route has a guard (a rate limit, `CORS`, a middleware), which runs
+    /// for every request: the edge build does not keep this answer.
+    #[cfg(target_arch = "wasm32")]
+    pub fn guarded(cx: &Cx) {
+        crate::edge::guarded(cx);
     }
 
     /// A 500 when the GET of a page is live.js asking for its error page

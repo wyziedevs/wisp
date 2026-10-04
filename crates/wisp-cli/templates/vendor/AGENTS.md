@@ -192,7 +192,11 @@ Accessibility lints warn, never fail (img alt, input label, link and button
 name, `<a href>`, heading order, tabindex...); `<!-- wisp-ignore a11y-img-alt -->` silences
 one. Images: `<img src="$lib/p.jpg" alt="">` or `src="/x.png"` gets
 `width`/`height`; `wisp build` adds WebP `srcset` (cwebp, cached), lazy.
-`data-wisp-raw` opts out. Translations: `src/locales/en.json` (`{"hi":
+`<img priority>` (above the fold) gets `fetchpriority="high"`, not lazy.
+`data-wisp-raw` opts out. Opt-in features: `wisp-cli/avif` (AVIF `<picture>`),
+`wisp/img` (a route `_img/+server.rs`: `wisp::img::serve::<crate::App>(cx)`
+answers `/_img?src=/p.jpg&w=640&q=75`, `static/` only, fixed widths),
+`og-png` on `wisp` and `wisp-cli` (PNG for `wisp::og`). Translations: `src/locales/en.json` (`{"hi":
 "Hello, {name}!", "n": "{count, plural, =0 {None} one {# item} other {#
 items}}"}`), `{t("hi", name = user.name)}`, `t('n', c)` in scripts; keys
 checked across locales at build. Locale: `[[lang=locale]]`, cookie `lang`,
@@ -472,7 +476,9 @@ vercel or netlify: their edge runtime; or per route, `const RUNTIME: wisp::Runti
 wisp::Runtime::Edge;` in its +page.rs/+server.rs: both functions from one app, other hosts ignore it), `--client ts`, `--sourcemap`, `--analyze`: per-route JS/CSS/wasm bytes, raw and
 gzip, no build) · `wisp
 deploy init <host>` (a GitHub Actions workflow; or `fly|render|railway`: that
-host's config) · `wisp routes` · `wisp new-route /path page|server|rest` ·
+host's config) · `wisp service install|uninstall|start|stop|status [--user u]
+[--port n] [--dry-run]` (run the release binary as a systemd unit or launchd
+daemon; Windows: a startup scheduled task) · `wisp routes` · `wisp new-route /path page|server|rest` ·
 `wisp add|remove pkg` (`wisp add` alone: the recipes in `add/`) · `wisp ui
 add|list button dialog` (accessible components into `src/components`; `clientonly`:
 `<ClientOnly fallback="…">` draws its children only in the browser) · `wisp

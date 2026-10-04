@@ -2,7 +2,7 @@
 
 | You have | Use |
 |---|---|
-| VPS or server | `wisp build`, copy the binary |
+| VPS or server | `wisp build`, copy the binary; `wisp service install` keeps it running |
 | Container host (Fly.io, Railway, Render, Cloud Run, Azure Container Apps) | `wisp build --docker` |
 | Static host (GitHub/GitLab Pages, S3) | `wisp build --static` (or `--spa`) |
 | Edge or serverless (Cloudflare, Deno Deploy, Vercel, Netlify, Amplify, Firebase, Azure Static Web Apps) | `wisp build --target <host>` |
@@ -67,6 +67,28 @@ pages, builds again with the bytes inside, and serves them as they are (ETag,
 render. One render serves all, so `cx` in statements, markup or `load` is a
 build error; its layouts render once as for a request without cookies.
 `--static` prerenders every page.
+
+## Service
+
+`wisp build`, then `wisp service install` (as root or an administrator) runs
+the release binary from the app folder as an OS service that starts at boot.
+`start`, `stop`, `status` and `uninstall` follow. Options: `--user <name>`,
+`--port <n>`, `--name <service>` (default the package name), `--dry-run` (print
+what would be written and run, change nothing).
+
+- Linux: `/etc/systemd/system/<name>.service` with `Restart=on-failure`,
+  `EnvironmentFile=-/etc/<name>.env` (made 0600 if missing: put `WISP_SECRET`
+  there), `WorkingDirectory`, `LimitNOFILE=1048576`, `User=` when given, and
+  `AmbientCapabilities=CAP_NET_BIND_SERVICE` for `--port` below 1024. Then
+  `daemon-reload`, `enable`, `start`. The `--user` must be able to read the
+  app folder.
+- macOS: `/Library/LaunchDaemons/wisp.<name>.plist`, loaded with `launchctl`.
+- Windows: a scheduled task at startup (`schtasks`, as SYSTEM). A true Windows
+  service must answer the Service Control Manager, which needs `unsafe`
+  FFI that Wisp does not have, so `stop` ends the process without draining.
+
+SIGTERM (systemd stop, launchd) and Ctrl+C reach the runtime, which stops
+accepting and drains for up to 10 seconds.
 
 ## Docker
 
