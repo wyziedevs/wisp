@@ -2001,9 +2001,10 @@ pub mod rt {
     /// status and one line, centered, on Wisp's dark tokens, with its own
     /// few styles (the app's CSS may not exist yet). The line is the
     /// status's name unless the error says something more specific. Under
-    /// `wisp dev` it is [`dev_error`]'s page instead.
+    /// `wisp dev` it is [`dev_error`]'s page instead (debug builds only:
+    /// a release build with `WISP_DEV=on` keeps this page).
     pub fn default_error(cx: &Cx, out: &mut Out, status: u16, message: &str) {
-        if crate::settings().dev {
+        if cfg!(debug_assertions) && crate::settings().dev {
             return dev_error(cx, out, status, message);
         }
         let title = crate::http::title(status);
