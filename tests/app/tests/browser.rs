@@ -5,6 +5,18 @@
 
 use wisp_test_app::Site;
 
+/// A link to a download: the page stays, and `navigating` is cleared.
+#[test]
+fn a_download_link_ends_the_navigation() {
+    let mut b = wisp::browser!(Site);
+    b.goto("/a2/shallow");
+    assert_eq!(b.text("#nav"), "here");
+    b.click("#save");
+    b.eval("new Promise((r) => setTimeout(r, 300))");
+    assert!(b.url().ends_with("/a2/shallow"), "{}", b.url());
+    assert_eq!(b.text("#nav"), "here");
+}
+
 /// pushState and replaceState: `page.value.state` follows the history,
 /// and back and forward to an entry made so ask the server nothing.
 #[test]

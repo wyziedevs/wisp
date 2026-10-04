@@ -20,7 +20,8 @@
 // `wisp:leave` before the page changes (`detail.w` collects promises it
 // waits for; live.js's onNavigate), `wisp:preload` (`{url, code, done}`),
 // `wisp:stale` when a page names a newer wisp.js, `wisp:update`
-// after each morph (live.js restarts browser code on it). Dispatching
+// after each morph (live.js restarts browser code on it), `wisp:stay`
+// when a navigation ends in a download and the page stays. Dispatching
 // `wisp:refresh` morphs in the current URL's page again (`wisp dev` does it
 // after every rebuild), `wisp:goto` navigates, `wisp:push` adds a history
 // entry with state on the page shown (`wisp:pop` when one comes back). A form gets `wisp:submit`
@@ -302,7 +303,9 @@
       return location.assign(url);
     }
     if (my !== nav) return;
-    if (!isHtml(res)) return location.assign(url); // a file: the browser shows or saves it
+    // A file: the browser shows or saves it. A download leaves the page
+    // where it is: `wisp:stay` says the navigation is over.
+    if (!isHtml(res)) return location.assign(url), attachment(res) && send('wisp:stay');
     let html = await res.text();
     html = (await drawn(html, url)) || html;
     if (my !== nav) return;

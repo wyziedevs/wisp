@@ -1677,4 +1677,6 @@ document.addEventListener('wisp:update', (e) => {
   navigating.value = null;
   start();
 });
+// A download: the page stayed.
+document.addEventListener('wisp:stay', () => (navigating.value = null));
 start();

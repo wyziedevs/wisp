@@ -11,3 +11,5 @@ let n = RENDERS.fetch_add(1, Ordering::Relaxed);
 <button id="three" on:click="replaceState('', { tab: 3 })">Tab three</button>
 <output>{:page.value.state.tab ?? 1}</output>
 <a id="away" href="/a2/islands">Away</a>
+<a id="save" href="/a2/download">Save</a>
+<p id="nav">{:navigating.value ? 'going' : 'here'}</p>
