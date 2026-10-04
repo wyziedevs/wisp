@@ -1077,7 +1077,8 @@ fn handlers_may_wait() {
 fn the_dev_endpoint_swaps_templates_for_loopback_only() {
     let (path, shape) = TEMPLATE;
     let swap = |peer: &str, body: String| {
-        let mut req = request("POST", "/_wisp/dev/swap", &[], body.as_bytes());
+        let dev = [("x-wisp-dev", "1")];
+        let mut req = request("POST", "/_wisp/dev/swap", &dev, body.as_bytes());
         req.peer = peer.parse().unwrap();
         let reply = client().send(req);
         (reply.status, reply.text().to_string())
@@ -1085,6 +1086,11 @@ fn the_dev_endpoint_swaps_templates_for_loopback_only() {
     let good = |shape: u64| format!("{path}\n{shape:x}\n2\n5\nhello3\nabc");
     assert_eq!(wisp::rt::chunk(0, 1, "compiled"), "compiled");
 
+    // A page of another site in the browser can post here, without the header.
+    let mut unasked = request("POST", "/_wisp/dev/swap", &[], good(shape).as_bytes());
+    unasked.peer = "127.0.0.1:1".parse().unwrap();
+    assert_eq!(client().send(unasked).status, 403);
+    assert_eq!(wisp::rt::chunk(0, 1, "compiled"), "compiled");
     let strangers = swap("8.8.8.8:1", good(shape));
     assert_eq!(strangers.0, 404, "only this machine may swap");
     assert_eq!(wisp::rt::chunk(0, 1, "compiled"), "compiled");
@@ -1120,7 +1126,12 @@ fn the_dev_endpoint_swaps_templates_for_loopback_only() {
         let got = swap("127.0.0.1:1", body.clone());
         assert_eq!(got, (409, message.into()), "{body:?}");
     }
-    let mut not_utf8 = request("POST", "/_wisp/dev/swap", &[], &[0xff, 0xfe]);
+    let mut not_utf8 = request(
+        "POST",
+        "/_wisp/dev/swap",
+        &[("x-wisp-dev", "1")],
+        &[0xff, 0xfe],
+    );
     not_utf8.peer = "127.0.0.1:1".parse().unwrap();
     assert_eq!(client().send(not_utf8).text(), "body is not UTF-8");
 

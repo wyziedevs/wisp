@@ -92,7 +92,7 @@ function page({ online = true, scripts = [], vitals = null, views = null, main =
   };
   const form = (attrs, data) => Object.assign(new EventTarget(), {
     data,
-    getAttribute: (k) => (k == 'method' ? 'post' : k == 'action' ? '/save' : attrs[k] ?? null),
+    getAttribute: (k) => (k == 'method' ? 'post' : k == 'action' ? attrs.action ?? '/save' : attrs[k] ?? null),
     hasAttribute: (k) => k in attrs,
     setAttribute() {},
     removeAttribute() {},
@@ -129,6 +129,13 @@ const tests = {
     assert.deepEqual(JSON.parse(p.store['wisp:q']), []);
     assert.equal(sent, 1);
     assert.equal(p.fetches[1].method, 'GET'); // the page again
+  },
+  async 'a post to another site is left to the browser'() {
+    const p = page();
+    const e = p.submit(p.form({ action: 'https://evil.test/steal' }, [['a', '1']]));
+    await tick();
+    assert.ok(!e.defaultPrevented);
+    assert.equal(p.fetches.length, 0);
   },
   async 'offline: another form is not queued'() {
     const p = page({ online: false });

@@ -626,10 +626,13 @@
       form.getAttribute('data-wisp') === 'off' ||
       (target && target !== '_self')
     ) return;
+    // A post to another site is the browser's: ours would send it our
+    // headers and could not read its answer.
+    const url = new URL(attr('action') ?? '', location.href);
+    if (url.origin !== location.origin) return;
     e.preventDefault();
     if (busy.has(form)) return; // Enter pressed again while the post is out
 
-    const url = new URL(attr('action') ?? '', location.href);
     // Sent as the browser would: files only with the multipart enctype.
     const data = new FormData(form, btn);
     if (!send('wisp:submit', { data, submitter: btn, action: url }, form)) return;

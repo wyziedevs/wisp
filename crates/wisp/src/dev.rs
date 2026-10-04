@@ -107,15 +107,22 @@ pub(crate) fn exit_with_parent() {
 
 /// `/_wisp/dev/*`. Only loopback peers are answered, and only by a debug
 /// build: a release build's pages never read swapped text, so there it is
-/// nothing to anyone, `WISP_DEV=on` or not.
+/// nothing to anyone, `WISP_DEV=on` or not. A swap must also send
+/// `x-wisp-dev` (`asked`): a page of another site, open in the developer's
+/// browser, can post to a loopback port but not send that header without
+/// CORS saying yes, which it never does, so no site can rewrite templates.
 pub(crate) fn endpoint<A: App>(
     method: Method,
     path: &str,
     body: &[u8],
     peer: SocketAddr,
+    asked: bool,
 ) -> (u16, &'static str) {
     if !cfg!(debug_assertions) || !peer.ip().is_loopback() {
         return (404, "Not Found");
+    }
+    if method == Method::Post && !asked {
+        return (403, "Forbidden");
     }
     match (method, path) {
         (Method::Post, "/_wisp/dev/swap") => match swap::<A>(body) {
@@ -531,13 +538,22 @@ mod tests {
         let peer: SocketAddr = "127.0.0.1:9".parse().unwrap();
         let stranger: SocketAddr = "192.0.2.1:9".parse().unwrap();
         let body = format!("{path}\n{shape:x}\n0\n");
-        let swapped = endpoint::<Fuzz>(Method::Post, "/_wisp/dev/swap", body.as_bytes(), peer);
+        let at = |peer, asked| {
+            endpoint::<Fuzz>(
+                Method::Post,
+                "/_wisp/dev/swap",
+                body.as_bytes(),
+                peer,
+                asked,
+            )
+            .0
+        };
         let expect = if cfg!(debug_assertions) { 200 } else { 404 };
-        assert_eq!(swapped.0, expect, "debug builds only");
-        assert_eq!(
-            endpoint::<Fuzz>(Method::Post, "/_wisp/dev/swap", body.as_bytes(), stranger).0,
-            404
-        );
+        assert_eq!(at(peer, true), expect, "debug builds only");
+        assert_eq!(at(stranger, true), 404);
+        // A site in the developer's browser cannot send `x-wisp-dev`.
+        let unasked = if cfg!(debug_assertions) { 403 } else { 404 };
+        assert_eq!(at(peer, false), unasked);
         // A new shape, given with the one it replaces; then only that one
         // is taken.
         let to = format!("{path}\n{shape:x}>def\n0\n");

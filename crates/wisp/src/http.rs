@@ -3498,7 +3498,8 @@ fn internal<A: App>(cx: &Cx, path: &str, reply: &mut Reply) -> bool {
             return true;
         }
         _ if s.dev && path.starts_with("/_wisp/") => {
-            let (status, msg) = dev::endpoint::<A>(cx.method, path, cx.body(), cx.peer());
+            let asked = cx.header("x-wisp-dev").is_some();
+            let (status, msg) = dev::endpoint::<A>(cx.method, path, cx.body(), cx.peer(), asked);
             reply.set_plain(status, msg);
             return true;
         }
