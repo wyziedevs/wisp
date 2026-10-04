@@ -52,7 +52,7 @@ struct Settings {
 /// The `Settings` of `toml`: each string `name value`, checked.
 fn settings(toml: &str) -> Result<Settings, String> {
     let mut s = Settings::default();
-    for e in crate::config::strings(toml, "i18n") {
+    for e in crate::config::strings(toml, "i18n")? {
         let at = |m: &str| format!("Cargo.toml: i18n = [\"{e}\"]: {m}");
         let w: Vec<&str> = e.split_whitespace().collect();
         match w[..] {
