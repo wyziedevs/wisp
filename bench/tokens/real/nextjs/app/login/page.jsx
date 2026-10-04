@@ -8,9 +8,9 @@ export default function Login() {
   return (
     <form action={action}>
       <title>Log in</title>
-      <input name="email" type="email" defaultValue={state.email} />
-      <input name="password" type="password" />
-      {state.error && <p>{state.error}</p>}
+      <label>Email <input name="email" type="email" required defaultValue={state.email} />
+        {state.error && <small className="problem">{state.error}</small>}</label>
+      <label>Password <input name="password" type="password" /></label>
       <button>Log in</button>
     </form>
   );

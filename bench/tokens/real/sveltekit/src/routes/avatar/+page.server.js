@@ -10,7 +10,7 @@ export const actions = {
 		if (!locals.user) error(401);
 		const file = (await request.formData()).get('avatar');
 		if (!file?.type?.startsWith('image/')) return fail(422, { error: 'Choose an image' });
-		if (file.size > 1024 * 1024) return fail(422, { error: 'At most 1 MB' });
+		if (file.size > 2 * 1024 * 1024) return fail(422, { error: 'At most 2 MB' });
 		locals.user.avatar = { type: file.type, bytes: new Uint8Array(await file.arrayBuffer()) };
 		redirect(303, '/dashboard');
 	}

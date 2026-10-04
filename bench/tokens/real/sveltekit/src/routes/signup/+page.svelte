@@ -6,9 +6,9 @@
 
 <svelte:head><title>Sign up</title></svelte:head>
 <form method="POST" use:enhance>
-	<input name="email" type="email" value={form?.email ?? ''} />
-	{#if form?.errors.email}<p>{form.errors.email}</p>{/if}
-	<input name="password" type="password" />
-	{#if form?.errors.password}<p>{form.errors.password}</p>{/if}
+	<label>Email <input name="email" type="email" required value={form?.email ?? ''} />
+		{#if form?.errors.email}<small class="problem">{form.errors.email}</small>{/if}</label>
+	<label>Password <input name="password" type="password" required minlength="8" />
+		{#if form?.errors.password}<small class="problem">{form.errors.password}</small>{/if}</label>
 	<button>Sign up</button>
 </form>

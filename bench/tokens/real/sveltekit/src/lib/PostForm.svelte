@@ -5,9 +5,9 @@
 </script>
 
 <form method="POST" use:enhance>
-	<input name="title" value={form?.title ?? post.title ?? ''} />
-	{#if form?.errors.title}<p>{form.errors.title}</p>{/if}
-	<textarea name="body" value={form?.body ?? post.body ?? ''}></textarea>
-	{#if form?.errors.body}<p>{form.errors.body}</p>{/if}
+	<label>Title <input name="title" required minlength="1" maxlength="100" value={form?.title ?? post.title ?? ''} />
+		{#if form?.errors.title}<small class="problem">{form.errors.title}</small>{/if}</label>
+	<label>Body <textarea name="body" required value={form?.body ?? post.body ?? ''}></textarea>
+		{#if form?.errors.body}<small class="problem">{form.errors.body}</small>{/if}</label>
 	<button>Save</button>
 </form>

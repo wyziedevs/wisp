@@ -7,8 +7,8 @@ export default function AvatarForm() {
   const [state, action] = useActionState(upload, {});
   return (
     <form action={action}>
-      <input name="avatar" type="file" accept="image/*" />
-      {state.error && <p>{state.error}</p>}
+      <label>Avatar <input name="avatar" type="file" required accept="image/*" />
+        {state.error && <small className="problem">{state.error}</small>}</label>
       <button>Upload</button>
     </form>
   );

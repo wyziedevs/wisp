@@ -31,7 +31,9 @@ pub fn native(ty: &str, rules: &[Rule], whole: bool) -> Native {
         None => (false, ty),
     };
     let last = ty::last_segment(ty::unref(t));
-    let text = ty::is_text(t);
+    // A `Password` is text the server refuses blank.
+    let password = last == "Password";
+    let text = ty::is_text(t) || password;
     let number = matches!(
         ty::scalar(t),
         Scalar::Unsigned | Scalar::Signed | Scalar::Float
@@ -45,7 +47,7 @@ pub fn native(ty: &str, rules: &[Rule], whole: bool) -> Native {
     for r in rules {
         r.native(&mut n, text, number);
     }
-    let blank_refused = whole || !text || n.email || n.min_len.is_some_and(|l| l > 0);
+    let blank_refused = whole || !text || password || n.email || n.min_len.is_some_and(|l| l > 0);
     n.required = !optional && blank_refused;
     n
 }
@@ -176,6 +178,13 @@ mod tests {
             ),
             ("String | len = 1..=100", "textarea", " required"),
             ("Option<String> | len = 1..", "input", " minlength=\"1\""),
+            ("Password |", "input password", " required"),
+            (
+                "wisp::Password | min_len = 8",
+                "input password",
+                " required minlength=\"8\"",
+            ),
+            ("Option<Password> |", "input password", ""),
             ("String | email", "input", " type=\"email\" required"),
             ("String | email", "input text", " required"),
             ("Option<Email> |", "input", " type=\"email\""),
