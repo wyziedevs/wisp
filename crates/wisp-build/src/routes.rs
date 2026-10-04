@@ -423,7 +423,21 @@ fn walk(
     let mut mds = Vec::new();
     for e in fs::read_dir(dir).map_err(|e| format!("{}: {e}", show(dir)))? {
         let e = e.map_err(|e| format!("{}: {e}", show(dir)))?;
-        let name = e.file_name().to_string_lossy().into_owned();
+        // A name lands in the generated code's `//` comments and paths, so
+        // it must be UTF-8 with no control character (a newline would end
+        // the comment and turn the rest of the name into code).
+        let Some(name) = e.file_name().to_str().map(str::to_string) else {
+            return Err(format!(
+                "{}: a file or folder name here is not UTF-8; rename it",
+                show(dir)
+            ));
+        };
+        if name.chars().any(char::is_control) {
+            return Err(format!(
+                "{}: {name:?} has a control character (a newline or tab); rename it",
+                show(dir)
+            ));
+        }
         if editor_temp(&name) {
             continue;
         }
@@ -746,6 +760,9 @@ fn reset_of(file: &str) -> Option<&str> {
 }
 
 pub fn parse_segment(name: &str) -> Result<Option<Seg>, String> {
+    if name.chars().any(char::is_control) {
+        return Err(format!("{name:?} has a control character; rename it"));
+    }
     let ident = |s: &str| -> Result<String, String> {
         if !crate::ty::is_ident(s) {
             return Err(format!("`{s}` is not a valid parameter name"));
@@ -873,6 +890,43 @@ mod tests {
         }
         for ok in ["a-b_c.d", "@modal", ".well-known", "a+b"] {
             assert!(parse_segment(ok).is_ok(), "{ok}");
+        }
+    }
+
+    #[test]
+    fn a_control_character_in_a_name_is_an_error() {
+        for bad in ["(a\nb)", "(.)a\nb", "(x\r)", "a\tb", "[[a\n]]"] {
+            assert!(parse_segment(bad).is_err(), "{bad:?}");
+        }
+        // On disk too (where the OS allows it): the name reaches `//`
+        // comments in wisp.rs, and a newline would end one.
+        let root = tmp("ctrl");
+        let _ = fs::create_dir_all(&root);
+        if fs::create_dir_all(root.join("(a\nfn x() {})")).is_ok() {
+            touch(&root, "(a\nfn x() {})/+page.wisp");
+            assert!(scan(&root).unwrap_err().contains("control character"));
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fuzzed_segments_never_panic() {
+        let mut x = 0x9E37_79B9_7F4A_7C15u64;
+        let pool: Vec<char> = "[]().=@a_1 \"\\*/\n\r\u{202e}日-".chars().collect();
+        for _ in 0..20_000 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            let len = (x % 9) as usize;
+            let name: String = (0..len)
+                .map(|i| pool[((x >> (i * 5)) % pool.len() as u64) as usize])
+                .collect();
+            if let Ok(Some(
+                Seg::Static(n) | Seg::Param(n, _) | Seg::Optional(n, _) | Seg::Rest(n),
+            )) = parse_segment(&name)
+            {
+                assert!(!n.contains(['\n', '\r']), "{name:?}");
+            }
         }
     }
 
