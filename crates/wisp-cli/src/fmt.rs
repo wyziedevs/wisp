@@ -28,6 +28,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
             _ => Err(format!("wisp fmt --stdin takes one path at most.\n{usage}")),
         };
     }
+    // In an app only: fmt works anywhere, and --stdin is an editor's.
+    if let Ok(root) = crate::app_root() {
+        crate::cargo::check_updated(root)?;
+    }
     if paths.is_empty() {
         paths.push(PathBuf::from("."));
     }

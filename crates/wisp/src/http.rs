@@ -973,6 +973,11 @@ fn trim_buffers(b: &mut Buffers) {
 #[path = "edge_conn.rs"]
 pub(crate) mod edge_conn;
 
+/// HTTP/2 with prior knowledge (the `h2` feature): see `h2.rs`.
+#[cfg(feature = "h2")]
+#[path = "h2.rs"]
+mod h2;
+
 /// What the epoll driver received for a connection and leaves to its
 /// future (see [`on_driver`]): the buffers, how much of `cx.wire.buf` is
 /// answered, and the request after that when the driver got that far with
@@ -1410,6 +1415,13 @@ async fn requests<A: App>(mut stream: Conn, peer: SocketAddr, held: &mut Option<
                     break;
                 }
                 Parsed::Invalid(status) => {
+                    // No HTTP/1 request, but HTTP/2's preface: an HTTP/1
+                    // request never comes this way, so it pays nothing.
+                    #[cfg(feature = "h2")]
+                    if used == 0 && cx.wire.buf.starts_with(&h2::PREFACE[..18]) {
+                        h2::serve::<A>(&mut stream, b, timer.as_mut()).await;
+                        return;
+                    }
                     reply.set_plain(status, reason(status));
                     serialize::<A, true>(wbuf, reply, out, true, false, false);
                     (close, refused) = (true, true);

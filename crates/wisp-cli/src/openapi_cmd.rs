@@ -39,7 +39,6 @@ fn options(args: &[String]) -> Result<Options, String> {
 
 pub fn run(root: &Path, args: &[String]) -> Result<(), String> {
     let o = options(args)?;
-    crate::cargo::warn_if_stale(root);
     let json = wisp_build::openapi(root)?;
     if json.is_empty() {
         return Err(

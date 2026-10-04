@@ -278,7 +278,10 @@ fields are restored with history. `import('$lib/x.js')` loads on demand.
 `<script lang="ts">`, `src/lib/*.ts`, `+page.ts` (types stripped; `wisp check
 --types`). `env.PUBLIC_X` is filled at build. Dev source maps; `--sourcemap`.
 `npm`: `wisp add pkg`; `<Island of="react:react-switch" client:visible
-props={:{...}} />` (`react|preact|vue|svelte`); web components just work.
+props={:{...}} />` (`react|preact|vue|svelte`); web components just work. Own esbuild/vite
+bundle in `static/`: `<div data-wisp-keep use:widget="{x}">`, script
+`widget(el, p)` does `import('/w.js')`, returns `{update, destroy}`.
+`data-wisp-notransition` (link or `<body>`) skips the nav view transition.
 `#[remote] fn user(id: u64) -> Result<User>` (page block or `src/*.rs`) is
 `await user(5)` in any script (`src/lib`: `import { user } from
 'wisp:remote'`): POST to `/_app/r/<hash>`, `#[remote(get)]` a GET; errors
@@ -474,6 +477,8 @@ no-wait fast path off every route.
 - `{#each x as y}` borrows a field path; `.iter()` other expressions.
 - In `+server.rs`, a param named `id` (no `[id]` folder) serves `/[id]`: use
   `list` for the folder's GET. `#[validate]` on params is for actions.
+- HTTP/2 in process is opt-in: `wisp = { .., features = ["h2"] }` (h2c with
+  prior knowledge, no TLS); app code is the same.
 - A field added to a saved type (`Rest`, `Table::saved`) must be `Option`,
   `Vec` or `bool`, so rows saved before it still read.
 
@@ -497,6 +502,10 @@ daemon; Windows: a startup scheduled task) · `wisp routes` · `wisp new-route /
 add|list button dialog` (accessible components into `src/components`; `clientonly`:
 `<ClientOnly fallback="…">` draws its children only in the browser) · `wisp
 lsp` · `wisp update-docs` · `wisp mcp` (`claude mcp add wisp -- wisp mcp`).
+Commands that work on an app warn on stderr first when the CLI is older than the
+app's `wisp` crate (Cargo.lock version, or for a `path` dependency its git commit
+count) and ask `Continue anyway? [y/N]` at a terminal; CI and pipes go on. Fix:
+`cargo install wisp-cli --force`; `WISP_NO_UPDATE_CHECK=1` silences it.
 Docs: https://wispweb.dev/docs (client, api, data, auth, serve, deploy,
 embed), the design and tokens pages, or llms-full.txt (this file and the site's pages).
 

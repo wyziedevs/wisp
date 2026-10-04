@@ -2799,6 +2799,29 @@
         }
       }
     },
+    "/a2/snippets": {
+      "get": {
+        "operationId": "page_a2_snippets",
+        "tags": [
+          "pages"
+        ],
+        "responses": {
+          "200": {
+            "description": "The page",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
     "/a2/state": {
       "get": {
         "operationId": "page_a2_state",
@@ -2858,6 +2881,29 @@
     "/a2/stores": {
       "get": {
         "operationId": "page_a2_stores",
+        "tags": [
+          "pages"
+        ],
+        "responses": {
+          "200": {
+            "description": "The page",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/a2/widget": {
+      "get": {
+        "operationId": "page_a2_widget",
         "tags": [
           "pages"
         ],

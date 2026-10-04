@@ -55,6 +55,9 @@ img = ["dep:image"]
 # `wisp::og(.., "auto")` names PNG pictures (build with the cli's `og-png`).
 og-png = ["wisp-shared/og-png"]
 tower = ["dep:bytes", "dep:http", "dep:http-body", "dep:tower-service"]
+# HTTP/2 with prior knowledge (h2c) on the built-in server, in-process:
+# its own HPACK, no deps. HTTP/1 requests pay nothing for it.
+h2 = []
 # `wisp::test::browser`: tests in a headless Chrome or Edge. No deps.
 browser = []
 # `wisp check --types`: the app's binary prints the TypeScript of the server
