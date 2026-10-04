@@ -19,8 +19,25 @@ const MAX: usize = 1024;
 /// An answer and the unix second it is kept until.
 type Kept = (u64, Arc<dyn Any + Send + Sync>);
 
-/// Counts `uncache`s: an answer made across one is stale, and not kept.
+/// How many `uncache`s there were, and the last few's prefixes by number:
+/// an answer made across one for its key is stale, and not kept.
 static FORGOTTEN: AtomicU64 = AtomicU64::new(0);
+static FORGOT: Shared<Vec<(u64, String)>> = Shared::new(Vec::new());
+
+/// Most prefixes remembered: an answer made across more is not kept.
+const FORGOT_KEPT: usize = 16;
+
+/// Whether `key` was uncached since `FORGOTTEN` was `from`.
+fn forgotten(key: &str, from: u64) -> bool {
+    if FORGOTTEN.load(Relaxed) == from {
+        return false;
+    }
+    let log = FORGOT.lock();
+    log.first().is_none_or(|(n, _)| *n > from + 1)
+        || log
+            .iter()
+            .any(|(n, p)| *n > from && key.starts_with(p.as_str()))
+}
 
 static KEPT: Shared<BTreeMap<String, Kept>> = Shared::new(BTreeMap::new());
 
@@ -43,10 +60,10 @@ where
     if let Some(v) = hit {
         return v;
     }
-    let forgotten = FORGOTTEN.load(Relaxed);
+    let from = FORGOTTEN.load(Relaxed);
     let v = make().await;
     let mut kept = KEPT.lock();
-    if secs == 0 || FORGOTTEN.load(Relaxed) != forgotten {
+    if secs == 0 || forgotten(key, from) {
         return v;
     }
     if kept.len() >= MAX && !kept.contains_key(key) {
@@ -70,7 +87,13 @@ where
 /// (`/posts` is `/posts` and `/posts/1`, not `/postscript`; `/` is all).
 pub fn uncache(prefix: &str) {
     let mut kept = KEPT.lock();
+    let mut log = FORGOT.lock();
+    log.push((FORGOTTEN.load(Relaxed) + 1, prefix.to_owned()));
+    if log.len() > FORGOT_KEPT {
+        log.remove(0);
+    }
     FORGOTTEN.fetch_add(1, Relaxed);
+    drop(log);
     kept.retain(|k, _| !k.starts_with(prefix));
     drop(kept);
     crate::bake::purge(prefix);
@@ -125,6 +148,14 @@ mod tests {
         }));
         assert_eq!(v, 1, "the caller still gets it");
         assert!(!KEPT.lock().contains_key("stale-a"));
+        let v = rt.block_on(cache("stale-b", 60, || async {
+            uncache("other");
+            2u8
+        }));
+        assert!(
+            KEPT.lock().contains_key("stale-b") && v == 2,
+            "another prefix"
+        );
     }
 
     #[test]
