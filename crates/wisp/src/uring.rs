@@ -29,11 +29,12 @@
 //! for. Each block says why it holds.
 #![allow(unsafe_code)]
 
+use crate::driver::{self, Driver, Slab, Slot, result, token, untoken, wait};
 use crate::{http, policy};
 use std::cell::RefCell;
 use std::future::poll_fn;
 use std::io;
-use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
@@ -183,19 +184,6 @@ struct BufReg {
     bgid: u16,
     flags: u16,
     resv: [u64; 3],
-}
-
-/// The `u64` a completion or event carries for `slot` (a connection's
-/// entry, here with its receive or send) in generation `generation` of the
-/// entry: one taken in the turn that closed a connection cannot reach the
-/// next one in the same entry. The epoll driver's too.
-pub(crate) fn token(slot: usize, generation: u32) -> u64 {
-    (u64::from(generation) << 32) | slot as u64
-}
-
-/// The slot and generation of a `token`.
-pub(crate) fn untoken(t: u64) -> (usize, u32) {
-    (t as u32 as usize, (t >> 32) as u32)
 }
 
 /// The `user_data` of connection `id`'s receive or send.
@@ -576,27 +564,16 @@ struct Entry {
     close: Option<RawFd>,
 }
 
-/// `waker` is `cx`'s from now on, cloned only when it changed. For the
-/// ring's and the epoll's entries.
-pub(crate) fn wait(waker: &mut Option<Waker>, cx: &Context) {
-    if !waker.as_ref().is_some_and(|w| w.will_wake(cx.waker())) {
-        *waker = Some(cx.waker().clone());
-    }
-}
-
-/// A connection's calls after `errno`, 0 for none.
-pub(crate) fn result(errno: i32) -> io::Result<()> {
-    match errno {
-        0 => Ok(()),
-        e => Err(io::Error::from_raw_os_error(e)),
+impl Slot for Entry {
+    fn generation(&self) -> u32 {
+        self.generation
     }
 }
 
 /// A worker's ring and connections.
-struct Worker {
+pub(crate) struct Worker {
     ring: Ring,
-    conns: Vec<Entry>,
-    free: Vec<usize>,
+    conns: Slab<Entry>,
     /// The driver task's waker, and whether it was woken since it last ran:
     /// a connection that queues something wakes it, once.
     driver: Option<Waker>,
@@ -620,7 +597,7 @@ thread_local! {
 }
 
 fn with<R>(f: impl FnOnce(&mut Worker) -> R) -> R {
-    WORKER.with_borrow_mut(|w| f(w.as_mut().expect("a ring socket used off its worker")))
+    driver::with(f)
 }
 
 impl Worker {
@@ -645,8 +622,7 @@ impl Worker {
     fn new(ring: Ring, listener: RawFd) -> Worker {
         Worker {
             ring,
-            conns: Vec::new(),
-            free: Vec::new(),
+            conns: Slab::new(),
             driver: None,
             woken: true,
             checked: 0,
@@ -815,27 +791,6 @@ impl Worker {
         });
     }
 
-    /// An entry for the socket `fd`, receiving.
-    fn open(&mut self, fd: RawFd) -> usize {
-        let id = self.free.pop().unwrap_or_else(|| {
-            self.conns.push(Entry::default());
-            self.conns.len() - 1
-        });
-        let e = &mut self.conns[id];
-        let (mut inbox, mut out) = (std::mem::take(&mut e.inbox), std::mem::take(&mut e.out));
-        inbox.clear();
-        out.clear();
-        *e = Entry {
-            fd,
-            generation: e.generation.wrapping_add(1),
-            inbox,
-            out,
-            ..Entry::default()
-        };
-        self.arm(id);
-        id
-    }
-
     fn arm(&mut self, id: usize) {
         let e = &mut self.conns[id];
         e.armed = true;
@@ -897,7 +852,7 @@ impl Worker {
         if !e.armed && e.dropped {
             e.dropped = false;
             e.waker = None;
-            self.free.push(id);
+            self.conns.free(id);
         }
     }
 
@@ -938,16 +893,6 @@ impl Worker {
         self.push_send(id);
     }
 
-    fn flushed(&mut self, id: usize, cx: &Context) -> Poll<io::Result<()>> {
-        let e = &mut self.conns[id];
-        if e.sending {
-            e.wants_send = true;
-            wait(&mut e.waker, cx);
-            return Poll::Pending;
-        }
-        Poll::Ready(result(e.failed))
-    }
-
     /// Stops receiving for good, and once the kernel is done, moves what
     /// came onto `early`.
     fn detach(&mut self, id: usize, early: &mut Vec<u8>, cx: &Context) -> Poll<io::Result<()>> {
@@ -965,8 +910,44 @@ impl Worker {
         early.append(&mut e.inbox);
         Poll::Ready(result(e.ended.unwrap_or(0)))
     }
+}
 
-    fn close(&mut self, id: usize, fd: Option<RawFd>) {
+impl Driver for Worker {
+    fn local() -> &'static std::thread::LocalKey<RefCell<Option<Worker>>> {
+        &WORKER
+    }
+    const OFF: &'static str = "a ring socket used off its worker";
+
+    /// An entry for the socket `fd`, receiving.
+    fn open(&mut self, fd: RawFd) -> usize {
+        let (id, generation) = self.conns.open();
+        let e = &mut self.conns[id];
+        let (mut inbox, mut out) = (std::mem::take(&mut e.inbox), std::mem::take(&mut e.out));
+        inbox.clear();
+        out.clear();
+        *e = Entry {
+            fd,
+            generation,
+            inbox,
+            out,
+            ..Entry::default()
+        };
+        self.arm(id);
+        id
+    }
+
+    fn flushed(&mut self, id: usize, cx: &Context) -> Poll<io::Result<()>> {
+        let e = &mut self.conns[id];
+        if e.sending {
+            e.wants_send = true;
+            wait(&mut e.waker, cx);
+            return Poll::Pending;
+        }
+        Poll::Ready(result(e.failed))
+    }
+
+    fn close(&mut self, id: usize, stream: Option<TcpStream>) {
+        let fd = stream.map(IntoRawFd::into_raw_fd);
         let e = &mut self.conns[id];
         (e.dropped, e.close, e.waker) = (true, fd, None);
         if e.armed && !e.cancelling {
@@ -974,51 +955,21 @@ impl Worker {
         }
         self.release(id);
     }
+
+    fn write(&mut self, id: usize, buf: &mut Vec<u8>) -> io::Result<()> {
+        self.send(id, buf);
+        Ok(())
+    }
 }
 
-/// A connection on its worker's ring. Like the task that holds it, it stays
-/// on the worker's thread.
-pub(crate) struct Sock {
-    id: usize,
-    stream: Option<TcpStream>,
-}
+/// A connection on its worker's ring.
+pub(crate) type Sock = driver::Sock<Worker>;
 
 impl Sock {
-    pub(crate) fn new(stream: TcpStream) -> Sock {
-        let id = with(|w| w.open(stream.as_raw_fd()));
-        Sock {
-            id,
-            stream: Some(stream),
-        }
-    }
-
     /// Appends what came to `buf`: `Ok(0)` once the peer has closed. Safe to
     /// drop unfinished: what comes meanwhile waits for the next call.
     pub(crate) async fn read(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
         poll_fn(|cx| with(|w| w.read(self.id, buf, cx))).await
-    }
-
-    /// Queues all of `buf` to go with the turn's other sends, and leaves
-    /// `buf` empty (it gets the buffer the last send used). A failure shows
-    /// in the next call.
-    pub(crate) async fn write(&mut self, buf: &mut Vec<u8>) -> io::Result<()> {
-        self.flush().await?;
-        with(|w| w.send(self.id, buf));
-        Ok(())
-    }
-
-    /// Waits for the send under way.
-    async fn flush(&self) -> io::Result<()> {
-        poll_fn(|cx| with(|w| w.flushed(self.id, cx))).await
-    }
-
-    /// Ends the sending side, once all of it has been sent.
-    pub(crate) async fn shutdown(&mut self) {
-        if self.flush().await.is_ok()
-            && let Some(s) = &self.stream
-        {
-            let _ = s.shutdown(Shutdown::Write);
-        }
     }
 
     /// The socket as tokio's, once the ring is done with it, and `early`
@@ -1032,18 +983,6 @@ impl Sock {
         let stream = self.stream.take().ok_or(io::ErrorKind::NotConnected)?;
         stream.set_nonblocking(true)?;
         Ok((tokio::net::TcpStream::from_std(stream)?, early))
-    }
-}
-
-impl Drop for Sock {
-    fn drop(&mut self) {
-        let _ = WORKER.try_with(|w| {
-            if let Ok(mut w) = w.try_borrow_mut()
-                && let Some(w) = w.as_mut()
-            {
-                w.close(self.id, self.stream.take().map(IntoRawFd::into_raw_fd));
-            }
-        });
     }
 }
 
@@ -1368,7 +1307,7 @@ macro_rules! socket_tests {
             let data = sent.clone();
             let writer = std::thread::spawn(move || {
                 w.write_all(&data).unwrap();
-                w.shutdown(Shutdown::Write).unwrap();
+                w.shutdown(std::net::Shutdown::Write).unwrap();
             });
             let mut got = Vec::new();
             c.read_to_end(&mut got).unwrap();

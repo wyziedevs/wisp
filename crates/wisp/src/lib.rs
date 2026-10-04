@@ -26,6 +26,8 @@ mod content;
 mod csp;
 mod cx;
 mod dev;
+#[cfg(target_os = "linux")]
+mod driver;
 #[cfg(target_arch = "wasm32")]
 pub mod edge;
 #[cfg(target_arch = "wasm32")]
