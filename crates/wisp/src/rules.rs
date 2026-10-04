@@ -15,6 +15,11 @@ type Got<'a> = [(&'static str, &'a str); MAX_PARAMS];
 /// Matches `path` to `pattern`, its captures into `got`: how many.
 fn capture<'a>(pattern: &'static str, path: &'a str, got: &mut Got<'a>) -> Option<usize> {
     let seg = crate::rt::seg;
+    // `/old/` is `/old` too: where pages' addresses end in `/`, it is the one a rule means.
+    let path = path
+        .strip_suffix('/')
+        .filter(|p| !p.is_empty())
+        .unwrap_or(path);
     let (mut p, mut r) = (pattern.strip_prefix('/')?, path.strip_prefix('/')?);
     let mut n = 0;
     loop {
@@ -151,5 +156,10 @@ mod tests {
         assert_eq!(got("/a/[...p]", "/a"), one("p", ""));
         assert_eq!(got("/[...p]", "/"), one("p", ""));
         assert_eq!(got("/a/[...p]", "/b/c"), None);
+        // A trailing slash is the same page.
+        assert_eq!(got("/a", "/a/"), Some(vec![]));
+        assert_eq!(got("/a/[id]", "/a/7/"), one("id", "7"));
+        assert_eq!(got("/", "/"), Some(vec![]));
+        assert_eq!(got("/a", "//"), None);
     }
 }

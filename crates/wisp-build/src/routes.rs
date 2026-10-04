@@ -277,7 +277,14 @@ pub fn scan(routes_dir: &Path) -> Result<Tree, String> {
                 "an intercepting page is `+page@.wisp`: it is drawn inside the page that is there, without the layouts above it",
             ));
         }
-        let up = mark.matches('.').count() - 1; // (.) is 0, (..) is 1, (...) is the root
+        // `(.)name` is 0 levels up, `(..)name` 1, `(...)name` the root.
+        let (dots, name) = mark[1..].split_once(')').unwrap_or_default();
+        if !(1..=3).contains(&dots.len()) || dots.contains(|c| c != '.') || name.is_empty() {
+            return Err(at(
+                "name the page it intercepts: `(.)name`, `(..)name` or `(...)name`",
+            ));
+        }
+        let up = dots.len() - 1;
         let mut target: Vec<Seg> = (r.segs[..k].iter())
             .filter(|s| !matches!(s, Seg::Static(n) if n.starts_with('@')))
             .cloned()
@@ -286,9 +293,7 @@ pub fn scan(routes_dir: &Path) -> Result<Tree, String> {
             2 => target.clear(),
             n => target.truncate(target.len().saturating_sub(n)),
         }
-        target.push(Seg::Static(
-            mark.trim_start_matches(['(', ')', '.']).to_string(),
-        ));
+        target.push(Seg::Static(name.to_string()));
         target.extend(r.segs[j + 1..].iter().cloned());
         let (target, inner) = (prefix(&target), prefix(&r.segs));
         tree.intercepts.push(Intercept {
@@ -297,6 +302,34 @@ pub fn scan(routes_dir: &Path) -> Result<Tree, String> {
             target,
             inner,
         });
+    }
+    // What a page intercepts is a page of the app: else it would never be drawn.
+    let shape = |p: &str| {
+        let seg = |s: &str| {
+            if s.starts_with("[...") {
+                "[...]"
+            } else if s.starts_with('[') {
+                "[]"
+            } else {
+                s
+            }
+            .to_string()
+        };
+        p.split('/').map(seg).collect::<Vec<_>>()
+    };
+    for i in &tree.intercepts {
+        let want = shape(&i.target);
+        if !tree
+            .routes
+            .iter()
+            .any(|r| r.page && shape(&r.pattern()) == want)
+        {
+            return Err(format!(
+                "{}: it intercepts {}, which is not a page of the app",
+                show(&tree.routes[i.route].dir),
+                i.target
+            ));
+        }
     }
     // Two routes that can match the exact same URLs are ambiguous.
     let mut seen: Vec<(Vec<String>, usize)> = Vec::new();
@@ -985,6 +1018,9 @@ fn get(id: u64) {}",
             "gal/@modal/(.)photo/[id]/+page@.wisp",
             "gal/@modal/(..)about/+page@.wisp",
             "gal/@modal/(...)top/x/+page@.wisp",
+            "gal/photo/[id]/+page.wisp",
+            "about/+page.wisp",
+            "top/x/+page.wisp",
         ] {
             touch(&root, f);
         }
@@ -1009,6 +1045,18 @@ fn get(id: u64) {}",
                 ("/top/x", "/gal/@modal/(...)top/x"),
             ]
         );
+        fs::remove_dir_all(&root).unwrap();
+        // A dot in the name is the name's, not another level up.
+        let root = tmp("slot-dots");
+        for f in [
+            "+layout.wisp",
+            "@m/+page.wisp",
+            "v1.0/+page.wisp",
+            "@m/(.)v1.0/+page@.wisp",
+        ] {
+            touch(&root, f);
+        }
+        assert_eq!(scan(&root).unwrap().intercepts[0].target, "/v1.0");
         fs::remove_dir_all(&root).unwrap();
         for (files, want) in [
             (vec!["@m/+page.wisp"], "a slot needs a +layout.wisp"),
