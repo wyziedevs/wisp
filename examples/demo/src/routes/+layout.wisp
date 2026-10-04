@@ -3,6 +3,7 @@ const NAV: [(&str, &str); 3] = [("/", "Home"), ("/about", "About"), ("/wisple", 
 
 let section = cx.path().split('/').nth(1).unwrap_or("");
 ---
+
 <div class="app">
   <a class="skip" href="#main">Skip to Content</a>
   <header class="site-header">

@@ -3,7 +3,15 @@ use people::{PEOPLE, Person};
 
 #[action]
 fn join(#[validate(len = 1..=40)] name: String, #[validate(min_len = 8)] password: String) {
-    cx.signup(&PEOPLE, Person { name, hash: password, avatar: None }).await?;
+    cx.signup(
+        &PEOPLE,
+        Person {
+            name,
+            hash: password,
+            avatar: None,
+        },
+    )
+    .await?;
     redirect("/me")
 }
 
@@ -13,6 +21,7 @@ fn enter(name: String, password: String) {
     redirect("/me")
 }
 ---
+
 <form action="?/join">
   <input aria-label="name" name="name">
   <input aria-label="password" type="password" name="password">

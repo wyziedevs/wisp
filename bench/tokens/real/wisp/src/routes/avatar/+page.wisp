@@ -7,5 +7,6 @@ fn default(avatar: Image) {
 
 cx.signed_in()?;
 ---
+
 <title>Avatar</title>
 <form fields><button>Upload</button></form>

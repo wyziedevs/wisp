@@ -2,6 +2,7 @@
 // @feature search
 let items = items().await;
 ---
+
 <title>Search</title>
 <input aria-label="Search" bind:value="q" placeholder="Search">
 <ul>

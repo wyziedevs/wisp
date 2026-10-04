@@ -4,6 +4,7 @@ use crate::hooks::{Greeting, User};
 let greeting = wisp::state::<Greeting>().0;
 let user = cx.get::<User>().map(|u| u.0.clone());
 ---
+
 <h1>{greeting}</h1>
 {#if let Some(name) = user}
   <p>Signed in as {name}</p>

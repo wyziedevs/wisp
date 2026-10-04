@@ -6,6 +6,7 @@ fn add(todo: Todo) {
 
 let count = TODOS.len();
 ---
+
 <title>Todos ({count})</title>
 <form action="?/add" fields><button>Add</button></form>
 {#each TODOS.all() as todo}

@@ -19,6 +19,7 @@ fn rename(who: String) {
 
 let title = "Awaits";
 ---
+
 <title>{title}</title>
 <h1>{title}</h1>
 <div id="top"><Tally /></div>

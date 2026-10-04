@@ -2,6 +2,7 @@
 let start = 2;
 let items = vec!["a", "b"];
 ---
+
 <button on:click="count++" :text="count">{start}</button>
 <ul>
   {#each items as item}<li :text="item.toUpperCase()">{item}</li>{/each}

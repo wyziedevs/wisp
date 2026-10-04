@@ -1,6 +1,7 @@
 ---
 let items: Vec<(&str, u32)> = vec![("pen", 2), ("ink", 5)];
 ---
+
 <script>
   let tags = ['x', 'y'];
 </script>

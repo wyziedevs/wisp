@@ -20,6 +20,7 @@ fn everywhere() {
 
 let me = cx.user()?;
 ---
+
 <h1>{me.name}</h1>
 {#if me.avatar.is_some()}
   <img src="/avatars/{me.id}" alt="">
