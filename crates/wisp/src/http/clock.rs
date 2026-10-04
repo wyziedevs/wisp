@@ -8,40 +8,32 @@ use super::*;
 // header has no finer resolution, and timeouts are swept once a second. The
 // same tradeoff nginx makes with its cached time.
 
-/// The clock in one word, so a reader never sees the two halves out of
-/// step: the unix second (for the Date header) in the high 32 bits, seconds
-/// since the clock started (monotonic, what request deadlines are counted
-/// in) in the low 32. 0 until the clock starts.
+/// The clock: seconds since it started, from the monotonic clock. Request
+/// deadlines are counted in it, and the unix second is derived from it
+/// (see `OFFSET`), so one load gives both, never out of step.
 pub(super) static TICK: AtomicU64 = AtomicU64::new(0);
 
-/// One `TICK` word from its unix second and elapsed seconds.
-#[inline(always)]
-pub(super) fn tick(unix: u64, elapsed: u64) -> u64 {
-    (unix << 32) | (elapsed & 0xffff_ffff)
-}
+/// The unix second at `TICK` 0: what turns a tick into a unix second. 0
+/// until the clock starts. It changes only when the system clock is set,
+/// and the clock thread writes it before the tick it goes with.
+pub(super) static OFFSET: AtomicU64 = AtomicU64::new(0);
 
-/// The unix second of a `TICK` word.
+/// The unix second of `tick`, given the clock's `offset`.
 #[inline(always)]
-pub(super) fn tick_unix(t: u64) -> u64 {
-    t >> 32
-}
-
-/// The elapsed seconds of a `TICK` word.
-#[inline(always)]
-pub(super) fn tick_elapsed(t: u64) -> u64 {
-    t & 0xffff_ffff
+pub(super) fn unix_at(offset: u64, tick: u64) -> u64 {
+    offset.wrapping_add(tick)
 }
 
 pub(crate) fn seconds() -> u64 {
-    tick_elapsed(TICK.load(Ordering::Relaxed))
+    TICK.load(Ordering::Relaxed)
 }
 
 /// The unix second: the clock's, when the server keeps one, else the
 /// system's (a host other than the built-in server).
 pub(crate) fn now() -> u64 {
-    match tick_unix(TICK.load(Ordering::Relaxed)) {
+    match OFFSET.load(Ordering::Relaxed) {
         0 => crate::unix_now(),
-        n => n,
+        o => unix_at(o, TICK.load(Ordering::Relaxed)),
     }
 }
 
@@ -58,15 +50,17 @@ pub(super) fn instant(deadline: u64) -> tokio::time::Instant {
 pub(crate) fn start_clock() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        TICK.store(tick(crate::unix_now(), 0), Ordering::Relaxed);
+        OFFSET.store(crate::unix_now(), Ordering::Relaxed);
         let start = *START.get_or_init(Instant::now);
         std::thread::Builder::new()
             .name("wisp-clock".into())
             .spawn(move || {
                 loop {
                     std::thread::sleep(Duration::from_secs(1));
-                    let t = tick(crate::unix_now(), start.elapsed().as_secs());
-                    TICK.store(t, Ordering::Relaxed);
+                    let tick = start.elapsed().as_secs();
+                    let offset = crate::unix_now().wrapping_sub(tick);
+                    OFFSET.store(offset, Ordering::Relaxed);
+                    TICK.store(tick, Ordering::Relaxed);
                 }
             })
             .expect("failed to start clock thread");
@@ -77,7 +71,7 @@ pub(crate) fn start_clock() {
 pub(super) const DATE_LINE: usize = 37;
 
 thread_local! {
-    /// (`TICK` word, its `date` line), formatted at most once a second.
+    /// (`TICK`, its `date` line), formatted at most once a second.
     static DATE: Cell<(u64, [u8; DATE_LINE])> = const { Cell::new((u64::MAX, [0; DATE_LINE])) };
 }
 
@@ -109,7 +103,7 @@ pub(super) fn date_line() -> [u8; DATE_LINE] {
         }
         let mut line = [0; DATE_LINE];
         line[..6].copy_from_slice(b"date: ");
-        line[6..35].copy_from_slice(&http_date(tick_unix(tick)));
+        line[6..35].copy_from_slice(&http_date(unix_at(OFFSET.load(Ordering::Relaxed), tick)));
         line[35..].copy_from_slice(b"\r\n");
         c.set((tick, line));
         line

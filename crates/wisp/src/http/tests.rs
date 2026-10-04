@@ -1,14 +1,14 @@
 use super::*;
 
 #[test]
-fn one_clock_word_holds_both_halves() {
-    let t = tick(1_790_000_000, 12_345);
-    assert_eq!((tick_unix(t), tick_elapsed(t)), (1_790_000_000, 12_345));
-    assert_eq!(tick_unix(tick(4_000_000_000, 0)), 4_000_000_000);
-    assert_eq!(tick_elapsed(tick(0, u32::MAX as u64)), u32::MAX as u64);
+fn the_unix_second_comes_from_the_tick() {
+    let offset = 1_790_000_000;
+    assert_eq!(unix_at(offset, 0), offset);
+    assert_eq!(unix_at(offset, 12_345), offset + 12_345);
+    // The clock set back past the start: the offset wraps, the sum does not.
+    assert_eq!(unix_at(5u64.wrapping_sub(10), 10), 5);
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn dev_binds_the_next_port_when_one_is_taken() {
     let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
