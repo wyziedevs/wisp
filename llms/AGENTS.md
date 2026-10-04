@@ -39,6 +39,7 @@ src/service-worker.js       registered for you: import { build, files, version }
 src/routes/…/+page.wisp     page: optional `---` Rust block, then markup
 src/routes/…/+page@.wisp    a page without the layouts above it (`+page@app.wisp`: only up to the `(app)` layout)
 src/routes/…/+layout.wisp   wraps pages below; must <slot /> (or {@render children()})
+src/routes/…/+loading.wisp  static HTML a client navigation shows in <main> at once while a page below this folder loads
 src/routes/…/+error.wisp    error page; has `status`, `message`, `cx`
 src/routes/…/+server.rs     endpoints: fn get/post/put/patch/delete/list
 src/routes/…/+page.md       Markdown page (`blog/x.md` = /blog/x)

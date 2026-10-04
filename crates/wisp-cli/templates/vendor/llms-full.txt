@@ -29,6 +29,7 @@ src/service-worker.js       registered for you: import { build, files, version }
 src/routes/…/+page.wisp     page: optional `---` Rust block, then markup
 src/routes/…/+page@.wisp    a page without the layouts above it (`+page@app.wisp`: only up to the `(app)` layout)
 src/routes/…/+layout.wisp   wraps pages below; must <slot /> (or {@render children()})
+src/routes/…/+loading.wisp  static HTML a client navigation shows in <main> at once while a page below this folder loads
 src/routes/…/+error.wisp    error page; has `status`, `message`, `cx`
 src/routes/…/+server.rs     endpoints: fn get/post/put/patch/delete/list
 src/routes/…/+page.md       Markdown page (`blog/x.md` = /blog/x)
@@ -842,6 +843,17 @@ Pick when one loads (`src`, so no code of yours): in the head, plain
 `<script src="https://t.example/a.js" type="wisp/idle">` loads when the
 browser is idle (also on a client navigation), `type="wisp/interaction"` at the
 first pointer, key or scroll. Other attributes (`async`, `data-*`) are copied.
+
+## Loading views
+
+`src/routes/blog/+loading.wisp` is static HTML (a `<style>` is fine; no `---`
+block, holes or components) that a client navigation to `/blog` or any page
+below it shows in `<main>` the moment the link is followed, until the page
+arrives and morphs over it (`aria-busy` is set meanwhile). The deepest folder
+that fits wins; `routes/+loading.wisp` is for every page. A page already
+fetched ahead (hover) shows none, nor does back or forward, nor a full page
+load. The build writes the views as JSON into the shell's head: an app with no
+`+loading.wisp` has none of it, and no request is made for one.
 
 ## Web vitals
 

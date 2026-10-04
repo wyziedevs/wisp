@@ -378,6 +378,17 @@ Pick when one loads (`src`, so no code of yours): in the head, plain
 browser is idle (also on a client navigation), `type="wisp/interaction"` at the
 first pointer, key or scroll. Other attributes (`async`, `data-*`) are copied.
 
+## Loading views
+
+`src/routes/blog/+loading.wisp` is static HTML (a `<style>` is fine; no `---`
+block, holes or components) that a client navigation to `/blog` or any page
+below it shows in `<main>` the moment the link is followed, until the page
+arrives and morphs over it (`aria-busy` is set meanwhile). The deepest folder
+that fits wins; `routes/+loading.wisp` is for every page. A page already
+fetched ahead (hover) shows none, nor does back or forward, nor a full page
+load. The build writes the views as JSON into the shell's head: an app with no
+`+loading.wisp` has none of it, and no request is made for one.
+
 ## Web vitals
 
 `<meta name="wisp-vitals" content="/vitals">` (in `src/app.html`) is opt-in:

@@ -1512,6 +1512,7 @@ impl<'a> Project<'a> {
         // The fonts' preload links come first in the head.
         let faces = crate::fonts::load(root)?;
         shell[0].push_str(&wisp_shared::fonts::preloads(&faces, crate::protocol::BASE));
+        shell[0].push_str(&crate::loading::tag(&tree, root)?);
         let t_used = vec![false; i18n.as_ref().map_or(0, i18n::Locales::key_count)];
         Ok(Project {
             root,

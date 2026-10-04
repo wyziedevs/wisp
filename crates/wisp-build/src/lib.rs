@@ -14,6 +14,7 @@ pub mod image;
 pub mod inspect;
 mod island;
 mod js;
+mod loading;
 mod markdown;
 mod model;
 pub mod npm;

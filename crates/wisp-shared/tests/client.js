@@ -18,7 +18,7 @@ const res = (body, type = 'text/html', status = 200) => ({
 });
 
 // A fresh page with wisp.js running in it. `fetches` records each call.
-function page({ online = true, scripts = [], vitals = null } = {}) {
+function page({ online = true, scripts = [], vitals = null, views = null, main = null } = {}) {
   const win = new EventTarget();
   const doc = new EventTarget();
   const fetches = [];
@@ -39,9 +39,9 @@ function page({ online = true, scripts = [], vitals = null } = {}) {
     currentScript: null,
     title: '',
     activeElement: { blur() {} },
-    getElementById: () => null,
+    getElementById: (id) => (id == 'wisp-loading' && views ? { text: JSON.stringify(views) } : null),
     querySelectorAll: (s) => (s.includes('wisp/') ? scripts : []),
-    querySelector: (s) => (s == 'h1' ? h1 : s.includes('wisp-vitals') ? vitals : null),
+    querySelector: (s) => (s == 'h1' ? h1 : s == 'main' ? main : s.includes('wisp-vitals') ? vitals : null),
     visibilityState: 'visible',
     createElement: () => Object.assign(new EventTarget(), { style: {}, attrs: {}, setAttribute(k, v) { this.attrs[k] = v; }, isConnected: true }),
     hidden: false,
@@ -222,6 +222,30 @@ const tests = {
     p.win.dispatchEvent(new Event('keydown'));
     assert.equal(p.calls.head.length, 2);
     assert.equal(p.calls.head[1].attrs.src, 'http://t.test/b.js');
+  },
+  async 'loading: the deepest folder view shows in main until the page arrives'() {
+    const main = { html: '', attrs: {}, replaceChildren() { this.html = ''; }, insertAdjacentHTML(_, h) { this.html += h; }, setAttribute(k, v) { this.attrs[k] = v; } };
+    const p = page({ views: [['', '<i>all</i>'], ['/blog', '<i>blog</i>'], ['/shop/[id=int]', '<i>item</i>']], main });
+    let release;
+    p.g.reply = () => new Promise((r) => (release = () => r(res('<title>B</title><h1>B</h1>'))));
+    p.click({}, '/blog/post');
+    assert.equal(main.html, '<i>blog</i>');
+    assert.equal(main.attrs['aria-busy'], 'true');
+    release();
+    await tick();
+    p.click({}, '/about');
+    assert.equal(main.html, '<i>all</i>');
+    release();
+    await tick();
+    main.html = '';
+    p.click({}, '/shop/x');
+    assert.equal(main.html, '<i>all</i>'); // [id=int] does not fit x
+    release();
+    await tick();
+    main.html = '';
+    p.click({}, '/shop/7');
+    assert.equal(main.html, '<i>item</i>');
+    release();
   },
   'vitals: only with the meta tag, and one beacon when hidden'() {
     const p = page();

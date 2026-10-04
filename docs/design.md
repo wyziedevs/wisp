@@ -1326,6 +1326,15 @@ branches).
   dispatch changed (`http.rs` is untouched) and a route that names none has
   nothing extra. `src/hooks.rs`'s `before` is the global one; `MIDDLEWARE`
   there is an error.
+- **Loading views.** `+loading.wisp` (a known route file; `Tree::loading` holds
+  its folder's pattern) is read by `loading.rs` and written into the shell's
+  head as `<script type="application/json" id="wisp-loading">[[prefix,html]]`,
+  so it is static bytes in every page of an app that has one and nothing
+  otherwise; it does not run, so no CSP hash. `wait()` in wisp.js, before the
+  fetch of a navigation not fetched ahead and not a pop, finds the deepest
+  prefix that `fit` (the SPA fallback's own matcher) accepts and fills `<main>`.
+  Streaming `{#await}` needs none of it: it is for the whole page, and a
+  streamed page is read whole by a client navigation. About 290 bytes gzipped.
 - **Version skew.** A release build puts `<meta name="wisp-build" content=ID>`
   in the shell (a hash of templates and Rust: baked, nothing per request).
   wisp.js compares it with the page a navigation fetched, as it does

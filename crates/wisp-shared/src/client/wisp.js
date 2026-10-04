@@ -29,6 +29,7 @@
 // Nodes that browser code made (marked __w) are left too.
 // `<script src type="wisp/idle">` (or `wisp/interaction`) loads a script
 // late; `<meta name="wisp-vitals" content="/path">` reports web vitals.
+// A folder's `+loading.wisp` shows in <main> while its page is fetched.
 (() => {
   const headers = { 'x-wisp': '1' };
   const key = (u) => String(u).split('#')[0];
@@ -239,6 +240,21 @@
     );
   }
 
+  // `+loading.wisp`: the build lists each folder's view (`[prefix, html]`);
+  // a navigation not already fetched ahead shows the deepest one that fits
+  // in <main> at once, and the page that arrives morphs over it.
+  const views = (() => {
+    try { return JSON.parse(document.getElementById('wisp-loading')?.text || '[]'); } catch { return []; }
+  })();
+  function wait(url) {
+    const hit = views.filter(([p]) => fit(p + '/[...r]', url.pathname)).sort((a, b) => b[0].length - a[0].length)[0];
+    const main = hit && document.querySelector('main');
+    if (!main) return;
+    main.replaceChildren();
+    main.insertAdjacentHTML('beforeend', hit[1]);
+    main.setAttribute('aria-busy', 'true');
+  }
+
   async function go(url, how = {}) {
     url = new URL(url, location.href);
     if (script(url)) return; // goto(text from a visitor) runs nothing
@@ -247,6 +263,7 @@
     if (!send('wisp:navigate', { from: location.href, to: url.href, pop: !!how.pop }) && !how.pop) return;
     const my = ++nav;
     if (!how.pop) history.replaceState({ ...history.state, x: scrollX, y: scrollY }, '');
+    if (views.length && !how.pop && !pre.has(key(url))) wait(url);
     let res;
     try {
       const early = pre.get(key(url));

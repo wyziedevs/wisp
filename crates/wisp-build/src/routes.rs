@@ -72,6 +72,24 @@ pub struct Tree {
     /// The param matchers routes use: each name with its `src/params` file,
     /// or `None` for the built-in `int`.
     pub matchers: Vec<(String, Option<PathBuf>)>,
+    /// Each `+loading.wisp`: the URL pattern of its folder (empty for the
+    /// root) and the file.
+    pub loading: Vec<(String, PathBuf)>,
+}
+
+/// The segments as a path, none for none: `/blog/[slug]`.
+fn prefix(segs: &[Seg]) -> String {
+    let mut s = String::new();
+    for seg in segs {
+        s.push('/');
+        match seg {
+            Seg::Static(n) => s.push_str(n),
+            Seg::Param(n, m) => s.push_str(&format!("[{n}{}]", matcher(m))),
+            Seg::Optional(n, m) => s.push_str(&format!("[[{n}{}]]", matcher(m))),
+            Seg::Rest(n) => s.push_str(&format!("[...{n}]")),
+        }
+    }
+    s
 }
 
 /// `=int` for a matcher, nothing without one.
@@ -82,20 +100,10 @@ fn matcher(m: &Option<String>) -> String {
 impl Route {
     /// The route as a URL pattern, for messages: `/blog/[slug]`.
     pub fn pattern(&self) -> String {
-        if self.segs.is_empty() {
-            return "/".into();
+        match prefix(&self.segs) {
+            p if p.is_empty() => "/".into(),
+            p => p,
         }
-        let mut s = String::new();
-        for seg in &self.segs {
-            s.push('/');
-            match seg {
-                Seg::Static(n) => s.push_str(n),
-                Seg::Param(n, m) => s.push_str(&format!("[{n}{}]", matcher(m))),
-                Seg::Optional(n, m) => s.push_str(&format!("[[{n}{}]]", matcher(m))),
-                Seg::Rest(n) => s.push_str(&format!("[...{n}]")),
-            }
-        }
-        s
     }
 
     pub fn params(&self) -> Vec<&str> {
@@ -324,7 +332,7 @@ fn walk(
         .find_map(|f| reset_of(f).map(|g| (f.clone(), g.to_string())));
     let has = |f: &str| files.iter().any(|x| x == f) || (f == "+page.wisp" && reset.is_some());
     for f in &files {
-        const KNOWN: [&str; 9] = [
+        const KNOWN: [&str; 10] = [
             "+page.wisp",
             "+page.rs",
             "+page.js",
@@ -333,6 +341,7 @@ fn walk(
             "+layout.wisp",
             "+layout.rs",
             "+error.wisp",
+            "+loading.wisp",
             "+server.rs",
         ];
         if !KNOWN.contains(&f.as_str()) && reset_of(f).is_none() {
@@ -381,6 +390,9 @@ fn walk(
             has_rs: has("+layout.rs"),
         });
         layouts.push(tree.layouts.len() - 1);
+    }
+    if has("+loading.wisp") {
+        tree.loading.push((prefix(segs), dir.join("+loading.wisp")));
     }
     let mut error = error;
     if has("+error.wisp") {
