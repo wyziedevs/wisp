@@ -2,15 +2,12 @@
 'use server';
 import { redirect } from 'next/navigation';
 
-const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-export async function send(prev, form) {
-  const name = String(form.get('name') ?? '');
-  const email = String(form.get('email') ?? '');
+export async function send(prev, data) {
+  const form = Object.fromEntries(data);
   const errors = {};
-  if (name.length < 1 || name.length > 50) errors.name = 'Name must be 1 to 50 characters';
-  if (!EMAIL.test(email)) errors.email = 'Enter a valid email';
-  if (errors.name || errors.email) return { name, email, errors };
-  console.log(`${name} <${email}>`);
+  if (!form.name || form.name.length > 50) errors.name = 'must have 1 to 50 characters';
+  if (!/^\S+@\S+\.\S+$/.test(form.email)) errors.email = 'must be an email address';
+  if (Object.keys(errors).length) return { ...form, errors };
+  console.log(`${form.name} <${form.email}>`);
   redirect('/');
 }

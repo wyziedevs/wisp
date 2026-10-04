@@ -45,9 +45,9 @@ struct Contact {
 
 #[derive(Deserialize, Validate)]
 struct ContactForm {
-    #[validate(length(min = 1, max = 50, message = "Name must be 1 to 50 characters"))]
+    #[validate(length(min = 1, max = 50, message = "must have 1 to 50 characters"))]
     name: String,
-    #[validate(email(message = "Enter a valid email"))]
+    #[validate(email(message = "must be an email address"))]
     email: String,
 }
 
