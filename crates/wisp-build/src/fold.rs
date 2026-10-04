@@ -183,6 +183,8 @@ type Comp<'a> = &'a dyn Fn(&str) -> Option<(&'a Template, &'a [PropDecl])>;
 /// Runs templates at build time.
 pub struct Fold<'a> {
     pub comp: Comp<'a>,
+    /// How many components deep the walk is: one that renders itself is not baked.
+    pub depth: std::cell::Cell<u8>,
 }
 
 impl Fold<'_> {
@@ -292,7 +294,13 @@ impl Fold<'_> {
                         Some(c) => self.nodes(c, t, env, doc, head, slot),
                         None => Some(()),
                     };
-                    self.nodes(&ct.nodes, ct, &own, doc, head, &kids)?;
+                    if self.depth.get() >= 64 {
+                        return None;
+                    }
+                    self.depth.set(self.depth.get() + 1);
+                    let done = self.nodes(&ct.nodes, ct, &own, doc, head, &kids);
+                    self.depth.set(self.depth.get() - 1);
+                    done?;
                 }
                 n => out.push_str(&fixed_in(n, t, env)?),
             }
@@ -425,7 +433,11 @@ mod tests {
         };
         let ts: Vec<Template> = layers.iter().map(|s| parse(s).unwrap()).collect();
         let refs: Vec<&Template> = ts.iter().collect();
-        Fold { comp: &comp }.page(&refs)
+        Fold {
+            comp: &comp,
+            depth: Default::default(),
+        }
+        .page(&refs)
     }
 
     #[test]

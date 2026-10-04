@@ -689,6 +689,11 @@ pub fn parse_segment(name: &str) -> Result<Option<Seg>, String> {
         if !crate::ty::is_ident(s) {
             return Err(format!("`{s}` is not a valid parameter name"));
         }
+        if crate::ty::is_unrawable(s) {
+            return Err(format!(
+                "`{s}` is a Rust keyword, so it cannot name a parameter"
+            ));
+        }
         Ok(s.to_string())
     };
     // `name=matcher`: the matcher is a file in src/params, or `int`.
@@ -738,6 +743,16 @@ pub fn parse_segment(name: &str) -> Result<Option<Seg>, String> {
     if name.contains(['[', ']', '(', ')']) {
         return Err("mixed static and dynamic text in one segment is not supported".into());
     }
+    // The path is matched as the browser sends it, so a name it would
+    // percent-encode (a space, `%`, `#`, a non-ASCII letter) never matches.
+    if let Some(c) = name
+        .chars()
+        .find(|&c| !(c.is_ascii_alphanumeric() || "-._~!$&'*+,;=:@".contains(c)))
+    {
+        return Err(format!(
+            "`{c}` in the folder name `{name}` would be percent-encoded in a URL, so the route could never match; use letters, digits and `-._~`"
+        ));
+    }
     Ok(Some(Seg::Static(name.to_string())))
 }
 
@@ -782,6 +797,22 @@ mod tests {
         let p = root.join(rel);
         fs::create_dir_all(p.parent().unwrap()).unwrap();
         fs::write(p, "").unwrap();
+    }
+
+    #[test]
+    fn a_parameter_is_not_a_keyword() {
+        for bad in ["[self]", "[_]", "[...crate]", "[[super]]"] {
+            let e = parse_segment(bad).unwrap_err();
+            assert!(e.contains("Rust keyword"), "{bad}: {e}");
+        }
+        assert!(parse_segment("[kind]").is_ok());
+        assert!(parse_segment("[type]").is_ok());
+        for bad in ["a b", "a%b", "日本", "a#b", "a\\b"] {
+            assert!(parse_segment(bad).is_err(), "{bad}");
+        }
+        for ok in ["a-b_c.d", "@modal", ".well-known", "a+b"] {
+            assert!(parse_segment(ok).is_ok(), "{ok}");
+        }
     }
 
     #[test]

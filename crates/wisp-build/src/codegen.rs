@@ -1850,6 +1850,8 @@ impl<'a> Project<'a> {
         let mut files = Vec::new();
         list_files(&comp_dir, &mut files)?;
         files.sort();
+        // Per component, those its markup renders with nothing to stop them.
+        let mut always: Vec<Vec<String>> = Vec::new();
         for file in files {
             let file_name = file
                 .file_name()
@@ -1926,6 +1928,14 @@ impl<'a> Project<'a> {
                     .map(|x| x.name.clone())
                     .collect()
             });
+            always.push(
+                (t.nodes.iter())
+                    .filter_map(|n| match n {
+                        Node::Component { name, .. } => Some(name.clone()),
+                        _ => None,
+                    })
+                    .collect(),
+            );
             self.comps.push(Comp {
                 rel,
                 name,
@@ -1937,6 +1947,39 @@ impl<'a> Project<'a> {
                 live: t.is_live(),
             });
             self.add_tpl(module, &file, Kind::Component, t);
+        }
+        for k in 0..always.len() {
+            let (mut seen, mut path) = (vec![k], vec![k]);
+            // Follow the first of each that is still to see: a loop back to
+            // `k` is a component that renders itself, however far round.
+            let mut stack = vec![always[k].clone()];
+            while let Some(top) = stack.last_mut() {
+                let Some(name) = top.pop() else {
+                    stack.pop();
+                    path.pop();
+                    continue;
+                };
+                let Some(j) = self.comps.iter().position(|c| c.name == name) else {
+                    continue;
+                };
+                if j == k {
+                    let way: Vec<String> = path
+                        .iter()
+                        .map(|&p| format!("<{}>", self.comps[p].name))
+                        .collect();
+                    return Err(format!(
+                        "{}: {} renders itself ({}) with nothing to stop it; put it in a {{:#if}} or {{:#each}} that ends",
+                        self.comps[k].rel,
+                        way[0],
+                        way.join(" -> ") + " -> " + &way[0]
+                    ));
+                }
+                if !seen.contains(&j) {
+                    seen.push(j);
+                    path.push(j);
+                    stack.push(always[j].clone());
+                }
+            }
         }
         Ok(())
     }
@@ -2447,7 +2490,8 @@ impl<'a> Project<'a> {
                         ": Option<String> = Some(cx.param(@)).filter(|s| !s.is_empty()).map(str::to_string)",
                     ),
                 };
-                names_word(&src, n).then(|| format!("let {n}{};", how.replace('@', &lit(n))))
+                let raw = if ty::is_keyword(n) { "r#" } else { "" };
+                names_word(&src, n).then(|| format!("let {raw}{n}{};", how.replace('@', &lit(n))))
             })
             .collect();
         let at = |f: &FnItem, msg: String| format!("{}:{}: {msg}", self.rel(&rs), f.line);
@@ -3251,7 +3295,10 @@ pub const MORE: ::wisp::rt::CacheMore = ::wisp::rt::CacheMore::NONE;"
             let c = &self.comps[k];
             (!c.live).then(|| (&self.templates[k].t, &c.props[..]))
         };
-        let fold = fold::Fold { comp: &comp };
+        let fold = fold::Fold {
+            comp: &comp,
+            depth: Default::default(),
+        };
         let reads = |t: &Tpl| {
             t.stmts.is_some() || t.load_js.is_some() || t.user.as_ref().is_some_and(|(_, r)| *r)
         };
@@ -12231,6 +12278,19 @@ pub fn load() -> Data { todo!() }";
             ),
             "{code}"
         );
+    }
+
+    #[test]
+    fn a_component_that_renders_itself_forever_is_refused() {
+        let page = ("src/routes/+page.wisp", "<Aa />");
+        let aa = |src: &'static str| ("src/components/Aa.wisp", src);
+        let bb = ("src/components/Bb.wisp", "<Aa />");
+        let e = app("self-forever", &[page, aa("<p>x</p><Aa />")]).unwrap_err();
+        assert!(e.contains("<Aa> renders itself"), "{e}");
+        let e = app("loop-forever", &[page, aa("<Bb />"), bb]).unwrap_err();
+        assert!(e.contains("<Aa> -> <Bb> -> <Aa>"), "{e}");
+        // A condition that is always true is the author's: no overflow.
+        assert!(app("true-forever", &[page, aa("{#if true}<Aa />{/if}")]).is_ok());
     }
 
     #[test]

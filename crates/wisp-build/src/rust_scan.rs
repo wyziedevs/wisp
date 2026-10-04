@@ -841,23 +841,103 @@ pub fn mark_actions(code: &str, markup: &str) -> Option<String> {
     (!lines.is_empty()).then_some(out)
 }
 
-/// The names `action="?/name"` and `formaction="?/name"` post to in `markup`.
+/// The names `action="?/name"` and `formaction="?/name"` post to in `markup`:
+/// on a tag's attributes, not in a comment, a script or the text.
 fn posted_to(markup: &str) -> Vec<&str> {
-    let mut out = Vec::new();
-    for (at, _) in markup.match_indices("action=") {
-        let rest = &markup[at + 7..];
-        let Some(rest) = rest
-            .strip_prefix(['"', '\''])
-            .and_then(|r| r.strip_prefix("?/"))
-        else {
-            continue;
-        };
-        let end = rest
-            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-            .unwrap_or(rest.len());
-        out.push(&rest[..end]);
+    let b = markup.as_bytes();
+    let (mut out, mut i) = (Vec::new(), 0);
+    while i < b.len() {
+        if b[i] != b'<' {
+            i += 1;
+        } else if markup[i..].starts_with("<!--") {
+            i += markup[i..].find("-->").map_or(b.len(), |e| e + 3);
+        } else if b.get(i + 1).is_some_and(u8::is_ascii_alphabetic) {
+            let name = i + 1;
+            let mut j = name;
+            while j < b.len() && !b[j].is_ascii_whitespace() && !matches!(b[j], b'>' | b'/') {
+                j += 1;
+            }
+            let tag = markup[name..j].to_ascii_lowercase();
+            // The attributes, to the `>` that is not in a value or `{…}`.
+            while j < b.len() && b[j] != b'>' {
+                if b[j] == b'{' {
+                    j = skip_braces(b, j);
+                    continue;
+                }
+                let at = j;
+                while j < b.len()
+                    && !b[j].is_ascii_whitespace()
+                    && !matches!(b[j], b'=' | b'>' | b'/' | b'{')
+                {
+                    j += 1;
+                }
+                if j == at {
+                    j += 1;
+                    continue;
+                }
+                let attr = &markup[at..j];
+                if b.get(j) != Some(&b'=') {
+                    continue;
+                }
+                j += 1;
+                let value = j;
+                match b.get(j) {
+                    Some(&q @ (b'"' | b'\'')) => {
+                        j = (j + 1..b.len()).find(|&k| b[k] == q).unwrap_or(b.len());
+                        j = (j + 1).min(b.len());
+                    }
+                    Some(b'{') => j = skip_braces(b, j),
+                    _ => {
+                        while j < b.len() && !b[j].is_ascii_whitespace() && b[j] != b'>' {
+                            j += 1;
+                        }
+                    }
+                }
+                if attr.eq_ignore_ascii_case("action") || attr.eq_ignore_ascii_case("formaction") {
+                    let v = &markup[value..j];
+                    if let Some(r) = v
+                        .strip_prefix(['"', '\''])
+                        .and_then(|r| r.strip_prefix("?/"))
+                    {
+                        let end = r
+                            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                            .unwrap_or(r.len());
+                        out.push(&r[..end]);
+                    }
+                }
+            }
+            i = j;
+            if matches!(tag.as_str(), "script" | "style") {
+                let close = format!("</{tag}");
+                i += markup[i..]
+                    .to_ascii_lowercase()
+                    .find(&close)
+                    .unwrap_or(b.len() - i);
+            }
+        } else {
+            i += 1;
+        }
     }
     out
+}
+
+/// The index past the `}` that closes the `{` at `i` (or the end).
+fn skip_braces(b: &[u8], mut i: usize) -> usize {
+    let mut depth = 0;
+    while i < b.len() {
+        match b[i] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return i + 1;
+                }
+            }
+            _ => i = skip_literal(b, i),
+        }
+        i += 1;
+    }
+    b.len()
 }
 
 /// The names the top-level `let`s of `stmts` bind: `let (a, mut b) = …`
@@ -970,7 +1050,7 @@ pub fn may_wait(code: &str) -> bool {
     let b = code.as_bytes();
     let mut i = 0;
     while i < b.len() {
-        if b[i].is_ascii_alphabetic() || b[i] == b'_' {
+        if is_ident_start(b, i) {
             let end = ident_end(b, i);
             let bang = b.get(end) == Some(&b'!') && b.get(end + 1) != Some(&b'=');
             // Any path is a doubt (`tokio::join!`), even `std::vec!`.
@@ -1080,7 +1160,7 @@ pub fn name_saved(src: &str) -> Option<String> {
         if b[i] == b';' {
             name.clear();
         }
-        if !(b[i].is_ascii_alphabetic() || b[i] == b'_') {
+        if !is_ident_start(b, i) {
             i = skip_literal(b, i) + 1;
             continue;
         }
@@ -1106,10 +1186,14 @@ pub fn name_saved(src: &str) -> Option<String> {
 /// The table `wisp::users(&db::USERS)` names, as written, in `src` (the
 /// hooks file), if it does.
 pub fn users_table(src: &str) -> Result<Option<String>, String> {
-    let src = strip_comments(src);
-    let Some(at) = src.find("wisp::users(") else {
+    let b = src.as_bytes();
+    let mut at = 0;
+    while at < b.len() && !b[at..].starts_with(b"wisp::users(") {
+        at = skip_literal(b, at) + 1;
+    }
+    if at >= b.len() {
         return Ok(None);
-    };
+    }
     let arg = &src[at + 12..];
     let arg = arg[..arg.find(')').unwrap_or(arg.len())]
         .trim()
@@ -1154,7 +1238,7 @@ pub fn bind_user(src: &str, table: Option<&str>) -> Result<Option<String>, Strin
     let b = src.as_bytes();
     let (mut out, mut from, mut i) = (String::new(), 0, 0);
     while i < b.len() {
-        if !(b[i].is_ascii_alphabetic() || b[i] == b'_') {
+        if !is_ident_start(b, i) {
             i = skip_literal(b, i) + 1;
             continue;
         }
@@ -1208,23 +1292,30 @@ fn args_of(b: &[u8], open: usize) -> Option<usize> {
     None
 }
 
-/// `s` with its comments blanked out.
+/// `s` with its comments blanked out (and its literals as they are).
 fn strip_comments(s: &str) -> String {
     let b = s.as_bytes();
-    let mut out = String::with_capacity(s.len());
-    let mut i = 0;
+    let (mut out, mut i) = (String::with_capacity(s.len()), 0);
     while i < b.len() {
+        let end = skip_literal(b, i).min(b.len() - 1);
         if b[i..].starts_with(b"//") || b[i..].starts_with(b"/*") {
-            let end = skip_space(b, i);
             out.push(' ');
-            i = end;
+        } else if end > i {
+            out.push_str(&s[i..=end]);
         } else {
             let n = s[i..].chars().next().map_or(1, char::len_utf8);
             out.push_str(&s[i..i + n]);
             i += n;
+            continue;
         }
+        i = end + 1;
     }
     out
+}
+
+/// Whether an identifier starts at `i`, rather than a raw string (`r"…"`).
+fn is_ident_start(b: &[u8], i: usize) -> bool {
+    (b[i].is_ascii_alphabetic() || b[i] == b'_') && skip_literal(b, i) == i
 }
 
 /// The end of the identifier starting at `i` (`i` itself if there is none).
@@ -1856,6 +1947,33 @@ fn a() {}"
     }
 
     #[test]
+    fn literals_hide_nothing_and_fake_nothing() {
+        // A `/*` or `//` in a string is not a comment: `wisp::users` after it counts.
+        let init = "const P: &str = \"/api/*\"; fn init() { wisp::users(&db::A); }";
+        assert_eq!(users_table(init), Ok(Some("db::A".into())));
+        let init = "const U: &str = \"http://x\"; fn init() { wisp::users(&db::A); }";
+        assert_eq!(users_table(init), Ok(Some("db::A".into())));
+        // And one inside a string is not a call.
+        assert_eq!(users_table("let s = \"wisp::users(&db::A)\";"), Ok(None));
+        // A raw string ending in a backslash does not swallow what follows.
+        for src in [
+            "let p = r\"C:\\\"; cx.user()",
+            "let p = br#\"\\\"#; cx.user()",
+        ] {
+            let got = bind_user(src, Some("db::U")).unwrap().unwrap();
+            assert!(got.ends_with("cx.user(&db::U)"), "{got}");
+        }
+        assert_eq!(bind_user("r\"cx.user()\"", Some("db::U")), Ok(None));
+        // A rule's pattern may hold `//`.
+        let items = scan(
+            "#[action]
+fn a(#[validate(pattern = \"https?://x\")] u: String) {}",
+        )
+        .unwrap();
+        assert_eq!(items.fns[0].checks[0].1, "pattern = \"https?://x\"");
+    }
+
+    #[test]
     fn cx_user_takes_the_table_init_names() {
         let init = "// wisp::users(&other::X)\nfn init() { wisp::users(&db::USERS); }";
         assert_eq!(users_table(init), Ok(Some("db::USERS".into())));
@@ -1918,6 +2036,28 @@ fn a() {}"
             mark_actions("fn size() -> u8 { 1 }", "<form action=\"?/size\">"),
             None
         );
+    }
+
+    #[test]
+    fn only_a_tags_attributes_post() {
+        for markup in [
+            "<!-- <form action=\"?/add\"> -->",
+            "<div data-action=\"?/add\">x</div>",
+            "<p>write action=\"?/add\" to post</p>",
+            "<script>let s = '<form action=\"?/add\">'</script>",
+            "<p title=\"action='?/add'\">x</p>",
+        ] {
+            assert_eq!(posted_to(markup), Vec::<&str>::new(), "{markup}");
+        }
+        for markup in [
+            "<form class=a action=\"?/add\">",
+            "<FORM ACTION='?/add'>",
+            "<form {...x} action=\"?/add&a={b > c}\">",
+            "<!-- x --><button formaction=\"?/add\">",
+            "<script>x</script><form action=\"?/add\">",
+        ] {
+            assert_eq!(posted_to(markup), ["add"], "{markup}");
+        }
     }
 
     #[test]

@@ -526,6 +526,10 @@ fn form_fields(src: &str, fields: &[Field]) -> Result<Option<String>, Error> {
     Ok((from > 0).then_some(out))
 }
 
+/// How deep blocks may nest: the build walks them recursively, so a bound
+/// keeps hostile input an error rather than a stack overflow.
+const MAX_NEST: usize = 128;
+
 pub fn parse(src: &str) -> Result<Template, Error> {
     parse_with(src, &[], "w-t", false)
 }
@@ -1206,6 +1210,9 @@ impl Parser<'_> {
     /// list. A block's own node is pushed at its close *without* another
     /// flush, since everything after its open went into the block.
     fn begin(&mut self, pos: usize) -> Result<(), Error> {
+        if self.frames.len() >= MAX_NEST {
+            return Err(self.err(pos, format!("blocks nested more than {MAX_NEST} deep")));
+        }
         if let Some(Frame::Match { arms, .. }) = self.frames.last()
             && arms.is_empty()
         {
@@ -5167,6 +5174,14 @@ mod tests {
                 "{fixed}"
             );
         }
+    }
+
+    #[test]
+    fn blocks_nest_only_so_deep() {
+        let deep = |n: usize| format!("{}x{}", "{#if a}".repeat(n), "{/if}".repeat(n));
+        assert!(parse(&deep(MAX_NEST - 1)).is_ok());
+        let e = parse(&deep(100_000)).err().expect("too deep");
+        assert!(e.msg.contains("nested more than"), "{}", e.msg);
     }
 
     #[test]

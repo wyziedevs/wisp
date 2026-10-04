@@ -90,6 +90,7 @@ pub fn skip_literal(b: &[u8], i: usize) -> usize {
         b'"' => skip_str(b, i),
         b'\'' => skip_char(b, i),
         b'r' if raw_str_start(b, i).is_some() => skip_raw_str(b, i),
+        b'b' if i + 1 < b.len() && raw_str_start(b, i + 1).is_some() => skip_raw_str(b, i + 1),
         b'/' if b.get(i + 1) == Some(&b'/') => {
             let mut j = i;
             while j + 1 < b.len() && b[j + 1] != b'\n' {
