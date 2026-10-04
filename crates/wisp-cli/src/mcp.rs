@@ -381,7 +381,7 @@ mod tests {
             all.iter()
                 .any(|s| s.0 == "AGENTS.md > Actions (form posts)")
         );
-        assert!(all.iter().any(|s| s.0.ends_with("> Event modifiers")));
+        assert!(all.iter().any(|s| s.0.ends_with("> Event Modifiers")));
         assert!(docs("").contains("> Webhooks"));
         assert!(docs("zzqq").starts_with("Nothing"));
     }

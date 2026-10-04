@@ -206,6 +206,9 @@ fn render(body: &str) -> (String, Option<String>) {
     let mut events: Vec<Event> = Vec::new();
     let mut h1: Option<String> = None;
     let mut in_h1 = false;
+    // The open heading (its start event's index, its text) and the ids so far.
+    let mut head: Option<(usize, String)> = None;
+    let mut ids: Vec<String> = Vec::new();
     // Text gathered for what is written whole: a code block, an image's alt.
     let mut code: Option<(String, String)> = None;
     let mut image: Option<(String, String, String)> = None;
@@ -243,6 +246,7 @@ fn render(body: &str) -> (String, Option<String>) {
         match e {
             Event::Start(Tag::Heading { level, .. }) => {
                 in_h1 = level == pulldown_cmark::HeadingLevel::H1 && h1.is_none();
+                head = Some((events.len(), String::new()));
                 events.push(Event::Start(Tag::Heading {
                     level,
                     id: None,
@@ -252,17 +256,35 @@ fn render(body: &str) -> (String, Option<String>) {
             }
             Event::End(TagEnd::Heading(l)) => {
                 in_h1 = false;
+                if let Some((at, words)) = head.take() {
+                    let id = slug(&words, &ids);
+                    if !id.is_empty() {
+                        events[at] = Event::Start(Tag::Heading {
+                            level: l,
+                            id: Some(CowStr::from(id.clone())),
+                            classes: Vec::new(),
+                            attrs: Vec::new(),
+                        });
+                        ids.push(id);
+                    }
+                }
                 events.push(Event::End(TagEnd::Heading(l)));
             }
             Event::Text(t) => {
                 if in_h1 {
                     h1.get_or_insert_default().push_str(&t);
                 }
+                if let Some((_, words)) = &mut head {
+                    words.push_str(&t);
+                }
                 events.push(Event::InlineHtml(CowStr::from(text(&t))));
             }
             Event::Code(t) => {
                 if in_h1 {
                     h1.get_or_insert_default().push_str(&t);
+                }
+                if let Some((_, words)) = &mut head {
+                    words.push_str(&t);
                 }
                 events.push(Event::InlineHtml(CowStr::from(format!(
                     "<code>{}</code>",
@@ -308,6 +330,25 @@ fn render(body: &str) -> (String, Option<String>) {
     let mut html = String::with_capacity(body.len() * 3 / 2);
     pulldown_cmark::html::push_html(&mut html, events.into_iter());
     (html, h1.map(|t| t.trim().to_string()))
+}
+
+/// A heading's id, GitHub style: lowercase, letters, digits, `_` and `-`
+/// kept, spaces to `-`; `-2`, `-3` after an id already in `taken`.
+fn slug(words: &str, taken: &[String]) -> String {
+    let base: String = words
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | ' '))
+        .collect::<String>()
+        .trim()
+        .replace(' ', "-");
+    let mut id = base.clone();
+    let mut n = 2;
+    while !base.is_empty() && taken.contains(&id) {
+        id = format!("{base}-{n}");
+        n += 1;
+    }
+    id
 }
 
 /// A fenced block: `<pre><code class="language-x">`, highlighted when
@@ -618,7 +659,7 @@ mod tests {
         assert_eq!(md.fields, [("title".into(), "Hello there".into())]);
         assert!(
             md.wisp.starts_with(
-                "<head><title>Hello there</title></head>\n<h1>Hello <code>there</code></h1>"
+                "<head><title>Hello there</title></head>\n<h1 id=\"hello-there\">Hello <code>there</code></h1>"
             ),
             "{}",
             md.wisp
@@ -628,6 +669,23 @@ mod tests {
             "<head><title>A &lt;b&gt;</title><meta name=\"robots\" content=\"noindex\"></head>\n"
         ), "{}", md.wisp);
         assert!(page("---\nnoindex: yes\n---\n", &[]).is_err());
+    }
+
+    #[test]
+    fn headings_get_ids() {
+        let md = page(
+            "## Install and Run\n\n## `wisp::pages()`, again!\n\n## Install and Run\n\n## ?",
+            &[],
+        )
+        .unwrap();
+        for h in [
+            "<h2 id=\"install-and-run\">",
+            "<h2 id=\"wisppages-again\">",
+            "<h2 id=\"install-and-run-2\">",
+            "<h2>?</h2>",
+        ] {
+            assert!(md.wisp.contains(h), "{h} in {}", md.wisp);
+        }
     }
 
     #[test]

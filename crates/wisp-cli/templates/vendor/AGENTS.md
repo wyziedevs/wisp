@@ -249,7 +249,8 @@ first). Not its Rust (`db.rs`, `hooks.rs`) or `fonts.txt`.
 `+page.md` with `---` front matter (`title`, `layout: Post` a component the
 page is the children of, any field `date: 2026-10-01`); text may use
 `<Card>` between blank lines. Built at build time; fenced code is
-highlighted (`hl-k hl-s hl-c hl-n hl-t hl-a`; color them). `noindex: true`
+highlighted (`hl-k hl-s hl-c hl-n hl-t hl-a`; color them); headings get
+ids (`## Install and Run` is `#install-and-run`). `noindex: true`
 leaves the sitemap. `/feed.xml` is an Atom feed of pages with a `date`
 (`description` is the summary). `{@html wisp::og(title, desc, image)}` in a
 head: Open Graph tags; image `"auto"` (literal title and description) is an SVG
@@ -470,6 +471,9 @@ no-wait fast path off every route.
 - Serve extras (https://wispweb.dev/docs/serve): embedded files gzip + `Range`; pages get
   `nosniff` and `referrer-policy` (`WISP_HSTS=on`, `WISP_SECURE_HEADERS=off`);
   `/_wisp/health`; `WISP_HANDLER_TIMEOUT=secs` is a 503.
+- Reference tables: every command and flag https://wispweb.dev/docs/cli, every env
+  var https://wispweb.dev/docs/env, knobs, Cargo.toml keys and cargo features
+  https://wispweb.dev/docs/config.
 
 ## Gotchas
 
