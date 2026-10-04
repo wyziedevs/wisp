@@ -10342,7 +10342,7 @@ fn report(cx: &mut Cx, err: &Error) {}",
             "let __a0 = ::wisp::rt::input::read(&mut __p, ::wisp::rt_traits::FromInput::get(cx, \"t\"))?; \
              if let Some(__v) = &__a0 { __p.check(\"t\", ::wisp::rt_traits::len(__v, 1..10)); \
              __p.check(\"t\", ::wisp::json::check::email(__v)); }",
-            "if let Some(__v) = &__a1 { __p.check(\"n\", ::wisp::json::check::min(__v, (1) as f64)); }",
+            "if let Some(__v) = &__a1 { __p.check(\"n\", ::wisp::json::check::min(__v, 1i128)); }",
             "let (Some(__a0), Some(__a1), true) = (__a0, __a1, __p.is_empty()) else { return ::wisp::rt::input::refused(__p); };",
         ] {
             assert!(code.contains(want), "{want}: {code}");
