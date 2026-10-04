@@ -694,9 +694,14 @@ for (const round of [1, 2]) {
 // The client leaves: the handler ends, and nothing more is sent.
 const res = await ask(app);
 await res.text();
-ws.dispatchEvent(new Event('close'));
+const bye = new Event('close');
+bye.code = 4001;
+bye.reason = 'bye';
+ws.dispatchEvent(bye);
 await tick();
 out.push(JSON.stringify(ws.sent));
+// Workers keeps the request open until the server end answers the client's close.
+const answered = JSON.stringify(ws.closed);
 // Not an upgrade, and another site's page.
 out.push(`${(await app.fetch(new Request('http://127.0.0.1/ws'), '')).status}`);
 out.push(`${(await ask(app, { origin: 'https://evil.example' })).status}`);
@@ -704,6 +709,7 @@ out.push(`${(await ask(app, { origin: 'https://evil.example' })).status}`);
 const bare = wisp(module, process.env);
 const no = await ask(bare);
 out.push(`${no.status} ${await no.text()}`);
+out.push(answered);
 process.stdout.write(out.join('\n'));
 "#;
 
@@ -734,6 +740,7 @@ fn a_host_made_websocket_carries_the_apps_messages() {
         lines[7].starts_with("501 WebSockets need a host with sockets"),
         "{said}"
     );
+    assert_eq!(lines[8], r#"[4001,"bye"]"#, "{said}");
 }
 
 /// What a client sends right behind its handshake is read, on raw sockets and

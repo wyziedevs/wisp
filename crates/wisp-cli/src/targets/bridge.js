@@ -521,7 +521,15 @@ export function wisp(module, env = {}, sink, accept) {
       x.call(() => x.exports.wisp_ws_message(id, text ? 1 : 2, x.put(bytes)));
     });
     const end = () => x.socks.delete(id) && x.call(() => x.exports.wisp_ws_close(id));
-    ws.addEventListener('close', end);
+    // The client closed: tell the app, then answer the close where the host
+    // leaves that to us (workerd holds the request open until `close`, and
+    // cancels it as hung otherwise). The app's own close, sent by `end`, wins.
+    ws.addEventListener('close', (e) => {
+      end();
+      try {
+        if (ws.readyState !== 3) ws.close(e.code >= 1000 && e.code < 5000 && ![1004, 1005, 1006, 1015].includes(e.code) ? e.code : 1000, e.reason);
+      } catch {} // closed already
+    });
     ws.addEventListener('error', end);
     flush();
     return response;

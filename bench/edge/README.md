@@ -5,7 +5,7 @@ Wisp's wasm build against Hono, SvelteKit (adapter-node) and Next.js
 `GET /` ("hello", text), `GET /list` (HTML, 50 escaped items), `GET /json`; and the
 realistic routes at the end.
 `apps/` has the four apps. Load: `oha`, 10 s, 64 connections, 3 s warmup, median
-of 3. Not measured: Bun and Deno (not installed here; their shims use the same raw driver).
+of 3. Deno is measured at the end of this file; Bun is not installed here.
 
 Setup (from a bench dir, say `C:/wb`):
 
@@ -233,3 +233,87 @@ Not covered, and why: Wisp's own files (`/_app/wisp.js`, the CSS) vary on
 worker; `CACHE` answers vary by cookie; the Node, Bun and Deno raw-socket path
 hands the bytes to the app, which parses and answers in about 1 us, so a table
 there would first have to parse HTTP in JS (not built, not measured).
+
+## Clean run, 2026-10-04 (main 8642ce1, all runtimes)
+
+Machine: Windows 10 Home 19045, AMD Ryzen 7 7800X3D (8 cores, 16 threads). Node 26.1.0,
+Deno 2.5.2, workerd 1.20261001.1 (the binary under wrangler 4.147.0), Hono 4.13.12,
+@hono/node-server 2.1.3, oha 1.16.0. Bun is not installed on this machine (no binary
+found; not downloaded), so `bun.mjs` is unmeasured. Bench app: `apps/wisp` built by this
+tree's `wisp` for each target; `apps/hono`. c=64, 10 s runs, 3 s warmup, **median of 5**,
+cold start median of 9; Wisp and Hono alternate within every route (`ab.mjs` for Node and
+Deno, `workerd.mjs` for workerd). The machine was not idle: an unrelated app held about
+0.8 of a core throughout, which is why absolute numbers are half of the older tables
+above; only the Wisp/Hono ratio inside a run means anything. No run had a non-200.
+
+`wrangler dev --local` itself serves Hono `/params` at 584 req/s (p99 349 ms; one 5 s run):
+its dev proxy is the limit, as above, so the workerd rows run the same `workerd` binary directly.
+
+req/s (higher is better), Wisp / Hono:
+
+| Runtime | `/` | `/list1000` | `/json-big` | `/params` + cookie | cold start (ms) |
+|---|---|---|---|---|---|
+| workerd | 7,694 / 9,447 | 5,093 / 2,007 | 5,962 / 8,480 | 14,581 / 14,624 | 39 / 24 |
+| Node, raw sockets | 100,865 / 54,327 | 6,561 / 1,873 | 20,812 / 19,677 | 113,240 / 46,760 | 97 / 83 |
+| Node, `node:http` (`WISP_NODE_HTTP=1`) | 46,129 / 54,327 | 6,084 / 1,873 | 16,850 / 19,677 | 52,128 / 46,760 | 72 / 83 |
+| Deno, raw sockets | 118,877 / 92,507 | 6,426 / 2,022 | 9,027 / 5,702 | 93,841 / 64,674 | 64 / 51 |
+| Deno, `Deno.serve` | 72,972 / 92,507 | 3,875 / 2,022 | 5,869 / 5,702 | 50,809 / 64,674 | 55 / 51 |
+| Bun (raw, `Bun.serve`) | not measured: Bun is not installed | | | | |
+
+workerd's `/` row was a separate 5 x 10 s run after the other three (the `workerd.mjs`
+route filter swallowed `/` the first time), both apps in it alternating; its cold start
+repeated at 39 / 27. workerd CPU us/request, Wisp / Hono (median): `/` 106 / 94,
+`/list1000` 198 / 496, `/json-big` 147 / 117, `/params` 70 / 70. The Deno rows are a
+second full run, after the fix below; the first run (quieter) gave Hono 108,071 on `/`
+and 76,203 on `/params`, and Wisp raw 87,428 and 81,262, so the raw path was behind Hono
+on `/` before the fix.
+
+### Found by this run: Deno's raw path paid a timer per request
+
+`deno.ts` re-armed its idle timeout (`clearTimeout` + `setTimeout`) on every read.
+Measured with no Wisp at all (`Deno.listen` answering a fixed reply: 196k req/s; `Deno.serve`
+`new Response('hello')`: 115k req/s), the loop has room, and the timer was 3 us a request:
+Wisp raw `/` 87,347 -> 120,859 and `/params` 82,937 -> 113,014 (alternating, median of 5,
+6 s) with one `setInterval` per connection that compares a timestamp stamped by each read
+(idle close within 1.25x of 60 s). Kept (`crates/wisp-cli/src/targets/deno.ts`).
+
+### WebSockets on workerd
+
+`examples/websocket` built for cloudflare, run on the workerd binary, a Node `WebSocket`
+client: the handshake and the numbered echo worked, but a client close was never answered
+(the app had nothing to send, and workerd without `web_socket_auto_reply_to_close` waits
+for the server end to `close`), so workerd cancelled the request ("code had hung") and the
+client saw an error (1006) instead of 1000. `takeover` in `bridge.js` now closes the host's
+socket when the client's close arrives (after telling the app, whose own close wins; the
+code is the client's, or 1000 for 1005/1006). Verified on workerd: `1: hello`, `2: world`, a
+70,003-byte echo, clean close 1000; `tests/app/tests/parity.rs` checks the reply.
+
+### Where Wisp loses, and why (measured)
+
+- **workerd `/`: -19%** (7,694 vs 9,447). In-process (Node, fastest of 40 x 2000 `fetch`
+  calls) Wisp's `/` is 5.18 us against 3.06 us for the same `Request` and a `Response('hello')`
+  with no wasm: 2.1 us above the floor (wasm entry, the request text, `Response` with the
+  head); in Deno 3.62 vs 1.24 us (2.4 us). workerd runs the same wasm about 1.8x slower
+  than Node and its first wasm entry in a request costs 2 to 4 us (above), so about 6 to 7 us
+  more than a handler that is plain JS. Measured CPU is 106 us against 94 (best of runs 80 vs 64): the
+  gap is inside the 15% this shared machine moves a result by; the quiet-machine
+  table above had it at 1 to 4%.
+- **workerd `/json-big`: -30%** (5,962 vs 8,480; CPU 147 vs 117 us, i.e. 41 us above Wisp's
+  `/` against 23 us above Hono's `/`). Hono serializes 200 rows in `JSON.stringify` (V8's
+  C++); Wisp's serializer is wasm (Node: 47.7 us a request, 42 of them above `/`; workerd
+  x1.8). The kept escape fast path (16-byte then 8-byte word scans, clean runs copied in
+  bulk) cannot help: the strings here are 1 to 8 bytes (`a`, `t3`, `user-17`), so there is no
+  run to copy. Tried again: a wasm-only path for strings under 16 bytes (one scan, one
+  `push_str`): fastest of 40 x 2000, six alternating pairs, base 44.9 to 50.7 us, new
+  46.7 to 51.3 us: no gain, dropped. What is left in the 42 us is `format!` for `user-N`
+  and `tN` (about 30% of the profile above), allocation and drops (20%).
+- **workerd cold start: 39 vs 24 to 27 ms.** `app.wasm` is 627 KB now (540 KB when 27 ms
+  was measured), and V8 compiles it and its first calls lazily; not taken apart again.
+- **Deno through `Deno.serve`: -21%** on `/` and `/params` (72,973 vs 92,507; 50,809 vs
+  64,674), ahead on `/list1000` (1.9x) and level on `/json-big`. The shim costs 2.4 us a
+  request over a bare `Request` + `Response` (above), and Hono's request is 10.8 us at that
+  rate, so 2.4 us is 18 to 22%. The default on Deno is the raw path, which wins.
+- **Node through `node:http`: -15%** on `/` (46,129 vs 54,327), the opt-out path; the
+  default raw path is 1.9x Hono there.
+- **json-big on Node raw is +6% only** (20,812 vs 19,677): the same serializer, with no
+  workerd tax, against V8's `JSON.stringify`.
