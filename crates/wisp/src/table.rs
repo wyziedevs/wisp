@@ -686,14 +686,29 @@ impl<T> Table<T> {
                 None => return Ok(()),
             }
         }
+        // Every row is read before any is applied: one that does not read
+        // (another instance's newer schema) leaves the table as it was, and
+        // is tried again on the next poll, not half applied.
+        let mut read = Vec::with_capacity(changes.rows.len());
         for (id, json) in changes.rows {
-            match (id, json) {
-                (0, Some(last)) => rows.last = rows.last.max(last.parse().unwrap_or(0)),
-                (id, None) => {
+            // Row 0 is the last id given.
+            let value = match (id, json) {
+                (0, last) => {
+                    rows.last = rows
+                        .last
+                        .max(last.and_then(|l| l.parse().ok()).unwrap_or(0));
+                    continue;
+                }
+                (_, json) => json.map(|j| self.read_row(saved, &j)).transpose()?,
+            };
+            read.push((id, value));
+        }
+        for (id, value) in read {
+            match value {
+                None => {
                     rows.map.remove(&id);
                 }
-                (id, Some(json)) => {
-                    let v = self.read_row(saved, &json)?;
+                Some(v) => {
                     rows.last = rows.last.max(id);
                     rows.map.insert(id, v);
                 }
@@ -837,18 +852,24 @@ impl<T> Table<T> {
         if !rows.map.contains_key(&id) {
             return Ok(None);
         }
-        self.free(&rows, &value, id)?;
-        let json = self.encode(&rows, &value);
-        self.save(&mut rows, id, Some(&json))?;
+        self.replace(&mut rows, id, value)?;
+        drop(rows);
+        self.notify();
+        Ok(Some(()))
+    }
+
+    /// Puts `value` in place of row `id`, which is there, saved first.
+    fn replace(&self, rows: &mut Rows<T>, id: u64, value: T) -> Result {
+        self.free(rows, &value, id)?;
+        let json = self.encode(rows, &value);
+        self.save(rows, id, Some(&json))?;
         if let Some((_, key)) = self.unique {
             let old = key(&rows.map[&id]).to_owned();
             rows.index.remove(&old);
             rows.index.insert(key(&value).to_owned(), id);
         }
         rows.map.insert(id, value);
-        drop(rows);
-        self.notify();
-        Ok(Some(()))
+        Ok(())
     }
 
     /// Takes every row out. Ids are not given again, as after `remove`.
@@ -929,12 +950,19 @@ impl<T: Clone> Table<T> {
     /// Like [`Table::update`], but on a copy, so a unique field changed to
     /// another row's is a 422 on that field and the row stays as it was.
     pub fn try_update<R>(&self, id: u64, f: impl FnOnce(&mut T) -> R) -> Result<Option<R>> {
-        let Some(mut v) = self.with(id, T::clone) else {
+        // Read, changed and put back with the table locked: two at once
+        // (`n.count += 1`) must both count. Hashing a password set here
+        // waits on the lock too, as in `update`.
+        let mut rows = self.write();
+        let Some(mut v) = rows.map.get(&id).cloned() else {
             return Ok(None);
         };
         let r = f(&mut v);
-        // The row may have gone meanwhile: `try_set` says.
-        Ok(self.try_set(id, v)?.map(|_| r))
+        self.seal(&mut v);
+        self.replace(&mut rows, id, v)?;
+        drop(rows);
+        self.notify();
+        Ok(Some(r))
     }
 
     /// A copy of every row, in order of their ids (oldest first, unless
@@ -1350,6 +1378,23 @@ mod tests {
     }
 
     #[test]
+    fn try_update_is_one_step_under_the_lock() {
+        static T: Table<u32> = Table::new();
+        let id = T.add(0);
+        let threads: Vec<_> = (0..4)
+            .map(|_| {
+                std::thread::spawn(move || {
+                    for _ in 0..500 {
+                        T.try_update(id, |n| *n += 1).unwrap();
+                    }
+                })
+            })
+            .collect();
+        threads.into_iter().for_each(|t| t.join().unwrap());
+        assert_eq!(T.get(id).unwrap().value, 2000, "no increment is lost");
+    }
+
+    #[test]
     fn fresh_empties_the_tables_that_are_ready() {
         static T: Table<u8> = Table::new();
         T.ready();
@@ -1422,6 +1467,16 @@ mod tests {
             assert_eq!(heard.recv().await.as_deref(), Some("change"));
         });
         assert_eq!(t.add(user("d@x", 1)), 3);
+        // A row that does not read changes nothing, however many came with it.
+        mem.save("old_users", 9, Some(r#"{"email":"z@x","age":1}"#))
+            .unwrap();
+        mem.save("old_users", 2, None).unwrap();
+        mem.save("old_users", 8, Some(r#"{"age":"x"}"#)).unwrap();
+        assert!(t.poll().is_err());
+        assert!(
+            t.by("b@x").is_some() && t.by("z@x").is_none(),
+            "none applied"
+        );
 
         // The admin page's view of it: stored JSON in, rows out.
         use crate::admin::Admin;

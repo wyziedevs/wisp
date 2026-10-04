@@ -25,7 +25,9 @@ impl Look<'_> {
 }
 
 /// The name of a title's file: lowercase letters and digits, runs of
-/// anything else one `-`, at most 60 bytes (`page` for nothing).
+/// anything else one `-`, at most 60 bytes. A title with none (all
+/// Japanese, say), or cut short, gets a hash of itself after, so titles
+/// do not write over each other's picture.
 pub fn slug(title: &str) -> String {
     let mut out = String::new();
     for c in title.chars().flat_map(char::to_lowercase) {
@@ -35,13 +37,18 @@ pub fn slug(title: &str) -> String {
             out.push('-');
         }
     }
+    let cut = out.len() > 60;
     out.truncate(60);
     let out = out.trim_end_matches('-');
-    if out.is_empty() {
-        "page".into()
-    } else {
-        out.into()
+    if !cut && !out.is_empty() && title.is_ascii() {
+        return out.into();
     }
+    // FNV-1a: the same on every build.
+    let hash = title.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3)
+    });
+    let out = if out.is_empty() { "page" } else { out };
+    format!("{out}-{:08x}", hash as u32)
 }
 
 /// Where the picture of `title` is served.
@@ -70,7 +77,10 @@ fn wrap(text: &str, n: usize, max: usize) -> Vec<String> {
     lines
 }
 
+/// `s` as XML text: escaped, without the control characters XML 1.0 cannot
+/// hold (one makes the whole picture unreadable).
 fn escape(s: &str) -> String {
+    let s: String = s.chars().filter(|c| !c.is_control()).collect();
     (s.replace('&', "&amp;"))
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -169,7 +179,12 @@ mod tests {
     #[test]
     fn names_and_pictures() {
         assert_eq!(slug("Hello, World! 2"), "hello-world-2");
-        assert_eq!(slug("  --  "), "page");
+        assert_ne!(slug("日本"), slug("中文"), "no letters, still apart");
+        assert!(slug("  --  ").starts_with("page-") && slug("!!!") != slug("--"));
+        assert_ne!(slug(&"a".repeat(70)), slug(&"a".repeat(71)), "cut ones too");
+        assert!(slug(&"a".repeat(300)).len() < 80);
+        let s = svg("a{0}b{b}", "{1f}d", &Look::DEFAULT);
+        assert!(!s.contains(|c: char| c.is_control() && c != '\n'));
         assert_eq!(url("A b"), "/og/a-b.svg");
         let look = Look {
             brand: "Acme & Co",

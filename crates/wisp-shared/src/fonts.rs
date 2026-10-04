@@ -131,11 +131,18 @@ pub fn parse(src: &str) -> Result<Vec<Line>, String> {
                 "a file is one weight (or one range, 100-900); list a file per line",
             ));
         }
-        if l.file
-            .as_ref()
-            .is_some_and(|f| f.contains("..") || f.starts_with('/'))
+        // Plain characters only: the name goes into a path, CSS and HTML.
+        let plain = |s: &str, more: &str| {
+            s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || more.contains(c))
+        };
+        if (l.file.as_ref())
+            .is_some_and(|f| f.contains("..") || f.starts_with('/') || !plain(f, "._-/+@"))
         {
             return Err(at("the file is a name under static/fonts"));
+        }
+        if !plain(&l.family, " -") {
+            return Err(at("a family is letters, digits, spaces and `-`"));
         }
         if l.file.is_none() && l.weights.iter().any(|w| w.contains(' ')) {
             return Err(at("google takes weights one by one (400 700)"));
@@ -298,6 +305,11 @@ mod tests {
         assert!(parse("Inter a.woff2 bold").is_err());
         assert!(parse("Inter a.woff2 400 700").is_err());
         assert!(parse("Inter ../a.woff2").is_err());
+        for bad in [r"C:\x.ttf", r"a\b.ttf", "a\"b.ttf", "a).ttf", "a;b.ttf"] {
+            assert!(parse(&format!("Inter {bad}")).is_err(), "{bad}");
+        }
+        assert!(parse("Ab\"c a.woff2").is_err() && parse("Ab}c a.woff2").is_err());
+        assert!(parse("Open_Sans sub/Open-Sans_1.woff2").is_ok());
     }
 
     /// A font with just the three tables `metrics` reads.
