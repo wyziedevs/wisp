@@ -124,8 +124,7 @@
   const served = document.getElementById('wisp-server-error');
   if (served) {
     const text = served.content.textContent;
-    meta = ['Server Error', text.split('
-')[0], 'Server'];
+    meta = ['Server Error', text.split('\n')[0], 'Server'];
     showError(text);
     broken = true;
   }
@@ -165,7 +164,7 @@
       console.error(e);
       return location.reload();
     }
-    if (files.includes('src/app.html')) document.dispatchEvent(new Event('wisp:refresh'));
+    if (files.includes('src/app.html')) refresh();
     else if (files.some((f) => marked(f))) document.dispatchEvent(new CustomEvent('wisp:region', { detail: { files } }));
   }
 
@@ -176,22 +175,59 @@
     return false;
   }
 
-  const events = new EventSource(`http://127.0.0.1:${port}/events`);
-  events.onmessage = (e) => {
+  // The page again from the server, morphed in. If that fails (a network
+  // error, the morph itself), the page is loaded whole: it must show the
+  // new build, whatever happened.
+  function refresh() {
+    let failed = false;
+    const fail = () => (failed = true);
+    addEventListener('unhandledrejection', fail);
+    const done = () =>
+      setTimeout(() => {
+        removeEventListener('unhandledrejection', fail);
+        if (failed) location.reload();
+      }, 50);
+    document.dispatchEvent(new CustomEvent('wisp:refresh', { detail: { done } }));
+  }
+
+  // How many updates `wisp dev` had sent when this page connected. After a
+  // dropped connection (a tab asleep through a rebuild), a different count
+  // means a rebuild was missed: load the page whole.
+  let updates = null;
+
+  let events;
+  function connect() {
+    events = new EventSource(`http://127.0.0.1:${port}/events`);
+    events.onmessage = message;
+    // The browser retries a dropped stream itself, but gives up for good on a
+    // refusal (the origin not allowed yet): try again.
+    events.onerror = () => {
+      if (events.readyState === EventSource.CLOSED) setTimeout(connect, 1000);
+    };
+  }
+  connect();
+
+  function message(e) {
     const nl = e.data.indexOf('\n');
     const kind = nl < 0 ? e.data : e.data.slice(0, nl);
     const data = nl < 0 ? '' : e.data.slice(nl + 1);
+    if (kind === 'hello') {
+      if (updates !== null && updates !== data) location.reload();
+      updates = data;
+      return;
+    }
     if (kind === 'building') return waiting(true);
     if (kind === 'title') return void (meta = data.split('\n'));
     waiting(false);
+    if (kind === 'reload' || kind === 'hot' || kind === 'full' || kind === 'css') updates = String(Number(updates) + 1);
     // Said with a rebuild's `reload`: why its modules swap whole.
     if (globalThis.__wisp_dev) __wisp_dev.full = kind === 'reload' ? data : '';
     broken = false;
     if (kind === 'error') return showError(data);
     dialog.close();
-    if (kind === 'reload') document.dispatchEvent(new Event('wisp:refresh'));
+    if (kind === 'reload') refresh();
     else if (kind === 'hot') hot(data.split('\n'));
     else if (kind === 'full') location.reload();
     else if (kind === 'css') swapStylesheet();
-  };
+  }
 })();
