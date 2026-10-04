@@ -63,8 +63,37 @@ pub struct ErrorPage {
     pub layouts: Vec<usize>,
 }
 
+/// A `@name` folder: a page a layout (`{@render name()}`) draws inside
+/// itself, besides its children.
+#[derive(Debug)]
+pub struct Slot {
+    /// The layout beside the folder.
+    pub layout: usize,
+    pub name: String,
+    pub dir: PathBuf,
+    /// The route of its `+page.wisp` (`/dashboard/@name`: also served).
+    pub route: usize,
+}
+
+/// A page under a slot (`@modal/(.)photo/[id]/+page@.wisp`) that a client
+/// navigation to another route's URL (`/photo/[id]`) shows in the slot
+/// instead, the URL changing and the page staying. A direct load or reload
+/// of that URL is the other route's own page.
+#[derive(Debug)]
+pub struct Intercept {
+    /// The route of the intercepting page, at its own URL (`inner`).
+    pub route: usize,
+    pub slot: String,
+    /// The URL pattern intercepted.
+    pub target: String,
+    /// The intercepting page's own URL pattern, which a navigation fetches.
+    pub inner: String,
+}
+
 #[derive(Debug, Default)]
 pub struct Tree {
+    pub intercepts: Vec<Intercept>,
+    pub slots: Vec<Slot>,
     /// Sorted by match priority; a route's id is its index.
     pub routes: Vec<Route>,
     pub layouts: Vec<Layout>,
@@ -72,6 +101,24 @@ pub struct Tree {
     /// The param matchers routes use: each name with its `src/params` file,
     /// or `None` for the built-in `int`.
     pub matchers: Vec<(String, Option<PathBuf>)>,
+    /// Each `+loading.wisp`: the URL pattern of its folder (empty for the
+    /// root) and the file.
+    pub loading: Vec<(String, PathBuf)>,
+}
+
+/// The segments as a path, none for none: `/blog/[slug]`.
+fn prefix(segs: &[Seg]) -> String {
+    let mut s = String::new();
+    for seg in segs {
+        s.push('/');
+        match seg {
+            Seg::Static(n) => s.push_str(n),
+            Seg::Param(n, m) => s.push_str(&format!("[{n}{}]", matcher(m))),
+            Seg::Optional(n, m) => s.push_str(&format!("[[{n}{}]]", matcher(m))),
+            Seg::Rest(n) => s.push_str(&format!("[...{n}]")),
+        }
+    }
+    s
 }
 
 /// `=int` for a matcher, nothing without one.
@@ -82,20 +129,10 @@ fn matcher(m: &Option<String>) -> String {
 impl Route {
     /// The route as a URL pattern, for messages: `/blog/[slug]`.
     pub fn pattern(&self) -> String {
-        if self.segs.is_empty() {
-            return "/".into();
+        match prefix(&self.segs) {
+            p if p.is_empty() => "/".into(),
+            p => p,
         }
-        let mut s = String::new();
-        for seg in &self.segs {
-            s.push('/');
-            match seg {
-                Seg::Static(n) => s.push_str(n),
-                Seg::Param(n, m) => s.push_str(&format!("[{n}{}]", matcher(m))),
-                Seg::Optional(n, m) => s.push_str(&format!("[[{n}{}]]", matcher(m))),
-                Seg::Rest(n) => s.push_str(&format!("[...{n}]")),
-            }
-        }
-        s
     }
 
     pub fn params(&self) -> Vec<&str> {
@@ -201,6 +238,66 @@ pub fn scan(routes_dir: &Path) -> Result<Tree, String> {
         )
     });
 
+    // Each slot's page, by the route's place after sorting.
+    let slots = std::mem::take(&mut tree.slots);
+    for mut s in slots {
+        s.route = tree
+            .routes
+            .iter()
+            .position(|r| r.dir == s.dir && r.page && r.md.is_none() && !r.member)
+            .ok_or_else(|| format!("{}: a slot is a +page.wisp", show(&s.dir)))?;
+        tree.slots.push(s);
+    }
+    // A `(.)name` segment under a `@slot`: what it intercepts.
+    for (id, r) in tree.routes.iter().enumerate() {
+        let Some(j) = r
+            .segs
+            .iter()
+            .position(|s| matches!(s, Seg::Static(n) if n.starts_with("(.")))
+        else {
+            continue;
+        };
+        let at = |why: &str| format!("{}: {why}", show(&r.dir));
+        let Some(k) = r.segs[..j]
+            .iter()
+            .rposition(|s| matches!(s, Seg::Static(n) if n.starts_with('@')))
+        else {
+            return Err(at(
+                "an intercepting page (`(.)name`) goes inside a `@slot` folder",
+            ));
+        };
+        let Seg::Static(mark) = &r.segs[j] else {
+            continue;
+        };
+        let Seg::Static(slot) = &r.segs[k] else {
+            continue;
+        };
+        if r.page_file != "+page@.wisp" || !r.page {
+            return Err(at(
+                "an intercepting page is `+page@.wisp`: it is drawn inside the page that is there, without the layouts above it",
+            ));
+        }
+        let up = mark.matches('.').count() - 1; // (.) is 0, (..) is 1, (...) is the root
+        let mut target: Vec<Seg> = (r.segs[..k].iter())
+            .filter(|s| !matches!(s, Seg::Static(n) if n.starts_with('@')))
+            .cloned()
+            .collect();
+        match up {
+            2 => target.clear(),
+            n => target.truncate(target.len().saturating_sub(n)),
+        }
+        target.push(Seg::Static(
+            mark.trim_start_matches(['(', ')', '.']).to_string(),
+        ));
+        target.extend(r.segs[j + 1..].iter().cloned());
+        let (target, inner) = (prefix(&target), prefix(&r.segs));
+        tree.intercepts.push(Intercept {
+            route: id,
+            slot: slot[1..].to_string(),
+            target,
+            inner,
+        });
+    }
     // Two routes that can match the exact same URLs are ambiguous.
     let mut seen: Vec<(Vec<String>, usize)> = Vec::new();
     for (id, r) in tree.routes.iter().enumerate() {
@@ -324,7 +421,7 @@ fn walk(
         .find_map(|f| reset_of(f).map(|g| (f.clone(), g.to_string())));
     let has = |f: &str| files.iter().any(|x| x == f) || (f == "+page.wisp" && reset.is_some());
     for f in &files {
-        const KNOWN: [&str; 9] = [
+        const KNOWN: [&str; 10] = [
             "+page.wisp",
             "+page.rs",
             "+page.js",
@@ -333,6 +430,7 @@ fn walk(
             "+layout.wisp",
             "+layout.rs",
             "+error.wisp",
+            "+loading.wisp",
             "+server.rs",
         ];
         if !KNOWN.contains(&f.as_str()) && reset_of(f).is_none() {
@@ -381,6 +479,9 @@ fn walk(
             has_rs: has("+layout.rs"),
         });
         layouts.push(tree.layouts.len() - 1);
+    }
+    if has("+loading.wisp") {
+        tree.loading.push((prefix(segs), dir.join("+loading.wisp")));
     }
     let mut error = error;
     if has("+error.wisp") {
@@ -480,6 +581,25 @@ fn walk(
     }
 
     for d in dirs {
+        if let Some(name) = d.strip_prefix('@') {
+            let at = show(&dir.join(&d));
+            if !crate::ty::is_ident(name) || matches!(name, "children" | "data" | "cx") {
+                return Err(format!(
+                    "{at}: `{name}` is not a slot name: a Rust name that is not `children`, `data` or `cx`"
+                ));
+            }
+            if layouts.len() == depth {
+                return Err(format!(
+                    "{at}: a slot needs a +layout.wisp in the folder above it, to draw it with {{@render {name}()}}"
+                ));
+            }
+            tree.slots.push(Slot {
+                layout: layouts[depth],
+                name: name.to_string(),
+                dir: dir.join(&d),
+                route: usize::MAX,
+            });
+        }
         let seg = parse_segment(&d).map_err(|e| format!("{}: {e}", show(&dir.join(&d))))?;
         if segs.is_empty() && matches!(&seg, Some(Seg::Static(s)) if s == "_app" || s == "_wisp") {
             return Err(format!(
@@ -604,6 +724,16 @@ pub fn parse_segment(name: &str) -> Result<Option<Seg>, String> {
     if let Some(inner) = name.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
         let (n, m) = param(inner)?;
         return Ok(Some(Seg::Param(n, m)));
+    }
+    // `(.)photo`, `(..)photo`, `(...)photo`: a page that intercepts that
+    // route (see `Tree::intercepts`); its URL, inside a slot, is its own.
+    if let Some(rest) = ["(...)", "(..)", "(.)"]
+        .iter()
+        .find_map(|p| name.strip_prefix(p))
+        && !rest.is_empty()
+        && !rest.contains(['[', ']', '(', ')'])
+    {
+        return Ok(Some(Seg::Static(name.to_string())));
     }
     if name.contains(['[', ']', '(', ')']) {
         return Err("mixed static and dynamic text in one segment is not supported".into());
@@ -808,6 +938,76 @@ fn get(id: u64) {}",
             touch(&root, &format!("{dir}/+page.wisp"));
             let err = scan(&root).unwrap_err();
             assert!(err.contains(want), "{dir}: {err}");
+            fs::remove_dir_all(&root).unwrap();
+        }
+    }
+
+    #[test]
+    fn slots_and_the_pages_that_intercept() {
+        let root = tmp("slots");
+        for f in [
+            "+layout.wisp",
+            "+page.wisp",
+            "gal/+layout.wisp",
+            "gal/+page.wisp",
+            "gal/@modal/+page.wisp",
+            "gal/@modal/(.)photo/[id]/+page@.wisp",
+            "gal/@modal/(..)about/+page@.wisp",
+            "gal/@modal/(...)top/x/+page@.wisp",
+        ] {
+            touch(&root, f);
+        }
+        let t = scan(&root).unwrap();
+        assert_eq!(t.slots.len(), 1);
+        let s = &t.slots[0];
+        assert_eq!(
+            (s.name.as_str(), t.routes[s.route].pattern().as_str()),
+            ("modal", "/gal/@modal")
+        );
+        let mut cuts: Vec<(&str, &str)> = t
+            .intercepts
+            .iter()
+            .map(|i| (i.target.as_str(), i.inner.as_str()))
+            .collect();
+        cuts.sort();
+        assert_eq!(
+            cuts,
+            [
+                ("/about", "/gal/@modal/(..)about"),
+                ("/gal/photo/[id]", "/gal/@modal/(.)photo/[id]"),
+                ("/top/x", "/gal/@modal/(...)top/x"),
+            ]
+        );
+        fs::remove_dir_all(&root).unwrap();
+        for (files, want) in [
+            (vec!["@m/+page.wisp"], "a slot needs a +layout.wisp"),
+            (
+                vec!["+layout.wisp", "@children/+page.wisp"],
+                "is not a slot name",
+            ),
+            (
+                vec!["+layout.wisp", "@m/x/+page.wisp"],
+                "a slot is a +page.wisp",
+            ),
+            (
+                vec!["+layout.wisp", "x/(.)p/+page@.wisp"],
+                "inside a `@slot` folder",
+            ),
+            (
+                vec!["+layout.wisp", "@m/(.)p/+page@.wisp"],
+                "a slot is a +page.wisp",
+            ),
+            (
+                vec!["+layout.wisp", "@m/+page.wisp", "@m/(.)p/+page.wisp"],
+                "is `+page@.wisp`",
+            ),
+        ] {
+            let root = tmp("slot-bad");
+            for f in &files {
+                touch(&root, f);
+            }
+            let err = scan(&root).unwrap_err();
+            assert!(err.contains(want), "{files:?}: {err}");
             fs::remove_dir_all(&root).unwrap();
         }
     }

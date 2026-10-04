@@ -25,6 +25,7 @@ package.json                npm packages for browser code: `wisp add canvas-conf
 add/<name>/recipe           `wisp add <name>`: lines `dep <Cargo line>`, `env K=v` (.env.example), `file <path>` (copied from add/<name>/<path>), `note`; idempotent, `--force` replaces files; `wisp add` lists
 .env                        X=…: `wisp::env("X")`, `env.PUBLIC_X` in browser code
 src/hooks.rs                fn init() once; fn before(cx) every request
+src/middleware.rs           named middleware: `pub fn auth(cx: &mut Cx) -> Result`, used by `const MIDDLEWARE`
 src/db.rs                   models and tables; its `pub` items are in every route file
 src/NAME.rs                 any module, no `mod` line: `NAME::f()` everywhere
 src/remote.rs               #[remote] fns browser code calls (or in a page's block)
@@ -32,11 +33,13 @@ src/components/Card.wisp    <Card title={x}>…</Card>
 src/lib/*.js (or .ts)       browser modules, `import … from '$lib/x.js'`
 src/params/word.rs          fn matches(s: &str) -> bool, for [x=word]
 src/locales/en.json         messages, fr.json etc.: {t("key")}
+src/fonts.txt               fonts, a line each: `Inter inter.woff2 100-900` (file in static/fonts), `Open_Sans google 400 700 [italic] [serif|mono]` (opt-in: wisp build downloads the Latin subset once into static/fonts); swap, size-adjusted fallback, preload; CSS `font-family: var(--font-inter)`
 src/manifest.json           web app manifest: {"name": "Notes", "offline": true}
 src/service-worker.js       registered for you: import { build, files, version } from 'wisp/sw'
 src/routes/…/+page.wisp     page: optional `---` Rust block, then markup
 src/routes/…/+page@.wisp    a page without the layouts above it (`+page@app.wisp`: only up to the `(app)` layout)
 src/routes/…/+layout.wisp   wraps pages below; must <slot /> (or {@render children()})
+src/routes/…/+loading.wisp  static HTML a client navigation shows in <main> at once while a page below this folder loads
 src/routes/…/+error.wisp    error page; has `status`, `message`, `cx`
 src/routes/…/+server.rs     endpoints: fn get/post/put/patch/delete/list
 src/routes/…/+page.md       Markdown page (`blog/x.md` = /blog/x)
@@ -48,6 +51,13 @@ Folders: `blog` static, `[slug]` param, `[[lang]]` optional, `[...rest]`
 rest, `[id=int]` digits (u64), `[x=word]` custom matcher, `[[lang=locale]]`
 one of `src/locales`, `(group)` not in URL. `+page.rs` (`struct Data` + `fn load(..) -> Data`, which the markup reads
 by name) and `+layout.rs` work instead of a block.
+Slots: `dash/@stats/+page.wisp` (`+page.rs` for its data; an empty file will do
+as a default) beside `dash/+layout.wisp` with `{@render stats()}`: that page is
+drawn inside the layout around every page below `dash` (it is also served at
+`/dash/@stats`). Intercepting: `feed/@modal/(.)photo/[id]/+page@.wisp` (`(.)`
+same level as `feed`, `(..)` one up, `(...)` the root) is what a client
+navigation to `/feed/photo/7` shows in the layout's `{@render modal()}`, the
+address changing and the page staying; a reload loads `feed/photo/[id]` whole.
 `/sitemap.xml` (pages without params, or with `entries()`; not `(private)`
 groups or `noindex` pages; host from env `SITE_URL`, else the request) and
 `/robots.txt` are made; a route or `static/` file of that name wins.
@@ -98,6 +108,9 @@ Block rules:
   requests a minute per client address, then a 429; `const CORS: &str = "*";`
   is `cx.cors("*")?`; `const TIMEOUT: u32 = 5;` (page or `+server.rs`) a 503
   after 5 s. They run first; a route that sets none pays nothing.
+  `const MIDDLEWARE: &[&str] = &["auth"];` (page, `+server.rs`, or a `+layout`
+  block for its pages) first runs `pub fn auth(cx: &mut Cx) -> Result` of
+  `src/middleware.rs`, in order (an `Err` answers); a route naming none runs none.
   `const SIGNED_IN: bool = true;` in a `+layout.wisp` block: its pages and
   actions are for members (303 to sign in, 401 for JSON).
 - `CACHE`, `CACHE_PUBLIC`, `SSR` and `PRERENDER` in a `+layout` block are its
@@ -220,6 +233,10 @@ prop an argument, no children (none for a component named like a prelude type,
 Cargo.toml copies the dependency's `wisp/routes` and `wisp/components` into
 `src/routes/(kit)/` and `src/components/kit/` at build (git-ignored; the
 app's own same-named component wins; `path` or registry dependency, not git).
+Layers: `extends = ["../base", "ui-kit"]` there inherits another app's (a
+path, or a dependency) `src/routes` (into `(layer_base)`; a route at the same
+path in yours wins), `src/components`, `static/` and `src/app.css` (plain CSS,
+first). Not its Rust (`db.rs`, `hooks.rs`) or `fonts.txt`.
 
 ## Markdown pages
 
@@ -229,7 +246,8 @@ page is the children of, any field `date: 2026-10-01`); text may use
 highlighted (`hl-k hl-s hl-c hl-n hl-t hl-a`; color them). `noindex: true`
 leaves the sitemap. `/feed.xml` is an Atom feed of pages with a `date`
 (`description` is the summary). `{@html wisp::og(title, desc, image)}` in a
-head: Open Graph tags. Index: `{#each wisp::pages("blog") as p}<a
+head: Open Graph tags; image `"auto"` (literal title and description) is an SVG
+`wisp build` writes to `static/og/<slug>.svg`, in your `--bg --ink --accent`. Index: `{#each wisp::pages("blog") as p}<a
 href={p.path}>{p.title}</a>{/each}` (newest `date` first).
 
 ## Browser code (JavaScript, same file)
@@ -266,6 +284,11 @@ Router API (`import {...} from 'wisp'`): `beforeNavigate(({cancel})=>)`,
 `preloadData(url)`, `preloadCode(url)`, `invalidate(key)` (+page.js loads that
 `depends(key)`), `invalidateAll()`, `updated` store; links take
 `data-wisp-noscroll|keepfocus|replacestate`.
+Third-party scripts: `<script src=… type="wisp/idle">` loads when idle,
+`type="wisp/interaction"` at the first pointer/key/scroll; plain `<script src>`
+blocks (before-interactive), `defer` is after.
+Web vitals: `<meta name="wisp-vitals" content="/vitals">` sends one
+`sendBeacon` JSON `{path,ttfb,lcp,cls,inp}` per load to that route.
 Stores, islands, the rest: docs/client.md.
 
 ## Endpoints (`+server.rs`)
@@ -445,11 +468,13 @@ no-wait fast path off every route.
 `*.stories.wisp`) · `wisp test [--browser]` · `wisp check [--types]` · `wisp
 fmt [--check]` · `wisp build` (`--static`, `--spa`, `--docker`, `--target
 cloudflare|pages|deno|vercel|netlify|node|bun|lambda|native` (`--edge` with
-vercel or netlify: their edge runtime), `--client ts`, `--sourcemap`) · `wisp
+vercel or netlify: their edge runtime), `--client ts`, `--sourcemap`, `--analyze`: per-route JS/CSS/wasm bytes, raw and
+gzip, no build) · `wisp
 deploy init <host>` (a GitHub Actions workflow; or `fly|render|railway`: that
 host's config) · `wisp routes` · `wisp new-route /path page|server|rest` ·
 `wisp add|remove pkg` (`wisp add` alone: the recipes in `add/`) · `wisp ui
-add|list button dialog` (accessible components into `src/components`) · `wisp
+add|list button dialog` (accessible components into `src/components`; `clientonly`:
+`<ClientOnly fallback="…">` draws its children only in the browser) · `wisp
 lsp` · `wisp update-docs` · `wisp mcp` (`claude mcp add wisp -- wisp mcp`).
 Docs: README.md, docs/design.md, client.md, api.md, deploy.md, embed.md,
 tokens.md, or llms-full.txt (this file, client, api, deploy and embed).

@@ -370,6 +370,35 @@ Theme CSS: copy `cdn/themes/light.css` into `static/` and `<link>` it in
 LitElement {…})` in a `src/lib` module a script imports. The
 `click-events` a11y lint skips custom elements.
 
+## Third-party scripts
+
+Pick when one loads (`src`, so no code of yours): in the head, plain
+`<script src>` is before-interactive and `<script defer src>` after-interactive;
+`<script src="https://t.example/a.js" type="wisp/idle">` loads when the
+browser is idle (also on a client navigation), `type="wisp/interaction"` at the
+first pointer, key or scroll. Other attributes (`async`, `data-*`) are copied.
+
+## Loading views
+
+`src/routes/blog/+loading.wisp` is static HTML (a `<style>` is fine; no `---`
+block, holes or components) that a client navigation to `/blog` or any page
+below it shows in `<main>` the moment the link is followed, until the page
+arrives and morphs over it (`aria-busy` is set meanwhile). The deepest folder
+that fits wins; `routes/+loading.wisp` is for every page. A page already
+fetched ahead (hover) shows none, nor does back or forward, nor a full page
+load. The build writes the views as JSON into the shell's head: an app with no
+`+loading.wisp` has none of it, and no request is made for one.
+
+## Web vitals
+
+`<meta name="wisp-vitals" content="/vitals">` (in `src/app.html`) is opt-in:
+when the page is hidden, wisp.js sends that path one beacon (`sendBeacon`, a
+POST) of JSON: `{"path":"/x","ttfb":12,"lcp":480.5,"cls":0.02,"inp":64}`
+(ms, `cls` a score; a metric the browser never measured is left out; one
+per page load, client navigations are not counted). Receive it with
+`vitals/+server.rs`: `fn post(cx: &mut Cx) -> Result<()>` reading `cx.body()`.
+No page that does not name the tag runs any of it.
+
 ## Loading code on demand
 
 `import()` loads when reached:

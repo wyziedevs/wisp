@@ -28,7 +28,18 @@ pub(crate) fn sync(root: &Path) -> Result<Vec<PathBuf>, String> {
     }) {
         return Err(format!("plugin `{n}`: not a crate name"));
     }
-    let ids: Vec<String> = names.iter().map(|n| n.replace('-', "_")).collect();
+    let mut ids: Vec<String> = names.iter().map(|n| n.replace('-', "_")).collect();
+    let extends = list(&toml, "extends");
+    let layer_dirs: Vec<PathBuf> = (extends.iter())
+        .map(|e| layer_dir(root, &toml, e).map(|d| (e, d)))
+        .map(|r| {
+            r.and_then(|(e, d)| match d.join("src").is_dir() {
+                true => Ok(d),
+                false => Err(format!("extends `{e}`: no `src` folder there (a layer has `src/routes`, `src/components`, `static`)")),
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    ids.extend(layer_dirs.iter().map(|d| layer_id(d)));
     for sub in ["routes", "components"] {
         for e in fs::read_dir(root.join("src").join(sub))
             .into_iter()
@@ -55,10 +66,39 @@ pub(crate) fn sync(root: &Path) -> Result<Vec<PathBuf>, String> {
             ));
         }
         let routes = root.join("src/routes").join(format!("({id})"));
-        copy(&from.join("routes"), &routes, None)?;
+        copy(&from.join("routes"), &routes, None, None)?;
         let own = root.join("src/components");
-        copy(&from.join("components"), &own.join(id), Some(&own.join(id)))?;
+        copy(
+            &from.join("components"),
+            &own.join(id),
+            Some(&own.join(id)),
+            None,
+        )?;
         dirs.push(from);
+    }
+    // Layers: a route of the app's own at the same path wins, as does a
+    // component of the same name.
+    for dir in layer_dirs {
+        let id = layer_id(&dir);
+        let routes = root.join("src/routes");
+        copy(
+            &dir.join("src/routes"),
+            &routes.join(format!("({id})")),
+            None,
+            Some(&routes),
+        )?;
+        let own = root.join("src/components");
+        copy(
+            &dir.join("src/components"),
+            &own.join(&id),
+            Some(&own.join(&id)),
+            None,
+        )?;
+        dirs.extend(
+            [dir.join("src"), dir.join("static")]
+                .into_iter()
+                .filter(|d| d.exists()),
+        );
     }
     Ok(dirs)
 }
@@ -83,33 +123,84 @@ fn base_of(toml: &str) -> Option<String> {
     None
 }
 
-/// The crate names of `use = [...]` in `[package.metadata.wisp]`.
-fn used(toml: &str) -> Vec<String> {
+/// The strings of `key = [...]` in `[package.metadata.wisp]`.
+fn list(toml: &str, key: &str) -> Vec<String> {
     let mut on = false;
     let mut text = String::new();
+    let mut taking = false;
     for l in toml.lines() {
         let l = l.trim();
-        if l.starts_with('[') {
+        if l.starts_with('[') && !taking {
             on = l == "[package.metadata.wisp]";
-        } else if on && !l.starts_with("base") {
-            text += l;
-            text += "\n";
+        } else if on {
+            let key_line = l
+                .strip_prefix(key)
+                .is_some_and(|r| r.trim_start().starts_with('='));
+            taking |= key_line;
+            if taking {
+                text += l;
+                text += "\n";
+                if l.contains(']') {
+                    break;
+                }
+            }
         }
     }
-    let Some(i) = text.find("use") else {
+    let Some(a) = text.find('[') else {
         return Vec::new();
     };
-    let rest = &text[i..];
-    let Some(a) = rest.find('[') else {
-        return Vec::new();
-    };
-    let list = &rest[a + 1..];
+    let list = &text[a + 1..];
     list[..list.find(']').unwrap_or(list.len())]
         .split('"')
         .skip(1)
         .step_by(2)
         .map(str::to_string)
         .collect()
+}
+
+/// The crate names of `use = [...]`.
+fn used(toml: &str) -> Vec<String> {
+    list(toml, "use")
+}
+
+/// `extends = ["../base", "ui-kit"]`: layers, each an app or crate with the
+/// layout of an app (`src/routes`, `src/components`, `static`,
+/// `src/app.css`): a path (it has a `/` or starts with `.`), else a
+/// dependency by name.
+fn layer_dir(root: &Path, toml: &str, entry: &str) -> Result<PathBuf, String> {
+    if entry.contains(['/', '\\']) || entry.starts_with('.') {
+        return Ok(root.join(entry));
+    }
+    find(root, toml, entry)
+}
+
+/// What a layer's names are made of: `layer_` and its folder's name.
+fn layer_id(dir: &Path) -> String {
+    let name = dir
+        .canonicalize()
+        .unwrap_or_else(|_| dir.to_path_buf())
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let ok = |c: char| if c.is_ascii_alphanumeric() { c } else { '_' };
+    format!("layer_{}", name.chars().map(ok).collect::<String>())
+}
+
+/// The layers' folders, in order (base first); one that cannot be found is
+/// left out here and refused by `sync`.
+pub(crate) fn layers(root: &Path) -> Vec<PathBuf> {
+    let toml = fs::read_to_string(root.join("Cargo.toml")).unwrap_or_default();
+    (list(&toml, "extends").iter())
+        .filter_map(|e| layer_dir(root, &toml, e).ok())
+        .collect()
+}
+
+/// The layers' `src/app.css`, whole: the tokens an app inherits.
+pub(crate) fn layer_css(root: &Path) -> String {
+    let all: Vec<String> = (layers(root).iter())
+        .filter_map(|d| fs::read_to_string(d.join("src/app.css")).ok())
+        .collect();
+    all.join("\n")
 }
 
 /// Where dependency `name` is: its `path`, else its place in the registry
@@ -191,9 +282,13 @@ fn path_of(line: &str) -> Option<String> {
 /// Makes `to` hold exactly the files of `from` (all of them, recursively),
 /// writing only what differs. With `own`, a `.wisp` file whose name is
 /// already a component of the app outside `own` is left out: the app wins.
-fn copy(from: &Path, to: &Path, own: Option<&Path>) -> Result<(), String> {
+/// With `over`, a file the app has there at the same path is left out too.
+fn copy(from: &Path, to: &Path, own: Option<&Path>, over: Option<&Path>) -> Result<(), String> {
     let mut want = Vec::new();
     files(from, from, &mut want, 0);
+    if let Some(over) = over {
+        want.retain(|(r, _)| !over.join(r).is_file());
+    }
     if let Some(own) = own {
         let mut mine = Vec::new();
         files(
@@ -333,6 +428,50 @@ mod tests {
         assert!(!app.join("src/routes/(kit)").exists());
         assert!(!app.join("src/components/kit").exists());
         assert!(app.join("src/components/Mine.wisp").is_file());
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn layers_are_inherited_and_the_app_wins() {
+        let d = std::env::temp_dir().join(format!("wisp-layers-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let (app, base) = (d.join("app"), d.join("base"));
+        for (p, f, s) in [
+            (&base, "src/routes/about/+page.wisp", "<p>base about</p>"),
+            (&base, "src/routes/team/+page.wisp", "<p>base team</p>"),
+            (&base, "src/components/Card.wisp", "<b>base</b>"),
+            (&base, "src/components/Badge.wisp", "<b>badge</b>"),
+            (&base, "src/app.css", ":root { --accent: red; }"),
+            (&base, "static/logo.svg", "<svg/>"),
+            (&app, "src/routes/about/+page.wisp", "<p>own about</p>"),
+            (&app, "src/components/Card.wisp", "<i>own</i>"),
+        ] {
+            fs::create_dir_all(p.join(f).parent().unwrap()).unwrap();
+            fs::write(p.join(f), s).unwrap();
+        }
+        let toml = "[package.metadata.wisp]\nextends = [\"../base\"]\n";
+        fs::write(app.join("Cargo.toml"), toml).unwrap();
+        assert_eq!(list(toml, "extends"), ["../base"]);
+        assert_eq!(layers(&app).len(), 1);
+        assert!(!sync(&app).unwrap().is_empty());
+        let group = app.join("src/routes/(layer_base)");
+        assert!(group.join("team/+page.wisp").is_file());
+        assert!(!group.join("about").exists(), "the app's own about wins");
+        assert!(app.join("src/components/layer_base/Badge.wisp").is_file());
+        assert!(!app.join("src/components/layer_base/Card.wisp").exists());
+        assert_eq!(layer_css(&app), ":root { --accent: red; }");
+        // Dropped: gone.
+        fs::write(app.join("Cargo.toml"), "[package]\n").unwrap();
+        sync(&app).unwrap();
+        assert!(!group.exists() && !app.join("src/components/layer_base").exists());
+        assert!(app.join("src/routes/about/+page.wisp").is_file());
+        // A layer that is not there is refused.
+        fs::write(
+            app.join("Cargo.toml"),
+            "[package.metadata.wisp]\nextends = [\"../nope\"]\n",
+        )
+        .unwrap();
+        assert!(sync(&app).unwrap_err().contains("no `src` folder"));
         let _ = fs::remove_dir_all(&d);
     }
 }

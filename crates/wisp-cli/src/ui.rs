@@ -21,7 +21,7 @@ macro_rules! part {
     };
 }
 
-const PARTS: [Part; 14] = [
+const PARTS: [Part; 15] = [
     part!("Accordion", "A section that opens and closes (<details>)."),
     part!(
         "Badge",
@@ -33,6 +33,10 @@ const PARTS: [Part; 14] = [
     ),
     part!("Card", "A panel with an optional title."),
     part!("Checkbox", "A checkbox with its label."),
+    part!(
+        "ClientOnly",
+        "Children drawn only in the browser, a fallback until then."
+    ),
     part!("Dialog", "A modal <dialog> and the button that opens it."),
     part!("Input", "A text field with its label, hint and problem."),
     part!("Menu", "A menu button: a popover list, arrow keys to move."),
