@@ -206,9 +206,20 @@ impl Fold<'_> {
             true => Some(()),
             false => self.layers(inner, doc),
         };
-        // The innermost `<title>` is the one written.
-        let titled = !inner.iter().any(|t| t.has_title());
-        self.nodes(&t.nodes, t, &[], doc, false, titled, &slot)
+        // The innermost `<title>` is the one written: an outer one is left out.
+        if t.has_title() && inner.iter().any(|t| t.has_title()) {
+            let nodes: Vec<Node> = (t.nodes.iter())
+                .filter(|n| !t.is_title(n))
+                .map(|n| match n {
+                    Node::Head(b) => {
+                        Node::Head(b.iter().filter(|n| !t.is_title(n)).cloned().collect())
+                    }
+                    n => n.clone(),
+                })
+                .collect();
+            return self.nodes(&nodes, t, &[], doc, false, &slot);
+        }
+        self.nodes(&t.nodes, t, &[], doc, false, &slot)
     }
 
     fn nodes(
@@ -218,7 +229,6 @@ impl Fold<'_> {
         env: &Env,
         doc: &mut Doc,
         head: bool,
-        titled: bool,
         slot: Slot,
     ) -> Option<()> {
         // Where the value of a URL attribute with holes began.
@@ -226,8 +236,7 @@ impl Fold<'_> {
         for n in nodes {
             let out = if head { &mut doc.head } else { &mut doc.body };
             match n {
-                Node::Head(_) if !titled && t.is_title(n) => {}
-                Node::Head(body) => self.nodes(body, t, env, doc, true, titled, slot)?,
+                Node::Head(body) => self.nodes(body, t, env, doc, true, slot)?,
                 Node::Render => slot(doc)?,
                 Node::UrlStart { prefix } => url = out.len().saturating_sub(prefix.len()),
                 Node::UrlEnd if runs_script(&out[url..]) => return None,
@@ -237,7 +246,7 @@ impl Fold<'_> {
                 // by it, and its problem. The input's own value is written.
                 Node::Kept { own, .. } => {
                     if let Some(own) = own {
-                        self.nodes(own, t, env, doc, head, titled, slot)?;
+                        self.nodes(own, t, env, doc, head, slot)?;
                     }
                 }
                 Node::Chosen { own: None, .. } | Node::Problem { .. } | Node::Selected(_) => {}
@@ -265,7 +274,7 @@ impl Fold<'_> {
                         }
                     }
                     if let Some(body) = taken.or(otherwise.as_ref()) {
-                        self.nodes(body, t, env, doc, head, titled, slot)?;
+                        self.nodes(body, t, env, doc, head, slot)?;
                     }
                 }
                 Node::Component {
@@ -295,14 +304,14 @@ impl Fold<'_> {
                         }
                     }
                     let kids = |doc: &mut Doc| match children {
-                        Some(c) => self.nodes(c, t, env, doc, head, titled, slot),
+                        Some(c) => self.nodes(c, t, env, doc, head, slot),
                         None => Some(()),
                     };
                     if self.depth.get() >= 64 {
                         return None;
                     }
                     self.depth.set(self.depth.get() + 1);
-                    let done = self.nodes(&ct.nodes, ct, &own, doc, head, true, &kids);
+                    let done = self.nodes(&ct.nodes, ct, &own, doc, head, &kids);
                     self.depth.set(self.depth.get() - 1);
                     done?;
                 }
