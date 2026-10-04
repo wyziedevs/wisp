@@ -40,7 +40,10 @@
 //! request `id`: its head, `status` and `name: value` lines, and its number
 //! among the heads sent, `u32::MAX` if not kept; a first line `200 stream` means the
 //! body follows as `chunk(id, ptr, len)` calls, the last one empty; a chunk
-//! returns 0 when the client is behind, and none follows until `wisp_pull`),
+//! returns 0 when the client is behind, and none follows until `wisp_pull`;
+//! `200 const` says the answer is the same to every request for that path
+//! (without a query) that sends no `x-wisp-error` and answers `if-none-match`
+//! by its ETag: a baked page, a trailing-slash redirect; see [`constant`]),
 //! `fetch(id, ptr, len)` (a request, its target a URL), `timer(id, ms)`,
 //! `conn_write(id, ptr, len) -> ok` (bytes for connection `id`, copied before
 //! it returns; an empty write ends the connection; 0 when the client is
@@ -127,6 +130,8 @@ pub(crate) struct Lazy {
     known: [OnceCell<Option<Box<str>>>; crate::cx::KNOWN],
     named: [OnceCell<Named>; NAMED],
     all: OnceCell<Vec<(Box<str>, Box<str>)>>,
+    /// The route's guard ran (see [`guarded`]).
+    guarded: Cell<bool>,
 }
 
 impl Lazy {
@@ -136,6 +141,7 @@ impl Lazy {
             known: [const { OnceCell::new() }; crate::cx::KNOWN],
             named: [const { OnceCell::new() }; NAMED],
             all: OnceCell::new(),
+            guarded: Cell::new(false),
         }
     }
 
@@ -157,6 +163,14 @@ impl Lazy {
         self.known[k as usize]
             .get_or_init(|| self.get(name))
             .as_deref()
+    }
+
+    /// Whether the request has read no header but those of `ok`.
+    fn reads_only(&self, ok: &[crate::cx::Known]) -> bool {
+        self.all.get().is_none()
+            && self.named.iter().all(|n| n.get().is_none())
+            && (self.known.iter().enumerate())
+                .all(|(i, k)| k.get().is_none() || ok.iter().any(|&o| o as usize == i))
     }
 
     /// Any header but `host`, `content-length` and `transfer-encoding`,
@@ -244,6 +258,10 @@ thread_local! {
     /// answers with the same head each time, so the host is sent its number.
     static HEAD: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     static HEADS: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
+    /// The request whose answer is `constant`, until its reply is sent.
+    static SAME: Cell<u32> = const { Cell::new(INIT) };
+    /// The app has no hook (`before`, `after`, `reroute`) that could change an answer.
+    static PLAIN: Cell<bool> = const { Cell::new(false) };
     /// The last peer text and what it parsed to.
     static PEER: RefCell<(String, SocketAddr)> = const { RefCell::new((String::new(), LOCAL)) };
 }
@@ -517,6 +535,7 @@ pub(crate) fn start<A: App>() {
         return;
     }
     let _ = DRIVE.set(|id, raw| Box::pin(connection::<A>(id, raw)));
+    PLAIN.set(!A::BEFORE && !A::AFTER && !A::REROUTE);
     let init = async {
         // Saved tables' rows, before `init`, which may set a store of its own.
         let opened = match env("WISP_STORE") {
@@ -544,6 +563,35 @@ pub(crate) fn start<A: App>() {
         WAITING.take().into_iter().for_each(Waker::wake);
     };
     spawn(INIT, Box::pin(init));
+}
+
+/// The answer to `cx`, a lazy request, is the same for every request for its
+/// path: a baked page or a trailing-slash redirect, made by no hook, from
+/// no header but `if-none-match` and `x-wisp-error` (which the bridge
+/// looks at itself), with no query and no request id. Its reply is then sent
+/// as `200 const`, and the bridge answers the path from what it kept, without
+/// entering the wasm.
+pub(crate) fn constant(cx: &crate::Cx) {
+    use crate::cx::Known::{IfNoneMatch, WispError};
+    let Some(lazy) = &cx.lazy else { return };
+    if PLAIN.get()
+        && !lazy.guarded.get()
+        && matches!(cx.method, crate::Method::Get | crate::Method::Head)
+        && cx.query_string().is_empty()
+        && cx.id().is_none()
+        && !crate::settings().request_id
+        && lazy.reads_only(&[IfNoneMatch, WispError])
+    {
+        SAME.set(lazy.id);
+    }
+}
+
+/// The route has a guard (a rate limit, a middleware: anything run for every
+/// request that reads no header), so its answer is not [`constant`].
+pub(crate) fn guarded(cx: &crate::Cx) {
+    if let Some(lazy) = &cx.lazy {
+        lazy.guarded.set(true);
+    }
 }
 
 fn log_panics() {
@@ -816,8 +864,11 @@ fn send(id: u32, reply: &Reply) {
     let (ptr, len, head_id) = HEAD.with_borrow_mut(|w| {
         w.clear();
         crate::http::push_decimal(w, reply.status.into());
+        let same = SAME.replace(INIT) == id;
         if matches!(reply.body, crate::Body::Stream(_)) {
             w.extend_from_slice(b" stream");
+        } else if same && matches!(reply.status, 200 | 304 | 308) {
+            w.extend_from_slice(b" const");
         }
         w.push(b'\n');
         for (n, v) in &reply.headers {

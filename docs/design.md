@@ -1567,6 +1567,12 @@ The built-in server is one front end. `respond` decides an answer as a
 - `wisp build --static` runs `handle` for each page and writes files.
 - `wisp build --target` compiles the same code to WebAssembly
   (`crates/wisp/src/edge.rs`), driven by a small JS bridge: no wasm-bindgen.
+  A path whose answer cannot change (a baked page, a trailing-slash
+  redirect) is marked `const` by the app, in an app with no `before`, `after`
+  or `reroute` hook, when it read no header but `if-none-match` and
+  `x-wisp-error` and had no query. The bridge's web `fetch` keeps the first
+  answer and its 304 and replays them (GET, HEAD, `if-none-match`) without
+  entering the wasm; `tests/platform/tests/fast.rs` pins them to native's.
 
 Every path uses the same request parser and limits. See [embed.md](embed.md)
 and [deploy.md](deploy.md).
