@@ -571,6 +571,96 @@ fn write_if_changed(path: &Path, contents: &str) {
 
 #[cfg(test)]
 mod tests {
+    /// Malformed templates, Rust and JS: every input returns (Ok or Err),
+    /// none panics or overflows the stack. A tiny xorshift keeps it
+    /// deterministic.
+    #[test]
+    fn fuzzed_sources_never_panic() {
+        const BITS: &[&str] = &[
+            "<div>",
+            "</div>",
+            "<p class=\"{a}\">",
+            "{#if a}",
+            "{:else}",
+            "{/if}",
+            "{#each xs as x}",
+            "{/each}",
+            "{#await f}",
+            "{/await}",
+            "{a}",
+            "{",
+            "}",
+            "---\n",
+            "<script>",
+            "</script>",
+            "<style>",
+            "\"",
+            "'",
+            "\\",
+            "*/",
+            "//",
+            "\r",
+            "\n",
+            "\u{202e}",
+            "\u{2028}",
+            "日本",
+            "<!--",
+            "-->",
+            "{@html x}",
+            "{@render c()}",
+            "{#snippet s()}",
+            "{/snippet}",
+            "<",
+            ">",
+            "=",
+            "`",
+            "${",
+        ];
+        let mut x = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        for _ in 0..4000 {
+            let n = (next() % 24) as usize;
+            let src: String = (0..n)
+                .map(|_| BITS[(next() % BITS.len() as u64) as usize])
+                .collect();
+            for cut in [src.len(), src.len() / 2] {
+                let s = &src[..src.floor_char_boundary(cut)];
+                let _ = super::parse_wisp(s, "f.wisp");
+                let _ = super::fmt::format(s, "2024");
+                let _ = super::rust_scan::scan(s);
+                let _ = super::js::tokens(s);
+            }
+        }
+    }
+
+    /// 10k levels of nesting: an Err or Ok, never a stack overflow.
+    #[test]
+    fn deep_nesting_does_not_overflow() {
+        let n = 10_000;
+        // The last two make one huge line.
+        for (open, close) in [
+            ("<div>", "</div>"),
+            ("{#if a}", "{/if}"),
+            ("{#each a as b}", "{/each}"),
+            ("<i>", ""),
+            ("{", "}"),
+            ("(", ")"),
+            ("x", ""),
+            ("{a}", ""),
+        ] {
+            let src = open.repeat(n) + &close.repeat(n);
+            let _ = super::parse_wisp(&src, "f.wisp");
+            let _ = super::fmt::format(&src, "2024");
+            let _ = super::rust_scan::scan(&src);
+            let _ = super::js::tokens(&src);
+        }
+    }
+
     #[test]
     fn fnv_vectors() {
         assert_eq!(super::fnv1a(b""), 0xcbf29ce484222325);
