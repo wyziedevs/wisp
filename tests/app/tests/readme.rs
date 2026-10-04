@@ -1,6 +1,8 @@
 //! The page in the README, as the README shows it (`src/routes/t/readme`):
 //! a counter kept in a cookie, changed by an action.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 use wisp::test::client;
 use wisp_test_app::Site;
 

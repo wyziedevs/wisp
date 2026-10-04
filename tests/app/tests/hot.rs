@@ -2,6 +2,7 @@
 //! wisp-test-app --features browser`; skipped where there is none): what
 //! the CLI sends the app, sent here, and what wisp-dev.js then does, done
 //! here. A page's count survives a new script and new text.
+#![cfg(not(target_arch = "wasm32"))]
 #![cfg(all(feature = "browser", debug_assertions))]
 
 use wisp::App;

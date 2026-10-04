@@ -2,6 +2,8 @@
 //! `WISP_*`, `ORIGIN`), on the test app's binary: each one that is not valid
 //! stops the server with a message, and each one that is takes effect.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 mod common;
 
 use common::{Server, Temp, command, start};

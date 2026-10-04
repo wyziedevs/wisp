@@ -1,5 +1,7 @@
 //! `/sitemap.xml` and `/robots.txt`, made from the routes.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 use wisp::test::client;
 use wisp_test_app::Site;
 
