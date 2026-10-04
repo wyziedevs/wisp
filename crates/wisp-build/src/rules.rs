@@ -177,6 +177,16 @@ mod tests {
                 " required minlength=\"1\" pattern=\"[\\s\\S]{0,100}\"",
             ),
             ("String | len = 1..=100", "textarea", " required"),
+            (
+                "String | len = 5..=100",
+                "textarea",
+                " required minlength=\"5\"",
+            ),
+            (
+                "Option<String> | min_len = 5",
+                "textarea",
+                " minlength=\"5\"",
+            ),
             ("Option<String> | len = 1..", "input", " minlength=\"1\""),
             ("Password |", "input password", " required"),
             (
