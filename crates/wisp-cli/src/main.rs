@@ -456,7 +456,7 @@ fn make_dir(dir: &Path) -> Result<(), String> {
 }
 
 /// The current directory, if it looks like a Wisp app.
-fn project() -> Result<&'static Path, String> {
+fn app_root() -> Result<&'static Path, String> {
     let root = Path::new(".");
     if !root.join("Cargo.toml").exists() || !root.join("build.rs").exists() {
         return Err("There is no Wisp app here.\nRun this in an app's folder, the one with Cargo.toml and build.rs, or create one with wisp new.".into());
@@ -464,8 +464,16 @@ fn project() -> Result<&'static Path, String> {
     Ok(root)
 }
 
+/// [`app_root`] for the commands that work on the app: first the warning
+/// that this CLI is older than the app's wisp (before any error about its
+/// routes), and the question whether to go on.
+fn project() -> Result<&'static Path, String> {
+    let root = app_root()?;
+    cargo::check_updated(root)?;
+    Ok(root)
+}
+
 fn build(root: &Path, o: &BuildOptions) -> Result<(), String> {
-    cargo::warn_if_stale(root);
     if o.analyze {
         return analyze::run(root);
     }

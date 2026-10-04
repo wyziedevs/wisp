@@ -512,5 +512,9 @@ daemon; Windows: a startup scheduled task) · `wisp routes` · `wisp new-route /
 add|list button dialog` (accessible components into `src/components`; `clientonly`:
 `<ClientOnly fallback="…">` draws its children only in the browser) · `wisp
 lsp` · `wisp update-docs` · `wisp mcp` (`claude mcp add wisp -- wisp mcp`).
+Commands that work on an app warn on stderr first when the CLI is older than the
+app's `wisp` crate (Cargo.lock version, or for a `path` dependency its git commit
+count) and ask `Continue anyway? [y/N]` at a terminal; CI and pipes go on. Fix:
+`cargo install wisp-cli --force`; `WISP_NO_UPDATE_CHECK=1` silences it.
 Docs: README.md, docs/design.md, client.md, api.md, deploy.md, embed.md,
 tokens.md, or llms-full.txt (this file, client, api, deploy and embed).

@@ -28,6 +28,28 @@ pub fn read(repo: &Path) -> Option<(String, Vec<PathBuf>)> {
     Some((sha(line)?, files))
 }
 
+/// A build stamp, `1234-abc1234`: the commits in `repo`'s history and its
+/// short hash. build.rs bakes the CLI's (`WISP_CLI_STAMP`); the CLI reads an
+/// app's path checkout the same way. Empty when git cannot say (absent, or
+/// no checkout), and nothing is compared then. Never fails.
+pub fn stamp(repo: &Path) -> String {
+    let count = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["rev-list", "--count", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|c| c.trim().to_string())
+        .filter(|c| c.parse::<u32>().is_ok());
+    let hash = read(repo).map(|(h, _)| h[..7].to_string());
+    match (count, hash) {
+        (Some(c), Some(h)) => format!("{c}-{h}"),
+        _ => String::new(),
+    }
+}
+
 /// `.git`, and where the refs are: the same, except in a linked worktree
 /// (where `.git` is a file that points to the former, and `commondir` to the
 /// latter).
