@@ -129,7 +129,15 @@ fn walk(dir: &Path, rel: &str, out: &mut Vec<String>) -> io::Result<()> {
         let skip = name.starts_with('.')
             || name == "node_modules"
             || top
-                && ["Cargo.toml", "Cargo.lock", "tests", "target", "data"].contains(&name.as_str());
+                && [
+                    "Cargo.toml",
+                    "Cargo.lock",
+                    "openapi.json",
+                    "tests",
+                    "target",
+                    "data",
+                ]
+                .contains(&name.as_str());
         if skip {
             continue;
         }
