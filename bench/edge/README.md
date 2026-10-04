@@ -357,3 +357,66 @@ call) 6 to 7 ms. In Node (lazy compile, same V8): compile 0.8 ms, instantiate 0.
 env + `main` 1.7, first request 3.8 beyond that, second 0.5. Module load does not follow
 size: the opt-level `s` wasm (433 KB) loaded in 25 to 31 ms against 31 to 32 for opt 3 (559 KB),
 within the noise. Gate: size only (`tests/wasm-size.sh`); a time bound would flake on this.
+
+## workerd profiled (V8 CPU profile, 2026-10-04)
+
+The profile is taken over workerd's inspector (`workerd serve config -i
+127.0.0.1:9339`, then `Profiler.start` over CDP while oha runs; 50 us
+sampling, self time divided by the requests served; the wasm built with
+`CARGO_PROFILE_RELEASE_STRIP=none` so its functions have names). The
+machine was quiet this time, so the numbers are about twice the clean
+run's above.
+
+What it found: the biggest JS cost of a Wisp reply was workerd's `Response`
+constructor, which copies a `Uint8Array` body out of the wasm memory slowly
+(`/json-big`: 10.1 us in `Response` against 5.9 for Hono's string body; a
+`body.slice()` first cost 9.8 us in itself, so it is the copy, not the
+constructor). Kept (`bridge.js`, `webSink`):
+
+- A body whose `content-type` is text, JSON, JavaScript or XML goes to
+  `Response` as a string: a fatal `TextDecoder` with `ignoreBOM` (native, and
+  exact: what is not UTF-8 throws and is passed as bytes), then workerd encodes
+  it. `Response` 10.1 to 6.1 us, the decode 1 us.
+- The head's init holds a `Headers` (made once per head) instead of a plain
+  object: about 1 us on `/` (workerd copies one into the Response without
+  reading names off an object). Duplicate names (`set-cookie`) need no list
+  case any more.
+
+Same build of `app.wasm` (byte-identical: no Rust changed, so native is
+untouched), alternating, c=64, median of 5 x 10 s, CPU us/request:
+
+| | `/` | `/list1000` | `/json-big` | `/params` |
+|---|---|---|---|---|
+| before | 19,637 (3.6) 52.0 | 5,608 (12.2) 182 | 10,753 (6.7) 94.9 | 18,632 (3.7) 54.5 |
+| after | 20,215 (3.5) 50.5 | 6,126 (13.7) 165 | 11,330 (10.7) 89.5 | 18,947 (3.7) 55.0 |
+
+(The second app of a pair runs about 1 us and 1.5% better with the same
+build in both, so `/` and `/params` moved by no more than that.)
+
+Against Hono, same run, median of 5 x 10 s, req/s (p99 ms) CPU us; cold start median of 9:
+
+| | `/` | `/list1000` | `/json-big` | `/params` | cold start |
+|---|---|---|---|---|---|
+| Wisp | 19,645 (4.2) 52.5 | 6,033 (15.6) 170 | 11,441 (10.4) 88.3 | 19,258 (3.6) 53.5 | 25 ms |
+| Hono | 20,908 (4.7) 49.1 | 2,359 (32.7) 429 | 11,894 (7.1) 86.2 | 20,256 (21.9) 51.6 | 19 ms |
+
+`/json-big` went from -21% (the same quiet machine, before) to -4%; `/` is -6%.
+
+What is left, from the profiles (self time, us per request):
+
+- `/` (3.4 us of CPU): `Response` 6.6 against Hono's 4.1. Hono's `c.text`
+  makes `new Response('hello')` with no init (workerd adds its own
+  `text/plain;charset=UTF-8`); Wisp sends its own head, and workerd's cost of
+  taking any init's headers is the 2.5 us. Then the bridge (`serve` 1.7,
+  `enter` 1.3, `webSink` 0.9, `reply` 0.8) and the wasm (about 2 us) against
+  Hono's router (about 4 us of JS).
+- `/json-big` (2 us of CPU, inside the noise): the rest is wasm compute. Of
+  the 50 us in wasm, the app's own `format!` (`user-{i}`, `t{}`:
+  `fmt::write` 4.7, `String::write_str` 5.5, `Display` 2.9, `pad_integral` 2.0)
+  is 15 us, dlmalloc (`free` 4.4, `malloc` 2.4, `unlink_chunk` 2.1) and
+  dropping the rows (3.6) 13 us, the JSON string escape (`live::string`) 7.2 us
+  for 600 strings (12 ns each), the rest of the serializer inlined into the
+  route (`http::decide`, 14.8 us). Hono's `JSON.stringify` and template strings
+  run in V8's C++ and JIT.
+- Cold start: 25 against 19 ms; unchanged by this (the module load and the
+  first request's lazy compile, as measured above).

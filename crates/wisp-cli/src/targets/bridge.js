@@ -2,6 +2,8 @@
 // JavaScript host. The ABI is described in crates/wisp/src/edge.rs.
 const enc = new TextEncoder();
 const dec = new TextDecoder();
+// Exact: invalid UTF-8 throws and a leading BOM is kept, so the text encodes back to the same bytes.
+const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 const failed = { status: 500, headers: [['content-type', 'text/plain; charset=utf-8']], body: enc.encode('Internal Server Error') };
 
 // A first line, `name: value` lines, an empty line, the body.
@@ -61,6 +63,7 @@ function parsed(text) {
     if (c > i && c < e) h.headers.push(text.slice(i, c), text.slice(c + 1, e).trim());
     i = e + 1;
   }
+  for (let i = 0; i < h.headers.length; i += 2) if (h.headers[i] === 'content-type') h.text = !h.stream && /text|json|javascript|xml/.test(h.headers[i + 1]);
   if (heads.size > 256) heads.clear();
   heads.set(text, h);
   return h;
@@ -174,9 +177,18 @@ function webSink(c, h, body) {
   }
   const empty = c.empty || h.status < 200 || h.status === 204 || h.status === 304;
   if (empty && h.stream) body.cancel(); // ends the app's stream
-  const r = new Response(empty ? null : body, (h.init ??= init(h)));
+  const r = new Response(empty ? null : h.text ? asText(body) : body, (h.init ??= init(h)));
   if (c.resolve) c.resolve(r);
   else c.res = r;
+}
+// A text body as a string: workerd makes a Response from a string in about
+// half the time it takes to copy the bytes out of the app's memory (bench/edge).
+function asText(body) {
+  try {
+    return utf8.decode(body);
+  } catch {
+    return body; // not UTF-8 after all
+  }
 }
 // A reply the app sent as `const` (`wisp::edge::constant`) is the same for
 // every request for its path that has no query, sends no `x-wisp-error` and
@@ -203,18 +215,12 @@ function names(header, tag) {
     return t === '*' || t === tag;
   });
 }
-// What `new Response` takes for a head, made once: a plain object is the
-// quickest way in, unless a name comes twice (`set-cookie`).
+// What `new Response` takes for a head, made once: workerd copies a
+// `Headers` into the Response quicker than it reads a plain object's names.
 function init({ status, headers: flat }) {
-  const record = {};
-  const list = [];
-  let twice = false;
-  for (let i = 0; i < flat.length; i += 2) {
-    twice ||= flat[i] in record;
-    record[flat[i]] = flat[i + 1];
-    list.push([flat[i], flat[i + 1]]);
-  }
-  return { status, headers: twice ? list : record };
+  const headers = new Headers();
+  for (let i = 0; i < flat.length; i += 2) headers.append(flat[i], flat[i + 1]);
+  return { status, headers };
 }
 
 // A message for a WebSocket the host made: `op` 1 text, 2 binary, 8 a close
