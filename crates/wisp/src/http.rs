@@ -2993,6 +2993,8 @@ fn slash_redirect(cx: &Cx, reply: &mut Reply, trailing: bool) {
     reply
         .headers
         .push((Cow::Borrowed("location"), Cow::Owned(location)));
+    #[cfg(target_arch = "wasm32")]
+    crate::edge::constant(cx);
 }
 
 /// Whether `res`, a 200 to a GET or HEAD with an `etag` (an [`crate::Image`],

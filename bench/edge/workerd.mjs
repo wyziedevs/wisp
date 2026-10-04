@@ -14,7 +14,7 @@ const secs = arg('secs', '10'), conns = arg('conns', '64'), runs = Number(arg('r
 const only = arg('only', '');
 const apps = Object.entries({ wisp: arg('wisp', '.'), hono: arg('hono', '.') }).filter(([n]) => !only || n === only).map(([name, dir], i) => ({ name, dir: resolve(dir), port: 4300 + i }));
 const jar = 'sid=abc123; theme=dark';
-const routes = ['/', '/list', '/json', '/list1000', '/json-big', '/params/42?q=hello%20world&x=1'].filter((r) => !arg('routes', '') || arg('routes', '').split(',').some((m) => r.includes(m)));
+const routes = ['/', '/list', '/json', '/list1000', '/json-big', '/about', '/params/42?q=hello%20world&x=1'].filter((r) => !arg('routes', '') || arg('routes', '').split(',').some((m) => r.includes(m)));
 const hdr = (p) => (p.startsWith('/params') ? { cookie: jar } : {});
 
 // Every file of the dir is a module: .wasm as wasm, .js and .mjs as ES modules.

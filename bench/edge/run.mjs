@@ -24,7 +24,7 @@ const servers = {
   'hono-cf': ['hono', node, [wrangler, 'dev', '--local', '--log-level', 'error', '--port', String(PORT)]],
 };
 const jar = 'sid=abc123; theme=dark';
-const routes = ['/', '/list', '/json', '/list1000', '/json-big', '/params/42?q=hello%20world&x=1'].filter((r) => !arg('routes', '') || arg('routes', '').split(',').some((m) => r.includes(m)));
+const routes = ['/', '/list', '/json', '/list1000', '/json-big', '/about', '/params/42?q=hello%20world&x=1'].filter((r) => !arg('routes', '') || arg('routes', '').split(',').some((m) => r.includes(m)));
 const hdr = (p) => (p.startsWith('/params') ? { cookie: jar } : {});
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

@@ -9,6 +9,7 @@ app.get('/', (c) => c.text('hello'));
 app.get('/list', (c) => c.html(page(items(50))));
 app.get('/json', (c) => c.json({ ok: true, name: 'hono', n: 42 }));
 app.get('/list1000', (c) => c.html(page(items(1000))));
+app.get('/about', (c) => c.html('<!doctype html><html lang="en"><head><meta charset="utf-8"><title>About</title></head><body><h1>About</h1><p>Static &amp; constant.</p></body></html>'));
 app.get('/json-big', (c) => c.json(rows()));
 app.get('/params/:id', (c) => c.text(`id=${c.req.param('id')} q=${c.req.query('q')} sid=${getCookie(c, 'sid') ?? 'none'}`));
 export default app;

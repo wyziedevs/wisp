@@ -4366,9 +4366,13 @@ impl Gen {
         }
         // `after` and `report` in `src/hooks.rs`: the server calls them only
         // when these say so (consts, so an app without them has no check).
-        for name in ["after", "report", "reroute"] {
+        // `before` is only said: its call is in `handle`.
+        for name in ["before", "after", "report", "reroute"] {
             if p.has_hook(name) {
                 self.line(1, &format!("const {}: bool = true;", name.to_uppercase()));
+                if name == "before" {
+                    continue;
+                }
                 if name == "reroute" {
                     self.line(
                         1,
@@ -4621,9 +4625,16 @@ impl Gen {
                     guard.push_str(&format!("{g}::__call::__guard(cx)?; "));
                 }
                 let (open, close) = within(r, &page.module);
+                // A guard (a rate limit, a check, a middleware) runs for every
+                // request: the edge build's table of constant answers must not
+                // skip it.
+                let note = match guard.is_empty() {
+                    true => "",
+                    false => "#[cfg(target_arch = \"wasm32\")] ::wisp::rt::guarded(cx); ",
+                };
                 self.line(
                     3,
-                    &format!("({i}, Get | Head) => {open}{{ {guard}::wisp::rt::browser_ok(cx)?; {get} }}{close},"),
+                    &format!("({i}, Get | Head) => {open}{{ {note}{guard}::wisp::rt::browser_ok(cx)?; {get} }}{close},"),
                 );
                 allow.extend(["GET", "HEAD"]);
                 let actions: Vec<&FnItem> = page.actions().collect();
@@ -10110,6 +10121,7 @@ fn report(cx: &mut Cx, err: &Error) {}",
             "pub async fn before(cx: &mut ::wisp::Cx) -> ::wisp::Result<Option<::wisp::Response>> { Ok(::wisp::rt_traits::Answer::answer(super::before(cx))) }",
             "hooks::__call::init().await?;",
             "if let Some(r) = hooks::__call::before(cx).await? {",
+            "const BEFORE: bool = true;",
         ] {
             assert!(code.contains(want), "{want}\n{code}");
         }
