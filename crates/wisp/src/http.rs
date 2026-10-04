@@ -3207,7 +3207,7 @@ struct Streamed {
 
 /// Writes `reply` as HTTP/1.1 and leaves it empty. A streamed body is
 /// returned for the connection to send as it comes.
-#[inline(never)]
+#[inline(always)]
 fn serialize<A: App, const OBS: bool>(
     w: &mut Vec<u8>,
     reply: &mut Reply,
@@ -3215,6 +3215,34 @@ fn serialize<A: App, const OBS: bool>(
     http11: bool,
     keep_alive: bool,
     head_only: bool,
+) -> Option<Streamed> {
+    emit::<A, OBS, false>(w, reply, out, http11, keep_alive, head_only, |_, _| {})
+}
+
+/// [`serialize`] for HTTP/2: the head goes to `sink` as fields, `:status`
+/// first, and only the body to `w`.
+#[cfg(feature = "h2")]
+pub(crate) fn serialize_h2<A: App>(
+    w: &mut Vec<u8>,
+    reply: &mut Reply,
+    out: &mut Out,
+    head_only: bool,
+    sink: impl FnMut(&str, &str),
+) -> Option<mpsc::Receiver<Vec<u8>>> {
+    emit::<A, true, true>(w, reply, out, true, true, head_only, sink).map(|s| s.body)
+}
+
+/// [`serialize`], and with `H2` [`serialize_h2`]: the head's fields go to
+/// `sink` rather than to `w`.
+#[inline(never)]
+fn emit<A: App, const OBS: bool, const H2: bool>(
+    w: &mut Vec<u8>,
+    reply: &mut Reply,
+    out: &mut Out,
+    http11: bool,
+    keep_alive: bool,
+    head_only: bool,
+    mut sink: impl FnMut(&str, &str),
 ) -> Option<Streamed> {
     let bodiless = bodiless(reply.status);
     let stream = matches!(reply.body, Body::Stream(_)) && !bodiless;
@@ -3240,7 +3268,10 @@ fn serialize<A: App, const OBS: bool>(
     // See `framing`.
     let own_length = head_only && reply.header("content-length").is_some();
     let made = matches!(reply.body, Body::Made(_));
-    if let Body::Made(m) = &reply.body {
+    let length = !made && !chunked && !stream && !bodiless && !own_length;
+    if H2 {
+        h2_head(reply, length.then_some(len), &mut sink);
+    } else if let Body::Made(m) = &reply.body {
         w.extend_from_slice(m.head()); // status line and length included
     } else {
         match status_line(reply.status) {
@@ -3255,20 +3286,19 @@ fn serialize<A: App, const OBS: bool>(
             w.extend_from_slice(b"transfer-encoding: chunked\r\n");
         }
     }
-    let length = !made && !chunked && !stream && !bodiless && !own_length;
-    length_and_date(w, length.then_some(len)); // a 205's is in its status line
-    if !keep_alive {
-        w.extend_from_slice(b"connection: close\r\n");
-    } else if !http11 {
-        // HTTP/1.0 closes after each response unless told otherwise.
-        w.extend_from_slice(b"connection: keep-alive\r\n");
-    }
-    for h in &reply.headers {
-        if !framing(&h.0, head_only) {
-            header(w, h);
+    if !H2 {
+        length_and_date(w, length.then_some(len)); // a 205's is in its status line
+        if !keep_alive {
+            w.extend_from_slice(b"connection: close\r\n");
+        } else if !http11 {
+            // HTTP/1.0 closes after each response unless told otherwise.
+            w.extend_from_slice(b"connection: keep-alive\r\n");
         }
+        fields(reply, head_only, |n, v| put_line(w, n, v));
+        w.extend_from_slice(b"\r\n");
+    } else {
+        fields(reply, head_only, &mut sink);
     }
-    w.extend_from_slice(b"\r\n");
 
     let body = std::mem::replace(&mut reply.body, Body::Static(b""));
     reply.headers.clear();
@@ -3299,6 +3329,59 @@ fn serialize<A: App, const OBS: bool>(
         _ => {}
     }
     None
+}
+
+/// The head of `reply` as HTTP/2 fields, all but the app's own: `:status`,
+/// then a made answer's fixed fields or the `content-length` of `length`
+/// (and a 205's), then `date`. Framing (`transfer-encoding`) is left out:
+/// HTTP/2 has none.
+#[cfg(feature = "h2")]
+#[cold]
+fn h2_head(reply: &Reply, length: Option<usize>, sink: &mut impl FnMut(&str, &str)) {
+    let decimal = |n: u64| {
+        let mut buf = [0u8; 20];
+        let at = crate::digits(&mut buf, 20, n);
+        // Digits are ASCII.
+        String::from_utf8_lossy(&buf[at..]).into_owned()
+    };
+    if let Body::Made(m) = &reply.body {
+        let head = std::str::from_utf8(m.head()).unwrap_or("");
+        let mut lines = head.split("\r\n");
+        let status = lines.next().unwrap_or("").get(9..12).unwrap_or("500");
+        sink(":status", status);
+        for line in lines {
+            if let Some((n, v)) = line.split_once(':') {
+                sink(n.trim(), v.trim());
+            }
+        }
+    } else {
+        sink(":status", &decimal(reply.status.into()));
+        if reply.status == 205 {
+            sink("content-length", "0");
+        }
+        if let Some(n) = length {
+            sink("content-length", &decimal(n as u64));
+        }
+    }
+    let date = date_line();
+    sink("date", std::str::from_utf8(&date[6..35]).unwrap_or(""));
+}
+
+/// Without HTTP/2 nothing asks for the head as fields.
+#[cfg(not(feature = "h2"))]
+#[inline(always)]
+fn h2_head(_: &Reply, _: Option<usize>, _: &mut impl FnMut(&str, &str)) {}
+
+/// The app's own header fields of `reply` that go out, each to `sink`:
+/// all but framing (see `framing`) and any that would split the response
+/// (see `checked`). HTTP/1 writes them to the wire, HTTP/2 to its encoder.
+#[inline(always)]
+fn fields(reply: &Reply, head_only: bool, mut sink: impl FnMut(&str, &str)) {
+    for h in &reply.headers {
+        if !framing(&h.0, head_only) && checked(h) {
+            sink(&h.0, &h.1);
+        }
+    }
 }
 
 /// The parts of a page, in order: the shell around the tags for
@@ -3736,18 +3819,15 @@ async fn pump(
 /// of the last few such pairs: such a string never changes, so its address
 /// and length say it is the same.
 #[inline(always)]
-fn header(w: &mut Vec<u8>, (name, value): &(Cow<'static, str>, Cow<'static, str>)) {
+fn checked((name, value): &(Cow<'static, str>, Cow<'static, str>)) -> bool {
     /// The pairs a thread keeps checked: a response's few static headers.
     const KEPT: usize = 4;
     thread_local! {
         static VALID: [Cell<[usize; 4]>; KEPT] = const { [const { Cell::new([0; 4]) }; KEPT] };
         static NEXT: Cell<usize> = const { Cell::new(0) };
     }
-    if name == "content-type"
-        && let Some(line) = type_line(value)
-    {
-        w.extend_from_slice(line);
-        return;
+    if name == "content-type" && type_line(value).is_some() {
+        return true;
     }
     let key = match (name, value) {
         (Cow::Borrowed(n), Cow::Borrowed(v)) => {
@@ -3757,13 +3837,26 @@ fn header(w: &mut Vec<u8>, (name, value): &(Cow<'static, str>, Cow<'static, str>
     };
     if !key.is_some_and(|k| VALID.with(|v| v.iter().any(|c| c.get() == k))) {
         if !valid_header(name, value) {
-            return;
+            return false;
         }
         if let Some(k) = key {
             let next = NEXT.get();
             VALID.with(|v| v[next].set(k));
             NEXT.set((next + 1) % KEPT);
         }
+    }
+    true
+}
+
+/// Writes the header line `name: value`, a known `content-type` in one
+/// piece.
+#[inline(always)]
+fn put_line(w: &mut Vec<u8>, name: &str, value: &str) {
+    if name == "content-type"
+        && let Some(line) = type_line(value)
+    {
+        w.extend_from_slice(line);
+        return;
     }
     w.extend_from_slice(name.as_bytes());
     w.extend_from_slice(b": ");
@@ -4144,8 +4237,12 @@ mod tests {
     fn headers_that_would_split_a_response_are_left_out() {
         let mut w = Vec::new();
         let mut put = |n: &'static str, v: &'static str| {
-            header(&mut w, &(n.into(), v.into())); // checked, then known
-            header(&mut w, &(n.into(), v.to_string().into())); // checked
+            for h in [(n.into(), v.into()), (n.into(), v.to_string().into())] {
+                // checked, then known; then checked
+                if checked(&h) {
+                    put_line(&mut w, &h.0, &h.1);
+                }
+            }
         };
         put("x-a", "1");
         put("x-b", "2\r\nset-cookie: x=1");

@@ -1116,7 +1116,7 @@ mod driver {
     use crate::cx::Cx;
     use crate::cx::Method;
     use crate::http::{
-        Buffers, Conn, body_limit, decide, give_buffers, read, seconds, serialize, take_buffers,
+        Buffers, Conn, body_limit, decide, give_buffers, read, seconds, serialize_h2, take_buffers,
     };
     use crate::policy;
     use std::future::{Future, poll_fn};
@@ -1312,12 +1312,6 @@ mod driver {
     /// Answers `req` through the HTTP/1 path, in buffers of its own, so the
     /// streams in flight never share one.
     async fn prepare<A: App>(req: Request, peer: SocketAddr) -> Prepared {
-        let bare = |status| Prepared {
-            status,
-            headers: Vec::new(),
-            rest: Vec::new(),
-            body: None,
-        };
         let host = req.authority.as_bytes();
         let headers = req
             .headers
@@ -1326,7 +1320,14 @@ mod driver {
             .chain((!host.is_empty()).then_some(("host", host)));
         let mut cx = match Cx::from_request::<A>(&req.method, &req.path, headers, &req.body, peer) {
             Ok(cx) => cx,
-            Err(status) => return bare(status),
+            Err(status) => {
+                return Prepared {
+                    status,
+                    headers: Vec::new(),
+                    rest: Vec::new(),
+                    body: None,
+                };
+            }
         };
         let mut b = take_buffers(peer);
         let Buffers {
@@ -1335,21 +1336,16 @@ mod driver {
         decide::<A>(&mut cx, out, reply, None).await;
         let head_only = cx.method == Method::Head;
         wbuf.clear();
-        let body = serialize::<A, true>(wbuf, reply, out, true, true, head_only);
-        let mut fields = [httparse::EMPTY_HEADER; 128];
-        let mut parsed = httparse::Response::new(&mut fields);
-        let p = match parsed.parse(wbuf) {
-            Ok(httparse::Status::Complete(at)) => Prepared {
-                status: parsed.code.unwrap_or(500),
-                headers: parsed
-                    .headers
-                    .iter()
-                    .map(|h| (h.name.to_ascii_lowercase().into_bytes(), h.value.to_vec()))
-                    .collect(),
-                rest: wbuf[at..].to_vec(),
-                body: body.map(|b| b.body),
-            },
-            _ => bare(500),
+        let (mut status, mut headers) = (500, Vec::new());
+        let body = serialize_h2::<A>(wbuf, reply, out, head_only, |n, v| match n {
+            ":status" => status = v.parse().unwrap_or(500),
+            _ => headers.push((n.to_ascii_lowercase().into_bytes(), v.as_bytes().to_vec())),
+        });
+        let p = Prepared {
+            status,
+            headers,
+            rest: wbuf.to_vec(),
+            body,
         };
         give_buffers(b);
         p
