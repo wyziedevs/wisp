@@ -1972,6 +1972,26 @@ fn actions_may_answer_with_a_response() {
 }
 
 #[test]
+fn a_form_needs_the_action_it_posts_to() {
+    let rs = ("src/routes/+page.rs", "#[action] fn add(text: String) {}");
+    let ok = (
+        "src/routes/+page.wisp",
+        "<form action=\"?/add\"><button formaction=\"?/add&x=1\">go</button></form>",
+    );
+    assert!(app("posts-ok", &[ok, rs]).is_ok());
+    let bad = (
+        "src/routes/+page.wisp",
+        "<p>x</p>
+<form action=\"?/remove\"></form>",
+    );
+    let e = app("posts-bad", &[bad, rs]).unwrap_err();
+    assert!(
+        e.contains("+page.wisp:2: a form posts to `?/remove`"),
+        "{e}"
+    );
+}
+
+#[test]
 fn inputs_are_read_by_name() {
     let files = [
         ("src/routes/[id]/+page.wisp", "x"),

@@ -21,7 +21,7 @@
   <p class="visually-hidden">An example guess, "ghost".</p>
   <p><strong>G</strong> is in the word, in the right place. <strong>O</strong> is in the word, in another place. <strong>H</strong>, <strong>S</strong> and <strong>T</strong> are not in the word at all.</p>
 
-  <br/>
+  <br />
 
   <p style="text-align: center"><a class="button primary" href="/wisple" title="Back to Wisple">Back to Wisple</a></p>
 </div>

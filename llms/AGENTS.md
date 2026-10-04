@@ -143,7 +143,8 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
 - No `->`: returns `Result` (`?`, `return error(..)`, end in `redirect(..)`
   or `;`); `.await` makes it async. Or return `Response`/`Option<Response>`
   to answer instead of the page. `#[action]` is left out for a lone `fn
-  default` and each fn the markup posts to (`?/name`).
+  default` and each fn the markup posts to (`?/name`; the build errs when the
+  page has none).
 - `<form action="?/like">` posts (`method="post"` is added); `<form
   method="post">` → `fn default`; `<button action="?/rm&id={x.id}">` outside
   a form is a one-button form.
@@ -196,7 +197,8 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
 | `cx` | the request (`&Cx`) in pages, layouts, error pages |
 
 `<style>h1 { color: red }</style>` (top level, no attributes) styles this
-file only (`:global(x)` opts out; `<style global>`); it joins app.css.
+file only (`:global(x)` opts out; `<style global>`); it joins app.css. Elements
+your script creates are not scoped.
 Accessibility lints warn, never fail (img alt, input label, link and button
 name, `<a href>`, heading order, tabindex...); `<!-- wisp-ignore a11y-img-alt -->` silences
 one. Images: `<img src="$lib/p.jpg" alt="">` or `src="/x.png"` gets

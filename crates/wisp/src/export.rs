@@ -202,6 +202,11 @@ pub async fn export<A: App>(dir: &Path, spa: bool) -> io::Result<()> {
                 continue;
             }
             find_assets(reply.text(), &mut assets);
+            if !r.actions && posts(reply.text()) {
+                println!(
+                    "warn {url} has a form that posts, which needs a server: it will not work"
+                );
+            }
             write(dir, &file(&segs), reply.bytes())?;
         }
     }
@@ -422,6 +427,26 @@ fn file(segs: &[String]) -> String {
 }
 
 /// The `/_app/...` files a page refers to (scripts, CSS, browser modules).
+/// Whether `html` holds a `<form>` that posts (`method="post"`, or an
+/// action `?/name`): a static host cannot answer it.
+fn posts(html: &str) -> bool {
+    let mut rest = html;
+    while let Some(i) = rest.find("<form") {
+        let tail = &rest[i + 5..];
+        let end = tail.find('>').unwrap_or(tail.len());
+        let tag = tail[..end].to_ascii_lowercase();
+        if tag.starts_with([' ', '\n', '\t'])
+            && (tag.contains("method=\"post\"")
+                || tag.contains("method=post")
+                || tag.contains("action=\"?/"))
+        {
+            return true;
+        }
+        rest = &tail[end..];
+    }
+    false
+}
+
 fn find_assets(html: &str, out: &mut BTreeSet<String>) {
     let mut rest = html;
     while let Some(i) = rest.find(crate::protocol::APP_PREFIX) {
@@ -554,6 +579,13 @@ mod tests {
         for odd in ["https://x/t.map", "../t.map", "data:x", ""] {
             assert_eq!(source_map(&format!("//# sourceMappingURL={odd}")), None);
         }
+    }
+
+    #[test]
+    fn forms_that_post_are_found() {
+        assert!(posts("<p></p><form class=\"a\" method=\"post\">"));
+        assert!(posts("<form action=\"?/add\">"));
+        assert!(!posts("<form action=\"/search\" method=\"get\"><formal>"));
     }
 
     #[test]

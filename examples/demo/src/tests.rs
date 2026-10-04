@@ -1,4 +1,4 @@
-//! The demo in a real browser: `cargo test -p demo --features browser`.
+//! The app in a real browser: `cargo test --features browser`.
 //! Each test passes, skipped, where no Chrome or Edge is installed.
 #![cfg(all(test, feature = "browser"))]
 

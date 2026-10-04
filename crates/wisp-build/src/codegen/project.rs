@@ -1012,6 +1012,18 @@ impl<'a> Project<'a> {
             front.clone(),
             &markup,
         )?;
+        // A form that posts to `?/name` needs the page's action of that name.
+        for name in rust_scan::posted_to(&markup) {
+            if !lg.items.fns.iter().any(|f| f.action && f.name == name) {
+                let line = src
+                    .find(&format!("?/{name}"))
+                    .map_or(1, |at| src[..at].matches('\n').count() + 1);
+                return Err(format!(
+                    "{}:{line}: a form posts to `?/{name}`, and this page has no action `{name}`: write `#[action] fn {name}(…)` in it",
+                    self.rel(&file)
+                ));
+            }
+        }
         let fields = rules::fields(&lg.items, &self.tree.routes[i].params(), &self.shared);
         let rs = lg.file.clone().unwrap_or_else(|| dir.join("+page.rs"));
         let mut shims = Vec::new();
