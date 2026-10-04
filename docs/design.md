@@ -1318,6 +1318,14 @@ branches).
   no Sass or Tailwind pass over it). A layer's root `+layout.wisp` wraps only
   the layer's own pages (it sits in the group). All build-time: an app with no
   `extends` runs none of it.
+- **Named middleware.** `const MIDDLEWARE: &[&str] = &["auth"];` in a page,
+  a `+server.rs` or a `+layout` is checked against `src/middleware.rs` (a `pub fn`
+  by each name) and written by `middleware()` in codegen into the same
+  statements `RATE_LIMIT` and `CORS` make: the page's or layout's `__guard`,
+  the endpoint's `before`. They are the first thing the request runs, so no
+  dispatch changed (`http.rs` is untouched) and a route that names none has
+  nothing extra. `src/hooks.rs`'s `before` is the global one; `MIDDLEWARE`
+  there is an error.
 - **Version skew.** A release build puts `<meta name="wisp-build" content=ID>`
   in the shell (a hash of templates and Rust: baked, nothing per request).
   wisp.js compares it with the page a navigation fetched, as it does

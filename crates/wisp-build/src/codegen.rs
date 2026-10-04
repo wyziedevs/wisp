@@ -2078,12 +2078,17 @@ impl<'a> Project<'a> {
                 }
             }
             self.layout_opts.push(opts);
-            let guard = self.flag(&lg.items, "SIGNED_IN", &at, &mut guarded)? == Some(true);
+            let mut code = match self.flag(&lg.items, "SIGNED_IN", &at, &mut guarded)? {
+                Some(true) => "cx.signed_in()?; ".to_string(),
+                _ => String::new(),
+            };
+            let rel = self.rel(&at);
+            code.push_str(&middleware(Some(self.root), &lg.items, &rel)?);
+            let guard = !code.is_empty();
             if guard {
-                guarded.push(
-                    "pub fn __guard(cx: &mut ::wisp::Cx) -> ::wisp::Result<()> { cx.signed_in()?; Ok(()) }"
-                        .into(),
-                );
+                guarded.push(format!(
+                    "pub fn __guard(cx: &mut ::wisp::Cx) -> ::wisp::Result<()> {{ {code}Ok(()) }}"
+                ));
             }
             let load = lg.items.function("load");
             // The template reads `data` from a load, or names from statements.
@@ -2344,7 +2349,7 @@ impl<'a> Project<'a> {
         self.body_limit(route, &lg.items, &rs, format!("page_{i}"), "", &mut shims)?;
         self.cache(route, &lg.items, &rs, format!("page_{i}"), "", &mut shims)?;
         let (rel, module) = (self.rel(&rs), format!("page_{i}"));
-        let guard = guards(&lg.items, &rel, &mut shims)?;
+        let guard = guards(Some(self.root), &lg.items, &rel, &mut shims)?;
         if !guard.is_empty() {
             shims.push(format!(
                 "pub fn __guard(cx: &mut ::wisp::Cx) -> ::wisp::Result<()> {{ {guard}Ok(()) }}"
@@ -2620,7 +2625,7 @@ impl<'a> Project<'a> {
                     set_once(&mut route.timeout, m, "TIMEOUT", page_file)
                         .map_err(|e| format!("{rel}: {e}"))?;
                 }
-                let guard = guards(&items, &rel, &mut shims)?;
+                let guard = guards(Some(self.root), &items, &rel, &mut shims)?;
                 let (handlers, mut before) =
                     server_handlers(&items, segs, &mut shims).map_err(|e| format!("{rel}:{e}"))?;
                 before |= add_guard(&mut shims, &guard, before);
@@ -4881,7 +4886,12 @@ fn now_arms<'a>(p: &Project, r: &'a model::Route) -> Vec<(&'a model::Server, &'a
 /// A file's `const RATE_LIMIT: u32 = 60;` (requests a minute per client
 /// address) and `const CORS: &str = "*";`, checked: the statements that
 /// enforce them, the first thing its requests run, `RateLimit` in `shims`.
-fn guards(items: &rust_scan::Items, rel: &str, shims: &mut Vec<String>) -> Result<String, String> {
+fn guards(
+    root: Option<&Path>,
+    items: &rust_scan::Items,
+    rel: &str,
+    shims: &mut Vec<String>,
+) -> Result<String, String> {
     let mut out = String::new();
     let get = |name: &str, ok: fn(&str) -> bool, want: &str| {
         let Some(c) = items.constant(name) else {
@@ -4906,6 +4916,62 @@ fn guards(items: &rust_scan::Items, rel: &str, shims: &mut Vec<String>) -> Resul
                 .into(),
         );
         out.push_str("__RATE.check(cx.client_ip())?; ");
+    }
+    out.push_str(&middleware(root, items, rel)?);
+    Ok(out)
+}
+
+/// A file's `const MIDDLEWARE: &[&str] = &["auth", "audit"];`, checked
+/// against `src/middleware.rs` (a `pub fn auth(cx: &mut Cx) -> Result` each):
+/// the calls, in order, before the request does anything else. A route that
+/// names none runs none.
+fn middleware(root: Option<&Path>, items: &rust_scan::Items, rel: &str) -> Result<String, String> {
+    let Some(c) = items.constant("MIDDLEWARE") else {
+        return Ok(String::new());
+    };
+    let shape =
+        "`const MIDDLEWARE: &[&str] = &[\"auth\"];`, names of functions in src/middleware.rs";
+    let at = |why: String| format!("{rel}:{}: {why}", c.line);
+    let Some(root) = root else {
+        return Err(at(
+            "hooks.rs has `before`, which runs for every request: call the functions there".into(),
+        ));
+    };
+    let list = (c.value.trim().strip_prefix('&'))
+        .and_then(|v| v.trim().strip_prefix('[')?.strip_suffix(']'));
+    let list = list.filter(|_| !c.is_static);
+    let mut names = Vec::new();
+    for n in list
+        .ok_or_else(|| at(format!("`MIDDLEWARE` must be {shape}")))?
+        .split(',')
+    {
+        let n = n.trim();
+        if n.is_empty() {
+            continue;
+        }
+        let n = n.trim_matches('"');
+        let ident = !n.is_empty()
+            && !n.starts_with(|c: char| c.is_ascii_digit())
+            && n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+        if !ident {
+            return Err(at(format!(
+                "`{n}` is not a function name; `MIDDLEWARE` is {shape}"
+            )));
+        }
+        names.push(n);
+    }
+    let file = root.join("src").join("middleware.rs");
+    let src = crate::read_source(&file).map_err(|_| at(format!("`MIDDLEWARE` names functions of src/middleware.rs, which is not there: add it with `pub fn {}(cx: &mut Cx) -> Result`", names.first().copied().unwrap_or("auth"))))?;
+    let known = rust_scan::scan(&src).map_err(|e| format!("src/middleware.rs: {e}"))?;
+    // The const is read, so it is not unused.
+    let mut out = String::from("let _ = super::MIDDLEWARE; ");
+    for n in names {
+        if !known.function(n).is_some_and(|f| f.public) {
+            return Err(at(format!(
+                "src/middleware.rs has no `pub fn {n}(cx: &mut Cx) -> Result`"
+            )));
+        }
+        out.push_str(&format!("middleware::{n}(cx)?; "));
     }
     Ok(out)
 }
@@ -5091,7 +5157,7 @@ fn hooks(root: &Path) -> Result<(Option<UserMod>, bool), String> {
             _ => {}
         }
     }
-    let guard = guards(&items, "src/hooks.rs", &mut shims)?;
+    let guard = guards(None, &items, "src/hooks.rs", &mut shims)?;
     add_guard(&mut shims, &guard, items.function("before").is_some());
     let waits = items.function("before").is_some_and(|f| f.is_async);
     Ok((
@@ -10039,6 +10105,66 @@ fn report(cx: &mut Cx, err: &Error) {}",
             err.unwrap_err()
                 .contains("a layout's `RATE_LIMIT` does nothing")
         );
+    }
+
+    #[test]
+    fn named_middleware_is_resolved_into_the_route() {
+        let mw = (
+            "src/middleware.rs",
+            "pub fn auth(cx: &mut Cx) -> Result { Ok(()) }\npub fn audit(cx: &mut Cx) -> Result { Ok(()) }\nfn hidden() {}",
+        );
+        let page = (
+            "src/routes/admin/+page.wisp",
+            "---\nconst MIDDLEWARE: &[&str] = &[\"auth\", \"audit\"];\n---\nx",
+        );
+        let code = app("mw-page", &[mw, page, ("src/routes/+page.wisp", "y")]).unwrap();
+        assert!(
+            code.contains("middleware::auth(cx)?; middleware::audit(cx)?; Ok(()) }"),
+            "{code}"
+        );
+        // A folder's: in its layout, for every page below.
+        let layout = (
+            "src/routes/team/+layout.wisp",
+            "---\nconst MIDDLEWARE: &[&str] = &[\"auth\"];\n---\n{@render children()}",
+        );
+        let code = app(
+            "mw-layout",
+            &[mw, layout, ("src/routes/team/+page.wisp", "x")],
+        )
+        .unwrap();
+        assert!(code.contains("middleware::auth(cx)?; Ok(()) }"), "{code}");
+        // An endpoint's.
+        let rs = "const MIDDLEWARE: &[&str] = &[\"auth\"];\nfn get() {}";
+        let code = app("mw-server", &[mw, ("src/routes/+server.rs", rs)]).unwrap();
+        assert!(code.contains("middleware::auth(cx)?;"), "{code}");
+        // Nothing named, nothing run.
+        let code = app("mw-none", &[mw, ("src/routes/+page.wisp", "x")]).unwrap();
+        assert!(!code.contains("middleware::"), "{code}");
+        for (name, files, want) in [
+            ("mw-nofn", vec![mw, page], "no `pub fn nope"),
+            ("mw-private", vec![mw, page], "no `pub fn hidden"),
+            (
+                "mw-nofile",
+                vec![page],
+                "src/middleware.rs, which is not there",
+            ),
+        ] {
+            let bad = match name {
+                "mw-nofn" => "---\nconst MIDDLEWARE: &[&str] = &[\"nope\"];\n---\nx",
+                "mw-private" => "---\nconst MIDDLEWARE: &[&str] = &[\"hidden\"];\n---\nx",
+                _ => "---\nconst MIDDLEWARE: &[&str] = &[\"auth\"];\n---\nx",
+            };
+            let files: Vec<_> = files
+                .into_iter()
+                .filter(|f| f.0 != page.0)
+                .chain([(page.0, bad)])
+                .collect();
+            let err = app(name, &files).unwrap_err();
+            assert!(err.contains(want), "{name}: {err}");
+        }
+        let numbers = "---\nconst MIDDLEWARE: &[&str] = &[\"1x\"];\n---\nx";
+        let err = app("mw-ident", &[mw, (page.0, numbers)]).unwrap_err();
+        assert!(err.contains("is not a function name"), "{err}");
     }
 
     #[test]

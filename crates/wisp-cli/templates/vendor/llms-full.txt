@@ -15,6 +15,7 @@ package.json                npm packages for browser code: `wisp add canvas-conf
 add/<name>/recipe           `wisp add <name>`: lines `dep <Cargo line>`, `env K=v` (.env.example), `file <path>` (copied from add/<name>/<path>), `note`; idempotent, `--force` replaces files; `wisp add` lists
 .env                        X=…: `wisp::env("X")`, `env.PUBLIC_X` in browser code
 src/hooks.rs                fn init() once; fn before(cx) every request
+src/middleware.rs           named middleware: `pub fn auth(cx: &mut Cx) -> Result`, used by `const MIDDLEWARE`
 src/db.rs                   models and tables; its `pub` items are in every route file
 src/NAME.rs                 any module, no `mod` line: `NAME::f()` everywhere
 src/remote.rs               #[remote] fns browser code calls (or in a page's block)
@@ -89,6 +90,9 @@ Block rules:
   requests a minute per client address, then a 429; `const CORS: &str = "*";`
   is `cx.cors("*")?`; `const TIMEOUT: u32 = 5;` (page or `+server.rs`) a 503
   after 5 s. They run first; a route that sets none pays nothing.
+  `const MIDDLEWARE: &[&str] = &["auth"];` (page, `+server.rs`, or a `+layout`
+  block for its pages) first runs `pub fn auth(cx: &mut Cx) -> Result` of
+  `src/middleware.rs`, in order (an `Err` answers); a route naming none runs none.
   `const SIGNED_IN: bool = true;` in a `+layout.wisp` block: its pages and
   actions are for members (303 to sign in, 401 for JSON).
 - `CACHE`, `CACHE_PUBLIC`, `SSR` and `PRERENDER` in a `+layout` block are its

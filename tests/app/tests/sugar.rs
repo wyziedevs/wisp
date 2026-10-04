@@ -66,6 +66,19 @@ fn a_route_limits_and_times_itself() {
 }
 
 #[test]
+fn named_middleware_runs_first_in_a_page_and_a_layout() {
+    let mut app = client::<Site>();
+    // `const MIDDLEWARE: &[&str] = &["gate", "stamp"];` (src/middleware.rs).
+    assert_eq!(app.get("/t/gated").status, 403);
+    let ok = app.get("/t/gated?key=open");
+    assert_eq!(ok.status, 200);
+    assert_eq!(ok.header("x-stamped"), Some("yes"));
+    // In a layout: every page below.
+    assert_eq!(app.get("/t/gate").status, 403);
+    assert_eq!(app.get("/t/gate?key=open").status, 200);
+}
+
+#[test]
 fn an_upload_param_keeps_any_file() {
     let mut app = client::<Site>();
     let page = app.get("/t/docs").text().to_string();
