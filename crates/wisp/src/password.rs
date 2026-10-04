@@ -186,7 +186,7 @@ async fn off_worker<T: Send + 'static>(
     match answer.await {
         Ok(Ok(v)) => Ok(v),
         Ok(Err(panic)) => resume_unwind(panic),
-        Err(_) => panic!("a password hash was dropped before it ran"),
+        Err(_) => Err(crate::Error::new(503, "A password check was dropped")),
     }
 }
 

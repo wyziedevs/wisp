@@ -126,7 +126,10 @@ impl Url {
         let (host, port) = match authority.strip_prefix('[') {
             Some(v6) => {
                 let (host, after) = v6.split_once(']')?;
-                (host, after.strip_prefix(':'))
+                match after {
+                    "" => (host, None),
+                    _ => (host, Some(after.strip_prefix(':')?)),
+                }
             }
             None => match authority.rsplit_once(':') {
                 Some((host, port)) => (host, Some(port)),
@@ -231,6 +234,10 @@ fn parse(buf: &[u8], eof: bool, head: bool) -> std::result::Result<Option<Reply>
         Err(_) => return Err("the reply is not HTTP"),
     };
     let status = res.code.ok_or("the reply is not HTTP")?;
+    // An interim reply (100, 103) comes before the real one: skipped.
+    if (100..200).contains(&status) && status != 101 {
+        return parse(&buf[used..], eof, head);
+    }
     let find = |name: &'static str| {
         res.headers
             .iter()
@@ -413,6 +420,7 @@ mod tests {
             "http://",
             "http://user:pw@example.com/",
             "http://example.com:0/",
+            "http://[::1]junk/",
             "http://example.com:99999/",
             "http://exa mple.com/",
             "http://example.com/a b",
@@ -420,6 +428,21 @@ mod tests {
         ] {
             assert!(Url::parse(bad).is_none(), "{bad:?}");
         }
+    }
+
+    /// A 100 or 103 before the answer is not the answer.
+    #[test]
+    fn interim_replies_are_skipped() {
+        let wire = b"HTTP/1.1 103 Early Hints
+link: </a>
+
+HTTP/1.1 200 OK
+content-length: 2
+
+hi";
+        let r = parse(wire, false, false).unwrap().unwrap();
+        assert_eq!((r.status, r.text()), (200, "hi"));
+        assert!(parse(&wire[..40], false, false).unwrap().is_none());
     }
 
     #[test]
