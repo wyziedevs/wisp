@@ -8,7 +8,7 @@ export async function upload(prev, form) {
   if (!user) redirect('/login');
   const file = form.get('avatar');
   if (!file?.type?.startsWith('image/')) return { error: 'Choose an image' };
-  if (file.size > 1024 * 1024) return { error: 'At most 1 MB' };
+  if (file.size > 2 * 1024 * 1024) return { error: 'At most 2 MB' };
   user.avatar = { type: file.type, bytes: new Uint8Array(await file.arrayBuffer()) };
   redirect('/dashboard');
 }

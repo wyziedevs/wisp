@@ -6,7 +6,7 @@
 
 <svelte:head><title>Avatar</title></svelte:head>
 <form method="POST" enctype="multipart/form-data" use:enhance>
-	<input name="avatar" type="file" accept="image/*" />
-	{#if form?.error}<p>{form.error}</p>{/if}
+	<label>Avatar <input name="avatar" type="file" required accept="image/*" />
+		{#if form?.error}<small class="problem">{form.error}</small>{/if}</label>
 	<button>Upload</button>
 </form>
