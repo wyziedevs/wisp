@@ -10,6 +10,7 @@ fn bump() {
 
 let count = COUNT.load(Ordering::Relaxed);
 ---
+
 <p id="server">{count}</p>
 <p id="seen">{:data.count}</p>
 <p id="client">{:clicks}</p>

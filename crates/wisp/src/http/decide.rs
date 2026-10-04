@@ -904,7 +904,7 @@ pub(super) fn redirect_reply(cx: &Cx, e: Error, reply: &mut Reply) {
         } else {
             name
         };
-        crate::cx::put_one(&mut reply.headers, name, value);
+        crate::headers::set_in(&mut reply.headers, name, value);
     }
 }
 
@@ -973,7 +973,7 @@ pub(super) fn error_reply(
         Some((e.status, message))
     };
     if let Some((name, value)) = e.header.take().map(|h| *h) {
-        crate::cx::put_one(&mut reply.headers, name, value);
+        crate::headers::set_in(&mut reply.headers, name, value);
     }
     (failure, page)
 }

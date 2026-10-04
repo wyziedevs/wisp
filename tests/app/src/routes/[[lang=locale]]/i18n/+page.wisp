@@ -1,6 +1,7 @@
 ---
 let n: u32 = cx.query_or("n", 0);
 ---
+
 <title>{t("i18n.title")}</title>
 <h1>{t("i18n.title")}</h1>
 <p class="count">{t("i18n.items", n)}</p>

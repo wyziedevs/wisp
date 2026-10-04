@@ -5,5 +5,6 @@ fn default(#[validate(len = 1..=50)] name: String, email: Email) {
     redirect("/")
 }
 ---
+
 <title>Contact</title>
 <form fields><button>Send</button></form>

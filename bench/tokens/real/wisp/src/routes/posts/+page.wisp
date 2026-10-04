@@ -6,6 +6,7 @@ fn remove(id: u64) {
 
 let posts = POSTS.page(cx, 10);
 ---
+
 <title>Posts</title>
 <a href="/posts/new">New post</a>
 {#each posts as post}

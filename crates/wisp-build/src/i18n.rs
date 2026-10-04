@@ -390,8 +390,10 @@ fn string(text: &str, i: usize) -> Result<(String, usize), String> {
                         if rest.starts_with("\\u") {
                             chars.next();
                             chars.next();
-                            let low = hex(&mut chars).ok_or("a bad \\u escape")?;
-                            u = 0x10000 + ((u - 0xd800) << 10) + (low.wrapping_sub(0xdc00) & 0x3ff);
+                            let low = hex(&mut chars)
+                                .filter(|l| (0xdc00..0xe000).contains(l))
+                                .ok_or("a bad \\u escape")?;
+                            u = 0x10000 + ((u - 0xd800) << 10) + (low - 0xdc00);
                         }
                     }
                     out.push(char::from_u32(u).ok_or("a bad \\u escape")?);
@@ -983,6 +985,14 @@ mod tests {
 
     const EN: &str = "{\n  \"hi\": \"Hello, {name}!\",\n  \"cart\": {\n    \"items\": \"{count, plural, =0 {No items} one {# item} other {# items}}\",\n    \"title\": \"Cart\"\n  }\n}\n";
     const FR: &str = "{\"hi\": \"Bonjour {name} !\", \"cart.items\": \"{count, plural, one {# article} many {# d'articles} other {# articles}}\", \"cart\": {\"title\": \"Panier\"}}";
+
+    #[test]
+    fn surrogate_pairs() {
+        assert_eq!(string(r#""😀""#, 0).unwrap().0, "\u{1f600}");
+        // A high surrogate needs a low one after it, not any `\u`.
+        assert!(string(r#""\ud83dA""#, 0).is_err());
+        assert!(string(r#""\udc00""#, 0).is_err());
+    }
 
     #[test]
     fn reads_and_checks_locales() {

@@ -8,6 +8,7 @@ fn add(text: String) {
 
 let posts = POSTS.page(cx, 2);
 ---
+
 {#each posts as post}
   <p>{post}</p>
 {/each}

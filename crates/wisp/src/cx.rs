@@ -5,7 +5,10 @@
 //! and, once warm, nothing is allocated. Owning the buffer (rather than
 //! borrowing it) keeps `Cx` free of lifetimes: handlers take `&mut Cx`.
 
+use crate::codec::new_id;
+pub(crate) use crate::codec::{hex_digit, valid_header};
 use crate::form::{Form, pairs};
+use crate::headers::Headers;
 use crate::sign;
 use std::any::{Any, TypeId};
 use std::borrow::Cow;
@@ -171,14 +174,9 @@ pub struct Cx {
     /// The response's headers, `set-cookie` among them: `cookie` reads what
     /// this request set before what it sent, so a page's `load` sees what
     /// its action just stored.
-    out_headers: Vec<(Cow<'static, str>, Cow<'static, str>)>,
-    /// How many of `out_headers` the `before` hook set. Those stay on an
-    /// error page; a handler's are dropped with the page it did not finish.
-    /// A `u32` packs it with the fields beside it.
-    kept_headers: u32,
-    /// [`Cx::set_header`] set a [`single`] header, which takes the place of
-    /// the response's own when it is sent.
-    replaces: bool,
+    /// Marked after the `before` hook: its headers stay on an error page;
+    /// a handler's are dropped with the page it did not finish.
+    out_headers: Headers,
     /// Signed cookies whose signature held, as (name, cookie as read): each
     /// is checked once a request.
     verified: std::sync::Mutex<Vec<(String, String)>>,
@@ -215,9 +213,7 @@ impl Cx {
             params: [Span::default(); MAX_PARAMS],
             decoded: [const { None }; MAX_PARAMS],
             status: 200,
-            out_headers: Vec::new(),
-            kept_headers: 0,
-            replaces: false,
+            out_headers: Headers::default(),
             verified: std::sync::Mutex::new(Vec::new()),
             locals: Vec::new(),
             json: std::sync::OnceLock::new(),
@@ -235,8 +231,6 @@ impl Cx {
         self.clear_params();
         self.status = 200;
         self.out_headers.clear();
-        self.kept_headers = 0;
-        self.replaces = false;
         self.verified
             .get_mut()
             .unwrap_or_else(|e| e.into_inner())
@@ -639,16 +633,28 @@ impl Cx {
 
     /// The client's IP address. Behind a proxy, set `WISP_CLIENT_IP_HEADER`
     /// to the header it puts the address in (`x-forwarded-for`, whose last
-    /// entry the proxy added, or `x-real-ip`, `cf-connecting-ip`...). Without
+    /// entry of its last line the proxy added, or `x-real-ip`,
+    /// `cf-connecting-ip`...). Without
     /// it, or when that header holds no address, this is the peer's address:
     /// a header any client can send is never trusted by default.
     pub fn client_ip(&self) -> IpAddr {
         let from_proxy = crate::settings()
             .client_ip_header
             .as_deref()
-            .and_then(|h| self.header(h))
-            .and_then(|v| v.rsplit(',').next()?.trim().parse().ok());
+            .and_then(|h| self.proxy_ip(h));
         from_proxy.unwrap_or(self.wire.peer.ip())
+    }
+
+    /// The last address in the last `header` line: the one the proxy
+    /// added. A proxy that appends its own line (HAProxy's `forwardfor`)
+    /// leaves the client's forged line first.
+    fn proxy_ip(&self, header: &str) -> Option<IpAddr> {
+        let v = self
+            .headers()
+            .filter(|(n, _)| n.eq_ignore_ascii_case(header))
+            .last()?
+            .1;
+        v.rsplit(',').next()?.trim().parse().ok()
     }
 
     /// Status for a rendered page. Endpoints set it on their `Response`.
@@ -671,27 +677,17 @@ impl Cx {
             valid_header(&name, &value),
             "invalid header {name:?}: {value:?}"
         );
-        if single(&name) {
-            // The `before` hook's stays below the kept boundary, shadowed,
-            // so a failed page brings it back (see `Cx::shadow`).
-            let (kept, mut at) = (self.kept_headers as usize, 0);
-            self.out_headers.retain(|(n, _)| {
-                at += 1;
-                at <= kept || !n.eq_ignore_ascii_case(&name)
-            });
-            self.replaces = true;
-        }
-        self.out_headers.push((name, Cow::Owned(value)));
+        self.out_headers.set(name, Cow::Owned(value));
     }
 
     /// Whether a header of `name` is set.
     pub(crate) fn has_out(&self, name: &str) -> bool {
-        (self.out_headers.iter()).any(|(n, _)| n.eq_ignore_ascii_case(name))
+        self.out_headers.has(name)
     }
 
     /// Adds a response header whose value is known to be one.
     pub(crate) fn put(&mut self, name: impl Into<Cow<'static, str>>, value: Cow<'static, str>) {
-        self.out_headers.push((name.into(), value));
+        self.out_headers.append(name.into(), value);
     }
 
     // The response so far, as the server reads it: the status, the headers
@@ -719,13 +715,13 @@ impl Cx {
     /// page.
     #[inline]
     pub(crate) fn keep_headers(&mut self) {
-        self.kept_headers = self.out_headers.len() as u32;
+        self.out_headers.mark();
     }
 
     /// The headers the handler set, after the `before` hook's.
     #[inline]
     pub(crate) fn page_headers(&self) -> &[(Cow<'static, str>, Cow<'static, str>)] {
-        &self.out_headers[self.kept_headers as usize..]
+        self.out_headers.since_mark()
     }
 
     /// Takes [`Cx::page_headers`] out.
@@ -733,49 +729,19 @@ impl Cx {
     pub(crate) fn take_page_headers(
         &mut self,
     ) -> std::vec::Drain<'_, (Cow<'static, str>, Cow<'static, str>)> {
-        if self.replaces {
-            self.shadow();
-        }
-        self.out_headers.drain(self.kept_headers as usize..)
-    }
-
-    /// Drops the `before` hook's single-valued headers the handler set
-    /// again: the page worked, so the handler's stand.
-    #[cold]
-    fn shadow(&mut self) {
-        let kept = self.kept_headers as usize;
-        let (hook, page) = self.out_headers.split_at(kept);
-        let set = |n: &str| (page.iter()).any(|(o, _)| o.eq_ignore_ascii_case(n));
-        let gone: Vec<bool> = hook.iter().map(|(n, _)| single(n) && set(n)).collect();
-        let mut at = 0;
-        self.out_headers.retain(|_| {
-            at += 1;
-            !gone.get(at - 1).copied().unwrap_or(false)
-        });
-        self.kept_headers -= gone.iter().filter(|g| **g).count() as u32;
+        self.out_headers.take_since_mark()
     }
 
     /// Drops [`Cx::page_headers`], with the page that failed.
     #[inline]
     pub(crate) fn drop_page_headers(&mut self) {
-        self.out_headers.truncate(self.kept_headers as usize);
+        self.out_headers.rollback();
     }
 
     /// Moves every header set onto the end of `to`.
     #[inline]
     pub(crate) fn send_headers(&mut self, to: &mut Vec<(Cow<'static, str>, Cow<'static, str>)>) {
-        if self.replaces {
-            self.shadow();
-            self.drop_replaced(to);
-        }
-        to.append(&mut self.out_headers);
-    }
-
-    /// Drops from `to` the single-valued headers [`Cx::set_header`] set again.
-    #[cold]
-    fn drop_replaced(&self, to: &mut Vec<(Cow<'static, str>, Cow<'static, str>)>) {
-        let set = |n: &str| (self.out_headers.iter()).any(|(o, _)| o.eq_ignore_ascii_case(n));
-        to.retain(|(n, _)| !(single(n) && set(n)));
+        self.out_headers.send(to);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1054,51 +1020,6 @@ fn parsed_or<T: FromStr>(v: Option<&str>, default: T) -> T {
     v.and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
-/// A fresh request id: 8 random hex digits per process, then a counter, so
-/// two are never alike within a process and, but for a 1 in 4 billion
-/// chance, across processes either.
-fn new_id() -> String {
-    static SEED: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    static COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let seed = *SEED.get_or_init(|| u32::from_le_bytes(crate::sign::random()));
-    let n = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    crate::hex(&(u64::from(seed) << 32 | u64::from(n)).to_be_bytes())
-}
-
-/// A header the response has one of, which a second set replaces:
-/// `content-type`, `cache-control`, `location`, `etag`, in any case.
-/// (`content-length` and `transfer-encoding` the server writes itself and
-/// leaves an app's out.)
-pub(crate) fn single(name: &str) -> bool {
-    ["content-type", "cache-control", "location", "etag"]
-        .iter()
-        .any(|s| name.eq_ignore_ascii_case(s))
-}
-
-/// Pushes `(name, value)` onto `headers`, in place of one of the same name
-/// when it is [`single`].
-pub(crate) fn put_one(
-    headers: &mut Vec<(Cow<'static, str>, Cow<'static, str>)>,
-    name: &'static str,
-    value: String,
-) {
-    if single(name) {
-        headers.retain(|(n, _)| !n.eq_ignore_ascii_case(name));
-    }
-    headers.push((Cow::Borrowed(name), Cow::Owned(value)));
-}
-
-/// A name of visible ASCII but `:`, and a value with no CR, LF or NUL,
-/// eight bytes at a time: nothing that would end the line or the field.
-pub(crate) fn valid_header(name: &str, value: &str) -> bool {
-    use crate::swar::{above, below, eq, none};
-    !name.is_empty()
-        && none(name.as_bytes(), |x| {
-            below(x, 0x21) | above(x, 0x7e) | eq(x, b':')
-        })
-        && none(value.as_bytes(), |x| eq(x, b'\r') | eq(x, b'\n') | eq(x, 0))
-}
-
 /// How a cookie is kept, for [`Cx::set_cookie_with`]. The default is what
 /// [`Cx::set_cookie`] does: the whole site, 400 days, hidden from scripts,
 /// `SameSite=Lax`, unsigned.
@@ -1204,11 +1125,6 @@ pub(crate) fn encode(
 /// rest [`encode`] escapes.
 pub(crate) fn unreserved(b: u8) -> bool {
     b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~')
-}
-
-/// The value of a hex digit, either case.
-pub(crate) fn hex_digit(b: u8) -> Option<u8> {
-    (b as char).to_digit(16).map(|d| d as u8)
 }
 
 // ---- values kept in cookies: #[derive(Cookie)] -------------------------------
@@ -1483,6 +1399,16 @@ mod tests {
             ["Cookie", "Content-Type"]
         );
         assert_eq!(cx.client_ip(), cx.peer().ip());
+    }
+
+    #[test]
+    fn proxy_ip_is_the_last_line_the_proxy_added() {
+        let cx = Cx::for_test(
+            "GET / HTTP/1.1\r\nX-Forwarded-For: 6.6.6.6\r\nx-forwarded-for: 10.0.0.1, 1.2.3.4\r\n\r\n",
+            &[],
+        );
+        assert_eq!(cx.proxy_ip("x-forwarded-for"), "1.2.3.4".parse().ok());
+        assert_eq!(cx.proxy_ip("x-real-ip"), None);
     }
 
     #[test]

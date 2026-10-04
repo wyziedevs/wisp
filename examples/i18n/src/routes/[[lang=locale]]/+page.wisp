@@ -2,6 +2,7 @@
 let count: u32 = cx.query_or("count", 0);
 let locale = cx.locale();
 ---
+
 <title>{t("home.title")}</title>
 <h1>{t("home.title")}</h1>
 <p class="cart">{t("home.cart", count)}</p>

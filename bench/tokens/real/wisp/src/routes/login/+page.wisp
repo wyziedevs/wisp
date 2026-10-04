@@ -5,5 +5,6 @@ fn default(email: Email, password: String) {
     redirect("/dashboard")
 }
 ---
+
 <title>Log in</title>
 <form fields><button>Log in</button></form>

@@ -4,4 +4,5 @@ fn entries() -> Vec<&'static str> {
     vec!["hello", "second-post"]
 }
 ---
+
 <h1>Post {slug}</h1>

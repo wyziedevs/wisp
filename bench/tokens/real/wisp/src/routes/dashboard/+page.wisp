@@ -7,6 +7,7 @@ fn logout() {
 
 let user = cx.user()?;
 ---
+
 <title>Dashboard</title>
 <p>Signed in as {user.email}</p>
 <button action="?/logout">Log out</button>

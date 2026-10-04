@@ -1,0 +1,196 @@
+// Ranking bench: Wisp against the popular frameworks of each host, on a quiet
+// Linux box. Same routes and load tool as ../edge (oha, c=64, median of 5 x
+// 10 s), plus cold start and memory. Servers run on cores 0-1, oha on 2-3.
+//   node rank.mjs --host workerd|node|bun|deno [--dir <out dir>] [--only a,b] [--secs 10] [--runs 5] [--cold 15] [--conns 64]
+// All of a host's servers run at once and every route's runs alternate between
+// them, so noise hurts all alike. Results go to results/<host>.json; `node
+// report.mjs` renders the tables.
+import { spawn, execFileSync } from 'node:child_process';
+import { writeFileSync, readFileSync, readdirSync, existsSync, mkdirSync } from 'node:fs';
+import { join, resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const arg = (k, d) => { const i = process.argv.indexOf('--' + k); return i > 0 ? process.argv[i + 1] : d; };
+const here = dirname(fileURLToPath(import.meta.url));
+const host = arg('host', 'node');
+const out = resolve(arg('dir', join(here, 'out')));
+const secs = arg('secs', '10'), conns = arg('conns', '64'), runs = Number(arg('runs', '5')), colds = Number(arg('cold', '15'));
+const only = arg('only', '').split(',').filter(Boolean);
+const SRV_CPUS = arg('srv-cpus', '0,1'), LOAD_CPUS = arg('load-cpus', '2,3');
+const jar = 'sid=abc123; theme=dark';
+const routes = ['/', '/list1000', '/json-big', '/params/42?q=hello%20world&x=1'].filter((r) => !arg('routes', '') || arg('routes', '').split(',').some((m) => (m === '/' ? r === '/' : r.includes(m))));
+const hdr = (p) => (p.startsWith('/params') ? { cookie: jar } : {});
+const bin = (n) => process.env[n.toUpperCase() + '_BIN'] || n;
+
+// name -> { wisp?, dir (under out), cmd, args, env, workerd? }
+const node = process.execPath;
+const sets = {
+  workerd: {
+    wisp: { wisp: 1, workerd: 1, dir: 'wisp-cf' },
+    hono: { workerd: 1, dir: 'hono-cf' },
+    itty: { workerd: 1, dir: 'itty-cf' },
+    sveltekit: { workerd: 1, dir: 'sveltekit-cf' },
+    astro: { workerd: 1, dir: 'astro-cf' },
+    'react-router': { workerd: 1, dir: 'rr-cf' },
+    next: { workerd: 1, dir: 'next-cf' },
+  },
+  node: {
+    'wisp raw': { wisp: 1, dir: 'wisp-node', cmd: node, args: ['server.mjs'] },
+    'wisp node:http': { wisp: 1, dir: 'wisp-node', cmd: node, args: ['server.mjs'], env: { WISP_NODE_HTTP: '1' } },
+    hono: { dir: 'micro', cmd: node, args: ['node-hono.mjs'] },
+    fastify: { dir: 'micro', cmd: node, args: ['fastify.mjs'] },
+    express: { dir: 'micro', cmd: node, args: ['express.mjs'] },
+    sveltekit: { dir: 'sveltekit-node', cmd: node, args: ['index.js'] },
+    next: { dir: 'next-node', cmd: node, args: ['server.js'], env: { HOSTNAME: '127.0.0.1' } },
+  },
+  bun: {
+    'wisp raw': { wisp: 1, dir: 'wisp-bun', cmd: bin('bun'), args: ['server.mjs'] },
+    'wisp Bun.serve': { wisp: 1, dir: 'wisp-bun', cmd: bin('bun'), args: ['server.mjs'], env: { WISP_NODE_HTTP: '1' } },
+    hono: { dir: 'micro', cmd: bin('bun'), args: ['hono-bun.ts'] },
+    elysia: { dir: 'micro', cmd: bin('bun'), args: ['elysia.ts'] },
+  },
+  deno: {
+    'wisp raw': { wisp: 1, dir: 'wisp-deno', cmd: bin('deno'), args: ['run', '-A', 'main.ts'] },
+    'wisp Deno.serve': { wisp: 1, dir: 'wisp-deno', cmd: bin('deno'), args: ['run', '-A', 'main.ts'], env: { WISP_NODE_HTTP: '1' } },
+    hono: { dir: 'micro', cmd: bin('deno'), args: ['run', '-A', 'hono-deno.ts'] },
+    oak: { dir: 'oak', cmd: bin('deno'), args: ['run', '-A', 'oak.ts'] },
+    fresh: { dir: 'fresh', cmd: bin('deno'), args: ['serve', '-A', '--host', '127.0.0.1', '--port', '{port}', '_fresh/server.js'] },
+  },
+}[host];
+
+// workerd: every .js/.mjs file of the app dir is an ES module, .wasm is wasm;
+// compat date and flags come from meta.json (written by build.sh). ASSETS is a
+// worker that answers 404; WORKER_SELF_REFERENCE points at the worker itself.
+function workerdConfig(a) {
+  const meta = existsSync(join(a.cwd, 'meta.json')) ? JSON.parse(readFileSync(join(a.cwd, 'meta.json'), 'utf8')) : {};
+  const entry = meta.entry || 'worker.js';
+  const files = [];
+  const walk = (d) => {
+    for (const e of readdirSync(join(a.cwd, d), { withFileTypes: true })) {
+      const rel = d === '.' ? e.name : `${d}/${e.name}`;
+      if (e.isDirectory()) walk(rel);
+      else if (/\.(m?js|wasm)$/.test(e.name)) files.push(rel);
+    }
+  };
+  walk('.');
+  files.sort((x, y) => (x === entry ? -1 : y === entry ? 1 : 0));
+  const mods = files.map((f) => `(name = "${f}", ${f.endsWith('.wasm') ? 'wasm' : 'esModule'} = embed "${f}")`);
+  const flags = (meta.flags || []).map((f) => `"${f}"`).join(', ');
+  const path = join(a.cwd, 'workerd.capnp');
+  writeFileSync(path, `using Workerd = import "/workerd/workerd.capnp";
+const config :Workerd.Config = (
+  services = [
+    (name = "main", worker = (modules = [${mods.join(', ')}], compatibilityDate = "${meta.date || '2025-09-01'}", compatibilityFlags = [${flags}],
+      bindings = [(name = "ASSETS", service = "assets"), (name = "WORKER_SELF_REFERENCE", service = "main")])),
+    (name = "assets", worker = (serviceWorkerScript = "addEventListener('fetch', (e) => e.respondWith(new Response('not found', { status: 404 })))", compatibilityDate = "2025-09-01")),
+  ],
+  sockets = [(name = "http", address = "127.0.0.1:${a.port}", http = (), service = "main")],
+);
+`);
+  return path;
+}
+
+const apps = Object.entries(sets).filter(([n]) => !only.length || only.includes(n)).map(([name, s], i) => {
+  const a = { name, wisp: !!s.wisp, cwd: join(out, s.dir), port: 4600 + i, env: { ...s.env, PORT: String(4600 + i) } };
+  if (!existsSync(a.cwd)) return a;
+  if (s.workerd) { a.cmd = bin('workerd'); a.args = ['serve', workerdConfig(a)]; } else { a.cmd = s.cmd; a.args = s.args.map((x) => x.replace('{port}', a.port)); }
+  return a;
+});
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const median = (a) => [...a].sort((x, y) => x - y)[a.length >> 1];
+const start = (a) => spawn('taskset', ['-c', SRV_CPUS, a.cmd, ...a.args], { cwd: a.cwd, env: { ...process.env, NODE_ENV: 'production', ...a.env }, stdio: 'ignore', detached: true });
+// Kill the whole process group (Next, Deno and friends leave children).
+const kill = (c) => { try { process.kill(-c.pid, 'SIGKILL'); } catch {} };
+const url = (a, p) => `http://127.0.0.1:${a.port}${p}`;
+const get = (a, p) => fetch(url(a, p), { headers: { connection: 'close', ...hdr(p) } });
+
+// Resident memory of the server and all its children, MB.
+function rss(pid) {
+  const ppid = new Map(), kb = new Map();
+  for (const d of readdirSync('/proc').filter((x) => /^\d+$/.test(x))) {
+    try {
+      const st = readFileSync(`/proc/${d}/stat`, 'utf8');
+      ppid.set(+d, +st.slice(st.lastIndexOf(')') + 2).split(' ')[1]);
+      kb.set(+d, +/VmRSS:\s+(\d+)/.exec(readFileSync(`/proc/${d}/status`, 'utf8'))?.[1] || 0);
+    } catch {}
+  }
+  let sum = 0;
+  const walk = (p) => { sum += kb.get(p) || 0; for (const [c, pp] of ppid) if (pp === p) walk(c); };
+  walk(pid);
+  return Math.round(sum / 1024);
+}
+
+// Same answers whatever the framework: exact text, parsed JSON, HTML with a thousand escaped items.
+const ref = Array.from({ length: 200 }, (_, k) => ({ id: k + 1, name: `user-${k + 1}`, active: (k + 1) % 3 !== 0, score: ((k + 1) * 37) % 101, tags: ['a', `t${(k + 1) % 7}`] }));
+async function check(a) {
+  const bad = [];
+  for (const p of routes) {
+    const r = await get(a, p), t = await r.text();
+    let ok = r.status === 200;
+    if (p === '/') ok &&= t === 'hello';
+    else if (p === '/list1000') ok &&= (t.match(/<li[ >]/g) || []).length === 1000 && /Item &lt;1000(&gt;|>) &amp; co/.test(t);
+    else if (p === '/json-big') ok &&= JSON.stringify(JSON.parse(t)) === JSON.stringify(ref);
+    else ok &&= t === 'id=42 q=hello world sid=abc123';
+    if (!ok) bad.push(`${p} ${r.status} ${t.slice(0, 80)}`);
+  }
+  return bad;
+}
+
+async function cold(a) {
+  const t = performance.now();
+  const c = start(a);
+  for (;;) {
+    if (c.exitCode !== null) return NaN;
+    if (performance.now() - t > 60000) { kill(c); return NaN; }
+    try { const r = await get(a, '/'); await r.text(); if (r.status === 200) break; } catch { await sleep(2); }
+  }
+  const ms = performance.now() - t;
+  kill(c);
+  await sleep(400);
+  return ms;
+}
+
+function oha(a, path, s) {
+  const j = JSON.parse(execFileSync('taskset', ['-c', LOAD_CPUS, 'oha', '-z', `${s}s`, '-c', conns, '--no-tui', '--output-format', 'json', ...(path.startsWith('/params') ? ['-H', `cookie: ${jar}`] : []), url(a, path)], { maxBuffer: 1 << 26 }));
+  const bad = Object.entries(j.statusCodeDistribution).filter(([k]) => k !== '200').reduce((n, [, v]) => n + v, 0);
+  return { rps: j.summary.requestsPerSec, p99: j.latencyPercentiles.p99 * 1000, bad };
+}
+
+const res = { host, when: new Date().toISOString(), secs, runs, conns, colds, cells: {}, cold: {}, rss: {}, failed: {} };
+mkdirSync(join(here, 'results'), { recursive: true });
+const save = () => writeFileSync(join(here, 'results', `${host}.json`), JSON.stringify(res, null, 1));
+const live = [];
+try {
+  for (const a of apps) {
+    if (!existsSync(a.cwd)) { res.failed[a.name] = 'missing ' + a.cwd; console.log(host, a.name, 'MISSING'); continue; }
+    const cs = [];
+    for (let i = 0; i < colds; i++) cs.push(await cold(a));
+    const ok = cs.filter((x) => x === x);
+    if (!ok.length) { res.failed[a.name] = 'does not start'; console.log(host, a.name, 'DOES NOT START'); continue; }
+    res.cold[a.name] = { median: +median(ok).toFixed(1), min: +Math.min(...ok).toFixed(1), n: ok.length };
+    console.log(host, a.name, 'cold ms', res.cold[a.name].median);
+    a.child = start(a);
+    await sleep(3000);
+    const bad = await check(a).catch((e) => [String(e)]);
+    if (bad.length) { res.failed[a.name] = bad.join(' | '); console.log(host, a.name, 'WRONG OUTPUT', bad); kill(a.child); continue; }
+    live.push(a);
+  }
+  save();
+  for (const a of live) res.rss[a.name] = { idle: rss(a.child.pid) };
+  for (const p of routes) {
+    const rs = live.map(() => []);
+    for (const a of live) { await get(a, p).then((r) => r.text()); oha(a, p, 3); }
+    for (let i = 0; i < runs; i++) live.forEach((a, k) => rs[k].push(oha(a, p, secs)));
+    live.forEach((a, k) => {
+      const m = (f) => +median(rs[k].map((r) => r[f])).toFixed(1);
+      res.cells[`${a.name} ${p}`] = { rps: Math.round(m('rps')), p99: m('p99'), runs: rs[k].map((r) => Math.round(r.rps)), bad: rs[k].reduce((n, r) => n + r.bad, 0) };
+      console.log(host, a.name, p, JSON.stringify(res.cells[`${a.name} ${p}`]));
+    });
+    save();
+  }
+  for (const a of live) res.rss[a.name].load = rss(a.child.pid);
+  save();
+} finally {
+  for (const a of apps) if (a.child) kill(a.child);
+}

@@ -142,10 +142,14 @@ pub async fn prerender<A: App>(dir: &Path) -> io::Result<()> {
 pub async fn export<A: App>(dir: &Path, spa: bool) -> io::Result<()> {
     crate::prepare::<A>().await?;
     let mut assets = BTreeSet::new();
+    let site_url = std::env::var_os("SITE_URL").is_some_and(|s| !s.is_empty());
     // Pattern and file of each page the fallback draws.
     let mut drawn: Vec<(&str, String)> = Vec::new();
     for r in A::export_routes() {
-        if r.server {
+        // The sitemap, robots and feed are written below when `SITE_URL` is set.
+        let site_file =
+            site_url && matches!(r.pattern, "/sitemap.xml" | "/robots.txt" | "/feed.xml");
+        if r.server && !site_file {
             println!(
                 "warn {} has a +server.rs, which needs a server, so it is not exported",
                 r.pattern
@@ -198,6 +202,11 @@ pub async fn export<A: App>(dir: &Path, spa: bool) -> io::Result<()> {
                 continue;
             }
             find_assets(reply.text(), &mut assets);
+            if !r.actions && posts(reply.text()) {
+                println!(
+                    "warn {url} has a form that posts, which needs a server: it will not work"
+                );
+            }
             write(dir, &file(&segs), reply.bytes())?;
         }
     }
@@ -208,7 +217,7 @@ pub async fn export<A: App>(dir: &Path, spa: bool) -> io::Result<()> {
         write(dir, "404.html", missing.bytes())?;
     }
     // A static host has no request host: the sitemap needs `SITE_URL`.
-    if std::env::var_os("SITE_URL").is_some_and(|s| !s.is_empty()) {
+    if site_url {
         for f in ["sitemap.xml", "robots.txt", "feed.xml"] {
             let reply = handle::<A>(page(&format!("/{f}"))).await;
             if reply.status == 200 {
@@ -399,6 +408,11 @@ pub(crate) fn url(segs: &[String]) -> String {
         s.push('/');
         let _ = crate::cx::encode(&mut s, seg, crate::cx::unreserved);
     }
+    // Under `trailing_slash(Always)` the other form is a 308, not a page.
+    let file = segs.last().is_some_and(|l| l.contains('.'));
+    if crate::http::slash() == crate::http::TrailingSlash::Always && !file {
+        s.push('/');
+    }
     s
 }
 
@@ -413,6 +427,26 @@ fn file(segs: &[String]) -> String {
 }
 
 /// The `/_app/...` files a page refers to (scripts, CSS, browser modules).
+/// Whether `html` holds a `<form>` that posts (`method="post"`, or an
+/// action `?/name`): a static host cannot answer it.
+fn posts(html: &str) -> bool {
+    let mut rest = html;
+    while let Some(i) = rest.find("<form") {
+        let tail = &rest[i + 5..];
+        let end = tail.find('>').unwrap_or(tail.len());
+        let tag = tail[..end].to_ascii_lowercase();
+        if tag.starts_with([' ', '\n', '\t'])
+            && (tag.contains("method=\"post\"")
+                || tag.contains("method=post")
+                || tag.contains("action=\"?/"))
+        {
+            return true;
+        }
+        rest = &tail[end..];
+    }
+    false
+}
+
 fn find_assets(html: &str, out: &mut BTreeSet<String>) {
     let mut rest = html;
     while let Some(i) = rest.find(crate::protocol::APP_PREFIX) {
@@ -545,6 +579,13 @@ mod tests {
         for odd in ["https://x/t.map", "../t.map", "data:x", ""] {
             assert_eq!(source_map(&format!("//# sourceMappingURL={odd}")), None);
         }
+    }
+
+    #[test]
+    fn forms_that_post_are_found() {
+        assert!(posts("<p></p><form class=\"a\" method=\"post\">"));
+        assert!(posts("<form action=\"?/add\">"));
+        assert!(!posts("<form action=\"/search\" method=\"get\"><formal>"));
     }
 
     #[test]

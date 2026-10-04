@@ -4,7 +4,7 @@ Wisp's wasm build against Hono, SvelteKit (adapter-node) and Next.js
 (standalone) on the same runtime. Three routes, the same output in each:
 `GET /` ("hello", text), `GET /list` (HTML, 50 escaped items), `GET /json`; and the
 realistic routes at the end.
-`apps/` has the four apps. Load: `oha`, 10 s, 64 connections, 3 s warmup, median
+`apps/` has the four apps. Ranking against the other popular frameworks on every host: see the end of this file and `../rank/`. Load: `oha`, 10 s, 64 connections, 3 s warmup, median
 of 3. Deno and Bun are measured at the end of this file.
 
 Setup (from a bench dir, say `C:/wb`):
@@ -603,3 +603,152 @@ Measured and kept as they are:
   first request (a TLS handshake), the first request takes 8.6 ms with the
   warm-up, 23.8 without and 26.1 deferred (Hono 12.2). That idle time is what
   Cloudflare has, so the warm-up stays at load.
+
+## Ranking against the popular frameworks, 2026-10-04 (`bench/rank/`)
+
+Where does Wisp place on each host, against what people actually deploy? Same
+four routes as above (`/` text, `/list1000` HTML with 1,000 escaped items,
+`/json-big` 200 objects, `/params/42?q=hello%20world&x=1` with `cookie: sid=abc123;
+theme=dark`), each framework written the way its docs write it (its own router,
+cookie helper, template or JSX; production build; `NODE_ENV=production`), and
+every app is checked for the same output before it is measured (exact text, the
+same JSON, a thousand escaped `<li>`; the HTML shells differ by framework, which
+is why Fresh, Next, SvelteKit and Astro carry their own head and hydration
+markup). `apps/` holds the apps, `rank.mjs` the harness, `report.mjs` the tables.
+
+Machine: the 4 vCPU Linux VPS (AMD EPYC 7B13, Ubuntu 24.04), idle (load under
+0.1 before the run), nothing else on it. Servers pinned to cores 0-1, `oha` to
+cores 2-3. `oha` 1.16.0, c=64, 3 s warm-up, 5 x 10 s, **median**; cold start is
+spawn to the first complete `GET /` (median of 15); memory is RSS of the server
+and its children after all four routes were loaded. All of a host's servers run
+at once and each route's runs alternate between them, so noise hits all alike.
+Node 24.9.0, Bun 1.4.2, Deno 2.9.7, workerd 1.20261001.1 (bare `workerd serve`,
+not `wrangler dev`, whose proxy caps everything near 1.7k req/s; `wrangler
+deploy --dry-run` bundles each worker, a stub `ASSETS` binding answers 404).
+Hono 4.13.13 (+ @hono/node-server 2.1.3), itty-router 5.0.24, Fastify 5.12.5
+(+ @fastify/cookie), Express 5.2.1 (+ cookie-parser), Elysia 1.4.30, Oak 17.2.0,
+Fresh 2.3.3, SvelteKit 3.0.0 (adapter-node 6.0.0, adapter-cloudflare 8.0.0),
+Astro 7.3.5 (@astrojs/cloudflare 14.3.3), React Router 8.4.0 (@cloudflare/vite-plugin),
+Next 16.3.8 (standalone on Node; @opennextjs/cloudflare 1.20.8 on workerd).
+Wisp is this tree's `wisp build --target node|bun|deno|cloudflare`, with the same
+`apps/wisp` routes as above. "wisp raw" is the default (the runtime's own
+sockets); "wisp node:http", "Bun.serve" and "Deno.serve" are `WISP_NODE_HTTP=1`.
+
+Rebuild everything: `WISP=<wisp binary> bench/rank/build-wisp.sh` (anywhere with
+the Rust toolchain), then on the Linux box `bench/rank/build.sh` and
+`bench/rank/run.sh`; the raw numbers are `bench/rank/results/*.json`.
+
+Reading the tables: each cell is req/s with Wisp's place in parentheses. A place
+counts the other frameworks only; the two Wisp variants do not push each other
+down. Ordered by mean place over the four routes. Cold start and memory: lower
+is better. Throughput swings 15% to 30% between runs on a VPS (the five runs of
+each cell are in the JSON), so a gap under about 10% is a tie, not a loss.
+Nothing in the requested list was skipped (Next on workerd built through
+OpenNext). Fresh was built with `vite build` and served with `deno serve`.
+Next's route handlers are slow on every host here (about 1k
+req/s on Node for `"hello"`), and 19 req/s for 1,000 JSX items on workerd.
+
+### workerd
+
+c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-04. Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).
+
+| framework | `/` | `/list1000` | `/json-big` | `/params` | cold start ms | RSS MB after load |
+|---|---|---|---|---|---|---|
+| itty | 3,564 (#3) | 337 (#2) | 1,570 (#1) | 4,163 (#1) | 53 (#1) | 426 (#4) |
+| hono | 4,217 (#1) | 330 (#3) | 1,537 (#2) | 4,076 (#2) | 58 (#2) | 357 (#2) |
+| **wisp** | **4,002 (#2)** | **626 (#1)** | **1,395 (#3)** | **3,581 (#3)** | **98 (#5)** | **309 (#1)** |
+| sveltekit | 1,974 (#4) | 148 (#5) | 1,128 (#4) | 2,098 (#5) | 80 (#3) | 838 (#7) |
+| astro | 1,768 (#5) | 275 (#4) | 918 (#6) | 2,159 (#4) | 112 (#6) | 585 (#5) |
+| react-router | 1,757 (#6) | 76 (#6) | 1,056 (#5) | 1,373 (#6) | 93 (#4) | 387 (#3) |
+| next | 286 (#7) | 19 (#7) | 204 (#7) | 290 (#7) | 450 (#7) | 601 (#6) |
+
+### Node
+
+c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-04. Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).
+
+| framework | `/` | `/list1000` | `/json-big` | `/params` | cold start ms | RSS MB after load |
+|---|---|---|---|---|---|---|
+| **wisp raw** | **33,575 (#1)** | **2,972 (#1)** | **7,767 (#1)** | **20,022 (#1)** | **203 (#2)** | **120 (#3)** |
+| **wisp node:http** | **11,317 (#3)** | **2,556 (#1)** | **5,424 (#1)** | **8,285 (#2)** | **156 (#1)** | **89 (#1)** |
+| hono | 12,213 (#2) | 847 (#3) | 4,457 (#2) | 7,320 (#3) | 187 (#2) | 95 (#3) |
+| fastify | 11,882 (#3) | 785 (#4) | 4,256 (#3) | 8,994 (#2) | 318 (#5) | 94 (#2) |
+| express | 6,755 (#4) | 860 (#2) | 3,421 (#4) | 5,889 (#4) | 251 (#4) | 157 (#4) |
+| sveltekit | 4,431 (#5) | 447 (#5) | 2,493 (#5) | 3,072 (#5) | 206 (#3) | 279 (#5) |
+| next | 962 (#6) | 50 (#6) | 922 (#6) | 720 (#6) | 835 (#6) | 496 (#6) |
+
+### Bun
+
+c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-04. Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).
+
+| framework | `/` | `/list1000` | `/json-big` | `/params` | cold start ms | RSS MB after load |
+|---|---|---|---|---|---|---|
+| **wisp raw** | **49,417 (#1)** | **4,082 (#1)** | **8,630 (#1)** | **47,525 (#1)** | **74 (#2)** | **40 (#2)** |
+| **wisp Bun.serve** | **24,934 (#3)** | **3,369 (#1)** | **6,525 (#2)** | **21,358 (#3)** | **75 (#2)** | **42 (#2)** |
+| elysia | 48,256 (#2) | 924 (#2) | 6,559 (#2) | 23,468 (#3) | 177 (#3) | 50 (#3) |
+| hono | 45,735 (#3) | 874 (#3) | 5,846 (#3) | 30,840 (#2) | 58 (#1) | 39 (#1) |
+
+### Deno
+
+c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-04. Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).
+
+| framework | `/` | `/list1000` | `/json-big` | `/params` | cold start ms | RSS MB after load |
+|---|---|---|---|---|---|---|
+| **wisp raw** | **39,542 (#2)** | **2,403 (#1)** | **3,939 (#2)** | **34,815 (#1)** | **87 (#2)** | **86 (#2)** |
+| hono | 43,060 (#1) | 860 (#2) | 3,825 (#3) | 28,454 (#2) | 56 (#1) | 51 (#1) |
+| **wisp Deno.serve** | **22,847 (#2)** | **2,260 (#1)** | **3,485 (#4)** | **16,011 (#2)** | **75 (#2)** | **69 (#2)** |
+| fresh | 19,357 (#3) | 519 (#4) | 4,352 (#1) | 7,154 (#4) | 90 (#3) | 98 (#4) |
+| oak | 15,011 (#4) | 750 (#3) | 3,518 (#4) | 10,557 (#3) | 154 (#4) | 86 (#3) |
+
+### Where Wisp is below 3rd or behind Hono
+
+Gap is how far behind in %: lower req/s, or higher cold start and memory. Gap to 3rd is against the framework in 3rd place (Wisp not counted).
+
+| host | Wisp variant | metric | place | Wisp | Hono | behind Hono | behind 3rd |
+|---|---|---|---|---|---|---|---|
+| workerd | wisp | `/` | #2 | 4,002 | 4,217 | 5% | - |
+| workerd | wisp | `/json-big` | #3 | 1,395 | 1,537 | 9% | - |
+| workerd | wisp | `/params` | #3 | 3,581 | 4,076 | 12% | - |
+| workerd | wisp | cold start ms | #5 | 98 | 58 | 69% | 22% (sveltekit) |
+| Node | wisp raw | cold start ms | #2 | 203 | 187 | 8% | - |
+| Node | wisp raw | RSS MB after load | #3 | 120 | 95 | 26% | - |
+| Node | wisp node:http | `/` | #3 | 11,317 | 12,213 | 7% | - |
+| Bun | wisp raw | cold start ms | #2 | 74 | 58 | 28% | - |
+| Bun | wisp raw | RSS MB after load | #2 | 40 | 39 | 3% | - |
+| Bun | wisp Bun.serve | `/` | #3 | 24,934 | 45,735 | 45% | - |
+| Bun | wisp Bun.serve | `/params` | #3 | 21,358 | 30,840 | 31% | - |
+| Bun | wisp Bun.serve | cold start ms | #2 | 75 | 58 | 29% | - |
+| Bun | wisp Bun.serve | RSS MB after load | #2 | 42 | 39 | 8% | - |
+| Deno | wisp raw | `/` | #2 | 39,542 | 43,060 | 8% | - |
+| Deno | wisp raw | cold start ms | #2 | 87 | 56 | 55% | - |
+| Deno | wisp raw | RSS MB after load | #2 | 86 | 51 | 69% | - |
+| Deno | wisp Deno.serve | `/` | #2 | 22,847 | 43,060 | 47% | - |
+| Deno | wisp Deno.serve | `/json-big` | #4 | 3,485 | 3,825 | 9% | 1% (oak) |
+| Deno | wisp Deno.serve | `/params` | #2 | 16,011 | 28,454 | 44% | - |
+| Deno | wisp Deno.serve | cold start ms | #2 | 75 | 56 | 34% | - |
+| Deno | wisp Deno.serve | RSS MB after load | #2 | 69 | 51 | 35% | - |
+
+**What it says.** Wisp (raw sockets) is 1st on every Node and Bun route and on
+Deno `/list1000` and `/params`; on Deno `/` it is 2nd (8% behind Hono, inside
+the noise) and on `/json-big` 2nd (ahead of Hono, behind Fresh). It is 1st on
+`/list1000` on every host (1.9x to 4.7x Hono; the escape and the list are one
+pass over bytes). On
+workerd it is 2nd to 3rd on throughput: `/list1000` is 1st (about 1.9x Hono),
+`/` is 2nd, `/json-big` and `/params` are 3rd behind itty-router and Hono, by 9%
+and 12% from Hono (the known cost of the wasm entry and `JSON.stringify`
+running in V8's C++ for Hono, see above; both inside run-to-run noise on this
+VPS). The `Bun.serve`, `Deno.serve` and `node:http` variants pay the host's
+`Request`/`Response` objects and are the slow Wisp paths (45% behind Hono on
+Bun `/`, 47% on Deno `/`): the raw path is the default, so those rows are the
+"portable" option, not the headline.
+
+**Where Wisp does not place 3rd or ahead of Hono.** Throughput: workerd `/`
+(5% behind Hono), `/json-big` (9%), `/params` (12%); Deno `/` (8% raw, 47%
+`Deno.serve`), Deno `Deno.serve` `/json-big` (4th, 9% behind Hono) and `/params`
+(44%); Bun `Bun.serve` `/` (45%) and `/params` (31%); Node `node:http` `/` (7%).
+Cold start is Wisp's weakest column: 98 ms on workerd (5th, 69% behind Hono's
+58 ms; the wasm has to be compiled and warmed at load, see the warm-up
+measurements above), 203 ms on Node raw (2nd, 8% behind Hono), 74 ms on Bun
+(28%), 87 ms on Deno (55%). Memory after load: Node raw 120 MB against Hono's
+95 (26%), Deno 86 against 51 (69%), Bun 40 against 39. Wisp has the smallest
+footprint on workerd (309 MB, 1st) and with `node:http` on Node (89 MB, 1st).
+The full list, with the gap to 3rd where Wisp is below it, is the last table.

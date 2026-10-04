@@ -5,5 +5,6 @@ fn default(post: Post) {
     redirect("/posts")
 }
 ---
+
 <title>New post</title>
 <form fields><button>Create</button></form>

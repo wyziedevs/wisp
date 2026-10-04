@@ -1,0 +1,21 @@
+{
+  "name": "rank-rr",
+  "private": true,
+  "type": "module",
+  "scripts": { "build": "react-router build" },
+  "dependencies": {
+    "isbot": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "react-router": "latest"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "latest",
+    "@react-router/dev": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "typescript": "latest",
+    "vite": "latest",
+    "wrangler": "latest"
+  }
+}

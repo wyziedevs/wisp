@@ -11,6 +11,7 @@ fn remove(id: u64) {
     TODOS.remove(id);
 }
 ---
+
 <title>Todos {TODOS.len()}</title>
 <form action="?/add">
   <input aria-label="text" name="text">

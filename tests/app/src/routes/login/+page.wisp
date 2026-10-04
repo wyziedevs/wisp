@@ -15,6 +15,7 @@ fn logout() -> Result {
     redirect("/")
 }
 ---
+
 <form method="post">
   <input aria-label="name" name="name">
   <button>Sign in</button>

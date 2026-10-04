@@ -9,4 +9,5 @@ if cx.query("cookie").is_some() {
     cx.set_cookie("seen", n);
 }
 ---
+
 <p>render {n}</p>

@@ -4,6 +4,7 @@ async fn twice(n: u32) -> u32 {
     n * 2
 }
 ---
+
 <h1>Remote</h1>
 <button on:click="twice(21).then((v) => (out = v))">Twice</button>
 <button on:click="sum()">Sum</button>

@@ -1,0 +1,16 @@
+{
+  "name": "rank-micro",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@fastify/cookie": "latest",
+    "@hono/node-server": "latest",
+    "cookie-parser": "latest",
+    "elysia": "latest",
+    "express": "latest",
+    "fastify": "latest",
+    "hono": "latest",
+    "itty-router": "latest"
+  },
+  "devDependencies": { "wrangler": "latest" }
+}

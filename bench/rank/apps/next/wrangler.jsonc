@@ -1,0 +1,8 @@
+{
+  "name": "next",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2025-09-01",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": { "binding": "ASSETS", "directory": ".open-next/assets" },
+  "services": [{ "binding": "WORKER_SELF_REFERENCE", "service": "next" }]
+}

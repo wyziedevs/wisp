@@ -84,7 +84,10 @@ fn format_lf(src: &str, edition: &str) -> Option<String> {
         rustfmt(&block, edition).unwrap_or(block)
     };
     let rest = lines[close + 1..].join("\n");
-    Some(format!("---\n{rust}---\n{}", markup(&rest)))
+    let page = markup(&rest);
+    let page = page.trim_start_matches('\n');
+    let gap = if page.is_empty() { "" } else { "\n" };
+    Some(format!("---\n{rust}---\n{gap}{page}"))
 }
 
 /// The statements and items of a `---` block through rustfmt, inside a
@@ -915,7 +918,8 @@ mod tests {
         let out = fmt(src);
         // Without rustfmt the block stays as written.
         assert!(
-            out == "---\nlet x = \"a\n  b\";\n---\n<p>{x}</p>\n" || out == src,
+            out == "---\nlet x = \"a\n  b\";\n---\n\n<p>{x}</p>\n"
+                || out == "---\nlet   x =  \"a\n  b\";\n---\n\n<p>{x}</p>\n",
             "{out}"
         );
     }
@@ -934,11 +938,11 @@ mod tests {
         assert_eq!(edition(&file), "2021");
         let _ = std::fs::remove_dir_all(&root);
         // rustfmt sorts `use` names by edition: 2024 as `cargo fmt` does there.
-        let src = "---\nuse a::{a_b, Zb, ZA};\n---\n<p></p>\n";
+        let src = "---\nuse a::{a_b, Zb, ZA};\n---\n\n<p></p>\n";
         let new = format(src, "2024");
         // Without rustfmt the block stays as written.
         if new != src {
-            assert_eq!(new, "---\nuse a::{ZA, Zb, a_b};\n---\n<p></p>\n");
+            assert_eq!(new, "---\nuse a::{ZA, Zb, a_b};\n---\n\n<p></p>\n");
             assert_eq!(format(src, "2021"), src);
         }
     }

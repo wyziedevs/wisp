@@ -1,0 +1,11 @@
+{
+  "name": "rank-next",
+  "private": true,
+  "dependencies": {
+    "@opennextjs/cloudflare": "latest",
+    "next": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "wrangler": "latest"
+  }
+}

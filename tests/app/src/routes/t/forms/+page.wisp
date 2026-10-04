@@ -36,6 +36,7 @@ let post = SAVED.lock().clone().unwrap_or(Post {
     note: None,
 });
 ---
+
 <form method="post">
   <input aria-label="title" name="title" value={post.title}>
   <textarea aria-label="body" name="body">{post.body}</textarea>

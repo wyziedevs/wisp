@@ -13,6 +13,7 @@ fn decrement() {
     cx.set_cookie("count", count - 1);
 }
 ---
+
 <head>
   <title>Home</title>
   <meta name="description" content="Your new Wisp app">

@@ -7,5 +7,7 @@
 {@render children()}
 
 <style>
-  h2 { color: rgb(0, 128, 0) }
+  h2 {
+    color: rgb(0, 128, 0)
+  }
 </style>

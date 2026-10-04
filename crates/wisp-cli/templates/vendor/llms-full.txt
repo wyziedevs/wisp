@@ -133,7 +133,8 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
 - No `->`: returns `Result` (`?`, `return error(..)`, end in `redirect(..)`
   or `;`); `.await` makes it async. Or return `Response`/`Option<Response>`
   to answer instead of the page. `#[action]` is left out for a lone `fn
-  default` and each fn the markup posts to (`?/name`).
+  default` and each fn the markup posts to (`?/name`; the build errs when the
+  page has none).
 - `<form action="?/like">` posts (`method="post"` is added); `<form
   method="post">` → `fn default`; `<button action="?/rm&id={x.id}">` outside
   a form is a one-button form.
@@ -181,12 +182,13 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
 | `{@const x = expr}` | let |
 | `{#snippet row(a, b)}…{/snippet}` `{@render row(x, 1)}` | local markup fn |
 | `{@pager posts}` | Newer/Older links of a `Table::page` |
-| `<head>…</head>` | into the document head; a top-level `<title>` goes there alone |
+| `<head>…</head>` | into the document head; a top-level `<title>` goes there alone; one `<title>` per page: the innermost page or layout with one writes it |
 | `<slot />` or `{@render children()}` | layout/component slot |
 | `cx` | the request (`&Cx`) in pages, layouts, error pages |
 
 `<style>h1 { color: red }</style>` (top level, no attributes) styles this
-file only (`:global(x)` opts out; `<style global>`); it joins app.css.
+file only (`:global(x)` opts out; `<style global>`); it joins app.css. Elements
+your script creates are not scoped.
 Accessibility lints warn, never fail (img alt, input label, link and button
 name, `<a href>`, heading order, tabindex...); `<!-- wisp-ignore a11y-img-alt -->` silences
 one. Images: `<img src="$lib/p.jpg" alt="">` or `src="/x.png"` gets
@@ -247,7 +249,8 @@ first). Not its Rust (`db.rs`, `hooks.rs`) or `fonts.txt`.
 ## Markdown pages
 
 `+page.md` with `---` front matter (`title`, `layout: Post` a component the
-page is the children of, any field `date: 2026-10-01`); text may use
+page is the children of, any field `date: 2026-10-01`; `title` is the
+`<title>` unless a layout writes one, which can wrap it from `wisp::pages`); text may use
 `<Card>` between blank lines. Built at build time; fenced code is
 highlighted (`hl-k hl-s hl-c hl-n hl-t hl-a`; color them); headings get
 ids (`## Install and Run` is `#install-and-run`). `noindex: true`
@@ -435,7 +438,10 @@ no-wait fast path off every route.
   `std::error::Error` via `?` → 500.
 - `Response::`: `json_of(&v) created(&v) text html empty(s) download(name,
   bytes) file_in(dir, name).await stream ndjson events websocket`
-  + `.with_status(s) .with_header(n, v)`.
+  + `.with_status(s) .with_header(n, v)`. A single-valued header
+  (`content-type cache-control location etag`) set again replaces the
+  first, here, on `Error` and in `cx.set_header`; `content-length` and
+  `transfer-encoding` are the server's.
 - `Response::websocket(|ws| async move { while let Some(m) = ws.recv().await {
   ws.send(m).await?; } Ok(()) })`: binary, node, bun, deno, cloudflare, pages;
   vercel, netlify, lambda, tower answer 501 (https://wispweb.dev/docs/deploy). On the edge a
@@ -612,7 +618,7 @@ struct Note {
 - An unknown field is a 400 listing the known ones.
 - `x-total-count` has the match count; `link: <…?limit=20&after=60>; rel="next"` the next page; `accept: application/x-ndjson` gives a line per row.
 - Every row and list has an `etag`; `if-none-match` gets a 304. A write with `if-match` is a 412 (`code` `changed`) if the row changed since.
-- `const CACHE: u32 = 5;` in a `+server.rs` caches each GET per path and query per worker (rules: [/docs/design](/docs/design)); a write does not clear it.
+- `const CACHE: u32 = 5;` in a `+server.rs` caches each GET per path and query per worker (rules: [/docs/design](/docs/design/)); a write does not clear it.
 
 ### Hooks
 
@@ -633,7 +639,7 @@ fn after_update(note: &Row<Note>) {
 
 A type with a field named `user` in `users/[user=int]/notes/+server.rs` holds each user's own: the route's `user` filters every request and is set on every row made or changed there.
 
-Where rows are kept, custom stores and paging: [/docs/api-tables](/docs/api-tables).
+Where rows are kept, custom stores and paging: [/docs/api-tables](/docs/api-tables/).
 
 
 <!-- docs/api-openapi.md -->
@@ -707,7 +713,7 @@ fn counter() {
 All of this works in the binary, Docker, Lambda and `tower`. JSON, validation, errors, CORS, auth, webhooks and docs work everywhere. The edge (`--target cloudflare` etc.) runs each request in an instance that may be its own:
 
 - `wisp::channel`, `wisp::every`, `RateLimit` are not there; WebSockets answer 501 (use the host's rate limiting).
-- Jobs (`cron`, `work`) run from the host's cron triggers ([/docs/deploy](/docs/deploy)).
+- Jobs (`cron`, `work`) run from the host's cron triggers ([/docs/deploy](/docs/deploy/)).
 - Tables are per-instance memory.
 
 Dev logs every request, release logs failures. Pass a proxy's request id back: `cx.set_header("x-request-id", id)` in `before` (`WISP_LOG=json`: AGENTS.md).
@@ -722,7 +728,7 @@ Keys:
 
 Sessions:
 - `cx.sign_in(id)` after `wisp::password::check(&typed, user_hash).await?` (`None` for no such user, as slow; `hash(&password).await?`; both on hashing threads).
-- Then `cx.signed_in()?` or `cx.user()?` (`cx.login`/`signup`: [/docs/auth](/docs/auth)) where only members go: signed out, a page 303s to `/login` (`wisp::sign_in_page("/x")`), an endpoint or JSON client gets 401 (`signed_out`).
+- Then `cx.signed_in()?` or `cx.user()?` (`cx.login`/`signup`: [/docs/auth](/docs/auth/)) where only members go: signed out, a page 303s to `/login` (`wisp::sign_in_page("/x")`), an endpoint or JSON client gets 401 (`signed_out`).
 - `cx.sign_out()` ends it here. The id is in a signed cookie for 30 days; each `sign_in` sets a new session.
 - `wisp::sign_out_everywhere(id)?` ends all earlier sessions of `id` on every device (counted in the saved table `wisp_sign_outs`; nothing is looked up until an app calls it; another instance sharing the store sees it on its next start; a store failure is its `Err`).
 
@@ -776,7 +782,7 @@ fn init() {
 ```
 
 - `every` runs until stop, never two at once; a panicking run is reported and the next starts on time.
-- `wisp::spawn` runs one task. Durable queues, cron: [/docs/data](/docs/data).
+- `wisp::spawn` runs one task. Durable queues, cron: [/docs/data](/docs/data/).
 - A health check is a route: `fn get() -> &'static str { "ok" }` (`/_wisp/health` exists).
 
 ## Configuration and Databases
@@ -828,7 +834,7 @@ Each param but `cx` is read by name: route param, then form field or JSON object
 | `min_len = 1` `max_len = 200` | length or items | strings, lists |
 | `email` | what `<input type="email">` takes (`a@b` too) | strings |
 
-- `None` passes. Further rules (`url one_of pattern with`): [/docs/data](/docs/data).
+- `None` passes. Further rules (`url one_of pattern with`): [/docs/data](/docs/data/).
 - An unknown rule is a build error listing the valid ones.
 - Own checks: `return invalid("email", "is already taken")` (422); `Error::invalid(..).and(..)` names several fields.
 
@@ -843,7 +849,7 @@ Each param but `cx` is read by name: route param, then form field or JSON object
 | `Option<T>` | JSON, 204 for `Some(())`, 404 for `None` |
 | any of these in a `Result` | same, or the error |
 
-`Response::created(&v)` is 201; `Response::json_of(&v).with_status(202)`; `.with_header(name, value)` adds a header (also on `Error`). In a page, `cx.set_status(404)` sets the status.
+`Response::created(&v)` is 201; `Response::json_of(&v).with_status(202)`; `.with_header(name, value)` adds a header (also on `Error`, and `cx.set_header` in a page). A single-valued one (`content-type`, `cache-control`, `location`, `etag`, any case) replaces what was set before instead of going out twice: `Response::text(xml).with_header("content-type", "application/rss+xml")` sends one `content-type`. `content-length` and `transfer-encoding` are the server's and are left out. `Response::text` and its kin take a `String` or a `&str` (the `IntoText` trait); anything else is a compile error. In a page, `cx.set_status(404)` sets the status.
 
 Query: `cx.query("q")`, `cx.query_or("page", 1)` (parsed, else the default), `cx.query_string()` (raw, no `?`). `cx.request_id()` is the request's id, sent back as `x-request-id`.
 
@@ -1038,7 +1044,7 @@ Distributed `RateLimit` waits for the relay (S2). Automatic `/_wisp/oauth/...` r
 
 <!-- docs/benchmarks.md -->
 
-Wisp's first rule is zero cost on the request hot path. This page has no numbers, only what is measured and how to run it.
+Wisp's first rule is zero cost on the request hot path. This page is what is measured and how to run it. The measured numbers, losses included, are on the [home page](/#measured) and in [`bench/tfb/RESULTS.md`](https://github.com/wyziedevs/wisp/blob/main/bench/tfb/RESULTS.md).
 
 ```bash
 git clone https://github.com/wyziedevs/wisp
@@ -1058,7 +1064,7 @@ You need Rust. `bench/README.md` lists every option, the frameworks compared, an
 
 ## Tokens
 
-Writing cost is measured by a program in the repository: `cargo run -p wisp-tokens --release`. See [Tokens](/docs/tokens).
+Writing cost is measured by a program in the repository: `cargo run -p wisp-tokens --release`. See [Tokens](/docs/tokens/).
 
 
 <!-- docs/cli.md -->
@@ -1113,7 +1119,7 @@ Writing cost is measured by a program in the repository: `cargo run -p wisp-toke
 
 ## CLI Older than the App
 
-App commands warn on stderr when the installed `wisp` is older than the app's `wisp` crate, and in a terminal ask before going on. `WISP_NO_UPDATE_CHECK=1` silences it. More: [CLI, dev loop and security](/docs/design-cli).
+App commands warn on stderr when the installed `wisp` is older than the app's `wisp` crate, and in a terminal ask before going on. `WISP_NO_UPDATE_CHECK=1` silences it. More: [CLI, dev loop and security](/docs/design-cli/).
 
 
 <!-- docs/client.md -->
@@ -1189,7 +1195,7 @@ A write redraws only the bindings that read what changed (no virtual DOM); the s
 - Server: `wisp::env("K")`.
 
 ## Translations
-`t('cart.items', n)` or `t('hi', { name, count: n })` in a script or directive, no import; keys checked at build; the page sends only the messages its scripts use. `src/lib` code can't call `t`. Message files: [/docs/design](/docs/design).
+`t('cart.items', n)` or `t('hi', { name, count: n })` in a script or directive, no import; keys checked at build; the page sends only the messages its scripts use. `src/lib` code can't call `t`. Message files: [/docs/design](/docs/design/).
 
 ## Directives
 
@@ -1701,7 +1707,7 @@ The server renders what it can know into the page (it works before JS and withou
 - Left to the browser: a call, sum, comparison, or a `+page.js` page's `data`.
 - Live attributes (`:class`, `class="a {:b}"`) keep static text until it starts.
 
-Next: [components, custom elements and state helpers](/docs/client-components).
+Next: [components, custom elements and state helpers](/docs/client-components/).
 
 
 <!-- docs/config.md -->
@@ -1734,10 +1740,10 @@ Lists of strings in `Cargo.toml`, checked and baked at build.
 | Key | What it does |
 |---|---|
 | `base = "/app"` | serve under a base path (`WISP_BASE`) |
-| `redirects = [...]` | `"from to [status]"` (308 by default; [design](/docs/design)) |
+| `redirects = [...]` | `"from to [status]"` (308 by default; [design](/docs/design/)) |
 | `rewrites = [...]` | serve one path from another |
 | `headers = [...]` | headers by path |
-| `i18n = [...]` | locale routing: `default`, `prefix`, `domain`, `missing` ([translations](/docs/design-tooling)) |
+| `i18n = [...]` | locale routing: `default`, `prefix`, `domain`, `missing` ([translations](/docs/design-tooling/)) |
 | `use = [...]` | plugin crates the build loads |
 | `extends = ["../base"]` | layers: an app's layout, components and static files under yours |
 
@@ -1749,7 +1755,7 @@ Lists of strings in `Cargo.toml`, checked and baked at build.
 | `h2` (wisp) | HTTP/2 with prior knowledge (h2c) on the built-in server |
 | `img` (wisp) | `wisp::img::serve`: `/_img?src=&w=&q=` resizes a picture of `static/` |
 | `og-png` (wisp and wisp-cli) | PNG Open Graph pictures for `wisp::og(.., "auto")` |
-| `tower` (wisp) | the app as a Tower service ([embed](/docs/embed)) |
+| `tower` (wisp) | the app as a Tower service ([embed](/docs/embed/)) |
 | `browser` (wisp) | `wisp::test::browser`: tests in headless Chrome or Edge |
 | `types` (wisp) | used by `wisp check --types`; never in a served build |
 | `avif` (wisp-cli) | AVIF widths for images in `wisp build`, beside WebP |
@@ -1812,7 +1818,7 @@ wisp::queue("mail").push(&Mail { to, body });         // .later(secs, &job)
 - Jobs live in the saved table `queue-mail`. A failure (`Err` or a panic) is tried again after 4, 8, 16... seconds (an hour at most), five tries; then it stays `dead` with its last error (`queue.dead()`, `queue.retry(id)`).
 - At least once: a job running when the process died runs again a minute later. One at a time per queue, in order.
 - `cron` takes five fields (`*`, `n`, `a-b`, `*/n`, lists; Sunday is 0 or 7).
-- On Cloudflare, Vercel and Netlify (`wisp build --target ...`) the same code runs from the host's cron: `wisp build` writes each `cron` schedule (a string literal) into its trigger config, and a trigger also runs the queues' due jobs (each minute if the app has `work`). Set `CRON_SECRET` and `WISP_STORE` there. See [/docs/deploy](/docs/deploy).
+- On Cloudflare, Vercel and Netlify (`wisp build --target ...`) the same code runs from the host's cron: `wisp build` writes each `cron` schedule (a string literal) into its trigger config, and a trigger also runs the queues' due jobs (each minute if the app has `work`). Set `CRON_SECRET` and `WISP_STORE` there. See [/docs/deploy](/docs/deploy/).
 
 ## Cache
 `wisp::cache("top", 60, || async { top_posts().await }).await` keeps an answer for 60 s per process. `wisp::uncache("/posts")` forgets cache keys starting with it and the pages `const CACHE` keeps, on every worker, for `/posts` and below (`/` is all).
@@ -1824,13 +1830,13 @@ Run `wisp build`, copy the binary, run it. Pick the build for your host:
 
 | You have | Use |
 |---|---|
-| VPS or server | `wisp build`; `wisp service install` keeps it running |
-| Container host (Fly.io, Railway, Render, Cloud Run, Azure Container Apps) | `wisp build --docker` |
-| Static host (GitHub/GitLab Pages, S3) | `wisp build --static` (or `--spa`) |
-| Edge or serverless (Cloudflare, Deno Deploy, Vercel, Netlify, Amplify, Firebase, Azure Static Web Apps) | `wisp build --target <host>` ([targets](/docs/deploy-targets)) |
-| AWS Lambda / Bun | `--target lambda` / `--target bun` |
+| VPS or server | `wisp build`; `wisp service install` keeps it running ([VPS](/docs/hosting/vps/)) |
+| Container host ([Fly.io](/docs/hosting/fly/), [Railway](/docs/hosting/railway/), [Render](/docs/hosting/render/), [Cloud Run](/docs/hosting/cloud-run/), [Azure](/docs/hosting/azure/)) | `wisp build --docker` ([Docker](/docs/hosting/docker/)) |
+| Static host ([GitHub Pages](/docs/hosting/github-pages/), GitLab Pages, S3) | `wisp build --static` (or `--spa`) |
+| Edge or serverless ([Cloudflare](/docs/hosting/cloudflare/), [Deno Deploy](/docs/hosting/deno-deploy/), [Vercel](/docs/hosting/vercel/), [Netlify](/docs/hosting/netlify/), Amplify, Firebase, [Azure Static Web Apps](/docs/hosting/azure/)) | `wisp build --target <host>` ([targets](/docs/deploy-targets/)) |
+| [AWS Lambda](/docs/hosting/aws-lambda/) / [Bun](/docs/hosting/bun/) / [Node](/docs/hosting/node/) | `--target lambda` / `--target bun` / `--target node` |
 
-An app that signs cookies needs `WISP_SECRET` (32+ random characters) on every host. Logs, metrics and traces: [Observe](/docs/deploy-observe).
+An app that signs cookies needs `WISP_SECRET` (32+ random characters) on every host. Logs, metrics and traces: [Observe](/docs/deploy-observe/). Step by step for each host: [Hosting](/docs/hosting/).
 
 A plain `wisp build` inside a host's CI picks the target from its variables and says so: `WORKERS_CI` or `CF_PAGES` (cloudflare), `VERCEL` (output in `.vercel/output`), `NETLIFY`, `DENO_DEPLOYMENT_ID` (deno), `AWS_APP_ID` (node). `--target native` forces the plain binary.
 
@@ -1838,7 +1844,7 @@ A plain `wisp build` inside a host's CI picks the target from its variables and 
 
 | Host | Writes |
 |---|---|
-| `cloudflare`, `deno`, `vercel`, `netlify`, `lambda`, `fly`, `pages` | `.github/workflows/deploy.yml`: build and deploy on push to `main`; line 1 names the secrets; `--force` replaces it |
+| `cloudflare`, `deno`, `vercel`, `netlify`, `lambda`, `pages` (GitHub Pages) | `.github/workflows/deploy.yml`: build and deploy on push to `main`; line 1 names the secrets; `--force` replaces it |
 | `fly`, `render`, `railway` | that host's config, and a Dockerfile if none |
 
 ## Binary
@@ -1854,7 +1860,7 @@ wisp = { version = "..", features = ["h2"] }
 
 ## Static and SPA
 
-`wisp build --static [--out site]` writes `dist/`: every parameterless page as `about/index.html`, plus `static/` and the `/_app` files (`.map`s with `--sourcemap`). A `[params]` route lists its pages:
+`wisp build --static [--out site]` writes `dist/`: every parameterless page as `about/index.html`, plus `static/` and the `/_app` files (`.map`s with `--sourcemap`). Forms need a server: the export warns for each page with actions, and for each exported page whose HTML holds a form that posts (`method="post"`, `action="?/name"`), whichever page its action is on. A `[params]` route lists its pages:
 
 ```html
 <!-- src/routes/blog/[slug]/+page.wisp (or its +page.rs) -->
@@ -1884,6 +1890,7 @@ let post = db::post(&slug).await?;
 - Before that (`cargo run`, other targets) each worker keeps the first render.
 - One render serves all, so `cx` in statements, markup or `load` is a build error. Its layouts render once, as for a request without cookies.
 - `--static` prerenders every page.
+- Under the hood the build calls `wisp::prerender` on the app; you never call it yourself.
 
 ## Service
 
@@ -1975,24 +1982,24 @@ The app compiles to WebAssembly in a folder with the host's config, an entry fil
 
 | Target | For | From `dist/<target>` |
 |---|---|---|
-| `cloudflare` | Workers | `npx wrangler deploy` (secrets: `npx wrangler secret put WISP_SECRET`) |
-| `pages` | Cloudflare Pages | `npx wrangler pages deploy .` in `dist/pages` (`_worker.js`, `_routes.json`; `WISP_SECRET` under Settings) |
-| `deno` | Deno Deploy | `deployctl deploy --entrypoint main.ts` (local: `deno run -A main.ts`) |
-| `vercel` | Vercel | `npx vercel deploy --prebuilt` (env var `WISP_SECRET`) |
-| `netlify` | Netlify | `npx netlify deploy --prod` |
-| `node` | Amplify, Firebase, Azure, Stormkit, Zeabur, any Node host | `npm start` |
-| `bun` | Bun (`Bun.listen`) | `bun server.mjs` |
-| `lambda` | AWS Lambda | [below](/docs/deploy-targets) |
+| `cloudflare` | [Workers](/docs/hosting/cloudflare/) | `npx wrangler deploy` (secrets: `npx wrangler secret put WISP_SECRET`) |
+| `pages` | [Cloudflare Pages](/docs/hosting/cloudflare/) | `npx wrangler pages deploy .` in `dist/pages` (`_worker.js`, `_routes.json`; `WISP_SECRET` under Settings) |
+| `deno` | [Deno Deploy](/docs/hosting/deno-deploy/) | `deployctl deploy --entrypoint main.ts` (local: `deno run -A main.ts`) |
+| `vercel` | [Vercel](/docs/hosting/vercel/) | `npx vercel deploy --prebuilt` (env var `WISP_SECRET`) |
+| `netlify` | [Netlify](/docs/hosting/netlify/) | `npx netlify deploy --prod` |
+| `node` | Amplify, Firebase, [Azure](/docs/hosting/azure/), Stormkit, Zeabur, any [Node](/docs/hosting/node/) host | `npm start` |
+| `bun` | [Bun](/docs/hosting/bun/) (`Bun.listen`) | `bun server.mjs` |
+| `lambda` | [AWS Lambda](/docs/hosting/aws-lambda/) | [below](#aws-lambda) |
 
-Other hosts:
+Other hosts (each has a page under [Hosting](/docs/hosting/)):
 
 | Host | Use |
 |---|---|
 | Amplify, Firebase, Azure Static Web Apps, Stormkit, Zeabur | `--target node` (`npm start`); the output's `hosts/*.md` has each host's manifest or function glue (Amplify: folder in `.amplify-hosting/compute/default/`, `static/` in `.amplify-hosting/static/`, a `deploy-manifest.json`) |
-| GitHub/GitLab Pages | `--static`, publish `dist/` (a project site under a path prefix needs prefix-safe links) |
-| Fly.io | `--docker`, `fly launch`, `fly deploy`, `fly secrets set WISP_SECRET=...` |
-| Railway, Render | `--docker`, point at the repo, set `WISP_SECRET` |
-| Cloud Run | `--docker`, `gcloud run deploy --source .` |
+| [GitHub Pages](/docs/hosting/github-pages/), GitLab Pages | `--static`, publish `dist/` (a project site under a path prefix needs prefix-safe links) |
+| [Fly.io](/docs/hosting/fly/) | `--docker`, `fly launch`, `fly deploy`, `fly secrets set WISP_SECRET=...` |
+| [Railway](/docs/hosting/railway/), [Render](/docs/hosting/render/) | `--docker`, point at the repo, set `WISP_SECRET` |
+| [Cloud Run](/docs/hosting/cloud-run/) | `--docker`, `gcloud run deploy --source .` |
 
 ## Edge Runtime per Route
 
@@ -2033,7 +2040,7 @@ aws lambda update-function-code --function-name my-app --zip-file fileb://dist/l
 - Any Wisp binary answers Lambda's runtime API when `AWS_LAMBDA_RUNTIME_API` is set.
 - Everything works except WebSockets and streaming (a stream is sent whole).
 - Saved tables go in `/tmp`, per instance: use `wisp::store` for lasting data.
-- The `tower` feature with `lambda_http` also works ([embed](/docs/embed)).
+- The `tower` feature with `lambda_http` also works ([embed](/docs/embed/)).
 
 ## What Works on the Edge
 
@@ -2126,7 +2133,7 @@ File | Meaning
 `+layout.rs` | Instead of a block: `load` for the layout
 `+error.wisp` | Errors below this directory; gets `status`, `message` (a sentence about the status when the error says no more than its name)
 `+page.js` | Optional. `load({ data, url, params, route, fetch })` in the browser
-`+server.rs` | `get`/`post`/`put`/`patch`/`delete` endpoints; one taking an `id` the path lacks serves `/[id]` below, and `list` is then the folder's GET. A `#[derive(Rest)]` type in it is served whole ([api](/docs/api))
+`+server.rs` | `get`/`post`/`put`/`patch`/`delete` endpoints; one taking an `id` the path lacks serves `/[id]` below, and `list` is then the folder's GET. A `#[derive(Rest)]` type in it is served whole ([api](/docs/api/))
 
 Segments: `blog` (static), `[slug]` (param), `[[lang]]` (optional), `[...rest]` (rest, may be empty), `(group)` (not in the URL).
 
@@ -2145,7 +2152,7 @@ fn matches(s: &str) -> bool {
 
 ### Trailing Slash
 
-`/about/` gets a 308 to `/about`, query kept. `wisp::trailing_slash(Always)` in `init` flips it (`/about` to `/about/`, GET and HEAD of pages; endpoints and paths with a `.` in the last segment are left alone); `Ignore` serves both. The other form is matched only after no route matched, so the default costs nothing. The build warns of a literal `href="/…"` in a template the setting would redirect.
+`/about/` gets a 308 to `/about`, query kept. `wisp::trailing_slash(Always)` in `init` flips it (`/about` to `/about/`, GET and HEAD of pages; endpoints and paths with a `.` in the last segment are left alone); `Ignore` serves both. The other form is matched only after no route matched, so the default costs nothing. `wisp build --static` asks for each page in the set form, so `Always` exports without a 308 warning. The build warns of a literal `href="/…"` in a template the setting would redirect.
 
 ### Sitemap, Robots, Feed, Og
 
@@ -2178,11 +2185,11 @@ Text, and a component:
 </Card>
 ```
 
-- Front matter is `name: value` lines (quotes optional). `title` (else the first `# heading`) is the `<title>`.
+- Front matter is `name: value` lines (quotes optional). `title` (else the first `# heading`) is the `<title>`, unless a layout above writes one: that layout reads it from `wisp::pages` and can wrap it (`Wisp: {title}`).
 - `layout` names a component in `src/components` showing the page as its children; it gets each field its `{@props}` declare (`&str`/`String`, `bool`, a number, `Option` of one). A required field the page lacks, or a wrong type, is a build error.
 - `noindex: true` adds `<meta name="robots" content="noindex">`.
 - `{`/`}` in text and code become `&#123;`/`&#125;`, so no hole comes from them; raw HTML (components) is the template's own.
-- Fenced code is highlighted at build time by `wisp-build` (rust, js/ts, html, css, json, bash) as `<span class="hl-k|s|c|n|t|a">` (keyword, string, comment, number, type or tag, attribute) in `<pre><code class="language-x">`. Your CSS colors them; other languages keep the class, unhighlighted.
+- Fenced code is highlighted at build time by `wisp-build` (rust, js/ts, html, wisp, css, json, bash; a `wisp` block, or an `html` one that opens with `---`, shows its Rust block and its `{expressions}` as Rust) as `<span class="hl-k|s|c|n|t|a">` (keyword, string, comment, number, type or tag, attribute) in `<pre><code class="language-x">`. Your CSS colors them; other languages keep the class, unhighlighted.
 - `wisp::pages("blog")` gives a folder's `MdPage`s (`path`, `title`, `get("date")`), newest `date` first: `{#each wisp::pages("blog") as p}<a href={p.path}>{p.title}</a>{/each}`. A `static` slice the build wrote: no I/O, no allocation.
 
 ## Config Rules
@@ -2199,7 +2206,7 @@ Rule | Form | Behavior
 
 In order: ultra fast, cheap, durable, flexible; developer happiness last.
 
-1. **Cheap** means app code in as few tokens as possible: AI writes most code, so a developer picks the framework whose apps run fastest, cost the fewest tokens, keep working and bend furthest. A convention beats a line of setup, one file beats two, a name the build can infer is not written. [tokens](/docs/tokens) measures it; [AGENTS.md](https://github.com/wyziedevs/wisp/blob/main/llms/AGENTS.md) is the whole language in one page.
+1. **Cheap** means app code in as few tokens as possible: AI writes most code, so a developer picks the framework whose apps run fastest, cost the fewest tokens, keep working and bend furthest. A convention beats a line of setup, one file beats two, a name the build can infer is not written. [tokens](/docs/tokens/) measures it; [AGENTS.md](https://github.com/wyziedevs/wisp/blob/main/llms/AGENTS.md) is the whole language in one page.
 2. **Durable**: every fast path is proven at startup and falls back; nothing after startup takes the process down.
 3. **Fast by construction**: templates compile to straight-line `push_str` calls, routes to one `match`, buffers are reused per connection. No boxing, no dynamic dispatch, no hot-path allocation after warm-up.
 4. **Minimal dependencies.** Each new one needs a written reason here.
@@ -2223,7 +2230,7 @@ The build crate and CLI depend on std and `pulldown-cmark` only.
 - Not used by default: hyper, axum, tower, serde, a TOML parser, `notify`, `syn`/`quote`.
 - Written ourselves: the HTTP/1.1 connection loop, URL/form decoding, multipart, HTML escaping, the HTTP date, the template compiler, a polling file watcher, the dev proxy of events.
 - Signed cookies: SHA-256 and HMAC in about a hundred lines in `crates/wisp/src/sign.rs`, fixed algorithms with published vectors (FIPS 180-4, RFC 4231) its tests check, and a constant-time compare. Anything that encrypts would use a vetted crate; we write no ciphers.
-- JSON: a fixed grammar (RFC 8259), so `crates/wisp/src/json.rs` has a strict parser for request bodies and `FromJson` with its checks, and `live.rs` writes JSON ([api](/docs/api)). Apps wanting serde still use it (`serde_json::from_slice(cx.body())`, `Response::json(serde_json::to_string(&x)?)`).
+- JSON: a fixed grammar (RFC 8259), so `crates/wisp/src/json.rs` has a strict parser for request bodies and `FromJson` with its checks, and `live.rs` writes JSON ([api](/docs/api/)). Apps wanting serde still use it (`serde_json::from_slice(cx.body())`, `Response::json(serde_json::to_string(&x)?)`).
 - Apps bring their own crates for a database driver, mailer, HTTP client.
 
 ## Workspace
@@ -2253,7 +2260,7 @@ wisp fmt            # format .wisp files
 wisp build          # release binary
 ```
 
-Agents (`wisp mcp`, `wisp update-docs`) and editors (`wisp lsp`): [design-editors](/docs/design-editors).
+Agents (`wisp mcp`, `wisp update-docs`) and editors (`wisp lsp`): [design-editors](/docs/design-editors/).
 
 ## `wisp new`
 
@@ -2333,7 +2340,7 @@ cargo install --path <checkout>/crates/wisp-cli --force  # path checkout
 - **Signed cookies.** The signature binds the cookie's name and value, compared in constant time. `WISP_SECRET` under 32 characters stops the server at start.
 - **Dev endpoints.** Only in debug builds, only answering loopback peers (behind a proxy on the same machine every peer is loopback: never serve a debug build). Dev mode on a non-loopback address says so at start.
 - **Live URL attributes** (`href={:x}`, `:src="x"`) block `javascript:` and `vbscript:` on the server's first paint and in the browser, as `href={x}` does. URL attributes whose scheme an expression decides are checked where they end: `javascript:` never reaches a page. wisp.js never follows a `javascript:` redirect or `goto`, and saves a posted form's attachment instead of opening it as a page of this site.
-- **Limits.** Request size and time limits as in [design-runtime](/docs/design-runtime); no request smuggling surface (strict chunked parsing, CL+TE rejected).
+- **Limits.** Request size and time limits as in [design-runtime](/docs/design-runtime/); no request smuggling surface (strict chunked parsing, CL+TE rejected).
 - **Connections.** At most `WISP_MAX_CONNS` (10000) open, WebSockets included; past it a new one gets a 503 and is closed before it costs a task.
 - **CSP.** Pages and error pages carry a `content-security-policy` (below).
 - **Tests.** `examples/demo/tests/http.rs` runs the demo's binary and sends malformed, oversized, smuggling and cross-site requests, path traversal attempts and junk cookies, checking every answer and that the server keeps answering. `tests/app` uses what the demo does not (hooks, state, components, uploads, signed cookies, chunked bodies, body limits, streamed responses); its `tests/http.rs` checks each on the wire.
@@ -2407,9 +2414,9 @@ A language server over stdio, in the CLI: JSON-RPC framed by hand, `wisp_shared:
 | Feature | What it does |
 |---|---|
 | Problems | On open and every change the buffer goes through the build's own parser and checks (`wisp_build::ide::check_file`: `---` block, template, component props against `src/components` as last read). On open and save the whole app is checked from disk as `wisp check` does, and its problem shows in its file, open or not. One problem per file (the compiler stops at the first). A panic in a request is answered as an error; the server goes on. |
-| Hover | A component's `{@props}`, a prop's type and default, directive and block docs, a route param's type, the `const` knobs (`CACHE`, `RATE_LIMIT`, `SSR`, ...), `<form fields>`, `action="?/x"`, `use:enhance`, the `data-wisp-*` attributes (tables in `lsp.rs`; a test fails when the reference shows one they lack). Rust items carry `///` docs (`#![deny(missing_docs)]` in `wisp`) for rust-analyzer. |
-| Go to definition | `<Card>` to its file, `'$lib/x.js'` to `src/lib/x.js`, a literal `href="/x"` to the route's `+page.wisp` (or `+page.rs`, `+server.rs`) |
-| Completion | Components (with required props), props, directives, `on:` events and modifiers, `{#...}` / `{:#...}` blocks, route paths in `href` |
+| Hover | A component's `{@props}`, a prop's type and default, directive and block docs, a route param's type, the `const` knobs (`CACHE`, `RATE_LIMIT`, `SSR`, ...), `<form fields>`, `action="?/x"`, `use:enhance`, the `data-wisp-*` attributes, Rust attributes in a block (`#[action]`, `#[model]`, `#[validate(..)]` and each rule, `#[derive(Rest)]`, `#[rest(..)]`, `#[json(..)]`, `#[unique]`) (tables in `lsp.rs`; a test fails when the reference shows one they lack). Rust items carry `///` docs (`#![deny(missing_docs)]` in `wisp`) for rust-analyzer. |
+| Go to definition | `<Card>` to its file, `'$lib/x.js'` to `src/lib/x.js`, a literal `href="/x/"` to the route's `+page.wisp` (or `+page.rs`, `+server.rs`) |
+| Completion | Components (with required props), props, directives, `on:` events and modifiers, `{#...}` / `{:#...}` blocks, route paths in `href`, `#[` attributes in a block |
 | Formatting | `fmt.rs` on the buffer, one edit of the whole text (none when formatted) |
 
 Follow-up: cheap Rust checks inside the `---` block (rust-analyzer covers `.rs` files only).
@@ -2535,11 +2542,12 @@ fn remove(id: u64) { /* ... */ }
 ## Actions
 
 - `action="?/like"` posts to the `like` action and adds `method="post"` when missing.
+- A form that posts to `?/name` needs `#[action] fn name` in the same page: the build says so when it is missing (a layout or component may post to the page that uses it, so only a page's own markup is checked).
 - A form with no `action` (and `method="post"`) posts to `default`.
 - `<button action="?/remove&id={todo.id}">` outside a form becomes its own `<form method="post"><button formaction="...">`. Works without JS.
 - Query parameters in an action URL are read like form fields (`id` above is `id: u64`).
 - A body with `.await` makes the action `async` (`#[action]` adds it); never write `async` there.
-- Cookies, sessions and sign-in: [design-sessions](/docs/design-sessions).
+- Cookies, sessions and sign-in: [design-sessions](/docs/design-sessions/).
 
 ## Validation
 
@@ -2623,7 +2631,7 @@ Styles live in `crates/wisp/src/client/tokens.css` (the one source of tokens), `
 
 | Piece | What it is |
 |---|---|
-| Error page | For apps without `+error.wisp`. Status and one line (status name, or the error's message when it says more), centered, dark tokens, styles inlined. No links or buttons; write a `+error.wisp` for those. Errors for endpoints and API clients are JSON (see [api](/docs/api)). |
+| Error page | For apps without `+error.wisp`. Status and one line (status name, or the error's message when it says more), centered, dark tokens, styles inlined. No links or buttons; write a `+error.wisp` for those. Errors for endpoints and API clients are JSON (see [api](/docs/api/)). |
 | Error page in `wisp dev` | Adds the status name, the request, what caused a 5xx and a link home. |
 | Server errors in dev | Every answer has `Server-Timing: total;dur=ms`. A 5xx dev page holds its message (a panic says `file:line`) in `<template id="wisp-server-error">`, which `wisp-dev.js` opens in the dialog below. Debug builds only. |
 | Build error dialog (dev) | Title, one sentence on where to look (`src/routes/+page.rs, line 7.`), then the error in a code block with Copy. Lives in a shadow root off `<html>`, so app CSS and morphs cannot touch it. Closes when the next build succeeds. |
@@ -2672,7 +2680,7 @@ async fn load(slug: String) -> Result<Data> {
 - Errors in a block point at the `.wisp` file and line. Editing a block compiles again; editing markup still swaps in without a compile.
 - A route file needs no `use` and no `pub`: it is included in its own module with `wisp::prelude` in scope (`Cx`, `Response`, `Result`, `error`, `redirect`, `#[action]`, the derives...), and its template is compiled inside it, so it reads private types and fields. `pub`, `use` (an explicit `use wisp::prelude::*` replaces Wisp's), `//!` docs and `#![…]` attributes still work. CRLF and byte order marks are fine.
 - `load` is found by name, actions by `#[action]`; nothing else is reachable from HTTP, so a helper never becomes an endpoint by accident.
-- `fn entries() -> Vec<…>` in a page under `[params]` lists the pages `wisp build --static` writes ([deploy](/docs/deploy)).
+- `fn entries() -> Vec<…>` in a page under `[params]` lists the pages `wisp build --static` writes ([deploy](/docs/deploy/)).
 - The build checks that `load` returns `Data` (plain or in a `Result`), that every parameter but `cx` has a plain name, and that `#[action]` (by any path, `wisp::action` too) marks only top-level functions of a page.
 
 ## Signatures and Inputs
@@ -2693,9 +2701,9 @@ So `fn load(q: Option<String>, page: Option<u32>)` and `#[action] fn add(text: S
 
 ## Errors, Actions, Validation
 
-- `?` on any `std::error::Error` is a 500 (details only in dev). `return error(404, "…")` stops with that status and message; `return redirect("/…")` is a 303. Both are `Err`s, so they end a function returning a `Result`. `Error::new(status, "…")` is the error itself (for `ok_or`, `map_err`); `Error::redirect(status, "/…")` takes another status. `Err(error(..))` is a build error telling you to write `return error(..)`. `Option::or_404()` is the shortcut.
+- `?` on any `std::error::Error` is a 500 (details only in dev). `return error(404, "…")` stops with that status and message; `return redirect("/…")` is a 303. Both are `Err`s, so they end a function returning a `Result`. `Error::new(status, "…")` is the error itself (for `ok_or`, `map_err`); `Error::redirect(status, "/…")` takes another status. `Err(error(..))` is a build error telling you to write `return error(..)`. `Option::or_404()` is the shortcut; `or_status(409)` on an `Option` or `Result` (the `OrStatus` trait, in the prelude) takes any status.
 - An action returns nothing (or `Result<()>`) and the page renders; or a `Response` (CSV, a file) sent instead of the page; or an `Option<Response>` to do that sometimes.
-- Validation: the action returns `invalid(field, problem)`; the page renders again as a 422 with the form still there, each input showing what was typed and what is wrong ([Actions](/docs/design-forms)). A param that does not parse (`email: Email`, `age: u8`) is the same 422 by field. An action written without `->` returns `Result`, so it may end in `redirect(..)`. `{cx.problem(field)}` places one message elsewhere; `cx.input(field)` reads what was sent. Any other error shows the error page. For more than a message, `cx.fail(status, value)` keeps a value for the load, which takes it with `cx.take()`.
+- Validation: the action returns `invalid(field, problem)`; the page renders again as a 422 with the form still there, each input showing what was typed and what is wrong ([Actions](/docs/design-forms/)). A param that does not parse (`email: Email`, `age: u8`) is the same 422 by field. An action written without `->` returns `Result`, so it may end in `redirect(..)`. `{cx.problem(field)}` places one message elsewhere; `cx.input(field)` reads what was sent. Any other error shows the error page. For more than a message, `cx.fail(status, value)` keeps a value for the load, which takes it with `cx.take()`.
 
 ```html
 ---
@@ -2713,7 +2721,7 @@ fn signup(name: String, email: Email) {
 </form>
 ```
 
-- `+server.rs` method: the `Response` it returns; any other value as JSON (`#[derive(Json)]`); nothing is a 204; `Option<Response>` `None` is a 404. `body: T` (not a string) is the JSON body read as a `FromJson` type. An error on a request under `/api`, or one that sent or asks for JSON, is answered as JSON ([api](/docs/api)).
+- `+server.rs` method: the `Response` it returns; any other value as JSON (`#[derive(Json)]`); nothing is a 204; `Option<Response>` `None` is a 404. `body: T` (not a string) is the JSON body read as a `FromJson` type. An error on a request under `/api`, or one that sent or asks for JSON, is answered as JSON ([api](/docs/api/)).
 
 ## Limits and Caching
 
@@ -2738,7 +2746,7 @@ Draft mode | `cx.enter_draft()` (from your own endpoint that checks who may; `cx
 
 The build checks that each is a `const` `u32` of one of the names, set once per route, not in a layout (`BODY_LIMIT`: a `usize`, same rules).
 
-A page reading nothing of the request needs no `CACHE`: when it and its layouts have no load, statements or `+page.js`, and every hole is a literal or a component prop given as one (`<Card title="Hi" />`, `{#if featured}` on a flag), the build writes the whole response into the binary ([Build](/docs/design-runtime)).
+A page reading nothing of the request needs no `CACHE`: when it and its layouts have no load, statements or `+page.js`, and every hole is a literal or a component prop given as one (`<Card title="Hi" />`, `{#if featured}` on a flag), the build writes the whole response into the binary ([Build](/docs/design-runtime/)).
 
 ## Accessibility
 
@@ -2765,14 +2773,14 @@ The rest is CSS, the client script and the starters, adding nothing to a request
 - A navigation moves focus to the `<h1>` and says the title in an `aria-live` region.
 - View transitions and `--change` (every component's transition time) go to nothing under `prefers-reduced-motion`; `tokens.css` turns lines and quiet text up under `prefers-contrast: more`.
 - Starters carry a skip link (`.skip`, `<main id="main">`), `:focus-visible` rings, 44px buttons on coarse pointers, `forced-colors` borders, `viewport-fit=cover` with `env(safe-area-inset-*)`, `100dvh`, fluid `clamp()` tokens (`--wisp-step-0..3`, `--wisp-space-s..xl`).
-- `Dialog` and `Menu` are native `<dialog>` and popover (focus trap, Escape, focus returned); `Input`, `Textarea`, `Select` set `aria-invalid` and `aria-describedby` from `problem`/`hint`; `Card` answers its own width with `@container`. Phones: [client](/docs/client-router).
+- `Dialog` and `Menu` are native `<dialog>` and popover (focus trap, Escape, focus returned); `Input`, `Textarea`, `Select` set `aria-invalid` and `aria-describedby` from `problem`/`hint`; `Card` answers its own width with `@container`. Phones: [client](/docs/client-router/).
 
-Template syntax, components, snippets and scoped styles: [Template syntax and styles](/docs/design-syntax).
+Template syntax, components, snippets and scoped styles: [Template syntax and styles](/docs/design-syntax/).
 
 
 <!-- docs/design-runtime.md -->
 
-`wisp::main!()` is `wisp::app!()` plus a `main` that calls `wisp::run::<App>()`. An app that sets things up first writes that `main` itself. `wisp::serve::<App>(addr)` is the async form for apps that own their runtime; it runs until its future is dropped. Feature list (base path, slots, fonts, layers...): [design-features](/docs/design-features).
+`wisp::main!()` is `wisp::app!()` plus a `main` that calls `wisp::run::<App>()`. An app that sets things up first writes that `main` itself. `wisp::serve::<App>(addr)` is the async form for apps that own their runtime; it runs until its future is dropped. Feature list (base path, slots, fonts, layers...): [design-features](/docs/design-features/).
 
 ## Server
 
@@ -2784,7 +2792,7 @@ Template syntax, components, snippets and scoped styles: [Template syntax and st
 - On SIGTERM (systemd, Docker, Kubernetes) or Ctrl+C: stop accepting, answer requests under way with `connection: close`, wait for responses the drivers are still sending, close idle connections (the client retries on a new one), return after at most 10 s or at a second signal.
 - Under `wisp dev` the app holds a pipe from the CLI as stdin and exits when it closes, so a killed `wisp dev` never leaves an app on the port.
 - A panic in a handler becomes a 500 for that request; the connection survives. A log line that cannot be written (stderr's reader gone) is dropped, not a panic.
-- TLS and compression belong to the reverse proxy or CDN (Caddy, nginx, Cloudflare), keeping the binary small and the hot path simple. Or run Wisp as a tower service under hyper or axum: [embed](/docs/embed).
+- TLS and compression belong to the reverse proxy or CDN (Caddy, nginx, Cloudflare), keeping the binary small and the hot path simple. Or run Wisp as a tower service under hyper or axum: [embed](/docs/embed/).
 
 ### Settings
 
@@ -2864,7 +2872,7 @@ Off by default; the `h2` feature compiles it (nothing of it otherwise). A connec
 
 ## One Request Entry Point
 
-The built-in server is one front end. `respond` decides an answer as a `Reply { status, headers, body }`; the HTTP/1.1 writer adds `content-length`, `date` and `connection`. Everything else calls the same code, with the same parser and limits ([embed](/docs/embed), [deploy](/docs/deploy)):
+The built-in server is one front end. `respond` decides an answer as a `Reply { status, headers, body }`; the HTTP/1.1 writer adds `content-length`, `date` and `connection`. Everything else calls the same code, with the same parser and limits ([embed](/docs/embed/), [deploy](/docs/deploy/)):
 
 | Entry | What it is |
 |---|---|
@@ -3038,7 +3046,7 @@ fn before(cx: &mut Cx) -> Result<()> {
 | `static X: Shared<Vec<Todo>> = Shared::new(Vec::new());` | in-memory value every request shares: `X.lock().push(todo)`. A `Mutex` without `unwrap` (a panic while held leaves the value as it was); do not hold the guard across `.await` |
 | `static X: Table<Todo> = Table::new();` | rows under ids it gives |
 | `Table::saved("todos")` | also kept in the app's store (log files in `WISP_DATA`, or any database via `wisp::Store`), survives restarts |
-| `#[derive(Rest)]` | the type has a saved table, `Note::table()`, which a `+server.rs` serves (see [api](/docs/api)) |
+| `#[derive(Rest)]` | the type has a saved table, `Note::table()`, which a `+server.rs` serves (see [api](/docs/api/)) |
 | `cx.set(value)` / `cx.get::<T>()` | hand a value along one request (`before` finds the user, pages read it) |
 | `cx.take::<T>()` | moves it out, so it need not be `Clone` |
 | `cx.bearer()` | token of an `Authorization: Bearer` header |
@@ -3099,7 +3107,7 @@ Rules:
 
 ## Client Code
 
-Browser reactivity is in [client](/docs/client): a bare `<script>` per file, directives (`on:`, `bind:`, `:attr`, `class:`, `use:`, `transition:`), `{:expr}` holes, client `{:#if}` and `{:#each}`, client components, stores, a client router and `use:enhance`.
+Browser reactivity is in [client](/docs/client/): a bare `<script>` per file, directives (`on:`, `bind:`, `:attr`, `class:`, `use:`, `transition:`), `{:expr}` holes, client `{:#if}` and `{:#each}`, client components, stores, a client router and `use:enhance`.
 
 - The build tokenizes the script (`wisp-build/src/js.rs`), finds which Rust values it uses, and sends only those as JSON (`wisp::Json`).
 - `live.js` (loaded only on pages with client code) runs it. `wisp.js` does forms, the morph and the router. No `eval`, no `with`; nothing is required with JS off.
@@ -3147,16 +3155,16 @@ Syntax | Compiles to
 `{#if c}…{:else if c}…{:else}…{/if}` | `if`/`else`; `if let` works
 `{#each e as pat[, i]}…{:else}…{/each}` | `for`; a plain place like `data.posts` is borrowed
 `{#match e}{:case pat}…{/match}` | `match`; a plain place is borrowed
-`{#await f}…{:then v}…{:catch e}…{/await}` | Page streams `v` or `e` later ([Streaming a page](/docs/design-state))
+`{#await f}…{:then v}…{:catch e}…{/await}` | Page streams `v` or `e` later ([Streaming a page](/docs/design-state/))
 `{@render children()}` or `<slot />` | Layout or component slot
 `{#snippet row(item, i)}…{/snippet}` | Markup to render later, here or in a component
 `{@render row(x, 0)}` | Renders a snippet
 `<head>…</head>` or `<wisp:head>…</wisp:head>` | Appended to the document head
-`<title>…</title>` at top level | Same as in `<head>` (not an `<svg>`'s)
+`<title>…</title>` at top level | Same as in `<head>` (not an `<svg>`'s). One per page: of a page and its layouts the innermost that writes a `<title>` wins, decided at build time
 `{cx.path()}` | `cx`, the request (`&Cx`), in pages, layouts, error pages
 
 - Expressions are Rust passed to `rustc` verbatim, so type errors are real. Inside `<script>`, `<style>` and HTML comments there are no holes, so CSS and JS braces need no escaping. Comments are stripped.
-- A bare `<script>` (no attributes) is the file's client script: compiled with the file's directives into an ES module, top-level names are its state, no collisions across files ([client](/docs/client)). A `<script>` with `type` or `src` is copied through.
+- A bare `<script>` (no attributes) is the file's client script: compiled with the file's directives into an ES module, top-level names are its state, no collisions across files ([client](/docs/client/)). A `<script>` with `type` or `src` is copied through.
 - Whitespace runs containing a newline collapse to one newline, except in `<pre>`/`<textarea>`. A block tag (`{#…}`, `{:…}`, `{/…}`, `{@const}`) alone on a line leaves no line behind.
 - Boolean attributes (`disabled`, `checked`, `selected`, `hidden`, `open`, `required`...) are on when present whatever the value, so `disabled="false"` disables. `name={cond}` takes a `bool` and prints the bare name or nothing; a hole in a quoted value is an error.
 - Braces are Rust on the server; a quoted directive value or `{:expr}` is JavaScript in the browser. No Rust expression goes inside `<script>`: use the Rust name or `data.x` (sent as JSON) there, or `data-*` attributes.
@@ -3199,7 +3207,7 @@ A `.wisp` file in `src/components` (any depth) is a component named by its file:
 - `{@render children()}` shows what the tag wraps. Children compile in the using page, so they see its `data`, loop variables and `{@const}`s.
 - Build checks: the component exists (the ones that do are listed if not), every given prop is declared, every prop without a default is given, a flag only goes to a `bool`, children only to a component that shows them.
 - The name starts with a capital and has a lowercase letter (`<DIV>` is HTML). Components cannot go in `<wisp:head>`; only components take `{@props}`. Component files hot-swap like templates.
-- The browser can draw components too (client blocks, `{:…}` props, `bind:`, `on:`): [client](/docs/client).
+- The browser can draw components too (client blocks, `{:…}` props, `bind:`, `on:`): [client](/docs/client/).
 
 ## Snippets
 
@@ -3226,7 +3234,7 @@ Markup a file renders more than once, or gives to a component:
 
 - Parameters are Rust `let` patterns, typed or not. The body sees the names around its definition, like a closure. A snippet is in scope after its `{/snippet}` to the end of its block; it cannot render itself (a component can).
 - A component takes one as a prop of type `Snippet<A, B>` (`Snippet` for none), which is `&dyn Fn(&mut Out, A, B)`: `{row}` or `row={row}` in its tag, or a `{#snippet row(…)}` among its children; it renders with `{@render row(…)}`.
-- `{:@render row(x)}` has the browser draw it: arguments are JavaScript, the body uses its parameters in `{:…}` ([client](/docs/client)). A component the browser draws takes snippets the same way (`<List items={:xs} {row} />`, or `{#snippet row(x)}` among children) and draws one with `{:@render row(x)}` where `row` is a prop. The body is a block before the tag (`Dir::Snip`, which `snip` in extra.js binds), found among the anchors right before the component's own, so no first paint for a component given one.
+- `{:@render row(x)}` has the browser draw it: arguments are JavaScript, the body uses its parameters in `{:…}` ([client](/docs/client/)). A component the browser draws takes snippets the same way (`<List items={:xs} {row} />`, or `{#snippet row(x)}` among children) and draws one with `{:@render row(x)}` where `row` is a prop. The body is a block before the tag (`Dir::Snip`, which `snip` in extra.js binds), found among the anchors right before the component's own, so no first paint for a component given one.
 
 ## Scoped Styles
 
@@ -3239,6 +3247,7 @@ Markup a file renders more than once, or gives to a component:
 ```
 
 - A `<style>` without attributes in a page, layout or component is that file's: each element it writes gets `class="w-xxxxxx"` (six characters from a hash of its path), and each selector gets `.w-xxxxxx` on its last compound that is not `:global(…)`, before any pseudo-class or pseudo-element: `.card p:hover` becomes `.card p.w-xxxxxx:hover`. Ancestors may come from anywhere (a layout, `<html class="dark">`). A component's elements are its own.
+- Only elements a template writes get the class, `{:#each}` ones too. Elements your own script makes (`document.createElement`, `innerHTML`) have none and no scoped rule styles them: write their rules in `:global(…)` or in `app.css`, or draw them with `{:#each}`.
 - `:global(x)` is `x`, unscoped. A `<style>` with any attribute (`<style global>`, `media="print"`) is copied as written. `@media`, `@supports`, `@container`, `@layer` and nesting (`&:hover`, `h2 {}` in a rule) are scoped inside; `@keyframes`, `@font-face` and their names stay global. `@import` is a build error: put it in `src/app.css`.
 - Top level only (not in a block, `<template>` or `<head>`); a file may have several. No class on `<html>`, `<head>`, `<body>`, `<title>`, `<meta>`, `<link>`, `<base>`, `<script>`, `<style>`, `<template>`; a browser-set `class={:x}` keeps it.
 - The CSS is appended to `/_app/app.css` after the app's own: no extra request. Release embeds it; dev reads `.wisp/scoped.css`, which `wisp dev` rewrites on a template save and the browser swaps in, no compile.
@@ -3598,6 +3607,706 @@ Read once at start. Switches take `on`/`off` (also `1`/`0`, `true`/`false`). You
 | `NO_COLOR` | plain CLI output |
 
 
+<!-- docs/hosting.md -->
+
+Wisp builds one binary for a server, an image for a container host, plain files for a static host, or WebAssembly for an edge or serverless host. Pick your host below for the build command, the deploy steps, its environment and its limits. The general rules are in [Deploying](/docs/deploy/) and [Edge and serverless targets](/docs/deploy-targets/).
+
+| Host | Build command | Runtime |
+|---|---|---|
+| [VPS](/docs/hosting/vps/) | `wisp build` | native binary |
+| [Docker](/docs/hosting/docker/) | `wisp build --docker` | container |
+| [Fly.io](/docs/hosting/fly/) | `wisp deploy init fly` | container |
+| [Render](/docs/hosting/render/) | `wisp deploy init render` | container |
+| [Railway](/docs/hosting/railway/) | `wisp deploy init railway` | container |
+| [Cloudflare](/docs/hosting/cloudflare/) | `wisp build --target cloudflare` or `pages` | WebAssembly on Workers or Pages |
+| [Deno Deploy](/docs/hosting/deno-deploy/) | `wisp build --target deno` | WebAssembly on Deno |
+| [Vercel](/docs/hosting/vercel/) | `wisp build --target vercel` | WebAssembly, Node function or Edge |
+| [Netlify](/docs/hosting/netlify/) | `wisp build --target netlify` | WebAssembly, function or edge function |
+| [AWS Lambda](/docs/hosting/aws-lambda/) | `wisp build --target lambda` | static Linux binary |
+| [Bun](/docs/hosting/bun/) | `wisp build --target bun` | WebAssembly on Bun |
+| [Node](/docs/hosting/node/) | `wisp build --target node` | WebAssembly on Node 20+ |
+| [GitHub Pages](/docs/hosting/github-pages/) | `wisp build --static` | static files |
+| [Cloud Run](/docs/hosting/cloud-run/) | `wisp build --docker` | container |
+| [Azure](/docs/hosting/azure/) | `wisp build --docker` or `--target node` | container or WebAssembly on Node |
+
+An app that signs cookies needs `WISP_SECRET` (32 or more random characters) on every host: [Environment variables](/docs/env/).
+
+
+<!-- docs/hosting/aws-lambda.md -->
+
+AWS Lambda runs the app's own static Linux binary on the `provided.al2023` runtime. Any Wisp binary answers Lambda's runtime API when `AWS_LAMBDA_RUNTIME_API` is set.
+
+## Build
+
+```sh
+rustup target add x86_64-unknown-linux-musl     # once
+wisp build --target lambda                      # dist/lambda/bootstrap.zip
+```
+
+The binary is built with Rust's lld, with no C toolchain.
+
+## Deploy
+
+Create the function once (runtime `provided.al2023`, `x86_64`, handler `bootstrap`) and add a Function URL (or API Gateway or an ALB):
+
+```sh
+aws lambda create-function --function-name my-app --runtime provided.al2023 \
+  --architectures x86_64 --handler bootstrap --role <role-arn> \
+  --zip-file fileb://dist/lambda/bootstrap.zip
+```
+
+Then for each release:
+
+```sh
+aws lambda update-function-code --function-name my-app --zip-file fileb://dist/lambda/bootstrap.zip
+```
+
+`wisp deploy init lambda` writes a GitHub Actions workflow that runs that update on push to `main`. It reads the secret `AWS_ROLE_ARN` (a role GitHub may assume) and the variables `AWS_REGION` and `LAMBDA_FUNCTION`.
+
+## Environment
+
+- `WISP_SECRET` as an environment variable of the function, for an app that signs cookies.
+- Other variables: [Environment variables](/docs/env/).
+
+## Limits
+
+- Everything works except WebSockets and streaming (a stream is sent whole).
+- The `tower` feature with `lambda_http` also works: [Testing and mixing with Rust code](/docs/embed/).
+- There is no cron trigger to write: the build says so and stops when the app uses `wisp::cron`.
+
+## Files and Data
+
+- `static/` is inside the binary.
+- Saved tables go in `/tmp`, per instance: use `wisp::store` for lasting data. See [Where rows are kept](/docs/api-tables/).
+
+## More
+
+[Edge and serverless targets](/docs/deploy-targets/), [Deploying](/docs/deploy/).
+
+
+<!-- docs/hosting/azure.md -->
+
+Azure takes Wisp three ways: a container (Container Apps), the Node build (App Service), or Static Web Apps with an HTTP function.
+
+## Build
+
+Container:
+
+```sh
+wisp build --docker
+```
+
+App Service and Static Web Apps (Node 20 or newer):
+
+```sh
+rustup target add wasm32-unknown-unknown     # once
+wisp build --target node                     # dist/node
+```
+
+## Deploy
+
+- Container Apps: build the Dockerfile as it is. See [Host with Docker](/docs/hosting/docker/).
+- App Service or Container Apps with the Node build: deploy `dist/node`. It runs `npm start`, which listens on `$PORT`.
+- Static Web Apps (managed functions answer under `/api` only): `dist/node/hosts/azure.md` has the HTTP function (v4 model) that passes every request on, using the original address Azure keeps in `x-ms-original-url`, and the `navigationFallback` rewrite to `/api/wisp` for `staticwebapp.config.json`.
+
+## Environment
+
+- `WISP_SECRET`: set it in the service's application settings, for an app that signs cookies.
+- Other variables: [Environment variables](/docs/env/).
+
+## Limits
+
+- A container build has no edge limits and runs the full feature set.
+- The Node build has the edge limits: WebSockets answer 501, and no `std::fs`, `std::thread`, `std::process` or `std::net`; use `wisp::spawn` and `wisp::sleep`. See [Host on Node](/docs/hosting/node/) and [What works on the edge](/docs/deploy-targets/).
+
+## Files and Data
+
+- Container: saved tables live in `/data`; give it storage that outlives the instance.
+- Node build: tables are per-instance memory unless `WISP_STORE` is set. See [Where rows are kept](/docs/api-tables/).
+
+## More
+
+[Edge and serverless targets](/docs/deploy-targets/), [Deploying](/docs/deploy/).
+
+
+<!-- docs/hosting/bun.md -->
+
+Bun runs the app as WebAssembly, serving raw sockets with `Bun.listen`. For a plain server, the [native binary](/docs/hosting/vps/) is faster and has more features.
+
+## Build
+
+```sh
+rustup target add wasm32-unknown-unknown     # once
+wisp build --target bun                      # dist/bun (--out <folder>)
+```
+
+## Deploy
+
+From `dist/bun`:
+
+```sh
+bun server.mjs
+```
+
+The folder's `package.json` has `"start": "bun server.mjs"`. Copy the folder to the machine and run it there.
+
+## Environment
+
+- `WISP_SECRET`: set it in the process environment, for an app that signs cookies.
+- Read other values with `wisp::env("KEY")` (`std::env::var` sees nothing).
+- `WISP_NODE_HTTP=1` serves with `Bun.serve` instead of `Bun.listen`. See [Environment variables](/docs/env/).
+
+## Limits
+
+- The app's own HTTP/1.1 parser answers over raw sockets (pipelining, keep-alive, chunked bodies, 413, 431 and each route's `BODY_LIMIT`). At startup a request over loopback must be answered as the app answers it (twice, on one connection); if not, it serves with `Bun.serve` and one stderr line says so.
+- WebSockets answer 501; use `Response::events` (SSE).
+- No threads or files: use `wisp::spawn` and `wisp::sleep`. See [What works on the edge](/docs/deploy-targets/).
+- There is no cron trigger to write: the build says so and stops when the app uses `wisp::cron`.
+
+## Files and Data
+
+- `Table::saved` and `Rest` are per-instance memory unless `WISP_STORE` is set (`libsql://`; see [Saved tables](/docs/deploy-targets/)).
+
+## More
+
+[Edge and serverless targets](/docs/deploy-targets/), [Deploying](/docs/deploy/).
+
+
+<!-- docs/hosting/cloud-run.md -->
+
+Cloud Run runs a container image. Wisp builds the Dockerfile as it is.
+
+## Build
+
+```sh
+wisp build --docker          # Dockerfile and .dockerignore (--force replaces them)
+```
+
+## Deploy
+
+```sh
+gcloud run deploy --source .
+```
+
+The image listens on `$PORT` (the Dockerfile sets `HOST=0.0.0.0` and `PORT=3000`).
+
+## Environment
+
+- `WISP_SECRET`: 32 or more random characters, set as an environment variable or secret of the service, for an app that signs cookies.
+- Other variables: [Environment variables](/docs/env/).
+
+## Limits
+
+- The image is the [Docker](/docs/hosting/docker/) one: epoll instead of io_uring under Docker's default profile.
+- WebSockets and streaming work in the binary. Any limit the platform puts on them is Cloud Run's, not Wisp's.
+
+## Files and Data
+
+- `static/` and the styles are inside the binary.
+- Saved tables live in `/data` inside the container, which does not outlive the instance unless you give it storage there. Otherwise use a custom store ([Where rows are kept](/docs/api-tables/)).
+
+## More
+
+[Host with Docker](/docs/hosting/docker/), [Deploying](/docs/deploy/).
+
+
+<!-- docs/hosting/cloudflare.md -->
+
+Cloudflare runs the app as WebAssembly on its edge, as a Worker (`cloudflare`) or on Pages (`pages`).
+
+## Build
+
+```sh
+rustup target add wasm32-unknown-unknown     # once
+wisp build --target cloudflare               # Workers: dist/cloudflare
+wisp build --target pages                    # Pages: dist/pages
+```
+
+`--out <folder>` changes the folder. No wasm-bindgen or other tool is needed. In Cloudflare's CI a plain `wisp build` picks the target from `WORKERS_CI` or `CF_PAGES`.
+
+## Deploy
+
+Workers, from `dist/cloudflare`:
+
+```sh
+npx wrangler deploy
+npx wrangler secret put WISP_SECRET
+```
+
+Pages, from `dist/pages` (`_worker.js` and `_routes.json`):
+
+```sh
+npx wrangler pages deploy .
+```
+
+For Workers, `wisp deploy init cloudflare` writes a GitHub Actions workflow that builds and deploys on push to `main`; it reads the secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
+
+## Environment
+
+- `WISP_SECRET`: a Worker secret (above), or on Pages under Settings.
+- Read other values with `wisp::env("KEY")`; `std::env::var` sees nothing and there is no `.env`.
+- `CRON_SECRET`, if the app has `wisp::cron`: set it as a secret; the cron triggers send it.
+- `WISP_STORE=d1:DB` and the rest: [Environment variables](/docs/env/).
+
+## Limits
+
+- No threads, sockets or files: use `wisp::spawn` and `wisp::sleep`, not `tokio::spawn`. See [What works on the edge](/docs/deploy-targets/).
+- WebSockets answer 501; use `Response::events` (SSE). `Response::stream` and `Response::events` are live.
+- `wisp::channel`, `wisp::every` and `RateLimit` are not in the edge build.
+- Started timers and fetches keep the instance alive (`waitUntil`).
+- Cron: `wisp::cron` becomes `[triggers] crons` in `wrangler.toml` (Workers); Pages has no trigger, so the build says so and stops.
+
+## Files and Data
+
+- `static/` goes into the build output and is served by Cloudflare before the app runs (Workers: `public` with an `[assets]` entry in `wrangler.toml`; Pages: beside `_worker.js`).
+- `Table::saved` and `Rest` are per-instance memory unless `WISP_STORE=d1:DB` is set, with a `[[d1_databases]]` binding named `DB` in `wrangler.toml`. See [Saved tables](/docs/deploy-targets/).
+
+## More
+
+[Edge and serverless targets](/docs/deploy-targets/), [Deploying](/docs/deploy/).
+
+
+<!-- docs/hosting/deno-deploy.md -->
+
+Deno Deploy runs the app as WebAssembly on Deno's edge.
+
+## Build
+
+```sh
+rustup target add wasm32-unknown-unknown     # once
+wisp build --target deno                     # dist/deno (--out <folder>)
+```
+
+In Deno Deploy's CI a plain `wisp build` picks the target from `DENO_DEPLOYMENT_ID`.
+
+## Deploy
+
+From `dist/deno`:
+
+```sh
+deployctl deploy --entrypoint main.ts
+deno run -A main.ts          # try it locally
+```
+
+`wisp deploy init deno` writes a GitHub Actions workflow that builds and deploys on push to `main` with `denoland/deployctl`. It reads no secrets: it uses GitHub's OIDC token. Edit `project: <name>` in it to your project.
+
+## Environment
+
+- `WISP_SECRET` as a project environment variable in Deno Deploy, for an app that signs cookies.
+- Read other values with `wisp::env("KEY")`; `std::env::var` sees nothing and there is no `.env`.
+- `WISP_STORE=deno-kv` and the rest: [Environment variables](/docs/env/).
+
+## Limits
+
+- Deno Deploy has no sockets, so it always serves with `Deno.serve`. (Locally `deno run -A main.ts` reads raw sockets, and `WISP_NODE_HTTP=1` selects `Deno.serve`.)
+- WebSockets answer 501; use `Response::events` (SSE). `Response::stream` and `Response::events` are live.
+- No threads or files: use `wisp::spawn` and `wisp::sleep`. See [What works on the edge](/docs/deploy-targets/).
+- `wisp::channel`, `wisp::every` and `RateLimit` are not in the edge build, and there is no cron trigger to write: the build says so and stops when the app uses `wisp::cron`.
+
+## Files and Data
+
+- `dist/deno` has no separate static folder: the app answers for `static/` itself.
+- `Table::saved` and `Rest` are per-instance memory unless `WISP_STORE=deno-kv` (or `deno-kv:<path>` for a file or URL) is set. See [Saved tables](/docs/deploy-targets/).
+
+## More
+
+[Edge and serverless targets](/docs/deploy-targets/), [Deploying](/docs/deploy/).
+
+
+<!-- docs/hosting/docker.md -->
+
+Docker packages the binary in a small image that runs on your machine or any container host. WebSockets, streaming and saved tables all work.
+
+## Build
+
+```sh
+wisp build --docker      # --force replaces existing files
+docker build -t my-app .
+```
+
+`wisp build --docker` writes a two-stage `Dockerfile` (`rust:slim`, then `debian:stable-slim`, `HOST=0.0.0.0`, `PORT=3000`, `WISP_DATA=/data`) and a `.dockerignore`. Files that exist are left alone unless you pass `--force`; the Dockerfile you have is the one that is built.
+
+## Deploy
+
+```sh
+docker run -p 3000:3000 -e WISP_SECRET=... -v my-app-data:/data my-app
+```
+
+Fly.io, Railway, Render, Cloud Run and Azure Container Apps build the Dockerfile as it is: [Fly.io](/docs/hosting/fly/), [Railway](/docs/hosting/railway/), [Render](/docs/hosting/render/), [Cloud Run](/docs/hosting/cloud-run/), [Azure](/docs/hosting/azure/).
+
+## Environment
+
+- `WISP_SECRET`: 32 or more random characters, needed by an app that signs cookies. Pass it with `-e` or an env file.
+- Other variables: [Environment variables](/docs/env/).
+
+## Limits
+
+- Docker's default seccomp profile refuses io_uring, so the server uses an epoll loop per worker. A profile allowing `io_uring_setup`, `io_uring_enter` and `io_uring_register` brings it back.
+- The image runs as `nobody`.
+- WebSockets and streaming work.
+
+## Files and Data
+
+- `static/` and the styles are inside the binary.
+- Saved tables live in `/data`: mount a volume there (`-v my-app-data:/data`) or they go with the container. See [Where rows are kept](/docs/api-tables/).
+
+## More
+
+[Deploying](/docs/deploy/), [Host on a VPS](/docs/hosting/vps/).
+
+
+<!-- docs/hosting/fly.md -->
+
+Fly.io runs containers on machines it starts for you. Wisp builds the Dockerfile as it is.
+
+## Build
+
+```sh
+wisp deploy init fly       # fly.toml, and a Dockerfile if there is none
+```
+
+This writes `fly.toml` (internal port 3000, `force_https`, machines that stop when idle and start on a request, 256 MB, one shared CPU) and the same `Dockerfile` as `wisp build --docker`. The app name in it is your package name and must be unique on Fly. `--force` replaces the file.
+
+## Deploy
+
+```sh
+fly launch --copy-config --no-deploy
+fly secrets set WISP_SECRET=<32 or more random characters>
+fly deploy
+```
+
+## Environment
+
+- `WISP_SECRET` as a Fly secret (above), for an app that signs cookies.
+- Other variables: [Environment variables](/docs/env/).
+
+## Limits
+
+- The image is the [Docker](/docs/hosting/docker/) one: epoll instead of io_uring under Docker's default profile.
+- WebSockets and streaming work, as in any container.
+
+## Files and Data
+
+- `static/` and the styles are inside the binary.
+- Saved tables live in `/data` inside the machine. The generated `fly.toml` has no volume mount, so add one for `/data` if the rows must outlive a deploy; otherwise use a custom store ([Where rows are kept](/docs/api-tables/)).
+
+## More
+
+[Host with Docker](/docs/hosting/docker/), [Deploying](/docs/deploy/).
+
+
+<!-- docs/hosting/github-pages.md -->
+
+GitHub Pages serves plain files. Wisp writes every parameterless page as HTML, so the site needs no server.
+
+## Build
+
+```sh
+wisp build --static          # dist/ (--out <folder>)
+```
+
+`--spa` is `--static` plus an `index.html` fallback. The same build works for GitLab Pages and S3.
+
+## Deploy
+
+```sh
+wisp deploy init pages
+```
+
+This writes `.github/workflows/deploy.yml`: build with `--static`, then `actions/upload-pages-artifact` and `actions/deploy-pages` on push to `main`. It reads no secrets; in the repository set Settings, Pages, Source to GitHub Actions. `--force` replaces the file.
+
+## Environment
+
+- `SITE_URL` (for example `https://me.github.io/my-app`): the address that sitemaps, feeds and absolute links use. Set it when you build.
+- `WISP_BASE`: a base path, set at build (`/my-app`). A project site under a path prefix needs prefix-safe links.
+- There is no server, so `WISP_SECRET` and the runtime variables do not apply. See [Environment variables](/docs/env/).
+
+## Limits
+
+- Forms need a server: the export warns for each page with actions, and for each exported page whose HTML holds a form that posts.
+- A route with actions or a `+server.rs` needs a server (the export warns).
+- A `[params]` route lists its pages with `entries`.
+
+## Static Assets
+
+- `static/` and the `/_app` files are written into `dist/`.
+- Saved tables do not exist here: there is no process to keep them.
+
+## More
+
+[Deploying](/docs/deploy/), [Hosting](/docs/hosting/).
+
+
+<!-- docs/hosting/netlify.md -->
+
+Netlify runs the app as WebAssembly in a function, or in an edge function with `--edge`.
+
+## Build
+
+```sh
+rustup target add wasm32-unknown-unknown     # once
+wisp build --target netlify                  # dist/netlify
+wisp build --target netlify --edge           # edge function
+```
+
+In Netlify's CI a plain `wisp build` picks the target from `NETLIFY`.
+
+## Deploy
+
+From `dist/netlify`:
+
+```sh
+npx netlify deploy --prod
+```
+
+`wisp deploy init netlify` writes a GitHub Actions workflow that builds and deploys on push to `main`. It reads the secrets `NETLIFY_AUTH_TOKEN` and `NETLIFY_SITE_ID`.
+
+## Environment
+
+- `WISP_SECRET` as an environment variable of the site, for an app that signs cookies.
+- Read other values with `wisp::env("KEY")` (`std::env::var` sees nothing).
+- `CRON_SECRET`, if the app has `wisp::cron`: set it too; the scheduled function sends it.
+- [Environment variables](/docs/env/).
+
+## Limits
+
+- Per route: `const RUNTIME: wisp::Runtime = wisp::Runtime::Edge;` puts a route on the edge; the rest stay on the function. See [Edge runtime per route](/docs/deploy-targets/).
+- Edge functions have the edge limits (no `std::fs`, `std::thread`, `std::process`, `std::net`, websockets); the build stops, naming the route, if an Edge route uses them.
+- WebSockets answer 501; use `Response::events` (SSE). Streaming is live.
+- Netlify keeps the instance alive (`waitUntil`) for started timers and fetches.
+- Cron: `wisp::cron` becomes a scheduled function. With `--edge` there is no trigger to write: the build says so and stops.
+- `wisp::channel`, `wisp::every` and `RateLimit` are not in the edge build.
+
+## Files and Data
+
+- `static/` goes to `public`, which Netlify serves; with `--edge` the edge function skips it via `excludedPath`.
+- `Table::saved` and `Rest` are per-instance memory. `WISP_STORE` accepts `libsql://` (Turso or any libSQL server, with `WISP_STORE_TOKEN`); see [Saved tables](/docs/deploy-targets/).
+
+## More
+
+[Edge and serverless targets](/docs/deploy-targets/), [Deploying](/docs/deploy/).
+
+
+<!-- docs/hosting/node.md -->
+
+The `node` target runs the app as WebAssembly under Node 20 or newer. It is the target for Amplify, Firebase, Azure, Stormkit, Zeabur and any other Node host. For your own server, the [native binary](/docs/hosting/vps/) is faster and has more features.
+
+## Build
+
+```sh
+rustup target add wasm32-unknown-unknown     # once
+wisp build --target node                     # dist/node (--out <folder>)
+```
+
+In AWS Amplify's CI a plain `wisp build` picks `node` from `AWS_APP_ID`.
+
+## Deploy
+
+From `dist/node`:
+
+```sh
+npm start
+```
+
+It runs `node server.mjs` and listens on `$PORT`. The output's `hosts/` folder has a note for each host (`amplify.md`, `firebase.md`, `azure.md`, `stormkit.md`, `zeabur.md`) with its manifest or function glue.
+
+## Environment
+
+- `WISP_SECRET`: set it in the host's environment settings, for an app that signs cookies.
+- Read other values with `wisp::env("KEY")` (`std::env::var` sees nothing).
+- `WISP_NODE_HTTP=1` serves with `node:http`. See [Environment variables](/docs/env/).
+
+## Limits
+
+- The app's own HTTP/1.1 parser answers over raw sockets. At startup a request over loopback must be answered as the app answers it (twice, on one connection); if not, or with `WISP_NODE_HTTP=1`, it serves with `node:http` (one stderr line says which). Only that path reads at most `WISP_BODY_LIMIT` (default 1 MB) of a body and answers 413 past it.
+- WebSockets answer 501; use `Response::events` (SSE). Streaming is live.
+- No threads or files: use `wisp::spawn` and `wisp::sleep`. See [What works on the edge](/docs/deploy-targets/).
+- There is no cron trigger to write: the build says so and stops when the app uses `wisp::cron`.
+
+## Files and Data
+
+- `Table::saved` and `Rest` are per-instance memory unless `WISP_STORE` is set (`libsql://`; see [Saved tables](/docs/deploy-targets/)).
+
+## More
+
+[Host on Azure](/docs/hosting/azure/), [Edge and serverless targets](/docs/deploy-targets/), [Deploying](/docs/deploy/).
+
+
+<!-- docs/hosting/railway.md -->
+
+Railway builds a Dockerfile from your project and runs it as a service.
+
+## Build
+
+```sh
+wisp deploy init railway      # railway.toml, and a Dockerfile if there is none
+```
+
+`railway.toml` sets the builder to `DOCKERFILE` with `Dockerfile` as the path, and a restart policy of `ON_FAILURE` with 10 retries. The Dockerfile is the one `wisp build --docker` writes. `--force` replaces the file.
+
+## Deploy
+
+```sh
+railway up
+```
+
+Railway builds the Dockerfile and sets `PORT`, which the app listens on. Or point a service at the repository.
+
+## Environment
+
+- `WISP_SECRET`: 32 or more random characters, in the service's variables, for an app that signs cookies.
+- Other variables: [Environment variables](/docs/env/).
+
+## Limits
+
+- The image is the [Docker](/docs/hosting/docker/) one: epoll instead of io_uring under Docker's default profile.
+- WebSockets and streaming work, as in any container.
+
+## Files and Data
+
+- `static/` and the styles are inside the binary.
+- Saved tables live in `/data` inside the container, so give that path storage that outlives a deploy, or use a custom store ([Where rows are kept](/docs/api-tables/)).
+
+## More
+
+[Host with Docker](/docs/hosting/docker/), [Deploying](/docs/deploy/).
+
+
+<!-- docs/hosting/render.md -->
+
+Render builds a Dockerfile from your repository and runs it as a web service.
+
+## Build
+
+```sh
+wisp deploy init render       # render.yaml, and a Dockerfile if there is none
+```
+
+`render.yaml` is a blueprint with one `web` service on the `docker` runtime, named for your package, with `WISP_SECRET` set to `generateValue: true`. The Dockerfile is the one `wisp build --docker` writes. `--force` replaces the file.
+
+## Deploy
+
+Commit both files and push. In Render choose New, Blueprint and pick the repository. Render builds the Dockerfile and sets `PORT`, which the app listens on.
+
+## Environment
+
+- `WISP_SECRET` is generated for you by the blueprint; to set your own, use the service's environment settings.
+- Other variables: [Environment variables](/docs/env/).
+
+## Limits
+
+- The image is the [Docker](/docs/hosting/docker/) one: epoll instead of io_uring under Docker's default profile.
+- WebSockets and streaming work, as in any container.
+
+## Files and Data
+
+- `static/` and the styles are inside the binary.
+- Saved tables live in `/data` inside the container. The blueprint does not attach storage, so rows are lost with the instance unless you mount a persistent disk at `/data` or use a custom store ([Where rows are kept](/docs/api-tables/)).
+
+## More
+
+[Host with Docker](/docs/hosting/docker/), [Deploying](/docs/deploy/).
+
+
+<!-- docs/hosting/vercel.md -->
+
+Vercel runs the app as WebAssembly in a Node function, or on its Edge runtime.
+
+## Build
+
+```sh
+rustup target add wasm32-unknown-unknown     # once
+wisp build --target vercel                   # .vercel/output
+wisp build --target vercel --edge            # every route on the Edge runtime
+```
+
+In Vercel's CI a plain `wisp build` picks the target from `VERCEL` and writes to `.vercel/output`.
+
+## Deploy
+
+```sh
+npx vercel deploy --prebuilt
+```
+
+`wisp deploy init vercel` writes a GitHub Actions workflow that builds and deploys on push to `main`. It reads the secrets `VERCEL_TOKEN`, `VERCEL_ORG_ID` and `VERCEL_PROJECT_ID`.
+
+## Environment
+
+- `WISP_SECRET` as an environment variable of the project, for an app that signs cookies.
+- Read other values with `wisp::env("KEY")` (`std::env::var` sees nothing).
+- `CRON_SECRET`, if the app has `wisp::cron`: set it too; Vercel's cron sends it.
+- [Environment variables](/docs/env/).
+
+## Limits
+
+- Per route: `const RUNTIME: wisp::Runtime = wisp::Runtime::Edge;` in a `+page.rs` or `+server.rs` puts that route on the Edge runtime and the rest stay on the Node function. See [Edge runtime per route](/docs/deploy-targets/).
+- The build stops, naming the route, if an Edge route uses what WebAssembly lacks (`std::fs`, `std::thread`, `std::process`, `std::net`, websockets).
+- WebSockets answer 501; use `Response::events` (SSE). Streaming is live.
+- Vercel may freeze the instance after the response, so finish background work first.
+- Cron: `wisp::cron` becomes `crons` in `config.json` (Hobby plan: daily only).
+- `wisp::channel`, `wisp::every` and `RateLimit` are not in the edge build.
+
+## Files and Data
+
+- `static/` goes to `.vercel/output/static` and stays the CDN's.
+- `Table::saved` and `Rest` are per-instance memory. `WISP_STORE` accepts `libsql://` (Turso or any libSQL server, with `WISP_STORE_TOKEN`); see [Saved tables](/docs/deploy-targets/).
+
+## More
+
+[Edge and serverless targets](/docs/deploy-targets/), [Deploying](/docs/deploy/).
+
+
+<!-- docs/hosting/vps.md -->
+
+A VPS is a server you rent and run yourself. Wisp fits it best: one binary, no runtime to install, and the full feature set (WebSockets, streaming, saved tables on disk).
+
+## Build
+
+```sh
+wisp build
+```
+
+This makes one release binary with the static files and styles inside. A native binary runs only on the OS and CPU it was built for, so build on the server or on a machine like it.
+
+## Deploy
+
+Copy the binary to the server and run it. It listens on `$HOST:$PORT` (`0.0.0.0:3000` in release).
+
+```sh
+scp target/release/my-app me@server:/srv/my-app/
+ssh me@server 'cd /srv/my-app && WISP_SECRET=... ./my-app'
+```
+
+To keep it running and start it at boot, run this on the server from the app folder, as root:
+
+```sh
+wisp service install --user my-app --port 3000
+wisp service status
+```
+
+On Linux this writes a systemd unit with `Restart=on-failure` and `EnvironmentFile=-/etc/<name>.env`. See [Deploying](/docs/deploy/) for every option, and for macOS and Windows.
+
+## Environment
+
+- `WISP_SECRET`: 32 or more random characters, needed by an app that signs cookies. With `wisp service install` on Linux, put it in `/etc/<name>.env` (made 0600 if missing).
+- `HOST`, `PORT`, `WISP_THREADS` and the rest: [Environment variables](/docs/env/).
+
+## Limits
+
+- There is no TLS in the server. Put a reverse proxy in front for HTTPS; set `WISP_CLIENT_IP_HEADER` so `cx.client_ip()` sees the real address.
+- SIGTERM and Ctrl+C stop accepting and drain for up to 10 seconds.
+- WebSockets and streaming both work.
+
+## Files and Data
+
+- `static/` and the styles are inside the binary.
+- Saved tables (`Table::saved`, `#[derive(Rest)]`) are log files in the `data` folder next to where you run it; `WISP_DATA` moves it. Back that folder up. See [Where rows are kept](/docs/api-tables/).
+
+## More
+
+[Deploying](/docs/deploy/), [Logs, metrics and traces](/docs/deploy-observe/), [Serve extras](/docs/serve/).
+
+
 <!-- docs/overview.md -->
 
 Wisp is the framework for the AI age: ultra fast to run, cheap in AI tokens to write, durable, and flexible.
@@ -3605,7 +4314,7 @@ Wisp is the framework for the AI age: ultra fast to run, cheap in AI tokens to w
 | Area | What you get |
 |---|---|
 | Reactivity | `$state`, `$derived`, `$effect` in a plain `<script>`, no build step. Islands (`client:visible`, `client:idle`, `client:media`) load code when needed. Components ship no JavaScript by default. Hot reload keeps `$state`; markup edits show in under 100 ms. |
-| AI and tokens | [AGENTS.md](https://github.com/wyziedevs/wisp/blob/main/llms/AGENTS.md) and [llms-full.txt](https://github.com/wyziedevs/wisp/blob/main/llms/llms-full.txt) hold the whole reference. `wisp mcp` serves the docs to coding agents. A whole app takes about half the tokens of SvelteKit or Next.js ([Tokens](/docs/tokens)). |
+| AI and tokens | [AGENTS.md](https://github.com/wyziedevs/wisp/blob/main/llms/AGENTS.md) and [llms-full.txt](https://github.com/wyziedevs/wisp/blob/main/llms/llms-full.txt) hold the whole reference. `wisp mcp` serves the docs to coding agents. A whole app takes about half the tokens of SvelteKit or Next.js ([Tokens](/docs/tokens/)). |
 | Rendering | Server-side rendering with streamed responses and server-streamed `{#await}`. Prerendered pages in a server build, `wisp build --static` and `--spa`. |
 | Data and forms | `#[action]` form handlers with validation, and uploads. `#[remote]` functions called from the browser. `#[derive(Rest)]` gives a JSON CRUD API; a store keeps rows in log files or any database. |
 | Styling | Scoped CSS in a `<style>` block, Tailwind and Sass built in. |
@@ -3614,14 +4323,14 @@ Wisp is the framework for the AI age: ultra fast to run, cheap in AI tokens to w
 
 ## Speed
 
-Zero cost on the request hot path is the first rule: see [Benchmarks](/docs/benchmarks). Wisp has no `unsafe` code outside its Linux I/O drivers and the edge exports.
+Zero cost on the request hot path is the first rule: see [Benchmarks](/docs/benchmarks/). Wisp has no `unsafe` code outside its Linux I/O drivers and the edge exports.
 
 ## Docs
 
-- [Design](/docs/design): the template language, routing, actions and the runtime.
-- [Browser code](/docs/client): scripts, directives, islands, stores and the router.
-- [APIs and platforms](/docs/api): JSON APIs, validation, auth, OpenAPI and testing.
-- [Deploying](/docs/deploy) covers every host. [Testing and mixing with Rust code](/docs/embed) covers axum, hyper and Lambda.
+- [Design](/docs/design/): the template language, routing, actions and the runtime.
+- [Browser code](/docs/client/): scripts, directives, islands, stores and the router.
+- [APIs and platforms](/docs/api/): JSON APIs, validation, auth, OpenAPI and testing.
+- [Deploying](/docs/deploy/) covers every host. [Testing and mixing with Rust code](/docs/embed/) covers axum, hyper and Lambda.
 - [examples](https://github.com/wyziedevs/wisp/tree/main/examples): a demo app, a JSON API and Wisp inside axum.
 
 Issues and pull requests are welcome; read the design rule at the top of [AGENTS.md](https://github.com/wyziedevs/wisp/blob/main/llms/AGENTS.md) first. License: [MIT](https://github.com/wyziedevs/wisp/blob/main/LICENSE).
@@ -3725,12 +4434,12 @@ Browser code lives in the same file as the markup. A top-level `let` in a `<scri
 </script>
 ```
 
-A write redraws only the parts of the page that read what changed. Without JavaScript the server's HTML still works, which is why forms and links do not depend on a script. See [Browser code](/docs/client).
+A write redraws only the parts of the page that read what changed. Without JavaScript the server's HTML still works, which is why forms and links do not depend on a script. See [Browser code](/docs/client/).
 
 <details class="deep-dive">
 <summary>Server Values and Browser Values</summary>
 
-`{name}` is Rust, evaluated once on the server. `{:count}` and the quoted value of `on:click` are JavaScript, evaluated in the browser. A name a page's Rust block makes is also available by name in browser code, as long as its type is a `#[model]` or derives `Json`. See [Server values and client blocks](/docs/client-templates).
+`{name}` is Rust, evaluated once on the server. `{:count}` and the quoted value of `on:click` are JavaScript, evaluated in the browser. A name a page's Rust block makes is also available by name in browser code, as long as its type is a `#[model]` or derives `Json`. See [Server values and client blocks](/docs/client-templates/).
 
 </details>
 
@@ -3795,12 +4504,12 @@ let entries = ENTRIES.all();
 {/each}
 ```
 
-`add`, `get`, `all`, `find`, `filter`, `update`, `set`, `remove` and `len` cover most needs. A row has an `id` and reads as the value you stored. See [Data, files and jobs](/docs/data).
+`add`, `get`, `all`, `find`, `filter`, `update`, `set`, `remove` and `len` cover most needs. A row has an `id` and reads as the value you stored. See [Data, files and jobs](/docs/data/).
 
 <details class="deep-dive">
 <summary>Where the Rows Are Kept</summary>
 
-Saved tables live in the folder named by `WISP_DATA`: `.wisp/data` in dev and `data` next to the binary in a release build. On a host with no disk, point a table at a database with a custom store. See [Where rows are kept](/docs/api-tables).
+Saved tables live in the folder named by `WISP_DATA`: `.wisp/data` in dev and `data` next to the binary in a release build. On a host with no disk, point a table at a database with a custom store. See [Where rows are kept](/docs/api-tables/).
 
 </details>
 
@@ -3826,20 +4535,20 @@ Pick the build for your host:
 | A static host | `wisp build --static` (pages with forms need a server) |
 | Cloudflare, Deno, Vercel, Netlify or Lambda | `wisp build --target <host>` |
 
-`wisp deploy init <host>` writes a GitHub Actions workflow or the host's config. An app that signs cookies needs `WISP_SECRET` set to 32 or more random characters on every host. See [Deploying](/docs/deploy).
+`wisp deploy init <host>` writes a GitHub Actions workflow or the host's config. An app that signs cookies needs `WISP_SECRET` set to 32 or more random characters on every host. See [Deploying](/docs/deploy/).
 
 ## Next Steps
 
 You now know most of what an everyday Wisp app uses. Where to go next:
 
-- [Tutorial](/docs/tutorial): build a guestbook step by step, with tests and a deploy.
-- [Pages and templates](/docs/design-pages): the Rust block, loads, actions and caching in full.
-- [Template syntax and styles](/docs/design-syntax): every `{#each}`, `{#if}` and snippet.
-- [Actions, forms and UI](/docs/design-forms): validation rules, uploads and the built-in form UI.
-- [Browser code](/docs/client): runes, directives, islands and the router.
-- [APIs and platforms](/docs/api): a JSON API from one struct.
-- [Deploying](/docs/deploy) and [Edge and serverless targets](/docs/deploy-targets).
-- Working with an AI agent: [Design and files](/docs/design-editors) covers `AGENTS.md` and `wisp mcp`.
+- [Tutorial](/docs/tutorial/): build a guestbook step by step, with tests and a deploy.
+- [Pages and templates](/docs/design-pages/): the Rust block, loads, actions and caching in full.
+- [Template syntax and styles](/docs/design-syntax/): every `{#each}`, `{#if}` and snippet.
+- [Actions, forms and UI](/docs/design-forms/): validation rules, uploads and the built-in form UI.
+- [Browser code](/docs/client/): runes, directives, islands and the router.
+- [APIs and platforms](/docs/api/): a JSON API from one struct.
+- [Deploying](/docs/deploy/) and [Edge and serverless targets](/docs/deploy-targets/).
+- Working with an AI agent: [Design and files](/docs/design-editors/) covers `AGENTS.md` and `wisp mcp`.
 
 
 <!-- docs/serve.md -->
@@ -3853,7 +4562,7 @@ All on the built-in server; each costs nothing for what does not use it.
 | Security headers | HTML and error pages carry `x-content-type-options: nosniff` and `referrer-policy: strict-origin-when-cross-origin` unless the app set its own. |
 | Health | `GET /_wisp/health` is 200 `ok`, and 503 `stopping` once the server drains, so a load balancer moves traffic away first. |
 | Handler timeout | A handler still waiting after the limit is dropped and answers 503. It is checked when the handler waits: one that blocks its thread without awaiting cannot be stopped. |
-| OpenTelemetry | See [Observe](/docs/deploy-observe). |
+| OpenTelemetry | See [Observe](/docs/deploy-observe/). |
 
 | Env var | What it does |
 |---|---|
@@ -3864,26 +4573,31 @@ All on the built-in server; each costs nothing for what does not use it.
 
 <!-- docs/tokens.md -->
 
-Most app code is written by AI, so an app's cost is measured in tokens, and keeping it low is a Wisp principle ([design](/docs/design)). Run `cargo run -q -p wisp-tokens --release` for the numbers. The four-app comparison against six frameworks: [Tokens, app by app](/docs/tokens-apps).
+Most app code is written by AI, so an app's cost is measured in tokens, and keeping it low is a Wisp principle ([design](/docs/design/)). Run `cargo run -q -p wisp-tokens --release` for the numbers. The four-app comparison against six frameworks: [Tokens, app by app](/docs/tokens-apps/).
 
 ## Five Features, Counted by `wisp-tokens`
 
 `bench/tokens/apps` holds the same five features as a complete app in each stack:
 
 - a list page loading its data
-- a contact form (name 1 to 50 characters, a valid email; a 422 that shows each problem and keeps what was typed, else a redirect)
+- a contact form (name 1 to 50 characters, a valid email; a 422 that shows each problem and keeps what was typed, else a redirect). Every stack checks the same two rules with the same two messages, hand-written where the framework has no rule, and Wisp's are built in
 - a JSON endpoint of the list
 - a layout with a nav
 - a live search filtered in the browser
 
-`cargo run -p wisp-tokens` counts them (method below, in `bench/tokens/src/main.rs`, with characters / 4 beside it). A `@feature NAME` comment says whose its lines are; a file without one, as a generator writes it, is not counted, nor the `[package]` table `cargo new` writes. The Wisp app builds with the workspace, and its tests check each feature.
+`cargo run -p wisp-tokens` counts them (method below, in `bench/tokens/src/main.rs`, with characters / 4 beside it). A `@feature NAME` comment says whose its lines are; a file without one, as a generator writes it, is not counted, nor the `[package]` table `cargo new` writes.
+
+The Node apps: Nuxt is file routes, server routes in `server/api` and `useFetch`, the form posting with `$fetch`; Express renders EJS views with a shared header and footer and a small script for the search; React is a Vite app with React Router, `useState` and `fetch`, over a small Express API. Their generated `package.json`, `nuxt.config.ts` and `index.html` are not counted; the proxy line added to `vite.config.js` is. The Wisp app builds with the workspace, and its tests check each feature.
 
 | Stack | list | form | api | layout | search | data | setup | total | chars / 4 | files |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | **Wisp** | 58 | 89 | 31 | 60 | 111 | 115 | 0 | **464** | 283 | 6 |
-| SvelteKit 2 | 128 | 470 | 57 | 83 | 192 | 72 | 0 | 1002 | 644 | 9 |
-| Next.js 15 | 107 | 439 | 44 | 108 | 241 | 71 | 0 | 1010 | 725 | 8 |
-| Axum 0.8 + askama | 145 | 553 | 29 | 104 | 217 | 123 | 285 | 1456 | 1020 | 7 |
+| SvelteKit 2 | 128 | 425 | 57 | 83 | 192 | 72 | 0 | 957 | 620 | 9 |
+| Next.js 15 | 107 | 400 | 44 | 108 | 241 | 71 | 0 | 971 | 706 | 8 |
+| Nuxt 4 (Vue) | 96 | 429 | 22 | 96 | 158 | 71 | 0 | 872 | 596 | 8 |
+| React 19 (Vite + Express) | 108 | 520 | 32 | 268 | 191 | 161 | 102 | 1382 | 999 | 8 |
+| Express 5 + EJS | 128 | 423 | 34 | 116 | 291 | 69 | 95 | 1156 | 699 | 7 |
+| Axum 0.8 + askama | 145 | 553 | 29 | 104 | 217 | 123 | 285 | 1456 | 1021 | 7 |
 | Actix Web 4 + tera | 164 | 565 | 46 | 104 | 237 | 123 | 292 | 1531 | 1061 | 7 |
 
 Wisp's `data` is longer than JavaScript's: a Rust type with its fields' types and `pub`s. Everything else is shorter, the form most of all. Of what is left, 60 tokens are file paths, 115 the Rust type and data, and the rest is markup every stack writes.
@@ -3894,7 +4608,7 @@ Wisp's `data` is longer than JavaScript's: a Rust type with its fields' types an
 
 ## Method
 
-Counted: every file a developer (or an agent) writes by hand, beyond what the framework's generator gives, plus each file's path (writing a file means naming it, so two files cost more than one). Manifests (`Cargo.toml`, `package.json`, `Gemfile`) are left out everywhere. For Rails the generator commands are counted, since the agent must write them, and the lines it adds or changes in generated files. Rails' api is `rails g scaffold` in an `--api` app, which writes the controller; the same api written by hand is the last row.
+Counted: every file a developer (or an agent) writes by hand, beyond what the framework's generator gives, plus each file's path (writing a file means naming it, so two files cost more than one). Manifests (`Cargo.toml`, `package.json`) are left out everywhere.
 
 There is no tokenizer offline, so the count estimates a BPE code tokenizer (cl100k-like):
 
@@ -3905,12 +4619,12 @@ There is no tokenizer offline, so the count estimates a BPE code tokenizer (cl10
 
 Characters / 4, the usual rule of thumb, ranks the frameworks the same way.
 
-Competitor versions: SvelteKit 2 with Svelte 5 runes and `use:enhance`; Next.js 15 app router with server actions and `useActionState`; Nuxt 3 with server routes and `useFetch`; Axum 0.8 with maud and serde; FastAPI with Jinja2 and pydantic; Rails 8 with Active Record. The Wisp versions are built by a script, so every counted line compiles. The competitors' sources, `count.py` and `verify.py` are kept out of the repository, so its size stays Wisp's own.
+Competitor versions: SvelteKit 2 with Svelte 5 runes and `use:enhance`; Next.js 15 app router with server actions and `useActionState`; Nuxt 4 with server routes and `useFetch`; Express 5 with EJS; React 19 with Vite and an Express API; Axum 0.8 with askama; Actix Web 4 with tera. The Wisp versions are built by a script, so every counted line compiles. Every competitor app's source is in `bench/tokens/apps`.
 
 
 <!-- docs/tokens-apps.md -->
 
-Method and the five-feature table: [Tokens](/docs/tokens).
+Method and the five-feature table: [Tokens](/docs/tokens/).
 
 ## The Four Apps
 
@@ -4131,7 +4845,7 @@ let entries = ENTRIES.all();
 <details class="deep-dive">
 <summary>Where the Rows Are Stored</summary>
 
-A saved table is a log file named after it, `entries.log`, in the folder named by `WISP_DATA`: `.wisp/data` in dev and `data` in a release build. Each change appends a line. Use `Table::new()` for rows that may vanish on restart. See [Where rows are kept](/docs/api-tables).
+A saved table is a log file named after it, `entries.log`, in the folder named by `WISP_DATA`: `.wisp/data` in dev and `data` in a release build. Each change appends a line. Use `Table::new()` for rows that may vanish on restart. See [Where rows are kept](/docs/api-tables/).
 
 </details>
 
@@ -4198,7 +4912,7 @@ Let a visitor mark a note as liked. This is browser code, so it goes in a `<scri
 
 <strong>Pitfall</strong>
 
-This state lives in the browser. Reload the page and every note is unliked again. To keep a like, send it to the server with an action or a `#[remote]` function and store it in a table. See [Browser code](/docs/client).
+This state lives in the browser. Reload the page and every note is unliked again. To keep a like, send it to the server with an action or a `#[remote]` function and store it in a table. See [Browser code](/docs/client/).
 
 </aside>
 
@@ -4257,7 +4971,7 @@ Pick the build that fits your host:
 | A container host | `wisp build --docker` |
 | Cloudflare, Deno, Vercel, Netlify or Lambda | `wisp build --target <host>` |
 
-A guestbook has a form, so it needs a server: `wisp build --static` suits pages with no actions. On a host with no disk, tables are memory, so use a database store there. See [Deploying](/docs/deploy) and [Edge and serverless targets](/docs/deploy-targets).
+A guestbook has a form, so it needs a server: `wisp build --static` suits pages with no actions. On a host with no disk, tables are memory, so use a database store there. See [Deploying](/docs/deploy/) and [Edge and serverless targets](/docs/deploy-targets/).
 
 ## Recap
 
@@ -4377,22 +5091,22 @@ let note = ENTRIES.get(id).or_404()?;
 
 ## Next Steps
 
-- [Quick Start](/docs/quick-start): the same ideas on one page.
-- [Actions, forms and UI](/docs/design-forms): more validation rules, uploads and the built-in UI.
-- [Data, files and jobs](/docs/data): tables, relay, files and background jobs.
-- [Browser code](/docs/client): runes, directives, islands and the router.
-- [Testing and mixing with Rust code](/docs/embed): more on testing an app in process.
+- [Quick Start](/docs/quick-start/): the same ideas on one page.
+- [Actions, forms and UI](/docs/design-forms/): more validation rules, uploads and the built-in UI.
+- [Data, files and jobs](/docs/data/): tables, relay, files and background jobs.
+- [Browser code](/docs/client/): runes, directives, islands and the router.
+- [Testing and mixing with Rust code](/docs/embed/): more on testing an app in process.
 
 
 <!-- docs/why.md -->
 
 ## Short Code That Reads Like the Page
 
-A folder is a URL, and its `+page.wisp` is the page: a block of Rust that loads data and handles forms, then markup. A model, a saved table, a validated action, a form and a list fit in about twenty lines. No imports (a prelude brings the usual names), no router file, no handler wiring. See [Getting started](/docs).
+A folder is a URL, and its `+page.wisp` is the page: a block of Rust that loads data and handles forms, then markup. A model, a saved table, a validated action, a form and a list fit in about twenty lines. No imports (a prelude brings the usual names), no router file, no handler wiring. See [Getting started](/docs/).
 
 ## Fast
 
-Zero cost on the request hot path: a route pays only for the features it uses, and a change that touches the path is checked by an instructions-per-request A/B before it lands. See [Benchmarks](/docs/benchmarks).
+Zero cost on the request hot path: a route pays only for the features it uses, and a change that touches the path is checked by an instructions-per-request A/B before it lands. See [Benchmarks](/docs/benchmarks/).
 
 ## Cheap to Write
 
@@ -4400,12 +5114,12 @@ AI writes most code now, and every token costs time and money. Wisp uses convent
 
 - The same five features take 464 tokens in Wisp, 1002 in SvelteKit and 1010 in Next.js.
 - A larger app with sign up, uploads and live refresh takes 995, against 3473 and 3331.
-- `cargo run -p wisp-tokens` counts every hand-written file and its path with a byte-pair style estimate. See [Tokens](/docs/tokens).
+- `cargo run -p wisp-tokens` counts every hand-written file and its path with a byte-pair style estimate. See [Tokens](/docs/tokens/).
 
 For agents: [AGENTS.md](https://github.com/wyziedevs/wisp/blob/main/llms/AGENTS.md) is the whole reference in one file, and `wisp mcp` serves the docs over MCP (`claude mcp add wisp -- wisp mcp`).
 
 ## And
 
-- One binary carries its styles and static files. It runs on a VPS, in a container, as static HTML or on an edge host ([Deploying](/docs/deploy)).
+- One binary carries its styles and static files. It runs on a VPS, in a container, as static HTML or on an edge host ([Deploying](/docs/deploy/)).
 - Every fast path is proven at startup, falls back, and never panics after startup.
-- Forms work without JavaScript, and reactivity lives in the same file as the markup ([Browser code](/docs/client)).
+- Forms work without JavaScript, and reactivity lives in the same file as the markup ([Browser code](/docs/client/)).

@@ -39,12 +39,13 @@
 //! why it holds.
 #![allow(unsafe_code)]
 
-use crate::uring::{owned, result, token, untoken, wait, yield_once};
+use crate::driver::{self, Driver, Slab, Slot, result, token, untoken, wait};
+use crate::uring::{owned, yield_once};
 use crate::{http, policy};
 use std::cell::RefCell;
 use std::future::{Future, poll_fn};
 use std::io;
-use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::Pin;
@@ -181,6 +182,12 @@ struct Entry {
     task: Option<Waker>,
 }
 
+impl Slot for Entry {
+    fn generation(&self) -> u32 {
+        self.generation
+    }
+}
+
 impl Entry {
     fn wake(&mut self) {
         (self.wants_recv, self.wants_send, self.bare) = (false, false, false);
@@ -191,10 +198,9 @@ impl Entry {
 }
 
 /// A worker's epoll and connections.
-struct Worker {
+pub(crate) struct Worker {
     epoll: RawFd,
-    conns: Vec<Entry>,
-    free: Vec<usize>,
+    conns: Slab<Entry>,
     events: Vec<libc::epoll_event>,
     /// The connections (`token`s) whose futures the driver polls after the
     /// turn: their sockets have what they wait for.
@@ -222,7 +228,7 @@ thread_local! {
 }
 
 fn with<R>(f: impl FnOnce(&mut Worker) -> R) -> R {
-    WORKER.with_borrow_mut(|w| f(w.as_mut().expect("an epoll socket used off its worker")))
+    driver::with(f)
 }
 
 impl Worker {
@@ -346,40 +352,13 @@ impl Worker {
         }
     }
 
-    /// An entry for the socket `fd`, which its events reach from now on.
-    fn open(&mut self, fd: RawFd) -> usize {
-        let id = self.free.pop().unwrap_or_else(|| {
-            self.conns.push(Entry::default());
-            self.conns.len() - 1
-        });
-        let e = &mut self.conns[id];
-        *e = Entry {
-            fd,
-            generation: e.generation.wrapping_add(1),
-            // Its request is likely in already: the first read tries.
-            readable: true,
-            ..Entry::default()
-        };
-        if let Err(err) = ctl(
-            self.epoll,
-            libc::EPOLL_CTL_ADD,
-            fd,
-            WATCH,
-            token(id, e.generation),
-        ) {
-            // Out of memory for the watch: the connection fails at once.
-            e.failed = err.raw_os_error().unwrap_or(libc::EIO);
-        }
-        id
-    }
-
     /// Entry `id` is done with its socket, which is closed if it still has
     /// it; free unless its future still runs.
     fn release(&mut self, id: usize) {
         let e = &mut self.conns[id];
         (e.fd, e.close, e.waker) = (-1, None, None);
         if !e.attached {
-            self.free.push(id);
+            self.conns.free(id);
         }
     }
 
@@ -388,7 +367,7 @@ impl Worker {
         let e = &mut self.conns[id];
         (e.attached, e.serve, e.task, e.handed) = (false, None, None, None);
         if e.fd < 0 {
-            self.free.push(id);
+            self.conns.free(id);
         }
     }
 
@@ -457,34 +436,6 @@ impl Worker {
         Poll::Pending
     }
 
-    /// Sends all of `buf`, and leaves it empty: what the socket has no room
-    /// for goes on from the driver (and `buf` gets a spare buffer).
-    fn write(&mut self, id: usize, buf: &mut Vec<u8>) -> io::Result<()> {
-        let Worker { conns, spare, .. } = self;
-        let e = &mut conns[id];
-        debug_assert!(!e.sending && e.out.is_empty());
-        result(e.failed)?;
-        let mut at = 0;
-        while at < buf.len() {
-            match send(e.fd, &buf[at..]) {
-                Ok(n) => at += n,
-                Err(libc::EAGAIN) => {
-                    e.out = std::mem::replace(buf, spare.pop().unwrap_or_default());
-                    (e.sent, e.sending, e.since) = (at, true, http::seconds());
-                    http::send_under_way(true);
-                    return Ok(());
-                }
-                Err(errno) => {
-                    e.failed = errno;
-                    buf.clear();
-                    return result(e.failed);
-                }
-            }
-        }
-        buf.clear();
-        Ok(())
-    }
-
     /// Receives onto the end of `buf`, as `read` does but without waiting.
     /// Not `try_read`'s: its checks, which the driver made already, cost
     /// the request on the driver more than this does.
@@ -505,30 +456,6 @@ impl Worker {
             Err(errno) => {
                 e.failed = errno;
                 Got::End
-            }
-        }
-    }
-
-    fn flushed(&mut self, id: usize, cx: &Context) -> Poll<io::Result<()>> {
-        let e = &mut self.conns[id];
-        if e.sending {
-            e.wants_send = true;
-            wait(&mut e.waker, cx);
-            return Poll::Pending;
-        }
-        Poll::Ready(result(e.failed))
-    }
-
-    /// The `Sock` of `id` is gone, with its socket unless tokio has that:
-    /// closed now, or once the send under way is done.
-    fn close(&mut self, id: usize, stream: Option<TcpStream>) {
-        let e = &mut self.conns[id];
-        (e.wants_recv, e.wants_send, e.waker) = (false, false, None);
-        match stream {
-            Some(s) if e.sending => e.close = Some(OwnedFd::from(s)),
-            s => {
-                drop(s);
-                self.release(id);
             }
         }
     }
@@ -712,6 +639,89 @@ pub(crate) fn hand(id: usize, mut h: http::Handed) {
     });
 }
 
+impl Driver for Worker {
+    fn local() -> &'static std::thread::LocalKey<RefCell<Option<Worker>>> {
+        &WORKER
+    }
+    const OFF: &'static str = "an epoll socket used off its worker";
+
+    /// An entry for the socket `fd`, which its events reach from now on.
+    fn open(&mut self, fd: RawFd) -> usize {
+        let (id, generation) = self.conns.open();
+        let e = &mut self.conns[id];
+        *e = Entry {
+            fd,
+            generation,
+            // Its request is likely in already: the first read tries.
+            readable: true,
+            ..Entry::default()
+        };
+        if let Err(err) = ctl(
+            self.epoll,
+            libc::EPOLL_CTL_ADD,
+            fd,
+            WATCH,
+            token(id, e.generation),
+        ) {
+            // Out of memory for the watch: the connection fails at once.
+            e.failed = err.raw_os_error().unwrap_or(libc::EIO);
+        }
+        id
+    }
+
+    /// Sends all of `buf`, and leaves it empty: what the socket has no room
+    /// for goes on from the driver (and `buf` gets a spare buffer).
+    fn write(&mut self, id: usize, buf: &mut Vec<u8>) -> io::Result<()> {
+        let Worker { conns, spare, .. } = self;
+        let e = &mut conns[id];
+        debug_assert!(!e.sending && e.out.is_empty());
+        result(e.failed)?;
+        let mut at = 0;
+        while at < buf.len() {
+            match send(e.fd, &buf[at..]) {
+                Ok(n) => at += n,
+                Err(libc::EAGAIN) => {
+                    e.out = std::mem::replace(buf, spare.pop().unwrap_or_default());
+                    (e.sent, e.sending, e.since) = (at, true, http::seconds());
+                    http::send_under_way(true);
+                    return Ok(());
+                }
+                Err(errno) => {
+                    e.failed = errno;
+                    buf.clear();
+                    return result(e.failed);
+                }
+            }
+        }
+        buf.clear();
+        Ok(())
+    }
+
+    fn flushed(&mut self, id: usize, cx: &Context) -> Poll<io::Result<()>> {
+        let e = &mut self.conns[id];
+        if e.sending {
+            e.wants_send = true;
+            wait(&mut e.waker, cx);
+            return Poll::Pending;
+        }
+        Poll::Ready(result(e.failed))
+    }
+
+    /// The `Sock` of `id` is gone, with its socket unless tokio has that:
+    /// closed now, or once the send under way is done.
+    fn close(&mut self, id: usize, stream: Option<TcpStream>) {
+        let e = &mut self.conns[id];
+        (e.wants_recv, e.wants_send, e.waker) = (false, false, None);
+        match stream {
+            Some(s) if e.sending => e.close = Some(OwnedFd::from(s)),
+            s => {
+                drop(s);
+                self.release(id);
+            }
+        }
+    }
+}
+
 /// Connection `token` fails: every call of its future does.
 fn fail(token: u64) {
     let (id, generation) = untoken(token);
@@ -723,22 +733,10 @@ fn fail(token: u64) {
     });
 }
 
-/// A connection on its worker's epoll. Like the future that holds it, it
-/// stays on the worker's thread.
-pub(crate) struct Sock {
-    id: usize,
-    stream: Option<TcpStream>,
-}
+/// A connection on its worker's epoll.
+pub(crate) type Sock = driver::Sock<Worker>;
 
 impl Sock {
-    pub(crate) fn new(stream: TcpStream) -> Sock {
-        let id = with(|w| w.open(stream.as_raw_fd()));
-        Sock {
-            id,
-            stream: Some(stream),
-        }
-    }
-
     /// Appends what came to `buf`: `Ok(0)` once the peer has closed. Safe to
     /// drop unfinished.
     pub(crate) async fn read(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
@@ -770,30 +768,9 @@ impl Sock {
         poll_fn(|cx| with(|w| w.readable(self.id, cx))).await
     }
 
-    /// Sends all of `buf` and leaves it empty. What the socket has no room
-    /// for goes on without the caller; a failure then shows in the next call.
-    pub(crate) async fn write(&mut self, buf: &mut Vec<u8>) -> io::Result<()> {
-        self.flush().await?;
-        with(|w| w.write(self.id, buf))
-    }
-
     /// What the driver left to this connection's future, once `readable`.
     pub(crate) fn handed(&mut self) -> Option<http::Handed> {
         with(|w| w.conns[self.id].handed.take())
-    }
-
-    /// Waits for the send under way.
-    async fn flush(&self) -> io::Result<()> {
-        poll_fn(|cx| with(|w| w.flushed(self.id, cx))).await
-    }
-
-    /// Ends the sending side, once all of it has been sent.
-    pub(crate) async fn shutdown(&mut self) {
-        if self.flush().await.is_ok()
-            && let Some(s) = &self.stream
-        {
-            let _ = s.shutdown(Shutdown::Write);
-        }
     }
 
     /// The socket as tokio's, once all of it has been sent, and `early`:
@@ -806,18 +783,6 @@ impl Sock {
         let stream = self.stream.take().ok_or(io::ErrorKind::NotConnected)?;
         with(|w| ctl(w.epoll, libc::EPOLL_CTL_DEL, stream.as_raw_fd(), 0, 0))?;
         Ok((tokio::net::TcpStream::from_std(stream)?, early))
-    }
-}
-
-impl Drop for Sock {
-    fn drop(&mut self) {
-        let _ = WORKER.try_with(|w| {
-            if let Ok(mut w) = w.try_borrow_mut()
-                && let Some(w) = w.as_mut()
-            {
-                w.close(self.id, self.stream.take());
-            }
-        });
     }
 }
 
@@ -864,8 +829,7 @@ pub(crate) async fn serve(
     };
     WORKER.set(Some(Worker {
         epoll: raw,
-        conns: Vec::new(),
-        free: Vec::new(),
+        conns: Slab::new(),
         events: Vec::with_capacity(EVENTS),
         ready: Vec::new(),
         checked: 0,
@@ -958,7 +922,7 @@ pub(crate) async fn serve(
             }
             // Deadlines and stalled sends are checked once a second while
             // there are connections, without anything else to wake the driver.
-            if with(|w| w.conns.len() > w.free.len()) && tick.as_mut().poll(cx).is_ready() {
+            if with(|w| w.conns.busy()) && tick.as_mut().poll(cx).is_ready() {
                 tick.as_mut().reset(Instant::now() + Duration::from_secs(1));
                 return Poll::Ready(());
             }
@@ -981,6 +945,7 @@ mod tests {
     use super::*;
     use crate::uring::{listen, socket_tests};
     use std::io::{Read, Write};
+    use std::net::Shutdown;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Futures the driver polled itself, in every test's workers.

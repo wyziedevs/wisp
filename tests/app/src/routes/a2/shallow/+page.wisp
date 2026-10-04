@@ -5,6 +5,7 @@ static RENDERS: AtomicU64 = AtomicU64::new(0);
 
 let n = RENDERS.fetch_add(1, Ordering::Relaxed);
 ---
+
 <h1>Shallow</h1>
 <p id="n">{n}</p>
 <button id="two" on:click="pushState('?tab=2', { tab: 2 })">Tab two</button>

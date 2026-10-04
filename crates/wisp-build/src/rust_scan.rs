@@ -927,7 +927,7 @@ pub fn mark_actions(code: &str, markup: &str) -> Option<String> {
 
 /// The names `action="?/name"` and `formaction="?/name"` post to in `markup`:
 /// on a tag's attributes, not in a comment, a script or the text.
-fn posted_to(markup: &str) -> Vec<&str> {
+pub(crate) fn posted_to(markup: &str) -> Vec<&str> {
     let b = markup.as_bytes();
     let (mut out, mut i) = (Vec::new(), 0);
     while i < b.len() {
