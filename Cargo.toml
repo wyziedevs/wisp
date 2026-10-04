@@ -8,6 +8,7 @@ members = [
     "crates/wisp-cli",
     "examples/demo",
     "examples/api",
+    "examples/jobs",
     "tests/app",
     "tests/agents",
     "tests/islands",

@@ -440,7 +440,9 @@ no-wait fast path off every route.
   expr)]`/`#[json(was = "old")]` for old rows, `.migrate(f)`, `.live()` (pages
   naming a live table's static refresh themselves, via `/_wisp/live/<name>`),
   `set clear by try_add`; `Upload`, `wisp::relay`,
-  `wisp::queue(n).push(&j)` + `work(n, f)` + `cron("0 3 * * *", f)`,
+  `wisp::queue(n).push(&j)` + `work(n, f)` + `cron("0 3 * * *", f)` (on
+  Cloudflare/Vercel/Netlify the build writes the host's cron trigger from the
+  literal schedule; set `CRON_SECRET`, `WISP_STORE`),
   `wisp::cache(k, secs, f)`/`uncache(path)`, `WISP_ADMIN_KEY` admin page;
   rules `url one_of pattern with`.
 - Static export: `fn entries() -> Vec<&'static str>` in a `[param]` page.
