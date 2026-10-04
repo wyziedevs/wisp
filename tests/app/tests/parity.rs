@@ -384,6 +384,7 @@ fn fetch_answers_as_native_with_headers_read_lazily() {
     let asset = native.request("GET", "/_app/wisp.js", "", b"");
     let etag = header(&asset, "etag").expect("an etag").to_string();
     let html = "accept: text/html\r\n";
+    let big = "x".repeat(64 * 1024 + 1);
     let cases: Vec<(&str, &str, String, &str)> = vec![
         ("GET", "/", String::new(), ""),
         ("GET", "/", String::new(), ""),
@@ -401,6 +402,8 @@ fn fetch_answers_as_native_with_headers_read_lazily() {
         ),
         ("POST", "/echo", String::new(), "hello"),
         ("POST", "/echo", FORM.into(), "a=1&b=two"),
+        // Past the route's BODY_LIMIT: 413 on every host, as native has it.
+        ("POST", "/echo", String::new(), &big),
     ];
     let mut stdin = String::new();
     for (method, target, headers, body) in &cases {
@@ -448,6 +451,9 @@ fn fetch_answers_as_native_with_headers_read_lazily() {
             h("location"),
             h("etag")
         );
+        if body.len() > 64 * 1024 {
+            assert_eq!(status(&raw), 413, "{raw:.60}");
+        }
         let (fast, got) = got.split_once(' ').unwrap();
         assert_eq!(got, want, "{method} {target} {headers:?}");
         // The first request starts the instance, so it waits.
