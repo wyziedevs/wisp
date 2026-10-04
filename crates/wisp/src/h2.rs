@@ -94,6 +94,8 @@ struct Stream {
     id: u32,
     /// What we may still send on it.
     send: i64,
+    /// What the client may still send on it (our window).
+    recv: i64,
     /// The client ended its side: a request in `ready`, or answered.
     ended: bool,
     req: Request,
@@ -124,6 +126,8 @@ pub(crate) struct Session {
     peer_frame: usize,
     /// What we may still send on the connection.
     send: i64,
+    /// What the client may still send on the connection (our window).
+    recv: i64,
     /// Whether the preface came.
     greeted: bool,
     resets: u32,
@@ -157,6 +161,7 @@ impl Session {
             peer_window: WINDOW,
             peer_frame: MAX_FRAME,
             send: WINDOW,
+            recv: WINDOW,
             greeted: false,
             resets: 0,
             answered: 0,
@@ -219,7 +224,26 @@ impl Session {
                 Err(Fault::Stream(id, code)) => self.reset(id, code),
             }
         }
-        if self.done { buf.len() } else { at }
+        if self.done {
+            return buf.len();
+        }
+        // The windows open again, once a frame's worth of what the client
+        // may rely on is spent. An update goes out after the data it
+        // covers is read, so a client that has seen only the older ones can
+        // never send past the counts.
+        if self.recv <= WINDOW / 2 {
+            self.window_update(0, (WINDOW - self.recv) as u32);
+            self.recv = WINDOW;
+        }
+        for i in 0..self.streams.len() {
+            let s = &mut self.streams[i];
+            if s.recv <= WINDOW / 2 && !s.ended {
+                let (id, n) = (s.id, (WINDOW - s.recv) as u32);
+                s.recv = WINDOW;
+                self.window_update(id, n);
+            }
+        }
+        at
     }
 
     fn frame_in(&mut self, kind: u8, flags: u8, id: u32, p: &[u8]) -> Result<(), Fault> {
@@ -238,8 +262,11 @@ impl Session {
                 if p.is_empty() && flags & END_STREAM == 0 {
                     self.spend()?;
                 }
-                if !p.is_empty() {
-                    self.window_update(0, p.len() as u32);
+                // More than the window we gave is an error (RFC 9113 6.9);
+                // `feed` gives it back when the frames are read.
+                self.recv -= p.len() as i64;
+                if self.recv < 0 {
+                    return Err(Conn(Code::FlowControl));
                 }
                 let Some(i) = self.find(id) else {
                     return Err(match id > self.last {
@@ -250,8 +277,10 @@ impl Session {
                 if self.streams[i].ended {
                     return Err(St(id, Code::StreamClosed));
                 }
-                if !p.is_empty() {
-                    self.window_update(id, p.len() as u32);
+                let s = &mut self.streams[i];
+                s.recv -= p.len() as i64;
+                if s.recv < 0 {
+                    return Err(St(id, Code::FlowControl));
                 }
                 let limit = self.limit;
                 let s = &mut self.streams[i];
@@ -508,6 +537,7 @@ impl Session {
         self.streams.push(Stream {
             id,
             send: self.peer_window,
+            recv: WINDOW,
             ended: false,
             req,
             length,
@@ -1543,6 +1573,51 @@ mod tests {
         assert!(!s.open(1));
     }
 
+    /// A POST on stream 3 and `n` DATA frames of 16384 bytes after it, read
+    /// in one pass.
+    fn upload(n: usize) -> (Session, Vec<Frame>) {
+        let mut h = get("/x");
+        h[0] = 0x83; // POST
+        let mut input = vec![frame(HEADERS, END_HEADERS, 3, &h)];
+        input.extend((0..n).map(|_| frame(DATA, 0, 3, &[0; 16384])));
+        run(&input)
+    }
+
+    #[test]
+    fn data_past_the_receive_window_is_a_flow_control_error() {
+        // 4 frames are 65536 bytes: one more than the window we gave.
+        let (_, f) = upload(4);
+        assert_eq!(goaway_code(&f), Some(Code::FlowControl as u32));
+        // The window, spent, is given back; and 3 frames are fine.
+        let (_, f) = upload(3);
+        assert_eq!(goaway_code(&f), None);
+        let back = |id| {
+            f.iter()
+                .filter(|f| f.0 == WINDOW_UPDATE && f.2 == id)
+                .count()
+        };
+        assert_eq!((back(0), back(3)), (1, 1));
+    }
+
+    #[test]
+    fn a_stream_past_its_window_is_reset() {
+        // Streams 3 and 5 share the connection's window; the 4th frame on
+        // stream 3 is past its own, with the connection's to spare.
+        let mut h = get("/x");
+        h[0] = 0x83;
+        let mut input = vec![frame(HEADERS, END_HEADERS, 3, &h)];
+        input.extend((0..3).map(|_| frame(DATA, 0, 3, &[0; 16384])));
+        let (mut s, f) = run(&input);
+        assert_eq!(goaway_code(&f), None);
+        s.recv = WINDOW;
+        s.streams[0].recv = 100;
+        s.out.clear();
+        let mut all = frame(DATA, 0, 3, &[0; 101]);
+        all.extend(frame(PING, 0, 0, &[0; 8]));
+        assert_eq!(s.feed(&all), all.len());
+        assert!(s.out.windows(9).any(|w| w[3] == RST_STREAM && w[8] == 3));
+    }
+
     #[test]
     fn a_post_body_and_flow_control() {
         let mut h = get("/x");
@@ -1552,7 +1627,10 @@ mod tests {
             frame(DATA, 0, 3, b"ab"),
             frame(DATA, END_STREAM | PADDED, 3, &[2, b'c', 0, 0]),
         ]);
-        assert!(f.iter().filter(|f| f.0 == WINDOW_UPDATE).count() >= 2);
+        assert!(
+            f.iter().all(|f| f.0 != WINDOW_UPDATE),
+            "a little data is not given back yet"
+        );
         assert_eq!(s.take(3).unwrap().body, b"abc");
         // The send window: 65535, then it waits for an update.
         s.out.clear();
