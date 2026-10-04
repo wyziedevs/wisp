@@ -409,7 +409,7 @@ impl<'a> Scanner<'a> {
                 if j == a {
                     return None;
                 }
-                if b[j] == b'=' {
+                if b.get(j) == Some(&b'=') {
                     j = self.value(j + 1, m[a..j].contains(':'))?;
                 }
             }
@@ -815,6 +815,13 @@ fn key(mut t: template::Template) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tag_cut_off_after_an_attribute_name_does_not_panic() {
+        for src in ["<p x", "<div a b", "<p class"] {
+            assert_eq!(format(src, "2024"), src);
+        }
+    }
 
     /// Formats `src`, checking that once more changes nothing and that the
     /// markup parses as before.
