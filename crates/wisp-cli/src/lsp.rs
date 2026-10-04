@@ -661,7 +661,7 @@ const NAMES: [(&str, &[&str]); 5] = [
 ];
 
 /// The template blocks: what to write, and what it does.
-const BLOCKS: [(&str, &str, &str); 25] = [
+const BLOCKS: [(&str, &str, &str); 27] = [
     (
         "{#if",
         "{#if ${1:cond}}\n\t$0\n{/if}",
@@ -774,6 +774,16 @@ const BLOCKS: [(&str, &str, &str); 25] = [
         "{:catch",
         "{:catch ${1:e}}",
         "The part of `{#await}` or `{:#try}` that shows the error.",
+    ),
+    (
+        "{:@const",
+        "{:@const ${1:name} = ${2:expr}}",
+        "`{:@const x = e}`: a name for the rest of the browser block.",
+    ),
+    (
+        "{:@html",
+        "{:@html ${1:markup}}",
+        "`{:@html h}`: unescaped markup the browser draws (trusted only).",
     ),
     ("{/", "", "Closes the block."),
     ("{:/", "", "Closes the browser block."),

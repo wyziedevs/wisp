@@ -279,6 +279,20 @@ X.bind = (sc, el, L, a, get, set) => {
   });
 };
 
+// {:@html expr}: the markup after the anchor, up to its <!--h--> end comment,
+// made again when the value changes. Not escaped, as on the server.
+X.html = (sc, inst, el, L, quiet, [, a]) =>
+  watch(
+    sc,
+    a,
+    L,
+    (v) => {
+      for (let n; (n = el.nextSibling) && !(n.nodeType == 8 && n.data == 'h'); ) n.remove();
+      el.after(Object.assign(document.createElement('template'), { innerHTML: v }).content);
+    },
+    1,
+  );
+
 // ---- components, forms, collections -------------------------------------------
 
 // A component the browser renders, after its anchor: a new instance of its

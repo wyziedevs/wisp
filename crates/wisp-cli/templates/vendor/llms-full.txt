@@ -260,7 +260,8 @@ toggles (`open = !open`: false) or counts (`n++`: 0) a name nothing declares,
 so a live search needs no script: `<input bind:value="q">` `{:#each items.filter((i) => matches(i.name,
 q)) as i}…{:/each}`. Directives `on:click` (`.prevent .once .debounce.300ms`…),
 `bind:value|checked|this`, `:attr="js"`, `:text`, `class:x="js"`,
-`transition:fade`, `use:action`; client blocks `{:#if}` `{:#each}`; runes
+`transition:fade`, `use:action`; client blocks `{:#if}` `{:#each}`, in them `{:@const x = e}`
+and `{:@html h}`; runes
 `$state $derived $effect(.pre .root .tracking) $props`; helpers `onMount listen goto
 invalidate matches tick flushSync onError tweened spring crossfade`. Values sent to JS must be `#[model]` or `#[derive(Json)]`.
 `pushState('?tab=2', {tab: 2})`: shallow routing, `page.value.state`; changed
@@ -696,6 +697,16 @@ works on the server.
 ```html
 {#snippet chip(tag)}<b class="chip">{:tag}</b>{/snippet}
 {:#each tags as tag (tag)}{:@render chip(tag)}{:/each}
+```
+
+`{:@const name = expr}` names a value for the rest of its block (it ends at
+`{:/…}` or `{:else}`); `{:@html expr}` puts markup in unescaped, as `{@html}`
+does on the server (trusted markup only), redrawn when the value changes.
+The server paints neither; `{:@html}` loads `extra.js`.
+
+```html
+{:#each items as item}{:@const total = item.price * item.qty}<li>{:total}</li>{:/each}
+<div>{:@html post.body}</div>
 ```
 
 ### First paint

@@ -207,6 +207,16 @@ works on the server.
 {:#each tags as tag (tag)}{:@render chip(tag)}{:/each}
 ```
 
+`{:@const name = expr}` names a value for the rest of its block (it ends at
+`{:/…}` or `{:else}`); `{:@html expr}` puts markup in unescaped, as `{@html}`
+does on the server (trusted markup only), redrawn when the value changes.
+The server paints neither; `{:@html}` loads `extra.js`.
+
+```html
+{:#each items as item}{:@const total = item.price * item.qty}<li>{:total}</li>{:/each}
+<div>{:@html post.body}</div>
+```
+
 ### First paint
 
 The server renders what it can know into the page (it works before JS and

@@ -340,7 +340,7 @@ function motion() {
   const code = fs.readFileSync(path.join(__dirname, '../src/client/extra.js'), 'utf8').replace(/^import .*$/m, '');
   let now = 0;
   let frames = [];
-  const X = { shared: {}, outs: 0, flips: 0 };
+  const X = { shared: {}, outs: 0, flips: 0, watch: (sc, get, L, f, flags) => f(String(get(L) ?? '')) };
   const store = (v) => {
     const o = { v, subs: [], get value() { return this.v; }, set value(x) { this.v = x; }, subscribe() {} };
     return o;
@@ -403,6 +403,23 @@ Object.assign(tests, {
     receive(c, { key: 9 }).tick(0.5);
     assert.equal(c.style.transform, undefined);
     assert.equal(c.style.opacity, 0.5);
+  },
+});
+
+Object.assign(tests, {
+  '{:@html} swaps what lies between its anchor and its end comment'() {
+    const { X } = motion();
+    // The anchor, the markup (a comment among it), the end (data 'h'), the rest.
+    const end = { nodeType: 8, data: 'h' };
+    const nodes = [{ nodeType: 1 }, { nodeType: 1, html: 'old' }, { nodeType: 8, data: '' }, end, { nodeType: 3 }];
+    const link = () => nodes.forEach((n, i) => ((n.nextSibling = nodes[i + 1] || null), (n.remove = () => (nodes.splice(nodes.indexOf(n), 1), link()))));
+    link();
+    nodes[0].after = (c) => (nodes.splice(1, 0, { nodeType: 1, html: c }), link());
+    globalThis.document = { createElement: () => ({ set innerHTML(v) { this.content = v; } }) };
+    X.html(null, null, nodes[0], null, 0, ['html', () => '<b>x</b>']);
+    delete globalThis.document;
+    assert.deepEqual(nodes.map((n) => n.html), [undefined, '<b>x</b>', undefined, undefined]);
+    assert.equal(nodes[2], end);
   },
 });
 
