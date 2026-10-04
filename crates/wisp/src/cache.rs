@@ -3,8 +3,7 @@
 //! forgets it, and the pages `const CACHE` keeps, when the data changes.
 //!
 //! Per process, shared by all its threads: with several servers, each has
-//! its own, and `uncache` reaches only the one it runs on (`wisp::relay`
-//! can tell the others). It does not make one call of many at once: a
+//! its own, and `uncache` reaches only the one it runs on. It does not make one call of many at once: a
 //! flood after the answer expires makes each of them.
 
 use crate::Shared;

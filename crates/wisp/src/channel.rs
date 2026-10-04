@@ -3,10 +3,8 @@
 //! sends to `wisp::channel("room")`, and each WebSocket or event stream
 //! subscribed to it gets the message.
 //!
-//! In process unless a [`Relay`](crate::Relay) is set (`wisp::relay`, Redis
-//! or Postgres `LISTEN` behind it): then each message goes to the app's other
-//! servers too. The edge build, where every request may be its own instance,
-//! has none.
+//! In process only: the edge build, where every request may be its own
+//! instance, has no other.
 
 use crate::{Gone, WebSocket, http};
 use std::collections::BTreeMap;
@@ -82,8 +80,8 @@ pub fn channel(name: &str) -> Channel {
 /// The channel called `name`, from `CHANNELS`.
 fn shared(name: &str) -> Channel {
     let found = CHANNELS.read().unwrap_or_else(|e| e.into_inner());
-    if let Some((name, tx)) = found.all.get_key_value(name) {
-        return Channel(tx.clone(), name.clone());
+    if let Some(tx) = found.all.get(name) {
+        return Channel(tx.clone());
     }
     drop(found);
     let mut c = CHANNELS.write().unwrap_or_else(|e| e.into_inner());
@@ -92,35 +90,23 @@ fn shared(name: &str) -> Channel {
             .retain(|_, tx| tx.strong_count() > 1 || tx.receiver_count() > 0);
         c.sweep_at = (2 * c.all.len()).max(SWEEP_AT);
     }
-    let name: Arc<str> = c
-        .all
-        .get_key_value(name)
-        .map_or_else(|| name.into(), |(k, _)| k.clone());
     let tx = c
         .all
-        .entry(name.clone())
+        .entry(name.into())
         .or_insert_with(|| broadcast::channel(BACKLOG).0);
-    Channel(tx.clone(), name)
+    Channel(tx.clone())
 }
 
 /// A channel from [`channel`]. Cloning it is cheap; clones are the same
 /// channel.
 #[derive(Clone)]
-pub struct Channel(broadcast::Sender<Arc<str>>, Arc<str>);
+pub struct Channel(broadcast::Sender<Arc<str>>);
 
 impl Channel {
-    /// Sends `message` to every subscriber there is now (and, with a relay,
-    /// the other servers'), and returns how many here that is. With none, it goes nowhere. Each subscriber shares
-    /// the one copy.
+    /// Sends `message` to every subscriber there is now, and returns how
+    /// many that is. With none, it goes nowhere. Each subscriber shares the
+    /// one copy.
     pub fn send(&self, message: impl Into<Arc<str>>) -> usize {
-        let message = message.into();
-        crate::relay::publish(&self.1, &message);
-        self.send_here(message)
-    }
-
-    /// [`Channel::send`] to this process's subscribers only: what the
-    /// relay brings in.
-    pub(crate) fn send_here(&self, message: impl Into<Arc<str>>) -> usize {
         self.0.send(message.into()).unwrap_or(0)
     }
 

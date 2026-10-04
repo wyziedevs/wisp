@@ -1,5 +1,5 @@
 //! `wisp ui add` and `wisp ui list`: accessible components, copied into
-//! the app's `src/components` with a stories file each. The app owns the
+//! the app's `src/components`. The app owns the
 //! copy: change it as you like; Wisp never touches it again.
 
 use crate::term;
@@ -7,8 +7,8 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 
-/// A component: its name, what it is, its file and its stories file.
-type Part = (&'static str, &'static str, &'static str, &'static str);
+/// A component: its name, what it is and its file.
+type Part = (&'static str, &'static str, &'static str);
 
 macro_rules! part {
     ($name:literal, $about:literal) => {
@@ -16,7 +16,6 @@ macro_rules! part {
             $name,
             $about,
             include_str!(concat!("../templates/ui/", $name, ".wisp")),
-            include_str!(concat!("../templates/ui/", $name, ".stories.wisp")),
         )
     };
 }
@@ -95,7 +94,7 @@ fn find(name: &str) -> Result<&'static Part, String> {
         })
 }
 
-/// Each component and its stories into `src/components`. A file there
+/// Each component into `src/components`. A file there
 /// already is the app's: it stays, unless `force`. Every name is checked
 /// before anything is written.
 fn add(root: &Path, names: &[&str], force: bool) -> Result<(), String> {
@@ -109,16 +108,12 @@ fn add(root: &Path, names: &[&str], force: bool) -> Result<(), String> {
     let dir = root.join("src").join("components");
     crate::make_dir(&dir)?;
     let mut kept = Vec::new();
-    for (name, _, wisp, stories) in parts {
-        for (file, text) in [
-            (format!("{name}.wisp"), wisp),
-            (format!("{name}.stories.wisp"), stories),
-        ] {
-            if write(&dir.join(&file), text, force)? {
-                term::done(&format!("Wrote src/components/{file}"));
-            } else {
-                kept.push(file);
-            }
+    for (name, _, wisp) in parts {
+        let file = format!("{name}.wisp");
+        if write(&dir.join(&file), wisp, force)? {
+            term::done(&format!("Wrote src/components/{file}"));
+        } else {
+            kept.push(file);
         }
     }
     if !kept.is_empty() {
@@ -149,7 +144,7 @@ fn write(path: &Path, text: &str, force: bool) -> Result<bool, String> {
 mod tests {
     use super::*;
 
-    /// Every component and its stories, in an app: valid, with no
+    /// Every component, in an app: valid, with no
     /// accessibility warnings; a second add keeps the app's copy.
     #[test]
     fn components_check_clean() {

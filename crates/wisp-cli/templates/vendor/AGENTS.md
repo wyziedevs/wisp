@@ -78,7 +78,7 @@ Block rules:
 - Route params are locals: `slug: String`, `[id=int]` → `id: u64`,
   `[[lang]]` → `Option<String>`. Even with no block.
 - No `use` lines: prelude = `Cx Response Result Error Email Image Json
-  FromJson Rest Config Upload Cookie CookieOptions SameSite Method Value Shared Table Row RateLimit OrStatus Password Reply KB MB
+  FromJson Rest Config Cookie CookieOptions SameSite Method Value Shared Table Row RateLimit OrStatus Password Reply KB MB
   action remote error invalid model redirect Always Never Ignore` and `src/db.rs`'s `pub` items (local
   names win). `Result` alone = `Result<()>`.
 - `const CACHE: u32 = 60;` (page or `+server.rs`) keeps a GET's answer 60 s
@@ -134,8 +134,7 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
   WebP or AVIF by its bytes (not SVG), else 422; at most 2 MB
   (`wisp::MAX_SIZE`) unless `#[validate(max_size = 5 * MB)]`. The form gets
   `enctype="multipart/form-data"` and the file input `accept="image/*"`.
-  `doc: Upload` is any file kept as a blob once all inputs pass (`doc.name`,
-  `doc.url()`, shows its URL; docs/data.md). Keep an image in a table field, serve it with `fn get(id: u64) -> Option<Image> {
+  Keep an image in a table field, serve it with `fn get(id: u64) -> Option<Image> {
   USERS.get(id)?.value.avatar }` in `avatars/[id=int]/+server.rs`.
 - Rules: `#[validate(len = 1..=100)]` (also `min max min_len max_len email`)
   or `return invalid("field", "msg")` → 422, the page re-rendered listing
@@ -279,7 +278,7 @@ fn before_create(note: &mut Note) -> Result { Ok(()) }  // also before_update, a
 ```
 → GET/POST `/api/notes`, GET/PUT/PATCH/DELETE `/api/notes/[id]`; rows are
 `{"id":1,…}`; 201, 404, 422 by field. Filters, sorting, pages, ETags, ndjson,
-idempotency, RFC 9457, webhooks, OpenAPI, TypeScript client: docs/api.md. A
+RFC 9457, webhooks, OpenAPI, TypeScript client: docs/api.md. A
 handler the file writes replaces that one; by hand:
 
 ```rust
@@ -392,13 +391,13 @@ no-wait fast path off every route.
   `wisp::env("K")`, `spawn`, `every`, `wisp::channel("x")`
   `.send/events()` (SSE)`/websocket()`, `RateLimit::per_minute(n).check(key)?`,
   `#[derive(Cookie)]`.
-- Data, files, jobs (docs/data.md): `#[unique]` on a `#[model]` field of a saved
+- Data, jobs (docs/data.md): `#[unique]` on a `#[model]` field of a saved
   table (or `.unique("f", |v: &T| &v.f)`), `#[json(default)]`/`#[json(default =
   expr)]`/`#[json(was = "old")]` for old rows, `.migrate(f)`, `.live()` (pages
   naming a live table's static refresh themselves, via `/_wisp/live/<name>`),
-  `set clear by try_add`; `Upload`, `wisp::relay`,
+  `set clear by try_add`;
   `wisp::queue(n).push(&j)` + `work(n, f)` + `cron("0 3 * * *", f)`,
-  `wisp::cache(k, secs, f)`/`uncache(path)`, `WISP_ADMIN_KEY` admin page;
+  `wisp::cache(k, secs, f)`/`uncache(path)`;
   rules `url one_of pattern with`.
 - Static export: `fn entries() -> Vec<&'static str>` in a `[param]` page.
   Test: `let mut app = wisp::test::client::<App>(); app.get("/").text()`,
@@ -431,8 +430,7 @@ no-wait fast path off every route.
 ## Commands
 
 `wisp new app [--template demo|minimal|api]` · `wisp dev` (hot reload keeps
-`$state`; `Alt+Shift+W` devtools; `/_wisp/components` workshop of
-`*.stories.wisp`) · `wisp test [--browser]` · `wisp check [--types]` · `wisp
+`$state`; `Alt+Shift+W` devtools) · `wisp test [--browser]` · `wisp check [--types]` · `wisp
 fmt [--check]` · `wisp build` (`--static`, `--spa`, `--docker`, `--target
 cloudflare|pages|deno|vercel|netlify|node|bun|lambda|native` (`--edge` with
 vercel or netlify: their edge runtime), `--client ts`, `--sourcemap`) · `wisp

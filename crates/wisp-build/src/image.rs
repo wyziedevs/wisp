@@ -233,7 +233,6 @@ pub fn sources(root: &Path) -> Vec<Found> {
     for dir in ["routes", "components"] {
         crate::wisp_files(&root.join("src").join(dir), dir == "routes", &mut files, 0);
     }
-    files.retain(|f| !f.to_string_lossy().ends_with(".stories.wisp"));
     files.sort();
     let mut out: Vec<Found> = Vec::new();
     for f in files {

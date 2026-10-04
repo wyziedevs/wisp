@@ -20,7 +20,7 @@ use crate::protocol::{
 use crate::routes::Seg;
 use crate::rust_scan::{self, FnItem, Returns};
 use crate::template::{self, Code, Dir, Directive, Node, PropDecl, PropValue, Template};
-use crate::{fnv1a, fold, i18n, image, js, rules, shell, sourcemap, stories, ty};
+use crate::{fnv1a, fold, i18n, image, js, rules, shell, sourcemap, ty};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -44,22 +44,6 @@ enum Kind {
     Layout,
     Error,
     Component,
-    /// A story of the component workshop: dev builds only.
-    Story,
-}
-
-/// A component in the workshop: its stories, or why it has none.
-struct Shelf {
-    comp: usize,
-    stories: Vec<ShelfStory>,
-    note: String,
-}
-
-struct ShelfStory {
-    story: stories::Story,
-    /// The controls' first values, where the story writes literals.
-    values: Vec<(String, String)>,
-    tpl: usize,
 }
 
 /// A component: `src/components/Card.wisp` is `<Card>`.
@@ -257,7 +241,6 @@ fn shim(f: &FnItem, kind: Shim) -> Result<String, String> {
     // Each input as (its name in the call, what reads it, its owned type
     // when the call borrows it).
     let mut read = Vec::new();
-    let mut keep = String::new();
     let mut inputs = f.inputs()?.into_iter();
     for (_, ty) in &f.params {
         if rust_scan::is_cx(ty) {
@@ -278,9 +261,6 @@ fn shim(f: &FnItem, kind: Shim) -> Result<String, String> {
         } else {
             (get, "", v.clone())
         };
-        if rules::is_blob(ty) {
-            keep += &format!("::wisp::rt_traits::Keep::keep(&{v}, cx, {})?; ", lit(name));
-        }
         read.push((name, v, get, owned));
         args.push(arg);
     }
@@ -324,9 +304,6 @@ fn shim(f: &FnItem, kind: Shim) -> Result<String, String> {
             names.join(", ")
         ));
     }
-    // An `Upload` is kept only now, all inputs passed: a refused form
-    // leaves no file behind.
-    lets.push_str(&keep);
     let call = format!(
         "super::{}({}){}{}",
         f.name,
@@ -913,8 +890,7 @@ pub fn hot(input: &Input) -> Result<Hot, String> {
         block: 0,
         props: 0,
     }];
-    // A story may have its component's file: stories are a compile anyway.
-    for t in p.templates.iter().filter(|t| t.kind != Kind::Story) {
+    for t in p.templates.iter() {
         let inline = (p.user_mods.iter())
             .find(|m| p.rel(&m.file) == t.rel)
             .and_then(|m| m.inline.as_deref());
@@ -1306,8 +1282,6 @@ struct Project<'a> {
     shared: Vec<rust_scan::TypeItem>,
     /// The `.live()` tables (static, channel) a page reading one listens to.
     lives: Vec<(String, String)>,
-    /// The component workshop (dev builds): a shelf per component.
-    shelves: Vec<Shelf>,
     /// The `PUBLIC_*` variables, for browser code's `env.PUBLIC_X`.
     env: Vec<(String, String)>,
     /// The Markdown pages, by route pattern, with their front matter: what
@@ -1423,7 +1397,6 @@ impl<'a> Project<'a> {
             mods: Vec::new(),
             shared: crate::shared_types(root),
             lives: crate::live_tables(root),
-            shelves: Vec::new(),
             env: crate::public_env(root),
             md_pages: Vec::new(),
             i18n,
@@ -1441,9 +1414,6 @@ impl<'a> Project<'a> {
         p.layouts()?;
         p.error_pages()?;
         p.routes()?;
-        if !p.release {
-            p.stories()?;
-        }
         p.app_files()?;
         p.translate()?;
         Ok(p)
@@ -1519,7 +1489,7 @@ impl<'a> Project<'a> {
                 .any(|(r, _)| r.expansions().iter().any(|e| may_match(e, path)))
         };
         let mut out = Vec::new();
-        for t in self.templates.iter().filter(|t| t.kind != Kind::Story) {
+        for t in &self.templates {
             let mut src: Option<String> = None;
             for href in t.t.chunks.iter().flat_map(|c| hrefs(c)) {
                 let path = href.split(['?', '#']).next().unwrap_or("");
@@ -1744,7 +1714,6 @@ impl<'a> Project<'a> {
                 .unwrap_or_default();
             if crate::routes::editor_temp(&file_name)
                 || file.extension().is_none_or(|e| e != "wisp")
-                || file_name.ends_with(stories::SUFFIX)
             {
                 continue;
             }
@@ -1824,70 +1793,6 @@ impl<'a> Project<'a> {
                 live: t.is_live(),
             });
             self.add_tpl(module, &file, Kind::Component, t);
-        }
-        Ok(())
-    }
-
-    /// Dev builds: each component's `Name.stories.wisp`, a template per
-    /// story; without one, a default story when every prop it needs is
-    /// one the workshop can fill in.
-    fn stories(&mut self) -> Result<(), String> {
-        for k in 0..self.comps.len() {
-            let (name, decls) = (self.comps[k].name.clone(), self.comps[k].props.clone());
-            let own = self.root.join(&self.templates[k].rel);
-            let mut file = own.with_file_name(format!("{name}{}", stories::SUFFIX));
-            let rel = self.rel(&file);
-            let (list, fill) = if file.is_file() {
-                let src = self.read(&file)?;
-                (
-                    stories::split(&src).map_err(|e| format!("{rel}:{e}"))?,
-                    false,
-                )
-            } else {
-                let needs = decls.iter().find(|d| {
-                    d.name != REST && d.default.is_none() && stories::Control::of(&d.ty).is_none()
-                });
-                if let Some(d) = needs {
-                    let note = format!(
-                        "Add {name}.stories.wisp beside it: its prop `{}` is a `{}`.",
-                        d.name, d.ty
-                    );
-                    self.shelves.push(Shelf {
-                        comp: k,
-                        stories: Vec::new(),
-                        note,
-                    });
-                    continue;
-                }
-                let story = stories::Story {
-                    name: "Default".into(),
-                    slug: "default".into(),
-                    line: 1,
-                    markup: format!("<{name} />"),
-                };
-                // Made from the component alone: its errors are its own.
-                file = own;
-                (vec![story], true)
-            };
-            let mut shelf = Shelf {
-                comp: k,
-                stories: Vec::new(),
-                note: String::new(),
-            };
-            for s in list {
-                let (mut t, _) = crate::parse_markup(&s.markup, None, &[], &rel, false)
-                    .map_err(|e| format!("{rel}:{e}"))?;
-                let values = stories::wire(&mut t.nodes, &name, &decls, fill);
-                let module = format!("tpl_story_{}", self.templates.len());
-                self.add_tpl(module, &file, Kind::Story, t);
-                let tpl = self.templates.len() - 1;
-                shelf.stories.push(ShelfStory {
-                    story: s,
-                    values,
-                    tpl,
-                });
-            }
-            self.shelves.push(shelf);
         }
         Ok(())
     }
@@ -3606,7 +3511,6 @@ impl Gen {
         self.router(p);
         let client = self.api(p)?;
         self.init(p);
-        self.workshop(p);
 
         self.line(1, "fn shell() -> [&'static str; 3] {");
         if p.release {
@@ -4111,58 +4015,6 @@ impl Gen {
         Ok(client)
     }
 
-    /// Dev builds: what `/_wisp/components` shows, each story with the
-    /// function that renders it.
-    fn workshop(&mut self, p: &Project) {
-        if p.shelves.is_empty() {
-            return;
-        }
-        self.line(1, "fn workshop() -> &'static [::wisp::rt::Shelf] {");
-        self.line(2, "&[");
-        for s in &p.shelves {
-            let c = &p.comps[s.comp];
-            let props: Vec<String> = (c.props.iter())
-                .filter(|d| d.name != REST)
-                .map(|d| {
-                    let control = stories::Control::of(&d.ty).map_or("None".into(), |c| {
-                        format!("Some(::wisp::rt::Control::{})", c.rust())
-                    });
-                    format!(
-                        "::wisp::rt::ShelfProp {{ name: {}, ty: {}, control: {control} }}",
-                        lit(&d.name),
-                        lit(&d.ty)
-                    )
-                })
-                .collect();
-            let stories: Vec<String> = (s.stories.iter())
-                .map(|ShelfStory { story, values, tpl }| {
-                    let values: Vec<String> = (values.iter())
-                        .map(|(k, v)| format!("({}, {})", lit(k), lit(v)))
-                        .collect();
-                    format!(
-                        "::wisp::rt::Story {{ name: {}, slug: {}, file: {}, line: {}, values: &[{}], render: {}::render }}",
-                        lit(&story.name),
-                        lit(&story.slug),
-                        lit(&p.templates[*tpl].rel),
-                        story.line,
-                        values.join(", "),
-                        p.templates[*tpl].path()
-                    )
-                })
-                .collect();
-            self.line(3, &format!(
-                "::wisp::rt::Shelf {{ name: {}, file: {}, props: &[{}], stories: &[{}], note: {} }},",
-                lit(&c.name),
-                lit(&p.templates[s.comp].rel),
-                props.join(", "),
-                stories.join(", "),
-                lit(&s.note)
-            ));
-        }
-        self.line(2, "]");
-        self.line(1, "}");
-    }
-
     fn init(&mut self, p: &Project) {
         self.line(1, "async fn init() -> ::wisp::Result<()> {");
         // What `#[derive(Config)]` reads is there for `init`.
@@ -4314,7 +4166,6 @@ impl Gen {
                     self.line(3, &format!("({i}, Post) => {open}{{"));
                     self.line(4, &guard);
                     self.line(4, "::wisp::rt::check_origin(cx)?;");
-                    self.line(4, &idempotent("()"));
                     self.line(4, "match cx.action() {");
                     // `invalid(field, ..)` shows the page again, as a 422, with
                     // what is wrong for `cx.problem(field)`.
@@ -4342,15 +4193,10 @@ impl Gen {
             for (s, h) in (r.server.iter()).flat_map(|s| s.handlers.iter().map(move |h| (s, h))) {
                 let (_, variants, allowed) = method_of(h);
                 let m = &s.module;
-                let mut before = match s.before {
+                let before = match s.before {
                     true => answer(&format!("{m}::__call::before")) + " ",
                     false => String::new(),
                 };
-                if h.op.method == "post" {
-                    // After `before`'s `if … { … }`, a `;`: not an `else if`.
-                    let sep = if before.is_empty() { "" } else { "; " };
-                    before = format!("{}{sep}{} ", before.trim_end(), idempotent("()"));
-                }
                 let mut serve = serve(m, h, &format!("{}(cx).await", h.shim));
                 if h.op.method == "get" {
                     serve = kept(serve);
@@ -4406,10 +4252,6 @@ impl Gen {
         self.line(2, "match (route, cx.method) {");
         for (i, r) in arms {
             for (s, h) in now_arms(p, r) {
-                let before = match h.op.method == "post" {
-                    true => idempotent("true") + " ",
-                    false => String::new(),
-                };
                 let mut serve = serve(&s.module, h, &format!("{}_now(cx)", h.shim));
                 if let (Some(c), "get") = (&r.cache, h.op.method) {
                     let (m, public, by) = (&c.module, c.public, r.by_accept());
@@ -4421,7 +4263,7 @@ impl Gen {
                 self.line(
                     3,
                     &format!(
-                        "({i}, {}) => {{ ::wisp::rt::hooked(cx); ::wisp::rt::endpoint(cx); {before}{serve} Ok(true) }}",
+                        "({i}, {}) => {{ ::wisp::rt::hooked(cx); ::wisp::rt::endpoint(cx); {serve} Ok(true) }}",
                         method_of(h).1
                     ),
                 );
@@ -4761,10 +4603,6 @@ fn may_match(exp: &[&Seg], url: &str) -> bool {
 /// answers a request whose `Idempotency-Key` was answered before.
 /// The statement that answers a POST its `Idempotency-Key` answered
 /// before, returning `Ok(done)`.
-fn idempotent(done: &str) -> String {
-    format!("if ::wisp::rt::idempotent(cx, __o) {{ return Ok({done}); }}")
-}
-
 /// The method `h` answers: its name, its `Method` variants, and its `Allow` names.
 fn method_of(h: &Handler) -> &'static (&'static str, &'static str, &'static str) {
     METHODS.iter().find(|(n, _, _)| *n == h.op.method).unwrap()
@@ -5745,7 +5583,6 @@ impl Gen {
                 "pub fn render(__o: &mut ::wisp::Out, cx: &::wisp::Cx, status: u16, message: &str)"
                     .into()
             }
-            Kind::Story => "pub fn render(__o: &mut ::wisp::Out, cx: &::wisp::Cx)".into(),
             Kind::Component => {
                 let props: String =
                     t.t.props
@@ -10324,7 +10161,7 @@ fn report(cx: &mut Cx, err: &Error) {}",
             "pub const CACHE: u32 = super::CACHE_PUBLIC;",
             "(0, Get | Head) => { ::wisp::rt::endpoint(cx); if ::wisp::rt::cached::<false>(cx, __o, true) { return Ok(()); } \
              ::wisp::rt::respond(__o, server_0::__call::get(cx).await?); ::wisp::rt::keep::<Self, false>(cx, __o, server_0::__call::CACHE, true); Ok(()) }",
-            "(0, Post) => { ::wisp::rt::endpoint(cx); ::wisp::rt::check_origin(cx)?; if ::wisp::rt::idempotent(cx, __o) { return Ok(()); } \
+            "(0, Post) => { ::wisp::rt::endpoint(cx); ::wisp::rt::check_origin(cx)?; \
              server_0::__call::post(cx).await?; ::wisp::rt::no_content(__o); Ok(()) }",
             // The same, sync, with no future: what `handle_now` answers.
             "now: true, sync: ::wisp::Method::Get.bit() | ::wisp::Method::Head.bit() | ::wisp::Method::Post.bit(),",
@@ -10333,7 +10170,6 @@ fn report(cx: &mut Cx, err: &Error) {}",
              ::wisp::rt::respond(__o, server_0::__call::get_now(cx)?); \
              ::wisp::rt::keep::<Self, false>(cx, __o, server_0::__call::CACHE, true); Ok(true) }",
             "(0, Post) => { ::wisp::rt::hooked(cx); ::wisp::rt::endpoint(cx); \
-             if ::wisp::rt::idempotent(cx, __o) { return Ok(true); } \
              server_0::__call::post_now(cx)?; ::wisp::rt::no_content(__o); Ok(true) }",
             "pub fn post_now(cx: &mut ::wisp::Cx) -> ::wisp::Result<()> { super::post(); Ok(()) }",
         ] {
@@ -10485,48 +10321,19 @@ fn report(cx: &mut Cx, err: &Error) {}",
         );
     }
 
-    /// Stories and the devtools' hooks are in dev builds only.
+    /// The devtools' hooks are in dev builds only.
     #[test]
-    fn stories_and_devtools_are_dev_only() {
+    fn devtools_are_dev_only() {
         let card = (
             "src/components/Card.wisp",
-            "{@props title: &str, n: u8 = 1}\n<h2>{title}</h2><button on:click=\"k++\">{:k}</button>",
+            "{@props title: &str, n: u8 = 1}
+<h2>{title}</h2><button on:click=\"k++\">{:k}</button>",
         );
         let page = ("src/routes/+page.wisp", "<Card title=\"a\" />");
-        let stories = (
-            "src/components/Card.stories.wisp",
-            "{#story \"Big\"}<Card title=\"x\" />{/story}",
-        );
-        let dev = build("stories-dev", &[card, page, stories], false).unwrap();
-        for want in [
-            "fn workshop()",
-            "slug: \"big\", file: \"src/components/Card.stories.wisp\", line: 1, values: &[(\"title\", \"x\"), (\"n\", \"1\")]",
-            "cx.query_or::<String>(\"title\"",
-            "__wisp_dev?.state(",
-        ] {
-            assert!(dev.contains(want), "{want}");
-        }
-        let release = build("stories-release", &[card, page, stories], true).unwrap();
-        for not in ["workshop", "tpl_story_", "__wisp_dev"] {
-            assert!(!release.contains(not), "{not}");
-        }
-        // Without a stories file, a default story when it can be made.
-        let dev = build("stories-default", &[card, page], false).unwrap();
-        assert!(dev.contains("name: \"Default\", slug: \"default\""));
-        let e = build(
-            "stories-bad",
-            &[
-                card,
-                page,
-                ("src/components/Card.stories.wisp", "\n<p>x</p>"),
-            ],
-            false,
-        )
-        .unwrap_err();
-        assert!(
-            e.starts_with("src/components/Card.stories.wisp:2: only"),
-            "{e}"
-        );
+        let dev = build("devtools-dev", &[card, page], false).unwrap();
+        assert!(dev.contains("__wisp_dev?.state("));
+        let release = build("devtools-release", &[card, page], true).unwrap();
+        assert!(!release.contains("__wisp_dev"));
     }
 
     #[test]
@@ -10574,16 +10381,6 @@ fn report(cx: &mut Cx, err: &Error) {}",
                 .unwrap_err()
                 .contains("or a `Response` to send instead of the page")
         );
-    }
-
-    #[test]
-    fn an_upload_is_kept_once_all_inputs_pass() {
-        let rs = "\n#[action] fn add(doc: Option<Upload>, #[validate(max = 5)] n: u8) {}";
-        let files = [("src/routes/+page.wisp", "x"), ("src/routes/+page.rs", rs)];
-        let code = app("keep", &files).unwrap();
-        let want = "else { return ::wisp::rt::input::refused(__p); }; \
-                    ::wisp::rt_traits::Keep::keep(&__a0, cx, \"doc\")?; ";
-        assert!(code.contains(want), "{code}");
     }
 
     #[test]

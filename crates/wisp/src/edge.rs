@@ -146,7 +146,6 @@ impl Lazy {
     pub(crate) fn known(&self, k: crate::cx::Known) -> Option<&str> {
         use crate::cx::Known::*;
         let name = match k {
-            IdempotencyKey => "idempotency-key",
             IfNoneMatch => "if-none-match",
             ContentType => "content-type",
             Accept => "accept",

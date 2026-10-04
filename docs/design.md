@@ -610,13 +610,12 @@ change and share as folders.
 
 ```sh
 wisp ui list                     # what there is
-wisp ui add button dialog tabs   # into src/components, with stories
+wisp ui add button dialog tabs   # into src/components
 ```
 
 `wisp ui add` copies components into `src/components`: the source is in the
 CLI, the copy is the app's, to change as it likes. A file already there is
-the app's and stays; `--force` writes over it. Each comes with a
-`Name.stories.wisp` for the workshop at `/_wisp/components`.
+the app's and stays; `--force` writes over it.
 
 | Component | Use | Browser code |
 |---|---|---|

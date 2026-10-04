@@ -8,73 +8,6 @@ use wisp::test::client;
 use wisp::{Body, Request, Value};
 use wisp_test_app::Site;
 
-/// The component workshop (dev builds): every component, stories from
-/// `Card.stories.wisp` rendered by the server with their props from the
-/// query, a default story for a component that needs nothing, and a note
-/// for one that needs a story.
-#[test]
-fn the_workshop_renders_stories() {
-    let mut app = client::<Site>();
-    let index = app.get("/_wisp/components");
-    if !cfg!(debug_assertions) {
-        assert_eq!(index.status, 404, "dev builds only");
-        return;
-    }
-    let text = index.text();
-    assert!(
-        text.contains("src/components/Card.wisp") && text.contains("2 stories"),
-        "{text}"
-    );
-    let page = app.get("/_wisp/components/Card/featured?title=Mint");
-    let text = page.text();
-    assert!(
-        text.contains("name=\"title\" data-set value=\"Mint\""),
-        "{text}"
-    );
-    assert!(text.contains("name=\"featured\" checked"), "{text}");
-    assert!(
-        text.contains("/_wisp/components/Card/featured/frame?title=Mint"),
-        "{text}"
-    );
-    let frame = app.get("/_wisp/components/Card/featured/frame");
-    let text = frame.text();
-    assert!(
-        text.contains("<h2>Tea ★</h2>")
-            && text.contains("3 items")
-            && text.contains("A pot for two."),
-        "{text}"
-    );
-    assert!(
-        text.contains("/_app/wisp.js?v="),
-        "in the app's shell: {text}"
-    );
-    let text = app
-        .get("/_wisp/components/Card/featured/frame?title=Mint&featured=false&count=9")
-        .text()
-        .to_string();
-    assert!(
-        text.contains("<h2>Mint</h2>") && text.contains("9 items"),
-        "{text}"
-    );
-    let text = app
-        .get("/_wisp/components/Card/empty/frame")
-        .text()
-        .to_string();
-    assert!(
-        text.contains("<h2>Nothing yet</h2>") && text.contains("0 items"),
-        "{text}"
-    );
-    let text = app
-        .get("/_wisp/components/Tally/default/frame")
-        .text()
-        .to_string();
-    assert!(text.contains("class=\"tally\""), "{text}");
-    let text = app.get("/_wisp/components/Table").text().to_string();
-    assert!(text.contains("Add Table.stories.wisp beside it"), "{text}");
-    assert_eq!(app.get("/_wisp/components/Card/nope").status, 404);
-    assert_eq!(app.get("/_wisp/components/Nope/frame/x/y").status, 404);
-}
-
 #[test]
 fn pages_hooks_and_errors() {
     let mut app = client::<Site>();
@@ -396,20 +329,7 @@ fn rest_resources_filter_sort_page_and_hook() {
             .starts_with(r#"{"type":"about:blank","title":"Not Found""#)
     );
 
-    // The same Idempotency-Key gets the first answer again.
-    app.header("idempotency-key", "k1");
-    let first = app.post_json("/tasks", r#"{"title":"Once","points":0}"#);
-    app.header("idempotency-key", "k1");
-    let again = app.post_json("/tasks", r#"{"title":"Once","points":0}"#);
-    assert_eq!((first.status, again.text()), (201, first.text()));
-    assert_eq!(again.header("idempotent-replayed"), Some("true"));
-    app.header("idempotency-key", "k1");
-    assert_eq!(
-        app.post_json("/tasks", r#"{"title":"Twice","points":0}"#)
-            .status,
-        422
-    );
-    assert_eq!(app.get("/tasks").header("x-total-count"), Some("4"));
+    assert_eq!(app.get("/tasks").header("x-total-count"), Some("3"));
 
     // Deleting takes the admin key; the after_delete hook sees the row.
     assert_eq!(app.delete("/tasks/2").status, 401);
@@ -772,26 +692,6 @@ fn if_match_compares_strongly() {
     let patched = app.patch_json(&at, &many);
     assert_eq!(patched.status, 200);
     assert!(patched.text().contains(r#""name":"Done""#));
-}
-
-#[test]
-fn one_visitor_never_gets_another_visitors_answer() {
-    let mut app = client::<Site>();
-    let body = r#"{"name":"Mine"}"#;
-    app.header("idempotency-key", "same");
-    app.header("cookie", "session=ann");
-    let ann = app.post_json("/users/42/items", body);
-    app.header("idempotency-key", "same");
-    app.header("cookie", "session=bob");
-    let bob = app.post_json("/users/42/items", body);
-    assert_eq!((ann.status, bob.status), (201, 201));
-    assert_eq!(bob.header("idempotent-replayed"), None);
-    assert_ne!(ann.header("location"), bob.header("location"));
-    app.header("idempotency-key", "same");
-    app.header("cookie", "session=ann");
-    let again = app.post_json("/users/42/items", body);
-    assert_eq!(again.header("idempotent-replayed"), Some("true"));
-    assert_eq!(again.text(), ann.text());
 }
 
 /// pushState and replaceState need no import: every module gets them from

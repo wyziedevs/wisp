@@ -118,7 +118,6 @@ impl Span {
 /// without a search: by index in [`Wire::known`].
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum Known {
-    IdempotencyKey,
     IfNoneMatch,
     ContentType,
     Accept,
@@ -128,7 +127,7 @@ pub(crate) enum Known {
 }
 
 /// How many [`Known`] there are.
-pub(crate) const KNOWN: usize = 7;
+pub(crate) const KNOWN: usize = 6;
 
 /// The request as it came over the wire: the connection's read buffer and
 /// spans into it. The parser in `http.rs` writes it; `Cx`'s methods read it.
@@ -175,9 +174,6 @@ pub struct Cx {
     id: std::sync::OnceLock<String>,
     /// Routed to a `+server.rs` endpoint, whose errors are JSON.
     api: bool,
-    /// The `Idempotency-Key` this request answers first, kept with its
-    /// answer (see `idem.rs`).
-    pub(crate) idem: Option<crate::idem::Key>,
     /// The edge host's request, whose headers but `host` it is asked for
     /// as they are read (see `edge::Lazy`).
     #[cfg(target_arch = "wasm32")]
@@ -210,7 +206,6 @@ impl Cx {
             json: std::sync::OnceLock::new(),
             id: std::sync::OnceLock::new(),
             api: false,
-            idem: None,
             #[cfg(target_arch = "wasm32")]
             lazy: None,
         }
@@ -220,7 +215,6 @@ impl Cx {
     /// spans are set by the parser. The edge build answers each request in
     /// a `Cx` of its own.
     pub(crate) fn reset(&mut self) {
-        self.idem = None;
         self.clear_params();
         self.status = 200;
         self.out_headers.clear();

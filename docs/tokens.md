@@ -139,7 +139,7 @@ api. Its 59 tokens keep the notes across restarts and crashes (a log file
 per table in `WISP_DATA`); of the others only Rails does (SQLite, through
 Active Record), and the rest keep them in memory, as the task allows. The
 same 59 tokens also answer filters by field, sorting, cursor pages, field
-selection, ETags with 304 and 412, bulk creates and idempotent retries,
+selection, ETags with 304 and 412, bulk creates,
 which no other version here has. Asked of the others, those would cost
 them more tokens; in Wisp they cost none. What a real API adds in Wisp is
 counted in the usual way: a `created_at: String` field is 6 tokens, a hook

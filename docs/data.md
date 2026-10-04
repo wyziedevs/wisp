@@ -1,6 +1,6 @@
-# Data, files and jobs
+# Data and jobs
 
-Everything here is opt-in: an app that uses none of it pays nothing.
+Everything here is opt-in: an app that uses none of it pays nothing. File storage, an admin UI and a cross-server relay are the app's: use a crate or a service.
 
 ## Tables
 
@@ -26,37 +26,6 @@ pub static USERS: Table<User> = Table::saved("users")
 - Several servers on one store: a `Store` may answer `changes(table,
   since)`, and with `WISP_STORE_POLL=5` (seconds) every table follows it.
   Tables are whole in memory: the store's size is the RAM bound.
-
-## Relay
-
-`wisp::relay(impl Relay)` in `init` carries every channel's messages to the
-other servers (Redis `PUBLISH`, Postgres `NOTIFY`, NATS): two methods,
-`publish(channel, text)` and `subscribe(deliver)`. Each message carries the
-sender's id, so a broker that echoes back is fine.
-
-## Files
-
-`Upload` keeps any file as a blob, by the hash of its bytes (one copy of
-equal files); a row holds its hash, name, type and size, and it shows as its
-URL: `<a href={doc.file}>`.
-
-```rust
-let file = cx.form().file("file").or_status(400)?;
-DOCS.add(Doc { title, file: Upload::new(&file, "pdf csv")? });  // 422 on `file`
-```
-
-An action takes one by name, no code: `#[action] fn add(title: String, file:
-Upload) { DOCS.add(Doc { title, file }); }`. Any kind of file, at most
-`wisp::MAX_SIZE` (`#[validate(max_size = ..)]`; raise `BODY_LIMIT` with it);
-none chosen is a 422 on the field, and `<form fields>` writes its file input.
-The bytes are kept as the action reads them, so a form refused for another
-field leaves its file in the store.
-
-Files go in `WISP_BLOBS` (default: `blobs` beside the data folder; memory
-where tables are); `wisp::blobs(impl Blobs)` puts them in S3 or elsewhere.
-The server answers `/_wisp/blob/<hash>` itself: typed by its bytes
-(images) or as opaque data, `nosniff`, cached for good, `Range` and
-`If-None-Match` honored; GET and HEAD only.
 
 ## Rules
 
@@ -90,10 +59,3 @@ later. One at a time per queue, in order. `cron` takes five fields (`*`,
 answer for 60 s per process. `wisp::uncache("/posts")` forgets cache keys
 starting with it and the pages `const CACHE` keeps, on every worker, for
 `/posts` and below (`/` is all).
-
-## Admin
-
-With `WISP_ADMIN_KEY` set, `/_wisp/admin` (HTTP basic auth, the key as the
-password) lists the saved tables, edits a row's JSON and deletes rows. It
-writes rows directly: no hooks run, only that the JSON is a row of the type
-(and unique fields are free). Form posts need this site's own `Origin`.

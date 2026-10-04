@@ -79,7 +79,7 @@ The `---` block is Rust that runs for each request, `{name}` is rendered on the 
 **Tooling**
 - A language server (`wisp lsp`) with a VS Code extension, plus Zed, tree-sitter and Prettier.
 - `wisp fmt`, `wisp check`, `wisp test` and `wisp test --browser`.
-- Devtools on `Alt+Shift+W` and a component workshop in dev.
+- Devtools on `Alt+Shift+W` in dev.
 
 **Deploy**
 - One binary, `--docker`, `--static`, or `--target cloudflare|deno|vercel|netlify|node|bun|lambda`.

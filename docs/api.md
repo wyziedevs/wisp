@@ -250,13 +250,6 @@ without `sha256=`) or base64 (Shopify). Stripe's `stripe-signature`
 (`t=…,v1=…`) signs the time too and is refused after five minutes. Other
 schemes: `wisp::hex(&wisp::hmac_sha256(secret, message))`, `wisp::secure_eq`.
 
-## Idempotent retries
-
-A POST with `Idempotency-Key` retried gets the first answer back with
-`idempotent-replayed: true`, kept a day per key, path and `authorization`;
-the same key with another body is 422, one still in progress 409. No header,
-nothing kept.
-
 ## Big lists
 
 ```rust
@@ -340,8 +333,7 @@ fn get() -> Response { wisp::channel("chat").websocket() }     // both ways
 
 `subscribe()` (`recv().await`) feeds your own `Response::events` or
 `websocket`; `connect(&ws)` joins an existing socket. Channels are per
-process: relay between servers (Redis pub/sub, Postgres `LISTEN`) from a task
-started in `init`.
+process: carry them between servers with a task started in `init`.
 
 ## Background jobs
 
@@ -413,7 +405,7 @@ fn notes() {
 ```
 
 Also `get put_json patch_json delete post_form send_json(method, url, json)`,
-`header(name, value)` (next request only: `if-match`, `idempotency-key`),
+`header(name, value)` (next request only: `if-match`),
 `send(Request)`, `next_chunk` (events as sent). Tables are in memory.
 
 ### In a browser

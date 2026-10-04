@@ -6,20 +6,9 @@ use crate::rust_scan::{Items, TypeItem};
 use crate::ty::{self, Scalar};
 pub use wisp_shared::rules::{Key, Native, Rule, Validate, parse, plain, rule};
 
-/// An upload's type: `Image` or `Upload` (any file, kept as a blob), or an
-/// `Option` of one.
+/// An upload's type: `Image`, or an `Option` of one.
 pub fn is_upload(ty: &str) -> bool {
-    matches!(upload_kind(ty), "Image" | "Upload")
-}
-
-/// An `Upload` (or `Option<Upload>`): kept as a blob once the action's
-/// inputs all pass.
-pub fn is_blob(ty: &str) -> bool {
-    upload_kind(ty) == "Upload"
-}
-
-fn upload_kind(ty: &str) -> &str {
-    ty::last_segment(ty::option_inner(ty).unwrap_or(ty))
+    ty::last_segment(ty::option_inner(ty).unwrap_or(ty)) == "Image"
 }
 
 /// The `#[validate(rules)]` of parameter `name` of type `ty`, or what is
@@ -28,7 +17,7 @@ pub fn validate(rules: &str, name: &str, ty: &str) -> Result<Validate, String> {
     let v = parse(rules)?;
     if v.max_size.is_some() && !is_upload(ty) {
         return Err(format!(
-            "`max_size` is for an upload, and `{name}` is a `{ty}`: make it an `Image` or `Upload` (or an `Option` of one)"
+            "`max_size` is for an upload, and `{name}` is a `{ty}`: make it an `Image` (or an `Option` of one)"
         ));
     }
     Ok(v)
@@ -53,7 +42,6 @@ pub fn native(ty: &str, rules: &[Rule], whole: bool) -> Native {
     }
     n.email = last == "Email";
     n.upload = is_upload(t);
-    n.blob = is_blob(t);
     for r in rules {
         r.native(&mut n, text, number);
     }

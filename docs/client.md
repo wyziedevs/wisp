@@ -558,9 +558,4 @@ None of this is in release builds.
 
 `Alt+Shift+W` opens dev-only devtools: component tree with live props and
 state (editable), stores, route and server values, timings; "Open" uses
-`$WISP_EDITOR` or `$EDITOR`, else `code -g`. `/_wisp/components` is the
-workshop: `Card.stories.wisp` beside `Card.wisp` holds
-`{#story "Featured"}<Card featured title="Tea" />{/story}` examples, each
-rendered at `/_wisp/components/Card/featured` with controls for `&str`,
-`String`, number and `bool` props (`?title=Mint`); a component without
-stories gets a "Default" one when its required props are all such types.
+`$WISP_EDITOR` or `$EDITOR`, else `code -g`.

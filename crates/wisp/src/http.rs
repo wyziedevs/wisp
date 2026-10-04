@@ -1219,7 +1219,7 @@ fn decide_now<A: App>(
     if crate::settings().request_id {
         cx.request_id();
     }
-    if !early::<A>(cx, route, out, reply) {
+    if !before_routes::<A>(cx, route, reply) {
         let timed = crate::settings().timed;
         let started = timed.then(Instant::now);
         out.clear();
@@ -1759,7 +1759,6 @@ pub(crate) fn header_name(b: &[u8], at: usize, len: usize) -> Name {
         13 if w == const { ends(b"if-none-match") } => Name::Known(Known::IfNoneMatch),
         14 if w == const { ends(b"content-length") } => Name::ContentLength,
         14 if w == const { ends(b"sec-fetch-site") } => Name::Known(Known::SecFetchSite),
-        15 if w == const { ends(b"idempotency-key") } => Name::Known(Known::IdempotencyKey),
         17 if w == const { ends(b"transfer-encoding") }
             && word(at + 8) == const { key(b"transfer-encoding", 8) } =>
         {
@@ -2550,7 +2549,7 @@ async fn decide<A: App>(
     if crate::obs::on() {
         crate::obs::begin(cx, route, &mut out.obs);
     }
-    if !early::<A>(cx, route, out, reply) {
+    if !before_routes::<A>(cx, route, reply) {
         let started = crate::settings().timed.then(Instant::now);
         out.clear();
         if out.obs.is_some() {
@@ -2665,39 +2664,6 @@ fn tag_plain(cx: &Cx, reply: &mut Reply) {
     }
 }
 
-/// [`before_routes`], and the component workshop first, in debug builds.
-#[cfg(debug_assertions)]
-fn early<A: App>(cx: &Cx, route: Option<usize>, out: &mut Out, reply: &mut Reply) -> bool {
-    workshop::<A>(cx, out, reply) || before_routes::<A>(cx, route, reply)
-}
-
-#[cfg(not(debug_assertions))]
-#[inline(always)]
-fn early<A: App>(cx: &Cx, route: Option<usize>, _: &mut Out, reply: &mut Reply) -> bool {
-    before_routes::<A>(cx, route, reply)
-}
-
-/// The component workshop (`/_wisp/components`), which renders a story
-/// into `out`: in dev only.
-#[cfg(debug_assertions)]
-fn workshop<A: App>(cx: &Cx, out: &mut Out, reply: &mut Reply) -> bool {
-    use crate::workshop::Answer;
-    let get = matches!(cx.method, Method::Get | Method::Head);
-    if !(get && crate::settings().dev && cx.path().starts_with("/_wisp/components")) {
-        return false;
-    }
-    match crate::workshop::answer::<A>(cx, out) {
-        Answer::Page(html) => reply.set(
-            200,
-            "text/html; charset=utf-8",
-            Body::Bytes(html.into_bytes()),
-        ),
-        Answer::Frame => reply.set(200, "text/html; charset=utf-8", Body::Page),
-        Answer::Missing => reply.set_plain(404, "Not Found"),
-    }
-    true
-}
-
 /// What is answered before the routes: a path that is not one, Wisp's own
 /// files, a trailing slash, the app's files. Whether it was.
 fn before_routes<A: App>(cx: &Cx, route: Option<usize>, reply: &mut Reply) -> bool {
@@ -2804,13 +2770,10 @@ fn answer_of(
     }
 }
 
-/// The reply decided: kept for its `Idempotency-Key`, given the headers the
+/// The reply decided: given the headers the
 /// request set, and logged; `failure` is what went wrong in a 5xx, for the
 /// log (the page may say less).
 fn answered(cx: &mut Cx, reply: &mut Reply, started: Option<Instant>, failure: Option<String>) {
-    if let Some(key) = cx.idem.take() {
-        key.finish(reply, cx.page_headers());
-    }
     cx.send_headers(&mut reply.headers);
     let method = cx.method.as_str();
     if let Some(started) = started {
@@ -3420,25 +3383,6 @@ fn internal<A: App>(cx: &Cx, path: &str, reply: &mut Reply) -> bool {
         "/_wisp/docs" if docs => (api_docs(), "html", None),
         crate::health::PATH if get => {
             crate::health::answer(reply);
-            return true;
-        }
-        _ if path.starts_with("/_wisp/blob/") || path.starts_with("/_wisp/admin") => {
-            let blob = path.starts_with("/_wisp/blob/");
-            let found = match blob {
-                true => get.then(|| crate::blob::serve(path)).flatten(),
-                false => crate::admin::serve(cx, path),
-            };
-            let Some(res) = found else { return false };
-            let etag = res
-                .headers
-                .iter()
-                .find(|(n, _)| n == "etag")
-                .map(|(_, v)| v.clone());
-            put(cx, reply, res);
-            // A file is the same bytes always: a video can be sought in.
-            if blob && reply.status == 200 {
-                crate::range::apply(cx, reply, etag.as_deref());
-            }
             return true;
         }
         "/_wisp/metrics" if get && crate::obs::serve(cx, reply) => return true,
@@ -4268,7 +4212,6 @@ mod tests {
             ("transfer-encoding", Name::TransferEncoding),
             ("connection", Name::Connection),
             ("expect", Name::Expect),
-            ("idempotency-key", Name::Known(Known::IdempotencyKey)),
             ("if-none-match", Name::Known(Known::IfNoneMatch)),
             ("content-type", Name::Known(Known::ContentType)),
             ("accept", Name::Known(Known::Accept)),

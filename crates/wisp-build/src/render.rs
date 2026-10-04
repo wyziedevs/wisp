@@ -24,7 +24,7 @@ pub(crate) fn html_fn(props: &[PropDecl]) -> String {
 const PRELUDE: &str = "Box Option Result Vec String Some None Ok Err Default Clone Copy
     Send Sync Sized Drop Fn FnMut FnOnce From Into Always Ignore Never Config Cookie CookieOptions
     Cx Email Error FromJson Image Json KB MB Method OrStatus Password Reply Response Rest Row SameSite Shared Table
-    Upload Value RateLimit";
+    Value RateLimit";
 
 /// `pub mod __comps`: each component by name, `Card::html(..)`. A name the
 /// app defines itself wins over the glob import `wisp::app!` makes of these.

@@ -96,6 +96,6 @@ failure the same 400.
 
 ## Not here
 
-Distributed `RateLimit` waits for the relay (S2). Automatic
+Distributed `RateLimit` is not here. Automatic
 `/_wisp/oauth/...` routes need `http.rs`; the two small routes above do the
 same. SMTP, SES.
