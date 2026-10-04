@@ -66,12 +66,12 @@ groups or `noindex` pages; host from env `SITE_URL`, else the request) and
 
 ```rust
 // src/db.rs
-#[model]                       // Json + FromJson + Clone, fields pub
+#[model] // Json + FromJson + Clone, fields pub
 pub struct Todo {
     #[validate(len = 1..=100)]
     text: String,
 }
-pub static TODOS: Table<Todo> = Table::saved();   // "todos"; Table::new() = memory
+pub static TODOS: Table<Todo> = Table::saved(); // "todos"; Table::new() = memory
 ```
 ```html
 ---
@@ -326,15 +326,18 @@ post/put/patch/delete refuse a request another site sent (`Origin`, else
 A whole JSON API, saved across restarts (`src/routes/api/notes/+server.rs`):
 
 ```rust
-#[derive(Rest)]                    // Json + FromJson + Note::table()
-#[rest(write = "API_KEY")]         // writes need Bearer $API_KEY
+#[derive(Rest)] // Json + FromJson + Note::table()
+#[rest(write = "API_KEY")] // writes need Bearer $API_KEY
 struct Note {
     #[validate(len = 1..=200)]
     title: String,
-    done: bool,                    // left out: false; Vec: []; Option: None
-    created_at: String,            // set by Wisp (also updated_at)
+    done: bool,         // left out: false; Vec: []; Option: None
+    created_at: String, // set by Wisp (also updated_at)
 }
-fn before_create(note: &mut Note) -> Result { Ok(()) }  // also before_update, after_*
+// also before_update, after_*
+fn before_create(note: &mut Note) -> Result {
+    Ok(())
+}
 ```
 → GET/POST `/api/notes`, GET/PUT/PATCH/DELETE `/api/notes/[id]`; rows are
 `{"id":1,…}`; 201, 404, 422 by field. Filters, sorting, pages, ETags, ndjson,
@@ -342,9 +345,17 @@ RFC 9457, webhooks, OpenAPI, TypeScript client: https://wispweb.dev/docs/api. A
 handler the file writes replaces that one; by hand:
 
 ```rust
-fn list() -> Vec<Note> { db::all() }                  // GET /api/notes
-fn post(body: New) -> Response { Response::created(&db::add(body)) }
-fn get(id: u64) -> Option<Note> { db::find(id) }      // `id` → /api/notes/[id]
+// GET /api/notes
+fn list() -> Vec<Note> {
+    db::all()
+}
+fn post(body: New) -> Response {
+    Response::created(&db::add(body))
+}
+// `id` → /api/notes/[id]
+fn get(id: u64) -> Option<Note> {
+    db::find(id)
+}
 ```
 `fn before(cx) -> Result` in the file runs before each handler.
 
@@ -365,7 +376,11 @@ files; `wisp::store(MyDb)` in `init` uses any DB; edge: env
 ```rust
 // src/db.rs: a `Password` field and `email` (or `name`) make a #[model] an Account
 #[model]
-pub struct User { #[unique] email: Email, password: Password }
+pub struct User {
+    #[unique]
+    email: Email,
+    password: Password,
+}
 pub static USERS: Table<User> = Table::saved();
 ```
 ```html
@@ -405,12 +420,15 @@ async fn init() -> Result {
     Ok(())
 }
 fn before(cx: &mut Cx) -> Result {
-    cx.cors("*")?;                    // a preflight is the Err that `?` returns
+    cx.cors("*")?; // a preflight is the Err that `?` returns
     Ok(())
 }
-fn after(cx: &mut Cx, reply: &mut Reply) {}   // sync, every reply: headers, logs
-fn report(cx: &mut Cx, err: &Error) {}        // sync, every 5xx: Sentry and the like (handleError)
-fn reroute(path: &str) -> &str { path }       // sync, before routing: return a part of `path`
+fn after(cx: &mut Cx, reply: &mut Reply) {} // sync, every reply: headers, logs
+fn report(cx: &mut Cx, err: &Error) {} // sync, every 5xx: Sentry and the like (handleError)
+// sync, before routing: return a part of `path`
+fn reroute(path: &str) -> &str {
+    path
+}
 ```
 `after`/`report`/`reroute` cost nothing in an app that has none (the build sets
 a const). `wisp::on_fetch(|req| req.header("x-key", K))` in `init` runs on every

@@ -56,12 +56,12 @@ groups or `noindex` pages; host from env `SITE_URL`, else the request) and
 
 ```rust
 // src/db.rs
-#[model]                       // Json + FromJson + Clone, fields pub
+#[model] // Json + FromJson + Clone, fields pub
 pub struct Todo {
     #[validate(len = 1..=100)]
     text: String,
 }
-pub static TODOS: Table<Todo> = Table::saved();   // "todos"; Table::new() = memory
+pub static TODOS: Table<Todo> = Table::saved(); // "todos"; Table::new() = memory
 ```
 ```html
 ---
@@ -316,15 +316,18 @@ post/put/patch/delete refuse a request another site sent (`Origin`, else
 A whole JSON API, saved across restarts (`src/routes/api/notes/+server.rs`):
 
 ```rust
-#[derive(Rest)]                    // Json + FromJson + Note::table()
-#[rest(write = "API_KEY")]         // writes need Bearer $API_KEY
+#[derive(Rest)] // Json + FromJson + Note::table()
+#[rest(write = "API_KEY")] // writes need Bearer $API_KEY
 struct Note {
     #[validate(len = 1..=200)]
     title: String,
-    done: bool,                    // left out: false; Vec: []; Option: None
-    created_at: String,            // set by Wisp (also updated_at)
+    done: bool,         // left out: false; Vec: []; Option: None
+    created_at: String, // set by Wisp (also updated_at)
 }
-fn before_create(note: &mut Note) -> Result { Ok(()) }  // also before_update, after_*
+// also before_update, after_*
+fn before_create(note: &mut Note) -> Result {
+    Ok(())
+}
 ```
 → GET/POST `/api/notes`, GET/PUT/PATCH/DELETE `/api/notes/[id]`; rows are
 `{"id":1,…}`; 201, 404, 422 by field. Filters, sorting, pages, ETags, ndjson,
@@ -332,9 +335,17 @@ RFC 9457, webhooks, OpenAPI, TypeScript client: https://wispweb.dev/docs/api. A
 handler the file writes replaces that one; by hand:
 
 ```rust
-fn list() -> Vec<Note> { db::all() }                  // GET /api/notes
-fn post(body: New) -> Response { Response::created(&db::add(body)) }
-fn get(id: u64) -> Option<Note> { db::find(id) }      // `id` → /api/notes/[id]
+// GET /api/notes
+fn list() -> Vec<Note> {
+    db::all()
+}
+fn post(body: New) -> Response {
+    Response::created(&db::add(body))
+}
+// `id` → /api/notes/[id]
+fn get(id: u64) -> Option<Note> {
+    db::find(id)
+}
 ```
 `fn before(cx) -> Result` in the file runs before each handler.
 
@@ -355,7 +366,11 @@ files; `wisp::store(MyDb)` in `init` uses any DB; edge: env
 ```rust
 // src/db.rs: a `Password` field and `email` (or `name`) make a #[model] an Account
 #[model]
-pub struct User { #[unique] email: Email, password: Password }
+pub struct User {
+    #[unique]
+    email: Email,
+    password: Password,
+}
 pub static USERS: Table<User> = Table::saved();
 ```
 ```html
@@ -395,12 +410,15 @@ async fn init() -> Result {
     Ok(())
 }
 fn before(cx: &mut Cx) -> Result {
-    cx.cors("*")?;                    // a preflight is the Err that `?` returns
+    cx.cors("*")?; // a preflight is the Err that `?` returns
     Ok(())
 }
-fn after(cx: &mut Cx, reply: &mut Reply) {}   // sync, every reply: headers, logs
-fn report(cx: &mut Cx, err: &Error) {}        // sync, every 5xx: Sentry and the like (handleError)
-fn reroute(path: &str) -> &str { path }       // sync, before routing: return a part of `path`
+fn after(cx: &mut Cx, reply: &mut Reply) {} // sync, every reply: headers, logs
+fn report(cx: &mut Cx, err: &Error) {} // sync, every 5xx: Sentry and the like (handleError)
+// sync, before routing: return a part of `path`
+fn reroute(path: &str) -> &str {
+    path
+}
 ```
 `after`/`report`/`reroute` cost nothing in an app that has none (the build sets
 a const). `wisp::on_fetch(|req| req.header("x-key", K))` in `init` runs on every
@@ -561,11 +579,24 @@ A handler with a param `id` in a folder whose URL has none answers at `/[id]` be
 
 ```rust
 // src/routes/api/notes/+server.rs
-fn list() -> Vec<Note> { db::notes() }                        // GET /api/notes
-fn post(body: New) -> Response { Response::created(&db::add(body)) }
-fn get(id: u64) -> Option<Note> { db::note(id) }              // GET /api/notes/7
-fn patch(id: u64, body: Changes) -> Option<Note> { db::change(id, body) }
-fn delete(id: u64) -> Option<()> { db::remove(id) }           // 204, or 404
+// GET /api/notes
+fn list() -> Vec<Note> {
+    db::notes()
+}
+fn post(body: New) -> Response {
+    Response::created(&db::add(body))
+}
+// GET /api/notes/7
+fn get(id: u64) -> Option<Note> {
+    db::note(id)
+}
+fn patch(id: u64, body: Changes) -> Option<Note> {
+    db::change(id, body)
+}
+// 204, or 404
+fn delete(id: u64) -> Option<()> {
+    db::remove(id)
+}
 ```
 
 A folder with its own `[id]` still works; two files answering the same URLs is a build error.
@@ -627,7 +658,9 @@ struct Note {
 ```rust
 fn before_create(note: &mut Note) -> Result {
     note.title = note.title.trim().to_string();
-    if note.title == "admin" { return invalid("title", "is reserved"); }
+    if note.title == "admin" {
+        return invalid("title", "is reserved");
+    }
     Ok(())
 }
 fn after_update(note: &Row<Note>) {
@@ -740,7 +773,9 @@ Guards go in `before` (hooks.rs: every route; `+server.rs`: each handler); hand 
 fn before(cx: &mut Cx) -> Result<()> {
     if cx.path().starts_with("/api/admin/") {
         let user = users::by_token(cx.bearer().unwrap_or("")).or_status(401)?;
-        if !user.admin { return error(403, "Admins only"); }
+        if !user.admin {
+            return error(403, "Admins only");
+        }
         cx.set(user); // a route reads it with cx.get::<User>()
     }
     Ok(())
@@ -765,10 +800,16 @@ fn post(cx: &mut Cx, name: String, password: String) -> Result<()> {
 ## Live Updates
 
 ```rust
-wisp::channel("notes").send(wisp::to_json(&note));     // anywhere
+wisp::channel("notes").send(wisp::to_json(&note)); // anywhere
 
-fn get() -> Response { wisp::channel("notes").events() }       // SSE
-fn get() -> Response { wisp::channel("chat").websocket() }     // both ways
+// SSE
+fn get() -> Response {
+    wisp::channel("notes").events()
+}
+// both ways
+fn get() -> Response {
+    wisp::channel("chat").websocket()
+}
 ```
 
 - `subscribe()` (`recv().await`) feeds your own `Response::events` or `websocket`; `connect(&ws)` joins an existing socket.
@@ -779,7 +820,9 @@ fn get() -> Response { wisp::channel("chat").websocket() }     // both ways
 ```rust
 // src/hooks.rs
 fn init() {
-    wisp::every(Duration::from_secs(3600), || async { db::delete_expired_sessions().await; });
+    wisp::every(Duration::from_secs(3600), || async {
+        db::delete_expired_sessions().await;
+    });
 }
 ```
 
@@ -795,8 +838,8 @@ fn init() {
 No database layer: open in `init`, `provide`, read with `state`.
 
 ```rust
-wisp::provide(sqlx::PgPool::connect(&url).await?)   // in `async fn init`
-wisp::state::<sqlx::PgPool>()                        // in a handler
+wisp::provide(sqlx::PgPool::connect(&url).await?) // in `async fn init`
+wisp::state::<sqlx::PgPool>() // in a handler
 ```
 
 - rusqlite is sync: provide a `Mutex<Connection>`, hold the lock briefly or `spawn_blocking`.
@@ -899,8 +942,13 @@ fn get() -> Response {
     Response::ndjson(|out| async move {
         for page in 0.. {
             let rows = db::page(page).await;
-            if rows.is_empty() { break; }
-            for row in rows { out.line(&row).await?; } // stops once the client left
+            if rows.is_empty() {
+                break;
+            }
+            // stops once the client left
+            for row in rows {
+                out.line(&row).await?;
+            }
         }
         Ok(())
     })
@@ -963,14 +1011,14 @@ Beyond `cx.login`, `cx.user` and sessions. Everything here is opt-in: an app tha
 ## Roles and CORS
 
 ```rust
-let admin = cx.need(&USERS, |u| u.admin)?;   // Row<User>
+let admin = cx.need(&USERS, |u| u.admin)?; // Row<User>
 ```
 
 Signed out is `cx.user`'s error (303 to sign in, 401 for a JSON client); signed in but not allowed is a 403.
 
 ```rust
 fn before(cx: &mut Cx) -> Result {
-    cx.cors("*")?;           // or "https://app.example.com https://x.com"
+    cx.cors("*")?; // or "https://app.example.com https://x.com"
     Ok(())
 }
 ```
@@ -981,7 +1029,7 @@ A preflight is answered with a 204 and the headers, carried as the `Err` that `?
 
 ```rust
 let t = wisp::token("reset", &user.id, Duration::from_secs(3600));
-let id: u64 = wisp::untoken("reset", &t)?;   // 400 for any failure, the same one
+let id: u64 = wisp::untoken("reset", &t)?; // 400 for any failure, the same one
 ```
 
 - HMAC-SHA256 under `WISP_SECRET` (and `WISP_SECRET_OLD`) over purpose, payload and expiry. A purpose of `""` is none.
@@ -991,10 +1039,10 @@ let id: u64 = wisp::untoken("reset", &t)?;   // 400 for any failure, the same on
 ## Two-Factor Codes
 
 ```rust
-let secret = wisp::totp::secret();                       // keep with the user
+let secret = wisp::totp::secret(); // keep with the user
 let uri = wisp::totp::uri("My App", &user.email, &secret); // QR code or text
-wisp::totp::check(&user.totp, &code)                     // ±1 step (30 s)
-wisp::totp::check_step(..)                               // the step, to refuse a replay
+wisp::totp::check(&user.totp, &code) // ±1 step (30 s)
+wisp::totp::check_step(..) // the step, to refuse a replay
 ```
 
 RFC 6238, SHA-1, six digits. Six digits can be guessed: put a `RateLimit` on the check, by user.
@@ -1005,7 +1053,7 @@ RFC 6238, SHA-1, six digits. Six digits can be guessed: put a `RateLimit` on the
 let mut req = wisp::Request::new("POST", "https://api.example.com/rows");
 req.header("authorization", &format!("Bearer {key}"));
 req.body = json.into_bytes();
-let reply = wisp::fetch(req).await?;      // reply.status, reply.text()
+let reply = wisp::fetch(req).await?; // reply.status, reply.text()
 ```
 
 - `http://` works as is. `https://` needs the `tls` feature (`wisp = { version = "..", features = ["tls"] }`: rustls and the web's root certificates, no OpenSSL).
@@ -1020,12 +1068,17 @@ Not built in: send mail from an action with `wisp::fetch` or any HTTP client.
 
 ```rust
 // src/routes/auth/github/+server.rs
-fn get(cx: &mut Cx) -> Result { wisp::oauth::github().start(cx) }
+fn get(cx: &mut Cx) -> Result {
+    wisp::oauth::github().start(cx)
+}
 
 // src/routes/auth/github/callback/+server.rs
 async fn get(cx: &mut Cx) -> Result {
-    let who = wisp::oauth::github().finish(cx).await?;   // id, email (verified only), name
-    let id = match USERS.find(|u| u.github == who.id) { Some(u) => u.id, None => /* sign up */ };
+    let who = wisp::oauth::github().finish(cx).await?; // id, email (verified only), name
+    let id = match USERS.find(|u| u.github == who.id) {
+        Some(u) => u.id,
+        None => /* sign up */,
+    };
     cx.sign_in(id);
     redirect("/")
 }
@@ -1344,7 +1397,9 @@ A page ships JS only for files with client code; a component can wait:
 `wisp add react react-dom react-switch` (framework first), then:
 
 ```html
-<Island of="react:react-switch" client:visible
+<Island
+  of="react:react-switch"
+  client:visible
   props={:{ checked: on, onChange: (v) => (on = v) }} />
 <p>{:on ? 'On' : 'Off'}</p>
 <script>
@@ -1584,6 +1639,7 @@ fn user(id: u64) -> Result<User> {
     USERS.get(id).map(|r| r.value).or_404()
 }
 ---
+
 <button on:click="user(5).then((u) => (name = u.name))">Load</button>
 <p>{:name}</p>
 <script>
@@ -1787,9 +1843,9 @@ Everything here is opt-in: an app that uses none of it pays nothing.
 ```rust
 // src/db.rs
 pub static USERS: Table<User> = Table::saved("users")
-    .unique("email", |u: &User| &u.email)   // no two rows share it
-    .migrate(|row| rename(row, "mail", "email"))  // old rows, as they are read
-    .live();                                 // each change is sent on channel "users"
+    .unique("email", |u: &User| &u.email) // no two rows share it
+    .migrate(|row| rename(row, "mail", "email")) // old rows, as they are read
+    .live(); // each change is sent on channel "users"
 ```
 
 - `set(id, v) -> Option<()>` replaces a row; `clear()` takes every row out (ids are not given again).
@@ -1812,9 +1868,9 @@ pub static USERS: Table<User> = Table::saved("users")
 ```rust
 // init
 wisp::work("mail", |m: Mail| async move { send(&m).await });
-wisp::cron("0 3 * * *", || async { purge().await });  // UTC
+wisp::cron("0 3 * * *", || async { purge().await }); // UTC
 // anywhere
-wisp::queue("mail").push(&Mail { to, body });         // .later(secs, &job)
+wisp::queue("mail").push(&Mail { to, body }); // .later(secs, &job)
 ```
 
 - Jobs live in the saved table `queue-mail`. A failure (`Err` or a panic) is tried again after 4, 8, 16... seconds (an hour at most), five tries; then it stays `dead` with its last error (`queue.dead()`, `queue.retry(id)`).
@@ -1883,7 +1939,10 @@ fn entries() -> Vec<&'static str> {
 ```html
 ---
 const PRERENDER: bool = true;
-fn entries() -> Vec<&'static str> { vec!["hello", "second-post"] }  // with [params]
+// with [params]
+fn entries() -> Vec<&'static str> {
+    vec!["hello", "second-post"]
+}
 let post = db::post(&slug).await?;
 ---
 ```
@@ -1969,7 +2028,7 @@ Wrong or missing key: 401. `METRICS_KEY` unset: 404. Prometheus scrape config: `
 
 ```rust
 let _s = wisp::span("charge card"); // child span until dropped
-let t = wisp::traceparent();        // Some("00-…-01"): header for a downstream call
+let t = wisp::traceparent(); // Some("00-…-01"): header for a downstream call
 ```
 
 
@@ -2010,7 +2069,7 @@ Vercel and Netlify Edge: add `--edge` (`--target vercel --edge`, `--target netli
 Per route (Vercel, Netlify): a route runs on the edge when its `+page.rs` or `+server.rs` says so; the rest stay on the Node function.
 
 ```rust
-const RUNTIME: wisp::Runtime = wisp::Runtime::Edge;   // default: Node
+const RUNTIME: wisp::Runtime = wisp::Runtime::Edge; // default: Node
 ```
 
 - With any Edge route, `wisp build --target vercel` (or `netlify`) writes both functions from the one app (the edge one at `opt-level = "s"`) and routes each pattern to its own: `edge.func` beside `index.func` in `config.json`, or the edge function's `path` list. `static/` stays the CDN's.
@@ -2091,7 +2150,10 @@ No threads, sockets or files.
 
 ```rust
 let mut req = wisp::Request::new("POST", "https://api.example.com/rows");
-req.header("authorization", &format!("Bearer {}", wisp::env("API_KEY").unwrap_or_default()));
+req.header(
+    "authorization",
+    &format!("Bearer {}", wisp::env("API_KEY").unwrap_or_default()),
+);
 req.body = json.into_bytes();
 let reply = wisp::edge::fetch(req).await?;
 ```
@@ -2535,10 +2597,14 @@ All build-time, a const or a cold path: a request that uses none of them runs no
 
 ```rust
 #[action]
-fn add(#[validate(len = 1..=100)] text: String) { /* ... */ }
+fn add(#[validate(len = 1..=100)] text: String) {
+    /* ... */
+}
 
 #[action]
-fn remove(id: u64) { /* ... */ }
+fn remove(id: u64) {
+    /* ... */
+}
 ```
 
 ## Actions
@@ -2717,6 +2783,7 @@ fn signup(name: String, email: Email) {
     redirect("/welcome")
 }
 ---
+
 <form action="?/signup">
   <input name="name">
   <input name="email">
@@ -2895,7 +2962,11 @@ Generated code implements one trait:
 ```rust
 pub trait App: 'static {
     fn init() -> impl Future<Output = Result<()>>;
-    fn handle(route: Option<usize>, cx: &mut Cx, out: &mut Out) -> impl Future<Output = Result<()>> + Send;
+    fn handle(
+        route: Option<usize>,
+        cx: &mut Cx,
+        out: &mut Out,
+    ) -> impl Future<Output = Result<()>> + Send;
     fn body_limit(route: usize) -> Option<usize>;
     // + static tables: shell, assets, templates (dev)
 }
@@ -2935,13 +3006,13 @@ Because the build sees every route and template:
 <!-- docs/design-sessions.md -->
 
 ```rust
-cx.set_cookie("theme", "dark");           // 400 days, HttpOnly, SameSite=Lax
+cx.set_cookie("theme", "dark"); // 400 days, HttpOnly, SameSite=Lax
 let theme = cx.cookie_or("theme", "light".to_string());
 
-cx.set_signed_cookie("user", name);       // HMAC-SHA256, needs WISP_SECRET
-let who = cx.signed_cookie("user");       // Some only if the signature holds
+cx.set_signed_cookie("user", name); // HMAC-SHA256, needs WISP_SECRET
+let who = cx.signed_cookie("user"); // Some only if the signature holds
 
-let me = cx.user()?;                      // members' page: signed-in row or redirect
+let me = cx.user()?; // members' page: signed-in row or redirect
 ```
 
 ## Cookies
@@ -3139,8 +3210,8 @@ Browser reactivity is in [client](/docs/client/): a bare `<script>` per file, di
 {/if}
 
 {#match data.status}
-  {:case Status::Draft} <span>draft</span>
-  {:case Status::Live(date)} <time>{date}</time>
+{:case Status::Draft} <span>draft</span>
+{:case Status::Live(date)} <time>{date}</time>
 {/match}
 
 {@const total = data.posts.len()}
@@ -3243,8 +3314,12 @@ Markup a file renders more than once, or gives to a component:
 ```html
 <h1>Hi</h1>
 <style>
-  h1, .lead { color: rebeccapurple }
-  :global(body) { margin: 0 }
+  h1, .lead {
+    color: rebeccapurple
+  }
+  :global(body) {
+    margin: 0
+  }
 </style>
 ```
 
@@ -3281,11 +3356,15 @@ pub async fn open() -> Result {
     wisp::provide(Pool::connect(&url).await?);
     Ok(())
 }
-pub fn pool() -> &'static Pool { wisp::state::<Pool>() }
+pub fn pool() -> &'static Pool {
+    wisp::state::<Pool>()
+}
 
 // add/sqlite/src/routes/api/time/+server.rs
 async fn get() -> Result<Response> {
-    let (now,): (String,) = sqlx::query_as("select datetime('now')").fetch_one(pool()).await?;
+    let (now,): (String,) = sqlx::query_as("select datetime('now')")
+        .fetch_one(pool())
+        .await?;
     Ok(Response::text(now))
 }
 ```
@@ -3417,10 +3496,10 @@ The app is a function from request to reply.
 ## In Process
 
 ```rust
-wisp::prepare::<App>().await?;                        // runs `init`, once
+wisp::prepare::<App>().await?; // runs `init`, once
 let mut req = wisp::Request::new("GET", "/posts?page=2");
 req.header("accept", "text/html");
-let reply = wisp::handle::<App>(req).await;           // reply.status, .headers (Vec<(name, value)>), .body (wisp::Body)
+let reply = wisp::handle::<App>(req).await; // reply.status, .headers (Vec<(name, value)>), .body (wisp::Body)
 ```
 
 Same parser, limits, hooks and CSRF check as the server.
@@ -3462,7 +3541,7 @@ A `+server.rs` upgrades with `Response::websocket`; the connection closes when t
 fn get() -> Response {
     Response::websocket(|ws| async move {
         while let Some(msg) = ws.recv().await {
-            ws.send(msg).await?;          // a String is text, a Vec<u8> binary
+            ws.send(msg).await?; // a String is text, a Vec<u8> binary
         }
         Ok(())
     })
@@ -3488,7 +3567,7 @@ wisp = { git = "https://wisp.ar0.eu", features = ["tower"] }
 ```
 
 ```rust
-let wisp = wisp::tower::service::<App>().await?;   // Service<http::Request<B>>
+let wisp = wisp::tower::service::<App>().await?; // Service<http::Request<B>>
 ```
 
 axum answers its own routes, Wisp the rest (`examples/axum`):
@@ -3501,7 +3580,10 @@ async fn main() -> std::io::Result<()> {
     let listener = tokio::net::TcpListener::bind(wisp::address()).await?;
     let wisp = wisp::tower::service::<App>().await?;
     let app = axum::Router::new()
-        .route("/api/hello", axum::routing::get(|| async { "hello from axum" }))
+        .route(
+            "/api/hello",
+            axum::routing::get(|| async { "hello from axum" }),
+        )
         .fallback_service(wisp);
     axum::serve(listener, app).await
 }
@@ -3537,7 +3619,7 @@ Send paths to an axum `Router` from `before` (or a catch-all `+server.rs`). `bef
 // src/hooks.rs
 async fn before(cx: &mut Cx) -> Result<Option<Response>> {
     if cx.path().starts_with("/api") {
-        let mut api = api_router();                      // an axum::Router
+        let mut api = api_router(); // an axum::Router
         return Ok(Some(wisp::tower::call(&mut api, cx).await?));
     }
     Ok(None)
@@ -4384,6 +4466,7 @@ A page is a `.wisp` file. It may start with a block of Rust between two `---` li
 ---
 let name: String = cx.query_or("name", "world".to_string());
 ---
+
 <h1>Hello, {name}!</h1>
 ```
 
@@ -4469,6 +4552,7 @@ fn sign(entry: Entry) {
     redirect("/")
 }
 ---
+
 <form action="?/sign" fields>
   <button>Sign</button>
 </form>
@@ -4498,6 +4582,7 @@ Read and change it from any page:
 ---
 let entries = ENTRIES.all();
 ---
+
 <title>Guestbook ({entries.len()})</title>
 {#each entries.iter().rev() as entry}
   <Note name={entry.name.as_str()} message={entry.message.as_str()} />
@@ -4787,6 +4872,7 @@ fn sign(entry: Entry) {
     redirect("/")
 }
 ---
+
 <title>Guestbook</title>
 
 <h1>Guestbook</h1>
@@ -4823,6 +4909,7 @@ fn sign(entry: Entry) {
 
 let entries = ENTRIES.all();
 ---
+
 <title>Guestbook ({entries.len()})</title>
 
 <h1>Guestbook</h1>
@@ -5077,6 +5164,7 @@ Make the folder `src/routes/notes/[id=int]` and put a page in it. A folder named
 ---
 let note = ENTRIES.get(id).or_404()?;
 ---
+
 <title>{note.name}</title>
 
 <h1>{note.name}</h1>
