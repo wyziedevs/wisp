@@ -51,7 +51,7 @@ fn edge_app(package: &str) -> Option<PathBuf> {
         return None;
     }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let out = std::env::temp_dir().join(format!("wisp-fast-{}", std::process::id()));
+    let out = std::env::temp_dir().join(format!("wisp-fast-{package}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&out);
     std::fs::create_dir_all(&out).ok()?;
     let put = |from: PathBuf, to: &str| std::fs::copy(from, out.join(to)).expect(to);
