@@ -21,6 +21,7 @@ mod og;
 mod recipe;
 mod routes_cmd;
 mod scaffold;
+mod service;
 mod targets;
 #[cfg(test)]
 mod template_files;
@@ -33,7 +34,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 /// `wisp --help`: each command or option, and what it does.
-const COMMANDS: [(&str, &str); 27] = [
+const COMMANDS: [(&str, &str); 28] = [
     (
         "wisp new [name]",
         "Create an app. It asks a few questions; the options below answer them.",
@@ -125,6 +126,10 @@ const COMMANDS: [(&str, &str); 27] = [
     ),
     ("wisp ui list", "Name the components wisp ui add has."),
     (
+        "wisp service install|uninstall|start|stop|status [--user u] [--port n] [--dry-run]",
+        "Run the built release binary as a systemd, launchd or Windows startup service.",
+    ),
+    (
         "wisp lsp",
         "Run the language server for editors, over stdio (editors/README.md: setup per editor).",
     ),
@@ -196,6 +201,7 @@ fn main() -> ExitCode {
             Some("fly" | "render" | "railway") => scaffold::deploy(root, &args[1..]),
             _ => ci::run(root, &args[1..]),
         }),
+        Some("service") => project().and_then(|root| service::run(root, &args[1..])),
         Some("routes") => project().and_then(|root| routes_cmd::list(root, &args[1..])),
         Some("new-route") => project().and_then(|root| routes_cmd::new_route(root, &args[1..])),
         Some("check") => check_types(&args[1..]).and_then(|types| {
