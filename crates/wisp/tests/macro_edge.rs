@@ -81,8 +81,8 @@ fn turbofish(flag: bool) {
 fn unit<A, B>() {}
 
 #[wisp::action]
-fn turbofish_comma() {
-    if unit::<u8, u8> as usize == 0 {
+fn turbofish_comma(flag: bool) {
+    if flag {
         return unit::<u8, u8>();
     }
 }
@@ -97,5 +97,5 @@ fn actions_keep_their_returns() {
     assert!(turbofish(true).is_ok());
     assert!(turbofish(false).is_ok());
     assert!(generic_bound(|x| x).is_ok());
-    assert!(turbofish_comma().is_ok());
+    assert!(turbofish_comma(true).is_ok());
 }
