@@ -7,7 +7,7 @@
 //! checked by their tests. Nothing is encrypted: a signed cookie's value is
 //! readable, only not forgeable.
 
-use crate::cx::hex_digit;
+use crate::codec::hex_digit;
 use std::cell::RefCell;
 use std::path::Path;
 use std::sync::OnceLock;

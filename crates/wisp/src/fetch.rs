@@ -171,7 +171,7 @@ impl Url {
         w.push_str(&format!("host: {host}\r\nconnection: close\r\n"));
         let mut agent = false;
         for (n, v) in &req.headers {
-            if !crate::cx::valid_header(n, v) {
+            if !crate::codec::valid_header(n, v) {
                 return None;
             }
             // Framing is Wisp's: an app's own would contradict it.
