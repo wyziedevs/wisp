@@ -1,7 +1,7 @@
 // Drives bridge.js with a fake instance, which answers each request with the
 // head and body its first request line asks for: `GET /<status>` answers that
 // status with a text body of "x" (an empty one for a status that has none).
-import { wisp } from '../../src/targets/bridge.js';
+import { put, wisp } from '../../src/targets/bridge.js';
 
 const enc = new TextEncoder();
 const targets = [];
@@ -70,6 +70,17 @@ await new Promise((r) => setTimeout(r, 50));
 crypto.getRandomValues = random;
 if (envs.length !== 1 || !envs[0].split('\0').includes('WISP_WARM_UP=1')) bad.push(`warm-up env: ${JSON.stringify(envs)}`);
 if (targets.join() !== '/') bad.push(`warm-up requests: ${targets}`);
+// A host's socket that takes only 1000 and 3000 to 4999 (Deno's): a close
+// for a message too big is 4009, never a normal 1000.
+const closed = [];
+const deno = { send() {}, close(code, reason) {
+  if (code !== 1000 && (code < 3000 || code > 4999)) throw new Error('InvalidAccessError');
+  closed.push(`${code} ${reason ?? ''}`.trim());
+} };
+put(deno, 8, new Uint8Array([0x03, 0xf1]));
+put(deno, 8, new Uint8Array([0x03, 0xe8]));
+put(deno, 8, new Uint8Array([0x0f, 0xa0, 0x78]));
+if (closed.join() !== '4009,1000,4000 x') bad.push(`Deno closes: ${closed}`);
 if (bad.length) {
   console.error(bad.join('\n'));
   process.exit(1);
