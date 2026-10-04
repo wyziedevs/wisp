@@ -246,6 +246,18 @@ No threads, sockets or files:
 - `Response::websocket` is 501 on every edge target (and `tower`); use SSE.
 - `wisp::channel`, `wisp::every`, `RateLimit` are not in the edge build (it
   won't compile with them): use the host's queues, cron, rate limiting.
+- Jobs: `wisp::cron` and `wisp::work` are the same code on every host.
+  `wisp build` reads each `wisp::cron("0 3 * * *", ..)` of `src/` (the
+  schedule must be a string literal) and writes the host's trigger: Cloudflare
+  `[triggers] crons` in wrangler.toml, Vercel `crons` in config.json, a
+  Netlify scheduled function a schedule. A trigger asks the app for
+  `/_wisp/cron/<schedule>` with `Authorization: Bearer $CRON_SECRET` (set it
+  as a host secret; without it the address is 404), which runs the tasks of
+  that schedule and then every queue's due jobs: an app with `work` gets a
+  trigger each minute (Vercel's Hobby plan allows daily ones only). The
+  queue is a table, so queued jobs need `WISP_STORE`. Pages, Deno, Node, Bun,
+  Lambda and Netlify `--edge` have no trigger to write: the build says so and
+  stops; run the binary or Docker, which run jobs themselves.
 - Outbound HTTP via `wisp::edge::fetch`:
 
   ```rust

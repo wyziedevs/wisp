@@ -281,9 +281,24 @@ export function wisp(module, env = {}, sink) {
     };
     // `text` into the app's memory at `out` when it fits in `cap`; its length.
     const give = (text, out, cap) => {
-      const b = enc.encode(text);
-      if (b.length <= cap) mem().set(b, out);
-      return b.length;
+      const m = mem();
+      if (cap >= text.length) {
+        // Written in place when it fits (each UTF-16 unit takes at most 3 bytes: retry if short).
+        const { read, written } = enc.encodeInto(text, m.subarray(out, out + cap));
+        if (read === text.length) return written;
+      }
+      return enc.encode(text).length;
+    };
+    // A header name in the app's memory: ASCII is read a byte at a time (quicker than a TextDecoder).
+    const named = (p, n) => {
+      const m = mem();
+      let s = '';
+      for (let i = 0; i < n; i++) {
+        const c = m[p + i];
+        if (c > 127) return dec.decode(m.subarray(p, p + n));
+        s += String.fromCharCode(c);
+      }
+      return s;
     };
     x.idle = () => (x.work ? new Promise((r) => x.idlers.push(r)) : settled);
     // Runs `f` once `promise` settles, counted as work until then.
@@ -376,7 +391,7 @@ export function wisp(module, env = {}, sink) {
         header: (id, np, nn, out, cap) => {
           let v = null;
           try {
-            v = x.asked.get(id)?.headers.get(dec.decode(mem().subarray(np, np + nn))) ?? null;
+            v = x.asked.get(id)?.headers.get(named(np, nn)) ?? null;
           } catch {} // not a header's name
           return v === null ? 0xffffffff : give(v, out, cap);
         },

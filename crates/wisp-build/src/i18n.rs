@@ -2,7 +2,15 @@
 //! against each other (the same keys, the same placeholders), and each
 //! `t("key", args)` of a template checked against them and compiled to an
 //! index into a table, per locale, of the message as parts. A missing key,
-//! an unknown one or a placeholder that differs is a build error.
+//! an unknown one or a placeholder that differs is a build error, unless
+//! `missing warn` (below) lets another locale fall back to the default's.
+//!
+//! The URLs' side is `i18n = [...]` in `[package.metadata.wisp]`, strings
+//! of `name value`: `default fr` (the locale a request gets that names
+//! none), `prefix always|as-needed|optional` (how `[[lang=locale]]` shows
+//! in URLs, `wisp::Prefix`), `domain example.fr fr` (a host's locale, one
+//! per line) and `missing warn|error` (a locale without a key the default
+//! has: a warning and the default's message, or the build error).
 //!
 //! A message is text with ICU's `{name}` and `{count, plural, one {# item}
 //! other {# items}}` (cases `=N` and the locale's CLDR ones, `other`
@@ -22,6 +30,59 @@ pub struct Locales {
     rules: Vec<u8>,
     /// Sorted by name.
     keys: Vec<Key>,
+    /// The locale a request gets that names none, by index.
+    pub default: usize,
+    /// `wisp::Prefix` as a number: 0 optional, 1 always, 2 as-needed.
+    pub prefix: u8,
+    /// Each domain and its locale's index.
+    pub domains: Vec<(String, usize)>,
+    /// What `missing warn` let through: file, line and what.
+    pub warnings: Vec<(String, u32, String)>,
+}
+
+/// `i18n = [...]` of the app's Cargo.toml.
+#[derive(Default)]
+struct Settings {
+    default: Option<String>,
+    prefix: u8,
+    domains: Vec<(String, String)>,
+    warn: bool,
+}
+
+/// The `Settings` of `toml`: each string `name value`, checked.
+fn settings(toml: &str) -> Result<Settings, String> {
+    let mut s = Settings::default();
+    for e in crate::config::strings(toml, "i18n")? {
+        let at = |m: &str| format!("Cargo.toml: i18n = [\"{e}\"]: {m}");
+        let w: Vec<&str> = e.split_whitespace().collect();
+        match w[..] {
+            ["default", l] => s.default = Some(l.into()),
+            ["prefix", "optional"] => s.prefix = 0,
+            ["prefix", "always"] => s.prefix = 1,
+            ["prefix", "as-needed"] => s.prefix = 2,
+            ["prefix", _] => return Err(at("the prefix is optional, always or as-needed")),
+            ["domain", host, l] => {
+                let ok = host
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b".-:".contains(&b));
+                if !ok {
+                    return Err(at(
+                        "a domain is a host name, `example.fr` or `localhost:3000`",
+                    ));
+                }
+                s.domains.push((host.to_ascii_lowercase(), l.into()));
+            }
+            ["missing", "warn"] => s.warn = true,
+            ["missing", "error"] => s.warn = false,
+            ["missing", _] => return Err(at("missing is warn or error")),
+            _ => {
+                return Err(at(
+                    "write `default fr`, `prefix always`, `domain example.fr fr` or `missing warn`",
+                ));
+            }
+        }
+    }
+    Ok(s)
 }
 
 struct Key {
@@ -33,14 +94,14 @@ struct Key {
     msgs: Vec<Vec<Part>>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 enum Part {
     Text(String),
     Arg(String),
     Plural(String, Vec<(Case, Vec<Part>)>),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 enum Case {
     Is(u64),
     Cat(u8),
@@ -75,11 +136,12 @@ pub fn load(root: &Path) -> Result<Option<Locales>, String> {
         return Ok(None);
     }
     files.sort();
-    parse(&files).map(Some)
+    let toml = std::fs::read_to_string(root.join("Cargo.toml")).unwrap_or_default();
+    parse(&files, &settings(&toml)?).map(Some)
 }
 
 /// The locales of `files`, `(name, text)` sorted by name.
-fn parse(files: &[(String, String)]) -> Result<Locales, String> {
+fn parse(files: &[(String, String)], set: &Settings) -> Result<Locales, String> {
     let rel = |k: usize| format!("src/locales/{}.json", files[k].0);
     // Per locale: (key, its message, line).
     let mut all: Vec<Vec<(String, Vec<Part>, u32)>> = Vec::new();
@@ -103,6 +165,38 @@ fn parse(files: &[(String, String)]) -> Result<Locales, String> {
             ));
         }
         all.push(msgs);
+    }
+    let index = |name: &str| files.iter().position(|f| f.0 == name);
+    let default = match &set.default {
+        None => 0,
+        Some(d) => index(d)
+            .ok_or_else(|| format!("Cargo.toml: i18n default {d}: no src/locales/{d}.json"))?,
+    };
+    let mut domains = Vec::new();
+    for (host, l) in &set.domains {
+        let i = index(l).ok_or_else(|| {
+            format!("Cargo.toml: i18n domain {host} {l}: no src/locales/{l}.json")
+        })?;
+        domains.push((host.clone(), i));
+    }
+    // `missing warn`: what a locale lacks, it takes from the default.
+    let mut warnings = Vec::new();
+    if set.warn {
+        let base = all[default].clone();
+        for (k, msgs) in all.iter_mut().enumerate().filter(|(k, _)| *k != default) {
+            let lacks =
+                |m: &&(String, Vec<Part>, u32)| msgs.binary_search_by(|x| x.0.cmp(&m.0)).is_err();
+            let lacking: Vec<_> = base.iter().filter(lacks).cloned().collect();
+            for (key, _, line) in &lacking {
+                let text = format!(
+                    "\"{key}\" is missing: {} has it, and answers for this locale",
+                    rel(default)
+                );
+                warnings.push((rel(k), *line, text));
+            }
+            msgs.extend(lacking);
+            msgs.sort_by(|a, b| a.0.cmp(&b.0));
+        }
     }
     // Every locale has every key.
     for (k, msgs) in all.iter().enumerate() {
@@ -167,6 +261,10 @@ fn parse(files: &[(String, String)]) -> Result<Locales, String> {
         names: files.iter().map(|(n, _)| n.clone()).collect(),
         rules,
         keys,
+        default,
+        prefix: set.prefix,
+        domains,
+        warnings,
     })
 }
 
@@ -507,6 +605,43 @@ pub fn with_lang(shell: &str, lang: &str) -> String {
 }
 
 impl Locales {
+    /// `const HTML_LANGS`: what goes in the shell's `<html lang="…">` per
+    /// locale. A right-to-left one carries its `dir` too, unless the shell
+    /// has one (`ar" dir="rtl` closes the quote the shell opened).
+    /// `None` with no such locale (`App::HTML_LANGS` is `LOCALES` then).
+    pub fn html_langs(&self, shell: &str) -> Option<String> {
+        let tag = shell.find("<html").map_or("", |at| &shell[at..]);
+        let tag = &tag[..tag.find('>').unwrap_or(tag.len())];
+        let rtl = |n: &String| wisp_shared::dir::is_rtl(n) && !tag.contains(" dir=");
+        if !self.names.iter().any(rtl) {
+            return None;
+        }
+        let langs: Vec<String> = (self.names.iter())
+            .map(|n| match rtl(n) {
+                true => lit(&format!("{n}\" dir=\"rtl")),
+                false => lit(n),
+            })
+            .collect();
+        Some(format!(
+            "const HTML_LANGS: &'static [&'static str] = &[{}];",
+            langs.join(", ")
+        ))
+    }
+
+    /// The call `init` makes first: the default locale, prefix and domains
+    /// of `i18n = [...]` (see the top of this file).
+    pub fn config(&self) -> String {
+        let domains: Vec<String> = (self.domains.iter())
+            .map(|(h, i)| format!("({}, {i})", lit(h)))
+            .collect();
+        format!(
+            "::wisp::rt::locale_setup({}, {}, &[{}]);",
+            self.default,
+            self.prefix,
+            domains.join(", ")
+        )
+    }
+
     /// How many keys there are.
     pub fn key_count(&self) -> usize {
         self.keys.len()
@@ -843,7 +978,7 @@ mod tests {
             .iter()
             .map(|(n, t)| (n.to_string(), t.to_string()))
             .collect();
-        parse(&files)
+        parse(&files, &Settings::default())
     }
 
     const EN: &str = "{\n  \"hi\": \"Hello, {name}!\",\n  \"cart\": {\n    \"items\": \"{count, plural, =0 {No items} one {# item} other {# items}}\",\n    \"title\": \"Cart\"\n  }\n}\n";
@@ -915,6 +1050,71 @@ mod tests {
                 .err()
                 .unwrap()
                 .contains("there twice")
+        );
+    }
+
+    #[test]
+    fn settings_and_fallback() {
+        let toml = "[package]\nname = \"a\"\n[package.metadata.wisp]\ni18n = [\n \"default fr\", \"prefix as-needed\",\n \"domain Example.FR fr\", \"missing warn\",\n]\n";
+        let set = settings(toml).unwrap();
+        assert_eq!(set.default.as_deref(), Some("fr"));
+        assert!(set.warn && set.prefix == 2);
+        // A locale without a key takes the default's, and a warning says so.
+        let files = [
+            ("ar", "{\"hi\": \"Marhaba {name}\"}"),
+            ("fr", FR),
+            ("en", EN),
+        ];
+        let mut files: Vec<(String, String)> = (files.iter())
+            .map(|(n, t)| (n.to_string(), t.to_string()))
+            .collect();
+        files.sort();
+        let l = parse(&files, &set).unwrap();
+        assert_eq!((l.default, l.prefix), (2, 2));
+        assert_eq!(l.domains, [("example.fr".to_string(), 2)]);
+        assert_eq!(l.warnings.len(), 2);
+        assert_eq!(l.warnings[0].0, "src/locales/ar.json");
+        assert!(l.warnings[0].2.contains("src/locales/fr.json has it"));
+        let items = l.key("cart.items").unwrap();
+        assert_eq!(l.keys[items].msgs[0], l.keys[items].msgs[2]);
+        // Without `missing warn` it is the build error it was.
+        let strict = settings("[package.metadata.wisp]\ni18n = [\"prefix always\"]\n").unwrap();
+        assert!(
+            parse(&files, &strict)
+                .err()
+                .unwrap()
+                .contains("every locale needs every key")
+        );
+        // Mistakes are said where they are made.
+        for (bad, says) in [
+            ("\"prefix never\"", "optional, always or as-needed"),
+            ("\"domain a b c\"", "write `default fr`"),
+            ("\"domain a/b fr\"", "host name"),
+            ("\"missing maybe\"", "warn or error"),
+        ] {
+            let toml = format!("[package.metadata.wisp]\ni18n = [{bad}]\n");
+            assert!(settings(&toml).err().unwrap().contains(says), "{bad}");
+        }
+        let lost = Settings {
+            default: Some("de".into()),
+            ..Settings::default()
+        };
+        assert!(
+            parse(&files, &lost)
+                .err()
+                .unwrap()
+                .contains("no src/locales/de.json")
+        );
+        // `<html dir>`: a right-to-left locale carries it, unless the shell does.
+        let shell = "<html lang=\"en\">";
+        let langs = l.html_langs(shell).unwrap();
+        assert!(langs.contains("\"ar\\\" dir=\\\"rtl\""), "{langs}");
+        assert!(l.html_langs("<html lang=\"en\" dir=\"auto\">").is_none());
+        assert!(
+            locales(&[("en", EN), ("fr", FR)])
+                .unwrap()
+                .html_langs(shell)
+                .is_none()
         );
     }
 

@@ -242,6 +242,18 @@ const tests = {
     await new Promise((r) => setTimeout(r, 60));
     assert.deepEqual(order, ['wait', 'update', 'after']);
   },
+  async 'view transitions run on a navigation, not under data-wisp-notransition'() {
+    const p = page();
+    let vts = 0;
+    p.doc.startViewTransition = (f) => (vts++, { ready: Promise.resolve(), finished: Promise.resolve(), updateCallbackDone: Promise.resolve(f()) });
+    globalThis.matchMedia = () => ({ matches: false });
+    p.click();
+    await tick();
+    assert.equal(vts, 1);
+    p.click({ 'data-wisp-notransition': '' });
+    await tick();
+    assert.equal(vts, 1);
+  },
   async 'preloadData fetches the page once, and the click uses it'() {
     const p = page();
     let done = 0;
@@ -336,11 +348,11 @@ const tests = {
 };
 
 // extra.js's motion helpers, with `wisp` and the clock stood in for.
-function motion() {
+function motion(more = {}) {
   const code = fs.readFileSync(path.join(__dirname, '../src/client/extra.js'), 'utf8').replace(/^import .*$/m, '');
   let now = 0;
   let frames = [];
-  const X = { shared: {}, outs: 0, flips: 0, watch: (sc, get, L, f, flags) => f(String(get(L) ?? '')) };
+  const X = { shared: {}, outs: 0, flips: 0, watch: (sc, get, L, f, flags) => f(String(get(L) ?? '')), ...more };
   const store = (v) => {
     const o = { v, subs: [], get value() { return this.v; }, set value(x) { this.v = x; }, subscribe() {} };
     return o;
@@ -415,11 +427,43 @@ Object.assign(tests, {
     const link = () => nodes.forEach((n, i) => ((n.nextSibling = nodes[i + 1] || null), (n.remove = () => (nodes.splice(nodes.indexOf(n), 1), link()))));
     link();
     nodes[0].after = (c) => (nodes.splice(1, 0, { nodeType: 1, html: c }), link());
-    globalThis.document = { createElement: () => ({ set innerHTML(v) { this.content = v; } }) };
+    const doc = globalThis.document;
+    globalThis.document = Object.assign(Object.create(doc), { createElement: () => ({ set innerHTML(v) { this.content = v; } }) });
     X.html(null, null, nodes[0], null, 0, ['html', () => '<b>x</b>']);
-    delete globalThis.document;
+    globalThis.document = doc;
     assert.deepEqual(nodes.map((n) => n.html), [undefined, '<b>x</b>', undefined, undefined]);
     assert.equal(nodes[2], end);
+  },
+});
+
+Object.assign(tests, {
+  'a snippet given to a component is drawn after its anchor, with the arguments as parameters'() {
+    class Sig { constructor(v) { this.v = v; } }
+    const drawn = [];
+    const { X } = motion({
+      Sig,
+      node: (sc, f) => f(),
+      scope: (up, c) => ({ up, c }),
+      end() {},
+      untrack: (f) => f(),
+      range: (c) => [c],
+      place: (at, el, cs, inst, L, q) => (drawn.push({ at, el, inst, L }), { drawn: drawn.length }),
+    });
+    const el = {};
+    const parent = { who: 'page' };
+    X.snip(null, parent, el, { page: 1 }, 0, ['snip', 'row', ['x', 'i']]);
+    assert.equal(el.__sn[0], 'row');
+    const stops = [];
+    let args = ['a', 0];
+    X.draw({ stops }, null, 'anchor', {}, 0, ['draw', () => el.__sn[1], () => args]);
+    assert.equal(stops.length, 1);
+    const d = drawn[0];
+    assert.equal(d.at, 'anchor');
+    assert.equal(d.inst, parent);
+    assert.deepEqual([d.L.page, d.L.x, d.L.i], [1, 'a', 0]);
+    // No snippet given: nothing drawn.
+    X.draw({ stops }, null, 'anchor', {}, 0, ['draw', () => undefined, () => args]);
+    assert.equal(drawn.length, 1);
   },
 });
 

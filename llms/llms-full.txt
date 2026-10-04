@@ -201,7 +201,15 @@ answers `/_img?src=/p.jpg&w=640&q=75`, `static/` only, fixed widths),
 items}}"}`), `{t("hi", name = user.name)}`, `t('n', c)` in scripts; keys
 checked across locales at build. Locale: `[[lang=locale]]`, cookie `lang`,
 `Accept-Language`, first; `cx.locale()`, `wisp::locales()`,
-`wisp::localize(cx.path(), "fr")`, `wisp::default_locale("fr")?`.
+`wisp::localize(cx.path(), "fr")`, `wisp::default_locale("fr")?`. Cargo.toml
+`[package.metadata.wisp] i18n = ["prefix as-needed", "default en", "domain
+example.fr fr", "missing warn"]`: `prefix always` redirects `/x` to `/en/x`,
+`as-needed` leaves the default bare, `domain` picks by host, `missing warn`
+falls back to the default's message (else a build error). `<html dir>` is
+set for ar, he, fa…; `wisp::dir(l)`. Head: `{@html wisp::alternates(cx)}`
+(canonical, hreflang); nav: `{@html wisp::switcher(cx)}`; numbers:
+`wisp::format_number format_money(n, "EUR", l) format_date format_date_long(d, l)`
+with `cx.locale()`. Sitemap and `--static` list every locale.
 
 `{#await stats(id)}<p>…</p>{:then s}<p>{s.posts}</p>{:catch e}{e}{/await}`:
 the page goes out at once; each answer follows in the same response, moved
@@ -261,7 +269,8 @@ so a live search needs no script: `<input bind:value="q">` `{:#each items.filter
 q)) as i}…{:/each}`. Directives `on:click` (`.prevent .once .debounce.300ms`…),
 `bind:value|checked|this`, `:attr="js"`, `:text`, `class:x="js"`,
 `transition:fade`, `use:action`; client blocks `{:#if}` `{:#each}`, in them `{:@const x = e}`
-and `{:@html h}`; runes
+and `{:@html h}`; `{:@render row(x)}` draws a `{#snippet}` or, in a component, a snippet prop
+(`<List items={:xs} {row} />` or `{#snippet row(x)}` among its children); runes
 `$state $derived $effect(.pre .root .tracking) $props`; helpers `onMount listen goto
 invalidate matches tick flushSync onError tweened spring crossfade`. Values sent to JS must be `#[model]` or `#[derive(Json)]`.
 `pushState('?tab=2', {tab: 2})`: shallow routing, `page.value.state`; changed
@@ -269,7 +278,10 @@ fields are restored with history. `import('$lib/x.js')` loads on demand.
 `<script lang="ts">`, `src/lib/*.ts`, `+page.ts` (types stripped; `wisp check
 --types`). `env.PUBLIC_X` is filled at build. Dev source maps; `--sourcemap`.
 `npm`: `wisp add pkg`; `<Island of="react:react-switch" client:visible
-props={:{...}} />` (`react|preact|vue|svelte`); web components just work.
+props={:{...}} />` (`react|preact|vue|svelte`); web components just work. Own esbuild/vite
+bundle in `static/`: `<div data-wisp-keep use:widget="{x}">`, script
+`widget(el, p)` does `import('/w.js')`, returns `{update, destroy}`.
+`data-wisp-notransition` (link or `<body>`) skips the nav view transition.
 `#[remote] fn user(id: u64) -> Result<User>` (page block or `src/*.rs`) is
 `await user(5)` in any script (`src/lib`: `import { user } from
 'wisp:remote'`): POST to `/_app/r/<hash>`, `#[remote(get)]` a GET; errors
@@ -435,7 +447,9 @@ no-wait fast path off every route.
   expr)]`/`#[json(was = "old")]` for old rows, `.migrate(f)`, `.live()` (pages
   naming a live table's static refresh themselves, via `/_wisp/live/<name>`),
   `set clear by try_add`; `Upload`, `wisp::relay`,
-  `wisp::queue(n).push(&j)` + `work(n, f)` + `cron("0 3 * * *", f)`,
+  `wisp::queue(n).push(&j)` + `work(n, f)` + `cron("0 3 * * *", f)` (on
+  Cloudflare/Vercel/Netlify the build writes the host's cron trigger from the
+  literal schedule; set `CRON_SECRET`, `WISP_STORE`),
   `wisp::cache(k, secs, f)`/`uncache(path)`, `WISP_ADMIN_KEY` admin page;
   rules `url one_of pattern with`.
 - Static export: `fn entries() -> Vec<&'static str>` in a `[param]` page.
@@ -471,7 +485,9 @@ no-wait fast path off every route.
 ## Commands
 
 `wisp new app [--template demo|minimal|api]` · `wisp dev` (hot reload keeps
-`$state`; `Alt+Shift+W` devtools; `/_wisp/components` workshop of
+`$state`; error dialog opens `file:line` in the editor, also for a handler's panic;
+`Server-Timing` on every dev response; `Alt+Shift+W` devtools
+with routes table; `/_wisp/components` workshop of
 `*.stories.wisp`) · `wisp test [--browser]` · `wisp check [--types]` · `wisp
 fmt [--check]` · `wisp build` (`--static`, `--spa`, `--docker`, `--target
 cloudflare|pages|deno|vercel|netlify|node|bun|lambda|native` (`--edge` with
@@ -479,7 +495,7 @@ vercel or netlify: their edge runtime; or per route, `const RUNTIME: wisp::Runti
 wisp::Runtime::Edge;` in its +page.rs/+server.rs: both functions from one app, other hosts ignore it), `--client ts`, `--sourcemap`, `--analyze`: per-route JS/CSS/wasm bytes, raw and
 gzip, no build) · `wisp
 deploy init <host>` (a GitHub Actions workflow; or `fly|render|railway`: that
-host's config) · `wisp service install|uninstall|start|stop|status [--user u]
+host's config) · `wisp openapi [-o openapi.json]` (`--check`: CI fails when the file is stale) · `wisp service install|uninstall|start|stop|status [--user u]
 [--port n] [--dry-run]` (run the release binary as a systemd unit or launchd
 daemon; Windows: a startup scheduled task) · `wisp routes` · `wisp new-route /path page|server|rest` ·
 `wisp add|remove pkg` (`wisp add` alone: the recipes in `add/`) · `wisp ui
@@ -701,6 +717,22 @@ works on the server.
 {:#each tags as tag (tag)}{:@render chip(tag)}{:/each}
 ```
 
+A component the browser draws takes snippets as props, by name
+(`<List items={:xs} {row} />`, `row={other}`) or among its children, and draws
+one with `{:@render row(x)}` where `row` is one of its props
+(`{@props row: Snippet<&Item>}` or `$props()`). The body sees the page's
+names and its parameters, and is drawn after `{:@render}`; none given draws
+nothing. It loads `extra.js`, and the server paints no copy of the component.
+
+```html
+<!-- src/components/List.wisp -->
+{@props items: Vec<String>, row: Snippet<&String, usize>}
+<ul>{:#each items as item, i}<li>{:@render row(item, i)}</li>{:/each}</ul>
+```
+```html
+<List items={:fruits}>{#snippet row(name, i)}<b>{:i}</b> {:name}{/snippet}</List>
+```
+
 `{:@const name = expr}` names a value for the rest of its block (it ends at
 `{:/…}` or `{:else}`); `{:@html expr}` puts markup in unescaped, as `{@html}`
 does on the server (trusted markup only), redrawn when the value changes.
@@ -881,6 +913,32 @@ Theme CSS: copy `cdn/themes/light.css` into `static/` and `<link>` it in
 LitElement {…})` in a `src/lib` module a script imports. The
 `click-events` a11y lint skips custom elements.
 
+## Your own bundle (npm UI libraries)
+
+For a widget `wisp add` cannot serve (React, Svelte, a charting kit): bundle it
+with your own tool, no Wisp dependency, into `static/`, and mount it from a
+`use:` action. `data-wisp-keep` stops a morph from touching what the widget draws.
+
+```sh
+esbuild src/widget.js --bundle --minify --format=esm --outfile=static/widget.js   # or vite build
+```
+
+```html
+<div data-wisp-keep use:widget="{ label }"></div>
+<script>
+  function widget(el, props) {            // mount(el, props), update(props), destroy()
+    let w
+    import('/widget.js').then((m) => (w = m.mount(el, props)))
+    return { update: (p) => w?.update(p), destroy: () => w?.destroy() }
+  }
+</script>
+```
+
+`destroy` runs when the element leaves the page (a navigation or `{:#if}`).
+To share a library between bundles, a `<script type="importmap">` in
+`src/app.html` maps `"react"` to a file in `static/`. Packages `wisp add`
+serves need none of this: `<Island of="react:name">`.
+
 ## Third-party scripts
 
 Pick when one loads (`src`, so no code of yours): in the head, plain
@@ -934,7 +992,11 @@ element around it starts it fresh. Layouts stay mounted.
 Same-origin clicks and back/forward fetch and morph, no full reload.
 Prefetch on hover (60 ms) and touch (`data-wisp-preload="off"` opts out).
 Scroll is restored; focus moves to `[autofocus]`; view transitions when
-available. `data-wisp-reload` on a link or parent forces a full load; links
+available (`data-wisp-notransition` on a link, or on `<body>` for the app,
+skips them; reduced motion skips them too). Global stores (`store`,
+`persisted`) are module state: they outlive every navigation. A component
+instance on an element the morph keeps keeps its state; `data-wisp-reset`
+starts it fresh. `data-wisp-reload` on a link or parent forces a full load; links
 with `target`, `download`, `rel="external"` and `/_app/` are left alone.
 
 ```js
@@ -967,7 +1029,7 @@ export a script may have:
 </script>
 ```
 
-`data-wisp-noscroll`, `data-wisp-keepfocus`, `data-wisp-replacestate` (on or around a link) keep scroll, keep focus, replace history; `goto(url, { noscroll, keepfocus, replace })` too. Hooks from `'wisp'` return an unsubscribe: `beforeNavigate(({ from, to, pop, cancel }) => ..)`, `afterNavigate`, `onNavigate` (after fetch, before the swap; a returned promise is awaited, a returned function runs after), `preloadData(url)`, `preloadCode(url)`, `invalidateAll()`, `updated.value` (a newer wisp.js or build exists). `cancel()` does not stop back/forward. `+page.js` `load` gets `depends(key)` (a `fetch`ed URL counts); `invalidate('key')` reruns only those loads, no page request.
+`data-wisp-noscroll`, `data-wisp-keepfocus`, `data-wisp-replacestate`, `data-wisp-notransition` (on or around a link) keep scroll, keep focus, replace history, skip the view transition; `goto(url, { noscroll, keepfocus, replace, novt })` too. Hooks from `'wisp'` return an unsubscribe: `beforeNavigate(({ from, to, pop, cancel }) => ..)`, `afterNavigate`, `onNavigate` (after fetch, before the swap; a returned promise is awaited, a returned function runs after), `preloadData(url)`, `preloadCode(url)`, `invalidateAll()`, `updated.value` (a newer wisp.js or build exists). `cancel()` does not stop back/forward. `+page.js` `load` gets `depends(key)` (a `fetch`ed URL counts); `invalidate('key')` reruns only those loads, no page request.
 
 Phones: pages leave with `pagehide` (back/forward cache; scroll restored). `<body data-wisp-revalidate="30">` refetches data when the tab or network returns (at most every N s, default 30; the morph keeps focus, scroll, typed text). Offline, `<form data-wisp-queue>` (safe to send twice) waits in `sessionStorage`, is sent in order when back, then the page refreshes (`wisp:sent`); other forms show "You are offline" and fire `wisp:result` with `error: "offline"`. Only urlencoded forms queue. A navigation focuses the `<h1>` (else `<main>`) and announces the title; view transitions skip under `prefers-reduced-motion`.
 
@@ -1094,10 +1156,16 @@ statement other than declarations, logging, writes to its own names and
 instance-ending helpers (`$effect`, `onMount`, `setInterval`…; `init()`,
 `if`, `new X()`, `window.x = 1` could run twice), or the swap throws.
 Components match by creation order, so a reordering list may trade states.
+Build errors show in a dialog whose `src/…:line` lines open in the editor;
+an error the page's code throws (also what `onError` hears) shows there too.
+The next successful build closes it.
 None of this is in release builds.
 
 `Alt+Shift+W` opens dev-only devtools: component tree with live props and
-state (editable), stores, route and server values, timings; "Open" uses
+state (editable), stores, the route (params, server values, the page's
+forms), a table of all the app's routes, timings (dev responses carry
+`Server-Timing: total;dur=…`); a server panic or other 5xx opens the same
+error dialog with its message and `file:line`; "Open" uses
 `$WISP_EDITOR` or `$EDITOR`, else `code -g`. `/_wisp/components` is the
 workshop: `Card.stories.wisp` beside `Card.wisp` holds
 `{#story "Featured"}<Card featured title="Tea" />{/story}` examples, each
@@ -1484,12 +1552,37 @@ Lambda, not the edge (use HTTP databases through `wisp::edge::fetch`).
 
 ## OpenAPI and docs page
 
-The build describes every `+server.rs` endpoint as OpenAPI 3.1 at
-`/_wisp/openapi.json`; `/_wisp/docs` lists them with a try-it form. On in
-dev, off in release; `WISP_API_DOCS=on|off` overrides. Nothing to annotate
-(paths, params, query/form inputs by name and type, `body: T`, returns).
-Types from the route file or `src/*.rs` are described by field; others are
-named and left open; checks like `min_len` are not included.
+The build describes the app as OpenAPI 3.1 at `/_wisp/openapi.json`;
+`/_wisp/docs` lists it with a try-it form. On in dev, off in release;
+`WISP_API_DOCS=on|off` overrides. Nothing to annotate:
+
+- Every `+server.rs` endpoint, and a `#[derive(Rest)]` type's routes and its
+  `/[id]`: path, query and header parameters, `body: T` (JSON) or form fields
+  by name and type, what it returns (`Option` adds a 404, `()` a 204), and
+  `default`, 400, 401, 422 error answers (`Error`, and RFC 9457 `Problem`).
+  A resource also has its `if-match`/`if-none-match`/`idempotency-key`
+  headers, `etag`, `location` and `x-total-count`, a filter parameter per
+  plain field, and a 201 for POST.
+- Every page as a GET of `text/html`, and each `#[action]` of its `+page.rs`
+  as a POST: `/contact` for `fn default`, `/contact?/send` for the others
+  (OpenAPI has no other place for `?/name`), a form body (`multipart/form-data`
+  with an `Image` or `Upload`), checks from `#[validate]`, 200/303/422.
+- Types from the route file or `src/*.rs` by field: structs as objects (`Option`
+  is also `null`, `#[validate]` limits become `minLength`, `maximum`, `format:
+  email`...), an enum without fields as its variant names. Others are named and
+  left open.
+- Security: `bearer` (HTTP bearer) and `session` (the cookie) are declared when
+  used. Marked on a `#[rest(key|write|admin = "...")]` route as its keys need,
+  and on a handler or action whose body calls `need_bearer`/`bearer()` or
+  `signed_in`/`user`. A `fn before` in `src/hooks.rs` that does the same marks
+  every operation (only changes, if it looks at `cx.writes()`). It is read
+  from the code, not run: a check inside a helper is not seen.
+- A route with `[[opt]]` or `[...rest]` is two paths. Paths that differ only by
+  parameter names (`[n=int]`, `[slug]`) are one to OpenAPI: the first is shown.
+
+`wisp openapi` prints the same document, indented (`-o openapi.json` writes
+it). Commit that file and run `wisp openapi --check` in CI: it fails with
+the command to run when the file is not what the app describes now.
 
 Typed TypeScript client from the same description, no dependencies:
 `/_wisp/client.ts`, or `wisp build --client ts [--out web/api.ts]`:
@@ -1556,7 +1649,8 @@ returns and the test passes, skipped. `wisp::test::browser::<App>()` is an
 All of this works in the binary, Docker, Lambda and `tower`. The edge
 (`--target cloudflare` etc.) runs each request in an instance that may be
 its own: `wisp::channel`, `wisp::every`, `RateLimit` are not there,
-WebSockets answer 501 (use the host's queues, cron, rate limiting), and
+WebSockets answer 501 (use the host's rate limiting), jobs (`cron`, `work`)
+run from the host's cron triggers (docs/deploy.md), and
 tables are per-instance memory. JSON, validation, errors, CORS, auth,
 webhooks and docs work everywhere.
 
@@ -1815,6 +1909,18 @@ No threads, sockets or files:
 - `Response::websocket` is 501 on every edge target (and `tower`); use SSE.
 - `wisp::channel`, `wisp::every`, `RateLimit` are not in the edge build (it
   won't compile with them): use the host's queues, cron, rate limiting.
+- Jobs: `wisp::cron` and `wisp::work` are the same code on every host.
+  `wisp build` reads each `wisp::cron("0 3 * * *", ..)` of `src/` (the
+  schedule must be a string literal) and writes the host's trigger: Cloudflare
+  `[triggers] crons` in wrangler.toml, Vercel `crons` in config.json, a
+  Netlify scheduled function a schedule. A trigger asks the app for
+  `/_wisp/cron/<schedule>` with `Authorization: Bearer $CRON_SECRET` (set it
+  as a host secret; without it the address is 404), which runs the tasks of
+  that schedule and then every queue's due jobs: an app with `work` gets a
+  trigger each minute (Vercel's Hobby plan allows daily ones only). The
+  queue is a table, so queued jobs need `WISP_STORE`. Pages, Deno, Node, Bun,
+  Lambda and Netlify `--edge` have no trigger to write: the build says so and
+  stops; run the binary or Docker, which run jobs themselves.
 - Outbound HTTP via `wisp::edge::fetch`:
 
   ```rust

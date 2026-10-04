@@ -12,6 +12,7 @@ mod errors;
 mod help;
 mod mcp;
 mod new;
+mod openapi;
 
 use std::fs;
 use std::ops::Deref;

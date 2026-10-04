@@ -9,6 +9,7 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::RateLimit;
+use crate::http::{TOKENS_CSS, UI_CSS};
 use crate::{Cx, Method, Response, Result};
 use std::fmt::Write;
 
@@ -151,13 +152,7 @@ fn page(status: u16, title: &str, body: &str) -> Response {
     let html = format!(
         "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\">\
          <meta name=robots content=noindex><title>{title}</title>\
-         <style>:root{{color-scheme:light dark;--a:#7c3aed}}body{{font:15px/1.5 system-ui,sans-serif;max-width:60rem;margin:2rem auto;padding:0 1rem}}\
-         table{{border-collapse:collapse;width:100%}}td,th{{border-bottom:1px solid #8884;padding:.4rem;text-align:left;vertical-align:top}}\
-         code{{font:13px ui-monospace,monospace;word-break:break-all}}a{{color:var(--a)}}\
-         textarea{{width:100%;min-height:16rem;font:13px ui-monospace,monospace;box-sizing:border-box}}\
-         button{{font:inherit;padding:.3rem .8rem;border:1px solid var(--a);background:var(--a);color:#fff;border-radius:.4rem;cursor:pointer}}\
-         button.x{{background:none;color:inherit;border-color:#8886}}.problem{{color:#c33}}</style>\
-         <h1>{title}</h1>{body}"
+         <style>{TOKENS_CSS}{UI_CSS}         body{{margin:0 auto;max-width:60rem;padding:var(--wisp-space-m);background:var(--wisp-paper);color:var(--wisp-ink);font:400 1rem/1.5 var(--wisp-sans)}}         table{{border-collapse:collapse;width:100%}}td,th{{border-bottom:1px solid var(--wisp-line);padding:.4rem;text-align:left;vertical-align:top}}         code,textarea{{font:.8125rem/1.5 var(--wisp-mono)}}code{{word-break:break-all}}a{{color:var(--wisp-accent-hover)}}         textarea{{width:100%;min-height:16rem;box-sizing:border-box;padding:.5rem;border:1px solid var(--wisp-line);border-radius:var(--wisp-radius);background:var(--wisp-inset);color:var(--wisp-ink)}}         .problem{{color:var(--wisp-danger)}}</style>         <h1>{title}</h1>{body}"
     );
     Response::html(html)
         .with_status(status)
@@ -176,7 +171,7 @@ fn index(tables: &[&'static dyn Admin]) -> Response {
     }
     body.push_str("</table>");
     if tables.is_empty() {
-        body.push_str("<p>No saved tables yet: one shows once the server has started with it.</p>");
+        body.push_str("<p>No saved tables yet. One shows once the server has started with it.</p>");
     }
     page(200, "Tables", &body)
 }
@@ -198,7 +193,7 @@ fn rows(cx: &Cx, t: &dyn Admin) -> Response {
             body,
             "<tr><td>{id}<td><code>{}{more}</code><td><a href=\"{PATH}/{name}/{id}\">Edit</a> \
              <form method=post action=\"{PATH}/{name}/{id}/delete\" style=display:inline>\
-             <button class=x onclick=\"return confirm('Delete row {id}?')\">Delete</button></form>",
+             <button class=\"wisp-button wisp-ghost\" onclick=\"return confirm('Delete row {id}?')\">Delete</button></form>",
             escaped(&short)
         );
     }
@@ -227,7 +222,7 @@ fn edit(t: &dyn Admin, id: u64, problem: Option<(&str, &str)>) -> Response {
     let body = format!(
         "<p><a href=\"{PATH}/{name}\">{name}</a></p>{error}\
          <form method=post action=\"{PATH}/{name}/{id}\"><textarea name=json spellcheck=false>{}</textarea>\
-         <p><button>Save</button></p></form>",
+         <p><button class=\"wisp-button wisp-primary\">Save</button></p></form>",
         escaped(&shown)
     );
     page(
@@ -320,7 +315,7 @@ mod tests {
         assert!(first.contains("fake?after=100"));
         let rest = at("/_wisp/admin/fake?after=100");
         assert!(rest.contains("Delete row 150?") && !rest.contains("Delete row 100?"));
-        assert!(!rest.contains("More"));
+        assert!(!rest.contains(">More<"));
     }
 
     #[cfg(not(target_arch = "wasm32"))]

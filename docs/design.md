@@ -863,7 +863,12 @@ A snippet is markup a file renders more than once, or gives to a component:
   `{@render row(…)}`.
 - `{:@render row(x)}` has the browser draw it: the arguments are
   JavaScript, and the body uses its parameters in `{:…}` (see
-  [client.md](client.md)).
+  [client.md](client.md)). A component the browser draws takes snippets
+  the same way (`<List items={:xs} {row} />`, or `{#snippet row(x)}` among
+  its children) and draws one with `{:@render row(x)}` where `row` is a
+  prop: the snippet's body is a block before the tag (`Dir::Snip`, which
+  `snip` in extra.js binds), and the component finds it among the anchors
+  right before its own, so no first paint for a component given one.
 
 ### Translations
 
@@ -902,9 +907,56 @@ One JSON file per locale in `src/locales`, flat or nested keys:
 - A page's scripts get only the messages they use, in its locale, with
   the page; their plurals follow `Intl.PluralRules`. `src/lib` modules
   cannot call `t`: pass them the text.
-- Switchers: `{#each wisp::locales().iter() as l}<a
+- Switchers: `{@html wisp::switcher(cx)}` is a `<nav class="wisp-locales">`
+  of links to the page in each locale, named in its own language; or
+  `{#each wisp::locales().iter() as l}<a
   href={wisp::localize(cx.path(), l)}>{l}</a>{/each}` (`/fr/about` →
   `/en/about`).
+
+Locale routing and the rest are opt-in, in `[package.metadata.wisp]` of the
+app's Cargo.toml as `i18n = [...]`, each string `name value`, baked at build
+(an app that says nothing has no code for them):
+
+```toml
+i18n = ["default en", "prefix as-needed", "domain example.fr fr", "missing warn"]
+```
+
+- `prefix optional` (what it is without one): `/about` and `/fr/about` both
+  answer. `prefix always`: every page has its locale, and `/about` redirects
+  (307, GET and HEAD, keeping the query) to the visitor's by cookie then
+  `Accept-Language`, `/fr/about`. `prefix as-needed`: the default locale has
+  no prefix and is what a page without one gets (no detection: a URL names
+  one language), `/en/about` redirects (308) to `/about`. `wisp::localize`
+  follows it, so links and the switcher need no change. The redirect is
+  emitted only in pages under `[[lang=locale]]`: other routes pay nothing.
+- `domain example.fr fr` (one per locale): the locale of a request is its
+  `Host`'s, `localize` gives `//example.fr/about`, and the redirects are off.
+  The `[[lang=locale]]` segment still wins when a URL has one.
+- `default fr`: the locale for a request that names none, instead of the
+  first file (`wisp::default_locale` in `init` still overrides).
+- `missing warn`: a locale without a key the default has uses the default's
+  message and the build warns (`file:line: "key" is missing`); a key the
+  default lacks, or a placeholder that differs, is still an error. `missing
+  error` is the default.
+- `{@html wisp::alternates(cx)}` in a head writes `<link rel="canonical">`,
+  an `alternate` with `hreflang` per locale and `x-default`; addresses start
+  with `SITE_URL`, else the request's host (a domain's host for its locale).
+- `/sitemap.xml` lists every page in every locale, each with its
+  `xhtml:link` alternates (the default's without a prefix under
+  `as-needed`; `prefix optional` lists the prefixed pages). `wisp build
+  --static` writes each locale's pages (`index.html`, `fr/index.html`) with
+  the unprefixed ones too unless `prefix always`. `entries()` of a page under
+  `[[lang=locale]]` lists the values of its other parameters.
+- `<html lang>` and, for a right-to-left language (ar, he, fa, ur…), `dir` are
+  set per request; `wisp::dir("ar")` says `rtl` for your own elements. Pages
+  under `[[lang=locale]]` are not baked: they say their language.
+- Formatting, small tables and no dependency: `wisp::format_number(n, l)`
+  (`1,234.5`, `1 234,5`, `1.234,5`), `format_money(n, "EUR", l)`,
+  `format_date(d, l)` (`10/4/2026`, `04/10/2026`, `4.10.2026`) and
+  `format_date_long(d, l)` (`October 4, 2026`, `4 octobre 2026`), `d` being Unix
+  seconds, `"2026-10-04"` or `(2026, 10, 4)`; `l` is `cx.locale()`. A language
+  without a table is written as `en` (numbers) or ISO 8601 (dates).
+- The example is `examples/i18n`.
 
 ### Actions and `wisp.js`
 
@@ -1298,6 +1350,10 @@ and `.wisp-*` classes, so they never touch an app's own CSS.
   also has the status's name, the request, what caused a 5xx and a link home.
   Its styles come inlined, since the app's own CSS may not exist yet. Errors
   for endpoints and API clients are JSON instead (see docs/api.md).
+- **Server errors in dev**: every answer carries `Server-Timing: total;dur=ms`,
+  and a 5xx's dev error page holds its message (a handler's panic says
+  `file:line`) in a `<template id="wisp-server-error">` that `wisp-dev.js`
+  opens in the dialog below. Debug builds only.
 - **The build error dialog** in dev: a title and one sentence saying where to
   look (`src/routes/+page.rs, line 7. Save a fix and the page updates.`), then
   the error text in a code block with a Copy control. It lives in a shadow

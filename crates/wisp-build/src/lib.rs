@@ -508,6 +508,24 @@ pub fn client_ts(root: &Path) -> Result<String, String> {
     .map(|(_, ts)| ts)
 }
 
+/// The OpenAPI 3.1 document of the project's endpoints, pages and form
+/// actions: the one `/_wisp/openapi.json` serves, for `wisp openapi`. Empty
+/// when the app has no endpoints and no actions.
+pub fn openapi(root: &Path) -> Result<String, String> {
+    codegen::openapi(&codegen::Input {
+        root,
+        release: false,
+        maps: false,
+        prerendered: None,
+    })
+}
+
+/// [`openapi`]'s document indented, a member a line: the file `wisp
+/// openapi` writes and `--check` compares.
+pub fn pretty_json(json: &str) -> String {
+    openapi::pretty(json)
+}
+
 /// `base = "/app"` of `[package.metadata.wisp]`, for `wisp build` to build
 /// with as `WISP_BASE`.
 pub fn app_base(root: &std::path::Path) -> Option<String> {

@@ -21,6 +21,8 @@ fn help_lists_every_command_and_new_option() {
                 "wisp build --target <host> [--out dist/<host>]",
                 "cloudflare, pages, deno, vercel, netlify, node, bun or lambda",
                 "wisp build --client ts [--out client.ts]",
+                "wisp openapi [-o openapi.json]",
+                "wisp openapi --check",
                 "wisp deploy init <host> [--force]",
                 "wisp check",
                 "wisp update-docs",

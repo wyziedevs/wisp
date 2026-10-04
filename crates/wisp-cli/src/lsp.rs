@@ -526,7 +526,7 @@ const KNOBS: [(&str, &str); 14] = [
 
 /// Wisp attributes (inside a tag) and what each does (hover). A test keeps it
 /// in step with the reference: every `data-wisp-*` it shows is here.
-const ATTRS: [(&str, &str); 15] = [
+const ATTRS: [(&str, &str); 16] = [
     (
         "fields",
         "`<form fields>`: writes a labelled input per param of the action (`Email` is `type=email`, `Image` a file, `bool` a checkbox, numbers `number`). `fields={post}` starts a struct param's fields from `post`.",
@@ -566,6 +566,10 @@ const ATTRS: [(&str, &str); 15] = [
     (
         "data-wisp-replacestate",
         "On or around a link: navigation replaces the history entry.",
+    ),
+    (
+        "data-wisp-notransition",
+        "On or around a link (`<body>` for the whole app): navigation skips `document.startViewTransition`; `goto(url, { novt: true })` too.",
     ),
     (
         "data-wisp-revalidate",
@@ -746,7 +750,7 @@ const BLOCKS: [(&str, &str, &str); 27] = [
     (
         "{:@render",
         "{:@render ${1:snippet}(${2})}",
-        "`{:@render s(x)}`: a snippet the browser renders.",
+        "`{:@render s(x)}`: a snippet the browser renders; in a component, a snippet prop its parent gave.",
     ),
     (
         "{@pager",

@@ -42,6 +42,10 @@ pub struct FnItem {
     /// `#[validate(len = 1..=100)] text: String`: each parameter's rules,
     /// as (parameter, what is inside `validate(…)`).
     pub checks: Vec<(String, String)>,
+    /// Its body asks for a bearer token (`cx.need_bearer(…)`, `cx.bearer()`).
+    pub bearer: bool,
+    /// Its body asks for a signed-in member (`cx.signed_in()`, `cx.user(…)`).
+    pub session: bool,
 }
 
 /// How browser code calls a `#[remote]` function.
@@ -64,6 +68,12 @@ pub struct TypeItem {
     /// `#[validate(len = 1..=9)]` on its fields, as (field, what is inside
     /// `validate(…)`).
     pub rules: Vec<(String, String)>,
+    /// The variants of an enum whose variants all have no fields: its
+    /// JSON is one of these names. Empty for anything else.
+    pub variants: Vec<String>,
+    /// What its `#[rest(key = "API_KEY", write = …, admin = …)]` names, as
+    /// (setting, environment variable).
+    pub rest: Vec<(String, String)>,
 }
 
 impl TypeItem {
@@ -304,6 +314,7 @@ pub fn scan(src: &str) -> Result<Items, String> {
     let mut is_async = false;
     let mut public = false;
     let mut derives: Vec<String> = Vec::new();
+    let mut rest: Vec<(String, String)> = Vec::new();
     let mut i = 0;
     while i < b.len() {
         let c = b[i];
@@ -371,6 +382,9 @@ pub fn scan(src: &str) -> Result<Items, String> {
                     if depth == 0 && path.rsplit("::").next() == Some("model") {
                         derives.extend(["Json", "FromJson", "Clone"].map(String::from));
                     }
+                    if depth == 0 && path.rsplit("::").next() == Some("rest") {
+                        rest = rest_args(&src[j + 1..end]);
+                    }
                     if depth == 0 && path.rsplit("::").next() == Some("derive") {
                         let args = src[j + 1..end].split_once('(').map_or("", |(_, a)| a);
                         derives.extend(
@@ -389,11 +403,13 @@ pub fn scan(src: &str) -> Result<Items, String> {
                 if depth == 0 {
                     (action, is_async, public, remote) = (false, false, false, None);
                     derives.clear();
+                    rest.clear();
                 }
             }
             b';' if depth == 0 => {
                 (action, is_async, public, remote) = (false, false, false, None);
                 derives.clear();
+                rest.clear();
             }
             _ if c.is_ascii_alphabetic() || c == b'_' => {
                 let start = i;
@@ -461,6 +477,10 @@ pub fn scan(src: &str) -> Result<Items, String> {
                                 || (marked
                                     && b.get(body) == Some(&b'{')
                                     && awaits(&src[body..block_end(b, body)]));
+                            let body_text = match b.get(body) {
+                                Some(b'{') => &src[body..block_end(b, body)],
+                                _ => "",
+                            };
                             items.fns.push(FnItem {
                                 name,
                                 action,
@@ -473,6 +493,10 @@ pub fn scan(src: &str) -> Result<Items, String> {
                                 line,
                                 implicit_cx,
                                 checks,
+                                bearer: body_text.contains("need_bearer(")
+                                    || body_text.contains(".bearer("),
+                                session: body_text.contains(".signed_in(")
+                                    || body_text.contains(".user("),
                             });
                             (action, is_async, public, remote) = (false, false, false, None);
                             derives.clear();
@@ -482,11 +506,18 @@ pub fn scan(src: &str) -> Result<Items, String> {
                             } else {
                                 (Vec::new(), Vec::new())
                             };
+                            let variants = if word == "enum" {
+                                variants(src, i)
+                            } else {
+                                Vec::new()
+                            };
                             items.types.push(TypeItem {
                                 name,
                                 fields,
                                 derives: std::mem::take(&mut derives),
                                 rules,
+                                variants,
+                                rest: std::mem::take(&mut rest),
                             });
                         }
                     }
@@ -535,6 +566,59 @@ fn fields(src: &str, i: usize) -> Params {
         j += 1;
     }
     (out, rules)
+}
+
+/// The variants of the enum whose name ends at `i`, if none has fields
+/// (a tuple or struct variant, which is not one name in JSON): `Open`,
+/// `Closed = 2`.
+fn variants(src: &str, i: usize) -> Vec<String> {
+    let b = src.as_bytes();
+    let open = skip_space(b, i);
+    if b.get(open) != Some(&b'{') {
+        return Vec::new();
+    }
+    let end = block_end(b, open);
+    let mut out = Vec::new();
+    for mut piece in split_top(&src[open + 1..end.saturating_sub(1).max(open + 1)]) {
+        loop {
+            piece = piece.trim_start();
+            if let Some(c) = piece.strip_prefix("//") {
+                piece = c.split_once('\n').map_or("", |x| x.1);
+            } else if piece.starts_with("#[") {
+                match matching_bracket(piece.as_bytes(), 1) {
+                    Some(e) => piece = &piece[e + 1..],
+                    None => return Vec::new(),
+                }
+            } else {
+                break;
+            }
+        }
+        let piece = piece.trim();
+        if piece.is_empty() {
+            continue;
+        }
+        let name = &piece[..ident_end(piece.as_bytes(), 0)];
+        let after = piece[name.len()..].trim_start();
+        if name.is_empty() || !(after.is_empty() || after.starts_with('=')) {
+            return Vec::new();
+        }
+        out.push(name.strip_prefix("r#").unwrap_or(name).to_string());
+    }
+    out
+}
+
+/// `key = "API_KEY", write = "W"` inside `#[rest(…)]`'s brackets, as pairs.
+fn rest_args(attr: &str) -> Vec<(String, String)> {
+    let args = attr.split_once('(').map_or("", |(_, a)| a);
+    let args = args.trim_end_matches([']', ')', ' ']);
+    split_top(args)
+        .into_iter()
+        .filter_map(|a| {
+            let (k, v) = a.split_once('=')?;
+            let v = v.trim().strip_prefix('"')?.strip_suffix('"')?;
+            Some((k.trim().to_string(), v.to_string()))
+        })
+        .collect()
 }
 
 /// `name: Type`, after any attributes, comments and visibility (`pub`,
@@ -2064,5 +2148,38 @@ fn a(#[validate(pattern = \"https?://x\")] u: String) {}",
     fn model_derives_what_actions_read() {
         let items = scan("#[model]\nstruct Post { title: String }").unwrap();
         assert_eq!(items.types[0].derives, ["Json", "FromJson", "Clone"]);
+    }
+
+    #[test]
+    fn enums_name_their_variants_when_none_has_fields() {
+        let items = scan(
+            "enum A { X, /// docs\n Y = 2, #[x] Z }\nenum B { P(u8), Q }\nenum C { R { a: u8 } }\nstruct S { a: u8 }",
+        )
+        .unwrap();
+        let got: Vec<&[String]> = items.types.iter().map(|t| &t.variants[..]).collect();
+        assert_eq!(got[0], ["X", "Y", "Z"]);
+        assert!(got[1].is_empty() && got[2].is_empty() && got[3].is_empty());
+    }
+
+    #[test]
+    fn rest_keys_and_what_a_body_asks_of_the_request() {
+        let items = scan(
+            "#[derive(Rest)]\n#[rest(write = \"W\", key=\"K\", memory)]\nstruct N { a: u8 }\nstruct M { a: u8 }\n\
+             fn a(cx: &mut Cx) { cx.need_bearer(\"K\")?; }\n\
+             fn b(cx: &mut Cx) -> Result { cx.signed_in()?; Ok(()) }\n\
+             fn c(cx: &mut Cx) { let t = cx.bearer(); }\n\
+             fn d(cx: &mut Cx) { let s = \"cx.signed_in()\"; }",
+        )
+        .unwrap();
+        assert_eq!(
+            items.types[0].rest,
+            [
+                ("write".to_string(), "W".to_string()),
+                ("key".into(), "K".into())
+            ]
+        );
+        assert!(items.types[1].rest.is_empty());
+        let asks: Vec<(bool, bool)> = items.fns.iter().map(|f| (f.bearer, f.session)).collect();
+        assert_eq!(asks[..3], [(true, false), (false, true), (true, false)]);
     }
 }

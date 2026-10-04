@@ -52,7 +52,7 @@ mod image;
 #[cfg(feature = "img")]
 pub mod img;
 mod input;
-#[cfg(not(target_arch = "wasm32"))]
+mod intl;
 mod jobs;
 pub mod json;
 #[cfg(not(target_arch = "wasm32"))]
@@ -111,10 +111,12 @@ pub use export::{Entry, ExportRoute, export, prerender};
 pub use fetch::{fetch, on_fetch};
 pub use form::{File, Form};
 pub use http::{Body, Reply, Request, TrailingSlash, handle, trailing_slash};
-pub use i18n::{default_locale, locales, localize};
+pub use i18n::{
+    Prefix, alternates, default_locale, dir, locales, localize, native_name, prefix, switcher,
+};
 pub use image::Image;
 pub use input::Email;
-#[cfg(not(target_arch = "wasm32"))]
+pub use intl::{AsDate, format_date, format_date_long, format_money, format_number};
 pub use jobs::{Queue, cron, queue, work};
 pub use json::{FromJson, Value, from_json, to_json};
 pub use limit::RateLimit;
@@ -828,6 +830,9 @@ pub trait App: 'static {
     const REPORT: bool = false;
     /// The locales of `src/locales/*.json`, by file name, sorted.
     const LOCALES: &'static [&'static str] = &[];
+    /// What goes in `<html lang="…">` per locale: [`App::LOCALES`], and a
+    /// right-to-left one with its `dir` (`ar" dir="rtl`).
+    const HTML_LANGS: &'static [&'static str] = Self::LOCALES;
     /// `(path, shape)` per template id, for dev hot swapping.
     const TEMPLATES: &'static [(&'static str, u64)];
 
@@ -843,8 +848,9 @@ pub trait App: 'static {
         let _ = path;
         None
     }
-    /// The OpenAPI document of the app's `+server.rs` endpoints, served at
-    /// `/_wisp/openapi.json`; empty without any.
+    /// The OpenAPI 3.1 document of the app's `+server.rs` endpoints, pages
+    /// and form actions, served at `/_wisp/openapi.json` (`wisp openapi`
+    /// prints it); empty without endpoints and actions.
     fn openapi() -> &'static str {
         ""
     }
@@ -1608,6 +1614,18 @@ impl<T, E: fmt::Display> OrStatus<T> for std::result::Result<T, E> {
 pub mod rt {
     pub use crate::envconf::{config, config_error, config_opt};
     pub use crate::i18n::{Arg, Case, Count, Msg, Part, Tr};
+
+    /// At startup, from `i18n = [...]`: the default locale, the prefix and
+    /// the domains with their locales' indexes.
+    pub fn locale_setup(default: u8, prefix: u8, domains: &'static [(&'static str, u8)]) {
+        crate::i18n::setup(default, prefix, domains);
+    }
+
+    /// The redirect of a page under `[[lang=locale]]` that `i18n`'s prefix
+    /// asks for, as its error.
+    pub fn locale_redirect(cx: &crate::Cx) -> crate::Result {
+        crate::i18n::redirect(cx)
+    }
     pub use crate::rules::{headers, redirect, rewrite};
     pub use crate::tail::{
         AnyResult, Awaits, Settled, Value, WispResult, defer, failed, failed_html as await_failed,
@@ -2098,6 +2116,12 @@ pub mod rt {
         out.body.push_str(
             "</p><div class=\"wisp-actions\"><a class=\"wisp-button wisp-primary\" href=\"/\">Go to the Home Page</a></div></main>",
         );
+        // What `wisp-dev.js` opens in its dialog, with `src/..:line` as editor links.
+        if status >= 500 {
+            out.body.push_str("<template id=\"wisp-server-error\">");
+            text(&mut out.body, message);
+            out.body.push_str("</template>");
+        }
     }
 }
 

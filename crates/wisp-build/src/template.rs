@@ -209,6 +209,9 @@ pub enum Dir {
     Spread,
     /// `{:#key expr}`: its content drawn afresh when `expr` changes.
     Key,
+    /// A `{#snippet}` given to a component the browser draws: `name` is the
+    /// prop it is given as, `mods` its parameters, and its body is the block's.
+    Snip,
     /// `{:#await promise}`: one copy, whose `__aw` says how it went.
     Await,
     /// `{:#try}`: one copy, whose `__tr` holds what failed in it.
@@ -1001,6 +1004,7 @@ struct Keep {
 
 /// A snippet defined above: its body's source, and the depth of the list
 /// it is in (it goes out of scope with that list).
+#[derive(Clone)]
 struct Snip {
     name: String,
     params: Vec<String>,
@@ -1757,6 +1761,17 @@ impl Parser<'_> {
                 PropValue::Live(_) | PropValue::Bind(_) | PropValue::On(_)
             )
         });
+        // A snippet of this file is given as itself, since it is not a value.
+        for p in &mut props {
+            if let PropValue::Expr(c) = &p.value
+                && let Some(s) = self.snippets.iter().rev().find(|s| s.name == c.src)
+            {
+                p.value = PropValue::Snippet {
+                    name: s.name.clone(),
+                    arity: s.params.len(),
+                };
+            }
+        }
         if live || self.templates.iter().any(Option::is_some) {
             if let Some(p) = props.iter().find(|p| p.name.starts_with("client:")) {
                 return Err(self.err(
@@ -1781,6 +1796,21 @@ impl Parser<'_> {
                 col: self.col_of(start),
             };
             self.require_text(start, &format!("<{name}>"))?;
+            // Each snippet it is given goes before it, for it to draw.
+            let given: Vec<(String, Snip)> = d
+                .props
+                .iter()
+                .filter_map(|p| match &p.value {
+                    PropValue::Snippet { name, .. } => {
+                        let s = self.snippets.iter().rev().find(|s| s.name == *name)?;
+                        Some((p.name.clone(), s.clone()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            for (prop, s) in &given {
+                self.client_snip(start, prop, s)?;
+            }
             self.begin(start)?;
             let group = self.group(vec![d], self.line_of(start));
             if self_closing {
@@ -1799,17 +1829,6 @@ impl Parser<'_> {
             });
             self.templates.push(Some(Vec::new()));
             return Ok(());
-        }
-        // A snippet of this file is given as itself, since it is not a value.
-        for p in &mut props {
-            if let PropValue::Expr(c) = &p.value
-                && let Some(s) = self.snippets.iter().rev().find(|s| s.name == c.src)
-            {
-                p.value = PropValue::Snippet {
-                    name: s.name.clone(),
-                    arity: s.params.len(),
-                };
-            }
         }
         if self_closing {
             let line = self.line_of(start);
@@ -3102,6 +3121,18 @@ impl Parser<'_> {
     /// The end of the innermost client block or component, at `pos`.
     fn client_close(&mut self, pos: usize) -> Result<(), Error> {
         self.templates.pop();
+        // The snippets a component's tag wraps are what it is given: each
+        // goes before it, for it to draw.
+        let depth = self.frames.len();
+        let given: Vec<Snip> = match self.frames.last() {
+            Some(Frame::Client { kind: "comp", .. }) => self
+                .snippets
+                .iter()
+                .filter(|s| s.depth == depth)
+                .cloned()
+                .collect(),
+            _ => Vec::new(),
+        };
         if let Frame::Client {
             group,
             mut branches,
@@ -3109,6 +3140,21 @@ impl Parser<'_> {
             ..
         } = self.end(pos)?
         {
+            for s in &given {
+                let d = &mut self.groups[group].directives[0];
+                if d.props.iter().any(|p| p.name == s.name) {
+                    let msg = format!("<{}> is given `{}` twice", d.name, s.name);
+                    return Err(self.err(pos, msg));
+                }
+                d.props.push(Prop {
+                    name: s.name.clone(),
+                    value: PropValue::Snippet {
+                        name: s.name.clone(),
+                        arity: s.params.len(),
+                    },
+                });
+                self.client_snip(pos, &s.name, s)?;
+            }
             branches.push((group, body));
             self.list().push(Node::Client(branches));
         }
@@ -3120,11 +3166,13 @@ impl Parser<'_> {
     /// `{#snippet name(params)}` at `open`.
     fn snippet_open(&mut self, open: usize, arg: &str) -> Result<(), Error> {
         self.require_text(open, "{#snippet}")?;
-        if self.templates.iter().any(Option::is_some) {
+        let given = matches!(self.frames.last(), Some(Frame::Client { kind: "comp", .. }));
+        if self.templates.iter().any(Option::is_some) && !given {
             return Err(self.err(
                 open,
-                "a {#snippet} is defined outside client blocks and browser-drawn components; \
-                 draw it in one with {:@render name(…)}"
+                "a {#snippet} is defined outside client blocks and browser-drawn components, \
+                 or among the children of a component the browser draws; \
+                 draw it in a block with {:@render name(…)}"
                     .into(),
             ));
         }
@@ -3206,9 +3254,19 @@ impl Parser<'_> {
         self.require_text(open, "{:@render}")?;
         let (name, args) = self.call(open, arg, "{:@render name(arg, …)}")?;
         let Some(s) = self.snippets.iter().rev().find(|s| s.name == name) else {
+            // A prop the parent gives a snippet in (`{@props row: Snippet}`
+            // or `$props()`): drawn after the anchor, with these arguments.
+            let prop = self
+                .props
+                .as_ref()
+                .is_some_and(|p| p.0.iter().any(|d| d.name == name))
+                || self.src.contains("$props(");
+            if prop {
+                return self.live_text(open, &name, "draw", Some(format!("[{args}]")));
+            }
             return Err(self.err(
                 open,
-                format!("no snippet `{name}` above: {{:@render}} draws a {{#snippet}} defined earlier in this file"),
+                format!("no snippet `{name}` above: {{:@render}} draws a {{#snippet}} defined earlier in this file, or a snippet a component is given (declare `{name}` in {{@props}} or $props())"),
             ));
         };
         let (params, body) = (s.params.clone(), s.body.clone());
@@ -3227,12 +3285,50 @@ impl Parser<'_> {
         (self.i, self.end) = (body.start, body.end);
         self.rendering.push(name);
         self.scan()?;
+        self.close_consts(open)?;
         self.rendering.pop();
         (self.i, self.end) = (i, end);
         for _ in &params {
             self.client_close(open)?;
         }
         Ok(())
+    }
+
+    /// `s` given to a component the browser draws: its body, read here as the
+    /// content of a `Dir::Snip` block just before the component, which the
+    /// component's `{:@render name(args)}` draws with the page's names.
+    fn client_snip(&mut self, open: usize, prop: &str, s: &Snip) -> Result<(), Error> {
+        let mut names = Vec::new();
+        for p in &s.params {
+            let p = untyped(p);
+            if !is_ident(p) || js::is_reserved(p) {
+                return Err(self.err(
+                    open,
+                    format!("the browser draws snippet `{}` in a component, so its parameters are plain names, not `{p}`", s.name),
+                ));
+            }
+            names.push(p.to_string());
+        }
+        let line = self.line_of(open);
+        let d = Directive {
+            kind: Dir::Snip,
+            name: prop.into(),
+            mods: names.clone(),
+            value: None,
+            key: None,
+            props: Vec::new(),
+            line,
+            col: self.col_of(open),
+        };
+        self.client_frame(open, "snip", Vec::new(), d, names)?;
+        let (i, end) = (self.i, self.end);
+        (self.i, self.end) = (s.body.start, s.body.end);
+        self.rendering.push(s.name.clone());
+        self.scan()?;
+        self.close_consts(open)?;
+        self.rendering.pop();
+        (self.i, self.end) = (i, end);
+        self.client_close(open)
     }
 
     /// `{:@const name = expr}` in a client block: `name` for the rest of the
@@ -3245,10 +3341,13 @@ impl Parser<'_> {
         else {
             return Err(self.err(open, "expected {:@const name = expr}".into()));
         };
-        if !matches!(self.frames.last(), Some(Frame::Client { .. })) {
+        if !matches!(
+            self.frames.last(),
+            Some(Frame::Client { .. } | Frame::Snippet { .. })
+        ) {
             return Err(self.err(
                 open,
-                "{:@const} goes inside a {:#if}, {:#each}, {:#key}, {:#await} or {:#try} block"
+                "{:@const} goes inside a {:#if}, {:#each}, {:#key}, {:#await} or {:#try} block, or a snippet"
                     .into(),
             ));
         }
@@ -3268,18 +3367,26 @@ impl Parser<'_> {
     }
 
     /// `{:expr}` in text: an anchor the browser puts the value after, what
-    /// the server knows of it, and the end of it.
-    fn live_text(&mut self, open: usize, js: &str, html: bool) -> Result<(), Error> {
+    /// the server knows of it, and the end of it. `how` is `""`, `html`
+    /// (`{:@html}`) or `draw` (`{:@render prop(args)}`, whose `args` are an
+    /// array's source), which the server paints nothing of.
+    fn live_text(
+        &mut self,
+        open: usize,
+        js: &str,
+        how: &str,
+        args: Option<String>,
+    ) -> Result<(), Error> {
         let (line, col) = (self.line_of(open), self.col_of(open));
         let d = Directive {
             kind: Dir::Hole,
-            name: if html { "html".into() } else { String::new() },
+            name: how.into(),
             mods: Vec::new(),
             value: Some(Code {
                 src: js.to_string(),
                 line,
             }),
-            key: None,
+            key: args.map(|src| Code { src, line }),
             props: Vec::new(),
             line,
             col,
@@ -3290,7 +3397,7 @@ impl Parser<'_> {
         self.text.push_str("</template>");
         self.push_node(open, Node::Hole { group })?;
         self.text
-            .push_str(if html { "<!--h-->" } else { "<!---->" });
+            .push_str(if how == "html" { "<!--h-->" } else { "<!---->" });
         Ok(())
     }
 
@@ -3458,7 +3565,7 @@ impl Parser<'_> {
                 .strip_prefix("@html ")
                 .filter(|_| self.ctx == Ctx::Text)
             {
-                return self.live_text(open, e.trim(), true);
+                return self.live_text(open, e.trim(), "html", None);
             }
             if let Some(c) = rest.strip_prefix("@const ") {
                 return self.client_const(open, c.trim());
@@ -3523,7 +3630,7 @@ impl Parser<'_> {
                     ));
                 }
                 return match self.ctx {
-                    Ctx::Text => self.live_text(open, js, false),
+                    Ctx::Text => self.live_text(open, js, "", None),
                     Ctx::Quoted(q) => self.live_value(open, q),
                     Ctx::Tag if self.last == b'=' => {
                         self.check_live_attr(open)?;
@@ -3851,6 +3958,7 @@ impl Parser<'_> {
 
     /// `{/if}` and the like, server blocks' and client blocks' alike.
     fn block_close(&mut self, open: usize, kw: &str) -> Result<(), Error> {
+        self.close_consts(open)?;
         let open_kind = match self.frames.last() {
             Some(Frame::If { .. }) => "if",
             Some(Frame::Each { .. }) => "each",
@@ -6201,6 +6309,47 @@ mod tests {
         assert!(client_renderable(&t.nodes));
 
         let err = |src: &str| parse(src).unwrap_err().msg;
+        // A snippet given to a component the browser draws: a `Snip` block
+        // before the tag, named for the prop, whether it is written among
+        // the children or passed by name; the component draws it with a prop.
+        for src in [
+            "<List a={:b}>{#snippet row(n)}{:@const l = n}<em>{:l}</em>{/snippet}</List>",
+            "{#snippet em(n)}<em>{:n}</em>{/snippet}<List a={:b} row={em} />",
+        ] {
+            let t = parse(&format!("{src}<script>let b = 1</script>")).unwrap();
+            let snip = t
+                .groups
+                .iter()
+                .flat_map(|g| &g.directives)
+                .find(|d| d.kind == Dir::Snip);
+            let snip = snip.unwrap();
+            assert_eq!(
+                (snip.name.as_str(), snip.mods.as_slice()),
+                ("row", ["n".to_string()].as_slice()),
+                "{src}"
+            );
+            let order: Vec<Dir> = (t.nodes.iter())
+                .filter_map(|n| match n {
+                    Node::Client(b) => Some(t.groups[b[0].0].directives[0].kind),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(order, [Dir::Snip, Dir::Comp], "block, then tag: {src}");
+        }
+        let t =
+            parse("{@props row: Snippet<&u8>}{:#each xs as x}{:@render row(x)}{:/each}").unwrap();
+        let draw = t
+            .groups
+            .iter()
+            .flat_map(|g| &g.directives)
+            .find(|d| d.name == "draw");
+        let draw = draw.unwrap();
+        assert_eq!(draw.value.as_ref().unwrap().src, "row");
+        assert_eq!(draw.key.as_ref().unwrap().src, "[x]");
+        assert!(err("<List row={:r}>{#snippet row(n)}x{/snippet}</List>").contains("`row` twice"));
+        assert!(
+            err("<List a={:b}>{#snippet row((a, b))}x{/snippet}</List>").contains("plain names")
+        );
         // `{:@html}` is a hole that ends in `<!--h-->`; `{:@const}` is a
         // one-item each that its block's end closes.
         let t = parse("{:#if a}{:@const b = a + 1}{:@const c = b * 2}<i>{:c}</i>{:@html h}{:else}{:@const d = 1}{:d}{:/if}{:#each xs as x}{:@const y = x}{:/each}").unwrap();

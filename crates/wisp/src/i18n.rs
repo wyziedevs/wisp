@@ -160,40 +160,351 @@ pub fn default_locale(name: &str) -> crate::Result {
     }
 }
 
+/// How `[[lang=locale]]` shows in URLs: `prefix` in `i18n = [...]` of
+/// `[package.metadata.wisp]` (see [`prefix`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Prefix {
+    /// `/about` and `/fr/about` both answer, neither redirects. What an app
+    /// gets that says nothing.
+    Optional,
+    /// Every page has its locale: `/about` redirects (307) to the
+    /// visitor's, `/fr/about`.
+    Always,
+    /// The default locale has none, `/about`, the others do, `/fr/about`;
+    /// `/en/about` redirects (308) to `/about`. A page without a prefix is
+    /// the default locale's whatever the cookie or `Accept-Language` says.
+    AsNeeded,
+}
+
+/// How the app's URLs name locales: [`Prefix::Optional`] unless
+/// `i18n = ["prefix always"]` or `"prefix as-needed"` in Cargo.toml says
+/// otherwise.
+pub fn prefix() -> Prefix {
+    match PREFIX.load(Ordering::Relaxed) {
+        1 => Prefix::Always,
+        2 => Prefix::AsNeeded,
+        _ => Prefix::Optional,
+    }
+}
+
+/// `prefix`, as [`Prefix`] by number.
+static PREFIX: AtomicU8 = AtomicU8::new(0);
+/// Each domain of `i18n = ["domain example.fr fr"]` and its locale's index.
+static DOMAINS: OnceLock<&'static [(&'static str, u8)]> = OnceLock::new();
+
+/// At startup, from `i18n = [...]` in Cargo.toml: the default locale, the
+/// prefix and the domains.
+pub(crate) fn setup(default: u8, prefix: u8, domains: &'static [(&'static str, u8)]) {
+    DEFAULT.store(default, Ordering::Relaxed);
+    PREFIX.store(prefix, Ordering::Relaxed);
+    let _ = DOMAINS.set(domains);
+}
+
+fn domains() -> &'static [(&'static str, u8)] {
+    DOMAINS.get().copied().unwrap_or(&[])
+}
+
+/// The default locale's name, `""` without locales.
+pub(crate) fn default_name() -> &'static str {
+    locales()
+        .get(DEFAULT.load(Ordering::Relaxed) as usize)
+        .copied()
+        .unwrap_or("")
+}
+
+/// The locale a request for `host` gets, by its domain.
+fn by_host(host: &str) -> Option<u8> {
+    host_in(domains(), host)
+}
+
+/// [`by_host`] among `domains`; a port in either may be left out.
+fn host_in(domains: &[(&str, u8)], host: &str) -> Option<u8> {
+    let bare = match host.rsplit_once(':') {
+        Some((h, port)) if port.bytes().all(|b| b.is_ascii_digit()) => h,
+        _ => host,
+    };
+    let is = |d: &str| d.eq_ignore_ascii_case(host) || d.eq_ignore_ascii_case(bare);
+    domains.iter().find(|(d, _)| is(d)).map(|(_, i)| *i)
+}
+
+/// The domain of `locale`, if `i18n` gave it one.
+fn domain_of(locale: &str) -> Option<&'static str> {
+    let list = locales();
+    let has = |i: &u8| list.get(*i as usize) == Some(&locale);
+    domains().iter().find(|(_, i)| has(i)).map(|(d, _)| *d)
+}
+
 /// `path` in `locale`: its first segment, if a locale, replaced, else
 /// `locale` put first. `localize("/fr/about", "en")` is `/en/about`,
 /// `localize("/about", "fr")` is `/fr/about`. For links to a route under
-/// `[[lang=locale]]`.
+/// `[[lang=locale]]`. With `prefix as-needed` the default locale gets none
+/// (`/about`), and a locale with a `domain` gets that, `//example.fr/about`.
 pub fn localize(path: &str, locale: &str) -> String {
-    localize_in(locales(), path, locale)
+    let at = path_in(locales(), path, locale, bare(locale));
+    match domain_of(locale) {
+        Some(host) => format!("//{host}{at}"),
+        None => at,
+    }
 }
 
-fn localize_in(list: &[&str], path: &str, locale: &str) -> String {
+/// Whether `locale` has no prefix: the default one with `prefix as-needed`,
+/// and any with a domain.
+fn bare(locale: &str) -> bool {
+    domain_of(locale).is_some() || (prefix() == Prefix::AsNeeded && locale == default_name())
+}
+
+/// `path` with its locale segment, if it has one, taken out: what every
+/// locale's is made of, and never one that begins `//`.
+fn strip(list: &[&str], path: &str) -> String {
     let rest = path.strip_prefix('/').unwrap_or(path);
     let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let tail = match end > 0 && list.contains(&&rest[..end]) {
         true => &rest[end..],
         false => rest,
     };
-    match tail.is_empty() || tail.starts_with(['/', '?', '#']) {
-        true => format!("/{locale}{tail}"),
-        false => format!("/{locale}/{tail}"),
+    format!("/{}", tail.trim_start_matches(['/', '\\']))
+}
+
+/// `path` in `locale`: [`localize`] without the domain. `bare`: no prefix.
+fn path_in(list: &[&str], path: &str, locale: &str, bare: bool) -> String {
+    let all = strip(list, path);
+    match (bare, all.as_bytes().get(1)) {
+        (true, _) => all,
+        (false, None | Some(b'?' | b'#')) => format!("/{locale}{}", &all[1..]),
+        (false, _) => format!("/{locale}{all}"),
     }
 }
 
 /// The locale of the request, by index into [`locales`]: the route's
-/// `lang` parameter, else the `lang` cookie, else the best of its
-/// `Accept-Language`, else the default.
+/// `lang` parameter, else its host's `domain`, else the `lang` cookie,
+/// else the best of its `Accept-Language`, else the default. With `prefix
+/// as-needed` a page without a prefix is the default's, cookie and header
+/// not asked.
 pub(crate) fn pick(cx: &Cx) -> u8 {
     let list = locales();
     if list.is_empty() {
         return 0;
     }
     let find = |s: &str| list.iter().position(|l| l.eq_ignore_ascii_case(s));
-    let named = (cx.route_param("lang").and_then(find))
-        .or_else(|| cx.cookie("lang").and_then(find))
+    if let Some(i) = cx.route_param("lang").and_then(find) {
+        return i as u8;
+    }
+    if let Some(i) = cx.host().and_then(by_host) {
+        return i;
+    }
+    let default = DEFAULT.load(Ordering::Relaxed);
+    if prefix() == Prefix::AsNeeded {
+        return default;
+    }
+    let named = (cx.cookie("lang").and_then(find))
         .or_else(|| cx.header("accept-language").and_then(|h| best(h, list)));
-    named.map_or_else(|| DEFAULT.load(Ordering::Relaxed), |i| i as u8)
+    named.map_or(default, |i| i as u8)
+}
+
+/// For a page under `[[lang=locale]]`: the redirect `prefix always` and
+/// `as-needed` ask for, if this request needs one. None for `optional`,
+/// for an app with `domain`s, and for anything but GET and HEAD.
+pub(crate) fn redirect(cx: &Cx) -> crate::Result {
+    let p = prefix();
+    let get = matches!(cx.method, crate::Method::Get | crate::Method::Head);
+    if p == Prefix::Optional || !get || !domains().is_empty() {
+        return Ok(());
+    }
+    let list = locales();
+    let given = cx.route_param("lang").filter(|l| !l.is_empty());
+    let picked = list.get(pick(cx) as usize).copied().unwrap_or("");
+    let Some((to, status)) = redirect_for(p, list, default_name(), given, picked, cx.path()) else {
+        return Ok(());
+    };
+    let query = cx.query_string();
+    let to = match query.is_empty() {
+        true => to,
+        false => format!("{to}?{query}"),
+    };
+    Err(crate::Error::redirect(status, to))
+}
+
+/// Where a request for `path` goes under `p`, and with what status:
+/// `given` is its `[[lang=locale]]`, `picked` the locale it gets. A 307
+/// is not kept by a cache, which suits an answer that depends on who asks.
+fn redirect_for(
+    p: Prefix,
+    list: &[&str],
+    default: &str,
+    given: Option<&str>,
+    picked: &str,
+    path: &str,
+) -> Option<(String, u16)> {
+    match (p, given) {
+        (Prefix::Always, None) => Some((path_in(list, path, picked, false), 307)),
+        (Prefix::AsNeeded, Some(l)) if l.eq_ignore_ascii_case(default) => {
+            Some((strip(list, path), 308))
+        }
+        _ => None,
+    }
+}
+
+/// `ltr` or `rtl`: the direction `locale` is written in, for `<html dir>`
+/// (the build sets it there) or a `dir` attribute of your own:
+/// `<p dir={wisp::dir(cx.locale())}>`.
+pub fn dir(locale: &str) -> &'static str {
+    match wisp_shared::dir::is_rtl(locale) {
+        true => "rtl",
+        false => "ltr",
+    }
+}
+
+/// `https://example.fr/app` for `locale`, from `base` (`https://example.com/app`):
+/// its domain's host in place of the base's, if `i18n` gave it one.
+pub(crate) fn site_for(base: &str, locale: &str) -> String {
+    site_in(domain_of(locale), base)
+}
+
+/// `base` with `host` (if any) as its host.
+fn site_in(host: Option<&str>, base: &str) -> String {
+    let Some(host) = host else {
+        return base.to_string();
+    };
+    let at = base.find("://").map_or(0, |i| i + 3);
+    let end = base[at..].find('/').map_or(base.len(), |i| at + i);
+    format!("{}{host}{}", &base[..at], &base[end..])
+}
+
+/// `<link>` tags for a page's head, which tell a crawler what the page is
+/// and what its other languages are: its `canonical` address, an
+/// `alternate` with `hreflang` per locale and `x-default` (the default
+/// locale's). On a page that is not under `[[lang=locale]]`, the canonical
+/// one alone. Addresses start with `SITE_URL`, else the request's host;
+/// nothing without either. `{@html wisp::alternates(cx)}`; the sitemap
+/// lists each page in each locale, too.
+pub fn alternates(cx: &Cx) -> String {
+    let Some(base) = crate::seo::base(cx) else {
+        return String::new();
+    };
+    let list = locales();
+    let mut out = String::new();
+    let mut tag = |rel: &str, lang: Option<&str>, href: &str| {
+        out.push_str(&format!("<link rel=\"{rel}\""));
+        if let Some(l) = lang {
+            out.push_str(&format!(" hreflang=\"{}\"", l.replace('_', "-")));
+        }
+        out.push_str(" href=\"");
+        crate::html::text(&mut out, href);
+        out.push_str("\">\n");
+    };
+    if cx.route_param("lang").is_none() || list.is_empty() {
+        tag("canonical", None, &format!("{base}{}", cx.path()));
+        return out;
+    }
+    let href = |l: &str| {
+        let at = path_in(list, cx.path(), l, bare(l));
+        format!("{}{at}", site_for(&base, l))
+    };
+    tag("canonical", None, &href(cx.locale()));
+    for l in list {
+        tag("alternate", Some(l), &href(l));
+    }
+    tag("alternate", Some("x-default"), &href(default_name()));
+    out
+}
+
+/// A language switcher: a `<nav class="wisp-locales" aria-label="Language">`
+/// of links to this page in each locale, named in their own language
+/// (`Français`), the current one `aria-current`. Empty with fewer than two
+/// locales. `{@html wisp::switcher(cx)}`; for another look, loop over
+/// [`locales`] with [`localize`] and [`native_name`].
+pub fn switcher(cx: &Cx) -> String {
+    let list = locales();
+    if list.len() < 2 {
+        return String::new();
+    }
+    let me = cx.locale();
+    let mut out = String::from("<nav class=\"wisp-locales\" aria-label=\"Language\">");
+    for l in list {
+        let to = localize(cx.path(), l);
+        let to = match to.starts_with("//") {
+            true => to,
+            false => crate::protocol::based(&to).into_owned(),
+        };
+        out.push_str("<a href=\"");
+        crate::html::text(&mut out, &to);
+        let tag = l.replace('_', "-");
+        out.push_str(&format!("\" lang=\"{tag}\" hreflang=\"{tag}\""));
+        if *l == me {
+            out.push_str(" aria-current=\"true\"");
+        }
+        out.push('>');
+        crate::html::text(&mut out, &native_name(l));
+        out.push_str("</a>");
+    }
+    out.push_str("</nav>");
+    out
+}
+
+/// A locale's name in its own language: `Français` for `fr`, `Português
+/// (BR)` for `pt-BR`; the code itself for one Wisp has no name for.
+pub fn native_name(locale: &str) -> String {
+    let mut parts = locale.split(['-', '_']);
+    let lang = parts.next().unwrap_or("").to_ascii_lowercase();
+    let name = match lang.as_str() {
+        "en" => "English",
+        "fr" => "Français",
+        "de" => "Deutsch",
+        "es" => "Español",
+        "it" => "Italiano",
+        "pt" => "Português",
+        "nl" => "Nederlands",
+        "sv" => "Svenska",
+        "da" => "Dansk",
+        "nb" | "no" => "Norsk",
+        "fi" => "Suomi",
+        "pl" => "Polski",
+        "cs" => "Čeština",
+        "tr" => "Türkçe",
+        "ru" => "Русский",
+        "uk" => "Українська",
+        "el" => "Ελληνικά",
+        "ar" => "العربية",
+        "he" => "עברית",
+        "fa" => "فارسی",
+        "hi" => "हिन्दी",
+        "th" => "ไทย",
+        "vi" => "Tiếng Việt",
+        "id" => "Bahasa Indonesia",
+        "ja" => "日本語",
+        "ko" => "한국어",
+        "zh" => "中文",
+        _ => return locale.to_string(),
+    };
+    match parts.next() {
+        Some(region) => format!("{name} ({})", region.to_ascii_uppercase()),
+        None => name.to_string(),
+    }
+}
+
+/// What a locale's page has in `[[lang=locale]]`: its name, or nothing for
+/// the one that has no prefix (see [`Prefix::AsNeeded`]). For the sitemap
+/// and the static export.
+pub(crate) fn segment(locale: &str) -> &str {
+    match bare(locale) {
+        true => "",
+        false => locale,
+    }
+}
+
+/// The values of `[[lang=locale]]` for the pages `wisp build --static`
+/// writes: each locale's, and the unprefixed too unless `prefix always`.
+pub(crate) fn variants() -> Vec<&'static str> {
+    let list = locales();
+    if list.is_empty() {
+        return vec![""];
+    }
+    let mut out: Vec<&str> = list.iter().map(|l| segment(l)).collect();
+    if prefix() == Prefix::Optional {
+        out.insert(0, "");
+    }
+    out.dedup();
+    out
 }
 
 /// The locale of `list` an `Accept-Language` value likes most: by `q`,
@@ -281,13 +592,53 @@ mod tests {
 
     #[test]
     fn localizes_paths() {
-        let l = |p: &str, to: &str| localize_in(&["en", "fr"], p, to);
+        let l = |p: &str, to: &str| path_in(&["en", "fr"], p, to, false);
+        let bare = |p: &str| path_in(&["en", "fr"], p, "en", true);
         assert_eq!(l("/fr/about?x=1", "en"), "/en/about?x=1");
         assert_eq!(l("/about", "fr"), "/fr/about");
         assert_eq!(l("/fr", "en"), "/en");
         assert_eq!(l("/", "fr"), "/fr");
         assert_eq!(l("/?q=1", "fr"), "/fr?q=1");
         assert_eq!(l("/french/x", "en"), "/en/french/x");
+        // No prefix, and never a path that is another host's.
+        assert_eq!(bare("/en/about?x=1"), "/about?x=1");
+        assert_eq!(bare("/en"), "/");
+        assert_eq!(bare("/en//evil.com"), "/evil.com");
+        assert_eq!(bare("/\\evil.com"), "/evil.com");
+        let go = |p, given, picked, path| redirect_for(p, &["en", "fr"], "en", given, picked, path);
+        assert_eq!(
+            go(Prefix::Always, None, "fr", "/about"),
+            Some(("/fr/about".into(), 307))
+        );
+        assert_eq!(
+            go(Prefix::Always, None, "en", "/"),
+            Some(("/en".into(), 307))
+        );
+        assert_eq!(go(Prefix::Always, Some("fr"), "fr", "/fr/about"), None);
+        assert_eq!(
+            go(Prefix::AsNeeded, Some("en"), "en", "/en/about"),
+            Some(("/about".into(), 308))
+        );
+        assert_eq!(go(Prefix::AsNeeded, Some("fr"), "fr", "/fr/about"), None);
+        assert_eq!(go(Prefix::AsNeeded, None, "en", "/about"), None);
+        assert_eq!(go(Prefix::Optional, Some("en"), "en", "/en/about"), None);
+        let d = [("example.fr", 1), ("localhost:3000", 0)];
+        assert_eq!(host_in(&d, "EXAMPLE.fr:8080"), Some(1));
+        assert_eq!(host_in(&d, "localhost:3000"), Some(0));
+        assert_eq!(host_in(&d, "example.com"), None);
+        assert_eq!(
+            site_in(Some("example.fr"), "https://example.com/app"),
+            "https://example.fr/app"
+        );
+        assert_eq!(
+            site_in(Some("example.fr"), "http://a:1"),
+            "http://example.fr"
+        );
+        assert_eq!(site_in(None, "https://x.org"), "https://x.org");
+        assert_eq!(dir("ar"), "rtl");
+        assert_eq!(dir("pt-BR"), "ltr");
+        assert_eq!(native_name("pt-br"), "Português (BR)");
+        assert_eq!(native_name("xx"), "xx");
     }
 
     #[test]
