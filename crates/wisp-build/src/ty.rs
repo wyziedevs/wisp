@@ -32,6 +32,24 @@ pub fn is_ident(s: &str) -> bool {
     s.bytes().next().is_some_and(|c| !c.is_ascii_digit()) && s.bytes().all(is_word)
 }
 
+/// Whether `s` is a Rust keyword (or `_`), which a `let` binds as `r#s`.
+pub fn is_keyword(s: &str) -> bool {
+    const KEYWORDS: &[&str] = &[
+        "_", "Self", "abstract", "as", "async", "await", "become", "box", "break", "const",
+        "continue", "crate", "do", "dyn", "else", "enum", "extern", "false", "final", "fn", "for",
+        "gen", "if", "impl", "in", "let", "loop", "macro", "match", "mod", "move", "mut",
+        "override", "priv", "pub", "ref", "return", "self", "static", "struct", "super", "trait",
+        "true", "try", "type", "typeof", "unsafe", "unsized", "use", "virtual", "where", "while",
+        "yield",
+    ];
+    KEYWORDS.contains(&s)
+}
+
+/// Whether `s` has no raw form: `r#self` is not a name.
+pub fn is_unrawable(s: &str) -> bool {
+    matches!(s, "_" | "self" | "Self" | "crate" | "super")
+}
+
 /// `wisp::Response` → `Response`, `Option<T>` → `Option`.
 pub fn last_segment(t: &str) -> &str {
     t.split('<')

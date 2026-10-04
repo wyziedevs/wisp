@@ -9,8 +9,11 @@
 pub mod base64;
 pub mod contexts;
 pub mod dotenv;
+pub mod fonts;
+pub mod gzip;
 pub mod json;
 pub mod manifest;
+pub mod og;
 pub mod pattern;
 pub mod plural;
 pub mod protocol;

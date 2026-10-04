@@ -2645,6 +2645,10 @@ fn settle_plain<A: App>(
 #[inline(always)]
 fn tag<A: App>(cx: &mut Cx, reply: &mut Reply) {
     tag_plain(cx, reply);
+    // A const: no code at all without `headers` in the app's config.
+    if A::HEADERS {
+        A::headers(cx, reply);
+    }
     // A const: no code at all unless `hooks.rs` has `after`.
     if A::AFTER {
         A::after(cx, reply);
@@ -2674,6 +2678,10 @@ fn before_routes<A: App>(cx: &Cx, route: Option<usize>, reply: &mut Reply) -> bo
         return true;
     }
     if raw.starts_with(b"/_") && internal::<A>(cx, cx.path(), reply) {
+        return true;
+    }
+    // A const: no code at all without `redirects` in the app's config.
+    if A::REDIRECTS && A::redirect(cx, reply) {
         return true;
     }
     // No route: the fallbacks, out of the way of the ones that have one.
@@ -2855,6 +2863,18 @@ fn find<A: App>(path: &str) -> Option<(usize, [&str; crate::cx::MAX_PARAMS])> {
     // A const: without `reroute` in `hooks.rs`, the path as it is.
     let path = if A::REROUTE { A::reroute(path) } else { path };
     match A::route(path) {
+        Some(found) => Some(found),
+        None => find_missing::<A>(path),
+    }
+}
+
+/// [`find`] of a path no route matches: a rewrite's route (not for a file
+/// of the app's, served as it is), else the route of its slashless form.
+#[cold]
+#[inline(never)]
+fn find_missing<A: App>(path: &str) -> Option<(usize, [&str; crate::cx::MAX_PARAMS])> {
+    let rewritten = A::REWRITES.then(|| A::rewrite(path)).flatten();
+    match rewritten.filter(|_| A::asset(path).is_none()) {
         Some(found) => Some(found),
         None => find_slash::<A>(path),
     }

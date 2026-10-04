@@ -115,6 +115,10 @@ pub fn check_step(secret: &str, code: &str) -> Option<u64> {
 }
 
 fn check_at(secret: &str, code: &str, time: u64) -> Option<u64> {
+    // Grouped digits are short: no work for a long one.
+    if code.len() > 4 * DIGITS {
+        return None;
+    }
     let key = unbase32(secret)?;
     // The digits an app shows may be grouped ("123 456").
     let code: String = code.chars().filter(|c| !c.is_whitespace()).collect();
@@ -225,6 +229,7 @@ mod tests {
         ] {
             assert!(check_at(&s, bad, t).is_none(), "{bad:?}");
         }
+        assert!(check_at(&s, &" ".repeat(1 << 20), t).is_none());
         assert!(check_at("not base32!", &right, t).is_none());
         assert!(check_at("", &right, t).is_none());
         assert!(check(&s, &code(&s, unix_now()).unwrap()));

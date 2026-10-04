@@ -1101,11 +1101,15 @@ pub mod check {
     }
 
     pub fn min(v: &impl Number, min: f64) -> Option<String> {
-        (v.number()? < min).then(|| format!("must be at least {min}"))
+        // `NaN` (a form says "NaN" to an `f64`) is below nothing and above
+        // nothing: it must not pass for a number in range.
+        let n = v.number()?;
+        (n.is_nan() || n < min).then(|| format!("must be at least {min}"))
     }
 
     pub fn max(v: &impl Number, max: f64) -> Option<String> {
-        (v.number()? > max).then(|| format!("must be at most {max}"))
+        let n = v.number()?;
+        (n.is_nan() || n > max).then(|| format!("must be at most {max}"))
     }
 
     pub fn min_len(v: &impl Length, min: usize) -> Option<String> {
@@ -1208,6 +1212,12 @@ pub mod check {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nan_is_in_no_range() {
+        assert!(check::min(&f64::NAN, 0.0).is_some() && check::max(&f64::NAN, 9.0).is_some());
+        assert!(check::min(&1.0, 0.0).is_none() && check::max(&Some(f64::NAN), 9.0).is_some());
+    }
 
     #[test]
     fn parses_strictly() {

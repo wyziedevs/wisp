@@ -34,6 +34,7 @@ pub fn scope(css: &str, class: &str) -> Result<String, (usize, String)> {
         i: 0,
         out: String::with_capacity(css.len() + 64),
         class,
+        depth: 0,
     };
     let at = |i: usize| {
         i + cuts
@@ -93,6 +94,7 @@ struct Scoper<'a> {
     i: usize,
     out: String,
     class: &'a str,
+    depth: usize,
 }
 
 /// At-rules whose block is declarations or keyframes, copied as they are.
@@ -134,7 +136,7 @@ impl Scoper<'_> {
                     self.out.push_str(&scoped);
                     self.out.push('{');
                     self.i = end + 1;
-                    self.rules(true)?;
+                    self.nest(true, start)?;
                     self.close(start)?;
                 }
                 // A declaration, or (outside a block) a stray one, as is.
@@ -148,6 +150,18 @@ impl Scoper<'_> {
                 }
             }
         }
+    }
+
+    /// `rules` of a block opened by the rule at `open`, to a bounded depth
+    /// (it recurses, and the input may be anything).
+    fn nest(&mut self, nested: bool, open: usize) -> Result<(), (usize, String)> {
+        if self.depth >= 64 {
+            return Err((open, "rules nested more than 64 deep".into()));
+        }
+        self.depth += 1;
+        let r = self.rules(nested);
+        self.depth -= 1;
+        r
     }
 
     /// `@name prelude;` or `@name prelude { … }` at `self.i`.
@@ -180,7 +194,7 @@ impl Scoper<'_> {
                 } else {
                     self.out.push('{');
                     self.i += 1;
-                    self.rules(nested)?;
+                    self.nest(nested, start)?;
                     self.close(start)?;
                 }
             }
@@ -421,6 +435,14 @@ mod tests {
         let (at, msg) = scope("p{}\n@import 'x.css';", "w-x").unwrap_err();
         assert_eq!(at, 4);
         assert!(msg.contains("src/app.css"));
+    }
+
+    #[test]
+    fn nesting_is_bounded() {
+        let deep = format!("{}a{{}}{}", "p{".repeat(10_000), "}".repeat(10_000));
+        assert!(scope(&deep, "w").unwrap_err().1.contains("nested"));
+        let ok = format!("{}a{{}}{}", "p{".repeat(20), "}".repeat(20));
+        assert!(scope(&ok, "w").is_ok());
     }
 
     #[test]

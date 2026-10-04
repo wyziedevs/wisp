@@ -752,6 +752,56 @@ impl Cx {
         self.set(problem);
     }
 
+    /// Runs `f` once the reply is on its way: after the handler, on the
+    /// thread that has the connection, when it is next free to run it. For
+    /// work the visitor should not wait for: a log line, a mail, a
+    /// `revalidate_tag`. It runs even if the visitor is gone, and not at
+    /// all if the handler fails to answer. Anything slow should
+    /// `wisp::spawn` its own task. At the edge the host runs it after the
+    /// reply, keeping the instance alive until it is done (`waitUntil`
+    /// there). A request that never calls it pays nothing.
+    pub fn after(&self, f: impl FnOnce() + Send + 'static) {
+        crate::spawn(async move {
+            #[cfg(not(target_arch = "wasm32"))]
+            tokio::task::yield_now().await;
+            f();
+        });
+    }
+
+    /// Adds `tag` to what `CACHE` keeps of this response, for
+    /// `wisp::revalidate_tag`: `cx.cache_tag("post-7")`, in a handler whose
+    /// data it names. A route that always has the same tags says them in
+    /// `const CACHE_TAGS: &[&str] = &["posts"];`.
+    pub fn cache_tag(&mut self, tag: &str) {
+        let mut t = self.take::<crate::bake::Tags>().unwrap_or_default();
+        t.0.push(tag.to_owned());
+        self.set(t);
+    }
+
+    /// Whether this visitor is in draft mode (see [`Cx::enter_draft`]):
+    /// a signed cookie, so it cannot be forged. Such a request is never
+    /// answered from what `CACHE_PUBLIC` keeps, nor is its answer kept;
+    /// the page shows its unpublished content when this is true.
+    pub fn draft(&self) -> bool {
+        self.signed_cookie(DRAFT).is_some()
+    }
+
+    /// Puts this visitor in draft mode until the browser closes: call it
+    /// from an endpoint of your own that checks who may (`/api/draft`).
+    pub fn enter_draft(&mut self) {
+        let options = CookieOptions {
+            max_age: None,
+            signed: true,
+            ..CookieOptions::default()
+        };
+        self.set_cookie_with(DRAFT, "1", options);
+    }
+
+    /// Takes this visitor out of draft mode.
+    pub fn exit_draft(&mut self) {
+        self.delete_cookie(DRAFT);
+    }
+
     /// A message for the next page this visitor sees, which reads it with
     /// [`Cx::flashed`]: `cx.flash("Saved"); redirect("/")`. It waits in a
     /// cookie until then, or until the browser closes.
@@ -1100,6 +1150,8 @@ impl<'a, 'f> CookieWriter<'a, 'f> {
 
 /// The cookie [`Cx::flash`] keeps its message in.
 const FLASH: &str = "wisp-flash";
+/// The signed cookie of draft mode.
+const DRAFT: &str = "wisp-draft";
 
 /// Text written for a cookie, escaped as a `#[derive(Cookie)]` field is.
 struct Escape<'a>(&'a str);
@@ -1358,6 +1410,35 @@ mod tests {
         assert_eq!(cx.get::<&str>(), Some(&"text"));
         cx.reset();
         assert_eq!(cx.get::<User>(), None);
+    }
+
+    #[test]
+    fn after_runs_once_the_handler_is_through() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let done = std::sync::Arc::new(AtomicBool::new(false));
+        rt.block_on(async {
+            let cx = cx_for("GET / HTTP/1.1\r\n\r\n");
+            let flag = done.clone();
+            cx.after(move || flag.store(true, Ordering::Relaxed));
+            assert!(
+                !done.load(Ordering::Relaxed),
+                "not before the handler yields"
+            );
+            tokio::task::yield_now().await;
+            tokio::task::yield_now().await;
+        });
+        assert!(done.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn cache_tags_collect_on_the_request() {
+        let mut cx = cx_for("GET / HTTP/1.1\r\n\r\n");
+        cx.cache_tag("a");
+        cx.cache_tag("b");
+        assert_eq!(cx.take::<crate::bake::Tags>().unwrap().0, ["a", "b"]);
     }
 
     #[test]

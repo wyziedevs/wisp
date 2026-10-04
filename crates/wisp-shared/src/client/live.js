@@ -237,7 +237,29 @@ function fail(n, e) {
 }
 
 // An error goes to the {:#try} block its scope is in, else to the console.
-const report = (sc, e) => (sc?.b ? sc.b(e) : console.error(e));
+const report = (sc, e) => (sc?.b ? sc.b(e) : (tell(e), console.error(e)));
+
+// onError(f): f(error) for each error the page's code throws that no
+// {:#try} took, and each uncaught error and rejected promise, whatever
+// threw it. Ended with the script that made it. Nothing listens until one is.
+const fails = new Set();
+const tell = (e) => {
+  for (const f of fails) {
+    try {
+      f(e);
+    } catch {}
+  }
+};
+const uncaught = (e) => tell(e.error ?? e.reason ?? e.message);
+export function onError(f) {
+  if (!fails.size) for (const t of ['error', 'unhandledrejection']) addEventListener(t, uncaught);
+  fails.add(f);
+  const off = () => {
+    if (fails.delete(f) && !fails.size) for (const t of ['error', 'unhandledrejection']) removeEventListener(t, uncaught);
+  };
+  current?.sc.stops.push(off);
+  return off;
+}
 
 function dispose(n) {
   n.dead = 1;
@@ -303,6 +325,8 @@ function flush() {
 }
 
 export const tick = () => flushing || Promise.resolve();
+// Applies what was set now, not at the end of the task.
+export const flushSync = () => void (flushing && flush());
 
 // A plain object or array, or a Map or a Set, as a proxy whose every key is a
 // signal: reads are tracked, and writes tell only what read that key (or
@@ -848,6 +872,8 @@ const shared = {
   __wisp_eq: eq,
   untrack,
   tick,
+  flushSync,
+  onError,
   derived,
   store,
   persisted,
@@ -872,7 +898,8 @@ function helpers(inst) {
   // $effect: after the DOM is drawn (pre: before), and again when what it
   // read changes. What it returns runs before that and at the end. One made
   // inside another ends with that run of it.
-  const fx = (f, pre) => void node(observer?.u ? observer : sc, f, pre ? 0 : 1, 1);
+  let root = null;
+  const fx = (f, pre) => void node(root || (observer?.u ? observer : sc), f, pre ? 0 : 1, 1);
   return {
     __proto__: shared,
     __wisp_d(f) {
@@ -882,6 +909,20 @@ function helpers(inst) {
     },
     __wisp_e: (f) => fx(f),
     __wisp_ep: (f) => fx(f, 1),
+    // $effect.root(fn): effects made in fn end with the function it returns,
+    // not with the instance. $effect.tracking(): whether a read is tracked.
+    __wisp_er(f) {
+      const own = scope(sc);
+      const prev = root;
+      root = own;
+      try {
+        untrack(f);
+      } finally {
+        root = prev;
+      }
+      return () => end(own);
+    },
+    __wisp_et: () => !!observer,
     // The server values or props, as signals; `d` has $props() defaults
     // (for a prop not given, or null), and `rest` asks for `__rest`, an
     // object of the props not named. New ones come in through inst.s: a

@@ -1,6 +1,7 @@
 //! `wisp_build` on whole projects: what passes, and what is refused and how.
 
 mod common;
+mod fonts;
 mod logic;
 mod markup;
 mod ok;

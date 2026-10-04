@@ -19,7 +19,8 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 pub(crate) fn answer<A: App>(cx: &Cx) -> Option<(Vec<u8>, &'static str)> {
     let sitemap = match cx.raw_path() {
         b"/feed.xml" => {
-            let feed = atom(&base(cx)?, crate::content::all())?;
+            let slashed = crate::http::slash() == crate::TrailingSlash::Always;
+            let feed = atom(&base(cx)?, crate::content::all(), slashed)?;
             return Some((feed.into_bytes(), "application/atom+xml; charset=utf-8"));
         }
         b"/sitemap.xml" => true,
@@ -42,16 +43,30 @@ pub(crate) fn answer<A: App>(cx: &Cx) -> Option<(Vec<u8>, &'static str)> {
     Some((body.into_bytes(), mime))
 }
 
+/// `v` as XML text: escaped, and without the control characters XML 1.0
+/// cannot hold at all (a feed reader rejects the whole file for one).
+fn esc(out: &mut String, v: &str) {
+    let bad = |c: char| c.is_control() && !matches!(c, '\t' | '\n' | '\r');
+    if v.chars().any(bad) {
+        let v: String = v.chars().filter(|&c| !bad(c)).collect();
+        return crate::html::text(out, &v);
+    }
+    crate::html::text(out, v);
+}
+
 /// `<tag>v</tag>`, escaped.
 fn elem(out: &mut String, tag: &str, v: &str) {
     out.push_str(&format!("<{tag}>"));
-    crate::html::text(out, v);
+    esc(out, v);
     out.push_str(&format!("</{tag}>"));
 }
 
+/// The most addresses a sitemap may hold (the protocol's own limit).
+const MAX_URLS: usize = 50_000;
+
 /// The Atom feed of the dated pages in `all`, newest first; `None` with
-/// none.
-fn atom(base: &str, all: &[crate::MdPage]) -> Option<String> {
+/// none. `slashed`: addresses end in `/`, as in the sitemap.
+fn atom(base: &str, all: &[crate::MdPage], slashed: bool) -> Option<String> {
     let mut dated: Vec<_> = all
         .iter()
         .filter_map(|p| Some((p.get("date")?, p)))
@@ -71,11 +86,16 @@ fn atom(base: &str, all: &[crate::MdPage]) -> Option<String> {
     elem(&mut out, "updated", &when(dated.first()?.0));
     out.push('\n');
     for (date, p) in dated {
-        let url = format!("{base}{}", p.path);
+        let segs: Vec<String> = (p.path.split('/'))
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect();
+        let end = if slashed && !segs.is_empty() { "/" } else { "" };
+        let url = format!("{base}{}{end}", url(&segs));
         out.push_str("<entry>");
         elem(&mut out, "title", p.title);
         out.push_str("<link href=\"");
-        crate::html::text(&mut out, &url);
+        esc(&mut out, &url);
         out.push_str("\"/>");
         elem(&mut out, "id", &url);
         elem(&mut out, "updated", &when(date));
@@ -92,6 +112,9 @@ fn atom(base: &str, all: &[crate::MdPage]) -> Option<String> {
 /// `{@html wisp::og("Hello", "A first post", "/cover.png")}`. Escaped; an
 /// empty `image` leaves that tag out.
 pub fn og(title: &str, description: &str, image: &str) -> String {
+    // `"auto"`: the picture `wisp build` made of this title (SVG, see `wisp_shared::og`).
+    let auto = wisp_shared::og::url(title);
+    let image = if image == "auto" { &auto } else { image };
     let mut out = String::new();
     let mut tag = |name: &str, v: &str| {
         out.push_str(&format!("<meta property=\"{name}\" content=\""));
@@ -156,10 +179,10 @@ fn xml(base: &str, routes: &[ExportRoute], slashed: bool) -> String {
     let mut out = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n",
     );
-    for u in urls {
+    for u in urls.into_iter().take(MAX_URLS) {
         out.push_str("<url><loc>");
         let end = if slashed && u != "/" { "/" } else { "" };
-        crate::html::text(&mut out, &format!("{base}{u}{end}"));
+        esc(&mut out, &format!("{base}{u}{end}"));
         out.push_str("</loc></url>\n");
     }
     out.push_str("</urlset>\n");
@@ -194,17 +217,26 @@ mod tests {
             },
         };
         let all = [page("/blog/a", Some("")), page("/about", None)];
-        let feed = atom("https://x.org", &all).unwrap();
+        let feed = atom("https://x.org", &all, false).unwrap();
         assert!(feed.contains("<updated>2026-10-01T00:00:00Z</updated>"));
         assert!(feed.contains("<link href=\"https://x.org/blog/a\"/>"));
         assert!(feed.contains("<title>A &amp; B</title>"));
         assert!(feed.contains("<summary>Hi</summary>"));
         assert!(!feed.contains("/about"));
-        assert!(atom("https://x.org", &all[1..]).is_none());
+        assert!(atom("https://x.org", &all[1..], false).is_none());
+        // The address is encoded, and slashed as the sitemap's is.
+        let odd = [page("/blog/a b", Some(""))];
+        let feed = atom("https://x.org", &odd, true).unwrap();
+        assert!(feed.contains("<link href=\"https://x.org/blog/a%20b/\"/>"));
+        // XML cannot hold control characters.
+        let mut out = String::new();
+        elem(&mut out, "t", "a\u{c}b\u{0}<");
+        assert_eq!(out, "<t>ab&lt;</t>");
         let tags = og("A \"b\"", "d", "");
         assert!(tags.contains("og:title\" content=\"A &quot;b&quot;\""));
         assert!(!tags.contains("og:image") && tags.contains("\"summary\""));
         assert!(og("t", "d", "/c.png").contains("og:image\" content=\"/c.png\""));
+        assert!(og("Hi there", "d", "auto").contains("og:image\" content=\"/og/hi-there.svg\""));
     }
 
     #[test]

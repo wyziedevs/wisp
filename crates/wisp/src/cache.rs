@@ -10,12 +10,33 @@ use crate::Shared;
 use std::any::Any;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
 /// Most answers kept: past it, the expired go, then the oldest key.
 const MAX: usize = 1024;
 
 /// An answer and the unix second it is kept until.
 type Kept = (u64, Arc<dyn Any + Send + Sync>);
+
+/// How many `uncache`s there were, and the last few's prefixes by number:
+/// an answer made across one for its key is stale, and not kept.
+static FORGOTTEN: AtomicU64 = AtomicU64::new(0);
+static FORGOT: Shared<Vec<(u64, String)>> = Shared::new(Vec::new());
+
+/// Most prefixes remembered: an answer made across more is not kept.
+const FORGOT_KEPT: usize = 16;
+
+/// Whether `key` was uncached since `FORGOTTEN` was `from`.
+fn forgotten(key: &str, from: u64) -> bool {
+    if FORGOTTEN.load(Relaxed) == from {
+        return false;
+    }
+    let log = FORGOT.lock();
+    log.first().is_none_or(|(n, _)| *n > from + 1)
+        || log
+            .iter()
+            .any(|(n, p)| *n > from && key.starts_with(p.as_str()))
+}
 
 static KEPT: Shared<BTreeMap<String, Kept>> = Shared::new(BTreeMap::new());
 
@@ -38,8 +59,12 @@ where
     if let Some(v) = hit {
         return v;
     }
+    let from = FORGOTTEN.load(Relaxed);
     let v = make().await;
     let mut kept = KEPT.lock();
+    if secs == 0 || forgotten(key, from) {
+        return v;
+    }
     if kept.len() >= MAX && !kept.contains_key(key) {
         kept.retain(|_, (until, _)| *until > now);
         // Still full: the one that expires first goes.
@@ -60,8 +85,25 @@ where
 /// keeps (on every worker thread) whose path is `prefix` or below it
 /// (`/posts` is `/posts` and `/posts/1`, not `/postscript`; `/` is all).
 pub fn uncache(prefix: &str) {
-    KEPT.lock().retain(|k, _| !k.starts_with(prefix));
+    let mut kept = KEPT.lock();
+    let mut log = FORGOT.lock();
+    log.push((FORGOTTEN.load(Relaxed) + 1, prefix.to_owned()));
+    if log.len() > FORGOT_KEPT {
+        log.remove(0);
+    }
+    FORGOTTEN.fetch_add(1, Relaxed);
+    drop(log);
+    kept.retain(|k, _| !k.starts_with(prefix));
+    drop(kept);
     crate::bake::purge(prefix);
+}
+
+/// Drops every page `CACHE` keeps under `tag` (`const CACHE_TAGS` of its
+/// route, or `cx.cache_tag` in its handler), on every worker thread, before
+/// each next answers from what it keeps: `wisp::revalidate_tag("posts")`
+/// after a post changes. Costs nothing to a lookup.
+pub fn revalidate_tag(tag: &str) {
+    crate::bake::purge_tag(tag);
 }
 
 #[cfg(test)]
@@ -69,8 +111,14 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
 
+    /// The tests share `KEPT` (a flood in one evicts another's keys, an
+    /// `uncache` drops what is being made): one at a time.
+    static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn kept_until_it_expires_or_is_dropped() {
+        let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+        KEPT.lock().clear(); // a full one (the eviction test's) would evict these
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();
@@ -97,7 +145,32 @@ mod tests {
     }
 
     #[test]
+    fn an_answer_made_across_an_uncache_is_not_kept() {
+        let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+        KEPT.lock().clear(); // a full one (the eviction test's) would evict these
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let v = rt.block_on(cache("stale-a", 60, || async {
+            uncache("stale-a");
+            1u8
+        }));
+        assert_eq!(v, 1, "the caller still gets it");
+        assert!(!KEPT.lock().contains_key("stale-a"));
+        let v = rt.block_on(cache("stale-b", 60, || async {
+            uncache("other");
+            2u8
+        }));
+        assert!(
+            KEPT.lock().contains_key("stale-b") && v == 2,
+            "another prefix"
+        );
+    }
+
+    #[test]
     fn the_one_that_expires_first_goes_when_it_is_full() {
+        let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+        KEPT.lock().clear(); // a full one (the eviction test's) would evict these
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();

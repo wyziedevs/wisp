@@ -15,7 +15,12 @@ pub struct Fail {
 
 /// `url`'s body.
 pub fn fetch(url: &str) -> Result<Vec<u8>, Fail> {
-    curl(url, None)
+    curl(url, None, None)
+}
+
+/// `url`'s body as a browser with this `User-Agent` gets it.
+pub fn fetch_as(url: &str, agent: &str) -> Result<Vec<u8>, Fail> {
+    curl(url, None, Some(agent))
 }
 
 /// Downloads `url` to `dest`, whole or not at all: into a file beside it
@@ -31,7 +36,7 @@ pub fn fetch_to(
     let mut partial = dest.as_os_str().to_owned();
     partial.push(format!(".{}.download", std::process::id()));
     let partial = PathBuf::from(partial);
-    let done = curl(url, Some(&partial))
+    let done = curl(url, Some(&partial), None)
         .map_err(|e| format!("Could not download {url}: {}.", e.text))
         .and_then(|_| check(&partial))
         .and_then(|()| match fs::rename(&partial, dest) {
@@ -43,9 +48,12 @@ pub fn fetch_to(
 }
 
 /// curl, the body into `out` or returned.
-fn curl(url: &str, out: Option<&Path>) -> Result<Vec<u8>, Fail> {
+fn curl(url: &str, out: Option<&Path>, agent: Option<&str>) -> Result<Vec<u8>, Fail> {
     let mut cmd = Command::new("curl");
     cmd.args(["-fsSL", "--connect-timeout", "30", "--retry", "2"]);
+    if let Some(a) = agent {
+        cmd.args(["-A", a]);
+    }
     if let Some(file) = out {
         cmd.arg("-o").arg(file);
     }

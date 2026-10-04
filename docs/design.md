@@ -173,7 +173,14 @@ a `date` front matter field, newest first (title `SITE_TITLE`, else the
 host; a page's `description` field is its summary); none without a dated
 page; `--static` writes it too. `wisp::og(title, description, image)` is
 the Open Graph and Twitter card tags of a page's head, escaped:
-`{@html wisp::og("Hello", "A first post", "/cover.png")}`.
+`{@html wisp::og("Hello", "A first post", "/cover.png")}`. With the image
+`"auto"` and a literal title and description, `wisp build` (`og.rs` in the
+CLI, drawing in `wisp-shared`'s `og.rs`) writes `static/og/<slug>.svg`: 1200
+by 630, title, description, the app's name, in `src/app.css`'s `--bg`, `--ink`
+and `--accent` (else Wisp's). It is SVG because nothing in Wisp's dependencies
+rasterizes, and X and Facebook want PNG: convert it in CI (`rsvg-convert -o
+static/og/x.png static/og/x.svg`, or resvg) and pass `"/og/x.png"` as the image.
+A title that is not a literal (a database row) needs an image of your own.
 
 ### Markdown pages
 
@@ -223,6 +230,22 @@ paths with a `.` in their last segment are left as asked), and `Ignore`
 serves both. The other form is matched only after its own path matched
 no route, so the default costs nothing. The build warns of a literal
 `href="/…"` in a template that the setting would redirect.
+
+Config rules: `redirects`, `rewrites` and `headers` in `[package.metadata.wisp]`
+(Cargo.toml), lists of strings, as Next.js's next.config has them. The build
+checks them and bakes them into tables; the server calls in only through the
+consts `App::REDIRECTS`, `REWRITES` and `HEADERS`, so an app with none runs no
+code for them. A pattern is a route's: text, `[name]`, a last `[...name]`.
+`redirects = ["/old/[id] /new/[id] 301"]`: `from to [status]` (308 by default),
+`to` a path of the app (under the base path, the query kept) or an
+`http(s)://` URL; checked first in `before_routes`, after Wisp's own `/_`
+paths. `rewrites = ["/g/[...p] /docs/[...p]"]`: the request is served by that
+route (named by its pattern as is, no matcher or optional segment; its
+parameters are `[name]`s of `from`), the address kept; tried only for a path no
+route matches and no file of the app serves, in `find`'s miss path, so a
+matched path pays nothing. `headers = ["/api/[...p] x-a: b"]` set on every
+reply of a matching path, replacing the reply's own, in `tag`. Anything
+malformed fails the build, naming the entry.
 
 ### Page logic
 
@@ -392,6 +415,30 @@ async fn load(slug: String) -> Result<Data> {
 
   The build checks that it is a `const` `u32`, one of the two names, set
   once per route, and not in a layout.
+- Three more consts beside `CACHE`, none costing a request that does not use
+  them (they fold away; the hit path is the same code):
+  - `const CACHE_STALE: u32 = 600;` is stale-while-revalidate: for 600 s
+    after the answer is old, it is still sent at once, and the first request
+    that finds it so makes a new one in the background (the app's own
+    `handle`, as a GET from peer port 0, which a client never has), so no
+    visitor waits for a render and a burst makes one. Single-flight per
+    worker: workers do not share what they keep, so each refreshes for
+    itself, once. A refresh that errors keeps the old answer and is tried
+    again by the next request, until the window ends.
+  - `const CACHE_TAGS: &[&str] = &["posts"];`, or `cx.cache_tag("post-7")`
+    in a handler, names what is kept. `wisp::revalidate_tag("posts")` drops
+    every answer under it on every worker before it next answers from what
+    it keeps (as `uncache` does for paths). Each worker has a tag-to-keys
+    index written only when a tagged answer is kept and when a tag is
+    dropped; a lookup never touches it.
+  - Draft mode: `cx.enter_draft()` (call it from an endpoint of your own
+    that checks who may; `cx.exit_draft()` ends it) sets the signed cookie
+    `wisp-draft`, and `cx.draft()` says whether the request has it. For a
+    `CACHE_PUBLIC` route a draft request is never answered from what is
+    kept, nor is its answer kept: the check runs only on that route's hit
+    branch, behind "has a cookie", in a cold function. A `CACHE` route
+    already renders for any request with a cookie. A page the build baked
+    whole reads nothing of the request, so it has no draft.
 - A page that reads nothing of the request needs no `CACHE`: when it and
   its layouts have no load, statements or `+page.js`, and every hole in them
   is a literal or a component's prop given as one (`<Card title="Hi" />`,
@@ -598,6 +645,17 @@ dep redis = { version = "0.27", features = ["tokio-comp"] }
 env REDIS_URL=redis://127.0.0.1/
 file src/cache.rs
 
+# add/redis-store: src/store.rs is `impl wisp::Store` over redis (HSET/HDEL on a
+# hash per table, HGETALL to load), and init calls wisp::store(RedisStore::new(url))
+dep redis = { version = "0.27", features = ["tokio-comp"] }
+env REDIS_URL=redis://127.0.0.1/
+file src/store.rs
+
+# add/kv-store: src/store.rs is `impl wisp::Store` over a KV's REST API
+# (a key per row, `table/id`), with `changes` from a list of recent keys
+env KV_URL=https://example.invalid/kv
+file src/store.rs
+
 # add/tailwind: src/app.css is `@import "tailwindcss";`
 file src/app.css
 note Wisp builds app.css with Tailwind when it imports it.
@@ -626,6 +684,7 @@ the app's and stays; `--force` writes over it.
 | `Checkbox`, `Switch` | `<Switch label="Dark" name="dark" checked />` (a checkbox, `role="switch"`) | none |
 | `Select` | `<Select label="Drink" name="drink"><option>Tea</option></Select>` (native) | none |
 | `Accordion` | `<Accordion title="Q" group="faq">A</Accordion>` (`<details name>`) | none |
+| `ClientOnly` | `<ClientOnly fallback="Loading…"><Chart /></ClientOnly>`: the server sends the fallback, the children wait in an inert `<template>` and are drawn on mount | `onMount` |
 | `Dialog` | `<Dialog id="d" title="Sure?" trigger="Delete">…</Dialog>` (`<dialog>`, `commandfor`) | none |
 | `Menu` | `<Menu id="m" label="Actions"><button role="menuitem">Edit</button></Menu>` (popover) | arrow keys |
 | `Tabs` | `<Tabs id="t" labels={["A", "B"]}><div>…</div><div>…</div></Tabs>` | arrow keys |
@@ -638,7 +697,7 @@ the app's and stays; `--force` writes over it.
   `--danger`, `--success` and `--warning` are read the same way.
 - Native elements first (`<dialog>`, `popover`, `<details>`, `<select>`,
   checkboxes): the browser's keyboard, focus and screen reader support,
-  and no JavaScript for ten of the fourteen. The rest follow the WAI-ARIA
+  and no JavaScript for ten of the fifteen. The rest follow the WAI-ARIA
   patterns. A test builds all of them with no accessibility warnings.
 
 ### Scoped styles
@@ -1092,6 +1151,12 @@ fn before(cx: &mut Cx) -> Result<()> {
   `cx.take::<T>()` moves it out, so it need not be `Clone`.
 - `cx.bearer()` is the token of an `Authorization: Bearer` header, `cx.host()`
   the `Host`, and `cx.delete_cookie(name)` removes a cookie.
+- `cx.after(|| …)` runs a closure once the handler is through, on the
+  connection's thread when it is next free (`wisp::spawn`, then a yield), for
+  a log line or a `revalidate_tag` the visitor should not wait for. It adds
+  nothing to a request that does not call it, and nothing to the request
+  path. At the edge it is `wisp::spawn`, so the host keeps the instance
+  alive until it is done (`waitUntil` on Cloudflare).
 - `cx.flash("Saved")` leaves a message for the next page the visitor sees
   (after a `redirect`, say), whose `load` reads it once with `cx.flashed()`.
 - `src/hooks.rs` is `crate::hooks`, so routes can use its `pub` types. Like
@@ -1272,6 +1337,80 @@ branches).
   `/blog/[slug]` `blog_slug`, `_2` for a name taken), taking each parameter
   as `impl Display` (optional ones `Option<..>`), percent-encoding it
   (`rt::path_param`; a rest parameter keeps its `/`).
+- **Script strategies.** `<script src type="wisp/idle">` and `wisp/interaction`
+  are inert to the browser (and to the navigation morph, which only re-creates
+  `module`/`javascript` ones); `lazy()` in wisp.js, run by `wake()`, makes
+  the real `<script>` on idle or on the first pointer, key or scroll. Plain
+  `<script src>` and `defer` need no code. About 270 bytes gzipped.
+- **Web vitals.** Opt-in by `<meta name="wisp-vitals" content="/path">`: wisp.js
+  watches LCP, layout shifts and event timing with `PerformanceObserver` and
+  sends one `sendBeacon` on `visibilitychange` hidden. Server side it is an
+  ordinary route. About 430 bytes gzipped.
+- **Bundle analyzer.** `wisp build --analyze` (`analyze.rs` in the CLI, `codegen::analyze`)
+  reads the app like a release build, builds nothing, and for each page route
+  sums the files that page loads as served (wisp.js and live.js minified, its
+  templates' modules and their static imports, app.css, the `static/` `.wasm`
+  files its JavaScript names), raw and gzipped, sorted largest first, with the
+  files of the heaviest. The gzip size is counted with Wisp's own compressor
+  (fixed Huffman, a hash-chain matcher), without writing the bits.
+- **Fonts.** `src/fonts.txt` (`wisp_shared::fonts`): a line per font file in
+  `static/fonts`, or `google` and weights, which is the opt-in to download
+  (`fonts.rs` in the CLI, once, the Latin subset as WOFF2 plus a TrueType copy
+  in `.wisp/fonts` for metrics; a failure only warns). The build puts first in
+  `app.css` (`join_styles`, so dev too) an `@font-face` per file with
+  `font-display: swap`, per family a fallback face (`size-adjust`,
+  `ascent-override`, `descent-override`, `line-gap-override` from the font's
+  `hhea` and `OS/2` over Arial, Times New Roman or Courier New's average width)
+  and `--font-<name>`; and a `preload` link per WOFF/WOFF2 at the start of the
+  shell's head. Metrics are read from TrueType and OpenType files only (WOFF2
+  is brotli, which Wisp has no decoder for): a local `.woff2` gets the swap
+  and the preload, and its fallback face when `.wisp/fonts/<name>.ttf` exists.
+- **Layers.** `extends = ["../base"]` beside `use` in `[package.metadata.wisp]`
+  (`plugins.rs`): a path or a dependency with an app's layout. Its `src/routes`
+  and `src/components` are copied as a plugin's are (`(layer_<dir>)` group,
+  `components/layer_<dir>/`, git-ignored, kept in step, stale ones removed),
+  minus a route file the app has at the same path and a component it has by
+  name; `static/` is listed after the app's own in `static_files` (the app's
+  URL wins); `src/app.css` goes first in `app.css` (`join_styles`, plain CSS,
+  no Sass or Tailwind pass over it). A layer's root `+layout.wisp` wraps only
+  the layer's own pages (it sits in the group). All build-time: an app with no
+  `extends` runs none of it.
+- **Named middleware.** `const MIDDLEWARE: &[&str] = &["auth"];` in a page,
+  a `+server.rs` or a `+layout` is checked against `src/middleware.rs` (a `pub fn`
+  by each name) and written by `middleware()` in codegen into the same
+  statements `RATE_LIMIT` and `CORS` make: the page's or layout's `__guard`,
+  the endpoint's `before`. They are the first thing the request runs, so no
+  dispatch changed (`http.rs` is untouched) and a route that names none has
+  nothing extra. `src/hooks.rs`'s `before` is the global one; `MIDDLEWARE`
+  there is an error.
+- **Loading views.** `+loading.wisp` (a known route file; `Tree::loading` holds
+  its folder's pattern) is read by `loading.rs` and written into the shell's
+  head as `<script type="application/json" id="wisp-loading">[[prefix,html]]`,
+  so it is static bytes in every page of an app that has one and nothing
+  otherwise; it does not run, so no CSP hash. `wait()` in wisp.js, before the
+  fetch of a navigation not fetched ahead and not a pop, finds the deepest
+  prefix that `fit` (the SPA fallback's own matcher) accepts and fills `<main>`.
+  Streaming `{#await}` needs none of it: it is for the whole page, and a
+  streamed page is read whole by a client navigation. About 290 bytes gzipped.
+- **Slots (parallel routes).** A `@name` folder with a `+page.wisp` beside a
+  `+layout.wisp` is an ordinary route at `/dir/@name` (no router change) that
+  the layout draws: `Tree::slots` records it, the layout's `render` gets a
+  `name: &dyn Fn(&mut Out)` parameter, `{@render name()}` calls it (a
+  non-local snippet, so the template needed nothing), and `wrap_layouts`
+  passes `|o| page_K::render(o, cx, &sK)` where `serve_page_N` loaded `sK` (the
+  slot's `+page.rs`) after the layouts' own loads. A slot page cannot have
+  statements (its render is sync inside a sync layout). Every page below the
+  layout draws it; a layout with no slot has the signature it had.
+- **Intercepting routes.** `(.)`, `(..)`, `(...)` before a segment inside a
+  slot (`Tree::intercepts`, from the route's segments; only `+page@.wisp`, so
+  the page has no layouts) name the route it intercepts. The slot a route
+  intercepts into is wrapped in `<div data-wisp-cut='[[target, own URL]]'>`
+  (only that layout's pages carry it, nothing in the shell); `cut()` in
+  wisp.js, on a click whose URL fits a target of an element the page has,
+  fetches the own URL, puts its `<body>` in the element and pushes the
+  target's URL. The page stays, `history.back()` closes it (the pop morphs the old
+  page's empty slot back), and a load of the URL is the route's own page.
+  About 310 bytes gzipped, none of it run on a page with no such element.
 - **Version skew.** A release build puts `<meta name="wisp-build" content=ID>`
   in the shell (a hash of templates and Rust: baked, nothing per request).
   wisp.js compares it with the page a navigation fetched, as it does

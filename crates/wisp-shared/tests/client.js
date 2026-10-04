@@ -18,11 +18,11 @@ const res = (body, type = 'text/html', status = 200) => ({
 });
 
 // A fresh page with wisp.js running in it. `fetches` records each call.
-function page({ online = true } = {}) {
+function page({ online = true, scripts = [], vitals = null, views = null, main = null, cuts = null } = {}) {
   const win = new EventTarget();
   const doc = new EventTarget();
   const fetches = [];
-  const calls = { scroll: [], say: [] };
+  const calls = { scroll: [], say: [], head: [], beacon: [] };
   const h1 = Object.assign(new EventTarget(), {
     attrs: {},
     style: {},
@@ -34,20 +34,22 @@ function page({ online = true } = {}) {
   const body = { nodeType: 3, nodeValue: '', dataset: {}, children: [], append(e) { calls.say.push(e); } };
   Object.assign(doc, {
     scripts: [],
-    head: { children: [], append() {} },
+    head: { children: [], append: (e) => calls.head.push(e) },
     body,
     currentScript: null,
     title: '',
     activeElement: { blur() {} },
-    getElementById: () => null,
-    querySelectorAll: () => [],
-    querySelector: (s) => (s == 'h1' ? h1 : null),
-    createElement: () => Object.assign(new EventTarget(), { style: {}, setAttribute() {}, isConnected: true }),
+    getElementById: (id) => (id == 'wisp-loading' && views ? { text: JSON.stringify(views) } : null),
+    querySelectorAll: (s) => (s.includes('wisp/') ? scripts : s.includes('data-wisp-cut') ? cuts || [] : []),
+    querySelector: (s) => (s == 'h1' ? h1 : s == 'main' ? main : s.includes('data-wisp-cut') ? cuts?.[0] ?? null : s.includes('wisp-vitals') ? vitals : null),
+    visibilityState: 'visible',
+    createElement: () => Object.assign(new EventTarget(), { style: {}, attrs: {}, setAttribute(k, v) { this.attrs[k] = v; }, isConnected: true }),
     hidden: false,
   });
   const store = {};
-  const nav = { onLine: online };
-  const loc = { href: 'http://x.test/', origin: 'http://x.test', assign: (u) => calls.assign = String(u) };
+  const nav = { onLine: online, sendBeacon: (u, b) => calls.beacon.push([u, b]) };
+  const idle = [];
+  const loc = { href: 'http://x.test/', origin: 'http://x.test', pathname: '/', assign: (u) => calls.assign = String(u) };
   class Anchor {}
   class Form {}
   Form.prototype.reset = () => {};
@@ -59,6 +61,7 @@ function page({ online = true } = {}) {
     history: { state: null, replaceState(s, _, u) { this.state = s; if (u) loc.href = String(u); }, pushState(s, _, u) { this.state = s; loc.href = String(u); } },
     sessionStorage: Object.assign(store, { getItem: (k) => store[k] ?? null, setItem: (k, v) => { store[k] = v; }, removeItem: (k) => { delete store[k]; } }),
     addEventListener: (t, f) => win.addEventListener(t, f),
+    requestIdleCallback: (f) => idle.push(f),
     scrollX: 0,
     scrollY: 0,
     scrollTo: (...a) => calls.scroll.push(a),
@@ -68,7 +71,7 @@ function page({ online = true } = {}) {
     DOMParser: class {
       parseFromString(html) {
         const t = /<title>(.*?)<\/title>/.exec(html);
-        return { title: t ? t[1] : '', head: { children: [] }, body: { nodeType: 3, nodeValue: '' }, querySelectorAll: () => [], querySelector: () => null, getElementById: () => null };
+        return { title: t ? t[1] : '', head: { children: [] }, body: { nodeType: 3, nodeValue: '', innerHTML: html }, querySelectorAll: () => [], querySelector: () => null, getElementById: () => null };
       }
     },
     fetch: async (u, o = {}) => {
@@ -102,7 +105,7 @@ function page({ online = true } = {}) {
   });
   let link_;
   const click = (attrs, href) => event('click', { target: (link_ = link(attrs, href)), button: 0 });
-  return { win, doc, g, h1, fetches, calls, store, nav, event, form, click, loc, submit: (f) => event('submit', { target: f }) };
+  return { idle, win, doc, g, h1, fetches, calls, store, nav, event, form, click, loc, submit: (f) => event('submit', { target: f }) };
 }
 
 const tests = {
@@ -208,7 +211,154 @@ const tests = {
     await tick();
     assert.equal(p.fetches.length, 1); // another site: nothing
   },
+  'scripts: idle ones load when idle, interaction ones at the first key'() {
+    const script = (src, type) => ({ src, type, attributes: [{ name: 'src', value: src }, { name: 'type', value: type }, { name: 'async', value: '' }] });
+    const p = page({ scripts: [script('http://t.test/a.js', 'wisp/idle'), script('http://t.test/b.js', 'wisp/interaction')] });
+    assert.equal(p.calls.head.length, 0);
+    p.idle.forEach((f) => f());
+    assert.equal(p.calls.head.length, 1);
+    assert.deepEqual(p.calls.head[0].attrs, { src: 'http://t.test/a.js', async: '' });
+    p.win.dispatchEvent(new Event('keydown'));
+    p.win.dispatchEvent(new Event('keydown'));
+    assert.equal(p.calls.head.length, 2);
+    assert.equal(p.calls.head[1].attrs.src, 'http://t.test/b.js');
+  },
+  async 'loading: the deepest folder view shows in main until the page arrives'() {
+    const main = { html: '', attrs: {}, replaceChildren() { this.html = ''; }, insertAdjacentHTML(_, h) { this.html += h; }, setAttribute(k, v) { this.attrs[k] = v; } };
+    const p = page({ views: [['', '<i>all</i>'], ['/blog', '<i>blog</i>'], ['/shop/[id=int]', '<i>item</i>']], main });
+    let release;
+    p.g.reply = () => new Promise((r) => (release = () => r(res('<title>B</title><h1>B</h1>'))));
+    p.click({}, '/blog/post');
+    assert.equal(main.html, '<i>blog</i>');
+    assert.equal(main.attrs['aria-busy'], 'true');
+    release();
+    await tick();
+    p.click({}, '/about');
+    assert.equal(main.html, '<i>all</i>');
+    release();
+    await tick();
+    main.html = '';
+    p.click({}, '/shop/x');
+    assert.equal(main.html, '<i>all</i>'); // [id=int] does not fit x
+    release();
+    await tick();
+    main.html = '';
+    p.click({}, '/shop/7');
+    assert.equal(main.html, '<i>item</i>');
+    release();
+    await tick();
+  },
+  async 'intercept: a navigation shows the slot page in place and changes the address'() {
+    const slot = { innerHTML: '', getAttribute: () => JSON.stringify([['/gal/item/[id]', '/gal/@modal/(.)item/[id]']]) };
+    const p = page({ cuts: [slot] });
+    p.g.reply = () => res('<b>photo 7</b>');
+    p.click({}, '/gal/item/7');
+    await tick();
+    assert.equal(p.fetches.length, 1);
+    assert.equal(p.fetches[0].url, '/gal/@modal/(.)item/7');
+    assert.equal(slot.innerHTML, '<b>photo 7</b>');
+    assert.equal(p.loc.href, 'http://x.test/gal/item/7');
+    // Another route, or a page without the slot: an ordinary navigation.
+    p.click({}, '/other');
+    await tick();
+    assert.equal(p.fetches[1].url, 'http://x.test/other');
+    const bare = page();
+    bare.click({}, '/gal/item/7');
+    await tick();
+    assert.equal(bare.fetches[0].url, 'http://x.test/gal/item/7');
+  },
+  'vitals: only with the meta tag, and one beacon when hidden'() {
+    const p = page();
+    p.doc.visibilityState = 'hidden';
+    p.event('visibilitychange');
+    assert.equal(p.calls.beacon.length, 0);
+    const q = page({ vitals: { content: '/vitals' } });
+    q.event('visibilitychange');
+    assert.equal(q.calls.beacon.length, 0);
+    q.doc.visibilityState = 'hidden';
+    q.event('visibilitychange');
+    assert.equal(q.calls.beacon[0][0], '/vitals');
+    assert.equal(JSON.parse(q.calls.beacon[0][1]).path, '/');
+    // Hidden again with nothing new: not sent twice. A beacon that throws is not an error.
+    q.event('visibilitychange');
+    assert.equal(q.calls.beacon.length, 1);
+    const r = page({ vitals: { content: '/vitals' } });
+    r.nav.sendBeacon = () => { throw new Error('no'); };
+    r.doc.visibilityState = 'hidden';
+    r.event('visibilitychange');
+  },
 };
+
+// extra.js's motion helpers, with `wisp` and the clock stood in for.
+function motion() {
+  const code = fs.readFileSync(path.join(__dirname, '../src/client/extra.js'), 'utf8').replace(/^import .*$/m, '');
+  let now = 0;
+  let frames = [];
+  const X = { shared: {}, outs: 0, flips: 0 };
+  const store = (v) => {
+    const o = { v, subs: [], get value() { return this.v; }, set value(x) { this.v = x; }, subscribe() {} };
+    return o;
+  };
+  const g = {
+    matchMedia: () => ({ matches: false }),
+    performance: { now: () => now },
+    requestAnimationFrame: (f) => frames.push(f),
+    cancelAnimationFrame: () => {},
+    getComputedStyle: () => ({ opacity: '1' }),
+  };
+  new Function('X', 'page', 'store', ...Object.keys(g), code)(X, null, store, ...Object.values(g));
+  const run = (ms) => {
+    for (const end = now + ms; now < end; ) {
+      now += 16;
+      const f = frames;
+      frames = [];
+      f.forEach((x) => x(now));
+    }
+  };
+  return { X, run };
+}
+
+Object.assign(tests, {
+  'tweened runs to its target, spring settles, set resolves'() {
+    const { X, run } = motion();
+    const t = X.shared.tweened(0, { duration: 160 });
+    let done = 0;
+    t.set(10).then(() => done++);
+    run(80);
+    assert.ok(t.value > 0 && t.value < 10);
+    run(200);
+    assert.equal(t.value, 10);
+    return tick().then(() => {
+      assert.equal(done, 1);
+      const a = X.shared.tweened([0, 0], { duration: 0 });
+      a.set([1, 2]);
+      assert.deepEqual(a.value, [1, 2]);
+      const s = X.shared.spring({ x: 0 });
+      s.set({ x: 100 });
+      run(5000);
+      assert.deepEqual(s.value, { x: 100 });
+      s.set({ x: 0 }, { hard: true });
+      assert.equal(s.value.x, 0);
+    });
+  },
+  'crossfade pairs a leaver with a newcomer of the same key'() {
+    const { X, run } = motion();
+    const [send, receive] = X.shared.crossfade({ duration: 100 });
+    const el = (left) => ({ style: {}, getBoundingClientRect: () => ({ left, top: 0, width: 10, height: 10 }) });
+    const a = el(0);
+    const b = el(100);
+    const out = send(a, { key: 1 });
+    const inn = receive(b, { key: 1 });
+    inn.tick(0);
+    assert.equal(b.style.transform.startsWith('translate(-100px'), true);
+    inn.tick(1);
+    assert.equal(b.style.transform, '');
+    const c = el(5);
+    receive(c, { key: 9 }).tick(0.5);
+    assert.equal(c.style.transform, undefined);
+    assert.equal(c.style.opacity, 0.5);
+  },
+});
 
 (async () => {
   let failed = 0;

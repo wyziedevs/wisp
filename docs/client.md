@@ -52,6 +52,8 @@ the script runs once; writes batch in a microtask.
 | `$derived(expr)`, `$derived.by(fn)` | Recomputed when read after an input changed; assigning is a build error. |
 | `$effect(fn)` | After the DOM is drawn and when what it read changes; may return a cleanup. |
 | `$effect.pre(fn)` | Same, before the DOM is drawn. |
+| `$effect.root(fn)` | Effects made in `fn` end with the function it returns, not with the component. |
+| `$effect.tracking()` | Whether the code running is tracking what it reads (inside an effect or a binding). |
 | `let { a, b = 1, c: d, ...rest } = $props()` | Component props with browser defaults (absent or `null`); needs no `{@props}`. |
 | `$bindable(default)` | A prop a parent may `bind:`; with `$props()` only these bind. |
 | `$inspect(a, b)` | Logs on change; gone in release. |
@@ -282,6 +284,11 @@ setInterval(() => n++, 1000)                       // also setTimeout, requestAn
                                                    // addEventListener: stopped for you
 listen('/events', (data) => { last = data })       // server-sent events
 await tick()                                       // after the redraw
+flushSync()                                        // redraw now, not at the end of the task
+onError((e) => report(e))                          // each uncaught error and rejection, and each error no {:#try} took
+const w = tweened(0, { duration: 400 })            // w.value = 5 runs there; numbers, arrays, objects of numbers
+const s = spring({ x: 0, y: 0 })                   // s.set({ x: 9, y: 4 }) with momentum; { hard: true } jumps
+const [send, receive] = crossfade({ duration: 400 })   // out:send={{ key: id }} in:receive={{ key: id }}
 ```
 
 ### Shared state
@@ -369,6 +376,35 @@ Theme CSS: copy `cdn/themes/light.css` into `static/` and `<link>` it in
 `wisp add lit`, `customElements.define('hello-tag', class extends
 LitElement {…})` in a `src/lib` module a script imports. The
 `click-events` a11y lint skips custom elements.
+
+## Third-party scripts
+
+Pick when one loads (`src`, so no code of yours): in the head, plain
+`<script src>` is before-interactive and `<script defer src>` after-interactive;
+`<script src="https://t.example/a.js" type="wisp/idle">` loads when the
+browser is idle (also on a client navigation), `type="wisp/interaction"` at the
+first pointer, key or scroll. Other attributes (`async`, `data-*`) are copied.
+
+## Loading views
+
+`src/routes/blog/+loading.wisp` is static HTML (a `<style>` is fine; no `---`
+block, holes or components) that a client navigation to `/blog` or any page
+below it shows in `<main>` the moment the link is followed, until the page
+arrives and morphs over it (`aria-busy` is set meanwhile). The deepest folder
+that fits wins; `routes/+loading.wisp` is for every page. A page already
+fetched ahead (hover) shows none, nor does back or forward, nor a full page
+load. The build writes the views as JSON into the shell's head: an app with no
+`+loading.wisp` has none of it, and no request is made for one.
+
+## Web vitals
+
+`<meta name="wisp-vitals" content="/vitals">` (in `src/app.html`) is opt-in:
+when the page is hidden, wisp.js sends that path one beacon (`sendBeacon`, a
+POST) of JSON: `{"path":"/x","ttfb":12,"lcp":480.5,"cls":0.02,"inp":64}`
+(ms, `cls` a score; a metric the browser never measured is left out; one
+per page load, client navigations are not counted). Receive it with
+`vitals/+server.rs`: `fn post(cx: &mut Cx) -> Result<()>` reading `cx.body()`.
+No page that does not name the tag runs any of it.
 
 ## Loading code on demand
 

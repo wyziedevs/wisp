@@ -63,6 +63,7 @@ mod remote;
 mod rest;
 #[doc(hidden)]
 pub mod rt_traits;
+mod rules;
 mod seo;
 #[cfg(test)]
 mod serve_tests;
@@ -85,7 +86,7 @@ pub mod ts;
 mod uring;
 mod ws;
 
-pub use cache::{cache, uncache};
+pub use cache::{cache, revalidate_tag, uncache};
 #[cfg(not(target_arch = "wasm32"))]
 pub use channel::{Channel, Subscription, channel};
 pub use content::{MdPage, pages};
@@ -167,6 +168,16 @@ impl<T> Shared<T> {
 /// Sizes for `BODY_LIMIT`: `const BODY_LIMIT: usize = 20 * wisp::MB;`
 pub const KB: usize = 1024;
 pub const MB: usize = 1024 * KB;
+
+/// Where a route runs on a host with both (`--target vercel`, `netlify`):
+/// `const RUNTIME: wisp::Runtime = wisp::Runtime::Edge;` in its `+page.rs` or
+/// `+server.rs`. `wisp build` reads it; other hosts and `cargo run` ignore it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Runtime {
+    #[default]
+    Node,
+    Edge,
+}
 
 /// The most an `Image` parameter takes unless it has a `#[validate(max_size
 /// = …)]` of its own: 2 MB. The route's body limit makes room for it.
@@ -852,6 +863,28 @@ pub trait App: 'static {
     fn report(cx: &mut Cx, err: &Error) {
         let _ = (cx, err);
     }
+    /// `redirects` in `[package.metadata.wisp]`: [`App::redirect`] looks at
+    /// every request first.
+    const REDIRECTS: bool = false;
+    /// `rewrites` there: [`App::rewrite`] routes a path no route matches.
+    const REWRITES: bool = false;
+    /// `headers` there: [`App::headers`] sets them on every reply.
+    const HEADERS: bool = false;
+    /// The redirect of the request's path, if a rule has one. Never called
+    /// without `REDIRECTS`.
+    fn redirect(cx: &Cx, reply: &mut Reply) -> bool {
+        let _ = (cx, reply);
+        false
+    }
+    /// The route a rule sends `path` to, and its parameters.
+    fn rewrite(path: &str) -> Option<(usize, [&str; cx::MAX_PARAMS])> {
+        let _ = path;
+        None
+    }
+    /// The rules' headers for the request's path.
+    fn headers(cx: &Cx, reply: &mut Reply) {
+        let _ = (cx, reply);
+    }
     /// `src/hooks.rs` has `reroute`: [`App::reroute`] sees every path first.
     const REROUTE: bool = false;
     /// `reroute` from `src/hooks.rs`: the path to look a route up by, a part
@@ -1526,6 +1559,7 @@ impl<T, E: fmt::Display> OrStatus<T> for std::result::Result<T, E> {
 pub mod rt {
     pub use crate::envconf::{config, config_error, config_opt};
     pub use crate::i18n::{Arg, Case, Count, Msg, Part, Tr};
+    pub use crate::rules::{headers, redirect, rewrite};
     pub use crate::tail::{
         AnyResult, Awaits, Settled, Value, WispResult, defer, failed, failed_html as await_failed,
     };
@@ -1536,7 +1570,7 @@ pub mod rt {
     pub fn pick_locale(cx: &crate::Cx) -> u8 {
         crate::i18n::pick(cx)
     }
-    pub use crate::bake::{Baked, baked, cached, keep};
+    pub use crate::bake::{Baked, CacheMore, baked, cached, keep};
     pub use crate::cx::{
         BadCookie, CookieReader, CookieWriter, MAX_PARAMS, MAX_SEGS, decode, split,
     };

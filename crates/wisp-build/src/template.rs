@@ -526,6 +526,10 @@ fn form_fields(src: &str, fields: &[Field]) -> Result<Option<String>, Error> {
     Ok((from > 0).then_some(out))
 }
 
+/// How deep blocks may nest: the build walks them recursively, so a bound
+/// keeps hostile input an error rather than a stack overflow.
+const MAX_NEST: usize = 128;
+
 pub fn parse(src: &str) -> Result<Template, Error> {
     parse_with(src, &[], "w-t", false)
 }
@@ -1206,6 +1210,9 @@ impl Parser<'_> {
     /// list. A block's own node is pushed at its close *without* another
     /// flush, since everything after its open went into the block.
     fn begin(&mut self, pos: usize) -> Result<(), Error> {
+        if self.frames.len() >= MAX_NEST {
+            return Err(self.err(pos, format!("blocks nested more than {MAX_NEST} deep")));
+        }
         if let Some(Frame::Match { arms, .. }) = self.frames.last()
             && arms.is_empty()
         {
@@ -3130,6 +3137,14 @@ impl Parser<'_> {
             .map(|p| p.trim().to_string())
             .filter(|p| !p.is_empty())
             .collect();
+        // A macro sees the newest of its name where it expands, so two of one
+        // name can render each other round and round.
+        if self.snippets.iter().any(|s| s.name == name) {
+            return Err(self.err(
+                open,
+                format!("snippet `{name}` is already defined above; a second one of the name can make them render each other forever, so call it something else"),
+            ));
+        }
         self.begin(open)?;
         self.open(Frame::Snippet {
             pos: open,
@@ -5170,6 +5185,14 @@ mod tests {
     }
 
     #[test]
+    fn blocks_nest_only_so_deep() {
+        let deep = |n: usize| format!("{}x{}", "{#if a}".repeat(n), "{/if}".repeat(n));
+        assert!(parse(&deep(MAX_NEST - 1)).is_ok());
+        let e = parse(&deep(100_000)).expect_err("too deep");
+        assert!(e.msg.contains("nested more than"), "{}", e.msg);
+    }
+
+    #[test]
     fn blocks_end_where_they_began() {
         let err = |src: &str| parse(src).unwrap_err().msg;
         assert!(err(r#"<div {#if a}class="on">{/if}{x}</div>"#).contains("same place"));
@@ -6127,6 +6150,7 @@ mod tests {
 
         let err = |src: &str| parse(src).unwrap_err().msg;
         assert!(err("{#snippet r(a)}{@render r(a)}{/snippet}").contains("renders itself"));
+        assert!(err("{#snippet a()}x{/snippet}{#snippet b()}{@render a()}{/snippet}{#snippet a()}{@render b()}{/snippet}{@render a()}").contains("already defined"));
         assert!(err("{#snippet r(a)}x{/snippet}{@render r(1, 2)}").contains("takes 1 argument"));
         assert!(err("{:#if a}{#snippet r()}x{/snippet}{:/if}").contains("outside client blocks"));
         assert!(err("{:@render nope(1)}").contains("no snippet `nope` above"));

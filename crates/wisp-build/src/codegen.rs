@@ -86,6 +86,9 @@ struct Tpl {
     t: Template,
     /// Its markup calls `t("key")`, which reads the request's locale.
     i18n: bool,
+    /// A layout's slots (`@name` folders): each a parameter `name` of its
+    /// render, which `{@render name()}` calls.
+    slots: Vec<String>,
 }
 
 impl Tpl {
@@ -836,6 +839,109 @@ pub fn check(input: &Input) -> Result<(Vec<String>, Vec<String>), String> {
     Ok((o.web.imports(npm::ESM), o.warnings))
 }
 
+/// One file a page of a route loads, for `wisp build --analyze`.
+pub struct Weight {
+    /// `js`, `css` or `wasm`.
+    pub kind: &'static str,
+    pub name: String,
+    pub bytes: Vec<u8>,
+}
+
+/// `wisp build --analyze`: per route (its pattern), the browser files a
+/// page of it loads as they are served: the runtime, the modules of its
+/// templates and what they import, the CSS, and the `static/` `.wasm` files
+/// its JavaScript names. A route with no page is left out.
+pub fn analyze(input: &Input) -> Result<Vec<(String, Vec<Weight>)>, String> {
+    let p = Project::load(input)?;
+    let web = p.browser()?;
+    let js = |name: &str, src: &str| Weight {
+        kind: "js",
+        name: name.into(),
+        bytes: crate::minify_js(src).into_bytes(),
+    };
+    let mut css = match css_source(p.root)? {
+        Some(f) => fs::read(&f).map_err(|e| format!("{}: {e}", f.display()))?,
+        None => Vec::new(),
+    };
+    css.extend_from_slice(p.styles().as_bytes());
+    let mut wasm = Vec::new();
+    let static_dir = p.root.join("static");
+    if static_dir.is_dir() {
+        list_files(&static_dir, &mut wasm)?;
+        wasm.retain(|f| f.extension().is_some_and(|e| e == "wasm"));
+    }
+    let served = |f: &JsFile| match &f.file {
+        Some(file) => fs::read_to_string(file).unwrap_or_default(),
+        None => f.source.clone(),
+    };
+    let mut out = Vec::new();
+    for r in &p.model.routes {
+        let Some(page) = &r.page else { continue };
+        let tpls: Vec<usize> = (r.layouts.iter().map(|&l| p.model.layouts[l].tpl))
+            .chain([page.tpl])
+            .collect();
+        let mut files = vec![js(WISP_JS_PATH, wisp_shared::WISP_JS)];
+        let mut urls = Vec::new();
+        let mut live = false;
+        for c in tpls.iter().filter_map(|&t| web.clients[t].as_ref()) {
+            live = true;
+            urls.push(format!("{}?v={}", c.path(), c.hash));
+            urls.extend(c.preload.iter().cloned());
+            files.push(Weight {
+                kind: "js",
+                name: c.path(),
+                bytes: c.source.clone().into_bytes(),
+            });
+        }
+        if live {
+            files.push(js(LIVE_JS_PATH, wisp_shared::LIVE_JS));
+        }
+        urls.sort();
+        urls.dedup();
+        for f in &web.js_files {
+            let url = match f.file {
+                Some(_) => f.path.clone(),
+                None => format!("{}?v={}", f.path, f.hash),
+            };
+            if urls.contains(&url) && !files.iter().any(|w| w.name == f.path) {
+                files.push(Weight {
+                    kind: "js",
+                    name: f.path.clone(),
+                    bytes: served(f).into_bytes(),
+                });
+            }
+        }
+        if !css.is_empty() {
+            files.push(Weight {
+                kind: "css",
+                name: APP_CSS_PATH.into(),
+                bytes: css.clone(),
+            });
+        }
+        let text: String = files
+            .iter()
+            .filter(|w| w.kind == "js")
+            .map(|w| String::from_utf8_lossy(&w.bytes).into_owned())
+            .collect();
+        for f in &wasm {
+            let name = f
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if text.contains(&name) {
+                let bytes = fs::read(f).map_err(|e| format!("{}: {e}", f.display()))?;
+                files.push(Weight {
+                    kind: "wasm",
+                    name,
+                    bytes,
+                });
+            }
+        }
+        out.push((r.pattern.clone(), files));
+    }
+    Ok(out)
+}
+
 /// For `wisp dev`: what a running dev build takes without a compile, and a
 /// fingerprint of the rest.
 pub struct Hot {
@@ -1171,6 +1277,11 @@ declare function setContext(key: unknown, value: unknown): void;
 declare function getContext<T = any>(key: unknown): T;
 declare function tick(): Promise<void>;
 declare function untrack<T>(f: () => T): T;
+declare function flushSync(): void;
+declare function onError(f: (error: unknown) => void): () => void;
+declare function tweened<T extends number | number[] | Record<string, number>>(value: T, o?: { duration?: number; delay?: number; easing?: (t: number) => number }): { value: T; set(v: T, o?: { duration?: number; delay?: number; easing?: (t: number) => number }): Promise<void>; update(f: (v: T) => T): Promise<void>; subscribe(f: (v: T) => void): () => void };
+declare function spring<T extends number | number[] | Record<string, number>>(value: T, o?: { stiffness?: number; damping?: number; precision?: number }): { value: T; set(v: T, o?: { hard?: boolean }): Promise<void>; update(f: (v: T) => T): Promise<void>; subscribe(f: (v: T) => void): () => void };
+declare function crossfade(o?: { duration?: number; easing?: (t: number) => number }): [(el: Element, o: { key: unknown }) => any, (el: Element, o: { key: unknown }) => any];
 declare function goto(url: string | URL, opts?: { replace?: boolean; noscroll?: boolean; keepfocus?: boolean }): Promise<void>;
 declare function invalidate(dep?: string): Promise<void>;
 declare function matches(text: unknown, q: unknown): boolean;
@@ -1194,6 +1305,8 @@ declare module 'wisp' {
   export function derived<T>(f: () => T): Store<T>;
   export function context<T = any>(): [() => T, (value: T) => void];
   export function untrack<T>(f: () => T): T;
+  export function flushSync(): void;
+  export function onError(f: (error: unknown) => void): () => void;
   export function tick(): Promise<void>;
   export function goto(url: string | URL, opts?: { replace?: boolean; noscroll?: boolean; keepfocus?: boolean }): Promise<void>;
   export function invalidate(dep?: string): Promise<void>;
@@ -1263,6 +1376,8 @@ struct Project<'a> {
     maps: bool,
     prerendered: Option<&'a Path>,
     tree: crate::routes::Tree,
+    /// `redirects`, `rewrites` and `headers` of Cargo.toml.
+    rules: crate::config::Rules,
     /// `src/app.html` (or the default) in its three pieces.
     shell: [String; 3],
     comps: Vec<Comp>,
@@ -1360,6 +1475,7 @@ impl<'a> Project<'a> {
     fn new(input: &Input<'a>) -> Result<Project<'a>, String> {
         let root = input.root;
         let tree = crate::routes::scan(&root.join("src").join("routes"))?;
+        let rules = crate::config::load(root, &tree)?;
         let shell_path = root.join("src").join("app.html");
         let shell_src = match shell_path.exists() {
             true => crate::read_source(&shell_path).map_err(|e| format!("src/app.html: {e}"))?,
@@ -1380,6 +1496,10 @@ impl<'a> Project<'a> {
                 }
             }
         }
+        // The fonts' preload links come first in the head.
+        let faces = crate::fonts::load(root)?;
+        shell[0].push_str(&wisp_shared::fonts::preloads(&faces, crate::protocol::BASE));
+        shell[0].push_str(&crate::loading::tag(&tree, root)?);
         let t_used = vec![false; i18n.as_ref().map_or(0, i18n::Locales::key_count)];
         Ok(Project {
             root,
@@ -1387,6 +1507,7 @@ impl<'a> Project<'a> {
             maps: input.maps,
             prerendered: input.prerendered,
             tree,
+            rules,
             shell,
             comps: Vec::new(),
             templates: Vec::new(),
@@ -1414,6 +1535,7 @@ impl<'a> Project<'a> {
         p.layouts()?;
         p.error_pages()?;
         p.routes()?;
+        p.slots()?;
         p.app_files()?;
         p.translate()?;
         Ok(p)
@@ -1525,6 +1647,7 @@ impl<'a> Project<'a> {
     /// The scoped `<style>`s of every template, for `/_app/app.css`.
     fn styles(&self) -> String {
         crate::join_styles(
+            self.root,
             (self.templates.iter())
                 .filter_map(|t| Some((t.rel.as_str(), t.t.style.as_deref()?)))
                 .collect(),
@@ -1694,6 +1817,7 @@ impl<'a> Project<'a> {
             stmts: None,
             t,
             i18n: false,
+            slots: Vec::new(),
         });
         self.templates.last_mut().expect("just pushed")
     }
@@ -1707,6 +1831,8 @@ impl<'a> Project<'a> {
         let mut files = Vec::new();
         list_files(&comp_dir, &mut files)?;
         files.sort();
+        // Per component, those its markup renders with nothing to stop them.
+        let mut always: Vec<Vec<String>> = Vec::new();
         for file in files {
             let file_name = file
                 .file_name()
@@ -1782,6 +1908,14 @@ impl<'a> Project<'a> {
                     .map(|x| x.name.clone())
                     .collect()
             });
+            always.push(
+                (t.nodes.iter())
+                    .filter_map(|n| match n {
+                        Node::Component { name, .. } => Some(name.clone()),
+                        _ => None,
+                    })
+                    .collect(),
+            );
             self.comps.push(Comp {
                 rel,
                 name,
@@ -1793,6 +1927,39 @@ impl<'a> Project<'a> {
                 live: t.is_live(),
             });
             self.add_tpl(module, &file, Kind::Component, t);
+        }
+        for k in 0..always.len() {
+            let (mut seen, mut path) = (vec![k], vec![k]);
+            // Follow the first of each that is still to see: a loop back to
+            // `k` is a component that renders itself, however far round.
+            let mut stack = vec![always[k].clone()];
+            while let Some(top) = stack.last_mut() {
+                let Some(name) = top.pop() else {
+                    stack.pop();
+                    path.pop();
+                    continue;
+                };
+                let Some(j) = self.comps.iter().position(|c| c.name == name) else {
+                    continue;
+                };
+                if j == k {
+                    let way: Vec<String> = path
+                        .iter()
+                        .map(|&p| format!("<{}>", self.comps[p].name))
+                        .collect();
+                    return Err(format!(
+                        "{}: {} renders itself ({}) with nothing to stop it; put it in a {{:#if}} or {{:#each}} that ends",
+                        self.comps[k].rel,
+                        way[0],
+                        way.join(" -> ") + " -> " + &way[0]
+                    ));
+                }
+                if !seen.contains(&j) {
+                    seen.push(j);
+                    path.push(j);
+                    stack.push(always[j].clone());
+                }
+            }
         }
         Ok(())
     }
@@ -1835,6 +2002,12 @@ impl<'a> Project<'a> {
                     c.line
                 ));
             }
+            if let Some(c) = lg.items.constant("RUNTIME") {
+                return Err(format!(
+                    "{where_}:{}: a layout's `RUNTIME` does nothing; set it in the page or +server.rs that runs there",
+                    c.line
+                ));
+            }
             if let Some(c) = ["RATE_LIMIT", "CORS", "TIMEOUT"]
                 .iter()
                 .find_map(|n| lg.items.constant(n))
@@ -1866,7 +2039,7 @@ impl<'a> Project<'a> {
                         ));
                     }
                     opts.cache = Some(c.name == "CACHE_PUBLIC");
-                    guarded.push(format!("pub const CACHE: u32 = super::{};", c.name));
+                    guarded.push(cache_shim(&lg.items, &c.name));
                 }
                 (Some(_), Some(c)) => {
                     return Err(format!(
@@ -1876,12 +2049,17 @@ impl<'a> Project<'a> {
                 }
             }
             self.layout_opts.push(opts);
-            let guard = self.flag(&lg.items, "SIGNED_IN", &at, &mut guarded)? == Some(true);
+            let mut code = match self.flag(&lg.items, "SIGNED_IN", &at, &mut guarded)? {
+                Some(true) => "cx.signed_in()?; ".to_string(),
+                _ => String::new(),
+            };
+            let rel = self.rel(&at);
+            code.push_str(&middleware(Some(self.root), &lg.items, &rel)?);
+            let guard = !code.is_empty();
             if guard {
-                guarded.push(
-                    "pub fn __guard(cx: &mut ::wisp::Cx) -> ::wisp::Result<()> { cx.signed_in()?; Ok(()) }"
-                        .into(),
-                );
+                guarded.push(format!(
+                    "pub fn __guard(cx: &mut ::wisp::Cx) -> ::wisp::Result<()> {{ {code}Ok(()) }}"
+                ));
             }
             let load = lg.items.function("load");
             // The template reads `data` from a load, or names from statements.
@@ -1902,9 +2080,11 @@ impl<'a> Project<'a> {
             }
             let load = load.is_some();
             let data = lg.items.data_fields();
+            let slots = self.slot_names(i, &t, &file)?;
             let tpl = self.add_tpl(format!("tpl_layout_{i}"), &file, Kind::Layout, t);
             tpl.user = user;
             tpl.data = data;
+            tpl.slots = slots;
             tpl.stmts = lg.stmts.map(|s| (s, Vec::new()));
             let tpl = self.templates.len() - 1;
             self.model.layouts.push(model::Layout {
@@ -1915,6 +2095,64 @@ impl<'a> Project<'a> {
             });
         }
         Ok(())
+    }
+
+    /// The slots' pages are drawn inside a layout, so they render without
+    /// waiting: no statements (their data is a `+page.rs`'s `load`), and
+    /// they stay out of the sitemap.
+    fn slots(&mut self) -> Result<(), String> {
+        for s in &self.tree.slots {
+            let page = self.model.routes[s.route].page.as_ref();
+            let tpl = &self.templates[page.expect("a slot is a page").tpl];
+            if tpl.stmts.is_some() || tpl.load_js.is_some() {
+                return Err(format!(
+                    "{}: a slot page is drawn inside its layout and cannot wait: no statements in its `---` block (or `+page.js`); load its data with `fn load(cx: &mut Cx)` in a `+page.rs`",
+                    tpl.rel
+                ));
+            }
+            self.model.routes[s.route].indexed = false;
+        }
+        for i in &self.tree.intercepts {
+            self.model.routes[i.route].indexed = false;
+        }
+        Ok(())
+    }
+
+    /// The slots of layout `i`, which its markup must draw, and draw only.
+    fn slot_names(&self, i: usize, t: &Template, file: &Path) -> Result<Vec<String>, String> {
+        fn drawn<'a>(nodes: &'a [Node], out: &mut Vec<&'a str>) {
+            for n in nodes {
+                if let Node::RenderSnippet {
+                    name, local: false, ..
+                } = n
+                {
+                    out.push(name);
+                }
+                inside(n).into_iter().for_each(|l| drawn(l, out));
+            }
+        }
+        let (mut calls, mut names) = (Vec::new(), Vec::new());
+        drawn(&t.nodes, &mut calls);
+        let mine = self.tree.slots.iter().filter(|s| s.layout == i);
+        for s in mine {
+            if !calls.contains(&s.name.as_str()) {
+                return Err(format!(
+                    "{}: the folder @{} is a slot of this layout: draw it with {{@render {}()}}",
+                    self.rel(file),
+                    s.name,
+                    s.name
+                ));
+            }
+            names.push(s.name.clone());
+        }
+        // A layout's own snippets are in its file; the rest is a slot, or nothing.
+        if let Some(c) = calls.iter().find(|c| !names.iter().any(|n| n == *c)) {
+            return Err(format!(
+                "{}: {{@render {c}()}} draws a slot, and there is no folder @{c} in this layout's folder",
+                self.rel(file)
+            ));
+        }
+        Ok(names)
     }
 
     fn error_pages(&mut self) -> Result<(), String> {
@@ -1995,6 +2233,23 @@ impl<'a> Project<'a> {
         Ok(Some(value))
     }
 
+    /// A route's `RUNTIME`, checked; the shim keeps it used. `wisp build`
+    /// reads it (see `routes::edge`).
+    fn runtime(
+        &self,
+        items: &rust_scan::Items,
+        file: &Path,
+        shims: &mut Vec<String>,
+    ) -> Result<(), String> {
+        if let Err((line, msg)) = crate::routes::edge(items) {
+            return Err(format!("{}:{line}: {msg}", self.rel(file)));
+        }
+        if items.constant("RUNTIME").is_some() {
+            shims.push("const _: ::wisp::Runtime = super::RUNTIME;".into());
+        }
+        Ok(())
+    }
+
     /// A route's `CACHE` (or `CACHE_PUBLIC`), checked: a `u32`, one of the
     /// two, set once.
     fn cache(
@@ -2027,7 +2282,7 @@ impl<'a> Project<'a> {
         }
         let cache = model::Cache { module, public };
         set_once(&mut route.cache, cache, &c.name, page).map_err(|e| at(&e))?;
-        shims.push(format!("pub const CACHE: u32 = super::{};", c.name));
+        shims.push(cache_shim(items, &c.name));
         Ok(())
     }
 
@@ -2139,10 +2394,11 @@ impl<'a> Project<'a> {
             t.hashes.push(crate::csp::hash(AWAIT_JS));
         }
         // The page comes first: nothing set these before it.
+        self.runtime(&lg.items, &rs, &mut shims)?;
         self.body_limit(route, &lg.items, &rs, format!("page_{i}"), "", &mut shims)?;
         self.cache(route, &lg.items, &rs, format!("page_{i}"), "", &mut shims)?;
         let (rel, module) = (self.rel(&rs), format!("page_{i}"));
-        let guard = guards(&lg.items, &rel, &mut shims)?;
+        let guard = guards(Some(self.root), &lg.items, &rel, &mut shims)?;
         if !guard.is_empty() {
             shims.push(format!(
                 "pub fn __guard(cx: &mut ::wisp::Cx) -> ::wisp::Result<()> {{ {guard}Ok(()) }}"
@@ -2188,7 +2444,8 @@ impl<'a> Project<'a> {
                         ": Option<String> = Some(cx.param(@)).filter(|s| !s.is_empty()).map(str::to_string)",
                     ),
                 };
-                names_word(&src, n).then(|| format!("let {n}{};", how.replace('@', &lit(n))))
+                let raw = if ty::is_keyword(n) { "r#" } else { "" };
+                names_word(&src, n).then(|| format!("let {raw}{n}{};", how.replace('@', &lit(n))))
             })
             .collect();
         let at = |f: &FnItem, msg: String| format!("{}:{}: {msg}", self.rel(&rs), f.line);
@@ -2351,7 +2608,11 @@ impl<'a> Project<'a> {
             module: format!("page_{i}"),
             public: true,
         });
-        shims.push("pub const CACHE: u32 = u32::MAX;".into());
+        shims.push(
+            "pub const CACHE: u32 = u32::MAX;
+pub const MORE: ::wisp::rt::CacheMore = ::wisp::rt::CacheMore::NONE;"
+                .into(),
+        );
         Ok(())
     }
 
@@ -2404,6 +2665,7 @@ impl<'a> Project<'a> {
                 }
                 let module = format!("server_{i}");
                 let mut shims = Vec::new();
+                self.runtime(&items, &file, &mut shims)?;
                 self.body_limit(route, &items, &file, module.clone(), page_file, &mut shims)?;
                 self.cache(route, &items, &file, module.clone(), page_file, &mut shims)?;
                 let cache = (route.cache.as_ref())
@@ -2418,7 +2680,7 @@ impl<'a> Project<'a> {
                     set_once(&mut route.timeout, m, "TIMEOUT", page_file)
                         .map_err(|e| format!("{rel}: {e}"))?;
                 }
-                let guard = guards(&items, &rel, &mut shims)?;
+                let guard = guards(Some(self.root), &items, &rel, &mut shims)?;
                 let (handlers, mut before) =
                     server_handlers(&items, segs, &mut shims).map_err(|e| format!("{rel}:{e}"))?;
                 before |= add_guard(&mut shims, &guard, before);
@@ -2988,7 +3250,10 @@ impl<'a> Project<'a> {
             let c = &self.comps[k];
             (!c.live).then(|| (&self.templates[k].t, &c.props[..]))
         };
-        let fold = fold::Fold { comp: &comp };
+        let fold = fold::Fold {
+            comp: &comp,
+            depth: Default::default(),
+        };
         let reads = |t: &Tpl| {
             t.stmts.is_some() || t.load_js.is_some() || t.user.as_ref().is_some_and(|(_, r)| *r)
         };
@@ -3026,8 +3291,10 @@ impl<'a> Project<'a> {
     }
 
     /// `layout_0::tpl_layout_0::render(__o, &d0, &|__o| tpl_layout_3::render(__o, &|__o| inner))`:
-    /// `inner` inside `layouts`.
-    fn wrap_layouts(&self, layouts: &[usize], inner: String) -> String {
+    /// `inner` inside `layouts`. A layout's slots are drawn from their pages
+    /// (`s{route}` is a loaded slot's data), or left empty (`drawn` false:
+    /// an error page).
+    fn wrap_layouts(&self, layouts: &[usize], inner: String, drawn: bool) -> String {
         layouts.iter().rev().fold(inner, |acc, &l| {
             let layout = &self.model.layouts[l];
             let data = if layout.load {
@@ -3035,8 +3302,43 @@ impl<'a> Project<'a> {
             } else {
                 String::new()
             };
+            let slots: String = (self.tree.slots.iter().filter(|s| s.layout == l))
+                .map(|s| match drawn {
+                    true => {
+                        let page = self.model.routes[s.route].page.as_ref();
+                        let page = page.expect("a slot is a page");
+                        let data = if page.load() {
+                            format!(", &s{}", s.route)
+                        } else {
+                            String::new()
+                        };
+                        let path = self.templates[page.tpl].path();
+                        // A slot something intercepts into is a place wisp.js
+                        // finds, which names what goes in it: `data-wisp-cut`
+                        // holds `[[target, own URL]]`.
+                        let cuts: Vec<String> = (self.tree.intercepts.iter())
+                            .filter(|i| {
+                                i.slot == s.name && self.tree.routes[i.route].dir.starts_with(&s.dir)
+                            })
+                            .map(|i| format!("[{},{}]", crate::json_str(&i.target), crate::json_str(&i.inner)))
+                            .collect();
+                        let open = (!cuts.is_empty()).then(|| {
+                            let list = format!("[{}]", cuts.join(","));
+                            format!("<div data-wisp-cut=\"{}\">", list.replace('&', "&amp;").replace('"', "&quot;"))
+                        });
+                        match open {
+                            Some(o) => format!(
+                                ", &|__o: &mut ::wisp::Out| {{ __o.body.push_str({}); {path}::render(__o, cx{data}); __o.body.push_str(\"</div>\"); }}",
+                                lit(&o)
+                            ),
+                            None => format!(", &|__o: &mut ::wisp::Out| {path}::render(__o, cx{data})"),
+                        }
+                    }
+                    false => ", &|_: &mut ::wisp::Out| {}".to_string(),
+                })
+                .collect();
             format!(
-                "{}::render(__o, cx{data}, &|__o: &mut ::wisp::Out| {acc})",
+                "{}::render(__o, cx{data}, &|__o: &mut ::wisp::Out| {acc}{slots})",
                 self.templates[layout.tpl].path()
             )
         })
@@ -3062,7 +3364,12 @@ impl Gen {
             lit(crate::runtime_version())
         ));
         self.line(0, "");
-        self.out.push_str(&typed_routes(&p.tree.routes));
+        let slots = &p.tree.slots;
+        let cuts = &p.tree.intercepts;
+        let linked = (p.tree.routes.iter().enumerate()).filter(|(i, _)| {
+            !slots.iter().any(|s| s.route == *i) && !cuts.iter().any(|c| c.route == *i)
+        });
+        self.out.push_str(&typed_routes(linked.map(|r| r.1)));
         match &p.hooks {
             None => self.line(0, "pub mod hooks {}"),
             Some(h) => {
@@ -3182,6 +3489,19 @@ impl Gen {
                     &format!("let d{l} = layout_{l}::__call::load(cx).await?;"),
                 );
             }
+            // The slots of the layouts around it, each with its own load.
+            for s in p
+                .tree
+                .slots
+                .iter()
+                .filter(|s| route.layouts.contains(&s.layout))
+            {
+                let slot = m.routes[s.route].page.as_ref().expect("a slot is a page");
+                if slot.load() {
+                    let k = s.route;
+                    self.line(1, &format!("let s{k} = page_{k}::__call::load(cx).await?;"));
+                }
+            }
             let page_load = pg.load();
             if page_load {
                 self.line(1, &format!("let d = page_{i}::__call::load(cx).await?;"));
@@ -3205,7 +3525,7 @@ impl Gen {
             if page.stmts.is_some() {
                 // The page runs its statements, then hands its render to this
                 // closure, which puts it inside the layouts.
-                let wrap = p.wrap_layouts(&route.layouts, "__p(__o)".into());
+                let wrap = p.wrap_layouts(&route.layouts, "__p(__o)".into(), true);
                 let end = if pg.streams { "?;" } else { "" };
                 self.line(1, &format!(
                     "{}::render(cx, __o, |__o: &mut ::wisp::Out, cx: &::wisp::Cx, __p: &dyn Fn(&mut ::wisp::Out)| {wrap}).await{end}",
@@ -3215,7 +3535,10 @@ impl Gen {
                 let data = if page_load { ", &d" } else { "" };
                 let inner = format!("{}::render(__o, cx{data})", page.path());
                 self.line(1, "let cx: &::wisp::Cx = cx;");
-                self.line(1, &format!("{};", p.wrap_layouts(&route.layouts, inner)));
+                self.line(
+                    1,
+                    &format!("{};", p.wrap_layouts(&route.layouts, inner, true)),
+                );
             }
             if pg.streams {
                 self.line(1, "__aw.finish::<App>(cx, __o);");
@@ -3244,7 +3567,7 @@ impl Gen {
                 p.templates[e.tpl].path()
             );
             self.line(1, "let cx: &::wisp::Cx = cx;");
-            self.line(1, &format!("{};", p.wrap_layouts(&e.layouts, inner)));
+            self.line(1, &format!("{};", p.wrap_layouts(&e.layouts, inner, false)));
             self.line(1, "Ok(())");
             self.line(0, "}");
             self.line(0, "");
@@ -3333,19 +3656,10 @@ impl Gen {
             let file = css.clone().unwrap_or_else(|| PathBuf::from("app.css"));
             files.push((APP_CSS_PATH.into(), file, h.clone()));
         }
-        let static_dir = p.root.join("static");
-        if static_dir.is_dir() {
-            let mut all = Vec::new();
-            list_files(&static_dir, &mut all)?;
-            all.sort();
-            for (f, etag) in all.iter().zip(hash_files(&all)) {
-                let path = f.strip_prefix(&static_dir).unwrap_or(f);
-                let url = format!(
-                    "/{}",
-                    encode_path(&path.to_string_lossy().replace('\\', "/"))
-                );
-                files.push((url, f.clone(), etag?));
-            }
+        let found = static_files(p.root)?;
+        let paths: Vec<PathBuf> = found.iter().map(|f| f.1.clone()).collect();
+        for ((url, f), etag) in found.into_iter().zip(hash_files(&paths)) {
+            files.push((url, f, etag?));
         }
         images(p.root, &mut files);
         for (i, (_, file, etag)) in files.iter().enumerate() {
@@ -3509,6 +3823,9 @@ impl Gen {
         }
         self.line(0, "");
         self.router(p);
+        for l in p.rules.emit() {
+            self.line(1, &l);
+        }
         let client = self.api(p)?;
         self.init(p);
 
@@ -4114,7 +4431,7 @@ impl Gen {
                     let by = r.by_accept();
                     format!(
                         "if ::wisp::rt::cached::<{by}>(cx, __o, {public}) {{ return Ok(()); }} {serve} \
-                         ::wisp::rt::keep::<Self, {by}>(cx, __o, {m}::__call::CACHE, {public});"
+                         ::wisp::rt::keep::<Self, {by}>(cx, __o, {m}::__call::CACHE, {public}, {m}::__call::MORE);"
                     )
                 }
                 None => serve,
@@ -4257,7 +4574,7 @@ impl Gen {
                     let (m, public, by) = (&c.module, c.public, r.by_accept());
                     serve = format!(
                         "if ::wisp::rt::cached::<{by}>(cx, __o, {public}) {{ return Ok(true); }} {serve} \
-                         ::wisp::rt::keep::<Self, {by}>(cx, __o, {m}::__call::CACHE, {public});"
+                         ::wisp::rt::keep::<Self, {by}>(cx, __o, {m}::__call::CACHE, {public}, {m}::__call::MORE);"
                     );
                 }
                 self.line(
@@ -4621,7 +4938,12 @@ fn now_arms<'a>(p: &Project, r: &'a model::Route) -> Vec<(&'a model::Server, &'a
 /// A file's `const RATE_LIMIT: u32 = 60;` (requests a minute per client
 /// address) and `const CORS: &str = "*";`, checked: the statements that
 /// enforce them, the first thing its requests run, `RateLimit` in `shims`.
-fn guards(items: &rust_scan::Items, rel: &str, shims: &mut Vec<String>) -> Result<String, String> {
+fn guards(
+    root: Option<&Path>,
+    items: &rust_scan::Items,
+    rel: &str,
+    shims: &mut Vec<String>,
+) -> Result<String, String> {
     let mut out = String::new();
     let get = |name: &str, ok: fn(&str) -> bool, want: &str| {
         let Some(c) = items.constant(name) else {
@@ -4646,6 +4968,62 @@ fn guards(items: &rust_scan::Items, rel: &str, shims: &mut Vec<String>) -> Resul
                 .into(),
         );
         out.push_str("__RATE.check(cx.client_ip())?; ");
+    }
+    out.push_str(&middleware(root, items, rel)?);
+    Ok(out)
+}
+
+/// A file's `const MIDDLEWARE: &[&str] = &["auth", "audit"];`, checked
+/// against `src/middleware.rs` (a `pub fn auth(cx: &mut Cx) -> Result` each):
+/// the calls, in order, before the request does anything else. A route that
+/// names none runs none.
+fn middleware(root: Option<&Path>, items: &rust_scan::Items, rel: &str) -> Result<String, String> {
+    let Some(c) = items.constant("MIDDLEWARE") else {
+        return Ok(String::new());
+    };
+    let shape =
+        "`const MIDDLEWARE: &[&str] = &[\"auth\"];`, names of functions in src/middleware.rs";
+    let at = |why: String| format!("{rel}:{}: {why}", c.line);
+    let Some(root) = root else {
+        return Err(at(
+            "hooks.rs has `before`, which runs for every request: call the functions there".into(),
+        ));
+    };
+    let list = (c.value.trim().strip_prefix('&'))
+        .and_then(|v| v.trim().strip_prefix('[')?.strip_suffix(']'));
+    let list = list.filter(|_| !c.is_static);
+    let mut names = Vec::new();
+    for n in list
+        .ok_or_else(|| at(format!("`MIDDLEWARE` must be {shape}")))?
+        .split(',')
+    {
+        let n = n.trim();
+        if n.is_empty() {
+            continue;
+        }
+        let n = n.trim_matches('"');
+        let ident = !n.is_empty()
+            && !n.starts_with(|c: char| c.is_ascii_digit())
+            && n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+        if !ident {
+            return Err(at(format!(
+                "`{n}` is not a function name; `MIDDLEWARE` is {shape}"
+            )));
+        }
+        names.push(n);
+    }
+    let file = root.join("src").join("middleware.rs");
+    let src = crate::read_source(&file).map_err(|_| at(format!("`MIDDLEWARE` names functions of src/middleware.rs, which is not there: add it with `pub fn {}(cx: &mut Cx) -> Result`", names.first().copied().unwrap_or("auth"))))?;
+    let known = rust_scan::scan(&src).map_err(|e| format!("src/middleware.rs: {e}"))?;
+    // The const is read, so it is not unused.
+    let mut out = String::from("let _ = super::MIDDLEWARE; ");
+    for n in names {
+        if !known.function(n).is_some_and(|f| f.public) {
+            return Err(at(format!(
+                "src/middleware.rs has no `pub fn {n}(cx: &mut Cx) -> Result`"
+            )));
+        }
+        out.push_str(&format!("middleware::{n}(cx)?; "));
     }
     Ok(out)
 }
@@ -4700,6 +5078,22 @@ fn within(r: &model::Route, module: &str) -> (String, &'static str) {
 /// `before`): a `Response` it hands back is sent instead of the page.
 fn answer(shim: &str) -> String {
     format!("if let Some(r) = {shim}(cx).await? {{ ::wisp::rt::respond(__o, r); return Ok(()); }}")
+}
+
+/// The shims of a route's `CACHE` (or `CACHE_PUBLIC`, named `name`): its
+/// seconds, and what `CACHE_STALE` and `CACHE_TAGS` add, if the module sets
+/// them.
+fn cache_shim(items: &rust_scan::Items, name: &str) -> String {
+    let stale = items
+        .constant("CACHE_STALE")
+        .map_or("0", |_| "super::CACHE_STALE");
+    let tags = items
+        .constant("CACHE_TAGS")
+        .map_or("&[]", |_| "super::CACHE_TAGS");
+    format!(
+        "pub const CACHE: u32 = super::{name};
+pub const MORE: ::wisp::rt::CacheMore = ::wisp::rt::CacheMore::new({stale}, {tags});"
+    )
 }
 
 /// Sets a route's `BODY_LIMIT` or `CACHE`, which its page (in file
@@ -4831,7 +5225,7 @@ fn hooks(root: &Path) -> Result<(Option<UserMod>, bool), String> {
             _ => {}
         }
     }
-    let guard = guards(&items, "src/hooks.rs", &mut shims)?;
+    let guard = guards(None, &items, "src/hooks.rs", &mut shims)?;
     add_guard(&mut shims, &guard, items.function("before").is_some());
     let waits = items.function("before").is_some_and(|f| f.is_async);
     Ok((
@@ -5175,6 +5569,29 @@ pub(crate) fn check_components(
         }
     }
     Ok(())
+}
+
+/// The files served from `static/`, by URL: the app's, then its layers'
+/// (`extends`), a file the app has winning.
+fn static_files(root: &Path) -> Result<Vec<(String, PathBuf)>, String> {
+    let mut found: Vec<(String, PathBuf)> = Vec::new();
+    let dirs = std::iter::once(root.to_path_buf()).chain(crate::plugins::layers(root));
+    for dir in dirs.map(|d| d.join("static")).filter(|d| d.is_dir()) {
+        let mut all = Vec::new();
+        list_files(&dir, &mut all)?;
+        all.sort();
+        for f in all {
+            let path = f.strip_prefix(&dir).unwrap_or(&f);
+            let url = format!(
+                "/{}",
+                encode_path(&path.to_string_lossy().replace('\\', "/"))
+            );
+            if !found.iter().any(|(u, _)| *u == url) {
+                found.push((url, f));
+            }
+        }
+    }
+    Ok(found)
 }
 
 /// The CSS to serve at `/_app/app.css`: the CSS tool's output if present,
@@ -5576,9 +5993,14 @@ impl Gen {
                  __wrap: impl FnOnce(&mut ::wisp::Out, &::wisp::Cx, &dyn Fn(&mut ::wisp::Out))) -> ::wisp::Result<()>"
                 .into(),
             Kind::Page => format!("pub fn render(__o: &mut ::wisp::Out, cx: &::wisp::Cx{data})"),
-            Kind::Layout => format!(
-                "pub fn render(__o: &mut ::wisp::Out, cx: &::wisp::Cx{data}, children: &dyn Fn(&mut ::wisp::Out))"
-            ),
+            Kind::Layout => {
+                let slots: String = (t.slots.iter())
+                    .map(|s| format!(", {s}: &dyn Fn(&mut ::wisp::Out)"))
+                    .collect();
+                format!(
+                    "pub fn render(__o: &mut ::wisp::Out, cx: &::wisp::Cx{data}, children: &dyn Fn(&mut ::wisp::Out){slots})"
+                )
+            }
             Kind::Error => {
                 "pub fn render(__o: &mut ::wisp::Out, cx: &::wisp::Cx, status: u16, message: &str)"
                     .into()
@@ -6999,9 +7421,9 @@ struct JsFile {
 /// The helpers every module's function takes. Most are scoped to the
 /// instance; the rest are live.js's exports, handed over so a script needs
 /// no import for them.
-const HELPERS: &str = "tick, untrack, setTimeout, setInterval, requestAnimationFrame, addEventListener, listen, onMount, onDestroy, effect, watch, \
+const HELPERS: &str = "tick, flushSync, onError, tweened, spring, crossfade, untrack, setTimeout, setInterval, requestAnimationFrame, addEventListener, listen, onMount, onDestroy, effect, watch, \
                        derived, store, persisted, emit, setContext, getContext, goto, invalidate, matches, page, navigating, enhance, \
-                       pushState, replaceState, context, portal,__wisp_s, __wisp_r, __wisp_d, __wisp_e, __wisp_ep, __wisp_snap, __wisp_props, __wisp_eq, __wisp_t";
+                       pushState, replaceState, context, portal,__wisp_s, __wisp_r, __wisp_d, __wisp_e, __wisp_ep, __wisp_er, __wisp_et, __wisp_snap, __wisp_props, __wisp_eq, __wisp_t";
 
 /// What `client` needs to know beyond the template.
 struct ClientCx<'a> {
@@ -7030,7 +7452,8 @@ struct ClientCx<'a> {
 use wisp_shared::EXTRA_JS;
 
 /// Whether a directive needs `extra.js` (so does a module whose code makes
-/// a Map or a Set, or uses `enhance`, `$state.snapshot` or `persisted`).
+/// a Map or a Set, or uses `enhance`, `$state.snapshot`, `persisted`,
+/// `tweened`, `spring` or `crossfade`).
 fn is_extra(d: &Directive) -> bool {
     matches!(
         d.kind,
@@ -7469,7 +7892,14 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
                         !t.member
                             && matches!(
                                 t.text(c),
-                                "Map" | "Set" | "enhance" | "__wisp_snap" | "persisted"
+                                "Map"
+                                    | "Set"
+                                    | "enhance"
+                                    | "__wisp_snap"
+                                    | "persisted"
+                                    | "tweened"
+                                    | "spring"
+                                    | "crossfade"
                             )
                     })
                 }))
@@ -8387,7 +8817,7 @@ fn server_path(path: &[String]) -> Vec<String> {
 /// the path `/blog/<slug>` and a link to a route that is gone, or without a
 /// parameter it needs, does not compile. Named by the pattern: `/` is
 /// `home`, `/blog/[slug]` is `blog_slug`; a name taken gets `_2`, `_3`.
-fn typed_routes(routes: &[crate::routes::Route]) -> String {
+fn typed_routes<'a>(routes: impl IntoIterator<Item = &'a crate::routes::Route>) -> String {
     let ident = |s: &str| {
         let s: String = s
             .chars()
@@ -8719,6 +9149,107 @@ fn pattern_names(pat: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn static_files_of_the_app_and_its_layers() {
+        let d = std::env::temp_dir().join(format!("wisp-static-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let (app, base) = (d.join("app"), d.join("base"));
+        for (dir, f, s) in [
+            (&base, "static/logo.svg", "base"),
+            (&base, "static/fonts/a.woff2", "base"),
+            (&app, "static/logo.svg", "own"),
+        ] {
+            fs::create_dir_all(dir.join(f).parent().unwrap()).unwrap();
+            fs::write(dir.join(f), s).unwrap();
+        }
+        let toml = "[package.metadata.wisp]\nextends = [\"../base\"]\n";
+        fs::write(app.join("Cargo.toml"), toml).unwrap();
+        let found = static_files(&app).unwrap();
+        let urls: Vec<&str> = found.iter().map(|f| f.0.as_str()).collect();
+        assert_eq!(urls, ["/logo.svg", "/fonts/a.woff2"]);
+        assert_eq!(fs::read_to_string(&found[0].1).unwrap(), "own");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn config_rules_are_baked_or_refused() {
+        let page = ("src/routes/docs/[...p]/+page.wisp", "<p>{p}</p>");
+        let with = |name: &str, rules: &str| {
+            let toml = format!(
+                "[package]
+name = \"a\"
+[package.metadata.wisp]
+{rules}
+"
+            );
+            app(name, &[page, ("Cargo.toml", &toml)])
+        };
+        let none = app("rules-none", &[page]).unwrap();
+        for w in ["REDIRECTS", "REWRITES", "HEADERS"] {
+            assert!(!none.contains(&format!("const {w}")), "{w}");
+        }
+        let code = with(
+            "rules-all",
+            "redirects = [\"/old/[id] /docs/[id] 301\", \"/x https://x.dev/y\"]
+             rewrites = [
+  \"/guide/[...p] /docs/[...p]\",
+]
+             headers = [\"/[...p] x-frame-options: DENY\"]",
+        )
+        .unwrap();
+        for want in [
+            "const REDIRECTS: bool = true;",
+            "(\"/old/[id]\", \"/docs/[id]\", 301), (\"/x\", \"https://x.dev/y\", 308)",
+            "const REWRITES: bool = true;",
+            "(\"/guide/[...p]\", 0, &[\"p\"])",
+            "const HEADERS: bool = true;",
+            "(\"/[...p]\", \"x-frame-options\", \"DENY\")",
+        ] {
+            assert!(
+                code.contains(want),
+                "{want}
+{code}"
+            );
+        }
+        for (rules, err) in [
+            ("redirects = [\"/a\"]", "write `from to`"),
+            ("redirects = [\"/a /b 200\"]", "the status is"),
+            ("redirects = [\"a /b\"]", "starts with a `/`"),
+            ("redirects = [\"/a /b/[id]\"]", "`[id]` is not in `/a`"),
+            ("redirects = [\"/a //evil.example\"]", "a path of the app"),
+            ("redirects = [\"/[h] https://[h].dev\"]", "host"),
+            ("rewrites = [\"/g/[...p] /nope\"]", "not a route"),
+            ("rewrites = [\"/g /docs/[...p]\"]", "has no `[p]`"),
+            (
+                "headers = [\"/a content-length: 1\"]",
+                "not a header to set",
+            ),
+            ("headers = [\"/a\"]", "write `pattern name: value`"),
+            ("redirects = [\"/a /a\"]", "goes round for ever: /a -> /a"),
+            ("redirects = [\"/a /b\", \"/b /a\"]", "/a -> /b -> /a"),
+            ("redirects = [\"/a/[...p] /a/b/[...p]\"]", "goes round"),
+            ("redirects = [\"/a /b\", \"/b /a x\"]", "the status is"),
+            ("redirects = [\"/a//b /c\"]", "empty segment"),
+            (
+                "redirects = [\"/a /b\" \"/c /d\"]",
+                "a comma goes between strings",
+            ),
+            ("redirects = [\"/a /b\"", "no closing `]`"),
+            ("redirects = \"/a /b\"", "a list of strings"),
+            ("redirects = [\"/a /b]", "no closing quote"),
+            ("redirects = [\"/a /b\\q\"]", "escapes"),
+            ("headers = ['/a x: a	b']", "control character"),
+            (
+                "redirects = [\"/[a]/[b]/[c]/[d]/[e]/[f]/[g]/[h]/[i] /x\"]",
+                "more than 8",
+            ),
+            ("rewrites = [\"/g/[p] /docs/[...p]\"]", "only one of"),
+        ] {
+            let e = with("rules-bad", rules).err().unwrap_or_default();
+            assert!(e.contains(err), "{rules}: {e}");
+        }
+    }
 
     #[test]
     fn field_paths() {
@@ -9736,6 +10267,168 @@ fn report(cx: &mut Cx, err: &Error) {}",
     }
 
     #[test]
+    fn slots_are_drawn_by_their_layout() {
+        let layout = (
+            "src/routes/d/+layout.wisp",
+            "<aside>{@render stats()}</aside>{@render children()}",
+        );
+        let slot = ("src/routes/d/@stats/+page.wisp", "<p>s</p>");
+        let page = ("src/routes/d/+page.wisp", "<h1>d</h1>");
+        let code = app("slot-ok", &[layout, slot, page]).unwrap();
+        // The layout takes it as a parameter, the page's route gives it.
+        assert!(
+            code.contains("children: &dyn Fn(&mut ::wisp::Out), stats: &dyn Fn(&mut ::wisp::Out))"),
+            "{code}"
+        );
+        assert!(
+            code.contains(", &|__o: &mut ::wisp::Out| tpl_page_"),
+            "{code}"
+        );
+        // Without a slot, a layout's render has no extra parameter.
+        let plain = app(
+            "slot-none",
+            &[("src/routes/d/+layout.wisp", "{@render children()}"), page],
+        )
+        .unwrap();
+        assert!(!code_has_slot(&plain), "{plain}");
+        for (name, files, want) in [
+            (
+                "slot-nolayout",
+                vec![slot, page],
+                "a slot needs a +layout.wisp",
+            ),
+            (
+                "slot-undrawn",
+                vec![
+                    ("src/routes/d/+layout.wisp", "{@render children()}"),
+                    slot,
+                    page,
+                ],
+                "draw it with {@render stats()}",
+            ),
+            (
+                "slot-waits",
+                vec![
+                    layout,
+                    (
+                        "src/routes/d/@stats/+page.wisp",
+                        "---\nlet n = 1;\n---\n<p>{n}</p>",
+                    ),
+                    page,
+                ],
+                "cannot wait",
+            ),
+            (
+                "slot-name",
+                vec![layout, ("src/routes/d/@children/+page.wisp", "x"), page],
+                "is not a slot name",
+            ),
+        ] {
+            let err = app(name, &files).unwrap_err();
+            assert!(err.contains(want), "{name}: {err}");
+        }
+    }
+
+    fn code_has_slot(code: &str) -> bool {
+        code.contains(": &dyn Fn(&mut ::wisp::Out))") && code.contains("stats:")
+    }
+
+    #[test]
+    fn named_middleware_is_resolved_into_the_route() {
+        let mw = (
+            "src/middleware.rs",
+            "pub fn auth(cx: &mut Cx) -> Result { Ok(()) }\npub fn audit(cx: &mut Cx) -> Result { Ok(()) }\nfn hidden() {}",
+        );
+        let page = (
+            "src/routes/admin/+page.wisp",
+            "---\nconst MIDDLEWARE: &[&str] = &[\"auth\", \"audit\"];\n---\nx",
+        );
+        let code = app("mw-page", &[mw, page, ("src/routes/+page.wisp", "y")]).unwrap();
+        assert!(
+            code.contains("middleware::auth(cx)?; middleware::audit(cx)?; Ok(()) }"),
+            "{code}"
+        );
+        // A folder's: in its layout, for every page below.
+        let layout = (
+            "src/routes/team/+layout.wisp",
+            "---\nconst MIDDLEWARE: &[&str] = &[\"auth\"];\n---\n{@render children()}",
+        );
+        let code = app(
+            "mw-layout",
+            &[mw, layout, ("src/routes/team/+page.wisp", "x")],
+        )
+        .unwrap();
+        assert!(code.contains("middleware::auth(cx)?; Ok(()) }"), "{code}");
+        // An endpoint's.
+        let rs = "const MIDDLEWARE: &[&str] = &[\"auth\"];\nfn get() {}";
+        let code = app("mw-server", &[mw, ("src/routes/+server.rs", rs)]).unwrap();
+        assert!(code.contains("middleware::auth(cx)?;"), "{code}");
+        // Nothing named, nothing run.
+        let code = app("mw-none", &[mw, ("src/routes/+page.wisp", "x")]).unwrap();
+        assert!(!code.contains("middleware::"), "{code}");
+        for (name, files, want) in [
+            ("mw-nofn", vec![mw, page], "no `pub fn nope"),
+            ("mw-private", vec![mw, page], "no `pub fn hidden"),
+            (
+                "mw-nofile",
+                vec![page],
+                "src/middleware.rs, which is not there",
+            ),
+        ] {
+            let bad = match name {
+                "mw-nofn" => "---\nconst MIDDLEWARE: &[&str] = &[\"nope\"];\n---\nx",
+                "mw-private" => "---\nconst MIDDLEWARE: &[&str] = &[\"hidden\"];\n---\nx",
+                _ => "---\nconst MIDDLEWARE: &[&str] = &[\"auth\"];\n---\nx",
+            };
+            let files: Vec<_> = files
+                .into_iter()
+                .filter(|f| f.0 != page.0)
+                .chain([(page.0, bad)])
+                .collect();
+            let err = app(name, &files).unwrap_err();
+            assert!(err.contains(want), "{name}: {err}");
+        }
+        let numbers = "---\nconst MIDDLEWARE: &[&str] = &[\"1x\"];\n---\nx";
+        let err = app("mw-ident", &[mw, (page.0, numbers)]).unwrap_err();
+        assert!(err.contains("is not a function name"), "{err}");
+    }
+
+    #[test]
+    fn runtime_is_a_checked_literal() {
+        let page = ("src/routes/+page.wisp", "x");
+        let ok = |v: &'static str| vec![page, ("src/routes/+page.rs", v)];
+        let code = app(
+            "runtime-ok",
+            &ok("const RUNTIME: wisp::Runtime = wisp::Runtime::Edge;"),
+        )
+        .unwrap();
+        assert!(
+            code.contains("const _: ::wisp::Runtime = super::RUNTIME;"),
+            "{code}"
+        );
+        let e = app("runtime-bad", &ok("const RUNTIME: wisp::Runtime = pick();")).unwrap_err();
+        assert!(
+            e.contains("+page.rs:1") && e.contains("as a literal"),
+            "{e}"
+        );
+        let e = app("runtime-ty", &ok("const RUNTIME: bool = true;")).unwrap_err();
+        assert!(e.contains("as a literal"), "{e}");
+        let layout = [
+            ("src/routes/+layout.wisp", "{@render children()}"),
+            (
+                "src/routes/+layout.rs",
+                "pub const RUNTIME: wisp::Runtime = wisp::Runtime::Edge;",
+            ),
+            page,
+        ];
+        assert!(
+            app("runtime-layout", &layout)
+                .unwrap_err()
+                .contains("a layout's `RUNTIME` does nothing")
+        );
+    }
+
+    #[test]
     fn body_limits_are_checked() {
         let page = ("src/routes/+page.wisp", "x");
         let rs = |src: &'static str| ("src/routes/+page.rs", src);
@@ -10130,6 +10823,36 @@ fn report(cx: &mut Cx, err: &Error) {}",
     }
 
     #[test]
+    fn cache_stale_and_tags_are_consts_the_shim_passes() {
+        let plain = (
+            "src/routes/+page.wisp",
+            "---
+const CACHE: u32 = 60;
+---
+x",
+        );
+        let code = app("cache-more-none", &[plain]).unwrap();
+        assert!(
+            code.contains("CacheMore::new(0, &[])"),
+            "no window, no tags: {code}"
+        );
+        let more = (
+            "src/routes/+page.wisp",
+            "---
+const CACHE: u32 = 60;
+const CACHE_STALE: u32 = 600;
+const CACHE_TAGS: &[&str] = &[\"posts\"];
+---
+x",
+        );
+        let code = app("cache-more", &[more]).unwrap();
+        assert!(
+            code.contains("CacheMore::new(super::CACHE_STALE, super::CACHE_TAGS)"),
+            "{code}"
+        );
+    }
+
+    #[test]
     fn cache_keeps_gets() {
         let page = (
             "src/routes/+page.wisp",
@@ -10146,7 +10869,7 @@ fn report(cx: &mut Cx, err: &Error) {}",
         for want in [
             "pub const CACHE: u32 = super::CACHE;",
             "(0, Get | Head) => { ::wisp::rt::browser_ok(cx)?; { if ::wisp::rt::cached::<false>(cx, __o, false) { return Ok(()); } \
-             serve_page_0(cx, __o).await?; ::wisp::rt::keep::<Self, false>(cx, __o, page_0::__call::CACHE, false); Ok(()) } },",
+             serve_page_0(cx, __o).await?; ::wisp::rt::keep::<Self, false>(cx, __o, page_0::__call::CACHE, false, page_0::__call::MORE); Ok(()) } },",
         ] {
             assert!(code.contains(want), "{want}\n{code}");
         }
@@ -10160,15 +10883,14 @@ fn report(cx: &mut Cx, err: &Error) {}",
         for want in [
             "pub const CACHE: u32 = super::CACHE_PUBLIC;",
             "(0, Get | Head) => { ::wisp::rt::endpoint(cx); if ::wisp::rt::cached::<false>(cx, __o, true) { return Ok(()); } \
-             ::wisp::rt::respond(__o, server_0::__call::get(cx).await?); ::wisp::rt::keep::<Self, false>(cx, __o, server_0::__call::CACHE, true); Ok(()) }",
-            "(0, Post) => { ::wisp::rt::endpoint(cx); ::wisp::rt::check_origin(cx)?; \
-             server_0::__call::post(cx).await?; ::wisp::rt::no_content(__o); Ok(()) }",
+             ::wisp::rt::respond(__o, server_0::__call::get(cx).await?); ::wisp::rt::keep::<Self, false>(cx, __o, server_0::__call::CACHE, true, server_0::__call::MORE); Ok(()) }",
+            "(0, Post) => { ::wisp::rt::endpoint(cx); ::wisp::rt::check_origin(cx)?;              server_0::__call::post(cx).await?; ::wisp::rt::no_content(__o); Ok(()) }",
             // The same, sync, with no future: what `handle_now` answers.
             "now: true, sync: ::wisp::Method::Get.bit() | ::wisp::Method::Head.bit() | ::wisp::Method::Post.bit(),",
             "(0, Get | Head) => { ::wisp::rt::hooked(cx); ::wisp::rt::endpoint(cx); \
              if ::wisp::rt::cached::<false>(cx, __o, true) { return Ok(true); } \
              ::wisp::rt::respond(__o, server_0::__call::get_now(cx)?); \
-             ::wisp::rt::keep::<Self, false>(cx, __o, server_0::__call::CACHE, true); Ok(true) }",
+             ::wisp::rt::keep::<Self, false>(cx, __o, server_0::__call::CACHE, true, server_0::__call::MORE); Ok(true) }",
             "(0, Post) => { ::wisp::rt::hooked(cx); ::wisp::rt::endpoint(cx); \
              server_0::__call::post_now(cx)?; ::wisp::rt::no_content(__o); Ok(true) }",
             "pub fn post_now(cx: &mut ::wisp::Cx) -> ::wisp::Result<()> { super::post(); Ok(()) }",
@@ -10257,7 +10979,7 @@ fn report(cx: &mut Cx, err: &Error) {}",
         for want in [
             "(0, Get | Head) => { ::wisp::rt::endpoint(cx); if ::wisp::rt::cached::<true>(cx, __o, false) { return Ok(()); } \
              ::wisp::rt::respond(__o, server_0::__call::__rest_list(cx).await?); \
-             ::wisp::rt::keep::<Self, true>(cx, __o, server_0::__call::CACHE, false); Ok(()) }",
+             ::wisp::rt::keep::<Self, true>(cx, __o, server_0::__call::CACHE, false, server_0::__call::MORE); Ok(()) }",
             "(1, Get | Head) => { ::wisp::rt::endpoint(cx); if ::wisp::rt::cached::<false>(cx, __o, false) {",
         ] {
             assert!(code.contains(want), "{want}\n{code}");
@@ -10554,6 +11276,7 @@ pub fn load() -> Data { todo!() }";
             stmts: None,
             t: template::parse(src).unwrap(),
             i18n: false,
+            slots: Vec::new(),
         };
         // The script's bare imports are the app's npm packages.
         let deps = vec![("a".into(), "1".into()), ("b".into(), "2".into())];
@@ -11526,6 +12249,48 @@ pub fn load() -> Data { todo!() }";
             ),
             "{code}"
         );
+    }
+
+    #[test]
+    fn slots_loading_and_interceptions_are_checked() {
+        let lay = (
+            "src/routes/+layout.wisp",
+            "<main>{@render children()}{@render modal()}</main>",
+        );
+        let page = ("src/routes/+page.wisp", "<p>hi</p>");
+        let e = app("slot-missing", &[lay, page]).unwrap_err();
+        assert!(
+            e.contains("{@render modal()} draws a slot") && e.contains("no folder @modal"),
+            "{e}"
+        );
+        let slot = ("src/routes/@modal/+page.wisp", "");
+        let cut = ("src/routes/@modal/(.)nope/+page@.wisp", "x");
+        let e = app("cut-nowhere", &[lay, page, slot, cut]).unwrap_err();
+        assert!(
+            e.contains("it intercepts /nope, which is not a page"),
+            "{e}"
+        );
+        let lay = (
+            "src/routes/+layout.wisp",
+            "<main>{@render children()}</main>",
+        );
+        let load = |src| ("src/routes/+loading.wisp", src);
+        assert!(app("loading-ok", &[lay, page, load("<i>l</i>")]).is_ok());
+        let e = app("loading-script", &[lay, page, load("<SCRIPT>1</SCRIPT>")]).unwrap_err();
+        assert!(e.contains("a loading view is static HTML"), "{e}");
+    }
+
+    #[test]
+    fn a_component_that_renders_itself_forever_is_refused() {
+        let page = ("src/routes/+page.wisp", "<Aa />");
+        let aa = |src: &'static str| ("src/components/Aa.wisp", src);
+        let bb = ("src/components/Bb.wisp", "<Aa />");
+        let e = app("self-forever", &[page, aa("<p>x</p><Aa />")]).unwrap_err();
+        assert!(e.contains("<Aa> renders itself"), "{e}");
+        let e = app("loop-forever", &[page, aa("<Bb />"), bb]).unwrap_err();
+        assert!(e.contains("<Aa> -> <Bb> -> <Aa>"), "{e}");
+        // A condition that is always true is the author's: no overflow.
+        assert!(app("true-forever", &[page, aa("{#if true}<Aa />{/if}")]).is_ok());
     }
 
     #[test]
