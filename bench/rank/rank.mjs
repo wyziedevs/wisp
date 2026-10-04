@@ -162,11 +162,16 @@ mkdirSync(join(here, 'results'), { recursive: true });
 const save = () => writeFileSync(join(here, 'results', `${host}.json`), JSON.stringify(res, null, 1));
 const live = [];
 try {
+  // Cold starts alternate between the servers too, a round at a time.
+  const there = [];
   for (const a of apps) {
-    if (!existsSync(a.cwd)) { res.failed[a.name] = 'missing ' + a.cwd; console.log(host, a.name, 'MISSING'); continue; }
-    const cs = [];
-    for (let i = 0; i < colds; i++) cs.push(await cold(a));
-    const ok = cs.filter((x) => x === x);
+    if (existsSync(a.cwd)) there.push(a);
+    else { res.failed[a.name] = 'missing ' + a.cwd; console.log(host, a.name, 'MISSING'); }
+  }
+  const cs = new Map(there.map((a) => [a, []]));
+  for (let i = 0; i < colds; i++) for (const a of there) cs.get(a).push(await cold(a));
+  for (const a of there) {
+    const ok = cs.get(a).filter((x) => x === x);
     if (!ok.length) { res.failed[a.name] = 'does not start'; console.log(host, a.name, 'DOES NOT START'); continue; }
     res.cold[a.name] = { median: +median(ok).toFixed(1), min: +Math.min(...ok).toFixed(1), n: ok.length };
     console.log(host, a.name, 'cold ms', res.cold[a.name].median);
