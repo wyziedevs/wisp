@@ -8055,7 +8055,14 @@ fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
                         !t.member
                             && matches!(
                                 t.text(c),
-                                "Map" | "Set" | "enhance" | "__wisp_snap" | "persisted" | "tweened" | "spring" | "crossfade"
+                                "Map"
+                                    | "Set"
+                                    | "enhance"
+                                    | "__wisp_snap"
+                                    | "persisted"
+                                    | "tweened"
+                                    | "spring"
+                                    | "crossfade"
                             )
                     })
                 }))
