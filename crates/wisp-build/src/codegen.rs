@@ -6932,7 +6932,7 @@ impl Gen {
                     .value
                     .as_ref()
                     .map_or("", |v| v.src.as_str());
-                let html = g.directives[0].name == "html";
+                let html = !g.directives[0].name.is_empty();
                 if let Some(put) = paint_value(cx, *group, js)
                     .filter(|_| !html)
                     .and_then(|v| v.text(&buf))
@@ -7260,7 +7260,10 @@ impl Gen {
             return;
         };
         // What a spread gives is the browser's to work out.
-        if d.props.iter().any(|p| p.name == "...") {
+        if d.props
+            .iter()
+            .any(|p| p.name == "..." || matches!(p.value, PropValue::Snippet { .. }))
+        {
             return;
         }
         let mut args = Vec::new();
@@ -7760,7 +7763,7 @@ fn is_extra(d: &Directive) -> bool {
             | Dir::Wait
             | Dir::Comp
     ) || (d.kind == Dir::Bind && !matches!(d.name.as_str(), "value" | "checked" | "this"))
-        || (d.kind == Dir::Hole && d.name == "html")
+        || (d.kind == Dir::Hole && !d.name.is_empty())
 }
 
 /// A place in a script, as a line and column of its file.
@@ -8923,6 +8926,22 @@ fn binding(d: &Directive, names: &mut Names) -> Result<String, String> {
         Dir::Attr => format!("[\"attr\", {name}, {}]", getter(value(), names)?),
         Dir::Text => format!("[\"text\", {}]", getter(value(), names)?),
         Dir::Hole if d.name == "html" => format!("[\"html\", {}]", getter(value(), names)?),
+        // The prop's snippet, and the array of the arguments to draw it with.
+        // The prop is the browser's own: the server sends no snippet.
+        Dir::Hole if d.name == "draw" => format!(
+            "[\"draw\", {} => {}, {}]",
+            one(&[]),
+            paren(&value().src),
+            optional(d.key.as_ref(), names)?
+        ),
+        Dir::Snip => format!(
+            "[\"snip\", {name}, [{}]]",
+            d.mods
+                .iter()
+                .map(|m| js_str(m))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         Dir::Hole => format!("[\"hole\", {}]", getter(value(), names)?),
         Dir::Class => format!("[\"class\", {name}, {}]", getter(value(), names)?),
         Dir::Style => format!("[\"style\", {name}, {}]", getter(value(), names)?),
@@ -9078,9 +9097,9 @@ fn comp_binding(
                     handler_body(&code.src)
                 ));
             }
-            PropValue::Expr(_) | PropValue::Snippet { .. } => {
-                unreachable!("the parser refuses server props here")
-            }
+            // Drawn from the block before the tag (`snip`), not passed.
+            PropValue::Snippet { .. } => {}
+            PropValue::Expr(_) => unreachable!("the parser refuses server props here"),
         }
     }
     let b = format!(
@@ -12332,6 +12351,57 @@ pub fn load() -> Data { todo!() }";
             ),
             "{code}"
         );
+    }
+
+    #[test]
+    fn snippets_are_props_of_components_the_browser_draws() {
+        let table = (
+            "src/components/Table.wisp",
+            "{@props items: Vec<u32>, row: Snippet<&u32, usize>}\n<ul>{:#each items as it, i}<li>{:@render row(it, i)}</li>{:/each}</ul>",
+        );
+        for (n, page) in [
+            "<Table items={:xs} {row} />",
+            "<Table items={:xs}>{#snippet row(x, i)}<b>{:i}: {:x}</b>{/snippet}</Table>",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let src = if n == 0 {
+                format!(
+                    "{{#snippet row(x, i)}}<b>{{:i}}: {{:x}}</b>{{/snippet}}{page}<script>let xs = [1, 2]</script>"
+                )
+            } else {
+                format!("{page}<script>let xs = [1, 2]</script>")
+            };
+            let code = app("snippet-props", &[table, ("src/routes/+page.wisp", &src)]).unwrap();
+            // The block before the tag, and the draw in the component.
+            assert!(
+                code.contains("[\\\"snip\\\", \\\"row\\\", [\\\"x\\\", \\\"i\\\"]]"),
+                "{code}"
+            );
+            assert!(code.contains("[\\\"draw\\\", "), "{code}");
+            assert!(
+                !code.contains("Table::paint("),
+                "no first paint when it is given a snippet"
+            );
+        }
+        let bad = |page: &str| {
+            app(
+                "snippet-bad",
+                &[
+                    (
+                        "src/components/Table.wisp",
+                        "{@props items: Vec<u32>}\n<p>{:items.length}</p>",
+                    ),
+                    ("src/routes/+page.wisp", page),
+                ],
+            )
+            .unwrap_err()
+        };
+        let bad = bad(
+            "{#snippet row(x)}{/snippet}<Table items={:xs} {row} /><script>let xs = []</script>",
+        );
+        assert!(bad.contains("has no prop `row`"), "{bad}");
     }
 
     #[test]

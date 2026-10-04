@@ -293,6 +293,38 @@ X.html = (sc, inst, el, L, quiet, [, a]) =>
     1,
   );
 
+// ---- snippets given to components ----------------------------------------------
+
+// A {#snippet} a component the browser draws is given: its anchor holds a
+// function (name, then: draw it after `at`, as a child of scope `up`, with
+// a getter of its arguments) for the component, which it finds among the
+// anchors right before its own. The body sees this page's names and its
+// parameters, which follow the arguments.
+X.snip = (sc, inst, el, L, quiet, [, name, names]) => {
+  el.__sn = [
+    name,
+    (at, up, args, q) => {
+      const v = untrack(args);
+      const sigs = names.map((_, i) => new Sig(v[i]));
+      const own = Object.create(L);
+      names.forEach((n, i) => Object.defineProperty(own, n, { get: () => sigs[i].v }));
+      const cs = scope(up, 1);
+      node(cs, () => {
+        const a = args();
+        untrack(() => sigs.forEach((s, i) => (s.v = a[i])));
+      });
+      const c = place(at, el, cs, inst, own, q);
+      return () => (end(cs), range(c).forEach((n) => n.remove()));
+    },
+  ];
+};
+
+// {:@render name(args)} where `name` is a prop: what the parent gave, if it did.
+X.draw = (sc, inst, el, L, quiet, [, f, a]) => {
+  const s = f(L);
+  if (s) sc.stops.push(s(el, sc, () => a(L), quiet));
+};
+
 // ---- components, forms, collections -------------------------------------------
 
 // A component the browser renders, after its anchor: a new instance of its
@@ -309,9 +341,12 @@ X.comp = (sc, parent, anchor, L, quiet, [, id, props, binds, events]) => {
   child.sc.c = 1; // all it draws is a copy
   child.slot = { tpl: anchor, inst: parent, L };
   for (const [name, f] of events) child.events[name] = (v) => untrack(() => f(L, v));
+  // The snippets it was given: the `snip` anchors right before it.
+  const given = {};
+  for (let p = anchor.previousSibling; p && (p.__sn || (p.nodeType == 3 && !p.data.trim())); p = p.previousSibling) if (p.__sn) given[p.__sn[0]] = p.__sn[1];
   const where = untrack(() => {
     try {
-      script(child, { ...props(L) });
+      script(child, { ...props(L), ...given });
     } catch (e) {
       report(sc, e);
     }
@@ -323,7 +358,7 @@ X.comp = (sc, parent, anchor, L, quiet, [, id, props, binds, events]) => {
     const p = props(L);
     untrack(() => {
       drop(where.last); // after a morph, the new page's copy
-      child.s?.(p);
+      child.s?.({ ...p, ...given });
     });
   });
   for (const [name, get, set] of binds)

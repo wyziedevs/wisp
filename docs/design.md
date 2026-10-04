@@ -863,7 +863,12 @@ A snippet is markup a file renders more than once, or gives to a component:
   `{@render row(…)}`.
 - `{:@render row(x)}` has the browser draw it: the arguments are
   JavaScript, and the body uses its parameters in `{:…}` (see
-  [client.md](client.md)).
+  [client.md](client.md)). A component the browser draws takes snippets
+  the same way (`<List items={:xs} {row} />`, or `{#snippet row(x)}` among
+  its children) and draws one with `{:@render row(x)}` where `row` is a
+  prop: the snippet's body is a block before the tag (`Dir::Snip`, which
+  `snip` in extra.js binds), and the component finds it among the anchors
+  right before its own, so no first paint for a component given one.
 
 ### Translations
 

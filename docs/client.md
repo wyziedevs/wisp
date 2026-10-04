@@ -207,6 +207,22 @@ works on the server.
 {:#each tags as tag (tag)}{:@render chip(tag)}{:/each}
 ```
 
+A component the browser draws takes snippets as props, by name
+(`<List items={:xs} {row} />`, `row={other}`) or among its children, and draws
+one with `{:@render row(x)}` where `row` is one of its props
+(`{@props row: Snippet<&Item>}` or `$props()`). The body sees the page's
+names and its parameters, and is drawn after `{:@render}`; none given draws
+nothing. It loads `extra.js`, and the server paints no copy of the component.
+
+```html
+<!-- src/components/List.wisp -->
+{@props items: Vec<String>, row: Snippet<&String, usize>}
+<ul>{:#each items as item, i}<li>{:@render row(item, i)}</li>{:/each}</ul>
+```
+```html
+<List items={:fruits}>{#snippet row(name, i)}<b>{:i}</b> {:name}{/snippet}</List>
+```
+
 `{:@const name = expr}` names a value for the rest of its block (it ends at
 `{:/…}` or `{:else}`); `{:@html expr}` puts markup in unescaped, as `{@html}`
 does on the server (trusted markup only), redrawn when the value changes.

@@ -746,7 +746,7 @@ const BLOCKS: [(&str, &str, &str); 27] = [
     (
         "{:@render",
         "{:@render ${1:snippet}(${2})}",
-        "`{:@render s(x)}`: a snippet the browser renders.",
+        "`{:@render s(x)}`: a snippet the browser renders; in a component, a snippet prop its parent gave.",
     ),
     (
         "{@pager",

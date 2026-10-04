@@ -133,3 +133,20 @@ fn awaits_answer_in_place() {
     assert_eq!(b.count(left), 0);
     live(&mut b);
 }
+
+/// A component the browser draws takes snippets as props (passed by name,
+/// and among its children), and `{:@const}` and `{:@html}` draw in place.
+#[test]
+fn components_draw_the_snippets_they_are_given() {
+    let mut b = wisp::browser!(Site);
+    b.goto("/a2/snippets");
+    assert_eq!(b.count("li"), 4);
+    b.click("button");
+    assert_eq!(b.count("li"), 6);
+    let text = "[...document.querySelectorAll('li')].map((e) => e.textContent.trim()).join()";
+    assert_eq!(
+        b.eval(text).as_str(),
+        Some("1. plum,2. fig,3. pear,PLUM,FIG,PEAR")
+    );
+    assert_eq!(b.text("#note i"), "raw");
+}
