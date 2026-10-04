@@ -30,6 +30,7 @@ pub struct Baked {
 }
 
 impl Baked {
+    /// Bakes a page: its head, its body and its ETag. Made by the generated code.
     pub const fn new(head: &'static str, body: &'static str, etag: &'static str) -> Baked {
         Baked { head, body, etag }
     }
@@ -46,8 +47,10 @@ pub struct CacheMore {
 }
 
 impl CacheMore {
+    /// No stale seconds and no tags: what a route without `CACHE_STALE` or `CACHE_TAGS` has.
     pub const NONE: CacheMore = CacheMore::new(0, &[]);
 
+    /// `stale` seconds past `CACHE` the old answer may be sent, and the `tags` it is dropped by.
     pub const fn new(stale: u32, tags: &'static [&'static str]) -> CacheMore {
         CacheMore { stale, tags }
     }
@@ -127,6 +130,10 @@ pub(crate) fn reply(cx: &Cx, made: Made, reply: &mut Reply) {
             return;
         }
     };
+    #[cfg(target_arch = "wasm32")]
+    if matches!(made, Made::Baked(_)) {
+        crate::edge::constant(cx);
+    }
     if !fresh {
         // A kept page has its policy in its head already.
         if let (Made::Baked(_), Some(policy)) = (&made, crate::csp::header()) {

@@ -1,7 +1,7 @@
 // Wisp against Hono on bare workerd (no wrangler: its dev proxy caps both at
 // ~1.7k req/s). See README.md.
 //   node workerd.mjs --workerd <workerd binary> --wisp <wisp build dir> --hono <dir with the bundled worker>
-//                    [--secs 10] [--conns 64] [--runs 3] [--cold 10] [--only wisp]
+//                    [--secs 10] [--conns 64] [--runs 3] [--cold 10] [--only wisp] [--routes list,json]
 // Both run at once; every route's runs alternate between them, so a busy
 // machine hurts both the same.
 import { spawn, execFileSync } from 'node:child_process';
@@ -13,7 +13,9 @@ const bin = resolve(arg('workerd', 'workerd'));
 const secs = arg('secs', '10'), conns = arg('conns', '64'), runs = Number(arg('runs', '3')), colds = Number(arg('cold', '10'));
 const only = arg('only', '');
 const apps = Object.entries({ wisp: arg('wisp', '.'), hono: arg('hono', '.') }).filter(([n]) => !only || n === only).map(([name, dir], i) => ({ name, dir: resolve(dir), port: 4300 + i }));
-const routes = ['/', '/list', '/json'];
+const jar = 'sid=abc123; theme=dark';
+const routes = ['/', '/list', '/json', '/list1000', '/json-big', '/about', '/params/42?q=hello%20world&x=1'].filter((r) => !arg('routes', '') || arg('routes', '').split(',').some((m) => r.includes(m)));
+const hdr = (p) => (p.startsWith('/params') ? { cookie: jar } : {});
 
 // Every file of the dir is a module: .wasm as wasm, .js and .mjs as ES modules.
 // The entry (worker.js, or Hono's bundle app.mjs) goes first.
@@ -58,7 +60,7 @@ function cpu(pid) {
 // One oha run: req/s, p99 ms, and workerd's CPU microseconds per request.
 function oha(a, path, s) {
   const c0 = cpu(a.child.pid);
-  const j = JSON.parse(execFileSync('oha', ['-z', `${s}s`, '-c', conns, '--no-tui', '--output-format', 'json', `http://127.0.0.1:${a.port}${path}`], { maxBuffer: 1 << 26 }));
+  const j = JSON.parse(execFileSync('oha', ['-z', `${s}s`, '-c', conns, '--no-tui', '--output-format', 'json', ...(path.startsWith('/params') ? ['-H', `cookie: ${jar}`] : []), `http://127.0.0.1:${a.port}${path}`], { maxBuffer: 1 << 26 }));
   const used = cpu(a.child.pid) - c0;
   const n = j.statusCodeDistribution['200'] ?? 0;
   const bad = Object.entries(j.statusCodeDistribution).filter(([k]) => k !== '200').length;
@@ -74,7 +76,7 @@ for (const a of apps) a.child = start(a);
 await sleep(1500);
 for (const p of routes) {
   const rs = apps.map(() => []);
-  for (const a of apps) { await fetch(`http://127.0.0.1:${a.port}${p}`, { headers: { connection: 'close' } }).then((r) => r.text()); oha(a, p, 3); }
+  for (const a of apps) { await fetch(`http://127.0.0.1:${a.port}${p}`, { headers: { connection: 'close', ...hdr(p) } }).then((r) => r.text()); oha(a, p, 3); }
   for (let i = 0; i < runs; i++) apps.forEach((a, k) => rs[k].push(oha(a, p, secs)));
   apps.forEach((a, k) => {
     const m = (f) => +median(rs[k].map((r) => r[f])).toFixed(1);

@@ -51,9 +51,11 @@ pub struct Profile {
     pub id: String,
     /// Their email, only if the provider vouches for it.
     pub email: Option<String>,
+    /// Their display name, if the provider gives one.
     pub name: Option<String>,
 }
 
+/// An OAuth provider: where to send the visitor, where to trade the code, what to ask for. Made by [`github`], [`google`] or by hand.
 #[derive(Clone)]
 pub struct Provider {
     name: &'static str,
@@ -66,6 +68,7 @@ pub struct Provider {
     github: bool,
 }
 
+/// GitHub as a provider (scope `read:user user:email`).
 pub fn github() -> Provider {
     Provider {
         github: true,
@@ -79,6 +82,7 @@ pub fn github() -> Provider {
     }
 }
 
+/// Google as a provider (scope `openid email profile`).
 pub fn google() -> Provider {
     Provider::new(
         "google",

@@ -40,7 +40,10 @@
 //! request `id`: its head, `status` and `name: value` lines, and its number
 //! among the heads sent, `u32::MAX` if not kept; a first line `200 stream` means the
 //! body follows as `chunk(id, ptr, len)` calls, the last one empty; a chunk
-//! returns 0 when the client is behind, and none follows until `wisp_pull`),
+//! returns 0 when the client is behind, and none follows until `wisp_pull`;
+//! `200 const` says the answer is the same to every request for that path
+//! (without a query) that sends no `x-wisp-error` and answers `if-none-match`
+//! by its ETag: a baked page, a trailing-slash redirect; see [`constant`]),
 //! `fetch(id, ptr, len)` (a request, its target a URL), `timer(id, ms)`,
 //! `conn_write(id, ptr, len) -> ok` (bytes for connection `id`, copied before
 //! it returns; an empty write ends the connection; 0 when the client is
@@ -127,6 +130,8 @@ pub(crate) struct Lazy {
     known: [OnceCell<Option<Box<str>>>; crate::cx::KNOWN],
     named: [OnceCell<Named>; NAMED],
     all: OnceCell<Vec<(Box<str>, Box<str>)>>,
+    /// The route's guard ran (see [`guarded`]).
+    guarded: Cell<bool>,
 }
 
 impl Lazy {
@@ -136,6 +141,7 @@ impl Lazy {
             known: [const { OnceCell::new() }; crate::cx::KNOWN],
             named: [const { OnceCell::new() }; NAMED],
             all: OnceCell::new(),
+            guarded: Cell::new(false),
         }
     }
 
@@ -157,6 +163,14 @@ impl Lazy {
         self.known[k as usize]
             .get_or_init(|| self.get(name))
             .as_deref()
+    }
+
+    /// Whether the request has read no header but those of `ok`.
+    fn reads_only(&self, ok: &[crate::cx::Known]) -> bool {
+        self.all.get().is_none()
+            && self.named.iter().all(|n| n.get().is_none())
+            && (self.known.iter().enumerate())
+                .all(|(i, k)| k.get().is_none() || ok.iter().any(|&o| o as usize == i))
     }
 
     /// Any header but `host`, `content-length` and `transfer-encoding`,
@@ -244,12 +258,17 @@ thread_local! {
     /// answers with the same head each time, so the host is sent its number.
     static HEAD: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     static HEADS: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
+    /// The request whose answer is `constant`, until its reply is sent.
+    static SAME: Cell<u32> = const { Cell::new(INIT) };
+    /// The app has no hook (`before`, `after`, `reroute`) that could change an answer.
+    static PLAIN: Cell<bool> = const { Cell::new(false) };
     /// The last peer text and what it parsed to.
     static PEER: RefCell<(String, SocketAddr)> = const { RefCell::new((String::new(), LOCAL)) };
 }
 
 const LOCAL: SocketAddr = SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 0);
 
+/// Host export: makes the input buffer at least `len` bytes and returns its address; the host writes its next message there.
 #[unsafe(no_mangle)]
 pub extern "C" fn wisp_buf(len: usize) -> *mut u8 {
     IN.with_borrow_mut(|b| {
@@ -266,6 +285,7 @@ fn take_in(len: usize) -> Vec<u8> {
     IN.with_borrow(|b| b[..len].to_vec())
 }
 
+/// Host export: the `len` bytes in the input buffer are the environment, as `KEY=value` lines separated by NUL.
 #[unsafe(no_mangle)]
 pub extern "C" fn wisp_env(len: usize) {
     let text = String::from_utf8_lossy(&take_in(len)).into_owned();
@@ -278,11 +298,13 @@ pub extern "C" fn wisp_env(len: usize) {
     });
 }
 
+/// Host export: the `len` bytes in the input buffer are request `id`; the app runs it to its reply.
 #[unsafe(no_mangle)]
 pub extern "C" fn wisp_request(id: u32, len: usize) {
     start_request(id, len, false);
 }
 
+/// Host export: like `wisp_request`, with the body read as the host sends it (a stream) rather than all at once.
 #[unsafe(no_mangle)]
 pub extern "C" fn wisp_request_lazy(id: u32, len: usize) {
     start_request(id, len, true);
@@ -296,6 +318,7 @@ fn start_request(id: u32, len: usize, lazy: bool) {
     }
 }
 
+/// Host export: a connection `id` (a WebSocket upgrade) opened; its first `len` bytes are in the input buffer.
 #[unsafe(no_mangle)]
 pub extern "C" fn wisp_conn_open(id: u32, len: usize) {
     let at = IN.with_borrow(|b| std::str::from_utf8(&b[..len]).map_or(LOCAL, peer));
@@ -310,6 +333,7 @@ pub extern "C" fn wisp_conn_open(id: u32, len: usize) {
     });
 }
 
+/// Host export: `len` more bytes from connection `id` are in the input buffer.
 #[unsafe(no_mangle)]
 pub extern "C" fn wisp_conn_data(id: u32, len: usize) {
     let idle = CONNS.with_borrow_mut(|c| {
@@ -344,6 +368,7 @@ pub extern "C" fn wisp_conn_close(id: u32, end: bool) {
     run();
 }
 
+/// Host export: the host can take more of connection `id`'s output.
 #[unsafe(no_mangle)]
 pub extern "C" fn wisp_conn_pull(id: u32) {
     done(&PULLS, CONN + id);
@@ -453,6 +478,7 @@ async fn finish(id: u32, mut reply: Reply) {
     }
 }
 
+/// Host export: the `len` bytes in the input buffer answer the fetch `id` the app asked for.
 #[unsafe(no_mangle)]
 pub extern "C" fn wisp_fetched(id: u32, len: usize) {
     let bytes = take_in(len);
@@ -470,16 +496,19 @@ pub extern "C" fn wisp_fetched(id: u32, len: usize) {
     run();
 }
 
+/// Host export: timer `id` fired.
 #[unsafe(no_mangle)]
 pub extern "C" fn wisp_timer(id: u32) {
     done(&TIMERS, id);
 }
 
+/// Host export: the host can take more of the streamed response `id`.
 #[unsafe(no_mangle)]
 pub extern "C" fn wisp_pull(id: u32) {
     done(&PULLS, id);
 }
 
+/// Host export: request `id` was cancelled by the client; its work is dropped.
 #[unsafe(no_mangle)]
 pub extern "C" fn wisp_cancel(id: u32) {
     let task = TASKS.with_borrow_mut(|t| t.remove(&id));
@@ -487,11 +516,13 @@ pub extern "C" fn wisp_cancel(id: u32) {
     run();
 }
 
+/// Host export: the id of the request or connection the app is working on now.
 #[unsafe(no_mangle)]
 pub extern "C" fn wisp_current() -> u32 {
     CURRENT.get()
 }
 
+/// Host export: runs the app's ready work.
 #[unsafe(no_mangle)]
 pub extern "C" fn wisp_poll() {
     run();
@@ -504,6 +535,7 @@ pub(crate) fn start<A: App>() {
         return;
     }
     let _ = DRIVE.set(|id, raw| Box::pin(connection::<A>(id, raw)));
+    PLAIN.set(!A::BEFORE && !A::AFTER && !A::REROUTE);
     let init = async {
         // Saved tables' rows, before `init`, which may set a store of its own.
         let opened = match env("WISP_STORE") {
@@ -531,6 +563,35 @@ pub(crate) fn start<A: App>() {
         WAITING.take().into_iter().for_each(Waker::wake);
     };
     spawn(INIT, Box::pin(init));
+}
+
+/// The answer to `cx`, a lazy request, is the same for every request for its
+/// path: a baked page or a trailing-slash redirect, made by no hook, from
+/// no header but `if-none-match` and `x-wisp-error` (which the bridge
+/// looks at itself), with no query and no request id. Its reply is then sent
+/// as `200 const`, and the bridge answers the path from what it kept, without
+/// entering the wasm.
+pub(crate) fn constant(cx: &crate::Cx) {
+    use crate::cx::Known::{IfNoneMatch, WispError};
+    let Some(lazy) = &cx.lazy else { return };
+    if PLAIN.get()
+        && !lazy.guarded.get()
+        && matches!(cx.method, crate::Method::Get | crate::Method::Head)
+        && cx.query_string().is_empty()
+        && cx.id().is_none()
+        && !crate::settings().request_id
+        && lazy.reads_only(&[IfNoneMatch, WispError])
+    {
+        SAME.set(lazy.id);
+    }
+}
+
+/// The route has a guard (a rate limit, a middleware: anything run for every
+/// request that reads no header), so its answer is not [`constant`].
+pub(crate) fn guarded(cx: &crate::Cx) {
+    if let Some(lazy) = &cx.lazy {
+        lazy.guarded.set(true);
+    }
 }
 
 fn log_panics() {
@@ -803,8 +864,11 @@ fn send(id: u32, reply: &Reply) {
     let (ptr, len, head_id) = HEAD.with_borrow_mut(|w| {
         w.clear();
         crate::http::push_decimal(w, reply.status.into());
+        let same = SAME.replace(INIT) == id;
         if matches!(reply.body, crate::Body::Stream(_)) {
             w.extend_from_slice(b" stream");
+        } else if same && matches!(reply.status, 200 | 304 | 308) {
+            w.extend_from_slice(b" const");
         }
         w.push(b'\n');
         for (n, v) in &reply.headers {

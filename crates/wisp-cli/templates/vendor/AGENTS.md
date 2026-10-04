@@ -192,7 +192,11 @@ Accessibility lints warn, never fail (img alt, input label, link and button
 name, `<a href>`, heading order, tabindex...); `<!-- wisp-ignore a11y-img-alt -->` silences
 one. Images: `<img src="$lib/p.jpg" alt="">` or `src="/x.png"` gets
 `width`/`height`; `wisp build` adds WebP `srcset` (cwebp, cached), lazy.
-`data-wisp-raw` opts out. Translations: `src/locales/en.json` (`{"hi":
+`<img priority>` (above the fold) gets `fetchpriority="high"`, not lazy.
+`data-wisp-raw` opts out. Opt-in features: `wisp-cli/avif` (AVIF `<picture>`),
+`wisp/img` (a route `_img/+server.rs`: `wisp::img::serve::<crate::App>(cx)`
+answers `/_img?src=/p.jpg&w=640&q=75`, `static/` only, fixed widths),
+`og-png` on `wisp` and `wisp-cli` (PNG for `wisp::og`). Translations: `src/locales/en.json` (`{"hi":
 "Hello, {name}!", "n": "{count, plural, =0 {None} one {# item} other {#
 items}}"}`), `{t("hi", name = user.name)}`, `t('n', c)` in scripts; keys
 checked across locales at build. Locale: `[[lang=locale]]`, cookie `lang`,
@@ -257,8 +261,8 @@ so a live search needs no script: `<input bind:value="q">` `{:#each items.filter
 q)) as i}…{:/each}`. Directives `on:click` (`.prevent .once .debounce.300ms`…),
 `bind:value|checked|this`, `:attr="js"`, `:text`, `class:x="js"`,
 `transition:fade`, `use:action`; client blocks `{:#if}` `{:#each}`; runes
-`$state $derived $effect $props`; helpers `onMount listen goto invalidate
-matches`. Values sent to JS must be `#[model]` or `#[derive(Json)]`.
+`$state $derived $effect(.pre .root .tracking) $props`; helpers `onMount listen goto
+invalidate matches tick flushSync onError tweened spring crossfade`. Values sent to JS must be `#[model]` or `#[derive(Json)]`.
 `pushState('?tab=2', {tab: 2})`: shallow routing, `page.value.state`; changed
 fields are restored with history. `import('$lib/x.js')` loads on demand.
 `<script lang="ts">`, `src/lib/*.ts`, `+page.ts` (types stripped; `wisp check
@@ -468,7 +472,8 @@ no-wait fast path off every route.
 `*.stories.wisp`) · `wisp test [--browser]` · `wisp check [--types]` · `wisp
 fmt [--check]` · `wisp build` (`--static`, `--spa`, `--docker`, `--target
 cloudflare|pages|deno|vercel|netlify|node|bun|lambda|native` (`--edge` with
-vercel or netlify: their edge runtime), `--client ts`, `--sourcemap`, `--analyze`: per-route JS/CSS/wasm bytes, raw and
+vercel or netlify: their edge runtime; or per route, `const RUNTIME: wisp::Runtime =
+wisp::Runtime::Edge;` in its +page.rs/+server.rs: both functions from one app, other hosts ignore it), `--client ts`, `--sourcemap`, `--analyze`: per-route JS/CSS/wasm bytes, raw and
 gzip, no build) · `wisp
 deploy init <host>` (a GitHub Actions workflow; or `fly|render|railway`: that
 host's config) · `wisp openapi [-o openapi.json]` (`--check`: CI fails when the file is stale) · `wisp routes` · `wisp new-route /path page|server|rest` ·

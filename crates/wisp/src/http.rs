@@ -65,7 +65,11 @@ const LIVE_JS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/live.js"));
 /// Live reload and the build error dialog, with the dialog's styles. Served
 /// and linked only by debug builds, so none of it ships in a release
 /// binary's pages.
+#[cfg(not(target_arch = "wasm32"))]
 const DEV_JS: &[u8] = include_bytes!("client/wisp-dev.js");
+/// The edge build has no dev mode to serve them to: 12 KB less in the wasm.
+#[cfg(target_arch = "wasm32")]
+const DEV_JS: &[u8] = b"";
 /// The devtools overlay (`Alt+Shift+W`): debug builds only.
 #[cfg(debug_assertions)]
 const DEVTOOLS_JS: &[u8] = include_bytes!("client/wisp-devtools.js");
@@ -78,7 +82,10 @@ pub(crate) const UI_CSS: &str = concat!(
 pub(crate) const TOKENS_CSS: &str = include_str!("client/tokens.css");
 /// The default error page's own styles.
 pub(crate) const ERROR_CSS: &str = include_str!("client/error.css");
+#[cfg(not(target_arch = "wasm32"))]
 const DIALOG_CSS: &[u8] = include_bytes!("client/dialog.css");
+#[cfg(target_arch = "wasm32")]
+const DIALOG_CSS: &[u8] = b"";
 
 /// The page at `/_wisp/docs` that lists the app's endpoints and sends
 /// requests to them, with Wisp's own styles.
@@ -2262,14 +2269,19 @@ fn recycle(mut body: Vec<u8>) {
 /// built-in server, [`handle`], tower. The host adds `content-length`,
 /// `date` and `connection` as its protocol needs.
 pub struct Reply {
+    /// The HTTP status code.
     pub status: u16,
     /// `content-type` first, when there is a body.
     pub headers: Vec<(Cow<'static, str>, Cow<'static, str>)>,
+    /// The body.
     pub body: Body,
 }
 
+/// A [`Reply`]'s body.
 pub enum Body {
+    /// Bytes the reply owns.
     Bytes(Vec<u8>),
+    /// Bytes compiled into the binary.
     Static(&'static [u8]),
     /// The page in the request's `Out`, inside the app's shell. Only the
     /// built-in server sees it; [`handle`] renders it to `Bytes`.
@@ -2388,16 +2400,20 @@ impl Reply {
 /// A request for [`handle`], from a host other than the built-in server,
 /// or from a test.
 pub struct Request {
+    /// The method: `"GET"`, `"POST"`.
     pub method: String,
     /// Path and query: `/posts?page=2`.
     pub target: String,
+    /// The request headers, as `(name, value)`.
     pub headers: Vec<(String, String)>,
+    /// The request body.
     pub body: Vec<u8>,
     /// The client's address. Loopback unless set.
     pub peer: SocketAddr,
 }
 
 impl Request {
+    /// A request with `method` and `target` (path and query), no headers and no body.
     pub fn new(method: &str, target: &str) -> Request {
         Request {
             method: method.into(),
@@ -2408,6 +2424,7 @@ impl Request {
         }
     }
 
+    /// Adds a request header.
     pub fn header(&mut self, name: &str, value: &str) {
         self.headers.push((name.into(), value.into()));
     }
@@ -2976,6 +2993,8 @@ fn slash_redirect(cx: &Cx, reply: &mut Reply, trailing: bool) {
     reply
         .headers
         .push((Cow::Borrowed("location"), Cow::Owned(location)));
+    #[cfg(target_arch = "wasm32")]
+    crate::edge::constant(cx);
 }
 
 /// Whether `res`, a 200 to a GET or HEAD with an `etag` (an [`crate::Image`],

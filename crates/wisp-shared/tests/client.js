@@ -279,8 +279,86 @@ const tests = {
     q.event('visibilitychange');
     assert.equal(q.calls.beacon[0][0], '/vitals');
     assert.equal(JSON.parse(q.calls.beacon[0][1]).path, '/');
+    // Hidden again with nothing new: not sent twice. A beacon that throws is not an error.
+    q.event('visibilitychange');
+    assert.equal(q.calls.beacon.length, 1);
+    const r = page({ vitals: { content: '/vitals' } });
+    r.nav.sendBeacon = () => { throw new Error('no'); };
+    r.doc.visibilityState = 'hidden';
+    r.event('visibilitychange');
   },
 };
+
+// extra.js's motion helpers, with `wisp` and the clock stood in for.
+function motion() {
+  const code = fs.readFileSync(path.join(__dirname, '../src/client/extra.js'), 'utf8').replace(/^import .*$/m, '');
+  let now = 0;
+  let frames = [];
+  const X = { shared: {}, outs: 0, flips: 0 };
+  const store = (v) => {
+    const o = { v, subs: [], get value() { return this.v; }, set value(x) { this.v = x; }, subscribe() {} };
+    return o;
+  };
+  const g = {
+    matchMedia: () => ({ matches: false }),
+    performance: { now: () => now },
+    requestAnimationFrame: (f) => frames.push(f),
+    cancelAnimationFrame: () => {},
+    getComputedStyle: () => ({ opacity: '1' }),
+  };
+  new Function('X', 'page', 'store', ...Object.keys(g), code)(X, null, store, ...Object.values(g));
+  const run = (ms) => {
+    for (const end = now + ms; now < end; ) {
+      now += 16;
+      const f = frames;
+      frames = [];
+      f.forEach((x) => x(now));
+    }
+  };
+  return { X, run };
+}
+
+Object.assign(tests, {
+  'tweened runs to its target, spring settles, set resolves'() {
+    const { X, run } = motion();
+    const t = X.shared.tweened(0, { duration: 160 });
+    let done = 0;
+    t.set(10).then(() => done++);
+    run(80);
+    assert.ok(t.value > 0 && t.value < 10);
+    run(200);
+    assert.equal(t.value, 10);
+    return tick().then(() => {
+      assert.equal(done, 1);
+      const a = X.shared.tweened([0, 0], { duration: 0 });
+      a.set([1, 2]);
+      assert.deepEqual(a.value, [1, 2]);
+      const s = X.shared.spring({ x: 0 });
+      s.set({ x: 100 });
+      run(5000);
+      assert.deepEqual(s.value, { x: 100 });
+      s.set({ x: 0 }, { hard: true });
+      assert.equal(s.value.x, 0);
+    });
+  },
+  'crossfade pairs a leaver with a newcomer of the same key'() {
+    const { X, run } = motion();
+    const [send, receive] = X.shared.crossfade({ duration: 100 });
+    const el = (left) => ({ style: {}, getBoundingClientRect: () => ({ left, top: 0, width: 10, height: 10 }) });
+    const a = el(0);
+    const b = el(100);
+    const out = send(a, { key: 1 });
+    const inn = receive(b, { key: 1 });
+    inn.tick(0);
+    assert.equal(b.style.transform.startsWith('translate(-100px'), true);
+    inn.tick(1);
+    assert.equal(b.style.transform, '');
+    const c = el(5);
+    receive(c, { key: 9 }).tick(0.5);
+    assert.equal(c.style.transform, undefined);
+    assert.equal(c.style.opacity, 0.5);
+  },
+});
 
 (async () => {
   let failed = 0;

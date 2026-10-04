@@ -179,6 +179,7 @@ pub struct Upload {
     pub name: String,
     /// The type the browser sent: visitor input too.
     pub kind: String,
+    /// Size in bytes.
     pub size: usize,
 }
 

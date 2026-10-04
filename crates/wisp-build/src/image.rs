@@ -4,6 +4,10 @@
 //! shift as it loads. A release build also gets `srcset` (the WebP widths
 //! `wisp build` wrote into `.wisp/img` with cwebp, served from `/_app/img/`
 //! as immutable), `sizes`, `loading="lazy"` and `decoding="async"`. What
+//! With the `avif` feature `wisp build` also writes AVIF widths and the tag
+//! gets a `<picture>` with them first.
+//! `priority` (a bare attribute, like next/image's) marks an image above the
+//! fold: it becomes `fetchpriority="high"` and is not lazy. What
 //! the tag already has stays; `data-wisp-raw` keeps it as written (but a
 //! `$lib/` src, which has no URL of its own).
 
@@ -179,6 +183,32 @@ pub fn widths(width: u32) -> Vec<u32> {
 /// An image's content hash, which names its files.
 pub fn hash(bytes: &[u8]) -> String {
     format!("{:016x}", fnv1a(bytes))
+}
+
+/// The file of an AVIF width in `DIR` (the `avif` feature), by the same rule.
+pub fn avif_name(hash: &str, width: u32) -> String {
+    format!("{hash}-{width}.avif")
+}
+
+/// An AVIF of the image at `width` (Lanczos, never wider than it), the
+/// `avif` feature's encoder: pure Rust, slow, which is why it is opt-in.
+#[cfg(feature = "avif")]
+pub fn encode_avif(file: &Path, width: u32) -> Result<Vec<u8>, String> {
+    let bad = |e: &dyn std::fmt::Display| format!("{}: {e}", file.display());
+    let mut img = ::image::open(file).map_err(|e| bad(&e))?;
+    if width < img.width() {
+        let h = (u64::from(img.height()) * u64::from(width) / u64::from(img.width())).max(1);
+        img = img.resize_exact(width, h as u32, ::image::imageops::FilterType::Lanczos3);
+    }
+    let rgba = img.to_rgba8();
+    let px: Vec<ravif::RGBA8> = (rgba.pixels())
+        .map(|p| ravif::RGBA8::new(p[0], p[1], p[2], p[3]))
+        .collect();
+    let view = ravif::Img::new(px.as_slice(), rgba.width() as usize, rgba.height() as usize);
+    let out = (ravif::Encoder::new().with_quality(70.0).with_speed(6))
+        .encode_rgba(view)
+        .map_err(|e| bad(&e))?;
+    Ok(out.avif_file)
 }
 
 /// The file of a WebP width in `DIR`, and its URL after `IMAGES`.
@@ -388,8 +418,41 @@ impl Img {
                 }
             }
         }
-        if release {
+        #[cfg(feature = "avif")]
+        if let (Some(h), Some(s)) = (&hash, size)
+            && !s.turned
+            && !self.has("srcset")
+        {
+            let ws = widths(s.width);
+            let dir = root.join(DIR);
+            if let Some(close) = m[self.end..].find('>')
+                && ws.iter().all(|&w| dir.join(avif_name(h, w)).is_file())
+            {
+                let set: Vec<String> = (ws.iter())
+                    .map(|&w| format!("{IMAGES}{} {w}w", avif_name(h, w)))
+                    .collect();
+                let sizes = (self.get("sizes"))
+                    .and_then(|a| a.value.clone())
+                    .map_or("100vw", |v| &m[v]);
+                edits.push((
+                    self.start..self.start,
+                    format!(
+                        "<picture><source type=\"image/avif\" srcset=\"{}\" sizes=\"{sizes}\">",
+                        set.join(", ")
+                    ),
+                ));
+                let at = self.end + close + 1;
+                edits.push((at..at, "</picture>".into()));
+            }
+        }
+        if let Some(a) = self.get("priority") {
+            // Above the fold: fetched early, never lazy.
+            edits.push((a.at.clone(), String::new()));
+            put("fetchpriority", "high");
+        } else if release {
             put("loading", "lazy");
+        }
+        if release {
             put("decoding", "async");
         }
         if !add.is_empty() {
@@ -622,6 +685,24 @@ mod tests {
         assert_eq!(size(&png_of(0, 600)), None);
     }
 
+    #[cfg(feature = "avif")]
+    #[test]
+    fn avif_makes_a_picture() {
+        let root = app("avif");
+        let h = hash(&png_of(1000, 500));
+        fs::create_dir_all(root.join(DIR)).unwrap();
+        for w in [640, 1000] {
+            fs::write(root.join(DIR).join(avif_name(&h, w)), "").unwrap();
+        }
+        let out = rewrite("<img src=\"$lib/cat.png\" alt=\"c\">", &root, true).unwrap();
+        assert!(out.starts_with("<picture><source type=\"image/avif\" srcset=\"/_app/img/"));
+        assert!(out.ends_with("decoding=\"async\"></picture>"));
+        let real = root.join("real.png");
+        ::image::RgbaImage::new(32, 16).save(&real).unwrap();
+        let bytes = encode_avif(&real, 16).unwrap();
+        assert_eq!(&bytes[4..8], b"ftyp");
+    }
+
     #[test]
     fn widths_never_grow() {
         assert_eq!(widths(3000), [640, 1280, 1920]);
@@ -680,6 +761,14 @@ mod tests {
             format!(
                 "<img src=\"/_app/img/{h}.png\" sizes=\"50vw\" alt=\"c\" width=\"1000\" height=\"500\" \
                  srcset=\"/_app/img/{h}-640.webp 640w, /_app/img/{h}-1000.webp 1000w\" loading=\"lazy\" decoding=\"async\" />"
+            )
+        );
+
+        let top = rewrite("<img src=\"$lib/cat.png\" priority alt=\"c\">", &root, true).unwrap();
+        assert_eq!(
+            top,
+            format!(
+                "<img src=\"/_app/img/{h}.png\"  alt=\"c\" width=\"1000\" height=\"500\" srcset=\"/_app/img/{h}-640.webp 640w, /_app/img/{h}-1000.webp 1000w\" sizes=\"100vw\" fetchpriority=\"high\" decoding=\"async\">"
             )
         );
 

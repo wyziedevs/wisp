@@ -61,7 +61,20 @@ pub fn build(root: &Path) {
     for (title, desc) in &found {
         let path = dir.join(format!("{}.svg", og::slug(title)));
         let svg = og::svg(title, desc, &look);
-        if fs::read_to_string(&path).is_ok_and(|old| old == svg) {
+        let same = fs::read_to_string(&path).is_ok_and(|old| old == svg);
+        #[cfg(feature = "og-png")]
+        if !same || !path.with_extension("png").is_file() {
+            match png(&svg) {
+                Some(b) => {
+                    let _ = fs::create_dir_all(&dir);
+                    if fs::write(path.with_extension("png"), b).is_err() {
+                        term::warn(&format!("Could not write {}.", path.display()));
+                    }
+                }
+                None => term::warn(&format!("Could not render the PNG of {title:?}.")),
+            }
+        }
+        if same {
             continue;
         }
         if fs::create_dir_all(&dir).is_err() || fs::write(&path, svg).is_err() {
@@ -73,6 +86,24 @@ pub fn build(root: &Path) {
     if wrote > 0 {
         term::done(&format!("Wrote {wrote} Open Graph image(s) to static/og"));
     }
+}
+
+/// The PNG of the picture (the `og-png` feature), text drawn with the
+/// system's fonts: `None` when it cannot be drawn.
+#[cfg(feature = "og-png")]
+fn png(svg: &str) -> Option<Vec<u8>> {
+    use resvg::{tiny_skia, usvg};
+    let mut opt = usvg::Options::default();
+    opt.fontdb_mut().load_system_fonts();
+    let tree = usvg::Tree::from_str(svg, &opt).ok()?;
+    let size = tree.size().to_int_size();
+    let mut pixmap = tiny_skia::Pixmap::new(size.width(), size.height())?;
+    resvg::render(
+        &tree,
+        tiny_skia::Transform::identity(),
+        &mut pixmap.as_mut(),
+    );
+    pixmap.encode_png().ok()
 }
 
 #[cfg(test)]
@@ -90,6 +121,11 @@ mod tests {
         build(&root);
         let svg = fs::read_to_string(root.join("static/og/hello-there.svg")).unwrap();
         assert!(svg.contains("Hello there") && svg.contains("#ff0000"));
+        #[cfg(feature = "og-png")]
+        assert_eq!(
+            &fs::read(root.join("static/og/hello-there.png")).unwrap()[1..4],
+            b"PNG"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 }

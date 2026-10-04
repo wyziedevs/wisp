@@ -20,6 +20,7 @@ pub trait Ts {
     type Static: Ts + 'static;
     /// Whether its JSON is an object, which a [`Row`] adds `id` to.
     const OBJECT: bool = false;
+    /// Writes this type's TypeScript into `d` (declaring named types there) and returns its name or shape.
     fn ts(d: &mut Decls) -> String;
 }
 
@@ -188,16 +189,23 @@ impl<T: Ts> Ts for Page<T> {
 /// TypeScript, `(&&probe(&x)).ts(d)`, `unknown` for a type with none.
 pub struct Probe<T: ?Sized>(PhantomData<T>);
 
+/// Makes a [`Probe`] of a value's type, to pick [`Known`] or [`Unknown`].
 pub fn probe<T: ?Sized>(_: &T) -> Probe<T> {
     Probe(PhantomData)
 }
 
+/// A type with TypeScript.
 pub struct Known<T>(PhantomData<T>);
+/// A type with none: `unknown`.
 pub struct Unknown;
 
+/// Picks a type that has TypeScript.
 pub trait ViaTs {
+    /// The picked type.
     type T;
+    /// Its [`Known`] pick.
     fn pick(&self) -> Known<Self::T>;
+    /// The type's TypeScript.
     fn ts(&self, d: &mut Decls) -> String;
 }
 
@@ -213,7 +221,9 @@ impl<T: Ts + ?Sized> ViaTs for &Probe<T> {
 
 /// A type with no TypeScript: `unknown`.
 pub trait ViaAny {
+    /// Its [`Unknown`] pick.
     fn pick(&self) -> Unknown;
+    /// `unknown`.
     fn ts(&self, d: &mut Decls) -> String;
 }
 
@@ -228,6 +238,7 @@ impl<T: ?Sized> ViaAny for Probe<T> {
 
 /// The picks of a block's values, as `(a, (b, ()))`.
 pub trait Fields {
+    /// Appends the TypeScript of each value of the list to `out`.
     fn list(d: &mut Decls, out: &mut Vec<String>);
 }
 

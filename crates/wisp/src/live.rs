@@ -37,6 +37,7 @@ use std::sync::Arc;
     note = "add `#[derive(Json)]` to the type (it is in `wisp::prelude`), or read a field that has a simpler type"
 )]
 pub trait Json {
+    /// Writes the value as JSON into `out`.
     fn json(&self, out: &mut String);
 }
 
@@ -48,7 +49,9 @@ pub struct ClientModule {
     pub path: &'static str,
     /// `/_app/c/t3.js?v=HASH`, the address pages use.
     pub url: &'static str,
+    /// Its ETag.
     pub etag: &'static str,
+    /// The module's source text.
     pub source: &'static str,
     /// What it imports, statically, all the way down, that the page
     /// preloads with it (`$lib` files, `extra.js`, npm packages, the

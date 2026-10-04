@@ -20,7 +20,9 @@ use std::pin::Pin;
 /// A message from or to the client.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Message {
+    /// A text message.
     Text(String),
+    /// A binary message.
     Binary(Vec<u8>),
 }
 
@@ -393,10 +395,12 @@ type Conn = std::convert::Infallible;
 
 #[cfg(target_arch = "wasm32")]
 impl WebSocket {
+    /// Never returns on this target: a WebSocket cannot exist here.
     pub async fn recv(&self) -> Option<Message> {
         match self.0 {}
     }
 
+    /// Never sends on this target: a WebSocket cannot exist here.
     pub async fn send(&self, msg: impl Into<Message>) -> std::result::Result<(), Gone> {
         let _ = msg;
         match self.0 {}
