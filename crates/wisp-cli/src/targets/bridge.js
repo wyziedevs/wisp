@@ -177,12 +177,18 @@ function webSink(c, h, body) {
     const r = c.up?.(c) ?? new Response('WebSockets are not available on this host', { status: 501 });
     return c.resolve ? c.resolve(r) : (c.res = r);
   }
-  const empty = c.empty || h.status < 200 || h.status === 204 || h.status === 205 || h.status === 304;
-  if (empty && h.stream) body.cancel(); // ends the app's stream
+  const empty = bare(h.status, c.empty, body);
   const text = !empty && h.text ? asText(body) : body;
   const r = h.plain && !empty && typeof text === 'string' ? new Response(text) : new Response(empty ? null : text, (h.init ??= init(h)));
   if (c.resolve) c.resolve(r);
   else c.res = r;
+}
+// Whether a reply has no body (1xx, 204, 205, 304, or a HEAD's); then the
+// app's stream, if it sends one, is cancelled to end it.
+function bare(status, head, body) {
+  const empty = head || status < 200 || status === 204 || status === 205 || status === 304;
+  if (empty && body instanceof ReadableStream) body.cancel();
+  return empty;
 }
 // A text body as a string: workerd makes a Response from a string in about
 // half the time it takes to copy the bytes out of the app's memory (bench/edge).
@@ -671,8 +677,7 @@ export function wisp(module, env = {}, sink, accept) {
     const r = await handle({ method: request.method, target: url.pathname + url.search, peer, headers, body });
     if (r.status === 101) return accept ? takeover(r.x, r.id, request) : new Response('WebSockets are not available on this host', { status: 501 });
     if (r.idle !== settled) ctx?.waitUntil?.(r.idle); // only when work is under way
-    const empty = r.status < 200 || r.status === 204 || r.status === 205 || r.status === 304 || request.method === 'HEAD';
-    if (empty && r.body instanceof ReadableStream) r.body.cancel(); // ends the app's stream
+    const empty = bare(r.status, request.method === 'HEAD', r.body);
     return new Response(empty ? null : r.body, { status: r.status, headers: r.headers });
   }
 

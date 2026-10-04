@@ -92,8 +92,22 @@ fn generic_bound<T: Fn(u8) -> u8 + Copy>(f: T) {
     let _ = f(1);
 }
 
+#[wisp::action]
+fn turbofish_arrow(flag: bool) {
+    if flag {
+        return unit::<fn(u8) -> u8, Vec<u8>>();
+    }
+}
+
+#[wisp::action]
+fn arrows_in_generics<F: Fn(u8) -> Vec<u8>, G: Fn() -> Option<u8>>(f: F, g: G) {
+    let _ = (f(1), g());
+}
+
 #[test]
 fn actions_keep_their_returns() {
+    assert!(turbofish_arrow(true).is_ok());
+    assert!(arrows_in_generics(|x| vec![x], || None).is_ok());
     assert!(turbofish(true).is_ok());
     assert!(turbofish(false).is_ok());
     assert!(generic_bound(|x| x).is_ok());

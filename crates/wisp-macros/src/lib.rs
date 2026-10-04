@@ -82,26 +82,9 @@ fn implicit_cx(item: TokenStream) -> TokenStream {
     };
     // The first `(…)` after the name and its generics: `<F: Fn(u8) -> u8>` has
     // groups of its own.
-    let (mut angle, mut dash) = (0i32, false);
-    let params = tokens[f..].iter().position(|t| match t {
-        TokenTree::Punct(p) => {
-            match p.as_char() {
-                '<' => angle += 1,
-                '>' if !dash => angle -= 1,
-                _ => {}
-            }
-            dash = p.as_char() == '-';
-            false
-        }
-        TokenTree::Group(g) => {
-            dash = false;
-            angle <= 0 && g.delimiter() == Delimiter::Parenthesis
-        }
-        _ => {
-            dash = false;
-            false
-        }
-    });
+    let params = angles(&tokens[f..], false)
+        .find(|&(i, d)| d <= 0 && matches!(&tokens[f + i], TokenTree::Group(g) if g.delimiter() == Delimiter::Parenthesis))
+        .map(|(i, _)| i);
     let body = tokens
         .iter()
         .rposition(|t| matches!(t, TokenTree::Group(g) if g.delimiter() == Delimiter::Brace));
@@ -179,25 +162,12 @@ fn returns_done(body: TokenStream) -> TokenStream {
             TokenTree::Ident(id) if id.to_string() == "return" => {
                 // Up to the statement's `;`, the arm's `,` or the block's end.
                 // A `,` inside a turbofish (`f::<A, B>()`) does not end it.
-                let (mut angle, mut path) = (0i32, false);
-                let end = (i + 1..tokens.len())
-                    .find(|&j| match &tokens[j] {
-                        TokenTree::Punct(p) => {
-                            let c = p.as_char();
-                            match c {
-                                '<' if path => angle += 1,
-                                '>' if angle > 0 && !matches!(&tokens[j - 1], TokenTree::Punct(d) if d.as_char() == '-') => angle -= 1,
-                                _ => {}
-                            }
-                            path = c == ':';
-                            c == ';' || (c == ',' && angle == 0)
-                        }
-                        _ => {
-                            path = false;
-                            false
-                        }
+                let end = angles(&tokens[i + 1..], true)
+                    .find(|&(j, d)| match &tokens[i + 1 + j] {
+                        TokenTree::Punct(p) => p.as_char() == ';' || (p.as_char() == ',' && d <= 0),
+                        _ => false,
                     })
-                    .unwrap_or(tokens.len());
+                    .map_or(tokens.len(), |(j, _)| i + 1 + j);
                 let value: TokenStream = tokens[i + 1..end].iter().cloned().collect();
                 let value = if value.is_empty() {
                     parse("()")
@@ -334,31 +304,15 @@ fn account(tokens: &[TokenTree]) -> Option<TokenStream> {
 
 /// A struct's fields with `pub` before each that has no visibility.
 fn public(fields: TokenStream) -> TokenStream {
-    let (mut out, mut start, mut angle, mut prev) = (Vec::new(), true, 0i32, ' ');
-    let mut it = fields.into_iter();
-    while let Some(t) = it.next() {
-        // Attributes and doc comments come first: `#` and its `[…]`.
-        if start && matches!(&t, TokenTree::Punct(p) if p.as_char() == '#') {
-            out.push(t);
-            out.extend(it.next());
-            continue;
-        }
-        let c = match &t {
-            TokenTree::Punct(p) => p.as_char(),
-            _ => ' ',
-        };
-        if start && !matches!(&t, TokenTree::Ident(i) if i.to_string() == "pub") {
+    let mut out = Vec::new();
+    for field in items(fields) {
+        let rest = skip_attributes(&field);
+        out.extend_from_slice(&field[..field.len() - rest.len()]);
+        if !matches!(rest.first(), Some(TokenTree::Ident(i)) if i.to_string() == "pub") {
             out.extend(parse("pub"));
         }
-        start = false;
-        match c {
-            '<' => angle += 1,
-            '>' if prev != '-' => angle -= 1,
-            ',' if angle <= 0 => start = true,
-            _ => {}
-        }
-        prev = c;
-        out.push(t);
+        out.extend_from_slice(rest);
+        out.push(Punct::new(',', Spacing::Alone).into());
     }
     out.into_iter().collect()
 }
@@ -1367,28 +1321,40 @@ fn skip_visibility(item: &[TokenTree]) -> &[TokenTree] {
     }
 }
 
-/// Splits a field or variant list at its top-level commas. Commas inside
-/// groups are already hidden; those inside `<...>` of a type are not.
-fn items(stream: TokenStream) -> Vec<Vec<TokenTree>> {
-    let mut out = vec![Vec::new()];
-    let mut depth = 0i32;
-    let mut arrow = false; // the `-` of `->`, whose `>` is not a closing bracket
-    for t in stream {
-        if let TokenTree::Punct(p) = &t {
+/// Each token's index with the `<…>` depth before it, for finding what is at
+/// the top level of a type or an expression: groups are already one token, but
+/// the commas of `Map<K, V>` are not. The `>` of `->` closes nothing. With
+/// `expr`, a `<` opens only after `:` (a turbofish, `f::<A, B>()`), else it is
+/// less-than, and a stray `>` is greater-than.
+fn angles(tokens: &[TokenTree], expr: bool) -> impl Iterator<Item = (usize, i32)> + '_ {
+    // The last token was the `-` of `->`, or a `:`.
+    let (mut depth, mut dash, mut colon) = (0i32, false, false);
+    tokens.iter().enumerate().map(move |(i, t)| {
+        let before = depth;
+        let (mut next_dash, mut next_colon) = (false, false);
+        if let TokenTree::Punct(p) = t {
             match p.as_char() {
-                '<' => depth += 1,
-                '>' if !arrow => depth -= 1,
-                ',' if depth == 0 => {
-                    out.push(Vec::new());
-                    continue;
-                }
+                '<' if !expr || colon => depth += 1,
+                '>' if !dash && (!expr || depth > 0) => depth -= 1,
                 _ => {}
             }
-            arrow = p.as_char() == '-' && p.spacing() == Spacing::Joint;
-        } else {
-            arrow = false;
+            next_dash = p.as_char() == '-' && p.spacing() == Spacing::Joint;
+            next_colon = p.as_char() == ':';
         }
-        out.last_mut().expect("never empty").push(t);
+        (dash, colon) = (next_dash, next_colon);
+        (i, before)
+    })
+}
+
+/// Splits a field or variant list at its top-level commas.
+fn items(stream: TokenStream) -> Vec<Vec<TokenTree>> {
+    let tokens: Vec<TokenTree> = stream.into_iter().collect();
+    let mut out = vec![Vec::new()];
+    for (i, depth) in angles(&tokens, false) {
+        match &tokens[i] {
+            TokenTree::Punct(p) if p.as_char() == ',' && depth <= 0 => out.push(Vec::new()),
+            t => out.last_mut().expect("never empty").push(t.clone()),
+        }
     }
     out.retain(|item| !item.is_empty());
     out
