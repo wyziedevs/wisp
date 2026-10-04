@@ -10,7 +10,6 @@
     not(any(target_arch = "wasm32", target_os = "linux")),
     forbid(unsafe_code)
 )]
-
 // Every public item says what it is: an editor's hover shows it.
 #![deny(missing_docs)]
 
@@ -305,6 +304,7 @@ pub(crate) fn lambda_api() -> Option<String> {
         .filter(|a| !a.is_empty())
 }
 
+/// Starts the app on an edge host (wasm32). The generated `main` calls it.
 #[cfg(target_arch = "wasm32")]
 pub fn run<A: App>() {
     edge::start::<A>();

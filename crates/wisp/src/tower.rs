@@ -236,6 +236,7 @@ enum Inner {
 }
 
 impl Body {
+    /// A body that is all of `bytes` at once.
     pub fn full(bytes: impl Into<Bytes>) -> Body {
         Body(Inner::Full(Some(bytes.into())))
     }
