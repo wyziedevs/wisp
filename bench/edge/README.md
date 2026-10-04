@@ -141,3 +141,37 @@ on workerd where the work is native there: `JSON.stringify` serializes the 200
 objects in V8's C++ while Wisp's serializer runs in wasm (-22%), and a cookie
 is a call out of the wasm into the Request's headers on top of the entry
 (-19%). On Node, which has no entry cost, Wisp is ahead on all three.
+
+## Cold start and wasm size, measured again
+
+Cold start is process start to the first complete response, median of 9, three
+rounds alternating the builds (the noise of one is about 6 ms; of a median of
+9, 1 ms). Wisp 26 to 27 ms, Hono 21 to 23 ms, before and after every change
+below. `app.wasm` of this bench's app (all routes above), `strip`ped, opt-level 3:
+
+| | wasm | cold start |
+|---|---|---|
+| main | 527,151 | 27 ms |
+| no dev-only files in the wasm32 build | 515,508 | 27 ms |
+
+Kept: the dev reload script and the build-error dialog (`wisp-dev.js`,
+`dialog.css`, 11.6 KB) are not linked on wasm32 (`http.rs`): the edge build has
+no dev mode to serve them to. Measured and dropped:
+
+- A request through a throwaway instance at module scope (compiles the request
+  path before the first one): 45 ms, against 28. Instantiating twice costs more than
+  the compiling it saves, and `env` (secrets, `WISP_STORE`) is not there yet to
+  start the real instance.
+- `obs` (log, metrics, traces), which never runs on wasm32, as a constant
+  `None` there: 1.6 KB, and it changed the native `.text` (inlining of the
+  functions around it), which has to stay as it is.
+- `panic=abort`: already what wasm32-unknown-unknown builds (same bytes with it
+  set); `lto = "fat"` and `codegen-units = 1` are in `wisp new`'s Cargo.toml.
+
+Where the rest is (symbol sizes of the unstripped wasm; `cargo bloat` does not
+read wasm, so the name section was read directly): 410 KB of code, 104 KB of data. Code:
+alloc 62 KB, `wisp::edge` 56 KB, std 52 KB, core 50 KB, `wisp::http` 39 KB, then
+`bake`, `cx`, `input`, `hashbrown`, `admin` (11 to 13 KB each). Data: 15 KB is
+`wisp.js`, 6 KB the API docs page, 4 KB the error styles. There is no unused
+subsystem left worth a flag: each remaining one is under 1% of the file, and
+the edge build already leaves out the server's sockets, jobs and fetch.

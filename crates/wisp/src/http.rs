@@ -65,7 +65,11 @@ const LIVE_JS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/live.js"));
 /// Live reload and the build error dialog, with the dialog's styles. Served
 /// and linked only by debug builds, so none of it ships in a release
 /// binary's pages.
+#[cfg(not(target_arch = "wasm32"))]
 const DEV_JS: &[u8] = include_bytes!("client/wisp-dev.js");
+/// The edge build has no dev mode to serve them to: 12 KB less in the wasm.
+#[cfg(target_arch = "wasm32")]
+const DEV_JS: &[u8] = b"";
 /// The devtools overlay (`Alt+Shift+W`): debug builds only.
 #[cfg(debug_assertions)]
 const DEVTOOLS_JS: &[u8] = include_bytes!("client/wisp-devtools.js");
@@ -78,7 +82,10 @@ pub(crate) const UI_CSS: &str = concat!(
 pub(crate) const TOKENS_CSS: &str = include_str!("client/tokens.css");
 /// The default error page's own styles.
 pub(crate) const ERROR_CSS: &str = include_str!("client/error.css");
+#[cfg(not(target_arch = "wasm32"))]
 const DIALOG_CSS: &[u8] = include_bytes!("client/dialog.css");
+#[cfg(target_arch = "wasm32")]
+const DIALOG_CSS: &[u8] = b"";
 
 /// The page at `/_wisp/docs` that lists the app's endpoints and sends
 /// requests to them, with Wisp's own styles.
