@@ -1830,13 +1830,13 @@ Run `wisp build`, copy the binary, run it. Pick the build for your host:
 
 | You have | Use |
 |---|---|
-| VPS or server | `wisp build`; `wisp service install` keeps it running |
-| Container host (Fly.io, Railway, Render, Cloud Run, Azure Container Apps) | `wisp build --docker` |
-| Static host (GitHub/GitLab Pages, S3) | `wisp build --static` (or `--spa`) |
-| Edge or serverless (Cloudflare, Deno Deploy, Vercel, Netlify, Amplify, Firebase, Azure Static Web Apps) | `wisp build --target <host>` ([targets](/docs/deploy-targets/)) |
-| AWS Lambda / Bun | `--target lambda` / `--target bun` |
+| VPS or server | `wisp build`; `wisp service install` keeps it running ([VPS](/docs/hosting/vps/)) |
+| Container host ([Fly.io](/docs/hosting/fly/), [Railway](/docs/hosting/railway/), [Render](/docs/hosting/render/), [Cloud Run](/docs/hosting/cloud-run/), [Azure](/docs/hosting/azure/)) | `wisp build --docker` ([Docker](/docs/hosting/docker/)) |
+| Static host ([GitHub Pages](/docs/hosting/github-pages/), GitLab Pages, S3) | `wisp build --static` (or `--spa`) |
+| Edge or serverless ([Cloudflare](/docs/hosting/cloudflare/), [Deno Deploy](/docs/hosting/deno-deploy/), [Vercel](/docs/hosting/vercel/), [Netlify](/docs/hosting/netlify/), Amplify, Firebase, [Azure Static Web Apps](/docs/hosting/azure/)) | `wisp build --target <host>` ([targets](/docs/deploy-targets/)) |
+| [AWS Lambda](/docs/hosting/aws-lambda/) / [Bun](/docs/hosting/bun/) / [Node](/docs/hosting/node/) | `--target lambda` / `--target bun` / `--target node` |
 
-An app that signs cookies needs `WISP_SECRET` (32+ random characters) on every host. Logs, metrics and traces: [Observe](/docs/deploy-observe/).
+An app that signs cookies needs `WISP_SECRET` (32+ random characters) on every host. Logs, metrics and traces: [Observe](/docs/deploy-observe/). Step by step for each host: [Hosting](/docs/hosting/).
 
 A plain `wisp build` inside a host's CI picks the target from its variables and says so: `WORKERS_CI` or `CF_PAGES` (cloudflare), `VERCEL` (output in `.vercel/output`), `NETLIFY`, `DENO_DEPLOYMENT_ID` (deno), `AWS_APP_ID` (node). `--target native` forces the plain binary.
 
@@ -1844,7 +1844,7 @@ A plain `wisp build` inside a host's CI picks the target from its variables and 
 
 | Host | Writes |
 |---|---|
-| `cloudflare`, `deno`, `vercel`, `netlify`, `lambda`, `fly`, `pages` | `.github/workflows/deploy.yml`: build and deploy on push to `main`; line 1 names the secrets; `--force` replaces it |
+| `cloudflare`, `deno`, `vercel`, `netlify`, `lambda`, `pages` (GitHub Pages) | `.github/workflows/deploy.yml`: build and deploy on push to `main`; line 1 names the secrets; `--force` replaces it |
 | `fly`, `render`, `railway` | that host's config, and a Dockerfile if none |
 
 ## Binary
@@ -1982,24 +1982,24 @@ The app compiles to WebAssembly in a folder with the host's config, an entry fil
 
 | Target | For | From `dist/<target>` |
 |---|---|---|
-| `cloudflare` | Workers | `npx wrangler deploy` (secrets: `npx wrangler secret put WISP_SECRET`) |
-| `pages` | Cloudflare Pages | `npx wrangler pages deploy .` in `dist/pages` (`_worker.js`, `_routes.json`; `WISP_SECRET` under Settings) |
-| `deno` | Deno Deploy | `deployctl deploy --entrypoint main.ts` (local: `deno run -A main.ts`) |
-| `vercel` | Vercel | `npx vercel deploy --prebuilt` (env var `WISP_SECRET`) |
-| `netlify` | Netlify | `npx netlify deploy --prod` |
-| `node` | Amplify, Firebase, Azure, Stormkit, Zeabur, any Node host | `npm start` |
-| `bun` | Bun (`Bun.listen`) | `bun server.mjs` |
-| `lambda` | AWS Lambda | [below](/docs/deploy-targets/) |
+| `cloudflare` | [Workers](/docs/hosting/cloudflare/) | `npx wrangler deploy` (secrets: `npx wrangler secret put WISP_SECRET`) |
+| `pages` | [Cloudflare Pages](/docs/hosting/cloudflare/) | `npx wrangler pages deploy .` in `dist/pages` (`_worker.js`, `_routes.json`; `WISP_SECRET` under Settings) |
+| `deno` | [Deno Deploy](/docs/hosting/deno-deploy/) | `deployctl deploy --entrypoint main.ts` (local: `deno run -A main.ts`) |
+| `vercel` | [Vercel](/docs/hosting/vercel/) | `npx vercel deploy --prebuilt` (env var `WISP_SECRET`) |
+| `netlify` | [Netlify](/docs/hosting/netlify/) | `npx netlify deploy --prod` |
+| `node` | Amplify, Firebase, [Azure](/docs/hosting/azure/), Stormkit, Zeabur, any [Node](/docs/hosting/node/) host | `npm start` |
+| `bun` | [Bun](/docs/hosting/bun/) (`Bun.listen`) | `bun server.mjs` |
+| `lambda` | [AWS Lambda](/docs/hosting/aws-lambda/) | [below](#aws-lambda) |
 
-Other hosts:
+Other hosts (each has a page under [Hosting](/docs/hosting/)):
 
 | Host | Use |
 |---|---|
 | Amplify, Firebase, Azure Static Web Apps, Stormkit, Zeabur | `--target node` (`npm start`); the output's `hosts/*.md` has each host's manifest or function glue (Amplify: folder in `.amplify-hosting/compute/default/`, `static/` in `.amplify-hosting/static/`, a `deploy-manifest.json`) |
-| GitHub/GitLab Pages | `--static`, publish `dist/` (a project site under a path prefix needs prefix-safe links) |
-| Fly.io | `--docker`, `fly launch`, `fly deploy`, `fly secrets set WISP_SECRET=...` |
-| Railway, Render | `--docker`, point at the repo, set `WISP_SECRET` |
-| Cloud Run | `--docker`, `gcloud run deploy --source .` |
+| [GitHub Pages](/docs/hosting/github-pages/), GitLab Pages | `--static`, publish `dist/` (a project site under a path prefix needs prefix-safe links) |
+| [Fly.io](/docs/hosting/fly/) | `--docker`, `fly launch`, `fly deploy`, `fly secrets set WISP_SECRET=...` |
+| [Railway](/docs/hosting/railway/), [Render](/docs/hosting/render/) | `--docker`, point at the repo, set `WISP_SECRET` |
+| [Cloud Run](/docs/hosting/cloud-run/) | `--docker`, `gcloud run deploy --source .` |
 
 ## Edge Runtime per Route
 
@@ -3605,6 +3605,706 @@ Read once at start. Switches take `on`/`off` (also `1`/`0`, `true`/`false`). You
 | `WISP_TSC` | the `tsc` for `wisp check --types` |
 | `WISP_BROWSER` | Chrome or Edge for browser tests |
 | `NO_COLOR` | plain CLI output |
+
+
+<!-- docs/hosting.md -->
+
+Wisp builds one binary for a server, an image for a container host, plain files for a static host, or WebAssembly for an edge or serverless host. Pick your host below for the build command, the deploy steps, its environment and its limits. The general rules are in [Deploying](/docs/deploy/) and [Edge and serverless targets](/docs/deploy-targets/).
+
+| Host | Build command | Runtime |
+|---|---|---|
+| [VPS](/docs/hosting/vps/) | `wisp build` | native binary |
+| [Docker](/docs/hosting/docker/) | `wisp build --docker` | container |
+| [Fly.io](/docs/hosting/fly/) | `wisp deploy init fly` | container |
+| [Render](/docs/hosting/render/) | `wisp deploy init render` | container |
+| [Railway](/docs/hosting/railway/) | `wisp deploy init railway` | container |
+| [Cloudflare](/docs/hosting/cloudflare/) | `wisp build --target cloudflare` or `pages` | WebAssembly on Workers or Pages |
+| [Deno Deploy](/docs/hosting/deno-deploy/) | `wisp build --target deno` | WebAssembly on Deno |
+| [Vercel](/docs/hosting/vercel/) | `wisp build --target vercel` | WebAssembly, Node function or Edge |
+| [Netlify](/docs/hosting/netlify/) | `wisp build --target netlify` | WebAssembly, function or edge function |
+| [AWS Lambda](/docs/hosting/aws-lambda/) | `wisp build --target lambda` | static Linux binary |
+| [Bun](/docs/hosting/bun/) | `wisp build --target bun` | WebAssembly on Bun |
+| [Node](/docs/hosting/node/) | `wisp build --target node` | WebAssembly on Node 20+ |
+| [GitHub Pages](/docs/hosting/github-pages/) | `wisp build --static` | static files |
+| [Cloud Run](/docs/hosting/cloud-run/) | `wisp build --docker` | container |
+| [Azure](/docs/hosting/azure/) | `wisp build --docker` or `--target node` | container or WebAssembly on Node |
+
+An app that signs cookies needs `WISP_SECRET` (32 or more random characters) on every host: [Environment variables](/docs/env/).
+
+
+<!-- docs/hosting/aws-lambda.md -->
+
+AWS Lambda runs the app's own static Linux binary on the `provided.al2023` runtime. Any Wisp binary answers Lambda's runtime API when `AWS_LAMBDA_RUNTIME_API` is set.
+
+## Build
+
+```sh
+rustup target add x86_64-unknown-linux-musl     # once
+wisp build --target lambda                      # dist/lambda/bootstrap.zip
+```
+
+The binary is built with Rust's lld, with no C toolchain.
+
+## Deploy
+
+Create the function once (runtime `provided.al2023`, `x86_64`, handler `bootstrap`) and add a Function URL (or API Gateway or an ALB):
+
+```sh
+aws lambda create-function --function-name my-app --runtime provided.al2023 \
+  --architectures x86_64 --handler bootstrap --role <role-arn> \
+  --zip-file fileb://dist/lambda/bootstrap.zip
+```
+
+Then for each release:
+
+```sh
+aws lambda update-function-code --function-name my-app --zip-file fileb://dist/lambda/bootstrap.zip
+```
+
+`wisp deploy init lambda` writes a GitHub Actions workflow that runs that update on push to `main`. It reads the secret `AWS_ROLE_ARN` (a role GitHub may assume) and the variables `AWS_REGION` and `LAMBDA_FUNCTION`.
+
+## Environment
+
+- `WISP_SECRET` as an environment variable of the function, for an app that signs cookies.
+- Other variables: [Environment variables](/docs/env/).
+
+## Limits
+
+- Everything works except WebSockets and streaming (a stream is sent whole).
+- The `tower` feature with `lambda_http` also works: [Testing and mixing with Rust code](/docs/embed/).
+- There is no cron trigger to write: the build says so and stops when the app uses `wisp::cron`.
+
+## Files and Data
+
+- `static/` is inside the binary.
+- Saved tables go in `/tmp`, per instance: use `wisp::store` for lasting data. See [Where rows are kept](/docs/api-tables/).
+
+## More
+
+[Edge and serverless targets](/docs/deploy-targets/), [Deploying](/docs/deploy/).
+
+
+<!-- docs/hosting/azure.md -->
+
+Azure takes Wisp three ways: a container (Container Apps), the Node build (App Service), or Static Web Apps with an HTTP function.
+
+## Build
+
+Container:
+
+```sh
+wisp build --docker
+```
+
+App Service and Static Web Apps (Node 20 or newer):
+
+```sh
+rustup target add wasm32-unknown-unknown     # once
+wisp build --target node                     # dist/node
+```
+
+## Deploy
+
+- Container Apps: build the Dockerfile as it is. See [Host with Docker](/docs/hosting/docker/).
+- App Service or Container Apps with the Node build: deploy `dist/node`. It runs `npm start`, which listens on `$PORT`.
+- Static Web Apps (managed functions answer under `/api` only): `dist/node/hosts/azure.md` has the HTTP function (v4 model) that passes every request on, using the original address Azure keeps in `x-ms-original-url`, and the `navigationFallback` rewrite to `/api/wisp` for `staticwebapp.config.json`.
+
+## Environment
+
+- `WISP_SECRET`: set it in the service's application settings, for an app that signs cookies.
+- Other variables: [Environment variables](/docs/env/).
+
+## Limits
+
+- A container build has no edge limits and runs the full feature set.
+- The Node build has the edge limits: WebSockets answer 501, and no `std::fs`, `std::thread`, `std::process` or `std::net`; use `wisp::spawn` and `wisp::sleep`. See [Host on Node](/docs/hosting/node/) and [What works on the edge](/docs/deploy-targets/).
+
+## Files and Data
+
+- Container: saved tables live in `/data`; give it storage that outlives the instance.
+- Node build: tables are per-instance memory unless `WISP_STORE` is set. See [Where rows are kept](/docs/api-tables/).
+
+## More
+
+[Edge and serverless targets](/docs/deploy-targets/), [Deploying](/docs/deploy/).
+
+
+<!-- docs/hosting/bun.md -->
+
+Bun runs the app as WebAssembly, serving raw sockets with `Bun.listen`. For a plain server, the [native binary](/docs/hosting/vps/) is faster and has more features.
+
+## Build
+
+```sh
+rustup target add wasm32-unknown-unknown     # once
+wisp build --target bun                      # dist/bun (--out <folder>)
+```
+
+## Deploy
+
+From `dist/bun`:
+
+```sh
+bun server.mjs
+```
+
+The folder's `package.json` has `"start": "bun server.mjs"`. Copy the folder to the machine and run it there.
+
+## Environment
+
+- `WISP_SECRET`: set it in the process environment, for an app that signs cookies.
+- Read other values with `wisp::env("KEY")` (`std::env::var` sees nothing).
+- `WISP_NODE_HTTP=1` serves with `Bun.serve` instead of `Bun.listen`. See [Environment variables](/docs/env/).
+
+## Limits
+
+- The app's own HTTP/1.1 parser answers over raw sockets (pipelining, keep-alive, chunked bodies, 413, 431 and each route's `BODY_LIMIT`). At startup a request over loopback must be answered as the app answers it (twice, on one connection); if not, it serves with `Bun.serve` and one stderr line says so.
+- WebSockets answer 501; use `Response::events` (SSE).
+- No threads or files: use `wisp::spawn` and `wisp::sleep`. See [What works on the edge](/docs/deploy-targets/).
+- There is no cron trigger to write: the build says so and stops when the app uses `wisp::cron`.
+
+## Files and Data
+
+- `Table::saved` and `Rest` are per-instance memory unless `WISP_STORE` is set (`libsql://`; see [Saved tables](/docs/deploy-targets/)).
+
+## More
+
+[Edge and serverless targets](/docs/deploy-targets/), [Deploying](/docs/deploy/).
+
+
+<!-- docs/hosting/cloud-run.md -->
+
+Cloud Run runs a container image. Wisp builds the Dockerfile as it is.
+
+## Build
+
+```sh
+wisp build --docker          # Dockerfile and .dockerignore (--force replaces them)
+```
+
+## Deploy
+
+```sh
+gcloud run deploy --source .
+```
+
+The image listens on `$PORT` (the Dockerfile sets `HOST=0.0.0.0` and `PORT=3000`).
+
+## Environment
+
+- `WISP_SECRET`: 32 or more random characters, set as an environment variable or secret of the service, for an app that signs cookies.
+- Other variables: [Environment variables](/docs/env/).
+
+## Limits
+
+- The image is the [Docker](/docs/hosting/docker/) one: epoll instead of io_uring under Docker's default profile.
+- WebSockets and streaming work in the binary. Any limit the platform puts on them is Cloud Run's, not Wisp's.
+
+## Files and Data
+
+- `static/` and the styles are inside the binary.
+- Saved tables live in `/data` inside the container, which does not outlive the instance unless you give it storage there. Otherwise use a custom store ([Where rows are kept](/docs/api-tables/)).
+
+## More
+
+[Host with Docker](/docs/hosting/docker/), [Deploying](/docs/deploy/).
+
+
+<!-- docs/hosting/cloudflare.md -->
+
+Cloudflare runs the app as WebAssembly on its edge, as a Worker (`cloudflare`) or on Pages (`pages`).
+
+## Build
+
+```sh
+rustup target add wasm32-unknown-unknown     # once
+wisp build --target cloudflare               # Workers: dist/cloudflare
+wisp build --target pages                    # Pages: dist/pages
+```
+
+`--out <folder>` changes the folder. No wasm-bindgen or other tool is needed. In Cloudflare's CI a plain `wisp build` picks the target from `WORKERS_CI` or `CF_PAGES`.
+
+## Deploy
+
+Workers, from `dist/cloudflare`:
+
+```sh
+npx wrangler deploy
+npx wrangler secret put WISP_SECRET
+```
+
+Pages, from `dist/pages` (`_worker.js` and `_routes.json`):
+
+```sh
+npx wrangler pages deploy .
+```
+
+For Workers, `wisp deploy init cloudflare` writes a GitHub Actions workflow that builds and deploys on push to `main`; it reads the secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
+
+## Environment
+
+- `WISP_SECRET`: a Worker secret (above), or on Pages under Settings.
+- Read other values with `wisp::env("KEY")`; `std::env::var` sees nothing and there is no `.env`.
+- `CRON_SECRET`, if the app has `wisp::cron`: set it as a secret; the cron triggers send it.
+- `WISP_STORE=d1:DB` and the rest: [Environment variables](/docs/env/).
+
+## Limits
+
+- No threads, sockets or files: use `wisp::spawn` and `wisp::sleep`, not `tokio::spawn`. See [What works on the edge](/docs/deploy-targets/).
+- WebSockets answer 501; use `Response::events` (SSE). `Response::stream` and `Response::events` are live.
+- `wisp::channel`, `wisp::every` and `RateLimit` are not in the edge build.
+- Started timers and fetches keep the instance alive (`waitUntil`).
+- Cron: `wisp::cron` becomes `[triggers] crons` in `wrangler.toml` (Workers); Pages has no trigger, so the build says so and stops.
+
+## Files and Data
+
+- `static/` goes into the build output and is served by Cloudflare before the app runs (Workers: `public` with an `[assets]` entry in `wrangler.toml`; Pages: beside `_worker.js`).
+- `Table::saved` and `Rest` are per-instance memory unless `WISP_STORE=d1:DB` is set, with a `[[d1_databases]]` binding named `DB` in `wrangler.toml`. See [Saved tables](/docs/deploy-targets/).
+
+## More
+
+[Edge and serverless targets](/docs/deploy-targets/), [Deploying](/docs/deploy/).
+
+
+<!-- docs/hosting/deno-deploy.md -->
+
+Deno Deploy runs the app as WebAssembly on Deno's edge.
+
+## Build
+
+```sh
+rustup target add wasm32-unknown-unknown     # once
+wisp build --target deno                     # dist/deno (--out <folder>)
+```
+
+In Deno Deploy's CI a plain `wisp build` picks the target from `DENO_DEPLOYMENT_ID`.
+
+## Deploy
+
+From `dist/deno`:
+
+```sh
+deployctl deploy --entrypoint main.ts
+deno run -A main.ts          # try it locally
+```
+
+`wisp deploy init deno` writes a GitHub Actions workflow that builds and deploys on push to `main` with `denoland/deployctl`. It reads no secrets: it uses GitHub's OIDC token. Edit `project: <name>` in it to your project.
+
+## Environment
+
+- `WISP_SECRET` as a project environment variable in Deno Deploy, for an app that signs cookies.
+- Read other values with `wisp::env("KEY")`; `std::env::var` sees nothing and there is no `.env`.
+- `WISP_STORE=deno-kv` and the rest: [Environment variables](/docs/env/).
+
+## Limits
+
+- Deno Deploy has no sockets, so it always serves with `Deno.serve`. (Locally `deno run -A main.ts` reads raw sockets, and `WISP_NODE_HTTP=1` selects `Deno.serve`.)
+- WebSockets answer 501; use `Response::events` (SSE). `Response::stream` and `Response::events` are live.
+- No threads or files: use `wisp::spawn` and `wisp::sleep`. See [What works on the edge](/docs/deploy-targets/).
+- `wisp::channel`, `wisp::every` and `RateLimit` are not in the edge build, and there is no cron trigger to write: the build says so and stops when the app uses `wisp::cron`.
+
+## Files and Data
+
+- `dist/deno` has no separate static folder: the app answers for `static/` itself.
+- `Table::saved` and `Rest` are per-instance memory unless `WISP_STORE=deno-kv` (or `deno-kv:<path>` for a file or URL) is set. See [Saved tables](/docs/deploy-targets/).
+
+## More
+
+[Edge and serverless targets](/docs/deploy-targets/), [Deploying](/docs/deploy/).
+
+
+<!-- docs/hosting/docker.md -->
+
+Docker packages the binary in a small image that runs on your machine or any container host. WebSockets, streaming and saved tables all work.
+
+## Build
+
+```sh
+wisp build --docker      # --force replaces existing files
+docker build -t my-app .
+```
+
+`wisp build --docker` writes a two-stage `Dockerfile` (`rust:slim`, then `debian:stable-slim`, `HOST=0.0.0.0`, `PORT=3000`, `WISP_DATA=/data`) and a `.dockerignore`. Files that exist are left alone unless you pass `--force`; the Dockerfile you have is the one that is built.
+
+## Deploy
+
+```sh
+docker run -p 3000:3000 -e WISP_SECRET=... -v my-app-data:/data my-app
+```
+
+Fly.io, Railway, Render, Cloud Run and Azure Container Apps build the Dockerfile as it is: [Fly.io](/docs/hosting/fly/), [Railway](/docs/hosting/railway/), [Render](/docs/hosting/render/), [Cloud Run](/docs/hosting/cloud-run/), [Azure](/docs/hosting/azure/).
+
+## Environment
+
+- `WISP_SECRET`: 32 or more random characters, needed by an app that signs cookies. Pass it with `-e` or an env file.
+- Other variables: [Environment variables](/docs/env/).
+
+## Limits
+
+- Docker's default seccomp profile refuses io_uring, so the server uses an epoll loop per worker. A profile allowing `io_uring_setup`, `io_uring_enter` and `io_uring_register` brings it back.
+- The image runs as `nobody`.
+- WebSockets and streaming work.
+
+## Files and Data
+
+- `static/` and the styles are inside the binary.
+- Saved tables live in `/data`: mount a volume there (`-v my-app-data:/data`) or they go with the container. See [Where rows are kept](/docs/api-tables/).
+
+## More
+
+[Deploying](/docs/deploy/), [Host on a VPS](/docs/hosting/vps/).
+
+
+<!-- docs/hosting/fly.md -->
+
+Fly.io runs containers on machines it starts for you. Wisp builds the Dockerfile as it is.
+
+## Build
+
+```sh
+wisp deploy init fly       # fly.toml, and a Dockerfile if there is none
+```
+
+This writes `fly.toml` (internal port 3000, `force_https`, machines that stop when idle and start on a request, 256 MB, one shared CPU) and the same `Dockerfile` as `wisp build --docker`. The app name in it is your package name and must be unique on Fly. `--force` replaces the file.
+
+## Deploy
+
+```sh
+fly launch --copy-config --no-deploy
+fly secrets set WISP_SECRET=<32 or more random characters>
+fly deploy
+```
+
+## Environment
+
+- `WISP_SECRET` as a Fly secret (above), for an app that signs cookies.
+- Other variables: [Environment variables](/docs/env/).
+
+## Limits
+
+- The image is the [Docker](/docs/hosting/docker/) one: epoll instead of io_uring under Docker's default profile.
+- WebSockets and streaming work, as in any container.
+
+## Files and Data
+
+- `static/` and the styles are inside the binary.
+- Saved tables live in `/data` inside the machine. The generated `fly.toml` has no volume mount, so add one for `/data` if the rows must outlive a deploy; otherwise use a custom store ([Where rows are kept](/docs/api-tables/)).
+
+## More
+
+[Host with Docker](/docs/hosting/docker/), [Deploying](/docs/deploy/).
+
+
+<!-- docs/hosting/github-pages.md -->
+
+GitHub Pages serves plain files. Wisp writes every parameterless page as HTML, so the site needs no server.
+
+## Build
+
+```sh
+wisp build --static          # dist/ (--out <folder>)
+```
+
+`--spa` is `--static` plus an `index.html` fallback. The same build works for GitLab Pages and S3.
+
+## Deploy
+
+```sh
+wisp deploy init pages
+```
+
+This writes `.github/workflows/deploy.yml`: build with `--static`, then `actions/upload-pages-artifact` and `actions/deploy-pages` on push to `main`. It reads no secrets; in the repository set Settings, Pages, Source to GitHub Actions. `--force` replaces the file.
+
+## Environment
+
+- `SITE_URL` (for example `https://me.github.io/my-app`): the address that sitemaps, feeds and absolute links use. Set it when you build.
+- `WISP_BASE`: a base path, set at build (`/my-app`). A project site under a path prefix needs prefix-safe links.
+- There is no server, so `WISP_SECRET` and the runtime variables do not apply. See [Environment variables](/docs/env/).
+
+## Limits
+
+- Forms need a server: the export warns for each page with actions, and for each exported page whose HTML holds a form that posts.
+- A route with actions or a `+server.rs` needs a server (the export warns).
+- A `[params]` route lists its pages with `entries`.
+
+## Static Assets
+
+- `static/` and the `/_app` files are written into `dist/`.
+- Saved tables do not exist here: there is no process to keep them.
+
+## More
+
+[Deploying](/docs/deploy/), [Hosting](/docs/hosting/).
+
+
+<!-- docs/hosting/netlify.md -->
+
+Netlify runs the app as WebAssembly in a function, or in an edge function with `--edge`.
+
+## Build
+
+```sh
+rustup target add wasm32-unknown-unknown     # once
+wisp build --target netlify                  # dist/netlify
+wisp build --target netlify --edge           # edge function
+```
+
+In Netlify's CI a plain `wisp build` picks the target from `NETLIFY`.
+
+## Deploy
+
+From `dist/netlify`:
+
+```sh
+npx netlify deploy --prod
+```
+
+`wisp deploy init netlify` writes a GitHub Actions workflow that builds and deploys on push to `main`. It reads the secrets `NETLIFY_AUTH_TOKEN` and `NETLIFY_SITE_ID`.
+
+## Environment
+
+- `WISP_SECRET` as an environment variable of the site, for an app that signs cookies.
+- Read other values with `wisp::env("KEY")` (`std::env::var` sees nothing).
+- `CRON_SECRET`, if the app has `wisp::cron`: set it too; the scheduled function sends it.
+- [Environment variables](/docs/env/).
+
+## Limits
+
+- Per route: `const RUNTIME: wisp::Runtime = wisp::Runtime::Edge;` puts a route on the edge; the rest stay on the function. See [Edge runtime per route](/docs/deploy-targets/).
+- Edge functions have the edge limits (no `std::fs`, `std::thread`, `std::process`, `std::net`, websockets); the build stops, naming the route, if an Edge route uses them.
+- WebSockets answer 501; use `Response::events` (SSE). Streaming is live.
+- Netlify keeps the instance alive (`waitUntil`) for started timers and fetches.
+- Cron: `wisp::cron` becomes a scheduled function. With `--edge` there is no trigger to write: the build says so and stops.
+- `wisp::channel`, `wisp::every` and `RateLimit` are not in the edge build.
+
+## Files and Data
+
+- `static/` goes to `public`, which Netlify serves; with `--edge` the edge function skips it via `excludedPath`.
+- `Table::saved` and `Rest` are per-instance memory. `WISP_STORE` accepts `libsql://` (Turso or any libSQL server, with `WISP_STORE_TOKEN`); see [Saved tables](/docs/deploy-targets/).
+
+## More
+
+[Edge and serverless targets](/docs/deploy-targets/), [Deploying](/docs/deploy/).
+
+
+<!-- docs/hosting/node.md -->
+
+The `node` target runs the app as WebAssembly under Node 20 or newer. It is the target for Amplify, Firebase, Azure, Stormkit, Zeabur and any other Node host. For your own server, the [native binary](/docs/hosting/vps/) is faster and has more features.
+
+## Build
+
+```sh
+rustup target add wasm32-unknown-unknown     # once
+wisp build --target node                     # dist/node (--out <folder>)
+```
+
+In AWS Amplify's CI a plain `wisp build` picks `node` from `AWS_APP_ID`.
+
+## Deploy
+
+From `dist/node`:
+
+```sh
+npm start
+```
+
+It runs `node server.mjs` and listens on `$PORT`. The output's `hosts/` folder has a note for each host (`amplify.md`, `firebase.md`, `azure.md`, `stormkit.md`, `zeabur.md`) with its manifest or function glue.
+
+## Environment
+
+- `WISP_SECRET`: set it in the host's environment settings, for an app that signs cookies.
+- Read other values with `wisp::env("KEY")` (`std::env::var` sees nothing).
+- `WISP_NODE_HTTP=1` serves with `node:http`. See [Environment variables](/docs/env/).
+
+## Limits
+
+- The app's own HTTP/1.1 parser answers over raw sockets. At startup a request over loopback must be answered as the app answers it (twice, on one connection); if not, or with `WISP_NODE_HTTP=1`, it serves with `node:http` (one stderr line says which). Only that path reads at most `WISP_BODY_LIMIT` (default 1 MB) of a body and answers 413 past it.
+- WebSockets answer 501; use `Response::events` (SSE). Streaming is live.
+- No threads or files: use `wisp::spawn` and `wisp::sleep`. See [What works on the edge](/docs/deploy-targets/).
+- There is no cron trigger to write: the build says so and stops when the app uses `wisp::cron`.
+
+## Files and Data
+
+- `Table::saved` and `Rest` are per-instance memory unless `WISP_STORE` is set (`libsql://`; see [Saved tables](/docs/deploy-targets/)).
+
+## More
+
+[Host on Azure](/docs/hosting/azure/), [Edge and serverless targets](/docs/deploy-targets/), [Deploying](/docs/deploy/).
+
+
+<!-- docs/hosting/railway.md -->
+
+Railway builds a Dockerfile from your project and runs it as a service.
+
+## Build
+
+```sh
+wisp deploy init railway      # railway.toml, and a Dockerfile if there is none
+```
+
+`railway.toml` sets the builder to `DOCKERFILE` with `Dockerfile` as the path, and a restart policy of `ON_FAILURE` with 10 retries. The Dockerfile is the one `wisp build --docker` writes. `--force` replaces the file.
+
+## Deploy
+
+```sh
+railway up
+```
+
+Railway builds the Dockerfile and sets `PORT`, which the app listens on. Or point a service at the repository.
+
+## Environment
+
+- `WISP_SECRET`: 32 or more random characters, in the service's variables, for an app that signs cookies.
+- Other variables: [Environment variables](/docs/env/).
+
+## Limits
+
+- The image is the [Docker](/docs/hosting/docker/) one: epoll instead of io_uring under Docker's default profile.
+- WebSockets and streaming work, as in any container.
+
+## Files and Data
+
+- `static/` and the styles are inside the binary.
+- Saved tables live in `/data` inside the container, so give that path storage that outlives a deploy, or use a custom store ([Where rows are kept](/docs/api-tables/)).
+
+## More
+
+[Host with Docker](/docs/hosting/docker/), [Deploying](/docs/deploy/).
+
+
+<!-- docs/hosting/render.md -->
+
+Render builds a Dockerfile from your repository and runs it as a web service.
+
+## Build
+
+```sh
+wisp deploy init render       # render.yaml, and a Dockerfile if there is none
+```
+
+`render.yaml` is a blueprint with one `web` service on the `docker` runtime, named for your package, with `WISP_SECRET` set to `generateValue: true`. The Dockerfile is the one `wisp build --docker` writes. `--force` replaces the file.
+
+## Deploy
+
+Commit both files and push. In Render choose New, Blueprint and pick the repository. Render builds the Dockerfile and sets `PORT`, which the app listens on.
+
+## Environment
+
+- `WISP_SECRET` is generated for you by the blueprint; to set your own, use the service's environment settings.
+- Other variables: [Environment variables](/docs/env/).
+
+## Limits
+
+- The image is the [Docker](/docs/hosting/docker/) one: epoll instead of io_uring under Docker's default profile.
+- WebSockets and streaming work, as in any container.
+
+## Files and Data
+
+- `static/` and the styles are inside the binary.
+- Saved tables live in `/data` inside the container. The blueprint does not attach storage, so rows are lost with the instance unless you mount a persistent disk at `/data` or use a custom store ([Where rows are kept](/docs/api-tables/)).
+
+## More
+
+[Host with Docker](/docs/hosting/docker/), [Deploying](/docs/deploy/).
+
+
+<!-- docs/hosting/vercel.md -->
+
+Vercel runs the app as WebAssembly in a Node function, or on its Edge runtime.
+
+## Build
+
+```sh
+rustup target add wasm32-unknown-unknown     # once
+wisp build --target vercel                   # .vercel/output
+wisp build --target vercel --edge            # every route on the Edge runtime
+```
+
+In Vercel's CI a plain `wisp build` picks the target from `VERCEL` and writes to `.vercel/output`.
+
+## Deploy
+
+```sh
+npx vercel deploy --prebuilt
+```
+
+`wisp deploy init vercel` writes a GitHub Actions workflow that builds and deploys on push to `main`. It reads the secrets `VERCEL_TOKEN`, `VERCEL_ORG_ID` and `VERCEL_PROJECT_ID`.
+
+## Environment
+
+- `WISP_SECRET` as an environment variable of the project, for an app that signs cookies.
+- Read other values with `wisp::env("KEY")` (`std::env::var` sees nothing).
+- `CRON_SECRET`, if the app has `wisp::cron`: set it too; Vercel's cron sends it.
+- [Environment variables](/docs/env/).
+
+## Limits
+
+- Per route: `const RUNTIME: wisp::Runtime = wisp::Runtime::Edge;` in a `+page.rs` or `+server.rs` puts that route on the Edge runtime and the rest stay on the Node function. See [Edge runtime per route](/docs/deploy-targets/).
+- The build stops, naming the route, if an Edge route uses what WebAssembly lacks (`std::fs`, `std::thread`, `std::process`, `std::net`, websockets).
+- WebSockets answer 501; use `Response::events` (SSE). Streaming is live.
+- Vercel may freeze the instance after the response, so finish background work first.
+- Cron: `wisp::cron` becomes `crons` in `config.json` (Hobby plan: daily only).
+- `wisp::channel`, `wisp::every` and `RateLimit` are not in the edge build.
+
+## Files and Data
+
+- `static/` goes to `.vercel/output/static` and stays the CDN's.
+- `Table::saved` and `Rest` are per-instance memory. `WISP_STORE` accepts `libsql://` (Turso or any libSQL server, with `WISP_STORE_TOKEN`); see [Saved tables](/docs/deploy-targets/).
+
+## More
+
+[Edge and serverless targets](/docs/deploy-targets/), [Deploying](/docs/deploy/).
+
+
+<!-- docs/hosting/vps.md -->
+
+A VPS is a server you rent and run yourself. Wisp fits it best: one binary, no runtime to install, and the full feature set (WebSockets, streaming, saved tables on disk).
+
+## Build
+
+```sh
+wisp build
+```
+
+This makes one release binary with the static files and styles inside. A native binary runs only on the OS and CPU it was built for, so build on the server or on a machine like it.
+
+## Deploy
+
+Copy the binary to the server and run it. It listens on `$HOST:$PORT` (`0.0.0.0:3000` in release).
+
+```sh
+scp target/release/my-app me@server:/srv/my-app/
+ssh me@server 'cd /srv/my-app && WISP_SECRET=... ./my-app'
+```
+
+To keep it running and start it at boot, run this on the server from the app folder, as root:
+
+```sh
+wisp service install --user my-app --port 3000
+wisp service status
+```
+
+On Linux this writes a systemd unit with `Restart=on-failure` and `EnvironmentFile=-/etc/<name>.env`. See [Deploying](/docs/deploy/) for every option, and for macOS and Windows.
+
+## Environment
+
+- `WISP_SECRET`: 32 or more random characters, needed by an app that signs cookies. With `wisp service install` on Linux, put it in `/etc/<name>.env` (made 0600 if missing).
+- `HOST`, `PORT`, `WISP_THREADS` and the rest: [Environment variables](/docs/env/).
+
+## Limits
+
+- There is no TLS in the server. Put a reverse proxy in front for HTTPS; set `WISP_CLIENT_IP_HEADER` so `cx.client_ip()` sees the real address.
+- SIGTERM and Ctrl+C stop accepting and drain for up to 10 seconds.
+- WebSockets and streaming both work.
+
+## Files and Data
+
+- `static/` and the styles are inside the binary.
+- Saved tables (`Table::saved`, `#[derive(Rest)]`) are log files in the `data` folder next to where you run it; `WISP_DATA` moves it. Back that folder up. See [Where rows are kept](/docs/api-tables/).
+
+## More
+
+[Deploying](/docs/deploy/), [Logs, metrics and traces](/docs/deploy-observe/), [Serve extras](/docs/serve/).
 
 
 <!-- docs/overview.md -->
