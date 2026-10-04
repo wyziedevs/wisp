@@ -14,7 +14,7 @@ wisp dev
 ```html
 <!-- src/routes/+page.wisp -->
 ---
-let name: String = cx.query_or("name", "world");
+let name = cx.query_or("name", "world".to_string());
 ---
 <h1>Hello, {name}!</h1>
 ```
