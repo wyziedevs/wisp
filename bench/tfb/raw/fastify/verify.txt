@@ -1,0 +1,22 @@
+=== GET /json
+HTTP/1.1 200 OK
+server: Fastify
+content-type: application/json; charset=utf-8
+content-length: 27
+Date: Sun, 04 Oct 2026 07:46:56 GMT
+Connection: keep-alive
+Keep-Alive: timeout=72
+
+{"message":"Hello, World!"}
+=== GET /plaintext
+HTTP/1.1 200 OK
+server: Fastify
+content-type: text/plain
+content-length: 13
+Date: Sun, 04 Oct 2026 07:46:56 GMT
+Connection: keep-alive
+Keep-Alive: timeout=72
+
+Hello, World!
+pipelined 16 -> 16 bodies
+processes: 3, threads: 21, affinity: 0,1

@@ -1,0 +1,18 @@
+# loadavg-before: 2.67 3.05 3.37
+# cmd: taskset -c 2-3 wrk -H 'Host: 127.0.0.1' -H 'Accept: text/plain,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,*/*;q=0.7' -H 'Connection: keep-alive' --latency -d 15 -c 256 --timeout 8 -t 2 http://127.0.0.1:8080/plaintext -s pipeline.lua -- 16
+Running 15s test @ http://127.0.0.1:8080/plaintext
+  2 threads and 256 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency   162.62ms  489.23ms   4.23s    93.24%
+    Req/Sec    30.55k     4.04k   39.47k    71.67%
+  Latency Distribution
+     50%   37.60ms
+     75%   56.82ms
+     90%   90.89ms
+     99%    2.76s 
+  912161 requests in 15.01s, 156.58MB read
+Requests/sec:  60754.39
+Transfer/sec:     10.43MB
+# cpu-delta user nice sys idle iowait irq softirq steal: 2040 0 1337 1723 0 0 698 74 
+# foreign-pct: 0.0  (user+sys+irq ticks 4075, server+wrk 4168)
+# top-after: 80.4 MainThread;80.2 MainThread; 2.8 MainThread;

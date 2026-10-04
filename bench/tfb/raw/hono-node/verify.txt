@@ -1,0 +1,22 @@
+=== GET /json
+HTTP/1.1 200 OK
+server: Hono
+content-type: application/json; charset=UTF-8
+Content-Length: 27
+Date: Sun, 04 Oct 2026 07:57:06 GMT
+Connection: keep-alive
+Keep-Alive: timeout=5
+
+{"message":"Hello, World!"}
+=== GET /plaintext
+HTTP/1.1 200 OK
+server: Hono
+content-type: text/plain; charset=UTF-8
+Content-Length: 13
+Date: Sun, 04 Oct 2026 07:57:06 GMT
+Connection: keep-alive
+Keep-Alive: timeout=5
+
+Hello, World!
+pipelined 16 -> 16 bodies
+processes: 5, threads: 33, affinity: 0,1

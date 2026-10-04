@@ -1,0 +1,36 @@
+
+added 21 packages in 20s
+Attention: Next.js now collects completely anonymous telemetry regarding usage.
+This information is used to shape Next.js' roadmap and prioritize features.
+You can learn more, including how to opt-out if you'd not like to participate in this anonymous program, by visiting the following URL:
+https://nextjs.org/telemetry
+
+   ▲ Next.js 15.5.27
+
+   Creating an optimized production build ...
+ ✓ Compiled successfully in 7.7s
+   Linting and checking validity of types ...
+   Collecting page data ...
+   Generating static pages (0/2) ...
+ ✓ Generating static pages (2/2)
+   Finalizing page optimization ...
+   Collecting build traces ...
+
+Route (app)                                  Size  First Load JS
+┌ ƒ /json                                   125 B         101 kB
+└ ƒ /plaintext                              125 B         101 kB
++ First Load JS shared by all              101 kB
+  ├ chunks/4bd1b696-c023c6e3521b1417.js   54.2 kB
+  ├ chunks/58-f028b11b68019a4b.js         45.4 kB
+  └ other shared chunks (total)           1.59 kB
+
+Route (pages)                                Size  First Load JS
+─ ○ /404                                    180 B         108 kB
++ First Load JS shared by all              107 kB
+  ├ chunks/framework-4891de286d38ef96.js  68.7 kB
+  ├ chunks/main-6acff1ba46561df6.js       37.1 kB
+  └ other shared chunks (total)           1.66 kB
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+

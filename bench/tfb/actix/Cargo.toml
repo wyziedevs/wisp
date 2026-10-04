@@ -1,0 +1,26 @@
+# From TechEmpower/FrameworkBenchmarks frameworks/Rust/actix (the default "tfb-web" bin, actix-web, /plaintext and /json),
+# database bins and dependencies removed. Source, lockfile and release profile otherwise as upstream.
+[package]
+name = "tfb-actix"
+version = "4.0.0"
+edition = "2024"
+
+[[bin]]
+name = "tfb-web"
+path = "src/main.rs"
+
+[dependencies]
+actix-web = "4.9.0"
+actix-http = "3.9.0"
+actix-service = "2"
+bytes = "1"
+simd-json = "0.14"
+simd-json-derive = "0.15"
+snmalloc-rs = "0.3.8"
+
+[profile.release]
+lto = true
+opt-level = 3
+codegen-units = 1
+
+[workspace]

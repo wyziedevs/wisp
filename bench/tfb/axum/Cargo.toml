@@ -1,0 +1,29 @@
+# From TechEmpower/FrameworkBenchmarks frameworks/Rust/axum (the "axum" test, /plaintext and /json),
+# database bins, features and dependencies removed. Source, lockfile and release profile otherwise as upstream.
+[package]
+name = "axum-techempower"
+version = "0.3.0"
+edition = "2024"
+
+[[bin]]
+name = "axum"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.8.7", default-features = false, features = ["json", "query", "http1", "tokio"] }
+num_cpus = "1.17.0"
+serde = { version = "1.0.219", features = ["derive"] }
+tokio = { version = "1.48.0", features = ["full"] }
+tower = { version = "0.5.2", features = ["util"] }
+tower-http = { version = "0.6.7", features = ["set-header"] }
+socket2 = "0.6.1"
+hyper = { version = "1.8.1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto", "http1"] }
+mimalloc = "0.1.47"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+
+[workspace]

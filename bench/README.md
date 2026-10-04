@@ -41,6 +41,10 @@ responses, as TechEmpower's plaintext does with 16; it is off by default,
 since browsers do not pipeline, and applies to every path that runs (use
 `--paths plaintext`). Pipelined and closed-loop numbers are not comparable.
 
+`tfb/` is the honest TechEmpower-standard run: Wisp's `/plaintext` and `/json` against the
+TFB reference sources, with TFB's own wrk scripts and settings, on a pinned shared VM. See
+`tfb/RESULTS.md` (including where Wisp is not first) and `tfb/run.sh`.
+
 Every server answers the same four paths. `/fortunes` is TechEmpower's
 fortunes test without the database: copy 12 rows, add one, sort by message,
 render an HTML table with escaping. `/plaintext` returns `Hello, World!`,

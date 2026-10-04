@@ -1,0 +1,4033 @@
+{
+ "contenders": {
+  "actix": {
+   "json": {
+    "16": [
+     {
+      "lat_avg_ms": 0.36726,
+      "lat_p99_ms": 3.05,
+      "non2xx": 0,
+      "requests": 1345089,
+      "rps": 89071.71,
+      "socket_errors": 0,
+      "steal_pct": 2.46
+     },
+     {
+      "lat_avg_ms": 0.24698,
+      "lat_p99_ms": 2.24,
+      "non2xx": 0,
+      "requests": 1412217,
+      "rps": 94100.07,
+      "socket_errors": 0,
+      "steal_pct": 1.15
+     },
+     {
+      "lat_avg_ms": 0.32152,
+      "lat_p99_ms": 2.68,
+      "non2xx": 0,
+      "requests": 1353139,
+      "rps": 90199.05,
+      "socket_errors": 0,
+      "steal_pct": 1.7
+     }
+    ],
+    "32": [
+     {
+      "lat_avg_ms": 0.57431,
+      "lat_p99_ms": 3.76,
+      "non2xx": 0,
+      "requests": 1497751,
+      "rps": 99179.53,
+      "socket_errors": 0,
+      "steal_pct": 1.35
+     },
+     {
+      "lat_avg_ms": 0.65183,
+      "lat_p99_ms": 4.4,
+      "non2xx": 0,
+      "requests": 1394665,
+      "rps": 92899.75,
+      "socket_errors": 0,
+      "steal_pct": 2.53
+     },
+     {
+      "lat_avg_ms": 0.65022,
+      "lat_p99_ms": 4.2,
+      "non2xx": 0,
+      "requests": 1487360,
+      "rps": 99097.99,
+      "socket_errors": 0,
+      "steal_pct": 1.67
+     }
+    ],
+    "64": [
+     {
+      "lat_avg_ms": 0.9,
+      "lat_p99_ms": 5.3,
+      "non2xx": 0,
+      "requests": 1345399,
+      "rps": 89648.31,
+      "socket_errors": 0,
+      "steal_pct": 2.73
+     },
+     {
+      "lat_avg_ms": 0.89,
+      "lat_p99_ms": 5.03,
+      "non2xx": 0,
+      "requests": 1282407,
+      "rps": 85399.66,
+      "socket_errors": 0,
+      "steal_pct": 2.99
+     },
+     {
+      "lat_avg_ms": 0.7650399999999999,
+      "lat_p99_ms": 4.14,
+      "non2xx": 0,
+      "requests": 1522318,
+      "rps": 101440.73,
+      "socket_errors": 0,
+      "steal_pct": 0.96
+     }
+    ],
+    "128": [
+     {
+      "lat_avg_ms": 1.18,
+      "lat_p99_ms": 5.64,
+      "non2xx": 0,
+      "requests": 1518713,
+      "rps": 101186.15,
+      "socket_errors": 0,
+      "steal_pct": 1.06
+     },
+     {
+      "lat_avg_ms": 1.11,
+      "lat_p99_ms": 5.23,
+      "non2xx": 0,
+      "requests": 1594443,
+      "rps": 106246.5,
+      "socket_errors": 0,
+      "steal_pct": 0.83
+     },
+     {
+      "lat_avg_ms": 0.96,
+      "lat_p99_ms": 3.83,
+      "non2xx": 0,
+      "requests": 1712775,
+      "rps": 114139.37,
+      "socket_errors": 0,
+      "steal_pct": 0.28
+     }
+    ],
+    "256": [
+     {
+      "lat_avg_ms": 1.85,
+      "lat_p99_ms": 6.83,
+      "non2xx": 0,
+      "requests": 1580069,
+      "rps": 105160.98,
+      "socket_errors": 0,
+      "steal_pct": 0.56
+     },
+     {
+      "lat_avg_ms": 1.74,
+      "lat_p99_ms": 5.92,
+      "non2xx": 0,
+      "requests": 1629377,
+      "rps": 108428.36,
+      "socket_errors": 0,
+      "steal_pct": 0.83
+     },
+     {
+      "lat_avg_ms": 1.77,
+      "lat_p99_ms": 5.88,
+      "non2xx": 0,
+      "requests": 1641275,
+      "rps": 109280.31,
+      "socket_errors": 0,
+      "steal_pct": 0.42
+     }
+    ],
+    "512": [
+     {
+      "lat_avg_ms": 3.59,
+      "lat_p99_ms": 9.58,
+      "non2xx": 0,
+      "requests": 1526229,
+      "rps": 101055.0,
+      "socket_errors": 0,
+      "steal_pct": 0.23
+     },
+     {
+      "lat_avg_ms": 5.92,
+      "lat_p99_ms": 16.53,
+      "non2xx": 0,
+      "requests": 1072859,
+      "rps": 71314.61,
+      "socket_errors": 0,
+      "steal_pct": 1.67
+     },
+     {
+      "lat_avg_ms": 6.69,
+      "lat_p99_ms": 18.67,
+      "non2xx": 0,
+      "requests": 1037135,
+      "rps": 68763.69,
+      "socket_errors": 0,
+      "steal_pct": 2.7
+     }
+    ]
+   },
+   "plaintext": {
+    "256": [
+     {
+      "lat_avg_ms": 4.03,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 9472048,
+      "rps": 630191.96,
+      "socket_errors": 0,
+      "steal_pct": 2.43
+     },
+     {
+      "lat_avg_ms": 4.25,
+      "lat_p99_ms": 49.02,
+      "non2xx": 0,
+      "requests": 9059216,
+      "rps": 603163.42,
+      "socket_errors": 0,
+      "steal_pct": 2.63
+     },
+     {
+      "lat_avg_ms": 4.32,
+      "lat_p99_ms": 27.18,
+      "non2xx": 0,
+      "requests": 8646480,
+      "rps": 575108.37,
+      "socket_errors": 0,
+      "steal_pct": 2.82
+     }
+    ],
+    "1024": [
+     {
+      "lat_avg_ms": 19.91,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 6806832,
+      "rps": 450698.15,
+      "socket_errors": 0,
+      "steal_pct": 3.53
+     },
+     {
+      "lat_avg_ms": 26.13,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 5501216,
+      "rps": 365153.33,
+      "socket_errors": 0,
+      "steal_pct": 6.75
+     },
+     {
+      "lat_avg_ms": 25.83,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 5518224,
+      "rps": 366626.08,
+      "socket_errors": 0,
+      "steal_pct": 7.13
+     }
+    ],
+    "4096": [
+     {
+      "lat_avg_ms": 86.74,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 5376752,
+      "rps": 356336.87,
+      "socket_errors": 0,
+      "steal_pct": 6.11
+     },
+     {
+      "lat_avg_ms": 92.95,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 5310848,
+      "rps": 351843.53,
+      "socket_errors": 0,
+      "steal_pct": 6.7
+     },
+     {
+      "lat_avg_ms": 100.75,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 4818560,
+      "rps": 318901.47,
+      "socket_errors": 0,
+      "steal_pct": 9.83
+     }
+    ],
+    "16384": [
+     {
+      "lat_avg_ms": null,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 0,
+      "rps": 0.0,
+      "socket_errors": 0,
+      "steal_pct": 7.56
+     },
+     {
+      "lat_avg_ms": null,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 0,
+      "rps": 0.0,
+      "socket_errors": 0,
+      "steal_pct": 6.84
+     },
+     {
+      "lat_avg_ms": 358.28,
+      "lat_p99_ms": 667.35,
+      "non2xx": 0,
+      "requests": 393216,
+      "rps": 14977.03,
+      "socket_errors": 0,
+      "steal_pct": 5.28
+     }
+    ]
+   }
+  },
+  "axum": {
+   "json": {
+    "16": [
+     {
+      "lat_avg_ms": 0.29498,
+      "lat_p99_ms": 3.11,
+      "non2xx": 0,
+      "requests": 1186952,
+      "rps": 79104.81,
+      "socket_errors": 0,
+      "steal_pct": 6.92
+     },
+     {
+      "lat_avg_ms": 0.5139199999999999,
+      "lat_p99_ms": 6.65,
+      "non2xx": 0,
+      "requests": 984719,
+      "rps": 65608.57,
+      "socket_errors": 0,
+      "steal_pct": 12.01
+     },
+     {
+      "lat_avg_ms": 0.18683000000000002,
+      "lat_p99_ms": 1.32,
+      "non2xx": 0,
+      "requests": 1422450,
+      "rps": 94819.85,
+      "socket_errors": 0,
+      "steal_pct": 2.13
+     }
+    ],
+    "32": [
+     {
+      "lat_avg_ms": 0.36774,
+      "lat_p99_ms": 2.58,
+      "non2xx": 0,
+      "requests": 1363919,
+      "rps": 90891.21,
+      "socket_errors": 0,
+      "steal_pct": 2.79
+     },
+     {
+      "lat_avg_ms": 0.42827,
+      "lat_p99_ms": 3.18,
+      "non2xx": 0,
+      "requests": 1304425,
+      "rps": 86901.45,
+      "socket_errors": 0,
+      "steal_pct": 3.78
+     },
+     {
+      "lat_avg_ms": 0.55029,
+      "lat_p99_ms": 5.57,
+      "non2xx": 0,
+      "requests": 1166969,
+      "rps": 77724.28,
+      "socket_errors": 0,
+      "steal_pct": 6.73
+     }
+    ],
+    "64": [
+     {
+      "lat_avg_ms": 0.6737799999999999,
+      "lat_p99_ms": 4.02,
+      "non2xx": 0,
+      "requests": 1426373,
+      "rps": 94930.08,
+      "socket_errors": 0,
+      "steal_pct": 2.98
+     },
+     {
+      "lat_avg_ms": 1.25,
+      "lat_p99_ms": 16.09,
+      "non2xx": 0,
+      "requests": 1180806,
+      "rps": 78427.13,
+      "socket_errors": 0,
+      "steal_pct": 6.72
+     },
+     {
+      "lat_avg_ms": 0.91,
+      "lat_p99_ms": 6.82,
+      "non2xx": 0,
+      "requests": 1161942,
+      "rps": 77297.76,
+      "socket_errors": 0,
+      "steal_pct": 5.8
+     }
+    ],
+    "128": [
+     {
+      "lat_avg_ms": 1.3,
+      "lat_p99_ms": 4.63,
+      "non2xx": 0,
+      "requests": 1391247,
+      "rps": 92662.39,
+      "socket_errors": 0,
+      "steal_pct": 1.77
+     },
+     {
+      "lat_avg_ms": 1.24,
+      "lat_p99_ms": 3.94,
+      "non2xx": 0,
+      "requests": 1454324,
+      "rps": 96862.98,
+      "socket_errors": 0,
+      "steal_pct": 0.93
+     },
+     {
+      "lat_avg_ms": 1.82,
+      "lat_p99_ms": 9.64,
+      "non2xx": 0,
+      "requests": 1062623,
+      "rps": 70648.45,
+      "socket_errors": 0,
+      "steal_pct": 5.73
+     }
+    ],
+    "256": [
+     {
+      "lat_avg_ms": 4.37,
+      "lat_p99_ms": 16.79,
+      "non2xx": 0,
+      "requests": 867711,
+      "rps": 57541.07,
+      "socket_errors": 0,
+      "steal_pct": 5.98
+     },
+     {
+      "lat_avg_ms": 2.99,
+      "lat_p99_ms": 10.47,
+      "non2xx": 0,
+      "requests": 1224556,
+      "rps": 81434.26,
+      "socket_errors": 0,
+      "steal_pct": 2.3
+     },
+     {
+      "lat_avg_ms": 4.12,
+      "lat_p99_ms": 14.13,
+      "non2xx": 0,
+      "requests": 908801,
+      "rps": 60464.72,
+      "socket_errors": 0,
+      "steal_pct": 5.13
+     }
+    ],
+    "512": [
+     {
+      "lat_avg_ms": 11.91,
+      "lat_p99_ms": 28.89,
+      "non2xx": 0,
+      "requests": 629929,
+      "rps": 41755.48,
+      "socket_errors": 0,
+      "steal_pct": 6.98
+     },
+     {
+      "lat_avg_ms": 10.59,
+      "lat_p99_ms": 24.08,
+      "non2xx": 0,
+      "requests": 710903,
+      "rps": 47070.26,
+      "socket_errors": 0,
+      "steal_pct": 4.9
+     },
+     {
+      "lat_avg_ms": 7.89,
+      "lat_p99_ms": 17.81,
+      "non2xx": 0,
+      "requests": 964778,
+      "rps": 64023.39,
+      "socket_errors": 0,
+      "steal_pct": 2.55
+     }
+    ]
+   },
+   "plaintext": {
+    "256": [
+     {
+      "lat_avg_ms": 9.05,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 4177504,
+      "rps": 276948.25,
+      "socket_errors": 0,
+      "steal_pct": 12.77
+     },
+     {
+      "lat_avg_ms": 10.83,
+      "lat_p99_ms": 50.28,
+      "non2xx": 0,
+      "requests": 3680176,
+      "rps": 245050.03,
+      "socket_errors": 0,
+      "steal_pct": 17.62
+     },
+     {
+      "lat_avg_ms": 7.07,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 5003984,
+      "rps": 332863.02,
+      "socket_errors": 0,
+      "steal_pct": 8.46
+     }
+    ],
+    "1024": [
+     {
+      "lat_avg_ms": 28.3,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 4869136,
+      "rps": 323091.93,
+      "socket_errors": 0,
+      "steal_pct": 6.49
+     },
+     {
+      "lat_avg_ms": 21.56,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 5747168,
+      "rps": 381323.66,
+      "socket_errors": 0,
+      "steal_pct": 3.92
+     },
+     {
+      "lat_avg_ms": 19.25,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 5902560,
+      "rps": 391336.02,
+      "socket_errors": 0,
+      "steal_pct": 4.1
+     }
+    ],
+    "4096": [
+     {
+      "lat_avg_ms": 66.6,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 6847696,
+      "rps": 454096.46,
+      "socket_errors": 0,
+      "steal_pct": 1.32
+     },
+     {
+      "lat_avg_ms": 68.87,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 6301936,
+      "rps": 417470.09,
+      "socket_errors": 0,
+      "steal_pct": 2.17
+     },
+     {
+      "lat_avg_ms": 67.51,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 6737040,
+      "rps": 446398.0,
+      "socket_errors": 0,
+      "steal_pct": 1.78
+     }
+    ],
+    "16384": [
+     {
+      "lat_avg_ms": 277.72,
+      "lat_p99_ms": 537.7,
+      "non2xx": 0,
+      "requests": 445680,
+      "rps": 27410.12,
+      "socket_errors": 0,
+      "steal_pct": 1.36
+     },
+     {
+      "lat_avg_ms": 340.48,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 3375728,
+      "rps": 223945.59,
+      "socket_errors": 0,
+      "steal_pct": 2.09
+     },
+     {
+      "lat_avg_ms": 442.25,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 2592624,
+      "rps": 171230.75,
+      "socket_errors": 0,
+      "steal_pct": 2.83
+     }
+    ]
+   }
+  },
+  "express": {
+   "json": {
+    "16": [
+     {
+      "lat_avg_ms": 1.26,
+      "lat_p99_ms": 7.86,
+      "non2xx": 0,
+      "requests": 233918,
+      "rps": 15575.52,
+      "socket_errors": 0,
+      "steal_pct": 13.84
+     },
+     {
+      "lat_avg_ms": 1.25,
+      "lat_p99_ms": 8.57,
+      "non2xx": 0,
+      "requests": 257113,
+      "rps": 17105.1,
+      "socket_errors": 0,
+      "steal_pct": 11.12
+     },
+     {
+      "lat_avg_ms": 7.87,
+      "lat_p99_ms": 306.29,
+      "non2xx": 0,
+      "requests": 254383,
+      "rps": 16944.67,
+      "socket_errors": 0,
+      "steal_pct": 10.01
+     }
+    ],
+    "32": [
+     {
+      "lat_avg_ms": 2.23,
+      "lat_p99_ms": 10.35,
+      "non2xx": 0,
+      "requests": 236144,
+      "rps": 15718.94,
+      "socket_errors": 0,
+      "steal_pct": 13.29
+     },
+     {
+      "lat_avg_ms": 2.06,
+      "lat_p99_ms": 8.59,
+      "non2xx": 0,
+      "requests": 250988,
+      "rps": 16708.87,
+      "socket_errors": 0,
+      "steal_pct": 11.77
+     },
+     {
+      "lat_avg_ms": 2.14,
+      "lat_p99_ms": 10.7,
+      "non2xx": 0,
+      "requests": 249208,
+      "rps": 16585.96,
+      "socket_errors": 0,
+      "steal_pct": 13.61
+     }
+    ],
+    "64": [
+     {
+      "lat_avg_ms": 4.52,
+      "lat_p99_ms": 18.06,
+      "non2xx": 0,
+      "requests": 230827,
+      "rps": 15351.46,
+      "socket_errors": 0,
+      "steal_pct": 14.45
+     },
+     {
+      "lat_avg_ms": 4.69,
+      "lat_p99_ms": 18.05,
+      "non2xx": 0,
+      "requests": 218196,
+      "rps": 14509.34,
+      "socket_errors": 0,
+      "steal_pct": 15.47
+     },
+     {
+      "lat_avg_ms": 4.65,
+      "lat_p99_ms": 19.4,
+      "non2xx": 0,
+      "requests": 221651,
+      "rps": 14745.93,
+      "socket_errors": 0,
+      "steal_pct": 15.73
+     }
+    ],
+    "128": [
+     {
+      "lat_avg_ms": 11.67,
+      "lat_p99_ms": 42.35,
+      "non2xx": 0,
+      "requests": 179632,
+      "rps": 11935.93,
+      "socket_errors": 0,
+      "steal_pct": 16.54
+     },
+     {
+      "lat_avg_ms": 9.82,
+      "lat_p99_ms": 32.47,
+      "non2xx": 0,
+      "requests": 217217,
+      "rps": 14442.5,
+      "socket_errors": 0,
+      "steal_pct": 12.21
+     },
+     {
+      "lat_avg_ms": 10.06,
+      "lat_p99_ms": 32.0,
+      "non2xx": 0,
+      "requests": 207531,
+      "rps": 13794.55,
+      "socket_errors": 0,
+      "steal_pct": 14.0
+     }
+    ],
+    "256": [
+     {
+      "lat_avg_ms": 28.54,
+      "lat_p99_ms": 526.05,
+      "non2xx": 0,
+      "requests": 234109,
+      "rps": 15567.06,
+      "socket_errors": 0,
+      "steal_pct": 7.7
+     },
+     {
+      "lat_avg_ms": 17.52,
+      "lat_p99_ms": 149.16,
+      "non2xx": 0,
+      "requests": 274993,
+      "rps": 18297.75,
+      "socket_errors": 0,
+      "steal_pct": 4.57
+     },
+     {
+      "lat_avg_ms": 18.06,
+      "lat_p99_ms": 160.82,
+      "non2xx": 0,
+      "requests": 270974,
+      "rps": 18022.75,
+      "socket_errors": 0,
+      "steal_pct": 5.0
+     }
+    ],
+    "512": [
+     {
+      "lat_avg_ms": 113.78,
+      "lat_p99_ms": 2340.0,
+      "non2xx": 0,
+      "requests": 293093,
+      "rps": 19491.2,
+      "socket_errors": 0,
+      "steal_pct": 2.74
+     },
+     {
+      "lat_avg_ms": 59.8,
+      "lat_p99_ms": 1370.0,
+      "non2xx": 0,
+      "requests": 343594,
+      "rps": 22857.97,
+      "socket_errors": 0,
+      "steal_pct": 1.38
+     },
+     {
+      "lat_avg_ms": 59.97,
+      "lat_p99_ms": 1360.0,
+      "non2xx": 0,
+      "requests": 340441,
+      "rps": 22643.84,
+      "socket_errors": 0,
+      "steal_pct": 1.58
+     }
+    ]
+   },
+   "plaintext": {
+    "256": [
+     {
+      "lat_avg_ms": 406.16,
+      "lat_p99_ms": 5060.0,
+      "non2xx": 0,
+      "requests": 643907,
+      "rps": 42851.87,
+      "socket_errors": 0,
+      "steal_pct": 1.89
+     },
+     {
+      "lat_avg_ms": 314.74,
+      "lat_p99_ms": 4440.0,
+      "non2xx": 0,
+      "requests": 607808,
+      "rps": 40420.66,
+      "socket_errors": 0,
+      "steal_pct": 2.89
+     },
+     {
+      "lat_avg_ms": 359.19,
+      "lat_p99_ms": 4850.0,
+      "non2xx": 0,
+      "requests": 563393,
+      "rps": 37511.16,
+      "socket_errors": 0,
+      "steal_pct": 3.78
+     }
+    ],
+    "1024": [
+     {
+      "lat_avg_ms": 304.51,
+      "lat_p99_ms": 5100.0,
+      "non2xx": 0,
+      "requests": 490545,
+      "rps": 32588.55,
+      "socket_errors": 81,
+      "steal_pct": 6.48
+     },
+     {
+      "lat_avg_ms": 294.91,
+      "lat_p99_ms": 5010.0,
+      "non2xx": 0,
+      "requests": 596210,
+      "rps": 39569.33,
+      "socket_errors": 89,
+      "steal_pct": 2.74
+     },
+     {
+      "lat_avg_ms": 281.57,
+      "lat_p99_ms": 4780.0,
+      "non2xx": 0,
+      "requests": 545778,
+      "rps": 36183.88,
+      "socket_errors": 76,
+      "steal_pct": 3.79
+     }
+    ],
+    "4096": [
+     {
+      "lat_avg_ms": 362.89,
+      "lat_p99_ms": 2190.0,
+      "non2xx": 0,
+      "requests": 418696,
+      "rps": 27713.86,
+      "socket_errors": 31,
+      "steal_pct": 9.9
+     },
+     {
+      "lat_avg_ms": 477.51,
+      "lat_p99_ms": 5710.0,
+      "non2xx": 0,
+      "requests": 404452,
+      "rps": 26800.43,
+      "socket_errors": 88,
+      "steal_pct": 9.75
+     },
+     {
+      "lat_avg_ms": 480.39,
+      "lat_p99_ms": 5760.0,
+      "non2xx": 0,
+      "requests": 416269,
+      "rps": 27554.22,
+      "socket_errors": 89,
+      "steal_pct": 8.6
+     }
+    ],
+    "16384": [
+     {
+      "lat_avg_ms": null,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 0,
+      "rps": 0.0,
+      "socket_errors": 0,
+      "steal_pct": 3.73
+     },
+     {
+      "lat_avg_ms": null,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 0,
+      "rps": 0.0,
+      "socket_errors": 0,
+      "steal_pct": 0.83
+     },
+     {
+      "lat_avg_ms": 2800.0,
+      "lat_p99_ms": 5480.0,
+      "non2xx": 0,
+      "requests": 147152,
+      "rps": 5293.96,
+      "socket_errors": 0,
+      "steal_pct": 3.18
+     }
+    ]
+   }
+  },
+  "fastify": {
+   "json": {
+    "16": [
+     {
+      "lat_avg_ms": 0.8138200000000001,
+      "lat_p99_ms": 4.69,
+      "non2xx": 0,
+      "requests": 346675,
+      "rps": 23100.19,
+      "socket_errors": 0,
+      "steal_pct": 9.61
+     },
+     {
+      "lat_avg_ms": 1.34,
+      "lat_p99_ms": 12.1,
+      "non2xx": 0,
+      "requests": 257849,
+      "rps": 17145.23,
+      "socket_errors": 0,
+      "steal_pct": 18.74
+     },
+     {
+      "lat_avg_ms": 0.92,
+      "lat_p99_ms": 6.28,
+      "non2xx": 0,
+      "requests": 330783,
+      "rps": 21996.41,
+      "socket_errors": 0,
+      "steal_pct": 11.94
+     }
+    ],
+    "32": [
+     {
+      "lat_avg_ms": 1.5,
+      "lat_p99_ms": 5.83,
+      "non2xx": 0,
+      "requests": 338135,
+      "rps": 22512.24,
+      "socket_errors": 0,
+      "steal_pct": 10.57
+     },
+     {
+      "lat_avg_ms": 4.68,
+      "lat_p99_ms": 134.44,
+      "non2xx": 0,
+      "requests": 298300,
+      "rps": 19871.32,
+      "socket_errors": 0,
+      "steal_pct": 12.65
+     },
+     {
+      "lat_avg_ms": 1.7,
+      "lat_p99_ms": 9.12,
+      "non2xx": 0,
+      "requests": 318567,
+      "rps": 21210.04,
+      "socket_errors": 0,
+      "steal_pct": 11.29
+     }
+    ],
+    "64": [
+     {
+      "lat_avg_ms": 2.98,
+      "lat_p99_ms": 9.64,
+      "non2xx": 0,
+      "requests": 334714,
+      "rps": 22283.46,
+      "socket_errors": 0,
+      "steal_pct": 8.13
+     },
+     {
+      "lat_avg_ms": 3.06,
+      "lat_p99_ms": 10.64,
+      "non2xx": 0,
+      "requests": 330027,
+      "rps": 21965.1,
+      "socket_errors": 0,
+      "steal_pct": 8.39
+     },
+     {
+      "lat_avg_ms": 3.27,
+      "lat_p99_ms": 12.08,
+      "non2xx": 0,
+      "requests": 307522,
+      "rps": 20467.82,
+      "socket_errors": 0,
+      "steal_pct": 10.4
+     }
+    ],
+    "128": [
+     {
+      "lat_avg_ms": 6.64,
+      "lat_p99_ms": 22.77,
+      "non2xx": 0,
+      "requests": 314728,
+      "rps": 20936.06,
+      "socket_errors": 0,
+      "steal_pct": 7.14
+     },
+     {
+      "lat_avg_ms": 6.75,
+      "lat_p99_ms": 20.09,
+      "non2xx": 0,
+      "requests": 300144,
+      "rps": 19976.87,
+      "socket_errors": 0,
+      "steal_pct": 8.37
+     },
+     {
+      "lat_avg_ms": 8.24,
+      "lat_p99_ms": 42.8,
+      "non2xx": 0,
+      "requests": 268544,
+      "rps": 17809.19,
+      "socket_errors": 0,
+      "steal_pct": 12.13
+     }
+    ],
+    "256": [
+     {
+      "lat_avg_ms": 30.9,
+      "lat_p99_ms": 574.79,
+      "non2xx": 0,
+      "requests": 216233,
+      "rps": 14339.98,
+      "socket_errors": 0,
+      "steal_pct": 12.98
+     },
+     {
+      "lat_avg_ms": 16.2,
+      "lat_p99_ms": 157.37,
+      "non2xx": 0,
+      "requests": 322770,
+      "rps": 21494.45,
+      "socket_errors": 0,
+      "steal_pct": 4.95
+     },
+     {
+      "lat_avg_ms": 17.2,
+      "lat_p99_ms": 225.3,
+      "non2xx": 0,
+      "requests": 319783,
+      "rps": 21249.46,
+      "socket_errors": 0,
+      "steal_pct": 5.58
+     }
+    ],
+    "512": [
+     {
+      "lat_avg_ms": 68.22,
+      "lat_p99_ms": 1600.0,
+      "non2xx": 0,
+      "requests": 363459,
+      "rps": 24163.4,
+      "socket_errors": 0,
+      "steal_pct": 2.32
+     },
+     {
+      "lat_avg_ms": 49.67,
+      "lat_p99_ms": 1110.0,
+      "non2xx": 0,
+      "requests": 367667,
+      "rps": 24449.25,
+      "socket_errors": 0,
+      "steal_pct": 2.27
+     },
+     {
+      "lat_avg_ms": 75.04,
+      "lat_p99_ms": 1650.0,
+      "non2xx": 0,
+      "requests": 353571,
+      "rps": 23503.45,
+      "socket_errors": 0,
+      "steal_pct": 2.82
+     }
+    ]
+   },
+   "plaintext": {
+    "256": [
+     {
+      "lat_avg_ms": 1050.0,
+      "lat_p99_ms": 6530.0,
+      "non2xx": 0,
+      "requests": 607446,
+      "rps": 40421.98,
+      "socket_errors": 34,
+      "steal_pct": 1.89
+     },
+     {
+      "lat_avg_ms": 217.55,
+      "lat_p99_ms": 3510.0,
+      "non2xx": 0,
+      "requests": 777057,
+      "rps": 51713.14,
+      "socket_errors": 0,
+      "steal_pct": 2.59
+     },
+     {
+      "lat_avg_ms": 162.62,
+      "lat_p99_ms": 2760.0,
+      "non2xx": 0,
+      "requests": 912161,
+      "rps": 60754.39,
+      "socket_errors": 0,
+      "steal_pct": 1.26
+     }
+    ],
+    "1024": [
+     {
+      "lat_avg_ms": 261.61,
+      "lat_p99_ms": 4960.0,
+      "non2xx": 0,
+      "requests": 966044,
+      "rps": 64182.71,
+      "socket_errors": 102,
+      "steal_pct": 1.02
+     },
+     {
+      "lat_avg_ms": 289.46,
+      "lat_p99_ms": 5210.0,
+      "non2xx": 0,
+      "requests": 939231,
+      "rps": 62345.47,
+      "socket_errors": 105,
+      "steal_pct": 1.3
+     },
+     {
+      "lat_avg_ms": 262.65,
+      "lat_p99_ms": 4650.0,
+      "non2xx": 0,
+      "requests": 685937,
+      "rps": 45566.71,
+      "socket_errors": 64,
+      "steal_pct": 4.21
+     }
+    ],
+    "4096": [
+     {
+      "lat_avg_ms": 264.11,
+      "lat_p99_ms": 2910.0,
+      "non2xx": 0,
+      "requests": 746667,
+      "rps": 49590.56,
+      "socket_errors": 52,
+      "steal_pct": 3.51
+     },
+     {
+      "lat_avg_ms": 227.26,
+      "lat_p99_ms": 2770.0,
+      "non2xx": 0,
+      "requests": 926224,
+      "rps": 61460.21,
+      "socket_errors": 58,
+      "steal_pct": 1.34
+     },
+     {
+      "lat_avg_ms": 245.6,
+      "lat_p99_ms": 1550.0,
+      "non2xx": 0,
+      "requests": 887936,
+      "rps": 58956.11,
+      "socket_errors": 42,
+      "steal_pct": 1.61
+     }
+    ],
+    "16384": [
+     {
+      "lat_avg_ms": 1960.0,
+      "lat_p99_ms": 3780.0,
+      "non2xx": 0,
+      "requests": 249638,
+      "rps": 16573.32,
+      "socket_errors": 0,
+      "steal_pct": 1.05
+     },
+     {
+      "lat_avg_ms": 1780.0,
+      "lat_p99_ms": 3290.0,
+      "non2xx": 0,
+      "requests": 179054,
+      "rps": 5972.36,
+      "socket_errors": 0,
+      "steal_pct": 1.73
+     },
+     {
+      "lat_avg_ms": 2230.0,
+      "lat_p99_ms": 4440.0,
+      "non2xx": 0,
+      "requests": 278084,
+      "rps": 18400.45,
+      "socket_errors": 0,
+      "steal_pct": 2.03
+     }
+    ]
+   }
+  },
+  "hono-bun": {
+   "json": {
+    "16": [
+     {
+      "lat_avg_ms": 0.36627,
+      "lat_p99_ms": 2.21,
+      "non2xx": 0,
+      "requests": 775710,
+      "rps": 51695.39,
+      "socket_errors": 0,
+      "steal_pct": 1.79
+     },
+     {
+      "lat_avg_ms": 0.35774,
+      "lat_p99_ms": 2.29,
+      "non2xx": 0,
+      "requests": 807355,
+      "rps": 53468.72,
+      "socket_errors": 0,
+      "steal_pct": 1.24
+     },
+     {
+      "lat_avg_ms": 0.37025,
+      "lat_p99_ms": 2.33,
+      "non2xx": 0,
+      "requests": 790550,
+      "rps": 52352.9,
+      "socket_errors": 0,
+      "steal_pct": 1.66
+     }
+    ],
+    "32": [
+     {
+      "lat_avg_ms": 0.54901,
+      "lat_p99_ms": 2.32,
+      "non2xx": 0,
+      "requests": 939895,
+      "rps": 62653.23,
+      "socket_errors": 0,
+      "steal_pct": 0.83
+     },
+     {
+      "lat_avg_ms": 0.83901,
+      "lat_p99_ms": 4.37,
+      "non2xx": 0,
+      "requests": 748419,
+      "rps": 49883.54,
+      "socket_errors": 0,
+      "steal_pct": 3.27
+     },
+     {
+      "lat_avg_ms": 0.66347,
+      "lat_p99_ms": 3.31,
+      "non2xx": 0,
+      "requests": 811079,
+      "rps": 54056.38,
+      "socket_errors": 0,
+      "steal_pct": 2.33
+     }
+    ],
+    "64": [
+     {
+      "lat_avg_ms": 1.03,
+      "lat_p99_ms": 3.46,
+      "non2xx": 0,
+      "requests": 968482,
+      "rps": 64112.63,
+      "socket_errors": 0,
+      "steal_pct": 0.96
+     },
+     {
+      "lat_avg_ms": 1.14,
+      "lat_p99_ms": 4.24,
+      "non2xx": 0,
+      "requests": 894857,
+      "rps": 59619.03,
+      "socket_errors": 0,
+      "steal_pct": 1.5
+     },
+     {
+      "lat_avg_ms": 1.22,
+      "lat_p99_ms": 4.38,
+      "non2xx": 0,
+      "requests": 824045,
+      "rps": 54928.85,
+      "socket_errors": 0,
+      "steal_pct": 1.98
+     }
+    ],
+    "128": [
+     {
+      "lat_avg_ms": 2.5,
+      "lat_p99_ms": 7.55,
+      "non2xx": 0,
+      "requests": 784682,
+      "rps": 52292.94,
+      "socket_errors": 0,
+      "steal_pct": 2.04
+     },
+     {
+      "lat_avg_ms": 2.64,
+      "lat_p99_ms": 8.56,
+      "non2xx": 0,
+      "requests": 757913,
+      "rps": 50492.94,
+      "socket_errors": 0,
+      "steal_pct": 2.61
+     },
+     {
+      "lat_avg_ms": 2.54,
+      "lat_p99_ms": 7.78,
+      "non2xx": 0,
+      "requests": 773998,
+      "rps": 51579.54,
+      "socket_errors": 0,
+      "steal_pct": 2.58
+     }
+    ],
+    "256": [
+     {
+      "lat_avg_ms": 5.5,
+      "lat_p99_ms": 16.0,
+      "non2xx": 0,
+      "requests": 712969,
+      "rps": 47379.22,
+      "socket_errors": 0,
+      "steal_pct": 3.56
+     },
+     {
+      "lat_avg_ms": 5.34,
+      "lat_p99_ms": 14.47,
+      "non2xx": 0,
+      "requests": 726780,
+      "rps": 48389.87,
+      "socket_errors": 0,
+      "steal_pct": 2.29
+     },
+     {
+      "lat_avg_ms": 6.5,
+      "lat_p99_ms": 17.63,
+      "non2xx": 0,
+      "requests": 592743,
+      "rps": 39409.85,
+      "socket_errors": 0,
+      "steal_pct": 4.48
+     }
+    ],
+    "512": [
+     {
+      "lat_avg_ms": 18.69,
+      "lat_p99_ms": 47.98,
+      "non2xx": 0,
+      "requests": 404391,
+      "rps": 26910.57,
+      "socket_errors": 0,
+      "steal_pct": 7.99
+     },
+     {
+      "lat_avg_ms": 17.93,
+      "lat_p99_ms": 48.1,
+      "non2xx": 0,
+      "requests": 428942,
+      "rps": 28439.12,
+      "socket_errors": 0,
+      "steal_pct": 8.95
+     },
+     {
+      "lat_avg_ms": 11.48,
+      "lat_p99_ms": 26.58,
+      "non2xx": 0,
+      "requests": 670913,
+      "rps": 44598.22,
+      "socket_errors": 0,
+      "steal_pct": 2.83
+     }
+    ]
+   },
+   "plaintext": {
+    "256": [
+     {
+      "lat_avg_ms": 210.99,
+      "lat_p99_ms": 410.1,
+      "non2xx": 0,
+      "requests": 159189,
+      "rps": 10598.71,
+      "socket_errors": 0,
+      "steal_pct": 1.15
+     },
+     {
+      "lat_avg_ms": 211.56,
+      "lat_p99_ms": 408.45,
+      "non2xx": 0,
+      "requests": 158772,
+      "rps": 10564.51,
+      "socket_errors": 0,
+      "steal_pct": 1.17
+     },
+     {
+      "lat_avg_ms": 211.18,
+      "lat_p99_ms": 425.86,
+      "non2xx": 0,
+      "requests": 159652,
+      "rps": 10627.76,
+      "socket_errors": 0,
+      "steal_pct": 0.62
+     }
+    ],
+    "1024": [
+     {
+      "lat_avg_ms": 866.37,
+      "lat_p99_ms": 1730.0,
+      "non2xx": 0,
+      "requests": 153516,
+      "rps": 10195.21,
+      "socket_errors": 0,
+      "steal_pct": 1.95
+     },
+     {
+      "lat_avg_ms": 838.87,
+      "lat_p99_ms": 1630.0,
+      "non2xx": 0,
+      "requests": 157213,
+      "rps": 10421.16,
+      "socket_errors": 0,
+      "steal_pct": 1.33
+     },
+     {
+      "lat_avg_ms": 853.78,
+      "lat_p99_ms": 1670.0,
+      "non2xx": 0,
+      "requests": 156209,
+      "rps": 10375.35,
+      "socket_errors": 0,
+      "steal_pct": 0.9
+     }
+    ],
+    "4096": [
+     {
+      "lat_avg_ms": 3260.0,
+      "lat_p99_ms": 6520.0,
+      "non2xx": 0,
+      "requests": 152898,
+      "rps": 10151.63,
+      "socket_errors": 0,
+      "steal_pct": 1.24
+     },
+     {
+      "lat_avg_ms": 3430.0,
+      "lat_p99_ms": 7300.0,
+      "non2xx": 0,
+      "requests": 144805,
+      "rps": 9618.52,
+      "socket_errors": 1,
+      "steal_pct": 4.0
+     },
+     {
+      "lat_avg_ms": 3400.0,
+      "lat_p99_ms": 6900.0,
+      "non2xx": 0,
+      "requests": 145797,
+      "rps": 9651.9,
+      "socket_errors": 0,
+      "steal_pct": 2.59
+     }
+    ],
+    "16384": [
+     {
+      "lat_avg_ms": 3680.0,
+      "lat_p99_ms": 7890.0,
+      "non2xx": 0,
+      "requests": 104540,
+      "rps": 6910.11,
+      "socket_errors": 1066,
+      "steal_pct": 0.55
+     },
+     {
+      "lat_avg_ms": 3720.0,
+      "lat_p99_ms": 7910.0,
+      "non2xx": 0,
+      "requests": 97321,
+      "rps": 6440.05,
+      "socket_errors": 537,
+      "steal_pct": 0.71
+     },
+     {
+      "lat_avg_ms": 3800.0,
+      "lat_p99_ms": 7890.0,
+      "non2xx": 0,
+      "requests": 110704,
+      "rps": 7323.24,
+      "socket_errors": 807,
+      "steal_pct": 0.67
+     }
+    ]
+   }
+  },
+  "hono-node": {
+   "json": {
+    "16": [
+     {
+      "lat_avg_ms": 2.42,
+      "lat_p99_ms": 38.82,
+      "non2xx": 0,
+      "requests": 256134,
+      "rps": 17068.79,
+      "socket_errors": 0,
+      "steal_pct": 3.21
+     },
+     {
+      "lat_avg_ms": 2.29,
+      "lat_p99_ms": 35.93,
+      "non2xx": 0,
+      "requests": 253404,
+      "rps": 16889.72,
+      "socket_errors": 0,
+      "steal_pct": 3.06
+     },
+     {
+      "lat_avg_ms": 2.17,
+      "lat_p99_ms": 34.51,
+      "non2xx": 0,
+      "requests": 262039,
+      "rps": 17460.79,
+      "socket_errors": 0,
+      "steal_pct": 2.92
+     }
+    ],
+    "32": [
+     {
+      "lat_avg_ms": 3.72,
+      "lat_p99_ms": 46.52,
+      "non2xx": 0,
+      "requests": 233840,
+      "rps": 15571.27,
+      "socket_errors": 0,
+      "steal_pct": 6.56
+     },
+     {
+      "lat_avg_ms": 25.52,
+      "lat_p99_ms": 698.51,
+      "non2xx": 0,
+      "requests": 143390,
+      "rps": 9505.22,
+      "socket_errors": 0,
+      "steal_pct": 11.69
+     },
+     {
+      "lat_avg_ms": 2.78,
+      "lat_p99_ms": 21.95,
+      "non2xx": 0,
+      "requests": 237102,
+      "rps": 15792.31,
+      "socket_errors": 0,
+      "steal_pct": 5.22
+     }
+    ],
+    "64": [
+     {
+      "lat_avg_ms": 7.87,
+      "lat_p99_ms": 59.94,
+      "non2xx": 0,
+      "requests": 163544,
+      "rps": 10864.43,
+      "socket_errors": 0,
+      "steal_pct": 14.11
+     },
+     {
+      "lat_avg_ms": 10.07,
+      "lat_p99_ms": 73.17,
+      "non2xx": 0,
+      "requests": 131157,
+      "rps": 8707.65,
+      "socket_errors": 0,
+      "steal_pct": 20.97
+     },
+     {
+      "lat_avg_ms": 9.48,
+      "lat_p99_ms": 73.37,
+      "non2xx": 0,
+      "requests": 135605,
+      "rps": 8987.89,
+      "socket_errors": 0,
+      "steal_pct": 17.62
+     }
+    ],
+    "128": [
+     {
+      "lat_avg_ms": 17.9,
+      "lat_p99_ms": 115.48,
+      "non2xx": 0,
+      "requests": 140901,
+      "rps": 9353.87,
+      "socket_errors": 0,
+      "steal_pct": 15.06
+     },
+     {
+      "lat_avg_ms": 17.39,
+      "lat_p99_ms": 94.31,
+      "non2xx": 0,
+      "requests": 134417,
+      "rps": 8902.36,
+      "socket_errors": 0,
+      "steal_pct": 16.74
+     },
+     {
+      "lat_avg_ms": 16.33,
+      "lat_p99_ms": 155.82,
+      "non2xx": 0,
+      "requests": 175853,
+      "rps": 11670.53,
+      "socket_errors": 0,
+      "steal_pct": 9.12
+     }
+    ],
+    "256": [
+     {
+      "lat_avg_ms": 45.59,
+      "lat_p99_ms": 965.33,
+      "non2xx": 0,
+      "requests": 185909,
+      "rps": 12375.7,
+      "socket_errors": 0,
+      "steal_pct": 6.08
+     },
+     {
+      "lat_avg_ms": 31.18,
+      "lat_p99_ms": 543.14,
+      "non2xx": 0,
+      "requests": 203880,
+      "rps": 13571.79,
+      "socket_errors": 0,
+      "steal_pct": 4.44
+     },
+     {
+      "lat_avg_ms": 30.16,
+      "lat_p99_ms": 440.04,
+      "non2xx": 0,
+      "requests": 196652,
+      "rps": 13083.57,
+      "socket_errors": 0,
+      "steal_pct": 5.78
+     }
+    ],
+    "512": [
+     {
+      "lat_avg_ms": 126.6,
+      "lat_p99_ms": 2520.0,
+      "non2xx": 0,
+      "requests": 230840,
+      "rps": 15348.95,
+      "socket_errors": 0,
+      "steal_pct": 2.45
+     },
+     {
+      "lat_avg_ms": 80.9,
+      "lat_p99_ms": 1720.0,
+      "non2xx": 0,
+      "requests": 266703,
+      "rps": 17748.39,
+      "socket_errors": 0,
+      "steal_pct": 1.35
+     },
+     {
+      "lat_avg_ms": 130.97,
+      "lat_p99_ms": 2600.0,
+      "non2xx": 0,
+      "requests": 219683,
+      "rps": 14608.03,
+      "socket_errors": 0,
+      "steal_pct": 3.24
+     }
+    ]
+   },
+   "plaintext": {
+    "256": [
+     {
+      "lat_avg_ms": 39.62,
+      "lat_p99_ms": 121.92,
+      "non2xx": 0,
+      "requests": 45712,
+      "rps": 3039.28,
+      "socket_errors": 104,
+      "steal_pct": 0.2
+     },
+     {
+      "lat_avg_ms": 448.97,
+      "lat_p99_ms": 5630.0,
+      "non2xx": 0,
+      "requests": 438016,
+      "rps": 29143.16,
+      "socket_errors": 4,
+      "steal_pct": 2.13
+     },
+     {
+      "lat_avg_ms": 546.82,
+      "lat_p99_ms": 6070.0,
+      "non2xx": 0,
+      "requests": 435681,
+      "rps": 28966.06,
+      "socket_errors": 30,
+      "steal_pct": 2.22
+     }
+    ],
+    "1024": [
+     {
+      "lat_avg_ms": 258.94,
+      "lat_p99_ms": 4420.0,
+      "non2xx": 0,
+      "requests": 513270,
+      "rps": 34082.41,
+      "socket_errors": 68,
+      "steal_pct": 1.05
+     },
+     {
+      "lat_avg_ms": 360.15,
+      "lat_p99_ms": 5290.0,
+      "non2xx": 0,
+      "requests": 382462,
+      "rps": 25357.27,
+      "socket_errors": 56,
+      "steal_pct": 2.93
+     },
+     {
+      "lat_avg_ms": 245.07,
+      "lat_p99_ms": 3840.0,
+      "non2xx": 0,
+      "requests": 445968,
+      "rps": 29601.58,
+      "socket_errors": 68,
+      "steal_pct": 2.24
+     }
+    ],
+    "4096": [
+     {
+      "lat_avg_ms": 327.36,
+      "lat_p99_ms": 1120.0,
+      "non2xx": 0,
+      "requests": 561074,
+      "rps": 37242.95,
+      "socket_errors": 32,
+      "steal_pct": 0.66
+     },
+     {
+      "lat_avg_ms": 561.82,
+      "lat_p99_ms": 5850.0,
+      "non2xx": 0,
+      "requests": 514602,
+      "rps": 34172.64,
+      "socket_errors": 109,
+      "steal_pct": 0.6
+     },
+     {
+      "lat_avg_ms": 558.09,
+      "lat_p99_ms": 5910.0,
+      "non2xx": 0,
+      "requests": 284477,
+      "rps": 18886.26,
+      "socket_errors": 94,
+      "steal_pct": 3.87
+     }
+    ],
+    "16384": [
+     {
+      "lat_avg_ms": 3370.0,
+      "lat_p99_ms": 7720.0,
+      "non2xx": 0,
+      "requests": 252528,
+      "rps": 16692.5,
+      "socket_errors": 830,
+      "steal_pct": 0.94
+     },
+     {
+      "lat_avg_ms": null,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 0,
+      "rps": 0.0,
+      "socket_errors": 0,
+      "steal_pct": 0.18
+     },
+     {
+      "lat_avg_ms": null,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 0,
+      "rps": 0.0,
+      "socket_errors": 0,
+      "steal_pct": 0.44
+     }
+    ]
+   }
+  },
+  "next": {
+   "json": {
+    "16": [
+     {
+      "lat_avg_ms": 14.27,
+      "lat_p99_ms": 106.12,
+      "non2xx": 0,
+      "requests": 22508,
+      "rps": 1499.05,
+      "socket_errors": 0,
+      "steal_pct": 0.78
+     },
+     {
+      "lat_avg_ms": 13.58,
+      "lat_p99_ms": 114.49,
+      "non2xx": 0,
+      "requests": 24991,
+      "rps": 1664.71,
+      "socket_errors": 0,
+      "steal_pct": 1.05
+     },
+     {
+      "lat_avg_ms": 20.63,
+      "lat_p99_ms": 185.31,
+      "non2xx": 0,
+      "requests": 17652,
+      "rps": 1174.27,
+      "socket_errors": 0,
+      "steal_pct": 4.74
+     }
+    ],
+    "32": [
+     {
+      "lat_avg_ms": 30.31,
+      "lat_p99_ms": 174.99,
+      "non2xx": 0,
+      "requests": 19434,
+      "rps": 1293.42,
+      "socket_errors": 0,
+      "steal_pct": 3.81
+     },
+     {
+      "lat_avg_ms": 30.42,
+      "lat_p99_ms": 191.58,
+      "non2xx": 0,
+      "requests": 19304,
+      "rps": 1284.94,
+      "socket_errors": 0,
+      "steal_pct": 4.05
+     },
+     {
+      "lat_avg_ms": 34.72,
+      "lat_p99_ms": 252.7,
+      "non2xx": 0,
+      "requests": 18217,
+      "rps": 1211.24,
+      "socket_errors": 0,
+      "steal_pct": 5.0
+     }
+    ],
+    "64": [
+     {
+      "lat_avg_ms": 49.97,
+      "lat_p99_ms": 297.61,
+      "non2xx": 0,
+      "requests": 22493,
+      "rps": 1498.22,
+      "socket_errors": 0,
+      "steal_pct": 2.29
+     },
+     {
+      "lat_avg_ms": 49.06,
+      "lat_p99_ms": 304.34,
+      "non2xx": 0,
+      "requests": 22884,
+      "rps": 1523.61,
+      "socket_errors": 0,
+      "steal_pct": 2.1
+     },
+     {
+      "lat_avg_ms": 43.62,
+      "lat_p99_ms": 220.23,
+      "non2xx": 0,
+      "requests": 25497,
+      "rps": 1697.94,
+      "socket_errors": 0,
+      "steal_pct": 1.15
+     }
+    ],
+    "128": [
+     {
+      "lat_avg_ms": 117.1,
+      "lat_p99_ms": 1460.0,
+      "non2xx": 0,
+      "requests": 25075,
+      "rps": 1668.61,
+      "socket_errors": 0,
+      "steal_pct": 1.38
+     },
+     {
+      "lat_avg_ms": 110.48,
+      "lat_p99_ms": 1070.0,
+      "non2xx": 0,
+      "requests": 22715,
+      "rps": 1512.58,
+      "socket_errors": 0,
+      "steal_pct": 2.59
+     },
+     {
+      "lat_avg_ms": 196.88,
+      "lat_p99_ms": 2410.0,
+      "non2xx": 0,
+      "requests": 17031,
+      "rps": 1132.21,
+      "socket_errors": 0,
+      "steal_pct": 5.27
+     }
+    ],
+    "256": [
+     {
+      "lat_avg_ms": 426.39,
+      "lat_p99_ms": 5490.0,
+      "non2xx": 0,
+      "requests": 16472,
+      "rps": 1091.78,
+      "socket_errors": 79,
+      "steal_pct": 7.23
+     },
+     {
+      "lat_avg_ms": 428.16,
+      "lat_p99_ms": 5460.0,
+      "non2xx": 0,
+      "requests": 20587,
+      "rps": 1369.77,
+      "socket_errors": 24,
+      "steal_pct": 2.93
+     },
+     {
+      "lat_avg_ms": 465.94,
+      "lat_p99_ms": 5780.0,
+      "non2xx": 0,
+      "requests": 23050,
+      "rps": 1532.81,
+      "socket_errors": 36,
+      "steal_pct": 1.86
+     }
+    ],
+    "512": [
+     {
+      "lat_avg_ms": 307.7,
+      "lat_p99_ms": 4830.0,
+      "non2xx": 0,
+      "requests": 25823,
+      "rps": 1715.05,
+      "socket_errors": 74,
+      "steal_pct": 0.99
+     },
+     {
+      "lat_avg_ms": 295.47,
+      "lat_p99_ms": 4620.0,
+      "non2xx": 0,
+      "requests": 25550,
+      "rps": 1698.83,
+      "socket_errors": 81,
+      "steal_pct": 0.91
+     },
+     {
+      "lat_avg_ms": 309.39,
+      "lat_p99_ms": 4960.0,
+      "non2xx": 0,
+      "requests": 27873,
+      "rps": 1854.28,
+      "socket_errors": 85,
+      "steal_pct": 0.76
+     }
+    ]
+   },
+   "plaintext": {
+    "256": [
+     {
+      "lat_avg_ms": null,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 0,
+      "rps": 0.0,
+      "socket_errors": 0,
+      "steal_pct": 1.71
+     },
+     {
+      "lat_avg_ms": null,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 0,
+      "rps": 0.0,
+      "socket_errors": 0,
+      "steal_pct": 2.33
+     },
+     {
+      "lat_avg_ms": null,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 0,
+      "rps": 0.0,
+      "socket_errors": 0,
+      "steal_pct": 0.38
+     }
+    ],
+    "1024": [
+     {
+      "lat_avg_ms": null,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 0,
+      "rps": 0.0,
+      "socket_errors": 0,
+      "steal_pct": 0.2
+     },
+     {
+      "lat_avg_ms": null,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 0,
+      "rps": 0.0,
+      "socket_errors": 0,
+      "steal_pct": 0.23
+     },
+     {
+      "lat_avg_ms": null,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 0,
+      "rps": 0.0,
+      "socket_errors": 0,
+      "steal_pct": 0.23
+     }
+    ],
+    "4096": [
+     {
+      "lat_avg_ms": null,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 0,
+      "rps": 0.0,
+      "socket_errors": 0,
+      "steal_pct": 0.64
+     }
+    ]
+   }
+  },
+  "sveltekit": {
+   "json": {
+    "16": [
+     {
+      "lat_avg_ms": 4.15,
+      "lat_p99_ms": 53.9,
+      "non2xx": 0,
+      "requests": 119872,
+      "rps": 7990.23,
+      "socket_errors": 0,
+      "steal_pct": 2.03
+     },
+     {
+      "lat_avg_ms": 4.29,
+      "lat_p99_ms": 71.55,
+      "non2xx": 0,
+      "requests": 124132,
+      "rps": 8274.34,
+      "socket_errors": 0,
+      "steal_pct": 2.97
+     },
+     {
+      "lat_avg_ms": 2.55,
+      "lat_p99_ms": 17.58,
+      "non2xx": 0,
+      "requests": 115064,
+      "rps": 7662.31,
+      "socket_errors": 0,
+      "steal_pct": 5.76
+     }
+    ],
+    "32": [
+     {
+      "lat_avg_ms": 9.52,
+      "lat_p99_ms": 231.0,
+      "non2xx": 0,
+      "requests": 128594,
+      "rps": 8551.77,
+      "socket_errors": 0,
+      "steal_pct": 2.67
+     },
+     {
+      "lat_avg_ms": 8.77,
+      "lat_p99_ms": 201.01,
+      "non2xx": 0,
+      "requests": 146678,
+      "rps": 9773.65,
+      "socket_errors": 0,
+      "steal_pct": 1.22
+     },
+     {
+      "lat_avg_ms": 3.03,
+      "lat_p99_ms": 10.52,
+      "non2xx": 0,
+      "requests": 165990,
+      "rps": 11059.76,
+      "socket_errors": 0,
+      "steal_pct": 1.11
+     }
+    ],
+    "64": [
+     {
+      "lat_avg_ms": 6.12,
+      "lat_p99_ms": 16.67,
+      "non2xx": 0,
+      "requests": 161420,
+      "rps": 10757.04,
+      "socket_errors": 0,
+      "steal_pct": 1.04
+     },
+     {
+      "lat_avg_ms": 6.37,
+      "lat_p99_ms": 17.41,
+      "non2xx": 0,
+      "requests": 155717,
+      "rps": 10377.8,
+      "socket_errors": 0,
+      "steal_pct": 0.87
+     },
+     {
+      "lat_avg_ms": 11.45,
+      "lat_p99_ms": 185.65,
+      "non2xx": 0,
+      "requests": 134929,
+      "rps": 8989.24,
+      "socket_errors": 0,
+      "steal_pct": 1.52
+     }
+    ],
+    "128": [
+     {
+      "lat_avg_ms": 18.28,
+      "lat_p99_ms": 67.34,
+      "non2xx": 0,
+      "requests": 115853,
+      "rps": 7714.14,
+      "socket_errors": 0,
+      "steal_pct": 3.77
+     },
+     {
+      "lat_avg_ms": 59.86,
+      "lat_p99_ms": 1290.0,
+      "non2xx": 0,
+      "requests": 104571,
+      "rps": 6960.18,
+      "socket_errors": 0,
+      "steal_pct": 3.08
+     },
+     {
+      "lat_avg_ms": 17.72,
+      "lat_p99_ms": 150.73,
+      "non2xx": 0,
+      "requests": 133376,
+      "rps": 8883.45,
+      "socket_errors": 0,
+      "steal_pct": 1.74
+     }
+    ],
+    "256": [
+     {
+      "lat_avg_ms": 45.27,
+      "lat_p99_ms": 688.18,
+      "non2xx": 0,
+      "requests": 127838,
+      "rps": 8512.48,
+      "socket_errors": 0,
+      "steal_pct": 1.87
+     },
+     {
+      "lat_avg_ms": 114.43,
+      "lat_p99_ms": 1410.0,
+      "non2xx": 0,
+      "requests": 83882,
+      "rps": 5580.42,
+      "socket_errors": 0,
+      "steal_pct": 4.84
+     },
+     {
+      "lat_avg_ms": 81.65,
+      "lat_p99_ms": 1420.0,
+      "non2xx": 0,
+      "requests": 91125,
+      "rps": 6062.17,
+      "socket_errors": 0,
+      "steal_pct": 5.16
+     }
+    ],
+    "512": [
+     {
+      "lat_avg_ms": 379.51,
+      "lat_p99_ms": 5570.0,
+      "non2xx": 0,
+      "requests": 85936,
+      "rps": 5707.04,
+      "socket_errors": 82,
+      "steal_pct": 4.37
+     },
+     {
+      "lat_avg_ms": 393.37,
+      "lat_p99_ms": 5670.0,
+      "non2xx": 0,
+      "requests": 100827,
+      "rps": 6697.99,
+      "socket_errors": 19,
+      "steal_pct": 4.89
+     },
+     {
+      "lat_avg_ms": 386.65,
+      "lat_p99_ms": 5670.0,
+      "non2xx": 0,
+      "requests": 110339,
+      "rps": 7339.56,
+      "socket_errors": 23,
+      "steal_pct": 2.49
+     }
+    ]
+   },
+   "plaintext": {
+    "256": [
+     {
+      "lat_avg_ms": 45.0,
+      "lat_p99_ms": 81.69,
+      "non2xx": 0,
+      "requests": 7555,
+      "rps": 501.93,
+      "socket_errors": 42,
+      "steal_pct": 0.38
+     },
+     {
+      "lat_avg_ms": 472.14,
+      "lat_p99_ms": 5590.0,
+      "non2xx": 0,
+      "requests": 164121,
+      "rps": 10928.72,
+      "socket_errors": 51,
+      "steal_pct": 1.51
+     },
+     {
+      "lat_avg_ms": 494.36,
+      "lat_p99_ms": 5810.0,
+      "non2xx": 0,
+      "requests": 166049,
+      "rps": 11055.12,
+      "socket_errors": 51,
+      "steal_pct": 1.51
+     }
+    ],
+    "1024": [
+     {
+      "lat_avg_ms": 514.44,
+      "lat_p99_ms": 2170.0,
+      "non2xx": 0,
+      "requests": 127613,
+      "rps": 8463.68,
+      "socket_errors": 20,
+      "steal_pct": 3.51
+     },
+     {
+      "lat_avg_ms": 666.57,
+      "lat_p99_ms": 5860.0,
+      "non2xx": 0,
+      "requests": 116801,
+      "rps": 7748.89,
+      "socket_errors": 42,
+      "steal_pct": 6.5
+     },
+     {
+      "lat_avg_ms": 501.57,
+      "lat_p99_ms": 3240.0,
+      "non2xx": 0,
+      "requests": 137329,
+      "rps": 9115.52,
+      "socket_errors": 21,
+      "steal_pct": 1.75
+     }
+    ],
+    "4096": [
+     {
+      "lat_avg_ms": 1090.0,
+      "lat_p99_ms": 2560.0,
+      "non2xx": 0,
+      "requests": 136462,
+      "rps": 9052.83,
+      "socket_errors": 9,
+      "steal_pct": 1.58
+     },
+     {
+      "lat_avg_ms": 525.94,
+      "lat_p99_ms": 5710.0,
+      "non2xx": 0,
+      "requests": 125768,
+      "rps": 8358.51,
+      "socket_errors": 65,
+      "steal_pct": 1.33
+     },
+     {
+      "lat_avg_ms": 546.98,
+      "lat_p99_ms": 6020.0,
+      "non2xx": 0,
+      "requests": 124678,
+      "rps": 8285.26,
+      "socket_errors": 75,
+      "steal_pct": 0.89
+     }
+    ],
+    "16384": [
+     {
+      "lat_avg_ms": 3840.0,
+      "lat_p99_ms": 7890.0,
+      "non2xx": 0,
+      "requests": 102423,
+      "rps": 6776.93,
+      "socket_errors": 287,
+      "steal_pct": 0.47
+     },
+     {
+      "lat_avg_ms": null,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 0,
+      "rps": 0.0,
+      "socket_errors": 0,
+      "steal_pct": 0.21
+     },
+     {
+      "lat_avg_ms": null,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 0,
+      "rps": 0.0,
+      "socket_errors": 0,
+      "steal_pct": 0.23
+     }
+    ]
+   }
+  },
+  "wisp": {
+   "json": {
+    "16": [
+     {
+      "lat_avg_ms": 0.7050599999999999,
+      "lat_p99_ms": 12.69,
+      "non2xx": 0,
+      "requests": 992457,
+      "rps": 65906.84,
+      "socket_errors": 0,
+      "steal_pct": 16.23
+     },
+     {
+      "lat_avg_ms": 0.44177,
+      "lat_p99_ms": 5.67,
+      "non2xx": 0,
+      "requests": 1079822,
+      "rps": 71878.51,
+      "socket_errors": 0,
+      "steal_pct": 13.16
+     },
+     {
+      "lat_avg_ms": 0.59866,
+      "lat_p99_ms": 6.95,
+      "non2xx": 0,
+      "requests": 1174723,
+      "rps": 78071.49,
+      "socket_errors": 0,
+      "steal_pct": 11.76
+     }
+    ],
+    "32": [
+     {
+      "lat_avg_ms": 0.37283,
+      "lat_p99_ms": 3.67,
+      "non2xx": 0,
+      "requests": 1303580,
+      "rps": 86812.85,
+      "socket_errors": 0,
+      "steal_pct": 6.5
+     },
+     {
+      "lat_avg_ms": 0.29783,
+      "lat_p99_ms": 1.98,
+      "non2xx": 0,
+      "requests": 1454546,
+      "rps": 96943.58,
+      "socket_errors": 0,
+      "steal_pct": 3.46
+     },
+     {
+      "lat_avg_ms": 1.61,
+      "lat_p99_ms": 26.35,
+      "non2xx": 0,
+      "requests": 1047831,
+      "rps": 69580.59,
+      "socket_errors": 0,
+      "steal_pct": 14.84
+     }
+    ],
+    "64": [
+     {
+      "lat_avg_ms": 0.73196,
+      "lat_p99_ms": 5.99,
+      "non2xx": 0,
+      "requests": 1286602,
+      "rps": 85620.58,
+      "socket_errors": 0,
+      "steal_pct": 7.13
+     },
+     {
+      "lat_avg_ms": 0.546,
+      "lat_p99_ms": 2.63,
+      "non2xx": 0,
+      "requests": 1444030,
+      "rps": 96089.14,
+      "socket_errors": 0,
+      "steal_pct": 3.1
+     },
+     {
+      "lat_avg_ms": 0.43460000000000004,
+      "lat_p99_ms": 2.2,
+      "non2xx": 0,
+      "requests": 1556661,
+      "rps": 103763.63,
+      "socket_errors": 0,
+      "steal_pct": 2.14
+     }
+    ],
+    "128": [
+     {
+      "lat_avg_ms": 0.6903400000000001,
+      "lat_p99_ms": 2.06,
+      "non2xx": 0,
+      "requests": 1618010,
+      "rps": 107833.95,
+      "socket_errors": 0,
+      "steal_pct": 1.02
+     },
+     {
+      "lat_avg_ms": 0.6691,
+      "lat_p99_ms": 1.74,
+      "non2xx": 0,
+      "requests": 1715339,
+      "rps": 114306.49,
+      "socket_errors": 0,
+      "steal_pct": 0.64
+     },
+     {
+      "lat_avg_ms": 0.73475,
+      "lat_p99_ms": 2.55,
+      "non2xx": 0,
+      "requests": 1612033,
+      "rps": 107405.23,
+      "socket_errors": 0,
+      "steal_pct": 1.23
+     }
+    ],
+    "256": [
+     {
+      "lat_avg_ms": 1.75,
+      "lat_p99_ms": 7.34,
+      "non2xx": 0,
+      "requests": 1385131,
+      "rps": 91875.52,
+      "socket_errors": 0,
+      "steal_pct": 3.22
+     },
+     {
+      "lat_avg_ms": 1.49,
+      "lat_p99_ms": 4.86,
+      "non2xx": 0,
+      "requests": 1502384,
+      "rps": 99849.96,
+      "socket_errors": 0,
+      "steal_pct": 1.55
+     },
+     {
+      "lat_avg_ms": 1.88,
+      "lat_p99_ms": 7.18,
+      "non2xx": 0,
+      "requests": 1309675,
+      "rps": 86957.03,
+      "socket_errors": 0,
+      "steal_pct": 3.01
+     }
+    ],
+    "512": [
+     {
+      "lat_avg_ms": 4.97,
+      "lat_p99_ms": 22.03,
+      "non2xx": 0,
+      "requests": 988410,
+      "rps": 65577.62,
+      "socket_errors": 0,
+      "steal_pct": 6.07
+     },
+     {
+      "lat_avg_ms": 3.86,
+      "lat_p99_ms": 11.52,
+      "non2xx": 0,
+      "requests": 1111756,
+      "rps": 73945.66,
+      "socket_errors": 0,
+      "steal_pct": 2.76
+     },
+     {
+      "lat_avg_ms": 3.89,
+      "lat_p99_ms": 11.79,
+      "non2xx": 0,
+      "requests": 1113115,
+      "rps": 73714.31,
+      "socket_errors": 0,
+      "steal_pct": 2.46
+     }
+    ]
+   },
+   "plaintext": {
+    "256": [
+     {
+      "lat_avg_ms": 1.45,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 17652464,
+      "rps": 1171461.81,
+      "socket_errors": 0,
+      "steal_pct": 0.6
+     },
+     {
+      "lat_avg_ms": 1.37,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 17045088,
+      "rps": 1129577.1,
+      "socket_errors": 0,
+      "steal_pct": 0.65
+     },
+     {
+      "lat_avg_ms": 1.61,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 16477136,
+      "rps": 1092692.91,
+      "socket_errors": 0,
+      "steal_pct": 0.75
+     }
+    ],
+    "1024": [
+     {
+      "lat_avg_ms": 8.28,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 9996192,
+      "rps": 663521.75,
+      "socket_errors": 0,
+      "steal_pct": 2.91
+     },
+     {
+      "lat_avg_ms": 7.97,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 9404304,
+      "rps": 623347.66,
+      "socket_errors": 0,
+      "steal_pct": 3.71
+     },
+     {
+      "lat_avg_ms": 10.11,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 7645904,
+      "rps": 506953.26,
+      "socket_errors": 0,
+      "steal_pct": 5.66
+     }
+    ],
+    "4096": [
+     {
+      "lat_avg_ms": 37.73,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 6964112,
+      "rps": 460222.18,
+      "socket_errors": 0,
+      "steal_pct": 4.44
+     },
+     {
+      "lat_avg_ms": 29.03,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 8042448,
+      "rps": 532959.4,
+      "socket_errors": 0,
+      "steal_pct": 1.85
+     },
+     {
+      "lat_avg_ms": 39.3,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 8263728,
+      "rps": 546911.88,
+      "socket_errors": 0,
+      "steal_pct": 1.57
+     }
+    ],
+    "16384": [
+     {
+      "lat_avg_ms": null,
+      "lat_p99_ms": null,
+      "non2xx": 6384,
+      "requests": 6384,
+      "rps": 219.73,
+      "socket_errors": 0,
+      "steal_pct": 1.93
+     },
+     {
+      "lat_avg_ms": 771.48,
+      "lat_p99_ms": 2490.0,
+      "non2xx": 66843,
+      "requests": 1589867,
+      "rps": 29252.33,
+      "socket_errors": 0,
+      "steal_pct": 3.45
+     },
+     {
+      "lat_avg_ms": null,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 0,
+      "rps": 0.0,
+      "socket_errors": 0,
+      "steal_pct": 8.8
+     }
+    ]
+   }
+  },
+  "wisp-uncapped": {
+   "json": {
+    "16": [
+     {
+      "lat_avg_ms": 0.13490000000000002,
+      "lat_p99_ms": 0.88,
+      "non2xx": 0,
+      "requests": 1671403,
+      "rps": 110676.4,
+      "socket_errors": 0,
+      "steal_pct": 1.18
+     },
+     {
+      "lat_avg_ms": 0.12012,
+      "lat_p99_ms": 0.405,
+      "non2xx": 0,
+      "requests": 1708817,
+      "rps": 113161.41,
+      "socket_errors": 0,
+      "steal_pct": 0.55
+     },
+     {
+      "lat_avg_ms": 0.13266999999999998,
+      "lat_p99_ms": 0.467,
+      "non2xx": 0,
+      "requests": 1645028,
+      "rps": 108926.44,
+      "socket_errors": 0,
+      "steal_pct": 0.61
+     }
+    ],
+    "32": [
+     {
+      "lat_avg_ms": 0.2078,
+      "lat_p99_ms": 1.06,
+      "non2xx": 0,
+      "requests": 1689100,
+      "rps": 111844.93,
+      "socket_errors": 0,
+      "steal_pct": 0.99
+     },
+     {
+      "lat_avg_ms": 0.22926,
+      "lat_p99_ms": 1.45,
+      "non2xx": 0,
+      "requests": 1715169,
+      "rps": 114315.19,
+      "socket_errors": 0,
+      "steal_pct": 1.47
+     },
+     {
+      "lat_avg_ms": 0.26067,
+      "lat_p99_ms": 1.49,
+      "non2xx": 0,
+      "requests": 1556092,
+      "rps": 103038.65,
+      "socket_errors": 0,
+      "steal_pct": 1.95
+     }
+    ],
+    "64": [
+     {
+      "lat_avg_ms": 0.42086,
+      "lat_p99_ms": 1.96,
+      "non2xx": 0,
+      "requests": 1526272,
+      "rps": 101063.76,
+      "socket_errors": 0,
+      "steal_pct": 1.64
+     },
+     {
+      "lat_avg_ms": 0.37701,
+      "lat_p99_ms": 1.45,
+      "non2xx": 0,
+      "requests": 1689964,
+      "rps": 111903.38,
+      "socket_errors": 0,
+      "steal_pct": 1.05
+     },
+     {
+      "lat_avg_ms": 0.33494999999999997,
+      "lat_p99_ms": 0.97,
+      "non2xx": 0,
+      "requests": 1756399,
+      "rps": 117057.72,
+      "socket_errors": 0,
+      "steal_pct": 0.61
+     }
+    ],
+    "128": [
+     {
+      "lat_avg_ms": 0.65118,
+      "lat_p99_ms": 1.87,
+      "non2xx": 0,
+      "requests": 1679162,
+      "rps": 111907.74,
+      "socket_errors": 0,
+      "steal_pct": 0.62
+     },
+     {
+      "lat_avg_ms": 0.7327,
+      "lat_p99_ms": 2.56,
+      "non2xx": 0,
+      "requests": 1603174,
+      "rps": 106814.57,
+      "socket_errors": 0,
+      "steal_pct": 1.09
+     },
+     {
+      "lat_avg_ms": 0.69611,
+      "lat_p99_ms": 2.33,
+      "non2xx": 0,
+      "requests": 1637036,
+      "rps": 109058.29,
+      "socket_errors": 0,
+      "steal_pct": 1.1
+     }
+    ],
+    "256": [
+     {
+      "lat_avg_ms": 1.34,
+      "lat_p99_ms": 3.55,
+      "non2xx": 0,
+      "requests": 1623560,
+      "rps": 107976.96,
+      "socket_errors": 0,
+      "steal_pct": 0.81
+     },
+     {
+      "lat_avg_ms": 1.25,
+      "lat_p99_ms": 3.13,
+      "non2xx": 0,
+      "requests": 1672401,
+      "rps": 111298.75,
+      "socket_errors": 0,
+      "steal_pct": 0.48
+     },
+     {
+      "lat_avg_ms": 1.16,
+      "lat_p99_ms": 2.99,
+      "non2xx": 0,
+      "requests": 1810321,
+      "rps": 120500.25,
+      "socket_errors": 0,
+      "steal_pct": 0.48
+     }
+    ],
+    "512": [
+     {
+      "lat_avg_ms": 2.6,
+      "lat_p99_ms": 6.59,
+      "non2xx": 0,
+      "requests": 1584204,
+      "rps": 105347.41,
+      "socket_errors": 0,
+      "steal_pct": 0.48
+     },
+     {
+      "lat_avg_ms": 2.73,
+      "lat_p99_ms": 7.59,
+      "non2xx": 0,
+      "requests": 1517550,
+      "rps": 100818.27,
+      "socket_errors": 0,
+      "steal_pct": 0.61
+     },
+     {
+      "lat_avg_ms": 3.14,
+      "lat_p99_ms": 9.39,
+      "non2xx": 0,
+      "requests": 1402828,
+      "rps": 93144.61,
+      "socket_errors": 0,
+      "steal_pct": 1.01
+     }
+    ]
+   },
+   "plaintext": {
+    "256": [
+     {
+      "lat_avg_ms": 1.73,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 14502592,
+      "rps": 960570.46,
+      "socket_errors": 0,
+      "steal_pct": 1.59
+     },
+     {
+      "lat_avg_ms": 1.32,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 16861984,
+      "rps": 1116892.2,
+      "socket_errors": 0,
+      "steal_pct": 0.95
+     },
+     {
+      "lat_avg_ms": 1.35,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 16843392,
+      "rps": 1116591.43,
+      "socket_errors": 0,
+      "steal_pct": 0.7
+     }
+    ],
+    "1024": [
+     {
+      "lat_avg_ms": 7.75,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 9756768,
+      "rps": 649788.37,
+      "socket_errors": 0,
+      "steal_pct": 2.34
+     },
+     {
+      "lat_avg_ms": 9.73,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 7859216,
+      "rps": 520330.91,
+      "socket_errors": 0,
+      "steal_pct": 4.1
+     },
+     {
+      "lat_avg_ms": 10.16,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 7253216,
+      "rps": 480904.46,
+      "socket_errors": 0,
+      "steal_pct": 5.24
+     }
+    ],
+    "4096": [
+     {
+      "lat_avg_ms": 26.91,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 8819328,
+      "rps": 586424.63,
+      "socket_errors": 0,
+      "steal_pct": 1.48
+     },
+     {
+      "lat_avg_ms": 31.49,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 8152560,
+      "rps": 539173.79,
+      "socket_errors": 0,
+      "steal_pct": 2.01
+     },
+     {
+      "lat_avg_ms": 33.62,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 8182928,
+      "rps": 539505.92,
+      "socket_errors": 0,
+      "steal_pct": 2.8
+     }
+    ],
+    "16384": [
+     {
+      "lat_avg_ms": 81.72,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 6239584,
+      "rps": 411487.6,
+      "socket_errors": 0,
+      "steal_pct": 0.71
+     },
+     {
+      "lat_avg_ms": 71.82,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 9320096,
+      "rps": 615278.62,
+      "socket_errors": 0,
+      "steal_pct": 0.34
+     },
+     {
+      "lat_avg_ms": 77.72,
+      "lat_p99_ms": null,
+      "non2xx": 0,
+      "requests": 8574400,
+      "rps": 566386.72,
+      "socket_errors": 0,
+      "steal_pct": 0.66
+     }
+    ]
+   }
+  }
+ },
+ "omitted": {},
+ "summary": {
+  "json": {
+   "16": {
+    "actix": {
+     "lat_avg_ms_median": 0.32152,
+     "lat_p99_ms_median": 2.68,
+     "non2xx": 0,
+     "rps_max": 94100.07,
+     "rps_median": 90199.05,
+     "rps_min": 89071.71,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 2.46
+    },
+    "axum": {
+     "lat_avg_ms_median": 0.29498,
+     "lat_p99_ms_median": 3.11,
+     "non2xx": 0,
+     "rps_max": 94819.85,
+     "rps_median": 79104.81,
+     "rps_min": 65608.57,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 12.01
+    },
+    "express": {
+     "lat_avg_ms_median": 1.26,
+     "lat_p99_ms_median": 8.57,
+     "non2xx": 0,
+     "rps_max": 17105.1,
+     "rps_median": 16944.67,
+     "rps_min": 15575.52,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 13.84
+    },
+    "fastify": {
+     "lat_avg_ms_median": 0.92,
+     "lat_p99_ms_median": 6.28,
+     "non2xx": 0,
+     "rps_max": 23100.19,
+     "rps_median": 21996.41,
+     "rps_min": 17145.23,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 18.74
+    },
+    "hono-bun": {
+     "lat_avg_ms_median": 0.36627,
+     "lat_p99_ms_median": 2.29,
+     "non2xx": 0,
+     "rps_max": 53468.72,
+     "rps_median": 52352.9,
+     "rps_min": 51695.39,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 1.79
+    },
+    "hono-node": {
+     "lat_avg_ms_median": 2.29,
+     "lat_p99_ms_median": 35.93,
+     "non2xx": 0,
+     "rps_max": 17460.79,
+     "rps_median": 17068.79,
+     "rps_min": 16889.72,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 3.21
+    },
+    "next": {
+     "lat_avg_ms_median": 14.27,
+     "lat_p99_ms_median": 114.49,
+     "non2xx": 0,
+     "rps_max": 1664.71,
+     "rps_median": 1499.05,
+     "rps_min": 1174.27,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 4.74
+    },
+    "sveltekit": {
+     "lat_avg_ms_median": 4.15,
+     "lat_p99_ms_median": 53.9,
+     "non2xx": 0,
+     "rps_max": 8274.34,
+     "rps_median": 7990.23,
+     "rps_min": 7662.31,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 5.76
+    },
+    "wisp": {
+     "lat_avg_ms_median": 0.59866,
+     "lat_p99_ms_median": 6.95,
+     "non2xx": 0,
+     "rps_max": 78071.49,
+     "rps_median": 71878.51,
+     "rps_min": 65906.84,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 16.23
+    },
+    "wisp-uncapped": {
+     "lat_avg_ms_median": 0.13266999999999998,
+     "lat_p99_ms_median": 0.467,
+     "non2xx": 0,
+     "rps_max": 113161.41,
+     "rps_median": 110676.4,
+     "rps_min": 108926.44,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 1.18
+    }
+   },
+   "32": {
+    "actix": {
+     "lat_avg_ms_median": 0.65022,
+     "lat_p99_ms_median": 4.2,
+     "non2xx": 0,
+     "rps_max": 99179.53,
+     "rps_median": 99097.99,
+     "rps_min": 92899.75,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 2.53
+    },
+    "axum": {
+     "lat_avg_ms_median": 0.42827,
+     "lat_p99_ms_median": 3.18,
+     "non2xx": 0,
+     "rps_max": 90891.21,
+     "rps_median": 86901.45,
+     "rps_min": 77724.28,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 6.73
+    },
+    "express": {
+     "lat_avg_ms_median": 2.14,
+     "lat_p99_ms_median": 10.35,
+     "non2xx": 0,
+     "rps_max": 16708.87,
+     "rps_median": 16585.96,
+     "rps_min": 15718.94,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 13.61
+    },
+    "fastify": {
+     "lat_avg_ms_median": 1.7,
+     "lat_p99_ms_median": 9.12,
+     "non2xx": 0,
+     "rps_max": 22512.24,
+     "rps_median": 21210.04,
+     "rps_min": 19871.32,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 12.65
+    },
+    "hono-bun": {
+     "lat_avg_ms_median": 0.66347,
+     "lat_p99_ms_median": 3.31,
+     "non2xx": 0,
+     "rps_max": 62653.23,
+     "rps_median": 54056.38,
+     "rps_min": 49883.54,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 3.27
+    },
+    "hono-node": {
+     "lat_avg_ms_median": 3.72,
+     "lat_p99_ms_median": 46.52,
+     "non2xx": 0,
+     "rps_max": 15792.31,
+     "rps_median": 15571.27,
+     "rps_min": 9505.22,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 11.69
+    },
+    "next": {
+     "lat_avg_ms_median": 30.42,
+     "lat_p99_ms_median": 191.58,
+     "non2xx": 0,
+     "rps_max": 1293.42,
+     "rps_median": 1284.94,
+     "rps_min": 1211.24,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 5.0
+    },
+    "sveltekit": {
+     "lat_avg_ms_median": 8.77,
+     "lat_p99_ms_median": 201.01,
+     "non2xx": 0,
+     "rps_max": 11059.76,
+     "rps_median": 9773.65,
+     "rps_min": 8551.77,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 2.67
+    },
+    "wisp": {
+     "lat_avg_ms_median": 0.37283,
+     "lat_p99_ms_median": 3.67,
+     "non2xx": 0,
+     "rps_max": 96943.58,
+     "rps_median": 86812.85,
+     "rps_min": 69580.59,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 14.84
+    },
+    "wisp-uncapped": {
+     "lat_avg_ms_median": 0.22926,
+     "lat_p99_ms_median": 1.45,
+     "non2xx": 0,
+     "rps_max": 114315.19,
+     "rps_median": 111844.93,
+     "rps_min": 103038.65,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 1.95
+    }
+   },
+   "64": {
+    "actix": {
+     "lat_avg_ms_median": 0.89,
+     "lat_p99_ms_median": 5.03,
+     "non2xx": 0,
+     "rps_max": 101440.73,
+     "rps_median": 89648.31,
+     "rps_min": 85399.66,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 2.99
+    },
+    "axum": {
+     "lat_avg_ms_median": 0.91,
+     "lat_p99_ms_median": 6.82,
+     "non2xx": 0,
+     "rps_max": 94930.08,
+     "rps_median": 78427.13,
+     "rps_min": 77297.76,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 6.72
+    },
+    "express": {
+     "lat_avg_ms_median": 4.65,
+     "lat_p99_ms_median": 18.06,
+     "non2xx": 0,
+     "rps_max": 15351.46,
+     "rps_median": 14745.93,
+     "rps_min": 14509.34,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 15.73
+    },
+    "fastify": {
+     "lat_avg_ms_median": 3.06,
+     "lat_p99_ms_median": 10.64,
+     "non2xx": 0,
+     "rps_max": 22283.46,
+     "rps_median": 21965.1,
+     "rps_min": 20467.82,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 10.4
+    },
+    "hono-bun": {
+     "lat_avg_ms_median": 1.14,
+     "lat_p99_ms_median": 4.24,
+     "non2xx": 0,
+     "rps_max": 64112.63,
+     "rps_median": 59619.03,
+     "rps_min": 54928.85,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 1.98
+    },
+    "hono-node": {
+     "lat_avg_ms_median": 9.48,
+     "lat_p99_ms_median": 73.17,
+     "non2xx": 0,
+     "rps_max": 10864.43,
+     "rps_median": 8987.89,
+     "rps_min": 8707.65,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 20.97
+    },
+    "next": {
+     "lat_avg_ms_median": 49.06,
+     "lat_p99_ms_median": 297.61,
+     "non2xx": 0,
+     "rps_max": 1697.94,
+     "rps_median": 1523.61,
+     "rps_min": 1498.22,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 2.29
+    },
+    "sveltekit": {
+     "lat_avg_ms_median": 6.37,
+     "lat_p99_ms_median": 17.41,
+     "non2xx": 0,
+     "rps_max": 10757.04,
+     "rps_median": 10377.8,
+     "rps_min": 8989.24,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 1.52
+    },
+    "wisp": {
+     "lat_avg_ms_median": 0.546,
+     "lat_p99_ms_median": 2.63,
+     "non2xx": 0,
+     "rps_max": 103763.63,
+     "rps_median": 96089.14,
+     "rps_min": 85620.58,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 7.13
+    },
+    "wisp-uncapped": {
+     "lat_avg_ms_median": 0.37701,
+     "lat_p99_ms_median": 1.45,
+     "non2xx": 0,
+     "rps_max": 117057.72,
+     "rps_median": 111903.38,
+     "rps_min": 101063.76,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 1.64
+    }
+   },
+   "128": {
+    "actix": {
+     "lat_avg_ms_median": 1.11,
+     "lat_p99_ms_median": 5.23,
+     "non2xx": 0,
+     "rps_max": 114139.37,
+     "rps_median": 106246.5,
+     "rps_min": 101186.15,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 1.06
+    },
+    "axum": {
+     "lat_avg_ms_median": 1.3,
+     "lat_p99_ms_median": 4.63,
+     "non2xx": 0,
+     "rps_max": 96862.98,
+     "rps_median": 92662.39,
+     "rps_min": 70648.45,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 5.73
+    },
+    "express": {
+     "lat_avg_ms_median": 10.06,
+     "lat_p99_ms_median": 32.47,
+     "non2xx": 0,
+     "rps_max": 14442.5,
+     "rps_median": 13794.55,
+     "rps_min": 11935.93,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 16.54
+    },
+    "fastify": {
+     "lat_avg_ms_median": 6.75,
+     "lat_p99_ms_median": 22.77,
+     "non2xx": 0,
+     "rps_max": 20936.06,
+     "rps_median": 19976.87,
+     "rps_min": 17809.19,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 12.13
+    },
+    "hono-bun": {
+     "lat_avg_ms_median": 2.54,
+     "lat_p99_ms_median": 7.78,
+     "non2xx": 0,
+     "rps_max": 52292.94,
+     "rps_median": 51579.54,
+     "rps_min": 50492.94,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 2.61
+    },
+    "hono-node": {
+     "lat_avg_ms_median": 17.39,
+     "lat_p99_ms_median": 115.48,
+     "non2xx": 0,
+     "rps_max": 11670.53,
+     "rps_median": 9353.87,
+     "rps_min": 8902.36,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 16.74
+    },
+    "next": {
+     "lat_avg_ms_median": 117.1,
+     "lat_p99_ms_median": 1460.0,
+     "non2xx": 0,
+     "rps_max": 1668.61,
+     "rps_median": 1512.58,
+     "rps_min": 1132.21,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 5.27
+    },
+    "sveltekit": {
+     "lat_avg_ms_median": 18.28,
+     "lat_p99_ms_median": 150.73,
+     "non2xx": 0,
+     "rps_max": 8883.45,
+     "rps_median": 7714.14,
+     "rps_min": 6960.18,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 3.77
+    },
+    "wisp": {
+     "lat_avg_ms_median": 0.6903400000000001,
+     "lat_p99_ms_median": 2.06,
+     "non2xx": 0,
+     "rps_max": 114306.49,
+     "rps_median": 107833.95,
+     "rps_min": 107405.23,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 1.23
+    },
+    "wisp-uncapped": {
+     "lat_avg_ms_median": 0.69611,
+     "lat_p99_ms_median": 2.33,
+     "non2xx": 0,
+     "rps_max": 111907.74,
+     "rps_median": 109058.29,
+     "rps_min": 106814.57,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 1.1
+    }
+   },
+   "256": {
+    "actix": {
+     "lat_avg_ms_median": 1.77,
+     "lat_p99_ms_median": 5.92,
+     "non2xx": 0,
+     "rps_max": 109280.31,
+     "rps_median": 108428.36,
+     "rps_min": 105160.98,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 0.83
+    },
+    "axum": {
+     "lat_avg_ms_median": 4.12,
+     "lat_p99_ms_median": 14.13,
+     "non2xx": 0,
+     "rps_max": 81434.26,
+     "rps_median": 60464.72,
+     "rps_min": 57541.07,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 5.98
+    },
+    "express": {
+     "lat_avg_ms_median": 18.06,
+     "lat_p99_ms_median": 160.82,
+     "non2xx": 0,
+     "rps_max": 18297.75,
+     "rps_median": 18022.75,
+     "rps_min": 15567.06,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 7.7
+    },
+    "fastify": {
+     "lat_avg_ms_median": 17.2,
+     "lat_p99_ms_median": 225.3,
+     "non2xx": 0,
+     "rps_max": 21494.45,
+     "rps_median": 21249.46,
+     "rps_min": 14339.98,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 12.98
+    },
+    "hono-bun": {
+     "lat_avg_ms_median": 5.5,
+     "lat_p99_ms_median": 16.0,
+     "non2xx": 0,
+     "rps_max": 48389.87,
+     "rps_median": 47379.22,
+     "rps_min": 39409.85,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 4.48
+    },
+    "hono-node": {
+     "lat_avg_ms_median": 31.18,
+     "lat_p99_ms_median": 543.14,
+     "non2xx": 0,
+     "rps_max": 13571.79,
+     "rps_median": 13083.57,
+     "rps_min": 12375.7,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 6.08
+    },
+    "next": {
+     "lat_avg_ms_median": 428.16,
+     "lat_p99_ms_median": 5490.0,
+     "non2xx": 0,
+     "rps_max": 1532.81,
+     "rps_median": 1369.77,
+     "rps_min": 1091.78,
+     "runs": 3,
+     "socket_errors": 139,
+     "steal_pct_max": 7.23
+    },
+    "sveltekit": {
+     "lat_avg_ms_median": 81.65,
+     "lat_p99_ms_median": 1410.0,
+     "non2xx": 0,
+     "rps_max": 8512.48,
+     "rps_median": 6062.17,
+     "rps_min": 5580.42,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 5.16
+    },
+    "wisp": {
+     "lat_avg_ms_median": 1.75,
+     "lat_p99_ms_median": 7.18,
+     "non2xx": 0,
+     "rps_max": 99849.96,
+     "rps_median": 91875.52,
+     "rps_min": 86957.03,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 3.22
+    },
+    "wisp-uncapped": {
+     "lat_avg_ms_median": 1.25,
+     "lat_p99_ms_median": 3.13,
+     "non2xx": 0,
+     "rps_max": 120500.25,
+     "rps_median": 111298.75,
+     "rps_min": 107976.96,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 0.81
+    }
+   },
+   "512": {
+    "actix": {
+     "lat_avg_ms_median": 5.92,
+     "lat_p99_ms_median": 16.53,
+     "non2xx": 0,
+     "rps_max": 101055.0,
+     "rps_median": 71314.61,
+     "rps_min": 68763.69,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 2.7
+    },
+    "axum": {
+     "lat_avg_ms_median": 10.59,
+     "lat_p99_ms_median": 24.08,
+     "non2xx": 0,
+     "rps_max": 64023.39,
+     "rps_median": 47070.26,
+     "rps_min": 41755.48,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 6.98
+    },
+    "express": {
+     "lat_avg_ms_median": 59.97,
+     "lat_p99_ms_median": 1370.0,
+     "non2xx": 0,
+     "rps_max": 22857.97,
+     "rps_median": 22643.84,
+     "rps_min": 19491.2,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 2.74
+    },
+    "fastify": {
+     "lat_avg_ms_median": 68.22,
+     "lat_p99_ms_median": 1600.0,
+     "non2xx": 0,
+     "rps_max": 24449.25,
+     "rps_median": 24163.4,
+     "rps_min": 23503.45,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 2.82
+    },
+    "hono-bun": {
+     "lat_avg_ms_median": 17.93,
+     "lat_p99_ms_median": 47.98,
+     "non2xx": 0,
+     "rps_max": 44598.22,
+     "rps_median": 28439.12,
+     "rps_min": 26910.57,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 8.95
+    },
+    "hono-node": {
+     "lat_avg_ms_median": 126.6,
+     "lat_p99_ms_median": 2520.0,
+     "non2xx": 0,
+     "rps_max": 17748.39,
+     "rps_median": 15348.95,
+     "rps_min": 14608.03,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 3.24
+    },
+    "next": {
+     "lat_avg_ms_median": 307.7,
+     "lat_p99_ms_median": 4830.0,
+     "non2xx": 0,
+     "rps_max": 1854.28,
+     "rps_median": 1715.05,
+     "rps_min": 1698.83,
+     "runs": 3,
+     "socket_errors": 240,
+     "steal_pct_max": 0.99
+    },
+    "sveltekit": {
+     "lat_avg_ms_median": 386.65,
+     "lat_p99_ms_median": 5670.0,
+     "non2xx": 0,
+     "rps_max": 7339.56,
+     "rps_median": 6697.99,
+     "rps_min": 5707.04,
+     "runs": 3,
+     "socket_errors": 124,
+     "steal_pct_max": 4.89
+    },
+    "wisp": {
+     "lat_avg_ms_median": 3.89,
+     "lat_p99_ms_median": 11.79,
+     "non2xx": 0,
+     "rps_max": 73945.66,
+     "rps_median": 73714.31,
+     "rps_min": 65577.62,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 6.07
+    },
+    "wisp-uncapped": {
+     "lat_avg_ms_median": 2.73,
+     "lat_p99_ms_median": 7.59,
+     "non2xx": 0,
+     "rps_max": 105347.41,
+     "rps_median": 100818.27,
+     "rps_min": 93144.61,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 1.01
+    }
+   }
+  },
+  "plaintext": {
+   "256": {
+    "actix": {
+     "lat_avg_ms_median": 4.25,
+     "lat_p99_ms_median": 38.1,
+     "non2xx": 0,
+     "rps_max": 630191.96,
+     "rps_median": 603163.42,
+     "rps_min": 575108.37,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 2.82
+    },
+    "axum": {
+     "lat_avg_ms_median": 9.05,
+     "lat_p99_ms_median": 50.28,
+     "non2xx": 0,
+     "rps_max": 332863.02,
+     "rps_median": 276948.25,
+     "rps_min": 245050.03,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 17.62
+    },
+    "express": {
+     "lat_avg_ms_median": 359.19,
+     "lat_p99_ms_median": 4850.0,
+     "non2xx": 0,
+     "rps_max": 42851.87,
+     "rps_median": 40420.66,
+     "rps_min": 37511.16,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 3.78
+    },
+    "fastify": {
+     "lat_avg_ms_median": 217.55,
+     "lat_p99_ms_median": 3510.0,
+     "non2xx": 0,
+     "rps_max": 60754.39,
+     "rps_median": 51713.14,
+     "rps_min": 40421.98,
+     "runs": 3,
+     "socket_errors": 34,
+     "steal_pct_max": 2.59
+    },
+    "hono-bun": {
+     "lat_avg_ms_median": 211.18,
+     "lat_p99_ms_median": 410.1,
+     "non2xx": 0,
+     "rps_max": 10627.76,
+     "rps_median": 10598.71,
+     "rps_min": 10564.51,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 1.17
+    },
+    "hono-node": {
+     "lat_avg_ms_median": 448.97,
+     "lat_p99_ms_median": 5630.0,
+     "non2xx": 0,
+     "rps_max": 29143.16,
+     "rps_median": 28966.06,
+     "rps_min": 3039.28,
+     "runs": 3,
+     "socket_errors": 138,
+     "steal_pct_max": 2.22
+    },
+    "next": {
+     "lat_avg_ms_median": 0,
+     "lat_p99_ms_median": null,
+     "non2xx": 0,
+     "rps_max": 0.0,
+     "rps_median": 0.0,
+     "rps_min": 0.0,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 2.33
+    },
+    "sveltekit": {
+     "lat_avg_ms_median": 472.14,
+     "lat_p99_ms_median": 5590.0,
+     "non2xx": 0,
+     "rps_max": 11055.12,
+     "rps_median": 10928.72,
+     "rps_min": 501.93,
+     "runs": 3,
+     "socket_errors": 144,
+     "steal_pct_max": 1.51
+    },
+    "wisp": {
+     "lat_avg_ms_median": 1.45,
+     "lat_p99_ms_median": null,
+     "non2xx": 0,
+     "rps_max": 1171461.81,
+     "rps_median": 1129577.1,
+     "rps_min": 1092692.91,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 0.75
+    },
+    "wisp-uncapped": {
+     "lat_avg_ms_median": 1.35,
+     "lat_p99_ms_median": null,
+     "non2xx": 0,
+     "rps_max": 1116892.2,
+     "rps_median": 1116591.43,
+     "rps_min": 960570.46,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 1.59
+    }
+   },
+   "1024": {
+    "actix": {
+     "lat_avg_ms_median": 25.83,
+     "lat_p99_ms_median": null,
+     "non2xx": 0,
+     "rps_max": 450698.15,
+     "rps_median": 366626.08,
+     "rps_min": 365153.33,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 7.13
+    },
+    "axum": {
+     "lat_avg_ms_median": 21.56,
+     "lat_p99_ms_median": null,
+     "non2xx": 0,
+     "rps_max": 391336.02,
+     "rps_median": 381323.66,
+     "rps_min": 323091.93,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 6.49
+    },
+    "express": {
+     "lat_avg_ms_median": 294.91,
+     "lat_p99_ms_median": 5010.0,
+     "non2xx": 0,
+     "rps_max": 39569.33,
+     "rps_median": 36183.88,
+     "rps_min": 32588.55,
+     "runs": 3,
+     "socket_errors": 246,
+     "steal_pct_max": 6.48
+    },
+    "fastify": {
+     "lat_avg_ms_median": 262.65,
+     "lat_p99_ms_median": 4960.0,
+     "non2xx": 0,
+     "rps_max": 64182.71,
+     "rps_median": 62345.47,
+     "rps_min": 45566.71,
+     "runs": 3,
+     "socket_errors": 271,
+     "steal_pct_max": 4.21
+    },
+    "hono-bun": {
+     "lat_avg_ms_median": 853.78,
+     "lat_p99_ms_median": 1670.0,
+     "non2xx": 0,
+     "rps_max": 10421.16,
+     "rps_median": 10375.35,
+     "rps_min": 10195.21,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 1.95
+    },
+    "hono-node": {
+     "lat_avg_ms_median": 258.94,
+     "lat_p99_ms_median": 4420.0,
+     "non2xx": 0,
+     "rps_max": 34082.41,
+     "rps_median": 29601.58,
+     "rps_min": 25357.27,
+     "runs": 3,
+     "socket_errors": 192,
+     "steal_pct_max": 2.93
+    },
+    "next": {
+     "lat_avg_ms_median": 0,
+     "lat_p99_ms_median": null,
+     "non2xx": 0,
+     "rps_max": 0.0,
+     "rps_median": 0.0,
+     "rps_min": 0.0,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 0.23
+    },
+    "sveltekit": {
+     "lat_avg_ms_median": 514.44,
+     "lat_p99_ms_median": 3240.0,
+     "non2xx": 0,
+     "rps_max": 9115.52,
+     "rps_median": 8463.68,
+     "rps_min": 7748.89,
+     "runs": 3,
+     "socket_errors": 83,
+     "steal_pct_max": 6.5
+    },
+    "wisp": {
+     "lat_avg_ms_median": 8.28,
+     "lat_p99_ms_median": null,
+     "non2xx": 0,
+     "rps_max": 663521.75,
+     "rps_median": 623347.66,
+     "rps_min": 506953.26,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 5.66
+    },
+    "wisp-uncapped": {
+     "lat_avg_ms_median": 9.73,
+     "lat_p99_ms_median": null,
+     "non2xx": 0,
+     "rps_max": 649788.37,
+     "rps_median": 520330.91,
+     "rps_min": 480904.46,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 5.24
+    }
+   },
+   "4096": {
+    "actix": {
+     "lat_avg_ms_median": 92.95,
+     "lat_p99_ms_median": null,
+     "non2xx": 0,
+     "rps_max": 356336.87,
+     "rps_median": 351843.53,
+     "rps_min": 318901.47,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 9.83
+    },
+    "axum": {
+     "lat_avg_ms_median": 67.51,
+     "lat_p99_ms_median": null,
+     "non2xx": 0,
+     "rps_max": 454096.46,
+     "rps_median": 446398.0,
+     "rps_min": 417470.09,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 2.17
+    },
+    "express": {
+     "lat_avg_ms_median": 477.51,
+     "lat_p99_ms_median": 5710.0,
+     "non2xx": 0,
+     "rps_max": 27713.86,
+     "rps_median": 27554.22,
+     "rps_min": 26800.43,
+     "runs": 3,
+     "socket_errors": 208,
+     "steal_pct_max": 9.9
+    },
+    "fastify": {
+     "lat_avg_ms_median": 245.6,
+     "lat_p99_ms_median": 2770.0,
+     "non2xx": 0,
+     "rps_max": 61460.21,
+     "rps_median": 58956.11,
+     "rps_min": 49590.56,
+     "runs": 3,
+     "socket_errors": 152,
+     "steal_pct_max": 3.51
+    },
+    "hono-bun": {
+     "lat_avg_ms_median": 3400.0,
+     "lat_p99_ms_median": 6900.0,
+     "non2xx": 0,
+     "rps_max": 10151.63,
+     "rps_median": 9651.9,
+     "rps_min": 9618.52,
+     "runs": 3,
+     "socket_errors": 1,
+     "steal_pct_max": 4.0
+    },
+    "hono-node": {
+     "lat_avg_ms_median": 558.09,
+     "lat_p99_ms_median": 5850.0,
+     "non2xx": 0,
+     "rps_max": 37242.95,
+     "rps_median": 34172.64,
+     "rps_min": 18886.26,
+     "runs": 3,
+     "socket_errors": 235,
+     "steal_pct_max": 3.87
+    },
+    "next": {
+     "lat_avg_ms_median": 0,
+     "lat_p99_ms_median": null,
+     "non2xx": 0,
+     "rps_max": 0.0,
+     "rps_median": 0.0,
+     "rps_min": 0.0,
+     "runs": 1,
+     "socket_errors": 0,
+     "steal_pct_max": 0.64
+    },
+    "sveltekit": {
+     "lat_avg_ms_median": 546.98,
+     "lat_p99_ms_median": 5710.0,
+     "non2xx": 0,
+     "rps_max": 9052.83,
+     "rps_median": 8358.51,
+     "rps_min": 8285.26,
+     "runs": 3,
+     "socket_errors": 149,
+     "steal_pct_max": 1.58
+    },
+    "wisp": {
+     "lat_avg_ms_median": 37.73,
+     "lat_p99_ms_median": null,
+     "non2xx": 0,
+     "rps_max": 546911.88,
+     "rps_median": 532959.4,
+     "rps_min": 460222.18,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 4.44
+    },
+    "wisp-uncapped": {
+     "lat_avg_ms_median": 31.49,
+     "lat_p99_ms_median": null,
+     "non2xx": 0,
+     "rps_max": 586424.63,
+     "rps_median": 539505.92,
+     "rps_min": 539173.79,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 2.8
+    }
+   },
+   "16384": {
+    "actix": {
+     "lat_avg_ms_median": 358.28,
+     "lat_p99_ms_median": 667.35,
+     "non2xx": 0,
+     "rps_max": 14977.03,
+     "rps_median": 0.0,
+     "rps_min": 0.0,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 7.56
+    },
+    "axum": {
+     "lat_avg_ms_median": 340.48,
+     "lat_p99_ms_median": 537.7,
+     "non2xx": 0,
+     "rps_max": 223945.59,
+     "rps_median": 171230.75,
+     "rps_min": 27410.12,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 2.83
+    },
+    "express": {
+     "lat_avg_ms_median": 2800.0,
+     "lat_p99_ms_median": 5480.0,
+     "non2xx": 0,
+     "rps_max": 5293.96,
+     "rps_median": 0.0,
+     "rps_min": 0.0,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 3.73
+    },
+    "fastify": {
+     "lat_avg_ms_median": 1960.0,
+     "lat_p99_ms_median": 3780.0,
+     "non2xx": 0,
+     "rps_max": 18400.45,
+     "rps_median": 16573.32,
+     "rps_min": 5972.36,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 2.03
+    },
+    "hono-bun": {
+     "lat_avg_ms_median": 3720.0,
+     "lat_p99_ms_median": 7890.0,
+     "non2xx": 0,
+     "rps_max": 7323.24,
+     "rps_median": 6910.11,
+     "rps_min": 6440.05,
+     "runs": 3,
+     "socket_errors": 2410,
+     "steal_pct_max": 0.71
+    },
+    "hono-node": {
+     "lat_avg_ms_median": 3370.0,
+     "lat_p99_ms_median": 7720.0,
+     "non2xx": 0,
+     "rps_max": 16692.5,
+     "rps_median": 0.0,
+     "rps_min": 0.0,
+     "runs": 3,
+     "socket_errors": 830,
+     "steal_pct_max": 0.94
+    },
+    "sveltekit": {
+     "lat_avg_ms_median": 3840.0,
+     "lat_p99_ms_median": 7890.0,
+     "non2xx": 0,
+     "rps_max": 6776.93,
+     "rps_median": 0.0,
+     "rps_min": 0.0,
+     "runs": 3,
+     "socket_errors": 287,
+     "steal_pct_max": 0.47
+    },
+    "wisp": {
+     "lat_avg_ms_median": 771.48,
+     "lat_p99_ms_median": 2490.0,
+     "non2xx": 73227,
+     "rps_max": 29252.33,
+     "rps_median": 219.73,
+     "rps_min": 0.0,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 8.8
+    },
+    "wisp-uncapped": {
+     "lat_avg_ms_median": 77.72,
+     "lat_p99_ms_median": null,
+     "non2xx": 0,
+     "rps_max": 615278.62,
+     "rps_median": 566386.72,
+     "rps_min": 411487.6,
+     "runs": 3,
+     "socket_errors": 0,
+     "steal_pct_max": 0.71
+    }
+   }
+  }
+ }
+}

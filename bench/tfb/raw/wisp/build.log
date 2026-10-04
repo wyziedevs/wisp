@@ -1,0 +1,12 @@
+   Compiling pulldown-cmark v0.13.4
+   Compiling libc v0.2.190
+   Compiling wisp-shared v0.1.0 (/root/tfb/crates/wisp-shared)
+   Compiling errno v0.3.14
+   Compiling wisp-build v0.1.0 (/root/tfb/crates/wisp-build)
+   Compiling signal-hook-registry v1.4.8
+   Compiling mio v1.2.4
+   Compiling socket2 v0.6.5
+   Compiling tokio v1.53.2
+   Compiling wisp v0.1.0 (/root/tfb/crates/wisp)
+   Compiling tfb-wisp v0.1.0 (/root/tfb/bench/tfb/wisp)
+    Finished `release` profile [optimized] target(s) in 1m 17s

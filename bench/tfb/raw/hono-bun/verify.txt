@@ -1,0 +1,18 @@
+=== GET /json
+HTTP/1.1 200 OK
+Content-Type: application/json; charset=UTF-8
+server: Hono
+Date: Sun, 04 Oct 2026 08:07:25 GMT
+Content-Length: 27
+
+{"message":"Hello, World!"}
+=== GET /plaintext
+HTTP/1.1 200 OK
+Content-Type: text/plain; charset=UTF-8
+server: Hono
+Date: Sun, 04 Oct 2026 08:07:25 GMT
+Content-Length: 13
+
+Hello, World!
+pipelined 16 -> 16 bodies
+processes: 3, threads: 13, affinity: 0,1

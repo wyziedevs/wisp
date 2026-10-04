@@ -1,0 +1,11 @@
+
+> hono@0.0.1 start
+> node src/clustered.js
+
+Primary 195941 is running
+Failed to find Response internal state key
+Worker 195948 started
+Failed to find Response internal state key
+Worker 195949 started
+Successfully bound to http://0.0.0.0:8080.
+Successfully bound to http://0.0.0.0:8080.

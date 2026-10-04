@@ -1,0 +1,50 @@
+
+added 66 packages in 10s
+npm warn install-scripts 1 package has install scripts not yet covered by allowScripts:
+npm warn install-scripts   esbuild@0.25.12 (postinstall: node install.js)
+npm warn install-scripts
+npm warn install-scripts Run `npm install-scripts ls` to review, or `npm install-scripts approve <pkg>` to allow.
+vite v6.4.3 building SSR bundle for production...
+transforming...
+✓ 146 modules transformed.
+rendering chunks...
+vite v6.4.3 building for production...
+transforming...
+✓ 154 modules transformed.
+rendering chunks...
+computing gzip size...
+.svelte-kit/output/client/_app/version.json                        0.03 kB │ gzip:  0.05 kB
+.svelte-kit/output/client/.vite/manifest.json                      2.64 kB │ gzip:  0.56 kB
+.svelte-kit/output/client/_app/immutable/chunks/DES7tzI6.js        0.23 kB │ gzip:  0.20 kB
+.svelte-kit/output/client/_app/immutable/nodes/0.BQBoTwnT.js       0.33 kB │ gzip:  0.24 kB
+.svelte-kit/output/client/_app/immutable/nodes/1.DRlXe68y.js       0.49 kB │ gzip:  0.32 kB
+.svelte-kit/output/client/_app/immutable/chunks/DXCNT65w.js        1.33 kB │ gzip:  0.73 kB
+.svelte-kit/output/client/_app/immutable/chunks/wbPk3Yxo.js        1.37 kB │ gzip:  0.66 kB
+.svelte-kit/output/client/_app/immutable/chunks/D8g-BAkQ.js        2.24 kB │ gzip:  0.99 kB
+.svelte-kit/output/client/_app/immutable/chunks/KFD9pzBy.js        6.90 kB │ gzip:  3.13 kB
+.svelte-kit/output/client/_app/immutable/entry/app.Ouc9XkgP.js     7.66 kB │ gzip:  3.54 kB
+.svelte-kit/output/client/_app/immutable/chunks/n9PJWIq6.js        8.12 kB │ gzip:  3.45 kB
+.svelte-kit/output/client/_app/immutable/entry/start.8Zc6SGX5.js  22.88 kB │ gzip:  8.86 kB
+.svelte-kit/output/client/_app/immutable/chunks/nZU3K9ry.js       26.68 kB │ gzip: 10.16 kB
+✓ built in 1.33s
+.svelte-kit/output/server/.vite/manifest.json                       2.67 kB
+.svelte-kit/output/server/entries/endpoints/plaintext/_server.js    0.15 kB
+.svelte-kit/output/server/entries/endpoints/json/_server.js         0.16 kB
+.svelte-kit/output/server/entries/fallbacks/layout.svelte.js        0.17 kB
+.svelte-kit/output/server/env.js                                    0.23 kB
+.svelte-kit/output/server/internal.js                               0.35 kB
+.svelte-kit/output/server/chunks/server.js                          0.62 kB
+.svelte-kit/output/server/entries/fallbacks/error.svelte.js         0.99 kB
+.svelte-kit/output/server/chunks/utils2.js                          1.09 kB
+.svelte-kit/output/server/chunks/internal.js                        3.00 kB
+.svelte-kit/output/server/chunks/exports.js                         5.54 kB
+.svelte-kit/output/server/chunks/utils.js                          34.22 kB
+.svelte-kit/output/server/remote-entry.js                          36.81 kB
+.svelte-kit/output/server/chunks/root.js                          130.44 kB
+.svelte-kit/output/server/index.js                                132.21 kB
+✓ built in 5.23s
+
+Run npm run preview to preview your production build locally.
+
+> Using @sveltejs/adapter-node
+  ✔ done

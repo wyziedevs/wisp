@@ -1,0 +1,19 @@
+# loadavg-before: 2.41 2.63 2.92
+# cmd: taskset -c 2-3 wrk -H 'Host: 127.0.0.1' -H 'Accept: application/json,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,*/*;q=0.7' -H 'Connection: keep-alive' --latency -d 15 -c 512 --timeout 8 -t 2 http://127.0.0.1:8080/json 
+Running 15s test @ http://127.0.0.1:8080/json
+  2 threads and 512 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency   295.47ms  738.44ms   7.95s    95.60%
+    Req/Sec     0.86k   233.90     1.32k    69.23%
+  Latency Distribution
+     50%  147.58ms
+     75%  179.03ms
+     90%  239.84ms
+     99%    4.62s 
+  25550 requests in 15.04s, 7.43MB read
+  Socket errors: connect 0, read 0, write 0, timeout 81
+Requests/sec:   1698.83
+Transfer/sec:    506.02KB
+# cpu-delta user nice sys idle iowait irq softirq steal: 2839 0 273 2724 1 0 152 55 
+# foreign-pct: 0.0  (user+sys+irq ticks 3264, server+wrk 3284)
+# top-after:  100 ps;85.7 next-server (v1;85.5 next-server (v1;

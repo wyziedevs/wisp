@@ -1,0 +1,18 @@
+=== GET /json
+HTTP/1.1 200 OK
+content-length: 27
+date: Sun, 04 Oct 2026 08:32:13 GMT
+content-type: application/json
+server: Wisp
+
+{"message":"Hello, World!"}
+=== GET /plaintext
+HTTP/1.1 200 OK
+content-length: 13
+date: Sun, 04 Oct 2026 08:32:13 GMT
+content-type: text/plain; charset=utf-8
+server: Wisp
+
+Hello, World!
+pipelined 16 -> 16 bodies
+processes: 1, threads: 5, affinity: 0,1

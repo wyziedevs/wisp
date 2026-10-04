@@ -1,0 +1,21 @@
+[package]
+name = "tfb-wisp"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+wisp = { path = "../../../crates/wisp" }
+
+[build-dependencies]
+wisp-build = { path = "../../../crates/wisp-build" }
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+
+# The TFB spec requires a Server header; Wisp's documented static-header config.
+[package.metadata.wisp]
+headers = ["/plaintext server: Wisp", "/json server: Wisp"]
+
+[workspace]

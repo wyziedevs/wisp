@@ -1,0 +1,20 @@
+=== GET /json
+HTTP/1.1 200 OK
+content-type: application/json
+server: Express
+Date: Sun, 04 Oct 2026 07:36:34 GMT
+Connection: keep-alive
+Transfer-Encoding: chunked
+
+{"message":"Hello, World!"}
+=== GET /plaintext
+HTTP/1.1 200 OK
+content-type: text/plain
+server: Express
+Date: Sun, 04 Oct 2026 07:36:34 GMT
+Connection: keep-alive
+Transfer-Encoding: chunked
+
+Hello, World!
+pipelined 16 -> 16 bodies
+processes: 3, threads: 21, affinity: 0,1

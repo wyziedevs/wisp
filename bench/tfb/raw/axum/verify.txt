@@ -1,0 +1,18 @@
+=== GET /json
+HTTP/1.1 200 OK
+content-type: application/json
+server: Axum
+content-length: 27
+date: Sun, 04 Oct 2026 07:15:53 GMT
+
+{"message":"Hello, World!"}
+=== GET /plaintext
+HTTP/1.1 200 OK
+content-type: text/plain; charset=utf-8
+server: Axum
+content-length: 13
+date: Sun, 04 Oct 2026 07:15:53 GMT
+
+Hello, World!
+pipelined 16 -> 16 bodies
+processes: 1, threads: 2, affinity: 0,1

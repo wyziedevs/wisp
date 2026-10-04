@@ -1,0 +1,9 @@
+# Built output and installed dependencies; sources and lockfiles are tracked
+# (lockfiles here override bench/.gitignore: the versions measured must be reproducible).
+target/
+node_modules/
+.next/
+build/
+.svelte-kit/
+raw/.times
+!package-lock.json
