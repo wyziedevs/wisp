@@ -1278,11 +1278,11 @@ fn errors_are_plain_data() {
     let io: wisp::Error = std::io::Error::other("nope").into();
     assert_eq!((io.status(), io.message()), (500, "nope"));
     assert!(format!("{io:?}").starts_with("500 nope ("));
-    // Statuses that are not errors, or redirects that are not, are mistakes.
+    // Statuses that are not errors are mistakes; a redirect that is not one is a 303.
     assert!(std::panic::catch_unwind(|| wisp::Error::new(200, "x")).is_err());
     assert!(std::panic::catch_unwind(|| wisp::Error::new(600, "x")).is_err());
-    assert!(std::panic::catch_unwind(|| wisp::Error::redirect(200, "/x")).is_err());
-    assert!(std::panic::catch_unwind(|| wisp::Error::redirect(309, "/x")).is_err());
+    assert_eq!(wisp::Error::redirect(200, "/x").status(), 303);
+    assert_eq!(wisp::Error::redirect(309, "/x").status(), 303);
     assert!(std::panic::catch_unwind(|| wisp::Response::empty(99)).is_err());
     assert!(std::panic::catch_unwind(|| wisp::Response::empty(1000)).is_err());
 

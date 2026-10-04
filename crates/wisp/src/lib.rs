@@ -1497,14 +1497,19 @@ impl Error {
     /// A redirect with a status other than [`redirect`]'s 303, such as 308
     /// for a page that moved for good: `return Err(Error::redirect(308, "/new"))`.
     /// A `location` with CR/LF (header injection) is refused, not sent: the
-    /// visitor gets a 500 and the reason is logged. Panics on a status outside
-    /// 300..=308, a mistake in the code, caught in its first test.
+    /// visitor gets a 500 and the reason is logged. A status outside
+    /// 300..=308 is logged with the location and becomes 303 See Other.
     pub fn redirect(status: u16, location: impl Into<String>) -> Error {
-        assert!(
-            (300..=308).contains(&status),
-            "redirect status must be 3xx, got {status}"
-        );
         let location = location.into();
+        let status = match (300..=308).contains(&status) {
+            true => status,
+            false => {
+                crate::http::log(format_args!(
+                    "wisp: redirect status {status} to {location:?} is not 3xx, sent 303"
+                ));
+                303
+            }
+        };
         if !cx::valid_header("location", &location) {
             crate::http::log(format_args!(
                 "wisp: refused redirect {status} to {location:?}: CR/LF in the location"
@@ -2082,6 +2087,8 @@ mod tests {
         let e = super::Error::redirect(308, "/new");
         assert_eq!(e.status(), 308);
         assert!(e.header.is_some());
+        let e = super::Error::redirect(200, "/new");
+        assert_eq!((e.status(), e.header.is_some()), (303, true));
     }
 
     /// `.env` fills in what the process's environment lacks, never more.
