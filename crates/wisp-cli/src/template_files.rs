@@ -249,10 +249,32 @@ pub fn llms_full(repo: &Path) -> io::Result<Option<String>> {
     let mut out = reference(&read_text(&repo.join("llms/AGENTS.md"))?);
     for (slug, path) in files {
         out.push_str(&format!("\n\n<!-- docs/{slug}.md -->\n\n"));
-        out.push_str(body(&read_text(&path)?).trim());
+        out.push_str(prose(body(&read_text(&path)?)).trim());
         out.push('\n');
     }
     Ok(Some(out))
+}
+
+/// A docs page as an agent reads it: a line that is only a layout wrapper
+/// (`<div …>` or `</div>`, outside code) is left out, and so is the blank
+/// line it leaves doubled; they cost tokens and say nothing.
+fn prose(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut code = false;
+    for line in text.split_inclusive('\n') {
+        let t = line.trim();
+        if t.starts_with("```") {
+            code = !code;
+        } else if !code {
+            let wrapper =
+                t == "</div>" || (t.starts_with("<div") && t.ends_with('>') && !t.contains("</"));
+            if wrapper || (t.is_empty() && (out.is_empty() || out.ends_with("\n\n"))) {
+                continue;
+            }
+        }
+        out.push_str(line);
+    }
+    out
 }
 
 /// Writes `text` to `path` unless it is there already.
@@ -264,4 +286,15 @@ pub fn write_if_changed(path: &Path, text: &str) -> io::Result<()> {
         fs::create_dir_all(parent)?;
     }
     fs::write(path, text)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn prose_drops_layout_wrappers_not_code() {
+        let page = "Intro.\n\n<div class=\"table-wrap\">\n\n| a |\n|---|\n\n</div>\n\nAfter.\n\n```html\n<div class=\"x\">\n\n</div>\n```\n";
+        let want =
+            "Intro.\n\n| a |\n|---|\n\nAfter.\n\n```html\n<div class=\"x\">\n\n</div>\n```\n";
+        assert_eq!(super::prose(page), want);
+    }
 }

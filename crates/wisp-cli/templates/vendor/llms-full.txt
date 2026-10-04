@@ -1493,7 +1493,7 @@ replaceState('', { tab: 3 })         // this entry's state ('' keeps the URL)
 - A component instance on an element the morph keeps keeps its state and gets the new `data`. `data-wisp-reset` on an element around it starts it fresh.
 - Global stores (`store`, `persisted`) are module state: they outlive every navigation.
 - Prefetch on hover (60 ms) and touch; `data-wisp-preload="off"` opts out.
-- Scroll is restored; focus moves to `[autofocus]`.
+- Scroll is restored; focus moves to `[autofocus]`. A navigation lands at once, as a page load does, even under `scroll-behavior: smooth`, which still smooths same-page `#` links.
 - View transitions when available. `data-wisp-notransition` on a link, or on `<body>` for the app, skips them; reduced motion skips them too.
 - `data-wisp-reload` on a link or parent forces a full load. Links with `target`, `download`, `rel="external"` and `/_app/` are left alone.
 - `pushState(url, state)` (shallow routing, for tabs and modals) adds an entry at `url` (`''`: this one) and loads nothing; `page.value.state` is reactive (`{}` on other entries). Back/forward restores it with no request; a reload keeps it only at its URL.
@@ -3643,8 +3643,6 @@ Every feature passes four gates: fast (no cost for apps that don't use it), chea
 
 Welcome to the Wisp docs. This page gives you a tour of the concepts you will use every day.
 
-<div class="learn">
-
 **You Will Learn**
 
 - How to make an app and run it
@@ -3653,8 +3651,6 @@ Welcome to the Wisp docs. This page gives you a tour of the concepts you will us
 - How to handle a form with validation
 - How to save data in a table
 - How to build and deploy
-
-</div>
 
 ## Create an App
 
@@ -4002,8 +3998,6 @@ let post = posts::POSTS.iter().find(|p| p.slug == slug).or_404()?;
 
 You will build a guestbook: visitors sign it with a name and a message, and every note is kept across restarts. Each step shows the exact file to write. No Wisp knowledge is assumed, but you should be able to read Rust.
 
-<div class="learn">
-
 **You Will Learn**
 
 - How a folder becomes a page
@@ -4012,8 +4006,6 @@ You will build a guestbook: visitors sign it with a name and a message, and ever
 - How to split markup into a component
 - How to add state in the browser
 - How to test the app and build one binary
-
-</div>
 
 ## Set Up
 
@@ -4269,8 +4261,6 @@ A guestbook has a form, so it needs a server: `wisp build --static` suits pages 
 
 ## Recap
 
-<div class="recap">
-
 You built a small app with Wisp. You learned that:
 
 - A folder under `src/routes` is a URL, and `+page.wisp` is the page.
@@ -4280,8 +4270,6 @@ You built a small app with Wisp. You learned that:
 - A component in `src/components` takes `{@props}` and may carry its own style and script.
 - A `<script>` with `$state` adds browser behavior, and the page works without it.
 - `wisp check`, `wisp test` and `wisp build` check, test and ship one binary.
-
-</div>
 
 ## Challenges
 

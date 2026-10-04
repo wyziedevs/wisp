@@ -64,7 +64,8 @@ function page({ online = true, scripts = [], vitals = null, views = null, main =
     requestIdleCallback: (f) => idle.push(f),
     scrollX: 0,
     scrollY: 0,
-    scrollTo: (...a) => calls.scroll.push(a),
+    // Navigations scroll instantly: `scrollTo({ left, top, behavior: 'instant' })`.
+    scrollTo: (o) => (assert.equal(o.behavior, 'instant'), calls.scroll.push([o.left, o.top])),
     HTMLAnchorElement: Anchor,
     HTMLFormElement: Form,
     FormData: class { constructor(f) { this.d = f.data; } [Symbol.iterator]() { return this.d[Symbol.iterator](); } },
