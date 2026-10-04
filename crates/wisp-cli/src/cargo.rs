@@ -7,6 +7,7 @@
 //! told against the template's own line, which is the one to fix.
 
 use crate::{git_head, term};
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use wisp_shared::json::{self, Json};
@@ -89,40 +90,96 @@ fn path_value(s: &str) -> Option<&str> {
     None
 }
 
-/// The commit of the framework checkout the app's `wisp` path dependency is
-/// in, from the files of that repository.
-fn path_commit(root: &Path) -> Option<String> {
+/// The framework checkout (the folder with `.git`) the app's `wisp` path
+/// dependency is in, if it is one.
+fn path_checkout(root: &Path) -> Option<PathBuf> {
     let toml = std::fs::read_to_string(root.join("Cargo.toml")).ok()?;
     let dep = root.join(wisp_path(&toml)?).canonicalize().ok()?;
     let repo = dep.ancestors().find(|d| d.join(".git").exists())?;
-    git_head::read(repo).map(|(commit, _)| commit)
+    Some(repo.to_path_buf())
 }
 
-/// What to say when this CLI is older than the `wisp` the app uses, if it
-/// is: by version for a locked one, by commit for one used by path (both
-/// say 0.1.0 there). `commit` is this CLI's, empty when unknown.
-fn stale(root: &Path, version: &str, commit: &str) -> Option<String> {
-    let lock = std::fs::read_to_string(root.join("Cargo.lock")).ok();
-    if let Some(app) = lock.as_deref().and_then(locked_wisp)
-        && triple(app) > triple(version)
-    {
-        return Some(format!(
-            "This CLI is older than the app's wisp ({version} vs {app}); run cargo install --path crates/wisp-cli"
-        ));
+/// The commits of a build stamp (`1234-abc1234`, see [`git_head::stamp`]).
+fn commits(stamp: &str) -> Option<u32> {
+    stamp.split('-').next()?.parse().ok()
+}
+
+/// What the app's `wisp` is: its locked version, and when it is used by path
+/// the checkout and that checkout's build stamp (empty when unknown).
+struct App {
+    version: String,
+    checkout: Option<PathBuf>,
+    stamp: String,
+}
+
+/// `None` when the app has no Cargo.lock yet, or none that says `wisp`.
+fn app_wisp(root: &Path) -> Option<App> {
+    let lock = std::fs::read_to_string(root.join("Cargo.lock")).ok()?;
+    let version = locked_wisp(&lock)?.to_string();
+    let checkout = path_checkout(root);
+    let stamp = checkout.as_deref().map(git_head::stamp).unwrap_or_default();
+    Some(App {
+        version,
+        checkout,
+        stamp,
+    })
+}
+
+/// What to say when this CLI is older than the app's `wisp`, if it is: that
+/// is a higher version, or the same one used by path from a checkout with
+/// more commits. `cli` is the CLI's version and build stamp.
+fn outdated(cli: (&str, &str), app: &App) -> Option<String> {
+    let same = triple(&app.version) == triple(cli.0);
+    let ahead = same
+        && app.checkout.is_some()
+        && matches!((commits(&app.stamp), commits(cli.1)), (Some(a), Some(c)) if a > c);
+    if triple(&app.version) <= triple(cli.0) && !ahead {
+        return None;
     }
-    let app = path_commit(root).filter(|app| !commit.is_empty() && app != commit)?;
+    let tell = |version: &str, stamp: &str| match stamp.is_empty() {
+        true => version.to_string(),
+        false => format!("{version}, build {stamp}"),
+    };
+    let fix = match &app.checkout {
+        Some(dir) => {
+            let dir = dir.display().to_string();
+            let dir = dir.strip_prefix(r"\\?\").unwrap_or(&dir);
+            format!("cargo install --path {dir}/crates/wisp-cli --force")
+        }
+        None => "cargo install wisp-cli --force".to_string(),
+    };
     Some(format!(
-        "This CLI was built from wisp {}, the app uses {}; run cargo install --path crates/wisp-cli",
-        &commit[..7.min(commit.len())],
-        &app[..7.min(app.len())],
+        "The wisp CLI is older than this app's wisp crate.\nCLI {}, app {}.\nUpdate it: {fix}\nWISP_NO_UPDATE_CHECK=1 silences this.",
+        tell(cli.0, cli.1),
+        tell(&app.version, &app.stamp),
     ))
 }
 
-/// Warns, once, when the app's wisp is not the one this CLI came from: its
-/// templates and checks may not know it. Never fails the command.
-pub fn warn_if_stale(root: &Path) {
-    if let Some(msg) = stale(root, env!("CARGO_PKG_VERSION"), env!("WISP_CLI_COMMIT")) {
-        term::warn(&msg);
+/// Before an app command: warns on stderr when the app's wisp is newer than
+/// this CLI (its templates and checks may not know it), and at a terminal
+/// asks whether to go on, `Err` for no. Without a terminal (CI, a pipe) it
+/// never waits. Silent when nothing can be told and with
+/// `WISP_NO_UPDATE_CHECK=1`. No network.
+pub fn check_updated(root: &Path) -> Result<(), String> {
+    if std::env::var_os("WISP_NO_UPDATE_CHECK").is_some_and(|v| !v.is_empty() && v != "0") {
+        return Ok(());
+    }
+    let cli = (env!("CARGO_PKG_VERSION"), env!("WISP_CLI_STAMP"));
+    let Some(msg) = app_wisp(root).and_then(|app| outdated(cli, &app)) else {
+        return Ok(());
+    };
+    term::warn_err(&msg);
+    let tty = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
+    if !tty || std::env::var_os("CI").is_some() {
+        return Ok(());
+    }
+    eprint!("  Continue anyway? [y/N] ");
+    let _ = std::io::stderr().flush();
+    let mut answer = String::new();
+    let _ = std::io::stdin().read_line(&mut answer);
+    match answer.trim().to_ascii_lowercase().as_str() {
+        "y" | "yes" => Ok(()),
+        _ => Err("Stopped: update the CLI, then run this again.".into()),
     }
 }
 
@@ -568,31 +625,64 @@ mod tests {
         assert_eq!(wisp_path("[package]\nwisp = { path = \"no\" }\n"), None);
     }
 
+    fn app(version: &str, checkout: bool, stamp: &str) -> App {
+        App {
+            version: version.into(),
+            checkout: checkout.then(|| PathBuf::from("/src/wisp")),
+            stamp: stamp.into(),
+        }
+    }
+
     #[test]
-    fn a_path_dependency_on_another_commit_is_told() {
-        const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        const B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-        let dir = std::env::temp_dir().join(format!("wisp-stale-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let (app, git) = (dir.join("app"), dir.join("wisp/.git"));
-        std::fs::create_dir_all(&app).unwrap();
-        std::fs::create_dir_all(dir.join("wisp/crates/wisp")).unwrap();
-        std::fs::create_dir_all(&git).unwrap();
-        std::fs::write(git.join("HEAD"), format!("{A}\n")).unwrap();
-        let toml = "[dependencies]\nwisp = { path = \"../wisp/crates/wisp\" }\n";
-        std::fs::write(app.join("Cargo.toml"), toml).unwrap();
-        // Same commit, an unknown one of ours, or nothing to compare: quiet.
-        assert_eq!(stale(&app, "0.1.0", A), None);
-        assert_eq!(stale(&app, "0.1.0", ""), None);
-        let told = stale(&app, "0.1.0", B).unwrap();
+    fn decides_whether_the_cli_is_outdated() {
+        let cli = ("0.1.0", "10-aaaaaaa");
+        // Equal, or the CLI is newer: quiet.
+        assert_eq!(outdated(cli, &app("0.1.0", false, "")), None);
+        assert_eq!(outdated(cli, &app("0.0.9", true, "99-b")), None);
+        assert_eq!(outdated(cli, &app("0.1.0", true, "10-aaaaaaa")), None);
+        // A newer version from the registry: the plain fix.
+        let told = outdated(cli, &app("0.2.0", false, "")).unwrap();
+        assert!(told.contains("CLI 0.1.0, build 10-aaaaaaa"), "{told}");
+        assert!(told.contains("app 0.2.0"), "{told}");
+        assert!(told.contains("cargo install wisp-cli --force"), "{told}");
+        assert!(told.contains("WISP_NO_UPDATE_CHECK=1"), "{told}");
+        // The same version by path: by commits.
+        let told = outdated(cli, &app("0.1.0", true, "12-bbbbbbb")).unwrap();
         assert!(
-            told.contains("bbbbbbb") && told.contains("aaaaaaa"),
+            told.contains("cargo install --path /src/wisp/crates/wisp-cli --force"),
             "{told}"
         );
-        std::fs::write(git.join("HEAD"), "garbage").unwrap();
-        assert_eq!(stale(&app, "0.1.0", B), None);
+        assert_eq!(outdated(cli, &app("0.1.0", true, "9-bbbbbbb")), None);
+        // Another hash at the same count, or no count known: nothing to say.
+        assert_eq!(outdated(cli, &app("0.1.0", true, "10-bbbbbbb")), None);
+        assert_eq!(outdated(cli, &app("0.1.0", true, "")), None);
+        assert_eq!(outdated(("0.1.0", ""), &app("0.1.0", true, "5-b")), None);
+        // From the registry the same version has no stamp to compare.
+        assert_eq!(outdated(cli, &app("0.1.0", false, "99-b")), None);
+        // A newer version is told even with no stamps.
+        assert!(outdated(("0.1.0", ""), &app("0.1.1", true, "")).is_some());
+    }
+
+    #[test]
+    fn reads_what_the_app_locks() {
+        let dir = std::env::temp_dir().join(format!("wisp-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(app_wisp(&dir).is_none());
+        let lock = "[[package]]\nname = \"wisp\"\nversion = \"3.0.0\"\n";
+        std::fs::write(dir.join("Cargo.lock"), lock).unwrap();
+        let app = app_wisp(&dir).unwrap();
+        assert_eq!(app.version, "3.0.0");
+        assert!(app.checkout.is_none() && app.stamp.is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
-        assert_eq!(stale(&app, "0.1.0", B), None);
+    }
+
+    #[test]
+    fn a_stamp_is_commits_then_hash() {
+        assert_eq!(commits("1234-abc1234"), Some(1234));
+        assert_eq!(commits(""), None);
+        assert_eq!(commits("-abc"), None);
+        assert_eq!(git_head::stamp(Path::new("/no/such/checkout")), "");
     }
 
     #[test]

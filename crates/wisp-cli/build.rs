@@ -31,13 +31,14 @@ fn main() {
     // mcp`): the repository's AGENTS.md, less its part for work on Wisp,
     // and llms-full.txt (that and the docs site checkout, WISP_DOCS_DIR).
     let repo = template_files::repo(&base);
-    // The commit this CLI is built from, for the check that an app using the
-    // framework by path is not ahead of it. Empty when there is no checkout.
-    let (commit, watched) = git_head::read(&repo).unwrap_or_default();
+    // The build stamp (commits, short hash) of the checkout this CLI is built
+    // from, for the check that the app's wisp is not ahead of it. Empty when
+    // there is no checkout or no git.
+    let (_, watched) = git_head::read(&repo).unwrap_or_default();
     for file in watched {
         println!("cargo:rerun-if-changed={}", file.display());
     }
-    println!("cargo:rustc-env=WISP_CLI_COMMIT={commit}");
+    println!("cargo:rustc-env=WISP_CLI_STAMP={}", git_head::stamp(&repo));
     if let Ok(agents) = template_files::read_text(&repo.join("llms/AGENTS.md")) {
         println!(
             "cargo:rerun-if-changed={}",

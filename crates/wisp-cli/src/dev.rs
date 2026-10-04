@@ -43,7 +43,6 @@ const HEALTH_WAIT: Duration = Duration::from_secs(10);
 const SETTLE_MAX: Duration = Duration::from_secs(1);
 
 pub fn run(root: &Path, port: u16) -> Result<(), String> {
-    cargo::warn_if_stale(root);
     crate::fonts::build(root);
     let events =
         Events::start(port).map_err(|e| format!("Could not start the reload server: {e}."))?;

@@ -63,6 +63,16 @@ pub fn warn(msg: &str) {
     println!("  {} {msg}", yellow("!"));
 }
 
+/// [`warn`] on stderr, for a warning that must not mix into output a script
+/// reads. Lines after the first are indented under it.
+pub fn warn_err(msg: &str) {
+    let mut lines = msg.lines();
+    eprintln!("  {} {}", yellow("!"), lines.next().unwrap_or(""));
+    for line in lines {
+        eprintln!("    {line}");
+    }
+}
+
 /// A step under way: `  › Building`.
 pub fn step(msg: &str) {
     println!("  {} {msg}", dim("›"));

@@ -437,7 +437,7 @@ no-wait fast path off every route.
   + `.with_status(s) .with_header(n, v)`.
 - `Response::websocket(|ws| async move { while let Some(m) = ws.recv().await {
   ws.send(m).await?; } Ok(()) })`: binary, node, bun, deno, cloudflare, pages;
-  vercel, netlify, lambda, tower answer 501 (docs/deploy.md). On the edge a
+  vercel, netlify, lambda, tower answer 501 (https://wispweb.dev/docs/deploy). On the edge a
   connection lives in one instance: no state shared by connections (a Durable
   Object's job on Cloudflare); `wisp::channel` is native only.
 - State: `Table<T>`: `add(v)→id get(id) all() find(f) filter(f) update(id, f)
@@ -508,6 +508,10 @@ daemon; Windows: a startup scheduled task) · `wisp routes` · `wisp new-route /
 add|list button dialog` (accessible components into `src/components`; `clientonly`:
 `<ClientOnly fallback="…">` draws its children only in the browser) · `wisp
 lsp` · `wisp update-docs` · `wisp mcp` (`claude mcp add wisp -- wisp mcp`).
+Commands that work on an app warn on stderr first when the CLI is older than the
+app's `wisp` crate (Cargo.lock version, or for a `path` dependency its git commit
+count) and ask `Continue anyway? [y/N]` at a terminal; CI and pipes go on. Fix:
+`cargo install wisp-cli --force`; `WISP_NO_UPDATE_CHECK=1` silences it.
 Docs: https://wispweb.dev/docs (client, api, data, auth, serve, deploy,
 embed), the design and tokens pages, or llms-full.txt (this file and the site's pages).
 
