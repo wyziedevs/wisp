@@ -224,7 +224,7 @@ fn builds_serves_and_follows_the_files() {
     has(&e, &["src/routes/+page.wisp:2:4: unclosed {"]);
     events.next(
         "Build Failed
-data: src/routes/+page.wisp, line 2.",
+data: Error in src/routes/+page.wisp on line 2.",
     );
     events.next("Template Check");
     assert!(get(&addr, "/").1.contains("<h1>second</h1>"));
@@ -280,7 +280,7 @@ data: src/routes/+page.wisp, line 2.",
     dev.wait_for("Build failed with 1 error.");
     events.next(
         "Build Failed
-data: src/hooks.rs, line 2.",
+data: Error in src/hooks.rs on line 2.",
     );
     events.next("mismatched types");
     assert_eq!(get(&addr, "/about").0, 200);
@@ -297,7 +297,7 @@ data: src/hooks.rs, line 2.",
     dev.wait_for("Build failed with 2 errors.");
     events.next(
         "Build Failed
-data: 2 errors. The first is in src/hooks.rs, line 2.",
+data: 2 errors. The first is in src/hooks.rs on line 2.",
     );
     write(
         &app,

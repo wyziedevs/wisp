@@ -301,9 +301,9 @@ fn place(e: &str) -> Option<(String, usize)> {
 fn summary(first: Option<(String, usize)>, count: usize) -> String {
     match first {
         Some((file, line)) if count > 1 => {
-            format!("{count} errors. The first is in {file}, line {line}.")
+            format!("{count} errors. The first is in {file} on line {line}.")
         }
-        Some((file, line)) => format!("{file}, line {line}."),
+        Some((file, line)) => format!("Error in {file} on line {line}."),
         None => String::new(),
     }
 }
