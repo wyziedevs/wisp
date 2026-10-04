@@ -5,7 +5,7 @@ Wisp's wasm build against Hono, SvelteKit (adapter-node) and Next.js
 `GET /` ("hello", text), `GET /list` (HTML, 50 escaped items), `GET /json`; and the
 realistic routes at the end.
 `apps/` has the four apps. Load: `oha`, 10 s, 64 connections, 3 s warmup, median
-of 3. Deno is measured at the end of this file; Bun is not installed here.
+of 3. Deno and Bun are measured at the end of this file.
 
 Setup (from a bench dir, say `C:/wb`):
 
@@ -239,7 +239,7 @@ there would first have to parse HTTP in JS (not built, not measured).
 Machine: Windows 10 Home 19045, AMD Ryzen 7 7800X3D (8 cores, 16 threads). Node 26.1.0,
 Deno 2.5.2, workerd 1.20261001.1 (the binary under wrangler 4.147.0), Hono 4.13.12,
 @hono/node-server 2.1.3, oha 1.16.0. Bun is not installed on this machine (no binary
-found; not downloaded), so `bun.mjs` is unmeasured. Bench app: `apps/wisp` built by this
+found; not downloaded; measured later, see Bun below). Bench app: `apps/wisp` built by this
 tree's `wisp` for each target; `apps/hono`. c=64, 10 s runs, 3 s warmup, **median of 5**,
 cold start median of 9; Wisp and Hono alternate within every route (`ab.mjs` for Node and
 Deno, `workerd.mjs` for workerd). The machine was not idle: an unrelated app held about
@@ -258,7 +258,8 @@ req/s (higher is better), Wisp / Hono:
 | Node, `node:http` (`WISP_NODE_HTTP=1`) | 46,129 / 54,327 | 6,084 / 1,873 | 16,850 / 19,677 | 52,128 / 46,760 | 72 / 83 |
 | Deno, raw sockets | 118,877 / 92,507 | 6,426 / 2,022 | 9,027 / 5,702 | 93,841 / 64,674 | 64 / 51 |
 | Deno, `Deno.serve` | 72,972 / 92,507 | 3,875 / 2,022 | 5,869 / 5,702 | 50,809 / 64,674 | 55 / 51 |
-| Bun (raw, `Bun.serve`) | not measured: Bun is not installed | | | | |
+| Bun, raw sockets | 133,387 / 127,725 | 9,287 / 3,149 | 20,017 / 19,549 | 53,876 / 36,407 | 33 / 34 |
+| Bun, `Bun.serve` (`WISP_NODE_HTTP=1`) | 83,345 / 127,725 | 8,521 / 3,149 | 18,703 / 19,549 | 40,962 / 36,407 | 36 / 34 |
 
 workerd's `/` row was a separate 5 x 10 s run after the other three (the `workerd.mjs`
 route filter swallowed `/` the first time), both apps in it alternating; its cold start
@@ -307,8 +308,8 @@ code is the client's, or 1000 for 1005/1006). Verified on workerd: `1: hello`, `
   `push_str`): fastest of 40 x 2000, six alternating pairs, base 44.9 to 50.7 us, new
   46.7 to 51.3 us: no gain, dropped. What is left in the 42 us is `format!` for `user-N`
   and `tN` (about 30% of the profile above), allocation and drops (20%).
-- **workerd cold start: 39 vs 24 to 27 ms.** `app.wasm` is 627 KB now (540 KB when 27 ms
-  was measured), and V8 compiles it and its first calls lazily; not taken apart again.
+- **workerd cold start: 39 vs 24 to 27 ms.** Taken apart below: about 7 ms is the wasm module
+  being there (not its size), 7 ms the first request; a 25 KB smaller wasm moved nothing.
 - **Deno through `Deno.serve`: -21%** on `/` and `/params` (72,973 vs 92,507; 50,809 vs
   64,674), ahead on `/list1000` (1.9x) and level on `/json-big`. The shim costs 2.4 us a
   request over a bare `Request` + `Response` (above), and Hono's request is 10.8 us at that
@@ -317,3 +318,42 @@ code is the client's, or 1000 for 1005/1006). Verified on workerd: `1: hello`, `
   default raw path is 1.9x Hono there.
 - **json-big on Node raw is +6% only** (20,812 vs 19,677): the same serializer, with no
   workerd tax, against V8's `JSON.stringify`.
+
+### Bun, and the wasm that grew (main c3d610b, 2026-10-04)
+
+Bun 1.4.2, same method as the Deno rows (`ab.mjs --group bun`, alternating, median of 5 x 10 s,
+c=64, cold start median of 9; `hono/bun.ts` is `Bun.serve({ fetch: app.fetch })`). Wisp / Hono
+rows are in the table above. Raw sockets win every route (+4% on `/`, 3.0x `/list1000`, +2%
+`/json-big`, +48% `/params`); nothing to fix. `Bun.serve` loses on `/` (-35%: its shim costs
+more per request than Bun's own `Response` path, as on Deno) and wins the rest; raw is the default.
+
+Wasm size, the bench app, stripped, opt-level 3, built at successive commits (the file went
+540,040 at bc5ce22 to 582,857 at c3d610b; the 627 KB quoted above did not reproduce: this
+app builds to 582,857 at c3d610b). By symbol sizes of the unstripped builds: removing the admin/blob/idem code
+(a56d2f9) took it to 488,775; jobs on the edge (09b87c5) put 100 KB back at that moment
+(`wisp::edge` +14 KB, BTreeMap code +27 KB, admin +12 KB), later trims took some away; edge
+WebSockets (13f6851) +29 KB; i18n (`seo`, `export`) +5 KB. The code that is only for
+Node/Bun/Deno, the server loop over raw connections (`edge::connection`, `Raw`, the
+`wisp_conn_*` exports, the raw WebSocket frames), was linked into every build: 43 KB.
+`wisp build` now sets `WISP_REQUEST_ONLY=1` for Cloudflare, Pages, Vercel and Netlify (read by
+`crates/wisp/build.rs`, a `cfg`; an older `wisp` ignores it), which leaves it out:
+
+| | before | after |
+|---|---|---|
+| bench app, Cloudflare build, opt 3 | 584,353 | 541,063 |
+| tests app (wasm32 release, stripped) | 1,814,667 | 1,772,227 |
+
+Native `.text` of the tests app is unchanged (the edit is `cfg(wasm32)`; two builds of
+main differ from each other in the same few functions, mine equals one of them).
+Node, Bun and Deno builds are as before. `tests/wasm-size.sh` (a CI step) fails over 1,810,000
+bytes (the tests app after the cut, +2%).
+
+workerd cold start, taken apart (process start to first response, median of 9, three rounds,
+alternating; the machine is bimodal, 25 or 32 ms for the same bytes, so only the sums mean
+something): an empty worker 23, the same plus the (unused) `app.wasm` as a module 31 to 32,
+the bridge module alone 24, Wisp end to end 39 (before and after the cut), Hono 27. So: module
+load 7 to 9 ms, first request (instantiate, `main`/init, the request path compiled on first
+call) 6 to 7 ms. In Node (lazy compile, same V8): compile 0.8 ms, instantiate 0.15,
+env + `main` 1.7, first request 3.8 beyond that, second 0.5. Module load does not follow
+size: the opt-level `s` wasm (433 KB) loaded in 25 to 31 ms against 31 to 32 for opt 3 (559 KB),
+within the noise. Gate: size only (`tests/wasm-size.sh`); a time bound would flake on this.

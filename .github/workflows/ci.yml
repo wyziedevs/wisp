@@ -18,3 +18,5 @@ jobs:
       - run: cargo test --workspace
       # Native-only code must not leak into edge builds.
       - run: cargo clippy -p wisp-test-app --all-targets --target wasm32-unknown-unknown -- -D warnings
+      # The edge wasm stays under its size budget (tests/wasm-size.sh).
+      - run: sh tests/wasm-size.sh

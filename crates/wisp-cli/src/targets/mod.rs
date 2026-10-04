@@ -129,7 +129,12 @@ pub fn build(root: &Path, host: &str, edge: bool, out: &Path) -> Result<(), Stri
     let strip = ("CARGO_PROFILE_RELEASE_STRIP", "symbols");
     // The fastest code (opt-level 3, about 180 KB gzipped) fits every limit but
     // Vercel's and Netlify's edge functions: `s` is as small as `z`, and faster.
+    // The hosts that hand over whole requests, not sockets: the wasm leaves
+    // out the server loop for raw connections (25 KB; see `wisp/build.rs`).
+    let whole = ("WISP_REQUEST_ONLY", "1");
     let env: &[(&str, &str)] = match host {
+        "vercel" | "netlify" if edge => &[("CARGO_PROFILE_RELEASE_OPT_LEVEL", "s"), strip, whole],
+        "cloudflare" | "pages" | "vercel" | "netlify" => &[strip, whole],
         _ if edge => &[("CARGO_PROFILE_RELEASE_OPT_LEVEL", "s"), strip],
         "lambda" if std::env::var_os(LINKER).is_none() => &[(LINKER, "rust-lld"), strip],
         _ => &[strip],
@@ -148,7 +153,7 @@ pub fn build(root: &Path, host: &str, edge: bool, out: &Path) -> Result<(), Stri
                 "Building the edge function for {} routes",
                 edges.len()
             ));
-            let env = [("CARGO_PROFILE_RELEASE_OPT_LEVEL", "s"), strip];
+            let env = [("CARGO_PROFILE_RELEASE_OPT_LEVEL", "s"), strip, whole];
             let b = cargo::build_for(root, true, false, &["--target", target], &env);
             let exe = b
                 .exe

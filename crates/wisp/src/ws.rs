@@ -597,6 +597,7 @@ mod edge {
     use std::time::Duration;
 
     /// What an unread connection may hold beyond the largest message.
+    #[cfg(not(request_only))]
     const SLACK: usize = 64 * 1024;
 
     pub(crate) struct Sock {
@@ -666,6 +667,7 @@ mod edge {
         }
 
         /// Bytes from the client (a raw connection).
+        #[cfg(not(request_only))]
         pub(crate) fn feed(&self, bytes: &[u8]) {
             let mut st = self.state();
             let held = st.inbox.buf.len() - st.inbox.at;
@@ -741,7 +743,7 @@ mod edge {
                     return Err(Gone);
                 }
                 st.closed = op == CLOSE;
-                if self.host {
+                if self.host || cfg!(request_only) {
                     host::ws_write(self.id, op, payload);
                     false
                 } else {
@@ -791,7 +793,7 @@ mod edge {
         /// with 1001; a host's socket keeps its own time.
         pub async fn recv(&self) -> Option<Message> {
             let sock = &*self.0;
-            let idle = if sock.host {
+            let idle = if sock.host || cfg!(request_only) {
                 Duration::ZERO
             } else {
                 crate::settings().ws_idle

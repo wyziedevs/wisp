@@ -72,6 +72,7 @@
 // numbers; memory crosses only as buffers Rust owns and hands out by address.
 #![allow(unsafe_code)]
 
+#[cfg(not(request_only))]
 use crate::http::edge_conn::{Raw, Step, Stream, Upgraded};
 use crate::ws::Sock;
 use crate::{App, Reply, Request};
@@ -232,16 +233,19 @@ const INIT: u32 = u32::MAX;
 
 static HANDLER: OnceLock<Handler> = OnceLock::new();
 /// Starts the task of a connection that has bytes.
+#[cfg(not(request_only))]
 static DRIVE: OnceLock<fn(u32, Raw) -> Task> = OnceLock::new();
 
 /// A connection's task is `CONN` and its id.
 const CONN: u32 = 1 << 30;
 /// What a client may send while its connection waits on the app: more is
 /// a flood, and the connection is closed.
+#[cfg(not(request_only))]
 const AHEAD: usize = 1 << 20;
 
 /// A connection: idle (its `Raw` here) or being driven (the task has it,
 /// and what arrives meanwhile waits in `inbox`).
+#[cfg(not(request_only))]
 struct Conn {
     raw: Option<Raw>,
     inbox: Vec<u8>,
@@ -251,6 +255,7 @@ struct Conn {
 
 thread_local! {
     static IN: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    #[cfg(not(request_only))]
     static CONNS: RefCell<HashMap<u32, Conn>> = RefCell::new(HashMap::new());
     /// WebSockets a host accepted, by request.
     static SOCKS: RefCell<HashMap<u32, Arc<Sock>>> = RefCell::new(HashMap::new());
@@ -336,6 +341,7 @@ fn start_request(id: u32, len: usize, lazy: bool) {
 }
 
 /// Host export: a connection `id` (a WebSocket upgrade) opened; its first `len` bytes are in the input buffer.
+#[cfg(not(request_only))]
 #[unsafe(no_mangle)]
 pub extern "C" fn wisp_conn_open(id: u32, len: usize) {
     let at = IN.with_borrow(|b| std::str::from_utf8(&b[..len]).map_or(LOCAL, peer));
@@ -352,6 +358,7 @@ pub extern "C" fn wisp_conn_open(id: u32, len: usize) {
 }
 
 /// Host export: `len` more bytes from connection `id` are in the input buffer.
+#[cfg(not(request_only))]
 #[unsafe(no_mangle)]
 pub extern "C" fn wisp_conn_data(id: u32, len: usize) {
     let idle = CONNS.with_borrow_mut(|c| {
@@ -382,6 +389,7 @@ pub extern "C" fn wisp_conn_data(id: u32, len: usize) {
 }
 
 /// `wisp_conn_close`: the client left. With `end`, the app ends it.
+#[cfg(not(request_only))]
 #[unsafe(no_mangle)]
 pub extern "C" fn wisp_conn_close(id: u32, end: bool) {
     let conn = CONNS.with_borrow_mut(|c| c.remove(&id));
@@ -399,12 +407,14 @@ pub extern "C" fn wisp_conn_close(id: u32, end: bool) {
 }
 
 /// Host export: the host can take more of connection `id`'s output.
+#[cfg(not(request_only))]
 #[unsafe(no_mangle)]
 pub extern "C" fn wisp_conn_pull(id: u32) {
     done(&PULLS, CONN + id);
 }
 
 /// Sends what `raw` wrote; false when the client is behind.
+#[cfg(not(request_only))]
 fn flush(id: u32, raw: &mut Raw) -> bool {
     let w = raw.out();
     let ok = w.is_empty() || conn_write(id, w.as_ptr(), w.len()) != 0;
@@ -414,6 +424,7 @@ fn flush(id: u32, raw: &mut Raw) -> bool {
 
 /// The task of connection `id`, with bytes in `raw`: answers them, and what
 /// comes while it does, then hands `raw` back to the connection.
+#[cfg(not(request_only))]
 async fn connection<A: App>(id: u32, mut raw: Raw) {
     loop {
         Ready.await;
@@ -665,6 +676,9 @@ pub(crate) fn start<A: App>() {
     if HANDLER.set(request::<A>).is_err() {
         return;
     }
+    // A build for a host that hands over whole requests never drives a raw
+    // connection: the server loop it would link is left out.
+    #[cfg(not(request_only))]
     let _ = DRIVE.set(|id, raw| Box::pin(connection::<A>(id, raw)));
     PLAIN.set(!A::BEFORE && !A::AFTER && !A::REROUTE);
     let init = async {
