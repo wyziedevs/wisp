@@ -468,7 +468,8 @@ no-wait fast path off every route.
 `*.stories.wisp`) · `wisp test [--browser]` · `wisp check [--types]` · `wisp
 fmt [--check]` · `wisp build` (`--static`, `--spa`, `--docker`, `--target
 cloudflare|pages|deno|vercel|netlify|node|bun|lambda|native` (`--edge` with
-vercel or netlify: their edge runtime), `--client ts`, `--sourcemap`, `--analyze`: per-route JS/CSS/wasm bytes, raw and
+vercel or netlify: their edge runtime; or per route, `const RUNTIME: wisp::Runtime =
+wisp::Runtime::Edge;` in its +page.rs/+server.rs: both functions from one app, other hosts ignore it), `--client ts`, `--sourcemap`, `--analyze`: per-route JS/CSS/wasm bytes, raw and
 gzip, no build) · `wisp
 deploy init <host>` (a GitHub Actions workflow; or `fly|render|railway`: that
 host's config) · `wisp service install|uninstall|start|stop|status [--user u]

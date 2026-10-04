@@ -158,6 +158,14 @@ file and the static files; no wasm-bindgen or other tool.
 
 Vercel and Netlify Edge: add `--edge` (`--target vercel --edge`, `--target netlify --edge`); the wasm app runs as a module (`opt-level = "s"`, for their size limits), Netlify skips `static/` via `excludedPath`. Edge limits apply.
 
+**Per route (Vercel, Netlify):** a route runs on the edge when its `+page.rs` or `+server.rs` says so; the rest stay on the Node function.
+
+```rust
+const RUNTIME: wisp::Runtime = wisp::Runtime::Edge;   // default: Node
+```
+
+With any Edge route, `wisp build --target vercel` (or `netlify`) writes both functions from the one app (the edge one built at `opt-level = "s"`) and routes each pattern to its own: `edge.func` beside `index.func` in `config.json`, or the edge function's `path` list. `static/` stays the CDN's. With no Edge route the output is unchanged. It must be a literal, and a layout cannot set it. Other hosts ignore it, and `--edge` puts every route there. The build stops, naming the route, if an Edge route uses what WebAssembly lacks (`std::fs`, `std::thread`, `std::process`, `std::net`, websockets).
+
 The `node`, `bun` and local `deno` servers read raw sockets and the app's own
 HTTP/1.1 parser answers (pipelining, keep-alive, chunked bodies, 413, 431 and
 each route's `BODY_LIMIT`, as the native server has them), with no per-request
