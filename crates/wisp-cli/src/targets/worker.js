@@ -9,7 +9,9 @@ let app;
 // instance of the module shares that code. A throwaway instance answers one
 // request while the worker loads (during the TLS handshake on Cloudflare), so
 // the first real request runs compiled code: 8 ms to 1.7 (bench/edge).
-wisp(module).fetch(new Request('https://wisp.invalid/_wisp/warm'), '').catch(() => {});
+// `WISP_WARM_UP` has the runtime answer it with no app code (no `init`,
+// hook, handler or log) and nothing a global scope may not do (I/O, random).
+wisp(module, { WISP_WARM_UP: '1' }).fetch(new Request('https://wisp.invalid/'), '').catch(() => {});
 
 // A WebSocket the app answered. The isolate holds it, so what the app keeps
 // across connections lives in this isolate alone (use a Durable Object for

@@ -536,6 +536,29 @@ fn request<A: App>(id: u32, bytes: Vec<u8>, lazy: bool) {
     spawn(id, Box::pin(task));
 }
 
+/// The task of request `id` in a warm-up instance, which a worker makes
+/// while it loads so that V8 compiles the request path before the first
+/// real request (V8 compiles wasm a function at its first call, and every
+/// instance of a module shares that code): the request is parsed, routed
+/// and answered through the host as any other, by no hook, handler, log
+/// or random number, which a worker's global scope does not allow.
+fn warming<A: App>(id: u32, bytes: Vec<u8>, _lazy: bool) {
+    let task = async move {
+        let reply = match view(&bytes) {
+            Some((method, target, peer, headers, body)) => {
+                let headers = headers.map(|(n, v)| (n, v.as_bytes()));
+                match crate::Cx::from_request::<A>(method, target, headers, body, peer) {
+                    Ok(mut cx) => crate::http::warm::<A>(&mut cx),
+                    Err(status) => Reply::plain(status),
+                }
+            }
+            None => Reply::plain(400),
+        };
+        finish(id, reply).await;
+    };
+    spawn(id, Box::pin(task));
+}
+
 /// The WebSocket of request `id`, which the app upgraded: the host is told
 /// (a reply of 101) and, once it has a socket, sends its messages. A host
 /// without `accept` (no `WISP_WS`) gets `refused`, the 501 `answer` made.
@@ -673,7 +696,15 @@ pub extern "C" fn wisp_poll() {
 /// `wisp::run` in the edge build: remembers the app and starts `init`.
 pub(crate) fn start<A: App>() {
     log_panics();
-    if HANDLER.set(request::<A>).is_err() {
+    // The host's warm-up instance (`WISP_WARM_UP=1`, see `warming`) runs
+    // no `init` and no hook: no app code at all.
+    let warm = env("WISP_WARM_UP").as_deref() == Some("1");
+    let handler: Handler = if warm { warming::<A> } else { request::<A> };
+    if HANDLER.set(handler).is_err() {
+        return;
+    }
+    if warm {
+        READY.set(1);
         return;
     }
     // A build for a host that hands over whole requests never drives a raw

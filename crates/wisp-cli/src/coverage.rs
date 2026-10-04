@@ -70,6 +70,7 @@ const ENV: [(&str, bool); 98] = [
     ("WISP_TAILWIND", false),
     ("WISP_TYPES", false),
     ("WISP_WS", false),
+    ("WISP_WARM_UP", false),
     // Wisp's own tests and tooling.
     ("WISP_CONF_UNSET", false),
     ("WISP_DOCS_DIR", false),

@@ -21,6 +21,11 @@ fn bridge_answers_every_status_a_response_can_carry() {
         .unwrap()
         .replace("../../src/targets/bridge.js", "./bridge.mjs");
     fs::write(dir.join("run.mjs"), script).unwrap();
+    // The Workers entry, its wasm a stand-in the fake instance ignores.
+    let worker = fs::read_to_string(format!("{here}/src/targets/worker.js"))
+        .unwrap()
+        .replace("import module from './app.wasm';", "const module = {};");
+    fs::write(dir.join("worker.mjs"), worker).unwrap();
     let out = Command::new("node")
         .arg(dir.join("run.mjs"))
         .output()

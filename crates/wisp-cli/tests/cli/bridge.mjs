@@ -4,6 +4,8 @@
 import { wisp } from '../../src/targets/bridge.js';
 
 const enc = new TextEncoder();
+const targets = [];
+const envs = []; // what each instance was given, in order
 globalThis.WebAssembly.instantiate = async (_, imports) => {
   const memory = new WebAssembly.Memory({ initial: 1 });
   const bytes = () => new Uint8Array(memory.buffer);
@@ -20,15 +22,19 @@ globalThis.WebAssembly.instantiate = async (_, imports) => {
     exports: {
       memory,
       wisp_buf: () => 0,
-      wisp_env() {},
+      wisp_env(len) {
+        envs.push(new TextDecoder().decode(bytes().slice(0, len)));
+      },
       main() {},
       wisp_current: () => 0xffffffff,
       wisp_poll() {},
       wisp_request(id, len) {
+        targets.push(new TextDecoder().decode(bytes().slice(0, len)).split(' ')[1]);
         target = new TextDecoder().decode(bytes().slice(0, len)).split(' ')[1];
         answer(id);
       },
       wisp_request_lazy(id, len) {
+        targets.push(new TextDecoder().decode(bytes().slice(0, len)).split(' ')[1]);
         target = new TextDecoder().decode(bytes().slice(0, len)).split(' ')[1];
         answer(id);
       },
@@ -52,6 +58,18 @@ for (const status of [200, 204, 205, 304]) {
     }
   }
 }
+// worker.js warms a throwaway instance at load, which global scope allows:
+// told `WISP_WARM_UP=1` (the runtime then runs no app code), with no random
+// number asked for.
+envs.length = 0;
+targets.length = 0;
+const random = crypto.getRandomValues;
+crypto.getRandomValues = () => bad.push('the warm-up asked for random values');
+await import('./worker.mjs');
+await new Promise((r) => setTimeout(r, 50));
+crypto.getRandomValues = random;
+if (envs.length !== 1 || !envs[0].split('\0').includes('WISP_WARM_UP=1')) bad.push(`warm-up env: ${JSON.stringify(envs)}`);
+if (targets.join() !== '/') bad.push(`warm-up requests: ${targets}`);
 if (bad.length) {
   console.error(bad.join('\n'));
   process.exit(1);

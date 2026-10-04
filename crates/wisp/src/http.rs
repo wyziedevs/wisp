@@ -2912,6 +2912,19 @@ fn route<A: App>(cx: &mut Cx) -> Option<usize> {
     Some(id)
 }
 
+/// The answer of an edge warm-up instance (`edge::warming`): the request
+/// routed and a page's headers set, by no app code (no `reroute`, hook or
+/// handler), so V8 has compiled that much before the first real request.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn warm<A: App>(cx: &mut Cx) -> Reply {
+    let found = A::route(cx.path()).is_some();
+    crate::headers::page(cx);
+    let mut reply = Reply::default();
+    reply.set_plain(if found { 204 } else { 404 }, "");
+    cx.send_headers(&mut reply.headers);
+    reply
+}
+
 /// The route of `path`, and its parameters. A path that ends in `/` is
 /// its route's without it too, when [`trailing_slash`] serves it: looked
 /// for only when the path itself matches nothing.
