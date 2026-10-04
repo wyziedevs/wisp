@@ -49,9 +49,44 @@ limit is 3 MB gzipped.
 | Node | node:http "hello" floor | 90,201 (1.2) | 90,508 (1.2) | 89,809 (1.2) |
 | Node | SvelteKit | 16,720 (6.9) | 5,773 (23.5) | 15,463 (7.7) |
 | Node | Next.js | 3,443 (78) | 861 (87) | 3,306 (86) |
-| workerd | Wisp | 1,735 (146) | 1,381 (196) | 1,692 (160) |
-| workerd | Hono | 1,597 (155) | 1,602 (154) | 1,841 (173) |
 
-`wrangler dev` caps both workerd rows near 1,500 to 2,000 req/s (its dev proxy
-is the limit, and runs vary by 15%), so read them as a tie. Other machine load
-moves the Node numbers by the same amount: run on a quiet machine.
+Other machine load moves the Node numbers by about 15%: run on a quiet machine.
+
+## workerd, without wrangler
+
+`wrangler dev` caps every app near 1.7k req/s (its dev proxy is the limit), so
+the Workers numbers come from the `workerd` binary itself (npm package
+`workerd`, run as `workerd serve config.capnp`). `workerd.mjs` writes the
+config (one worker, every `.js`/`.mjs`/`.wasm` of the folder as a module),
+starts both apps, and alternates oha runs between them so a busy machine hurts
+both alike. It reports req/s, p99 (ms), workerd's CPU microseconds per request
+(process time over the requests served, so it includes workerd's own HTTP work;
+a bare `new Response("hello")` worker costs about 45) and cold start (process
+start to the first complete response, median of 15).
+
+```sh
+(cd hono && npx wrangler deploy --dry-run --outdir ../hono-out)   # bundles Hono; rename app.js to app.mjs
+node workerd.mjs --workerd hono/node_modules/@cloudflare/workerd-windows-64/bin/workerd.exe \
+  --wisp wisp-cf --hono hono-out [--secs 10 --runs 3 --cold 15 --only wisp]
+```
+
+Windows 10, 16 cores, c=64, 10 s, median of 3; req/s (p99 ms), CPU us/request:
+
+| | `/` | `/list` | `/json` | cold start |
+|---|---|---|---|---|
+| Wisp before | 14,745 (32.5) 70 | 11,026 (35.4) 94 | 13,820 (31.3) 75 | 27 ms |
+| Wisp now | 17,813 (5.1) 59 | 15,153 (6.2) 67 | 17,165 (5.2) 60 | 28 ms |
+| Hono | 20,582 (4.5) 49 | 15,842 (7.9) 66 | 19,786 (27) 53 | 22 ms |
+
+What moved Wisp (`bridge.js` `serve`): a request without a body goes to the app
+synchronously and its Response is returned directly (no Promise, closure or
+joined copy of the request), the request text's bytes are cached by the text,
+and a response head becomes `new Response`'s init once. That cut p99 six-fold.
+Measured and dropped: `headers.forEach` (no faster), a string body instead of
+the Uint8Array (no faster). `strip` takes the wasm from 508 KB to 466 KB and
+`opt-level=s` to 373 KB, with no change in cold start: about 3 ms is V8
+compiling the module, and about 4 ms more is its first calls (`main`, then the
+first request's code, compiled on first use).
+
+Still behind Hono by 10 to 15% on `/` and `/json`: iterating the request's
+headers (about 2 us in workerd) and the wasm call are what Hono does not do.

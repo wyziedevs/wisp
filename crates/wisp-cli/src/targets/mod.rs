@@ -97,16 +97,15 @@ pub fn build(root: &Path, host: &str, edge: bool, out: &Path) -> Result<(), Stri
     let started = Instant::now();
     term::step(&format!("Building for {host} ({what})"));
     // Linked by Rust's own lld, which needs no C toolchain for Linux on any
-    // machine, and stripped: Lambda loads it on every cold start.
+    // machine, and stripped (every build): a host loads it on each cold start.
     const LINKER: &str = "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER";
     let strip = ("CARGO_PROFILE_RELEASE_STRIP", "symbols");
     // The fastest code (opt-level 3, about 180 KB gzipped) fits every limit but
     // Vercel's and Netlify's edge functions: `s` is as small as `z`, and faster.
     let env: &[(&str, &str)] = match host {
-        _ if edge => &[("CARGO_PROFILE_RELEASE_OPT_LEVEL", "s")],
+        _ if edge => &[("CARGO_PROFILE_RELEASE_OPT_LEVEL", "s"), strip],
         "lambda" if std::env::var_os(LINKER).is_none() => &[(LINKER, "rust-lld"), strip],
-        "lambda" => &[strip],
-        _ => &[],
+        _ => &[strip],
     };
     let b = cargo::build_for(root, true, false, &["--target", target], env);
     let app = b

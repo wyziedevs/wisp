@@ -160,6 +160,30 @@ async function stored(x, env, method, body) {
 
 const CONN = 1 << 30;
 
+// The answer to a `serve` request `c`: a Response, handed to the waiting
+// Promise or kept for `serve` to return. Response's constructor copies the
+// body, so the app's memory view is safe to pass.
+function webSink(c, h, body) {
+  const empty = c.empty || h.status < 200 || h.status === 204 || h.status === 304;
+  if (empty && h.stream) body.cancel(); // ends the app's stream
+  const r = new Response(empty ? null : body, (h.init ??= init(h)));
+  if (c.resolve) c.resolve(r);
+  else c.res = r;
+}
+// What `new Response` takes for a head, made once: a plain object is the
+// quickest way in, unless a name comes twice (`set-cookie`).
+function init({ status, headers: flat }) {
+  const record = {};
+  const list = [];
+  let twice = false;
+  for (let i = 0; i < flat.length; i += 2) {
+    twice ||= flat[i] in record;
+    record[flat[i]] = flat[i + 1];
+    list.push([flat[i], flat[i + 1]]);
+  }
+  return { status, headers: twice ? list : record };
+}
+
 // `module` is a compiled WebAssembly.Module; `env` the host's variables
 // (only strings are passed on). A panic fails its own request with a 500,
 // and later requests go to a fresh instance.
@@ -173,6 +197,8 @@ export function wisp(module, env = {}, sink) {
   let ready = null; // the instance that last answered: requests skip the awaits
   let next = 0;
   const seen = new Map();
+  const sent = new Map(); // request text -> its bytes, for `serve`
+  sink ??= webSink;
 
   async function start() {
     // `work`: timers and fetches under way, which `idle` waits out.
@@ -420,7 +446,40 @@ export function wisp(module, env = {}, sink) {
 
   // A web `Request` to a web `Response`: Workers, Deno, Netlify. `ctx` is
   // the host's context, whose `waitUntil` keeps background work alive.
-  async function serve(request, peer = '', ctx) {
+  // A request without a body goes straight to the app and, when the app
+  // answers at once, comes back as a Response with no Promise made.
+  function serve(request, peer = '', ctx) {
+    const x = ready;
+    const method = request.method;
+    const plain = method === 'GET' || method === 'HEAD'; // no `request.body` to look at
+    if (!x || x.retired || (!plain && request.body)) return slow(request, peer, ctx);
+    const url = request.url;
+    const s = url.indexOf('//') + 2;
+    const at = url.indexOf('/', s);
+    let h = `${method} ${at < 0 ? '/' : url.slice(at)} ${peer}\n`;
+    let host = false;
+    let body = false;
+    for (const [k, v] of request.headers) {
+      h += `${k}: ${v}\n`;
+      if (k === 'host') host = true;
+      else if (k === 'transfer-encoding' || (k === 'content-length' && v !== '0')) body = true;
+    }
+    if (plain && body && request.body) return slow(request, peer, ctx); // a GET that has one
+    if (!host) h += `host: ${url.slice(s, at < 0 ? url.length : at)}\n`;
+    let bytes = sent.get(h);
+    if (!bytes) {
+      if (sent.size > 64) sent.clear();
+      sent.set(h, (bytes = enc.encode(h + '\n')));
+    }
+    const c = { res: null, resolve: null, empty: method === 'HEAD' };
+    const id = (next = (next + 1) & 0x7fffffff);
+    x.pending.set(id, c);
+    x.call(x.exports.wisp_request, id, x.write(bytes));
+    if (x.work) ctx?.waitUntil?.(x.idle());
+    return c.res ?? new Promise((resolve) => (c.resolve = resolve));
+  }
+
+  async function slow(request, peer, ctx) {
     const url = new URL(request.url);
     const headers = [...request.headers];
     if (!request.headers.has('host')) headers.push(['host', url.host]);
