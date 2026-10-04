@@ -372,6 +372,8 @@ struct Lang {
     keywords: &'static [&'static str],
     /// A capitalized word is a type (Rust, TypeScript).
     types: bool,
+    /// `#[derive(Debug)]` is an attribute (Rust).
+    attrs: bool,
 }
 
 const RUST: Lang = Lang {
@@ -385,6 +387,7 @@ const RUST: Lang = Lang {
         "true", "type", "unsafe", "use", "where", "while",
     ],
     types: true,
+    attrs: true,
 };
 
 const JS: Lang = Lang {
@@ -437,6 +440,7 @@ const JS: Lang = Lang {
         "yield",
     ],
     types: true,
+    attrs: false,
 };
 
 const CSS: Lang = Lang {
@@ -445,6 +449,7 @@ const CSS: Lang = Lang {
     quotes: b"\"'",
     keywords: &["important", "inherit", "initial", "none", "auto"],
     types: false,
+    attrs: false,
 };
 
 const JSON: Lang = Lang {
@@ -453,6 +458,7 @@ const JSON: Lang = Lang {
     quotes: b"\"",
     keywords: &["true", "false", "null"],
     types: false,
+    attrs: false,
 };
 
 const BASH: Lang = Lang {
@@ -464,6 +470,7 @@ const BASH: Lang = Lang {
         "function", "return", "export", "local", "echo", "cd", "sudo",
     ],
     types: false,
+    attrs: false,
 };
 
 /// `code` with its keywords, strings, comments, numbers and types (or an
@@ -522,6 +529,16 @@ fn lex(lang: &Lang, code: &str) -> String {
             continue;
         }
         let c = b[i];
+        if lang.attrs
+            && c == b'#'
+            && let Some(open) = rest.find('[')
+            && rest[..open].trim_start_matches('#').is_empty()
+            && let Some(end) = close_bracket(&rest[open..])
+        {
+            span(&mut out, "a", &rest[..open + end + 1]);
+            i += open + end + 1;
+            continue;
+        }
         if lang.quotes.contains(&c) {
             let mut j = i + 1;
             while j < b.len() && b[j] != c {
@@ -594,6 +611,27 @@ fn wisp(code: &str) -> String {
         lex(&RUST, &body[..at]),
         markup(&body[at + 3..])
     )
+}
+
+/// The end of the `[...]` that `s` starts with, strings and nesting aside.
+fn close_bracket(s: &str) -> Option<usize> {
+    let (mut depth, mut quote, mut skip) = (0, false, false);
+    for (i, c) in s.char_indices() {
+        match c {
+            _ if skip => skip = false,
+            '\\' if quote => skip = true,
+            '"' => quote = !quote,
+            '[' if !quote => depth += 1,
+            ']' if !quote => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// The end of the `{...}` that `s` starts with, strings and nesting aside.
