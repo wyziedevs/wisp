@@ -181,7 +181,7 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
 | `{@const x = expr}` | let |
 | `{#snippet row(a, b)}…{/snippet}` `{@render row(x, 1)}` | local markup fn |
 | `{@pager posts}` | Newer/Older links of a `Table::page` |
-| `<head>…</head>` | into the document head; a top-level `<title>` goes there alone |
+| `<head>…</head>` | into the document head; a top-level `<title>` goes there alone; one `<title>` per page: the innermost page or layout with one writes it |
 | `<slot />` or `{@render children()}` | layout/component slot |
 | `cx` | the request (`&Cx`) in pages, layouts, error pages |
 
@@ -247,7 +247,8 @@ first). Not its Rust (`db.rs`, `hooks.rs`) or `fonts.txt`.
 ## Markdown pages
 
 `+page.md` with `---` front matter (`title`, `layout: Post` a component the
-page is the children of, any field `date: 2026-10-01`); text may use
+page is the children of, any field `date: 2026-10-01`; `title` is the
+`<title>` unless a layout writes one, which can wrap it from `wisp::pages`); text may use
 `<Card>` between blank lines. Built at build time; fenced code is
 highlighted (`hl-k hl-s hl-c hl-n hl-t hl-a`; color them); headings get
 ids (`## Install and Run` is `#install-and-run`). `noindex: true`
@@ -435,7 +436,10 @@ no-wait fast path off every route.
   `std::error::Error` via `?` → 500.
 - `Response::`: `json_of(&v) created(&v) text html empty(s) download(name,
   bytes) file_in(dir, name).await stream ndjson events websocket`
-  + `.with_status(s) .with_header(n, v)`.
+  + `.with_status(s) .with_header(n, v)`. A single-valued header
+  (`content-type cache-control location etag`) set again replaces the
+  first, here, on `Error` and in `cx.set_header`; `content-length` and
+  `transfer-encoding` are the server's.
 - `Response::websocket(|ws| async move { while let Some(m) = ws.recv().await {
   ws.send(m).await?; } Ok(()) })`: binary, node, bun, deno, cloudflare, pages;
   vercel, netlify, lambda, tower answer 501 (https://wispweb.dev/docs/deploy). On the edge a
@@ -843,7 +847,7 @@ Each param but `cx` is read by name: route param, then form field or JSON object
 | `Option<T>` | JSON, 204 for `Some(())`, 404 for `None` |
 | any of these in a `Result` | same, or the error |
 
-`Response::created(&v)` is 201; `Response::json_of(&v).with_status(202)`; `.with_header(name, value)` adds a header (also on `Error`). In a page, `cx.set_status(404)` sets the status.
+`Response::created(&v)` is 201; `Response::json_of(&v).with_status(202)`; `.with_header(name, value)` adds a header (also on `Error`, and `cx.set_header` in a page). A single-valued one (`content-type`, `cache-control`, `location`, `etag`, any case) replaces what was set before instead of going out twice: `Response::text(xml).with_header("content-type", "application/rss+xml")` sends one `content-type`. `content-length` and `transfer-encoding` are the server's and are left out. In a page, `cx.set_status(404)` sets the status.
 
 Query: `cx.query("q")`, `cx.query_or("page", 1)` (parsed, else the default), `cx.query_string()` (raw, no `?`). `cx.request_id()` is the request's id, sent back as `x-request-id`.
 
@@ -1038,7 +1042,7 @@ Distributed `RateLimit` waits for the relay (S2). Automatic `/_wisp/oauth/...` r
 
 <!-- docs/benchmarks.md -->
 
-Wisp's first rule is zero cost on the request hot path. This page has no numbers, only what is measured and how to run it.
+Wisp's first rule is zero cost on the request hot path. This page is what is measured and how to run it. The measured numbers, losses included, are on the [home page](/#measured) and in [`bench/tfb/RESULTS.md`](https://github.com/wyziedevs/wisp/blob/main/bench/tfb/RESULTS.md).
 
 ```bash
 git clone https://github.com/wyziedevs/wisp
@@ -2178,11 +2182,11 @@ Text, and a component:
 </Card>
 ```
 
-- Front matter is `name: value` lines (quotes optional). `title` (else the first `# heading`) is the `<title>`.
+- Front matter is `name: value` lines (quotes optional). `title` (else the first `# heading`) is the `<title>`, unless a layout above writes one: that layout reads it from `wisp::pages` and can wrap it (`Wisp: {title}`).
 - `layout` names a component in `src/components` showing the page as its children; it gets each field its `{@props}` declare (`&str`/`String`, `bool`, a number, `Option` of one). A required field the page lacks, or a wrong type, is a build error.
 - `noindex: true` adds `<meta name="robots" content="noindex">`.
 - `{`/`}` in text and code become `&#123;`/`&#125;`, so no hole comes from them; raw HTML (components) is the template's own.
-- Fenced code is highlighted at build time by `wisp-build` (rust, js/ts, html, css, json, bash) as `<span class="hl-k|s|c|n|t|a">` (keyword, string, comment, number, type or tag, attribute) in `<pre><code class="language-x">`. Your CSS colors them; other languages keep the class, unhighlighted.
+- Fenced code is highlighted at build time by `wisp-build` (rust, js/ts, html, wisp, css, json, bash; a `wisp` block, or an `html` one that opens with `---`, shows its Rust block and its `{expressions}` as Rust) as `<span class="hl-k|s|c|n|t|a">` (keyword, string, comment, number, type or tag, attribute) in `<pre><code class="language-x">`. Your CSS colors them; other languages keep the class, unhighlighted.
 - `wisp::pages("blog")` gives a folder's `MdPage`s (`path`, `title`, `get("date")`), newest `date` first: `{#each wisp::pages("blog") as p}<a href={p.path}>{p.title}</a>{/each}`. A `static` slice the build wrote: no I/O, no allocation.
 
 ## Config Rules
@@ -2407,9 +2411,9 @@ A language server over stdio, in the CLI: JSON-RPC framed by hand, `wisp_shared:
 | Feature | What it does |
 |---|---|
 | Problems | On open and every change the buffer goes through the build's own parser and checks (`wisp_build::ide::check_file`: `---` block, template, component props against `src/components` as last read). On open and save the whole app is checked from disk as `wisp check` does, and its problem shows in its file, open or not. One problem per file (the compiler stops at the first). A panic in a request is answered as an error; the server goes on. |
-| Hover | A component's `{@props}`, a prop's type and default, directive and block docs, a route param's type, the `const` knobs (`CACHE`, `RATE_LIMIT`, `SSR`, ...), `<form fields>`, `action="?/x"`, `use:enhance`, the `data-wisp-*` attributes (tables in `lsp.rs`; a test fails when the reference shows one they lack). Rust items carry `///` docs (`#![deny(missing_docs)]` in `wisp`) for rust-analyzer. |
+| Hover | A component's `{@props}`, a prop's type and default, directive and block docs, a route param's type, the `const` knobs (`CACHE`, `RATE_LIMIT`, `SSR`, ...), `<form fields>`, `action="?/x"`, `use:enhance`, the `data-wisp-*` attributes, Rust attributes in a block (`#[action]`, `#[model]`, `#[validate(..)]` and each rule, `#[derive(Rest)]`, `#[rest(..)]`, `#[json(..)]`, `#[unique]`) (tables in `lsp.rs`; a test fails when the reference shows one they lack). Rust items carry `///` docs (`#![deny(missing_docs)]` in `wisp`) for rust-analyzer. |
 | Go to definition | `<Card>` to its file, `'$lib/x.js'` to `src/lib/x.js`, a literal `href="/x"` to the route's `+page.wisp` (or `+page.rs`, `+server.rs`) |
-| Completion | Components (with required props), props, directives, `on:` events and modifiers, `{#...}` / `{:#...}` blocks, route paths in `href` |
+| Completion | Components (with required props), props, directives, `on:` events and modifiers, `{#...}` / `{:#...}` blocks, route paths in `href`, `#[` attributes in a block |
 | Formatting | `fmt.rs` on the buffer, one edit of the whole text (none when formatted) |
 
 Follow-up: cheap Rust checks inside the `---` block (rust-analyzer covers `.rs` files only).
@@ -3152,7 +3156,7 @@ Syntax | Compiles to
 `{#snippet row(item, i)}…{/snippet}` | Markup to render later, here or in a component
 `{@render row(x, 0)}` | Renders a snippet
 `<head>…</head>` or `<wisp:head>…</wisp:head>` | Appended to the document head
-`<title>…</title>` at top level | Same as in `<head>` (not an `<svg>`'s)
+`<title>…</title>` at top level | Same as in `<head>` (not an `<svg>`'s). One per page: of a page and its layouts the innermost that writes a `<title>` wins, decided at build time
 `{cx.path()}` | `cx`, the request (`&Cx`), in pages, layouts, error pages
 
 - Expressions are Rust passed to `rustc` verbatim, so type errors are real. Inside `<script>`, `<style>` and HTML comments there are no holes, so CSS and JS braces need no escaping. Comments are stripped.
@@ -3876,13 +3880,18 @@ Most app code is written by AI, so an app's cost is measured in tokens, and keep
 - a layout with a nav
 - a live search filtered in the browser
 
-`cargo run -p wisp-tokens` counts them (method below, in `bench/tokens/src/main.rs`, with characters / 4 beside it). A `@feature NAME` comment says whose its lines are; a file without one, as a generator writes it, is not counted, nor the `[package]` table `cargo new` writes. The Wisp app builds with the workspace, and its tests check each feature.
+`cargo run -p wisp-tokens` counts them (method below, in `bench/tokens/src/main.rs`, with characters / 4 beside it). A `@feature NAME` comment says whose its lines are; a file without one, as a generator writes it, is not counted, nor the `[package]` table `cargo new` writes.
+
+The Node apps: Nuxt is file routes, server routes in `server/api` and `useFetch`, the form posting with `$fetch`; Express renders EJS views with a shared header and footer and a small script for the search; React is a Vite app with React Router, `useState` and `fetch`, over a small Express API. Their generated `package.json`, `nuxt.config.ts` and `index.html` are not counted; the proxy line added to `vite.config.js` is. The Wisp app builds with the workspace, and its tests check each feature.
 
 | Stack | list | form | api | layout | search | data | setup | total | chars / 4 | files |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | **Wisp** | 58 | 89 | 31 | 60 | 111 | 115 | 0 | **464** | 283 | 6 |
 | SvelteKit 2 | 128 | 470 | 57 | 83 | 192 | 72 | 0 | 1002 | 644 | 9 |
 | Next.js 15 | 107 | 439 | 44 | 108 | 241 | 71 | 0 | 1010 | 725 | 8 |
+| Nuxt 4 (Vue) | 96 | 472 | 22 | 96 | 158 | 71 | 0 | 915 | 623 | 8 |
+| React 19 (Vite + Express) | 108 | 560 | 32 | 268 | 191 | 161 | 102 | 1422 | 1023 | 8 |
+| Express 5 + EJS | 128 | 465 | 34 | 116 | 291 | 69 | 95 | 1198 | 724 | 7 |
 | Axum 0.8 + askama | 145 | 553 | 29 | 104 | 217 | 123 | 285 | 1456 | 1020 | 7 |
 | Actix Web 4 + tera | 164 | 565 | 46 | 104 | 237 | 123 | 292 | 1531 | 1061 | 7 |
 
@@ -3894,7 +3903,7 @@ Wisp's `data` is longer than JavaScript's: a Rust type with its fields' types an
 
 ## Method
 
-Counted: every file a developer (or an agent) writes by hand, beyond what the framework's generator gives, plus each file's path (writing a file means naming it, so two files cost more than one). Manifests (`Cargo.toml`, `package.json`, `Gemfile`) are left out everywhere. For Rails the generator commands are counted, since the agent must write them, and the lines it adds or changes in generated files. Rails' api is `rails g scaffold` in an `--api` app, which writes the controller; the same api written by hand is the last row.
+Counted: every file a developer (or an agent) writes by hand, beyond what the framework's generator gives, plus each file's path (writing a file means naming it, so two files cost more than one). Manifests (`Cargo.toml`, `package.json`) are left out everywhere.
 
 There is no tokenizer offline, so the count estimates a BPE code tokenizer (cl100k-like):
 
@@ -3905,7 +3914,7 @@ There is no tokenizer offline, so the count estimates a BPE code tokenizer (cl10
 
 Characters / 4, the usual rule of thumb, ranks the frameworks the same way.
 
-Competitor versions: SvelteKit 2 with Svelte 5 runes and `use:enhance`; Next.js 15 app router with server actions and `useActionState`; Nuxt 3 with server routes and `useFetch`; Axum 0.8 with maud and serde; FastAPI with Jinja2 and pydantic; Rails 8 with Active Record. The Wisp versions are built by a script, so every counted line compiles. The competitors' sources, `count.py` and `verify.py` are kept out of the repository, so its size stays Wisp's own.
+Competitor versions: SvelteKit 2 with Svelte 5 runes and `use:enhance`; Next.js 15 app router with server actions and `useActionState`; Nuxt 4 with server routes and `useFetch`; Express 5 with EJS; React 19 with Vite and an Express API; Axum 0.8 with askama; Actix Web 4 with tera. The Wisp versions are built by a script, so every counted line compiles. Every competitor app's source is in `bench/tokens/apps`.
 
 
 <!-- docs/tokens-apps.md -->
