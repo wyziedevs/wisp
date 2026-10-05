@@ -568,9 +568,31 @@ pub(crate) fn setup<A: App>() {
 #[cold]
 #[inline(never)]
 pub(crate) fn dropped(what: &str, name: &str, value: &str) {
-    log(format_args!(
-        "wisp: dropped {what} {name:?}={value:?}: a character it cannot hold"
-    ));
+    log(format_args!("{}", dropped_line(what, name, value)));
+}
+
+/// The line `dropped` logs. The value is never in it: a cookie's is often
+/// a session token, and either may be a visitor's megabyte. The name is
+/// cut to 64 bytes for the same reason.
+fn dropped_line(what: &str, name: &str, value: &str) -> String {
+    let cut = (0..=name.len().min(64))
+        .rev()
+        .find(|&i| name.is_char_boundary(i))
+        .unwrap_or(0);
+    format!(
+        "wisp: dropped {what} {:?} ({} byte value): a character it cannot hold",
+        &name[..cut],
+        value.len()
+    )
+}
+
+#[cfg(test)]
+#[test]
+fn a_dropped_line_never_holds_the_value() {
+    let line = dropped_line("cookie", "sid", "s3cr3t-token;x");
+    assert!(!line.contains("s3cr3t"), "{line}");
+    let huge = "é".repeat(100_000);
+    assert!(dropped_line("header", &huge, &huge).len() < 200);
 }
 
 /// A line on stderr. Unlike `eprintln!`, a log that cannot be written (its
