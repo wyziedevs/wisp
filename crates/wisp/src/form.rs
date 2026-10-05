@@ -17,8 +17,9 @@ pub struct Form<'a> {
 /// with `enctype="multipart/form-data"`. Read it with `cx.form().file("photo")`.
 #[derive(Clone, Debug)]
 pub struct File<'a> {
-    /// The file's name on the visitor's machine, without its folders.
-    /// It is visitor input: never use it as a path.
+    /// The file's name on the visitor's machine, without its folders,
+    /// trailing dots or spaces; a Windows device name (`CON`, `nul.txt`)
+    /// gets a `_` in front. It is visitor input: never use it as a path.
     pub name: Cow<'a, str>,
     /// As the browser sent it; `application/octet-stream` when it sent none.
     /// Visitor input too: check the bytes if the type matters.
@@ -322,22 +323,31 @@ fn unquote(value: &[u8]) -> Cow<'_, str> {
 /// too: on Windows `C:a.png` joined to a folder is the drive's own path,
 /// and `a.png:x` a stream of `a.png`. Control characters are taken out,
 /// and a name that is then empty, `.` or `..` is `file`, so one joined to
-/// a folder stays in it. Only `""` as sent stays empty: the browser's
-/// "no file chosen".
+/// a folder stays in it. Trailing dots and spaces, which Windows trims to
+/// another name, are taken off, and a name Windows opens as a device
+/// (`CON`, `nul.txt`, `COM1.png`) gets a `_` in front. Only `""` as sent
+/// stays empty: the browser's "no file chosen".
 fn base_name(name: Cow<'_, str>) -> Cow<'_, str> {
     if name.is_empty() {
         return name;
     }
     let at = name.rfind(['/', '\\', ':']).map_or(0, |at| at + 1);
-    let clean = !name[at..].contains(char::is_control);
+    let end = name.trim_end_matches(['.', ' ']).len().max(at);
+    let clean = !name[at..end].contains(char::is_control);
     let name = match name {
-        Cow::Borrowed(s) if clean => Cow::Borrowed(&s[at..]),
-        _ => Cow::Owned(name[at..].chars().filter(|c| !c.is_control()).collect()),
+        Cow::Borrowed(s) if clean => Cow::Borrowed(&s[at..end]),
+        _ => {
+            let s: String = name[at..].chars().filter(|c| !c.is_control()).collect();
+            Cow::Owned(s.trim_end_matches(['.', ' ']).to_owned())
+        }
     };
-    match &*name {
-        "" | "." | ".." => Cow::Borrowed("file"),
-        _ => name,
+    if name.is_empty() {
+        return Cow::Borrowed("file");
     }
+    if crate::http::windows_device(&name) {
+        return Cow::Owned(format!("_{name}"));
+    }
+    name
 }
 
 /// The index of the first `\r\n--boundary` at or after `from`, as the index
@@ -448,6 +458,15 @@ b\r\n--XyZ--\r\nepilogue";
             (r#"filename="a.png:stream""#, "stream"),
             (r#"filename="C:""#, "file"),
             (r#"filename="..%00/x""#, "x"),
+            (r#"filename="CON""#, "_CON"),
+            (r#"filename="nul.txt""#, "_nul.txt"),
+            (r#"filename="photos/com1.png""#, "_com1.png"),
+            (r#"filename="Lpt9 .txt""#, "_Lpt9 .txt"),
+            (r#"filename="a.txt.""#, "a.txt"),
+            (r#"filename="a.txt . ""#, "a.txt"),
+            (r#"filename="nul. ""#, "_nul"),
+            (r#"filename=". .""#, "file"),
+            (r#"filename="console.png""#, "console.png"),
         ] {
             let body = part(&format!("name=\"f\"; {sent}"));
             let file = Form::new(ct, body.as_bytes()).file("f");

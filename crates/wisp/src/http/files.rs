@@ -267,7 +267,7 @@ pub(crate) fn stays_inside(rel: &str) -> bool {
 /// Whether Windows opens `seg` as a device whatever the folder: `CON`, `PRN`,
 /// `AUX`, `NUL`, `COM0`-`COM9`, `LPT0`-`LPT9` (and `COM¹`-`COM³`,
 /// `LPT¹`-`LPT³`), `CONIN$`, `CONOUT$`, with any extension, any case.
-fn windows_device(seg: &str) -> bool {
+pub(crate) fn windows_device(seg: &str) -> bool {
     let stem = seg.split('.').next().unwrap_or(seg).trim_end().as_bytes();
     match stem.len() {
         3 => ["con", "prn", "aux", "nul"]
