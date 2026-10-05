@@ -801,3 +801,11 @@ Node target 602,654 to 461,190. Native `.text` of tests/app: identical
 Left: 107 KB of data (`live.js`, `wisp.js`, the UI CSS, the API docs page,
 all in `http/mod.rs`, linked whatever the app uses) and the sitemap (about
 20 KB of code, could be made by the build).
+
+**Built-in data only where used (2026-10-05).** `/_app/live.js` is linked into
+the wasm only for an app with browser modules (`App::LIVE`, from the build), and
+the request-only build (`WISP_REQUEST_ONLY=1`) has no `/_wisp/docs` page and no
+dev UI CSS. Bench app, Cloudflare build: 395,463 to 355,845 bytes (-39,618);
+tests/app wasm (has browser modules): 1,805,240 to 1,793,149. Native `.text` of
+the bench app: identical (only panic line numbers in `.rdata` moved).
+`wisp.js` stays: every page links it.

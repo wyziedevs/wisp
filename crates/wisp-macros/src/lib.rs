@@ -245,21 +245,9 @@ fn names(s: &TokenStream, idents: &[&str]) -> bool {
 /// `derive(Clone)`.
 #[proc_macro_attribute]
 pub fn model(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let attr: Vec<TokenTree> = attr.into_iter().collect();
-    let saved = matches!(attr.as_slice(), [TokenTree::Ident(w)] if w.to_string() == "saved");
-    let crud = attr
-        .iter()
-        .any(|t| matches!(t, TokenTree::Ident(w) if w.to_string() == "crud"));
-    let mut out = match attr.first() {
-        Some(_) if crud => error(
-            "`crud` writes a page's actions, so it goes on a model in a page's `---` block; here, write them: `fn add(todo: Todo) { TODOS.add(todo); }`",
-            attr[0].span(),
-        ),
-        Some(first) if !saved => error(
-            "#[model] takes `saved` or nothing: `#[model(saved)]` also declares the table, `pub static TODOS: Table<Todo> = Table::saved(\"todos\")`",
-            first.span(),
-        ),
-        _ => TokenStream::new(),
+    let mut out = match attr.into_iter().next() {
+        Some(first) => error("#[model] takes no arguments", first.span()),
+        None => TokenStream::new(),
     };
     let tokens: Vec<TokenTree> = item.into_iter().collect();
     let is = |t: &TokenTree, word: &str| matches!(t, TokenTree::Ident(i) if i.to_string() == word);
@@ -270,22 +258,6 @@ pub fn model(attr: TokenStream, item: TokenStream) -> TokenStream {
     // a body, so such a model is `Json` and `Clone` only.
     let fields = named.then(|| named_fields(&tokens.iter().cloned().collect()).ok());
     let borrowed = (fields.flatten().into_iter().flatten()).any(|f| f.ty.starts_with('&'));
-    // `#[model(saved)]`: the table too, named for the struct.
-    let table = match (saved, at.and_then(|at| tokens.get(at + 1))) {
-        (false, _) => TokenStream::new(),
-        (true, Some(TokenTree::Ident(name))) if named && !borrowed => {
-            let statik = wisp_shared::rust::table_static(&name.to_string());
-            parse(&format!(
-                "pub static {statik}: ::wisp::Table<{name}> = ::wisp::Table::saved({:?});",
-                statik.to_ascii_lowercase()
-            ))
-        }
-        (true, Some(t)) => error(
-            "#[model(saved)] needs a struct with named, owned fields: a saved row is a JSON object",
-            t.span(),
-        ),
-        (true, None) => error("#[model(saved)] goes on a struct", Span::call_site()),
-    };
     out.extend(parse(if borrowed {
         "#[derive(::wisp::Json, ::std::clone::Clone)]"
     } else {
@@ -310,7 +282,6 @@ pub fn model(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
     out.extend(account);
-    out.extend(table);
     out
 }
 
@@ -1200,7 +1171,7 @@ fn named_fields(item: &TokenStream) -> Result<Vec<Field>, Error> {
     let mut out = Vec::new();
     for field in items(group.stream()) {
         let mut checks = Vec::new();
-        let (mut default, mut was, mut unique, mut min_len) = (None, None, false, false);
+        let (mut default, mut was, mut unique) = (None, None, false);
         let mut rest = field.as_slice();
         while let [TokenTree::Punct(hash), TokenTree::Group(attr), after @ ..] = rest
             && hash.as_char() == '#'
@@ -1260,7 +1231,6 @@ fn named_fields(item: &TokenStream) -> Result<Vec<Field>, Error> {
                     };
                     let r = wisp_shared::rules::rule(&name.to_string(), value.as_deref())
                         .map_err(|e| (e, name.span()))?;
-                    min_len |= wisp_shared::rules::sets_min_len(std::slice::from_ref(&r));
                     checks.push(r.check("__x"));
                 }
             }
@@ -1273,17 +1243,9 @@ fn named_fields(item: &TokenStream) -> Result<Vec<Field>, Error> {
         if colon.as_char() != ':' || ty.is_empty() {
             return Err(("expected `name: Type`".into(), colon.span()));
         }
-        let ty = TokenStream::from_iter(ty.iter().cloned()).to_string();
-        // A `Password` with no least length of its own is held to `PASSWORD_MIN_LEN`.
-        if !min_len && wisp_shared::rules::is_password(&ty) {
-            let min = wisp_shared::rules::PASSWORD_MIN_LEN.to_string();
-            let r =
-                wisp_shared::rules::rule("min_len", Some(&min)).map_err(|e| (e, name.span()))?;
-            checks.push(r.check("__x"));
-        }
         out.push(Field {
             name: name.clone(),
-            ty,
+            ty: TokenStream::from_iter(ty.iter().cloned()).to_string(),
             checks,
             default,
             was,

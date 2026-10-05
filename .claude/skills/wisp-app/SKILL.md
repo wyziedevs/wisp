@@ -9,7 +9,7 @@ The full reference is `llms/AGENTS.md` (an app has its own copy at its root): re
 Core, in short:
 - Files are routes: `src/routes/x/+page.wisp` (optional `---` Rust block, then markup), `+layout.wisp`, `+error.wisp`, `+server.rs` (fn get/post/...), `+page.rs` (`struct Data` + `fn load`). Models and tables live in `src/db.rs`. No `use` lines: the prelude, the `pub` items of `src/*.rs`, common std names (`HashMap`, `Arc`, `Duration`...) and `[package.metadata.wisp] auto = [...]` are auto-imported where used.
 - `#[action] fn name(args)` in a page block handles `<form action="?/name">`: params by name, `#[validate(..)]`, `redirect(..)`, `error(..)`, `invalid(..)`.
-- Data: `#[model(saved)]` struct declares its `Table` (`Todo` → `TODOS`; `{#each TODOS as todo}` walks it); in a page's block `#[model(saved, crud)]` also writes the page's `add`/`remove`/`update` actions; a `static` by hand for `Table::new()` (memory) or `.live()`; `#[derive(Rest)]` is a whole JSON API.
+- Data: `#[model]` struct, `Table::saved()` (`new()` is in memory); `#[derive(Rest)]` is a whole JSON API.
 - Auth: `cx.signup`, `cx.login`, `cx.user(&USERS)`.
 - Fewest tokens wins: lean on conventions, don't write what the build infers. Run `wisp check --rust`, `wisp test`, `wisp fmt` before finishing; `wisp routes` lists routes.
 - Gotchas are in AGENTS.md (`Err(error(..))` is wrong, `+page.wisp` needs the `+`, no guards held across `.await`).

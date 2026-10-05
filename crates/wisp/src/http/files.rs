@@ -17,12 +17,21 @@ pub(super) fn internal<A: App>(cx: &Cx, path: &str, reply: &mut Reply) -> bool {
     let docs = get && s.api_docs && !A::openapi().is_empty();
     let (body, ext, etag): (&'static [u8], _, _) = match path {
         crate::protocol::route::WISP_JS_PATH if get => (CLIENT_JS, "js", Some(CLIENT_JS_ETAG)),
-        crate::protocol::route::LIVE_JS_PATH if get => (LIVE_JS, "js", Some(CLIENT_JS_ETAG)),
+        // The edge build links live.js only into an app with browser modules.
+        crate::protocol::route::LIVE_JS_PATH
+            if get && (A::LIVE || !cfg!(target_arch = "wasm32")) =>
+        {
+            (LIVE_JS, "js", Some(CLIENT_JS_ETAG))
+        }
         "/_app/wisp-dev.js" if dev => (DEV_JS, "js", None),
+        // The request-only edge build has no API docs page and no dev UI
+        // styles (see `wisp/build.rs`).
+        #[cfg(not(request_only))]
         "/_app/wisp-ui.css" if dev => (UI_CSS.as_bytes(), "css", None),
         "/_app/wisp-dialog.css" if dev => (DIALOG_CSS, "css", None),
         "/_wisp/openapi.json" if docs => (A::openapi().as_bytes(), "json", None),
         "/_wisp/client.ts" if docs => (A::client_ts().as_bytes(), "txt", None),
+        #[cfg(not(request_only))]
         "/_wisp/docs" if docs => (api_docs(), "html", None),
         crate::health::PATH if get => {
             crate::health::answer(reply);

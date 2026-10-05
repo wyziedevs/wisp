@@ -74,6 +74,7 @@ const DEV_JS: &[u8] = b"";
 #[cfg(debug_assertions)]
 const DEVTOOLS_JS: &[u8] = include_bytes!("../client/wisp-devtools.js");
 /// Also inlined into the API docs page.
+#[cfg_attr(request_only, allow(dead_code))]
 pub(crate) const UI_CSS: &str = concat!(
     include_str!("../client/tokens.css"),
     include_str!("../client/ui.css")
@@ -88,7 +89,8 @@ const DIALOG_CSS: &[u8] = include_bytes!("../client/dialog.css");
 const DIALOG_CSS: &[u8] = b"";
 
 /// The page at `/_wisp/docs` that lists the app's endpoints and sends
-/// requests to them, with Wisp's own styles.
+/// requests to them, with Wisp's own styles. Not in the request-only edge build.
+#[cfg(not(request_only))]
 fn api_docs() -> &'static [u8] {
     static PAGE: OnceLock<String> = OnceLock::new();
     PAGE.get_or_init(|| include_str!("../api-docs.html").replace("/*ui.css*/", UI_CSS))

@@ -1,6 +1,6 @@
 ---
 // @feature auth
-fn default(email: Email, password: Password) {
+fn default(email: Email, #[validate(min_len = 8)] password: Password) {
     cx.signup(User {
         email,
         password,

@@ -846,15 +846,6 @@ impl<T> Table<T> {
     }
 }
 
-/// `for row in &TABLE` is `TABLE.all()`: `{#each TODOS as todo}` in a page.
-impl<T: Clone> IntoIterator for &Table<T> {
-    type Item = Row<T>;
-    type IntoIter = std::vec::IntoIter<Row<T>>;
-    fn into_iter(self) -> Self::IntoIter {
-        self.all().into_iter()
-    }
-}
-
 impl<T: Clone> Table<T> {
     /// A copy of the row.
     pub fn get(&self, id: u64) -> Option<Row<T>> {

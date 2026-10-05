@@ -1,4 +1,5 @@
 ---
+#[action]
 fn add(todo: Todo) {
     TODOS.add(todo);
 }

@@ -643,38 +643,24 @@ struct Member {
 
 static MEMBERS: wisp::Table<Member> = wisp::Table::saved("members");
 
-#[wisp::model(saved)]
-struct Category {
-    name: String,
-}
-
-/// `#[model(saved)]` declares the table, named for the struct, in the store.
-#[test]
-fn a_saved_model_declares_its_table() {
-    let table: &wisp::Table<Category> = &CATEGORIES;
-    assert_eq!(table.len(), CATEGORIES.all().len());
-    let n = (&CATEGORIES).into_iter().count();
-    assert_eq!(n, table.len());
-}
-
 /// `#[json(default)]` and `#[json(was)]` bring old rows and short bodies to
 /// the type, on the straight path and through a `Value` alike.
 #[test]
 fn old_rows_are_read_as_they_are_now() {
     for (body, name, age) in [
-        (r#"{"email":"a@b.c","password":"pw-hunter2"}"#, "anon", 0),
+        (r#"{"email":"a@b.c","password":"pw"}"#, "anon", 0),
         (
-            r#"{"email":"a@b.c","password":"pw-hunter2","nick":"Al","age":3}"#,
+            r#"{"email":"a@b.c","password":"pw","nick":"Al","age":3}"#,
             "Al",
             3,
         ),
         (
-            r#"{"email":"a@b.c","password":"pw-hunter2","nick":"Al","name":"Bo"}"#,
+            r#"{"email":"a@b.c","password":"pw","nick":"Al","name":"Bo"}"#,
             "Bo",
             0,
         ),
         (
-            r#"{"name":"Bo","nick":"Al","email":"a@b.c","password":"pw-hunter2"}"#,
+            r#"{"name":"Bo","nick":"Al","email":"a@b.c","password":"pw"}"#,
             "Bo",
             0,
         ),
@@ -686,7 +672,7 @@ fn old_rows_are_read_as_they_are_now() {
         }
     }
     // What is not defaulted is still required.
-    assert_eq!(problems::<Member>(r#"{"password":"pw-hunter2"}"#).len(), 1);
+    assert_eq!(problems::<Member>(r#"{"password":"pw"}"#).len(), 1);
 }
 
 /// `#[unique]` makes a saved table refuse a repeat; a `Password` is kept as
@@ -707,8 +693,7 @@ fn unique_and_password_fields() {
         .build()
         .unwrap();
     let ann = |email: &str| {
-        from_json::<Member>(format!(r#"{{"email":"{email}","password":"pw-hunter2"}}"#).as_bytes())
-            .unwrap()
+        from_json::<Member>(format!(r#"{{"email":"{email}","password":"pw"}}"#).as_bytes()).unwrap()
     };
     let row = rt
         .block_on(wisp::signup(&MEMBERS, ann("ann@x.io")))
@@ -728,14 +713,14 @@ fn unique_and_password_fields() {
             && to_json(&row.value).contains(r#""password":null"#)
     );
     let got = rt
-        .block_on(wisp::login(&MEMBERS, "ann@x.io", "pw-hunter2"))
+        .block_on(wisp::login(&MEMBERS, "ann@x.io", "pw"))
         .unwrap();
     assert_eq!(got.id, row.id);
     assert!(
         rt.block_on(wisp::login(&MEMBERS, "ann@x.io", "nope"))
             .is_err()
     );
-    assert!(kept().contains("$pbkdf2-sha256$") && !kept().contains(r#"":"pw-hunter2""#));
+    assert!(kept().contains("$pbkdf2-sha256$") && !kept().contains(r#"":"pw""#));
 }
 
 #[wisp::model]

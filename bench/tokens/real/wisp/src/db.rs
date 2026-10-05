@@ -1,5 +1,5 @@
 // @feature data
-#[model(saved)]
+#[model]
 struct User {
     email: Email,
     password: Password,
@@ -13,6 +13,7 @@ struct Post {
     body: String,
 }
 
+pub static USERS: Table<User> = Table::saved();
 pub static POSTS: Table<Post> = Table::saved()
 // @feature live
     .live();

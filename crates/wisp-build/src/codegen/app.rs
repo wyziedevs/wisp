@@ -445,6 +445,9 @@ impl Gen {
                 ),
             );
         }
+        if tags.is_empty() && web.js_files.is_empty() && web.clients.iter().all(Option::is_none) {
+            self.line(1, "const LIVE: bool = false;");
+        }
         if let Some(w) = pwa {
             let etag = |s: &str| lit(&format!("\"{:016x}\"", fnv1a(s.as_bytes())));
             let manifest = w.manifest.as_deref();

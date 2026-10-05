@@ -4,9 +4,7 @@
 
 use crate::rust_scan::{Items, TypeItem};
 use crate::ty::{self, Scalar};
-pub use wisp_shared::rules::{
-    Key, Native, PASSWORD_MIN_LEN, Rule, Validate, is_password, parse, plain, rule, sets_min_len,
-};
+pub use wisp_shared::rules::{Key, Native, Rule, Validate, parse, plain, rule};
 
 /// An upload's type: `Image`, or an `Option` of one.
 pub fn is_upload(ty: &str) -> bool {
@@ -48,10 +46,6 @@ pub fn native(ty: &str, rules: &[Rule], whole: bool) -> Native {
     n.upload = is_upload(t);
     for r in rules {
         r.native(&mut n, text, number);
-    }
-    // A `Password` with no least length of its own is held to `PASSWORD_MIN_LEN`.
-    if password && !sets_min_len(rules) {
-        n.min_len = Some(PASSWORD_MIN_LEN);
     }
     let blank_refused = whole || !text || password || n.email || n.min_len.is_some_and(|l| l > 0);
     n.required = !optional && blank_refused;
@@ -194,23 +188,13 @@ mod tests {
                 " minlength=\"5\"",
             ),
             ("Option<String> | len = 1..", "input", " minlength=\"1\""),
-            ("Password |", "input password", " required minlength=\"8\""),
-            (
-                "Password | max_len = 64",
-                "input password",
-                " required minlength=\"8\" pattern=\"[\\s\\S]{0,64}\"",
-            ),
+            ("Password |", "input password", " required"),
             (
                 "wisp::Password | min_len = 8",
                 "input password",
                 " required minlength=\"8\"",
             ),
-            ("Option<Password> |", "input password", " minlength=\"8\""),
-            (
-                "Password | len = 4..=20",
-                "input password",
-                " required minlength=\"4\" pattern=\"[\\s\\S]{0,20}\"",
-            ),
+            ("Option<Password> |", "input password", ""),
             ("String | email", "input", " type=\"email\" required"),
             ("String | email", "input text", " required"),
             ("Option<Email> |", "input", " type=\"email\""),

@@ -422,10 +422,9 @@ impl<'a> Project<'a> {
                     .unwrap_or_default()
             ));
         }
-        let at = |e: String| format!("{}:{e}", self.rel(wisp));
-        let code = rust_scan::expand_crud(&code).map_err(at)?.unwrap_or(code);
         let code = rust_scan::mark_actions(&code, markup).unwrap_or(code);
         let (mut items_src, stmts) = rust_scan::split_items(&code);
+        let at = |e: String| format!("{}:{e}", self.rel(wisp));
         // Its `mod server` is the route's endpoints, which `server` reads.
         if let Some((rest, _, line)) = rust_scan::split_server(&items_src) {
             let page = (wisp.file_name()).is_some_and(|n| n.to_string_lossy().starts_with("+page"));
