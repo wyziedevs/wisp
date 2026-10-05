@@ -129,7 +129,13 @@ pub fn run() {
 /// A source file's text with `\r\n` (Windows checkouts) as `\n` and no byte
 /// order mark, so that a template compiles to the same code either way.
 pub fn read_source(path: &Path) -> std::io::Result<String> {
-    let text = fs::read_to_string(path)?;
+    let text = fs::read_to_string(path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::InvalidData => std::io::Error::new(
+            e.kind(),
+            "not UTF-8 text: save the file as UTF-8 in your editor",
+        ),
+        _ => e,
+    })?;
     let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
     Ok(if text.contains('\r') {
         text.replace("\r\n", "\n")
@@ -586,7 +592,7 @@ fn write_if_changed(path: &Path, contents: &str) {
         .unwrap_or_else(|e| {
             let _ = fs::remove_file(&tmp);
             panic!(
-                "wisp: cannot write {}: {e}; check that the target directory is writable                  (or run `cargo clean`) and build again",
+                "wisp: cannot write {}: {e}; make the target directory writable (or run `cargo clean`) and build again",
                 path.display()
             )
         });
