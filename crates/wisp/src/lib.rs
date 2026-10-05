@@ -1085,13 +1085,14 @@ pub mod rt {
     // A page's forms read what an action refused through these, once per
     // field of a form that posts to an action. On a GET, or a post that
     // passed, `refused` is `None` and each returns at its first line: an
-    // inlined test of one register. Only a 422 goes further.
+    // inlined test of one register. Only a 422 goes further, out of line:
+    // the body of each is one call, as small at a hundred fields as at one.
 
     /// Whether the request posted to the form `action` (`""`: one named by
     /// an expression, so any) and it was refused.
-    #[inline]
-    fn posted_to(cx: &Cx, refused: Option<&Error>, action: &str) -> bool {
-        refused.is_some() && (action.is_empty() || cx.action() == action)
+    #[inline(never)]
+    fn posted_to(cx: &Cx, action: &str) -> bool {
+        action.is_empty() || cx.action() == action
     }
 
     /// What the form posting to `action` sent for `name`, when the action
@@ -1105,7 +1106,7 @@ pub mod rt {
         action: &str,
         name: &str,
     ) -> Option<std::borrow::Cow<'a, str>> {
-        if !posted_to(cx, refused, action) {
+        if refused.is_none() || !posted_to(cx, action) {
             return None;
         }
         cx.input(name)
@@ -1135,7 +1136,7 @@ pub mod rt {
         action: &str,
         name: &'a str,
     ) -> Option<(crate::Form<'a>, &'a str)> {
-        if !posted_to(cx, refused, action) {
+        if refused.is_none() || !posted_to(cx, action) {
             return None;
         }
         Some((cx.form(), name))
@@ -1164,6 +1165,17 @@ pub mod rt {
         own: Option<&T>,
         sent: Option<(crate::Form<'a>, &'a str)>,
     ) -> Chosen<'a> {
+        // One body for every `T`: only the `format_args!` is per type.
+        match own {
+            Some(v) => chosen_of(Some(format_args!("{v}")), sent),
+            None => chosen_of(None, sent),
+        }
+    }
+
+    fn chosen_of<'a>(
+        own: Option<std::fmt::Arguments<'_>>,
+        sent: Option<(crate::Form<'a>, &'a str)>,
+    ) -> Chosen<'a> {
         use std::fmt::Write;
         if let Some(s) = sent {
             return Chosen::Sent(s);
@@ -1182,7 +1194,7 @@ pub mod rt {
             }
         }
         let mut b = Buf(0, [0; 48]);
-        match write!(b, "{v}") {
+        match b.write_fmt(v) {
             Ok(()) => Chosen::Small(b.0 as u8, b.1),
             Err(_) => Chosen::Kept(std::borrow::Cow::Owned(v.to_string())),
         }
@@ -1190,7 +1202,25 @@ pub mod rt {
 
     /// Whether an `<option>`'s value is `chosen`: `selected` then.
     pub fn is<T: std::fmt::Display + ?Sized>(chosen: &Chosen<'_>, value: &T) -> bool {
-        // Compared as it is written, without a copy of it.
+        let bytes = match chosen {
+            Chosen::None => return false,
+            // Only a refused form sends: one body for every `T`.
+            Chosen::Sent((form, name)) => return any_is(form, name, format_args!("{value}")),
+            Chosen::Kept(c) => c.as_bytes(),
+            Chosen::Small(n, b) => &b[..*n as usize],
+        };
+        same(bytes, format_args!("{value}"))
+    }
+
+    #[inline(never)]
+    fn any_is(form: &crate::Form<'_>, name: &str, value: std::fmt::Arguments<'_>) -> bool {
+        form.all(name).any(|v| same(v.as_bytes(), value))
+    }
+
+    /// Whether `value` is written as `bytes`, compared as it is written,
+    /// without a copy of it.
+    #[inline]
+    fn same(bytes: &[u8], value: std::fmt::Arguments<'_>) -> bool {
         struct Rest<'a>(&'a [u8]);
         impl std::fmt::Write for Rest<'_> {
             fn write_str(&mut self, s: &str) -> std::fmt::Result {
@@ -1198,15 +1228,8 @@ pub mod rt {
                 Ok(())
             }
         }
-        let mut rest = Rest(match chosen {
-            Chosen::None => return false,
-            Chosen::Sent((form, name)) => {
-                return form.all(name).any(|v| is(&Chosen::Kept(v), value));
-            }
-            Chosen::Kept(c) => c.as_bytes(),
-            Chosen::Small(n, b) => &b[..*n as usize],
-        });
-        std::fmt::write(&mut rest, format_args!("{value}")).is_ok() && rest.0.is_empty()
+        let mut rest = Rest(bytes);
+        std::fmt::write(&mut rest, value).is_ok() && rest.0.is_empty()
     }
 
     #[cfg(test)]
@@ -1291,7 +1314,7 @@ pub mod rt {
         name: &str,
         id: Option<&str>,
     ) {
-        if let Some(e) = refused.filter(|_| posted_to(cx, refused, action)) {
+        if let Some(e) = refused.filter(|_| posted_to(cx, action)) {
             problems(out, e, name, id);
         }
     }
@@ -1309,11 +1332,12 @@ pub mod rt {
         name: &str,
         id: Option<&str>,
     ) {
-        if let Some(e) = refused.filter(|_| posted_to(cx, refused, action)) {
+        if let Some(e) = refused.filter(|_| posted_to(cx, action)) {
             invalid_attrs(out, e, name, id);
         }
     }
 
+    #[inline(never)]
     fn invalid_attrs(out: &mut String, e: &Error, name: &str, id: Option<&str>) {
         if !e.fields().iter().any(|(f, _)| f == name) {
             return;
@@ -1326,6 +1350,7 @@ pub mod rt {
         }
     }
 
+    #[inline(never)]
     fn problems(out: &mut String, e: &Error, name: &str, id: Option<&str>) {
         let mut id = id;
         for (_, p) in e.fields().iter().filter(|(f, _)| f == name) {
