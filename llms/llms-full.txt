@@ -1159,7 +1159,7 @@ Not built in: a `RateLimit` shared between servers, automatic `/_wisp/oauth/...`
 
 <!-- docs/benchmarks.md -->
 
-Wisp's first rule is zero cost on the request hot path. This page is what is measured and how to run it. The numbers below are dated, with the machine they ran on, and the losses are listed with them. The native TechEmpower tables are on the [home page](/#measured) and in [`bench/tfb/RESULTS.md`](https://github.com/wyziedevs/wisp/blob/main/bench/tfb/RESULTS.md).
+Wisp's first rule is no extra cost on the request path. This page shows what is measured and how to run it. Each result has its date and machine, and the losses are listed too. The native TechEmpower tables are on the [home page](/#measured) and in [`bench/tfb/RESULTS.md`](https://github.com/wyziedevs/wisp/blob/main/bench/tfb/RESULTS.md).
 
 ```bash
 git clone https://github.com/wyziedevs/wisp
@@ -1167,11 +1167,11 @@ cd wisp
 cargo run -r -p bench-run -- --paths fortunes
 ```
 
-You need Rust. `bench/README.md` lists every option, the frameworks compared, and how each path is checked for identical output before it is measured. Results depend on the machine, so compare frameworks run on the same machine and treat the absolute numbers with care.
+You need Rust. `bench/README.md` lists every option, the frameworks compared, and how each path is checked for identical output before it is measured. Results depend on the machine, so compare frameworks only when they ran on the same one.
 
 ## Native, Linux (2026-10-04)
 
-Source: [`bench/tfb/RESULTS.md`](https://github.com/wyziedevs/wisp/blob/main/bench/tfb/RESULTS.md) (generated from `results.json`). TechEmpower's plaintext and JSON tests with their own wrk scripts, run 2026-10-04 on one shared 4-vCPU VM (AMD EPYC 7B13), the server on 2 pinned cores, medians of 3 runs of 15 s. Not an official TechEmpower result. Contenders are in a fixed order, not ranked; "Failed" means every run stalled or completed no request. The full results add min, max, latency and errors per row. The same Wisp binary moved between moments on this VM, so gaps inside the min-max ranges are ties.
+Source: [`bench/tfb/RESULTS.md`](https://github.com/wyziedevs/wisp/blob/main/bench/tfb/RESULTS.md) (generated from `results.json`). The TechEmpower plaintext and JSON tests with their own wrk scripts, run 2026-10-04 on one shared 4-CPU VM (AMD EPYC 7B13), with the server pinned to 2 cores. Each number is the median of 3 runs of 15 seconds. This is not an official TechEmpower result. Frameworks are listed in a fixed order, not ranked. "Failed" means every run stalled or finished no request. The full results add min, max, latency and errors per row. The same Wisp binary varied between runs on this VM, so gaps inside the min-max ranges count as ties.
 
 Plaintext, pipelined, requests per second (median of 3), by connections:
 
@@ -5403,7 +5403,7 @@ A folder is a URL, and its `+page.wisp` is the page: a block of Rust that loads 
 
 ## Fast
 
-Zero cost on the request hot path: a route pays only for the features it uses, and a change that touches the path is checked by an instructions-per-request A/B before it lands. See [Benchmarks](/docs/benchmarks/).
+Nothing extra on the request path: a route pays only for the features it uses, and every change to that path is measured before it ships. See [Benchmarks](/docs/benchmarks/).
 
 ## Cheap to Write
 
@@ -5411,7 +5411,7 @@ An AI pays for every token it reads and writes, in time and money. Wisp uses con
 
 - The same five features take <Stat k="apps.wisp" /> tokens in Wisp, <Stat k="apps.sveltekit" /> in SvelteKit and <Stat k="apps.next" /> in Next.js.
 - A larger app with sign up, uploads and live refresh takes <Stat k="real.wisp" />, against <Stat k="real.sveltekit" /> and <Stat k="real.next" />.
-- `cargo run -p wisp-tokens` counts every hand-written file and its path with a byte-pair style estimate. See [Tokens](/docs/tokens/).
+- `cargo run -p wisp-tokens` counts every hand-written file and its path with a token estimate. See [Tokens](/docs/tokens/).
 
 For agents: [AGENTS.md](https://github.com/wyziedevs/wisp/blob/main/llms/AGENTS.md) is the whole reference in one file, and `wisp mcp` serves the docs over MCP (`claude mcp add wisp -- wisp mcp`).
 
@@ -5419,5 +5419,5 @@ For agents: [AGENTS.md](https://github.com/wyziedevs/wisp/blob/main/llms/AGENTS.
 
 - A page is one `+page.wisp`: its models, tables, actions, markup and scoped style in a single file. Larger sites split into `src/db.rs`, `+page.rs`, `+server.rs` and components ([One file or several](/docs/design-pages/#one-file-or-several)).
 - One binary carries its styles and static files. It runs on a VPS, in a container, as static HTML or on an edge host ([Deploying](/docs/deploy/)).
-- Every fast path is proven at startup, falls back, and a panic in a handler is caught and answered as a 500.
+- Every fast path is tested at startup and falls back to a safe one if it fails. A panic in a handler is caught and answered with a 500.
 - Forms work without JavaScript, and reactivity lives in the same file as the markup ([Browser code](/docs/client/)).
