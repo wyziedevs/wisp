@@ -489,10 +489,6 @@ debug = "line-tables-only"
 opt-level = 1
 lto = "off"
 
-# Dependencies carry no debug info: less to write and link on every rebuild.
-[profile.dev.package."*"]
-debug = false
-
 [profile.release]
 codegen-units = 1
 lto = "fat"
