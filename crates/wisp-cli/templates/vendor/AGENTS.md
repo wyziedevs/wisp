@@ -569,7 +569,8 @@ no-wait fast path off every route.
   prior knowledge, no TLS); app code is the same. Streams on a connection
   are answered at once: an open SSE or stream holds back no other request.
 - A field added to a saved type (`Rest`, `Table::saved`) must be `Option`,
-  `Vec` or `bool`, so rows saved before it still read.
+  `Vec` or `bool`, so rows saved before it still read; a row that does
+  not is skipped at load with a logged warning (never a panic).
 
 ## Commands
 

@@ -101,23 +101,18 @@ pub struct Queue {
     worked: AtomicBool,
 }
 
-/// The queue called `name` (letters, digits, `_`, `-`), made on first use;
-/// its jobs are the saved table `queue-name`.
+/// The queue called `name`, made on first use; its jobs are the saved
+/// table `queue-name` (letters, digits, `_`, `-`, up to 58; any other name
+/// gets a table named by its hash). A job's `later(secs)` past the end of
+/// time waits forever rather than running at once.
 pub fn queue(name: &str) -> &'static Queue {
     static ALL: crate::Shared<Vec<(&'static str, &'static Queue)>> = crate::Shared::new(Vec::new());
     let mut all = ALL.lock();
     if let Some((_, q)) = all.iter().find(|(n, _)| *n == name) {
         return q;
     }
-    assert!(
-        !name.is_empty()
-            && name
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
-        "a queue's name is letters, digits, _ and -: {name:?}"
-    );
+    let table: &'static str = Box::leak(table_name(name).into());
     let name: &'static str = Box::leak(name.into());
-    let table: &'static str = Box::leak(format!("queue-{name}").into());
     let q: &'static Queue = Box::leak(Box::new(Queue {
         name,
         table: Table::saved(table),
@@ -126,6 +121,24 @@ pub fn queue(name: &str) -> &'static Queue {
     }));
     all.push((name, q));
     q
+}
+
+/// The table of queue `name`: `queue-name`, or, for a name a table cannot
+/// have (other characters, empty, past 58 bytes), its letters, digits, `_`
+/// and `-` cut to 40 and a hash of the whole, so it never fails to save.
+fn table_name(name: &str) -> String {
+    let fits = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'-';
+    if !name.is_empty() && name.len() <= 58 && name.bytes().all(fits) {
+        return format!("queue-{name}");
+    }
+    let kept: String = name
+        .bytes()
+        .filter(|&b| fits(b))
+        .take(40)
+        .map(char::from)
+        .collect();
+    let h = crate::rest::hash(&[name.as_bytes()]);
+    format!("queue-{kept}-{h:016x}")
 }
 
 impl Queue {
@@ -774,6 +787,21 @@ mod tests {
         settle(&mut j, 1000, "bad".into(), true);
         assert!(j.dead && j.tries == 1);
         assert_eq!(backoff(40), 3600);
+    }
+
+    #[test]
+    fn any_queue_name_makes_a_table_name() {
+        let long = "q".repeat(80);
+        for name in ["mail", "", "bad name!", "é", long.as_str()] {
+            let t = table_name(name);
+            assert!(t.len() <= 64 && t.starts_with("queue-"), "{t}");
+            assert!(
+                t.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            );
+        }
+        assert_eq!(table_name("mail"), "queue-mail", "names as before");
+        assert_ne!(table_name(&long), table_name(&"q".repeat(81)));
     }
 
     #[test]

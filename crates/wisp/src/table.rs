@@ -485,15 +485,21 @@ impl<T> Table<T> {
                 rows.last = rows.last.max(json.parse().unwrap_or(0));
                 continue;
             }
-            let value = self.read_row(saved, &json).unwrap_or_else(|e| {
-                panic!(
-                    "table `{name}`: row {id} is not a {} any more ({}). A field added \
-                     since it was saved must be an `Option` (or a `bool`), so old rows read.",
-                    std::any::type_name::<T>(),
-                    e.message()
-                )
-            });
+            // Its id stays taken, and its line stays in the store, for a fix.
             rows.last = rows.last.max(id);
+            let value = match self.read_row(saved, &json) {
+                Ok(v) => v,
+                Err(e) => {
+                    crate::http::log(format_args!(
+                        "wisp: table `{name}`: skipped row {id}, not a {} any more ({}). A \
+                         field added since it was saved must be an `Option` (or a `bool`), \
+                         or give the table a `migrate`.",
+                        std::any::type_name::<T>(),
+                        e.message()
+                    ));
+                    continue;
+                }
+            };
             rows.map.insert(id, value);
         }
         self.reindex(rows);
@@ -1227,6 +1233,18 @@ mod tests {
         let log = mem.0.lock().unwrap();
         let order: Vec<u64> = log.iter().skip(1).map(|(_, id, _)| *id).collect();
         assert_eq!(order, [0, 1], "a crash between the saves gives no id twice");
+    }
+
+    #[test]
+    fn a_row_that_no_longer_reads_is_skipped_not_a_panic() {
+        store::memory();
+        let mem: &'static Mem = Box::leak(Box::new(Mem(Mutex::new(Vec::new()))));
+        mem.save("bad_rows", 1, Some("\"x\"")).unwrap();
+        mem.save("bad_rows", 2, Some("5")).unwrap();
+        let t: Table<u32> = Table::saved("bad_rows");
+        t.load(&mut t.rows.write().unwrap(), Some(mem));
+        assert_eq!(t.all(), [Row { id: 2, value: 5 }]);
+        assert_eq!(t.add(6), 3, "the skipped row's id is not given again");
     }
 
     #[test]

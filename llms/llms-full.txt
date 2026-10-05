@@ -569,7 +569,8 @@ no-wait fast path off every route.
   prior knowledge, no TLS); app code is the same. Streams on a connection
   are answered at once: an open SSE or stream holds back no other request.
 - A field added to a saved type (`Rest`, `Table::saved`) must be `Option`,
-  `Vec` or `bool`, so rows saved before it still read.
+  `Vec` or `bool`, so rows saved before it still read; a row that does
+  not is skipped at load with a logged warning (never a panic).
 
 ## Commands
 
@@ -1029,6 +1030,8 @@ Saved before memory changes, read at first use: a log file per table (`note.log`
 | `WISP_FSYNC` | `second` (default), `always`, `off`. |
 
 Tables hold every row in memory; for larger data or database-side queries write the handlers.
+
+Never a panic at load: a torn last line of a log (a crash mid-write) is dropped, a corrupt line in the middle is skipped with one logged warning giving the count and file, and a row that no longer reads as its type is skipped with a warning naming it (its id stays taken and its line stays in the store, to fix or migrate).
 
 ## Any Database
 `wisp::store(Db)` in `init`: implement `wisp::Store`:
@@ -1985,7 +1988,7 @@ wisp::cron("0 3 * * *", || async { purge().await }); // UTC
 wisp::queue("mail").push(&Mail { to, body }); // .later(secs, &job)
 ```
 
-- Jobs live in the saved table `queue-mail`. A failure (`Err` or a panic) is tried again after 4, 8, 16... seconds (an hour at most), five tries; then it stays `dead` with its last error (`queue.dead()`, `queue.retry(id)`).
+- Jobs live in the saved table `queue-mail` (a name past 58 characters, or with other than letters, digits, `_` and `-`, gets a table named by its hash). `later(secs)` past the end of time waits, never wraps. A failure (`Err` or a panic) is tried again after 4, 8, 16... seconds (an hour at most), five tries; then it stays `dead` with its last error (`queue.dead()`, `queue.retry(id)`).
 - At least once: a job running when the process died runs again a minute later. One at a time per queue, in order.
 - `cron` takes five fields (`*`, `n`, `a-b`, `*/n`, lists; Sunday is 0 or 7), in UTC only. As in Vixie cron, a day field starting with `*` (`*/2`) is not a restriction on the day.
 - A minute already run never runs again, so a clock stepped back does not repeat it. A run missed while the machine slept runs once on waking. Near the end of time the next run is `None` and the task stops.

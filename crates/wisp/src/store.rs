@@ -324,18 +324,22 @@ pub(crate) mod files {
     }
 
     /// The rows of a log's text, each id's last line, and the length of
-    /// the whole lines (a last line without its `\n` was cut short).
-    fn replay(text: &[u8]) -> (HashMap<u64, &[u8]>, usize) {
+    /// the whole lines (a last line without its `\n` was cut short), and
+    /// how many whole lines were not a row's (a corrupt log), skipped.
+    fn replay(text: &[u8]) -> (HashMap<u64, &[u8]>, usize, usize) {
         let whole = text.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
         let mut rows = HashMap::new();
+        let mut skipped = 0;
         for line in text[..whole].split(|&b| b == b'\n') {
-            let Some(tab) = line.iter().position(|&b| b == b'\t') else {
-                continue;
-            };
-            let Some(id) = std::str::from_utf8(&line[..tab])
-                .ok()
-                .and_then(|s| s.parse::<u64>().ok())
-            else {
+            let id = line.iter().position(|&b| b == b'\t').and_then(|tab| {
+                let id = std::str::from_utf8(&line[..tab])
+                    .ok()?
+                    .parse::<u64>()
+                    .ok()?;
+                Some((id, tab))
+            });
+            let Some((id, tab)) = id else {
+                skipped += !line.is_empty() as usize;
                 continue;
             };
             let json = &line[tab + 1..];
@@ -345,7 +349,7 @@ pub(crate) mod files {
                 rows.insert(id, json);
             }
         }
-        (rows, whole)
+        (rows, whole, skipped)
     }
 
     impl Store for Files {
@@ -363,7 +367,14 @@ pub(crate) mod files {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
                 Err(e) => return Err(io(table, "read its log", e)),
             };
-            let (rows, whole) = replay(&text);
+            let (rows, whole, skipped) = replay(&text);
+            if skipped > 0 {
+                crate::http::log(format_args!(
+                    "wisp: table `{table}`: skipped {skipped} corrupt line(s) of {}; \
+                     the rows they held are lost",
+                    path.display()
+                ));
+            }
             if whole < text.len() {
                 crate::http::log(format_args!(
                     "wisp: table `{table}`: dropped the last {} bytes of its log, a write cut short",
@@ -568,7 +579,7 @@ pub(crate) mod files {
         /// The rows of the log's first `size` bytes, written to `tmp`.
         fn rewrite(&self, size: u64, tmp: &Path) -> std::io::Result<()> {
             let text = fs::read(&self.path)?;
-            let (rows, _) = replay(&text[..(size as usize).min(text.len())]);
+            let (rows, _, _) = replay(&text[..(size as usize).min(text.len())]);
             let mut ids: Vec<u64> = rows.keys().copied().collect();
             ids.sort_unstable();
             let mut out = Vec::with_capacity(size as usize / 2);
@@ -644,6 +655,12 @@ pub(crate) mod files {
             assert!(files.load("../x").is_err(), "names stay in the folder");
             assert!(files.save("other", 1, None).is_err(), "loaded first");
             let _ = fs::remove_dir_all(d);
+        }
+
+        #[test]
+        fn a_corrupt_line_in_the_middle_is_skipped_and_counted() {
+            let (rows, whole, skipped) = replay(b"1\t\"a\"\nxx\n\n9z\t1\n2\t\"b\"\n3\t");
+            assert_eq!((rows.len(), whole, skipped), (2, 21, 2));
         }
 
         #[test]
