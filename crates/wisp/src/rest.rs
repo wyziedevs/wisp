@@ -800,7 +800,10 @@ mod tests {
         assert!(f(Kind::Other, Op::Has, "home").passes("[\"home\",\"work\"]"));
         assert!(!f(Kind::Other, Op::Has, "hom").passes("[\"home\"]"));
         assert!(f(Kind::Number, Op::Gt, "9").passes("10"), "as numbers");
-        assert!(!f(Kind::Number, Op::Eq, "NaN").passes("10"), "NaN is no number");
+        assert!(
+            !f(Kind::Number, Op::Eq, "NaN").passes("10"),
+            "NaN is no number"
+        );
         assert!(f(Kind::Text, Op::Lt, "9").passes("\"10\""), "as text");
         assert!(f(Kind::Number, Op::Eq, "3").passes("3.0"));
         assert!(f(Kind::Bool, Op::Eq, "true").passes("true"));
