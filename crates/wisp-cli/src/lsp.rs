@@ -643,7 +643,7 @@ pub(crate) const RUST_ATTRS: [(&str, &str); 32] = [
     ),
     (
         "model",
-        "`#[model] struct Post { title: String }`: `Json`, `FromJson` and `Clone` derived, it and its fields `pub` (a borrowed `&'static str` field: no `FromJson`): a table's row, an action's input and a template's value.",
+        "`#[model] struct Post { title: String }`: `Json`, `FromJson` and `Clone` derived, it and its fields `pub` (a borrowed `&'static str` field: no `FromJson`): a table's row, an action's input and a template's value. `#[model(saved)]` also declares its table, `pub static POSTS: Table<Post> = Table::saved(\"posts\")` (`Category` → `CATEGORIES`); `#[model(saved, crud)]`, in a page's block, writes the page's `add(post: Post)`, `remove(id: u64)` and `update(id: u64, post: Post)` actions too, less any the block defines.",
     ),
     (
         "validate",
@@ -841,7 +841,7 @@ pub(crate) const BLOCKS: [(&str, &str, &str); 27] = [
     (
         "{#each",
         "{#each ${1:list} as ${2:item}}\n\t$0\n{/each}",
-        "`{#each list as item, i if cond}…{:else}…{/each}`: a for loop; `if cond` keeps matching items, `{:else}` when none.",
+        "`{#each list as item, i if cond}…{:else}…{/each}`: a for loop; `if cond` keeps matching items, `{:else}` when none; `{#each TODOS as row}` walks a table's rows.",
     ),
     (
         "{#match",

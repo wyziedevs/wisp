@@ -1,12 +1,12 @@
 //! What AGENTS.md's snippets call: `src/db.rs`'s `pub` items are in every route file.
 
 // src/db.rs
-#[model] // Json + FromJson + Clone, all pub
+#[model]
 struct Todo {
     #[validate(len = 1..=100)]
     text: String,
 }
-pub static TODOS: Table<Todo> = Table::saved(); // "todos"; Table::new() = memory
+pub static TODOS: Table<Todo> = Table::saved(); // "todos"; Table::new() = memory; `.live()` chains
 
 // src/db.rs: a `Password` field and `email` (or `name`) make a #[model] an Account
 #[model]

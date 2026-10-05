@@ -63,18 +63,33 @@ A route is one file: the `---` block holds its Rust (load, actions, and
 endpoints in `mod server`), the markup follows. `+page.rs` and `+server.rs`
 beside it build the same, for a page whose Rust outgrows the block.
 
+```html
+---
+#[model(saved, crud)] // Json + FromJson + Clone, all pub; `pub static TODOS: Table<Todo> = Table::saved("todos");`
+struct Todo {         // and this page's actions add(todo: Todo), remove(id: u64), update(id: u64, todo: Todo)
+    #[validate(len = 1..=100)]
+    text: String,
+}
+---
+
+<title>Todos ({TODOS.len()})</title>
+<form action="?/add" fields />
+{#each TODOS as todo}
+  <p>{todo.text} <button action="?/remove&id={todo.id}">Remove</button></p>
+{/each}
+```
+The long form, for a model routes share (`src/db.rs`) or any other name:
 ```rust
 // src/db.rs
-#[model] // Json + FromJson + Clone, all pub
+#[model]
 struct Todo {
     #[validate(len = 1..=100)]
     text: String,
 }
-pub static TODOS: Table<Todo> = Table::saved(); // "todos"; Table::new() = memory
+pub static TODOS: Table<Todo> = Table::saved(); // "todos"; Table::new() = memory; `.live()` chains
 ```
 ```html
 ---
-#[action]
 fn add(todo: Todo) {
     TODOS.add(todo);
 }
@@ -134,7 +149,7 @@ Block rules:
 | `attr={expr}` | quoted+escaped; `Option` → left out when None |
 | `disabled={bool}` `<a {href}>` `class:on={bool}` | boolean attr, `href={href}`, toggled class |
 | `{#if c}…{:else if c}…{:else}…{/if}` | `if let Some(x) = y` works; a bare `{#if x.avatar}` tests `Some`, non-empty or `true` |
-| `{#each list as item, i if cond}…{:else}…{/each}` | `if` filters, `{:else}` when empty |
+| `{#each list as item, i if cond}…{:else}…{/each}` | `if` filters, `{:else}` when empty; `{#each TODOS as row}` walks a table (`.all()`) |
 | `{#match e}{:case P}…{/match}` | match |
 | `{#await f}…{:then v}…{:catch e}…{/await}` | page only: sent pending, `v`/`e` streamed in later |
 | `{@const x = expr}` | let |
@@ -226,7 +241,11 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
   (`content-type cache-control location etag`) set again replaces the first.
 - `Table<T>`: `add(v)→id get(id) all() find(f) filter(f) update(id, f)
   set(id, v) remove(id) len() page(cx, 10)`; rows are `Row { id, value }` that read as
-  the value. `Shared<T>` (`.lock()`), `wisp::provide(v)`/`state::<T>()`,
+  the value. `#[model(saved)]` declares the table (`Todo` → `TODOS`, `Category` →
+  `CATEGORIES`, stored as `"todos"`); write the `static` yourself for another
+  name, `Table::new()` (memory) or `.live()`. `#[model(saved, crud)]`, in a
+  page's block only, also writes that page's `add`, `remove` and `update`
+  actions, less any the block defines (a build error elsewhere). `Shared<T>` (`.lock()`), `wisp::provide(v)`/`state::<T>()`,
   `wisp::env("K")`, `spawn`, `every`, `wisp::channel("x")`
   `.send/events()` (SSE)`/websocket()`, `RateLimit::per_minute(n).check(key)?`,
   `#[derive(Cookie)]`. Rows live in `WISP_DATA` log files; `wisp::store(MyDb)`
@@ -468,7 +487,7 @@ wisp::pages("blog") as p}<a href={p.path}>{p.title}</a>{/each}` (newest first).
   a block's last statement ends with `;`.
 - Don't hold `Shared::lock()` or other guards across `.await`; blocking work
   → `tokio::task::spawn_blocking` (a thread per core).
-- `{#each x as y}` borrows a field path; `.iter()` other expressions.
+- `{#each x as y}` borrows a field path, a local or a `STATIC`; `.iter()` other expressions.
 - In `+server.rs`, a param named `id` (no `[id]` folder) serves `/[id]`: use
   `list` for the folder's GET. `#[validate]` on params is for actions.
 - HTTP/2 in process is opt-in: `wisp = { .., features = ["h2"] }` (h2c, no

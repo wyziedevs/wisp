@@ -1977,7 +1977,18 @@ fn is_field_path(s: &str) -> bool {
 /// bind, which the markup (a closure that may run more than once) can only
 /// borrow.
 fn is_place(expr: &str, locals: &[String]) -> bool {
-    is_field_path(expr) || locals.iter().any(|l| l == expr)
+    is_field_path(expr) || is_static_name(expr) || locals.iter().any(|l| l == expr)
+}
+
+/// A `static`'s name as Rust spells one, `TODOS`: `{#each TODOS as todo}`
+/// borrows it (a table, a list).
+fn is_static_name(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() > 1
+        && b[0].is_ascii_uppercase()
+        && !b.iter().any(|c| c.is_ascii_lowercase())
+        && b.iter()
+            .all(|&c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == b'_')
 }
 
 fn borrow_place(expr: &str, locals: &[String]) -> String {

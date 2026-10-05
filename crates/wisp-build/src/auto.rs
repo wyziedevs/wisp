@@ -130,7 +130,7 @@ impl Auto {
         defined.extend(defines(&made, 1).0);
         let mut out = Vec::new();
         for (name, (code, k, line)) in names {
-            if defined.contains(&name) {
+            if defined.iter().any(|d| d == name) {
                 continue;
             }
             let mut hits: Vec<&Export> = (self.exports.iter())
@@ -250,6 +250,8 @@ pub(crate) enum Attr {
     Path,
     /// `#[model]`: makes its struct `pub`.
     Model,
+    /// `#[model(saved)]`: `pub`, and a `pub static` table named for it.
+    ModelSaved,
     Other,
 }
 
@@ -378,7 +380,15 @@ pub(crate) fn lex(s: &str) -> Vec<Tok<'_>> {
                 let kind = match &b[k..e] {
                     b"cfg" | b"test" => Attr::Cfg,
                     b"path" => Attr::Path,
-                    b"model" => Attr::Model,
+                    b"model" => {
+                        let args = wisp_shared::rust::skip_space(b, e);
+                        let inner = b.get(args + 1..).unwrap_or(b"");
+                        let saved = b.get(args) == Some(&b'(')
+                            && inner.strip_prefix(b"saved").is_some_and(|r| {
+                                r.first().is_none_or(|c| !wisp_shared::rust::is_word(*c))
+                            });
+                        if saved { Attr::ModelSaved } else { Attr::Model }
+                    }
                     _ => Attr::Other,
                 };
                 line += nl(i, j);
@@ -522,14 +532,18 @@ fn uses<'a>(toks: &[Tok<'a>]) -> Vec<(&'a str, u32, bool)> {
 
 /// The names `toks` defines at brace depth `depth` (items and `use`
 /// lines), and whether it has a `use …::*` of its own there.
-fn defines<'a>(toks: &[Tok<'a>], depth: u32) -> (Vec<&'a str>, bool) {
+fn defines(toks: &[Tok<'_>], depth: u32) -> (Vec<String>, bool) {
     let (mut out, mut globs) = (Vec::new(), false);
     let mut d = 0u32;
     let mut k = 0;
+    // `#[model(saved)]` before a struct: its table's static too.
+    let mut saved = false;
     while k < toks.len() {
         match toks[k] {
             Tok::P(b'{') => d += 1,
             Tok::P(b'}') => d = d.saturating_sub(1),
+            Tok::Attr(a) if d == depth => saved |= a == Attr::ModelSaved,
+            Tok::P(b';') if d == depth => saved = false,
             Tok::Id(n, _, true) if d == depth => match n {
                 "fn" | "struct" | "enum" | "static" | "type" | "trait" | "mod" | "union"
                 | "const" => {
@@ -539,20 +553,25 @@ fn defines<'a>(toks: &[Tok<'a>], depth: u32) -> (Vec<&'a str>, bool) {
                     if let Some(Tok::Id(name, ..)) = toks.get(j)
                         && !matches!(*name, "fn" | "unsafe" | "async" | "extern")
                     {
-                        out.push(*name);
+                        out.push((*name).to_string());
+                        if n == "struct" && std::mem::take(&mut saved) {
+                            out.push(wisp_shared::rust::table_static(name));
+                        }
                     }
                 }
                 "macro_rules" => {
                     if let (Some(Tok::P(b'!')), Some(Tok::Id(name, ..))) =
                         (toks.get(k + 1), toks.get(k + 2))
                     {
-                        out.push(*name);
+                        out.push((*name).to_string());
                     }
                 }
                 "use" => {
                     let end = (toks[k..].iter().position(|t| *t == Tok::P(b';')))
                         .map_or(toks.len(), |e| k + e);
-                    globs |= use_names(&toks[k + 1..end], &mut out);
+                    let mut names = Vec::new();
+                    globs |= use_names(&toks[k + 1..end], &mut names);
+                    out.extend(names.into_iter().map(str::to_string));
                     k = end;
                 }
                 _ => {}
@@ -564,7 +583,7 @@ fn defines<'a>(toks: &[Tok<'a>], depth: u32) -> (Vec<&'a str>, bool) {
     // `extern crate x;`
     for w in toks.windows(3) {
         if let [Tok::Id("extern", ..), Tok::Id("crate", ..), Tok::Id(n, ..)] = w {
-            out.push(n);
+            out.push((*n).to_string());
         }
     }
     (out, globs)
@@ -817,7 +836,7 @@ impl Module<'_> {
             return;
         }
         let mut d = 0u32;
-        let (mut cfg, mut model) = (false, false);
+        let (mut cfg, mut model, mut saved) = (false, false, false);
         let mut k = 0;
         while k < toks.len() {
             match toks[k] {
@@ -825,9 +844,10 @@ impl Module<'_> {
                 Tok::P(b'}') => d = d.saturating_sub(1),
                 Tok::Attr(a) if d == 0 => {
                     cfg |= a == Attr::Cfg;
-                    model |= a == Attr::Model;
+                    model |= matches!(a, Attr::Model | Attr::ModelSaved);
+                    saved |= a == Attr::ModelSaved;
                 }
-                Tok::P(b';') if d == 0 => (cfg, model) = (false, false),
+                Tok::P(b';') if d == 0 => (cfg, model, saved) = (false, false, false),
                 Tok::Id(kw, ..) if d == 0 => {
                     let kind = match kw {
                         "fn" => "fn",
@@ -857,6 +877,7 @@ impl Module<'_> {
                     }
                     let public = vis(toks, k) == Vis::Pub || std::mem::take(&mut model);
                     let skip = std::mem::take(&mut cfg);
+                    let table = std::mem::take(&mut saved) && kind == "struct";
                     let Some(Tok::Id(name, line, true)) = toks.get(j).copied() else {
                         k += 1;
                         continue;
@@ -890,6 +911,21 @@ impl Module<'_> {
                             line,
                             sig,
                         });
+                        if table {
+                            let statik = wisp_shared::rust::table_static(name);
+                            out.push(Export {
+                                sig: format!(
+                                    "pub static {statik}: Table<{name}> = Table::saved({:?})",
+                                    statik.to_ascii_lowercase()
+                                ),
+                                name: statik,
+                                kind: "static",
+                                segs: segs.to_vec(),
+                                wisp: self.wisp,
+                                rel: self.rel.clone(),
+                                line,
+                            });
+                        }
                     }
                 }
                 _ => {}
@@ -1079,6 +1115,16 @@ mod tests {
     }
 
     #[test]
+    fn a_saved_model_defines_its_table() {
+        let src = "#[model(saved)]
+struct Todo { t: String }
+#[model]
+struct A { t: String }
+#[model(saved)] fn f() {}";
+        assert_eq!(defines(&lex(src), 0).0, ["Todo", "TODOS", "A", "f"]);
+    }
+
+    #[test]
     fn use_trees_name_their_leaves() {
         let (d, globs) = defines(
             &lex("use a::{b::{C, D as E}, self as F, G}; use h::*; use std::fmt::{self};"),
@@ -1219,7 +1265,7 @@ mod tests {
             ("src/util/hidden.rs", "pub fn secret() {}"),
             (
                 "src/db.rs",
-                "#[model]\nstruct Post { t: String }\npub static POSTS: Table<Post> = Table::saved();\nfn private() {}",
+                "#[model]\nstruct Post { t: String }\npub static POSTS: Table<Post> = Table::saved();\nfn private() {}\n#[model(saved)]\nstruct Category { t: String }",
             ),
         ];
         for (p, c) in files {
@@ -1237,12 +1283,18 @@ mod tests {
             [
                 "M::db::Post src/db.rs 2",
                 "M::db::POSTS src/db.rs 3",
+                "M::db::Category src/db.rs 6",
+                "M::db::CATEGORIES src/db.rs 6",
                 "crate::util::top src/util/mod.rs 3",
                 "crate::util::inner::In src/util/mod.rs 5",
                 "crate::util::text::slug src/util/text.rs 2",
             ]
         );
-        assert_eq!(e[4].sig, "pub fn slug(s: &str) -> String");
+        assert_eq!(e[6].sig, "pub fn slug(s: &str) -> String");
+        assert_eq!(
+            e[3].sig,
+            "pub static CATEGORIES: Table<Category> = Table::saved(\"categories\")"
+        );
     }
 
     #[test]

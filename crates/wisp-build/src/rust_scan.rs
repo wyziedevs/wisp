@@ -378,9 +378,22 @@ pub fn scan(src: &str) -> Result<Items, String> {
                             _ => Remote::Post,
                         });
                     }
-                    // `#[model]` derives these.
+                    // `#[model]` derives these; `#[model(saved)]` declares the table too.
                     if depth == 0 && path.rsplit("::").next() == Some("model") {
                         derives.extend(["Json", "FromJson", "Clone"].map(String::from));
+                        let args = src[j + 1..end].split_once('(').map_or("", |(_, a)| a);
+                        let saved =
+                            (args.trim_end_matches(')').split(',')).any(|a| a.trim() == "saved");
+                        if saved && let Some(name) = struct_after(src, end + 1) {
+                            let statik = wisp_shared::rust::table_static(name);
+                            items.consts.push(ConstItem {
+                                name: statik.clone(),
+                                ty: format!("Table<{name}>"),
+                                line: line(i),
+                                is_static: true,
+                                value: format!("Table::saved({:?})", statik.to_ascii_lowercase()),
+                            });
+                        }
                     }
                     if depth == 0 && path.rsplit("::").next() == Some("rest") {
                         rest = rest_args(&src[j + 1..end]);
@@ -1345,6 +1358,131 @@ pub fn name_saved(src: &str) -> Option<String> {
     (from > 0).then_some(out)
 }
 
+/// The actions `#[model(saved, crud)]` writes for a model declared in a
+/// page's block, each on the attribute's line (so an error in one points
+/// there), the attribute left as `#[model(saved)]`: `add(todo: Todo)`,
+/// `remove(id: u64)` and `update(id: u64, todo: Todo)`, less any the block
+/// defines itself. `None` when the block has no `crud`; `line: msg` for a
+/// `crud` without `saved`.
+pub fn expand_crud(code: &str) -> Result<Option<String>, String> {
+    if !code.contains("crud") {
+        return Ok(None);
+    }
+    let own: Vec<String> = match scan(code) {
+        Ok(items) => items.fns.iter().map(|f| f.name.clone()).collect(),
+        Err(_) => Vec::new(),
+    };
+    let b = code.as_bytes();
+    let (mut out, mut from, mut i, mut found) = (String::new(), 0, 0, false);
+    while i < b.len() {
+        if !is_ident_start(b, i) {
+            i = skip_literal(b, i) + 1;
+            continue;
+        }
+        let end = ident_end(b, i);
+        let attr = i >= 2 && &code[i - 2..i] == "#[" && &code[i..end] == "model";
+        let open = skip_space(b, end);
+        if !attr || b.get(open) != Some(&b'(') {
+            i = end;
+            continue;
+        }
+        let Some(close) = code[open..].find(')').map(|c| c + open) else {
+            break;
+        };
+        let args: Vec<&str> = code[open + 1..close].split(',').map(str::trim).collect();
+        if !args.contains(&"crud") {
+            i = close;
+            continue;
+        }
+        let line = code[..i].matches('\n').count() + 1;
+        if !args.contains(&"saved") {
+            return Err(format!(
+                "{line}: `crud` writes actions on the model's table, which `saved` declares: `#[model(saved, crud)]`"
+            ));
+        }
+        let after = code[close..].find(']').map_or(close + 1, |k| close + k + 1);
+        let Some(name) = struct_after(code, after) else {
+            return Err(format!("{line}: #[model(saved, crud)] goes on a struct"));
+        };
+        let statik = wisp_shared::rust::table_static(name);
+        let param = statik.to_ascii_lowercase();
+        let param = param
+            .strip_suffix("ies")
+            .map(|p| format!("{p}y"))
+            .unwrap_or_else(|| param.strip_suffix('s').unwrap_or(&param).to_string());
+        let actions = [
+            (
+                "add",
+                format!("fn add({param}: {name}) {{ {statik}.add({param}); }}"),
+            ),
+            (
+                "remove",
+                format!("fn remove(id: u64) {{ {statik}.remove(id); }}"),
+            ),
+            (
+                "update",
+                format!(
+                    "fn update(id: u64, {param}: {name}) {{ {statik}.set(id, {param}).or_404()?; }}"
+                ),
+            ),
+        ];
+        out.push_str(&code[from..i - 2]);
+        for (n, f) in actions {
+            if !own.iter().any(|o| o == n) {
+                out.push_str("#[action] ");
+                out.push_str(&f);
+                out.push(' ');
+            }
+        }
+        out.push_str("#[model(saved)]");
+        from = after;
+        found = true;
+        i = close;
+    }
+    out.push_str(&code[from..]);
+    Ok(found.then_some(out))
+}
+
+/// The name of the `struct` that follows `at` (after other attributes,
+/// `pub` and doc comments), for `#[model(saved)]`.
+fn struct_after(src: &str, at: usize) -> Option<&str> {
+    let b = src.as_bytes();
+    let mut i = skip_space(b, at);
+    while b.get(i) == Some(&b'#') {
+        let open = src[i..].find('[')? + i;
+        let mut depth = 0usize;
+        let mut k = open;
+        loop {
+            match b.get(k)? {
+                b'[' => depth += 1,
+                b']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            k += 1;
+        }
+        i = skip_space(b, k + 1);
+    }
+    let mut word = &src[i..ident_end(b, i)];
+    if word == "pub" {
+        i = skip_space(b, i + 3);
+        if b.get(i) == Some(&b'(') {
+            i = skip_space(b, src[i..].find(')')? + i + 1);
+        }
+        word = &src[i..ident_end(b, i)];
+    }
+    if word != "struct" {
+        return None;
+    }
+    i = skip_space(b, i + 6);
+    let name = &src[i..ident_end(b, i)];
+    (!name.is_empty()).then_some(name)
+}
+
 /// The table `wisp::users(&db::USERS)` names, as written, in `src` (the
 /// hooks file), if it does.
 pub fn users_table(src: &str) -> Result<Option<String>, String> {
@@ -2195,6 +2333,55 @@ fn a(#[validate(pattern = \"https?://x\")] u: String) {}",
         assert_eq!(
             account_table("pub static POSTS: Table<Post> = Table::saved();"),
             None
+        );
+        // `#[model(saved)]` declares the static itself.
+        let saved = "#[model(saved)]\n/// Members.\n#[derive(Debug)]\npub struct Member { email: Email, password: Password }\n#[model(saved)] struct Post { t: String }";
+        assert_eq!(account_table(saved), Some("db::MEMBERS".into()));
+        let items = scan(saved).unwrap();
+        let members = items.consts.iter().find(|c| c.name == "MEMBERS").unwrap();
+        assert!(
+            members.is_static && members.ty == "Table<Member>",
+            "{members:?}"
+        );
+        assert_eq!(members.value, "Table::saved(\"members\")");
+        assert!(items.consts.iter().any(|c| c.name == "POSTS"));
+        assert!(
+            scan("#[model] struct A { t: String }")
+                .unwrap()
+                .consts
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn crud_writes_the_actions_on_the_models_line() {
+        let block = "// x\n#[model(saved, crud)]\nstruct Todo {\n    text: String,\n}\nfn remove(id: u64) {\n    TODOS.remove(id);\n}";
+        let out = expand_crud(block).unwrap().unwrap();
+        assert_eq!(
+            out,
+            "// x\n#[action] fn add(todo: Todo) { TODOS.add(todo); } #[action] fn update(id: u64, todo: Todo) { TODOS.set(id, todo).or_404()?; } #[model(saved)]\nstruct Todo {\n    text: String,\n}\nfn remove(id: u64) {\n    TODOS.remove(id);\n}"
+        );
+        assert_eq!(out.lines().count(), block.lines().count());
+        let items = scan(&out).unwrap();
+        assert!(
+            items.function("add").unwrap().action && items.consts.iter().any(|c| c.name == "TODOS")
+        );
+        assert_eq!(
+            expand_crud("#[model(saved)] struct A { t: String }").unwrap(),
+            None
+        );
+        assert_eq!(expand_crud("let crud = 1;").unwrap(), None);
+        let e = expand_crud("\n#[model(crud)] struct A { t: String }").unwrap_err();
+        assert!(
+            e.starts_with("2: `crud` writes actions") && e.contains("#[model(saved, crud)]"),
+            "{e}"
+        );
+        let out = expand_crud("#[model(saved, crud)] struct Category { t: String }")
+            .unwrap()
+            .unwrap();
+        assert!(
+            out.contains("fn add(category: Category) { CATEGORIES.add(category); }"),
+            "{out}"
         );
     }
 

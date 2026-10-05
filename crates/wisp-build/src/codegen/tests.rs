@@ -123,6 +123,9 @@ fn let_conditions_borrow_places() {
     assert_eq!(cond("let 1..=5 = n"), "let 1..=5 = n");
     assert_eq!(cond("a == b"), "a == b");
     assert_eq!(cond("letter"), "letter");
+    assert_eq!(cond("TODOS"), "::wisp::rt::truthy(&(TODOS))");
+    assert!(is_static_name("TODOS") && is_static_name("BLOG_POSTS") && is_static_name("T2"));
+    assert!(!is_static_name("T") && !is_static_name("Todo") && !is_static_name("1A"));
     assert_eq!(cond("user"), "::wisp::rt::truthy(&(user))");
     assert_eq!(cond("data.avatar"), "::wisp::rt::truthy(&(data.avatar))");
     assert_eq!(cond("data.n > 0"), "data.n > 0");
@@ -1089,6 +1092,29 @@ fn db_items_are_in_every_route_file() {
     assert_eq!(globs, 2, "{code}");
     let none = app("db-none", &[page]).unwrap();
     assert!(!none.contains("db::*"), "{none}");
+}
+
+#[test]
+fn a_table_is_iterated_by_reference() {
+    let page = "---\n#[model(saved, crud)]\nstruct Todo {\n    text: String,\n}\n---\n<form action=\"?/add\" fields />{#each TODOS as todo}<p>{todo.text}</p>{/each}{#if TODOS}y{/if}";
+    let code = app("table-each", &[("src/routes/+page.wisp", page)]).unwrap();
+    for f in [
+        "fn add(todo: Todo)",
+        "fn remove(id: u64)",
+        "fn update(id: u64, todo: Todo)",
+    ] {
+        assert!(code.contains(f), "{f} in {code}");
+    }
+    let bad = "---\n#[model(crud)]\nstruct Todo {\n    text: String,\n}\n---\nx";
+    let e = app("crud-bad", &[("src/routes/+page.wisp", bad)]).unwrap_err();
+    assert!(e.contains("+page.wisp:2: `crud` writes actions"), "{e}");
+    assert!(
+        code.contains("for todo in (&(TODOS)).into_iter() {"),
+        "{code}"
+    );
+    assert!(code.contains("if ::wisp::rt::truthy(&(TODOS)) {"), "{code}");
+    // `#[model(saved)]` is an action's input, with `fields` for its form.
+    assert!(code.contains(r#"name=\"text\""#), "{code}");
 }
 
 #[test]
