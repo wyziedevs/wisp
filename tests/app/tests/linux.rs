@@ -428,6 +428,64 @@ fn a_second_signal_does_not_wait_for_a_request_that_never_ends() {
 }
 
 #[test]
+fn stopping_finishes_the_request_under_way_refuses_new_ones_and_closes_idle_ones() {
+    for env in BACKENDS {
+        let mut s = common::start(env);
+        // One connection kept alive and quiet, one with a request half sent.
+        let mut idle = BufReader::new(connect(s.port));
+        idle.get_mut().write_all(GET).unwrap();
+        assert!(read_answer(&mut idle).0.starts_with("HTTP/1.1 200"));
+        let mut busy = connect(s.port);
+        busy.write_all(
+            b"POST /echo HTTP/1.1
+host: x
+content-length: 4
+
+ab",
+        )
+        .unwrap();
+        wait_until_read(s.port, &busy);
+        signal(&s, "TERM");
+        refuses_soon(s.port);
+        // The drain waits for the busy one: the process is still there.
+        assert!(s.child.try_wait().unwrap().is_none(), "{env:?}");
+        busy.write_all(b"cd").unwrap();
+        let mut answer = String::new();
+        busy.read_to_string(&mut answer).unwrap();
+        assert!(answer.starts_with("HTTP/1.1 200"), "{env:?} {answer}");
+        assert!(answer.contains("connection: close"), "{answer}");
+        assert!(answer.ends_with("4:abcd"), "{answer}");
+        // Done well inside the ten second drain, and the idle one is closed with it.
+        assert!(exits_within(&mut s.child, 5).success());
+        let mut rest = Vec::new();
+        if idle.read_to_end(&mut rest).is_ok() {
+            assert!(rest.is_empty(), "{rest:?}");
+        }
+    }
+}
+
+#[test]
+fn a_request_that_never_ends_is_cut_off_when_the_ten_second_drain_ends() {
+    let mut s = start();
+    let mut c = connect(s.port);
+    c.write_all(
+        b"POST /echo HTTP/1.1
+host: x
+content-length: 4
+
+ab",
+    )
+    .unwrap();
+    wait_until_read(s.port, &c);
+    let began = Instant::now();
+    signal(&s, "TERM");
+    // No second signal: it waits for the drain to run out (10 s), no longer.
+    assert!(exits_within(&mut s.child, 14).success());
+    let took = began.elapsed();
+    assert!(took >= Duration::from_secs(9), "left early: {took:?}");
+}
+
+#[test]
 fn streams_end_properly_and_sockets_hear_the_server_is_going_away() {
     for env in BACKENDS {
         streams_end_properly_on(env);
