@@ -106,7 +106,10 @@ fn candidates(rust: &str) -> Vec<Let> {
                     .rsplit('\n')
                     .next()
                     .is_some_and(|l| l.trim().is_empty());
+                // And nothing after it but a comment: its line is cleared.
+                let after = rust[i + 1..].split('\n').next().unwrap_or("").trim();
                 if alone
+                    && (after.is_empty() || after.starts_with("//"))
                     && !text.contains('\n')
                     && let Some(l) = literal_let(text, rust[..at].matches('\n').count())
                 {
@@ -331,7 +334,7 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
 /// but `lang`), as its start and end.
 fn client_script(markup: &str) -> Option<(usize, usize)> {
     let mut from = 0;
-    while let Some(k) = markup[from..].find("<script") {
+    while let Some(k) = find(&markup.as_bytes()[from..], b"<script") {
         let at = from + k + "<script".len();
         let close = at + markup[at..].find('>')?;
         let attrs = markup[at..close].trim();
@@ -459,6 +462,105 @@ let n = 1;
         ] {
             let (rust, _) = folded(src);
             assert!(rust.contains("let n = 1;"), "{src}");
+        }
+    }
+
+    #[test]
+    fn what_shares_its_line_is_kept() {
+        // Moving `n` must not take the rest of its line with it.
+        for src in [
+            "---\nlet n = 1; let m = 2;\n---\n{m}{:n}",
+            "---\nlet n = 1; cx.status(201);\n---\n{:n}",
+        ] {
+            let (rust, _) = folded(src);
+            assert!(rust.contains("let n = 1;"), "{src}: {rust}");
+        }
+        // A trailing comment is fine to drop with it.
+        let (rust, markup) = folded("---\nlet n = 1; // start\n---\n{:n}");
+        assert!(!rust.contains("let n"), "{rust}");
+        assert!(markup.contains("let n = 1;"), "{markup}");
+    }
+
+    #[test]
+    fn edge_lets() {
+        for (src, moves) in [
+            ("---\nlet n = -2.5e-3;\n---\n{:n}", true),
+            ("---\nlet n = 0x10;\n---\n{:n}", false),
+            ("---\nlet n = \"a{b}c\";\n---\n{:n}", true),
+            ("---\nlet n = \"é ✓\";\n---\n{:n}", true),
+            ("---\nlet n = \"a\\\"b\";\n---\n{:n}", false),
+            ("---\nlet n = r#\"x\"#;\n---\n{:n}", false),
+            ("---\nlet n = Some(1);\n---\n{:n}", false),
+            ("---\nlet n = 1;\nlet n = 2;\n---\n{:n}", false),
+            ("---\nlet café = 1;\n---\n{:café}", false),
+            ("---\nlet n = /* c */ 1;\n---\n{:n}", false),
+            ("---\nlet n: Vec<i32> = vec![];\n---\n{:n}", true),
+            (
+                "---\nlet n = 1;\n#[action]\nfn go(cx: &mut Cx) { let _ = n; }\n---\n{:n}",
+                false,
+            ),
+            ("---\nlet n = 1;\n---\n{:n}<SCRIPT>let m = 2</SCRIPT>", true),
+        ] {
+            let (rust, markup) = folded(src);
+            assert_eq!(
+                !rust.trim_start().starts_with("let"),
+                moves,
+                "{src}: {rust} | {markup}"
+            );
+            if moves {
+                assert!(crate::template::parse(&markup).is_ok(), "{markup}");
+            }
+        }
+    }
+
+    #[test]
+    fn fuzz_never_panics() {
+        let parts = [
+            "let ",
+            "mut ",
+            "n",
+            " = ",
+            "-",
+            "1",
+            "_",
+            ".",
+            "e",
+            "\"",
+            "{",
+            "}",
+            "(",
+            ")",
+            "[",
+            "]",
+            ";",
+            "\n",
+            "vec!",
+            ",",
+            "None",
+            "//",
+            "/*",
+            "*/",
+            "é",
+            "'",
+            "r#",
+            ":",
+            "<script>",
+            "</script>",
+            "{:n}",
+            "---\n",
+            " ",
+        ];
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        for _ in 0..20_000 {
+            let mut s = String::from("---\n");
+            for _ in 0..(seed % 24) {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                s.push_str(parts[(seed % parts.len() as u64) as usize]);
+            }
+            s.push_str("\n---\n{:n}<p on:click=\"n++\"></p>");
+            let _ = crate::split_front(&s);
         }
     }
 }
