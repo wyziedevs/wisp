@@ -59,6 +59,7 @@ unsafe_code = "forbid"
 [profile.dev]
 debug = "line-tables-only"
 opt-level = 1
+lto = "off"
 
 [profile.release]
 codegen-units = 1

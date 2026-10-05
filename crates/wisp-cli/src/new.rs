@@ -482,10 +482,12 @@ edition = "2024"
 [features]
 browser = ["wisp/browser"]
 
-# Dev builds near release speed, and rebuilds as fast as unoptimized ones.
+# Dev builds near release speed, and rebuilds as fast as unoptimized ones
+# (`lto = "off"` skips the local ThinLTO pass opt-level 1 runs on every edit).
 [profile.dev]
 debug = "line-tables-only"
 opt-level = 1
+lto = "off"
 
 [profile.release]
 codegen-units = 1

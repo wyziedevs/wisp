@@ -514,6 +514,10 @@ machine swings up to 2x between runs, so read the shape, not the digits:
 - Dev profile: `opt-level = 1` on the app beats `0` on edits (1.4-1.6s
   against 1.8-4.2s for a template edit at 200 routes: less code to link),
   and `opt-level = 2` for deps made cold builds slower; kept as is.
+- Dev profile `lto = "off"`: opt-level 1 runs a local ThinLTO pass over
+  the app crate on every edit (15s of 25s in `-Ztime-passes`, 300 routes,
+  Windows). Off, a template shape edit at 300 routes rebuilds in 1.7-3.4s
+  instead of 17.8s; release builds are untouched.
 - `wisp check --rust` type-checks without codegen or link (`cargo check`).
 - Deps of a fresh app: 13 crates (tokio, mio, socket2, httparse, bytes,
   pulldown-cmark and the Wisp crates); tokio's `fs` feature is dropped.
