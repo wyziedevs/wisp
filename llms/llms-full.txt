@@ -244,8 +244,9 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
   expr)]`/`#[json(was = "old")]` for old rows, `.migrate(f)`, `.live()` (pages
   naming a live table's static refresh themselves), `set clear by try_add`. A
   field added to a saved type must be `Option`, `Vec` or `bool`.
-  Jobs: `wisp::queue(n).push(&j)` + `work(n, f)` + `cron("0 3 * * *", f)`,
-  `wisp::cache(k, secs, f)`/`uncache(path)`: https://wispweb.dev/docs/data.
+  Jobs: `wisp::queue(n).push(&j)` + `work(n, f)` + `cron("0 3 * * *", f)` (an
+  app with none has no jobs in its wasm), `wisp::cache(k, secs, f)`/`uncache(path)`:
+  https://wispweb.dev/docs/data.
 - Test: `let mut app = wisp::test::client::<App>(); app.get("/").text()`,
   `app.post_form/post_json/delete`, `.json::<T>()`, `r.location()`,
   `app.upload(url, field, mime, bytes)`, `app.sign_in(id)`,
@@ -1108,7 +1109,7 @@ What these numbers come from:
 
 ## Edge and JavaScript Hosts (2026-10-04)
 
-The same app built with `wisp build --target node|bun|deno|cloudflare`, against Hono, on Windows 10, Ryzen 7 7800X3D, Node 26, Deno 2.5, Bun 1.4, workerd 1.20261001. `oha`, 64 connections, 10 s runs, median of 5, Wisp and Hono alternating; Wisp is the first number in each cell. The machine was not idle (an unrelated app used about 0.8 of a core), so compare the two numbers within a row and treat the absolute values with care. Requests a second, Wisp / Hono:
+The same app built with `wisp build --target node|bun|deno|cloudflare`, against Hono, on Windows 10, Ryzen 7 7800X3D, Node 26, Deno 2.5, Bun 1.4, workerd 1.20261001. `oha`, 64 connections, 10 s runs, median of 5, Wisp and Hono alternating; Wisp is the first number in each cell. The machine was not idle (an unrelated app used about 0.8 of a core), so treat the absolute values with care. Run validity not recorded (no steal data); raw data, no ranking is drawn from it. Requests a second, Wisp / Hono:
 
 | Host | `/` | `/list1000` | `/json-big` | `/params` + cookie |
 |---|---:|---:|---:|---:|
@@ -1123,7 +1124,7 @@ The same app built with `wisp build --target node|bun|deno|cloudflare`, against 
 - The wasm for the bench app is 541 KB (541,063 bytes) since the Cloudflare, Pages, Vercel and Netlify builds leave out the server loop for raw connections (`WISP_REQUEST_ONLY`, 584,353 before). `tests/wasm-size.sh` fails CI when a build grows past its budget.
 - Where speed and size disagree, speed wins, so `opt-level = 3` stays, and `wasm-opt` and allocator swaps that measured no faster were not kept.
 
-The full tables, the dropped experiments and a ranking against fifteen other frameworks per host are in [`bench/edge/README.md`](https://github.com/wyziedevs/wisp/blob/main/bench/edge/README.md) and `bench/rank`. That ranking ran on a CPU-capped VPS, so this site quotes none of its places.
+The full tables, the dropped experiments and the raw numbers for fifteen other frameworks per host are in [`bench/edge/README.md`](https://github.com/wyziedevs/wisp/blob/main/bench/edge/README.md) and `bench/rank`. Run validity is not recorded for those runs (no steal data), so this site quotes no place or rank from them.
 
 ## What Is Checked
 

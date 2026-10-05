@@ -244,8 +244,9 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
   expr)]`/`#[json(was = "old")]` for old rows, `.migrate(f)`, `.live()` (pages
   naming a live table's static refresh themselves), `set clear by try_add`. A
   field added to a saved type must be `Option`, `Vec` or `bool`.
-  Jobs: `wisp::queue(n).push(&j)` + `work(n, f)` + `cron("0 3 * * *", f)`,
-  `wisp::cache(k, secs, f)`/`uncache(path)`: https://wispweb.dev/docs/data.
+  Jobs: `wisp::queue(n).push(&j)` + `work(n, f)` + `cron("0 3 * * *", f)` (an
+  app with none has no jobs in its wasm), `wisp::cache(k, secs, f)`/`uncache(path)`:
+  https://wispweb.dev/docs/data.
 - Test: `let mut app = wisp::test::client::<App>(); app.get("/").text()`,
   `app.post_form/post_json/delete`, `.json::<T>()`, `r.location()`,
   `app.upload(url, field, mime, bytes)`, `app.sign_in(id)`,
