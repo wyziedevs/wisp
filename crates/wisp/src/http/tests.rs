@@ -1417,3 +1417,33 @@ fn timing_names_the_phases_that_ran() {
         "total;dur=1.00"
     );
 }
+
+/// Without `WISP_SECRET` a request that signs is a caught panic: a 500
+/// naming the setting, and the next request is served.
+#[test]
+fn no_secret_is_a_caught_500() {
+    use std::task::{Context, Poll, Waker};
+    let run = |sign: bool| {
+        let mut f = std::pin::pin!(super::catch::catch_made(|| async move {
+            let mut cx = Cx::for_test("POST /login HTTP/1.1\r\n\r\n", &[]);
+            if sign {
+                cx.set_signed_cookie("user", 42);
+            }
+            Ok(())
+        }));
+        let Poll::Ready(r) = f.as_mut().poll(&mut Context::from_waker(Waker::noop())) else {
+            panic!("the handler never waits")
+        };
+        r
+    };
+    crate::sign::NO_KEY.set(true);
+    let failed = run(true).unwrap_err();
+    crate::sign::NO_KEY.set(false);
+    assert_eq!(failed.status(), 500);
+    assert!(
+        failed.message().contains("WISP_SECRET"),
+        "{}",
+        failed.message()
+    );
+    assert!(run(false).is_ok(), "the next request is served");
+}

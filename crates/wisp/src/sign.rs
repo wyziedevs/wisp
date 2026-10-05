@@ -57,6 +57,10 @@ pub(crate) static ROOT: OnceLock<&'static str> = OnceLock::new();
 /// `.wisp/secret`, so signed cookies survive restarts. Otherwise there is
 /// none to sign with: the panic is the request's 500, with the reason.
 fn key() -> &'static Hmac {
+    #[cfg(test)]
+    if NO_KEY.get() {
+        panic!("{NO_SECRET}");
+    }
     static KEY: OnceLock<Hmac> = OnceLock::new();
     KEY.get_or_init(|| {
         if let Some(secret) = &crate::settings().secret {
@@ -65,11 +69,19 @@ fn key() -> &'static Hmac {
         if crate::settings().dev {
             return Hmac::new(&dev_key());
         }
-        panic!(
-            "signed cookies need a secret: set WISP_SECRET to at least 32 random characters \
-             (`openssl rand -hex 32` makes one), the same on every server of the app"
-        )
+        panic!("{NO_SECRET}")
     })
+}
+
+/// The panic without a secret: the request's 500 (caught on a server, the
+/// edge bridge's 500 on an edge host), never the process.
+const NO_SECRET: &str = "signed cookies need a secret: set WISP_SECRET to at least 32 random characters \
+     (`openssl rand -hex 32` makes one), the same on every server of the app";
+
+#[cfg(test)]
+thread_local! {
+    /// A test's thread has no secret, as a server without `WISP_SECRET`.
+    pub(crate) static NO_KEY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// `WISP_SECRET_OLD`: the secret before `WISP_SECRET`, which signatures are

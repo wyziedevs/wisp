@@ -203,6 +203,13 @@ pub(crate) fn settings() -> &'static Settings {
             n => n.unwrap_or(10_000),
         };
         let dev = switch("WISP_DEV", cfg!(debug_assertions));
+        // Said at start: without it a request that signs a cookie or a
+        // token answers 500 (its panic names WISP_SECRET too).
+        if cfg!(not(target_arch = "wasm32")) && !dev && secret.is_none() {
+            http::log(format_args!(
+                "wisp: WISP_SECRET is not set: signed cookies, sign-ins and tokens answer 500\n  Set it to at least 32 random characters (`openssl rand -hex 32` makes one), the same on every server."
+            ));
+        }
         let api_docs = switch("WISP_API_DOCS", dev);
         let request_id = switch("WISP_REQUEST_ID", false);
         let problem_json = switch("WISP_PROBLEM_JSON", false);
