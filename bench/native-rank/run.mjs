@@ -16,20 +16,20 @@ import { fileURLToPath } from 'node:url';
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const SERVER_CPUS = process.env.SERVER_CPUS || '0-1';
 const CLIENT_CPUS = process.env.CLIENT_CPUS || '2-3';
-const PORT = 8080;
+const PORT = 18480; // not 8080: other jobs on a shared host use it
 const PATH = ['/root/.cargo/bin', '/root/nr-tools/go/bin', '/root/dotnet', '/usr/local/bin', '/opt/bun/bin', process.env.PATH].join(':');
 
 // One entry per framework: how to build it and how to start it (cwd is apps/<dir>).
 const FW = {
   wisp: { name: 'Wisp', build: 'cargo build --release', cmd: './target/release/nr-wisp' },
-  aspnet: { name: 'ASP.NET Core', build: 'dotnet publish -c Release -o pub', cmd: './pub/Nr' },
+  aspnet: { name: 'ASP.NET Core', build: 'dotnet publish -c Release -o pub', cmd: './pub/Nr', env: { DOTNET_ROOT: '/root/dotnet' } },
   axum: { name: 'Axum', build: 'cargo build --release', cmd: './target/release/nr-axum' },
   actix: { name: 'Actix Web', build: 'cargo build --release', cmd: './target/release/nr-actix' },
   gin: { name: 'Go Gin', build: 'go mod tidy && go build -o nr-gin .', cmd: './nr-gin' },
   fastify: { name: 'Fastify', build: 'npm install --omit=dev --no-audit --no-fund', cmd: 'node cluster.js', env: { NODE_ENV: 'production' } },
   express: { name: 'Express', build: 'npm install --omit=dev --no-audit --no-fund', cmd: 'node cluster.js', env: { NODE_ENV: 'production' } },
   'hono-bun': { name: 'Hono (Bun)', build: 'bun install', cmd: 'for i in $(seq $(nproc)); do bun server.js & done; wait', env: { NODE_ENV: 'production' } },
-  spring: { name: 'Spring Boot', build: 'mvn -q -DskipTests package', cmd: 'java -XX:+UseParallelGC -Xms1g -Xmx1g -jar target/app.jar' },
+  spring: { name: 'Spring Boot', build: 'mvn -q -DskipTests package', cmd: 'java -XX:+UseParallelGC -Xms1g -Xmx1g -jar target/app.jar --server.port=${PORT}' },
   fastapi: { name: 'FastAPI', build: 'python3 -m venv .venv && .venv/bin/pip install -q -r requirements.txt', cmd: `.venv/bin/uvicorn main:app --host 0.0.0.0 --port ${PORT} --workers 2 --http httptools --loop uvloop --no-access-log --log-level error` },
   next: { name: 'Next.js', build: 'npm install --no-audit --no-fund && npx next build', cmd: 'node cluster.js', env: { NODE_ENV: 'production', HOSTNAME: '0.0.0.0' } },
   sveltekit: { name: 'SvelteKit', build: 'npm install --no-audit --no-fund && npx vite build', cmd: 'node cluster.js', env: { NODE_ENV: 'production' } },
@@ -75,10 +75,10 @@ async function start(f) {
   const d = FW[f];
   const env = { ...process.env, PATH, PORT: String(PORT), ...(d.env || {}) };
   const t0 = performance.now();
-  const child = spawn('taskset', ['-c', SERVER_CPUS, 'bash', '-c', 'exec 2>/dev/null; ' + d.cmd], { cwd: join(ROOT, 'apps', f), env, detached: true, stdio: 'ignore' });
-  child.unref();
+  const child = spawn('taskset', ['-c', SERVER_CPUS, 'bash', '-c', d.cmd], { cwd: join(ROOT, 'apps', f), env, detached: true, stdio: process.env.NRDEBUG ? 'inherit' : ['pipe', 'ignore', 'ignore'] });
+  child.unref(); // stdin stays an open pipe: a server reading a closed stdin (Wisp does) would stop
   for (;;) {
-    if (performance.now() - t0 > 180000) throw new Error('no 200 within 180 s');
+    if (performance.now() - t0 > 90000) throw new Error(`${f}: no 200 within 90 s`);
     try { const r = await get('/'); if (r.status === 200) break; } catch {}
     await sleep(5);
   }
@@ -150,7 +150,6 @@ async function bench(f, pass) {
       console.log(`[${f}] ${n}: ${res.routes[n].rps} req/s p99 ${res.routes[n].p99ms} ms  runs ${res.routes[n].runs.join(' ')}`);
     }
     Object.assign(res, memKb(pid));
-    if (!args.includes('--routes') || !prev.rssMb) { /* fresh memory sample after this load */ }
     console.log(`[${f}] rss ${res.rssMb} MB (peak ${res.peakMb})`);
   } finally {
     await stop(pid);

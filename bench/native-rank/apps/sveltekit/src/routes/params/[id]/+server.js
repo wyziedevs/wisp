@@ -8,5 +8,5 @@ const sid = (c) => {
   return 'none';
 };
 export function GET({ params, url, request }) {
-  return text(`id=${params.id} q=${url.searchParams.get('q') ?? ''} sid=${sid(request.headers.get('cookie'))}`);
+  return text(`id=${params.id} q=${url.searchParams.get('q') ?? ''} sid=${sid(request.headers.get('cookie'))}`, { headers: { 'content-type': 'text/plain; charset=utf-8' } });
 }
