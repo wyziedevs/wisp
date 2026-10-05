@@ -40,6 +40,8 @@
   // `scroll-behavior: smooth`.
   const jump = (x, y) => scrollTo({ left: x, top: y, behavior: 'instant' });
   let shown = key(location.href);
+  // Where back returns to: this entry's scroll.
+  const keep = () => history.replaceState({ ...history.state, x: scrollX, y: scrollY }, '');
   const me = document.currentScript?.src;
   // The path the app is served under (`/app`, or none), from this script's.
   const base = me ? new URL(me).pathname.replace(/\/_app\/wisp\.js$/, '') : '';
@@ -283,6 +285,7 @@
         const html = await res.text();
         if (my !== nav) return true; // a newer navigation took over
         el.innerHTML = new DOMParser().parseFromString(html, 'text/html').body.innerHTML;
+        shown = key(url); // back is then another page: it closes the slot
         push(url);
         return true;
       }
@@ -297,7 +300,7 @@
     if (!send('wisp:navigate', { from: location.href, to: url.href, pop: !!how.pop }) && !how.pop) return;
     const my = ++nav;
     if (!how.pop && document.querySelector('[data-wisp-cut]') && (await cut(url, my))) return my === nav && send('wisp:stay');
-    if (!how.pop) history.replaceState({ ...history.state, x: scrollX, y: scrollY }, '');
+    if (!how.pop) keep();
     const undo = views.length && !how.pop && !pre.has(key(url)) && wait(url);
     let res;
     try {
@@ -366,7 +369,7 @@
     if (!a || e.defaultPrevented || e.button || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || !ours(a)) return;
     const url = new URL(a.href);
     // Same page, another #place (or a bare `#`): the browser scrolls there.
-    if (a.href.includes('#') && key(url) === key(location.href)) return history.replaceState({ ...history.state, x: scrollX, y: scrollY }, ''); // where back returns to
+    if (a.href.includes('#') && key(url) === key(location.href)) return keep();
     e.preventDefault();
     const has = (n) => !!a.closest(`[data-wisp-${n}]`);
     // A page that cannot be shown here (bad HTML, a throwing hook) is loaded whole.

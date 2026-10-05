@@ -111,6 +111,19 @@ function page({ online = true, scripts = [], vitals = null, views = null, main =
 }
 
 const tests = {
+  async 'back from a slot page fetches the page that closes the slot'() {
+    const slot = { innerHTML: '', getAttribute: () => JSON.stringify([['/gal/item/[id]', '/gal/@modal/(.)item/[id]']]) };
+    const p = page({ cuts: [slot] });
+    p.g.reply = () => res('<b>photo 7</b>');
+    p.click({}, '/gal/item/7');
+    await tick();
+    p.fetches.length = 0;
+    p.loc.href = 'http://x.test/';
+    p.g.history.state = { k: 'a' };
+    p.win.dispatchEvent(new Event('popstate'));
+    await tick();
+    assert.equal(p.fetches[0]?.url, 'http://x.test/');
+  },
   async 'offline: a data-wisp-queue form waits, and is sent when online'() {
     const p = page({ online: false });
     const e = p.submit(p.form({ 'data-wisp-queue': '' }, [['a', '1'], ['b', 'x y']]));
