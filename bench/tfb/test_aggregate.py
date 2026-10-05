@@ -39,5 +39,17 @@ class Parse(unittest.TestCase):
     def test_no_latency(self):
         self.assertIsNone(run("Requests/sec: 5\n"))
 
+class Limited(unittest.TestCase):
+    def row(self, **kw):
+        return {"failed": None, "rps_max": 100.0, "requests": 1000, "non2xx": 0, **kw}
+    def test_only_the_top_level(self):
+        self.assertFalse(aggregate.limited(4096, self.row(failed="no request completed", rps_max=0)))
+        self.assertTrue(aggregate.limited(16384, self.row(failed="no request completed", rps_max=0)))
+    def test_non2xx_dominated(self):
+        self.assertTrue(aggregate.limited(16384, self.row(non2xx=600)))
+        self.assertFalse(aggregate.limited(16384, self.row(non2xx=100)))
+    def test_clean_cell(self):
+        self.assertFalse(aggregate.limited(16384, self.row()))
+
 if __name__ == "__main__":
     unittest.main()

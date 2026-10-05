@@ -156,6 +156,10 @@ with the numbers they would be a different scale from the tables above.
 - **Plaintext at 16384 connections** is beyond what this setup serves for most contenders (wrk
   timeouts after 8 s; a `0` median means at least 2 of 3 runs completed no request). Wisp's default
   `WISP_MAX_CONNS=10000` answers `503` past that many connections.
+  A cell at 16384 that records `0`, no valid run or mostly non-2xx replies is labelled "load-generator
+  limited (local port range)": the VM has about 28k local ports (32768-60999), Linux searches half of
+  them for every `connect()`, and wrk's event loop blocks while refused clients reconnect. That is a
+  measurement caveat of this setup, not a Wisp failure. Widening the range (see `bench/README.md`) lifts it.
 - **Pipelined rows have no p99** (wrk), and latency is queueing under a 16-deep pipeline, not
   request latency.
 - Next.js has no valid pipelined plaintext result: no 16-deep pipelined response completed within wrk's timeout. It was restarted

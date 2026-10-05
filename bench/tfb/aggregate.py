@@ -18,6 +18,8 @@ LABEL = {
 }
 # Why a contender's runs at one level all completed no request, from the run notes in RESULTS.md.
 FAILED = {("next", "plaintext"): "No valid result: no pipelined response completed (heap raised to 8 GB, still none)"}
+HIGH_LEVEL = 16384
+LIMITED = "load-generator limited (local port range)"
 UNIT = {"us": 1e-3, "ms": 1.0, "s": 1000.0, "m": 60000.0}
 
 
@@ -25,6 +27,16 @@ def ms(text):
     m = re.match(r"([\d.]+)(us|ms|s|m)$", text)
     v = float(m.group(1)) * UNIT[m.group(2)] if m else None
     return v or None   # wrk prints 0.00us for percentiles it could not compute (pipelining)
+
+
+def limited(lvl, row):
+    """At the top level the client, not the server, is the limit: wrk's connect() slows on the VM's
+    ~28k local ports, so a cell with no completed request, or mostly non-2xx replies, says nothing
+    about the server. Derived from the data only."""
+    if lvl < HIGH_LEVEL:
+        return False
+    bad = row["failed"] or row["rps_max"] == 0
+    return bool(bad or (row["requests"] and 2 * row["non2xx"] > row["requests"]))
 
 
 def parse(path):
@@ -84,6 +96,7 @@ def main():
                     "lat_avg_ms_median": statistics.median([r["lat_avg_ms"] for r in runs if r["lat_avg_ms"]] or [0]),
                     "lat_p99_ms_median": (statistics.median([r["lat_p99_ms"] for r in runs if r["lat_p99_ms"]]) if any(r["lat_p99_ms"] for r in runs) else None),
                     "non2xx": sum(r["non2xx"] for r in runs),
+                    "requests": sum(r["requests"] or 0 for r in runs),
                     "socket_errors": sum(r["socket_errors"] for r in runs),
                     "steal_pct_max": max((r["steal_pct"] or 0) for r in runs),
                 }
@@ -95,6 +108,8 @@ def main():
             for c, r in rows.items():
                 r["failed"] = (FAILED.get((c, w), "no request completed") if r["rps_max"] == 0
                                else "every run stalled" if r["stalled"] == r["runs_total"] else None)
+            for r in rows.values():
+                r["limited"] = limited(lvl, r)
             ranked = [c for c in rows if c != "wisp-uncapped" and not rows[c]["failed"] and rows[c]["runs"] >= 2]
             for c, r in rows.items():
                 r["tied_with"] = sorted(o for o in ranked if c in ranked and o != c
@@ -140,6 +155,8 @@ def main():
                     err.append(f"{r['stalled']} stalled run(s) left out")
                 if r["socket_errors"]:
                     err.append(f"{r['socket_errors']} socket")
+                if r["limited"]:
+                    err.append(LIMITED + ", a measurement caveat, not a server failure")
                 if r["failed"]:
                     cells = [rank, LABEL[c], (r['failed'] if r['failed'].startswith("No valid") else f"Failed ({r['failed']})"), "-", "-", "-", "-",
                              ', '.join(err) or '-', f"{r['steal_pct_max']:.1f}", "-"]

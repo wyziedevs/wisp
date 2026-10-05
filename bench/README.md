@@ -45,6 +45,14 @@ since browsers do not pipeline, and applies to every path that runs (use
 TFB reference sources, with TFB's own wrk scripts and settings, on a pinned shared VM. See
 `tfb/RESULTS.md` and `tfb/run.sh`.
 
+For the 16384-connection level, wrk's `connect()` slows because the VM has only about 28k local
+ports (`net.ipv4.ip_local_port_range` 32768-60999) and Linux searches half of them first; clients
+refused past the server's connection cap reconnect and block wrk's event loop. `tfb/aggregate.py`
+labels such cells "load-generator limited (local port range)": a measurement caveat, not a server
+failure. Optionally widen the range before the run with
+`sysctl net.ipv4.ip_local_port_range="1024 65535"` (runtime only, reverts on reboot). It is a
+system setting the operator applies; the scripts never change it.
+
 Every server answers the same four paths. `/fortunes` is TechEmpower's
 fortunes test without the database: copy 12 rows, add one, sort by message,
 render an HTML table with escaping. `/plaintext` returns `Hello, World!`,
