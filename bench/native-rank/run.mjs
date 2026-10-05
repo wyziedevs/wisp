@@ -164,7 +164,7 @@ async function verify() {
     try { all[f] = await fetchAll(); } finally { await stop(pid); }
   }
   // Normalise away what a template engine may legitimately differ in: the list page's wrapper.
-  const items = (b) => [...b.matchAll(/<li>(.*?)<\/li>/g)].map((m) => m[1]);
+  const items = (b) => [...b.matchAll(/<li>(.*?)<\/li>/g)].map((m) => m[1].replaceAll('&gt;', '>')); // Svelte leaves a text `>` bare; both are the same text
   const ref = all[fws[0]];
   let bad = 0;
   for (const f of fws) {
