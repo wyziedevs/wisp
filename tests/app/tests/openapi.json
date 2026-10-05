@@ -2463,62 +2463,6 @@
         }
       }
     },
-    "/a2/header": {
-      "get": {
-        "operationId": "page_a2_header",
-        "tags": [
-          "pages"
-        ],
-        "responses": {
-          "200": {
-            "description": "The page",
-            "content": {
-              "text/html": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        }
-      }
-    },
-    "/a2/header?/bump": {
-      "post": {
-        "operationId": "action_bump_a2_header",
-        "tags": [
-          "actions"
-        ],
-        "responses": {
-          "200": {
-            "description": "The page again",
-            "content": {
-              "text/html": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "303": {
-            "description": "Done: on to the page it names",
-            "headers": {
-              "location": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        }
-      }
-    },
     "/a2/holes": {
       "get": {
         "operationId": "page_a2_holes",

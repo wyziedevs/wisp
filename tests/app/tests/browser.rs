@@ -294,34 +294,31 @@ fn forms_morph_in_place() {
     assert_eq!(b.eval(&format!("{n}.value")).as_str(), Some("B"));
 }
 
-/// A `---` block's literals the browser alone reads are browser state, as a
-/// script's `let`s are: the page has no script, and after a form action's
-/// morph they keep what the visitor made them. A value the server computes
-/// (`bumps`) is the server's again after the morph.
+/// A `---` block's literals the browser alone reads are browser state, as
+/// the script's `let`s are: after a form action's morph they keep what the
+/// visitor made them. A value the server computes (`count`, read as
+/// `data.count`) is the server's again after the morph.
 #[test]
 fn header_literals_are_browser_state() {
     let mut b = wisp::browser!(Site);
-    b.goto("/a2/header");
-    assert_eq!(b.text("#clicks"), "5");
+    b.goto("/a2/state");
+    assert_eq!(b.text("#lit"), "5");
     assert_eq!(b.text("#on"), "off");
     assert_eq!(b.text("#who"), "me");
     assert_eq!(b.text("#list"), "2");
-    let bumps: u32 = b.text("#bumps").parse().unwrap();
-    b.click("#click");
-    b.click("#click");
+    let seen: u32 = b.text("#seen").parse().unwrap();
+    b.click("#lit-up");
+    b.click("#lit-up");
     b.click("#toggle");
     b.click("#add");
-    b.click("#local");
+    b.click("#click");
     b.fill("#who-in", "you");
-    assert_eq!(b.text("#clicks"), "7");
-    assert_eq!(b.text("#on"), "on");
-    assert_eq!(b.text("#who"), "you");
-    assert_eq!(b.text("#list"), "3");
-    assert_eq!(b.text("#bumps"), (bumps + 10).to_string());
+    let after = ["7", "on", "you", "3", "1"];
+    let now = |b: &mut wisp::test::Browser| {
+        ["#lit", "#on", "#who", "#list", "#client"].map(|s| b.text(s))
+    };
+    assert_eq!(now(&mut b), after);
     b.click("#bump");
-    assert_eq!(b.text("#bumps"), (bumps + 1).to_string());
-    assert_eq!(b.text("#clicks"), "7");
-    assert_eq!(b.text("#on"), "on");
-    assert_eq!(b.text("#who"), "you");
-    assert_eq!(b.text("#list"), "3");
+    assert_eq!(b.text("#seen"), (seen + 1).to_string());
+    assert_eq!(now(&mut b), after);
 }
