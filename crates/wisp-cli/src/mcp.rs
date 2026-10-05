@@ -3,7 +3,7 @@
 //! problems, and add a route. JSON-RPC 2.0, one message a line; the app is
 //! the current directory, read again on every call.
 
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::path::Path;
 use wisp_shared::json::{self, Json};
 
@@ -22,21 +22,50 @@ const TOOLS: &str = concat!(
     "]"
 );
 
+/// The longest message read; a longer line is answered with an error.
+const MAX_LINE: u64 = 1 << 20;
+
 pub fn run() -> Result<(), String> {
-    let stdin = io::stdin();
+    let mut input = io::stdin().lock();
     let mut out = io::stdout().lock();
-    for line in stdin.lock().lines() {
-        let line = line.map_err(|e| format!("Could not read stdin: {e}"))?;
-        if line.trim().is_empty() {
-            continue;
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        let n = input
+            .by_ref()
+            .take(MAX_LINE + 1)
+            .read_until(10, &mut buf)
+            .map_err(|e| format!("Could not read stdin: {e}"))?;
+        if n == 0 {
+            return Ok(());
         }
-        if let Some(reply) = answer(&line) {
+        let reply = if buf.len() as u64 > MAX_LINE {
+            // Drop the rest of the line, then say so.
+            loop {
+                buf.clear();
+                let n = input
+                    .by_ref()
+                    .take(MAX_LINE)
+                    .read_until(10, &mut buf)
+                    .map_err(|e| format!("Could not read stdin: {e}"))?;
+                if n == 0 || buf.last() == Some(&10) {
+                    break;
+                }
+            }
+            Some(error(&Json::Null, -32600, "The message is over 1 MiB."))
+        } else {
+            let line = String::from_utf8_lossy(&buf);
+            if line.trim().is_empty() {
+                continue;
+            }
+            answer(&line)
+        };
+        if let Some(reply) = reply {
             writeln!(out, "{reply}")
                 .and_then(|()| out.flush())
                 .map_err(|e| format!("Could not write stdout: {e}"))?;
         }
     }
-    Ok(())
 }
 
 /// The reply to one message; none to a notification.
@@ -366,6 +395,17 @@ mod tests {
             Some(&Json::Num("-32601".into()))
         );
         assert!(reply("{").get("error").is_some());
+        // Malformed shapes get an error or a tool error, never a panic.
+        for bad in [
+            "[]",
+            "1",
+            r#"{"id":1}"#,
+            r#"{"id":1,"method":5}"#,
+            r#"{"id":1,"method":"tools/call","params":"x"}"#,
+            r#"{"id":1,"method":"tools/call","params":{"name":7,"arguments":[]}}"#,
+        ] {
+            assert!(answer(bad).is_some(), "{bad}");
+        }
     }
 
     #[test]

@@ -195,13 +195,16 @@ fn best(header: &str, list: &[&str]) -> Option<usize> {
         let q = it
             .find_map(|p| p.trim().strip_prefix("q="))
             .map_or(1.0, |q| q.trim().parse().unwrap_or(0.0));
+        // `NaN`, `inf` and the like parse; a weight is 0 to 1.
+        let q = if (0.0..=1.0).contains(&q) { q } else { 0.0 };
         if q <= 0.0 || tag.is_empty() || tag == "*" || best.is_some_and(|(b, _)| b >= q) {
             continue;
         }
         let base = |a: &str, b: &str| {
+            let a = a.as_bytes();
             a.len() > b.len()
-                && a[..b.len()].eq_ignore_ascii_case(b)
-                && matches!(a.as_bytes()[b.len()], b'-' | b'_')
+                && a[..b.len()].eq_ignore_ascii_case(b.as_bytes())
+                && matches!(a[b.len()], b'-' | b'_')
         };
         let found = (list.iter().position(|l| l.eq_ignore_ascii_case(tag)))
             .or_else(|| list.iter().position(|l| base(tag, l) || base(l, tag)));
@@ -266,6 +269,9 @@ mod tests {
         assert_eq!(b("de, *;q=0.1"), None);
         assert_eq!(b("fr;q=0, en"), Some("en"));
         assert_eq!(b(""), None);
+        // Not ASCII, not a weight: no panic, no winner.
+        assert_eq!(b("日本, fr;q=NaN, en;q=inf, é-x"), None);
+        assert_eq!(b("日本語, fr"), Some("fr"));
     }
 
     #[test]

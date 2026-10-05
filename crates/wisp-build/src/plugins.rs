@@ -29,6 +29,10 @@ pub(crate) fn sync(root: &Path) -> Result<Vec<PathBuf>, String> {
         return Err(format!("plugin `{n}`: not a crate name"));
     }
     let ids: Vec<String> = names.iter().map(|n| n.replace('-', "_")).collect();
+    // `a-b` and `a_b` would share a folder.
+    if let Some(i) = (1..ids.len()).find(|&i| ids[..i].contains(&ids[i])) {
+        return Err(format!("plugin `{}`: listed twice", names[i]));
+    }
     for sub in ["routes", "components"] {
         for e in fs::read_dir(root.join("src").join(sub))
             .into_iter()
@@ -96,7 +100,17 @@ fn used(toml: &str) -> Vec<String> {
             text += "\n";
         }
     }
-    let Some(i) = text.find("use") else {
+    // The key `use` itself, not `reuse` or a word in a comment.
+    let Some(i) = text
+        .lines()
+        .scan(0, |at, l| {
+            let here = *at;
+            *at += l.len() + 1;
+            Some((here, l))
+        })
+        .find(|(_, l)| l.strip_prefix("use").is_some_and(|r| r.trim_start().starts_with('=')))
+        .map(|(at, _)| at)
+    else {
         return Vec::new();
     };
     let rest = &text[i..];
@@ -264,6 +278,29 @@ mod tests {
         assert_eq!(base_of(t).as_deref(), Some("/user"));
         assert_eq!(used(t), ["kit"]);
         assert_eq!(base_of("[package]\nbase = \"/x\"\n"), None);
+    }
+
+    #[test]
+    fn use_is_the_key_not_a_word() {
+        let t = "[package.metadata.wisp]
+reuse = [\"x\"]
+use = [\"kit\"]
+";
+        assert_eq!(used(t), ["kit"]);
+        assert!(used("[package.metadata.wisp]
+reuse = [\"x\"]
+").is_empty());
+        let d = std::env::temp_dir().join(format!("wisp-plugin-dup-{}", std::process::id()));
+        fs::create_dir_all(&d).unwrap();
+        fs::write(
+            d.join("Cargo.toml"),
+            "[package.metadata.wisp]
+use = [\"a-b\", \"a_b\"]
+",
+        )
+        .unwrap();
+        assert!(sync(&d).unwrap_err().contains("listed twice"));
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]

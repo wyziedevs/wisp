@@ -208,7 +208,12 @@ fn with_dep(toml: &str, dep: &str) -> Option<String> {
     for line in toml.lines() {
         out.push_str(line);
         out.push('\n');
-        if !added && line.trim() == "[dependencies]" {
+        if !added
+            && line
+                .split('#')
+                .next()
+                .is_some_and(|l| l.trim() == "[dependencies]")
+        {
             out.push_str(dep);
             out.push('\n');
             added = true;
