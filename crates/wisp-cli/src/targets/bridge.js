@@ -4,6 +4,9 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 // Exact: invalid UTF-8 throws and a leading BOM is kept, so the text encodes back to the same bytes.
 const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+// The same without `fatal`: Deno's fatal decoder takes 12x as long on 14 KB
+// (6.7 us, against 0.55; bench/rank /json-big), Bun's and Node's the same.
+const loose = new TextDecoder('utf-8', { ignoreBOM: true });
 const failed = { status: 500, headers: [['content-type', 'text/plain; charset=utf-8']], body: enc.encode('Internal Server Error') };
 
 // A first line, `name: value` lines, an empty line, the body.
@@ -208,6 +211,9 @@ function asText(body) {
     while (i < body.length && body[i] < 128) i++;
     if (i === body.length) return String.fromCharCode.apply(null, body);
   }
+  // U+FFFD marks a byte that was not UTF-8, or one the text has itself: the exact decoder tells.
+  const s = loose.decode(body);
+  if (!s.includes('�')) return s;
   try {
     return utf8.decode(body);
   } catch {
@@ -240,8 +246,16 @@ function names(header, tag) {
   });
 }
 // What `new Response` takes for a head, made once: workerd copies a
-// `Headers` into the Response quicker than it reads a plain object's names.
+// `Headers` into the Response quicker than it reads a plain object's names;
+// Deno reads a plain object in half the time (110 ns against 196), so it
+// gets one when no name repeats.
 function init({ status, headers: flat }) {
+  if (typeof Deno === 'object') {
+    const o = {};
+    let i = 0;
+    while (i < flat.length && !Object.hasOwn(o, flat[i])) o[flat[i]] = flat[i + 1], (i += 2);
+    if (i >= flat.length) return { status, headers: o };
+  }
   const headers = new Headers();
   for (let i = 0; i < flat.length; i += 2) headers.append(flat[i], flat[i + 1]);
   return { status, headers };
