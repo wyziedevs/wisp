@@ -542,7 +542,7 @@ lsp` · `wisp update-docs` · `wisp mcp` (`claude mcp add wisp -- wisp mcp`) · 
 Commands that work on an app warn on stderr first when the CLI is older than the
 app's `wisp` crate (Cargo.lock version, or for a `path` dependency its git commit
 count) and ask `Continue anyway? [y/N]` at a terminal; CI and pipes go on. Fix:
-`cargo install --git https://wisp.ar0.eu wisp-web --force`; `WISP_NO_UPDATE_CHECK=1` silences it.
+`cargo install wisp-web --force`; `WISP_NO_UPDATE_CHECK=1` silences it.
 Docs: https://wispweb.dev/docs (client, api, data, auth, serve, deploy,
 embed), the design and tokens pages, or llms-full.txt (this file and the site's pages).
 

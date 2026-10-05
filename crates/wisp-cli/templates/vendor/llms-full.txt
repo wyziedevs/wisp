@@ -542,7 +542,7 @@ lsp` · `wisp update-docs` · `wisp mcp` (`claude mcp add wisp -- wisp mcp`) · 
 Commands that work on an app warn on stderr first when the CLI is older than the
 app's `wisp` crate (Cargo.lock version, or for a `path` dependency its git commit
 count) and ask `Continue anyway? [y/N]` at a terminal; CI and pipes go on. Fix:
-`cargo install --git https://wisp.ar0.eu wisp-cli --force`; `WISP_NO_UPDATE_CHECK=1` silences it.
+`cargo install wisp-web --force`; `WISP_NO_UPDATE_CHECK=1` silences it.
 Docs: https://wispweb.dev/docs (client, api, data, auth, serve, deploy,
 embed), the design and tokens pages, or llms-full.txt (this file and the site's pages).
 
@@ -2457,7 +2457,7 @@ In debug builds every static HTML chunk of every template is read through a tabl
 When the installed `wisp` is older than the app's `wisp` crate (the CLI's stamp against the app's), app commands print a warning on stderr first. In a terminal it asks `Continue anyway? [y/N]`; the default N exits with 1. In CI or a pipe it warns and continues. `WISP_NO_UPDATE_CHECK=1` silences it. Without git, the stamp check stays silent.
 
 ```bash
-cargo install --git https://wisp.ar0.eu wisp-cli --force  # git install
+cargo install wisp-web --force  # crates.io install
 cargo install --path <checkout>/crates/wisp-cli --force  # path checkout
 ```
 
@@ -2494,11 +2494,11 @@ content-security-policy: default-src 'self'; script-src 'self' 'sha256-…';
 
 No homegrown auth, ORM or job system, now or later. Wisp gives the tools (cookies, sessions, the `Store` trait, hooks, `wisp::spawn` from `init`) and the app builds on them. Integrations wire in existing, maintained crates (a recipe in `add/`; `wisp add sqlite` scaffolds the glue). Also out: Windows services. (HTTP/2 in process is the opt-in `h2` feature: h2c only.)
 
-1. **Core**: routes, layouts, templates, load, actions, errors, static files, `wisp.js` morph, `wisp dev` with hot swap. (current)
-2. **Measure**: dev-loop timings; req/s and latency vs ASP.NET Core Minimal APIs on the same machine.
+1. **Core**: routes, layouts, templates, load, actions, errors, static files, `wisp.js` morph, `wisp dev` with hot swap. (done)
+2. **Measure**: req/s and latency against Rust and Node frameworks on the same machine ([Benchmarks](/docs/benchmarks/)). (in progress: more stacks and the dev-loop timings are still to come)
 3. **Flexible**: hooks, state, components, uploads, signed cookies, streaming, body limits, proxies. (done)
    **Reactive and everywhere**: client scripts, router, tower, static export, Docker, edge targets. (done)
-4. **v0.2**: behaviors, link boosting, docs site built with Wisp.
+4. **v0.2**: link boosting (the client router) and a docs site built with Wisp (this one). (done)
 
 
 <!-- docs/design-editors.md -->
@@ -3291,6 +3291,7 @@ Syntax | Compiles to
 `{expr}` | Escaped `Display`; an `Option` writes its value, nothing for `None`
 `attr={expr}` | `attr="…"`, quotes added, value escaped
 `disabled={cond}` | ` disabled` if `cond`, else nothing (all HTML boolean attributes)
+`<a href="/blog" active>` | `aria-current={wisp::current(cx.path(), "/blog")}`: `"page"` on `/blog` and below (`/` only itself), else left out; `href={x}` too; pages and layouts
 `{@html expr}` | Unescaped `Display` (you promise it is safe)
 `{@const x = expr}` | `let x = expr;`
 `{#if c}…{:else if c}…{:else}…{/if}` | `if`/`else`; `if let` works
@@ -4528,7 +4529,7 @@ Welcome to the Wisp docs. This page gives you a tour of the concepts you will us
 You need [Rust](https://rustup.rs) 1.88 or later. Install the `wisp` command, make an app and start the dev server. `wisp new` asks a few questions: press Enter for the defaults, or add `-y`.
 
 ```bash
-cargo install --git https://wisp.ar0.eu wisp-cli
+cargo install wisp-web
 wisp new guestbook --template minimal
 cd guestbook
 wisp dev
@@ -4946,7 +4947,7 @@ You will build a guestbook: visitors sign it with a name and a message, and ever
 You need [Rust](https://rustup.rs) 1.88 or later. Install the `wisp` command and make the app:
 
 ```bash
-cargo install --git https://wisp.ar0.eu wisp-cli
+cargo install wisp-web
 wisp new guestbook --template minimal
 cd guestbook
 wisp dev

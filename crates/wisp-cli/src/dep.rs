@@ -40,12 +40,10 @@ pub fn path_line(key: &str, repo: &str) -> String {
     format!("{key} = {{ path = \"{repo}/crates/{key}\", package = \"{pkg}\" }}")
 }
 
-/// The command that installs this CLI from `WISP_DEP`, without flags.
+/// The command that installs this CLI, without flags. Always the crates.io
+/// name; it works once the crates are published (RELEASING.md).
 pub fn install() -> String {
-    match WISP_DEP {
-        Dep::Git(url) => format!("cargo install --git {url} wisp-web"),
-        Dep::Crates(_) => "cargo install wisp-web".to_string(),
-    }
+    "cargo install wisp-web".to_string()
 }
 
 #[cfg(test)]
@@ -62,7 +60,6 @@ mod tests {
                     format!("wisp = {{ git = \"{url}\", package = \"wisp-web-rt\" }}")
                 );
                 assert!(build.contains(url) && build.contains("package = \"wisp-web-build\""));
-                assert_eq!(cmd, format!("cargo install --git {url} wisp-web"));
             }
             Dep::Crates(v) => {
                 assert_eq!(
@@ -70,9 +67,9 @@ mod tests {
                     format!("wisp = {{ version = \"{v}\", package = \"wisp-web-rt\" }}")
                 );
                 assert!(build.contains("package = \"wisp-web-build\""));
-                assert_eq!(cmd, "cargo install wisp-web");
             }
         }
+        assert_eq!(cmd, "cargo install wisp-web");
         assert_eq!(
             path_line("wisp", "/w"),
             "wisp = { path = \"/w/crates/wisp\", package = \"wisp-web-rt\" }"

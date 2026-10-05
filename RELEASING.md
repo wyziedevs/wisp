@@ -67,7 +67,7 @@ It holds the names; it is also public and irreversible like any version.
 ## Site and README changes at publish time (not before)
 
 - README.md and the wispweb.dev home page and `/docs` getting-started:
-  `cargo install --git https://wisp.ar0.eu wisp-web` becomes `cargo install wisp-web`
+  `cargo install wisp-web` is already the install command everywhere
   (alternatives: `cargo binstall wisp-web`, `curl -fsSL https://wispweb.dev/install | sh`,
   `irm https://wispweb.dev/install.ps1 | iex`).
 - Docs pages that show an app's Cargo.toml: `wisp = { version = "0.1", package = "wisp-web-rt" }`,
