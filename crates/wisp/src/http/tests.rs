@@ -20,6 +20,12 @@ fn static_paths_refuse_windows_devices_and_trimmed_names() {
         "a.txt.",
         "a.txt ",
         "x/PRN",
+        // Windows reads superscript digits and the console names too.
+        "COM\u{b9}",
+        "lpt\u{b2}.txt",
+        "com\u{b3}",
+        "CONIN$",
+        "conout$.log",
         // Out of the folder, or a name a drive or a root could read.
         "..",
         "a/../../b",

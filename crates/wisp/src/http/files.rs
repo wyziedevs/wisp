@@ -265,17 +265,21 @@ pub(crate) fn stays_inside(rel: &str) -> bool {
 }
 
 /// Whether Windows opens `seg` as a device whatever the folder: `CON`, `PRN`,
-/// `AUX`, `NUL`, `COM0`-`COM9`, `LPT0`-`LPT9`, with any extension, any case.
+/// `AUX`, `NUL`, `COM0`-`COM9`, `LPT0`-`LPT9` (and `COM¹`-`COM³`,
+/// `LPT¹`-`LPT³`), `CONIN$`, `CONOUT$`, with any extension, any case.
 fn windows_device(seg: &str) -> bool {
     let stem = seg.split('.').next().unwrap_or(seg).trim_end().as_bytes();
     match stem.len() {
         3 => ["con", "prn", "aux", "nul"]
             .iter()
             .any(|d| stem.eq_ignore_ascii_case(d.as_bytes())),
-        4 => {
+        // A digit, or superscript 1-3 (U+00B9, U+00B2, U+00B3), which
+        // Windows also opens as the port.
+        4 | 5 => {
             (stem[..3].eq_ignore_ascii_case(b"com") || stem[..3].eq_ignore_ascii_case(b"lpt"))
-                && stem[3].is_ascii_digit()
+                && matches!(&stem[3..], [b'0'..=b'9'] | [0xc2, 0xb2 | 0xb3 | 0xb9])
         }
+        6 | 7 => stem.eq_ignore_ascii_case(b"conin$") || stem.eq_ignore_ascii_case(b"conout$"),
         _ => false,
     }
 }
