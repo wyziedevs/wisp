@@ -33,7 +33,7 @@ fn form() {
     );
     assert!(
         page.contains(
-            "<label>Email <input name=\"email\" type=\"email\" required value=\"ann\"><small class=\"problem\">"
+            "<label>Email <input name=\"email\" type=\"email\" required value=\"ann\" aria-invalid=\"true\"><small class=\"problem\">"
         ),
         "{page}"
     );

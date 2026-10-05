@@ -249,7 +249,10 @@ impl Fold<'_> {
                         self.nodes(own, t, env, doc, head, slot)?;
                     }
                 }
-                Node::Chosen { own: None, .. } | Node::Problem { .. } | Node::Selected(_) => {}
+                Node::Chosen { own: None, .. }
+                | Node::Problem { .. }
+                | Node::Invalid { .. }
+                | Node::Selected(_) => {}
                 Node::Bool {
                     name,
                     code,

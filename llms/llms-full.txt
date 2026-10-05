@@ -174,14 +174,14 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
   every failing field. Inputs get the matching browser checks (`required`,
   `minlength`, `type=email`, `min`/`max`); the server checks all; a button
   with `formaction="?/other"` skips them.
-- Each named `<input>`, `<textarea>`, `<select>` of an action form shows what
-  was sent, else its own value (`value={post.title}`, `<textarea
-  name="body">{post.body}</textarea>`, `<select name="kind"
-  value={post.kind}>`), then `<small class="problem">msg</small>` (passwords,
-  files: the problem only); checkboxes, radios and `<select multiple>` keep
-  what was ticked or chosen (only in the form that was refused);
-  `{cx.problem("field")}` puts it elsewhere. Other
-  errors → error page. Same-origin checked. Works without JS.
+- Each named `<input>`, `<textarea>`, `<select>` of the refused form (only
+  that one) shows what was sent, else its own value (`value={post.title}`,
+  `<textarea name="body">{post.body}</textarea>`, `<select name="kind"
+  value={post.kind}>`, `checked={post.draft}`), gets `aria-invalid` (and
+  `aria-describedby` with an `id`), then `<small class="problem">msg</small>`
+  per problem (passwords, files: the problem only; a checkbox or radio
+  group: after its last input); `{cx.problem("field")}` puts it elsewhere.
+  Other errors → error page. Same-origin checked. Works without JS.
 
 ## Templates (Rust on the server)
 
@@ -531,7 +531,7 @@ no-wait fast path off every route.
   `set clear by try_add`;
   `wisp::queue(n).push(&j)` + `work(n, f)` + `cron("0 3 * * *", f)` (on
   Cloudflare/Vercel/Netlify the build writes the host's cron trigger from the
-  literal schedule; set `CRON_SECRET`, `WISP_STORE`; cron follows the wall
+  literal schedule in `src/`, and an app with none has no jobs in its wasm; set `CRON_SECRET`, `WISP_STORE`; cron follows the wall
   clock: a minute missed asleep runs once, a clock stepped back never reruns one),
   `wisp::cache(k, secs, f)`/`uncache(path)`;
   rules `url one_of pattern with`.
@@ -1205,7 +1205,7 @@ What these numbers come from:
 
 ## Edge and JavaScript Hosts (2026-10-04)
 
-The same app built with `wisp build --target node|bun|deno|cloudflare`, against Hono, on Windows 10, Ryzen 7 7800X3D, Node 26, Deno 2.5, Bun 1.4, workerd 1.20261001. `oha`, 64 connections, 10 s runs, median of 5, Wisp and Hono alternating; Wisp is the first number in each cell. The machine was not idle (an unrelated app used about 0.8 of a core), so compare the two numbers within a row and treat the absolute values with care. Requests a second, Wisp / Hono:
+The same app built with `wisp build --target node|bun|deno|cloudflare`, against Hono, on Windows 10, Ryzen 7 7800X3D, Node 26, Deno 2.5, Bun 1.4, workerd 1.20261001. `oha`, 64 connections, 10 s runs, median of 5, Wisp and Hono alternating; Wisp is the first number in each cell. The machine was not idle (an unrelated app used about 0.8 of a core), so treat the absolute values with care. Run validity not recorded (no steal data); raw data, no ranking is drawn from it. Requests a second, Wisp / Hono:
 
 | Host | `/` | `/list1000` | `/json-big` | `/params` + cookie |
 |---|---:|---:|---:|---:|
@@ -1220,7 +1220,7 @@ The same app built with `wisp build --target node|bun|deno|cloudflare`, against 
 - The wasm for the bench app is 541 KB (541,063 bytes) since the Cloudflare, Pages, Vercel and Netlify builds leave out the server loop for raw connections (`WISP_REQUEST_ONLY`, 584,353 before). `tests/wasm-size.sh` fails CI when a build grows past its budget.
 - Where speed and size disagree, speed wins, so `opt-level = 3` stays, and `wasm-opt` and allocator swaps that measured no faster were not kept.
 
-The full tables, the dropped experiments and a ranking against fifteen other frameworks per host are in [`bench/edge/README.md`](https://github.com/wyziedevs/wisp/blob/main/bench/edge/README.md) and `bench/rank`. That ranking ran on a CPU-capped VPS, so this site quotes none of its places.
+The full tables, the dropped experiments and the raw numbers for fifteen other frameworks per host are in [`bench/edge/README.md`](https://github.com/wyziedevs/wisp/blob/main/bench/edge/README.md) and `bench/rank`. Run validity is not recorded for those runs (no steal data), so this site quotes no place or rank from them.
 
 ## What Is Checked
 
@@ -1679,7 +1679,7 @@ replaceState('', { tab: 3 })         // this entry's state ('' keeps the URL)
 - View transitions when available. `data-wisp-notransition` on a link, or on `<body>` for the app, skips them; reduced motion skips them too.
 - `data-wisp-reload` on a link or parent forces a full load. Links with `target`, `download`, `rel="external"` and `/_app/` are left alone.
 - `pushState(url, state)` (shallow routing, for tabs and modals) adds an entry at `url` (`''`: this one) and loads nothing; `page.value.state` is reactive (`{}` on other entries). Back/forward restores it with no request; a reload keeps it only at its URL.
-- `document` events: `wisp:navigate wisp:update wisp:goto wisp:refresh wisp:stay wisp:error wisp:push wisp:pop` (`wisp:stay`: a navigation ended with the page staying, for a download or a `data-wisp-cut` slot, and `navigating.value` is `null` again); forms: `wisp:submit` (cancelable), `wisp:result`.
+- `document` events: `wisp:navigate wisp:update wisp:goto wisp:refresh wisp:stay wisp:error wisp:push wisp:pop` (`wisp:stay`: a navigation ended with the page staying, for a download or a `data-wisp-cut` slot, and `navigating.value` is `null` again); forms: `wisp:submit` (cancelable), `wisp:result`, sent to the form and bubbling, so a listener on `document` sees every form's.
 
 ### Link and Navigation Options
 `data-wisp-noscroll`, `data-wisp-keepfocus`, `data-wisp-replacestate`, `data-wisp-notransition` (on or around a link) keep scroll, keep focus, replace history, skip the view transition. `goto(url, { noscroll, keepfocus, replace, novt })` does the same.
@@ -1972,6 +1972,7 @@ pub static USERS: Table<User> = Table::saved("users")
 
 - `set(id, v) -> Option<()>` replaces a row; `clear()` takes every row out (ids are not given again).
 - `unique`: `by(&email)` finds the row without a scan. `try_add`, `try_set` and `try_update` return a 422 on the field (`email: is taken`), for an action to return with `?`. `add`, `set` and `update` panic (a 500) instead. Use `try_update` to change a unique field. `#[derive(Rest)]` routes do the same: a taken value is a 422.
+- `#[model(saved)]` also declares the table: `pub static TODOS: Table<Todo> = Table::saved("todos")`, the struct's name in upper snake case and plural (`Category` → `CATEGORIES`, `Box` → `BOXES`, `BlogPost` → `BLOG_POSTS`), stored under its lower-case name. Write the `static` yourself for any other name, for `Table::new()` (memory) or to chain `.unique(..)`, `.migrate(..)` or `.live()`. In a page's `---` block, `#[model(saved, crud)]` also writes that page's actions, `add(todo: Todo)`, `remove(id: u64)` and `update(id: u64, todo: Todo)` (a 404 for an id no row has), except any the block defines itself, so one line says what the page does and a handwritten `fn remove` still wins; outside a page's block it is a build error, since the actions would have no page. `{#each TODOS as todo}` in a page walks its rows (`for row in &TODOS` is `TODOS.all()`).
 - `#[model]` makes the struct and its fields `pub` and derives `Json`, `FromJson` and `Clone`. A model with a borrowed field (`name: &'static str`, for static data a page lists) derives no `FromJson`, since a body cannot fill it.
 - On a `#[model]` field: `#[unique]` is the same as `.unique(..)`; `#[json(default)]` or `#[json(default = expr)]` fills a field old rows lack; `#[json(was = "old")]` reads it under its old name.
 - `migrate(|v: &mut Value| ..)` runs on each stored row's JSON when it is read (at load, and by `WISP_STORE_POLL`), before it becomes the type.
@@ -2762,6 +2763,7 @@ fn remove(id: u64) {
 - A form that posts to `?/name` needs `#[action] fn name` in the same page: the build says so when it is missing (a layout or component may post to the page that uses it, so only a page's own markup is checked).
 - A form with no `action` (and `method="post"`) posts to `default`.
 - `<button action="?/remove&id={todo.id}">` outside a form becomes its own `<form method="post"><button formaction="...">`. Works without JS.
+- `#[model(saved, crud)]` on a model in the page's block writes the page's `add`, `remove` and `update` actions ([Data](/docs/data/)); the page then only names them: `<form action="?/add" fields />`, `<button action="?/remove&id={todo.id}">`.
 - `<form fields>` writes a labelled input per parameter of the action (`fields={post}` starts them from `post`); text with `#[validate(one_of = "draft live")]` is a `<select>` of those. A `fields` form with no button gets one: `Send` for `fn default`, `Save` with `{post}`, else the action's name; `<form fields />` is the whole form and `<form fields="Log in" />` names its button.
 - Query parameters in an action URL are read like form fields (`id` above is `id: u64`).
 - A body with `.await` makes the action `async` (`#[action]` adds it); never write `async` there.
@@ -2769,18 +2771,20 @@ fn remove(id: u64) {
 
 ## Validation
 
-- Parameter rules: `#[validate(...)]` with `len`, `min`, `max`, `min_len`, `max_len`, `email`. Same as a `FromJson` field.
+- Parameter rules: `#[validate(...)]` with `len`, `min`, `max`, `min_len`, `max_len`, `email`. Same as a `FromJson` field. A `Password` (a parameter, a remote argument or a field) with no `min_len` or `len` of its own is held to 8 characters, on the server and as the input's `minlength`; `#[validate(min_len = 12)]` changes it.
 - Every parameter is read and checked first, so one 422 lists each failure by field (`wisp::rt::input::read`), from a form or a JSON body.
 - A parameter may be a struct with `#[derive(FromJson)]` or `Rest` (`fn default(post: Post)`). Fields are read by name (text by the field's type, blank field = missing) or from JSON, and checked by their own `#[validate]` (`wisp::rt::input::whole`).
 - A failure, or `return invalid("text", "...")`, shows the page again as a 422.
 
 On that 422 page:
 
-- Each named `<input>`, `<textarea>`, `<select>` of the posting form shows what was sent (`wisp::rt::kept`) instead of its own value, then `<small class="problem">...</small>` (`wisp::rt::problem`). A checkbox or radio is ticked when its value was sent (`wisp::rt::ticked`; left out is unticked), and a `<select multiple>` selects every value sent (`wisp::rt::sent`). Ticks and choices come back only in the form whose action refused; another form on the page shows its own.
-- Own value forms: `value={post.title}`, or `value="text"` (same node, position in the tag does not matter). A hole inside, `value="a{b}"`, is a build error. Textarea content works; `<select value={post.kind}>` marks the matching option `selected`.
-- Passwords and files show the problem but are never sent back. Checkboxes, radios, hidden inputs and component inputs are left alone.
-- `{cx.problem("text")}` places that field's `<small>` yourself (nothing when none); none is added then.
-- A GET has neither; use an `if` on `cx`'s locals (none) so the page can still be baked.
+- Each named `<input>`, `<textarea>`, `<select>` of the form whose action refused shows what was sent (`wisp::rt::kept`) instead of its own value, then `<small class="problem">...</small>` (`wisp::rt::problem`), one per problem of the field. A checkbox or radio is ticked when its value was sent (`wisp::rt::ticked`; left out is unticked), and a `<select multiple>` selects every value sent (`wisp::rt::sent`). Only that form: another form on the page, even one sharing a field name, shows its own values and no problems.
+- A field with a problem says so: `aria-invalid="true"`, and when it has an `id`, `aria-describedby="{id}-problem"` naming its `<small>` (`wisp::rt::invalid`).
+- A checkbox or radio shows its problem too (a box that must be ticked: `return invalid("terms", "...")`), after the last input of its name in the form; a group written inside a block (`{#each}`) gets it once, before `</form>`.
+- Own value forms: `value={post.title}`, or `value="text"` (same node, position in the tag does not matter). A hole inside, `value="a{b}"`, is a build error. Textarea content works; `<select value={post.kind}>` marks the matching option `selected`; a checkbox's or radio's own state is `checked` or `checked={cond}`.
+- Passwords and files show the problem but are never sent back. Hidden inputs, component inputs and fields with `bind:value` or `bind:checked` are left alone.
+- `{cx.problem("text")}` places that field's `<small>` yourself (nothing when none); none is added then, and the field is not described by it.
+- A GET has neither; use an `if` on `cx`'s locals (none) so the page can still be baked. On a GET, or a post that passed, each of these is one inlined test of the refusal (`None`) per field: no lookup, no allocation.
 
 Browser-side checks come from the same rules (`wisp_build::rules::Native`). A field that an action of the page reads gets, as static text, only attributes the server also checks:
 
@@ -3252,6 +3256,7 @@ let me = cx.user()?; // members' page: signed-in row or redirect
 
 - `user`, `login` and `signup` take the users table for you: the lone `Table` of a model with a `Password` field in `src/db.rs`, else the one `wisp::users(&db::USERS)` names in `init` (the build adds it; `&USERS` first still works, and is how a second table is used).
 - The page at `/login` is the convention; `wisp::sign_in_page("/enter")` in `init` names another.
+- A typed `Password` is at least 8 characters unless its `#[validate(min_len = …)]` or `len` says otherwise (a 422 on the field before any hashing); log in with a `String`, so an old shorter password is still checked, not refused.
 
 ### Sign Out Everywhere
 
@@ -3423,7 +3428,7 @@ Syntax | Compiles to
 `{@html expr}` | Unescaped `Display` (you promise it is safe)
 `{@const x = expr}` | `let x = expr;`
 `{#if c}…{:else if c}…{:else}…{/if}` | `if`/`else`; `if let` works; a bare place, `{#if user.avatar}`, tests `Some`, non-empty or `true`
-`{#each e as pat[, i] [if cond]}…{:else}…{/each}` | `for`; `if cond` keeps matching items; a plain place like `data.posts` is borrowed
+`{#each e as pat[, i] [if cond]}…{:else}…{/each}` | `for`; `if cond` keeps matching items; a plain place like `data.posts`, a local or a `STATIC` is borrowed, so `{#each TODOS as todo}` walks a table's rows (`TODOS.all()`)
 `{#match e}{:case pat}…{/match}` | `match`; a plain place is borrowed
 `{#await f}…{:then v}…{:catch e}…{/await}` | Page streams `v` or `e` later ([Streaming a page](/docs/design-state/))
 `{@render children()}` or `<slot />` | Layout or component slot
@@ -4779,7 +4784,7 @@ A page file is named `+page.wisp`, with the `+`. In an action, `error()` already
 
 ## Saving Data in a Table
 
-A `Table` holds rows of a model. `Table::saved()` keeps them in a log file in the data folder, so they survive a restart, and `Table::new()` keeps them in memory. The page above reads it in the same block:
+A `Table` holds rows of a model. `Table::saved()` keeps them in a log file in the data folder, so they survive a restart, and `Table::new()` keeps them in memory. `#[model(saved)]` on the struct writes that `static` for you, named for it (`Entry` → `ENTRIES`), and `{#each ENTRIES as e}` walks it. The page above reads it in the same block:
 
 ```html
 ---
@@ -4955,7 +4960,7 @@ Wisp's `data` is longer than JavaScript's: a Rust type with its fields' types. E
 
 ## A Real App: Auth, CRUD, Upload, Live, a Component
 
-`bench/tokens/real` is sign up and in, a posts table with validation, edit, delete, pages and live refresh, an avatar upload and a toggle component: 10 files, **958** tokens in Wisp, 3.6x less than SvelteKit 3 and 3.5x less than Next.js 15. Its tests check every feature.
+`bench/tokens/real` is sign up and in, a posts table with validation, edit, delete, pages and live refresh, an avatar upload and a toggle component: 10 files, **935** tokens in Wisp, 3.7x less than SvelteKit 2 and 3.6x less than Next.js 15. Its tests check every feature.
 
 ## Method
 
@@ -5498,7 +5503,7 @@ Zero cost on the request hot path: a route pays only for the features it uses, a
 An AI pays for every token it reads and writes, in time and money. Wisp uses conventions over configuration, types the compiler infers, and forms that write their own inputs and errors.
 
 - The same five features take 432 tokens in Wisp, 957 in SvelteKit and 971 in Next.js.
-- A larger app with sign up, uploads and live refresh takes 958, against 3,473 and 3,331.
+- A larger app with sign up, uploads and live refresh takes 935, against 3,473 and 3,331.
 - `cargo run -p wisp-tokens` counts every hand-written file and its path with a byte-pair style estimate. See [Tokens](/docs/tokens/).
 
 For agents: [AGENTS.md](https://github.com/wyziedevs/wisp/blob/main/llms/AGENTS.md) is the whole reference in one file, and `wisp mcp` serves the docs over MCP (`claude mcp add wisp -- wisp mcp`).

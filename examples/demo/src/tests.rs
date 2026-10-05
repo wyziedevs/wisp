@@ -60,3 +60,23 @@ fn links_inputs_and_screenshots() {
     let _ = std::fs::remove_file(&png);
     assert!(bytes.starts_with(b"\x89PNG"));
 }
+
+#[test]
+fn the_join_form_keeps_what_was_typed() {
+    let mut b = wisp::browser!(App);
+    b.goto("/join");
+    b.fill("#name", "Ada");
+    b.eval("document.getElementById('plan').value = 'pro'");
+    b.click("text=Wed");
+    b.click(".join .button");
+    // The page morphed in place: the problem is by the box that must be
+    // ticked, and every choice stays as made.
+    assert_eq!(b.text("#terms + small"), "Tick to accept the terms");
+    assert_eq!(b.attr("#terms", "aria-invalid").as_deref(), Some("true"));
+    let state = "[document.getElementById('name').value, plan.value, [...document.querySelectorAll('[name=days]:checked')].map((d) => d.value).join('+'), terms.checked].join()";
+    assert_eq!(b.eval(state).as_str(), Some("Ada,pro,Wed,false"));
+    b.click("#terms");
+    b.click(".join .button");
+    assert_eq!(b.text(".flash"), "Welcome aboard");
+    assert_eq!(b.count("small.problem"), 0);
+}

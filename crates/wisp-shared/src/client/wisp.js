@@ -108,8 +108,10 @@
     return doc;
   }
 
+  // Events bubble: a form's `wisp:submit` and `wisp:result` reach a
+  // listener on the document too.
   const send = (type, detail, at = document) => {
-    const e = new CustomEvent(type, { detail, cancelable: true });
+    const e = new CustomEvent(type, { detail, cancelable: true, bubbles: true });
     at.dispatchEvent(e);
     return !e.defaultPrevented;
   };
@@ -717,9 +719,14 @@
     }
     if (res === undefined && form.__wispEnhance !== true) {
       // Network trouble: let the browser post it, and show what went wrong.
-      native = form;
-      form_.requestSubmit.call(form, btn);
-      native = null;
+      // In a later task: a fetch that fails at once fails while the submit
+      // event is still being dispatched, and a submit asked for then is
+      // dropped by the browser (the form is "firing submission events").
+      setTimeout(() => {
+        native = form;
+        form_.requestSubmit.call(form, btn);
+        native = null;
+      });
       return;
     }
     if (result.ok && !result.data) form_.reset.call(form); // fields fall back to the server's new defaults

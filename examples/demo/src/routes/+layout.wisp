@@ -1,5 +1,11 @@
 ---
-const NAV: [(&str, &str); 4] = [("/", "Home"), ("/about", "About"), ("/counter", "Counter"), ("/wisple", "Wisple")];
+const NAV: [(&str, &str); 5] = [
+    ("/", "Home"),
+    ("/about", "About"),
+    ("/counter", "Counter"),
+    ("/join", "Join"),
+    ("/wisple", "Wisple"),
+];
 ---
 
 <div class="app">

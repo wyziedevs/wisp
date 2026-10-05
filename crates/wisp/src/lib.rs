@@ -1085,20 +1085,39 @@ pub mod rt {
         }
     }
 
-    /// What the form sent for `name`, when an action refused it: an
-    /// `<input name="x">` in a `<form action="?/…">` shows it again.
+    // A page's forms read what an action refused through these, once per
+    // field of a form that posts to an action. On a GET, or a post that
+    // passed, `refused` is `None` and each returns at its first line: an
+    // inlined test of one register. Only a 422 goes further.
+
+    /// Whether the request posted to the form `action` (`""`: one named by
+    /// an expression, so any) and it was refused.
+    #[inline]
+    fn posted_to(cx: &Cx, refused: Option<&Error>, action: &str) -> bool {
+        refused.is_some() && (action.is_empty() || cx.action() == action)
+    }
+
+    /// What the form posting to `action` sent for `name`, when the action
+    /// refused it: an `<input name="x">` in a `<form action="?/…">` shows
+    /// it again. `None` for another form's refusal, so a name two forms
+    /// share stays each form's own.
+    #[inline]
     pub fn kept<'a>(
         cx: &'a Cx,
         refused: Option<&Error>,
+        action: &str,
         name: &str,
     ) -> Option<std::borrow::Cow<'a, str>> {
-        refused?;
+        if !posted_to(cx, refused, action) {
+            return None;
+        }
         cx.input(name)
     }
 
     /// Whether a refused form sent `value` for checkbox or radio `name`
     /// (any of its values, for a group of checkboxes): `None` when
     /// `action` did not refuse it, so the field shows its own `checked`.
+    #[inline]
     pub fn ticked<T: std::fmt::Display + ?Sized>(
         cx: &Cx,
         refused: Option<&Error>,
@@ -1112,14 +1131,14 @@ pub mod rt {
     /// The form `action` refused, if it was that one, with the name of one
     /// of its fields: what a `<select>` (`multiple` too) or checkbox shows
     /// again. Another form on the page shows its own values.
+    #[inline]
     pub fn sent<'a>(
         cx: &'a Cx,
         refused: Option<&Error>,
         action: &str,
         name: &'a str,
     ) -> Option<(crate::Form<'a>, &'a str)> {
-        refused?;
-        if cx.action() != action {
+        if !posted_to(cx, refused, action) {
             return None;
         }
         Some((cx.form(), name))
@@ -1212,17 +1231,117 @@ pub mod rt {
         assert_eq!(ticked(&cx, refused, "save", "tag", &'c'), Some(true));
         assert_eq!(ticked(&cx, None, "save", "on", "on"), None);
         assert_eq!(ticked(&cx, refused, "other", "on", "on"), None);
+        // Text too: another form's field of the same name keeps its own.
+        assert_eq!(kept(&cx, refused, "save", "tag").as_deref(), Some("a"));
+        assert_eq!(kept(&cx, refused, "other", "tag"), None);
+        assert_eq!(kept(&cx, None, "save", "tag"), None);
+        // An action named by an expression is any action.
+        assert_eq!(kept(&cx, refused, "", "tag").as_deref(), Some("a"));
+        assert_eq!(ticked(&cx, refused, "", "on", "on"), Some(true));
     }
 
-    /// What was wrong with `name`, after its `<input>` in an action's form:
-    /// `<small class="problem">…</small>`, or nothing.
-    pub fn problem(out: &mut String, refused: Option<&Error>, name: &str) {
-        let Some((_, p)) = refused.and_then(|e| e.fields().iter().find(|(f, _)| f == name)) else {
+    #[cfg(test)]
+    #[test]
+    fn problems_are_shown_by_form_and_escaped() {
+        let cx = Cx::for_test(
+            "POST /p?/save HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\n\r\nq=1",
+            &[],
+        );
+        let e = Error::invalid("q", "<b>no</b>")
+            .and("q", "and \"no\" again")
+            .and("r", "x");
+        let refused = Some(&e);
+        let mut out = String::new();
+        problem(&mut out, &cx, refused, "save", "q", Some("q-id"));
+        assert_eq!(
+            out,
+            "<small class=\"problem\" id=\"q-id-problem\">&lt;b&gt;no&lt;/b&gt;</small>\
+             <small class=\"problem\">and &quot;no&quot; again</small>"
+        );
+        out.clear();
+        invalid(&mut out, &cx, refused, "save", "q", Some("q-id"));
+        assert_eq!(
+            out,
+            " aria-invalid=\"true\" aria-describedby=\"q-id-problem\""
+        );
+        out.clear();
+        invalid(&mut out, &cx, refused, "save", "r", None);
+        assert_eq!(out, " aria-invalid=\"true\"");
+        // Not this form's refusal, no problem of the field, or no refusal.
+        for (action, name, refused) in [
+            ("other", "q", refused),
+            ("save", "z", refused),
+            ("save", "q", None),
+        ] {
+            out.clear();
+            problem(&mut out, &cx, refused, action, name, Some("q-id"));
+            invalid(&mut out, &cx, refused, action, name, Some("q-id"));
+            assert_eq!(out, "", "{action} {name}");
+        }
+    }
+
+    /// What was wrong with `name`, after its `<input>` in the form posting
+    /// to `action`: `<small class="problem">…</small>` for each problem of
+    /// it, the first with `id="{id}-problem"` when the input has an `id`
+    /// (its `aria-describedby`, see `invalid`); nothing when the action
+    /// (or another) did not refuse it.
+    #[inline]
+    pub fn problem(
+        out: &mut String,
+        cx: &Cx,
+        refused: Option<&Error>,
+        action: &str,
+        name: &str,
+        id: Option<&str>,
+    ) {
+        if let Some(e) = refused.filter(|_| posted_to(cx, refused, action)) {
+            problems(out, e, name, id);
+        }
+    }
+
+    /// In the tag of field `name` of the form posting to `action`:
+    /// ` aria-invalid="true"` when the action refused it with a problem of
+    /// that field, and ` aria-describedby="{id}-problem"` when its problem
+    /// is shown with that id (`problem`). Nothing otherwise.
+    #[inline]
+    pub fn invalid(
+        out: &mut String,
+        cx: &Cx,
+        refused: Option<&Error>,
+        action: &str,
+        name: &str,
+        id: Option<&str>,
+    ) {
+        if let Some(e) = refused.filter(|_| posted_to(cx, refused, action)) {
+            invalid_attrs(out, e, name, id);
+        }
+    }
+
+    fn invalid_attrs(out: &mut String, e: &Error, name: &str, id: Option<&str>) {
+        if !e.fields().iter().any(|(f, _)| f == name) {
             return;
-        };
-        out.push_str("<small class=\"problem\">");
-        escape(out, p);
-        out.push_str("</small>");
+        }
+        out.push_str(" aria-invalid=\"true\"");
+        if let Some(id) = id {
+            out.push_str(" aria-describedby=\"");
+            escape(out, id);
+            out.push_str("-problem\"");
+        }
+    }
+
+    fn problems(out: &mut String, e: &Error, name: &str, id: Option<&str>) {
+        let mut id = id;
+        for (_, p) in e.fields().iter().filter(|(f, _)| f == name) {
+            out.push_str("<small class=\"problem\"");
+            if let Some(id) = id.take() {
+                out.push_str(" id=\"");
+                escape(out, id);
+                out.push_str("-problem\"");
+            }
+            out.push('>');
+            escape(out, p);
+            out.push_str("</small>");
+        }
     }
 
     pub fn respond(out: &mut Out, r: Response) {

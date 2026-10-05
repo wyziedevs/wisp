@@ -837,3 +837,45 @@ nav a[aria-current="page"]::before {
     transition-duration: 1ms !important;
   }
 }
+
+/* The join form: a field a line, its problem under it in the accent. */
+.join {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 1.5rem;
+}
+
+.join input:not([type="checkbox"]),
+.join select {
+  padding: 0.5rem 0.75rem;
+  color: var(--ink);
+  background: var(--inset);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.join [aria-invalid] {
+  border-color: var(--accent);
+}
+
+.join fieldset {
+  display: flex;
+  gap: 1rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.join .problem {
+  color: var(--accent-ink);
+}
+
+.join .button {
+  justify-self: start;
+}
+
+.flash {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+}

@@ -428,7 +428,7 @@ fn action_forms_post_check_and_keep_input() {
     assert_eq!(long.status, 422);
     assert!(
         html.contains(
-            "<input aria-label=\"text\" name=\"text\" required minlength=\"1\" pattern=\"[\\s\\S]{0,10}\" value=\"far &lt;too&gt; long\">"
+            "<input aria-label=\"text\" name=\"text\" required minlength=\"1\" pattern=\"[\\s\\S]{0,10}\" value=\"far &lt;too&gt; long\" aria-invalid=\"true\">"
         ),
         "{html}"
     );

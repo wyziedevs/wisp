@@ -1965,11 +1965,11 @@ fn borrow_place(expr: &str, locals: &[String]) -> String {
     }
 }
 
-/// What an action refused was sent as, for its form's field `name`: an
+/// What `action` refused was sent as, for its form's field `name`: an
 /// `Option<Cow<str>>`, which is never there without the request, `cx`.
-fn kept(name: &str, has_cx: bool) -> String {
+fn kept(action: &str, name: &str, has_cx: bool) -> String {
     match has_cx {
-        true => format!("::wisp::rt::kept(cx, __refused, {name:?})"),
+        true => format!("::wisp::rt::kept(cx, __refused, {action:?}, {name:?})"),
         false => "None::<::std::borrow::Cow<'static, str>>".into(),
     }
 }

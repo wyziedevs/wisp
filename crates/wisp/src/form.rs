@@ -485,6 +485,109 @@ b\r\n--XyZ--\r\nepilogue";
         );
     }
 
+    /// Bodies as clients other than a browser write them: nothing panics,
+    /// and each pair reads as sent. `&` separates, `=` splits once, `+` is
+    /// a space, a bad `%` is itself, bad UTF-8 is U+FFFD, `a[b]` is a name.
+    #[test]
+    fn urlencoded_edges() {
+        let pairs = |b: &'static [u8]| -> Vec<(String, String)> {
+            Form::new(URLENCODED, b)
+                .iter()
+                .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                .collect()
+        };
+        let p = |k: &str, v: &str| (k.to_string(), v.to_string());
+        assert_eq!(pairs(b""), []);
+        assert_eq!(pairs(b"&&=&"), [p("", "")]);
+        assert_eq!(pairs(b"a=b=c&d"), [p("a", "b=c"), p("d", "")]);
+        assert_eq!(pairs(b"a=1;b=2"), [p("a", "1;b=2")], "`;` is no separator");
+        assert_eq!(
+            pairs(b"a[b]=1&a[]=2&a[]=3&a.b=4"),
+            [p("a[b]", "1"), p("a[]", "2"), p("a[]", "3"), p("a.b", "4")]
+        );
+        assert_eq!(pairs(b"q=%2B+%25%zz%4%"), [p("q", "+ %%zz%4%")]);
+        assert_eq!(pairs(b"u=%FF%C3%A9%00"), [p("u", "\u{FFFD}é\0")]);
+        assert_eq!(pairs(b"k%3Dv=%26"), [p("k=v", "&")]);
+        assert_eq!(pairs(b"a=1\r\nb=2"), [p("a", "1\r\nb=2")]);
+        let f = Form::new(URLENCODED, b"x=first&x=second&x=");
+        assert_eq!(f.get("x").unwrap(), "first", "the first of a repeated name");
+        assert_eq!(f.all("x").count(), 3);
+        assert!(f.get("X").is_none(), "names are case-sensitive");
+        // A big body is read as it is: no copy of a value that needs none.
+        let big: Vec<u8> = std::iter::repeat_n(b"a=b&", 300_000)
+            .flatten()
+            .copied()
+            .collect();
+        let f = Form::new(URLENCODED, &big);
+        assert!(matches!(f.get("a"), Some(Cow::Borrowed("b"))));
+        assert_eq!(f.all("a").count(), 300_000);
+    }
+
+    /// Multipart bodies that are not quite right: a boundary too long or
+    /// missing, no closing delimiter, a part without a name or without
+    /// headers, bare LF, headers in any case, and a name or filename
+    /// written without quotes.
+    #[test]
+    fn multipart_edges() {
+        let ct = |b: &str| format!("multipart/form-data; boundary={b}");
+        let long = "x".repeat(71);
+        assert!(
+            Form::new(Some(&ct(&long)), b"--xxx\r\n\r\n")
+                .get("a")
+                .is_none(),
+            "a boundary over 70 bytes (RFC 2046) is none"
+        );
+        assert!(
+            Form::new(Some("multipart/form-data; boundary="), b"a=1")
+                .get("a")
+                .is_none()
+        );
+        assert!(
+            Form::new(Some("multipart/form-data; boundary=\"\""), b"")
+                .get("a")
+                .is_none()
+        );
+        let ct = Some("multipart/form-data; boundary=B");
+        // No closing delimiter: what is complete is read, the rest is not.
+        let open = b"--B\r\ncontent-disposition: form-data; name=\"a\"\r\n\r\n1\r\n--B\r\ncontent-disposition: form-data; name=\"b\"\r\n\r\n2";
+        let f = Form::new(ct, open);
+        assert_eq!(f.get("a").unwrap(), "1");
+        assert!(f.get("b").is_none());
+        // Headers in any case, unquoted name and filename, LF-only lines.
+        let loose = b"--B\r\nCONTENT-DISPOSITION: Form-Data; NAME=a; FILENAME=x.txt\r\nCONTENT-TYPE: Text/Plain\r\n\r\nhi\r\n--B--\r\n";
+        let f = Form::new(ct, loose);
+        let file = f.file("a").expect("unquoted name and filename");
+        assert_eq!((file.name.as_ref(), file.bytes), ("x.txt", &b"hi"[..]));
+        let lf = b"--B\ncontent-disposition: form-data; name=\"a\"\n\n1\n--B--\n";
+        let _ = Form::new(ct, lf).iter().count();
+        // A part that is only a boundary, and a body of boundaries.
+        for body in [
+            &b"--B\r\n--B--"[..],
+            b"--B--",
+            b"--B\r\n\r\n\r\n--B--",
+            b"\r\n--B\r\n\r\n--B\r\n\r\n--B--",
+        ] {
+            let f = Form::new(ct, body);
+            let _ = (f.iter().count(), f.files("a").count());
+        }
+        // A file part's bytes may hold `--B` not at a line start, and CRs.
+        let tricky = b"--B\r\ncontent-disposition: form-data; name=\"f\"; filename=\"t\"\r\n\r\n--B\r--B\n\r\n--Bx\r\n--B--\r\n";
+        let f = Form::new(ct, tricky);
+        assert_eq!(f.file("f").unwrap().bytes, b"--B\r--B\n\r\n--Bx");
+        // Many parts: each read, in order.
+        let mut many = Vec::new();
+        for i in 0..2000 {
+            many.extend_from_slice(
+                format!("--B\r\ncontent-disposition: form-data; name=\"n\"\r\n\r\n{i}\r\n")
+                    .as_bytes(),
+            );
+        }
+        many.extend_from_slice(b"--B--\r\n");
+        let f = Form::new(ct, &many);
+        assert_eq!(f.all("n").count(), 2000);
+        assert_eq!(f.all("n").nth(1999).unwrap(), "1999");
+    }
+
     use crate::fuzz::{Rng, mutate};
 
     /// `s` as a browser sends it in a urlencoded form.

@@ -184,14 +184,14 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
   every failing field. Inputs get the matching browser checks (`required`,
   `minlength`, `type=email`, `min`/`max`); the server checks all; a button
   with `formaction="?/other"` skips them.
-- Each named `<input>`, `<textarea>`, `<select>` of an action form shows what
-  was sent, else its own value (`value={post.title}`, `<textarea
-  name="body">{post.body}</textarea>`, `<select name="kind"
-  value={post.kind}>`), then `<small class="problem">msg</small>` (passwords,
-  files: the problem only); checkboxes, radios and `<select multiple>` keep
-  what was ticked or chosen (only in the form that was refused);
-  `{cx.problem("field")}` puts it elsewhere. Other
-  errors → error page. Same-origin checked. Works without JS.
+- Each named `<input>`, `<textarea>`, `<select>` of the refused form (only
+  that one) shows what was sent, else its own value (`value={post.title}`,
+  `<textarea name="body">{post.body}</textarea>`, `<select name="kind"
+  value={post.kind}>`, `checked={post.draft}`), gets `aria-invalid` (and
+  `aria-describedby` with an `id`), then `<small class="problem">msg</small>`
+  per problem (passwords, files: the problem only; a checkbox or radio
+  group: after its last input); `{cx.problem("field")}` puts it elsewhere.
+  Other errors → error page. Same-origin checked. Works without JS.
 
 ## Templates (Rust on the server)
 

@@ -721,13 +721,14 @@ impl Gen {
                 own,
                 line,
                 tick,
+                action,
             } => {
                 let sent_as = match tick {
                     Some(v) if cx.has_cx => {
-                        format!("::wisp::rt::ticked(cx, __refused, {v})")
+                        format!("::wisp::rt::ticked(cx, __refused, {action:?}, {name:?}, {v})")
                     }
                     Some(_) => "None::<bool>".into(),
-                    None => kept(name, cx.has_cx),
+                    None => kept(action, name, cx.has_cx),
                 };
                 let cond = Code {
                     src: format!("let Some(__k) = {sent_as}"),
@@ -769,10 +770,32 @@ impl Gen {
                 };
                 self.code_line(ind, &format!("let {};", code.src), &code, cx);
             }
-            Node::Problem { .. } if !cx.has_cx => {}
-            Node::Problem { name, line, .. } => {
+            Node::Problem { .. } | Node::Invalid { .. } if !cx.has_cx => {}
+            Node::Problem {
+                name,
+                line,
+                action,
+                id,
+                ..
+            }
+            | Node::Invalid {
+                name,
+                line,
+                action,
+                id,
+            } => {
+                let what = match n {
+                    Node::Problem { .. } => "problem",
+                    _ => "invalid",
+                };
+                let id = match id {
+                    Some(id) => format!("Some({id:?})"),
+                    None => "None".into(),
+                };
                 let code = Code {
-                    src: format!("::wisp::rt::problem(&mut {buf}, __refused, {name:?})"),
+                    src: format!(
+                        "::wisp::rt::{what}(&mut {buf}, cx, __refused, {action:?}, {name:?}, {id})"
+                    ),
                     line: *line,
                 };
                 self.code_line(ind, &format!("{};", code.src), &code, cx);

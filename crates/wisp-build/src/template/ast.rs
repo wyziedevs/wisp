@@ -91,17 +91,20 @@ pub enum Node {
         line: u32,
     },
     /// A named field of an action's form (see `Parser::form_defaults`):
-    /// `sent`, which reads what was sent as `__k`, when the action refused
-    /// it, else `own`. A component, having no `cx`, writes `own` alone, as
-    /// does a GET, which is all that is baked. With `tick`, the code of
-    /// its form's action and of a checkbox's or radio's value, `__k` is whether that value was sent
-    /// (none sent is unticked), so a refused form keeps what was ticked.
+    /// `sent`, which reads what was sent as `__k`, when `action` (its
+    /// form's; `""` for one named by an expression, which any refusal
+    /// matches) refused it, else `own`. A component, having no `cx`,
+    /// writes `own` alone, as does a GET, which is all that is baked. With
+    /// `tick`, the code of a checkbox's or radio's value, `__k` is whether
+    /// that value was sent (none sent is unticked), so a refused form keeps
+    /// what was ticked.
     Kept {
         name: String,
         sent: Vec<Node>,
         own: Option<Vec<Node>>,
         line: u32,
         tick: Option<String>,
+        action: String,
     },
     /// A kept `<select>`'s choice, `__wisp_sel`, by which its options are
     /// `selected` (see `IS`): what was sent, when the action refused it,
@@ -116,13 +119,30 @@ pub enum Node {
     /// ` selected` on an `<option>` whose value (the code of a `&str`) is
     /// its `<select>`'s choice, `__wisp_sel` (see `Chosen`).
     Selected(Code),
-    /// What was wrong with field `name`, when the action refused it:
-    /// `<small class="problem">…</small>`. After a kept field (`auto`),
-    /// unless the file shows it itself: `{cx.problem("x")}` is one.
+    /// What was wrong with field `name`, when `action` refused its form
+    /// (`""`: any): `<small class="problem">…</small>`, one per problem.
+    /// After a kept field (`auto`), unless the file shows it itself:
+    /// `{cx.problem("x")}` is one. `id`, the field's own, names the first
+    /// `<small>` (`{id}-problem`) for the field's `aria-describedby`
+    /// (`Invalid`). `seq` numbers the automatic ones: of a group of radios
+    /// or checkboxes, only the last one's is kept (`Parser::dropped`).
     Problem {
         name: String,
         line: u32,
         auto: bool,
+        action: String,
+        id: Option<String>,
+        seq: usize,
+    },
+    /// In the tag of a field of an action's form: ` aria-invalid="true"`,
+    /// and ` aria-describedby="{id}-problem"` when its problem is shown with
+    /// that id (`Problem`), when `action` refused the form with a problem
+    /// of `name`. Nothing otherwise.
+    Invalid {
+        name: String,
+        line: u32,
+        action: String,
+        id: Option<String>,
     },
     /// Where an element's browser directives were, just before its `>`:
     /// its `protocol::GROUP_ATTR` (and `LOOP_ATTR`) for

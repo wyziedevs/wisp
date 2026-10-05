@@ -175,3 +175,121 @@ fn a_slot_navigation_ends_the_navigation() {
     assert_eq!(b.text("dialog"), "modal 7");
     assert_eq!(b.text("#nav"), "here");
 }
+
+/// A form post with JS on: the 422 morphs in (no load, no history entry),
+/// each problem beside its input and announced by it, what was typed kept
+/// with the focus and the caret, a second submit while one is out dropped,
+/// the same markup as without JS, a file sent as multipart, a redirect
+/// after a post followed, and a post the network loses handed to the
+/// browser.
+#[test]
+fn forms_morph_in_place() {
+    let mut b = wisp::browser!(Site);
+    b.goto("/t/forms");
+    b.goto("/t/forms2");
+    let length = b.eval("history.length");
+    b.eval("window.__posts = 0; addEventListener('wisp:submit', () => __posts++)");
+    // (`name` alone is `window.name`.)
+    let n = "document.getElementById('name2')";
+    b.fill("[aria-label=note2]", "typed");
+    b.fill("#name2", "twice");
+    b.eval(&format!("{n}.setSelectionRange(1, 1)"));
+    // Enter in a field submits its form; the page morphs, not loads (a
+    // load would lose `__posts`).
+    b.press("Enter");
+    b.wait("#name2-problem");
+    assert_eq!(
+        b.eval("history.length"),
+        length,
+        "no history entry for a 422"
+    );
+    assert!(b.url().ends_with("/t/forms2"), "{}", b.url());
+    assert_eq!(b.text("#name2-problem"), "first");
+    assert_eq!(b.text("#name2-problem + small"), "second");
+    assert_eq!(b.attr("#name2", "aria-invalid").as_deref(), Some("true"));
+    assert_eq!(
+        b.attr("#name2", "aria-describedby").as_deref(),
+        Some("name2-problem")
+    );
+    assert_eq!(
+        b.eval(&format!(
+            "[{n}.value, document.querySelector('[aria-label=note2]').value, document.activeElement.id, {n}.selectionStart].join()"
+        ))
+        .as_str(),
+        Some("twice,typed,name2,1"),
+        "kept, focused, caret where it was"
+    );
+    assert_eq!(b.eval("__posts").as_i64(), Some(1));
+    // The first form is its own still.
+    assert_eq!(
+        b.eval("document.getElementById('name').value").as_str(),
+        Some("Ada")
+    );
+    assert_eq!(b.count("#join [aria-invalid]"), 0);
+
+    // Twice at once: one post.
+    b.eval("other.requestSubmit(); other.requestSubmit()");
+    b.wait("#name2-problem");
+    assert_eq!(b.eval("__posts").as_i64(), Some(2));
+
+    // The page is what the server sends without JS: same form, same bytes.
+    let served = b.eval(
+        "fetch('/t/forms2?/other', { method: 'POST', body: new URLSearchParams(new FormData(other)) }).then((r) => r.text())\
+         .then((h) => new DOMParser().parseFromString(h, 'text/html').getElementById('other').outerHTML)",
+    );
+    assert_eq!(b.eval("other.outerHTML"), served, "JS on and off agree");
+
+    // The rules pass; the action wants the tick: its problem by the box.
+    // A file goes along, multipart (the form says so).
+    b.fill("#name", "Al");
+    b.eval(
+        "const dt = new DataTransfer(); dt.items.add(new File(['hello'], 'a.txt', { type: 'text/plain' }));\
+         document.querySelector('[name=doc]').files = dt.files",
+    );
+    b.click("#join button");
+    b.wait("#agree[aria-invalid]");
+    assert_eq!(b.text("#agree + small"), "Tick to accept the terms");
+    assert_eq!(b.count("#name-problem"), 0);
+    assert_eq!(
+        b.eval("document.getElementById('name').value").as_str(),
+        Some("Al")
+    );
+    assert_eq!(b.eval("__posts").as_i64(), Some(3));
+
+    // Ticked, it passes: the redirect is followed, as a load would be.
+    b.click("#agree");
+    b.click("#join button");
+    assert_eq!(b.count("small.problem"), 0);
+    assert_eq!(
+        b.eval("document.getElementById('name').value").as_str(),
+        Some("Ada"),
+        "the page anew"
+    );
+    assert!(b.url().ends_with("/t/forms2"), "{}", b.url());
+    // The history is the browser's own: the post made an entry (a 303 to
+    // the same page would too), so back is the page before the post.
+    b.eval("history.back()");
+    assert!(b.url().ends_with("/t/forms2"), "{}", b.url());
+    assert_eq!(b.count("small.problem"), 0);
+    assert_eq!(
+        b.eval("history.length").as_i64(),
+        length.as_i64().map(|n| n + 1)
+    );
+
+    // The network loses the post: the browser sends it itself, and shows
+    // the server's answer as a loaded page.
+    b.goto("/t/forms2");
+    b.eval(
+        "window.__mark = 1; const f = fetch;\
+         window.fetch = (...a) => { window.fetch = f; return Promise.reject(new TypeError('lost')) }",
+    );
+    b.fill("#name2", "B");
+    b.click("#other button");
+    b.wait("#name2-problem");
+    assert_eq!(
+        b.eval("typeof __mark").as_str(),
+        Some("undefined"),
+        "a load"
+    );
+    assert_eq!(b.eval(&format!("{n}.value")).as_str(), Some("B"));
+}

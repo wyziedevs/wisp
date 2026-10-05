@@ -175,8 +175,8 @@ fn parse_as(
         auto_head: false,
     };
     p.run()?;
-    if !p.form.shown.is_empty() {
-        drop_shown(&mut p.root, &mut p.chunks, &p.form.shown);
+    if !p.form.shown.is_empty() || !p.form.dropped.is_empty() {
+        drop_shown(&mut p.root, &mut p.chunks, &p.form.shown, &p.form.dropped);
     }
 
     // Trim the template as a whole; inner whitespace was already collapsed.
@@ -513,21 +513,43 @@ struct Forms {
     /// for a `method="post"` one), `""` when that is not plain, `None` for
     /// one that posts to none.
     open: Vec<Option<String>>,
+    /// How many blocks were open at each of `open`'s start.
+    depth: Vec<usize>,
     /// A `<button action="?/name">` is open, in the form it opened.
     button: bool,
     /// The input just scanned, whose problem goes after it (`Node::Problem`).
-    problem: Option<String>,
+    problem: Option<Pending>,
     /// The fields whose problem the file shows itself, `{cx.problem("x")}`:
     /// none goes after their inputs (`drop_shown`).
     shown: Vec<String>,
     /// The `<textarea>` or `<select>` of an action's form that is open.
     keep: Option<Keep>,
+    /// In the open form, each group of radios or checkboxes given a problem
+    /// so far, with the `seq` of the `Problem` after its last one.
+    ticks: Vec<(String, usize)>,
+    /// Groups in the open form inside a block (`{#each}`): their problem
+    /// goes once, before `</form>`, not after each of the block's inputs.
+    deferred: Vec<String>,
+    /// Automatic `Problem`s numbered so far (`seq`), and those to leave out:
+    /// a group's, when a later input of the group got one.
+    seq: usize,
+    dropped: Vec<usize>,
+}
+
+/// A field whose problem goes after its tag: `tick`, a radio or checkbox,
+/// whose problem is its group's (see `Forms::ticks`).
+struct Pending {
+    name: String,
+    id: Option<String>,
+    tick: bool,
 }
 
 /// A `<textarea>` or `<select>` of an action's form, till its end tag:
 /// what was sent goes back in it, and its problem after it.
 struct Keep {
     name: String,
+    /// Its `id`, when plain text, for its problem's (`Node::Problem`).
+    id: Option<String>,
     textarea: bool,
     /// Bound (`bind:value`): the value is the page's, only its problem is added.
     bound: bool,
@@ -958,6 +980,23 @@ impl Parser<'_> {
                 body: Vec::new(),
             });
             self.auto_head = true;
+        }
+
+        // The problems of a form's groups inside blocks go before its end.
+        if name == "form" && closing && !self.form.deferred.is_empty() {
+            let depth = self.form.depth.last().copied().unwrap_or(0);
+            if self.frames.len() == depth {
+                for name in std::mem::take(&mut self.form.deferred) {
+                    let tick = true;
+                    let p = Pending {
+                        name,
+                        id: None,
+                        tick,
+                    };
+                    self.problem_after(p)?;
+                }
+            }
+            self.form.deferred.clear();
         }
 
         // `<button action="?/remove&id={id}">` outside a form is a form of
@@ -1493,10 +1532,8 @@ impl Parser<'_> {
         let self_closed = self.t.last == b'/' && self.text.ends_with('/');
         self.push_byte(b'>');
         self.ctx = Ctx::Text;
-        if let Some(name) = self.form.problem.take() {
-            let line = self.line_of(self.t.pos);
-            let auto = true;
-            self.push_node(self.t.pos, Node::Problem { name, line, auto })?;
+        if let Some(p) = self.form.problem.take() {
+            self.problem_after(p)?;
         }
         if !self.t.closing
             && self.t.name == "textarea"
@@ -1517,6 +1554,8 @@ impl Parser<'_> {
                 }
                 "form" => {
                     self.form.open.pop();
+                    self.form.depth.pop();
+                    self.form.ticks.clear();
                 }
                 "svg" => self.svg = self.svg.saturating_sub(1),
                 "button" if std::mem::take(&mut self.form.button) => self.text.push_str("</form>"),
@@ -1595,6 +1634,9 @@ impl Parser<'_> {
                     (self.fields.iter()).any(|f| f.native.upload && f.action == *a)
                 });
             self.form.open.push(posts);
+            self.form.depth.push(self.frames.len());
+            self.form.ticks.clear();
+            self.form.deferred.clear();
         }
         // A button that posts to another action skips this form's browser
         // checks: they are this form's action's, not that one's.
@@ -1678,21 +1720,44 @@ impl Parser<'_> {
                 let attrs = f.native.attrs(&self.t.name, &typed, &|a| self.has(a));
                 self.text.push_str(&attrs);
             }
+            // A group's problem goes after its last input, so none of them
+            // is described by it.
+            let id = (self.seen("id").flatten())
+                .filter(|_| !tick)
+                .map(String::from);
+            let line = self.line_of(self.t.pos);
+            let invalid = Node::Invalid {
+                name: name.clone(),
+                line,
+                action: self.form_action(),
+                id: id.clone(),
+            };
             if self.t.name == "input" {
+                // (Before `Invalid`, which flushes the tag's text so far: a
+                // plain `checked` is taken out of it.)
                 if keeps && !bound {
                     self.keep_value(&name)?;
                 }
                 if tick {
                     self.keep_checked(&name)?;
+                }
+                self.push_node(self.t.pos, invalid)?;
+                let deep = (self.form.depth.last()).is_some_and(|&d| self.frames.len() > d);
+                if tick && deep {
+                    if !self.form.deferred.contains(&name) {
+                        self.form.deferred.push(name);
+                    }
                 } else {
-                    self.form.problem = Some(name);
+                    self.form.problem = Some(Pending { name, id, tick });
                 }
             } else {
                 if self.t.name == "select" && !bound {
                     self.choose(&name)?;
                 }
+                self.push_node(self.t.pos, invalid)?;
                 self.form.keep = Some(Keep {
                     name,
+                    id,
                     textarea: self.t.name == "textarea",
                     bound,
                     frames: self.frames.len(),
@@ -1704,6 +1769,29 @@ impl Parser<'_> {
             self.text.push('/');
         }
         Ok(())
+    }
+
+    /// The problem of field `p`, after the tag just closed: one `Problem`
+    /// per group of radios or checkboxes, after the last of them.
+    fn problem_after(&mut self, p: Pending) -> Result<(), Error> {
+        let line = self.line_of(self.t.pos);
+        let seq = self.form.seq;
+        self.form.seq += 1;
+        if p.tick {
+            match self.form.ticks.iter_mut().find(|(n, _)| *n == p.name) {
+                Some((_, last)) => self.form.dropped.push(std::mem::replace(last, seq)),
+                None => self.form.ticks.push((p.name.clone(), seq)),
+            }
+        }
+        let node = Node::Problem {
+            name: p.name,
+            line,
+            auto: true,
+            action: self.form_action(),
+            id: p.id,
+            seq,
+        };
+        self.push_node(self.t.pos, node)
     }
 
     /// A block's body of just `node`, between empty text, as lists go.
@@ -1876,6 +1964,7 @@ impl Parser<'_> {
         };
         let sent = self.alone(value);
         let name = name.to_string();
+        let action = self.form_action();
         match at {
             Some(k) => {
                 let own = std::mem::replace(&mut self.list()[k], Node::Render);
@@ -1886,6 +1975,7 @@ impl Parser<'_> {
                     own,
                     line,
                     tick: None,
+                    action,
                 };
                 Ok(())
             }
@@ -1897,6 +1987,7 @@ impl Parser<'_> {
                     own: None,
                     line,
                     tick: None,
+                    action,
                 },
             ),
         }
@@ -1930,16 +2021,30 @@ impl Parser<'_> {
             },
             class: false,
         };
-        // Plain `checked` is taken out of the text: the node writes it.
+        // Plain `checked` (or `checked=""`, `checked="checked"`, as HTML
+        // allows) is taken out of the text: the node writes it.
         let plain = match (own_at, self.seen("checked"), self.t.checked_at) {
             (Some(_), ..) | (None, None, _) => false,
-            (None, Some(None), Some((chunks, at)))
+            (None, Some(v), Some((chunks, at)))
                 if chunks == self.chunks.len()
                     && self.text[at..].starts_with("checked")
-                    && !self.text[at + 7..].starts_with('=') =>
+                    && v.is_none_or(|v| v.is_empty() || v.eq_ignore_ascii_case("checked")) =>
             {
+                let rest = &self.text[at + 7..];
+                let end = match rest.strip_prefix('=') {
+                    None => at + 7,
+                    Some(q) => {
+                        let n = match q.as_bytes().first() {
+                            Some(&quote @ (b'"' | b'\'')) => {
+                                q[1..].find(quote as char).map_or(q.len(), |n| n + 2)
+                            }
+                            _ => q.find([' ', '\t', '\n', '\r', '/', '>']).unwrap_or(q.len()),
+                        };
+                        at + 8 + n
+                    }
+                };
                 let start = self.text[..at].trim_end().len();
-                self.text.replace_range(start..at + 7, "");
+                self.text.replace_range(start..end, "");
                 true
             }
             // `checked` some other way: left as written.
@@ -1954,13 +2059,14 @@ impl Parser<'_> {
             None if plain => Some((None, self.alone(checked("true")))),
             None => None,
         };
-        let tick = format!("{:?}, {name:?}, {value}", self.form_action());
+        let action = self.form_action();
         let node = |own| Node::Kept {
             name: name.to_string(),
             sent,
             own,
             line,
-            tick: Some(tick),
+            tick: Some(value),
+            action,
         };
         match own {
             Some((Some(k), own)) => {
@@ -2025,15 +2131,21 @@ impl Parser<'_> {
                 src: "__k".into(),
                 line,
             }));
+            let action = self.form_action();
             self.list().push(Node::Kept {
                 name: k.name.clone(),
                 sent,
                 own,
                 line,
                 tick: None,
+                action,
             });
         }
-        self.form.problem = Some(k.name);
+        self.form.problem = Some(Pending {
+            name: k.name,
+            id: k.id,
+            tick: false,
+        });
         Ok(())
     }
 
@@ -3517,8 +3629,15 @@ impl Parser<'_> {
         if let Some(name) = problem_call(t).filter(|_| self.ctx == Ctx::Text) {
             let line = self.line_of(open);
             self.form.shown.push(name.clone());
-            let auto = false;
-            return self.push_node(open, Node::Problem { name, line, auto });
+            let node = Node::Problem {
+                name,
+                line,
+                auto: false,
+                action: self.form_action(),
+                id: None,
+                seq: usize::MAX,
+            };
+            return self.push_node(open, node);
         }
         self.push_node(open, Node::Expr(code(t)))?;
         if unquoted {
@@ -3947,12 +4066,19 @@ fn problem_call(t: &str) -> Option<String> {
 }
 
 /// Leaves out of `list` (and the lists in it) each automatic problem of a
-/// field the file shows itself, joining the text around it.
-fn drop_shown(list: &mut Vec<Node>, chunks: &mut [String], shown: &[String]) {
+/// field the file shows itself, and each a later input of its group took
+/// over (`dropped`), joining the text around it. A field shown that way
+/// is not described by its own problem.
+fn drop_shown(list: &mut Vec<Node>, chunks: &mut [String], shown: &[String], dropped: &[usize]) {
     let mut k = 0;
     while k < list.len() {
-        let shown_here =
-            matches!(&list[k], Node::Problem { name, auto: true, .. } if shown.contains(name));
+        if let Node::Invalid { name, id, .. } = &mut list[k]
+            && shown.contains(name)
+        {
+            *id = None;
+        }
+        let shown_here = matches!(&list[k], Node::Problem { name, auto: true, seq, .. }
+            if shown.contains(name) || dropped.contains(seq));
         // (Lists alternate text and nodes, so text is on both sides.)
         if let (true, Some(&Node::Text(a)), Some(&Node::Text(b))) = (
             shown_here,
@@ -3964,7 +4090,7 @@ fn drop_shown(list: &mut Vec<Node>, chunks: &mut [String], shown: &[String]) {
             list.drain(k..k + 2);
             continue;
         }
-        let mut go = |l: &mut Vec<Node>| drop_shown(l, chunks, shown);
+        let mut go = |l: &mut Vec<Node>| drop_shown(l, chunks, shown, dropped);
         match &mut list[k] {
             Node::Snippet { body, .. } | Node::Head(body) => go(body),
             Node::If {
@@ -4377,7 +4503,8 @@ fn server_line(nodes: &[Node]) -> Option<u32> {
         Node::Component { line, .. }
         | Node::Kept { line, .. }
         | Node::Chosen { line, .. }
-        | Node::Problem { line, .. } => Some(*line),
+        | Node::Problem { line, .. }
+        | Node::Invalid { line, .. } => Some(*line),
         _ => Some(1),
     })
 }
@@ -4730,10 +4857,23 @@ fn shape(nodes: &[Node], out: &mut Vec<u8>) {
                 out.extend_from_slice(own.as_deref().unwrap_or("").as_bytes());
                 out.push(0);
             }
-            Node::Problem { name, .. } => {
+            Node::Problem {
+                name, action, id, ..
+            } => {
                 out.push(b'P');
-                out.extend_from_slice(name.as_bytes());
-                out.push(0);
+                for s in [name, action, id.as_deref().unwrap_or("")] {
+                    out.extend_from_slice(s.as_bytes());
+                    out.push(0);
+                }
+            }
+            Node::Invalid {
+                name, action, id, ..
+            } => {
+                out.push(b'I');
+                for s in [name, action, id.as_deref().unwrap_or("")] {
+                    out.extend_from_slice(s.as_bytes());
+                    out.push(0);
+                }
             }
             Node::Component {
                 name,
@@ -5755,7 +5895,14 @@ mod tests {
                     Node::Selected(c) => format!("[+selected?{}]", c.src),
                     Node::Expr(c) => format!("{{{}}}", c.src),
                     Node::Const(c) => format!("{{@const {}}}", c.src),
-                    Node::Problem { name, .. } => format!("<problem {name}>"),
+                    Node::Problem { name, id, .. } => match id {
+                        Some(id) => format!("<problem {name}#{id}>"),
+                        None => format!("<problem {name}>"),
+                    },
+                    Node::Invalid { name, id, .. } => match id {
+                        Some(id) => format!("{{!{name}#{id}}}"),
+                        None => format!("{{!{name}}}"),
+                    },
                     Node::Kept {
                         name, sent, own, ..
                     } => {
@@ -5831,18 +5978,19 @@ mod tests {
     #[test]
     fn action_forms_post_and_keep_what_was_typed() {
         // Each input keeps what was sent (`{kept a}`: what the action
-        // refused, else its own value) and is followed by its problem.
+        // refused, else its own value), says so (`{!a}`: `aria-invalid`)
+        // and is followed by its problem.
         assert_eq!(
             forms("<form action=\"?/add\"><input name=\"a\"><input name=b /></form>"),
-            "<form action=\"?/add\" method=\"post\"><input name=\"a\"{kept a:[value=__k]}><problem a>\
-             <input name=b{kept b:[value=__k]}/><problem b></form>"
+            "<form action=\"?/add\" method=\"post\"><input name=\"a\"{kept a:[value=__k]}{!a}><problem a>\
+             <input name=b{kept b:[value=__k]}{!b}/><problem b></form>"
         );
         let t = parse("<form method=\"POST\"><input name=\"a\"></form>").unwrap();
         assert_alternates(&t.nodes);
         // Its own `value={…}` is what it shows on a GET.
         assert_eq!(
             forms("<form method=\"post\"><input name=\"t\" value={post.title}></form>"),
-            "<form method=\"post\"><input name=\"t\"{kept t:[value=__k]|[value=post.title]}><problem t></form>"
+            "<form method=\"post\"><input name=\"t\"{kept t:[value=__k]|[value=post.title]}{!t}><problem t></form>"
         );
         // A value written as text too, decoded, wherever it is in the tag;
         // one not in one piece is an error, never a value lost.
@@ -5851,9 +5999,9 @@ mod tests {
                 "<form method=\"post\"><input value=\"a&amp;b\" name=\"t\"><input value=x name=u>\
                  <input value=\"y\" name=\"v\" title={t}></form>"
             ),
-            "<form method=\"post\"><input{kept t:[value=__k]|[value=\"a&b\"]} name=\"t\"><problem t>\
-             <input{kept u:[value=__k]|[value=\"x\"]} name=u><problem u>\
-             <input{kept v:[value=__k]|[value=\"y\"]} name=\"v\"[title=t]><problem v></form>"
+            "<form method=\"post\"><input{kept t:[value=__k]|[value=\"a&b\"]} name=\"t\"{!t}><problem t>\
+             <input{kept u:[value=__k]|[value=\"x\"]} name=u{!u}><problem u>\
+             <input{kept v:[value=__k]|[value=\"y\"]} name=\"v\"[title=t]{!v}><problem v></form>"
         );
         let e =
             parse("<form method=\"post\"><input name=\"t\" value=\"a{b}\"></form>").unwrap_err();
@@ -5866,8 +6014,8 @@ mod tests {
             forms(
                 "<form method=\"post\"><textarea name=\"b\">{post.body}</textarea><textarea name=c></textarea></form>"
             ),
-            "<form method=\"post\"><textarea name=\"b\">{kept b:{__k}|{post.body}}</textarea><problem b>\
-             <textarea name=c>{kept c:{__k}|}</textarea><problem c></form>"
+            "<form method=\"post\"><textarea name=\"b\"{!b}>{kept b:{__k}|{post.body}}</textarea><problem b>\
+             <textarea name=c{!c}>{kept c:{__k}|}</textarea><problem c></form>"
         );
         // A select chooses its option by what was sent, else its value;
         // an option's value as the browser sends it: decoded, or its text.
@@ -5876,7 +6024,7 @@ mod tests {
                 "<form method=\"post\"><select name=\"k\" value={post.kind}><option value=\"a&amp;b\">A</option>\
                    {#each ks as k}<option value={k.id}>{k.name}</option>{/each}<option>\n c  d </option><option>{e}</option></select></form>"
             ),
-            "<form method=\"post\"><select name=\"k\"{chosen k|post.kind}>\
+            "<form method=\"post\"><select name=\"k\"{chosen k|post.kind}{!k}>\
              <option value=\"a&amp;b\"[+selected?\"a&b\"]>A</option>{each ks}<option[value=k.id][+selected?&(k.id)]>{k.name}</option>{/each}\
              <option[+selected?\"c d\"]>\nc  d </option><option>{e}</option></select><problem k></form>"
         );
@@ -5885,16 +6033,25 @@ mod tests {
             forms(
                 "<form action=\"?/a\"><input name=\"p\" type=\"password\"><input type=file name=f></form>"
             ),
-            "<form action=\"?/a\" method=\"post\"><input name=\"p\" type=\"password\"><problem p>\
-             <input type=file name=f><problem f></form>"
+            "<form action=\"?/a\" method=\"post\"><input name=\"p\" type=\"password\"{!p}><problem p>\
+             <input type=file name=f{!f}><problem f></form>"
         );
-        // A file that shows a field's problem itself gets none added for
-        // it, and `{cx.problem("x")}` is the same element.
+        // A field with an id is described by its problem.
         assert_eq!(
             forms(
-                "<form method=\"post\"><input name=\"a\"><input name=\"b\"><p>{cx.problem(\"a\")}</p></form>"
+                "<form action=\"?/a\"><input id=\"e\" name=\"e\"><textarea id=t name=t></textarea></form>"
             ),
-            "<form method=\"post\"><input name=\"a\"{kept a:[value=__k]}><input name=\"b\"{kept b:[value=__k]}><problem b>\
+            "<form action=\"?/a\" method=\"post\"><input id=\"e\" name=\"e\"{kept e:[value=__k]}{!e#e}><problem e#e>\
+             <textarea id=t name=t{!t#t}>{kept t:{__k}|}</textarea><problem t#t></form>"
+        );
+        // A file that shows a field's problem itself gets none added for
+        // it (and the field is not described by it), and
+        // `{cx.problem("x")}` is the same element.
+        assert_eq!(
+            forms(
+                "<form method=\"post\"><input name=\"a\" id=a><input name=\"b\"><p>{cx.problem(\"a\")}</p></form>"
+            ),
+            "<form method=\"post\"><input name=\"a\" id=a{kept a:[value=__k]}{!a}><input name=\"b\"{kept b:[value=__k]}{!b}><problem b>\
              <p><problem a></p></form>"
         );
         // Any literal, before its input or in a block; a name worked out
@@ -5903,7 +6060,7 @@ mod tests {
             forms(
                 "{#if x}<i>{cx.problem(r\"a\")}</i>{/if}<form method=\"post\"><input name=\"a\"></form>"
             ),
-            "?<form method=\"post\"><input name=\"a\"{kept a:[value=__k]}></form>"
+            "?<form method=\"post\"><input name=\"a\"{kept a:[value=__k]}{!a}></form>"
         );
         for src in [
             "<form method=\"post\"><input name=\"a\">{cx.problem(f)}</form>",
@@ -5925,23 +6082,61 @@ mod tests {
             assert!(!forms(src).contains("{kept"), "{src}: {}", forms(src));
         }
         // A checkbox or radio keeps whether it was ticked: plain `checked`
-        // or `checked={cond}` is its own, and it shows no problem itself.
+        // or `checked={cond}` is its own. Its problem (a box that must be
+        // ticked) follows the last of its group, which no `id` describes.
         for (src, want) in [
             (
                 "<form action=\"?/a\"><input type=\"checkbox\" name=\"c\"></form>",
-                "<form action=\"?/a\" method=\"post\"><input type=\"checkbox\" name=\"c\"{kept c:[+checked?__k]}></form>",
+                "<form action=\"?/a\" method=\"post\"><input type=\"checkbox\" name=\"c\"{kept c:[+checked?__k]}{!c}><problem c></form>",
             ),
             (
                 "<form action=\"?/a\"><input type=radio name=r value=x checked></form>",
-                "<form action=\"?/a\" method=\"post\"><input type=radio name=r[value=\"x\"]{kept r:[+checked?__k]|[+checked?true]}></form>",
+                "<form action=\"?/a\" method=\"post\"><input type=radio name=r[value=\"x\"]{kept r:[+checked?__k]|[+checked?true]}{!r}><problem r></form>",
+            ),
+            (
+                "<form action=\"?/a\"><input type=checkbox name=c checked=\"checked\"><input type=checkbox name=d checked=\"\" id=d></form>",
+                "<form action=\"?/a\" method=\"post\"><input type=checkbox name=c{kept c:[+checked?__k]|[+checked?true]}{!c}><problem c><input type=checkbox name=d id=d{kept d:[+checked?__k]|[+checked?true]}{!d}><problem d></form>",
             ),
             (
                 "<form action=\"?/a\"><input type=checkbox name=c checked={on} id=c></form>",
-                "<form action=\"?/a\" method=\"post\"><input type=checkbox name=c{kept c:[+checked?__k]|[+checked?on]} id=c></form>",
+                "<form action=\"?/a\" method=\"post\"><input type=checkbox name=c{kept c:[+checked?__k]|[+checked?on]} id=c{!c}><problem c></form>",
+            ),
+            (
+                "<form action=\"?/a\"><input type=radio name=r value=x><input type=radio name=r value=y><input name=t></form>",
+                "<form action=\"?/a\" method=\"post\"><input type=radio name=r[value=\"x\"]{kept r:[+checked?__k]}{!r}>\
+                 <input type=radio name=r[value=\"y\"]{kept r:[+checked?__k]}{!r}><problem r><input name=t{kept t:[value=__k]}{!t}><problem t></form>",
+            ),
+            // In a block, once, before the form's end.
+            (
+                "<form action=\"?/a\">{#each ks as k}<input type=radio name=r value={k}>{/each}<i>x</i></form>",
+                "<form action=\"?/a\" method=\"post\">{each ks}<input type=radio name=r[value=k]{kept r:[+checked?__k]}{!r}>{/each}<i>x</i><problem r></form>",
             ),
         ] {
             assert_eq!(forms(src), want, "{src}");
         }
+        // Each field is its own form's: another form's refusal leaves it.
+        let t = parse(
+            "<form action=\"?/a\"><input name=q><input type=checkbox name=c><select name=s></select></form>\
+             <form action=\"?/b\"><input name=q></form><form action=\"?/{act}\"><input name=q></form>",
+        )
+        .unwrap();
+        let mut actions = Vec::new();
+        for n in &t.nodes {
+            match n {
+                Node::Kept { action, name, .. }
+                | Node::Invalid { action, name, .. }
+                | Node::Problem { action, name, .. }
+                | Node::Chosen { action, name, .. } => actions.push(format!("{name}@{action}")),
+                _ => {}
+            }
+        }
+        assert_eq!(
+            actions,
+            [
+                "q@a", "q@a", "q@a", "c@a", "c@a", "c@a", "s@a", "s@a", "s@a", "q@b", "q@b", "q@b",
+                "q@", "q@", "q@"
+            ]
+        );
         assert!(
             sketch("<form action=\"?/a\"></form><input name=\"q\">")
                 .ends_with("<input name=\"q\">")
