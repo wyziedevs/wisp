@@ -1,0 +1,9 @@
+[package]
+name = "wisp-gate"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+description = "The gates CI runs, as one command on any OS: cargo run -q -p wisp-gate"
+
+[lints]
+workspace = true

@@ -3,9 +3,18 @@ on:
   push:
     branches: [main]
   pull_request:
+# The gates are `cargo run -q -p wisp-gate` (the same on a dev machine, any OS);
+# the steps are spelled out here so a red one is named in the log.
 jobs:
   check:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -14,9 +23,22 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
-      - run: cargo clippy --workspace -- -D warnings
-      - run: cargo test --workspace
-      # Native-only code must not leak into edge builds.
-      - run: cargo clippy -p wisp-test-app --all-targets --target wasm32-unknown-unknown -- -D warnings
-      # The edge wasm stays under its size budget (tests/wasm-size.sh).
-      - run: sh tests/wasm-size.sh
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace -q
+      # `wisp new` then `wisp build`, from this checkout, in a path with a space.
+      - name: Smoke test
+        run: |
+          cargo build -q -p wisp-web
+          bin="$PWD/target/debug/wisp"
+          dir="$RUNNER_TEMP/smoke app"
+          mkdir -p "$dir"
+          cd "$dir"
+          "$bin" new app -t minimal -y --no-git --no-install --no-tailwind
+          cd app
+          "$bin" build
+      # Native-only code must not leak into edge builds; the edge wasm stays
+      # under its size budget. Linux only: the result does not depend on the host.
+      - if: runner.os == 'Linux'
+        run: |
+          cargo clippy -p wisp-test-app --all-targets --target wasm32-unknown-unknown -- -D warnings
+          cargo run -q -p wisp-gate -- wasm

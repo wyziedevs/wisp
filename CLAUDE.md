@@ -2,7 +2,7 @@
 
 A fast, fun web framework for Rust: file routes, `.wisp` templates compiled to Rust, form actions, one binary.
 
-Commands: `cargo build` · `cargo test -q` · `cargo fmt --check` · `cargo clippy --all-targets -- -D warnings` (also with `--target x86_64-unknown-linux-gnu`) · token bench `cargo run -q -p wisp-tokens --release`.
+Commands (all of them run on Windows, macOS and Linux; the whole gate set is `cargo run -q -p wisp-gate`, add `fast` to skip the wasm steps): `cargo build` · `cargo test -q` · `cargo fmt --check` · `cargo clippy --all-targets -- -D warnings` (also with `--target x86_64-unknown-linux-gnu`) · token bench `cargo run -q -p wisp-tokens --release`.
 
 Crates: `wisp` runtime (I/O drivers, http, tables) · `wisp-build` build.rs codegen, templates, checks · `wisp-macros` derives and attributes · `wisp-shared` code shared by build and runtime · `wisp-cli` the `wisp` command (packages are published as `wisp-web` for the CLI and `wisp-web-rt`, `wisp-web-build`, `wisp-web-macros`, `wisp-web-shared`; lib names unchanged, so `-p wisp-web-rt` etc.) (new, dev, build, mcp) · `tests/`, `examples/`, `bench/` apps, tests, benchmarks.
 

@@ -19,6 +19,7 @@ members = [
     "tests/agents",
     "tests/islands",
     "tests/platform",
+    "tests/gate",
     "bench/load",
     "bench/run",
     "bench/app",

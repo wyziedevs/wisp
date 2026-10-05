@@ -8,7 +8,8 @@ $ErrorActionPreference = "Stop"
 $repo = "wyziedevs/wisp"
 $dir = if ($env:WISP_INSTALL_DIR) { $env:WISP_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "wisp\bin" }
 $version = if ($env:WISP_VERSION) { $env:WISP_VERSION } else { "latest" }
-if ($env:PROCESSOR_ARCHITECTURE -ne "AMD64") {
+# Windows on ARM runs the x86_64 build in its emulation.
+if ($env:PROCESSOR_ARCHITECTURE -notin "AMD64", "ARM64") {
     throw "wisp: no prebuilt binary for $env:PROCESSOR_ARCHITECTURE; run: cargo install wisp-web"
 }
 $name = "wisp-x86_64-pc-windows-msvc"
