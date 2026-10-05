@@ -12,16 +12,17 @@
 use wisp_shared::rust::skip_literal;
 
 /// Folds `rust`'s browser-only literal lets into `markup` (both as long as
-/// the file, line for line; `open` and `close` are the `---` lines).
-pub(crate) fn fold(rust: &mut String, markup: &mut String, open: usize, close: usize) {
+/// the file, line for line; `open` and `close` are the `---` lines), and
+/// says whether any moved.
+pub(crate) fn fold(rust: &mut String, markup: &mut String, open: usize, close: usize) -> bool {
     let lets = candidates(rust);
     if lets.is_empty() {
-        return;
+        return false;
     }
     // What the browser runs: directive values, `{:…}` holes and blocks, and
     // the script. Markup that does not parse is left for the build to say.
     let Ok(t) = crate::template::parse(markup) else {
-        return;
+        return false;
     };
     let mut client = String::new();
     for d in t.groups.iter().flat_map(|g| &g.directives) {
@@ -45,7 +46,7 @@ pub(crate) fn fold(rust: &mut String, markup: &mut String, open: usize, close: u
         }
     }
     if moved.is_empty() {
-        return;
+        return false;
     }
     // The Rust loses those lines, kept empty.
     let mut lines: Vec<String> = rust.split('\n').map(str::to_string).collect();
@@ -71,6 +72,7 @@ pub(crate) fn fold(rust: &mut String, markup: &mut String, open: usize, close: u
             *markup = lines.join("\n");
         }
     }
+    true
 }
 
 /// A top-level `let name = literal;` on one line.

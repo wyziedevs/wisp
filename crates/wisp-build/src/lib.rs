@@ -3,8 +3,8 @@
 //! `$OUT_DIR/wisp.rs` for `wisp::app!()` to include.
 
 mod a11y;
-mod client_lets;
 pub mod auto;
+mod client_lets;
 mod codegen;
 mod config;
 pub mod csp;
@@ -488,8 +488,9 @@ pub(crate) fn split_front(src: &str) -> Result<(Option<String>, String), String>
         kept.join("\n")
     };
     let (mut rust, mut markup) = (pick(true), pick(false));
-    client_lets::fold(&mut rust, &mut markup, open, close);
-    Ok((Some(rust), markup))
+    // A block that was only browser state is gone, as if never written.
+    let moved = client_lets::fold(&mut rust, &mut markup, open, close);
+    Ok(((!moved || !rust.trim().is_empty()).then_some(rust), markup))
 }
 
 /// Checks the whole project the way `run` does, without writing anything.
