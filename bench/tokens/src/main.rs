@@ -93,14 +93,14 @@ fn main() {
 fn table(suite: &Suite) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(suite.dir);
     let features = suite.features;
-    let mut rows = Vec::new();
+    let (mut rows, mut lists) = (Vec::new(), Vec::new());
     for &(dir, name) in suite.apps {
         let app = root.join(dir);
         let mut files = Vec::new();
         walk(&app, &mut files);
         files.sort();
         let mut per = vec![Count::default(); features.len()];
-        let mut counted = 0;
+        let (mut counted, mut listed, mut skipped) = (0, Vec::new(), Vec::new());
         for file in &files {
             let Ok(text) = fs::read_to_string(file) else {
                 continue;
@@ -112,8 +112,12 @@ fn table(suite: &Suite) {
                 .replace('\\', "/");
             if count_file(&rel, &text, features, &mut per) {
                 counted += 1;
+                listed.push(rel);
+            } else {
+                skipped.push(rel);
             }
         }
+        lists.push((name, listed, skipped));
         rows.push((name, per, counted));
     }
 
@@ -142,6 +146,12 @@ fn table(suite: &Suite) {
     for (name, per, _) in &rows[1..] {
         let total: usize = per.iter().map(|c| c.tokens).sum();
         println!("{name}: {:.1}x Wisp", total as f64 / wisp as f64);
+    }
+    // Which files each stack counted (and which it skipped for want of a marker), for auditing.
+    println!();
+    for (name, listed, skipped) in &lists {
+        println!("{name} counted: {}", listed.join(", "));
+        println!("{name} not counted: {}", skipped.join(", "));
     }
 }
 
