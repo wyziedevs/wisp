@@ -333,6 +333,16 @@ pub(crate) fn paths(r: &ExportRoute) -> Result<Vec<Vec<String>>, String> {
     Ok(all)
 }
 
+/// [`paths`] of a route of an app with no `entries()` and no locales: its
+/// one page when every parameter is optional (`[[n]]`), else none.
+pub(crate) fn plain(r: &ExportRoute) -> Option<Vec<String>> {
+    let params = || r.pattern.split('/').filter(|s| s.starts_with('['));
+    if !params().all(|s| s.starts_with("[[")) {
+        return None;
+    }
+    segments(r.pattern, &vec![String::new(); params().count()])
+}
+
 /// The pages a route makes, as path segments. `lang` is what goes in its
 /// `[[lang=locale]]` ("" leaves it out), which `entries` does not list.
 pub(crate) fn pages(r: &ExportRoute, lang: &str) -> Result<Vec<Vec<String>>, String> {
@@ -537,6 +547,23 @@ mod tests {
             url(&s(&["blog", "hello world", "é"])),
             "/blog/hello%20world/%C3%A9"
         );
+    }
+
+    #[test]
+    fn plain_is_paths_without_entries() {
+        for p in [
+            "/",
+            "/a/b",
+            "/p/[[n]]",
+            "/[[lang=locale]]/x",
+            "/blog/[slug]",
+            "/d/[...rest]",
+        ] {
+            let want = paths(&route(p, None))
+                .ok()
+                .and_then(|v| v.into_iter().next());
+            assert_eq!(plain(&route(p, None)), want, "{p}");
+        }
     }
 
     #[test]

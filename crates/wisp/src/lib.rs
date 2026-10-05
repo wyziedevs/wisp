@@ -656,6 +656,9 @@ pub trait App: 'static {
     const AFTER: bool = false;
     /// `src/hooks.rs` has `report`: [`App::report`] runs on every 5xx.
     const REPORT: bool = false;
+    /// Some page has `entries()` (see [`ExportRoute::entries`]): without
+    /// any, `/sitemap.xml` has none of the code that calls them.
+    const ENTRIES: bool = true;
     /// The locales of `src/locales/*.json`, by file name, sorted.
     const LOCALES: &'static [&'static str] = &[];
     /// What goes in `<html lang="…">` per locale: [`App::LOCALES`], and a

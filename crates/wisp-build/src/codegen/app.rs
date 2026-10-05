@@ -937,6 +937,13 @@ impl Gen {
         if !before && !m.root_waits() && p.remotes.is_empty() {
             self.line(1, "const NOT_FOUND_NOW: bool = true;");
         }
+        if !m
+            .routes
+            .iter()
+            .any(|r| r.page.as_ref().is_some_and(|pg| pg.entries()))
+        {
+            self.line(1, "const ENTRIES: bool = false;");
+        }
         // Where only endpoints are, an unmatched path's error is JSON too.
         let ends = |r: &model::Route| {
             r.page.is_none() && r.server.as_ref().is_some_and(|s| !s.handlers.is_empty())

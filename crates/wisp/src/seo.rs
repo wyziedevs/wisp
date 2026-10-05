@@ -31,19 +31,15 @@ pub(crate) fn answer<A: App>(cx: &Cx) -> Option<(Vec<u8>, &'static str)> {
     let routes = A::export_routes();
     let base = base(cx).filter(|_| routes.iter().any(|r| r.page && r.indexed))?;
     let (body, mime) = match sitemap {
-        // An app with no locales has none of their addresses' code.
+        // An app with no locales, or no `entries()`, has none of their code.
         true => (
-            match A::LOCALES.is_empty() {
-                true => xml::<false>(
-                    &base,
-                    &routes,
-                    crate::http::slash() == crate::TrailingSlash::Always,
-                ),
-                false => xml::<true>(
-                    &base,
-                    &routes,
-                    crate::http::slash() == crate::TrailingSlash::Always,
-                ),
+            {
+                let slashed = crate::http::slash() == crate::TrailingSlash::Always;
+                match (A::LOCALES.is_empty(), A::ENTRIES) {
+                    (true, false) => xml::<false, false>(&base, &routes, slashed),
+                    (true, true) => xml::<false, true>(&base, &routes, slashed),
+                    (false, _) => xml::<true, true>(&base, &routes, slashed),
+                }
             },
             "application/xml; charset=utf-8",
         ),
@@ -189,8 +185,12 @@ pub(crate) fn base(cx: &Cx) -> Option<String> {
 
 /// The sitemap of `routes`' indexed pages, each address once, in order;
 /// `slashed`: each ends in `/`, as `trailing_slash(Always)` serves them.
-/// `I18N`: the app has locales.
-fn xml<const I18N: bool>(base: &str, routes: &[ExportRoute], slashed: bool) -> String {
+/// `I18N`: the app has locales; `ENTRIES`: some page has `entries()`.
+fn xml<const I18N: bool, const ENTRIES: bool>(
+    base: &str,
+    routes: &[ExportRoute],
+    slashed: bool,
+) -> String {
     // Each address, and the `xhtml:link`s that go with it.
     let mut urls: BTreeMap<String, String> = BTreeMap::new();
     let locales = crate::locales();
@@ -199,6 +199,11 @@ fn xml<const I18N: bool>(base: &str, routes: &[ExportRoute], slashed: bool) -> S
         // A route whose `entries()` panics or does not fit is left out.
         if I18N && has_locale(r) && !locales.is_empty() {
             urls.extend(locale_urls(base, r, &end));
+        } else if !ENTRIES {
+            if let Some(segs) = crate::export::plain(r) {
+                let u = url(&segs);
+                urls.insert(format!("{base}{u}{}", end(&u)), String::new());
+            }
         } else if let Ok(Ok(all)) = catch_unwind(AssertUnwindSafe(|| paths(r))) {
             let all = all.iter().map(|segs| url(segs));
             urls.extend(all.map(|u| (format!("{base}{u}{}", end(&u)), String::new())));
@@ -345,7 +350,7 @@ mod tests {
             post,
         ];
         assert_eq!(
-            xml::<true>("https://x.org", &routes, false),
+            xml::<true, true>("https://x.org", &routes, false),
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
              <urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n\
              <url><loc>https://x.org/</loc></url>\n\
@@ -355,7 +360,7 @@ mod tests {
              <url><loc>https://x.org/post/c</loc></url>\n\
              </urlset>\n"
         );
-        let slashed = xml::<true>("https://x.org", &routes, true);
+        let slashed = xml::<true, true>("https://x.org", &routes, true);
         assert!(slashed.contains("<loc>https://x.org/about/</loc>"));
         assert!(slashed.contains("<loc>https://x.org/post/c/</loc>"));
         assert!(slashed.contains("<loc>https://x.org/</loc>"));
