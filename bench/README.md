@@ -78,7 +78,7 @@ cached and baked pages are paths of their own: see `app/` below).
   `/json` as minimal APIs. Logging is set to
   `Warning` as the templates' appsettings do, and the HTML encoder emits
   non-ASCII as is, like Wisp.
-- `rust/`: Actix Web, Axum, may-minihttp, xitca-web, ntex and bare hyper
+- `rust/` (does not build today: the third-party ntex crate fails to compile, so its tables below are not reproducible from this tree): Actix Web, Axum, may-minihttp, xitca-web, ntex and bare hyper
   (a tokio runtime per thread, SO_REUSEPORT) in one binary (`bench-rust
   actix|axum|may|xitca|ntex|hyper|ohkami`), all rendering with Askama, which
   compiles templates to Rust as Wisp does (`/page` inherits `templates/`'s

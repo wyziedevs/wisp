@@ -344,7 +344,7 @@ Node/Bun/Deno, the server loop over raw connections (`edge::connection`, `Raw`, 
 
 Native `.text` of the tests app is unchanged (the edit is `cfg(wasm32)`; two builds of
 main differ from each other in the same few functions, mine equals one of them).
-Node, Bun and Deno builds are as before. `tests/gate` (`cargo run -p wisp-gate`) (a CI step) fails over 1,810,000
+Node, Bun and Deno builds are as before. `tests/gate` (`cargo run -p wisp-gate`) (a CI step) fails over 1,829,000
 bytes (the tests app after the cut, +2%).
 
 workerd cold start, taken apart (process start to first response, median of 9, three rounds,
