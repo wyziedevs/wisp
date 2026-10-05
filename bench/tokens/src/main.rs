@@ -84,8 +84,9 @@ struct Count {
     chars: usize,
 }
 
-/// Prints each suite's table and writes the totals to `results.json`
-/// (`{"<dir>": [{"stack", "tokens", "files"}..]}`), which the docs site reads.
+/// Prints each suite's table and writes the counts to `results.json`
+/// (`{"<dir>": [{"stack", "tokens", "chars", "files", "features": {"<name>": n}}..]}`),
+/// which the docs site reads.
 fn main() {
     let mut json = Vec::new();
     for (i, suite) in SUITES.iter().enumerate() {
@@ -94,9 +95,21 @@ fn main() {
         }
         let rows: Vec<String> = table(suite)
             .iter()
-            .map(|(name, tokens, files)| {
+            .map(|(name, per, files)| {
                 let name = name.trim_matches('*');
-                format!("{{\"stack\": \"{name}\", \"tokens\": {tokens}, \"files\": {files}}}")
+                let tokens: usize = per.iter().map(|c| c.tokens).sum();
+                let chars: usize = per.iter().map(|c| c.chars).sum();
+                let by: Vec<String> = suite
+                    .features
+                    .iter()
+                    .zip(per)
+                    .map(|(f, c)| format!("\"{f}\": {}", c.tokens))
+                    .collect();
+                format!(
+                    "{{\"stack\": \"{name}\", \"tokens\": {tokens}, \"chars\": {}, \"files\": {files}, \"features\": {{{}}}}}",
+                    chars / 4,
+                    by.join(", ")
+                )
             })
             .collect();
         json.push(format!(
@@ -126,8 +139,8 @@ fn main() {
     );
 }
 
-/// Prints a suite's table; returns each stack's (name, tokens, files counted).
-fn table(suite: &Suite) -> Vec<(&'static str, usize, usize)> {
+/// Prints a suite's table; returns each stack's (name, count per feature, files counted).
+fn table(suite: &Suite) -> Vec<(&'static str, Vec<Count>, usize)> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(suite.dir);
     let features = suite.features;
     let scaffold = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -197,9 +210,7 @@ fn table(suite: &Suite) -> Vec<(&'static str, usize, usize)> {
         println!("{name} counted: {}", listed.join(", "));
         println!("{name} not counted: {}", skipped.join(", "));
     }
-    rows.iter()
-        .map(|(name, per, files)| (*name, per.iter().map(|c| c.tokens).sum(), *files))
-        .collect()
+    rows
 }
 
 fn walk(dir: &Path, out: &mut Vec<PathBuf>) {

@@ -1,17 +1,17 @@
 {
   "apps": [
-    {"stack": "Wisp", "tokens": 476, "files": 7},
-    {"stack": "SvelteKit", "tokens": 1134, "files": 9},
-    {"stack": "Next.js", "tokens": 1146, "files": 8},
-    {"stack": "Nuxt (Vue)", "tokens": 1043, "files": 8},
-    {"stack": "React (Vite + Express)", "tokens": 1599, "files": 9},
-    {"stack": "Express (Node.js)", "tokens": 1388, "files": 8},
-    {"stack": "Axum + askama", "tokens": 1803, "files": 7},
-    {"stack": "Actix + tera", "tokens": 1878, "files": 7}
+    {"stack": "Wisp", "tokens": 476, "chars": 299, "files": 7, "features": {"list": 58, "form": 79, "api": 31, "layout": 60, "search": 96, "data": 108, "setup": 44}},
+    {"stack": "SvelteKit", "tokens": 1134, "chars": 696, "files": 9, "features": {"list": 128, "form": 602, "api": 57, "layout": 83, "search": 192, "data": 72, "setup": 0}},
+    {"stack": "Next.js", "tokens": 1146, "chars": 782, "files": 8, "features": {"list": 107, "form": 575, "api": 44, "layout": 108, "search": 241, "data": 71, "setup": 0}},
+    {"stack": "Nuxt (Vue)", "tokens": 1043, "chars": 670, "files": 8, "features": {"list": 96, "form": 600, "api": 22, "layout": 96, "search": 158, "data": 71, "setup": 0}},
+    {"stack": "React (Vite + Express)", "tokens": 1599, "chars": 1098, "files": 9, "features": {"list": 108, "form": 696, "api": 32, "layout": 268, "search": 191, "data": 161, "setup": 143}},
+    {"stack": "Express (Node.js)", "tokens": 1388, "chars": 805, "files": 8, "features": {"list": 128, "form": 602, "api": 34, "layout": 116, "search": 291, "data": 69, "setup": 148}},
+    {"stack": "Axum + askama", "tokens": 1803, "chars": 1239, "files": 7, "features": {"list": 145, "form": 894, "api": 29, "layout": 104, "search": 217, "data": 123, "setup": 291}},
+    {"stack": "Actix + tera", "tokens": 1878, "chars": 1279, "files": 7, "features": {"list": 164, "form": 906, "api": 46, "layout": 104, "search": 237, "data": 123, "setup": 298}}
   ],
   "real": [
-    {"stack": "Wisp", "tokens": 1016, "files": 11},
-    {"stack": "SvelteKit", "tokens": 3666, "files": 22},
-    {"stack": "Next.js", "tokens": 3458, "files": 20}
+    {"stack": "Wisp", "tokens": 1016, "chars": 653, "files": 11, "features": {"auth": 262, "crud": 333, "upload": 178, "live": 5, "component": 85, "data": 97, "setup": 56}},
+    {"stack": "SvelteKit", "tokens": 3666, "chars": 2503, "files": 22, "features": {"auth": 1354, "crud": 1282, "upload": 535, "live": 243, "component": 112, "data": 56, "setup": 84}},
+    {"stack": "Next.js", "tokens": 3458, "chars": 2549, "files": 20, "features": {"auth": 1216, "crud": 1129, "upload": 586, "live": 295, "component": 131, "data": 52, "setup": 49}}
   ]
 }
