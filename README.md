@@ -65,7 +65,7 @@ The `---` block is Rust that runs for each request, and `{name}` is rendered on 
 
 ## Speed
 
-TechEmpower's plaintext and JSON tests, run with their own load scripts against their reference sources (SvelteKit and Next.js are plain route handlers), on one shared 4-vCPU AMD EPYC 7B13 VM with the server pinned to 2 cores. Medians of 3 runs of 15 seconds, 2026-10-04, from [`bench/tfb/results.json`](bench/tfb/results.json). Contenders are in a fixed order, not ranked; `0` means no request completed.
+TechEmpower's plaintext and JSON tests, run with their own load scripts against their reference sources (SvelteKit and Next.js are plain route handlers), on one shared 4-vCPU AMD EPYC 7B13 VM with the server pinned to 2 cores. Medians of 3 runs of 15 seconds, 2026-10-04, from [`bench/tfb/results.json`](bench/tfb/results.json). Contenders are in a fixed order, not ranked; "Failed" means no run completed a request.
 
 | Framework | Plaintext, 256 connections (req/s) | JSON, 64 connections (req/s) |
 |---|---:|---:|
@@ -77,7 +77,9 @@ TechEmpower's plaintext and JSON tests, run with their own load scripts against 
 | Hono (Node) | 28,966 | 8,988 |
 | Hono (Bun) | 10,599 | 59,619 |
 | SvelteKit | 10,929 | 10,378 |
-| Next.js | 0 | 1,524 |
+| Next.js | Failed (out of memory) | 1,524 |
+
+Rows whose min-max ranges overlap are ties. Plaintext, 256: Fastify and Express; Hono (Node), Hono (Bun) and SvelteKit. JSON, 64: Wisp, Actix Web and Axum; Hono (Node) and SvelteKit.
 
 This is not an official TechEmpower result, and the VM is shared. [`bench/tfb/RESULTS.md`](bench/tfb/RESULTS.md) has every contender, connection level and metric. Rank tables from a newer run are pending: the latest runs on a CPU-capped VPS were invalid and are not published. Valid on any machine: callgrind counts of 1585, 2323 and 1789 instructions per request for `GET /`, `GET /user/0` and `POST /user`.
 

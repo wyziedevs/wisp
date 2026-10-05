@@ -13,7 +13,7 @@ This file is generated: `python3 aggregate.py` fills the tables from `raw/`. Raw
 Derived by `aggregate.py` from `results.json`; nothing here is hand-written. Medians of 3 runs,
 15 s each, server on 2 pinned cores.
 
-By median req/s Wisp (defaults) has the highest median at 6 of 10 workload and connection levels; at 2 more its min-max range overlaps the leader's (a tie within noise). Counted from the tables below, supplementary row excluded.
+Wisp (defaults) has a min-max range above every other contender's at 3 of 10 workload and connection levels; at 5 more its range overlaps that of the highest median (a tie within noise). Counted from the tables below, supplementary row excluded.
 
 ## What TFB specifies (read from the source, not from memory)
 
@@ -134,157 +134,177 @@ All contenders, both workloads and every connection level, with every metric. So
 table: median requests per second, descending; the Wisp rows are bold. Source: `raw/` wrk output
 (`results.json`), run date and hardware in Environment above. Rows marked "(supplementary)" are not
 part of the summary. "steal % max" is the highest hypervisor steal share of CPU over the runs. "errors" counts non-2xx responses and wrk socket errors summed over the 3 runs.
-Contenders that stop answering show `0`; that is a measured result of this setup.
+A contender whose runs at a level completed no request shows "Failed" with the reason, not a number. Rows whose min-max ranges overlap are ties: they show "tie" and whom with in "tied with", and get no rank.
 
 
 #### Plaintext (pipeline depth 16), 256 connections
 
-| # | Contender | req/s median | min | max | latency avg (ms) | latency p99 (ms) | errors | steal % max |
-|---:|---|---:|---:|---:|---:|---:|---|---:|
-| **1** | **Wisp (defaults)** | **1,129,577** | **1,092,693** | **1,171,462** | **1.45** | **n/a** | **-** | **0.8** |
-| **2** | **Wisp, WISP_MAX_CONNS=0 (supplementary)** | **1,116,591** | **960,570** | **1,116,892** | **1.35** | **n/a** | **-** | **1.6** |
-| 3 | Actix Web (TFB source) | 603,163 | 575,108 | 630,192 | 4.25 | 38.10 | - | 2.8 |
-| 4 | Axum (TFB source) | 276,948 | 245,050 | 332,863 | 9.05 | 50.28 | - | 17.6 |
-| 5 | Fastify (TFB source) | 51,713 | 40,422 | 60,754 | 218 | 3510 | 34 socket | 2.6 |
-| 6 | Express (TFB source) | 40,421 | 37,511 | 42,852 | 359 | 4850 | - | 3.8 |
-| 7 | Hono on Node (TFB source) | 28,966 | 3,039 | 29,143 | 449 | 5630 | 138 socket | 2.2 |
-| 8 | SvelteKit (not TFB) | 10,929 | 502 | 11,055 | 472 | 5590 | 144 socket | 1.5 |
-| 9 | Hono on Bun (not TFB source) | 10,599 | 10,565 | 10,628 | 211 | 410 | - | 1.2 |
-| 10 | Next.js (not TFB) | 0 | 0 | 0 | 0.00 | n/a | - | 2.3 |
+| # | Contender | req/s median | min | max | latency avg (ms) | latency p99 (ms) | errors | steal % max | tied with |
+|---:|---|---:|---:|---:|---:|---:|---|---:|---|
+| **1** | **Wisp (defaults)** | **1,129,577** | **1,092,693** | **1,171,462** | **1.45** | **n/a** | **-** | **0.8** | **-** |
+| **-** | **Wisp, WISP_MAX_CONNS=0 (supplementary)** | **1,116,591** | **960,570** | **1,116,892** | **1.35** | **n/a** | **-** | **1.6** | **-** |
+| 2 | Actix Web (TFB source) | 603,163 | 575,108 | 630,192 | 4.25 | 38.10 | - | 2.8 | - |
+| 3 | Axum (TFB source) | 276,948 | 245,050 | 332,863 | 9.05 | 50.28 | - | 17.6 | - |
+| tie | Fastify (TFB source) | 51,713 | 40,422 | 60,754 | 218 | 3510 | 34 socket | 2.6 | Express |
+| tie | Express (TFB source) | 40,421 | 37,511 | 42,852 | 359 | 4850 | - | 3.8 | Fastify |
+| tie | Hono on Node (TFB source) | 28,966 | 3,039 | 29,143 | 449 | 5630 | 138 socket | 2.2 | Hono on Bun, SvelteKit |
+| tie | SvelteKit (not TFB) | 10,929 | 502 | 11,055 | 472 | 5590 | 144 socket | 1.5 | Hono on Bun, Hono on Node |
+| tie | Hono on Bun (not TFB source) | 10,599 | 10,565 | 10,628 | 211 | 410 | - | 1.2 | Hono on Node, SvelteKit |
+| - | Next.js (not TFB) | Failed (out of memory) | - | - | - | - | - | 2.3 | - |
+
+Rows whose min-max ranges overlap are ties and get no rank.
 
 #### Plaintext (pipeline depth 16), 1024 connections
 
-| # | Contender | req/s median | min | max | latency avg (ms) | latency p99 (ms) | errors | steal % max |
-|---:|---|---:|---:|---:|---:|---:|---|---:|
-| **1** | **Wisp (defaults)** | **623,348** | **506,953** | **663,522** | **8.28** | **n/a** | **-** | **5.7** |
-| **2** | **Wisp, WISP_MAX_CONNS=0 (supplementary)** | **520,331** | **480,904** | **649,788** | **9.73** | **n/a** | **-** | **5.2** |
-| 3 | Axum (TFB source) | 381,324 | 323,092 | 391,336 | 21.56 | n/a | - | 6.5 |
-| 4 | Actix Web (TFB source) | 366,626 | 365,153 | 450,698 | 25.83 | n/a | - | 7.1 |
-| 5 | Fastify (TFB source) | 62,345 | 45,567 | 64,183 | 263 | 4960 | 271 socket | 4.2 |
-| 6 | Express (TFB source) | 36,184 | 32,589 | 39,569 | 295 | 5010 | 246 socket | 6.5 |
-| 7 | Hono on Node (TFB source) | 29,602 | 25,357 | 34,082 | 259 | 4420 | 192 socket | 2.9 |
-| 8 | Hono on Bun (not TFB source) | 10,375 | 10,195 | 10,421 | 854 | 1670 | - | 1.9 |
-| 9 | SvelteKit (not TFB) | 8,464 | 7,749 | 9,116 | 514 | 3240 | 83 socket | 6.5 |
-| 10 | Next.js (not TFB) | 0 | 0 | 0 | 0.00 | n/a | - | 0.2 |
+| # | Contender | req/s median | min | max | latency avg (ms) | latency p99 (ms) | errors | steal % max | tied with |
+|---:|---|---:|---:|---:|---:|---:|---|---:|---|
+| **1** | **Wisp (defaults)** | **623,348** | **506,953** | **663,522** | **8.28** | **n/a** | **-** | **5.7** | **-** |
+| **-** | **Wisp, WISP_MAX_CONNS=0 (supplementary)** | **520,331** | **480,904** | **649,788** | **9.73** | **n/a** | **-** | **5.2** | **-** |
+| tie | Axum (TFB source) | 381,324 | 323,092 | 391,336 | 21.56 | n/a | - | 6.5 | Actix Web |
+| tie | Actix Web (TFB source) | 366,626 | 365,153 | 450,698 | 25.83 | n/a | - | 7.1 | Axum |
+| 4 | Fastify (TFB source) | 62,345 | 45,567 | 64,183 | 263 | 4960 | 271 socket | 4.2 | - |
+| tie | Express (TFB source) | 36,184 | 32,589 | 39,569 | 295 | 5010 | 246 socket | 6.5 | Hono on Node |
+| tie | Hono on Node (TFB source) | 29,602 | 25,357 | 34,082 | 259 | 4420 | 192 socket | 2.9 | Express |
+| 7 | Hono on Bun (not TFB source) | 10,375 | 10,195 | 10,421 | 854 | 1670 | - | 1.9 | - |
+| 8 | SvelteKit (not TFB) | 8,464 | 7,749 | 9,116 | 514 | 3240 | 83 socket | 6.5 | - |
+| - | Next.js (not TFB) | Failed (out of memory) | - | - | - | - | - | 0.2 | - |
+
+Rows whose min-max ranges overlap are ties and get no rank.
 
 #### Plaintext (pipeline depth 16), 4096 connections
 
-| # | Contender | req/s median | min | max | latency avg (ms) | latency p99 (ms) | errors | steal % max |
-|---:|---|---:|---:|---:|---:|---:|---|---:|
-| **1** | **Wisp, WISP_MAX_CONNS=0 (supplementary)** | **539,506** | **539,174** | **586,425** | **31.49** | **n/a** | **-** | **2.8** |
-| **2** | **Wisp (defaults)** | **532,959** | **460,222** | **546,912** | **37.73** | **n/a** | **-** | **4.4** |
-| 3 | Axum (TFB source) | 446,398 | 417,470 | 454,096 | 67.51 | n/a | - | 2.2 |
-| 4 | Actix Web (TFB source) | 351,844 | 318,901 | 356,337 | 92.95 | n/a | - | 9.8 |
-| 5 | Fastify (TFB source) | 58,956 | 49,591 | 61,460 | 246 | 2770 | 152 socket | 3.5 |
-| 6 | Hono on Node (TFB source) | 34,173 | 18,886 | 37,243 | 558 | 5850 | 235 socket | 3.9 |
-| 7 | Express (TFB source) | 27,554 | 26,800 | 27,714 | 478 | 5710 | 208 socket | 9.9 |
-| 8 | Hono on Bun (not TFB source) | 9,652 | 9,619 | 10,152 | 3400 | 6900 | 1 socket | 4.0 |
-| 9 | SvelteKit (not TFB) | 8,359 | 8,285 | 9,053 | 547 | 5710 | 149 socket | 1.6 |
-| 10 | Next.js (not TFB) | 0 | 0 | 0 | 0.00 | n/a | - | 0.6 |
+| # | Contender | req/s median | min | max | latency avg (ms) | latency p99 (ms) | errors | steal % max | tied with |
+|---:|---|---:|---:|---:|---:|---:|---|---:|---|
+| **-** | **Wisp, WISP_MAX_CONNS=0 (supplementary)** | **539,506** | **539,174** | **586,425** | **31.49** | **n/a** | **-** | **2.8** | **-** |
+| **1** | **Wisp (defaults)** | **532,959** | **460,222** | **546,912** | **37.73** | **n/a** | **-** | **4.4** | **-** |
+| 2 | Axum (TFB source) | 446,398 | 417,470 | 454,096 | 67.51 | n/a | - | 2.2 | - |
+| 3 | Actix Web (TFB source) | 351,844 | 318,901 | 356,337 | 92.95 | n/a | - | 9.8 | - |
+| 4 | Fastify (TFB source) | 58,956 | 49,591 | 61,460 | 246 | 2770 | 152 socket | 3.5 | - |
+| tie | Hono on Node (TFB source) | 34,173 | 18,886 | 37,243 | 558 | 5850 | 235 socket | 3.9 | Express |
+| tie | Express (TFB source) | 27,554 | 26,800 | 27,714 | 478 | 5710 | 208 socket | 9.9 | Hono on Node |
+| 7 | Hono on Bun (not TFB source) | 9,652 | 9,619 | 10,152 | 3400 | 6900 | 1 socket | 4.0 | - |
+| 8 | SvelteKit (not TFB) | 8,359 | 8,285 | 9,053 | 547 | 5710 | 149 socket | 1.6 | - |
+| - | Next.js (not TFB) | Failed (out of memory) | - | - | - | - | - | 0.6 | - |
+
+Rows whose min-max ranges overlap are ties and get no rank.
 
 #### Plaintext (pipeline depth 16), 16384 connections
 
-| # | Contender | req/s median | min | max | latency avg (ms) | latency p99 (ms) | errors | steal % max |
-|---:|---|---:|---:|---:|---:|---:|---|---:|
-| **1** | **Wisp, WISP_MAX_CONNS=0 (supplementary)** | **566,387** | **411,488** | **615,279** | **77.72** | **n/a** | **-** | **0.7** |
-| 2 | Axum (TFB source) | 171,231 | 27,410 | 223,946 | 340 | 538 | - | 2.8 |
-| 3 | Fastify (TFB source) | 16,573 | 5,972 | 18,400 | 1960 | 3780 | - | 2.0 |
-| 4 | Hono on Bun (not TFB source) | 6,910 | 6,440 | 7,323 | 3720 | 7890 | 2410 socket | 0.7 |
-| **5** | **Wisp (defaults)** | **220** | **0** | **29,252** | **771** | **2490** | **73227 non-2xx** | **8.8** |
-| 6 | Actix Web (TFB source) | 0 | 0 | 14,977 | 358 | 667 | - | 7.6 |
-| 7 | Express (TFB source) | 0 | 0 | 5,294 | 2800 | 5480 | - | 3.7 |
-| 8 | Hono on Node (TFB source) | 0 | 0 | 16,692 | 3370 | 7720 | 830 socket | 0.9 |
-| 9 | SvelteKit (not TFB) | 0 | 0 | 6,777 | 3840 | 7890 | 287 socket | 0.5 |
+| # | Contender | req/s median | min | max | latency avg (ms) | latency p99 (ms) | errors | steal % max | tied with |
+|---:|---|---:|---:|---:|---:|---:|---|---:|---|
+| **-** | **Wisp, WISP_MAX_CONNS=0 (supplementary)** | **566,387** | **411,488** | **615,279** | **77.72** | **n/a** | **-** | **0.7** | **-** |
+| tie | Axum (TFB source) | 171,231 | 27,410 | 223,946 | 340 | 538 | - | 2.8 | Wisp |
+| tie | Fastify (TFB source) | 16,573 | 5,972 | 18,400 | 1960 | 3780 | - | 2.0 | Actix Web, Hono on Bun, Hono on Node, SvelteKit, Wisp |
+| tie | Hono on Bun (not TFB source) | 6,910 | 6,440 | 7,323 | 3720 | 7890 | 2410 socket | 0.7 | Actix Web, Fastify, Hono on Node, SvelteKit, Wisp |
+| **tie** | **Wisp (defaults)** | **220** | **0** | **29,252** | **771** | **2490** | **73227 non-2xx** | **8.8** | **Actix Web, Axum, Express, Fastify, Hono on Bun, Hono on Node, SvelteKit** |
+| tie | Actix Web (TFB source) | 0 | 0 | 14,977 | 358 | 667 | - | 7.6 | Express, Fastify, Hono on Bun, Hono on Node, SvelteKit, Wisp |
+| tie | Express (TFB source) | 0 | 0 | 5,294 | 2800 | 5480 | - | 3.7 | Actix Web, Hono on Node, SvelteKit, Wisp |
+| tie | Hono on Node (TFB source) | 0 | 0 | 16,692 | 3370 | 7720 | 830 socket | 0.9 | Actix Web, Express, Fastify, Hono on Bun, SvelteKit, Wisp |
+| tie | SvelteKit (not TFB) | 0 | 0 | 6,777 | 3840 | 7890 | 287 socket | 0.5 | Actix Web, Express, Fastify, Hono on Bun, Hono on Node, Wisp |
+
+Rows whose min-max ranges overlap are ties and get no rank.
 
 #### JSON serialization, 16 connections
 
-| # | Contender | req/s median | min | max | latency avg (ms) | latency p99 (ms) | errors | steal % max |
-|---:|---|---:|---:|---:|---:|---:|---|---:|
-| **1** | **Wisp, WISP_MAX_CONNS=0 (supplementary)** | **110,676** | **108,926** | **113,161** | **0.13** | **0.47** | **-** | **1.2** |
-| 2 | Actix Web (TFB source) | 90,199 | 89,072 | 94,100 | 0.32 | 2.68 | - | 2.5 |
-| 3 | Axum (TFB source) | 79,105 | 65,609 | 94,820 | 0.29 | 3.11 | - | 12.0 |
-| **4** | **Wisp (defaults)** | **71,879** | **65,907** | **78,071** | **0.60** | **6.95** | **-** | **16.2** |
-| 5 | Hono on Bun (not TFB source) | 52,353 | 51,695 | 53,469 | 0.37 | 2.29 | - | 1.8 |
-| 6 | Fastify (TFB source) | 21,996 | 17,145 | 23,100 | 0.92 | 6.28 | - | 18.7 |
-| 7 | Hono on Node (TFB source) | 17,069 | 16,890 | 17,461 | 2.29 | 35.93 | - | 3.2 |
-| 8 | Express (TFB source) | 16,945 | 15,576 | 17,105 | 1.26 | 8.57 | - | 13.8 |
-| 9 | SvelteKit (not TFB) | 7,990 | 7,662 | 8,274 | 4.15 | 53.90 | - | 5.8 |
-| 10 | Next.js (not TFB) | 1,499 | 1,174 | 1,665 | 14.27 | 114 | - | 4.7 |
+| # | Contender | req/s median | min | max | latency avg (ms) | latency p99 (ms) | errors | steal % max | tied with |
+|---:|---|---:|---:|---:|---:|---:|---|---:|---|
+| **-** | **Wisp, WISP_MAX_CONNS=0 (supplementary)** | **110,676** | **108,926** | **113,161** | **0.13** | **0.47** | **-** | **1.2** | **-** |
+| tie | Actix Web (TFB source) | 90,199 | 89,072 | 94,100 | 0.32 | 2.68 | - | 2.5 | Axum |
+| tie | Axum (TFB source) | 79,105 | 65,609 | 94,820 | 0.29 | 3.11 | - | 12.0 | Actix Web, Wisp |
+| **tie** | **Wisp (defaults)** | **71,879** | **65,907** | **78,071** | **0.60** | **6.95** | **-** | **16.2** | **Axum** |
+| 4 | Hono on Bun (not TFB source) | 52,353 | 51,695 | 53,469 | 0.37 | 2.29 | - | 1.8 | - |
+| tie | Fastify (TFB source) | 21,996 | 17,145 | 23,100 | 0.92 | 6.28 | - | 18.7 | Hono on Node |
+| tie | Hono on Node (TFB source) | 17,069 | 16,890 | 17,461 | 2.29 | 35.93 | - | 3.2 | Express, Fastify |
+| tie | Express (TFB source) | 16,945 | 15,576 | 17,105 | 1.26 | 8.57 | - | 13.8 | Hono on Node |
+| 8 | SvelteKit (not TFB) | 7,990 | 7,662 | 8,274 | 4.15 | 53.90 | - | 5.8 | - |
+| 9 | Next.js (not TFB) | 1,499 | 1,174 | 1,665 | 14.27 | 114 | - | 4.7 | - |
+
+Rows whose min-max ranges overlap are ties and get no rank.
 
 #### JSON serialization, 32 connections
 
-| # | Contender | req/s median | min | max | latency avg (ms) | latency p99 (ms) | errors | steal % max |
-|---:|---|---:|---:|---:|---:|---:|---|---:|
-| **1** | **Wisp, WISP_MAX_CONNS=0 (supplementary)** | **111,845** | **103,039** | **114,315** | **0.23** | **1.45** | **-** | **1.9** |
-| 2 | Actix Web (TFB source) | 99,098 | 92,900 | 99,180 | 0.65 | 4.20 | - | 2.5 |
-| 3 | Axum (TFB source) | 86,901 | 77,724 | 90,891 | 0.43 | 3.18 | - | 6.7 |
-| **4** | **Wisp (defaults)** | **86,813** | **69,581** | **96,944** | **0.37** | **3.67** | **-** | **14.8** |
-| 5 | Hono on Bun (not TFB source) | 54,056 | 49,884 | 62,653 | 0.66 | 3.31 | - | 3.3 |
-| 6 | Fastify (TFB source) | 21,210 | 19,871 | 22,512 | 1.70 | 9.12 | - | 12.7 |
-| 7 | Express (TFB source) | 16,586 | 15,719 | 16,709 | 2.14 | 10.35 | - | 13.6 |
-| 8 | Hono on Node (TFB source) | 15,571 | 9,505 | 15,792 | 3.72 | 46.52 | - | 11.7 |
-| 9 | SvelteKit (not TFB) | 9,774 | 8,552 | 11,060 | 8.77 | 201 | - | 2.7 |
-| 10 | Next.js (not TFB) | 1,285 | 1,211 | 1,293 | 30.42 | 192 | - | 5.0 |
+| # | Contender | req/s median | min | max | latency avg (ms) | latency p99 (ms) | errors | steal % max | tied with |
+|---:|---|---:|---:|---:|---:|---:|---|---:|---|
+| **-** | **Wisp, WISP_MAX_CONNS=0 (supplementary)** | **111,845** | **103,039** | **114,315** | **0.23** | **1.45** | **-** | **1.9** | **-** |
+| tie | Actix Web (TFB source) | 99,098 | 92,900 | 99,180 | 0.65 | 4.20 | - | 2.5 | Wisp |
+| tie | Axum (TFB source) | 86,901 | 77,724 | 90,891 | 0.43 | 3.18 | - | 6.7 | Wisp |
+| **tie** | **Wisp (defaults)** | **86,813** | **69,581** | **96,944** | **0.37** | **3.67** | **-** | **14.8** | **Actix Web, Axum** |
+| 4 | Hono on Bun (not TFB source) | 54,056 | 49,884 | 62,653 | 0.66 | 3.31 | - | 3.3 | - |
+| 5 | Fastify (TFB source) | 21,210 | 19,871 | 22,512 | 1.70 | 9.12 | - | 12.7 | - |
+| tie | Express (TFB source) | 16,586 | 15,719 | 16,709 | 2.14 | 10.35 | - | 13.6 | Hono on Node |
+| tie | Hono on Node (TFB source) | 15,571 | 9,505 | 15,792 | 3.72 | 46.52 | - | 11.7 | Express, SvelteKit |
+| tie | SvelteKit (not TFB) | 9,774 | 8,552 | 11,060 | 8.77 | 201 | - | 2.7 | Hono on Node |
+| 9 | Next.js (not TFB) | 1,285 | 1,211 | 1,293 | 30.42 | 192 | - | 5.0 | - |
+
+Rows whose min-max ranges overlap are ties and get no rank.
 
 #### JSON serialization, 64 connections
 
-| # | Contender | req/s median | min | max | latency avg (ms) | latency p99 (ms) | errors | steal % max |
-|---:|---|---:|---:|---:|---:|---:|---|---:|
-| **1** | **Wisp, WISP_MAX_CONNS=0 (supplementary)** | **111,903** | **101,064** | **117,058** | **0.38** | **1.45** | **-** | **1.6** |
-| **2** | **Wisp (defaults)** | **96,089** | **85,621** | **103,764** | **0.55** | **2.63** | **-** | **7.1** |
-| 3 | Actix Web (TFB source) | 89,648 | 85,400 | 101,441 | 0.89 | 5.03 | - | 3.0 |
-| 4 | Axum (TFB source) | 78,427 | 77,298 | 94,930 | 0.91 | 6.82 | - | 6.7 |
-| 5 | Hono on Bun (not TFB source) | 59,619 | 54,929 | 64,113 | 1.14 | 4.24 | - | 2.0 |
-| 6 | Fastify (TFB source) | 21,965 | 20,468 | 22,283 | 3.06 | 10.64 | - | 10.4 |
-| 7 | Express (TFB source) | 14,746 | 14,509 | 15,351 | 4.65 | 18.06 | - | 15.7 |
-| 8 | SvelteKit (not TFB) | 10,378 | 8,989 | 10,757 | 6.37 | 17.41 | - | 1.5 |
-| 9 | Hono on Node (TFB source) | 8,988 | 8,708 | 10,864 | 9.48 | 73.17 | - | 21.0 |
-| 10 | Next.js (not TFB) | 1,524 | 1,498 | 1,698 | 49.06 | 298 | - | 2.3 |
+| # | Contender | req/s median | min | max | latency avg (ms) | latency p99 (ms) | errors | steal % max | tied with |
+|---:|---|---:|---:|---:|---:|---:|---|---:|---|
+| **-** | **Wisp, WISP_MAX_CONNS=0 (supplementary)** | **111,903** | **101,064** | **117,058** | **0.38** | **1.45** | **-** | **1.6** | **-** |
+| **tie** | **Wisp (defaults)** | **96,089** | **85,621** | **103,764** | **0.55** | **2.63** | **-** | **7.1** | **Actix Web, Axum** |
+| tie | Actix Web (TFB source) | 89,648 | 85,400 | 101,441 | 0.89 | 5.03 | - | 3.0 | Axum, Wisp |
+| tie | Axum (TFB source) | 78,427 | 77,298 | 94,930 | 0.91 | 6.82 | - | 6.7 | Actix Web, Wisp |
+| 4 | Hono on Bun (not TFB source) | 59,619 | 54,929 | 64,113 | 1.14 | 4.24 | - | 2.0 | - |
+| 5 | Fastify (TFB source) | 21,965 | 20,468 | 22,283 | 3.06 | 10.64 | - | 10.4 | - |
+| 6 | Express (TFB source) | 14,746 | 14,509 | 15,351 | 4.65 | 18.06 | - | 15.7 | - |
+| tie | SvelteKit (not TFB) | 10,378 | 8,989 | 10,757 | 6.37 | 17.41 | - | 1.5 | Hono on Node |
+| tie | Hono on Node (TFB source) | 8,988 | 8,708 | 10,864 | 9.48 | 73.17 | - | 21.0 | SvelteKit |
+| 9 | Next.js (not TFB) | 1,524 | 1,498 | 1,698 | 49.06 | 298 | - | 2.3 | - |
+
+Rows whose min-max ranges overlap are ties and get no rank.
 
 #### JSON serialization, 128 connections
 
-| # | Contender | req/s median | min | max | latency avg (ms) | latency p99 (ms) | errors | steal % max |
-|---:|---|---:|---:|---:|---:|---:|---|---:|
-| **1** | **Wisp, WISP_MAX_CONNS=0 (supplementary)** | **109,058** | **106,815** | **111,908** | **0.70** | **2.33** | **-** | **1.1** |
-| **2** | **Wisp (defaults)** | **107,834** | **107,405** | **114,306** | **0.69** | **2.06** | **-** | **1.2** |
-| 3 | Actix Web (TFB source) | 106,246 | 101,186 | 114,139 | 1.11 | 5.23 | - | 1.1 |
-| 4 | Axum (TFB source) | 92,662 | 70,648 | 96,863 | 1.30 | 4.63 | - | 5.7 |
-| 5 | Hono on Bun (not TFB source) | 51,580 | 50,493 | 52,293 | 2.54 | 7.78 | - | 2.6 |
-| 6 | Fastify (TFB source) | 19,977 | 17,809 | 20,936 | 6.75 | 22.77 | - | 12.1 |
-| 7 | Express (TFB source) | 13,795 | 11,936 | 14,442 | 10.06 | 32.47 | - | 16.5 |
-| 8 | Hono on Node (TFB source) | 9,354 | 8,902 | 11,671 | 17.39 | 115 | - | 16.7 |
-| 9 | SvelteKit (not TFB) | 7,714 | 6,960 | 8,883 | 18.28 | 151 | - | 3.8 |
-| 10 | Next.js (not TFB) | 1,513 | 1,132 | 1,669 | 117 | 1460 | - | 5.3 |
+| # | Contender | req/s median | min | max | latency avg (ms) | latency p99 (ms) | errors | steal % max | tied with |
+|---:|---|---:|---:|---:|---:|---:|---|---:|---|
+| **-** | **Wisp, WISP_MAX_CONNS=0 (supplementary)** | **109,058** | **106,815** | **111,908** | **0.70** | **2.33** | **-** | **1.1** | **-** |
+| **tie** | **Wisp (defaults)** | **107,834** | **107,405** | **114,306** | **0.69** | **2.06** | **-** | **1.2** | **Actix Web** |
+| tie | Actix Web (TFB source) | 106,246 | 101,186 | 114,139 | 1.11 | 5.23 | - | 1.1 | Wisp |
+| 3 | Axum (TFB source) | 92,662 | 70,648 | 96,863 | 1.30 | 4.63 | - | 5.7 | - |
+| 4 | Hono on Bun (not TFB source) | 51,580 | 50,493 | 52,293 | 2.54 | 7.78 | - | 2.6 | - |
+| 5 | Fastify (TFB source) | 19,977 | 17,809 | 20,936 | 6.75 | 22.77 | - | 12.1 | - |
+| 6 | Express (TFB source) | 13,795 | 11,936 | 14,442 | 10.06 | 32.47 | - | 16.5 | - |
+| 7 | Hono on Node (TFB source) | 9,354 | 8,902 | 11,671 | 17.39 | 115 | - | 16.7 | - |
+| 8 | SvelteKit (not TFB) | 7,714 | 6,960 | 8,883 | 18.28 | 151 | - | 3.8 | - |
+| 9 | Next.js (not TFB) | 1,513 | 1,132 | 1,669 | 117 | 1460 | - | 5.3 | - |
+
+Rows whose min-max ranges overlap are ties and get no rank.
 
 #### JSON serialization, 256 connections
 
-| # | Contender | req/s median | min | max | latency avg (ms) | latency p99 (ms) | errors | steal % max |
-|---:|---|---:|---:|---:|---:|---:|---|---:|
-| **1** | **Wisp, WISP_MAX_CONNS=0 (supplementary)** | **111,299** | **107,977** | **120,500** | **1.25** | **3.13** | **-** | **0.8** |
-| 2 | Actix Web (TFB source) | 108,428 | 105,161 | 109,280 | 1.77 | 5.92 | - | 0.8 |
-| **3** | **Wisp (defaults)** | **91,876** | **86,957** | **99,850** | **1.75** | **7.18** | **-** | **3.2** |
-| 4 | Axum (TFB source) | 60,465 | 57,541 | 81,434 | 4.12 | 14.13 | - | 6.0 |
-| 5 | Hono on Bun (not TFB source) | 47,379 | 39,410 | 48,390 | 5.50 | 16.00 | - | 4.5 |
-| 6 | Fastify (TFB source) | 21,249 | 14,340 | 21,494 | 17.20 | 225 | - | 13.0 |
-| 7 | Express (TFB source) | 18,023 | 15,567 | 18,298 | 18.06 | 161 | - | 7.7 |
-| 8 | Hono on Node (TFB source) | 13,084 | 12,376 | 13,572 | 31.18 | 543 | - | 6.1 |
-| 9 | SvelteKit (not TFB) | 6,062 | 5,580 | 8,512 | 81.65 | 1410 | - | 5.2 |
-| 10 | Next.js (not TFB) | 1,370 | 1,092 | 1,533 | 428 | 5490 | 139 socket | 7.2 |
+| # | Contender | req/s median | min | max | latency avg (ms) | latency p99 (ms) | errors | steal % max | tied with |
+|---:|---|---:|---:|---:|---:|---:|---|---:|---|
+| **-** | **Wisp, WISP_MAX_CONNS=0 (supplementary)** | **111,299** | **107,977** | **120,500** | **1.25** | **3.13** | **-** | **0.8** | **-** |
+| 1 | Actix Web (TFB source) | 108,428 | 105,161 | 109,280 | 1.77 | 5.92 | - | 0.8 | - |
+| **2** | **Wisp (defaults)** | **91,876** | **86,957** | **99,850** | **1.75** | **7.18** | **-** | **3.2** | **-** |
+| 3 | Axum (TFB source) | 60,465 | 57,541 | 81,434 | 4.12 | 14.13 | - | 6.0 | - |
+| 4 | Hono on Bun (not TFB source) | 47,379 | 39,410 | 48,390 | 5.50 | 16.00 | - | 4.5 | - |
+| tie | Fastify (TFB source) | 21,249 | 14,340 | 21,494 | 17.20 | 225 | - | 13.0 | Express |
+| tie | Express (TFB source) | 18,023 | 15,567 | 18,298 | 18.06 | 161 | - | 7.7 | Fastify |
+| 7 | Hono on Node (TFB source) | 13,084 | 12,376 | 13,572 | 31.18 | 543 | - | 6.1 | - |
+| 8 | SvelteKit (not TFB) | 6,062 | 5,580 | 8,512 | 81.65 | 1410 | - | 5.2 | - |
+| 9 | Next.js (not TFB) | 1,370 | 1,092 | 1,533 | 428 | 5490 | 139 socket | 7.2 | - |
+
+Rows whose min-max ranges overlap are ties and get no rank.
 
 #### JSON serialization, 512 connections
 
-| # | Contender | req/s median | min | max | latency avg (ms) | latency p99 (ms) | errors | steal % max |
-|---:|---|---:|---:|---:|---:|---:|---|---:|
-| **1** | **Wisp, WISP_MAX_CONNS=0 (supplementary)** | **100,818** | **93,145** | **105,347** | **2.73** | **7.59** | **-** | **1.0** |
-| **2** | **Wisp (defaults)** | **73,714** | **65,578** | **73,946** | **3.89** | **11.79** | **-** | **6.1** |
-| 3 | Actix Web (TFB source) | 71,315 | 68,764 | 101,055 | 5.92 | 16.53 | - | 2.7 |
-| 4 | Axum (TFB source) | 47,070 | 41,755 | 64,023 | 10.59 | 24.08 | - | 7.0 |
-| 5 | Hono on Bun (not TFB source) | 28,439 | 26,911 | 44,598 | 17.93 | 47.98 | - | 8.9 |
-| 6 | Fastify (TFB source) | 24,163 | 23,503 | 24,449 | 68.22 | 1600 | - | 2.8 |
-| 7 | Express (TFB source) | 22,644 | 19,491 | 22,858 | 59.97 | 1370 | - | 2.7 |
-| 8 | Hono on Node (TFB source) | 15,349 | 14,608 | 17,748 | 127 | 2520 | - | 3.2 |
-| 9 | SvelteKit (not TFB) | 6,698 | 5,707 | 7,340 | 387 | 5670 | 124 socket | 4.9 |
-| 10 | Next.js (not TFB) | 1,715 | 1,699 | 1,854 | 308 | 4830 | 240 socket | 1.0 |
+| # | Contender | req/s median | min | max | latency avg (ms) | latency p99 (ms) | errors | steal % max | tied with |
+|---:|---|---:|---:|---:|---:|---:|---|---:|---|
+| **-** | **Wisp, WISP_MAX_CONNS=0 (supplementary)** | **100,818** | **93,145** | **105,347** | **2.73** | **7.59** | **-** | **1.0** | **-** |
+| **tie** | **Wisp (defaults)** | **73,714** | **65,578** | **73,946** | **3.89** | **11.79** | **-** | **6.1** | **Actix Web** |
+| tie | Actix Web (TFB source) | 71,315 | 68,764 | 101,055 | 5.92 | 16.53 | - | 2.7 | Wisp |
+| tie | Axum (TFB source) | 47,070 | 41,755 | 64,023 | 10.59 | 24.08 | - | 7.0 | Hono on Bun |
+| tie | Hono on Bun (not TFB source) | 28,439 | 26,911 | 44,598 | 17.93 | 47.98 | - | 8.9 | Axum |
+| 5 | Fastify (TFB source) | 24,163 | 23,503 | 24,449 | 68.22 | 1600 | - | 2.8 | - |
+| 6 | Express (TFB source) | 22,644 | 19,491 | 22,858 | 59.97 | 1370 | - | 2.7 | - |
+| 7 | Hono on Node (TFB source) | 15,349 | 14,608 | 17,748 | 127 | 2520 | - | 3.2 | - |
+| 8 | SvelteKit (not TFB) | 6,698 | 5,707 | 7,340 | 387 | 5670 | 124 socket | 4.9 | - |
+| 9 | Next.js (not TFB) | 1,715 | 1,699 | 1,854 | 308 | 4830 | 240 socket | 1.0 | - |
+
+Rows whose min-max ranges overlap are ties and get no rank.
 
 ## Noise: the same binary at different moments
 
