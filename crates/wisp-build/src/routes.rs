@@ -208,6 +208,18 @@ pub fn scan(routes_dir: &Path) -> Result<Tree, String> {
                 return Err(format!("{}: parameter `{p}` appears twice", r.pattern()));
             }
         }
+        for file in ["+page.rs", "+server.rs"] {
+            let path = r.dir.join(file);
+            let Ok(src) = fs::read_to_string(&path) else {
+                continue;
+            };
+            if let Some(name) = unknown_param(&src, &params) {
+                return Err(format!(
+                    "{}: `cx.param(\"{name}\")`, but the route's parameters are {params:?}",
+                    show(&path)
+                ));
+            }
+        }
         for seg in &r.segs {
             let (Seg::Param(n, Some(m)) | Seg::Optional(n, Some(m))) = seg else {
                 continue;
@@ -380,6 +392,20 @@ impl Tree {
         arms.sort_by(|a, b| priority(&a.0, &b.0)); // stable: ties keep route order
         arms
     }
+}
+
+/// The first `cx.param("name")` in `src` (comment lines skipped) whose name
+/// the route lacks: `Cx::param` panics on one, so the build stops instead.
+fn unknown_param<'s>(src: &'s str, params: &[&str]) -> Option<&'s str> {
+    const CALL: &str = "cx.param(\"";
+    src.lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .flat_map(|l| {
+            l.match_indices(CALL)
+                .map(move |(i, _)| &l[i + CALL.len()..])
+        })
+        .filter_map(|rest| rest.split_once('"').map(|(name, _)| name))
+        .find(|name| !params.contains(name))
 }
 
 /// `src/routes/...`, for messages.
@@ -1064,6 +1090,34 @@ fn get(id: u64) {}",
         let slug = arms.iter().position(|p| p == "/[slug]").unwrap();
         assert!(hello < slug, "{arms:?}");
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn misspelled_param_is_a_build_error() {
+        let p = ["slug", "id"];
+        assert_eq!(unknown_param("let s = cx.param(\"slug\");", &p), None);
+        assert_eq!(
+            unknown_param("// cx.param(\"x\")\nlet a = cx.param(\"id\");", &p),
+            None
+        );
+        assert_eq!(
+            unknown_param("let a = (cx.param(\"id\"), cx.param(\"slgu\"));", &p),
+            Some("slgu")
+        );
+        let root = tmp("misspelled");
+        let routes = root.join("routes");
+        touch(&routes, "[slug]/+page.wisp");
+        let dir = routes.join("[slug]");
+        fs::write(
+            dir.join("+page.rs"),
+            "fn load(cx: &Cx) { cx.param(\"slgu\"); }",
+        )
+        .unwrap();
+        let err = scan(&routes).unwrap_err();
+        assert!(
+            err.contains("cx.param(\"slgu\")") && err.contains("+page.rs"),
+            "{err}"
+        );
     }
 
     #[test]
