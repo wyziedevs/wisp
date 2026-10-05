@@ -17,8 +17,8 @@ use std::process::{Command, ExitCode};
 /// (twiggy: `Table<Memo>`, its forms and pages; the runtime unchanged), and
 /// the REST fixes after it +7 KB: 1_852_689 bytes, plus 2%. Lowered: the
 /// edge cuts of 2026-10-05 (scanned lists for hash maps, jobs, sockets and
-/// the float parser only where used) took it to 1_805_240; the sitemap without entries() 1_807_159 (tests/app has some: the general path stays), plus 2%.
-const BUDGET: u64 = 1_843_000;
+/// the float parser only where used) took it to 1_805_240; the sitemap without entries() 1_807_159 (tests/app has some: the general path stays); with 3bd0169 (no live.js, API docs or UI CSS on request-only builds) 1_792_316, plus 2%.
+const BUDGET: u64 = 1_829_000;
 const WASM: &str = "wasm32-unknown-unknown";
 
 fn cargo(args: &[&str], env: &[(&str, &str)]) -> bool {
