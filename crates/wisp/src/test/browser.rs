@@ -115,6 +115,15 @@ pub fn browser<A: App>() -> Option<Browser> {
         eprintln!(
             "wisp: no Chrome or Edge found, so this browser test is skipped.\n  Install one, or set WISP_BROWSER to its path."
         );
+        // Counted by the repo's gate, so a skip is not read as a pass.
+        if let Some(log) = std::env::var_os("WISP_SKIP_LOG") {
+            use std::io::Write;
+            let f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log);
+            let _ = f.and_then(|mut f| writeln!(f, "  browser test: no Chrome or Edge"));
+        }
         return None;
     };
     Some(Browser::start::<A>(&exe).unwrap_or_else(|e| panic!("wisp::test::browser: {e}")))
