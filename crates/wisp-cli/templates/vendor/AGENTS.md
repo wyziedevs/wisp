@@ -56,8 +56,8 @@ groups or `noindex` pages; host from env `SITE_URL`, else the request) and
 
 ```rust
 // src/db.rs
-#[model] // Json + FromJson + Clone, fields pub
-pub struct Todo {
+#[model] // Json + FromJson + Clone, all pub
+struct Todo {
     #[validate(len = 1..=100)]
     text: String,
 }
@@ -192,7 +192,8 @@ file only (`:global(x)` opts out; `<style global>`); it joins app.css. Elements
 your script creates are not scoped.
 Accessibility lints warn, never fail (img alt, input label, link and button
 name, `<a href>`, heading order, tabindex...); `<!-- wisp-ignore a11y-img-alt -->` silences
-one. Images: `<img src="$lib/p.jpg" alt="">` or `src="/x.png"` gets
+one. A lone control with only a `placeholder` gets it as its `aria-label`.
+Images: `<img src="$lib/p.jpg" alt="">` or `src="/x.png"` gets
 `width`/`height`; `wisp build` adds WebP `srcset` (cwebp, cached), lazy.
 `<img priority>` (above the fold) gets `fetchpriority="high"`, not lazy.
 `data-wisp-raw` opts out. Opt-in features: `wisp-cli/avif` (AVIF `<picture>`),
@@ -366,7 +367,7 @@ files; `wisp::store(MyDb)` in `init` uses any DB; edge: env
 ```rust
 // src/db.rs: a `Password` field and `email` (or `name`) make a #[model] an Account
 #[model]
-pub struct User {
+struct User {
     #[unique]
     email: Email,
     password: Password,

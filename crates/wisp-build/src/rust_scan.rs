@@ -511,6 +511,10 @@ pub fn scan(src: &str) -> Result<Items, String> {
                             } else {
                                 Vec::new()
                             };
+                            // `#[model]` with a borrowed field reads no body.
+                            if fields.iter().any(|(_, ty)| ty.starts_with('&')) {
+                                derives.retain(|d| d != "FromJson");
+                            }
                             items.types.push(TypeItem {
                                 name,
                                 fields,
@@ -2148,6 +2152,12 @@ fn a(#[validate(pattern = \"https?://x\")] u: String) {}",
     fn model_derives_what_actions_read() {
         let items = scan("#[model]\nstruct Post { title: String }").unwrap();
         assert_eq!(items.types[0].derives, ["Json", "FromJson", "Clone"]);
+        let items = scan(
+            "#[model]
+struct Item { name: &'static str }",
+        )
+        .unwrap();
+        assert_eq!(items.types[0].derives, ["Json", "Clone"]);
     }
 
     #[test]

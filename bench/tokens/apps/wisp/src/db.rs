@@ -1,9 +1,9 @@
 // @feature data
-#[derive(Json)]
-pub struct Item {
-    pub id: u64,
-    pub name: &'static str,
-    pub price: u32,
+#[model]
+struct Item {
+    id: u64,
+    name: &'static str,
+    price: u32,
 }
 
 pub async fn items() -> Vec<Item> {

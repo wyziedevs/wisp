@@ -730,7 +730,7 @@ fn a_page_reading_a_live_table_listens_to_it() {
     let db = (
         "src/db.rs",
         "#[model]
-pub struct P { t: String }
+struct P { t: String }
 pub static POSTS: Table<P> = Table::saved().live();
 pub static KEPT: Table<P> = Table::saved();",
     );

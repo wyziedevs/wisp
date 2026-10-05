@@ -1406,6 +1406,20 @@ impl Parser<'_> {
                 let line = self.line_of(self.t.pos);
                 (self.a11y).element(&self.t.name, line, &self.t.seen, &self.t.directives);
             }
+            // A control named only by its placeholder: that is its label.
+            if let Some(p) = self.a11y.placeholder.take() {
+                let slash = self.t.last == b'/' && self.text.ends_with('/');
+                if slash {
+                    self.text.pop();
+                    self.text.truncate(self.text.trim_end().len());
+                }
+                self.text.push_str(" aria-label=\"");
+                self.text.push_str(&p.replace('"', "&quot;"));
+                self.text.push('"');
+                if slash {
+                    self.text.push('/');
+                }
+            }
             // `<meta http-equiv="refresh" content="0;url=…">` goes to its URL,
             // which no guard checks: its `content` stays static.
             if self.t.name == "meta" {

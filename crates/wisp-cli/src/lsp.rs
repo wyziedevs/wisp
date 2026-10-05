@@ -608,7 +608,7 @@ pub(crate) const RUST_ATTRS: [(&str, &str); 32] = [
     ),
     (
         "model",
-        "`#[model] struct Post { title: String }`: `Json`, `FromJson` and `Clone` derived, fields `pub`: a table's row, an action's input and a template's value.",
+        "`#[model] struct Post { title: String }`: `Json`, `FromJson` and `Clone` derived, it and its fields `pub` (a borrowed `&'static str` field: no `FromJson`): a table's row, an action's input and a template's value.",
     ),
     (
         "validate",

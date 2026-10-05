@@ -56,8 +56,8 @@ groups or `noindex` pages; host from env `SITE_URL`, else the request) and
 
 ```rust
 // src/db.rs
-#[model] // Json + FromJson + Clone, fields pub
-pub struct Todo {
+#[model] // Json + FromJson + Clone, all pub
+struct Todo {
     #[validate(len = 1..=100)]
     text: String,
 }
@@ -192,7 +192,8 @@ file only (`:global(x)` opts out; `<style global>`); it joins app.css. Elements
 your script creates are not scoped.
 Accessibility lints warn, never fail (img alt, input label, link and button
 name, `<a href>`, heading order, tabindex...); `<!-- wisp-ignore a11y-img-alt -->` silences
-one. Images: `<img src="$lib/p.jpg" alt="">` or `src="/x.png"` gets
+one. A lone control with only a `placeholder` gets it as its `aria-label`.
+Images: `<img src="$lib/p.jpg" alt="">` or `src="/x.png"` gets
 `width`/`height`; `wisp build` adds WebP `srcset` (cwebp, cached), lazy.
 `<img priority>` (above the fold) gets `fetchpriority="high"`, not lazy.
 `data-wisp-raw` opts out. Opt-in features: `wisp-cli/avif` (AVIF `<picture>`),
@@ -366,7 +367,7 @@ files; `wisp::store(MyDb)` in `init` uses any DB; edge: env
 ```rust
 // src/db.rs: a `Password` field and `email` (or `name`) make a #[model] an Account
 #[model]
-pub struct User {
+struct User {
     #[unique]
     email: Email,
     password: Password,
@@ -1300,7 +1301,9 @@ A component inside a client block, or given `{:…}`, `bind:` or `on:`, is drawn
 
 ```html
 {:#each names as name (name)}
-  <Item label={:name} bind:count="counts[name]" on:bump="bumped = event"><b>{:name}!</b></Item>
+  <Item label={:name} bind:count="counts[name]" on:bump="bumped = event">
+    <b>{:name}!</b>
+  </Item>
 {:/each}
 ```
 ```html
@@ -1850,6 +1853,7 @@ pub static USERS: Table<User> = Table::saved("users")
 
 - `set(id, v) -> Option<()>` replaces a row; `clear()` takes every row out (ids are not given again).
 - `unique`: `by(&email)` finds the row without a scan. `try_add`, `try_set` and `try_update` return a 422 on the field (`email: is taken`), for an action to return with `?`. `add`, `set` and `update` panic (a 500) instead. Use `try_update` to change a unique field.
+- `#[model]` makes the struct and its fields `pub` and derives `Json`, `FromJson` and `Clone`. A model with a borrowed field (`name: &'static str`, for static data a page lists) derives no `FromJson`, since a body cannot fill it.
 - On a `#[model]` field: `#[unique]` is the same as `.unique(..)`; `#[json(default)]` or `#[json(default = expr)]` fills a field old rows lack; `#[json(was = "old")]` reads it under its old name.
 - `migrate(|v: &mut Value| ..)` runs on each stored row's JSON when it is read (at load, and by `WISP_STORE_POLL`), before it becomes the type.
 - `live()`: after each change, `wisp::channel(name).send("change")`, only when someone listens. A page listens with `listen('/users/events', invalidate)` and a `+server.rs` of `wisp::channel("users").events()`. A page that names a live table's static rows refreshes itself through `/_wisp/live/<name>`.
@@ -2721,9 +2725,12 @@ async fn like(id: i64) {
     db::like(id).await?;
 }
 ---
+
 <head><title>{post.title}</title></head>
 <h1>{post.title}</h1>
-<form method="post" action="?/like"><button name="id" value={post.id}>Like</button></form>
+<form method="post" action="?/like">
+  <button name="id" value={post.id}>Like</button>
+</form>
 ```
 
 ```rust
@@ -2825,7 +2832,7 @@ Name | Warns about
 ---|---
 `img-alt` | `<img>` without `alt` (`alt=""` is fine)
 `click-events` | `on:click` on a non-interactive element (not a custom element like `<sl-button>`) without both a `role` and a key handler (`on:keydown`)
-`input-label` | `<input>`, `<select>`, `<textarea>` with no wrapping `<label>`, no `id` (for `<label for>`), no `aria-label`/`aria-labelledby`/`title` (hidden and button types exempt)
+`input-label` | `<input>`, `<select>`, `<textarea>` with no wrapping `<label>`, no `id` (for `<label for>`), no `aria-label`/`aria-labelledby`/`title` and no `placeholder` (hidden and button types exempt). A control named only by a plain `placeholder` gets it as its `aria-label`
 `link-name` | `<a href>` with no text, `<img alt>`, `aria-label` or `title`
 `label-control` | `<label>` with no `for` and no control inside
 `anchor-href` | `<a>` without `href`, or `href="#"`
@@ -4534,7 +4541,7 @@ A form posts to an action. The action's parameters are the form's fields, and `f
 
 ```rust
 #[model]
-pub struct Entry {
+struct Entry {
     #[validate(len = 1..=40)]
     name: String,
     #[validate(len = 1..=200)]
@@ -4678,7 +4685,7 @@ The Node apps: Nuxt is file routes, server routes in `server/api` and `useFetch`
 
 | Stack | list | form | api | layout | search | data | setup | total | chars / 4 | files |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| **Wisp** | 58 | 89 | 31 | 60 | 111 | 115 | 0 | **464** | 283 | 6 |
+| **Wisp** | 58 | 89 | 31 | 60 | 104 | 108 | 0 | **450** | 273 | 6 |
 | SvelteKit 2 | 128 | 425 | 57 | 83 | 192 | 72 | 0 | 957 | 620 | 9 |
 | Next.js 15 | 107 | 400 | 44 | 108 | 241 | 71 | 0 | 971 | 706 | 8 |
 | Nuxt 4 (Vue) | 96 | 429 | 22 | 96 | 158 | 71 | 0 | 872 | 596 | 8 |
@@ -4687,11 +4694,11 @@ The Node apps: Nuxt is file routes, server routes in `server/api` and `useFetch`
 | Axum 0.8 + askama | 145 | 553 | 29 | 104 | 217 | 123 | 285 | 1456 | 1021 | 7 |
 | Actix Web 4 + tera | 164 | 565 | 46 | 104 | 237 | 123 | 292 | 1531 | 1061 | 7 |
 
-Wisp's `data` is longer than JavaScript's: a Rust type with its fields' types and `pub`s. Everything else is shorter, the form most of all. Of what is left, 60 tokens are file paths, 115 the Rust type and data, and the rest is markup every stack writes.
+Wisp's `data` is longer than JavaScript's: a Rust type with its fields' types. Everything else is shorter, the form most of all. Of what is left, 60 tokens are file paths, 108 the Rust type and data, and the rest is markup every stack writes.
 
 ## A Real App: Auth, CRUD, Upload, Live, a Component
 
-`bench/tokens/real` is sign up and in, a posts table with validation, edit, delete, pages and live refresh, an avatar upload and a toggle component: 10 files, **995** tokens in Wisp, 3.5x less than SvelteKit 3 and 3.3x less than Next.js 15. Its tests check every feature.
+`bench/tokens/real` is sign up and in, a posts table with validation, edit, delete, pages and live refresh, an avatar upload and a toggle component: 10 files, **999** tokens in Wisp, 3.5x less than SvelteKit 3 and 3.3x less than Next.js 15. Its tests check every feature.
 
 ## Method
 
@@ -4773,6 +4780,7 @@ fn remove(id: u64) {
     TODOS.remove(id);
 }
 ---
+
 <form action="?/add">
   <input name="text">
   <button>Add</button>
@@ -4789,6 +4797,7 @@ fn remove(id: u64) {
 ---
 let post = posts::POSTS.iter().find(|p| p.slug == slug).or_404()?;
 ---
+
 <title>{post.title}</title>
 <h1>{post.title}</h1>
 <p>{post.body}</p>
@@ -4848,7 +4857,7 @@ Create `src/db.rs`. It holds the models and tables, and its `pub` items are visi
 
 ```rust
 #[model]
-pub struct Entry {
+struct Entry {
     #[validate(len = 1..=40)]
     name: String,
     #[validate(len = 1..=200)]
@@ -4858,7 +4867,7 @@ pub struct Entry {
 pub static ENTRIES: Table<Entry> = Table::saved();
 ```
 
-`#[model]` makes `Entry` something a form can fill and a table can store, and its fields public. `#[validate]` states the rule once: a name has 1 to 40 characters and a message 1 to 200. `Table::saved()` keeps the rows in a log file, so they survive a restart.
+`#[model]` makes `Entry` something a form can fill and a table can store, and it and its fields public. `#[validate]` states the rule once: a name has 1 to 40 characters and a message 1 to 200. `Table::saved()` keeps the rows in a log file, so they survive a restart.
 
 ## Add the Form
 
@@ -5202,7 +5211,7 @@ Zero cost on the request hot path: a route pays only for the features it uses, a
 
 AI writes most code now, and every token costs time and money. Wisp uses conventions over configuration, types the compiler infers, and forms that write their own inputs and errors.
 
-- The same five features take 464 tokens in Wisp, 1002 in SvelteKit and 1010 in Next.js.
+- The same five features take 450 tokens in Wisp, 1002 in SvelteKit and 1010 in Next.js.
 - A larger app with sign up, uploads and live refresh takes 995, against 3473 and 3331.
 - `cargo run -p wisp-tokens` counts every hand-written file and its path with a byte-pair style estimate. See [Tokens](/docs/tokens/).
 

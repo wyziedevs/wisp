@@ -229,23 +229,33 @@ fn names(s: &TokenStream, idents: &[&str]) -> bool {
     false
 }
 
-/// `#[model]` on a struct: `Json`, `FromJson` and `Clone` derived, and each
-/// field `pub`, so it is a table's row type, an action's input and a
-/// template's value at once. Not with its own `derive(Clone)`.
+/// `#[model]` on a struct: `Json`, `FromJson` and `Clone` derived, and the
+/// struct and each field `pub`, so it is a table's row type, an action's
+/// input and a template's value at once. A struct with a borrowed field
+/// (`name: &'static str`, static data) gets no `FromJson`. Not with its own
+/// `derive(Clone)`.
 #[proc_macro_attribute]
 pub fn model(attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut out = match attr.into_iter().next() {
         Some(first) => error("#[model] takes no arguments", first.span()),
         None => TokenStream::new(),
     };
-    out.extend(parse(
-        "#[derive(::wisp::Json, ::wisp::FromJson, ::std::clone::Clone)]",
-    ));
     let tokens: Vec<TokenTree> = item.into_iter().collect();
-    let named = tokens
-        .iter()
-        .any(|t| matches!(t, TokenTree::Ident(i) if i.to_string() == "struct"))
+    let is = |t: &TokenTree, word: &str| matches!(t, TokenTree::Ident(i) if i.to_string() == word);
+    let at = tokens.iter().position(|t| is(t, "struct"));
+    let named = at.is_some()
         && matches!(tokens.last(), Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Brace);
+    // A borrowed field (`&'static str` of static data) cannot be read from
+    // a body, so such a model is `Json` and `Clone` only.
+    let fields = named.then(|| named_fields(&tokens.iter().cloned().collect()).ok());
+    let borrowed = (fields.flatten().into_iter().flatten()).any(|f| f.ty.starts_with('&'));
+    out.extend(parse(if borrowed {
+        "#[derive(::wisp::Json, ::std::clone::Clone)]"
+    } else {
+        "#[derive(::wisp::Json, ::wisp::FromJson, ::std::clone::Clone)]"
+    }));
+    // A model is shared by routes, so it is `pub` without saying so.
+    let private = at.is_some_and(|at| !tokens[..at].iter().any(|t| is(t, "pub")));
     let last = tokens.len().wrapping_sub(1);
     let account = named.then(|| account(&tokens)).flatten();
     for (k, t) in tokens.into_iter().enumerate() {
@@ -254,6 +264,10 @@ pub fn model(attr: TokenStream, item: TokenStream) -> TokenStream {
                 let mut group = Group::new(Delimiter::Brace, public(g.stream()));
                 group.set_span(g.span());
                 out.extend([TokenTree::from(group)]);
+            }
+            t if private && Some(k) == at => {
+                out.extend(parse("pub"));
+                out.extend([t]);
             }
             t => out.extend([t]),
         }

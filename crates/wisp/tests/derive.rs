@@ -795,3 +795,24 @@ fn a_direct_add_is_hashed_once() {
             .unwrap()
     );
 }
+
+mod models {
+    /// A model is pub without saying so; a borrowed field (static data)
+    /// keeps it `Json` and `Clone` without `FromJson`.
+    #[wisp::model]
+    struct Item {
+        id: u64,
+        name: &'static str,
+    }
+
+    pub fn tea() -> Item {
+        Item { id: 1, name: "Tea" }
+    }
+}
+
+#[test]
+fn model_is_pub_and_takes_borrowed_fields() {
+    let item: models::Item = models::tea();
+    assert_eq!(to_json(&item.clone()), r#"{"id":1,"name":"Tea"}"#);
+    assert_eq!(item.id, 1);
+}

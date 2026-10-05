@@ -23,6 +23,10 @@ pub struct Checker {
     open: Vec<(&'static str, u32, bool)>,
     /// The last heading's level.
     heading: Option<u8>,
+    /// The last control's name from its placeholder: a lone `<input>`,
+    /// `<select>` or `<textarea>` with a plain `placeholder` and no other
+    /// name gets it as its `aria-label`, which the template writes.
+    pub placeholder: Option<String>,
 }
 
 /// Tags a click already works on, by keyboard too.
@@ -159,7 +163,10 @@ impl Checker {
                         Some(Some("hidden" | "submit" | "button" | "reset" | "image"))
                     ) =>
             {
-                self.lint(line, "input-label", &format!("<{tag}> has no label: wrap it in a <label>, or give it an id for a <label for>, or an aria-label (a placeholder is not a name)"));
+                match value("placeholder").flatten().filter(|p| !p.trim().is_empty()) {
+                    Some(p) => self.placeholder = Some(p.to_string()),
+                    None => self.lint(line, "input-label", &format!("<{tag}> has no label: wrap it in a <label>, or give it an id for a <label for>, or an aria-label or placeholder")),
+                }
             }
             "label" => self.open.push(("label", line, has("for"))),
             _ => {}
@@ -322,6 +329,25 @@ mod tests {
             ),
             ["1 label-control"]
         );
+    }
+
+    #[test]
+    fn a_placeholder_names_a_lone_control() {
+        let src = "<input placeholder=\"Search\">
+<label>N <input placeholder=\"x\"></label>
+                   <input placeholder=\"x\" aria-label=\"Q\" /><textarea placeholder='Say \"hi\"'></textarea>";
+        let t = parse(src).unwrap();
+        assert!(t.lints.is_empty(), "{:?}", t.lints);
+        let html = format!("{:?}{:?}", t.nodes, t.chunks);
+        assert!(
+            html.contains(r#"<input placeholder=\"Search\" aria-label=\"Search\">"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"aria-label=\"Say &quot;hi&quot;\">"#),
+            "{html}"
+        );
+        assert_eq!(html.matches("aria-label").count(), 3, "{html}");
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //! (`/me`, `/avatars/[id]`).
 
 #[model]
-pub struct Person {
+struct Person {
     name: String,
     hash: String,
     avatar: Option<Image>,
