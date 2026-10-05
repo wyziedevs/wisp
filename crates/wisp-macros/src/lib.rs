@@ -1171,7 +1171,7 @@ fn named_fields(item: &TokenStream) -> Result<Vec<Field>, Error> {
     let mut out = Vec::new();
     for field in items(group.stream()) {
         let mut checks = Vec::new();
-        let (mut default, mut was, mut unique) = (None, None, false);
+        let (mut default, mut was, mut unique, mut min_len) = (None, None, false, false);
         let mut rest = field.as_slice();
         while let [TokenTree::Punct(hash), TokenTree::Group(attr), after @ ..] = rest
             && hash.as_char() == '#'
@@ -1231,6 +1231,7 @@ fn named_fields(item: &TokenStream) -> Result<Vec<Field>, Error> {
                     };
                     let r = wisp_shared::rules::rule(&name.to_string(), value.as_deref())
                         .map_err(|e| (e, name.span()))?;
+                    min_len |= wisp_shared::rules::sets_min_len(std::slice::from_ref(&r));
                     checks.push(r.check("__x"));
                 }
             }
@@ -1243,9 +1244,17 @@ fn named_fields(item: &TokenStream) -> Result<Vec<Field>, Error> {
         if colon.as_char() != ':' || ty.is_empty() {
             return Err(("expected `name: Type`".into(), colon.span()));
         }
+        let ty = TokenStream::from_iter(ty.iter().cloned()).to_string();
+        // A `Password` with no least length of its own is held to `PASSWORD_MIN_LEN`.
+        if !min_len && wisp_shared::rules::is_password(&ty) {
+            let min = wisp_shared::rules::PASSWORD_MIN_LEN.to_string();
+            let r =
+                wisp_shared::rules::rule("min_len", Some(&min)).map_err(|e| (e, name.span()))?;
+            checks.push(r.check("__x"));
+        }
         out.push(Field {
             name: name.clone(),
-            ty: TokenStream::from_iter(ty.iter().cloned()).to_string(),
+            ty,
             checks,
             default,
             was,

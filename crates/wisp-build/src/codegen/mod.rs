@@ -295,8 +295,8 @@ fn shim(f: &FnItem, kind: Shim) -> Result<String, String> {
         ));
     }
     let mut lets = String::new();
-    let nothing_to_check =
-        f.checks.is_empty() && !f.params.iter().any(|(p, _)| unsized_upload(f, p));
+    let nothing_to_check = f.checks.is_empty()
+        && !(f.params.iter()).any(|(p, _)| unsized_upload(f, p) || unruled_password(f, p));
     if let ([(_, v, get, owned)], true) = (read.as_slice(), nothing_to_check) {
         // One input, nothing to check: its error is the answer.
         let ty = annotation(owned, "{}");
@@ -319,6 +319,9 @@ fn shim(f: &FnItem, kind: Shim) -> Result<String, String> {
                 lets.push_str(
                     &checks(name, v, DEFAULT_SIZE).map_err(|e| format!("{}: {e}", f.line))?,
                 );
+            }
+            if unruled_password(f, name) {
+                lets.push_str(&checks(name, v, &password_min())?);
             }
         }
         let names: Vec<&str> = read.iter().map(|(_, v, ..)| v.as_str()).collect();
@@ -419,6 +422,9 @@ fn remote_shim(f: &FnItem) -> Result<String, String> {
                 lets.push_str(&checks(name, &v, rules).map_err(|e| format!("{}: {e}", f.line))?);
             }
         }
+        if unruled_password(f, name) {
+            lets.push_str(&checks(name, &v, &password_min())?);
+        }
         names.push(v);
         args.push(arg);
     }
@@ -492,6 +498,23 @@ fn checks(name: &str, v: &str, rules: &str) -> Result<String, String> {
 
 /// What an upload with no `max_size` is held to: `::wisp::MAX_SIZE`.
 const DEFAULT_SIZE: &str = "max_size = ::wisp::MAX_SIZE";
+
+/// What a `Password` with no least length of its own is held to.
+fn password_min() -> String {
+    format!("min_len = {}", rules::PASSWORD_MIN_LEN)
+}
+
+/// Whether parameter `p` of `f` is a `Password` with no `min_len` or `len`
+/// of its own.
+fn unruled_password(f: &FnItem, p: &str) -> bool {
+    let password = f
+        .params
+        .iter()
+        .any(|(n, t)| n == p && rules::is_password(t));
+    password
+        && !(f.checks.iter())
+            .any(|(c, r)| c == p && rules::parse(r).is_ok_and(|v| rules::sets_min_len(&v.rules)))
+}
 
 /// Whether parameter `p` of `f` is an upload with no `max_size` of its own.
 fn unsized_upload(f: &FnItem, p: &str) -> bool {

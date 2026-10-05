@@ -1,6 +1,6 @@
 ---
 #[action] // sign up
-fn signup(email: Email, #[validate(min_len = 8)] password: Password) {
+fn signup(email: Email, password: Password) {
     cx.signup(User { email, password }).await?; // hashes it; 422 if taken
     redirect("/me")
 }

@@ -1092,6 +1092,41 @@ fn db_items_are_in_every_route_file() {
 }
 
 #[test]
+fn a_password_is_held_to_a_length() {
+    let page = |src: &'static str| ("src/routes/+page.wisp", src);
+    let none = "---
+#[action]
+fn a(email: Email, password: Password, old: Option<Password>) {}
+---
+<form action=\"?/a\" fields />";
+    let code = app("pw-default", &[page(none)]).unwrap();
+    assert_eq!(code.matches("check::min_len(__v, 8)").count(), 2, "{code}");
+    assert!(code.contains(r#"minlength=\"8\""#), "{code}");
+    // Alone, too: not "one input, nothing to check".
+    let one = app(
+        "pw-one",
+        &[page(
+            "---
+#[action]
+fn a(password: Password) {}
+---
+x",
+        )],
+    )
+    .unwrap();
+    assert!(one.contains("check::min_len(__v, 8)"), "{one}");
+    // Its own `min_len` or `len` wins; a `String` is not held to any.
+    let own = "---
+#[action]
+fn a(#[validate(min_len = 12)] password: Password, #[validate(len = 4..=20)] pin: Password, text: String) {}
+---
+x";
+    let code = app("pw-own", &[page(own)]).unwrap();
+    assert!(code.contains("check::min_len(__v, 12)"), "{code}");
+    assert!(!code.contains("min_len(__v, 8)"), "{code}");
+}
+
+#[test]
 fn an_upload_is_held_to_a_size() {
     let page = |src: &'static str| ("src/routes/+page.wisp", src);
     let none = "---\n#[action]\nfn a(img: Image, b: Option<Image>) {}\n---\n<form action=\"?/a\"><input name=\"img\" type=\"file\"></form>";

@@ -823,7 +823,7 @@ pub mod rt {
     pub use crate::timeout::within;
 
     /// What `{#if x}` tests when `x` is a bare place: a `bool` itself, an
-    /// `Option` when it is `Some`, a string or list when it is not empty.
+    /// `Option` when it is `Some`, a string, list, set or map when it is not empty.
     #[diagnostic::on_unimplemented(
         message = "`{{#if}}` cannot test a `{Self}`: write a bool expression",
         label = "not a bool, Option, string or list"
@@ -868,10 +868,60 @@ pub mod rt {
             !self.is_empty()
         }
     }
+    impl Truthy for std::borrow::Cow<'_, str> {
+        #[inline(always)]
+        fn truthy(&self) -> bool {
+            !self.is_empty()
+        }
+    }
+    impl<T> Truthy for std::collections::VecDeque<T> {
+        #[inline(always)]
+        fn truthy(&self) -> bool {
+            !self.is_empty()
+        }
+    }
+    impl<K, V, S> Truthy for std::collections::HashMap<K, V, S> {
+        #[inline(always)]
+        fn truthy(&self) -> bool {
+            !self.is_empty()
+        }
+    }
+    impl<T, S> Truthy for std::collections::HashSet<T, S> {
+        #[inline(always)]
+        fn truthy(&self) -> bool {
+            !self.is_empty()
+        }
+    }
+    impl<K, V> Truthy for std::collections::BTreeMap<K, V> {
+        #[inline(always)]
+        fn truthy(&self) -> bool {
+            !self.is_empty()
+        }
+    }
+    impl<T> Truthy for std::collections::BTreeSet<T> {
+        #[inline(always)]
+        fn truthy(&self) -> bool {
+            !self.is_empty()
+        }
+    }
     impl<T: Truthy + ?Sized> Truthy for &T {
         #[inline(always)]
         fn truthy(&self) -> bool {
             (**self).truthy()
+        }
+    }
+
+    #[cfg(test)]
+    mod truthy_tests {
+        use super::truthy;
+        #[test]
+        fn what_if_tests() {
+            assert!(truthy(&true) && !truthy(&false));
+            assert!(truthy(&Some(0)) && !truthy(&None::<u8>));
+            assert!(truthy(&"a") && !truthy(&"") && !truthy(&String::new()));
+            assert!(truthy(&vec![1]) && !truthy(&Vec::<u8>::new()));
+            assert!(!truthy(&std::collections::HashMap::<u8, u8>::new()));
+            assert!(truthy(&&Some("x")));
         }
     }
 

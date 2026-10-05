@@ -300,7 +300,9 @@ impl std::str::FromStr for Password {
     }
 }
 
-/// The text, for `#[validate(min_len = 8)]` on the one typed.
+/// The text. A typed one is held to 8 characters by actions, remote
+/// functions and `FromJson` unless its own `#[validate(min_len = …)]` or
+/// `len` says.
 impl std::ops::Deref for Password {
     type Target = str;
 

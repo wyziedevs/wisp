@@ -184,6 +184,29 @@ const DEFS: [Def; 10] = [
 /// upload, which the route's body limit makes room for.
 const MAX_SIZE: &str = "max_size";
 
+/// The fewest characters a `Password` is held to when no `min_len` or `len`
+/// rule of its own says: `#[validate(min_len = 8)]` written for you.
+pub const PASSWORD_MIN_LEN: u64 = 8;
+
+/// Whether `rules` set a least length (`min_len`, or a `len` range).
+pub fn sets_min_len(rules: &[Rule]) -> bool {
+    rules
+        .iter()
+        .any(|r| matches!(r.key, Key::MinLen | Key::Len))
+}
+
+/// A type that is a `Password`, or an `Option` of one, as written.
+pub fn is_password(ty: &str) -> bool {
+    // As the scanner writes it, or as a token stream prints it (`Option < Password >`).
+    let t: String = ty.chars().filter(|c| !c.is_whitespace()).collect();
+    let t = t
+        .strip_prefix("Option<")
+        .and_then(|t| t.strip_suffix('>'))
+        .unwrap_or(&t)
+        .trim_start_matches('&');
+    t.rsplit("::").next() == Some("Password")
+}
+
 /// A number as a browser's `min` or `max` (and JSON) takes it: plain and
 /// finite.
 pub fn plain(x: &str) -> Option<f64> {

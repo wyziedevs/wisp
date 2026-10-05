@@ -659,7 +659,7 @@ pub(crate) const RUST_ATTRS: [(&str, &str); 32] = [
     ),
     (
         "validate(min_len)",
-        "`#[validate(min_len = 8)]`: the text has at least this many characters.",
+        "`#[validate(min_len = 8)]`: the text has at least this many characters. A `Password` with no `min_len` or `len` is held to 8.",
     ),
     (
         "validate(max_len)",
