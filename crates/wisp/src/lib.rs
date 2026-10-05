@@ -822,6 +822,65 @@ pub mod rt {
     };
     pub use crate::timeout::within;
 
+    /// What `{#if x}` tests when `x` is a bare place: a `bool` itself, an
+    /// `Option` when it is `Some`, a string or list when it is not empty.
+    #[diagnostic::on_unimplemented(
+        message = "`{{#if}}` cannot test a `{Self}`: write a bool expression",
+        label = "not a bool, Option, string or list"
+    )]
+    pub trait Truthy {
+        /// Whether `{#if}` takes its branch.
+        fn truthy(&self) -> bool;
+    }
+    impl Truthy for bool {
+        #[inline(always)]
+        fn truthy(&self) -> bool {
+            *self
+        }
+    }
+    impl<T> Truthy for Option<T> {
+        #[inline(always)]
+        fn truthy(&self) -> bool {
+            self.is_some()
+        }
+    }
+    impl Truthy for str {
+        #[inline(always)]
+        fn truthy(&self) -> bool {
+            !self.is_empty()
+        }
+    }
+    impl Truthy for String {
+        #[inline(always)]
+        fn truthy(&self) -> bool {
+            !self.is_empty()
+        }
+    }
+    impl<T> Truthy for [T] {
+        #[inline(always)]
+        fn truthy(&self) -> bool {
+            !self.is_empty()
+        }
+    }
+    impl<T> Truthy for Vec<T> {
+        #[inline(always)]
+        fn truthy(&self) -> bool {
+            !self.is_empty()
+        }
+    }
+    impl<T: Truthy + ?Sized> Truthy for &T {
+        #[inline(always)]
+        fn truthy(&self) -> bool {
+            (**self).truthy()
+        }
+    }
+
+    /// `{#if x}` on a bare place `x`: see [`Truthy`].
+    #[inline(always)]
+    pub fn truthy<T: Truthy + ?Sized>(v: &T) -> bool {
+        v.truthy()
+    }
+
     /// The request's locale, by index: for `Out::lang`.
     #[inline]
     pub fn pick_locale(cx: &crate::Cx) -> u8 {

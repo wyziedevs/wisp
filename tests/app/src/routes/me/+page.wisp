@@ -21,7 +21,7 @@ let me = cx.user()?;
 ---
 
 <h1>{me.name}</h1>
-{#if me.avatar.is_some()}
+{#if me.avatar}
   <img src="/avatars/{me.id}" alt="">
 {/if}
 <form action="?/avatar">

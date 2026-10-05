@@ -836,7 +836,7 @@ pub(crate) const BLOCKS: [(&str, &str, &str); 27] = [
     (
         "{#if",
         "{#if ${1:cond}}\n\t$0\n{/if}",
-        "`{#if c}…{:else if c}…{:else}…{/if}`; `if let Some(x) = y` works.",
+        "`{#if c}…{:else if c}…{:else}…{/if}`; `if let Some(x) = y` works; a bare `{#if x.avatar}` tests `Some`, non-empty or `true`.",
     ),
     (
         "{#each",

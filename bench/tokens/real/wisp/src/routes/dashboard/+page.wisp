@@ -12,7 +12,7 @@ let user = cx.user()?;
 <p>Signed in as {user.email}</p>
 <button action="?/logout">Log out</button>
 <!-- @feature upload -->
-{#if user.avatar.is_some()}<img src="/avatars/{user.id}" alt="Avatar">{/if}
+{#if user.avatar}<img src="/avatars/{user.id}" alt="Avatar">{/if}
 <a href="/avatar">Change avatar</a>
 <!-- @feature component -->
 <Details title="Account">

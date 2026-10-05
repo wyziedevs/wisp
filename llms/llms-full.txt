@@ -189,7 +189,7 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
 | `{@html expr}` | raw (trusted only) |
 | `attr={expr}` | quoted+escaped; `Option` → left out when None |
 | `disabled={bool}` `<a {href}>` `class:on={bool}` | boolean attr, `href={href}`, toggled class |
-| `{#if c}…{:else if c}…{:else}…{/if}` | `if let Some(x) = y` works |
+| `{#if c}…{:else if c}…{:else}…{/if}` | `if let Some(x) = y` works; a bare `{#if x.avatar}` tests `Some`, non-empty or `true` |
 | `{#each list as item, i if cond}…{:else}…{/each}` | `if` filters, `{:else}` when empty |
 | `{#match e}{:case P}…{/match}` | match |
 | `{#await f}…{:then v}…{:catch e}…{/await}` | page only: sent pending, `v`/`e` streamed in later |
@@ -431,7 +431,7 @@ fn signup(email: Email, #[validate(min_len = 8)] password: Password) {
 }
 #[action] // log in
 fn login(email: Email, password: String) {
-    cx.login(&email, &password).await?; // 422 for either wrong, equally slow
+    cx.login(email, password).await?; // 422 for either wrong, equally slow
     redirect("/me")
 }
 let me = cx.user()?; // Row<User>, or 303 to /login
@@ -2731,23 +2731,27 @@ All build-time, a const or a cold path: a request that uses none of them runs no
 <!-- docs/design-forms.md -->
 
 ```html
-<form action="?/add">
-  <input name="text">
-  <button>Add</button>
-</form>
-<button action="?/remove&id={todo.id}">Delete</button>
-```
+---
+static TODOS: Table<String> = Table::new();
 
-```rust
 #[action]
 fn add(#[validate(len = 1..=100)] text: String) {
-    /* ... */
+    TODOS.add(text);
 }
 
 #[action]
 fn remove(id: u64) {
-    /* ... */
+    TODOS.remove(id);
 }
+---
+
+<form action="?/add">
+  <input name="text">
+  <button>Add</button>
+</form>
+{#each TODOS.all() as todo}
+  <p>{todo} <button action="?/remove&id={todo.id}">Delete</button></p>
+{/each}
 ```
 
 ## Actions
@@ -2899,6 +2903,46 @@ async fn load(slug: String) -> Result<Data> {
 - `load` is found by name, actions by `#[action]`; nothing else is reachable from HTTP, so a helper never becomes an endpoint by accident.
 - `fn entries() -> Vec<…>` in a page under `[params]` lists the pages `wisp build --static` writes ([Deploying](/docs/deploy/)).
 - The build checks that `load` returns `Data` (plain or in a `Result`), that every parameter but `cx` has a plain name, and that `#[action]` (by any path, `wisp::action` too) marks only top-level functions of a page.
+
+## One File or Several
+
+One `+page.wisp` is the preferred way to build a page. Its `---` block can hold the models (`#[model]` structs), their `Table`s, the `#[action]`s, helper functions and the load, the markup follows, and scoped `<style>` and `<script>` tags close it. A `mod server { � }` in the same block adds the route's JSON endpoints.
+
+```html
+<!-- src/routes/todos/+page.wisp -->
+---
+#[model]
+struct Todo {
+    #[validate(len = 1..=100)]
+    text: String,
+}
+static TODOS: Table<Todo> = Table::saved(); // "todos"
+
+#[action]
+fn add(todo: Todo) {
+    TODOS.add(todo);
+}
+---
+
+<title>Todos ({TODOS.len()})</title>
+<form action="?/add" fields><button>Add</button></form>
+{#each TODOS.all() as todo}
+  <p>{todo.text}</p>
+{/each}
+
+<style>
+  p {
+    margin: 0;
+  }
+</style>
+```
+
+Items in a block belong to that page's module, so another page cannot see them. Splitting is supported and is the better fit for larger sites and complex needs:
+
+- `src/db.rs` (or any `src/NAME.rs`): models and tables more than one page uses. Its `pub` items are visible in every route file with no `use` line. The users table that `cx.user` and `login` find by itself is read from there ([Sessions](/docs/design-sessions/)), and so are `.live()` tables.
+- `+page.rs`: a load and actions that outgrow the block, or that you want to read and test as plain Rust.
+- `+server.rs`: endpoints shared by a whole folder, or more than a short `mod server` holds. A `mod server` is its own module, so what it shares with the page also goes in `src/*.rs`.
+- Components and layouts: markup that repeats across pages.
 
 ## Signatures and Inputs
 
@@ -3196,7 +3240,7 @@ let me = cx.user()?; // members' page: signed-in row or redirect
 | Call | What it does |
 |---|---|
 | `cx.signup(row).await?` | for a `#[model]` with a `hash` field and `email` or `name` (an `Account`): hashes the password in `row.hash`, refuses a taken name with a 422, signs in |
-| `cx.login(&email, &password).await?` | checks it, as slowly for a name no one has |
+| `cx.login(email, password).await?` | checks it, as slowly for a name no one has |
 | `wisp::signup`, `wisp::login` | same without a `Cx` |
 | `cx.sign_in(id)` | sets signed cookie `session` to the id and time, 30 days; always a new session, so a planted one never becomes the visitor's |
 | `cx.signed_in()?` | the id; signed out (or 30 days on) it is the error that sends to sign in: 303 to `/login`, or 401 for a JSON client |
@@ -3376,7 +3420,7 @@ Syntax | Compiles to
 `<a href="/blog" active>` | `aria-current={wisp::current(cx.path(), "/blog")}`: `"page"` on `/blog` and below (`/` only itself), else left out; `href={x}` too; pages and layouts
 `{@html expr}` | Unescaped `Display` (you promise it is safe)
 `{@const x = expr}` | `let x = expr;`
-`{#if c}…{:else if c}…{:else}…{/if}` | `if`/`else`; `if let` works
+`{#if c}…{:else if c}…{:else}…{/if}` | `if`/`else`; `if let` works; a bare place, `{#if user.avatar}`, tests `Some`, non-empty or `true`
 `{#each e as pat[, i] [if cond]}…{:else}…{/each}` | `for`; `if cond` keeps matching items; a plain place like `data.posts` is borrowed
 `{#match e}{:case pat}…{/match}` | `match`; a plain place is borrowed
 `{#await f}…{:then v}…{:catch e}…{/await}` | Page streams `v` or `e` later ([Streaming a page](/docs/design-state/))
@@ -4696,9 +4740,10 @@ A write redraws only the parts of the page that read what changed. Without JavaS
 
 ## Handling a Form
 
-A form posts to an action. The action's parameters are the form's fields, and `fields` writes a labelled input for each one. Put the model in `src/db.rs`, where every route file can see it:
+A form posts to an action. The action's parameters are the form's fields, and `fields` writes a labelled input for each one. The model, its table and the action can all live in the page's `---` block:
 
-```rust
+```html
+---
 #[model]
 struct Entry {
     #[validate(len = 1..=40)]
@@ -4706,12 +4751,8 @@ struct Entry {
     #[validate(len = 1..=200)]
     message: String,
 }
-```
+static ENTRIES: Table<Entry> = Table::saved();
 
-Then handle the post in a page:
-
-```html
----
 #[action]
 fn sign(entry: Entry) {
     ENTRIES.add(entry);
@@ -4736,16 +4777,11 @@ A page file is named `+page.wisp`, with the `+`. In an action, `error()` already
 
 ## Saving Data in a Table
 
-A `Table` holds rows of a model. `Table::saved()` keeps them in a log file in the data folder, so they survive a restart, and `Table::new()` keeps them in memory. In `src/db.rs`:
-
-```rust
-pub static ENTRIES: Table<Entry> = Table::saved();
-```
-
-Read and change it from any page:
+A `Table` holds rows of a model. `Table::saved()` keeps them in a log file in the data folder, so they survive a restart, and `Table::new()` keeps them in memory. The page above reads it in the same block:
 
 ```html
 ---
+// ...the model, table and action from above...
 let entries = ENTRIES.all();
 ---
 
@@ -4756,6 +4792,8 @@ let entries = ENTRIES.all();
   <p>No notes yet. Be the first.</p>
 {/each}
 ```
+
+One `+page.wisp` is the preferred way to write a page. When a second page needs the same table, move the model and the `pub static` to `src/db.rs`: its `pub` items are visible in every route file with no `use` line. See [One file or several](/docs/design-pages/#one-file-or-several).
 
 `add`, `get`, `all`, `find`, `filter`, `update`, `set`, `remove` and `len` cover most needs. A row has an `id` and reads as the value you stored. See [Data, files and jobs](/docs/data/).
 
@@ -4915,7 +4953,7 @@ Wisp's `data` is longer than JavaScript's: a Rust type with its fields' types. E
 
 ## A Real App: Auth, CRUD, Upload, Live, a Component
 
-`bench/tokens/real` is sign up and in, a posts table with validation, edit, delete, pages and live refresh, an avatar upload and a toggle component: 10 files, **965** tokens in Wisp, 3.6x less than SvelteKit 3 and 3.5x less than Next.js 15. Its tests check every feature.
+`bench/tokens/real` is sign up and in, a posts table with validation, edit, delete, pages and live refresh, an avatar upload and a toggle component: 10 files, **960** tokens in Wisp, 3.6x less than SvelteKit 3 and 3.5x less than Next.js 15. Its tests check every feature.
 
 ## Method
 
@@ -5071,9 +5109,10 @@ A folder under `src/routes` is a URL, and its `+page.wisp` is the page. This fil
 
 ## Describe the Data
 
-Create `src/db.rs`. It holds the models and tables, and its `pub` items are visible in every route file without a `use` line:
+The whole app fits in this one file. Add a block of Rust between two `---` lines at the top of `src/routes/+page.wisp`, above the markup:
 
-```rust
+```html
+---
 #[model]
 struct Entry {
     #[validate(len = 1..=40)]
@@ -5081,11 +5120,16 @@ struct Entry {
     #[validate(len = 1..=200)]
     message: String,
 }
+static ENTRIES: Table<Entry> = Table::saved();
+---
 
-pub static ENTRIES: Table<Entry> = Table::saved();
+<title>Guestbook</title>
+
+<h1>Guestbook</h1>
+<p>Leave a note for the next visitor.</p>
 ```
 
-`#[model]` makes `Entry` something a form can fill and a table can store, and makes it and its fields public. `#[validate]` states the rule once: a name has 1 to 40 characters and a message 1 to 200. `Table::saved()` keeps the rows in a log file, so they survive a restart.
+`#[model]` makes `Entry` something a form can fill and a table can store. `#[validate]` states the rule once: a name has 1 to 40 characters and a message 1 to 200. `Table::saved()` keeps the rows in a log file, so they survive a restart.
 
 ## Add the Form
 
@@ -5093,6 +5137,15 @@ A form posts to an action, which is a function in the page's block. Its paramete
 
 ```html
 ---
+#[model]
+struct Entry {
+    #[validate(len = 1..=40)]
+    name: String,
+    #[validate(len = 1..=200)]
+    message: String,
+}
+static ENTRIES: Table<Entry> = Table::saved();
+
 #[action]
 fn sign(entry: Entry) {
     ENTRIES.add(entry);
@@ -5128,6 +5181,7 @@ Rows come from the table. Add a load before the markup, and a list after the for
 
 ```html
 ---
+// Entry and ENTRIES as before
 #[action]
 fn sign(entry: Entry) {
     ENTRIES.add(entry);
@@ -5296,6 +5350,7 @@ You built a small app with Wisp. You learned that:
 - A folder under `src/routes` is a URL, and `+page.wisp` is the page.
 - A page has an optional block of Rust, then markup, and `{value}` is escaped.
 - A `#[model]` with `#[validate]` rules describes data once, and `Table::saved()` keeps it.
+- One `+page.wisp` can hold the model, the table, the actions and the markup. When several pages share a table, it moves to `src/db.rs`.
 - An `#[action]` handles a form, and `fields` writes the inputs. A bad value is a 422 that keeps what was typed.
 - A component in `src/components` takes `{@props}` and may carry its own style and script.
 - A `<script>` with `$state` adds browser behavior, and the page works without it.
@@ -5353,6 +5408,7 @@ Flash a message in the action, and show it with `{@flash}`. It shows once:
 
 ```html
 ---
+// Entry and ENTRIES as before
 #[action]
 fn sign(entry: Entry) {
     ENTRIES.add(entry);
@@ -5382,7 +5438,20 @@ Give each note its own page at `/notes/1`, `/notes/2` and so on, with a 404 for 
 <details class="solution">
 <summary>Show Solution</summary>
 
-Make the folder `src/routes/notes/[id=int]` and put a page in it. A folder named `[id=int]` matches digits, and the block gets `id` as a `u64`:
+Items in a page's block belong to that page, so a second page cannot see `ENTRIES` yet. Move `Entry` and the table out of the home page's block into `src/db.rs`, and make the table `pub`. The `pub` items of `src/db.rs` are visible in every route file without a `use` line:
+
+```rust
+#[model]
+struct Entry {
+    #[validate(len = 1..=40)]
+    name: String,
+    #[validate(len = 1..=200)]
+    message: String,
+}
+pub static ENTRIES: Table<Entry> = Table::saved();
+```
+
+`#[model]` makes the struct and its fields `pub` for you. Then make the folder `src/routes/notes/[id=int]` and put a page in it. A folder named `[id=int]` matches digits, and the block gets `id` as a `u64`:
 
 ```html
 ---
@@ -5427,13 +5496,14 @@ Zero cost on the request hot path: a route pays only for the features it uses, a
 An AI pays for every token it reads and writes, in time and money. Wisp uses conventions over configuration, types the compiler infers, and forms that write their own inputs and errors.
 
 - The same five features take 432 tokens in Wisp, 957 in SvelteKit and 971 in Next.js.
-- A larger app with sign up, uploads and live refresh takes 965, against 3,473 and 3,331.
+- A larger app with sign up, uploads and live refresh takes 960, against 3,473 and 3,331.
 - `cargo run -p wisp-tokens` counts every hand-written file and its path with a byte-pair style estimate. See [Tokens](/docs/tokens/).
 
 For agents: [AGENTS.md](https://github.com/wyziedevs/wisp/blob/main/llms/AGENTS.md) is the whole reference in one file, and `wisp mcp` serves the docs over MCP (`claude mcp add wisp -- wisp mcp`).
 
 ## And More
 
+- A page is one `+page.wisp`: its models, tables, actions, markup and scoped style in a single file. Larger sites split into `src/db.rs`, `+page.rs`, `+server.rs` and components ([One file or several](/docs/design-pages/#one-file-or-several)).
 - One binary carries its styles and static files. It runs on a VPS, in a container, as static HTML or on an edge host ([Deploying](/docs/deploy/)).
 - Every fast path is proven at startup, falls back, and never panics after startup.
 - Forms work without JavaScript, and reactivity lives in the same file as the markup ([Browser code](/docs/client/)).

@@ -1980,7 +1980,11 @@ fn if_condition(cond: &str, locals: &[String]) -> String {
         .strip_prefix("let")
         .filter(|r| r.starts_with(char::is_whitespace))
     else {
-        return cond.to_string();
+        // A bare place tests its truthiness: `{#if user.avatar}`.
+        return match is_place(cond.trim(), locals) {
+            true => format!("::wisp::rt::truthy(&({}))", cond.trim()),
+            false => cond.to_string(),
+        };
     };
     let b = rest.as_bytes();
     let mut eq = None;

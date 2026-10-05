@@ -149,13 +149,15 @@ pub trait Account {
 }
 
 /// The member of `users` whose `who` and `password` these are, or a 422 on
-/// `who`'s field, the same whichever is wrong. Takes as long for no such
+/// `who`'s field, the same whichever is wrong. Both take a `String`, an
+/// `Email` or a `&str`: `login(&USERS, email, password)`. Takes as long for no such
 /// member (`password::check`), so names stay secret.
 pub async fn login<T: Account + Clone>(
     users: &Table<T>,
-    who: &str,
-    password: &str,
+    who: impl AsRef<str>,
+    password: impl AsRef<str>,
 ) -> Result<Row<T>> {
+    let (who, password) = (who.as_ref(), password.as_ref());
     let found = users.find(|u| u.who() == who);
     let right = crate::password::check(password, found.as_ref().map(|u| u.hash())).await?;
     found
@@ -186,8 +188,8 @@ impl Cx {
     pub async fn login<T: Account + Clone>(
         &mut self,
         users: &Table<T>,
-        who: &str,
-        password: &str,
+        who: impl AsRef<str>,
+        password: impl AsRef<str>,
     ) -> Result<Row<T>> {
         let user = login(users, who, password).await?;
         self.sign_in(user.id);

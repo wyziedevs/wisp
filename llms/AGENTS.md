@@ -199,7 +199,7 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
 | `{@html expr}` | raw (trusted only) |
 | `attr={expr}` | quoted+escaped; `Option` → left out when None |
 | `disabled={bool}` `<a {href}>` `class:on={bool}` | boolean attr, `href={href}`, toggled class |
-| `{#if c}…{:else if c}…{:else}…{/if}` | `if let Some(x) = y` works |
+| `{#if c}…{:else if c}…{:else}…{/if}` | `if let Some(x) = y` works; a bare `{#if x.avatar}` tests `Some`, non-empty or `true` |
 | `{#each list as item, i if cond}…{:else}…{/each}` | `if` filters, `{:else}` when empty |
 | `{#match e}{:case P}…{/match}` | match |
 | `{#await f}…{:then v}…{:catch e}…{/await}` | page only: sent pending, `v`/`e` streamed in later |
@@ -441,7 +441,7 @@ fn signup(email: Email, #[validate(min_len = 8)] password: Password) {
 }
 #[action] // log in
 fn login(email: Email, password: String) {
-    cx.login(&email, &password).await?; // 422 for either wrong, equally slow
+    cx.login(email, password).await?; // 422 for either wrong, equally slow
     redirect("/me")
 }
 let me = cx.user()?; // Row<User>, or 303 to /login

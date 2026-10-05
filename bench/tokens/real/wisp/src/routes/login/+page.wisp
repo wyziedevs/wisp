@@ -1,7 +1,7 @@
 ---
 // @feature auth
 fn default(email: Email, password: String) {
-    cx.login(&email, &password).await?;
+    cx.login(email, password).await?;
     redirect("/dashboard")
 }
 ---

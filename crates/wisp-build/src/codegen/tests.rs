@@ -123,6 +123,9 @@ fn let_conditions_borrow_places() {
     assert_eq!(cond("let 1..=5 = n"), "let 1..=5 = n");
     assert_eq!(cond("a == b"), "a == b");
     assert_eq!(cond("letter"), "letter");
+    assert_eq!(cond("user"), "::wisp::rt::truthy(&(user))");
+    assert_eq!(cond("data.avatar"), "::wisp::rt::truthy(&(data.avatar))");
+    assert_eq!(cond("data.n > 0"), "data.n > 0");
     assert_eq!(
         rust_scan::let_names(
             "let (a, mut b) = x;\nif c { let d = 1; }\nlet Some(e) = f else { return };\nlet g: Vec<u8> = h;"

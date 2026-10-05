@@ -2174,8 +2174,8 @@ fn a(#[validate(pattern = \"https?://x\")] u: String) {}",
         assert_eq!(bind_user("cx.user(&T)", None), Ok(None));
         assert!(bind_user(src, None).unwrap_err().contains("wisp::users"));
         // Login and sign-up too, unless they already name the table.
-        let src = "cx.login(&email, &password).await?; cx.signup(U { a: 1, b }).await?; cx.login(&T, &e, &p); cx.signup(&T, u)";
-        let want = "cx.login(&db::U, &email, &password).await?; cx.signup(&db::U, U { a: 1, b }).await?; cx.login(&T, &e, &p); cx.signup(&T, u)";
+        let src = "cx.login(&email, &password).await?; cx.signup(U { a: 1, b }).await?; cx.login(&T, &e, &p); cx.signup(&T, u); cx.login(e, p)";
+        let want = "cx.login(&db::U, &email, &password).await?; cx.signup(&db::U, U { a: 1, b }).await?; cx.login(&T, &e, &p); cx.signup(&T, u); cx.login(&db::U, e, p)";
         assert_eq!(bind_user(src, Some("db::U")), Ok(Some(want.into())));
         assert_eq!(bind_user("cx.login(&T, &e, &p)", None), Ok(None));
         assert!(
