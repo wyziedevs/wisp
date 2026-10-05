@@ -527,13 +527,19 @@ fn best(header: &str, list: &[&str]) -> Option<usize> {
             continue;
         }
         // As bytes: a tag of the client's need not split where a locale does.
+        // `_` and `-` are one: a file may be named `pt_BR.json`.
+        let eq = |a: &[u8], b: &[u8]| {
+            a.len() == b.len()
+                && a.iter().zip(b).all(|(x, y)| {
+                    x.eq_ignore_ascii_case(y)
+                        || (matches!(x, b'-' | b'_') && matches!(y, b'-' | b'_'))
+                })
+        };
         let base = |a: &str, b: &str| {
             let (a, b) = (a.as_bytes(), b.as_bytes());
-            a.len() > b.len()
-                && a[..b.len()].eq_ignore_ascii_case(b)
-                && matches!(a[b.len()], b'-' | b'_')
+            a.len() > b.len() && eq(&a[..b.len()], b) && matches!(a[b.len()], b'-' | b'_')
         };
-        let found = (list.iter().position(|l| l.eq_ignore_ascii_case(tag)))
+        let found = (list.iter().position(|l| eq(l.as_bytes(), tag.as_bytes())))
             .or_else(|| list.iter().position(|l| base(tag, l) || base(l, tag)));
         if let Some(i) = found {
             best = Some((q, i));
@@ -593,13 +599,22 @@ mod tests {
         assert_eq!(b("de, en;q=0.5, fr;q=0.7"), Some("fr"));
         assert_eq!(b("pt"), Some("pt-BR"));
         assert_eq!(b("PT-br"), Some("pt-BR"));
+        let list = ["en", "pt_BR", "zh_Hant"];
+        let u = |h: &str| best(h, &list).map(|i| list[i]);
+        assert_eq!(u("pt-BR"), Some("pt_BR"), "a file named pt_BR.json");
+        assert_eq!(u("zh-Hant-TW"), Some("zh_Hant"));
+        assert_eq!(u("pt"), Some("pt_BR"));
         assert_eq!(b("de, *;q=0.1"), None);
         assert_eq!(b("fr;q=0, en"), Some("en"));
         assert_eq!(b(""), None);
         assert_eq!(b("e\u{e9}-x"), None, "a split inside a character, no panic");
         assert_eq!(b("fr;q=NaN, en;q=0.5"), Some("en"));
         assert_eq!(b("fr;q=9, en;q=0.5"), Some("en"));
-        assert_eq!(b("fr;Q=0, en"), Some("en"), "the parameter name is not case-sensitive");
+        assert_eq!(
+            b("fr;Q=0, en"),
+            Some("en"),
+            "the parameter name is not case-sensitive"
+        );
         assert_eq!(b("en;q=0.5, fr;Q=0.9"), Some("fr"));
     }
 
