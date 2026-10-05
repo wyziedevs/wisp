@@ -274,7 +274,10 @@ macro_rules! __ts {
 #[macro_export]
 macro_rules! app {
     () => {
+        // A route folder `[userId]` is a parameter of that name in the
+        // generated code, which Rust would warn about on a file it never shows.
         #[doc(hidden)]
+        #[allow(non_snake_case)]
         mod __wisp {
             include!(concat!(env!("OUT_DIR"), "/wisp.rs"));
         }

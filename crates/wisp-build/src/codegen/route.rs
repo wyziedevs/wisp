@@ -37,6 +37,10 @@ pub(super) fn typed_routes<'a>(
             .collect();
         match s.starts_with(|c: char| c.is_ascii_digit()) {
             true => format!("r_{s}"),
+            // No raw form: `r#self` is not a name.
+            false if ["self", "Self", "crate", "super", "_"].contains(&s.as_str()) => {
+                format!("{s}_")
+            }
             false => rust_place(&[s]),
         }
     };
@@ -46,7 +50,7 @@ pub(super) fn typed_routes<'a>(
     );
     let mut taken: Vec<String> = Vec::new();
     for r in routes {
-        let mut name = match r.segs.is_empty() {
+        let name = match r.segs.is_empty() {
             true => "home".to_string(),
             false => (r.segs.iter())
                 .map(|s| match s {
@@ -57,12 +61,14 @@ pub(super) fn typed_routes<'a>(
                 .collect::<Vec<_>>()
                 .join("_"),
         };
+        // Taken by what it reads as: `a!b` and `a$b` are both `a_b`.
         let base = name.clone();
+        let mut name = ident(&name);
         for k in 2.. {
             if !taken.contains(&name) {
                 break;
             }
-            name = format!("{base}_{k}");
+            name = ident(&format!("{base}_{k}"));
         }
         taken.push(name.clone());
         let mut args = Vec::new();
@@ -95,7 +101,7 @@ pub(super) fn typed_routes<'a>(
         out.push_str(&format!(
             "    /// `{}`\n    pub fn {}({}) -> String {{ {body} }}\n",
             r.pattern(),
-            ident(&name),
+            name,
             args.join(", ")
         ));
     }
@@ -105,11 +111,12 @@ pub(super) fn typed_routes<'a>(
 
 /// `data.type` is `data.r#type` in Rust.
 pub(super) fn rust_place(path: &[String]) -> String {
-    const KEYWORDS: [&str; 38] = [
+    const KEYWORDS: [&str; 48] = [
         "as", "async", "await", "break", "const", "continue", "dyn", "else", "enum", "extern",
         "false", "fn", "for", "gen", "if", "impl", "in", "let", "loop", "match", "mod", "move",
         "mut", "pub", "ref", "return", "static", "struct", "trait", "true", "try", "type",
-        "unsafe", "use", "where", "while", "yield", "box",
+        "unsafe", "use", "where", "while", "yield", "box", "abstract", "become", "do", "final",
+        "macro", "override", "priv", "typeof", "unsized", "virtual",
     ];
     let segs: Vec<String> = path
         .iter()

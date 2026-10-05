@@ -789,3 +789,13 @@ fn a_page_without_server_rendering_sends_its_data() {
         "{data}"
     );
 }
+
+/// A folder `[userId]` is a parameter of that name in the generated code,
+/// which must build without a warning (`match/camel/[userId]`; the gate's
+/// `clippy -D warnings` fails on a `non_snake_case` one).
+#[test]
+fn a_camel_case_parameter_serves() {
+    let page = client::<Site>().get("/match/camel/u7");
+    assert_eq!(page.status, 200);
+    assert!(page.text().contains("u7"), "{}", page.text());
+}

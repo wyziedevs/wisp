@@ -49,7 +49,8 @@ static/…                    served at /
 
 Folders: `blog` static, `[slug]` param, `[[lang]]` optional, `[...rest]`
 rest, `[id=int]` digits (u64), `[x=word]` custom matcher, `[[lang=locale]]`
-one of `src/locales`, `(group)` not in URL. `+page.rs` (`struct Data` + `fn load(..) -> Data`, which the markup reads
+one of `src/locales`, `(group)` not in URL; `.well-known` is a route folder; a param is
+not `cx` or `__x`. `+page.rs` (`struct Data` + `fn load(..) -> Data`, which the markup reads
 by name) and `+layout.rs` work instead of a block; a block holds all of it too.
 Slots: `dash/@stats/+page.wisp` (`+page.rs` for its data; an empty file will do
 as a default) beside `dash/+layout.wisp` with `{@render stats()}`: that page is
@@ -214,8 +215,8 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
 file only (`:global(x)` opts out; `<style global>`); it joins app.css. Elements
 your script creates are not scoped.
 Accessibility lints warn, never fail (img alt, input label, link and button
-name, `<a href>`, heading order, tabindex...); `<!-- wisp-ignore a11y-img-alt -->` silences
-one. A lone control with only a `placeholder` gets it as its `aria-label`.
+name, `<a href>`, heading order, tabindex...; an `<img>` with `aria-hidden="true"` or
+`role="presentation"` needs no alt); `<!-- wisp-ignore a11y-img-alt -->` silences one. A lone control with only a `placeholder` gets it as its `aria-label`.
 Images: `<img src="$lib/p.jpg" alt="">` or `src="/x.png"` gets
 `width`/`height`; `wisp build` adds WebP `srcset` (cwebp, cached), lazy.
 `<img priority>` (above the fold) gets `fetchpriority="high"`, not lazy.

@@ -529,6 +529,11 @@ impl<'a> Project<'a> {
                      and only letters, digits and _, such as {suggest}.wisp"
                 ));
             }
+            if name == "Self" {
+                return Err(format!(
+                    "{rel}: `Self` is a Rust keyword, so it cannot be a component's name; call it something else"
+                ));
+            }
             if let Some(other) = self.comps.iter().find(|c| c.name == name) {
                 return Err(format!(
                     "{rel}: there is already a component `{name}` ({})",

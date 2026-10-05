@@ -3738,6 +3738,39 @@
         }
       }
     },
+    "/match/camel/{userId}": {
+      "get": {
+        "operationId": "page_match_camel_userId",
+        "tags": [
+          "pages"
+        ],
+        "parameters": [
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The page",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
     "/match/opt/{n}": {
       "get": {
         "operationId": "page_match_opt_n",

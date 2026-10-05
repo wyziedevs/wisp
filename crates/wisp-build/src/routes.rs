@@ -438,10 +438,12 @@ fn walk(
                 show(dir)
             ));
         }
-        if editor_temp(&name) {
+        let is_dir = e.file_type().map_err(|e| e.to_string())?.is_dir();
+        // `/.well-known/...` is a URL apps serve; no editor leaves that folder.
+        if editor_temp(&name) && !(is_dir && name == ".well-known") {
             continue;
         }
-        if e.file_type().map_err(|e| e.to_string())?.is_dir() {
+        if is_dir {
             dirs.push(name);
         } else if name.starts_with('+') {
             files.push(name);
@@ -782,14 +784,25 @@ pub fn parse_segment(name: &str) -> Result<Option<Seg>, String> {
         }
         Ok(s.to_string())
     };
+    // The generated code has locals of its own (`cx`, `__o`): a parameter
+    // of that name would be one of them.
+    let pname = |s: &str| -> Result<String, String> {
+        let n = ident(s)?;
+        if n == "cx" || n.starts_with("__") {
+            return Err(format!(
+                "`{n}` is reserved for the generated code; rename the parameter"
+            ));
+        }
+        Ok(n)
+    };
     // `name=matcher`: the matcher is a file in src/params, or `int`.
     let param = |s: &str| -> Result<(String, Option<String>), String> {
         match s.split_once('=') {
             Some((n, m)) => {
                 let m = ident(m).map_err(|_| format!("`{m}` is not a valid matcher name"))?;
-                Ok((ident(n)?, Some(m)))
+                Ok((pname(n)?, Some(m)))
             }
-            None => Ok((ident(s)?, None)),
+            None => Ok((pname(s)?, None)),
         }
     };
     if let Some(inner) = name.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
@@ -810,7 +823,7 @@ pub fn parse_segment(name: &str) -> Result<Option<Seg>, String> {
                 "matchers go on [name=matcher] and [[name=matcher]], not on [...rest]".into(),
             );
         }
-        return Ok(Some(Seg::Rest(ident(inner)?)));
+        return Ok(Some(Seg::Rest(pname(inner)?)));
     }
     if let Some(inner) = name.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
         let (n, m) = param(inner)?;
@@ -899,6 +912,24 @@ mod tests {
         for ok in ["a-b_c.d", "@modal", ".well-known", "a+b"] {
             assert!(parse_segment(ok).is_ok(), "{ok}");
         }
+    }
+
+    /// `/.well-known/...` is a URL apps serve (webfinger, OIDC, passkeys):
+    /// its folder is a route, not an editor's dropping.
+    #[test]
+    fn a_well_known_folder_is_a_route() {
+        let root = tmp("wellknown");
+        touch(&root, ".well-known/webfinger/+server.rs");
+        touch(&root, ".git/x/+page.wisp");
+        touch(&root, "a/.swp/+page.wisp");
+        let pats: Vec<_> = scan(&root)
+            .unwrap()
+            .routes
+            .iter()
+            .map(Route::pattern)
+            .collect();
+        assert_eq!(pats, ["/.well-known/webfinger"]);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

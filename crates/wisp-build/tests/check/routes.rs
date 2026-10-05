@@ -108,6 +108,16 @@ fn segments_are_checked() {
             &["`a-b` is not a valid parameter name"],
         ),
         (
+            "param named like a generated local",
+            &[("src/routes/[cx]/+page.wisp", "x")],
+            &["src/routes/[cx]: `cx` is reserved", "rename the parameter"],
+        ),
+        (
+            "param named like a generated temporary",
+            &[("src/routes/[__o]/+page.wisp", "x")],
+            &["src/routes/[__o]: `__o` is reserved"],
+        ),
+        (
             "empty optional",
             &[("src/routes/[[]]/+page.wisp", "x")],
             &["src/routes/[[]]: `` is not a valid parameter name"],

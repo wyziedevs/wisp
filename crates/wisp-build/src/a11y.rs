@@ -137,11 +137,17 @@ impl Checker {
             }
         }
         match tag {
-            "img" if !has("alt") => self.lint(
-                line,
-                "img-alt",
-                "<img> has no alt: say what it shows, or alt=\"\" if it shows nothing that matters",
-            ),
+            // Hidden from assistive technology: nothing to say.
+            "img" if !has("alt")
+                && value("aria-hidden") != Some(Some("true"))
+                && !matches!(value("role"), Some(Some("presentation" | "none"))) =>
+            {
+                self.lint(
+                    line,
+                    "img-alt",
+                    "<img> has no alt: say what it shows, or alt=\"\" if it shows nothing that matters",
+                )
+            }
             "a" if !has("href") => self.lint(
                 line,
                 "anchor-href",
@@ -274,6 +280,21 @@ mod tests {
             .iter()
             .map(|l| format!("{} {}", l.line, l.name))
             .collect()
+    }
+
+    /// An image hidden from assistive technology needs no alt.
+    #[test]
+    fn a_hidden_image_needs_no_alt() {
+        assert!(
+            lints(
+                "<img src=\"a\" aria-hidden=\"true\"><img src=\"b\" role=\"presentation\"><img src=\"c\" role=\"none\">"
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            lints("<img src=\"a\" aria-hidden=\"false\">"),
+            ["1 img-alt"]
+        );
     }
 
     #[test]

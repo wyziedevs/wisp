@@ -452,6 +452,11 @@ fn component_files() {
     let page = ("src/routes/+page.wisp", "x");
     fails(&[
         (
+            "a Rust keyword",
+            &[("src/components/Self.wisp", "x"), page],
+            &["src/components/Self.wisp: `Self` is a Rust keyword"],
+        ),
+        (
             "a lowercase name",
             &[("src/components/my-card.wisp", "x"), page],
             &[

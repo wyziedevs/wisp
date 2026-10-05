@@ -2430,6 +2430,9 @@ fn translations_are_checked_and_compiled() {
         "__o.lang = ::wisp::rt::pick_locale(cx);",
         "matches!(p0, \"en\" | \"fr\")",
         "let __wisp_l: u8 = __o.lang;",
+        // Its imports go unused when no template says `t(…)`.
+        "#[allow(dead_code, unused_imports, clippy::all)]
+pub mod __i18n {",
     ] {
         assert!(code.contains(want), "{want}: {code}");
     }
@@ -3468,4 +3471,42 @@ fn a_name_two_modules_share_fails_where_it_is_used() {
         e.contains("`blog::Post`") && e.contains("`db::Post`"),
         "{e}"
     );
+}
+
+/// `routes::name()` per route: each name is its own and a Rust identifier,
+/// whatever the folders are called (`a!b` and `a$b` both read `a_b`; `self`
+/// and `_` are not names; `r_1` is what `1` is called).
+#[test]
+fn route_functions_have_distinct_valid_names() {
+    let names = [
+        "a!b", "a$b", "a&b", "a-b", "a_b", "a.b", "self", "crate", "super", "_", "1", "r_1",
+        "abstract", "do", "final", "type", "fn",
+    ];
+    let paths: Vec<String> = names
+        .iter()
+        .map(|n| format!("src/routes/k/{n}/+page.wisp"))
+        .collect();
+    let files: Vec<(&str, &str)> = paths.iter().map(|p| (p.as_str(), "x")).collect();
+    let code = app("route-fn-names", &files).unwrap();
+    let routes = &code[code.find("pub mod routes {").unwrap()..];
+    let routes = &routes[..routes.find("\n}\n").unwrap()];
+    let mut seen: Vec<&str> = Vec::new();
+    for line in routes.lines().filter(|l| l.contains("pub fn ")) {
+        let name = line
+            .split("pub fn ")
+            .nth(1)
+            .unwrap()
+            .split('(')
+            .next()
+            .unwrap();
+        assert!(!seen.contains(&name), "{name} twice: {routes}");
+        seen.push(name);
+        let bare = name.trim_start_matches("r#");
+        assert!(
+            !["self", "crate", "super", "_"].contains(&bare)
+                && !bare.starts_with(|c: char| c.is_ascii_digit()),
+            "{name}: {routes}"
+        );
+    }
+    assert_eq!(seen.len(), names.len(), "{routes}");
 }

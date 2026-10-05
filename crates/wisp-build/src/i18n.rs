@@ -800,7 +800,7 @@ impl Locales {
     pub fn tables(&self, used: &[bool], sent: &[bool]) -> String {
         let n = self.names.len();
         let mut s = String::from(
-            "#[doc(hidden)]\n#[allow(dead_code, clippy::all)]\npub mod __i18n {\n    use ::wisp::rt::{Case, Msg, Part};\n",
+            "#[doc(hidden)]\n#[allow(dead_code, unused_imports, clippy::all)]\npub mod __i18n {\n    use ::wisp::rt::{Case, Msg, Part};\n",
         );
         for (k, key) in self.keys.iter().enumerate() {
             if used[k] && key.args.is_empty() {
