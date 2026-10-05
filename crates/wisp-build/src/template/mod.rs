@@ -5435,7 +5435,7 @@ mod tests {
              <label>Body <textarea name=\"body\">{post.body}</textarea></label>\
              <label>Done <input name=\"done\" type=\"checkbox\" checked={post.done}></label>\
              <label>Secret <input name=\"secret\" type=\"password\"></label>\
-             <label>Note <input name=\"note\"></label><button>Send</button></form>"
+             <label>Note <input name=\"note\"></label><button>Save</button></form>"
         );
         // `<form fields />`: the whole form, its button named for the action.
         let short = form_fields("<form action=\"?/sign_up\" fields />", &[field("sign_up", "email", "Email")]);

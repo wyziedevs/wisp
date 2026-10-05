@@ -317,6 +317,7 @@ pub(super) fn form_fields(src: &str, fields: &[Field]) -> Result<Option<String>,
         if closed || !body.contains("<button") {
             let mut name = match button {
                 Some(text) => text.to_string(),
+                None if start_from.is_some() => "save".into(),
                 None if action == "default" => "send".into(),
                 None => action.replace('_', " "),
             };

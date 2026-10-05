@@ -9,4 +9,4 @@ let post = POSTS.get(id).or_404()?;
 ---
 
 <title>Edit {post.title}</title>
-<form fields={post}><button>Save</button></form>
+<form fields={post} />

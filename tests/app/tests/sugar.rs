@@ -24,6 +24,29 @@ fn a_generated_form_flashes_once() {
     assert!(!app.get("/t/contact").text().contains("flash"));
 }
 
+/// `wisp add crud /t/memos` wrote these pages and `src/db.rs`.
+#[test]
+fn generated_crud_creates_edits_and_deletes() {
+    let mut app = client::<Site>();
+    assert!(app.get("/t/memos").text().contains("None yet."));
+    let new = app.get("/t/memos/new").text().to_string();
+    assert!(new.contains("<button>Create</button></form>"), "{new}");
+    let r = app.post_form("/t/memos/new", &[("title", "One"), ("body", "B")]);
+    assert_eq!(r.status, 303);
+    let list = app.get("/t/memos").text().to_string();
+    assert!(list.contains("Created") && list.contains(">One</a>"), "{list}");
+    let end = list.find("/edit\"").unwrap();
+    let id: u64 = list[list[..end].rfind('/').unwrap() + 1..end].parse().unwrap();
+    let edit = app.get(&format!("/t/memos/{id}/edit")).text().to_string();
+    assert!(edit.contains("value=\"One\"") && edit.contains("<button>Save</button>"), "{edit}");
+    let r = app.post_form(&format!("/t/memos/{id}/edit"), &[("title", "Two"), ("body", "B")]);
+    assert_eq!(r.status, 303);
+    assert!(app.get("/t/memos").text().contains(">Two</a>"));
+    app.post_form(&format!("/t/memos?/remove&id={id}"), &[]);
+    assert!(app.get("/t/memos").text().contains("None yet."));
+    assert_eq!(app.get("/t/memos/999/edit").status, 404);
+}
+
 #[test]
 fn an_active_link_is_the_current_page() {
     let mut app = client::<Site>();

@@ -107,7 +107,7 @@ pub fn new_route(root: &Path, args: &[String]) -> Result<(), String> {
         _ => return Err(usage.into()),
     };
     let kind = if kind == "api" { "rest" } else { kind };
-    if !KINDS.contains(&kind) || kind == "component" {
+    if !KINDS.contains(&kind) || matches!(kind, "component" | "crud") {
         return Err(format!("There is no kind {kind}.\n{usage}"));
     }
     let made = create(root, path, kind)?;
@@ -116,7 +116,8 @@ pub fn new_route(root: &Path, args: &[String]) -> Result<(), String> {
 }
 
 /// What `wisp add <kind> <path>` writes (`api` is `rest`).
-const KINDS: [&str; 7] = [
+const KINDS: [&str; 8] = [
+    "crud",
     "page",
     "form",
     "layout",
@@ -139,7 +140,72 @@ pub fn add(root: &Path, args: &[String]) -> Option<Result<(), String>> {
     if kind == "component" {
         return Some(component(root, what).map(|made| term::done(&format!("Wrote {made}"))));
     }
+    if kind == "crud" {
+        return Some(crud(root, what).map(|made| {
+            for m in made {
+                term::done(&format!("Wrote {m}"));
+            }
+        }));
+    }
     Some(new_route(root, &[what.clone(), kind.clone()]))
+}
+
+/// `wisp add crud /posts`: a list with delete and pages, a new form and an
+/// edit form for `POSTS: Table<Post>`, which `src/db.rs` gets (a title and
+/// a body) when it has no `struct Post`.
+fn crud(root: &Path, path: &str) -> Result<Vec<String>, String> {
+    let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    let plain = |s: &&str| !s.is_empty() && s.bytes().all(|c| c.is_ascii_lowercase() || c == b'-' || c == b'_');
+    let Some(name) = segs.last().filter(|_| segs.iter().all(plain)) else {
+        return Err(format!("{path}: crud takes a plain path, such as /posts."));
+    };
+    let one = name.strip_suffix('s').filter(|n| n.len() > 1).unwrap_or(name);
+    let ty = camel(one, "");
+    let table = name.replace('-', "_").to_ascii_uppercase();
+    let url = format!("/{}", segs.join("/"));
+    let dir = segs.iter().fold(root.join("src/routes"), |d, s| d.join(s));
+    let files = [
+        (
+            dir.join("+page.wisp"),
+            format!(
+                "---\nfn remove(id: u64) {{\n    {table}.remove(id);\n}}\n\nlet rows = {table}.page(cx, 20);\n---\n\n<title>{title}</title>\n\n{{@flash}}\n<a href=\"{url}/new\">New</a>\n{{#each rows as row}}\n  <p>\n    <a href=\"{url}/{{row.id}}/edit\">{{row.title}}</a>\n    <button action=\"?/remove&id={{row.id}}\">Delete</button>\n  </p>\n{{:else}}\n  <p>None yet.</p>\n{{/each}}\n{{@pager rows}}\n",
+                title = camel(name, " "),
+            ),
+        ),
+        (
+            dir.join("new/+page.wisp"),
+            format!(
+                "---\nfn default(row: {ty}) {{\n    {table}.add(row);\n    cx.flash(\"Created\");\n    redirect(\"{url}\")\n}}\n---\n\n<title>New</title>\n<form fields=\"Create\" />\n"
+            ),
+        ),
+        (
+            dir.join("[id=int]/edit/+page.wisp"),
+            format!(
+                "---\nfn default(id: u64, row: {ty}) {{\n    {table}.set(id, row).or_404()?;\n    cx.flash(\"Saved\");\n    redirect(\"{url}\")\n}}\n\nlet row = {table}.get(id).or_404()?;\n---\n\n<title>Edit {{row.title}}</title>\n<form fields={{row}} />\n"
+            ),
+        ),
+    ];
+    if let Some((taken, _)) = files.iter().find(|(f, _)| f.exists()) {
+        return Err(format!("{} already exists.", taken.display()));
+    }
+    let mut made = Vec::new();
+    let shown = |p: &Path| p.strip_prefix(root).unwrap_or(p).to_string_lossy().replace('\\', "/");
+    for (to, text) in &files {
+        fs::create_dir_all(to.parent().unwrap_or(root)).map_err(|e| e.to_string())?;
+        fs::write(to, text).map_err(|e| format!("{}: {e}", to.display()))?;
+        made.push(shown(to));
+    }
+    let db = root.join("src/db.rs");
+    let old = fs::read_to_string(&db).unwrap_or_default();
+    if !old.contains(&format!("struct {ty} ")) {
+        let sep = if old.is_empty() || old.ends_with("\n\n") { "" } else if old.ends_with('\n') { "\n" } else { "\n\n" };
+        let add = format!(
+            "{sep}#[model]\nstruct {ty} {{\n    #[validate(len = 1..=100)]\n    title: String,\n    body: String,\n}}\npub static {table}: Table<{ty}> = Table::saved();\n"
+        );
+        fs::write(&db, old + &add).map_err(|e| format!("{}: {e}", db.display()))?;
+        made.push("src/db.rs".into());
+    }
+    Ok(made)
 }
 
 /// `src/components/Name.wisp`: a prop, a slot.
