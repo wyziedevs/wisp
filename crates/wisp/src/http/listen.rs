@@ -562,6 +562,17 @@ pub(crate) fn setup<A: App>() {
     });
 }
 
+/// Says a header or cookie the app set was not sent: its value could not
+/// be one (CR/LF, or a character a cookie cannot hold). Cold, and one
+/// place, so the checks cost the hot path a branch and no code.
+#[cold]
+#[inline(never)]
+pub(crate) fn dropped(what: &str, name: &str, value: &str) {
+    log(format_args!(
+        "wisp: dropped {what} {name:?}={value:?}: a character it cannot hold"
+    ));
+}
+
 /// A line on stderr. Unlike `eprintln!`, a log that cannot be written (its
 /// reader gone) never takes a request down with it.
 pub(crate) fn log(line: std::fmt::Arguments) {

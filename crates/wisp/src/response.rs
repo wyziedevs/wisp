@@ -234,17 +234,18 @@ impl Response {
     /// twice, so `Response::text(xml).with_header("content-type",
     /// "application/rss+xml")` sends one `content-type`. `content-length`
     /// and `transfer-encoding` are the server's and are left out.
-    /// Panics on CR/LF in the value (header injection).
+    /// CR/LF in the value (header injection) drops the header with a
+    /// logged line, never a panic.
     pub fn with_header(
         mut self,
         name: impl Into<Cow<'static, str>>,
         value: impl Into<String>,
     ) -> Response {
         let (name, value) = (name.into(), value.into());
-        assert!(
-            cx::valid_header(&name, &value),
-            "invalid header {name:?}: {value:?}"
-        );
+        if !cx::valid_header(&name, &value) {
+            crate::http::dropped("header", &name, &value);
+            return self;
+        }
         if name.eq_ignore_ascii_case("content-type") {
             self.content_type = Cow::Owned(value);
             return self;

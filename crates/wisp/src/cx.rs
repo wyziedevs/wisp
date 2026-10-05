@@ -690,14 +690,14 @@ impl Cx {
     /// `cx.set_header("content-type", "application/rss+xml")`. One the
     /// `before` hook set comes back if the page then fails.
     /// `content-length` and `transfer-encoding` are the server's and are
-    /// left out. Panics on CR/LF, which would allow header injection;
-    /// building a header from unchecked input is a bug.
+    /// left out. A name or value with CR/LF (header injection) is dropped
+    /// and logged, never sent and never a panic.
     pub fn set_header(&mut self, name: impl Into<Cow<'static, str>>, value: impl Into<String>) {
         let (name, value) = (name.into(), value.into());
-        assert!(
-            valid_header(&name, &value),
-            "invalid header {name:?}: {value:?}"
-        );
+        if !valid_header(&name, &value) {
+            crate::http::dropped("header", &name, &value);
+            return;
+        }
         self.out_headers.set(name, Cow::Owned(value));
     }
 
@@ -887,8 +887,9 @@ impl Cx {
     /// such as a number or a string; an empty one deletes the cookie.
     /// [`Cx::set_cookie_with`] takes other options.
     ///
-    /// Panics on a character a cookie cannot hold (space, `"`, `,`, `;`,
-    /// `\`, control or non-ASCII); encode such values first.
+    /// A character a cookie cannot hold (space, `"`, `,`, `;`, `\`,
+    /// control or non-ASCII) drops the cookie with a logged line, never a
+    /// panic; encode such values first.
     pub fn set_cookie(&mut self, name: &str, value: impl std::fmt::Display) {
         self.set_cookie_with(name, value, CookieOptions::default());
     }
@@ -929,26 +930,23 @@ impl Cx {
         use std::fmt::Write;
         let token =
             |s: &str, bad: &[u8]| s.bytes().all(|b| b.is_ascii_graphic() && !bad.contains(&b));
-        assert!(
-            !name.is_empty() && token(name, b"()<>@,;:\\\"/[]?={}"),
-            "invalid cookie name {name:?}"
-        );
-        assert!(
-            options.path.starts_with('/') && token(options.path, b";"),
-            "invalid cookie path {:?}",
-            options.path
-        );
-        assert!(
-            options
-                .domain
-                .is_none_or(|d| !d.is_empty() && token(d, b";")),
-            "invalid cookie domain {:?}",
-            options.domain
-        );
         let mut header = String::with_capacity(96);
         let _ = write!(header, "{name}={value}");
         let value = &header[name.len() + 1..];
-        assert!(token(value, b"\",;\\"), "invalid cookie value {value:?}");
+        // A part a cookie cannot hold (unchecked input, say) drops the
+        // cookie and says so: never a panic, never an injected attribute.
+        if name.is_empty()
+            || !token(name, b"()<>@,;:\\\"/[]?={}")
+            || !token(value, b"\",;\\")
+            || !options.path.starts_with('/')
+            || !token(options.path, b";")
+            || options
+                .domain
+                .is_some_and(|d| d.is_empty() || !token(d, b";"))
+        {
+            crate::http::dropped("cookie", name, value);
+            return;
+        }
         let deleted = value.is_empty();
         if options.signed && !deleted {
             let mac = sign::cookie_mac(name, value);
@@ -1663,9 +1661,27 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "invalid cookie value")]
-    fn cookie_value_is_checked() {
-        cx_for("GET / HTTP/1.1\r\n\r\n").set_cookie("a", "x;y");
+    /// A value a cookie or header cannot hold (attacker input put in one
+    /// unchecked) is dropped with a logged line: no panic, no injection.
+    fn bad_cookie_or_header_is_dropped_not_a_panic() {
+        let mut cx = cx_for("GET / HTTP/1.1\r\n\r\n");
+        cx.set_cookie("a", "x;y");
+        cx.set_cookie("a", "x\r\nset-cookie: admin=1");
+        cx.set_cookie("b c", 1);
+        cx.set_header("x-a", "1\r\nset-cookie: admin=1");
+        assert!(
+            cx.out_headers()
+                .iter()
+                .all(|(n, _)| n != "set-cookie" && n != "x-a")
+        );
+        cx.set_cookie("ok", 1);
+        assert_eq!(
+            cx.out_headers()
+                .iter()
+                .filter(|(n, _)| n == "set-cookie")
+                .count(),
+            1
+        );
     }
 
     /// A handler's single-valued header replaces the hook's on the page it

@@ -111,13 +111,14 @@ impl Error {
 
     /// A header to send with the error, such as `retry-after` on a 429.
     /// A single-valued one (`content-type`, `cache-control`, `location`,
-    /// `etag`) replaces the error page's own. Panics on CR/LF in the value.
+    /// `etag`) replaces the error page's own. CR/LF in the value (header
+    /// injection) makes it a logged 500 instead, never a panic.
     pub fn with_header(mut self, name: &'static str, value: impl Into<String>) -> Error {
         let value = value.into();
-        assert!(
-            codec::valid_header(name, &value),
-            "invalid header {name:?}: {value:?}"
-        );
+        if !codec::valid_header(name, &value) {
+            crate::http::dropped("header", name, &value);
+            return Error::raw(500, Cow::Borrowed("Internal Server Error"));
+        }
         self.header = Some(Box::new((name, value)));
         self
     }
@@ -182,9 +183,7 @@ impl Error {
             }
         };
         if !codec::valid_header("location", &location) {
-            crate::http::log(format_args!(
-                "wisp: refused redirect {status} to {location:?}: CR/LF in the location"
-            ));
+            crate::http::dropped("redirect", "location", &location);
             return Error::raw(500, Cow::Borrowed("Internal Server Error"));
         }
         // A path stays one: browsers read `//host`, `/\host` (and a tab in

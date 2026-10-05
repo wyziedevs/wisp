@@ -66,7 +66,10 @@ fn minimal_writes_these_files() {
     let app = cwd.join("site");
     assert_eq!(tree(&app), MINIMAL);
     assert!(!app.join(".git").exists());
-    assert_eq!(read(&app, ".gitignore"), "/target\n/.wisp\n/data\n");
+    assert_eq!(
+        read(&app, ".gitignore"),
+        "/target\n/.wisp\n/data\n.env\n.env.*\n"
+    );
 
     let toml = read(&app, "Cargo.toml");
     has(

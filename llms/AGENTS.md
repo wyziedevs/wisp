@@ -518,6 +518,7 @@ no-wait fast path off every route.
   `Result`; `opt.or_404()?`, `.or_status(403)?`; `Error::new(s, m)`; any
   `std::error::Error` via `?` → 500. `redirect` keeps a path on the site
   (`//evil` → `/evil`), so `redirect(next)` with a `/`-checked `?next=` is safe.
+  A cookie or header value it cannot hold (CR/LF, `;`) is dropped and logged.
 - `Response::`: `json_of(&v) created(&v) text html empty(s) download(name,
   bytes) file_in(dir, name).await stream ndjson events websocket`
   + `.with_status(s) .with_header(n, v)`. A single-valued header

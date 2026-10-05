@@ -216,12 +216,13 @@ fn cookies_are_written_as_asked() {
 
 #[test]
 fn cookies_a_value_cannot_break_out_of() {
-    // What would end the cookie, or the header, is a bug of the app's: a 500.
+    // What would end the cookie, or the header, drops the cookie (logged):
+    // never a panic, never an injected attribute.
     for bad in [
         "a+b", "a%3Bb", "a%2Cb", "a%22b", "a%5Cb", "a%0D%0Ax", "%C3%A9",
     ] {
         let reply = get(&format!("/set-cookie?v={bad}"), &[]);
-        assert_eq!(reply.status, 500, "{bad}");
+        assert_eq!(reply.status, 200, "{bad}");
         assert_eq!(reply.header("set-cookie"), None, "{bad}");
     }
 }
@@ -702,7 +703,13 @@ fn nothing_splits_a_response() {
         "/redirect-to?to=/x%0Aset-cookie:%20x=1",
     ] {
         let reply = get(target, &[]);
-        assert_eq!(reply.status, 500, "{target}");
+        // `cx.set_header` drops the header; a built `Response` is a 500.
+        let want = if target.starts_with("/header") {
+            200
+        } else {
+            500
+        };
+        assert_eq!(reply.status, want, "{target}");
         assert_eq!(reply.header("set-cookie"), None, "{target}");
         assert_eq!(reply.header("x-echo"), None, "{target}");
         assert_eq!(reply.header("location"), None, "{target}");
@@ -711,12 +718,12 @@ fn nothing_splits_a_response() {
     let fine = get("/header?v=a%20b%3B%20c", &[]);
     assert_eq!(header(&fine, "x-echo"), "a b; c");
 
-    let builders = std::panic::catch_unwind(|| {
-        let _ = wisp::Response::text("x").with_header("x", "a\r\nb");
-    });
-    assert!(builders.is_err());
-    assert!(
-        std::panic::catch_unwind(|| wisp::Error::new(400, "x").with_header("x", "a\nb")).is_err()
+    // The builders drop it, or answer 500: never a panic.
+    let r = wisp::Response::text("x").with_header("x", "a\r\nb");
+    assert_eq!(r.status, 200);
+    assert_eq!(
+        wisp::Error::new(400, "x").with_header("x", "a\nb").status(),
+        500
     );
 }
 

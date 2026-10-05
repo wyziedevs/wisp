@@ -1426,7 +1426,9 @@ pub mod rt {
     /// `Origin` on POST; non-browser clients without it are allowed. The
     /// origin must be `ORIGIN` when that is set, or name the host the request
     /// was sent to: `Host`, or `X-Forwarded-Host` from a proxy (a page on
-    /// another site cannot set that header without the app allowing it).
+    /// another site cannot set that header without the app allowing it),
+    /// over `https`, or `http` unless `X-Forwarded-Proto: https` says the
+    /// site is HTTPS.
     /// Without `Origin`, a `Sec-Fetch-Site` that names another site (or a
     /// sibling one, `same-site`) is refused too: an older browser, or a
     /// privacy setting, may leave `Origin` out.
@@ -1443,11 +1445,18 @@ pub mod rt {
                 return Ok(());
             }
         } else {
-            let origin_host = origin.split_once("://").map_or(origin, |(_, h)| h);
-            if [cx.header("host"), cx.forwarded("x-forwarded-host")]
-                .into_iter()
-                .flatten()
-                .any(|h| origin_host.eq_ignore_ascii_case(h))
+            // The scheme counts as far as it is known: a plain-HTTP page
+            // (which anyone on the network can write) may not post to a
+            // site its proxy says is HTTPS. A proxy that names no scheme
+            // leaves HTTPS pages allowed, as Rails and Django do.
+            let (scheme, origin_host) = origin.split_once("://").unwrap_or(("", ""));
+            let scheme_ok = scheme.eq_ignore_ascii_case("https")
+                || (scheme.eq_ignore_ascii_case("http") && !cx.is_https());
+            if scheme_ok
+                && [cx.header("host"), cx.forwarded("x-forwarded-host")]
+                    .into_iter()
+                    .flatten()
+                    .any(|h| origin_host.eq_ignore_ascii_case(h))
             {
                 return Ok(());
             }
@@ -1680,6 +1689,15 @@ mod tests {
         assert_eq!(post("origin: https://b.com\r\n"), Err(403));
         assert_eq!(post("origin: null\r\n"), Err(403));
         assert_eq!(post("origin: https://a.com.b.com\r\n"), Err(403));
+        // A plain-HTTP page (an attacker on the network can write one) may
+        // not post to the site its proxy says is HTTPS; HTTPS to a proxy
+        // that names no scheme stays allowed.
+        let https = "x-forwarded-proto: https\r\n";
+        assert_eq!(post(&format!("{https}origin: http://a.com\r\n")), Err(403));
+        assert_eq!(post(&format!("{https}origin: https://a.com\r\n")), Ok(()));
+        assert_eq!(post("origin: http://a.com\r\n"), Ok(()), "plain dev");
+        assert_eq!(post("origin: a.com\r\n"), Err(403), "no scheme");
+        assert_eq!(post("origin: ftp://a.com\r\n"), Err(403));
         // No `Origin`: what the browser says of the page that sent it.
         assert_eq!(post("sec-fetch-site: same-origin\r\n"), Ok(()));
         assert_eq!(

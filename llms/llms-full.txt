@@ -508,6 +508,7 @@ no-wait fast path off every route.
   `Result`; `opt.or_404()?`, `.or_status(403)?`; `Error::new(s, m)`; any
   `std::error::Error` via `?` → 500. `redirect` keeps a path on the site
   (`//evil` → `/evil`), so `redirect(next)` with a `/`-checked `?next=` is safe.
+  A cookie or header value it cannot hold (CR/LF, `;`) is dropped and logged.
 - `Response::`: `json_of(&v) created(&v) text html empty(s) download(name,
   bytes) file_in(dir, name).await stream ndjson events websocket`
   + `.with_status(s) .with_header(n, v)`. A single-valued header
@@ -1165,39 +1166,19 @@ You need Rust. `bench/README.md` lists every option, the frameworks compared, an
 
 ## Native, Linux (2026-10-04)
 
-Source: [`bench/tfb/RESULTS.md`](https://github.com/wyziedevs/wisp/blob/main/bench/tfb/RESULTS.md) (generated from `results.json`). TechEmpower's plaintext and JSON tests with their own wrk scripts, run 2026-10-04 on one shared 4-vCPU VM (AMD EPYC 7B13), the server on 2 pinned cores, medians of 3 runs of 15 s. Not an official TechEmpower result. Contenders are in a fixed order, not ranked; "Failed" means no run completed a request, and a `0` median means at least 2 of 3 runs completed none. The full results add min, max, latency and errors per row. The same Wisp binary moved between moments on this VM, so gaps inside the min-max ranges are ties.
+Source: [`bench/tfb/RESULTS.md`](https://github.com/wyziedevs/wisp/blob/main/bench/tfb/RESULTS.md) (generated from `results.json`). TechEmpower's plaintext and JSON tests with their own wrk scripts, run 2026-10-04 on one shared 4-vCPU VM (AMD EPYC 7B13), the server on 2 pinned cores, medians of 3 runs of 15 s. Not an official TechEmpower result. Contenders are in a fixed order, not ranked; "Failed" means every run stalled or completed no request. The full results add min, max, latency and errors per row. The same Wisp binary moved between moments on this VM, so gaps inside the min-max ranges are ties.
 
 Plaintext, pipelined, requests per second (median of 3), by connections:
 
-| Contender | 256 | 1024 | 4096 | 16384 |
-|---|---:|---:|---:|---:|
-| **Wisp** | **1,129,577** | **623,348** | **532,959** | **220** |
-| Axum | 276,948 | 381,324 | 446,398 | 171,231 |
-| Actix Web | 603,163 | 366,626 | 351,844 | 0 |
-| Express | 40,421 | 36,184 | 27,554 | 0 |
-| Fastify | 51,713 | 62,345 | 58,956 | 16,573 |
-| Hono (Node) | 28,966 | 29,602 | 34,173 | 0 |
-| Hono (Bun) | 10,599 | 10,375 | 9,652 | 6,910 |
-| SvelteKit | 10,929 | 8,464 | 8,359 | 0 |
-| Next.js | No result | No result | No result | not run |
+<Levels work="plaintext" />
 
-Rows whose min-max ranges overlap are ties. 256: Fastify and Express; Hono (Node), SvelteKit and Hono (Bun). 1024: Axum and Actix Web; Express and Hono (Node). 4096: Hono (Node) and Express. 16384: Wisp's range (0 to 29,252) overlaps every row that answered, so no rank is drawn there.
+Rows whose min-max ranges overlap are ties. 256: Fastify and Express; Hono (Node), SvelteKit and Hono (Bun). 1024: Axum and Actix Web; Express and Hono (Node). 4096: Hono (Node) and Express. 16384: Wisp, Actix Web and Express failed, and Wisp's three stalled runs are under investigation, so no Wisp rank is drawn there.
 
 Next.js completed no pipelined plaintext response at any level, and raising its heap to 8 GB changed nothing, so the cause is not memory; the runs were indicative only.
 
 JSON, requests per second (median of 3), by connections:
 
-| Contender | 16 | 32 | 64 | 128 | 256 | 512 |
-|---|---:|---:|---:|---:|---:|---:|
-| **Wisp** | **71,879** | **86,813** | **96,089** | **107,834** | **91,876** | **73,714** |
-| Axum | 79,105 | 86,901 | 78,427 | 92,662 | 60,465 | 47,070 |
-| Actix Web | 90,199 | 99,098 | 89,648 | 106,246 | 108,428 | 71,315 |
-| Express | 16,945 | 16,586 | 14,746 | 13,795 | 18,023 | 22,644 |
-| Fastify | 21,996 | 21,210 | 21,965 | 19,977 | 21,249 | 24,163 |
-| Hono (Node) | 17,069 | 15,571 | 8,988 | 9,354 | 13,084 | 15,349 |
-| Hono (Bun) | 52,353 | 54,056 | 59,619 | 51,580 | 47,379 | 28,439 |
-| SvelteKit | 7,990 | 9,774 | 10,378 | 7,714 | 6,062 | 6,698 |
-| Next.js | 1,499 | 1,285 | 1,524 | 1,513 | 1,370 | 1,715 |
+<Levels work="json" />
 
 Rows whose min-max ranges overlap are ties. 16: Actix Web and Axum, Axum and Wisp; Fastify, Hono (Node) and Express. 32: Wisp with Actix Web and with Axum; Express, Hono (Node) and SvelteKit. 64: Wisp, Actix Web and Axum; SvelteKit and Hono (Node). 128: Wisp and Actix Web. 256: Fastify and Express. 512: Wisp and Actix Web; Axum and Hono (Bun).
 
@@ -4875,6 +4856,8 @@ Wisp is young and has not been audited, and it can be broken. This page lists wh
 **Auth**
 
 - `redirect` keeps a path on the site: `//evil.example` and `/\evil.example` (another site to a browser, tabs dropped) go out as `/evil.example`, so `redirect(next)` with a `?next=` checked to start with `/` is no open redirect. Another site needs its scheme (`https://…`).
+- `cx.set_cookie`, `cx.set_header` and `Response::with_header` with a value they cannot hold (CR/LF, `;`, a space or non-ASCII in a cookie) drop it and log one line, and `Error::with_header` becomes a logged 500: never a panic, never an injected header or cookie attribute.
+- Form posts and WebSocket upgrades without `ORIGIN` set check the scheme too: an `http://` page cannot post to a site whose proxy sends `X-Forwarded-Proto: https`, and an `Origin` that is not `http(s)://` is refused. A proxy that sends no scheme leaves `https://` pages allowed, as Rails and Django do; set `ORIGIN` for an exact match.
 
 **Servers**
 
@@ -4891,7 +4874,7 @@ Wisp is young and has not been audited, and it can be broken. This page lists wh
 
 **Files and uploads**
 
-- Upload file names lose a drive (`C:`) and an NTFS stream (`:stream`), as well as paths.
+- Upload file names lose a drive (`C:`) and an NTFS stream (`:stream`), as well as paths, and trailing dots and spaces; a Windows device name (`CON`, `nul.txt`, `COM1.png`) gets a `_` in front.
 - Static files and `Response::file_in` answer 404 for Windows device names (`nul`, `CON.txt`, `COM1`) and for names Windows trims (`a.txt.`, `a.txt `).
 
 **Browser script and dev mode**
@@ -4958,16 +4941,7 @@ An AI reads and writes code by the token, so an app's cost is measured in tokens
 
 The Node apps: Nuxt is file routes, server routes in `server/api` and `useFetch`, the form posting with `$fetch`; Express renders EJS views with a shared header and footer and a small script for the search; React is a Vite app with React Router, `useState` and `fetch`, over a small Express API. Their generated `package.json`, `nuxt.config.ts` and `index.html` are not counted; the proxy line added to `vite.config.js` is. The Wisp app builds with the workspace, and its tests check each feature.
 
-| Stack | list | form | api | layout | search | data | setup | total | chars / 4 | files |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| **Wisp** | 58 | 79 | 31 | 60 | 96 | 108 | 44 | **476** | 299 | 7 |
-| SvelteKit 2 | 128 | 602 | 57 | 83 | 192 | 72 | 0 | 1134 | 696 | 9 |
-| Next.js 15 | 107 | 575 | 44 | 108 | 241 | 71 | 0 | 1146 | 782 | 8 |
-| Nuxt 4 (Vue) | 96 | 600 | 22 | 96 | 158 | 71 | 0 | 1043 | 670 | 8 |
-| React 19 (Vite + Express) | 108 | 696 | 32 | 268 | 191 | 161 | 143 | 1599 | 1098 | 9 |
-| Express 5 + EJS | 128 | 602 | 34 | 116 | 291 | 69 | 148 | 1388 | 805 | 8 |
-| Axum 0.8 + askama | 145 | 894 | 29 | 104 | 217 | 123 | 291 | 1803 | 1239 | 7 |
-| Actix Web 4 + tera | 164 | 906 | 46 | 104 | 237 | 123 | 298 | 1878 | 1279 | 7 |
+<TokenGrid />
 
 Wisp's `data` is longer than JavaScript's: a Rust type with its fields' types. Most of the rest is shorter, the form most of all; the exception is `api`, where Nuxt (22) and Axum (29) are shorter than Wisp (31). Against Wisp's total, Nuxt is 2.2 times, SvelteKit 2.4, Next.js 2.4, Express 2.9, React 3.4, Axum 3.8 and Actix 3.9. Of what is left, 108 tokens are the Rust type and data, and the rest is markup every stack writes.
 
