@@ -13,7 +13,7 @@ ulimit -n 1048576 2>/dev/null || ulimit -n 65535
 
 pass() {
   local n=$1 list=$ALL
-  [ "$n" = 2 ] && list=$(echo $ALL | tr ' ' '\n' | tac | tr '\n' ' ')
+  [ $((n % 2)) = 0 ] && list=$(echo $ALL | tr ' ' '\n' | tac | tr '\n' ' ')
   # pass 3 (the tie-break when 1 and 2 disagree): neither order, Rust servers split up
   [ "$n" = 3 ] && list="axum fastify wisp spring actix sveltekit aspnet fastapi gin next hono-bun express"
   for f in $list; do

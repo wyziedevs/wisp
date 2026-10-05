@@ -90,6 +90,19 @@ async function start(f) {
 function session(pid) {
   try { return execFileSync('ps', ['-o', 'pid=', '--sid', String(pid)], { encoding: 'utf8' }).split(/\s+/).filter(Boolean).map(Number); } catch { return []; }
 }
+// CPU the server's processes have used (user + system, 10 ms ticks): CPU per request does not
+// move with hypervisor steal the way req/s does.
+function ticks(pid) {
+  let t = 0;
+  for (const p of session(pid)) {
+    try {
+      const s = readFileSync(`/proc/${p}/stat`, 'utf8');
+      const f = s.slice(s.lastIndexOf(')') + 2).split(' ');
+      t += +f[11] + +f[12];
+    } catch {}
+  }
+  return t;
+}
 function memKb(pid) {
   let rss = 0, hwm = 0;
   for (const p of session(pid)) {
@@ -118,7 +131,7 @@ function oha(route, secs) {
   const j = JSON.parse(out);
   const codes = j.statusCodeDistribution || {};
   const non200 = Object.entries(codes).filter(([k]) => k !== '200').reduce((s, [, v]) => s + v, 0);
-  return { rps: j.summary.requestsPerSec, p50: (j.latencyPercentiles?.p50 ?? 0) * 1000, p99: (j.latencyPercentiles?.p99 ?? 0) * 1000, non200, errors: Object.values(j.errorDistribution || {}).reduce((s, v) => s + v, 0) };
+  return { rps: j.summary.requestsPerSec, p50: (j.latencyPercentiles?.p50 ?? 0) * 1000, p99: (j.latencyPercentiles?.p99 ?? 0) * 1000, non200, reqs: Object.values(codes).reduce((s, v) => s + v, 0), errors: Object.values(j.errorDistribution || {}).reduce((s, v) => s + v, 0) };
 }
 // Hypervisor steal over a window: the VPS is shared, so a run's numbers are only as good as its steal.
 const cpu = () => {
@@ -156,7 +169,7 @@ async function bench(f, pass) {
       for (let i = 0; i < runs; i++) {
         let best = null;
         for (let a = 0; a < STEAL_TRIES; a++) {
-          const c0 = cpu(); const r = oha(n, secs); const c1 = cpu();
+          const c0 = cpu(); const k0 = ticks(pid); const r = oha(n, secs); const k1 = ticks(pid); const c1 = cpu(); r.cpuUs = (k1 - k0) * 10000 / Math.max(1, r.reqs);
           r.steal = 100 * (c1[0] - c0[0]) / (c1[1] - c0[1]);
           if (!best || r.steal < best.steal) best = r;
           if (r.steal <= STEAL_MAX) break;
@@ -165,8 +178,8 @@ async function bench(f, pass) {
         rs.push(best); await sleep(500);
       }
       const m = median(rs);
-      res.routes[n] = { rps: Math.round(m.rps), p50ms: +m.p50.toFixed(2), p99ms: +m.p99.toFixed(2), non200: rs.reduce((s, x) => s + x.non200, 0), errors: rs.reduce((s, x) => s + x.errors, 0), runs: rs.map((x) => Math.round(x.rps)), stealPct: +median(rs.map((x) => ({ rps: x.steal }))).rps.toFixed(1), discarded, noisy: rs.some((x) => x.steal > STEAL_MAX) };
-      console.log(`[${f}] ${n}: ${res.routes[n].rps} req/s p99 ${res.routes[n].p99ms} ms steal ${res.routes[n].stealPct}% discarded ${discarded}${res.routes[n].noisy ? ' NOISY' : ''}  runs ${res.routes[n].runs.join(' ')}`);
+      res.routes[n] = { rps: Math.round(m.rps), p50ms: +m.p50.toFixed(2), p99ms: +m.p99.toFixed(2), non200: rs.reduce((s, x) => s + x.non200, 0), errors: rs.reduce((s, x) => s + x.errors, 0), cpuUs: +m.cpuUs.toFixed(1), runs: rs.map((x) => Math.round(x.rps)),stealPct: +median(rs.map((x) => ({ rps: x.steal }))).rps.toFixed(1), discarded, noisy: rs.some((x) => x.steal > STEAL_MAX) };
+      console.log(`[${f}] ${n}: ${res.routes[n].rps} req/s p99 ${res.routes[n].p99ms} ms cpu ${res.routes[n].cpuUs} us/req steal ${res.routes[n].stealPct}% discarded ${discarded}${res.routes[n].noisy ? ' NOISY' : ''}  runs ${res.routes[n].runs.join(' ')}`);
     }
     Object.assign(res, memKb(pid));
     console.log(`[${f}] rss ${res.rssMb} MB (peak ${res.peakMb})`);

@@ -1,6 +1,8 @@
 #!/usr/bin/env node
-// Renders results/pass1 + results/pass2 into markdown: per route, both passes side by side, the
-// rank in each pass, the gap between passes (flagged above 5%), and the final rank on the mean.
+// Renders results/pass{1,2,3}/*.json into markdown. Per route: every pass side by side (~ marks a
+// pass whose host steal stayed above the gate), the final value, and the rank. Final value: the
+// median of the clean passes (all passes if fewer than two are clean). A cell "agrees" when two
+// clean passes are within 5% of each other; otherwise it is flagged and its rank is provisional.
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,54 +16,75 @@ const load = (p) => {
   if (existsSync(d)) for (const f of readdirSync(d)) if (f.endsWith('.json')) o[f.slice(0, -5)] = JSON.parse(readFileSync(join(d, f), 'utf8'));
   return o;
 };
-const P = [load(1), load(2)];
-const fws = Object.keys(P[0]).filter((f) => P[1][f] || true);
-const name = (f) => (P[0][f] || P[1][f]).framework;
-const n = (x) => (x == null ? '-' : x.toLocaleString('en-US'));
-const mean = (a) => { const v = a.filter((x) => x != null); return v.length ? v.reduce((s, x) => s + x, 0) / v.length : null; };
-const diff = (a, b) => (a != null && b != null ? Math.abs(a - b) / ((a + b) / 2) * 100 : null);
+const P = [1, 2, 3].map(load).filter((x) => Object.keys(x).length);
+const fws = [...new Set(P.flatMap((x) => Object.keys(x)))];
+const name = (f) => P.map((x) => x[f]?.framework).find(Boolean);
+const n = (x) => (x == null ? '-' : Math.round(x).toLocaleString('en-US'));
+const median = (a) => { const s = [...a].sort((x, y) => x - y); return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2; };
+const gap = (a, b) => Math.abs(a - b) / ((a + b) / 2) * 100;
+
+// One cell: all passes, the clean ones, the final number, whether two clean passes agree.
+function cell(f, r) {
+  const v = P.map((x) => x[f]?.routes?.[r]).map((c) => (c ? { rps: c.rps, noisy: !!c.noisy, p99: c.p99ms, steal: c.stealPct } : null));
+  const have = v.filter(Boolean);
+  const clean = have.filter((c) => !c.noisy);
+  const use = clean.length >= 2 ? clean : have;
+  let agree = false;
+  for (let i = 0; i < clean.length; i++) for (let j = i + 1; j < clean.length; j++) if (gap(clean[i].rps, clean[j].rps) <= 5) agree = true;
+  return { v, final: use.length ? median(use.map((c) => c.rps)) : null, agree, nclean: clean.length };
+}
 const ranks = (get, asc) => {
-  const xs = fws.map((f) => [f, get(f)]).filter(([, v]) => v != null).sort((a, b) => (asc ? a[1] - b[1] : b[1] - a[1]));
+  const xs = fws.map((f) => [f, get(f)]).filter(([, x]) => x != null).sort((a, b) => (asc ? a[1] - b[1] : b[1] - a[1]));
   return Object.fromEntries(xs.map(([f], i) => [f, i + 1]));
 };
-const nz = (p, f, r) => (P[p][f]?.routes?.[r]?.noisy ? '~' : '');
+
 const out = [];
 const flagged = [];
-
-out.push('## Throughput (req/s, median of 5 x 10 s; higher is better; ~ marks a cell where host steal stayed above 8% in some run)\n');
 const finalRank = {};
+const passCols = P.map((_, i) => `Pass ${i + 1}`).join(' | ');
+out.push(`## Throughput (req/s, median of 5 x 10 s per pass; higher is better)\n`, '`~` = host steal stayed above the gate in that pass. Final = median of the clean passes. Status: ok = two clean passes within 5%; **no agree** = they never did (the shared host, see README).\n');
 for (const r of ROUTES) {
-  const g = (p) => (f) => P[p][f]?.routes?.[r]?.rps ?? null;
-  const rk = [ranks(g(0)), ranks(g(1))];
-  const m = (f) => mean([g(0)(f), g(1)(f)]);
-  const fr = ranks(m);
+  const cells = Object.fromEntries(fws.map((f) => [f, cell(f, r)]));
+  const fr = ranks((f) => cells[f].final);
   finalRank[r] = fr;
-  out.push(`### ${LABEL[r]}\n`, '| Rank | Framework | Pass 1 | Pass 2 | Mean | Pass gap | Rank p1/p2 | p99 ms p1/p2 |', '|---|---|---|---|---|---|---|---|');
+  out.push(`### ${LABEL[r]}\n`, `| Rank | Framework | ${passCols} | Final | Status |`, `|---|---|${P.map(() => '---').join('|')}|---|---|`);
   for (const f of Object.keys(fr).sort((a, b) => fr[a] - fr[b])) {
-    const d = diff(g(0)(f), g(1)(f));
-    const flag = d != null && d > 5;
-    if (flag) flagged.push(`${name(f)} ${r}: ${d.toFixed(1)}%`);
-    out.push(`| ${fr[f]} | ${name(f)} | ${n(g(0)(f))}${nz(0, f, r)} | ${n(g(1)(f))}${nz(1, f, r)} | ${n(Math.round(m(f)))} | ${d == null ? '-' : d.toFixed(1) + '%'}${flag ? ' **FLAG**' : ''} | ${rk[0][f] ?? '-'}/${rk[1][f] ?? '-'} | ${P[0][f]?.routes?.[r]?.p99ms ?? '-'} / ${P[1][f]?.routes?.[r]?.p99ms ?? '-'} |`);
+    const c = cells[f];
+    if (!c.agree) flagged.push(`${name(f)} ${r}`);
+    out.push(`| ${fr[f]} | ${name(f)} | ${c.v.map((x) => (x ? n(x.rps) + (x.noisy ? '~' : '') : '-')).join(' | ')} | ${n(c.final)} | ${c.agree ? 'ok' : '**no agree**'} |`);
   }
   out.push('');
 }
 
-out.push('## Rank summary (by mean of both passes; 1 is fastest)\n', `| Framework | ${ROUTES.join(' | ')} | Sum |`, `|---|${ROUTES.map(() => '---').join('|')}|---|`);
+out.push('## Rank summary (by final value; 1 is fastest)\n', `| Framework | ${ROUTES.join(' | ')} | Sum |`, `|---|${ROUTES.map(() => '---').join('|')}|---|`);
 const sums = (f) => ROUTES.reduce((s, r) => s + (finalRank[r][f] ?? 12), 0);
 for (const f of [...fws].sort((a, b) => sums(a) - sums(b))) out.push(`| ${name(f)} | ${ROUTES.map((r) => finalRank[r][f] ?? '-').join(' | ')} | ${sums(f)} |`);
 
+out.push('', '## Per pass ranks (what each pass said on its own)\n', `| Framework | ${P.map((_, i) => `Pass ${i + 1}: ${ROUTES.join(' ')}`).join(' | ')} |`, `|---|${P.map(() => '---').join('|')}|`);
+const pr = P.map((x) => Object.fromEntries(ROUTES.map((r) => [r, ranks((f) => x[f]?.routes?.[r]?.rps ?? null)])));
+for (const f of [...fws].sort((a, b) => sums(a) - sums(b))) out.push(`| ${name(f)} | ${P.map((_, i) => ROUTES.map((r) => pr[i][r][f] ?? '-').join(' ')).join(' | ')} |`);
+
+// CPU per request: user+system time of the server's processes per request. Hypervisor steal does
+// not count as the server's CPU, so this ranks the frameworks by work done, steal or not.
+const cpuOf = (f, r) => { const v = P.map((x) => x[f]?.routes?.[r]?.cpuUs).filter((x) => x != null); return v.length ? median(v) : null; };
+if (fws.some((f) => ROUTES.some((r) => cpuOf(f, r) != null))) {
+  const cr = Object.fromEntries(ROUTES.map((r) => [r, ranks((f) => cpuOf(f, r), true)]));
+  const csum = (f) => ROUTES.reduce((s, r) => s + (cr[r][f] ?? 12), 0);
+  out.push('', '## CPU per request (server CPU microseconds, user+system, both cores; lower is better; rank in brackets)\n', `| Framework | ${ROUTES.join(' | ')} | Sum of ranks |`, `|---|${ROUTES.map(() => '---').join('|')}|---|`);
+  for (const f of [...fws].sort((a, b) => csum(a) - csum(b))) out.push(`| ${name(f)} | ${ROUTES.map((r) => `${cpuOf(f, r)?.toFixed(1) ?? '-'} (${cr[r][f] ?? '-'})`).join(' | ')} | ${csum(f)} |`);
+}
+
 const metric = (title, key, unit) => {
-  const g = (p) => (f) => P[p][f]?.[key] ?? null;
-  const m = (f) => mean([g(0)(f), g(1)(f)]);
-  const fr = ranks(m, true);
-  out.push('', `## ${title} (${unit}; lower is better)\n`, '| Rank | Framework | Pass 1 | Pass 2 | Mean | Pass gap |', '|---|---|---|---|---|---|');
-  for (const f of Object.keys(fr).sort((a, b) => fr[a] - fr[b])) {
-    const d = diff(g(0)(f), g(1)(f));
-    out.push(`| ${fr[f]} | ${name(f)} | ${n(g(0)(f))} | ${n(g(1)(f))} | ${n(Math.round(m(f)))} | ${d == null ? '-' : d.toFixed(1) + '%'}${d != null && d > 5 ? ' (differs; see notes)' : ''} |`);
-  }
+  const g = (f) => { const v = P.map((x) => x[f]?.[key]).filter((x) => x != null); return v.length ? median(v) : null; };
+  const fr = ranks(g, true);
+  out.push('', `## ${title} (${unit}; lower is better; median of the passes)\n`, `| Rank | Framework | ${passCols} | Median |`, `|---|---|${P.map(() => '---').join('|')}|---|`);
+  for (const f of Object.keys(fr).sort((a, b) => fr[a] - fr[b])) out.push(`| ${fr[f]} | ${name(f)} | ${P.map((x) => n(x[f]?.[key])).join(' | ')} | ${n(g(f))} |`);
 };
 metric('Cold start, spawn to first 200 on `/`', 'coldMs', 'ms');
-metric('RSS after load (all processes of the server)', 'rssMb', 'MB');
+metric('RSS after load, all processes of the server', 'rssMb', 'MB');
 
-out.push('', '## Cells where the two passes differ by more than 5%\n', flagged.length ? flagged.map((x) => `- ${x}`).join('\n') : 'none');
+const w = (f, r) => cell(f, r);
+const wisp = Object.keys(finalRank.plaintext).find((f) => name(f) === 'Wisp');
+out.push('', '## Wisp outside the top 3', '', ROUTES.filter((r) => finalRank[r][wisp] > 3).map((r) => `- ${LABEL[r]}: rank ${finalRank[r][wisp]}`).join('\n') || 'none (by final value)');
+out.push('', '## Cells where no two clean passes agree within 5%', '', flagged.length ? flagged.map((x) => `- ${x}`).join('\n') : 'none');
 console.log(out.join('\n'));
