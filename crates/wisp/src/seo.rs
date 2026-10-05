@@ -18,7 +18,8 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 /// another path, or an app with no page to list.
 pub(crate) fn answer<A: App>(cx: &Cx) -> Option<(Vec<u8>, &'static str)> {
     let sitemap = match cx.raw_path() {
-        b"/feed.xml" => {
+        // An app with no Markdown pages has no feed, nor its code.
+        b"/feed.xml" if !A::PAGES.is_empty() => {
             let slashed = crate::http::slash() == crate::TrailingSlash::Always;
             let feed = atom(&base(cx)?, crate::content::all(), slashed)?;
             return Some((feed.into_bytes(), "application/atom+xml; charset=utf-8"));

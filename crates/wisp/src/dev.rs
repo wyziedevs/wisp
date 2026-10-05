@@ -421,6 +421,10 @@ fn color() -> bool {
 /// `$lib/` image (`/_app/img/lib/x.png`) is `src/lib`'s, anything else
 /// comes from `static/`.
 pub(crate) fn read_file(root: &str, path: &str) -> Option<(Vec<u8>, String)> {
+    // wasm32 has no files: none is read, and the code to is left out.
+    if cfg!(target_arch = "wasm32") {
+        return None;
+    }
     let root = Path::new(root);
     if path == crate::protocol::route::APP_CSS_PATH {
         return app_css(root).map(|css| (css, "css".into()));
