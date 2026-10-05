@@ -1,6 +1,6 @@
 # Docs move with code (always)
 
-Any change that alters the public API, a template or Rust-block syntax, the CLI or behavior updates, in the same change:
+Any change to the framework (API, syntax, CLI, behavior, fixes, security hardening, speed, benchmark or token numbers) updates, in the same change, and the website (https://wispweb.dev, repo `../wisp-docs`, pushed to its `main`) is ALWAYS part of it: the change is not done until the live site matches the code.
 
 - `///` on every `pub` item of `crates/wisp`: what it is, each argument, what it returns and when it errs, a tiny example where it helps. `#![deny(missing_docs)]` fails the build on a gap; rust-analyzer shows them on hover.
 - The editor hover in `crates/wisp-cli/src/lsp.rs`: `KNOBS` (`const` knobs), `ATTRS` (`fields`, `action`, `use:enhance`, `data-wisp-*`), `DIRECTIVES`, `BLOCKS`. The test `hover_covers_the_reference` fails when `llms/AGENTS.md` or the docs site pages show a knob, `data-wisp-*` attribute or block it lacks.
