@@ -15,7 +15,7 @@ const OTHER: u8 = 5;
 
 /// The rules, by number: the languages each covers (the part of a locale
 /// before `-` or `_`, `pt-PT` apart) and the cases it has.
-const RULES: [(&[&str], &[u8]); 14] = [
+const RULES: [(&[&str], &[u8]); 15] = [
     // 0: no plural.
     (
         &[
@@ -28,7 +28,7 @@ const RULES: [(&[&str], &[u8]); 14] = [
         &[
             "en", "de", "nl", "sv", "da", "nb", "nn", "no", "fi", "et", "el", "hu", "tr", "bg",
             "gl", "eu", "af", "sw", "ur", "sq", "az", "ka", "kk", "ky", "mn", "uz", "ml", "ta",
-            "te", "ne", "mr", "is", "fy", "lb",
+            "te", "ne", "mr", "fy", "lb",
         ],
         &[ONE, OTHER],
     ),
@@ -56,6 +56,8 @@ const RULES: [(&[&str], &[u8]); 14] = [
     (&["lt"], &[ONE, FEW, MANY, OTHER]),
     // 13: zero = …0 or …11-19; one = …1 but …11.
     (&["lv"], &[ZERO, ONE, OTHER]),
+    // 14: one = …1 but …11.
+    (&["is"], &[ONE, OTHER]),
 ];
 
 /// The rule of `locale` (`en`, `pt-BR`, `zh_Hant`), if this table has its
@@ -92,11 +94,12 @@ pub fn category(r: u8, n: u64) -> u8 {
         8 | 9 if n == 2 => TWO,
         8 if (3..=10).contains(&m100) => FEW,
         8 if m100 >= 11 => MANY,
-        11 if n == 0 || (2..=19).contains(&m100) => FEW,
+        11 if n == 0 || (1..=19).contains(&m100) => FEW,
         12 if m10 == 1 && !(11..=19).contains(&m100) => ONE,
         12 if m10 >= 2 && !(11..=19).contains(&m100) => FEW,
         13 if m10 == 0 || (11..=19).contains(&m100) => ZERO,
         13 if m10 == 1 => ONE,
+        14 if m10 == 1 && m100 != 11 => ONE,
         _ => OTHER,
     }
 }
@@ -150,6 +153,11 @@ mod tests {
                 assert_eq!(case(locale, n), want, "{locale} {n}");
             }
         }
+        // Icelandic counts by the last digit, Romanian's few starts at …01.
+        assert_eq!(case("is", 21), "one");
+        assert_eq!(case("is", 11), "other");
+        assert_eq!(case("ro", 101), "few");
+        assert_eq!(case("ro", 20), "other");
         assert_eq!(rule("xx"), None);
         // Every case a rule picks is one it lists.
         for r in 0..RULES.len() as u8 {

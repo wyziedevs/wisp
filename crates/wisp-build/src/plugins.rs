@@ -44,6 +44,10 @@ pub(crate) fn sync(root: &Path) -> Result<Vec<PathBuf>, String> {
         })
         .collect::<Result<_, _>>()?;
     ids.extend(layer_dirs.iter().map(|d| layer_id(d)));
+    // `a-b` and `a_b` would share a folder.
+    if let Some(i) = (1..ids.len()).find(|&i| ids[..i].contains(&ids[i])) {
+        return Err(format!("plugin or layer `{}`: listed twice", ids[i]));
+    }
     for sub in ["routes", "components"] {
         for e in fs::read_dir(root.join("src").join(sub))
             .into_iter()
@@ -357,12 +361,55 @@ mod tests {
     use super::*;
 
     #[test]
+    fn duplicate_plugin_ids() {
+        let d = std::env::temp_dir().join(format!("wisp-plugin-dup-{}", std::process::id()));
+        fs::create_dir_all(&d).unwrap();
+        fs::write(
+            d.join("Cargo.toml"),
+            "[package.metadata.wisp]
+use = [\"a-b\", \"a_b\"]
+",
+        )
+        .unwrap();
+        assert!(sync(&d).unwrap_err().contains("listed twice"));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn reads_the_base_path() {
         let t =
             "[package]\nname = \"a\"\n[package.metadata.wisp]\nbase = \"/user\"\nuse = [\"kit\"]\n";
         assert_eq!(base_of(t).as_deref(), Some("/user"));
         assert_eq!(used(t), ["kit"]);
         assert_eq!(base_of("[package]\nbase = \"/x\"\n"), None);
+    }
+
+    #[test]
+    fn use_is_the_key_not_a_word() {
+        let t = "[package.metadata.wisp]
+reuse = [\"x\"]
+use = [\"kit\"]
+";
+        assert_eq!(used(t), ["kit"]);
+        assert!(
+            used(
+                "[package.metadata.wisp]
+reuse = [\"x\"]
+"
+            )
+            .is_empty()
+        );
+        let d = std::env::temp_dir().join(format!("wisp-plugin-dup-{}", std::process::id()));
+        fs::create_dir_all(&d).unwrap();
+        fs::write(
+            d.join("Cargo.toml"),
+            "[package.metadata.wisp]
+use = [\"a-b\", \"a_b\"]
+",
+        )
+        .unwrap();
+        assert!(sync(&d).unwrap_err().contains("listed twice"));
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]

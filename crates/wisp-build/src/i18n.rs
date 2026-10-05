@@ -143,6 +143,10 @@ pub fn load(root: &Path) -> Result<Option<Locales>, String> {
 /// The locales of `files`, `(name, text)` sorted by name.
 fn parse(files: &[(String, String)], set: &Settings) -> Result<Locales, String> {
     let rel = |k: usize| format!("src/locales/{}.json", files[k].0);
+    // A locale is an index of one byte at run time.
+    if files.len() > 255 {
+        return Err("src/locales: at most 255 locales".into());
+    }
     // Per locale: (key, its message, line).
     let mut all: Vec<Vec<(String, Vec<Part>, u32)>> = Vec::new();
     let mut rules = Vec::new();
@@ -992,6 +996,17 @@ mod tests {
         // A high surrogate needs a low one after it, not any `\u`.
         assert!(string(r#""\ud83dA""#, 0).is_err());
         assert!(string(r#""\udc00""#, 0).is_err());
+    }
+
+    #[test]
+    fn too_many_locales() {
+        let names: Vec<String> = (0..256).map(|i| format!("l{i}")).collect();
+        let files: Vec<(&str, &str)> = names.iter().map(|n| (n.as_str(), "{}")).collect();
+        assert!(
+            locales(&files)
+                .err()
+                .is_some_and(|e| e.contains("at most 255"))
+        );
     }
 
     #[test]

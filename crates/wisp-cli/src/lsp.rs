@@ -5,7 +5,7 @@
 //! an answer, never the end of the server.
 
 use std::collections::HashMap;
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use wisp_build::fmt;
@@ -25,7 +25,10 @@ pub fn serve(input: &mut impl BufRead, out: &mut impl Write) -> Result<(), Strin
             send(out, &reply("null", Err((-32700, "not JSON"))))?;
             continue;
         };
-        let method = msg.str("method").unwrap_or("");
+        // The client's answers to nothing we asked have no method: not ours.
+        let Some(method) = msg.str("method") else {
+            continue;
+        };
         if method == "exit" {
             break;
         }
@@ -44,25 +47,39 @@ pub fn serve(input: &mut impl BufRead, out: &mut impl Write) -> Result<(), Strin
 }
 
 /// One message's body, after its headers; `None` at the end of the input.
+/// A frame that cannot be told apart from the next is an error: no guessing.
 fn read_message(r: &mut impl BufRead) -> Result<Option<String>, String> {
     let mut len = None;
     loop {
         let mut line = String::new();
-        if r.read_line(&mut line).map_err(|e| e.to_string())? == 0 {
+        // A header is a short line; a long one is not LSP.
+        if r.by_ref()
+            .take(8192)
+            .read_line(&mut line)
+            .map_err(|e| e.to_string())?
+            == 0
+        {
             return Ok(None);
         }
         let line = line.trim_end();
-        if line.is_empty() && len.is_some() {
+        if line.is_empty() {
             break;
         }
         if let Some((k, v)) = line.split_once(':')
             && k.eq_ignore_ascii_case("content-length")
         {
-            len = v.trim().parse::<usize>().ok().filter(|&n| n < 1 << 26);
+            len = Some(v.trim().parse::<usize>().ok().filter(|&n| n < 1 << 26));
+            if len == Some(None) {
+                return Err(format!("bad Content-Length: {}", v.trim()));
+            }
         }
     }
-    let mut body = vec![0; len.unwrap_or(0)];
-    r.read_exact(&mut body).map_err(|e| e.to_string())?;
+    let Some(Some(len)) = len else {
+        return Err("a message without a Content-Length".into());
+    };
+    let mut body = vec![0; len];
+    r.read_exact(&mut body)
+        .map_err(|_| "the input ended inside a message".to_string())?;
     Ok(Some(String::from_utf8_lossy(&body).into_owned()))
 }
 
@@ -1679,5 +1696,79 @@ mod tests {
             .filter(|k| !BLOCKS.iter().any(|e| e.0 == k))
             .collect();
         assert!(missing.is_empty(), "no hover for {missing:?}");
+    }
+
+    #[test]
+    fn framing() {
+        let read = |s: &str| read_message(&mut s.as_bytes());
+        assert_eq!(read("").unwrap(), None);
+        assert_eq!(
+            read(
+                "Content-Length: 2
+
+hi"
+            )
+            .unwrap()
+            .as_deref(),
+            Some("hi")
+        );
+        assert!(
+            read(
+                "Content-Length: 99999999999
+
+"
+            )
+            .unwrap_err()
+            .contains("bad")
+        );
+        assert!(
+            read(
+                "Content-Length: x
+
+"
+            )
+            .unwrap_err()
+            .contains("bad")
+        );
+        assert!(
+            read(
+                "X: 1
+
+{}"
+            )
+            .unwrap_err()
+            .contains("without")
+        );
+        assert!(
+            read(
+                "Content-Length: 5
+
+hi"
+            )
+            .unwrap_err()
+            .contains("ended")
+        );
+        let long = format!(
+            "{}
+",
+            "a".repeat(20000)
+        );
+        assert!(read(&long).is_err() || read(&long).unwrap().is_none());
+    }
+
+    #[test]
+    fn client_answers_are_not_requests() {
+        let input: String = [
+            r#"{"jsonrpc":"2.0","id":7,"result":null}"#,
+            r#"[1,2]"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"shutdown"}"#,
+        ]
+        .iter()
+        .map(|m| frame(m))
+        .collect();
+        let mut out = Vec::new();
+        serve(&mut input.as_bytes(), &mut out).unwrap();
+        let msgs = messages(&out);
+        assert_eq!(msgs.len(), 1, "{msgs:?}");
     }
 }

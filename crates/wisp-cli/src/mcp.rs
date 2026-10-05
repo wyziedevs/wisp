@@ -426,6 +426,17 @@ mod tests {
             Some(&Json::Num("-32601".into()))
         );
         assert!(reply("{").get("error").is_some());
+        // Malformed shapes get an error or a tool error, never a panic.
+        for bad in [
+            "[]",
+            "1",
+            r#"{"id":1}"#,
+            r#"{"id":1,"method":5}"#,
+            r#"{"id":1,"method":"tools/call","params":"x"}"#,
+            r#"{"id":1,"method":"tools/call","params":{"name":7,"arguments":[]}}"#,
+        ] {
+            assert!(answer(bad).is_some(), "{bad}");
+        }
     }
 
     #[test]
