@@ -328,7 +328,8 @@ impl Cx {
     /// Optional parameters that are absent are `""`.
     ///
     /// Panics if the route has no such parameter: that is a typo in code,
-    /// not bad input.
+    /// not bad input. A literal `cx.param("name")` in the route's own
+    /// `+page.rs` or `+server.rs` is checked at build, so it fails there.
     pub fn param(&self, name: &str) -> &str {
         match self.route_param(name) {
             Some(v) => v,
