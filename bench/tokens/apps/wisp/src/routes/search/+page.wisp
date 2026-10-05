@@ -6,7 +6,7 @@ let items = items().await;
 <title>Search</title>
 <input bind:value="q" placeholder="Search">
 <ul>
-  {:#each items.filter((i) => matches(i.name, q)) as item}
+  {:#each items as item if matches(item.name, q)}
     <li>{:item.name}</li>
-  {:/each}
+  {/each}
 </ul>

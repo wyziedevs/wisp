@@ -2436,6 +2436,13 @@ impl Parser<'_> {
                     self.err(open, "expected {:#each list as item}, {:#each list as item, i} or with a key: {:#each list as item, i (item.id)}".into())
                 };
                 // `{:#each list}` alone draws its content once per item.
+                let (arg, cond) = match arg.rfind(" as ") {
+                    Some(at) => match arg[at..].find(" if ") {
+                        Some(n) => (&arg[..at + n], Some(arg[at + n + 4..].trim())),
+                        None => (arg, None),
+                    },
+                    None => (arg, None),
+                };
                 let (list, pat, key) = match split_client_each(arg) {
                     Some(x) => x,
                     None if !arg.contains(" as ") && !arg.trim_end().ends_with(" as") => {
@@ -2455,9 +2462,18 @@ impl Parser<'_> {
                             .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'$')
                         && !js::is_reserved(s)
                 };
-                if !(ident(item) || pat.is_empty()) || index.is_some_and(|i| !ident(i)) {
+                if !(ident(item) || pat.is_empty() && cond.is_none())
+                    || index.is_some_and(|i| !ident(i))
+                    || cond == Some("")
+                {
                     return Err(bad());
                 }
+                // `{:#each xs as x if cond}` keeps the items where cond holds.
+                let list = match cond {
+                    Some(c) => format!("({}).filter(({item}) => {c})", list.trim()),
+                    None => list.to_string(),
+                };
+                let list = list.as_str();
                 d.kind = Dir::Each;
                 d.name = item.to_string();
                 d.mods.extend(index.map(String::from));
@@ -3456,15 +3472,27 @@ impl Parser<'_> {
                 otherwise: None,
             },
             "each" => {
-                let (iter, pat, index) = split_each(arg).ok_or_else(|| {
+                let (head, cond) = split_filter(arg);
+                let (iter, pat, index) = split_each(head).ok_or_else(|| {
                     self.err(
                         open,
-                        "expected {#each <expr> as <pattern>[, <index>]}".into(),
+                        "expected {#each <expr> as <pattern>[, <index>] [if <cond>]}".into(),
                     )
                 })?;
+                // `{#each xs as x if cond}` keeps the items where cond holds.
+                let iter = match cond {
+                    Some(_) if !is_ident(pat) => {
+                        return Err(self.err(
+                            open,
+                            "{#each … as x if cond} needs a plain name before `if`".into(),
+                        ));
+                    }
+                    Some(c) => format!("({iter}).into_iter().filter(|{pat}| {c})"),
+                    None => iter.to_string(),
+                };
                 Frame::Each {
                     pos: open,
-                    iter: self.code_at(open, iter),
+                    iter: self.code_at(open, &iter),
                     pat: pat.into(),
                     index: index.map(Into::into),
                     body: Vec::new(),
@@ -4146,6 +4174,30 @@ fn split_each(arg: &str) -> Option<(&str, &str, Option<&str>)> {
         return None;
     }
     Some((iter, pat, index))
+}
+
+/// `iter as x if cond`: splits off the filter at the first top-level `if`
+/// that follows an `as`.
+fn split_filter(arg: &str) -> (&str, Option<&str>) {
+    let b = arg.as_bytes();
+    let mut cut = None;
+    for_each_top(arg, |i| {
+        let word = cut.is_none()
+            && b[i..].starts_with(b"if")
+            && i > 0
+            && is_ws(b[i - 1])
+            && b.get(i + 2).is_some_and(|&c| is_ws(c));
+        if word && split_each(&arg[..i]).is_some() {
+            cut = Some(i);
+        }
+    });
+    match cut {
+        Some(i) => (
+            arg[..i].trim(),
+            Some(arg[i + 2..].trim()).filter(|c| !c.is_empty()),
+        ),
+        None => (arg, None),
+    }
 }
 
 /// `list as item, i (key)`: the list, the pattern and the key. The last
@@ -5216,6 +5268,25 @@ mod tests {
             Node::Match { arms, .. } => assert_eq!(arms[0].0.src, "Some(x) if x > 1"),
             n => panic!("{n:?}"),
         }
+    }
+
+    #[test]
+    fn each_with_a_filter() {
+        assert_eq!(split_filter("xs as x if x > 1"), ("xs as x", Some("x > 1")));
+        assert_eq!(split_filter("xs.iter() as x"), ("xs.iter() as x", None));
+        assert_eq!(
+            split_filter("if a { xs } else { ys } as x"),
+            ("if a { xs } else { ys } as x", None)
+        );
+        let t = parse("{#each xs as x if x.n > 1}{x.n}{/each}").unwrap();
+        match t.nodes.iter().find(|n| matches!(n, Node::Each { .. })) {
+            Some(Node::Each { iter, pat, .. }) => {
+                assert_eq!(pat, "x");
+                assert_eq!(iter.src, "(xs).into_iter().filter(|x| x.n > 1)");
+            }
+            n => panic!("{n:?}"),
+        }
+        assert!(parse("{#each xs as (a, b) if a > 1}{a}{/each}").is_err());
     }
 
     #[test]

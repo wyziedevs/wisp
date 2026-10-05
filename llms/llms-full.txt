@@ -177,7 +177,7 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
 | `attr={expr}` | quoted+escaped; `Option` → left out when None |
 | `disabled={bool}` `<a {href}>` `class:on={bool}` | boolean attr, `href={href}`, toggled class |
 | `{#if c}…{:else if c}…{:else}…{/if}` | `if let Some(x) = y` works |
-| `{#each list as item, i}…{:else}…{/each}` | `{:else}` when empty |
+| `{#each list as item, i if cond}…{:else}…{/each}` | `if` filters, `{:else}` when empty |
 | `{#match e}{:case P}…{/match}` | match |
 | `{#await f}…{:then v}…{:catch e}…{/await}` | page only: sent pending, `v`/`e` streamed in later |
 | `{@const x = expr}` | let |
@@ -270,8 +270,8 @@ href={p.path}>{p.title}</a>{/each}` (newest `date` first).
 (top-level lets are state). A page's Rust names are browser values by name (`items`, `data.items`).
 `bind:value="q"` with no `let q` declares it, and so does a handler that
 toggles (`open = !open`: false) or counts (`n++`: 0) a name nothing declares,
-so a live search needs no script: `<input bind:value="q">` `{:#each items.filter((i) => matches(i.name,
-q)) as i}…{:/each}`. Directives `on:click` (`.prevent .once .debounce.300ms`…),
+so a live search needs no script: `<input bind:value="q">` `{:#each items as i
+if matches(i.name, q)}…{/each}` (`if` keeps matching items, in `{#each}` too). Directives `on:click` (`.prevent .once .debounce.300ms`…),
 `bind:value|checked|this`, `:attr="js"`, `:text`, `class:x="js"`,
 `transition:fade`, `use:action`; client blocks `{:#if}` `{:#each}`, in them `{:@const x = e}`
 and `{:@html h}`; `{:@render row(x)}` draws a `{#snippet}` or, in a component, a snippet prop
@@ -1687,10 +1687,11 @@ Any Rust value client code mentions is sent, only the mentioned parts.
 - Sent as JSON via `wisp::Json`: numbers, strings, `bool`, `Option`, `Vec`, arrays, tuples, maps; own types `#[derive(Json)]`.
 - An unsendable value is a compile error naming `wisp::Json`; a prop that is also a script variable is a build error.
 - `matches(text, q)` (no import): case-insensitive contains; empty `q` matches all.
+- `{:#each list as x if cond}` (and `{#each}` on the server) keeps the items where `cond` holds; the index counts kept items.
 
 ```html
 <input bind:value="q">
-{:#each items.filter((i) => matches(i.name, q)) as item}<p>{:item.name}</p>{:/each}
+{:#each items as item if matches(item.name, q)}<p>{:item.name}</p>{/each}
 ```
 
 ## `{:expr}` Holes
@@ -3233,7 +3234,7 @@ Syntax | Compiles to
 `{@html expr}` | Unescaped `Display` (you promise it is safe)
 `{@const x = expr}` | `let x = expr;`
 `{#if c}…{:else if c}…{:else}…{/if}` | `if`/`else`; `if let` works
-`{#each e as pat[, i]}…{:else}…{/each}` | `for`; a plain place like `data.posts` is borrowed
+`{#each e as pat[, i] [if cond]}…{:else}…{/each}` | `for`; `if cond` keeps matching items; a plain place like `data.posts` is borrowed
 `{#match e}{:case pat}…{/match}` | `match`; a plain place is borrowed
 `{#await f}…{:then v}…{:catch e}…{/await}` | Page streams `v` or `e` later ([Streaming a page](/docs/design-state/))
 `{@render children()}` or `<slot />` | Layout or component slot
@@ -4685,7 +4686,7 @@ The Node apps: Nuxt is file routes, server routes in `server/api` and `useFetch`
 
 | Stack | list | form | api | layout | search | data | setup | total | chars / 4 | files |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| **Wisp** | 58 | 89 | 31 | 60 | 104 | 108 | 0 | **450** | 273 | 6 |
+| **Wisp** | 58 | 89 | 31 | 60 | 96 | 108 | 0 | **442** | 270 | 6 |
 | SvelteKit 2 | 128 | 425 | 57 | 83 | 192 | 72 | 0 | 957 | 620 | 9 |
 | Next.js 15 | 107 | 400 | 44 | 108 | 241 | 71 | 0 | 971 | 706 | 8 |
 | Nuxt 4 (Vue) | 96 | 429 | 22 | 96 | 158 | 71 | 0 | 872 | 596 | 8 |
@@ -5211,7 +5212,7 @@ Zero cost on the request hot path: a route pays only for the features it uses, a
 
 AI writes most code now, and every token costs time and money. Wisp uses conventions over configuration, types the compiler infers, and forms that write their own inputs and errors.
 
-- The same five features take 450 tokens in Wisp, 1002 in SvelteKit and 1010 in Next.js.
+- The same five features take 442 tokens in Wisp, 957 in SvelteKit and 971 in Next.js.
 - A larger app with sign up, uploads and live refresh takes 995, against 3473 and 3331.
 - `cargo run -p wisp-tokens` counts every hand-written file and its path with a byte-pair style estimate. See [Tokens](/docs/tokens/).
 

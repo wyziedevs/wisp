@@ -187,7 +187,7 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
 | `attr={expr}` | quoted+escaped; `Option` → left out when None |
 | `disabled={bool}` `<a {href}>` `class:on={bool}` | boolean attr, `href={href}`, toggled class |
 | `{#if c}…{:else if c}…{:else}…{/if}` | `if let Some(x) = y` works |
-| `{#each list as item, i}…{:else}…{/each}` | `{:else}` when empty |
+| `{#each list as item, i if cond}…{:else}…{/each}` | `if` filters, `{:else}` when empty |
 | `{#match e}{:case P}…{/match}` | match |
 | `{#await f}…{:then v}…{:catch e}…{/await}` | page only: sent pending, `v`/`e` streamed in later |
 | `{@const x = expr}` | let |
@@ -280,8 +280,8 @@ href={p.path}>{p.title}</a>{/each}` (newest `date` first).
 (top-level lets are state). A page's Rust names are browser values by name (`items`, `data.items`).
 `bind:value="q"` with no `let q` declares it, and so does a handler that
 toggles (`open = !open`: false) or counts (`n++`: 0) a name nothing declares,
-so a live search needs no script: `<input bind:value="q">` `{:#each items.filter((i) => matches(i.name,
-q)) as i}…{:/each}`. Directives `on:click` (`.prevent .once .debounce.300ms`…),
+so a live search needs no script: `<input bind:value="q">` `{:#each items as i
+if matches(i.name, q)}…{/each}` (`if` keeps matching items, in `{#each}` too). Directives `on:click` (`.prevent .once .debounce.300ms`…),
 `bind:value|checked|this`, `:attr="js"`, `:text`, `class:x="js"`,
 `transition:fade`, `use:action`; client blocks `{:#if}` `{:#each}`, in them `{:@const x = e}`
 and `{:@html h}`; `{:@render row(x)}` draws a `{#snippet}` or, in a component, a snippet prop

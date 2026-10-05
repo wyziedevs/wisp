@@ -2627,6 +2627,14 @@ fn hot_tells_what_needs_a_compile() {
 }
 
 #[test]
+fn client_each_with_a_filter() {
+    let src = "<script>let xs = [1, 2]; let q = 1</script>
+{:#each xs as n if n > q}<i>{:n}</i>{/each}";
+    let c = page_client(src, true).unwrap();
+    assert!(c.source.contains(".filter((n) => n > q)"), "{}", c.source);
+}
+
+#[test]
 fn html_and_const_in_client_blocks() {
     let src = "<script>\n  let items = [1, 2]\n  let h = '<b>x</b>'\n</script>\n{:#each items as n}{:@const sq = n * n}<i>{:sq}</i>{:/each}<div>{:@html h}</div>";
     let c = page_client(src, true).unwrap();

@@ -806,7 +806,7 @@ pub(crate) const BLOCKS: [(&str, &str, &str); 26] = [
     (
         "{#each",
         "{#each ${1:list} as ${2:item}}\n\t$0\n{/each}",
-        "`{#each list as item, i}…{:else}…{/each}`: a for loop; `{:else}` when it is empty.",
+        "`{#each list as item, i if cond}…{:else}…{/each}`: a for loop; `if cond` keeps matching items, `{:else}` when none.",
     ),
     (
         "{#match",
@@ -862,7 +862,7 @@ pub(crate) const BLOCKS: [(&str, &str, &str); 26] = [
     (
         "{:#each",
         "{:#each ${1:items} as ${2:it} (${2:it}.id)}\n\t$0\n{:/each}",
-        "`{:#each items as it, i (it.id)}…{:/each}`: a keyed list the browser keeps up to date.",
+        "`{:#each items as it, i (it.id) if cond}…{:/each}`: a keyed list the browser keeps up to date; `if cond` keeps matching items.",
     ),
     (
         "{:#key",
