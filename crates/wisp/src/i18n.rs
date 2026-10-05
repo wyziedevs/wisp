@@ -515,7 +515,11 @@ fn best(header: &str, list: &[&str]) -> Option<usize> {
         let mut it = item.split(';');
         let tag = it.next().unwrap_or("").trim();
         let q = it
-            .find_map(|p| p.trim().strip_prefix("q="))
+            .find_map(|p| {
+                let p = p.trim();
+                // As bytes: the name is ASCII, the rest of the item need not be.
+                (p.len() > 2 && p.as_bytes()[..2].eq_ignore_ascii_case(b"q=")).then(|| &p[2..])
+            })
             .map_or(1.0, |q| q.trim().parse::<f32>().unwrap_or(0.0));
         // `NaN`, `inf` or above 1 is no weight a client may send.
         let q = if (0.0..=1.0).contains(&q) { q } else { 0.0 };
@@ -595,6 +599,8 @@ mod tests {
         assert_eq!(b("e\u{e9}-x"), None, "a split inside a character, no panic");
         assert_eq!(b("fr;q=NaN, en;q=0.5"), Some("en"));
         assert_eq!(b("fr;q=9, en;q=0.5"), Some("en"));
+        assert_eq!(b("fr;Q=0, en"), Some("en"), "the parameter name is not case-sensitive");
+        assert_eq!(b("en;q=0.5, fr;Q=0.9"), Some("fr"));
     }
 
     #[test]
