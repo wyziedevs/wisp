@@ -111,6 +111,10 @@ pub(crate) fn exit_with_parent() {
 /// name was rebound to 127.0.0.1 (DNS rebinding) is its own origin, so it
 /// could send the header; its `Host` is still its own name.
 pub(crate) fn asked(dev_header: bool, host: Option<&str>) -> bool {
+    // A wasm32 release build answers no dev endpoint (see `endpoint`).
+    if cfg!(all(target_arch = "wasm32", not(debug_assertions))) {
+        return false;
+    }
     let Some(host) = host else { return false };
     let name = match host.strip_prefix('[') {
         Some(v6) => v6.split_once(']').map_or("", |(ip, _)| ip),
@@ -477,6 +481,10 @@ fn app_css(root: &Path) -> Option<Vec<u8>> {
 /// was most of a small page's time in dev (tens of µs on Windows). A file
 /// added later is still found at any path that is not a page's.
 pub(crate) fn listed(root: &str, path: &str) -> bool {
+    // wasm32 has no files.
+    if cfg!(target_arch = "wasm32") {
+        return false;
+    }
     static FILES: OnceLock<HashSet<String>> = OnceLock::new();
     FILES
         .get_or_init(|| {
