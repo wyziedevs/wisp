@@ -546,17 +546,17 @@ that each feature works.
 
 | Stack | list | form | api | layout | search | data | setup | total | chars / 4 | files |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| **Wisp** | 58 | 79 | 31 | 60 | 96 | 108 | 0 | **432** | 264 | 6 |
+| **Wisp** | 58 | 79 | 31 | 60 | 96 | 108 | 44 | **476** | 299 | 7 |
 | SvelteKit | 128 | 602 | 57 | 83 | 192 | 72 | 0 | 1134 | 696 | 9 |
 | Next.js | 107 | 575 | 44 | 108 | 241 | 71 | 0 | 1146 | 782 | 8 |
 | Nuxt (Vue) | 96 | 600 | 22 | 96 | 158 | 71 | 0 | 1043 | 670 | 8 |
-| React (Vite + Express) | 108 | 696 | 32 | 268 | 191 | 161 | 102 | 1558 | 1076 | 8 |
-| Express (Node.js) | 128 | 602 | 34 | 116 | 291 | 69 | 95 | 1335 | 777 | 7 |
+| React (Vite + Express) | 108 | 696 | 32 | 268 | 191 | 161 | 150 | 1606 | 1103 | 10 |
+| Express (Node.js) | 128 | 602 | 34 | 116 | 291 | 69 | 154 | 1394 | 807 | 8 |
 | Axum + askama | 145 | 894 | 29 | 104 | 217 | 123 | 291 | 1803 | 1239 | 7 |
 | Actix + tera | 164 | 906 | 46 | 104 | 237 | 123 | 298 | 1878 | 1279 | 7 |
 
-Nuxt takes 2.4x Wisp's tokens, SvelteKit 2.6x, Next.js 2.7x, Express (EJS)
-3.1x, React (Vite + an Express API) 3.6x, Axum 4.2x, Actix 4.3x (output of
+Nuxt takes 2.2x Wisp's tokens, SvelteKit and Next.js 2.4x, Express (EJS)
+2.9x, React (Vite + an Express API) 3.4x, Axum 3.8x, Actix 3.9x (output of
 `cargo run -q -p wisp-tokens --release`, 2026-10-05). Every stack's form checks
 the same rules with the same messages. The estimate and the method:
 [the tokens page](https://wispweb.dev/docs/tokens).
