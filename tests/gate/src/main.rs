@@ -15,8 +15,10 @@ use std::process::{Command, ExitCode};
 /// Raised from 1_810_000: 3065761 (`wisp add crud` tests) put three routes
 /// and a saved `Memo` table in tests/app, +55 KB of the app's own code
 /// (twiggy: `Table<Memo>`, its forms and pages; the runtime unchanged), and
-/// the REST fixes after it +7 KB: 1_852_689 bytes, plus 2%.
-const BUDGET: u64 = 1_890_000;
+/// the REST fixes after it +7 KB: 1_852_689 bytes, plus 2%. Lowered: the
+/// edge cuts of 2026-10-05 (scanned lists for hash maps, jobs, sockets and
+/// the float parser only where used) took it to 1_805_240, plus 2%.
+const BUDGET: u64 = 1_841_000;
 const WASM: &str = "wasm32-unknown-unknown";
 
 fn cargo(args: &[&str], env: &[(&str, &str)]) -> bool {
