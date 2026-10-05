@@ -46,18 +46,16 @@ fn rows(root: &Path) -> Result<Vec<Row>, String> {
         if r.page {
             rows.push(("GET".into(), pattern.clone(), file(r, "+page.wisp")));
         }
-        if r.server {
-            let path = r.dir.join("+server.rs");
-            let src = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        // Its endpoints: a `+server.rs`, or the `mod server` of its page.
+        if let [_, Some((path, src))] = wisp_build::route_rust(r)? {
             let items = rust_scan::scan(&src).map_err(|e| format!("{}: {e}", path.display()))?;
-            let (own, member) = methods(&items, &r.segs);
-            let shown = file(r, "+server.rs");
-            if !own.is_empty() {
-                rows.push((own, pattern.clone(), shown.clone()));
-            }
-            if !member.is_empty() {
-                let at = if pattern == "/" { "" } else { &pattern };
-                rows.push((member, format!("{at}/[id]"), shown));
+            // A `/[id]` it serves is a route of its own, with its handlers.
+            let segs = &r.segs[..r.segs.len() - usize::from(r.member)];
+            let (own, member) = methods(&items, segs);
+            let mine = if r.member { member } else { own };
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+            if !mine.is_empty() {
+                rows.push((mine, pattern.clone(), file(r, &name.unwrap_or_default())));
             }
         }
     }
@@ -436,7 +434,7 @@ mod tests {
             want("GET,POST", "/api/notes", "src/routes/api/notes/+server.rs"),
             want(
                 "GET,PUT,PATCH,DELETE",
-                "/api/notes/[id]",
+                "/api/notes/[id=int]",
                 "src/routes/api/notes/+server.rs",
             ),
             want("GET", "/healthz", "src/routes/healthz/+server.rs"),

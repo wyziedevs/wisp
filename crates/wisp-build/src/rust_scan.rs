@@ -893,6 +893,80 @@ pub fn split_items(code: &str) -> (String, String) {
     (keep(true), keep(false))
 }
 
+/// A page block's items (as [`split_items`] gives them) split around their
+/// `mod server { … }`: the items without it, the module's contents (the
+/// route's endpoints, what a `+server.rs` beside the page would hold) and
+/// the line it starts on. Both keep every line on its line in the file;
+/// `None` when the block has no such module.
+pub fn split_server(items: &str) -> Option<(String, String, usize)> {
+    let b = items.as_bytes();
+    let (mut i, mut depth) = (0, 0i32);
+    let (start, open) = loop {
+        if i >= b.len() {
+            return None;
+        }
+        match b[i] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            c if depth == 0 && is_word(c) && (i == 0 || !is_word(b[i - 1])) => {
+                let end = ident_end(b, i);
+                let mut at = i;
+                let mut w = &b[i..end];
+                if w == b"pub" {
+                    at = skip_space(b, end);
+                    w = &b[at..ident_end(b, at)];
+                }
+                if w == b"mod" {
+                    let n = skip_space(b, at + 3);
+                    let ne = ident_end(b, n);
+                    let open = skip_space(b, ne);
+                    if &b[n..ne] == b"server" && b.get(open) == Some(&b'{') {
+                        break (i, open);
+                    }
+                }
+                i = end;
+                continue;
+            }
+            _ => i = skip_literal(b, i),
+        }
+        i += 1;
+    };
+    let (mut j, mut depth) = (open, 0i32);
+    let close = loop {
+        if j >= b.len() {
+            return None;
+        }
+        match b[j] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    break j;
+                }
+            }
+            _ => j = skip_literal(b, j),
+        }
+        j += 1;
+    };
+    let keep = |from: usize, to: usize, inside: bool| -> String {
+        items
+            .char_indices()
+            .map(
+                |(k, c)| match c == '\n' || (k >= from && k < to) == inside {
+                    true => c,
+                    false => ' ',
+                },
+            )
+            .collect()
+    };
+    let line = items[..start].matches('\n').count() + 1;
+    Some((
+        keep(start, close + 1, false),
+        keep(open + 1, close, true),
+        line,
+    ))
+}
+
 /// The actions a `---` block does not mark: its `fn default`, when it is the
 /// only one and the block has no `#[action]`, and each function the markup
 /// posts to (`action="?/name"`, `formaction`). The block with `#[action]`
@@ -1845,6 +1919,33 @@ fn a() {}"
         assert_eq!(check("fn a() { Err(Error::new(404, \"x\")) }"), Ok(()));
         assert_eq!(check("fn a() { Err(redirect_to(1)) }"), Ok(()));
         assert_eq!(check("fn error(s: u8) {} fn a() { Err(error(4)) }"), Ok(()));
+    }
+
+    #[test]
+    fn a_blocks_mod_server_is_split_off() {
+        let code = "fn a() { let s = \"mod server {\"; }\n// mod server { x }\npub mod server {\n    fn put(t: String) { if t.is_empty() {} }\n}\nstruct B;\n";
+        let (rest, server, line) = split_server(code).unwrap();
+        assert_eq!(line, 3);
+        assert_eq!((rest.len(), server.len()), (code.len(), code.len()));
+        assert_eq!(rest.lines().count(), code.lines().count());
+        let words = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert_eq!(
+            words(&rest),
+            "fn a() { let s = \"mod server {\"; } // mod server { x } struct B;"
+        );
+        assert_eq!(words(&server), "fn put(t: String) { if t.is_empty() {} }");
+        assert_eq!(
+            server.lines().nth(3),
+            Some("    fn put(t: String) { if t.is_empty() {} }")
+        );
+        assert!(split_server("fn server() {}\nmod servers {}\nfn f() { mod server {} }").is_none());
+        // Left in, as the dev server and the editor read a block, its
+        // functions are not the page's.
+        let items = scan(&split_items(code).0).unwrap();
+        assert_eq!(
+            items.fns.iter().map(|f| &f.name[..]).collect::<Vec<_>>(),
+            ["a"]
+        );
     }
 
     #[test]

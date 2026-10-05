@@ -19,6 +19,11 @@
     "description": "A form action in the --- block: <form action=\"?/name\">",
     "body": ["#[action]", "fn ${1:add}(${2:text}: ${3:String}) {", "    $0", "}"]
   },
+  "Endpoints": {
+    "prefix": "server",
+    "description": "The route's endpoints in the --- block, as a +server.rs would hold them",
+    "body": ["mod server {", "    fn ${1:delete}(${2:id}: ${3:u64}) {", "        $0", "    }", "}"]
+  },
   "Action form": {
     "prefix": "form",
     "description": "A form that posts to an action",

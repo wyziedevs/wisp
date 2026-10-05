@@ -156,6 +156,43 @@ fn pages() {
             ],
         ),
         (
+            "a block's mod server and a +server.rs",
+            &[
+                (
+                    "src/routes/+page.wisp",
+                    "---\nmod server {\n    fn put() {}\n}\n---\n",
+                ),
+                ("src/routes/+server.rs", "fn delete() {}"),
+            ],
+            &[
+                "src/routes/+page.wisp:2: this block's `mod server`",
+                "+server.rs is beside it",
+                "move the handlers of +server.rs into `mod server`",
+            ],
+        ),
+        (
+            "mod server in a layout",
+            &[
+                (
+                    "src/routes/+layout.wisp",
+                    "---\nmod server {\n    fn put() {}\n}\n---\n<slot />",
+                ),
+                ("src/routes/+page.wisp", "x"),
+            ],
+            &[
+                "src/routes/+layout.wisp:2: `mod server`",
+                "only a +page.wisp is a route",
+            ],
+        ),
+        (
+            "an endpoint in mod server that conflicts with the page",
+            &[(
+                "src/routes/+page.wisp",
+                "---\nmod server {\n    fn get() {}\n}\n---\n",
+            )],
+            &["src/routes/+page.wisp: `get` conflicts with the page"],
+        ),
+        (
             "statements and load in one block",
             &[(
                 "src/routes/+page.wisp",

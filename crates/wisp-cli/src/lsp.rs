@@ -483,6 +483,9 @@ fn path_uri(p: &Path) -> String {
     out
 }
 
+/// The hover of `mod server` in a page's `---` block.
+pub(crate) const MOD_SERVER: &str = "`mod server { fn put(..) {} }` in a page's `---` block: the route's endpoints, as a `+server.rs` beside the page would hold them (`get` `post` `put` `patch` `delete` `list`, `fn get(id: u64)` for its `/[id]`, `before`, its own `const` knobs). Not with a `+server.rs` beside it.";
+
 /// The `const` knobs of a route file's Rust block and what each does (hover).
 /// A test keeps it in step with the reference: every `const NAME` it shows is here.
 pub(crate) const KNOBS: [(&str, &str); 14] = [
@@ -1101,6 +1104,8 @@ impl<'a> At<'a> {
             doc.to_string()
         } else if let Some(doc) = find(&KNOBS) {
             doc.to_string()
+        } else if ident == "server" && self.text()[..self.word.0].trim_end().ends_with("mod") {
+            MOD_SERVER.to_string()
         } else if let Some(doc) = self.auto_doc(ident) {
             doc
         } else {
@@ -1571,6 +1576,7 @@ mod tests {
             ("<form data-wisp-qu|eue>", "safe to send twice"),
             ("const CA|CHE: u32 = 60;", "per worker"),
             ("const RATE_LIM|IT: u32 = 60;", "429"),
+            ("---\nmod ser|ver {\n}\n---", "the route's endpoints"),
             ("{#ea|ch xs as x}", "for loop"),
             ("#[act|ion]\nfn add() {}", "form action"),
             ("#[::wisp::mod|el]", "`Json`, `FromJson`"),

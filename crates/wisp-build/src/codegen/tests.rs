@@ -176,6 +176,50 @@ fn codegen_per_route_stays_small() {
     }
 }
 
+/// A route in one `.wisp` (`Data`, `load`, actions and a `mod server` in
+/// its block) generates what the same route in three files does: the
+/// same router, render and shims, the user's items only placed inline
+/// rather than `include!`d. What differs is where the code came from.
+#[test]
+fn a_one_file_route_generates_what_three_files_do() {
+    let page = "pub struct Data {\n    pub n: u32,\n}\n\npub fn load(cx: &mut Cx) -> Data {\n    Data { n: cx.path().len() as u32 }\n}\n\n#[action]\npub fn add(cx: &mut Cx) {\n    let _ = cx;\n}\n\nconst RUNTIME: wisp::Runtime = wisp::Runtime::Edge;\n";
+    let server = "const RATE_LIMIT: u32 = 5;\n\npub fn delete(id: u64) -> Result<()> {\n    let _ = id;\n    Ok(())\n}\n\npub fn put(text: String) {\n    let _ = text;\n}\n";
+    let markup = "<p>{n}</p>\n<form method=\"post\" action=\"?/add\"><button>Add</button></form>\n";
+    let indented: String = server.lines().map(|l| format!("    {l}\n")).collect();
+    let block = format!("---\n{page}\nmod server {{\n{indented}}}\n---\n\n{markup}");
+    let three = [
+        ("src/routes/items/+page.wisp", markup),
+        ("src/routes/items/+page.rs", page),
+        ("src/routes/items/+server.rs", server),
+    ];
+    let one = [("src/routes/items/+page.wisp", block.as_str())];
+    // The code without what names its source: comments, `include!`s, the
+    // block's own lines, the build's hashes and its directory.
+    let same = |code: String, dir: &str| -> Vec<String> {
+        let (mut out, mut user) = (Vec::new(), 0);
+        for l in code.lines() {
+            let l = l.split(" // src/").next().unwrap_or(l).replace(dir, "");
+            if l.starts_with("pub mod page_") || l.starts_with("pub mod server_") {
+                user = 1;
+            } else if user == 1 && l.starts_with("    pub mod __call") {
+                user = 2;
+            } else if user == 1 {
+                continue;
+            }
+            if l.contains("pub static S:") || l.starts_with("    const TEMPLATES") {
+                continue;
+            }
+            out.push(l);
+        }
+        out
+    };
+    let a = same(build("three", &three, true).unwrap(), "codegen-three-");
+    let b = same(build("one", &one, true).unwrap(), "codegen-one-");
+    let off = a.iter().zip(&b).find(|(x, y)| x != y);
+    assert!(off.is_none() && a.len() == b.len(), "{off:?}");
+    assert!(a.iter().any(|l| l.contains("server_")), "{a:#?}");
+}
+
 /// Generates the app made of `files` (path, contents), in a scratch
 /// directory: the error if it fails, `Ok` with the code otherwise.
 fn app(name: &str, files: &[(&str, &str)]) -> Result<String, String> {

@@ -31,7 +31,7 @@ src/routes/…/+page@.wisp    a page without the layouts above it (`+page@app.wi
 src/routes/…/+layout.wisp   wraps pages below; must <slot /> (or {@render children()})
 src/routes/…/+loading.wisp  static HTML a client navigation shows in <main> at once while a page below this folder loads
 src/routes/…/+error.wisp    error page; has `status`, `message`, `cx`
-src/routes/…/+server.rs     endpoints: fn get/post/put/patch/delete/list
+src/routes/…/+server.rs     endpoints: fn get/post/put/patch/delete/list (or `mod server {}` in the page's block)
 src/routes/…/+page.md       Markdown page (`blog/x.md` = /blog/x)
 src/routes/…/+page.js       optional browser `load({data,url,params,fetch})` (or .ts)
 static/…                    served at /
@@ -40,7 +40,7 @@ static/…                    served at /
 Folders: `blog` static, `[slug]` param, `[[lang]]` optional, `[...rest]`
 rest, `[id=int]` digits (u64), `[x=word]` custom matcher, `[[lang=locale]]`
 one of `src/locales`, `(group)` not in URL. `+page.rs` (`struct Data` + `fn load(..) -> Data`, which the markup reads
-by name) and `+layout.rs` work instead of a block.
+by name) and `+layout.rs` work instead of a block; a block holds all of it too.
 Slots: `dash/@stats/+page.wisp` (`+page.rs` for its data; an empty file will do
 as a default) beside `dash/+layout.wisp` with `{@render stats()}`: that page is
 drawn inside the layout around every page below `dash` (it is also served at
@@ -322,6 +322,38 @@ Stores, islands, the rest: https://wispweb.dev/docs/client.
 post/put/patch/delete refuse a request another site sent (`Origin`, else
 `Sec-Fetch-Site`; 403, as actions do); `const CORS` (it takes other sites) or
 `const CSRF: bool = false;` in the file opts out. GET and curl are unaffected.
+
+Or in the page's block, as `mod server { … }`: the whole route in one file,
+built as the three files are (a module of its own, as `+server.rs` is: what
+both halves use goes in `src/*.rs`). Not with a `+server.rs` beside it.
+
+```html
+---
+// src/routes/todos/+page.wisp
+struct Data {
+    count: usize,
+}
+
+fn load() -> Data {
+    Data { count: TODOS.len() }
+}
+
+#[action]
+fn add(todo: Todo) {
+    TODOS.add(todo);
+}
+
+mod server {
+    // DELETE /todos/[id]
+    fn delete(id: u64) {
+        TODOS.remove(id);
+    }
+}
+---
+
+<p>{count} todos</p>
+<form action="?/add" fields />
+```
 
 A whole JSON API, saved across restarts (`src/routes/api/notes/+server.rs`):
 

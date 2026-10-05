@@ -20,20 +20,16 @@ const NO: [(&str, &str); 8] = [
 ];
 
 /// The edge routes' patterns, each a list of segments (`[[x]]` expanded, a
-/// `+server.rs`'s `/[id]` added). Empty when no route is Edge.
+/// `/[id]` of endpoints a route of its own). Empty when no route is Edge.
 pub fn edge_routes(root: &Path) -> Result<Vec<Vec<Seg>>, String> {
     let tree = routes::scan(&root.join("src/routes"))?;
     let mut out = Vec::new();
     for r in &tree.routes {
         let (mut edge, mut at) = (None, String::new());
-        for (name, here) in [("+page.rs", r.page_rs), ("+server.rs", r.server)] {
-            if !here {
-                continue;
-            }
-            let path = r.dir.join(name);
-            let src =
-                std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-            let items = rust_scan::scan(&src).map_err(|e| format!("{}: {e}", path.display()))?;
+        // The page's Rust and the endpoints', wherever each is.
+        for (path, src) in wisp_build::route_rust(r)?.into_iter().flatten() {
+            let items = rust_scan::scan(&rust_scan::split_items(&src).0)
+                .map_err(|e| format!("{}: {e}", path.display()))?;
             let rel = path
                 .strip_prefix(root)
                 .unwrap_or(&path)
@@ -55,13 +51,9 @@ pub fn edge_routes(root: &Path) -> Result<Vec<Vec<Seg>>, String> {
             }
         }
         if edge == Some(true) {
+            // A `/[id]` its endpoints serve is a route of its own.
             for e in r.expansions() {
-                let mut segs: Vec<Seg> = e.into_iter().cloned().collect();
-                out.push(segs.clone());
-                if r.member {
-                    segs.push(Seg::Param("id".into(), None));
-                    out.push(segs);
-                }
+                out.push(e.into_iter().cloned().collect());
             }
         }
     }
@@ -154,6 +146,12 @@ mod tests {
                     "src/routes/hi.json/+server.rs",
                     &format!("{EDGE}pub async fn get() {{}}"),
                 ),
+                // One file: the page's block, or its `mod server`.
+                ("src/routes/one/+page.wisp", &format!("---\n{EDGE}---\nx")),
+                (
+                    "src/routes/api/+page.wisp",
+                    &format!("---\nmod server {{\n{EDGE}fn delete(id: u64) {{}}\n}}\n---\nx"),
+                ),
             ],
         );
         let routes = edge_routes(&root).unwrap();
@@ -166,7 +164,12 @@ mod tests {
             v.contains(&("^/hi\\.json/?$".into(), "/hi.json".into())),
             "{v:?}"
         );
-        assert_eq!(v.len(), 2, "{v:?}");
+        assert!(v.contains(&("^/one/?$".into(), "/one".into())), "{v:?}");
+        assert!(
+            v.contains(&("^/api/[^/]+/?$".into(), "/api/:id".into())),
+            "{v:?}"
+        );
+        assert_eq!(v.len(), 4, "{v:?}");
         assert_eq!(vercel(&[Seg::Rest("p".into())]), "^(?:/.*)?/?$");
         assert_eq!(vercel(&[]), "^//?$");
         assert_eq!(
@@ -203,6 +206,16 @@ mod tests {
         assert!(e.contains("src/routes/a/+page.rs:2"), "{e}");
         assert!(
             e.contains("route /a") && e.contains("no files") && e.contains("std::fs"),
+            "{e}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+        let block = format!(
+            "---\nmod server {{\n{EDGE}fn put() {{ let _ = std::fs::read(\"x\"); }}\n}}\n---\nx"
+        );
+        let root = app("fs-block", &[("src/routes/a/+page.wisp", &block)]);
+        let e = edge_routes(&root).unwrap_err();
+        assert!(
+            e.contains("src/routes/a/+page.wisp:4") && e.contains("std::fs"),
             "{e}"
         );
         let _ = std::fs::remove_dir_all(root);

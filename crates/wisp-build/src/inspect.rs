@@ -3,12 +3,12 @@
 //! Read from the files as the build reads them; nothing is compiled.
 
 use crate::routes::{self, HANDLERS};
-use crate::rust_scan::{self, Items};
+use crate::rust_scan;
 use crate::template::PropDecl;
 use std::path::Path;
 
 /// A route: `/blog/[slug]`, its params, the `#[action]`s of its page and
-/// what its `+server.rs` answers (`GET /api/notes/[id]`).
+/// what its endpoints answer (`GET /api/notes/[id]`).
 pub struct RouteInfo {
     pub pattern: String,
     /// The folder, from the app's root: `src/routes/blog/[slug]`.
@@ -28,18 +28,18 @@ pub fn routes(root: &Path) -> Result<Vec<RouteInfo>, String> {
     let mut out = Vec::new();
     for r in &tree.routes {
         let pattern = r.pattern();
-        let page = (r.md.is_none() && (r.page || r.page_rs)).then(|| page_items(&r.dir));
-        let actions = page
+        // What does not read or scan has nothing: the build says what is wrong.
+        let [page, server] = crate::route_rust(r).unwrap_or_default();
+        let scan = |src: Option<(std::path::PathBuf, String)>| {
+            src.and_then(|(_, s)| rust_scan::scan(&rust_scan::split_items(&s).0).ok())
+        };
+        let actions = scan(page)
             .iter()
             .flat_map(|i| i.fns.iter().filter(|f| f.action))
             .map(|f| f.name.clone())
             .collect();
         let mut endpoints = Vec::new();
-        if r.server {
-            let items = crate::read_source(&r.dir.join("+server.rs"))
-                .ok()
-                .and_then(|s| rust_scan::scan(&s).ok())
-                .unwrap_or_default();
+        if let Some(items) = scan(server) {
             let base = pattern.trim_end_matches('/');
             let at = |member: bool| {
                 if member {
@@ -85,20 +85,6 @@ pub fn routes(root: &Path) -> Result<Vec<RouteInfo>, String> {
         });
     }
     Ok(out)
-}
-
-/// The functions of a page's block, or of its `+page.rs`. What does not
-/// scan has none: the build says what is wrong.
-fn page_items(dir: &Path) -> Items {
-    let block = crate::read_source(&dir.join("+page.wisp"))
-        .ok()
-        .and_then(|src| crate::split_front(&src).ok()?.0);
-    let src = match block {
-        Some(b) => Some(rust_scan::split_items(&b).0),
-        None => crate::read_source(&dir.join("+page.rs")).ok(),
-    };
-    src.and_then(|s| rust_scan::scan(&s).ok())
-        .unwrap_or_default()
 }
 
 /// `src/components/**/*.wisp`: each component's name, file and props.

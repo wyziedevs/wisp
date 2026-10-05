@@ -423,8 +423,24 @@ impl<'a> Project<'a> {
             ));
         }
         let code = rust_scan::mark_actions(&code, markup).unwrap_or(code);
-        let (items_src, stmts) = rust_scan::split_items(&code);
+        let (mut items_src, stmts) = rust_scan::split_items(&code);
         let at = |e: String| format!("{}:{e}", self.rel(wisp));
+        // Its `mod server` is the route's endpoints, which `server` reads.
+        if let Some((rest, _, line)) = rust_scan::split_server(&items_src) {
+            let page = (wisp.file_name()).is_some_and(|n| n.to_string_lossy().starts_with("+page"));
+            if !page {
+                return Err(at(format!(
+                    "{line}: `mod server` holds a route's endpoints, and only a +page.wisp is a route; move it into the page's block or a +server.rs"
+                )));
+            }
+            if wisp.with_file_name("+server.rs").is_file() {
+                return Err(at(format!(
+                    "{line}: this block's `mod server` holds the route's endpoints, and +server.rs is beside it; \
+                     keep them in one: move the handlers of +server.rs into `mod server` and delete it, or move `mod server`'s into +server.rs"
+                )));
+            }
+            items_src = rest;
+        }
         let items = rust_scan::scan(&items_src).map_err(at)?;
         items.check().map_err(at)?;
         let stmts = (!stmts.trim().is_empty()).then_some(stmts);
@@ -1311,7 +1327,16 @@ pub const MORE: ::wisp::rt::CacheMore = ::wisp::rt::CacheMore::NONE;"
         let r = &self.tree.routes[i];
         let (page, member) = (r.page, r.member);
         let page_file = if r.page_rs { "+page.rs" } else { "+page.wisp" };
-        let file = r.dir.join("+server.rs");
+        // A `+server.rs`, or else the `mod server` of the page's block.
+        let rs = r.dir.join("+server.rs");
+        let block = match rs.is_file() {
+            true => None,
+            false => crate::block_server(&r.dir.join(&r.page_file)).map(|s| s.0),
+        };
+        let file = match block {
+            Some(_) => r.dir.join(&r.page_file),
+            None => rs,
+        };
         let k = match servers.iter().position(|s| s.file == file) {
             Some(k) => {
                 let (sf, at) = (&servers[k], |e: String| format!("{}: {e}", self.rel(&file)));
@@ -1338,7 +1363,15 @@ pub const MORE: ::wisp::rt::CacheMore = ::wisp::rt::CacheMore::NONE;"
                 k
             }
             None => {
-                let items = self.scan(&file)?;
+                let items = match &block {
+                    Some(src) => {
+                        let at = |e: String| format!("{}:{e}", self.rel(&file));
+                        let items = rust_scan::scan(src).map_err(at)?;
+                        items.check().map_err(at)?;
+                        items
+                    }
+                    None => self.scan(&file)?,
+                };
                 if let Some(r) = items.fns.iter().find(|f| f.remote.is_some()) {
                     return Err(format!(
                         "{}:{}: `{}` is #[remote], which browser code calls; +server.rs has endpoints. Put it in a page or src/remote.rs",
@@ -1376,7 +1409,7 @@ pub const MORE: ::wisp::rt::CacheMore = ::wisp::rt::CacheMore::NONE;"
                 (self.user_mods).push(UserMod::new(
                     module.clone(),
                     file.clone(),
-                    None,
+                    block.clone(),
                     shims,
                     &items,
                 ));

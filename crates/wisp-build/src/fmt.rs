@@ -945,6 +945,14 @@ mod tests {
                 || out == "---\nlet   x =  \"a\n  b\";\n---\n\n<p>{x}</p>\n",
             "{out}"
         );
+        // A whole route: `Data`, `load`, an action and `mod server`.
+        let src = "---\nstruct Data { n: u32 }\nfn load() -> Data { Data { n: 1 } }\n#[action]\nfn add() {}\nmod server {\nfn put(text: String) { let _ = text; }\n}\n---\n<p>{n}</p>\n";
+        let out = fmt(src);
+        let want = "---\nstruct Data {\n    n: u32,\n}\nfn load() -> Data {\n    Data { n: 1 }\n}\n#[action]\nfn add() {}\nmod server {\n    fn put(text: String) {\n        let _ = text;\n    }\n}\n---\n\n<p>{n}</p>\n";
+        assert!(
+            out == want || out == src.replacen("---\n<p>", "---\n\n<p>", 1),
+            "{out}"
+        );
     }
 
     #[test]

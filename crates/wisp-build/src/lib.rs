@@ -402,6 +402,47 @@ pub(crate) fn live_tables(root: &Path) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The `mod server { … }` of the `---` block of the page `wisp`: the
+/// route's endpoints, as a `+server.rs` beside it would hold them (as long
+/// as the file, the rest blanked), and the line the module starts on.
+/// `None` when the page has no such module or does not read.
+pub(crate) fn block_server(wisp: &Path) -> Option<(String, usize)> {
+    let (rust, _) = split_front(&read_source(wisp).ok()?).ok()?;
+    let (_, server, line) = rust_scan::split_server(&rust_scan::split_items(&rust?).0)?;
+    Some((server, line))
+}
+
+/// The Rust of route `r`, each part with the file it is in: its page's (a
+/// `+page.rs`, or its `+page.wisp`'s `---` block but for `mod server`) and
+/// its endpoints' (a `+server.rs`, or that `mod server`'s contents). A
+/// block's keeps the file's lines, the rest blanked. Errs on a Rust file
+/// that does not read.
+pub fn route_rust(r: &routes::Route) -> Result<[Option<(PathBuf, String)>; 2], String> {
+    let read = |p: PathBuf| match read_source(&p) {
+        Ok(s) => Ok((p, s)),
+        Err(e) => Err(format!("{}: {e}", p.display())),
+    };
+    let wisp = r.dir.join(&r.page_file);
+    let block = (r.page && r.md.is_none() && !r.page_rs)
+        .then(|| split_front(&read_source(&wisp).ok()?).ok()?.0)
+        .flatten();
+    let page = match (r.page_rs, block) {
+        (true, _) => Some(read(r.dir.join("+page.rs"))?),
+        (false, Some(b)) => match rust_scan::split_server(&b) {
+            Some((rest, _, _)) => Some((wisp.clone(), rest)),
+            None => Some((wisp.clone(), b)),
+        },
+        (false, None) => None,
+    };
+    let rs = r.dir.join("+server.rs");
+    let server = match r.server {
+        false => None,
+        true if rs.is_file() => Some(read(rs)?),
+        true => block_server(&wisp).map(|(s, _)| (wisp, s)),
+    };
+    Ok([page, server])
+}
+
 /// Splits off the `---` block of Rust a page or layout may start with:
 ///
 /// ```text

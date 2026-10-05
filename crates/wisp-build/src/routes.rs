@@ -544,10 +544,6 @@ fn walk(
         });
         error = Some(tree.errors.len() - 1);
     }
-    let (collection, member) = match has("+server.rs") {
-        true => server_shape(&dir.join("+server.rs"), segs),
-        false => (false, None),
-    };
     let page_md = has("+page.md").then(|| dir.join("+page.md"));
     // `+page@group.wisp`: the layouts above `group`'s directory (it too) stay.
     let (page_file, page_layouts) = match &reset {
@@ -576,12 +572,22 @@ fn walk(
             (f.clone(), layouts[..at].to_vec())
         }
     };
+    // Its endpoints: a `+server.rs`, or the `mod server` of the page's block.
+    let server = match has("+server.rs") {
+        true => Some(crate::read_source(&dir.join("+server.rs")).unwrap_or_default()),
+        false if has("+page.wisp") => crate::block_server(&dir.join(&page_file)).map(|s| s.0),
+        false => None,
+    };
+    let (collection, member) = match server {
+        Some(src) => server_shape(&src, segs),
+        None => (false, None),
+    };
     if has("+page.wisp") || page_md.is_some() || collection {
         tree.routes.push(Route {
             dir: dir.to_path_buf(),
             segs: segs.clone(),
             page: has("+page.wisp") || page_md.is_some(),
-            page_file,
+            page_file: page_file.clone(),
             md: page_md,
             page_rs: has("+page.rs"),
             page_js,
@@ -598,7 +604,11 @@ fn walk(
             dir: dir.to_path_buf(),
             segs,
             page: false,
-            page_file: String::new(),
+            // Not served, but its `mod server` may hold this route's handlers.
+            page_file: match has("+page.wisp") {
+                true => page_file.clone(),
+                false => String::new(),
+            },
             md: None,
             page_rs: false,
             page_js: None,
@@ -719,15 +729,13 @@ pub fn rest_type(items: &crate::rust_scan::Items) -> Option<&str> {
     t.map(|t| t.name.as_str())
 }
 
-/// What a `+server.rs` serves: its route (true unless every handler is
-/// its `/[id]`'s), and that `/[id]`, if any, with the matcher `int` when
-/// every `id` it takes is an integer. A file that does not scan is left to
-/// `codegen`, which says what is wrong.
-fn server_shape(file: &Path, segs: &[Seg]) -> (bool, Option<Option<String>>) {
-    let Some(items) = crate::read_source(file)
-        .ok()
-        .and_then(|s| crate::rust_scan::scan(&s).ok())
-    else {
+/// What the endpoints `src` (a `+server.rs`, or a page's `mod server`)
+/// serve: its route (true unless every handler is its `/[id]`'s), and that
+/// `/[id]`, if any, with the matcher `int` when every `id` it takes is an
+/// integer. Code that does not scan is left to `codegen`, which says what
+/// is wrong.
+fn server_shape(src: &str, segs: &[Seg]) -> (bool, Option<Option<String>>) {
+    let Ok(items) = crate::rust_scan::scan(src) else {
         return (true, None);
     };
     let handlers: Vec<_> = items
