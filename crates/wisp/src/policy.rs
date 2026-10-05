@@ -13,10 +13,8 @@ use std::time::Duration;
 /// Time allowed to receive a request's head once its first byte arrived,
 /// and then for each part of its body: a large upload may take minutes, as
 /// long as it keeps coming.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// Bytes a second a request body must average, after `REQUEST_TIMEOUT`.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) const MIN_BODY_RATE: usize = 1024;
 /// Time an idle keep-alive connection is kept open.
 #[cfg(not(target_arch = "wasm32"))]
@@ -64,7 +62,6 @@ pub(crate) fn idle_deadline(now: u64) -> u64 {
 }
 
 /// When a request whose head started coming at `since` must have all of it.
-#[cfg(not(target_arch = "wasm32"))]
 #[inline]
 pub(crate) fn head_deadline(since: u64) -> u64 {
     since + REQUEST_TIMEOUT.as_secs()
@@ -74,7 +71,6 @@ pub(crate) fn head_deadline(since: u64) -> u64 {
 /// `received` bytes of the request in, must come by, at `now`. Each part in
 /// time, and the whole at `MIN_BODY_RATE` at least after the same grace: a
 /// body sent a byte at a time cannot hold a connection for days.
-#[cfg(not(target_arch = "wasm32"))]
 #[inline]
 pub(crate) fn body_deadline(now: u64, since: u64, received: usize) -> u64 {
     let rate = since + REQUEST_TIMEOUT.as_secs() + (received / MIN_BODY_RATE) as u64;

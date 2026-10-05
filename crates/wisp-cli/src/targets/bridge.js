@@ -248,18 +248,20 @@ function init({ status, headers: flat }) {
 }
 
 // A message for a WebSocket the host made: `op` 1 text, 2 binary, 8 a close
-// (a code and a reason). A host that will not send a code (Deno's takes only
-// 1000 and 3000 to 4999) gets 1000.
-function put(ws, op, bytes) {
+// (a code and a reason). A host that will not send a protocol code (Deno's
+// takes only 1000 and 3000 to 4999) gets it as 4000 and up, 1009 as 4009,
+// with the reason: a failure never reads as a normal close.
+export function put(ws, op, bytes) {
   try {
     if (op === 1) ws.send(dec.decode(bytes));
     else if (op === 2) ws.send(bytes);
     else if (op === 8) {
       const code = bytes.length > 1 ? (bytes[0] << 8) | bytes[1] : 1000;
+      const reason = dec.decode(bytes.subarray(2));
       try {
-        ws.close(code, dec.decode(bytes.subarray(2)));
+        ws.close(code, reason);
       } catch {
-        ws.close(1000);
+        ws.close(code > 1000 && code < 1016 ? code + 3000 : 1000, reason);
       }
     }
   } catch {} // closed already

@@ -18,9 +18,10 @@
 //! taken during a long stream. HPACK is our
 //! own (static and dynamic tables, Huffman), so the feature adds no
 //! dependency. Limits: 100 concurrent streams, 16 KiB header lists, 16 KiB
-//! frames, a 4 KiB dynamic table; a reset flood, a CONTINUATION flood, an
-//! empty-frame flood and an HPACK bomb each end the connection with
-//! GOAWAY. Nothing here panics: every index is checked, every error is a
+//! frames, a 4 KiB dynamic table, 1 MiB of bodies still coming (past it,
+//! only the oldest stream's window opens again); a reset flood (the
+//! client's, or one it draws from us), a CONTINUATION flood, an empty-frame
+//! flood and an HPACK bomb each end the connection with GOAWAY. Nothing here panics: every index is checked, every error is a
 //! frame.
 
 use std::collections::VecDeque;
@@ -41,6 +42,9 @@ const RESET_BUDGET: u32 = 2 * MAX_STREAMS as u32;
 /// Empty DATA, CONTINUATION or unknown frames, and PINGs and SETTINGS, a
 /// client may send between two answers: work for no request.
 const IDLE_FRAME_BUDGET: u32 = 1000;
+/// Body bytes the streams still coming may hold before only the oldest of
+/// them is given more window.
+const MAX_HELD: usize = 1 << 20;
 /// The default window.
 const WINDOW: i64 = 65_535;
 const MAX_WINDOW: i64 = (1 << 31) - 1;
@@ -221,7 +225,18 @@ impl Session {
                     self.goaway(code);
                     return buf.len();
                 }
-                Err(Fault::Stream(id, code)) => self.reset(id, code),
+                Err(Fault::Stream(id, code)) => {
+                    // Resets the client draws from us count as its own: a
+                    // frame that makes us drop a started handler (a zero
+                    // WINDOW_UPDATE, DATA on an ended stream) is a reset
+                    // flood too ("MadeYouReset").
+                    self.reset(id, code);
+                    self.resets += 1;
+                    if self.resets > self.answered.saturating_add(RESET_BUDGET) {
+                        self.goaway(Code::Calm);
+                        return buf.len();
+                    }
+                }
             }
         }
         if self.done {
@@ -235,9 +250,18 @@ impl Session {
             self.window_update(0, (WINDOW - self.recv) as u32);
             self.recv = WINDOW;
         }
+        // A stream's window opens again only while the bodies still coming
+        // hold at most `MAX_HELD`, or for the oldest of them: a client
+        // cannot make 100 streams each hold a body limit at once, and the
+        // oldest always goes on, so none waits for good.
+        let (mut held, mut oldest) = (0, u32::MAX);
+        for s in self.streams.iter().filter(|s| !s.ended) {
+            held += s.req.body.len();
+            oldest = oldest.min(s.id);
+        }
         for i in 0..self.streams.len() {
             let s = &mut self.streams[i];
-            if s.recv <= WINDOW / 2 && !s.ended {
+            if s.recv <= WINDOW / 2 && !s.ended && (held <= MAX_HELD || s.id == oldest) {
                 let (id, n) = (s.id, (WINDOW - s.recv) as u32);
                 s.recv = WINDOW;
                 self.window_update(id, n);
@@ -749,9 +773,13 @@ fn request(fields: Vec<(Vec<u8>, Vec<u8>)>) -> Result<(Request, Option<u64>), Co
             return Err(Code::Protocol);
         }
         let name = text(n)?;
+        // Digits only, and a repeat must agree, as on HTTP/1.
         if name == "content-length" {
-            let s = std::str::from_utf8(&v).map_err(|_| Code::Protocol)?;
-            length = Some(s.parse::<u64>().map_err(|_| Code::Protocol)?);
+            let n = crate::http::parse_decimal(&v).ok_or(Code::Protocol)? as u64;
+            if length.is_some_and(|m| m != n) {
+                return Err(Code::Protocol);
+            }
+            length = Some(n);
         }
         // Crumbs of `cookie` (RFC 9113 8.2.3) are one header to the app.
         if name == "cookie"
@@ -1897,6 +1925,102 @@ mod tests {
         let (s, f) = run(&input);
         assert_eq!(rst_code(&f), Some(Code::Refused as u32));
         assert!(!s.done);
+    }
+
+    #[test]
+    fn resets_we_are_made_to_send_spend_the_budget() {
+        // MadeYouReset: each stream's handler is started (taken), then a
+        // zero WINDOW_UPDATE makes us reset it. It ends the connection as a
+        // client's own resets would.
+        let mut s = Session::new(limit);
+        s.feed(PREFACE);
+        for i in 0..400u32 {
+            let id = 2 * i + 1;
+            s.feed(&frame(HEADERS, END_HEADERS | END_STREAM, id, &get("/")));
+            assert!(s.take(id).is_some() || s.done);
+            s.feed(&frame(WINDOW_UPDATE, 0, id, &[0; 4]));
+        }
+        assert!(s.done, "a flood of resets we sent ends the connection");
+        // A few, as a client that errs now and then makes, do not.
+        let mut s = Session::new(limit);
+        s.feed(PREFACE);
+        for i in 0..50u32 {
+            let id = 2 * i + 1;
+            s.feed(&frame(HEADERS, END_HEADERS | END_STREAM, id, &get("/")));
+            s.take(id);
+            s.feed(&frame(WINDOW_UPDATE, 0, id, &[0; 4]));
+        }
+        assert!(!s.done);
+    }
+
+    #[test]
+    fn many_uploads_at_once_hold_little() {
+        // Thirty streams each send three frames: past `MAX_HELD`, only the
+        // oldest stream's window opens again.
+        fn big(_: &str) -> usize {
+            1 << 30
+        }
+        let mut s = Session::new(big);
+        s.feed(PREFACE);
+        let mut h = get("/x");
+        h[0] = 0x83; // POST
+        let mut heads = Vec::new();
+        for i in 0..30u32 {
+            heads.extend(frame(HEADERS, END_HEADERS, 2 * i + 1, &h));
+        }
+        s.feed(&heads);
+        s.out.clear();
+        for i in 0..30u32 {
+            let mut one = Vec::new();
+            for _ in 0..3 {
+                one.extend(frame(DATA, 0, 2 * i + 1, &[0; 16384]));
+            }
+            s.recv = WINDOW;
+            s.feed(&one);
+        }
+        let opened: Vec<u32> = (0..s.out.len().saturating_sub(8))
+            .filter(|&k| s.out[k + 3] == WINDOW_UPDATE && s.out[k..k + 3] == [0, 0, 4])
+            .map(|k| u32::from_be_bytes([s.out[k + 5], s.out[k + 6], s.out[k + 7], s.out[k + 8]]))
+            .filter(|&id| id != 0)
+            .collect();
+        assert!(opened.contains(&1), "the oldest goes on: {opened:?}");
+        assert!(opened.len() < 30, "not every stream: {opened:?}");
+        // Once the streams before it end, the first held back goes on.
+        let next = (0..30u32)
+            .map(|i| 2 * i + 1)
+            .find(|id| !opened.contains(id));
+        let next = next.expect("one held back") as u8;
+        let mut w = Vec::new();
+        for &id in &opened {
+            w.extend(frame(DATA, END_STREAM, id, &[]));
+        }
+        s.out.clear();
+        s.feed(&w);
+        assert!(
+            s.out
+                .windows(9)
+                .any(|f| f[3] == WINDOW_UPDATE && f[8] == next)
+        );
+    }
+
+    #[test]
+    fn content_length_is_digits_and_agrees() {
+        let with = |cl: &[&[u8]]| {
+            let mut h = get("/x");
+            h[0] = 0x83;
+            for v in cl {
+                h.push(0);
+                encode_string(&mut h, b"content-length");
+                encode_string(&mut h, v);
+            }
+            let (_, f) = run(&[frame(HEADERS, END_HEADERS, 1, &h)]);
+            rst_code(&f)
+        };
+        assert_eq!(with(&[b"3"]), None);
+        assert_eq!(with(&[b"3", b"3"]), None);
+        assert_eq!(with(&[b"3", b"4"]), Some(Code::Protocol as u32));
+        assert_eq!(with(&[b"+3"]), Some(Code::Protocol as u32));
+        assert_eq!(with(&[b" 3"]), Some(Code::Protocol as u32));
     }
 
     #[test]
