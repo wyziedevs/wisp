@@ -777,6 +777,16 @@ fn files_are_read_from_inside_their_folder() {
     assert_eq!(hello.status, 200);
     assert_eq!(hello.text(), "hello file");
     assert_eq!(header(&hello, "content-type"), "text/plain; charset=utf-8");
+    // An upload is never sniffed, and one a browser would run (HTML, SVG)
+    // runs no script on the site.
+    assert_eq!(header(&hello, "x-content-type-options"), "nosniff");
+    let svg = file(&mut app, "upload.svg");
+    assert_eq!(header(&svg, "content-type"), "image/svg+xml");
+    assert_eq!(header(&svg, "x-content-type-options"), "nosniff");
+    assert_eq!(
+        header(&svg, "content-security-policy"),
+        "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox"
+    );
     let json = file(&mut app, "sub%2Fx.json");
     assert_eq!(
         (json.text(), header(&json, "content-type")),

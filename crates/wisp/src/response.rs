@@ -128,7 +128,10 @@ impl Response {
     ///
     /// `name` may come from the URL: one that would reach outside `dir`
     /// (`..`, an absolute path, a drive) is a 404, as is a file that does not
-    /// exist. It is read without blocking the thread.
+    /// exist. It is read without blocking the thread. It is sent with
+    /// `x-content-type-options: nosniff`, and an HTML, XHTML, SVG or XML
+    /// file with a `content-security-policy` that sandboxes it, so an
+    /// uploaded page or image runs no script on the site.
     pub async fn file_in(dir: impl AsRef<std::path::Path>, name: &str) -> Result<Response> {
         if !http::stays_inside(name) {
             return Err(Error::new(404, "Not Found"));
@@ -151,7 +154,17 @@ impl Response {
                     .extension()
                     .map(|e| e.to_string_lossy().to_ascii_lowercase())
                     .unwrap_or_default();
-                Ok(Response::new(http::mime(&ext), body))
+                let res = Response::new(http::mime(&ext), body)
+                    .with_header("x-content-type-options", "nosniff");
+                // An upload a browser would run gets no script, no
+                // requests and no access to the site's cookies.
+                Ok(match ext.as_str() {
+                    "htm" | "html" | "xhtml" | "svg" | "xml" => res.with_header(
+                        "content-security-policy",
+                        "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox",
+                    ),
+                    _ => res,
+                })
             }
             Err(e)
                 if matches!(
