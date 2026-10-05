@@ -1,53 +1,53 @@
 ### workerd
 
-c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-04. Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).
+c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-05. Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).
 
 | framework | `/` | `/list1000` | `/json-big` | `/params` | cold start ms | RSS MB after load |
 |---|---|---|---|---|---|---|
-| hono | 6,186 (#1) | 795 (#3) | 3,359 (#1) | 4,774 (#1) | 75 (#2) | 303 (#1) |
-| **wisp** | **5,579 (#2)** | **1,902 (#1)** | **3,243 (#2)** | **4,771 (#2)** | **100 (#3)** | **374 (#2)** |
-| itty | 4,766 (#3) | 855 (#2) | 3,002 (#3) | 4,130 (#3) | 70 (#1) | 754 (#6) |
-| astro | 2,986 (#4) | 698 (#4) | 2,203 (#5) | 2,477 (#4) | 179 (#6) | 477 (#4) |
-| sveltekit | 2,884 (#5) | 418 (#5) | 2,296 (#4) | 2,223 (#5) | 120 (#4) | 1581 (#7) |
-| react-router | 2,351 (#6) | 226 (#6) | 1,905 (#6) | 1,849 (#6) | 151 (#5) | 425 (#3) |
-| next | 457 (#7) | 45 (#7) | 384 (#7) | 399 (#7) | 631 (#7) | 631 (#5) |
+| hono | 1,075 (#1) | 238 (#3) | 677 (#2) | 1,142 (#1) | 206 (#2) | 284 (#3) |
+| **wisp** | **1,069 (#2)** | **265 (#1)** | **672 (#3)** | **975 (#2)** | **305 (#4)** | **250 (#1)** |
+| itty | 1,035 (#3) | 260 (#2) | 747 (#1) | 957 (#3) | 186 (#1) | 427 (#5) |
+| sveltekit | 600 (#5) | 104 (#5) | 518 (#4) | 667 (#4) | 286 (#3) | 662 (#7) |
+| astro | 610 (#4) | 181 (#4) | 508 (#5) | 657 (#5) | 428 (#6) | 442 (#6) |
+| react-router | 580 (#6) | 45 (#6) | 374 (#6) | 520 (#6) | 384 (#5) | 281 (#2) |
+| next | 111 (#7) | 13 (#7) | 77 (#7) | 94 (#7) | 1653 (#7) | 422 (#4) |
 
 ### Node
 
-c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-04. Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).
+c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-05. Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).
 
 | framework | `/` | `/list1000` | `/json-big` | `/params` | cold start ms | RSS MB after load |
 |---|---|---|---|---|---|---|
-| **wisp raw** | **33,942 (#1)** | **3,165 (#1)** | **7,959 (#1)** | **30,533 (#1)** | **166 (#1)** | **82 (#1)** |
-| **wisp node:http** | **13,151 (#3)** | **3,001 (#1)** | **5,940 (#1)** | **11,627 (#2)** | **152 (#1)** | **290 (#5)** |
-| hono | 14,196 (#2) | 1,043 (#3) | 4,583 (#2) | 9,131 (#3) | 167 (#2) | 100 (#3) |
-| fastify | 13,661 (#3) | 1,049 (#2) | 4,496 (#3) | 11,862 (#2) | 312 (#5) | 95 (#2) |
-| express | 7,325 (#4) | 927 (#4) | 3,484 (#4) | 6,671 (#4) | 231 (#4) | 226 (#4) |
-| sveltekit | 4,802 (#5) | 516 (#5) | 2,629 (#5) | 4,300 (#5) | 187 (#3) | 269 (#5) |
-| next | 1,211 (#6) | 66 (#6) | 1,040 (#6) | 1,227 (#6) | 725 (#6) | 505 (#6) |
+| **wisp raw** | **3,763 (#1)** | **643 (#1)** | **981 (#1)** | **4,244 (#1)** | **1107 (#1)** | **89 (#1)** |
+| **wisp node:http** | **2,155 (#1)** | **574 (#1)** | **762 (#3)** | **1,992 (#2)** | **1190 (#1)** | **95 (#4)** |
+| hono | 1,336 (#3) | 158 (#3) | 892 (#2) | 1,904 (#3) | 1219 (#2) | 94 (#3) |
+| fastify | 1,902 (#2) | 156 (#4) | 790 (#3) | 2,281 (#2) | 2188 (#5) | 93 (#2) |
+| express | 778 (#4) | 162 (#2) | 615 (#4) | 1,264 (#4) | 1514 (#4) | 94 (#3) |
+| sveltekit | 409 (#5) | 73 (#5) | 385 (#5) | 715 (#5) | 1411 (#3) | 147 (#5) |
+| next | 125 (#6) | 9 (#6) | 85 (#6) | 71 (#6) | 4295 (#6) | 252 (#6) |
 
 ### Bun
 
-c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-04. Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).
+c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-05. Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).
 
 | framework | `/` | `/list1000` | `/json-big` | `/params` | cold start ms | RSS MB after load |
 |---|---|---|---|---|---|---|
-| **wisp raw** | **49,417 (#1)** | **4,082 (#1)** | **8,630 (#1)** | **47,525 (#1)** | **74 (#2)** | **40 (#2)** |
-| **wisp Bun.serve** | **24,934 (#3)** | **3,369 (#1)** | **6,525 (#2)** | **21,358 (#3)** | **75 (#2)** | **42 (#2)** |
-| elysia | 48,256 (#2) | 924 (#2) | 6,559 (#2) | 23,468 (#3) | 177 (#3) | 50 (#3) |
-| hono | 45,735 (#3) | 874 (#3) | 5,846 (#3) | 30,840 (#2) | 58 (#1) | 39 (#1) |
+| **wisp raw** | **5,906 (#1)** | **556 (#1)** | **1,467 (#1)** | **5,463 (#1)** | **321 (#2)** | **40 (#2)** |
+| **wisp Bun.serve** | **3,279 (#3)** | **687 (#1)** | **1,192 (#1)** | **3,010 (#2)** | **281 (#2)** | **41 (#2)** |
+| hono | 4,937 (#3) | 138 (#2) | 1,010 (#2) | 3,372 (#2) | 201 (#1) | 39 (#1) |
+| elysia | 5,374 (#2) | 119 (#3) | 1,009 (#3) | 2,819 (#3) | 668 (#3) | 51 (#3) |
 
 ### Deno
 
-c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-04. Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).
+c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-05. Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).
 
 | framework | `/` | `/list1000` | `/json-big` | `/params` | cold start ms | RSS MB after load |
 |---|---|---|---|---|---|---|
-| **wisp raw** | **39,542 (#2)** | **2,403 (#1)** | **3,939 (#2)** | **34,815 (#1)** | **87 (#2)** | **86 (#2)** |
-| hono | 43,060 (#1) | 860 (#2) | 3,825 (#3) | 28,454 (#2) | 56 (#1) | 51 (#1) |
-| **wisp Deno.serve** | **22,847 (#2)** | **2,260 (#1)** | **3,485 (#4)** | **16,011 (#2)** | **75 (#2)** | **69 (#2)** |
-| fresh | 19,357 (#3) | 519 (#4) | 4,352 (#1) | 7,154 (#4) | 90 (#3) | 98 (#4) |
-| oak | 15,011 (#4) | 750 (#3) | 3,518 (#4) | 10,557 (#3) | 154 (#4) | 86 (#3) |
+| **wisp raw** | **4,881 (#2)** | **666 (#1)** | **1,315 (#2)** | **4,468 (#1)** | **630 (#3)** | **68 (#2)** |
+| hono | 5,891 (#1) | 231 (#2) | 1,427 (#1) | 4,137 (#2) | 376 (#1) | 52 (#1) |
+| **wisp Deno.serve** | **4,360 (#2)** | **553 (#1)** | **1,140 (#2)** | **3,203 (#2)** | **508 (#2)** | **67 (#2)** |
+| oak | 2,321 (#4) | 219 (#3) | 957 (#4) | 1,943 (#3) | 941 (#4) | 84 (#3) |
+| fresh | 3,113 (#3) | 167 (#4) | 1,136 (#3) | 1,413 (#4) | 623 (#3) | 94 (#4) |
 
 ### Where Wisp is below 3rd or behind Hono
 
@@ -55,24 +55,24 @@ Gap is how far behind in %: lower req/s, or higher cold start and memory. Gap to
 
 | host | Wisp variant | metric | place | Wisp | Hono | behind Hono | behind 3rd |
 |---|---|---|---|---|---|---|---|
-| workerd | wisp | `/` | #2 | 5,579 | 6,186 | 10% | - |
-| workerd | wisp | `/json-big` | #2 | 3,243 | 3,359 | 3% | - |
-| workerd | wisp | `/params` | #2 | 4,771 | 4,774 | 0% | - |
-| workerd | wisp | cold start ms | #3 | 100 | 75 | 34% | - |
-| workerd | wisp | RSS MB after load | #2 | 374 | 303 | 23% | - |
-| Node | wisp node:http | `/` | #3 | 13,151 | 14,196 | 7% | - |
-| Node | wisp node:http | RSS MB after load | #5 | 290 | 100 | 190% | 28% (express) |
-| Bun | wisp raw | cold start ms | #2 | 74 | 58 | 28% | - |
+| workerd | wisp | `/` | #2 | 1,069 | 1,075 | 1% | - |
+| workerd | wisp | `/json-big` | #3 | 672 | 677 | 1% | - |
+| workerd | wisp | `/params` | #2 | 975 | 1,142 | 15% | - |
+| workerd | wisp | cold start ms | #4 | 305 | 206 | 48% | 7% (sveltekit) |
+| Node | wisp node:http | `/json-big` | #3 | 762 | 892 | 15% | - |
+| Node | wisp node:http | RSS MB after load | #4 | 95 | 94 | 1% | 1% (express) |
+| Bun | wisp raw | cold start ms | #2 | 321 | 201 | 60% | - |
 | Bun | wisp raw | RSS MB after load | #2 | 40 | 39 | 3% | - |
-| Bun | wisp Bun.serve | `/` | #3 | 24,934 | 45,735 | 45% | - |
-| Bun | wisp Bun.serve | `/params` | #3 | 21,358 | 30,840 | 31% | - |
-| Bun | wisp Bun.serve | cold start ms | #2 | 75 | 58 | 29% | - |
-| Bun | wisp Bun.serve | RSS MB after load | #2 | 42 | 39 | 8% | - |
-| Deno | wisp raw | `/` | #2 | 39,542 | 43,060 | 8% | - |
-| Deno | wisp raw | cold start ms | #2 | 87 | 56 | 55% | - |
-| Deno | wisp raw | RSS MB after load | #2 | 86 | 51 | 69% | - |
-| Deno | wisp Deno.serve | `/` | #2 | 22,847 | 43,060 | 47% | - |
-| Deno | wisp Deno.serve | `/json-big` | #4 | 3,485 | 3,825 | 9% | 1% (oak) |
-| Deno | wisp Deno.serve | `/params` | #2 | 16,011 | 28,454 | 44% | - |
-| Deno | wisp Deno.serve | cold start ms | #2 | 75 | 56 | 34% | - |
-| Deno | wisp Deno.serve | RSS MB after load | #2 | 69 | 51 | 35% | - |
+| Bun | wisp Bun.serve | `/` | #3 | 3,279 | 4,937 | 34% | - |
+| Bun | wisp Bun.serve | `/params` | #2 | 3,010 | 3,372 | 11% | - |
+| Bun | wisp Bun.serve | cold start ms | #2 | 281 | 201 | 40% | - |
+| Bun | wisp Bun.serve | RSS MB after load | #2 | 41 | 39 | 5% | - |
+| Deno | wisp raw | `/` | #2 | 4,881 | 5,891 | 17% | - |
+| Deno | wisp raw | `/json-big` | #2 | 1,315 | 1,427 | 8% | - |
+| Deno | wisp raw | cold start ms | #3 | 630 | 376 | 67% | - |
+| Deno | wisp raw | RSS MB after load | #2 | 68 | 52 | 31% | - |
+| Deno | wisp Deno.serve | `/` | #2 | 4,360 | 5,891 | 26% | - |
+| Deno | wisp Deno.serve | `/json-big` | #2 | 1,140 | 1,427 | 20% | - |
+| Deno | wisp Deno.serve | `/params` | #2 | 3,203 | 4,137 | 23% | - |
+| Deno | wisp Deno.serve | cold start ms | #2 | 508 | 376 | 35% | - |
+| Deno | wisp Deno.serve | RSS MB after load | #2 | 67 | 52 | 29% | - |

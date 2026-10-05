@@ -791,3 +791,32 @@ measurements above), 203 ms on Node raw (2nd, 8% behind Hono), 74 ms on Bun
 95 (26%), Deno 86 against 51 (69%), Bun 40 against 39. Wisp has the smallest
 footprint on workerd (309 MB, 1st) and with `node:http` on Node (89 MB, 1st).
 The full list, with the gap to 3rd where Wisp is below it, is the last table.
+
+## Shims and Node memory, measured again (2026-10-05)
+
+Node's RSS after load (bench/rank) swung because a body over 16 KB went to
+the socket as `Buffer.from(view)`: malloc'd, freed only at a V8 GC, so the
+brk heap held about 76 MB under load. Every body now goes as a latin1
+string, whose copy Node frees when the write ends: RSS after 4 x 4 s of
+load 152 to 80 MB, throughput equal within noise (alternating, `/list1000`
+and `/json-big`). bench/rank: Node raw 144 to 84-89 MB, 4th to 1st.
+
+`Bun.serve` / `Deno.serve`, instructions per request (`perf stat`, c=64,
+alternating; user-space): the request text is kept by path (its parts
+compared, no string made and hashed per request), the body view is a
+`Uint8Array` constructor (JSC's `subarray` was 7% of the shim), and the
+peer is read only when the app is asked. Bun / 30.8k to 29.9k, /params
+44.0k to 43.4k; Deno / 32.9k to 31.7k, /params 55.7k to 55.0k. Where the
+rest goes, Bun `/`: Bun.serve plus `new Response('hello')` alone is 12.9k,
+Hono 15.3k, Wisp 29.9k; `request.url` is 2.2k of it, `requestIP` (a
+`getpeername` syscall) 2.6k user + 1.8k kernel; the wasm's lazy-request
+path (copy in, task, Cx, route, head out) about 8k. Measured and not kept:
+a short ASCII body read as a string in JS (rope building cost more than
+`TextDecoder` past a few bytes on /params); bytes instead of a string to
+`Response` on Bun (worse). The raw paths stay the defaults and lead.
+
+The rank run of this date (results/*.json) ran while other builds shared
+the 4 cores: cold starts are 4 to 10x the quiet runs for every framework
+and the throughput places moved by up to 20%; the clean run before it
+had Node raw 1st on every route, Bun raw 1st, workerd 1st on `/`,
+`/list1000`, `/params`.
