@@ -24,10 +24,11 @@ const ranks = (get, asc) => {
   const xs = fws.map((f) => [f, get(f)]).filter(([, v]) => v != null).sort((a, b) => (asc ? a[1] - b[1] : b[1] - a[1]));
   return Object.fromEntries(xs.map(([f], i) => [f, i + 1]));
 };
+const nz = (p, f, r) => (P[p][f]?.routes?.[r]?.noisy ? '~' : '');
 const out = [];
 const flagged = [];
 
-out.push('## Throughput (req/s, median of 5 x 10 s; higher is better)\n');
+out.push('## Throughput (req/s, median of 5 x 10 s; higher is better; ~ marks a cell where host steal stayed above 8% in some run)\n');
 const finalRank = {};
 for (const r of ROUTES) {
   const g = (p) => (f) => P[p][f]?.routes?.[r]?.rps ?? null;
@@ -40,7 +41,7 @@ for (const r of ROUTES) {
     const d = diff(g(0)(f), g(1)(f));
     const flag = d != null && d > 5;
     if (flag) flagged.push(`${name(f)} ${r}: ${d.toFixed(1)}%`);
-    out.push(`| ${fr[f]} | ${name(f)} | ${n(g(0)(f))} | ${n(g(1)(f))} | ${n(Math.round(m(f)))} | ${d == null ? '-' : d.toFixed(1) + '%'}${flag ? ' **FLAG**' : ''} | ${rk[0][f] ?? '-'}/${rk[1][f] ?? '-'} | ${P[0][f]?.routes?.[r]?.p99ms ?? '-'} / ${P[1][f]?.routes?.[r]?.p99ms ?? '-'} |`);
+    out.push(`| ${fr[f]} | ${name(f)} | ${n(g(0)(f))}${nz(0, f, r)} | ${n(g(1)(f))}${nz(1, f, r)} | ${n(Math.round(m(f)))} | ${d == null ? '-' : d.toFixed(1) + '%'}${flag ? ' **FLAG**' : ''} | ${rk[0][f] ?? '-'}/${rk[1][f] ?? '-'} | ${P[0][f]?.routes?.[r]?.p99ms ?? '-'} / ${P[1][f]?.routes?.[r]?.p99ms ?? '-'} |`);
   }
   out.push('');
 }

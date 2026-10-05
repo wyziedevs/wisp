@@ -16,7 +16,8 @@ import { fileURLToPath } from 'node:url';
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const SERVER_CPUS = process.env.SERVER_CPUS || '0-1';
 const CLIENT_CPUS = process.env.CLIENT_CPUS || '2-3';
-const STEAL_MAX = +(process.env.STEAL_MAX || 5); // percent of CPU time the hypervisor may take during a run
+const STEAL_MAX = +(process.env.STEAL_MAX || 8); // percent of CPU time the hypervisor may take during a run
+const STEAL_TRIES = +(process.env.STEAL_TRIES || 4); // a run above it is redone, this many tries at most
 const PORT = 18480; // not 8080: other jobs on a shared host use it
 const PATH = ['/root/.cargo/bin', '/root/nr-tools/go/bin', '/root/dotnet', '/usr/local/bin', '/opt/bun/bin', process.env.PATH].join(':');
 
@@ -149,12 +150,12 @@ async function bench(f, pass) {
     for (const [n, s] of Object.entries(sample)) if (s.status !== 200) throw new Error(`${n} answered ${s.status}`);
     for (const n of routeNames) {
       oha(n, warm);
-      // A run whose hypervisor steal went above STEAL_MAX is thrown away and redone (up to 10
-      // tries; then the quietest try is kept and the cell is marked noisy).
+      // A run whose hypervisor steal went above STEAL_MAX is thrown away and redone (up to
+      // STEAL_TRIES tries; then the quietest try is kept and the cell is marked noisy).
       const rs = []; let discarded = 0;
       for (let i = 0; i < runs; i++) {
         let best = null;
-        for (let a = 0; a < 10; a++) {
+        for (let a = 0; a < STEAL_TRIES; a++) {
           const c0 = cpu(); const r = oha(n, secs); const c1 = cpu();
           r.steal = 100 * (c1[0] - c0[0]) / (c1[1] - c0[1]);
           if (!best || r.steal < best.steal) best = r;
