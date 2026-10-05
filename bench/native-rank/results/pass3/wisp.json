@@ -1,0 +1,99 @@
+{
+ "framework": "Wisp",
+ "pass": 3,
+ "at": "2026-10-05T14:32:01.492Z",
+ "coldMs": 33,
+ "routes": {
+  "plaintext": {
+   "rps": 68924,
+   "p50ms": 0.4,
+   "p99ms": 6.32,
+   "non200": 0,
+   "errors": 274,
+   "runs": [
+    63643,
+    73462,
+    62197,
+    68963,
+    68924
+   ],
+   "stealPct": 6.8,
+   "discarded": 12,
+   "noisy": true
+  },
+  "json": {
+   "rps": 48710,
+   "p50ms": 0.5,
+   "p99ms": 8.74,
+   "non200": 0,
+   "errors": 262,
+   "runs": [
+    48710,
+    53535,
+    52068,
+    45691,
+    42170
+   ],
+   "stealPct": 15.6,
+   "discarded": 15,
+   "noisy": true
+  },
+  "params": {
+   "rps": 54323,
+   "p50ms": 0.48,
+   "p99ms": 7.5,
+   "non200": 0,
+   "errors": 301,
+   "runs": [
+    48874,
+    50675,
+    58120,
+    59009,
+    54323
+   ],
+   "stealPct": 10.2,
+   "discarded": 15,
+   "noisy": true
+  },
+  "list": {
+   "rps": 5859,
+   "p50ms": 9.54,
+   "p99ms": 38.14,
+   "non200": 0,
+   "errors": 314,
+   "runs": [
+    5859,
+    6027,
+    6018,
+    5823,
+    5452
+   ],
+   "stealPct": 20.5,
+   "discarded": 15,
+   "noisy": true
+  },
+  "json-big": {
+   "rps": 9752,
+   "p50ms": 4.85,
+   "p99ms": 32.1,
+   "non200": 0,
+   "errors": 290,
+   "runs": [
+    10042,
+    9312,
+    9752,
+    8977,
+    10231
+   ],
+   "stealPct": 26.8,
+   "discarded": 15,
+   "noisy": true
+  }
+ },
+ "host": {
+  "cpus": "0-1",
+  "client": "2-3"
+ },
+ "rssMb": 4,
+ "peakMb": 4
+}

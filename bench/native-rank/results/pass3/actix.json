@@ -1,0 +1,99 @@
+{
+ "framework": "Actix Web",
+ "pass": 3,
+ "at": "2026-10-05T15:11:04.508Z",
+ "coldMs": 24,
+ "routes": {
+  "plaintext": {
+   "rps": 82692,
+   "p50ms": 0.36,
+   "p99ms": 4.43,
+   "non200": 0,
+   "errors": 310,
+   "runs": [
+    82692,
+    82710,
+    81103,
+    88845,
+    70669
+   ],
+   "stealPct": 2.1,
+   "discarded": 0,
+   "noisy": false
+  },
+  "json": {
+   "rps": 62880,
+   "p50ms": 0.44,
+   "p99ms": 6.34,
+   "non200": 0,
+   "errors": 286,
+   "runs": [
+    66297,
+    62595,
+    62880,
+    64359,
+    52923
+   ],
+   "stealPct": 7.9,
+   "discarded": 15,
+   "noisy": true
+  },
+  "params": {
+   "rps": 62492,
+   "p50ms": 0.57,
+   "p99ms": 5.5,
+   "non200": 0,
+   "errors": 294,
+   "runs": [
+    50165,
+    63665,
+    70410,
+    62492,
+    60148
+   ],
+   "stealPct": 4.7,
+   "discarded": 5,
+   "noisy": true
+  },
+  "list": {
+   "rps": 10175,
+   "p50ms": 5.11,
+   "p99ms": 26.84,
+   "non200": 0,
+   "errors": 299,
+   "runs": [
+    13352,
+    11651,
+    9938,
+    10175,
+    8236
+   ],
+   "stealPct": 14.6,
+   "discarded": 15,
+   "noisy": true
+  },
+  "json-big": {
+   "rps": 9100,
+   "p50ms": 5.98,
+   "p99ms": 24.29,
+   "non200": 0,
+   "errors": 305,
+   "runs": [
+    7697,
+    9108,
+    8947,
+    9287,
+    9100
+   ],
+   "stealPct": 17.5,
+   "discarded": 15,
+   "noisy": true
+  }
+ },
+ "host": {
+  "cpus": "0-1",
+  "client": "2-3"
+ },
+ "rssMb": 5,
+ "peakMb": 6
+}

@@ -1,0 +1,104 @@
+{
+ "framework": "Next.js",
+ "pass": 5,
+ "at": "2026-10-05T17:50:23.922Z",
+ "coldMs": 1935,
+ "routes": {
+  "plaintext": {
+   "rps": 591,
+   "p50ms": 77.58,
+   "p99ms": 332.92,
+   "non200": 0,
+   "errors": 320,
+   "cpuUs": 3416.2,
+   "runs": [
+    337,
+    595,
+    688,
+    518,
+    591
+   ],
+   "stealPct": 11.7,
+   "discarded": 5,
+   "noisy": true
+  },
+  "json": {
+   "rps": 744,
+   "p50ms": 64.2,
+   "p99ms": 408.87,
+   "non200": 0,
+   "errors": 320,
+   "cpuUs": 2741.5,
+   "runs": [
+    744,
+    669,
+    685,
+    766,
+    792
+   ],
+   "stealPct": 15.5,
+   "discarded": 5,
+   "noisy": true
+  },
+  "params": {
+   "rps": 488,
+   "p50ms": 91,
+   "p99ms": 531.94,
+   "non200": 0,
+   "errors": 320,
+   "cpuUs": 4154.5,
+   "runs": [
+    379,
+    455,
+    496,
+    496,
+    488
+   ],
+   "stealPct": 14.3,
+   "discarded": 5,
+   "noisy": true
+  },
+  "list": {
+   "rps": 20,
+   "p50ms": 3789.8,
+   "p99ms": 5694.2,
+   "non200": 0,
+   "errors": 320,
+   "cpuUs": 143956.8,
+   "runs": [
+    19,
+    20,
+    21,
+    20,
+    20
+   ],
+   "stealPct": 8.4,
+   "discarded": 3,
+   "noisy": true
+  },
+  "json-big": {
+   "rps": 549,
+   "p50ms": 90.44,
+   "p99ms": 328.01,
+   "non200": 0,
+   "errors": 320,
+   "cpuUs": 3706.1,
+   "runs": [
+    549,
+    449,
+    568,
+    521,
+    611
+   ],
+   "stealPct": 12.9,
+   "discarded": 5,
+   "noisy": true
+  }
+ },
+ "host": {
+  "cpus": "0-1",
+  "client": "2-3"
+ },
+ "rssMb": 1095,
+ "peakMb": 1095
+}

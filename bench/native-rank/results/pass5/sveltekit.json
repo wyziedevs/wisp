@@ -1,0 +1,104 @@
+{
+ "framework": "SvelteKit",
+ "pass": 5,
+ "at": "2026-10-05T17:56:44.392Z",
+ "coldMs": 342,
+ "routes": {
+  "plaintext": {
+   "rps": 6129,
+   "p50ms": 8.67,
+   "p99ms": 35.45,
+   "non200": 0,
+   "errors": 318,
+   "cpuUs": 325.7,
+   "runs": [
+    6014,
+    6129,
+    6584,
+    7261,
+    5691
+   ],
+   "stealPct": 7,
+   "discarded": 1,
+   "noisy": true
+  },
+  "json": {
+   "rps": 6189,
+   "p50ms": 8.13,
+   "p99ms": 37.89,
+   "non200": 0,
+   "errors": 318,
+   "cpuUs": 322.5,
+   "runs": [
+    4622,
+    7142,
+    7776,
+    6189,
+    5580
+   ],
+   "stealPct": 6.2,
+   "discarded": 1,
+   "noisy": true
+  },
+  "params": {
+   "rps": 5428,
+   "p50ms": 10.33,
+   "p99ms": 47.54,
+   "non200": 0,
+   "errors": 319,
+   "cpuUs": 367.8,
+   "runs": [
+    5883,
+    5456,
+    5428,
+    4829,
+    4834
+   ],
+   "stealPct": 7.7,
+   "discarded": 2,
+   "noisy": true
+  },
+  "list": {
+   "rps": 371,
+   "p50ms": 115.3,
+   "p99ms": 754.67,
+   "non200": 0,
+   "errors": 320,
+   "cpuUs": 5427.9,
+   "runs": [
+    327,
+    371,
+    371,
+    339,
+    473
+   ],
+   "stealPct": 7.5,
+   "discarded": 1,
+   "noisy": true
+  },
+  "json-big": {
+   "rps": 3069,
+   "p50ms": 18.73,
+   "p99ms": 53.33,
+   "non200": 0,
+   "errors": 316,
+   "cpuUs": 652,
+   "runs": [
+    2176,
+    3006,
+    3069,
+    4045,
+    4531
+   ],
+   "stealPct": 11.2,
+   "discarded": 3,
+   "noisy": true
+  }
+ },
+ "host": {
+  "cpus": "0-1",
+  "client": "2-3"
+ },
+ "rssMb": 1692,
+ "peakMb": 1710
+}

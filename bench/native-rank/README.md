@@ -73,11 +73,55 @@ differs only in spelling (`;charset=` spacing and case).
   (which see two cores). Express has ETag off and `x-powered-by` off, Gin has no logger or
   recovery middleware, FastAPI has no docs routes.
 - Two independent passes at different times; pass 2 walks the frameworks in reverse order. Cells
-  where the passes differ by more than 5% are flagged in the report and re-run or explained.
-  Ranks use the mean of both passes.
+  where no two clean passes are within 5% are flagged in the report; re-runs (passes 3 to 5) were
+  added until time ran out, and the cells that still disagree are listed with the reason (steal).
+  Ranks use the median of the clean passes.
 - Wisp is built `--release` with its own `Cargo.toml` profile (fat LTO, one codegen unit); Axum
   and Actix get the same profile, plus `panic = "abort"`.
 
 Not covered: pipelining, other concurrency levels, bodies, TLS, a database. Throughput ranks here
 move by 10 to 20% between runs on a shared host (see `results/report.md` for the observed gaps);
 treat neighbours as ties.
+
+## Results (full tables: `results/report.md`)
+
+Five passes on the shared 4-core VPS (see Hypervisor steal above): 1 and 2 are the two required
+independent passes (pass 2 in reverse order, hours later), 3 is a partial tie-break (strict
+steal gate, 5 of 12 servers), 4 and 5 re-ran everything and also record CPU per request, which does
+not move with steal. Req/s is the median of the clean passes; ranks:
+
+| Framework | `/` | `/json` | `/params` | `/list` | `/json-big` | CPU per request, rank sum |
+|---|---|---|---|---|---|---|
+| Wisp | 1 | 1 | 3 | 3 | 1 | 8 (best) |
+| Actix Web | 2 | 3 | 1 | 1 | 2 | 9 |
+| Axum | 3 | 2 | 2 | 2 | 3 | 13 |
+| ASP.NET Core | 4 | 4 | 4 | 5 | 4 | 20 |
+| Hono (Bun) | 5 | 5 | 6 | 9 | 6 | 31 |
+| Go Gin | 6 | 6 | 5 | 10 | 7 | 31 |
+| Fastify | 7 | 7 | 8 | 6 | 5 | 33 |
+| Express | 8 | 9 | 7 | 7 | 9 | 40 |
+| Spring Boot | 10 | 8 | 9 | 4 | 8 | 42 |
+| FastAPI | 9 | 11 | 10 | 8 | 12 | 51 |
+| SvelteKit | 11 | 10 | 11 | 11 | 10 | 53 |
+| Next.js | 12 | 12 | 12 | 12 | 11 | 59 |
+
+Plainly:
+
+- Wisp is top 3 in every route, but the top three (Wisp, Actix Web, Axum) are within the noise of
+  each other on `/`, `/json`, `/params` and `/json-big`: their order flips between passes (Wisp
+  was 4th in pass 1 `/`, 1st in pass 2). Do not read a win from those ranks; read "top tier".
+- `/list` is Wisp's weak cell: 3rd in all five passes, and about 2.5x the CPU per request of Axum
+  and Actix (257 us against 109 and 116), whose handlers write one `String` by hand. Rendering the
+  1000-item `.wisp` template is the cost. Gin's `html/template` is the slowest of the compiled
+  stacks here (a stock-library choice, not a tuned one); Next.js renders 1000 React elements plus
+  its RSC payload.
+- CPU per request (steal-proof): Wisp is first on `/`, `/json` and `/params` (19 to 23 us), second
+  on `/json-big` (130 us against Actix 128), third on `/list`.
+- Memory after load: Wisp 4 MB, Actix 5, Axum 6, Gin 24, Hono 85, ASP.NET Core 95, FastAPI 140,
+  Fastify 376, Express 492, Spring 568, Next.js 1.1 GB, SvelteKit 1.8 GB. Cold start to first 200:
+  Actix 25 ms, Axum 27, Wisp 33, Gin 52, Hono 89, SvelteKit 399, Express 464, Fastify 566, ASP.NET
+  Core 641, FastAPI 1.2 s, Next.js 1.5 s, Spring Boot 10.7 s (two cores, JIT and classpath scan).
+- Agreement: most throughput cells never got two clean passes within 5% (list in the report),
+  because the host's steal time was above the gate in most runs of most passes. Those cells are
+  provisional by the report's own flag; the ranks above are stable where the gaps are large (the
+  tail of the table moves by at most one place) and not where they are small (the top three).

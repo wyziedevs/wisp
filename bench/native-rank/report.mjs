@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Renders results/pass{1,2,3}/*.json into markdown. Per route: every pass side by side (~ marks a
+// Renders results/pass{1..5}/*.json into markdown. Per route: every pass side by side (~ marks a
 // pass whose host steal stayed above the gate), the final value, and the rank. Final value: the
 // median of the clean passes (all passes if fewer than two are clean). A cell "agrees" when two
 // clean passes are within 5% of each other; otherwise it is flagged and its rank is provisional.
@@ -16,7 +16,7 @@ const load = (p) => {
   if (existsSync(d)) for (const f of readdirSync(d)) if (f.endsWith('.json')) o[f.slice(0, -5)] = JSON.parse(readFileSync(join(d, f), 'utf8'));
   return o;
 };
-const P = [1, 2, 3].map(load).filter((x) => Object.keys(x).length);
+const P = [1, 2, 3, 4, 5].map(load).filter((x) => Object.keys(x).length);
 const fws = [...new Set(P.flatMap((x) => Object.keys(x)))];
 const name = (f) => P.map((x) => x[f]?.framework).find(Boolean);
 const n = (x) => (x == null ? '-' : Math.round(x).toLocaleString('en-US'));

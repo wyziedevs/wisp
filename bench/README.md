@@ -569,3 +569,12 @@ Nuxt takes 2.0x Wisp's tokens, SvelteKit and Next.js 2.2x, Express (EJS)
   so it would serve from one CPU.
 - Kestrel sends `/plaintext` chunked (the minimal API default for a returned
   string), so its responses are 35 bytes larger.
+
+## Native ranking, 12 frameworks (`native-rank/`)
+
+Wisp plus eleven (ASP.NET Core, Axum, Actix Web, Gin, Fastify, Express, Hono on Bun, Spring Boot,
+FastAPI, Next.js, SvelteKit) on five routes, five passes, with cold start, RSS and CPU per request.
+On a shared VPS with 0 to 55% hypervisor steal. Wisp is top 3 on every route and first on CPU per
+request for `/`, `/json`, `/params`; its `/list` (1000-item template) is 3rd, about 2.5x the CPU of
+Axum and Actix. Details, method and the cells that never agreed: `native-rank/README.md`,
+`native-rank/results/report.md`.

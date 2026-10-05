@@ -1,0 +1,104 @@
+{
+ "framework": "Spring Boot",
+ "pass": 5,
+ "at": "2026-10-05T17:37:02.703Z",
+ "coldMs": 12085,
+ "routes": {
+  "plaintext": {
+   "rps": 5251,
+   "p50ms": 9.08,
+   "p99ms": 60.16,
+   "non200": 0,
+   "errors": 314,
+   "cpuUs": 381.6,
+   "runs": [
+    821,
+    3318,
+    5251,
+    6446,
+    11251
+   ],
+   "stealPct": 16.9,
+   "discarded": 5,
+   "noisy": true
+  },
+  "json": {
+   "rps": 9952,
+   "p50ms": 4.94,
+   "p99ms": 27.48,
+   "non200": 0,
+   "errors": 319,
+   "cpuUs": 188.1,
+   "runs": [
+    6522,
+    7594,
+    12698,
+    12505,
+    9952
+   ],
+   "stealPct": 13.4,
+   "discarded": 5,
+   "noisy": true
+  },
+  "params": {
+   "rps": 10943,
+   "p50ms": 4.69,
+   "p99ms": 25.1,
+   "non200": 0,
+   "errors": 306,
+   "cpuUs": 175.2,
+   "runs": [
+    4593,
+    9975,
+    10943,
+    12957,
+    13214
+   ],
+   "stealPct": 13,
+   "discarded": 5,
+   "noisy": true
+  },
+  "list": {
+   "rps": 1872,
+   "p50ms": 24.43,
+   "p99ms": 147.11,
+   "non200": 0,
+   "errors": 320,
+   "cpuUs": 1057.3,
+   "runs": [
+    1399,
+    2496,
+    1865,
+    1872,
+    2242
+   ],
+   "stealPct": 12.2,
+   "discarded": 5,
+   "noisy": true
+  },
+  "json-big": {
+   "rps": 4416,
+   "p50ms": 10.03,
+   "p99ms": 66.11,
+   "non200": 0,
+   "errors": 319,
+   "cpuUs": 442.6,
+   "runs": [
+    3039,
+    4241,
+    4720,
+    5173,
+    4416
+   ],
+   "stealPct": 16.5,
+   "discarded": 5,
+   "noisy": true
+  }
+ },
+ "host": {
+  "cpus": "0-1",
+  "client": "2-3"
+ },
+ "rssMb": 543,
+ "peakMb": 543
+}
