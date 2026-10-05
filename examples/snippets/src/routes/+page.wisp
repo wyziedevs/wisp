@@ -1,3 +1,7 @@
+---
+let fruits = vec!["plum", "fig"];
+---
+
 <head>
   <title>Snippets</title>
 </head>
@@ -22,7 +26,3 @@
 
 <!-- {:@html} writes markup unescaped: only for markup you trust. -->
 <p>{:@html '<i>raw</i> markup'}</p>
-
-<script>
-  let fruits = ['plum', 'fig']
-</script>

@@ -294,11 +294,13 @@ href={p.path}>{p.title}</a>{/each}` (newest `date` first).
 
 `{…}` is Rust on the server; quoted directive values and `{:…}` are JS.
 
-`<button on:click="count++">{:count}</button>` with `<script>let count = 0</script>`
-(top-level lets are state). A page's Rust names are browser values by name (`items`, `data.items`).
-`bind:value="q"` with no `let q` declares it, and so does a handler that
-toggles (`open = !open`: false) or counts (`n++`: 0) a name nothing declares,
-so a live search needs no script: `<input bind:value="q">` `{:#each items as i
+`<button on:click="count++">{:count}</button>` needs no script: a handler that counts
+(`n++`: 0) or toggles (`open = !open`: false) a name nothing declares declares it. Another
+start goes in the `---` block, `let count = 5;`: a literal only `{:…}`/directives read is
+browser state, built in, nothing sent per request. A page's other Rust names are browser values
+by name (`items`, `data.items`), sent with the page. `<script>` (its top-level lets are state)
+is for real browser code: DOM, `onMount`, `$effect`, imports, `$props`, context.
+`bind:value="q"` with no `let q` declares it, so a live search needs no script: `<input bind:value="q">` `{:#each items as i
 if matches(i.name, q)}…{/each}` (`if` keeps matching items, in `{#each}` too). Directives `on:click` (`.prevent .once .debounce.300ms`…),
 `bind:value|checked|this`, `:attr="js"`, `:text`, `class:x="js"`,
 `transition:fade`, `use:action`; client blocks `{:#if}` `{:#each}`, in them `{:@const x = e}`

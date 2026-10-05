@@ -764,7 +764,7 @@ pub(crate) const RUST_ATTRS: [(&str, &str); 32] = [
 pub(crate) const DIRECTIVES: [(&str, &str); 9] = [
     (
         "on:",
-        "`on:click=\"count++\"`: runs JavaScript on the event. Modifiers: `.prevent .stop .once .self .capture .passive .window .document .outside .debounce.300ms .enter .escape .ctrl .shift .alt .meta`.",
+        "`on:click=\"count++\"`: runs JavaScript on the event. A counted (`n++`) or toggled name nothing declares starts at 0 or false; `let n = 5;` in the `---` block starts it there, as browser state. Modifiers: `.prevent .stop .once .self .capture .passive .window .document .outside .debounce.300ms .enter .escape .ctrl .shift .alt .meta`.",
     ),
     (
         "bind:",
