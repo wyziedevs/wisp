@@ -32,7 +32,8 @@ for (const host of hosts) {
     const rivals = names.filter((x) => x !== n && m.val(x) != null && (!isWisp(n) ? !isWisp(x) || x === bestWisp(m) : !isWisp(x)));
     return 1 + rivals.filter((x) => (m.better === 'high' ? m.val(x) > v : m.val(x) < v)).length;
   };
-  const bestWisp = (m) => names.filter((x) => isWisp(x) && m.val(x) != null).sort((a, b) => (m.better === 'high' ? m.val(b) - m.val(a) : m.val(a) - m.val(b)))[0];
+  const best = (m, list, i = 0) => list.filter((x) => m.val(x) != null).sort((a, b) => (m.better === 'high' ? m.val(b) - m.val(a) : m.val(a) - m.val(b)))[i];
+  const bestWisp = (m) => best(m, names.filter(isWisp));
 
   const order = (n) => { const ps = metrics.slice(0, routes.length).map((m) => place(m, n)).filter((x) => x != null); return ps.reduce((a, b) => a + b, 0) / (ps.length || 1); };
   const rows = [...names].sort((a, b) => order(a) - order(b));
@@ -61,7 +62,7 @@ for (const host of hosts) {
       const worse = (a, b) => (m.better === 'high' ? (b - a) / b : (a - b) / b) * 100; // % worse than b
       const behindHono = h != null && (m.better === 'high' ? v < h : v > h);
       if (p > 3 || behindHono) {
-        const third = names.filter((x) => !isWisp(x) && m.val(x) != null).sort((a, b) => (m.better === 'high' ? m.val(b) - m.val(a) : m.val(a) - m.val(b)))[2];
+        const third = best(m, names.filter((x) => !isWisp(x)), 2);
         losses.push({ host: label[host], n, metric: m.title, p, v: m.fmt(v), h: h != null ? m.fmt(h) : '-', gapHono: h != null ? worse(v, h) : null, gap3: p > 3 && third ? worse(v, m.val(third)) : null, third });
       }
     }

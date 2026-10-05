@@ -5,36 +5,19 @@
 // Both run at once; every route's runs alternate between them, so a busy
 // machine hurts both the same.
 import { spawn, execFileSync } from 'node:child_process';
-import { writeFileSync, readFileSync, readdirSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { sleep, median, hdr, oha as ohaRun, workerdConfig } from './util.mjs';
 
 const arg = (k, d) => { const i = process.argv.indexOf('--' + k); return i > 0 ? process.argv[i + 1] : d; };
 const bin = resolve(arg('workerd', 'workerd'));
 const secs = arg('secs', '10'), conns = arg('conns', '64'), runs = Number(arg('runs', '3')), colds = Number(arg('cold', '10'));
 const only = arg('only', '');
 const apps = Object.entries({ wisp: arg('wisp', '.'), hono: arg('hono', '.') }).filter(([n]) => !only || n === only).map(([name, dir], i) => ({ name, dir: resolve(dir), port: 4300 + i }));
-const jar = 'sid=abc123; theme=dark';
 const routes = ['/', '/list', '/json', '/list1000', '/json-big', '/about', '/params/42?q=hello%20world&x=1'].filter((r) => !arg('routes', '') || arg('routes', '').split(',').some((m) => (m === '/' ? r === '/' : r.includes(m))));
-const hdr = (p) => (p.startsWith('/params') ? { cookie: jar } : {});
 
-// Every file of the dir is a module: .wasm as wasm, .js and .mjs as ES modules.
-// The entry (worker.js, or Hono's bundle app.mjs) goes first.
-function config(a) {
-  const entry = (f) => (f === 'worker.js' || f === 'app.mjs' ? 0 : 1);
-  const mods = readdirSync(a.dir).filter((f) => /\.(m?js|wasm)$/.test(f)).sort((x, y) => entry(x) - entry(y)).map((f) => `(name = "${f}", ${f.endsWith('.wasm') ? 'wasm' : 'esModule'} = embed "${f}")`);
-  const path = join(a.dir, 'workerd.capnp');
-  writeFileSync(path, `using Workerd = import "/workerd/workerd.capnp";
-const config :Workerd.Config = (
-  services = [(name = "main", worker = (modules = [${mods.join(', ')}], compatibilityDate = "2025-09-01"))],
-  sockets = [(name = "http", address = "127.0.0.1:${a.port}", http = (), service = "main")],
-);
-`);
-  return path;
-}
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const config = (a) => workerdConfig(a.dir, a.port, { entries: ['worker.js', 'app.mjs'] });
 const kill = (c) => { if (process.platform === 'win32') try { execFileSync('taskkill', ['/PID', String(c.pid), '/T', '/F'], { stdio: 'ignore' }); } catch {} else c.kill('SIGKILL'); };
-const median = (a) => [...a].sort((x, y) => x - y)[a.length >> 1];
 const start = (a) => spawn(bin, ['serve', config(a)], { cwd: a.dir, stdio: 'ignore' });
 
 // Time from spawn to the first complete response.
@@ -60,7 +43,7 @@ function cpu(pid) {
 // One oha run: req/s, p99 ms, and workerd's CPU microseconds per request.
 function oha(a, path, s) {
   const c0 = cpu(a.child.pid);
-  const j = JSON.parse(execFileSync('oha', ['-z', `${s}s`, '-c', conns, '--no-tui', '--output-format', 'json', ...(path.startsWith('/params') ? ['-H', `cookie: ${jar}`] : []), `http://127.0.0.1:${a.port}${path}`], { maxBuffer: 1 << 26 }));
+  const j = ohaRun(`http://127.0.0.1:${a.port}${path}`, path, s, conns);
   const used = cpu(a.child.pid) - c0;
   const n = j.statusCodeDistribution['200'] ?? 0;
   const bad = Object.entries(j.statusCodeDistribution).filter(([k]) => k !== '200').length;

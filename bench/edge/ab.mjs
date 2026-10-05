@@ -7,15 +7,14 @@
 // each: `import { app } from './app.mjs'; Deno.serve({ port: Number(Deno.env.get('PORT')) }, app.fetch)`).
 import { spawn, execFileSync } from 'node:child_process';
 import { join } from 'node:path';
+import { sleep, median, hdr, oha as ohaRun } from './util.mjs';
 
 const arg = (k, d) => { const i = process.argv.indexOf('--' + k); return i > 0 ? process.argv[i + 1] : d; };
 const dir = arg('dir', process.env.BENCH_DIR || 'C:/wb');
 const group = arg('group', 'node');
 const bin = arg('bin', group);
 const secs = arg('secs', '10'), conns = arg('conns', '64'), runs = Number(arg('runs', '5')), colds = Number(arg('cold', '9'));
-const jar = 'sid=abc123; theme=dark';
 const routes = ['/', '/list1000', '/json-big', '/params/42?q=hello%20world&x=1'].filter((r) => !arg('routes', '') || arg('routes', '').split(',').some((m) => r.includes(m)));
-const hdr = (p) => (p.startsWith('/params') ? { cookie: jar } : {});
 
 // name -> [cwd, command, args, env]
 const sets = {
@@ -37,9 +36,7 @@ const sets = {
 }[group];
 const apps = Object.entries(sets).map(([name, [cwd, cmd, args, env]], i) => ({ name, cwd: join(dir, cwd), cmd, args, env: { ...env, PORT: String(4500 + i) }, port: 4500 + i }));
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const kill = (c) => { if (process.platform === 'win32') try { execFileSync('taskkill', ['/PID', String(c.pid), '/T', '/F'], { stdio: 'ignore' }); } catch {} else c.kill('SIGKILL'); };
-const median = (a) => [...a].sort((x, y) => x - y)[a.length >> 1];
 const start = (a) => spawn(a.cmd, a.args, { cwd: a.cwd, env: { ...process.env, ...a.env }, stdio: 'ignore' });
 const url = (a, p) => `http://127.0.0.1:${a.port}${p}`;
 const get = (a, p) => fetch(url(a, p), { headers: { connection: 'close', ...hdr(p) } }).then((r) => r.text());
@@ -58,7 +55,7 @@ async function cold(a) {
 }
 
 function oha(a, path, s) {
-  const j = JSON.parse(execFileSync('oha', ['-z', `${s}s`, '-c', conns, '--no-tui', '--output-format', 'json', ...(path.startsWith('/params') ? ['-H', `cookie: ${jar}`] : []), url(a, path)], { maxBuffer: 1 << 26 }));
+  const j = ohaRun(url(a, path), path, s, conns);
   const bad = Object.entries(j.statusCodeDistribution).filter(([k]) => k !== '200').length;
   return { rps: j.summary.requestsPerSec, p99: j.latencyPercentiles.p99 * 1000, bad };
 }

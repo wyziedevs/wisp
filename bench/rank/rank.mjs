@@ -5,10 +5,11 @@
 // All of a host's servers run at once and every route's runs alternate between
 // them, so noise hurts all alike. Results go to results/<host>.json; `node
 // report.mjs` renders the tables.
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { writeFileSync, readFileSync, readdirSync, existsSync, mkdirSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { sleep, median, hdr, oha as ohaRun, workerdConfig } from '../edge/util.mjs';
 
 const arg = (k, d) => { const i = process.argv.indexOf('--' + k); return i > 0 ? process.argv[i + 1] : d; };
 const here = dirname(fileURLToPath(import.meta.url));
@@ -17,9 +18,8 @@ const out = resolve(arg('dir', join(here, 'out')));
 const secs = arg('secs', '10'), conns = arg('conns', '64'), runs = Number(arg('runs', '5')), colds = Number(arg('cold', '15'));
 const only = arg('only', '').split(',').filter(Boolean);
 const SRV_CPUS = arg('srv-cpus', '0,1'), LOAD_CPUS = arg('load-cpus', '2,3');
-const jar = 'sid=abc123; theme=dark';
-const routes = ['/', '/list1000', '/json-big', '/params/42?q=hello%20world&x=1'].filter((r) => !arg('routes', '') || arg('routes', '').split(',').some((m) => (m === '/' ? r === '/' : r.includes(m))));
-const hdr = (p) => (p.startsWith('/params') ? { cookie: jar } : {});
+const only_routes = arg('routes', '');
+const routes = ['/', '/list1000', '/json-big', '/params/42?q=hello%20world&x=1'].filter((r) => !only_routes || only_routes.split(',').some((m) => (m === '/' ? r === '/' : r.includes(m))));
 const bin = (n) => process.env[n.toUpperCase() + '_BIN'] || n;
 
 // name -> { wisp?, dir (under out), cmd, args, env, workerd? }
@@ -61,44 +61,19 @@ const sets = {
 // workerd: every .js/.mjs file of the app dir is an ES module, .wasm is wasm;
 // compat date and flags come from meta.json (written by build.sh). ASSETS is a
 // worker that answers 404; WORKER_SELF_REFERENCE points at the worker itself.
-function workerdConfig(a) {
+const workerd = (a) => {
   const meta = existsSync(join(a.cwd, 'meta.json')) ? JSON.parse(readFileSync(join(a.cwd, 'meta.json'), 'utf8')) : {};
-  const entry = meta.entry || 'worker.js';
-  const files = [];
-  const walk = (d) => {
-    for (const e of readdirSync(join(a.cwd, d), { withFileTypes: true })) {
-      const rel = d === '.' ? e.name : `${d}/${e.name}`;
-      if (e.isDirectory()) walk(rel);
-      else if (/\.(m?js|wasm)$/.test(e.name)) files.push(rel);
-    }
-  };
-  walk('.');
-  files.sort((x, y) => (x === entry ? -1 : y === entry ? 1 : 0));
-  const mods = files.map((f) => `(name = "${f}", ${f.endsWith('.wasm') ? 'wasm' : 'esModule'} = embed "${f}")`);
-  const flags = (meta.flags || []).map((f) => `"${f}"`).join(', ');
-  const path = join(a.cwd, 'workerd.capnp');
-  writeFileSync(path, `using Workerd = import "/workerd/workerd.capnp";
-const config :Workerd.Config = (
-  services = [
-    (name = "main", worker = (modules = [${mods.join(', ')}], compatibilityDate = "${meta.date || '2025-09-01'}", compatibilityFlags = [${flags}],
-      bindings = [(name = "ASSETS", service = "assets"), (name = "WORKER_SELF_REFERENCE", service = "main")])),
-    (name = "assets", worker = (serviceWorkerScript = "addEventListener('fetch', (e) => e.respondWith(new Response('not found', { status: 404 })))", compatibilityDate = "2025-09-01")),
-  ],
-  sockets = [(name = "http", address = "127.0.0.1:${a.port}", http = (), service = "main")],
-);
-`);
-  return path;
-}
+  return workerdConfig(a.cwd, a.port, { entries: [meta.entry || 'worker.js'], deep: true, date: meta.date, flags: meta.flags, self: true });
+};
 
 const apps = Object.entries(sets).filter(([n]) => !only.length || only.includes(n)).map(([name, s], i) => {
   const a = { name, wisp: !!s.wisp, cwd: join(out, s.dir), port: 4600 + i, env: { ...s.env, PORT: String(4600 + i) } };
   if (!existsSync(a.cwd)) return a;
-  if (s.workerd) { a.cmd = bin('workerd'); a.args = ['serve', workerdConfig(a)]; } else { a.cmd = s.cmd; a.args = s.args.map((x) => x.replace('{port}', a.port)); }
+  a.cmd = s.workerd ? bin('workerd') : s.cmd;
+  a.args = s.workerd ? ['serve', workerd(a)] : s.args.map((x) => x.replace('{port}', a.port));
   return a;
 });
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const median = (a) => [...a].sort((x, y) => x - y)[a.length >> 1];
 const start = (a) => spawn('taskset', ['-c', SRV_CPUS, a.cmd, ...a.args], { cwd: a.cwd, env: { ...process.env, NODE_ENV: 'production', ...a.env }, stdio: 'ignore', detached: true });
 // Kill the whole process group (Next, Deno and friends leave children).
 const kill = (c) => { try { process.kill(-c.pid, 'SIGKILL'); } catch {} };
@@ -152,7 +127,7 @@ async function cold(a) {
 }
 
 function oha(a, path, s) {
-  const j = JSON.parse(execFileSync('taskset', ['-c', LOAD_CPUS, 'oha', '-z', `${s}s`, '-c', conns, '--no-tui', '--output-format', 'json', ...(path.startsWith('/params') ? ['-H', `cookie: ${jar}`] : []), url(a, path)], { maxBuffer: 1 << 26 }));
+  const j = ohaRun(url(a, path), path, s, conns, ['taskset', '-c', LOAD_CPUS]);
   const bad = Object.entries(j.statusCodeDistribution).filter(([k]) => k !== '200').reduce((n, [, v]) => n + v, 0);
   return { rps: j.summary.requestsPerSec, p99: j.latencyPercentiles.p99 * 1000, bad };
 }
