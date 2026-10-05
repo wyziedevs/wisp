@@ -1,0 +1,7 @@
+{
+  "name": "items",
+  "private": true,
+  "type": "module",
+  "scripts": { "build": "nuxt build", "dev": "nuxt dev", "preview": "nuxt preview" },
+  "dependencies": { "nuxt": "^4.1.0", "vue": "latest", "vue-router": "latest" }
+}

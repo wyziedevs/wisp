@@ -6,11 +6,14 @@
 //! A file is counted when it has a `@feature NAME` line (in any comment
 //! syntax); that line is not counted, and the lines after it, up to the next
 //! marker, belong to NAME. Lines above a file's first marker belong to it too,
-//! and so does the file's path: writing a file means naming it. Files with no
-//! marker (what a generator writes: `wisp new`, `sv create`,
-//! `create-next-app`, `npm create`, `npm init`, `cargo new`) are not counted, nor the lines after a
-//! `@generated` marker (a `[package]` table below the `[dependencies]` one
-//! has to write).
+//! and so does the file's path: writing a file means naming it. The lines after a
+//! `@generated` marker are not counted (a `[package]` table below the
+//! `[dependencies]` one has to write). A file with no marker (what a generator
+//! writes: `wisp new`, `sv create`, `create-next-app`, `npm create`, `npm init`,
+//! `cargo new`) counts as `setup` by the lines the generator's copy of it under `scaffold/<suite>/<stack>/` lacks (every line
+//! when there is no copy), so manifests and configs the author edits
+//! (`package.json`, `Cargo.toml`, `nuxt.config.ts`) count alike for every
+//! stack. `src/tests.rs` is not counted: no other stack's app has tests.
 //!
 //! No tokenizer is available offline, so this estimates a BPE code tokenizer
 //! (cl100k-like): whitespace with a newline in it is 1 token; other spaces
@@ -93,6 +96,9 @@ fn main() {
 fn table(suite: &Suite) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(suite.dir);
     let features = suite.features;
+    let scaffold = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("scaffold")
+        .join(suite.dir);
     let (mut rows, mut lists) = (Vec::new(), Vec::new());
     for &(dir, name) in suite.apps {
         let app = root.join(dir);
@@ -110,7 +116,11 @@ fn table(suite: &Suite) {
                 .unwrap()
                 .to_string_lossy()
                 .replace('\\', "/");
-            if count_file(&rel, &text, features, &mut per) {
+            // Tests are no feature: no other stack's app has any.
+            let counts = rel != "src/tests.rs"
+                && (count_file(&rel, &text, features, &mut per)
+                    || count_unmarked(&scaffold.join(dir).join(&rel), &text, features, &mut per));
+            if counts {
                 counted += 1;
                 listed.push(rel);
             } else {
@@ -221,6 +231,38 @@ fn count_file(path: &str, text: &str, features: &[&str], per: &mut [Count]) -> b
         add(&mut per[c], &pending);
     }
     add(&mut per[first], path);
+    true
+}
+
+/// A file with no marker (a manifest or config the stack's generator writes):
+/// its lines that the generator's copy under `scaffold/` lacks are what the
+/// author typed, and count as `setup`; with no copy, every line counts. False
+/// when nothing is left.
+fn count_unmarked(scaffold: &Path, text: &str, features: &[&str], per: &mut [Count]) -> bool {
+    let key = |l: &str| l.trim().trim_end_matches(',').to_string();
+    let base: Vec<String> = fs::read_to_string(scaffold)
+        .unwrap_or_default()
+        .lines()
+        .map(key)
+        .collect();
+    let typed: Vec<&str> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !base.contains(&key(l)))
+        .collect();
+    if typed.is_empty() {
+        return false;
+    }
+    let setup = features
+        .iter()
+        .position(|f| *f == "setup")
+        .expect("a setup feature");
+    add(
+        &mut per[setup],
+        &typed.join(
+            "
+",
+        ),
+    );
     true
 }
 

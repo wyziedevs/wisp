@@ -1,0 +1,11 @@
+# What `wisp new` writes (crates/wisp-cli/src/new.rs CARGO_TOML), the wisp deps in workspace form.
+[package]
+name = "tokens-wisp"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+wisp = { workspace = true }
+
+[build-dependencies]
+wisp-build = { workspace = true }
