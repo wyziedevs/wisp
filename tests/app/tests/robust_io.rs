@@ -8,6 +8,8 @@ mod common;
 
 use common::*;
 use std::io::{BufReader, Read, Write};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 use std::time::Duration;
 
 /// The server's private memory, in KB.
@@ -135,6 +137,55 @@ fn http_1_1_must_name_one_host() {
         200
     );
     assert_eq!(sent(b"GET / HTTP/1.0\r\n\r\n"), 200);
+}
+
+#[test]
+fn clients_refused_at_the_cap_never_stall_the_held_ones() {
+    // Past the cap, refused clients reconnect at once (wrk does): each is told
+    // 503 promptly, and the connections already held go on being answered.
+    let s = start(&[("WISP_MAX_CONNS", "2")]);
+    let get = b"GET / HTTP/1.1\r\nhost: x\r\n\r\n";
+    let mut held: Vec<_> = (0..2).map(|_| BufReader::new(connect(s.port))).collect();
+    for c in &mut held {
+        c.get_mut().write_all(get).unwrap();
+        read_answer(c);
+    }
+    let stop = Arc::new(AtomicBool::new(false));
+    let refused = Arc::new(AtomicUsize::new(0));
+    let flood: Vec<_> = (0..8)
+        .map(|_| {
+            let (stop, refused, port) = (stop.clone(), refused.clone(), s.port);
+            std::thread::spawn(move || {
+                while !stop.load(Relaxed) {
+                    let Ok(mut c) = std::net::TcpStream::connect(("127.0.0.1", port)) else {
+                        continue;
+                    };
+                    let _ = c.set_read_timeout(Some(Duration::from_secs(5)));
+                    let _ = c.write_all(get);
+                    let mut got = Vec::new();
+                    let _ = c.read_to_end(&mut got);
+                    if got.starts_with(b"HTTP/1.1 503") {
+                        refused.fetch_add(1, Relaxed);
+                    }
+                }
+            })
+        })
+        .collect();
+    for _ in 0..50 {
+        for c in &mut held {
+            c.get_mut()
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            c.get_mut().write_all(get).unwrap();
+            let (head, _) = read_answer(c);
+            assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        }
+    }
+    stop.store(true, Relaxed);
+    for t in flood {
+        t.join().unwrap();
+    }
+    assert!(refused.load(Relaxed) > 0, "none refused");
 }
 
 #[test]
