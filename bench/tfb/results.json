@@ -10,6 +10,7 @@
       "requests": 1345089,
       "rps": 89071.71,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.46
      },
      {
@@ -19,6 +20,7 @@
       "requests": 1412217,
       "rps": 94100.07,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.15
      },
      {
@@ -28,6 +30,7 @@
       "requests": 1353139,
       "rps": 90199.05,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.7
      }
     ],
@@ -39,6 +42,7 @@
       "requests": 1497751,
       "rps": 99179.53,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.35
      },
      {
@@ -48,6 +52,7 @@
       "requests": 1394665,
       "rps": 92899.75,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.53
      },
      {
@@ -55,8 +60,9 @@
       "lat_p99_ms": 4.2,
       "non2xx": 0,
       "requests": 1487360,
-      "rps": 99097.99,
+      "rps": 99097.98999999999,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.67
      }
     ],
@@ -68,6 +74,7 @@
       "requests": 1345399,
       "rps": 89648.31,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.73
      },
      {
@@ -77,6 +84,7 @@
       "requests": 1282407,
       "rps": 85399.66,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.99
      },
      {
@@ -86,6 +94,7 @@
       "requests": 1522318,
       "rps": 101440.73,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.96
      }
     ],
@@ -97,6 +106,7 @@
       "requests": 1518713,
       "rps": 101186.15,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.06
      },
      {
@@ -106,6 +116,7 @@
       "requests": 1594443,
       "rps": 106246.5,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.83
      },
      {
@@ -115,6 +126,7 @@
       "requests": 1712775,
       "rps": 114139.37,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.28
      }
     ],
@@ -126,6 +138,7 @@
       "requests": 1580069,
       "rps": 105160.98,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.56
      },
      {
@@ -135,6 +148,7 @@
       "requests": 1629377,
       "rps": 108428.36,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.83
      },
      {
@@ -144,6 +158,7 @@
       "requests": 1641275,
       "rps": 109280.31,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.42
      }
     ],
@@ -155,6 +170,7 @@
       "requests": 1526229,
       "rps": 101055.0,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.23
      },
      {
@@ -164,6 +180,7 @@
       "requests": 1072859,
       "rps": 71314.61,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.67
      },
      {
@@ -173,6 +190,7 @@
       "requests": 1037135,
       "rps": 68763.69,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.7
      }
     ]
@@ -186,6 +204,7 @@
       "requests": 9472048,
       "rps": 630191.96,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.43
      },
      {
@@ -195,6 +214,7 @@
       "requests": 9059216,
       "rps": 603163.42,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.63
      },
      {
@@ -204,6 +224,7 @@
       "requests": 8646480,
       "rps": 575108.37,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.82
      }
     ],
@@ -215,6 +236,7 @@
       "requests": 6806832,
       "rps": 450698.15,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 3.53
      },
      {
@@ -224,6 +246,7 @@
       "requests": 5501216,
       "rps": 365153.33,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 6.75
      },
      {
@@ -233,6 +256,7 @@
       "requests": 5518224,
       "rps": 366626.08,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 7.13
      }
     ],
@@ -244,6 +268,7 @@
       "requests": 5376752,
       "rps": 356336.87,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 6.11
      },
      {
@@ -253,6 +278,7 @@
       "requests": 5310848,
       "rps": 351843.53,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 6.7
      },
      {
@@ -262,6 +288,7 @@
       "requests": 4818560,
       "rps": 318901.47,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 9.83
      }
     ],
@@ -273,6 +300,7 @@
       "requests": 0,
       "rps": 0.0,
       "socket_errors": 0,
+      "stalled": true,
       "steal_pct": 7.56
      },
      {
@@ -282,6 +310,7 @@
       "requests": 0,
       "rps": 0.0,
       "socket_errors": 0,
+      "stalled": true,
       "steal_pct": 6.84
      },
      {
@@ -291,6 +320,7 @@
       "requests": 393216,
       "rps": 14977.03,
       "socket_errors": 0,
+      "stalled": true,
       "steal_pct": 5.28
      }
     ]
@@ -306,6 +336,7 @@
       "requests": 1186952,
       "rps": 79104.81,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 6.92
      },
      {
@@ -315,6 +346,7 @@
       "requests": 984719,
       "rps": 65608.57,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 12.01
      },
      {
@@ -324,6 +356,7 @@
       "requests": 1422450,
       "rps": 94819.85,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.13
      }
     ],
@@ -335,6 +368,7 @@
       "requests": 1363919,
       "rps": 90891.21,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.79
      },
      {
@@ -344,6 +378,7 @@
       "requests": 1304425,
       "rps": 86901.45,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 3.78
      },
      {
@@ -353,6 +388,7 @@
       "requests": 1166969,
       "rps": 77724.28,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 6.73
      }
     ],
@@ -364,6 +400,7 @@
       "requests": 1426373,
       "rps": 94930.08,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.98
      },
      {
@@ -373,6 +410,7 @@
       "requests": 1180806,
       "rps": 78427.13,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 6.72
      },
      {
@@ -382,6 +420,7 @@
       "requests": 1161942,
       "rps": 77297.76,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 5.8
      }
     ],
@@ -393,6 +432,7 @@
       "requests": 1391247,
       "rps": 92662.39,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.77
      },
      {
@@ -402,6 +442,7 @@
       "requests": 1454324,
       "rps": 96862.98,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.93
      },
      {
@@ -411,6 +452,7 @@
       "requests": 1062623,
       "rps": 70648.45,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 5.73
      }
     ],
@@ -422,6 +464,7 @@
       "requests": 867711,
       "rps": 57541.07,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 5.98
      },
      {
@@ -431,6 +474,7 @@
       "requests": 1224556,
       "rps": 81434.26,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.3
      },
      {
@@ -440,6 +484,7 @@
       "requests": 908801,
       "rps": 60464.72,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 5.13
      }
     ],
@@ -451,6 +496,7 @@
       "requests": 629929,
       "rps": 41755.48,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 6.98
      },
      {
@@ -460,6 +506,7 @@
       "requests": 710903,
       "rps": 47070.26,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 4.9
      },
      {
@@ -469,6 +516,7 @@
       "requests": 964778,
       "rps": 64023.39,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.55
      }
     ]
@@ -482,6 +530,7 @@
       "requests": 4177504,
       "rps": 276948.25,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 12.77
      },
      {
@@ -491,6 +540,7 @@
       "requests": 3680176,
       "rps": 245050.03,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 17.62
      },
      {
@@ -500,6 +550,7 @@
       "requests": 5003984,
       "rps": 332863.02,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 8.46
      }
     ],
@@ -511,6 +562,7 @@
       "requests": 4869136,
       "rps": 323091.93,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 6.49
      },
      {
@@ -520,6 +572,7 @@
       "requests": 5747168,
       "rps": 381323.66,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 3.92
      },
      {
@@ -529,6 +582,7 @@
       "requests": 5902560,
       "rps": 391336.02,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 4.1
      }
     ],
@@ -540,6 +594,7 @@
       "requests": 6847696,
       "rps": 454096.46,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.32
      },
      {
@@ -549,6 +604,7 @@
       "requests": 6301936,
       "rps": 417470.09,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.17
      },
      {
@@ -558,6 +614,7 @@
       "requests": 6737040,
       "rps": 446398.0,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.78
      }
     ],
@@ -567,8 +624,9 @@
       "lat_p99_ms": 537.7,
       "non2xx": 0,
       "requests": 445680,
-      "rps": 27410.12,
+      "rps": 27410.120000000003,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.36
      },
      {
@@ -578,6 +636,7 @@
       "requests": 3375728,
       "rps": 223945.59,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.09
      },
      {
@@ -587,6 +646,7 @@
       "requests": 2592624,
       "rps": 171230.75,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.83
      }
     ]
@@ -602,6 +662,7 @@
       "requests": 233918,
       "rps": 15575.52,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 13.84
      },
      {
@@ -611,6 +672,7 @@
       "requests": 257113,
       "rps": 17105.1,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 11.12
      },
      {
@@ -620,6 +682,7 @@
       "requests": 254383,
       "rps": 16944.67,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 10.01
      }
     ],
@@ -631,6 +694,7 @@
       "requests": 236144,
       "rps": 15718.94,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 13.29
      },
      {
@@ -640,6 +704,7 @@
       "requests": 250988,
       "rps": 16708.87,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 11.77
      },
      {
@@ -649,6 +714,7 @@
       "requests": 249208,
       "rps": 16585.96,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 13.61
      }
     ],
@@ -660,6 +726,7 @@
       "requests": 230827,
       "rps": 15351.46,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 14.45
      },
      {
@@ -669,6 +736,7 @@
       "requests": 218196,
       "rps": 14509.34,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 15.47
      },
      {
@@ -676,8 +744,9 @@
       "lat_p99_ms": 19.4,
       "non2xx": 0,
       "requests": 221651,
-      "rps": 14745.93,
+      "rps": 14745.929999999998,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 15.73
      }
     ],
@@ -689,6 +758,7 @@
       "requests": 179632,
       "rps": 11935.93,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 16.54
      },
      {
@@ -698,6 +768,7 @@
       "requests": 217217,
       "rps": 14442.5,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 12.21
      },
      {
@@ -707,6 +778,7 @@
       "requests": 207531,
       "rps": 13794.55,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 14.0
      }
     ],
@@ -718,6 +790,7 @@
       "requests": 234109,
       "rps": 15567.06,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 7.7
      },
      {
@@ -727,6 +800,7 @@
       "requests": 274993,
       "rps": 18297.75,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 4.57
      },
      {
@@ -736,6 +810,7 @@
       "requests": 270974,
       "rps": 18022.75,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 5.0
      }
     ],
@@ -747,6 +822,7 @@
       "requests": 293093,
       "rps": 19491.2,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.74
      },
      {
@@ -756,6 +832,7 @@
       "requests": 343594,
       "rps": 22857.97,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.38
      },
      {
@@ -765,6 +842,7 @@
       "requests": 340441,
       "rps": 22643.84,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.58
      }
     ]
@@ -778,6 +856,7 @@
       "requests": 643907,
       "rps": 42851.87,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.89
      },
      {
@@ -787,6 +866,7 @@
       "requests": 607808,
       "rps": 40420.66,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.89
      },
      {
@@ -796,6 +876,7 @@
       "requests": 563393,
       "rps": 37511.16,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 3.78
      }
     ],
@@ -807,6 +888,7 @@
       "requests": 490545,
       "rps": 32588.55,
       "socket_errors": 81,
+      "stalled": false,
       "steal_pct": 6.48
      },
      {
@@ -816,6 +898,7 @@
       "requests": 596210,
       "rps": 39569.33,
       "socket_errors": 89,
+      "stalled": false,
       "steal_pct": 2.74
      },
      {
@@ -825,6 +908,7 @@
       "requests": 545778,
       "rps": 36183.88,
       "socket_errors": 76,
+      "stalled": false,
       "steal_pct": 3.79
      }
     ],
@@ -834,8 +918,9 @@
       "lat_p99_ms": 2190.0,
       "non2xx": 0,
       "requests": 418696,
-      "rps": 27713.86,
+      "rps": 27713.859999999997,
       "socket_errors": 31,
+      "stalled": false,
       "steal_pct": 9.9
      },
      {
@@ -845,6 +930,7 @@
       "requests": 404452,
       "rps": 26800.43,
       "socket_errors": 88,
+      "stalled": false,
       "steal_pct": 9.75
      },
      {
@@ -854,6 +940,7 @@
       "requests": 416269,
       "rps": 27554.22,
       "socket_errors": 89,
+      "stalled": false,
       "steal_pct": 8.6
      }
     ],
@@ -865,6 +952,7 @@
       "requests": 0,
       "rps": 0.0,
       "socket_errors": 0,
+      "stalled": true,
       "steal_pct": 3.73
      },
      {
@@ -874,6 +962,7 @@
       "requests": 0,
       "rps": 0.0,
       "socket_errors": 0,
+      "stalled": true,
       "steal_pct": 0.83
      },
      {
@@ -883,6 +972,7 @@
       "requests": 147152,
       "rps": 5293.96,
       "socket_errors": 0,
+      "stalled": true,
       "steal_pct": 3.18
      }
     ]
@@ -898,6 +988,7 @@
       "requests": 346675,
       "rps": 23100.19,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 9.61
      },
      {
@@ -907,6 +998,7 @@
       "requests": 257849,
       "rps": 17145.23,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 18.74
      },
      {
@@ -916,6 +1008,7 @@
       "requests": 330783,
       "rps": 21996.41,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 11.94
      }
     ],
@@ -927,6 +1020,7 @@
       "requests": 338135,
       "rps": 22512.24,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 10.57
      },
      {
@@ -936,6 +1030,7 @@
       "requests": 298300,
       "rps": 19871.32,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 12.65
      },
      {
@@ -945,6 +1040,7 @@
       "requests": 318567,
       "rps": 21210.04,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 11.29
      }
     ],
@@ -956,6 +1052,7 @@
       "requests": 334714,
       "rps": 22283.46,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 8.13
      },
      {
@@ -965,6 +1062,7 @@
       "requests": 330027,
       "rps": 21965.1,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 8.39
      },
      {
@@ -974,6 +1072,7 @@
       "requests": 307522,
       "rps": 20467.82,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 10.4
      }
     ],
@@ -985,6 +1084,7 @@
       "requests": 314728,
       "rps": 20936.06,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 7.14
      },
      {
@@ -994,6 +1094,7 @@
       "requests": 300144,
       "rps": 19976.87,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 8.37
      },
      {
@@ -1003,6 +1104,7 @@
       "requests": 268544,
       "rps": 17809.19,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 12.13
      }
     ],
@@ -1012,8 +1114,9 @@
       "lat_p99_ms": 574.79,
       "non2xx": 0,
       "requests": 216233,
-      "rps": 14339.98,
+      "rps": 14339.979999999998,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 12.98
      },
      {
@@ -1023,6 +1126,7 @@
       "requests": 322770,
       "rps": 21494.45,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 4.95
      },
      {
@@ -1032,6 +1136,7 @@
       "requests": 319783,
       "rps": 21249.46,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 5.58
      }
     ],
@@ -1043,6 +1148,7 @@
       "requests": 363459,
       "rps": 24163.4,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.32
      },
      {
@@ -1052,6 +1158,7 @@
       "requests": 367667,
       "rps": 24449.25,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.27
      },
      {
@@ -1061,6 +1168,7 @@
       "requests": 353571,
       "rps": 23503.45,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.82
      }
     ]
@@ -1074,6 +1182,7 @@
       "requests": 607446,
       "rps": 40421.98,
       "socket_errors": 34,
+      "stalled": false,
       "steal_pct": 1.89
      },
      {
@@ -1081,8 +1190,9 @@
       "lat_p99_ms": 3510.0,
       "non2xx": 0,
       "requests": 777057,
-      "rps": 51713.14,
+      "rps": 51713.14000000001,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.59
      },
      {
@@ -1092,6 +1202,7 @@
       "requests": 912161,
       "rps": 60754.39,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.26
      }
     ],
@@ -1103,6 +1214,7 @@
       "requests": 966044,
       "rps": 64182.71,
       "socket_errors": 102,
+      "stalled": false,
       "steal_pct": 1.02
      },
      {
@@ -1112,6 +1224,7 @@
       "requests": 939231,
       "rps": 62345.47,
       "socket_errors": 105,
+      "stalled": false,
       "steal_pct": 1.3
      },
      {
@@ -1121,6 +1234,7 @@
       "requests": 685937,
       "rps": 45566.71,
       "socket_errors": 64,
+      "stalled": false,
       "steal_pct": 4.21
      }
     ],
@@ -1132,6 +1246,7 @@
       "requests": 746667,
       "rps": 49590.56,
       "socket_errors": 52,
+      "stalled": false,
       "steal_pct": 3.51
      },
      {
@@ -1141,6 +1256,7 @@
       "requests": 926224,
       "rps": 61460.21,
       "socket_errors": 58,
+      "stalled": false,
       "steal_pct": 1.34
      },
      {
@@ -1150,6 +1266,7 @@
       "requests": 887936,
       "rps": 58956.11,
       "socket_errors": 42,
+      "stalled": false,
       "steal_pct": 1.61
      }
     ],
@@ -1161,6 +1278,7 @@
       "requests": 249638,
       "rps": 16573.32,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.05
      },
      {
@@ -1170,6 +1288,7 @@
       "requests": 179054,
       "rps": 5972.36,
       "socket_errors": 0,
+      "stalled": true,
       "steal_pct": 1.73
      },
      {
@@ -1179,6 +1298,7 @@
       "requests": 278084,
       "rps": 18400.45,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.03
      }
     ]
@@ -1194,6 +1314,7 @@
       "requests": 775710,
       "rps": 51695.39,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.79
      },
      {
@@ -1203,6 +1324,7 @@
       "requests": 807355,
       "rps": 53468.72,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.24
      },
      {
@@ -1212,6 +1334,7 @@
       "requests": 790550,
       "rps": 52352.9,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.66
      }
     ],
@@ -1223,6 +1346,7 @@
       "requests": 939895,
       "rps": 62653.23,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.83
      },
      {
@@ -1232,6 +1356,7 @@
       "requests": 748419,
       "rps": 49883.54,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 3.27
      },
      {
@@ -1241,6 +1366,7 @@
       "requests": 811079,
       "rps": 54056.38,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.33
      }
     ],
@@ -1252,6 +1378,7 @@
       "requests": 968482,
       "rps": 64112.63,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.96
      },
      {
@@ -1261,6 +1388,7 @@
       "requests": 894857,
       "rps": 59619.03,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.5
      },
      {
@@ -1270,6 +1398,7 @@
       "requests": 824045,
       "rps": 54928.85,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.98
      }
     ],
@@ -1281,6 +1410,7 @@
       "requests": 784682,
       "rps": 52292.94,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.04
      },
      {
@@ -1290,6 +1420,7 @@
       "requests": 757913,
       "rps": 50492.94,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.61
      },
      {
@@ -1299,6 +1430,7 @@
       "requests": 773998,
       "rps": 51579.54,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.58
      }
     ],
@@ -1310,6 +1442,7 @@
       "requests": 712969,
       "rps": 47379.22,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 3.56
      },
      {
@@ -1317,8 +1450,9 @@
       "lat_p99_ms": 14.47,
       "non2xx": 0,
       "requests": 726780,
-      "rps": 48389.87,
+      "rps": 48389.869999999995,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.29
      },
      {
@@ -1328,6 +1462,7 @@
       "requests": 592743,
       "rps": 39409.85,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 4.48
      }
     ],
@@ -1337,8 +1472,9 @@
       "lat_p99_ms": 47.98,
       "non2xx": 0,
       "requests": 404391,
-      "rps": 26910.57,
+      "rps": 26910.569999999996,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 7.99
      },
      {
@@ -1348,6 +1484,7 @@
       "requests": 428942,
       "rps": 28439.12,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 8.95
      },
      {
@@ -1357,6 +1494,7 @@
       "requests": 670913,
       "rps": 44598.22,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.83
      }
     ]
@@ -1370,6 +1508,7 @@
       "requests": 159189,
       "rps": 10598.71,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.15
      },
      {
@@ -1379,6 +1518,7 @@
       "requests": 158772,
       "rps": 10564.51,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.17
      },
      {
@@ -1388,6 +1528,7 @@
       "requests": 159652,
       "rps": 10627.76,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.62
      }
     ],
@@ -1399,6 +1540,7 @@
       "requests": 153516,
       "rps": 10195.21,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.95
      },
      {
@@ -1408,6 +1550,7 @@
       "requests": 157213,
       "rps": 10421.16,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.33
      },
      {
@@ -1417,6 +1560,7 @@
       "requests": 156209,
       "rps": 10375.35,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.9
      }
     ],
@@ -1428,6 +1572,7 @@
       "requests": 152898,
       "rps": 10151.63,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.24
      },
      {
@@ -1437,6 +1582,7 @@
       "requests": 144805,
       "rps": 9618.52,
       "socket_errors": 1,
+      "stalled": false,
       "steal_pct": 4.0
      },
      {
@@ -1446,6 +1592,7 @@
       "requests": 145797,
       "rps": 9651.9,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.59
      }
     ],
@@ -1457,6 +1604,7 @@
       "requests": 104540,
       "rps": 6910.11,
       "socket_errors": 1066,
+      "stalled": false,
       "steal_pct": 0.55
      },
      {
@@ -1464,8 +1612,9 @@
       "lat_p99_ms": 7910.0,
       "non2xx": 0,
       "requests": 97321,
-      "rps": 6440.05,
+      "rps": 6440.050000000001,
       "socket_errors": 537,
+      "stalled": false,
       "steal_pct": 0.71
      },
      {
@@ -1473,8 +1622,9 @@
       "lat_p99_ms": 7890.0,
       "non2xx": 0,
       "requests": 110704,
-      "rps": 7323.24,
+      "rps": 7323.239999999999,
       "socket_errors": 807,
+      "stalled": false,
       "steal_pct": 0.67
      }
     ]
@@ -1490,6 +1640,7 @@
       "requests": 256134,
       "rps": 17068.79,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 3.21
      },
      {
@@ -1499,6 +1650,7 @@
       "requests": 253404,
       "rps": 16889.72,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 3.06
      },
      {
@@ -1508,6 +1660,7 @@
       "requests": 262039,
       "rps": 17460.79,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.92
      }
     ],
@@ -1519,6 +1672,7 @@
       "requests": 233840,
       "rps": 15571.27,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 6.56
      },
      {
@@ -1528,6 +1682,7 @@
       "requests": 143390,
       "rps": 9505.22,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 11.69
      },
      {
@@ -1537,6 +1692,7 @@
       "requests": 237102,
       "rps": 15792.31,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 5.22
      }
     ],
@@ -1548,6 +1704,7 @@
       "requests": 163544,
       "rps": 10864.43,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 14.11
      },
      {
@@ -1557,6 +1714,7 @@
       "requests": 131157,
       "rps": 8707.65,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 20.97
      },
      {
@@ -1566,6 +1724,7 @@
       "requests": 135605,
       "rps": 8987.89,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 17.62
      }
     ],
@@ -1577,6 +1736,7 @@
       "requests": 140901,
       "rps": 9353.87,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 15.06
      },
      {
@@ -1586,6 +1746,7 @@
       "requests": 134417,
       "rps": 8902.36,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 16.74
      },
      {
@@ -1595,6 +1756,7 @@
       "requests": 175853,
       "rps": 11670.53,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 9.12
      }
     ],
@@ -1606,6 +1768,7 @@
       "requests": 185909,
       "rps": 12375.7,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 6.08
      },
      {
@@ -1615,6 +1778,7 @@
       "requests": 203880,
       "rps": 13571.79,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 4.44
      },
      {
@@ -1624,6 +1788,7 @@
       "requests": 196652,
       "rps": 13083.57,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 5.78
      }
     ],
@@ -1635,6 +1800,7 @@
       "requests": 230840,
       "rps": 15348.95,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.45
      },
      {
@@ -1644,6 +1810,7 @@
       "requests": 266703,
       "rps": 17748.39,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.35
      },
      {
@@ -1653,6 +1820,7 @@
       "requests": 219683,
       "rps": 14608.03,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 3.24
      }
     ]
@@ -1666,6 +1834,7 @@
       "requests": 45712,
       "rps": 3039.28,
       "socket_errors": 104,
+      "stalled": false,
       "steal_pct": 0.2
      },
      {
@@ -1675,6 +1844,7 @@
       "requests": 438016,
       "rps": 29143.16,
       "socket_errors": 4,
+      "stalled": false,
       "steal_pct": 2.13
      },
      {
@@ -1684,6 +1854,7 @@
       "requests": 435681,
       "rps": 28966.06,
       "socket_errors": 30,
+      "stalled": false,
       "steal_pct": 2.22
      }
     ],
@@ -1695,6 +1866,7 @@
       "requests": 513270,
       "rps": 34082.41,
       "socket_errors": 68,
+      "stalled": false,
       "steal_pct": 1.05
      },
      {
@@ -1704,6 +1876,7 @@
       "requests": 382462,
       "rps": 25357.27,
       "socket_errors": 56,
+      "stalled": false,
       "steal_pct": 2.93
      },
      {
@@ -1713,6 +1886,7 @@
       "requests": 445968,
       "rps": 29601.58,
       "socket_errors": 68,
+      "stalled": false,
       "steal_pct": 2.24
      }
     ],
@@ -1724,6 +1898,7 @@
       "requests": 561074,
       "rps": 37242.95,
       "socket_errors": 32,
+      "stalled": false,
       "steal_pct": 0.66
      },
      {
@@ -1733,6 +1908,7 @@
       "requests": 514602,
       "rps": 34172.64,
       "socket_errors": 109,
+      "stalled": false,
       "steal_pct": 0.6
      },
      {
@@ -1742,6 +1918,7 @@
       "requests": 284477,
       "rps": 18886.26,
       "socket_errors": 94,
+      "stalled": false,
       "steal_pct": 3.87
      }
     ],
@@ -1753,6 +1930,7 @@
       "requests": 252528,
       "rps": 16692.5,
       "socket_errors": 830,
+      "stalled": false,
       "steal_pct": 0.94
      },
      {
@@ -1762,6 +1940,7 @@
       "requests": 0,
       "rps": 0.0,
       "socket_errors": 0,
+      "stalled": true,
       "steal_pct": 0.18
      },
      {
@@ -1771,6 +1950,7 @@
       "requests": 0,
       "rps": 0.0,
       "socket_errors": 0,
+      "stalled": true,
       "steal_pct": 0.44
      }
     ]
@@ -1786,6 +1966,7 @@
       "requests": 22508,
       "rps": 1499.05,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.78
      },
      {
@@ -1795,6 +1976,7 @@
       "requests": 24991,
       "rps": 1664.71,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.05
      },
      {
@@ -1804,6 +1986,7 @@
       "requests": 17652,
       "rps": 1174.27,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 4.74
      }
     ],
@@ -1815,6 +1998,7 @@
       "requests": 19434,
       "rps": 1293.42,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 3.81
      },
      {
@@ -1824,6 +2008,7 @@
       "requests": 19304,
       "rps": 1284.94,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 4.05
      },
      {
@@ -1833,6 +2018,7 @@
       "requests": 18217,
       "rps": 1211.24,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 5.0
      }
     ],
@@ -1844,6 +2030,7 @@
       "requests": 22493,
       "rps": 1498.22,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.29
      },
      {
@@ -1851,8 +2038,9 @@
       "lat_p99_ms": 304.34,
       "non2xx": 0,
       "requests": 22884,
-      "rps": 1523.61,
+      "rps": 1523.6099999999997,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.1
      },
      {
@@ -1862,6 +2050,7 @@
       "requests": 25497,
       "rps": 1697.94,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.15
      }
     ],
@@ -1873,6 +2062,7 @@
       "requests": 25075,
       "rps": 1668.61,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.38
      },
      {
@@ -1880,8 +2070,9 @@
       "lat_p99_ms": 1070.0,
       "non2xx": 0,
       "requests": 22715,
-      "rps": 1512.58,
+      "rps": 1512.5799999999997,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.59
      },
      {
@@ -1891,6 +2082,7 @@
       "requests": 17031,
       "rps": 1132.21,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 5.27
      }
     ],
@@ -1902,6 +2094,7 @@
       "requests": 16472,
       "rps": 1091.78,
       "socket_errors": 79,
+      "stalled": false,
       "steal_pct": 7.23
      },
      {
@@ -1911,6 +2104,7 @@
       "requests": 20587,
       "rps": 1369.77,
       "socket_errors": 24,
+      "stalled": false,
       "steal_pct": 2.93
      },
      {
@@ -1920,6 +2114,7 @@
       "requests": 23050,
       "rps": 1532.81,
       "socket_errors": 36,
+      "stalled": false,
       "steal_pct": 1.86
      }
     ],
@@ -1931,6 +2126,7 @@
       "requests": 25823,
       "rps": 1715.05,
       "socket_errors": 74,
+      "stalled": false,
       "steal_pct": 0.99
      },
      {
@@ -1940,6 +2136,7 @@
       "requests": 25550,
       "rps": 1698.83,
       "socket_errors": 81,
+      "stalled": false,
       "steal_pct": 0.91
      },
      {
@@ -1949,6 +2146,7 @@
       "requests": 27873,
       "rps": 1854.28,
       "socket_errors": 85,
+      "stalled": false,
       "steal_pct": 0.76
      }
     ]
@@ -1962,6 +2160,7 @@
       "requests": 0,
       "rps": 0.0,
       "socket_errors": 0,
+      "stalled": true,
       "steal_pct": 1.71
      },
      {
@@ -1971,6 +2170,7 @@
       "requests": 0,
       "rps": 0.0,
       "socket_errors": 0,
+      "stalled": true,
       "steal_pct": 2.33
      },
      {
@@ -1980,6 +2180,7 @@
       "requests": 0,
       "rps": 0.0,
       "socket_errors": 0,
+      "stalled": true,
       "steal_pct": 0.38
      }
     ],
@@ -1991,6 +2192,7 @@
       "requests": 0,
       "rps": 0.0,
       "socket_errors": 0,
+      "stalled": true,
       "steal_pct": 0.2
      },
      {
@@ -2000,6 +2202,7 @@
       "requests": 0,
       "rps": 0.0,
       "socket_errors": 0,
+      "stalled": true,
       "steal_pct": 0.23
      },
      {
@@ -2009,6 +2212,7 @@
       "requests": 0,
       "rps": 0.0,
       "socket_errors": 0,
+      "stalled": true,
       "steal_pct": 0.23
      }
     ],
@@ -2020,6 +2224,7 @@
       "requests": 0,
       "rps": 0.0,
       "socket_errors": 0,
+      "stalled": true,
       "steal_pct": 0.64
      }
     ]
@@ -2035,6 +2240,7 @@
       "requests": 119872,
       "rps": 7990.23,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.03
      },
      {
@@ -2044,6 +2250,7 @@
       "requests": 124132,
       "rps": 8274.34,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.97
      },
      {
@@ -2053,6 +2260,7 @@
       "requests": 115064,
       "rps": 7662.31,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 5.76
      }
     ],
@@ -2064,6 +2272,7 @@
       "requests": 128594,
       "rps": 8551.77,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.67
      },
      {
@@ -2073,6 +2282,7 @@
       "requests": 146678,
       "rps": 9773.65,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.22
      },
      {
@@ -2082,6 +2292,7 @@
       "requests": 165990,
       "rps": 11059.76,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.11
      }
     ],
@@ -2093,6 +2304,7 @@
       "requests": 161420,
       "rps": 10757.04,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.04
      },
      {
@@ -2102,6 +2314,7 @@
       "requests": 155717,
       "rps": 10377.8,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.87
      },
      {
@@ -2111,6 +2324,7 @@
       "requests": 134929,
       "rps": 8989.24,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.52
      }
     ],
@@ -2122,6 +2336,7 @@
       "requests": 115853,
       "rps": 7714.14,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 3.77
      },
      {
@@ -2129,8 +2344,9 @@
       "lat_p99_ms": 1290.0,
       "non2xx": 0,
       "requests": 104571,
-      "rps": 6960.18,
+      "rps": 6960.179999999999,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 3.08
      },
      {
@@ -2140,6 +2356,7 @@
       "requests": 133376,
       "rps": 8883.45,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.74
      }
     ],
@@ -2151,6 +2368,7 @@
       "requests": 127838,
       "rps": 8512.48,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.87
      },
      {
@@ -2160,6 +2378,7 @@
       "requests": 83882,
       "rps": 5580.42,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 4.84
      },
      {
@@ -2169,6 +2388,7 @@
       "requests": 91125,
       "rps": 6062.17,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 5.16
      }
     ],
@@ -2180,6 +2400,7 @@
       "requests": 85936,
       "rps": 5707.04,
       "socket_errors": 82,
+      "stalled": false,
       "steal_pct": 4.37
      },
      {
@@ -2189,6 +2410,7 @@
       "requests": 100827,
       "rps": 6697.99,
       "socket_errors": 19,
+      "stalled": false,
       "steal_pct": 4.89
      },
      {
@@ -2198,6 +2420,7 @@
       "requests": 110339,
       "rps": 7339.56,
       "socket_errors": 23,
+      "stalled": false,
       "steal_pct": 2.49
      }
     ]
@@ -2211,6 +2434,7 @@
       "requests": 7555,
       "rps": 501.93,
       "socket_errors": 42,
+      "stalled": false,
       "steal_pct": 0.38
      },
      {
@@ -2220,6 +2444,7 @@
       "requests": 164121,
       "rps": 10928.72,
       "socket_errors": 51,
+      "stalled": false,
       "steal_pct": 1.51
      },
      {
@@ -2229,6 +2454,7 @@
       "requests": 166049,
       "rps": 11055.12,
       "socket_errors": 51,
+      "stalled": false,
       "steal_pct": 1.51
      }
     ],
@@ -2240,6 +2466,7 @@
       "requests": 127613,
       "rps": 8463.68,
       "socket_errors": 20,
+      "stalled": false,
       "steal_pct": 3.51
      },
      {
@@ -2249,6 +2476,7 @@
       "requests": 116801,
       "rps": 7748.89,
       "socket_errors": 42,
+      "stalled": false,
       "steal_pct": 6.5
      },
      {
@@ -2258,6 +2486,7 @@
       "requests": 137329,
       "rps": 9115.52,
       "socket_errors": 21,
+      "stalled": false,
       "steal_pct": 1.75
      }
     ],
@@ -2269,6 +2498,7 @@
       "requests": 136462,
       "rps": 9052.83,
       "socket_errors": 9,
+      "stalled": false,
       "steal_pct": 1.58
      },
      {
@@ -2278,6 +2508,7 @@
       "requests": 125768,
       "rps": 8358.51,
       "socket_errors": 65,
+      "stalled": false,
       "steal_pct": 1.33
      },
      {
@@ -2287,6 +2518,7 @@
       "requests": 124678,
       "rps": 8285.26,
       "socket_errors": 75,
+      "stalled": false,
       "steal_pct": 0.89
      }
     ],
@@ -2298,6 +2530,7 @@
       "requests": 102423,
       "rps": 6776.93,
       "socket_errors": 287,
+      "stalled": false,
       "steal_pct": 0.47
      },
      {
@@ -2307,6 +2540,7 @@
       "requests": 0,
       "rps": 0.0,
       "socket_errors": 0,
+      "stalled": true,
       "steal_pct": 0.21
      },
      {
@@ -2316,6 +2550,7 @@
       "requests": 0,
       "rps": 0.0,
       "socket_errors": 0,
+      "stalled": true,
       "steal_pct": 0.23
      }
     ]
@@ -2331,6 +2566,7 @@
       "requests": 992457,
       "rps": 65906.84,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 16.23
      },
      {
@@ -2340,6 +2576,7 @@
       "requests": 1079822,
       "rps": 71878.51,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 13.16
      },
      {
@@ -2349,6 +2586,7 @@
       "requests": 1174723,
       "rps": 78071.49,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 11.76
      }
     ],
@@ -2360,6 +2598,7 @@
       "requests": 1303580,
       "rps": 86812.85,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 6.5
      },
      {
@@ -2369,6 +2608,7 @@
       "requests": 1454546,
       "rps": 96943.58,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 3.46
      },
      {
@@ -2378,6 +2618,7 @@
       "requests": 1047831,
       "rps": 69580.59,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 14.84
      }
     ],
@@ -2389,6 +2630,7 @@
       "requests": 1286602,
       "rps": 85620.58,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 7.13
      },
      {
@@ -2396,8 +2638,9 @@
       "lat_p99_ms": 2.63,
       "non2xx": 0,
       "requests": 1444030,
-      "rps": 96089.14,
+      "rps": 96089.14000000001,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 3.1
      },
      {
@@ -2405,8 +2648,9 @@
       "lat_p99_ms": 2.2,
       "non2xx": 0,
       "requests": 1556661,
-      "rps": 103763.63,
+      "rps": 103763.62999999999,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.14
      }
     ],
@@ -2418,6 +2662,7 @@
       "requests": 1618010,
       "rps": 107833.95,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.02
      },
      {
@@ -2427,6 +2672,7 @@
       "requests": 1715339,
       "rps": 114306.49,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.64
      },
      {
@@ -2436,6 +2682,7 @@
       "requests": 1612033,
       "rps": 107405.23,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.23
      }
     ],
@@ -2447,6 +2694,7 @@
       "requests": 1385131,
       "rps": 91875.52,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 3.22
      },
      {
@@ -2456,6 +2704,7 @@
       "requests": 1502384,
       "rps": 99849.96,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.55
      },
      {
@@ -2465,6 +2714,7 @@
       "requests": 1309675,
       "rps": 86957.03,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 3.01
      }
     ],
@@ -2476,6 +2726,7 @@
       "requests": 988410,
       "rps": 65577.62,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 6.07
      },
      {
@@ -2485,6 +2736,7 @@
       "requests": 1111756,
       "rps": 73945.66,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.76
      },
      {
@@ -2494,6 +2746,7 @@
       "requests": 1113115,
       "rps": 73714.31,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.46
      }
     ]
@@ -2507,6 +2760,7 @@
       "requests": 17652464,
       "rps": 1171461.81,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.6
      },
      {
@@ -2516,6 +2770,7 @@
       "requests": 17045088,
       "rps": 1129577.1,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.65
      },
      {
@@ -2525,6 +2780,7 @@
       "requests": 16477136,
       "rps": 1092692.91,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.75
      }
     ],
@@ -2536,6 +2792,7 @@
       "requests": 9996192,
       "rps": 663521.75,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.91
      },
      {
@@ -2545,6 +2802,7 @@
       "requests": 9404304,
       "rps": 623347.66,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 3.71
      },
      {
@@ -2554,6 +2812,7 @@
       "requests": 7645904,
       "rps": 506953.26,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 5.66
      }
     ],
@@ -2563,8 +2822,9 @@
       "lat_p99_ms": null,
       "non2xx": 0,
       "requests": 6964112,
-      "rps": 460222.18,
+      "rps": 460222.18000000005,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 4.44
      },
      {
@@ -2574,6 +2834,7 @@
       "requests": 8042448,
       "rps": 532959.4,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.85
      },
      {
@@ -2583,6 +2844,7 @@
       "requests": 8263728,
       "rps": 546911.88,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.57
      }
     ],
@@ -2592,8 +2854,9 @@
       "lat_p99_ms": null,
       "non2xx": 6384,
       "requests": 6384,
-      "rps": 219.73,
+      "rps": 0.0,
       "socket_errors": 0,
+      "stalled": true,
       "steal_pct": 1.93
      },
      {
@@ -2601,8 +2864,9 @@
       "lat_p99_ms": 2490.0,
       "non2xx": 66843,
       "requests": 1589867,
-      "rps": 29252.33,
+      "rps": 28022.470210350933,
       "socket_errors": 0,
+      "stalled": true,
       "steal_pct": 3.45
      },
      {
@@ -2612,6 +2876,7 @@
       "requests": 0,
       "rps": 0.0,
       "socket_errors": 0,
+      "stalled": true,
       "steal_pct": 8.8
      }
     ]
@@ -2627,6 +2892,7 @@
       "requests": 1671403,
       "rps": 110676.4,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.18
      },
      {
@@ -2636,6 +2902,7 @@
       "requests": 1708817,
       "rps": 113161.41,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.55
      },
      {
@@ -2645,6 +2912,7 @@
       "requests": 1645028,
       "rps": 108926.44,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.61
      }
     ],
@@ -2656,6 +2924,7 @@
       "requests": 1689100,
       "rps": 111844.93,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.99
      },
      {
@@ -2665,6 +2934,7 @@
       "requests": 1715169,
       "rps": 114315.19,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.47
      },
      {
@@ -2674,6 +2944,7 @@
       "requests": 1556092,
       "rps": 103038.65,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.95
      }
     ],
@@ -2685,6 +2956,7 @@
       "requests": 1526272,
       "rps": 101063.76,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.64
      },
      {
@@ -2694,6 +2966,7 @@
       "requests": 1689964,
       "rps": 111903.38,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.05
      },
      {
@@ -2703,6 +2976,7 @@
       "requests": 1756399,
       "rps": 117057.72,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.61
      }
     ],
@@ -2714,6 +2988,7 @@
       "requests": 1679162,
       "rps": 111907.74,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.62
      },
      {
@@ -2721,8 +2996,9 @@
       "lat_p99_ms": 2.56,
       "non2xx": 0,
       "requests": 1603174,
-      "rps": 106814.57,
+      "rps": 106814.57000000002,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.09
      },
      {
@@ -2730,8 +3006,9 @@
       "lat_p99_ms": 2.33,
       "non2xx": 0,
       "requests": 1637036,
-      "rps": 109058.29,
+      "rps": 109058.29000000001,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.1
      }
     ],
@@ -2743,6 +3020,7 @@
       "requests": 1623560,
       "rps": 107976.96,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.81
      },
      {
@@ -2752,6 +3030,7 @@
       "requests": 1672401,
       "rps": 111298.75,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.48
      },
      {
@@ -2761,6 +3040,7 @@
       "requests": 1810321,
       "rps": 120500.25,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.48
      }
     ],
@@ -2772,6 +3052,7 @@
       "requests": 1584204,
       "rps": 105347.41,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.48
      },
      {
@@ -2781,6 +3062,7 @@
       "requests": 1517550,
       "rps": 100818.27,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.61
      },
      {
@@ -2790,6 +3072,7 @@
       "requests": 1402828,
       "rps": 93144.61,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.01
      }
     ]
@@ -2801,8 +3084,9 @@
       "lat_p99_ms": null,
       "non2xx": 0,
       "requests": 14502592,
-      "rps": 960570.46,
+      "rps": 960570.4600000001,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.59
      },
      {
@@ -2812,6 +3096,7 @@
       "requests": 16861984,
       "rps": 1116892.2,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.95
      },
      {
@@ -2821,6 +3106,7 @@
       "requests": 16843392,
       "rps": 1116591.43,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.7
      }
     ],
@@ -2832,6 +3118,7 @@
       "requests": 9756768,
       "rps": 649788.37,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.34
      },
      {
@@ -2841,6 +3128,7 @@
       "requests": 7859216,
       "rps": 520330.91,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 4.1
      },
      {
@@ -2850,6 +3138,7 @@
       "requests": 7253216,
       "rps": 480904.46,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 5.24
      }
     ],
@@ -2861,6 +3150,7 @@
       "requests": 8819328,
       "rps": 586424.63,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 1.48
      },
      {
@@ -2870,6 +3160,7 @@
       "requests": 8152560,
       "rps": 539173.79,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.01
      },
      {
@@ -2879,6 +3170,7 @@
       "requests": 8182928,
       "rps": 539505.92,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 2.8
      }
     ],
@@ -2890,6 +3182,7 @@
       "requests": 6239584,
       "rps": 411487.6,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.71
      },
      {
@@ -2899,6 +3192,7 @@
       "requests": 9320096,
       "rps": 615278.62,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.34
      },
      {
@@ -2908,6 +3202,7 @@
       "requests": 8574400,
       "rps": 566386.72,
       "socket_errors": 0,
+      "stalled": false,
       "steal_pct": 0.66
      }
     ]
@@ -2927,7 +3222,9 @@
      "rps_median": 90199.05,
      "rps_min": 89071.71,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 2.46,
      "tied_with": [
       "axum"
@@ -2942,7 +3239,9 @@
      "rps_median": 79104.81,
      "rps_min": 65608.57,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 12.01,
      "tied_with": [
       "actix",
@@ -2958,7 +3257,9 @@
      "rps_median": 16944.67,
      "rps_min": 15575.52,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 13.84,
      "tied_with": [
       "hono-node"
@@ -2973,7 +3274,9 @@
      "rps_median": 21996.41,
      "rps_min": 17145.23,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 18.74,
      "tied_with": [
       "hono-node"
@@ -2988,7 +3291,9 @@
      "rps_median": 52352.9,
      "rps_min": 51695.39,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 1.79,
      "tied_with": []
     },
@@ -3001,7 +3306,9 @@
      "rps_median": 17068.79,
      "rps_min": 16889.72,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 3.21,
      "tied_with": [
       "express",
@@ -3017,7 +3324,9 @@
      "rps_median": 1499.05,
      "rps_min": 1174.27,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 4.74,
      "tied_with": []
     },
@@ -3030,7 +3339,9 @@
      "rps_median": 7990.23,
      "rps_min": 7662.31,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 5.76,
      "tied_with": []
     },
@@ -3043,7 +3354,9 @@
      "rps_median": 71878.51,
      "rps_min": 65906.84,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 16.23,
      "tied_with": [
       "axum"
@@ -3058,7 +3371,9 @@
      "rps_median": 110676.4,
      "rps_min": 108926.44,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 1.18,
      "tied_with": []
     }
@@ -3070,10 +3385,12 @@
      "lat_p99_ms_median": 4.2,
      "non2xx": 0,
      "rps_max": 99179.53,
-     "rps_median": 99097.99,
+     "rps_median": 99097.98999999999,
      "rps_min": 92899.75,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 2.53,
      "tied_with": [
       "wisp"
@@ -3088,7 +3405,9 @@
      "rps_median": 86901.45,
      "rps_min": 77724.28,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 6.73,
      "tied_with": [
       "wisp"
@@ -3103,7 +3422,9 @@
      "rps_median": 16585.96,
      "rps_min": 15718.94,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 13.61,
      "tied_with": [
       "hono-node"
@@ -3118,7 +3439,9 @@
      "rps_median": 21210.04,
      "rps_min": 19871.32,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 12.65,
      "tied_with": []
     },
@@ -3131,7 +3454,9 @@
      "rps_median": 54056.38,
      "rps_min": 49883.54,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 3.27,
      "tied_with": []
     },
@@ -3144,7 +3469,9 @@
      "rps_median": 15571.27,
      "rps_min": 9505.22,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 11.69,
      "tied_with": [
       "express",
@@ -3160,7 +3487,9 @@
      "rps_median": 1284.94,
      "rps_min": 1211.24,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 5.0,
      "tied_with": []
     },
@@ -3173,7 +3502,9 @@
      "rps_median": 9773.65,
      "rps_min": 8551.77,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 2.67,
      "tied_with": [
       "hono-node"
@@ -3188,7 +3519,9 @@
      "rps_median": 86812.85,
      "rps_min": 69580.59,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 14.84,
      "tied_with": [
       "actix",
@@ -3204,7 +3537,9 @@
      "rps_median": 111844.93,
      "rps_min": 103038.65,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 1.95,
      "tied_with": []
     }
@@ -3219,7 +3554,9 @@
      "rps_median": 89648.31,
      "rps_min": 85399.66,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 2.99,
      "tied_with": [
       "axum",
@@ -3235,7 +3572,9 @@
      "rps_median": 78427.13,
      "rps_min": 77297.76,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 6.72,
      "tied_with": [
       "actix",
@@ -3248,10 +3587,12 @@
      "lat_p99_ms_median": 18.06,
      "non2xx": 0,
      "rps_max": 15351.46,
-     "rps_median": 14745.93,
+     "rps_median": 14745.929999999998,
      "rps_min": 14509.34,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 15.73,
      "tied_with": []
     },
@@ -3264,7 +3605,9 @@
      "rps_median": 21965.1,
      "rps_min": 20467.82,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 10.4,
      "tied_with": []
     },
@@ -3277,7 +3620,9 @@
      "rps_median": 59619.03,
      "rps_min": 54928.85,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 1.98,
      "tied_with": []
     },
@@ -3290,7 +3635,9 @@
      "rps_median": 8987.89,
      "rps_min": 8707.65,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 20.97,
      "tied_with": [
       "sveltekit"
@@ -3302,10 +3649,12 @@
      "lat_p99_ms_median": 297.61,
      "non2xx": 0,
      "rps_max": 1697.94,
-     "rps_median": 1523.61,
+     "rps_median": 1523.6099999999997,
      "rps_min": 1498.22,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 2.29,
      "tied_with": []
     },
@@ -3318,7 +3667,9 @@
      "rps_median": 10377.8,
      "rps_min": 8989.24,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 1.52,
      "tied_with": [
       "hono-node"
@@ -3329,11 +3680,13 @@
      "lat_avg_ms_median": 0.546,
      "lat_p99_ms_median": 2.63,
      "non2xx": 0,
-     "rps_max": 103763.63,
-     "rps_median": 96089.14,
+     "rps_max": 103763.62999999999,
+     "rps_median": 96089.14000000001,
      "rps_min": 85620.58,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 7.13,
      "tied_with": [
       "actix",
@@ -3349,7 +3702,9 @@
      "rps_median": 111903.38,
      "rps_min": 101063.76,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 1.64,
      "tied_with": []
     }
@@ -3364,7 +3719,9 @@
      "rps_median": 106246.5,
      "rps_min": 101186.15,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 1.06,
      "tied_with": [
       "wisp"
@@ -3379,7 +3736,9 @@
      "rps_median": 92662.39,
      "rps_min": 70648.45,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 5.73,
      "tied_with": []
     },
@@ -3392,7 +3751,9 @@
      "rps_median": 13794.55,
      "rps_min": 11935.93,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 16.54,
      "tied_with": []
     },
@@ -3405,7 +3766,9 @@
      "rps_median": 19976.87,
      "rps_min": 17809.19,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 12.13,
      "tied_with": []
     },
@@ -3418,7 +3781,9 @@
      "rps_median": 51579.54,
      "rps_min": 50492.94,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 2.61,
      "tied_with": []
     },
@@ -3431,7 +3796,9 @@
      "rps_median": 9353.87,
      "rps_min": 8902.36,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 16.74,
      "tied_with": []
     },
@@ -3441,10 +3808,12 @@
      "lat_p99_ms_median": 1460.0,
      "non2xx": 0,
      "rps_max": 1668.61,
-     "rps_median": 1512.58,
+     "rps_median": 1512.5799999999997,
      "rps_min": 1132.21,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 5.27,
      "tied_with": []
     },
@@ -3455,9 +3824,11 @@
      "non2xx": 0,
      "rps_max": 8883.45,
      "rps_median": 7714.14,
-     "rps_min": 6960.18,
+     "rps_min": 6960.179999999999,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 3.77,
      "tied_with": []
     },
@@ -3470,7 +3841,9 @@
      "rps_median": 107833.95,
      "rps_min": 107405.23,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 1.23,
      "tied_with": [
       "actix"
@@ -3482,10 +3855,12 @@
      "lat_p99_ms_median": 2.33,
      "non2xx": 0,
      "rps_max": 111907.74,
-     "rps_median": 109058.29,
-     "rps_min": 106814.57,
+     "rps_median": 109058.29000000001,
+     "rps_min": 106814.57000000002,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 1.1,
      "tied_with": []
     }
@@ -3500,7 +3875,9 @@
      "rps_median": 108428.36,
      "rps_min": 105160.98,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 0.83,
      "tied_with": []
     },
@@ -3513,7 +3890,9 @@
      "rps_median": 60464.72,
      "rps_min": 57541.07,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 5.98,
      "tied_with": []
     },
@@ -3526,7 +3905,9 @@
      "rps_median": 18022.75,
      "rps_min": 15567.06,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 7.7,
      "tied_with": [
       "fastify"
@@ -3539,9 +3920,11 @@
      "non2xx": 0,
      "rps_max": 21494.45,
      "rps_median": 21249.46,
-     "rps_min": 14339.98,
+     "rps_min": 14339.979999999998,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 12.98,
      "tied_with": [
       "express"
@@ -3552,11 +3935,13 @@
      "lat_avg_ms_median": 5.5,
      "lat_p99_ms_median": 16.0,
      "non2xx": 0,
-     "rps_max": 48389.87,
+     "rps_max": 48389.869999999995,
      "rps_median": 47379.22,
      "rps_min": 39409.85,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 4.48,
      "tied_with": []
     },
@@ -3569,7 +3954,9 @@
      "rps_median": 13083.57,
      "rps_min": 12375.7,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 6.08,
      "tied_with": []
     },
@@ -3582,7 +3969,9 @@
      "rps_median": 1369.77,
      "rps_min": 1091.78,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 139,
+     "stalled": 0,
      "steal_pct_max": 7.23,
      "tied_with": []
     },
@@ -3595,7 +3984,9 @@
      "rps_median": 6062.17,
      "rps_min": 5580.42,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 5.16,
      "tied_with": []
     },
@@ -3608,7 +3999,9 @@
      "rps_median": 91875.52,
      "rps_min": 86957.03,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 3.22,
      "tied_with": []
     },
@@ -3621,7 +4014,9 @@
      "rps_median": 111298.75,
      "rps_min": 107976.96,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 0.81,
      "tied_with": []
     }
@@ -3636,7 +4031,9 @@
      "rps_median": 71314.61,
      "rps_min": 68763.69,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 2.7,
      "tied_with": [
       "wisp"
@@ -3651,7 +4048,9 @@
      "rps_median": 47070.26,
      "rps_min": 41755.48,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 6.98,
      "tied_with": [
       "hono-bun"
@@ -3666,7 +4065,9 @@
      "rps_median": 22643.84,
      "rps_min": 19491.2,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 2.74,
      "tied_with": []
     },
@@ -3679,7 +4080,9 @@
      "rps_median": 24163.4,
      "rps_min": 23503.45,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 2.82,
      "tied_with": []
     },
@@ -3690,9 +4093,11 @@
      "non2xx": 0,
      "rps_max": 44598.22,
      "rps_median": 28439.12,
-     "rps_min": 26910.57,
+     "rps_min": 26910.569999999996,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 8.95,
      "tied_with": [
       "axum"
@@ -3707,7 +4112,9 @@
      "rps_median": 15348.95,
      "rps_min": 14608.03,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 3.24,
      "tied_with": []
     },
@@ -3720,7 +4127,9 @@
      "rps_median": 1715.05,
      "rps_min": 1698.83,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 240,
+     "stalled": 0,
      "steal_pct_max": 0.99,
      "tied_with": []
     },
@@ -3733,7 +4142,9 @@
      "rps_median": 6697.99,
      "rps_min": 5707.04,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 124,
+     "stalled": 0,
      "steal_pct_max": 4.89,
      "tied_with": []
     },
@@ -3746,7 +4157,9 @@
      "rps_median": 73714.31,
      "rps_min": 65577.62,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 6.07,
      "tied_with": [
       "actix"
@@ -3761,7 +4174,9 @@
      "rps_median": 100818.27,
      "rps_min": 93144.61,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 1.01,
      "tied_with": []
     }
@@ -3778,7 +4193,9 @@
      "rps_median": 603163.42,
      "rps_min": 575108.37,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 2.82,
      "tied_with": []
     },
@@ -3791,7 +4208,9 @@
      "rps_median": 276948.25,
      "rps_min": 245050.03,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 17.62,
      "tied_with": []
     },
@@ -3804,7 +4223,9 @@
      "rps_median": 40420.66,
      "rps_min": 37511.16,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 3.78,
      "tied_with": [
       "fastify"
@@ -3816,10 +4237,12 @@
      "lat_p99_ms_median": 3510.0,
      "non2xx": 0,
      "rps_max": 60754.39,
-     "rps_median": 51713.14,
+     "rps_median": 51713.14000000001,
      "rps_min": 40421.98,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 34,
+     "stalled": 0,
      "steal_pct_max": 2.59,
      "tied_with": [
       "express"
@@ -3834,7 +4257,9 @@
      "rps_median": 10598.71,
      "rps_min": 10564.51,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 1.17,
      "tied_with": [
       "hono-node",
@@ -3850,7 +4275,9 @@
      "rps_median": 28966.06,
      "rps_min": 3039.28,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 138,
+     "stalled": 0,
      "steal_pct_max": 2.22,
      "tied_with": [
       "hono-bun",
@@ -3866,7 +4293,9 @@
      "rps_median": 0.0,
      "rps_min": 0.0,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 3,
      "steal_pct_max": 2.33,
      "tied_with": []
     },
@@ -3879,7 +4308,9 @@
      "rps_median": 10928.72,
      "rps_min": 501.93,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 144,
+     "stalled": 0,
      "steal_pct_max": 1.51,
      "tied_with": [
       "hono-bun",
@@ -3895,7 +4326,9 @@
      "rps_median": 1129577.1,
      "rps_min": 1092692.91,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 0.75,
      "tied_with": []
     },
@@ -3906,9 +4339,11 @@
      "non2xx": 0,
      "rps_max": 1116892.2,
      "rps_median": 1116591.43,
-     "rps_min": 960570.46,
+     "rps_min": 960570.4600000001,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 1.59,
      "tied_with": []
     }
@@ -3923,7 +4358,9 @@
      "rps_median": 366626.08,
      "rps_min": 365153.33,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 7.13,
      "tied_with": [
       "axum"
@@ -3938,7 +4375,9 @@
      "rps_median": 381323.66,
      "rps_min": 323091.93,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 6.49,
      "tied_with": [
       "actix"
@@ -3953,7 +4392,9 @@
      "rps_median": 36183.88,
      "rps_min": 32588.55,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 246,
+     "stalled": 0,
      "steal_pct_max": 6.48,
      "tied_with": [
       "hono-node"
@@ -3968,7 +4409,9 @@
      "rps_median": 62345.47,
      "rps_min": 45566.71,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 271,
+     "stalled": 0,
      "steal_pct_max": 4.21,
      "tied_with": []
     },
@@ -3981,7 +4424,9 @@
      "rps_median": 10375.35,
      "rps_min": 10195.21,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 1.95,
      "tied_with": []
     },
@@ -3994,7 +4439,9 @@
      "rps_median": 29601.58,
      "rps_min": 25357.27,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 192,
+     "stalled": 0,
      "steal_pct_max": 2.93,
      "tied_with": [
       "express"
@@ -4009,7 +4456,9 @@
      "rps_median": 0.0,
      "rps_min": 0.0,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 3,
      "steal_pct_max": 0.23,
      "tied_with": []
     },
@@ -4022,7 +4471,9 @@
      "rps_median": 8463.68,
      "rps_min": 7748.89,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 83,
+     "stalled": 0,
      "steal_pct_max": 6.5,
      "tied_with": []
     },
@@ -4035,7 +4486,9 @@
      "rps_median": 623347.66,
      "rps_min": 506953.26,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 5.66,
      "tied_with": []
     },
@@ -4048,7 +4501,9 @@
      "rps_median": 520330.91,
      "rps_min": 480904.46,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 5.24,
      "tied_with": []
     }
@@ -4063,7 +4518,9 @@
      "rps_median": 351843.53,
      "rps_min": 318901.47,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 9.83,
      "tied_with": []
     },
@@ -4076,7 +4533,9 @@
      "rps_median": 446398.0,
      "rps_min": 417470.09,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 2.17,
      "tied_with": []
     },
@@ -4085,11 +4544,13 @@
      "lat_avg_ms_median": 477.51,
      "lat_p99_ms_median": 5710.0,
      "non2xx": 0,
-     "rps_max": 27713.86,
+     "rps_max": 27713.859999999997,
      "rps_median": 27554.22,
      "rps_min": 26800.43,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 208,
+     "stalled": 0,
      "steal_pct_max": 9.9,
      "tied_with": [
       "hono-node"
@@ -4104,7 +4565,9 @@
      "rps_median": 58956.11,
      "rps_min": 49590.56,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 152,
+     "stalled": 0,
      "steal_pct_max": 3.51,
      "tied_with": []
     },
@@ -4117,7 +4580,9 @@
      "rps_median": 9651.9,
      "rps_min": 9618.52,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 1,
+     "stalled": 0,
      "steal_pct_max": 4.0,
      "tied_with": []
     },
@@ -4130,7 +4595,9 @@
      "rps_median": 34172.64,
      "rps_min": 18886.26,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 235,
+     "stalled": 0,
      "steal_pct_max": 3.87,
      "tied_with": [
       "express"
@@ -4145,7 +4612,9 @@
      "rps_median": 0.0,
      "rps_min": 0.0,
      "runs": 1,
+     "runs_total": 1,
      "socket_errors": 0,
+     "stalled": 1,
      "steal_pct_max": 0.64,
      "tied_with": []
     },
@@ -4158,7 +4627,9 @@
      "rps_median": 8358.51,
      "rps_min": 8285.26,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 149,
+     "stalled": 0,
      "steal_pct_max": 1.58,
      "tied_with": []
     },
@@ -4169,9 +4640,11 @@
      "non2xx": 0,
      "rps_max": 546911.88,
      "rps_median": 532959.4,
-     "rps_min": 460222.18,
+     "rps_min": 460222.18000000005,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 4.44,
      "tied_with": []
     },
@@ -4184,14 +4657,16 @@
      "rps_median": 539505.92,
      "rps_min": 539173.79,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 2.8,
      "tied_with": []
     }
    },
    "16384": {
     "actix": {
-     "failed": null,
+     "failed": "every run stalled",
      "lat_avg_ms_median": 358.28,
      "lat_p99_ms_median": 667.35,
      "non2xx": 0,
@@ -4199,16 +4674,11 @@
      "rps_median": 0.0,
      "rps_min": 0.0,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 3,
      "steal_pct_max": 7.56,
-     "tied_with": [
-      "express",
-      "fastify",
-      "hono-bun",
-      "hono-node",
-      "sveltekit",
-      "wisp"
-     ]
+     "tied_with": []
     },
     "axum": {
      "failed": null,
@@ -4217,16 +4687,16 @@
      "non2xx": 0,
      "rps_max": 223945.59,
      "rps_median": 171230.75,
-     "rps_min": 27410.12,
+     "rps_min": 27410.120000000003,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 2.83,
-     "tied_with": [
-      "wisp"
-     ]
+     "tied_with": []
     },
     "express": {
-     "failed": null,
+     "failed": "every run stalled",
      "lat_avg_ms_median": 2800.0,
      "lat_p99_ms_median": 5480.0,
      "non2xx": 0,
@@ -4234,52 +4704,41 @@
      "rps_median": 0.0,
      "rps_min": 0.0,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 3,
      "steal_pct_max": 3.73,
-     "tied_with": [
-      "actix",
-      "hono-node",
-      "sveltekit",
-      "wisp"
-     ]
+     "tied_with": []
     },
     "fastify": {
      "failed": null,
-     "lat_avg_ms_median": 1960.0,
-     "lat_p99_ms_median": 3780.0,
+     "lat_avg_ms_median": 2095.0,
+     "lat_p99_ms_median": 4110.0,
      "non2xx": 0,
      "rps_max": 18400.45,
-     "rps_median": 16573.32,
-     "rps_min": 5972.36,
-     "runs": 3,
+     "rps_median": 17486.885000000002,
+     "rps_min": 16573.32,
+     "runs": 2,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 1,
      "steal_pct_max": 2.03,
-     "tied_with": [
-      "actix",
-      "hono-bun",
-      "hono-node",
-      "sveltekit",
-      "wisp"
-     ]
+     "tied_with": []
     },
     "hono-bun": {
      "failed": null,
      "lat_avg_ms_median": 3720.0,
      "lat_p99_ms_median": 7890.0,
      "non2xx": 0,
-     "rps_max": 7323.24,
+     "rps_max": 7323.239999999999,
      "rps_median": 6910.11,
-     "rps_min": 6440.05,
+     "rps_min": 6440.050000000001,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 2410,
+     "stalled": 0,
      "steal_pct_max": 0.71,
-     "tied_with": [
-      "actix",
-      "fastify",
-      "hono-node",
-      "sveltekit",
-      "wisp"
-     ]
+     "tied_with": []
     },
     "hono-node": {
      "failed": null,
@@ -4287,19 +4746,14 @@
      "lat_p99_ms_median": 7720.0,
      "non2xx": 0,
      "rps_max": 16692.5,
-     "rps_median": 0.0,
-     "rps_min": 0.0,
-     "runs": 3,
+     "rps_median": 16692.5,
+     "rps_min": 16692.5,
+     "runs": 1,
+     "runs_total": 3,
      "socket_errors": 830,
+     "stalled": 2,
      "steal_pct_max": 0.94,
-     "tied_with": [
-      "actix",
-      "express",
-      "fastify",
-      "hono-bun",
-      "sveltekit",
-      "wisp"
-     ]
+     "tied_with": []
     },
     "sveltekit": {
      "failed": null,
@@ -4307,40 +4761,29 @@
      "lat_p99_ms_median": 7890.0,
      "non2xx": 0,
      "rps_max": 6776.93,
-     "rps_median": 0.0,
-     "rps_min": 0.0,
-     "runs": 3,
+     "rps_median": 6776.93,
+     "rps_min": 6776.93,
+     "runs": 1,
+     "runs_total": 3,
      "socket_errors": 287,
+     "stalled": 2,
      "steal_pct_max": 0.47,
-     "tied_with": [
-      "actix",
-      "express",
-      "fastify",
-      "hono-bun",
-      "hono-node",
-      "wisp"
-     ]
+     "tied_with": []
     },
     "wisp": {
-     "failed": null,
+     "failed": "every run stalled",
      "lat_avg_ms_median": 771.48,
      "lat_p99_ms_median": 2490.0,
      "non2xx": 73227,
-     "rps_max": 29252.33,
-     "rps_median": 219.73,
+     "rps_max": 28022.470210350933,
+     "rps_median": 0.0,
      "rps_min": 0.0,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 3,
      "steal_pct_max": 8.8,
-     "tied_with": [
-      "actix",
-      "axum",
-      "express",
-      "fastify",
-      "hono-bun",
-      "hono-node",
-      "sveltekit"
-     ]
+     "tied_with": []
     },
     "wisp-uncapped": {
      "failed": null,
@@ -4351,7 +4794,9 @@
      "rps_median": 566386.72,
      "rps_min": 411487.6,
      "runs": 3,
+     "runs_total": 3,
      "socket_errors": 0,
+     "stalled": 0,
      "steal_pct_max": 0.71,
      "tied_with": []
     }

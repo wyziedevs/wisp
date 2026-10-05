@@ -13,7 +13,7 @@ This file is generated: `python3 aggregate.py` fills the tables from `raw/`. Raw
 Derived by `aggregate.py` from `results.json`; nothing here is hand-written. Medians of 3 runs,
 15 s each, server on 2 pinned cores.
 
-Wisp (defaults) has a min-max range above every other contender's at 3 of 10 workload and connection levels; at 5 more its range overlaps that of the highest median (a tie within noise). Counted from the tables below, supplementary row excluded.
+Wisp (defaults) has a min-max range above every other contender's at 3 of 9 workload and connection levels; at 4 more its range overlaps that of the highest median (a tie within noise). Counted from the tables below, supplementary row excluded.
 
 ## What TFB specifies (read from the source, not from memory)
 
@@ -116,12 +116,12 @@ crates (Cargo.lock):
 	/root/tfb/bench/tfb/actix/Cargo.lock-version = "0.3.8"
 /root/tfb/bench/tfb/actix/Cargo.lock:name = "tokio"
 	/root/tfb/bench/tfb/actix/Cargo.lock-version = "1.44.2"
-express: ├── express@5.2.1 └── fast-json-stringify@6.4.0  
-fastify: └── fastify@5.12.5  
-hono-node: ├── @hono/node-server@1.10.1 └── hono@3.12.12  
-sveltekit: ├── @sveltejs/adapter-node@5.5.7 ├── @sveltejs/kit@2.70.3 ├── @sveltejs/vite-plugin-svelte@5.1.1 ├── svelte@5.57.1 └── vite@6.4.3  
-next: ├── next@15.5.27 ├── react-dom@19.3.0 └── react@19.3.0  
-hono-bun: /root/tfb/bench/tfb/hono-bun node_modules (1 installed) └── hono@3.12.12 
+express: â”œâ”€â”€ express@5.2.1 â””â”€â”€ fast-json-stringify@6.4.0  
+fastify: â””â”€â”€ fastify@5.12.5  
+hono-node: â”œâ”€â”€ @hono/node-server@1.10.1 â””â”€â”€ hono@3.12.12  
+sveltekit: â”œâ”€â”€ @sveltejs/adapter-node@5.5.7 â”œâ”€â”€ @sveltejs/kit@2.70.3 â”œâ”€â”€ @sveltejs/vite-plugin-svelte@5.1.1 â”œâ”€â”€ svelte@5.57.1 â””â”€â”€ vite@6.4.3  
+next: â”œâ”€â”€ next@15.5.27 â”œâ”€â”€ react-dom@19.3.0 â””â”€â”€ react@19.3.0  
+hono-bun: /root/tfb/bench/tfb/hono-bun node_modules (1 installed) â””â”€â”€ hono@3.12.12 
 ```
 
 Two shared-VM facts matter: `scaling_governor` is not exposed (frequency is the host's choice), and
@@ -134,7 +134,7 @@ All contenders, both workloads and every connection level, with every metric. So
 table: median requests per second, descending; the Wisp rows are bold. Source: `raw/` wrk output
 (`results.json`), run date and hardware in Environment above. Rows marked "(supplementary)" are not
 part of the summary. "steal % max" is the highest hypervisor steal share of CPU over the runs. "errors" counts non-2xx responses and wrk socket errors summed over the 3 runs.
-A contender whose runs at a level completed no request shows "Failed" with the reason, not a number. Rows whose min-max ranges overlap are ties: they show "tie" and whom with in "tied with", and get no rank.
+Contenders that stop answering show `0`; that is a measured result of this setup.
 
 
 #### Plaintext (pipeline depth 16), 256 connections
@@ -150,7 +150,7 @@ A contender whose runs at a level completed no request shows "Failed" with the r
 | tie | Hono on Node (TFB source) | 28,966 | 3,039 | 29,143 | 449 | 5630 | 138 socket | 2.2 | Hono on Bun, SvelteKit |
 | tie | SvelteKit (not TFB) | 10,929 | 502 | 11,055 | 472 | 5590 | 144 socket | 1.5 | Hono on Bun, Hono on Node |
 | tie | Hono on Bun (not TFB source) | 10,599 | 10,565 | 10,628 | 211 | 410 | - | 1.2 | Hono on Node, SvelteKit |
-| - | Next.js (not TFB) | Failed (out of memory) | - | - | - | - | - | 2.3 | - |
+| - | Next.js (not TFB) | Failed (out of memory) | - | - | - | - | 3 stalled run(s) left out | 2.3 | - |
 
 Rows whose min-max ranges overlap are ties and get no rank.
 
@@ -167,7 +167,7 @@ Rows whose min-max ranges overlap are ties and get no rank.
 | tie | Hono on Node (TFB source) | 29,602 | 25,357 | 34,082 | 259 | 4420 | 192 socket | 2.9 | Express |
 | 7 | Hono on Bun (not TFB source) | 10,375 | 10,195 | 10,421 | 854 | 1670 | - | 1.9 | - |
 | 8 | SvelteKit (not TFB) | 8,464 | 7,749 | 9,116 | 514 | 3240 | 83 socket | 6.5 | - |
-| - | Next.js (not TFB) | Failed (out of memory) | - | - | - | - | - | 0.2 | - |
+| - | Next.js (not TFB) | Failed (out of memory) | - | - | - | - | 3 stalled run(s) left out | 0.2 | - |
 
 Rows whose min-max ranges overlap are ties and get no rank.
 
@@ -184,7 +184,7 @@ Rows whose min-max ranges overlap are ties and get no rank.
 | tie | Express (TFB source) | 27,554 | 26,800 | 27,714 | 478 | 5710 | 208 socket | 9.9 | Hono on Node |
 | 7 | Hono on Bun (not TFB source) | 9,652 | 9,619 | 10,152 | 3400 | 6900 | 1 socket | 4.0 | - |
 | 8 | SvelteKit (not TFB) | 8,359 | 8,285 | 9,053 | 547 | 5710 | 149 socket | 1.6 | - |
-| - | Next.js (not TFB) | Failed (out of memory) | - | - | - | - | - | 0.6 | - |
+| - | Next.js (not TFB) | Failed (out of memory) | - | - | - | - | 1 stalled run(s) left out | 0.6 | - |
 
 Rows whose min-max ranges overlap are ties and get no rank.
 
@@ -193,14 +193,14 @@ Rows whose min-max ranges overlap are ties and get no rank.
 | # | Contender | req/s median | min | max | latency avg (ms) | latency p99 (ms) | errors | steal % max | tied with |
 |---:|---|---:|---:|---:|---:|---:|---|---:|---|
 | **-** | **Wisp, WISP_MAX_CONNS=0 (supplementary)** | **566,387** | **411,488** | **615,279** | **77.72** | **n/a** | **-** | **0.7** | **-** |
-| tie | Axum (TFB source) | 171,231 | 27,410 | 223,946 | 340 | 538 | - | 2.8 | Wisp |
-| tie | Fastify (TFB source) | 16,573 | 5,972 | 18,400 | 1960 | 3780 | - | 2.0 | Actix Web, Hono on Bun, Hono on Node, SvelteKit, Wisp |
-| tie | Hono on Bun (not TFB source) | 6,910 | 6,440 | 7,323 | 3720 | 7890 | 2410 socket | 0.7 | Actix Web, Fastify, Hono on Node, SvelteKit, Wisp |
-| **tie** | **Wisp (defaults)** | **220** | **0** | **29,252** | **771** | **2490** | **73227 non-2xx** | **8.8** | **Actix Web, Axum, Express, Fastify, Hono on Bun, Hono on Node, SvelteKit** |
-| tie | Actix Web (TFB source) | 0 | 0 | 14,977 | 358 | 667 | - | 7.6 | Express, Fastify, Hono on Bun, Hono on Node, SvelteKit, Wisp |
-| tie | Express (TFB source) | 0 | 0 | 5,294 | 2800 | 5480 | - | 3.7 | Actix Web, Hono on Node, SvelteKit, Wisp |
-| tie | Hono on Node (TFB source) | 0 | 0 | 16,692 | 3370 | 7720 | 830 socket | 0.9 | Actix Web, Express, Fastify, Hono on Bun, SvelteKit, Wisp |
-| tie | SvelteKit (not TFB) | 0 | 0 | 6,777 | 3840 | 7890 | 287 socket | 0.5 | Actix Web, Express, Fastify, Hono on Bun, Hono on Node, Wisp |
+| 1 | Axum (TFB source) | 171,231 | 27,410 | 223,946 | 340 | 538 | - | 2.8 | - |
+| 2 | Fastify (TFB source) | 17,487 | 16,573 | 18,400 | 2095 | 4110 | 1 stalled run(s) left out | 2.0 | - |
+| - | Hono on Node (TFB source) | 16,692 | 16,692 | 16,692 | 3370 | 7720 | one valid run, not ranked, 2 stalled run(s) left out, 830 socket | 0.9 | - |
+| 3 | Hono on Bun (not TFB source) | 6,910 | 6,440 | 7,323 | 3720 | 7890 | 2410 socket | 0.7 | - |
+| - | SvelteKit (not TFB) | 6,777 | 6,777 | 6,777 | 3840 | 7890 | one valid run, not ranked, 2 stalled run(s) left out, 287 socket | 0.5 | - |
+| **-** | **Wisp (defaults)** | **Failed (every run stalled)** | **-** | **-** | **-** | **-** | **73227 non-2xx, 3 stalled run(s) left out** | **8.8** | **-** |
+| - | Actix Web (TFB source) | Failed (every run stalled) | - | - | - | - | 3 stalled run(s) left out | 7.6 | - |
+| - | Express (TFB source) | Failed (every run stalled) | - | - | - | - | 3 stalled run(s) left out | 3.7 | - |
 
 Rows whose min-max ranges overlap are ties and get no rank.
 
@@ -354,7 +354,6 @@ with the numbers they would be a different scale from the tables above.
 - **Plaintext at 16384 connections** is beyond what this setup serves for most contenders (wrk
   timeouts after 8 s; a `0` median means at least 2 of 3 runs completed no request). Wisp's default
   `WISP_MAX_CONNS=10000` answers `503` past that many connections.
-- **Wisp default at 16384 connections:** one run stalled with 0 requests; under investigation.
 - **Pipelined rows have no p99** (wrk), and latency is queueing under a 16-deep pipeline, not
   request latency.
 - Next.js ran out of memory (2 GB V8 heap) during the pipelined plaintext test and was restarted
