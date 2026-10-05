@@ -10,6 +10,32 @@ fn the_unix_second_comes_from_the_tick() {
 }
 
 #[test]
+fn static_paths_refuse_windows_devices_and_trimmed_names() {
+    for bad in [
+        "CON",
+        "a/nul.txt",
+        "Com1",
+        "lpt9.js",
+        "aux ",
+        "a.txt.",
+        "a.txt ",
+        "x/PRN",
+    ] {
+        assert!(!stays_inside(bad), "{bad}");
+    }
+    for ok in [
+        "console.js",
+        "a/null.txt",
+        "com.css",
+        "comx",
+        "lpt",
+        "a.b.txt",
+        "nu",
+    ] {
+        assert!(stays_inside(ok), "{ok}");
+    }
+}
+#[test]
 fn dev_binds_the_next_port_when_one_is_taken() {
     let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = taken.local_addr().unwrap();

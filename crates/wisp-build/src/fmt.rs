@@ -831,10 +831,9 @@ mod tests {
             "<p>x</p>
 <a b",
         ] {
-            assert_eq!(format(src, "2024"), src);
-        }
-    }
-
+            assert_eq!(format(src, "2024"), src);
+        }
+    }
 
     #[test]
     fn a_tag_cut_off_after_an_attribute_name_does_not_panic() {

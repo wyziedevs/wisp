@@ -241,8 +241,32 @@ pub(crate) fn safe_relative_path(path: &str) -> Option<String> {
 }
 
 /// Whether `rel`, joined to a folder, names something inside it: no `..`,
-/// no empty segment, nothing a drive or an absolute path could use.
+/// no empty segment, nothing a drive or an absolute path could use, and no
+/// segment Windows reads as a device (`CON`, `nul.txt`) or trims to another
+/// name (`a.txt.`, `a.txt `).
 pub(crate) fn stays_inside(rel: &str) -> bool {
-    rel.split('/')
-        .all(|s| !s.is_empty() && s != "." && s != ".." && !s.contains(['\\', ':', '\0']))
+    rel.split('/').all(|s| {
+        !s.is_empty()
+            && s != "."
+            && s != ".."
+            && !s.contains(['\\', ':', '\0'])
+            && !s.ends_with(['.', ' '])
+            && !windows_device(s)
+    })
+}
+
+/// Whether Windows opens `seg` as a device whatever the folder: `CON`, `PRN`,
+/// `AUX`, `NUL`, `COM0`-`COM9`, `LPT0`-`LPT9`, with any extension, any case.
+fn windows_device(seg: &str) -> bool {
+    let stem = seg.split('.').next().unwrap_or(seg).trim_end().as_bytes();
+    match stem.len() {
+        3 => ["con", "prn", "aux", "nul"]
+            .iter()
+            .any(|d| stem.eq_ignore_ascii_case(d.as_bytes())),
+        4 => {
+            (stem[..3].eq_ignore_ascii_case(b"com") || stem[..3].eq_ignore_ascii_case(b"lpt"))
+                && stem[3].is_ascii_digit()
+        }
+        _ => false,
+    }
 }
