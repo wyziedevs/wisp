@@ -2,7 +2,8 @@
 """Reads raw/<contender>/<workload>-c<level>-run<N>.txt (wrk output) and writes results.json
 and the tables of RESULTS.md (stdout). Median/min/max of requests/sec; latency avg and p99 are
 the medians of the runs. req/s counts only 2xx/3xx responses; runs with non-2xx responses or
-socket errors are flagged, not dropped."""
+socket errors are flagged, not dropped. A stalled run (no request completed, or wall time over
+1.5x the test duration) is left out of the median/min/max and counted in the errors column."""
 import json, re, statistics, sys
 from pathlib import Path
 
@@ -36,6 +37,9 @@ def parse(path):
     total = re.search(r"(\d+) requests in", t)
     if not (rps and avg and p99):  # a run without latency lines is unusable
         return None
+    dur = re.search(r"Running (\d+)s test", t)
+    wall = re.search(r"requests in ([\d.]+)(us|ms|s|m),", t)
+    wall_s = float(wall.group(1)) * UNIT[wall.group(2)] / 1000 if wall else None
     cpu = re.search(r"# cpu-delta[^:]*: ([\d ]+)", t)
     steal = None
     if cpu:
@@ -50,6 +54,7 @@ def parse(path):
         "non2xx": int(non2.group(1)) if non2 else 0,
         "socket_errors": sum(int(x) for x in sock.groups()) if sock else 0,
         "requests": int(total.group(1)) if total else None, "steal_pct": steal,
+        "stalled": n_total == 0 or bool(dur and wall_s and wall_s > 1.5 * int(dur.group(1))),
     }
 
 
@@ -70,10 +75,11 @@ def main():
     summary = {}
     for c, ws in out["contenders"].items():
         for w, lv in ws.items():
-            for lvl, runs in lv.items():
+            for lvl, every in lv.items():
+                runs = [r for r in every if not r["stalled"]] or every
                 rps = [r["rps"] for r in runs]
                 summary.setdefault(w, {}).setdefault(lvl, {})[c] = {
-                    "runs": len(runs), "rps_median": statistics.median(rps), "rps_min": min(rps),
+                    "runs": len(runs), "runs_total": len(every), "stalled": sum(r["stalled"] for r in every), "rps_median": statistics.median(rps), "rps_min": min(rps),
                     "rps_max": max(rps),
                     "lat_avg_ms_median": statistics.median([r["lat_avg_ms"] for r in runs if r["lat_avg_ms"]] or [0]),
                     "lat_p99_ms_median": (statistics.median([r["lat_p99_ms"] for r in runs if r["lat_p99_ms"]]) if any(r["lat_p99_ms"] for r in runs) else None),
@@ -82,13 +88,14 @@ def main():
                     "steal_pct_max": max((r["steal_pct"] or 0) for r in runs),
                 }
     # A level where no run completed a request is a failed run, not a 0. Ranges that overlap are
-    # ties: a row gets a rank only when its min-max range overlaps no other row's (supplementary
+    # ties: a row with two or more valid runs gets a rank only when its min-max range overlaps no other row's (supplementary
     # and failed rows take no part).
     for w, lv in summary.items():
         for lvl, rows in lv.items():
             for c, r in rows.items():
-                r["failed"] = FAILED.get((c, w), "no request completed") if r["rps_max"] == 0 else None
-            ranked = [c for c in rows if c != "wisp-uncapped" and not rows[c]["failed"]]
+                r["failed"] = (FAILED.get((c, w), "no request completed") if r["rps_max"] == 0
+                               else "every run stalled" if r["stalled"] == r["runs_total"] else None)
+            ranked = [c for c in rows if c != "wisp-uncapped" and not rows[c]["failed"] and rows[c]["runs"] >= 2]
             for c, r in rows.items():
                 r["tied_with"] = sorted(o for o in ranked if c in ranked and o != c
                                         and r["rps_min"] <= rows[o]["rps_max"] and rows[o]["rps_min"] <= r["rps_max"])
@@ -116,7 +123,7 @@ def main():
         for lvl in sorted(summary.get(w, {})):
             rows = summary[w][lvl]
             order = sorted(rows, key=lambda c: (bool(rows[c]["failed"]), -rows[c]["rps_median"]))
-            ranked = [c for c in order if c != "wisp-uncapped" and not rows[c]["failed"]]
+            ranked = [c for c in order if c != "wisp-uncapped" and not rows[c]["failed"] and rows[c]["runs"] >= 2]
             lines.append(f"\n#### {title}, {lvl} connections\n")
             lines.append("| # | Contender | req/s median | min | max | latency avg (ms) | latency p99 (ms) | errors | steal % max | tied with |")
             lines.append("|---:|---|---:|---:|---:|---:|---:|---|---:|---|")
@@ -127,6 +134,10 @@ def main():
                 err = []
                 if r["non2xx"]:
                     err.append(f"{r['non2xx']} non-2xx")
+                if r["runs"] < 2 and not r["failed"]:
+                    err.append("one valid run, not ranked")
+                if r["stalled"]:
+                    err.append(f"{r['stalled']} stalled run(s) left out")
                 if r["socket_errors"]:
                     err.append(f"{r['socket_errors']} socket")
                 if r["failed"]:
@@ -144,7 +155,7 @@ def main():
     firsts, tot, tied = 0, 0, 0
     for w in ("plaintext", "json"):
         for lvl in sorted(summary.get(w, {})):
-            rows = {c: r for c, r in summary[w][lvl].items() if c != "wisp-uncapped" and not r["failed"]}
+            rows = {c: r for c, r in summary[w][lvl].items() if c != "wisp-uncapped" and not r["failed"] and r["runs"] >= 2}
             if "wisp" not in rows:
                 continue
             lead = max(rows, key=lambda c: rows[c]["rps_median"])
@@ -176,4 +187,5 @@ def main():
     print(tables)
 
 
-main()
+if __name__ == "__main__":
+    main()
