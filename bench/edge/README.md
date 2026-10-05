@@ -345,7 +345,7 @@ Node/Bun/Deno, the server loop over raw connections (`edge::connection`, `Raw`, 
 
 Native `.text` of the tests app is unchanged (the edit is `cfg(wasm32)`; two builds of
 main differ from each other in the same few functions, mine equals one of them).
-Node, Bun and Deno builds are as before. `tests/wasm-size.sh` (a CI step) fails over 1,810,000
+Node, Bun and Deno builds are as before. `tests/gate` (`cargo run -p wisp-gate`) (a CI step) fails over 1,810,000
 bytes (the tests app after the cut, +2%).
 
 workerd cold start, taken apart (process start to first response, median of 9, three rounds,
@@ -356,7 +356,7 @@ load 7 to 9 ms, first request (instantiate, `main`/init, the request path compil
 call) 6 to 7 ms. In Node (lazy compile, same V8): compile 0.8 ms, instantiate 0.15,
 env + `main` 1.7, first request 3.8 beyond that, second 0.5. Module load does not follow
 size: the opt-level `s` wasm (433 KB) loaded in 25 to 31 ms against 31 to 32 for opt 3 (559 KB),
-within the noise. Gate: size only (`tests/wasm-size.sh`); a time bound would flake on this.
+within the noise. Gate: size only (`tests/gate` (`cargo run -p wisp-gate`)); a time bound would flake on this.
 
 ## workerd profiled (V8 CPU profile, 2026-10-04)
 
