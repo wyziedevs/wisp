@@ -587,16 +587,13 @@ pub(crate) fn digits(buf: &mut [u8], end: usize, mut n: u64) -> usize {
 pub(crate) fn decimal(out: &mut String, n: u64) {
     let mut buf = [0u8; 20];
     let start = digits(&mut buf, 20, n);
-    #[cfg(not(target_arch = "wasm32"))]
-    out.push_str(std::str::from_utf8(&buf[start..]).unwrap_or_default());
-    // In wasm `from_utf8` is an outlined call that checks bytes known to be
-    // ASCII digits: pushing them one by one is shorter.
-    #[cfg(target_arch = "wasm32")]
-    {
-        out.reserve(20 - start);
-        for &d in &buf[start..] {
-            out.push(char::from(d));
-        }
+    // Byte by byte, not `push_str(from_utf8(..))`: `from_utf8` is an
+    // outlined call that checks bytes known to be digits, and `push_str` a
+    // `memcpy` call for three bytes (170 instructions of 260 a number in a
+    // 1000-row list). `& 0x7f` tells `push` each is one UTF-8 byte.
+    out.reserve(20 - start);
+    for &d in &buf[start..] {
+        out.push(char::from(d & 0x7f));
     }
 }
 

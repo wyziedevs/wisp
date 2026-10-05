@@ -46,7 +46,11 @@ requested by name.
 `/list` is built the way each framework's docs would: Wisp, Next.js and SvelteKit components,
 Go `html/template`, FastAPI Jinja2, and a string builder with the framework's HTML escaper where
 there is no engine in the default stack (Axum, Actix, ASP.NET Core, Spring, Fastify, Express,
-Hono). `verify` compares the 1000 `<li>` texts, not the wrapper: Wisp adds its head
+Hono). Axum and Actix write the escaped text as a literal around the number (`Item &lt;{i}&gt;
+&amp; co`, no escaper call and no string per item); the Wisp template does the same
+(`{#each 1..=1000 as i}<li>Item &lt;{i}&gt; &amp; co</li>{/each}`), so the three do the same work.
+Until 2026-10-05 Wisp's page built 1000 `format!` strings and escaped each, which was most of its
+257 us against 109 and 116. `verify` compares the 1000 `<li>` texts, not the wrapper: Wisp adds its head
 (build id and client script), Next.js its RSC payload (153 KB), SvelteKit with `csr = false` sends
 neither. Everything else (status, body bytes, length) is compared exactly; the content-type
 differs only in spelling (`;charset=` spacing and case).
@@ -110,9 +114,11 @@ Plainly:
 - Wisp is top 3 in every route, but the top three (Wisp, Actix Web, Axum) are within the noise of
   each other on `/`, `/json`, `/params` and `/json-big`: their order flips between passes (Wisp
   was 4th in pass 1 `/`, 1st in pass 2). Do not read a win from those ranks; read "top tier".
-- `/list` is Wisp's weak cell: 3rd in all five passes, and about 2.5x the CPU per request of Axum
-  and Actix (257 us against 109 and 116), whose handlers write one `String` by hand. Rendering the
-  1000-item `.wisp` template is the cost. Gin's `html/template` is the slowest of the compiled
+- `/list` was Wisp's weak cell in these passes: 3rd in all five, 257 us against Axum's 109 and
+  Actix's 116, because its page built and escaped 1000 strings the others did not (see above).
+  With the same work (2026-10-05, callgrind, one request): Wisp 153k instructions, Axum 370k,
+  Actix 425k; CPU per request in three alternating c=64 rounds: Wisp 108/92/172 us, Axum
+  139/168/180, Actix 179/199/229. The passes above predate it. Gin's `html/template` is the slowest of the compiled
   stacks here (a stock-library choice, not a tuned one); Next.js renders 1000 React elements plus
   its RSC payload.
 - CPU per request (steal-proof): Wisp is first on `/`, `/json` and `/params` (19 to 23 us), second

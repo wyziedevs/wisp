@@ -1,10 +1,6 @@
----
-let items: Vec<String> = (1..=1000).map(|i| format!("Item <{i}> & co")).collect();
----
-
 <h1>List</h1>
 <ul>
-  {#each items as item}
-    <li>{item}</li>
+  {#each 1..=1000 as i}
+    <li>Item &lt;{i}&gt; &amp; co</li>
   {/each}
 </ul>
