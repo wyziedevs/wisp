@@ -18,6 +18,16 @@ use std::time::{Duration, Instant};
 /// What is on, read from the environment once, at start. Empty when
 /// nothing is.
 static OBS: OnceLock<Obs> = OnceLock::new();
+/// [`OBS`]; never set on wasm32 (see [`init`]), where this is a constant
+/// `None` and none of the code that reads it is in the wasm.
+#[inline(always)]
+fn obs() -> Option<&'static Obs> {
+    match cfg!(target_arch = "wasm32") {
+        true => None,
+        false => OBS.get(),
+    }
+}
+
 /// Whether [`OBS`] is set, where a request reads it in one load.
 static ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -77,7 +87,7 @@ pub(crate) fn init(routes: &'static [RouteFacts]) {
 
 /// The trace exporter, when traces are on.
 pub(crate) fn otel() -> Option<&'static Otel> {
-    OBS.get()?.otel.as_ref()
+    obs()?.otel.as_ref()
 }
 
 /// Sends the spans still queued, as the server stops.
@@ -122,7 +132,7 @@ pub(crate) fn on() -> bool {
 #[cold]
 #[inline(never)]
 pub(crate) fn begin(cx: &Cx, route: Option<usize>, slot: &mut Option<Pending>) {
-    if let Some(o) = OBS.get() {
+    if let Some(o) = obs() {
         *slot = Some(o.begin(cx, route));
     }
 }
@@ -156,7 +166,7 @@ pub(crate) fn tag(p: &Option<Pending>, reply: &mut Reply) {
 #[cold]
 #[inline(never)]
 pub(crate) fn finish(slot: &mut Option<Pending>, status: u16, bytes: usize) {
-    if let (Some(p), Some(o)) = (slot.take(), OBS.get()) {
+    if let (Some(p), Some(o)) = (slot.take(), obs()) {
         o.finish(p, status, bytes);
     }
 }
@@ -234,7 +244,7 @@ impl Obs {
 impl Drop for Pending {
     /// No longer in flight, answered or not (its connection gone).
     fn drop(&mut self) {
-        if let Some(m) = OBS.get().and_then(|o| o.metrics.as_ref()) {
+        if let Some(m) = obs().and_then(|o| o.metrics.as_ref()) {
             m.in_flight.fetch_sub(1, Relaxed);
         }
     }
@@ -385,7 +395,7 @@ fn rss() -> Option<u64> {
 /// path is the app's, a 404): the metrics for `Authorization: Bearer
 /// <key>`, a 401 for anything else.
 pub(crate) fn serve(cx: &Cx, reply: &mut Reply) -> bool {
-    let Some((o, m)) = OBS.get().and_then(|o| Some((o, o.metrics.as_ref()?))) else {
+    let Some((o, m)) = obs().and_then(|o| Some((o, o.metrics.as_ref()?))) else {
         return false;
     };
     if !crate::secure_eq(cx.bearer().unwrap_or(""), &m.key) {
