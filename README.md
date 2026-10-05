@@ -52,7 +52,7 @@ The `---` block is Rust that runs for each request, and `{name}` is rendered on 
 
 - **Fast.** A route pays only for the features it uses, and a change that touches the request path is checked by an instructions-per-request A/B before it lands.
 - **Cheap to write.** The small test app takes 432 tokens in Wisp against 1,043 in Nuxt, 2.4x to 4.3x across the stacks measured. See [Tokens](https://wispweb.dev/docs/tokens/) for the method and the apps measured.
-- **Durable.** Fast paths are proven at startup and fall back, and nothing after startup panics. There is no `unsafe` outside the Linux I/O drivers and the edge exports.
+- **Durable.** Fast paths are proven at startup and fall back, and a panic in a handler is caught and answered as a 500. There is no `unsafe` outside the Linux I/O drivers and the edge exports.
 - **Flexible.** Forms, JSON APIs, uploads, signed cookies, hooks and components. Wisp gives you tools, not an auth or database layer.
 
 ## What You Get
