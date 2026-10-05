@@ -16,8 +16,6 @@ LABEL = {
     "hono-node": "Hono on Node (TFB source)", "hono-bun": "Hono on Bun (not TFB source)",
     "sveltekit": "SvelteKit (not TFB)", "next": "Next.js (not TFB)", "nuxt": "Nuxt (not TFB)",
 }
-# Why a contender's runs at one level all completed no request, from the run notes in RESULTS.md.
-FAILED = {("next", "plaintext"): "No valid result: no pipelined response completed (heap raised to 8 GB, still none)"}
 HIGH_LEVEL = 16384
 LIMITED = "load-generator limited (local port range)"
 UNIT = {"us": 1e-3, "ms": 1.0, "s": 1000.0, "m": 60000.0}
@@ -106,7 +104,7 @@ def main():
     for w, lv in summary.items():
         for lvl, rows in lv.items():
             for c, r in rows.items():
-                r["failed"] = (FAILED.get((c, w), "no request completed") if r["rps_max"] == 0
+                r["failed"] = ("no request completed" if r["rps_max"] == 0
                                else "every run stalled" if r["stalled"] == r["runs_total"] else None)
             for r in rows.values():
                 r["limited"] = limited(lvl, r)
@@ -158,7 +156,7 @@ def main():
                 if r["limited"]:
                     err.append(LIMITED + ", a measurement caveat, not a server failure")
                 if r["failed"]:
-                    cells = [rank, LABEL[c], (r['failed'] if r['failed'].startswith("No valid") else f"Failed ({r['failed']})"), "-", "-", "-", "-",
+                    cells = [rank, LABEL[c], f"Failed ({r['failed']})", "-", "-", "-", "-",
                              ', '.join(err) or '-', f"{r['steal_pct_max']:.1f}", "-"]
                 else:
                     cells = [rank, LABEL[c], f(r['rps_median']), f(r['rps_min']), f(r['rps_max']),

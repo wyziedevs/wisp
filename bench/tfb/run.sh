@@ -62,7 +62,7 @@ start() {
     hono-node) launch "$ROOT/hono-node" "$log" env NODE_ENV=production $pin npm start ;;
     hono-bun)  launch "$ROOT/hono-bun" "$log" env PORT=$p $pin bash -c 'for i in $(seq $(nproc)); do bun server.js & done; wait' ;;
     sveltekit) launch "$ROOT/sveltekit" "$log" env NODE_ENV=production PORT=$p $pin node cluster.js ;;
-    next)      launch "$ROOT/next" "$log" env NODE_ENV=production NODE_OPTIONS=--max-old-space-size=${NEXT_HEAP_MB:-8192} PORT=$p HOSTNAME=0.0.0.0 $pin node cluster.js ;;
+    next)      launch "$ROOT/next" "$log" env NODE_ENV=production PORT=$p HOSTNAME=0.0.0.0 $pin node cluster.js ;;
     nuxt)      launch "$ROOT/nuxt" "$log" env NODE_ENV=production PORT=$p HOST=0.0.0.0 $pin node cluster.js ;;
   esac
   for i in $(seq 150); do curl -s -o /dev/null "http://$HOST:$p/plaintext" && return 0; sleep 0.2; done
@@ -148,11 +148,28 @@ wrk_once() {
   } >"$out" 2>&1
 }
 
+# Same rule for every contender: no run starts while the server still burns CPU on the last one.
+# wrk closes its sockets at the end of a run, but a server may keep executing the requests already
+# pipelined on them (Node's http does: after the 16384 x 16 warmup Next.js stayed at 100% of both
+# cores for ~180 s with no client, so every run in that window counted 0). Waits until the server's
+# process group uses < 5% of a core over 2 s, at most DRAIN_MAX s, and notes the wait in the run file.
+DRAIN_MAX=${DRAIN_MAX:-600}
+drain() {
+  local s0=$SECONDS a b
+  while [ $((SECONDS - s0)) -lt "$DRAIN_MAX" ]; do
+    a=$(group_ticks); sleep 2; b=$(group_ticks)
+    [ $((b - a)) -lt 10 ] && { DRAINED=$((SECONDS - s0)); return 0; }
+  done
+  DRAINED="over $DRAIN_MAX (still busy)"
+}
+
 # A run another tenant of this VM disturbed (foreign CPU > 5%) is kept as <out>.tainted<N> and repeated.
 wrk_run() {
   local out=$4 n f
   for n in 1 2 3 4; do
+    drain
     wrk_once "$@"
+    sed -i "1i # drain-before: ${DRAINED}s" "$out"
     f=$(sed -n 's/^# foreign-pct: \([0-9.]*\).*/\1/p' "$out")
     awk -v f="${f:-0}" 'BEGIN{exit !(f > 5)}' || return 0
     [ $n = 4 ] && { echo "# NOTE: foreign CPU stayed above 5% on every attempt" >>"$out"; return 0; }

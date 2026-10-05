@@ -36,6 +36,9 @@ class Parse(unittest.TestCase):
     def test_dead_after(self):
         self.assertTrue(run(OK + "# alive-after: no\n")["stalled"])
         self.assertFalse(run(OK + "# alive-after: yes\n")["stalled"])
+    def test_no_hand_written_failures(self):
+        # A failed cell comes from the data ("no request completed"), never a per-contender note.
+        self.assertFalse(hasattr(aggregate, "FAILED"))
     def test_no_latency(self):
         self.assertIsNone(run("Requests/sec: 5\n"))
 
