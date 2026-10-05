@@ -4,10 +4,11 @@
 use crate::json::{self, Json};
 
 /// `text` (a JSON object) with what it leaves out filled in: `start_url`
-/// `/`, `display` `standalone`, `name` and `short_name` from each other,
-/// and `icons` (`static/`'s, as JSON) when it has none. Wisp's own
+/// `/` (under `base`, the path the app is served under: `/app/`),
+/// `display` `standalone`, `name` and `short_name` from each other, and
+/// `icons` (`static/`'s, as JSON) when it has none. Wisp's own
 /// `offline` member is taken out: the second value is whether it was true.
-pub fn complete(text: &str, icons: &str) -> Result<(String, bool), String> {
+pub fn complete(text: &str, icons: &str, base: &str) -> Result<(String, bool), String> {
     let Json::Obj(mut members) = json::parse(text)? else {
         return Err("a web app manifest is a JSON object: {\"name\": \"Notes\"}".into());
     };
@@ -25,9 +26,12 @@ pub fn complete(text: &str, icons: &str) -> Result<(String, bool), String> {
             members.push((k.into(), Json::Str(v)));
         }
     }
-    for (k, v) in [("start_url", "/"), ("display", "standalone")] {
+    for (k, v) in [
+        ("start_url", format!("{base}/")),
+        ("display", "standalone".into()),
+    ] {
         if !has(&members, k) {
-            members.push((k.into(), Json::Str(v.into())));
+            members.push((k.into(), Json::Str(v)));
         }
     }
     if !has(&members, "icons") && icons != "[]" {
@@ -43,7 +47,7 @@ mod tests {
     #[test]
     fn fills_in_what_is_left_out() {
         let icons = r#"[{"src":"/icon-192.png","sizes":"192x192","type":"image/png"}]"#;
-        let (m, offline) = complete(r#"{"name": "Notes", "offline": true}"#, icons).unwrap();
+        let (m, offline) = complete(r#"{"name": "Notes", "offline": true}"#, icons, "").unwrap();
         assert!(offline);
         assert_eq!(
             m,
@@ -55,6 +59,7 @@ mod tests {
         let (m, offline) = complete(
             r#"{"short_name": "N", "display": "browser", "icons": [], "offline": false}"#,
             icons,
+            "",
         )
         .unwrap();
         assert!(!offline);
@@ -62,7 +67,14 @@ mod tests {
             m,
             r#"{"short_name":"N","display":"browser","icons":[],"name":"N","start_url":"/"}"#
         );
-        assert!(complete("[1]", "[]").unwrap_err().contains("a JSON object"));
-        assert!(complete("{", "[]").is_err());
+        // Under a base path the app starts at its own root.
+        let (m, _) = complete("{}", "[]", "/app").unwrap();
+        assert_eq!(m, r#"{"start_url":"/app/","display":"standalone"}"#);
+        assert!(
+            complete("[1]", "[]", "")
+                .unwrap_err()
+                .contains("a JSON object")
+        );
+        assert!(complete("{", "[]", "").is_err());
     }
 }

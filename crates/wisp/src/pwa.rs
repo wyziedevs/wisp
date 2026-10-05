@@ -17,7 +17,7 @@ static MANIFEST: OnceLock<String> = OnceLock::new();
 pub fn app_manifest(json: &str) -> crate::Result {
     let icons = ICONS.get().copied().unwrap_or("[]");
     let fail = |e: String| Error::new(500, format!("wisp::app_manifest: {e}"));
-    match wisp_shared::manifest::complete(json, icons) {
+    match wisp_shared::manifest::complete(json, icons, crate::protocol::BASE) {
         Ok((_, true)) => Err(fail(
             "`\"offline\": true` goes in src/manifest.json, which the build reads".into(),
         )),

@@ -6,7 +6,7 @@
 //! An app with neither gets nothing: no tag, no route, no byte.
 
 use crate::image;
-use crate::protocol::{IMAGES, MANIFEST_PATH};
+use crate::protocol::{IMAGES, MANIFEST_PATH, SERVICE_WORKER_PATH};
 use crate::{fnv1a, js, json_str};
 use std::path::Path;
 
@@ -34,20 +34,25 @@ pub(crate) struct Input<'a> {
     pub runtime_manifest: bool,
     /// The `PUBLIC_*` variables, for the worker's `env.PUBLIC_X`.
     pub env: &'a [(String, String)],
+    /// The path the app is served under (`WISP_BASE`), or "".
+    pub base: &'a str,
 }
 
-/// The script every page runs to register the worker.
-const REGISTER: &str = "navigator.serviceWorker?.register(\"/service-worker.js\")";
+/// The script every page runs to register the worker, served under `base`.
+fn register(base: &str) -> String {
+    format!("navigator.serviceWorker?.register(\"{base}{SERVICE_WORKER_PATH}\")")
+}
 
 /// Wisp's own service worker, after `build`, `files` and `version`: the
 /// shell (`/`), the browser files and `static/` kept at install; a file of
 /// `build` from what was kept; a page from the network, kept, and offline
 /// the kept page or a short offline page; anything else from the network,
-/// or what was kept.
+/// or what was kept. `root` is the app's front page (`/`, under a base path
+/// `/app/`).
 const OFFLINE_WORKER: &str = r#"const cache = 'wisp-' + version;
 const offline = '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Offline</title><p style="font:1.1rem system-ui;text-align:center;margin-top:30vh">You are offline. This page loads when you are back.</p>';
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(cache).then((c) => Promise.allSettled(['/', ...build, ...files].map((u) => c.add(u)))).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(cache).then((c) => Promise.allSettled([root, ...build, ...files].map((u) => c.add(u)))).then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', (e) => {
   e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k.startsWith('wisp-') && k != cache).map((k) => caches.delete(k)))).then(() => self.clients.claim()));
@@ -55,7 +60,7 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   const r = e.request;
   const url = new URL(r.url);
-  if (r.method != 'GET' || url.origin != location.origin || url.pathname.startsWith('/_wisp/') || r.headers.get('accept') == 'text/event-stream') return;
+  if (r.method != 'GET' || url.origin != location.origin || url.pathname.startsWith(root + '_wisp/') || r.headers.get('accept') == 'text/event-stream') return;
   const page = r.mode == 'navigate' || (r.headers.get('accept') || '').includes('text/html');
   e.respondWith(caches.open(cache).then(async (c) => {
     const kept = await c.match(r);
@@ -77,10 +82,10 @@ self.addEventListener('fetch', (e) => {
 pub(crate) fn build(i: &Input) -> Result<Option<Pwa>, String> {
     let src = i.root.join("src");
     let manifest_src = crate::read_source(&src.join("manifest.json")).ok();
-    let icons = icons(i.root);
+    let icons = icons(i.root, i.base);
     let (manifest, offline) = match &manifest_src {
         Some(text) => {
-            let (m, offline) = wisp_shared::manifest::complete(text, &icons)
+            let (m, offline) = wisp_shared::manifest::complete(text, &icons, i.base)
                 .map_err(|e| format!("src/manifest.json: {e}"))?;
             (Some(m), offline)
         }
@@ -124,7 +129,8 @@ pub(crate) fn build(i: &Input) -> Result<Option<Pwa>, String> {
         None if offline => {
             let (build, files, version) = lists(OFFLINE_WORKER);
             format!(
-                "// Wisp's offline service worker.\nconst build = {build}, files = {files}, version = {version};\n{OFFLINE_WORKER}"
+                "// Wisp's offline service worker.\nconst build = {build}, files = {files}, version = {version}, root = {};\n{OFFLINE_WORKER}",
+                json_str(&format!("{}/", i.base))
             )
         }
         None => String::new(),
@@ -134,11 +140,15 @@ pub(crate) fn build(i: &Input) -> Result<Option<Pwa>, String> {
     }
     let mut head = String::new();
     if manifest.as_deref() != Some("") {
-        head.push_str(&format!("<link rel=\"manifest\" href=\"{MANIFEST_PATH}\">"));
+        head.push_str(&format!(
+            "<link rel=\"manifest\" href=\"{}{MANIFEST_PATH}\">",
+            i.base
+        ));
     }
     let hash = (!worker.is_empty()).then(|| {
-        head.push_str(&format!("<script>{REGISTER}</script>"));
-        crate::csp::hash(REGISTER)
+        let register = register(i.base);
+        head.push_str(&format!("<script>{register}</script>"));
+        crate::csp::hash(&register)
     });
     Ok(Some(Pwa {
         worker,
@@ -235,7 +245,7 @@ fn worker(
 /// its size from its header, each `static/icon*.svg` of any size, and the
 /// 192 and 512 px WebP widths `wisp build` wrote of `static/icon.png`
 /// (with cwebp, as for images; when they are there).
-fn icons(root: &Path) -> String {
+fn icons(root: &Path, base: &str) -> String {
     let dir = root.join("static");
     let mut names: Vec<String> = (std::fs::read_dir(&dir).into_iter().flatten())
         .flatten()
@@ -251,7 +261,7 @@ fn icons(root: &Path) -> String {
     };
     let mut out = Vec::new();
     for n in names {
-        let src = format!("/{}", crate::codegen::encode_path(&n));
+        let src = format!("{base}/{}", crate::codegen::encode_path(&n));
         if n.ends_with(".svg") {
             out.push(icon(&src, "any", "image/svg+xml"));
         } else if let Some(s) = std::fs::read(dir.join(&n))
@@ -354,6 +364,7 @@ mod tests {
             files: vec![("/a.txt".into(), "ab".into())],
             runtime_manifest,
             env: &[],
+            base: "",
         });
         let _ = std::fs::remove_dir_all(&root);
         out
@@ -378,11 +389,12 @@ mod tests {
         assert_eq!(
             p.head,
             format!(
-                "<link rel=\"manifest\" href=\"/manifest.webmanifest\"><script>{REGISTER}</script>"
+                "<link rel=\"manifest\" href=\"/manifest.webmanifest\"><script>{}</script>",
+                register("")
             )
         );
-        assert_eq!(p.hash, Some(crate::csp::hash(REGISTER)));
-        assert!(REGISTER.contains(&format!("\"{SERVICE_WORKER_PATH}\"")));
+        assert_eq!(p.hash, Some(crate::csp::hash(&register(""))));
+        assert!(register("").contains(&format!("\"{SERVICE_WORKER_PATH}\"")));
         assert!(!p.manifest.unwrap().contains("offline"));
     }
 
@@ -398,7 +410,7 @@ mod tests {
         .unwrap();
         assert!(p.worker.starts_with("const version = \""), "{}", p.worker);
         assert_eq!(p.manifest.as_deref(), Some(""));
-        assert_eq!(p.head, format!("<script>{REGISTER}</script>"));
+        assert_eq!(p.head, format!("<script>{}</script>", register("")));
         // `wisp::app_manifest` in `init`: linked, made at startup.
         let p = app(&[], true).unwrap();
         assert_eq!(p.manifest, None);
@@ -407,6 +419,40 @@ mod tests {
             p.head,
             "<link rel=\"manifest\" href=\"/manifest.webmanifest\">"
         );
+    }
+
+    /// Under a base path every URL the app writes is under it: the
+    /// manifest, the worker's registration, the icons, the front page.
+    #[test]
+    fn a_base_path_goes_before_every_url() {
+        let root = std::env::temp_dir().join(format!("wisp-pwa-base-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("static")).unwrap();
+        std::fs::write(
+            root.join("src/manifest.json"),
+            r#"{"name":"N","offline":true}"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("static/icon.svg"), "<svg/>").unwrap();
+        let out = build(&Input {
+            root: &root,
+            build: vec![],
+            files: vec![],
+            runtime_manifest: false,
+            env: &[],
+            base: "/app",
+        });
+        let _ = std::fs::remove_dir_all(&root);
+        let p = out.unwrap().unwrap();
+        assert_eq!(
+            p.head,
+            "<link rel=\"manifest\" href=\"/app/manifest.webmanifest\"><script>navigator.serviceWorker?.register(\"/app/service-worker.js\")</script>"
+        );
+        assert_eq!(p.hash, Some(crate::csp::hash(&register("/app"))));
+        let m = p.manifest.unwrap();
+        assert!(m.contains("\"start_url\":\"/app/\""), "{m}");
+        assert!(m.contains("\"src\":\"/app/icon.svg\""), "{m}");
+        assert!(p.worker.contains("root = \"/app/\""), "{}", p.worker);
     }
 
     #[test]
@@ -439,7 +485,7 @@ mod tests {
             std::fs::create_dir_all(f.parent().unwrap()).unwrap();
             std::fs::write(f, bytes).unwrap();
         }
-        let got = icons(&root);
+        let got = icons(&root, "");
         let _ = std::fs::remove_dir_all(&root);
         assert_eq!(
             got,

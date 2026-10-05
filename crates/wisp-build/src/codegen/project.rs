@@ -1957,6 +1957,7 @@ pub const MORE: ::wisp::rt::CacheMore = ::wisp::rt::CacheMore::NONE;"
             files,
             runtime_manifest: crate::read_source(&hooks).is_ok_and(|s| s.contains("app_manifest(")),
             env: &self.env,
+            base: crate::BASE,
         })
     }
 
