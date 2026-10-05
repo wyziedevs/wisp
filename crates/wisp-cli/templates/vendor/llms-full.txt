@@ -1175,7 +1175,7 @@ Plaintext, pipelined, requests per second (median of 3), by connections:
 
 <Levels work="plaintext" />
 
-Rows whose min-max ranges overlap are ties. 256: Fastify and Express; Hono (Node), SvelteKit and Hono (Bun). 1024: Axum and Actix Web; Express and Hono (Node). 4096: Hono (Node) and Express. 16384: <Stat k="failed.plaintext.16384" /> failed, and Wisp's three stalled runs are under investigation, so no Wisp rank is drawn there.
+Rows whose min-max ranges overlap are ties. 256: Fastify and Express; Hono on Node.js, SvelteKit and Hono on Bun. 1024: Axum and Actix Web; Express and Hono on Node.js. 4096: Hono on Node.js and Express. 16384: <Stat k="failed.plaintext.16384" /> failed, and Wisp's three stalled runs are under investigation, so no Wisp rank is drawn there.
 
 Next.js completed no pipelined plaintext response at any level, and raising its heap to 8 GB changed nothing, so the cause is not memory; the runs were indicative only.
 
@@ -1183,7 +1183,7 @@ JSON, requests per second (median of 3), by connections:
 
 <Levels work="json" />
 
-Rows whose min-max ranges overlap are ties. 16: Actix Web and Axum, Axum and Wisp; Fastify, Hono (Node) and Express. 32: Wisp with Actix Web and with Axum; Express, Hono (Node) and SvelteKit. 64: Wisp, Actix Web and Axum; SvelteKit and Hono (Node). 128: Wisp and Actix Web. 256: Fastify and Express. 512: Wisp and Actix Web; Axum and Hono (Bun).
+Rows whose min-max ranges overlap are ties. 16: Actix Web and Axum, Axum and Wisp; Fastify, Hono on Node.js and Express. 32: Wisp with Actix Web and with Axum; Express, Hono on Node.js and SvelteKit. 64: Wisp, Actix Web and Axum; SvelteKit and Hono on Node.js. 128: Wisp and Actix Web. 256: Fastify and Express. 512: Wisp and Actix Web; Axum and Hono on Bun.
 
 Earlier run (2026-09-28, other Linux VPS, 64 connections, plaintext and fortunes, CPU per request): [`bench/README.md`](https://github.com/wyziedevs/wisp/blob/main/bench/README.md). A later rerun on a CPU-capped VPS (about 75% steal) was invalid and is not published, so this site claims no current Linux ranking; rank tables are pending a valid run. Instructions per request (callgrind, valid on any host load): `GET /` 1572, `GET /user/0` 2310, `POST /user` 1773 at d72eee5; 1585, 2323 and 1789 after the chunked fix.
 
@@ -2487,7 +2487,7 @@ Agents (`wisp mcp`, `wisp update-docs`) and editors (`wisp lsp`): [AI agents and
 
 One std-only process. `wisp dev [--port <n> | --port=<n> | -p <n>]`; anything else is an error with the usage.
 
-- **Watching.** Polls mtimes of `src/`, `static/`, `Cargo.toml`, `build.rs`, `package.json` and `postcss.config.*` every 50 ms (no `notify`). Editors' swap, backup and lock files are ignored; a burst of changes settles for at most a second.
+- **Watching.** Polls mtimes of `src/`, `static/`, `Cargo.toml`, `build.rs`, `package.json` and `postcss.config.*` every 50 ms (no `notify`). Dot folders (except `static/.well-known`), `target` and `node_modules` are skipped; top-level files are read from one folder listing, symlinks followed. Editors' swap, backup and lock files are ignored; a file settles once it is quiet for 25 ms, and a burst settles for at most a second. Only a modified template swaps in; a template added, removed or renamed, or any `.rs` or `Cargo.toml` change, is a compile.
 - **Port.** The app gets `HOST=127.0.0.1` unless `HOST` is set; the printed address is the one shown and used for hot swaps (port 0 works). A port in use moves the first start to the next free one, up to 20 more (the app binds it itself, `WISP_PORT_TRIES`, so nothing can take it between), with a line saying so. `wisp build` servers never move.
 - **Build and restart.** Builds with `cargo build`, copies the exe to `.wisp/run/` (so the next build can overwrite the original while the old server serves), restarts it. Ready when the app prints its `listening on` line: the CLI reads the app's stdout rather than polling (a refused connect takes 2 s on Windows). Output is read as bytes until the pipe closes, so a non-UTF-8 line never cuts the app off.
 - **Children die with the CLI.** The app's stdin is a pipe the CLI holds; when it closes (however `wisp dev` ends, even `kill -9`) the app exits (`exit_with_parent`), freeing the port. A CSS watcher runs under `wisp __child <exe> <args...>`, which kills the tool then.

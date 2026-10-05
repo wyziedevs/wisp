@@ -722,7 +722,12 @@ fn scan(root: &Path) -> Snapshot {
             if !top.iter().chain(&css::POSTCSS_CONFIGS).any(|f| *f == rel) {
                 continue;
             }
-            if let Ok(meta) = e.metadata()
+            // A listing describes a symlink itself: follow it, as the build does.
+            let meta = match e.file_type() {
+                Ok(t) if t.is_symlink() => fs::metadata(e.path()),
+                _ => e.metadata(),
+            };
+            if let Ok(meta) = meta
                 && meta.is_file()
                 && let Ok(m) = meta.modified()
             {
@@ -747,8 +752,9 @@ fn scratch(name: &str) -> bool {
 
 /// A folder never part of the app's source (dot folders, build output,
 /// npm packages): skipped so a 50 ms poll does not walk thousands of files.
+/// `.well-known` is served from `static/`, so it is watched.
 fn skip_dir(name: &str) -> bool {
-    name.starts_with('.') || name == "target" || name == "node_modules"
+    (name.starts_with('.') && name != ".well-known") || name == "target" || name == "node_modules"
 }
 
 fn diff(old: &Snapshot, new: &Snapshot) -> Vec<(String, Change)> {
@@ -824,6 +830,28 @@ mod tests {
             ("src/routes/+page.rs", Change::Modified),
         ]);
         assert!(plan(&mixed, &style).rebuild);
+        // The shell swaps like a template; added, it is a compile.
+        let shell = c(&[("src/app.html", Change::Modified)]);
+        assert_eq!(plan(&shell, &style).templates, vec!["src/app.html"]);
+        assert!(plan(&c(&[("src/app.html", Change::Added)]), &style).rebuild);
+        // A CSS tool's output swaps; its config is the tool's to read.
+        assert!(plan(&c(&[(".wisp/app.css", Change::Modified)]), &style).css);
+        let cfg = c(&[("postcss.config.js", Change::Modified)]);
+        assert_eq!(plan(&cfg, &style), Plan::default());
+        for f in ["Cargo.toml", ".env", "build.rs", "src/lib/x.rs"] {
+            assert!(plan(&c(&[(f, Change::Modified)]), &style).rebuild, "{f}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scan_follows_a_symlinked_top_file() {
+        let root = temp("link");
+        fs::write(root.join("real.toml"), "x").unwrap();
+        std::os::unix::fs::symlink(root.join("real.toml"), root.join("Cargo.toml")).unwrap();
+        let files = scan(&root);
+        let _ = fs::remove_dir_all(&root);
+        assert!(files.contains_key("Cargo.toml"));
     }
 
     #[test]
@@ -878,6 +906,7 @@ mod tests {
             "src/node_modules/x",
             "src/target",
             "static/.cache",
+            "static/.well-known",
         ] {
             fs::create_dir_all(root.join(d)).unwrap();
         }
@@ -886,6 +915,7 @@ mod tests {
             "src/node_modules/x/a.js",
             "src/target/b",
             "static/.cache/c",
+            "static/.well-known/security.txt",
         ] {
             fs::write(root.join(f), "x").unwrap();
         }
@@ -909,7 +939,8 @@ mod tests {
                 ".env",
                 ".wisp/app.css",
                 "Cargo.toml",
-                "src/routes/+page.wisp"
+                "src/routes/+page.wisp",
+                "static/.well-known/security.txt"
             ]
         );
     }
