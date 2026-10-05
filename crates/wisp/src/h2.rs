@@ -282,8 +282,9 @@ impl Session {
                     return Err(Conn(Code::Protocol));
                 }
                 let data = unpad(flags, p)?;
-                // Flow control counts the padding too.
-                if p.is_empty() && flags & END_STREAM == 0 {
+                // Flow control counts the padding too. A frame of padding
+                // alone carries nothing either: it spends the budget.
+                if data.is_empty() && flags & END_STREAM == 0 {
                     self.spend()?;
                 }
                 // More than the window we gave is an error (RFC 9113 6.9);
@@ -1911,6 +1912,14 @@ mod tests {
         let mut input = vec![frame(HEADERS, 0, 1, &get("/"))];
         for _ in 0..100 {
             input.push(frame(CONTINUATION, 0, 1, &[0x40, 1, b'a', 1, b'b']));
+        }
+        let (_, f) = run(&input);
+        assert_eq!(goaway_code(&f), Some(Code::Calm as u32));
+        // Empty DATA frames, padded so the payload is not empty: still a
+        // flood of frames that carry nothing.
+        let mut input = vec![frame(HEADERS, END_HEADERS, 1, &get("/"))];
+        for _ in 0..2000 {
+            input.push(frame(DATA, PADDED, 1, &[0]));
         }
         let (_, f) = run(&input);
         assert_eq!(goaway_code(&f), Some(Code::Calm as u32));
