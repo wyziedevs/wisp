@@ -21,7 +21,7 @@ use crate::Error;
 use crate::Result;
 use std::sync::RwLock;
 #[cfg(not(target_arch = "wasm32"))]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// A place durable tables keep their rows in: a database, a key-value store.
 /// Rows go in and out as the JSON of their value; row 0, when there is
@@ -207,6 +207,9 @@ pub(crate) mod files {
     struct Log {
         table: String,
         path: PathBuf,
+        /// This log's compaction file: one name per log, so a compaction of
+        /// a log read again never writes into the new log's.
+        tmp: PathBuf,
         state: Shared<State>,
     }
 
@@ -352,8 +355,8 @@ pub(crate) mod files {
             USED.store(true, Ordering::Relaxed);
             fs::create_dir_all(&self.dir).map_err(|e| io(table, "make its folder", e))?;
             let path = self.dir.join(format!("{table}.log"));
-            // A compaction the process did not finish: the log is still whole.
-            let _ = fs::remove_file(path.with_extension("log.tmp"));
+            // Compactions the process did not finish: the log is still whole.
+            clear_tmps(&self.dir, table);
             let text = match fs::read(&path) {
                 Ok(t) => t,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
@@ -381,6 +384,11 @@ pub(crate) mod files {
             }
             let log = Log {
                 table: table.to_string(),
+                tmp: {
+                    static N: AtomicU64 = AtomicU64::new(0);
+                    let n = N.fetch_add(1, Ordering::Relaxed);
+                    path.with_extension(format!("log.{n}.tmp"))
+                },
                 path,
                 state: Shared::new(State {
                     file: Arc::new(file),
@@ -502,6 +510,32 @@ pub(crate) mod files {
         Ok(file)
     }
 
+    /// Removes `table`'s compaction files (`<table>.log.<n>.tmp`, and the
+    /// older `<table>.log.tmp`).
+    fn clear_tmps(dir: &Path, table: &str) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        let head = format!("{table}.log.");
+        for e in entries.flatten() {
+            let name = e.file_name();
+            let Some(mid) = name
+                .to_str()
+                .and_then(|n| n.strip_prefix(head.as_str()))
+                .and_then(|n| n.strip_suffix("tmp"))
+            else {
+                continue;
+            };
+            if mid.is_empty()
+                || mid
+                    .strip_suffix('.')
+                    .is_some_and(|d| d.bytes().all(|b| b.is_ascii_digit()))
+            {
+                let _ = fs::remove_file(e.path());
+            }
+        }
+    }
+
     fn line_len(id: u64, json: usize) -> u64 {
         (id.to_string().len() + json + 2) as u64
     }
@@ -512,16 +546,16 @@ pub(crate) mod files {
         /// written meanwhile are copied over, under the lock, as it swaps.
         fn compact(&self) {
             let size = self.state.lock().size;
-            let tmp = self.path.with_extension("log.tmp");
-            let swapped = self.rewrite(size, &tmp);
+            let tmp = &self.tmp;
+            let swapped = self.rewrite(size, tmp);
             let mut s = self.state.lock();
             s.compacting = false;
-            match swapped.and_then(|_| self.swap(&mut s, size, &tmp)) {
+            match swapped.and_then(|_| self.swap(&mut s, size, tmp)) {
                 Ok(()) => {}
                 Err(e) => {
                     s.retry_at = 2 * s.size;
                     drop(s);
-                    let _ = fs::remove_file(&tmp);
+                    let _ = fs::remove_file(tmp);
                     crate::http::log(format_args!(
                         "wisp: table `{}`: could not compact its log: {e}",
                         self.table
@@ -617,11 +651,13 @@ pub(crate) mod files {
             fs::create_dir_all(&d).unwrap();
             fs::write(d.join("t.log"), "1\t\"a\"\n2\t\"b\"\n3\t\"c").unwrap();
             fs::write(d.join("t.log.tmp"), "junk").unwrap();
+            fs::write(d.join("t.log.7.tmp"), "junk").unwrap();
             let files = Files::new(d.clone(), Sync::Off);
             let mut rows = files.load("t").unwrap();
             rows.sort();
             assert_eq!(rows, [(1, "\"a\"".into()), (2, "\"b\"".into())]);
             assert!(!d.join("t.log.tmp").exists());
+            assert!(!d.join("t.log.7.tmp").exists());
             files.save("t", 4, Some("\"d\"")).unwrap();
             assert_eq!(
                 fs::read_to_string(d.join("t.log")).unwrap(),
@@ -707,7 +743,7 @@ pub(crate) mod files {
             // A compaction under way as the table is read again (a 500).
             let old = files.logs.lock()["r"].clone();
             let size = old.state.lock().size;
-            let tmp = old.path.with_extension("log.tmp");
+            let tmp = old.tmp.clone();
             files.load("r").unwrap();
             old.rewrite(size, &tmp).unwrap();
             files.save("r", 2, Some("\"b\"")).unwrap();
@@ -716,6 +752,30 @@ pub(crate) mod files {
             let mut rows = Files::new(d.clone(), Sync::Off).load("r").unwrap();
             rows.sort();
             assert_eq!(rows.iter().map(|r| r.0).collect::<Vec<_>>(), [1, 2, 3]);
+            let _ = fs::remove_dir_all(d);
+        }
+
+        #[test]
+        fn two_compactions_of_one_table_never_share_a_file() {
+            let d = dir("twotmp");
+            let files = Files::new(d.clone(), Sync::Off);
+            files.load("t").unwrap();
+            files.save("t", 1, Some("\"a\"")).unwrap();
+            let old = files.logs.lock()["t"].clone();
+            let old_size = old.state.lock().size;
+            files.load("t").unwrap();
+            files.save("t", 2, Some("\"b\"")).unwrap();
+            let new = files.logs.lock()["t"].clone();
+            let size = new.state.lock().size;
+            // The new log's compaction writes its file, then the old one's,
+            // still running, writes its own: the new swap keeps row 2.
+            new.rewrite(size, &new.tmp).unwrap();
+            old.rewrite(old_size, &old.tmp).unwrap();
+            new.swap(&mut new.state.lock(), size, &new.tmp).unwrap();
+            assert!(old.swap(&mut old.state.lock(), old_size, &old.tmp).is_err());
+            let mut rows = Files::new(d.clone(), Sync::Off).load("t").unwrap();
+            rows.sort();
+            assert_eq!(rows.iter().map(|r| r.0).collect::<Vec<_>>(), [1, 2]);
             let _ = fs::remove_dir_all(d);
         }
 
