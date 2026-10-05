@@ -185,7 +185,7 @@ function webSink(c, h, body) {
     return c.resolve ? c.resolve(r) : (c.res = r);
   }
   const empty = bare(h.status, c.empty, body);
-  const text = !empty && h.text && typeof body !== 'string' ? asText(body) : body;
+  const text = !empty && h.text ? asText(body) : body;
   const r = h.plain && !empty && typeof text === 'string' ? new Response(text) : new Response(empty ? null : text, (h.init ??= init(h)));
   if (c.resolve) c.resolve(r);
   else c.res = r;
@@ -196,18 +196,6 @@ function bare(status, head, body) {
   const empty = head || status < 200 || status === 204 || status === 205 || status === 304;
   if (empty && body instanceof ReadableStream) body.cancel();
   return empty;
-}
-// A short ASCII body read here as a string (null when it is not ASCII or is
-// empty): quicker than a view and a TextDecoder on every host (Bun: a view of
-// the app's memory alone is 7% of its shim, a decode 3%).
-function short(m, p, n) {
-  let s = '';
-  for (let i = p; i < p + n; i++) {
-    const c = m[i];
-    if (c > 127) return null;
-    s += String.fromCharCode(c);
-  }
-  return s || null;
 }
 // A text body as a string: workerd makes a Response from a string in about
 // half the time it takes to copy the bytes out of the app's memory (bench/edge).
