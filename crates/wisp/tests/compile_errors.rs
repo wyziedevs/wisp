@@ -92,7 +92,7 @@ fn a_bad_derive_is_refused_where_it_is_written() {
         .replace('\\', "/");
     let manifest = format!(
         "[package]\nname = \"compile-errors\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n\
-         [dependencies]\nwisp = {{ path = \"{wisp}\" }}\n\n[workspace]\n"
+         [dependencies]\nwisp = {{ path = \"{wisp}\", package = \"wisp-web-rt\" }}\n\n[workspace]\n"
     );
     std::fs::write(dir.join("Cargo.toml"), manifest).unwrap();
     // The same versions as the workspace, so nothing is looked up.

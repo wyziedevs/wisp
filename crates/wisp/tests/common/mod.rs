@@ -233,7 +233,7 @@ async fn lab(cx: &mut Cx, out: &mut Out) -> Result<()> {
             text(out, format!("{first:?}|{second:?}"))
         }
         "/bearer" => {
-            // Cargo sets this for every test, so the key is known: "wisp".
+            // Cargo sets this for every test, so the key is known: the package name.
             cx.need_bearer("CARGO_PKG_NAME")?;
             text(out, cx.bearer().unwrap_or(""))
         }
