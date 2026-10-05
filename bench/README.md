@@ -229,7 +229,7 @@ suite at 64, 256 and 512 connections were invalid: the VPS provider's CPU cap
 left about 75% steal, so they are not published and no rank is claimed. What is
 valid on any host load is the instruction count per request (callgrind, the
 server's own code, no kernel): `GET /` 1572, `GET /user/0` 2310, `POST /user`
-1773 at d72eee5; 1585, 2323 and 1789 after the chunked-encoding fix. Rank tables
+1773 at d72eee5; 1585, 2323 and 1789 after the chunked-encoding fix (not rerun after cddf6ca or later runtime commits). Rank tables
 come back with a valid run, and will be generated from its data.
 
 The suite sends the same requests on the same routes at the same levels,
