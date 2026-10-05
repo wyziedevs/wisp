@@ -645,6 +645,10 @@ impl Cx {
 
     /// The TCP peer: the client, or the proxy in front of the app.
     pub fn peer(&self) -> SocketAddr {
+        #[cfg(target_arch = "wasm32")]
+        if let Some(at) = self.lazy.as_ref().and_then(|l| l.peer()) {
+            return at;
+        }
         self.wire.peer
     }
 
@@ -659,7 +663,7 @@ impl Cx {
             .client_ip_header
             .as_deref()
             .and_then(|h| self.proxy_ip(h));
-        from_proxy.unwrap_or(self.wire.peer.ip())
+        from_proxy.unwrap_or_else(|| self.peer().ip())
     }
 
     /// The last address in the last `header` line: the one the proxy

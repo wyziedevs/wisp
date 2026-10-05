@@ -146,6 +146,9 @@ pub(crate) struct Lazy {
     known: [OnceCell<Option<Box<str>>>; crate::cx::KNOWN],
     named: [OnceCell<Named>; NAMED],
     all: OnceCell<Vec<(Box<str>, Box<str>)>>,
+    /// The client's address, asked for once read: Bun's `requestIP` and
+    /// Deno's `remoteAddr` cost every request that never reads it.
+    peer: OnceCell<Option<SocketAddr>>,
     /// The route's guard ran (see [`guarded`]).
     guarded: Cell<bool>,
 }
@@ -157,6 +160,7 @@ impl Lazy {
             known: [const { OnceCell::new() }; crate::cx::KNOWN],
             named: [const { OnceCell::new() }; NAMED],
             all: OnceCell::new(),
+            peer: OnceCell::new(),
             guarded: Cell::new(false),
         }
     }
@@ -180,9 +184,20 @@ impl Lazy {
             .as_deref()
     }
 
-    /// Whether the request has read no header but those of `ok`.
+    /// The client's address the host gives as `:peer` (no header's name),
+    /// or `None` when it gave one in the request's first line.
+    pub(crate) fn peer(&self) -> Option<SocketAddr> {
+        *self.peer.get_or_init(|| {
+            let text = self.get(":peer")?;
+            let ip: std::net::IpAddr = text.parse().ok()?;
+            Some(SocketAddr::new(ip, 0))
+        })
+    }
+
+    /// Whether the request has read no header but those of `ok`, nor its peer.
     fn reads_only(&self, ok: &[crate::cx::Known]) -> bool {
         self.all.get().is_none()
+            && self.peer.get().is_none()
             && self.named.iter().all(|n| n.get().is_none())
             && (self.known.iter().enumerate())
                 .all(|(i, k)| k.get().is_none() || ok.iter().any(|&o| o as usize == i))

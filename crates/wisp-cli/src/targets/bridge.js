@@ -420,7 +420,7 @@ export function wisp(module, env = {}, sink, accept) {
             return done?.(r);
           }
           const h = hid === 0xffffffff ? parsed(dec.decode(m.subarray(hp, hp + hn))) : (x.heads[hid] ??= parsed(dec.decode(m.subarray(hp, hp + hn))));
-          sink(done, h, h.stream ? x.stream(id) : new Uint8Array(m.buffer, bp, bn));
+          sink(done, h, h.stream ? x.stream(id) : m.subarray(bp, bp + bn));
         },
         // 0 when the client is behind: the app waits for `wisp_pull`.
         chunk: (id, p, n) => {
@@ -454,9 +454,14 @@ export function wisp(module, env = {}, sink, accept) {
         // written to `out` if it fits in `cap`; 2**32 - 1 for none.
         header: (id, np, nn, out, cap) => {
           let v = null;
-          try {
-            v = x.of(id)?.request?.headers.get(named(np, nn)) ?? null;
-          } catch {} // not a header's name
+          const c = x.of(id);
+          const name = named(np, nn);
+          // `:peer`, no header's name: the client's address, asked for once read.
+          if (name === ':peer') v = typeof c?.peer === 'function' ? c.peer() || null : null;
+          else
+            try {
+              v = c?.request?.headers.get(name) ?? null;
+            } catch {} // not a header's name
           return v === null ? 0xffffffff : give(v, out, cap);
         },
         headers: (id, out, cap) => {
@@ -664,8 +669,9 @@ export function wisp(module, env = {}, sink, accept) {
       }
     }
     const host = url.slice(s, at < 0 ? url.length : at);
-    const c = { res: null, resolve: null, empty: method === 'HEAD', fast: get && !path.includes('?') ? fast : null, path, probe, request, host, up, id: 0 };
-    enter(x, method, path, typeof peer === 'function' ? peer() : peer, c);
+    // A function `peer` is called only if the app reads the address (`:peer`).
+    const c = { res: null, resolve: null, empty: method === 'HEAD', fast: get && !path.includes('?') ? fast : null, path, probe, request, host, up, id: 0, peer };
+    enter(x, method, path, typeof peer === 'function' ? '' : peer, c);
     if (x.work) ctx?.waitUntil?.(x.idle());
     return c.res ?? new Promise((resolve) => (c.resolve = resolve));
   }
