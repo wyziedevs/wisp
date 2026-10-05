@@ -3,6 +3,7 @@
 //! `$OUT_DIR/wisp.rs` for `wisp::app!()` to include.
 
 mod a11y;
+mod client_lets;
 pub mod auto;
 mod codegen;
 mod config;
@@ -453,7 +454,8 @@ pub fn route_rust(r: &routes::Route) -> Result<[Option<(PathBuf, String)>; 2], S
 /// ```
 ///
 /// Both halves keep the file's lines: the Rust with the markup blanked, the
-/// markup with the block's lines left empty.
+/// markup with the block's lines left empty. A `let` of a literal that only
+/// the browser reads moves into the client script (see `client_lets`).
 pub(crate) fn split_front(src: &str) -> Result<(Option<String>, String), String> {
     let lines: Vec<&str> = src.split('\n').collect();
     let Some(open) = lines.iter().position(|l| !l.trim().is_empty()) else {
@@ -485,7 +487,9 @@ pub(crate) fn split_front(src: &str) -> Result<(Option<String>, String), String>
             .collect();
         kept.join("\n")
     };
-    Ok((Some(pick(true)), pick(false)))
+    let (mut rust, mut markup) = (pick(true), pick(false));
+    client_lets::fold(&mut rust, &mut markup, open, close);
+    Ok((Some(rust), markup))
 }
 
 /// Checks the whole project the way `run` does, without writing anything.

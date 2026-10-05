@@ -2527,7 +2527,7 @@ fn public_env_in_browser_code() {
 fn block_values_are_probed_for_types_in_dev_builds_only() {
     let files = [(
         "src/routes/+page.wisp",
-        "---\nlet n = 3;\nlet unread = 1;\n---\n<p>{:n}</p>",
+        "---\nlet n = 1 + 2;\nlet unread = 1;\n---\n<p>{:n}</p>",
     )];
     let dev = build("probe", &files, false).unwrap();
     // Only what the browser reads: `n`, not `unread`.
@@ -3512,4 +3512,68 @@ fn route_functions_have_distinct_valid_names() {
         );
     }
     assert_eq!(seen.len(), names.len(), "{routes}");
+}
+
+/// A `---` block's literal that only the browser reads compiles as the
+/// same `let` in the client script would: the server renders the literal,
+/// sends no value for it, and the browser module is the same code.
+#[test]
+fn header_literals_the_browser_reads_are_client_state() {
+    let render = |src: &str, name: &str| {
+        let c = build(name, &[("src/routes/+page.wisp", src)], true).unwrap();
+        let k = c.find("fn render(").unwrap();
+        let e = k + c[k..].find("\n    }\n").unwrap();
+        let body: String = c[k..e]
+            .lines()
+            .map(|l| l.split(" // ").next().unwrap().trim())
+            .collect();
+        let js = c
+            .lines()
+            .find(|l| l.contains("static __WISP_CLIENT"))
+            .unwrap();
+        let js = &js[js.find("source: ").unwrap()..js.find(", preload").unwrap()];
+        let js: String = js
+            .replace("\\n", "")
+            .replace("\n", "")
+            .replace([' ', ';'], "");
+        (body, js)
+    };
+    let markup = "<button on:click=\"count++\">{:count} {:on} {:who} {:list.length}</button>";
+    let header = render(
+        &format!(
+            "---\nlet count = 5;\nlet on = false;\nlet who = \"me\";\nlet list = vec![1, 2];\n---\n{markup}"
+        ),
+        "hl-header",
+    );
+    let script = render(
+        &format!(
+            "{markup}\n<script>let count = 5;let on = false;let who = \"me\";let list = [1, 2];</script>"
+        ),
+        "hl-script",
+    );
+    assert_eq!(header, script);
+    assert!(header.0.contains("::wisp::rt::Js(\"5\")"), "{}", header.0);
+    assert!(header.0.contains("__b.push_str(\"{}\")"), "{}", header.0);
+    assert!(
+        !header.0.contains("rt::json") && !header.0.contains("js_of"),
+        "{}",
+        header.0
+    );
+
+    // One the server renders too stays its value, sent as today.
+    let shown = render(
+        "---\nlet count = 5;\n---\n<p>{count}</p><button on:click=\"count++\">{:count}</button>",
+        "hl-shown",
+    );
+    assert!(
+        shown.0.contains("let count = 5;") && shown.0.contains("rt::json"),
+        "{}",
+        shown.0
+    );
+    // So does one the server computes.
+    let computed = render(
+        "---\nlet count = cx.query_or(\"n\", 5u32);\n---\n<button on:click=\"count++\">{:count}</button>",
+        "hl-computed",
+    );
+    assert!(computed.0.contains("rt::json"), "{}", computed.0);
 }

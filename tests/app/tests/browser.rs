@@ -293,3 +293,35 @@ fn forms_morph_in_place() {
     );
     assert_eq!(b.eval(&format!("{n}.value")).as_str(), Some("B"));
 }
+
+/// A `---` block's literals the browser alone reads are browser state, as a
+/// script's `let`s are: the page has no script, and after a form action's
+/// morph they keep what the visitor made them. A value the server computes
+/// (`bumps`) is the server's again after the morph.
+#[test]
+fn header_literals_are_browser_state() {
+    let mut b = wisp::browser!(Site);
+    b.goto("/a2/header");
+    assert_eq!(b.text("#clicks"), "5");
+    assert_eq!(b.text("#on"), "off");
+    assert_eq!(b.text("#who"), "me");
+    assert_eq!(b.text("#list"), "2");
+    let bumps: u32 = b.text("#bumps").parse().unwrap();
+    b.click("#click");
+    b.click("#click");
+    b.click("#toggle");
+    b.click("#add");
+    b.click("#local");
+    b.fill("#who-in", "you");
+    assert_eq!(b.text("#clicks"), "7");
+    assert_eq!(b.text("#on"), "on");
+    assert_eq!(b.text("#who"), "you");
+    assert_eq!(b.text("#list"), "3");
+    assert_eq!(b.text("#bumps"), (bumps + 10).to_string());
+    b.click("#bump");
+    assert_eq!(b.text("#bumps"), (bumps + 1).to_string());
+    assert_eq!(b.text("#clicks"), "7");
+    assert_eq!(b.text("#on"), "on");
+    assert_eq!(b.text("#who"), "you");
+    assert_eq!(b.text("#list"), "3");
+}
