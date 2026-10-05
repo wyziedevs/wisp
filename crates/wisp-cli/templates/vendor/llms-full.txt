@@ -652,7 +652,7 @@ struct Note {
 - An unknown field is a 400 listing the known ones.
 - `x-total-count` has the match count; `link: <…?limit=20&after=60>; rel="next"` the next page; `accept: application/x-ndjson` gives a line per row.
 - Every row and list has an `etag`; `if-none-match` gets a 304. A write with `if-match` is a 412 (`code` `changed`) if the row changed since.
-- `const CACHE: u32 = 5;` in a `+server.rs` caches each GET per path and query per worker (rules: [/docs/design](/docs/design/)); a write does not clear it.
+- `const CACHE: u32 = 5;` in a `+server.rs` caches each GET per path and query per worker (rules: [Limits and caching](/docs/design-pages/#limits-and-caching)); a write does not clear it.
 
 ### Hooks
 
@@ -675,7 +675,7 @@ fn after_update(note: &Row<Note>) {
 
 A type with a field named `user` in `users/[user=int]/notes/+server.rs` holds each user's own: the route's `user` filters every request and is set on every row made or changed there.
 
-Where rows are kept, custom stores and paging: [/docs/api-tables](/docs/api-tables/).
+Where rows are kept, custom stores and paging: [Where rows are kept](/docs/api-tables/).
 
 
 <!-- docs/api-openapi.md -->
@@ -684,7 +684,7 @@ Where rows are kept, custom stores and paging: [/docs/api-tables](/docs/api-tabl
 The build describes the app as OpenAPI 3.1 at `/_wisp/openapi.json`; `/_wisp/docs` lists it with a try-it form. On in dev, off in release; `WISP_API_DOCS=on|off` overrides. Nothing to annotate:
 
 - Every `+server.rs` endpoint, and a `#[derive(Rest)]` type's routes and its `/[id]`: path, query and header parameters, `body: T` (JSON) or form fields by name and type, what it returns (`Option` adds a 404, `()` a 204), and `default`, 400, 401, 422 error answers (`Error`, and RFC 9457 `Problem`).
-- A resource also has its `if-match`/`if-none-match`/`idempotency-key` headers, `etag`, `location` and `x-total-count`, a filter parameter per plain field, and a 201 for POST.
+- A resource also has its `if-match`/`if-none-match` headers, `etag`, `location` and `x-total-count`, a filter parameter per plain field, and a 201 for POST.
 - Every page as a GET of `text/html`, and each `#[action]` of its `+page.rs` as a POST: `/contact` for `fn default`, `/contact?/send` for the others (OpenAPI has no other place for `?/name`), a form body (`multipart/form-data` with an `Image` or `Upload`), checks from `#[validate]`, 200/303/422.
 - Types from the route file or `src/*.rs` by field: structs as objects (`Option` is also `null`, `#[validate]` limits become `minLength`, `maximum`, `format: email`...), an enum without fields as its variant names. Others are named and left open.
 - Security: `bearer` (HTTP bearer) and `session` (the cookie) are declared when used. Marked on a `#[rest(key|write|admin = "...")]` route as its keys need, and on a handler or action whose body calls `need_bearer`/`bearer()` or `signed_in`/`user`. A `fn before` in `src/hooks.rs` that does the same marks every operation (only changes, if it looks at `cx.writes()`). It is read from the code, not run: a check inside a helper is not seen.
@@ -722,7 +722,7 @@ fn notes() {
 ```
 
 - Also `get put_json patch_json delete post_form send_json(method, url, json)`, `send(Request)`, `next_chunk` (events as sent).
-- `header(name, value)` applies to the next request only (`if-match`, `idempotency-key`).
+- `header(name, value)` applies to the next request only (`if-match`).
 - Tables are in memory.
 
 ### In a Browser
@@ -749,7 +749,7 @@ fn counter() {
 All of this works in the binary, Docker, Lambda and `tower`. JSON, validation, errors, CORS, auth, webhooks and docs work everywhere. The edge (`--target cloudflare` etc.) runs each request in an instance that may be its own:
 
 - `wisp::channel`, `wisp::every`, `RateLimit` are not there; WebSockets answer 501 (use the host's rate limiting).
-- Jobs (`cron`, `work`) run from the host's cron triggers ([/docs/deploy](/docs/deploy/)).
+- Jobs (`cron`, `work`) run from the host's cron triggers ([Edge and serverless targets](/docs/deploy-targets/#jobs)).
 - Tables are per-instance memory.
 
 Dev logs every request, release logs failures. Pass a proxy's request id back: `cx.set_header("x-request-id", id)` in `before` (`WISP_LOG=json`: AGENTS.md).
@@ -764,7 +764,7 @@ Keys:
 
 Sessions:
 - `cx.sign_in(id)` after `wisp::password::check(&typed, user_hash).await?` (`None` for no such user, as slow; `hash(&password).await?`; both on hashing threads).
-- Then `cx.signed_in()?` or `cx.user()?` (`cx.login`/`signup`: [/docs/auth](/docs/auth/)) where only members go: signed out, a page 303s to `/login` (`wisp::sign_in_page("/x")`), an endpoint or JSON client gets 401 (`signed_out`).
+- Then `cx.signed_in()?` or `cx.user()?` (`cx.login`/`signup`: [Auth and integrations](/docs/auth/)) where only members go: signed out, a page 303s to `/login` (`wisp::sign_in_page("/x")`), an endpoint or JSON client gets 401 (`signed_out`).
 - `cx.sign_out()` ends it here. The id is in a signed cookie for 30 days; each `sign_in` sets a new session.
 - `wisp::sign_out_everywhere(id)?` ends all earlier sessions of `id` on every device (counted in the saved table `wisp_sign_outs`; nothing is looked up until an app calls it; another instance sharing the store sees it on its next start; a store failure is its `Err`).
 
@@ -828,7 +828,7 @@ fn init() {
 ```
 
 - `every` runs until stop, never two at once; a panicking run is reported and the next starts on time.
-- `wisp::spawn` runs one task. Durable queues, cron: [/docs/data](/docs/data/).
+- `wisp::spawn` runs one task. Durable queues, cron: [Data, files and jobs](/docs/data/).
 - A health check is a route: `fn get() -> &'static str { "ok" }` (`/_wisp/health` exists).
 
 ## Configuration and Databases
@@ -880,7 +880,7 @@ Each param but `cx` is read by name: route param, then form field or JSON object
 | `min_len = 1` `max_len = 200` | length or items | strings, lists |
 | `email` | what `<input type="email">` takes (`a@b` too) | strings |
 
-- `None` passes. Further rules (`url one_of pattern with`): [/docs/data](/docs/data/).
+- `None` passes. Further rules (`url one_of pattern with`): [Data, files and jobs](/docs/data/).
 - An unknown rule is a build error listing the valid ones.
 - Own checks: `return invalid("email", "is already taken")` (422); `Error::invalid(..).and(..)` names several fields.
 
@@ -932,9 +932,6 @@ fn post(cx: &mut Cx, body: Value) -> Result {
 - HMAC-SHA256 of the body with the secret in that variable, hex (with or without `sha256=`) or base64 (Shopify).
 - Stripe's `stripe-signature` (`t=…,v1=…`) signs the time too and is refused after five minutes.
 - Other schemes: `wisp::hex(&wisp::hmac_sha256(secret, message))`, `wisp::secure_eq`.
-
-## Idempotent Retries
-A POST with `Idempotency-Key` retried gets the first answer back with `idempotent-replayed: true`, kept a day per key, path and `authorization`. The same key with another body is 422, one still in progress 409. No header, nothing kept.
 
 ## Big Lists
 
@@ -1095,12 +1092,12 @@ Kept safe by:
 - every failure the same 400.
 
 ## Not Here
-Distributed `RateLimit` waits for the relay (S2). Automatic `/_wisp/oauth/...` routes need `http.rs`; the two small routes above do the same. SMTP, SES.
+Not built in: a `RateLimit` shared between servers, automatic `/_wisp/oauth/...` routes (the two small routes above do the same), and SMTP or SES clients.
 
 
 <!-- docs/benchmarks.md -->
 
-Wisp's first rule is zero cost on the request hot path. This page is what is measured and how to run it. The measured numbers, losses included, are on the [home page](/#measured) and in [`bench/tfb/RESULTS.md`](https://github.com/wyziedevs/wisp/blob/main/bench/tfb/RESULTS.md).
+Wisp's first rule is zero cost on the request hot path. This page is what is measured and how to run it. The numbers below are dated, with the machine they ran on, and the losses are listed with them. The native TechEmpower tables are on the [home page](/#measured) and in [`bench/tfb/RESULTS.md`](https://github.com/wyziedevs/wisp/blob/main/bench/tfb/RESULTS.md).
 
 ```bash
 git clone https://github.com/wyziedevs/wisp
@@ -1109,6 +1106,46 @@ cargo run -r -p bench-run -- --paths fortunes
 ```
 
 You need Rust. `bench/README.md` lists every option, the frameworks compared, and how each path is checked for identical output before it is measured. Results depend on the machine: read them as a comparison on one machine, not as absolutes.
+
+## Native, Linux (2026-10-04)
+
+TechEmpower's plaintext and JSON tests with their own wrk scripts, on one shared 4-vCPU VM (AMD EPYC), the server on 2 pinned cores, medians of 3 runs of 15 s. Not an official TechEmpower result.
+
+| Test | Wisp | Actix Web | Axum | Fastify | Express |
+|---|---:|---:|---:|---:|---:|
+| Plaintext, 256 connections, pipelined | 1,129,577 | 603,163 | 276,948 | 51,713 | 40,421 |
+| JSON, 64 connections | 96,089 | 89,648 | 78,427 | 21,965 | 14,746 |
+
+- Plaintext: first at 256, 1,024 (623,348) and 4,096 (532,959) connections. At 16,384 Wisp's default limit of 10,000 connections refuses the overflow, so it is not first there.
+- JSON: first at 64, 128 and 512 connections, but Actix Web is ahead at 16 and 256 (90,199 against 71,879 at 16), and the ranges overlap at the others. The same Wisp binary moved 11% to 21% between moments on this VM, which is larger than most gaps between the Rust servers. Read no JSON ranking out of it.
+- Fortunes, an earlier run (2026-09-28, other Linux VPS, 64 connections, CPU per request): Wisp 97,502 requests a second, Actix Web 86,169, Axum 76,818. A virtual machine's kernel is most of each request, so fast servers bunch together on plaintext.
+- A later rerun on a CPU-capped VPS was not valid, so this site claims no current Linux ranking.
+
+What these numbers come from:
+
+- **Driver fast path.** The epoll and io_uring drivers receive, answer and send in their own turn without waking the connection's task, and for routes the build found never wait, `http::on_driver` answers without polling the future at all.
+- **One pass over the request.** The request line, headers and a JSON body are read in as few passes as possible, borrowed from the receive buffer instead of copied.
+- **Pooled buffers.** A connection holds buffers only while it has a request; idle ones go back to a pool per thread.
+- **Nothing for what is off.** HTTP/2 (feature `h2`) is noticed only where HTTP/1 already refused the bytes, so HTTP/1 pays nothing. Features a route does not use add no instructions, checked by the A/B above.
+
+## Edge and JavaScript Hosts (2026-10-04)
+
+The same app built with `wisp build --target node|bun|deno|cloudflare`, against Hono, on Windows 10, Ryzen 7 7800X3D, Node 26, Deno 2.5, Bun 1.4, workerd 1.20261001. `oha`, 64 connections, 10 s runs, median of 5, Wisp and Hono alternating. The machine was not idle (an unrelated app used about 0.8 of a core), so read the ratio inside a row, not the absolute numbers. Requests a second, Wisp / Hono:
+
+| Host | `/` | `/list1000` | `/json-big` | `/params` + cookie |
+|---|---:|---:|---:|---:|
+| Node, raw sockets (default) | 100,865 / 54,327 | 6,561 / 1,873 | 20,812 / 19,677 | 113,240 / 46,760 |
+| Deno, raw sockets (default) | 118,877 / 92,507 | 6,426 / 2,022 | 9,027 / 5,702 | 93,841 / 64,674 |
+| Bun, raw sockets (default) | 133,387 / 127,725 | 9,287 / 3,149 | 20,017 / 19,549 | 53,876 / 36,407 |
+| workerd | 7,694 / 9,447 | 5,093 / 2,007 | 5,962 / 8,480 | 14,581 / 14,624 |
+
+- On Node, Deno and Bun, Wisp's default path reads raw sockets and the app's own HTTP parser answers, about 1 microsecond a request inside the wasm, so it is ahead on all four routes. `WISP_NODE_HTTP=1` serves through the host's own server instead and then loses on `/` (Node -15%, Deno -21%, Bun -35%).
+- On workerd, a quieter run alternating with Hono (median of 5): `/` 19,645 and 20,908 (-6%), `/json-big` 11,441 and 11,894 (-4%), `/params` 19,258 and 20,256 (-5%), `/list1000` 6,033 and 2,359 (2.6 times). The wasm's own work is a few microseconds a request; the gap on `/` is workerd's cost of entering wasm and of a response with a head, and on `/json-big` it is a serializer in wasm against V8's `JSON.stringify`.
+- Cold start on workerd is Wisp's loss: 25 ms against 19 ms for Hono in that run (39 and 24 to 27 ms in the busier one), about 7 ms of it the host loading the module and the rest the first request compiling. A warm-up request at load took the first request from about 17 ms to 5 ms in one run, with no app code run.
+- The wasm for the bench app is 541 KB (541,063 bytes) since the Cloudflare, Pages, Vercel and Netlify builds leave out the server loop for raw connections (`WISP_REQUEST_ONLY`, 584,353 before). `tests/wasm-size.sh` fails CI when a build grows past its budget.
+- The one rule the numbers follow: where speed and size disagree, speed wins, so `opt-level = 3` stays, and `wasm-opt` and allocator swaps that measured no faster were not kept.
+
+The full tables, the dropped experiments and a ranking against fifteen other frameworks per host are in [`bench/edge/README.md`](https://github.com/wyziedevs/wisp/blob/main/bench/edge/README.md) and `bench/rank`. That ranking ran on a CPU-capped VPS, so this site quotes none of its places.
 
 ## What Is Checked
 
@@ -1157,10 +1194,10 @@ Writing cost is measured by a program in the repository: `cargo run -p wisp-toke
 | `wisp remove <pkg>` | take an npm package out |
 | `wisp ui add <name…> [--force]` | copy components (button, dialog, tabs…) into `src/components` |
 | `wisp ui list` | the components `wisp ui add` has |
-| `wisp service install\|uninstall\|start\|stop\|status` | run the release binary as a systemd, launchd or Windows service; `--name`, `--user`, `--port`, `--dry-run` |
+| `wisp service install\|uninstall\|start\|stop\|status` | run the release binary as a systemd, launchd or Windows service; `--name`, `--user`, `--port`, `--dry-run`; an app folder with a quote, `%` or a control character in its path is refused |
 | `wisp lsp` | the language server, over stdio |
 | `wisp update-docs` | bring `AGENTS.md` up to this Wisp |
-| `wisp mcp` | docs, routes, components and checks for AI agents (MCP, stdio) |
+| `wisp mcp` | docs, routes, components and checks for AI agents (MCP, stdio); a message line is capped at 16 MiB |
 | `wisp --help` | this list (`-h`, `help`) |
 | `wisp --version` | the version (`-V`) |
 
@@ -1252,7 +1289,7 @@ A write redraws only the bindings that read what changed (no virtual DOM); the s
 - Server: `wisp::env("K")`.
 
 ## Translations
-`t('cart.items', n)` or `t('hi', { name, count: n })` in a script or directive, no import; keys checked at build; the page sends only the messages its scripts use. `src/lib` code can't call `t`. Message files: [/docs/design](/docs/design/).
+`t('cart.items', n)` or `t('hi', { name, count: n })` in a script or directive, no import; keys checked at build; the page sends only the messages its scripts use. `src/lib` code can't call `t`. Message files: [Tooling, images and translations](/docs/design-tooling/#translations).
 
 ## Directives
 
@@ -1564,7 +1601,7 @@ replaceState('', { tab: 3 })         // this entry's state ('' keeps the URL)
 - View transitions when available. `data-wisp-notransition` on a link, or on `<body>` for the app, skips them; reduced motion skips them too.
 - `data-wisp-reload` on a link or parent forces a full load. Links with `target`, `download`, `rel="external"` and `/_app/` are left alone.
 - `pushState(url, state)` (shallow routing, for tabs and modals) adds an entry at `url` (`''`: this one) and loads nothing; `page.value.state` is reactive (`{}` on other entries). Back/forward restores it with no request; a reload keeps it only at its URL.
-- `document` events: `wisp:navigate wisp:update wisp:goto wisp:refresh wisp:error wisp:push wisp:pop`; forms: `wisp:submit` (cancelable), `wisp:result`.
+- `document` events: `wisp:navigate wisp:update wisp:goto wisp:refresh wisp:stay wisp:error wisp:push wisp:pop` (`wisp:stay`: a navigation ended with the page staying, for a download or a `data-wisp-cut` slot, and `navigating.value` is `null` again); forms: `wisp:submit` (cancelable), `wisp:result`.
 
 ### Link and Navigation Options
 `data-wisp-noscroll`, `data-wisp-keepfocus`, `data-wisp-replacestate`, `data-wisp-notransition` (on or around a link) keep scroll, keep focus, replace history, skip the view transition. `goto(url, { noscroll, keepfocus, replace, novt })` does the same.
@@ -1803,10 +1840,10 @@ Lists of strings in `Cargo.toml`, checked and baked at build.
 | Key | What it does |
 |---|---|
 | `base = "/app"` | serve under a base path (`WISP_BASE`) |
-| `redirects = [...]` | `"from to [status]"` (308 by default; [design](/docs/design/)) |
+| `redirects = [...]` | `"from to [status]"` (308 by default; [Design and files](/docs/design/)) |
 | `rewrites = [...]` | serve one path from another |
 | `headers = [...]` | headers by path |
-| `i18n = [...]` | locale routing: `default`, `prefix`, `domain`, `missing` ([translations](/docs/design-tooling/)) |
+| `i18n = [...]` | locale routing: `default`, `prefix`, `domain`, `missing` ([Tooling, images and translations](/docs/design-tooling/)) |
 | `use = [...]` | plugin crates the build loads |
 | `extends = ["../base"]` | layers: an app's layout, components and static files under yours |
 
@@ -1818,7 +1855,7 @@ Lists of strings in `Cargo.toml`, checked and baked at build.
 | `h2` (wisp) | HTTP/2 with prior knowledge (h2c) on the built-in server |
 | `img` (wisp) | `wisp::img::serve`: `/_img?src=&w=&q=` resizes a picture of `static/` |
 | `og-png` (wisp and wisp-cli) | PNG Open Graph pictures for `wisp::og(.., "auto")` |
-| `tower` (wisp) | the app as a Tower service ([embed](/docs/embed/)) |
+| `tower` (wisp) | the app as a Tower service ([Testing and mixing with Rust code](/docs/embed/)) |
 | `browser` (wisp) | `wisp::test::browser`: tests in headless Chrome or Edge |
 | `types` (wisp) | used by `wisp check --types`; never in a served build |
 | `avif` (wisp-cli) | AVIF widths for images in `wisp build`, beside WebP |
@@ -1882,7 +1919,7 @@ wisp::queue("mail").push(&Mail { to, body }); // .later(secs, &job)
 - Jobs live in the saved table `queue-mail`. A failure (`Err` or a panic) is tried again after 4, 8, 16... seconds (an hour at most), five tries; then it stays `dead` with its last error (`queue.dead()`, `queue.retry(id)`).
 - At least once: a job running when the process died runs again a minute later. One at a time per queue, in order.
 - `cron` takes five fields (`*`, `n`, `a-b`, `*/n`, lists; Sunday is 0 or 7).
-- On Cloudflare, Vercel and Netlify (`wisp build --target ...`) the same code runs from the host's cron: `wisp build` writes each `cron` schedule (a string literal) into its trigger config, and a trigger also runs the queues' due jobs (each minute if the app has `work`). Set `CRON_SECRET` and `WISP_STORE` there. See [/docs/deploy](/docs/deploy/).
+- On Cloudflare, Vercel and Netlify (`wisp build --target ...`) the same code runs from the host's cron: `wisp build` writes each `cron` schedule (a string literal) into its trigger config, and a trigger also runs the queues' due jobs (each minute if the app has `work`). Set `CRON_SECRET` and `WISP_STORE` there. See [Edge and serverless targets](/docs/deploy-targets/#jobs).
 
 ## Cache
 `wisp::cache("top", 60, || async { top_posts().await }).await` keeps an answer for 60 s per process. `wisp::uncache("/posts")` forgets cache keys starting with it and the pages `const CACHE` keeps, on every worker, for `/posts` and below (`/` is all).
@@ -1897,7 +1934,7 @@ Run `wisp build`, copy the binary, run it. Pick the build for your host:
 | VPS or server | `wisp build`; `wisp service install` keeps it running ([VPS](/docs/hosting/vps/)) |
 | Container host ([Fly.io](/docs/hosting/fly/), [Railway](/docs/hosting/railway/), [Render](/docs/hosting/render/), [Cloud Run](/docs/hosting/cloud-run/), [Azure](/docs/hosting/azure/)) | `wisp build --docker` ([Docker](/docs/hosting/docker/)) |
 | Static host ([GitHub Pages](/docs/hosting/github-pages/), GitLab Pages, S3) | `wisp build --static` (or `--spa`) |
-| Edge or serverless ([Cloudflare](/docs/hosting/cloudflare/), [Deno Deploy](/docs/hosting/deno-deploy/), [Vercel](/docs/hosting/vercel/), [Netlify](/docs/hosting/netlify/), Amplify, Firebase, [Azure Static Web Apps](/docs/hosting/azure/)) | `wisp build --target <host>` ([targets](/docs/deploy-targets/)) |
+| Edge or serverless ([Cloudflare](/docs/hosting/cloudflare/), [Deno Deploy](/docs/hosting/deno-deploy/), [Vercel](/docs/hosting/vercel/), [Netlify](/docs/hosting/netlify/), Amplify, Firebase, [Azure Static Web Apps](/docs/hosting/azure/)) | `wisp build --target <host>` ([Edge and serverless targets](/docs/deploy-targets/)) |
 | [AWS Lambda](/docs/hosting/aws-lambda/) / [Bun](/docs/hosting/bun/) / [Node](/docs/hosting/node/) | `--target lambda` / `--target bun` / `--target node` |
 
 An app that signs cookies needs `WISP_SECRET` (32+ random characters) on every host. Logs, metrics and traces: [Observe](/docs/deploy-observe/). Step by step for each host: [Hosting](/docs/hosting/).
@@ -1915,7 +1952,7 @@ A plain `wisp build` inside a host's CI picks the target from its variables and 
 
 `wisp build` makes one release binary with static files and styles inside. It listens on `$HOST:$PORT` (`0.0.0.0:3000` in release).
 
-HTTP/2 without a proxy: the `h2` feature serves h2c with prior knowledge on the same port (for a proxy that speaks h2c, or `curl --http2-prior-knowledge`). HTTP/1 is unchanged and pays nothing. There is no TLS in the server, so browsers still want the proxy.
+HTTP/2 without a proxy: the `h2` feature serves h2c with prior knowledge on the same port (for a proxy that speaks h2c, or `curl --http2-prior-knowledge`). HTTP/1 is unchanged and pays nothing. Streams are answered at once, within the flow-control windows. There is no TLS in the server, so browsers still want the proxy.
 
 ```toml
 # Cargo.toml
@@ -1961,7 +1998,7 @@ let post = db::post(&slug).await?;
 
 ## Service
 
-`wisp build`, then `wisp service install` (as root or administrator) runs the release binary from the app folder as an OS service that starts at boot. Then `start`, `stop`, `status`, `uninstall`.
+`wisp build`, then `wisp service install` (as root or administrator; it refuses an app folder with a quote, `%` or a control character in its path) runs the release binary from the app folder as an OS service that starts at boot. Then `start`, `stop`, `status`, `uninstall`.
 
 | Option | What it does |
 |---|---|
@@ -2082,7 +2119,7 @@ const RUNTIME: wisp::Runtime = wisp::Runtime::Edge; // default: Node
 - With no Edge route the output is unchanged.
 - It must be a literal, and a layout cannot set it.
 - Other hosts ignore it; `--edge` puts every route there.
-- The build stops, naming the route, if an Edge route uses what WebAssembly lacks (`std::fs`, `std::thread`, `std::process`, `std::net`, websockets).
+- The build stops, naming the route, if an Edge route uses what WebAssembly lacks (`std::fs`, `std::thread`, `std::process`, `std::net`, websockets; the Edge function of Vercel and Netlify has no sockets).
 
 ## Servers on Node, Bun and Local Deno
 
@@ -2090,8 +2127,11 @@ They read raw sockets and the app's own HTTP/1.1 parser answers (pipelining, kee
 
 - At startup a request over loopback must be answered as the app answers it (twice, on one connection). If not, or with `WISP_NODE_HTTP=1`, they serve with `node:http`, `Bun.serve` or `Deno.serve` (one stderr line says which).
 - Deno Deploy has no sockets and always uses `Deno.serve`.
-- WebSockets are not served on any edge build (501).
+- WebSockets are upgraded by the same parser; see the table below.
+- A request's head and body have the native deadlines on raw connections too: one trickled past them is refused 408 when its next bytes come.
 - Only the `node:http` path reads at most `WISP_BODY_LIMIT` (default 1 MB) of a body and answers 413 past it.
+- The bridges that read a body with the host's own `fetch` (Workers, Deno, Netlify, Vercel Edge, Bun's `fetch` path) stop reading one byte past the route's limit and the app answers 413, so an endless body is never held in memory.
+- Windows hosts pass environment names to the app upper-cased, so `wisp::env("PATH")` finds `Path`.
 
 ## AWS Lambda
 
@@ -2105,9 +2145,9 @@ aws lambda update-function-code --function-name my-app --zip-file fileb://dist/l
 ```
 
 - Any Wisp binary answers Lambda's runtime API when `AWS_LAMBDA_RUNTIME_API` is set.
-- Everything works except WebSockets and streaming (a stream is sent whole).
+- Everything works except WebSockets (501) and streaming (a stream is sent whole).
 - Saved tables go in `/tmp`, per instance: use `wisp::store` for lasting data.
-- The `tower` feature with `lambda_http` also works ([embed](/docs/embed/)).
+- The `tower` feature with `lambda_http` also works ([Testing and mixing with Rust code](/docs/embed/)).
 
 ## What Works on the Edge
 
@@ -2119,9 +2159,27 @@ No threads, sockets or files.
 | Background work | Cloudflare and Netlify keep the instance alive (`waitUntil`) for started timers and fetches; Deno and Node run on; Vercel may freeze after the response, so finish first. |
 | Secrets | `WISP_SECRET` as a host secret. Read others with `wisp::env("KEY")` (`std::env::var` sees nothing; no `.env`). |
 | Streaming | `Response::stream` and `Response::events` are live on Cloudflare, Deno, Netlify, Vercel, Node; a leaving client fails `send`. |
-| WebSockets | `Response::websocket` is 501 on every edge target (and `tower`); use SSE. |
+| WebSockets | `Response::websocket` works where the host can hold a socket (below); 501 on Vercel, Netlify, Lambda and `tower`: use SSE. |
 | Not in the edge build | `wisp::channel`, `wisp::every`, `RateLimit` (it won't compile with them): use the host's queues, cron, rate limiting. |
 | Panics | A panic fails only that request (500). No `Date` header from Wisp. |
+
+### WebSockets
+
+The same code on every host that can hold a socket, and a 501 on the rest. `before` and the origin check run on the upgrade request as for any route. `examples/websocket` is an echo that runs on all of them.
+
+| Host | WebSockets | Made by |
+|---|---|---|
+| binary, Docker | yes | Wisp's server |
+| `node` | yes | Wisp's parser on the raw socket; with `node:http`, its `upgrade` event |
+| `bun` | yes | Wisp's parser on `Bun.listen`; with `Bun.serve`, `server.upgrade` |
+| `deno` | yes | Wisp's parser on `Deno.listen`; with `Deno.serve` and Deploy, `Deno.upgradeWebSocket` |
+| `cloudflare`, `pages` | yes | `WebSocketPair` |
+| `vercel`, `netlify`, `lambda`, `tower` | 501 | no sockets there |
+
+- On raw sockets the codec is the native server's: handshake, fragments, pings, the idle ping and close (`WISP_WS_IDLE`), the `BODY_LIMIT` message limit and the protocol errors.
+- Where the host frames the messages (`Bun.serve`, `Deno.serve`, Deploy, Workers) it answers pings and fragments and keeps its own idle time. Wisp still refuses a message past the limit and closes with 1009. Deno's `close` takes only 1000 or codes from 3000, so there it is 4009.
+- A client's close is answered on workerd, so the client sees 1000, not a cancelled request.
+- A connection lives in one instance (on Cloudflare, one isolate): state shared by connections needs a Durable Object of your own or `WISP_STORE`. `wisp::channel` is native only.
 
 ### Saved Tables
 
@@ -2203,7 +2261,7 @@ File | Meaning
 `+layout.rs` | Instead of a block: `load` for the layout
 `+error.wisp` | Errors below this directory; gets `status`, `message` (a sentence about the status when the error says no more than its name)
 `+page.js` | Optional. `load({ data, url, params, route, fetch })` in the browser
-`+server.rs` | `get`/`post`/`put`/`patch`/`delete` endpoints; one taking an `id` the path lacks serves `/[id]` below, and `list` is then the folder's GET. A `#[derive(Rest)]` type in it is served whole ([api](/docs/api/))
+`+server.rs` | `get`/`post`/`put`/`patch`/`delete` endpoints; one taking an `id` the path lacks serves `/[id]` below, and `list` is then the folder's GET. A `#[derive(Rest)]` type in it is served whole ([APIs and platforms](/docs/api/))
 
 Segments: `blog` (static), `[slug]` (param), `[[lang]]` (optional), `[...rest]` (rest, may be empty), `(group)` (not in the URL).
 
@@ -2224,7 +2282,7 @@ fn matches(s: &str) -> bool {
 
 `/about/` gets a 308 to `/about`, query kept. `wisp::trailing_slash(Always)` in `init` flips it (`/about` to `/about/`, GET and HEAD of pages; endpoints and paths with a `.` in the last segment are left alone); `Ignore` serves both. The other form is matched only after no route matched, so the default costs nothing. `wisp build --static` asks for each page in the set form, so `Always` exports without a 308 warning. The build warns of a literal `href="/…"` in a template the setting would redirect.
 
-### Sitemap, Robots, Feed, Og
+### Sitemap, Robots, Feed and Open Graph
 
 `/sitemap.xml` and `/robots.txt` are made from the route tree, answered only for a GET no route and no file matched. A file of the same name in `static/`, or a route, wins.
 
@@ -2276,12 +2334,12 @@ Rule | Form | Behavior
 
 In order: ultra fast, cheap, durable, flexible; developer happiness last.
 
-1. **Cheap** means app code in as few tokens as possible: AI writes most code, so a developer picks the framework whose apps run fastest, cost the fewest tokens, keep working and bend furthest. A convention beats a line of setup, one file beats two, a name the build can infer is not written. [tokens](/docs/tokens/) measures it; [AGENTS.md](https://github.com/wyziedevs/wisp/blob/main/llms/AGENTS.md) is the whole language in one page.
-2. **Durable**: every fast path is proven at startup and falls back; nothing after startup takes the process down.
-3. **Fast by construction**: templates compile to straight-line `push_str` calls, routes to one `match`, buffers are reused per connection. No boxing, no dynamic dispatch, no hot-path allocation after warm-up.
+1. **Fast by construction**: templates compile to straight-line `push_str` calls, routes to one `match`, buffers are reused per connection. No boxing, no dynamic dispatch, no hot-path allocation after warm-up.
+2. **Cheap** means app code in as few tokens as possible, because an AI pays by the token. A convention beats a line of setup, one file beats two, a name the build can infer is not written. [Tokens](/docs/tokens/) measures it; [AGENTS.md](https://github.com/wyziedevs/wisp/blob/main/llms/AGENTS.md) is the whole language in one page.
+3. **Durable**: every fast path is proven at startup and falls back; nothing after startup takes the process down.
 4. **Minimal dependencies.** Each new one needs a written reason here.
 5. **Boring code**: plain functions and data; abstractions only where they remove more code than they add; invariants asserted.
-6. **Safe**: no `unsafe` in Wisp or its generated code (workspace lint `forbid`; the benchmark runner, which pins processes to CPUs through the OS, sets its own).
+6. **Safe**: no `unsafe` in the compiler, the CLI or an app's generated code (workspace lint `forbid`). The runtime has it only in the Linux I/O drivers and the edge exports, each block with its reason; the benchmark runner, which pins processes to CPUs through the OS, sets its own.
 7. **Mistakes fail early, in the user's file**: the build checks what it can and says where and what to do (a private `load`, an `#[action]` in the wrong place, `page.wisp` without its `+`, a block leaving a tag open in one branch). rustc only points at code the user wrote.
 8. **Fast dev loop**: editing markup never waits for `cargo`; editing Rust rebuilds only the app crate.
 9. **Works without JavaScript**: forms and links are real; `wisp.js` enhances, never required.
@@ -2300,7 +2358,7 @@ The build crate and CLI depend on std and `pulldown-cmark` only.
 - Not used by default: hyper, axum, tower, serde, a TOML parser, `notify`, `syn`/`quote`.
 - Written ourselves: the HTTP/1.1 connection loop, URL/form decoding, multipart, HTML escaping, the HTTP date, the template compiler, a polling file watcher, the dev proxy of events.
 - Signed cookies: SHA-256 and HMAC in about a hundred lines in `crates/wisp/src/sign.rs`, fixed algorithms with published vectors (FIPS 180-4, RFC 4231) its tests check, and a constant-time compare. Anything that encrypts would use a vetted crate; we write no ciphers.
-- JSON: a fixed grammar (RFC 8259), so `crates/wisp/src/json.rs` has a strict parser for request bodies and `FromJson` with its checks, and `live.rs` writes JSON ([api](/docs/api/)). Apps wanting serde still use it (`serde_json::from_slice(cx.body())`, `Response::json(serde_json::to_string(&x)?)`).
+- JSON: a fixed grammar (RFC 8259), so `crates/wisp/src/json.rs` has a strict parser for request bodies and `FromJson` with its checks, and `live.rs` writes JSON ([APIs and platforms](/docs/api/)). Apps wanting serde still use it (`serde_json::from_slice(cx.body())`, `Response::json(serde_json::to_string(&x)?)`).
 - Apps bring their own crates for a database driver, mailer, HTTP client.
 
 ## Workspace
@@ -2330,7 +2388,7 @@ wisp fmt            # format .wisp files
 wisp build          # release binary
 ```
 
-Agents (`wisp mcp`, `wisp update-docs`) and editors (`wisp lsp`): [design-editors](/docs/design-editors/).
+Agents (`wisp mcp`, `wisp update-docs`) and editors (`wisp lsp`): [AI agents and editors](/docs/design-editors/).
 
 ## `wisp new`
 
@@ -2408,9 +2466,9 @@ cargo install --path <checkout>/crates/wisp-cli --force  # path checkout
 - **Escaping.** On by default; `{@html}` is the only raw output. Component props are typed Rust values, escaped where shown like any other.
 - **Actions.** Opt-in (`#[action]`), same-origin checked, only form fields: no client-supplied type names or serialized state (Livewire CVE-2025-54068 class).
 - **Signed cookies.** The signature binds the cookie's name and value, compared in constant time. `WISP_SECRET` under 32 characters stops the server at start.
-- **Dev endpoints.** Only in debug builds, only answering loopback peers (behind a proxy on the same machine every peer is loopback: never serve a debug build). Dev mode on a non-loopback address says so at start.
+- **Dev endpoints.** Only in debug builds, only answering loopback peers with a loopback `Host` (a DNS-rebinding page is refused), and the template swap also needs the `x-wisp-dev` header the CLI sends, which a cross-site page cannot add. Behind a proxy on the same machine every peer is loopback: never serve a debug build. Dev mode on a non-loopback address says so at start.
 - **Live URL attributes** (`href={:x}`, `:src="x"`) block `javascript:` and `vbscript:` on the server's first paint and in the browser, as `href={x}` does. URL attributes whose scheme an expression decides are checked where they end: `javascript:` never reaches a page. wisp.js never follows a `javascript:` redirect or `goto`, and saves a posted form's attachment instead of opening it as a page of this site.
-- **Limits.** Request size and time limits as in [design-runtime](/docs/design-runtime/); no request smuggling surface (strict chunked parsing, CL+TE rejected).
+- **Limits.** Request size and time limits as in [Runtime and build](/docs/design-runtime/); no request smuggling surface (strict chunked parsing, CL+TE rejected).
 - **Connections.** At most `WISP_MAX_CONNS` (10000) open, WebSockets included; past it a new one gets a 503 and is closed before it costs a task.
 - **CSP.** Pages and error pages carry a `content-security-policy` (below).
 - **Tests.** `examples/demo/tests/http.rs` runs the demo's binary and sends malformed, oversized, smuggling and cross-site requests, path traversal attempts and junk cookies, checking every answer and that the server keeps answering. `tests/app` uses what the demo does not (hooks, state, components, uploads, signed cookies, chunked bodies, body limits, streamed responses); its `tests/http.rs` checks each on the wire.
@@ -2621,7 +2679,7 @@ fn remove(id: u64) {
 - `<button action="?/remove&id={todo.id}">` outside a form becomes its own `<form method="post"><button formaction="...">`. Works without JS.
 - Query parameters in an action URL are read like form fields (`id` above is `id: u64`).
 - A body with `.await` makes the action `async` (`#[action]` adds it); never write `async` there.
-- Cookies, sessions and sign-in: [design-sessions](/docs/design-sessions/).
+- Cookies, sessions and sign-in: [Cookies and sign-in](/docs/design-sessions/).
 
 ## Validation
 
@@ -2672,7 +2730,7 @@ A textarea gets only `required` (line breaks are sent as two characters). The se
 
 - `cx.form()` reads urlencoded and multipart bodies (`enctype="multipart/form-data"` for files). Text fields read the same either way.
 - `cx.form().file("photo")` is the file of `<input type="file" name="photo">` (`None` when none): `name` as sent, `content_type`, `bytes`. `files("photo")` is every file of a `multiple` input.
-- File name and type are visitor input: the name is never a path, the type says nothing the bytes do not.
+- File name and type are visitor input: the name is never a path (a drive such as `C:` and an NTFS stream such as `:stream` are dropped too), the type says nothing the bytes do not.
 - Uploads are held in memory; a route taking large ones raises its own `BODY_LIMIT`.
 
 ### Images
@@ -2694,18 +2752,18 @@ async fn get(name: String) -> Result<Response> {
 }
 ```
 
-- `Response::file_in(dir, name)` reads without blocking, typed by extension. A name reaching outside the directory (`..`, absolute path, drive) is a 404, like a missing file. The name may come straight from the URL.
+- `Response::file_in(dir, name)` reads without blocking, typed by extension. A name reaching outside the directory (`..`, absolute path, drive, a Windows device such as `nul` or `CON.txt`, a name Windows trims such as `a.txt.` or `a.txt `) is a 404, like a missing file. Static files get the same rule. The name may come straight from the URL.
 - `Response::download("report.csv", bytes)` sends bytes the browser saves as that file name.
 
 ## Built-In UI
 
-Wisp draws a few things from one design system: Kinetrix's roles and values (dark, as the demo site), Wisp violet (`#896ce0`) as the one accent, only on what is interactive. One-pixel hairlines, two shadow steps, one type scale, one focus ring.
+Wisp draws a few things from one design system: dark tokens, as the demo site has, with Wisp violet (`#896ce0`) as the one accent, only on what is interactive. One-pixel hairlines, two shadow steps, one type scale, one focus ring.
 
 Styles live in `crates/wisp/src/client/tokens.css` (the one source of tokens), `ui.css` (buttons), `error.css` and `dialog.css` (dev only). All are `--wisp-*` tokens and `.wisp-*` classes, so they never touch app CSS.
 
 | Piece | What it is |
 |---|---|
-| Error page | For apps without `+error.wisp`. Status and one line (status name, or the error's message when it says more), centered, dark tokens, styles inlined. No links or buttons; write a `+error.wisp` for those. Errors for endpoints and API clients are JSON (see [api](/docs/api/)). |
+| Error page | For apps without `+error.wisp`. Status and one line (status name, or the error's message when it says more), centered, dark tokens, styles inlined. No links or buttons; write a `+error.wisp` for those. Errors for endpoints and API clients are JSON (see [APIs and platforms](/docs/api/)). |
 | Error page in `wisp dev` | Adds the status name, the request, what caused a 5xx and a link home. |
 | Server errors in dev | Every answer has `Server-Timing: total;dur=ms`. A 5xx dev page holds its message (a panic says `file:line`) in `<template id="wisp-server-error">`, which `wisp-dev.js` opens in the dialog below. Debug builds only. |
 | Build error dialog (dev) | Title, one sentence on where to look (`Error in src/routes/+page.rs on line 7.`), then the error in a code block with Copy. Lives in a shadow root off `<html>`, so app CSS and morphs cannot touch it. Closes when the next build succeeds. |
@@ -2757,7 +2815,7 @@ async fn load(slug: String) -> Result<Data> {
 - Errors in a block point at the `.wisp` file and line. Editing a block compiles again; editing markup still swaps in without a compile.
 - A route file needs no `use` and no `pub`: it is included in its own module with `wisp::prelude` in scope (`Cx`, `Response`, `Result`, `error`, `redirect`, `#[action]`, the derives...), and its template is compiled inside it, so it reads private types and fields. `pub`, `use` (an explicit `use wisp::prelude::*` replaces Wisp's), `//!` docs and `#![…]` attributes still work. CRLF and byte order marks are fine.
 - `load` is found by name, actions by `#[action]`; nothing else is reachable from HTTP, so a helper never becomes an endpoint by accident.
-- `fn entries() -> Vec<…>` in a page under `[params]` lists the pages `wisp build --static` writes ([deploy](/docs/deploy/)).
+- `fn entries() -> Vec<…>` in a page under `[params]` lists the pages `wisp build --static` writes ([Deploying](/docs/deploy/)).
 - The build checks that `load` returns `Data` (plain or in a `Result`), that every parameter but `cx` has a plain name, and that `#[action]` (by any path, `wisp::action` too) marks only top-level functions of a page.
 
 ## Signatures and Inputs
@@ -2778,7 +2836,7 @@ So `fn load(q: Option<String>, page: Option<u32>)` and `#[action] fn add(text: S
 
 ## Errors, Actions, Validation
 
-- `?` on any `std::error::Error` is a 500 (details only in dev). `return error(404, "…")` stops with that status and message; `return redirect("/…")` is a 303. Both are `Err`s, so they end a function returning a `Result`. `Error::new(status, "…")` is the error itself (for `ok_or`, `map_err`); `Error::redirect(status, "/…")` takes another status. `Err(error(..))` is a build error telling you to write `return error(..)`. `Option::or_404()` is the shortcut; `or_status(409)` on an `Option` or `Result` (the `OrStatus` trait, in the prelude) takes any status.
+- `?` on any `std::error::Error` is a 500 (details only in dev). `return error(404, "…")` stops with that status and message; `return redirect("/…")` is a 303. Both are `Err`s, so they end a function returning a `Result`. `Error::new(status, "…")` is the error itself (for `ok_or`, `map_err`); `Error::redirect(status, "/…")` takes another status; one that is not 3xx is logged and sent as 303, and a location with CR or LF in it is a logged 500, never a panic or a split header. `Err(error(..))` is a build error telling you to write `return error(..)`. `Option::or_404()` is the shortcut; `or_status(409)` on an `Option` or `Result` (the `OrStatus` trait, in the prelude) takes any status.
 - An action returns nothing (or `Result<()>`) and the page renders; or a `Response` (CSV, a file) sent instead of the page; or an `Option<Response>` to do that sometimes.
 - Validation: the action returns `invalid(field, problem)`; the page renders again as a 422 with the form still there, each input showing what was typed and what is wrong ([Actions](/docs/design-forms/)). A param that does not parse (`email: Email`, `age: u8`) is the same 422 by field. An action written without `->` returns `Result`, so it may end in `redirect(..)`. `{cx.problem(field)}` places one message elsewhere; `cx.input(field)` reads what was sent. Any other error shows the error page. For more than a message, `cx.fail(status, value)` keeps a value for the load, which takes it with `cx.take()`.
 
@@ -2799,7 +2857,7 @@ fn signup(name: String, email: Email) {
 </form>
 ```
 
-- `+server.rs` method: the `Response` it returns; any other value as JSON (`#[derive(Json)]`); nothing is a 204; `Option<Response>` `None` is a 404. `body: T` (not a string) is the JSON body read as a `FromJson` type. An error on a request under `/api`, or one that sent or asks for JSON, is answered as JSON ([api](/docs/api/)).
+- `+server.rs` method: the `Response` it returns; any other value as JSON (`#[derive(Json)]`); nothing is a 204; `Option<Response>` `None` is a 404. `body: T` (not a string) is the JSON body read as a `FromJson` type. An error on a request under `/api`, or one that sent or asks for JSON, is answered as JSON ([APIs and platforms](/docs/api/)).
 
 ## Limits and Caching
 
@@ -2851,14 +2909,14 @@ The rest is CSS, the client script and the starters, adding nothing to a request
 - A navigation moves focus to the `<h1>` and says the title in an `aria-live` region.
 - View transitions and `--change` (every component's transition time) go to nothing under `prefers-reduced-motion`; `tokens.css` turns lines and quiet text up under `prefers-contrast: more`.
 - Starters carry a skip link (`.skip`, `<main id="main">`), `:focus-visible` rings, 44px buttons on coarse pointers, `forced-colors` borders, `viewport-fit=cover` with `env(safe-area-inset-*)`, `100dvh`, fluid `clamp()` tokens (`--wisp-step-0..3`, `--wisp-space-s..xl`).
-- `Dialog` and `Menu` are native `<dialog>` and popover (focus trap, Escape, focus returned); `Input`, `Textarea`, `Select` set `aria-invalid` and `aria-describedby` from `problem`/`hint`; `Card` answers its own width with `@container`. Phones: [client](/docs/client-router/).
+- `Dialog` and `Menu` are native `<dialog>` and popover (focus trap, Escape, focus returned); `Input`, `Textarea`, `Select` set `aria-invalid` and `aria-describedby` from `problem`/`hint`; `Card` answers its own width with `@container`. Phones: [The router and forms](/docs/client-router/).
 
 Template syntax, components, snippets and scoped styles: [Template syntax and styles](/docs/design-syntax/).
 
 
 <!-- docs/design-runtime.md -->
 
-`wisp::main!()` is `wisp::app!()` plus a `main` that calls `wisp::run::<App>()`. An app that sets things up first writes that `main` itself. `wisp::serve::<App>(addr)` is the async form for apps that own their runtime; it runs until its future is dropped. Feature list (base path, slots, fonts, layers...): [design-features](/docs/design-features/).
+`wisp::main!()` is `wisp::app!()` plus a `main` that calls `wisp::run::<App>()`. An app that sets things up first writes that `main` itself. `wisp::serve::<App>(addr)` is the async form for apps that own their runtime; it runs until its future is dropped. Feature list (base path, slots, fonts, layers...): [Parity features](/docs/design-features/).
 
 ## Server
 
@@ -2867,10 +2925,10 @@ Template syntax, components, snippets and scoped styles: [Template syntax and st
 - One worker per CPU (`WISP_THREADS`), each a single-threaded tokio runtime with its own I/O driver. The main thread accepts and hands out connections in turn. A connection lives on one thread, so the request path never wakes another.
 - Why: a multi-thread tokio runtime funnels every socket event through one driver, which left cores idle when measured (bench/README.md).
 - Tradeoff: no work stealing. A handler that blocks its thread stalls that thread's connections. Dev builds log any handler holding its thread 100 ms or more in one go, with what to use instead.
-- On SIGTERM (systemd, Docker, Kubernetes) or Ctrl+C: stop accepting, answer requests under way with `connection: close`, wait for responses the drivers are still sending, close idle connections (the client retries on a new one), return after at most 10 s or at a second signal.
+- On SIGTERM (systemd, Docker, Kubernetes) or Ctrl+C (both caught before the `listening` line, so a signal sent right after it is not the process's default death): stop accepting, answer requests under way with `connection: close`, wait for responses the drivers are still sending, close idle connections (the client retries on a new one), return after at most 10 s or at a second signal.
 - Under `wisp dev` the app holds a pipe from the CLI as stdin and exits when it closes, so a killed `wisp dev` never leaves an app on the port.
 - A panic in a handler becomes a 500 for that request; the connection survives. A log line that cannot be written (stderr's reader gone) is dropped, not a panic.
-- TLS and compression belong to the reverse proxy or CDN (Caddy, nginx, Cloudflare), keeping the binary small and the hot path simple. Or run Wisp as a tower service under hyper or axum: [embed](/docs/embed/).
+- TLS and compression belong to the reverse proxy or CDN (Caddy, nginx, Cloudflare), keeping the binary small and the hot path simple. Or run Wisp as a tower service under hyper or axum: [Testing and mixing with Rust code](/docs/embed/).
 
 ### Settings
 
@@ -2879,7 +2937,7 @@ All from the environment. Strict: one that is set but invalid stops the server w
 | Setting | What it does |
 |---|---|
 | `PORT`, `HOST` | Where to listen: 3000, on 127.0.0.1 in dev and 0.0.0.0 otherwise |
-| `WISP_DEV` | Dev mode: `on` in debug builds, `off` in release (5xx details, `static/` from disk, dev log) |
+| `WISP_DEV` | Dev mode: `on` in debug builds, `off` in release (5xx details, `static/` from disk, dev log). The dev 5xx page is for debug builds only, even with `on` in a release build |
 | `WISP_THREADS` | Worker threads, one per CPU by default |
 | `WISP_BODY_LIMIT` | Largest request body (`1048576`, `512KB`, `10MB`); 1 MB by default |
 | `WISP_SECRET` | Signs cookies; at least 32 characters |
@@ -2933,6 +2991,7 @@ The io_uring and epoll drivers are the `unsafe` modules of a native build (ring 
 | Body buffer | grows as it arrives, at most 1 MB ahead; a large `Content-Length` alone allocates nothing |
 | Out of descriptors | accepting pauses 50 ms at a time, logged once a second |
 
+- A streamed answer still hears its client leave: past 64 KB sent behind it (a client that pipelined that much and left) the connection is closed instead of held until the stream writes again.
 - A refused request is answered, the sending side closed, and what the client still sends is read and dropped for up to 2 s (and 1 MB), so the close does not reset the connection before the client reads why.
 - On the wire: HTTP/1.1 without `Host`, or any request with two, is 400 (RFC 9112 section 3.2). An absolute-form target (`GET http://host/x`, as a proxy sends) is its path with its host as `Host` (3.2.2). `Expect: 100-continue` is answered only to HTTP/1.1.
 - These deadlines and buffer rules are one module of plain functions (`crates/wisp/src/policy.rs`) that tokio's sockets, epoll, the ring and the epoll driver's own answers all call, tested on a made-up clock.
@@ -2943,14 +3002,14 @@ The io_uring and epoll drivers are the `unsafe` modules of a native build (ring 
 Off by default; the `h2` feature compiles it (nothing of it otherwise). A connection opening with the HTTP/2 preface is served as h2c with prior knowledge (`src/h2.rs`): own HPACK (static and dynamic tables, Huffman), no new dependency.
 
 - Noticed only where the HTTP/1 parser already refused the bytes (`PRI * HTTP/2.0`), so HTTP/1 requests pay nothing, feature on or off.
-- Each stream's HEADERS and DATA become an HTTP/1.1 request through `Cx::from_request` and the same `decide`/`serialize`; the answer goes back as HEADERS and DATA. Streams are answered one at a time, in the order they end.
-- Limits: 100 concurrent streams (more refused), 16 KiB header lists and frames, 4 KiB HPACK table, the route's body limit (413). Flow control both ways, SETTINGS, PING, GOAWAY, RST_STREAM.
-- GOAWAY `ENHANCE_YOUR_CALM` ends the connection on: a reset flood (resets beyond answers + 200), a CONTINUATION flood (64 pieces or 16 KiB), 1000 frames asking no request, an HPACK bomb (decoded list over 16 KiB).
+- Each stream's HEADERS and DATA become an HTTP/1.1 request through `Cx::from_request` and the same `decide`/`serialize`; the answer goes back as HEADERS and DATA. Streams are answered at once: each request is a future polled beside the read, so WINDOW_UPDATE, PING, RST_STREAM and new HEADERS are taken during a long answer, DATA is interleaved within the windows, and a reset drops that stream's handler or body. SSE beside a GET works.
+- Limits: 100 concurrent streams (more refused), 16 KiB header lists and frames, 4 KiB HPACK table, the route's body limit (413). Flow control both ways, SETTINGS, PING, GOAWAY, RST_STREAM. A peer sending past the receive window gets FLOW_CONTROL_ERROR, and windows are given back after each read; past 1 MiB of incoming bodies only the oldest stream's window reopens.
+- GOAWAY `ENHANCE_YOUR_CALM` ends the connection on: a reset flood (resets beyond answers + 200; a reset the client makes us send, as MadeYouReset does, spends the same budget), a CONTINUATION flood (64 pieces or 16 KiB), 1000 frames asking no request, an HPACK bomb (decoded list over 16 KiB).
 - No `Upgrade: h2c`, no ALPN: the `tls` feature is the client's (`wisp::fetch`); the server has no TLS.
 
 ## One Request Entry Point
 
-The built-in server is one front end. `respond` decides an answer as a `Reply { status, headers, body }`; the HTTP/1.1 writer adds `content-length`, `date` and `connection`. Everything else calls the same code, with the same parser and limits ([embed](/docs/embed/), [deploy](/docs/deploy/)):
+The built-in server is one front end. `respond` decides an answer as a `Reply { status, headers, body }`; the HTTP/1.1 writer adds `content-length`, `date` and `connection`. Everything else calls the same code, with the same parser and limits ([Testing and mixing with Rust code](/docs/embed/), [Deploying](/docs/deploy/)):
 
 | Entry | What it is |
 |---|---|
@@ -3128,7 +3187,7 @@ fn before(cx: &mut Cx) -> Result<()> {
 | `static X: Shared<Vec<Todo>> = Shared::new(Vec::new());` | in-memory value every request shares: `X.lock().push(todo)`. A `Mutex` without `unwrap` (a panic while held leaves the value as it was); do not hold the guard across `.await` |
 | `static X: Table<Todo> = Table::new();` | rows under ids it gives |
 | `Table::saved("todos")` | also kept in the app's store (log files in `WISP_DATA`, or any database via `wisp::Store`), survives restarts |
-| `#[derive(Rest)]` | the type has a saved table, `Note::table()`, which a `+server.rs` serves (see [api](/docs/api/)) |
+| `#[derive(Rest)]` | the type has a saved table, `Note::table()`, which a `+server.rs` serves (see [APIs and platforms](/docs/api/)) |
 | `cx.set(value)` / `cx.get::<T>()` | hand a value along one request (`before` finds the user, pages read it) |
 | `cx.take::<T>()` | moves it out, so it need not be `Clone` |
 | `cx.bearer()` | token of an `Authorization: Bearer` header |
@@ -3189,7 +3248,7 @@ Rules:
 
 ## Client Code
 
-Browser reactivity is in [client](/docs/client/): a bare `<script>` per file, directives (`on:`, `bind:`, `:attr`, `class:`, `use:`, `transition:`), `{:expr}` holes, client `{:#if}` and `{:#each}`, client components, stores, a client router and `use:enhance`.
+Browser reactivity is in [Browser code](/docs/client/): a bare `<script>` per file, directives (`on:`, `bind:`, `:attr`, `class:`, `use:`, `transition:`), `{:expr}` holes, client `{:#if}` and `{:#each}`, client components, stores, a client router and `use:enhance`.
 
 - The build tokenizes the script (`wisp-build/src/js.rs`), finds which Rust values it uses, and sends only those as JSON (`wisp::Json`).
 - `live.js` (loaded only on pages with client code) runs it. `wisp.js` does forms, the morph and the router. No `eval`, no `with`; nothing is required with JS off.
@@ -3246,7 +3305,7 @@ Syntax | Compiles to
 `{cx.path()}` | `cx`, the request (`&Cx`), in pages, layouts, error pages
 
 - Expressions are Rust passed to `rustc` verbatim, so type errors are real. Inside `<script>`, `<style>` and HTML comments there are no holes, so CSS and JS braces need no escaping. Comments are stripped.
-- A bare `<script>` (no attributes) is the file's client script: compiled with the file's directives into an ES module, top-level names are its state, no collisions across files ([client](/docs/client/)). A `<script>` with `type` or `src` is copied through.
+- A bare `<script>` (no attributes) is the file's client script: compiled with the file's directives into an ES module, top-level names are its state, no collisions across files ([Browser code](/docs/client/)). A `<script>` with `type` or `src` is copied through.
 - Whitespace runs containing a newline collapse to one newline, except in `<pre>`/`<textarea>`. A block tag (`{#…}`, `{:…}`, `{/…}`, `{@const}`) alone on a line leaves no line behind.
 - Boolean attributes (`disabled`, `checked`, `selected`, `hidden`, `open`, `required`...) are on when present whatever the value, so `disabled="false"` disables. `name={cond}` takes a `bool` and prints the bare name or nothing; a hole in a quoted value is an error.
 - Braces are Rust on the server; a quoted directive value or `{:expr}` is JavaScript in the browser. No Rust expression goes inside `<script>`: use the Rust name or `data.x` (sent as JSON) there, or `data-*` attributes.
@@ -3289,7 +3348,7 @@ A `.wisp` file in `src/components` (any depth) is a component named by its file:
 - `{@render children()}` shows what the tag wraps. Children compile in the using page, so they see its `data`, loop variables and `{@const}`s.
 - Build checks: the component exists (the ones that do are listed if not), every given prop is declared, every prop without a default is given, a flag only goes to a `bool`, children only to a component that shows them.
 - The name starts with a capital and has a lowercase letter (`<DIV>` is HTML). Components cannot go in `<wisp:head>`; only components take `{@props}`. Component files hot-swap like templates.
-- The browser can draw components too (client blocks, `{:…}` props, `bind:`, `on:`): [client](/docs/client/).
+- The browser can draw components too (client blocks, `{:…}` props, `bind:`, `on:`): [Browser code](/docs/client/).
 
 ## Snippets
 
@@ -3316,7 +3375,7 @@ Markup a file renders more than once, or gives to a component:
 
 - Parameters are Rust `let` patterns, typed or not. The body sees the names around its definition, like a closure. A snippet is in scope after its `{/snippet}` to the end of its block; it cannot render itself (a component can).
 - A component takes one as a prop of type `Snippet<A, B>` (`Snippet` for none), which is `&dyn Fn(&mut Out, A, B)`: `{row}` or `row={row}` in its tag, or a `{#snippet row(…)}` among its children; it renders with `{@render row(…)}`.
-- `{:@render row(x)}` has the browser draw it: arguments are JavaScript, the body uses its parameters in `{:…}` ([client](/docs/client/)). A component the browser draws takes snippets the same way (`<List items={:xs} {row} />`, or `{#snippet row(x)}` among children) and draws one with `{:@render row(x)}` where `row` is a prop. The body is a block before the tag (`Dir::Snip`, which `snip` in extra.js binds), found among the anchors right before the component's own, so no first paint for a component given one.
+- `{:@render row(x)}` has the browser draw it: arguments are JavaScript, the body uses its parameters in `{:…}` ([Browser code](/docs/client/)). A component the browser draws takes snippets the same way (`<List items={:xs} {row} />`, or `{#snippet row(x)}` among children) and draws one with `{:@render row(x)}` where `row` is a prop. The body is a block before the tag (`Dir::Snip`, which `snip` in extra.js binds), found among the anchors right before the component's own, so no first paint for a component given one.
 
 ## Scoped Styles
 
@@ -3539,7 +3598,7 @@ fn counter() {
 | `next_chunk(&mut reply)` | next chunk of a stream |
 | `cookie(name)` | a stored cookie |
 
-More in AGENTS.md and api.md. Nothing upgrades in process, so `Response::websocket` is 501: test WebSockets against the running server (`tests/app/tests/http.rs` uses a `TcpStream`).
+More in [OpenAPI and tests](/docs/api-openapi/#tests) and AGENTS.md. Nothing upgrades in process, so `Response::websocket` is 501: test WebSockets against the running server (`tests/app/tests/http.rs` uses a `TcpStream`).
 
 ## WebSockets
 
@@ -3645,14 +3704,14 @@ Read once at start. Switches take `on`/`off` (also `1`/`0`, `true`/`false`). You
 | Name | What it does |
 |---|---|
 | `HOST`, `PORT` | listen address (`0.0.0.0:3000` in release, `127.0.0.1` in dev) |
-| `WISP_DEV` | dev mode: on in debug builds (5xx details, `static/` from disk, dev log) |
+| `WISP_DEV` | dev mode: on in debug builds (5xx details, `static/` from disk, dev log). `on` in a release build adds no dev page: the 5xx page is for debug builds only |
 | `WISP_THREADS` | worker threads, one per CPU |
 | `WISP_IO` | Linux: `epoll` instead of io_uring; `uring` fails at start where it does not work |
 | `WISP_MAX_CONNS` | open connections before new ones get a 503 (10000; 0 no cap) |
 | `WISP_BODY_LIMIT` | largest request body in bytes (1 MB); `const BODY_LIMIT` per route |
 | `WISP_HANDLER_TIMEOUT` | handler timeout in seconds |
 | `WISP_WS_IDLE` | seconds a quiet WebSocket lives (60; 0 never) |
-| `WISP_CLIENT_IP_HEADER` | header with the client address behind a proxy |
+| `WISP_CLIENT_IP_HEADER` | header with the client address behind a proxy; the last line of it is read, as the proxy appends it |
 | `WISP_SECURE_HEADERS` | `off` leaves out `nosniff` and `referrer-policy` |
 | `WISP_HSTS` | `on` adds `strict-transport-security` |
 | `WISP_PROBLEM_JSON` | `on`: errors as RFC 9457 problem JSON |
@@ -3674,6 +3733,15 @@ Read once at start. Switches take `on`/`off` (also `1`/`0`, `true`/`false`). You
 | `WISP_EDITOR`, `EDITOR` | what the dev error dialog's Open runs (`code -g`) |
 
 `#[derive(Rest)]` bearer tokens and OAuth client ids and secrets are read from the names their attributes give.
+
+## Set by the CLI and Hosts
+
+Not for you to set. `wisp build` and the host bridges set them for the app they build or run.
+
+| Name | What it does |
+|---|---|
+| `WISP_REQUEST_ONLY` | `1` while `wisp build` builds for Cloudflare, Pages, Vercel or Netlify: leaves the server loop for raw connections out of the wasm (541 KB instead of 584 KB for the bench app). An older `wisp` ignores it |
+| `WISP_WARM_UP` | the Cloudflare worker's warm-up instance: it answers one request with the runtime alone (no `init`, hook or random) so the real first request runs compiled code |
 
 ## Logs and Traces
 
@@ -3810,7 +3878,7 @@ wisp build --target node                     # dist/node
 ## Limits
 
 - A container build has no edge limits and runs the full feature set.
-- The Node build has the edge limits: WebSockets answer 501, and no `std::fs`, `std::thread`, `std::process` or `std::net`; use `wisp::spawn` and `wisp::sleep`. See [Host on Node](/docs/hosting/node/) and [What works on the edge](/docs/deploy-targets/).
+- The Node build has the edge limits (WebSockets work), and no `std::fs`, `std::thread`, `std::process` or `std::net`; use `wisp::spawn` and `wisp::sleep`. See [Host on Node](/docs/hosting/node/) and [What works on the edge](/docs/deploy-targets/#what-works-on-the-edge).
 
 ## Files and Data
 
@@ -3852,13 +3920,13 @@ The folder's `package.json` has `"start": "bun server.mjs"`. Copy the folder to 
 ## Limits
 
 - The app's own HTTP/1.1 parser answers over raw sockets (pipelining, keep-alive, chunked bodies, 413, 431 and each route's `BODY_LIMIT`). At startup a request over loopback must be answered as the app answers it (twice, on one connection); if not, it serves with `Bun.serve` and one stderr line says so.
-- WebSockets answer 501; use `Response::events` (SSE).
-- No threads or files: use `wisp::spawn` and `wisp::sleep`. See [What works on the edge](/docs/deploy-targets/).
+- WebSockets work: Wisp's parser on the raw socket, or `server.upgrade` with `Bun.serve`.
+- No threads or files: use `wisp::spawn` and `wisp::sleep`. See [What works on the edge](/docs/deploy-targets/#what-works-on-the-edge).
 - There is no cron trigger to write: the build says so and stops when the app uses `wisp::cron`.
 
 ## Files and Data
 
-- `Table::saved` and `Rest` are per-instance memory unless `WISP_STORE` is set (`libsql://`; see [Saved tables](/docs/deploy-targets/)).
+- `Table::saved` and `Rest` are per-instance memory unless `WISP_STORE` is set (`libsql://`; see [Saved tables](/docs/deploy-targets/#saved-tables)).
 
 ## More
 
@@ -3943,8 +4011,8 @@ For Workers, `wisp deploy init cloudflare` writes a GitHub Actions workflow that
 
 ## Limits
 
-- No threads, sockets or files: use `wisp::spawn` and `wisp::sleep`, not `tokio::spawn`. See [What works on the edge](/docs/deploy-targets/).
-- WebSockets answer 501; use `Response::events` (SSE). `Response::stream` and `Response::events` are live.
+- No threads, sockets or files: use `wisp::spawn` and `wisp::sleep`, not `tokio::spawn`. See [What works on the edge](/docs/deploy-targets/#what-works-on-the-edge).
+- WebSockets work through `WebSocketPair`, one connection to one isolate ([WebSockets](/docs/deploy-targets/#websockets)); `Response::stream` and `Response::events` (SSE) are live.
 - `wisp::channel`, `wisp::every` and `RateLimit` are not in the edge build.
 - Started timers and fetches keep the instance alive (`waitUntil`).
 - Cron: `wisp::cron` becomes `[triggers] crons` in `wrangler.toml` (Workers); Pages has no trigger, so the build says so and stops.
@@ -3952,7 +4020,7 @@ For Workers, `wisp deploy init cloudflare` writes a GitHub Actions workflow that
 ## Files and Data
 
 - `static/` goes into the build output and is served by Cloudflare before the app runs (Workers: `public` with an `[assets]` entry in `wrangler.toml`; Pages: beside `_worker.js`).
-- `Table::saved` and `Rest` are per-instance memory unless `WISP_STORE=d1:DB` is set, with a `[[d1_databases]]` binding named `DB` in `wrangler.toml`. See [Saved tables](/docs/deploy-targets/).
+- `Table::saved` and `Rest` are per-instance memory unless `WISP_STORE=d1:DB` is set, with a `[[d1_databases]]` binding named `DB` in `wrangler.toml`. See [Saved tables](/docs/deploy-targets/#saved-tables).
 
 ## More
 
@@ -3992,14 +4060,14 @@ deno run -A main.ts          # try it locally
 ## Limits
 
 - Deno Deploy has no sockets, so it always serves with `Deno.serve`. (Locally `deno run -A main.ts` reads raw sockets, and `WISP_NODE_HTTP=1` selects `Deno.serve`.)
-- WebSockets answer 501; use `Response::events` (SSE). `Response::stream` and `Response::events` are live.
-- No threads or files: use `wisp::spawn` and `wisp::sleep`. See [What works on the edge](/docs/deploy-targets/).
+- WebSockets work through `Deno.upgradeWebSocket`; a message past the limit closes with 4009, as Deno's `close` takes no 1009. `Response::stream` and `Response::events` are live.
+- No threads or files: use `wisp::spawn` and `wisp::sleep`. See [What works on the edge](/docs/deploy-targets/#what-works-on-the-edge).
 - `wisp::channel`, `wisp::every` and `RateLimit` are not in the edge build, and there is no cron trigger to write: the build says so and stops when the app uses `wisp::cron`.
 
 ## Files and Data
 
 - `dist/deno` has no separate static folder: the app answers for `static/` itself.
-- `Table::saved` and `Rest` are per-instance memory unless `WISP_STORE=deno-kv` (or `deno-kv:<path>` for a file or URL) is set. See [Saved tables](/docs/deploy-targets/).
+- `Table::saved` and `Rest` are per-instance memory unless `WISP_STORE=deno-kv` (or `deno-kv:<path>` for a file or URL) is set. See [Saved tables](/docs/deploy-targets/#saved-tables).
 
 ## More
 
@@ -4163,7 +4231,7 @@ npx netlify deploy --prod
 
 ## Limits
 
-- Per route: `const RUNTIME: wisp::Runtime = wisp::Runtime::Edge;` puts a route on the edge; the rest stay on the function. See [Edge runtime per route](/docs/deploy-targets/).
+- Per route: `const RUNTIME: wisp::Runtime = wisp::Runtime::Edge;` puts a route on the edge; the rest stay on the function. See [Edge runtime per route](/docs/deploy-targets/#edge-runtime-per-route).
 - Edge functions have the edge limits (no `std::fs`, `std::thread`, `std::process`, `std::net`, websockets); the build stops, naming the route, if an Edge route uses them.
 - WebSockets answer 501; use `Response::events` (SSE). Streaming is live.
 - Netlify keeps the instance alive (`waitUntil`) for started timers and fetches.
@@ -4173,7 +4241,7 @@ npx netlify deploy --prod
 ## Files and Data
 
 - `static/` goes to `public`, which Netlify serves; with `--edge` the edge function skips it via `excludedPath`.
-- `Table::saved` and `Rest` are per-instance memory. `WISP_STORE` accepts `libsql://` (Turso or any libSQL server, with `WISP_STORE_TOKEN`); see [Saved tables](/docs/deploy-targets/).
+- `Table::saved` and `Rest` are per-instance memory. `WISP_STORE` accepts `libsql://` (Turso or any libSQL server, with `WISP_STORE_TOKEN`); see [Saved tables](/docs/deploy-targets/#saved-tables).
 
 ## More
 
@@ -4212,13 +4280,13 @@ It runs `node server.mjs` and listens on `$PORT`. The output's `hosts/` folder h
 ## Limits
 
 - The app's own HTTP/1.1 parser answers over raw sockets. At startup a request over loopback must be answered as the app answers it (twice, on one connection); if not, or with `WISP_NODE_HTTP=1`, it serves with `node:http` (one stderr line says which). Only that path reads at most `WISP_BODY_LIMIT` (default 1 MB) of a body and answers 413 past it.
-- WebSockets answer 501; use `Response::events` (SSE). Streaming is live.
-- No threads or files: use `wisp::spawn` and `wisp::sleep`. See [What works on the edge](/docs/deploy-targets/).
+- WebSockets work: Wisp's parser on the raw socket, or the `upgrade` event with `WISP_NODE_HTTP=1`. Streaming is live.
+- No threads or files: use `wisp::spawn` and `wisp::sleep`. See [What works on the edge](/docs/deploy-targets/#what-works-on-the-edge).
 - There is no cron trigger to write: the build says so and stops when the app uses `wisp::cron`.
 
 ## Files and Data
 
-- `Table::saved` and `Rest` are per-instance memory unless `WISP_STORE` is set (`libsql://`; see [Saved tables](/docs/deploy-targets/)).
+- `Table::saved` and `Rest` are per-instance memory unless `WISP_STORE` is set (`libsql://`; see [Saved tables](/docs/deploy-targets/#saved-tables)).
 
 ## More
 
@@ -4332,7 +4400,7 @@ npx vercel deploy --prebuilt
 
 ## Limits
 
-- Per route: `const RUNTIME: wisp::Runtime = wisp::Runtime::Edge;` in a `+page.rs` or `+server.rs` puts that route on the Edge runtime and the rest stay on the Node function. See [Edge runtime per route](/docs/deploy-targets/).
+- Per route: `const RUNTIME: wisp::Runtime = wisp::Runtime::Edge;` in a `+page.rs` or `+server.rs` puts that route on the Edge runtime and the rest stay on the Node function. See [Edge runtime per route](/docs/deploy-targets/#edge-runtime-per-route).
 - The build stops, naming the route, if an Edge route uses what WebAssembly lacks (`std::fs`, `std::thread`, `std::process`, `std::net`, websockets).
 - WebSockets answer 501; use `Response::events` (SSE). Streaming is live.
 - Vercel may freeze the instance after the response, so finish background work first.
@@ -4342,7 +4410,7 @@ npx vercel deploy --prebuilt
 ## Files and Data
 
 - `static/` goes to `.vercel/output/static` and stays the CDN's.
-- `Table::saved` and `Rest` are per-instance memory. `WISP_STORE` accepts `libsql://` (Turso or any libSQL server, with `WISP_STORE_TOKEN`); see [Saved tables](/docs/deploy-targets/).
+- `Table::saved` and `Rest` are per-instance memory. `WISP_STORE` accepts `libsql://` (Turso or any libSQL server, with `WISP_STORE_TOKEN`); see [Saved tables](/docs/deploy-targets/#saved-tables).
 
 ## More
 
@@ -4402,7 +4470,7 @@ On Linux this writes a systemd unit with `Restart=on-failure` and `EnvironmentFi
 
 <!-- docs/overview.md -->
 
-Wisp is the framework for the AI age: ultra fast to run, cheap in AI tokens to write, durable, and flexible.
+Wisp is a fast, fun web framework for Rust: ultra fast to run, cheap in AI tokens to write, durable and flexible.
 
 | Area | What you get |
 |---|---|
@@ -4424,20 +4492,21 @@ Zero cost on the request hot path is the first rule: see [Benchmarks](/docs/benc
 - [Browser code](/docs/client/): scripts, directives, islands, stores and the router.
 - [APIs and platforms](/docs/api/): JSON APIs, validation, auth, OpenAPI and testing.
 - [Deploying](/docs/deploy/) covers every host. [Testing and mixing with Rust code](/docs/embed/) covers axum, hyper and Lambda.
-- [examples](https://github.com/wyziedevs/wisp/tree/main/examples): a demo app, a JSON API and Wisp inside axum.
+- [Examples](https://github.com/wyziedevs/wisp/tree/main/examples): a demo app, a JSON API and Wisp inside axum.
 
 Issues and pull requests are welcome; read the design rule at the top of [AGENTS.md](https://github.com/wyziedevs/wisp/blob/main/llms/AGENTS.md) first. License: [MIT](https://github.com/wyziedevs/wisp/blob/main/LICENSE).
 
 ## Status
 
-Every feature passes four gates: fast (no cost for apps that don't use it), cheap (one line, file or attribute), durable (checked at build time, no new runtime panics) and done (tests, an AGENTS.md entry, a docs section). The roadmap runs in five phases.
+Wisp is young and still being hardened: see [Security and hardening](/docs/security/) for the tests, the fuzzing and what is not claimed.
+
+Every feature passes four gates: fast (no cost for apps that don't use it), cheap (one line, file or attribute), durable (checked at build time, no new runtime panics) and done (tests, an AGENTS.md entry, a docs section). Wisp was built in five phases, all shipped.
 
 - Phase 1, the compiler: scoped styles, source maps, TypeScript in scripts, accessibility warnings, public and private environment variables (`env.PUBLIC_X`), Content Security Policy.
 - Phase 2, developer experience: editor support (`wisp lsp`), formatter (`wisp fmt`), hot reload that keeps state, devtools, browser E2E tests (`wisp test --browser`).
 - Phase 3, rendering and routing: SPA mode (`const SSR: bool = false;`), code loading on demand, server functions (`#[remote]`), shallow routing, snapshots, per-page prerendering (`const PRERENDER: bool = true;`), trailing slash.
 - Phase 4, content and assets: Markdown pages, image optimization, i18n, sitemap and robots.txt.
 - Phase 5, platform: service worker and PWA, web components (`{@element "x-card"}`), third-party UI (`wisp ui add`, framework islands), observability (`WISP_LOG=json`, `/_wisp/metrics`, OpenTelemetry).
-- Planned order: phase 1 first (scoped styles, source maps, TypeScript, accessibility warnings, env variables, CSP), then phase 2 (editor support and formatter first), then phase 3 (`#[remote]` and loading on demand first). Phases 4 and 5 are mostly independent.
 - Decisions: images use a pinned `cwebp` (sha256 checked, `$WISP_CWEBP` override; if unavailable the build warns and serves the original); Markdown uses `pulldown-cmark` at build time only; E2E tests are Rust only; i18n is supported while Wisp's own docs stay English.
 
 
@@ -4456,7 +4525,7 @@ Welcome to the Wisp docs. This page gives you a tour of the concepts you will us
 
 ## Create an App
 
-You need [Rust](https://rustup.rs) 1.88 or later. Install the `wisp` command, make an app and start the dev server:
+You need [Rust](https://rustup.rs) 1.88 or later. Install the `wisp` command, make an app and start the dev server. `wisp new` asks a few questions: press Enter for the defaults, or add `-y`.
 
 ```bash
 cargo install --git https://wisp.ar0.eu wisp-cli
@@ -4647,6 +4716,59 @@ You now know most of what an everyday Wisp app uses. Where to go next:
 - Working with an AI agent: [Design and files](/docs/design-editors/) covers `AGENTS.md` and `wisp mcp`.
 
 
+<!-- docs/security.md -->
+
+Wisp is young. It has not been audited, and nothing here claims it cannot be broken. This page says what is done, how it is tested, and what was found and fixed, so you can judge it. Defaults and the CSP are in [CLI, dev loop and security](/docs/design-cli/), limits in [Runtime and build](/docs/design-runtime/).
+
+## Status: Young, Actively Hardened
+
+- More than 1,000 tests run on every change: the runtime, the compiler, the CLI, the edge bridges and an app that uses every feature, plus a test that compiles every code sample of the reference.
+- Parsers are fuzzed with a seeded generator that breaks inputs the way hostile clients do: the HTTP/1 parser, HTTP/2 frames and HPACK, JSON, forms, cookies, WebSocket frames and the signing code. The compiler's template and Rust scanners are fuzzed with malformed, deeply nested and huge input, and `wisp fmt` with a round trip that must be idempotent and keep every visible character. A failing seed repeats.
+- A table of request-smuggling shapes (conflicting lengths, doubled `Transfer-Encoding`, bad chunking) must each be refused.
+- Every fast path is proven at startup and falls back, and nothing after startup panics. No `unsafe` outside the Linux I/O drivers and the edge exports.
+- Each pass hunts for bugs in one area (HTTP, the app and browser script, the build, the CLI, the edge bridges) and each finding gets a test. The list below is what the latest passes changed.
+
+## What the Latest Passes Hardened
+
+**Servers**
+
+- HTTP/2: a reset a client makes us send (the MadeYouReset shape) spends the same reset budget as one it sends. Past 1 MiB of incoming bodies only the oldest stream's window reopens. A peer sending past the receive window gets FLOW_CONTROL_ERROR. `content-length` is digits only, and repeats must agree.
+- A streamed answer still hears its client leave after 64 KB were sent behind it, so the connection and its `WISP_MAX_CONNS` slot are freed.
+- `WISP_CLIENT_IP_HEADER` reads the last line of the header, which the proxy appended, not a first line the client forged.
+- `Error::redirect` with a CR or LF in the location is a logged 500, and a non-3xx status is logged and sent as 303. Neither panics or splits a header.
+- A dev 5xx page never shows in a release build, even with `WISP_DEV=on`. Stop signals are caught before the `listening` line.
+
+**Files and uploads**
+
+- Upload file names lose a drive (`C:`) and an NTFS stream (`:stream`), as well as paths.
+- Static files and `Response::file_in` answer 404 for Windows device names (`nul`, `CON.txt`, `COM1`) and for names Windows trims (`a.txt.`, `a.txt `).
+
+**Browser script and dev mode**
+
+- The template-swap and the other dev endpoints answer only a loopback `Host` (against DNS rebinding), and the swap also needs the `x-wisp-dev` header, so another site cannot rewrite your templates.
+- `wisp.js` leaves cross-origin form posts to the browser. A form field named `__wispEnhance` cannot replace `use:enhance`. The `javascript:` scheme guard on URL attributes is fuzzed with random URLs.
+
+**Build and CLI**
+
+- A route file name that is not UTF-8 or has a control character is an error, not text injected into generated comments. `wisp fmt` no longer panics on a tag cut off after an attribute name.
+- `wisp service install` quotes `ExecStart`, escapes the plist XML, and refuses an app folder with a quote, `%` or a control character in its path, which could add unit directives. `wisp mcp` caps a message line at 16 MiB instead of buffering without bound.
+
+**Edge hosts**
+
+- Raw connections on Node, Bun and Deno have the native head and body deadlines: a trickled request is refused 408 when its next bytes come.
+- The bridges that read a body with the host's `fetch` stop one byte past the route's limit and the app answers 413, so an endless body is not held in memory.
+- A WebSocket message past the limit closes with 1009, and 4009 on Deno, whose `close` accepts no 1009.
+- Windows hosts pass environment names to the app upper-cased, so reading `PATH` works.
+
+## Not Claimed
+
+- No audit, no bug bounty and no certification. A TLS server is not built in: put a proxy in front for browsers, as [Deploying](/docs/deploy/) says.
+- Fuzzing and tests find what they are written to find. The fuzz targets are in the repository: read them.
+- A debug build is for your machine: behind a proxy on the same machine every peer is loopback, so never serve one.
+
+Found something? Open an issue on [GitHub](https://github.com/wyziedevs/wisp), and a failing request or file is the best report.
+
+
 <!-- docs/serve.md -->
 
 All on the built-in server; each costs nothing for what does not use it.
@@ -4669,7 +4791,7 @@ All on the built-in server; each costs nothing for what does not use it.
 
 <!-- docs/tokens.md -->
 
-Most app code is written by AI, so an app's cost is measured in tokens, and keeping it low is a Wisp principle ([design](/docs/design/)). Run `cargo run -q -p wisp-tokens --release` for the numbers. The four-app comparison against six frameworks: [Tokens, app by app](/docs/tokens-apps/).
+An AI reads and writes code by the token, so an app's cost is measured in tokens, and keeping it low is a Wisp principle ([Design and files](/docs/design/)). Run `cargo run -q -p wisp-tokens --release` for the numbers. The four-app comparison against six frameworks: [Tokens, app by app](/docs/tokens-apps/).
 
 ## Five Features, Counted by `wisp-tokens`
 
@@ -4687,7 +4809,7 @@ The Node apps: Nuxt is file routes, server routes in `server/api` and `useFetch`
 
 | Stack | list | form | api | layout | search | data | setup | total | chars / 4 | files |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| **Wisp** | 58 | 89 | 31 | 60 | 96 | 108 | 0 | **442** | 270 | 6 |
+| **Wisp** | 58 | 89 | 31 | 60 | 111 | 115 | 0 | **464** | 283 | 6 |
 | SvelteKit 2 | 128 | 425 | 57 | 83 | 192 | 72 | 0 | 957 | 620 | 9 |
 | Next.js 15 | 107 | 400 | 44 | 108 | 241 | 71 | 0 | 971 | 706 | 8 |
 | Nuxt 4 (Vue) | 96 | 429 | 22 | 96 | 158 | 71 | 0 | 872 | 596 | 8 |
@@ -4696,11 +4818,11 @@ The Node apps: Nuxt is file routes, server routes in `server/api` and `useFetch`
 | Axum 0.8 + askama | 145 | 553 | 29 | 104 | 217 | 123 | 285 | 1456 | 1021 | 7 |
 | Actix Web 4 + tera | 164 | 565 | 46 | 104 | 237 | 123 | 292 | 1531 | 1061 | 7 |
 
-Wisp's `data` is longer than JavaScript's: a Rust type with its fields' types. Everything else is shorter, the form most of all. Of what is left, 60 tokens are file paths, 108 the Rust type and data, and the rest is markup every stack writes.
+Wisp's `data` is longer than JavaScript's: a Rust type with its fields' types. Everything else is shorter, the form most of all. Against Wisp's total, Nuxt is 1.9 times, SvelteKit and Next.js 2.1, Express 2.5, React 3.0, Axum 3.1 and Actix 3.3. Of what is left, 60 tokens are file paths, 115 the Rust type and data, and the rest is markup every stack writes.
 
 ## A Real App: Auth, CRUD, Upload, Live, a Component
 
-`bench/tokens/real` is sign up and in, a posts table with validation, edit, delete, pages and live refresh, an avatar upload and a toggle component: 10 files, **999** tokens in Wisp, 3.5x less than SvelteKit 3 and 3.3x less than Next.js 15. Its tests check every feature.
+`bench/tokens/real` is sign up and in, a posts table with validation, edit, delete, pages and live refresh, an avatar upload and a toggle component: 10 files, **1,001** tokens in Wisp, 3.5x less than SvelteKit 3 and 3.3x less than Next.js 15. Its tests check every feature.
 
 ## Method
 
@@ -4746,13 +4868,13 @@ Estimated tokens (files):
 
 Wisp is the shortest on every app, and in all 39% shorter than the next (Rails with its scaffold). The api is a type: Rails' scaffold is the only other that comes close, with a generator command, a model, a route and a controller to edit. Characters / 4 ranks them the same way (Wisp 346, Rails 726, SvelteKit 959).
 
-The apps are not equal in what they do, and the difference favors Wisp's api. Its 59 tokens keep the notes across restarts and crashes (a log file per table in `WISP_DATA`); of the others only Rails does (SQLite, through Active Record), and the rest keep them in memory, as the task allows. The same 59 tokens also answer filters by field, sorting, cursor pages, field selection, ETags with 304 and 412, bulk creates and idempotent retries, which no other version here has.
+The apps are not equal in what they do, and the difference favors Wisp's api. Its 59 tokens keep the notes across restarts and crashes (a log file per table in `WISP_DATA`); of the others only Rails does (SQLite, through Active Record), and the rest keep them in memory, as the task allows. The same 59 tokens also answer filters by field, sorting, cursor pages, field selection, ETags with 304 and 412, and bulk creates, which no other version here has.
 
 What a real API adds in Wisp:
 
 - a `created_at: String` field: 6 tokens
 - a hook such as `fn before_create(note: &mut Note) -> Result { Ok(()) }`: 22 with its body
-- every table in SQLite instead of log files: a `wisp::Store` of 373 (docs/api.md), written once per app
+- every table in SQLite instead of log files: a `wisp::Store` of 373 ([Where rows are kept](/docs/api-tables/)), written once per app
 
 ## The Wisp Versions
 
@@ -4830,13 +4952,14 @@ cd guestbook
 wisp dev
 ```
 
-Open `http://127.0.0.1:3000`. Leave `wisp dev` running: it rebuilds when you save a file and reloads the page. The app has these files, and you will add a few more:
+`wisp new` asks a few questions (press Enter for the defaults, or add `-y`). Open `http://127.0.0.1:3000`. Leave `wisp dev` running: it rebuilds when you save a file and reloads the page. The app has these files, and you will add a few more:
 
 ```
 src/main.rs                 wisp::main!();
 src/app.html                the page shell
 src/app.css                 styles
 src/routes/+page.wisp       the home page
+src/routes/+layout.wisp     wraps every page
 src/routes/+error.wisp      the error page
 ```
 
@@ -4869,7 +4992,7 @@ struct Entry {
 pub static ENTRIES: Table<Entry> = Table::saved();
 ```
 
-`#[model]` makes `Entry` something a form can fill and a table can store, and it and its fields public. `#[validate]` states the rule once: a name has 1 to 40 characters and a message 1 to 200. `Table::saved()` keeps the rows in a log file, so they survive a restart.
+`#[model]` makes `Entry` something a form can fill and a table can store, and makes it and its fields public. `#[validate]` states the rule once: a name has 1 to 40 characters and a message 1 to 200. `Table::saved()` keeps the rows in a log file, so they survive a restart.
 
 ## Add the Form
 
@@ -5194,7 +5317,7 @@ let note = ENTRIES.get(id).or_404()?;
 
 - [Quick Start](/docs/quick-start/): the same ideas on one page.
 - [Actions, forms and UI](/docs/design-forms/): more validation rules, uploads and the built-in UI.
-- [Data, files and jobs](/docs/data/): tables, relay, files and background jobs.
+- [Data, files and jobs](/docs/data/): tables, files and background jobs.
 - [Browser code](/docs/client/): runes, directives, islands and the router.
 - [Testing and mixing with Rust code](/docs/embed/): more on testing an app in process.
 
@@ -5211,15 +5334,15 @@ Zero cost on the request hot path: a route pays only for the features it uses, a
 
 ## Cheap to Write
 
-AI writes most code now, and every token costs time and money. Wisp uses conventions over configuration, types the compiler infers, and forms that write their own inputs and errors.
+An AI pays for every token it reads and writes, in time and money. Wisp uses conventions over configuration, types the compiler infers, and forms that write their own inputs and errors.
 
-- The same five features take 442 tokens in Wisp, 957 in SvelteKit and 971 in Next.js.
-- A larger app with sign up, uploads and live refresh takes 995, against 3473 and 3331.
+- The same five features take 464 tokens in Wisp, 957 in SvelteKit and 971 in Next.js.
+- A larger app with sign up, uploads and live refresh takes 1,001, against 3,473 and 3,331.
 - `cargo run -p wisp-tokens` counts every hand-written file and its path with a byte-pair style estimate. See [Tokens](/docs/tokens/).
 
 For agents: [AGENTS.md](https://github.com/wyziedevs/wisp/blob/main/llms/AGENTS.md) is the whole reference in one file, and `wisp mcp` serves the docs over MCP (`claude mcp add wisp -- wisp mcp`).
 
-## And
+## And More
 
 - One binary carries its styles and static files. It runs on a VPS, in a container, as static HTML or on an edge host ([Deploying](/docs/deploy/)).
 - Every fast path is proven at startup, falls back, and never panics after startup.
