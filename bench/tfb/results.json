@@ -4285,7 +4285,7 @@
      ]
     },
     "next": {
-     "failed": "out of memory",
+     "failed": "No valid result: no pipelined response completed (heap raised to 8 GB, still none)",
      "lat_avg_ms_median": 0,
      "lat_p99_ms_median": null,
      "non2xx": 0,
@@ -4448,7 +4448,7 @@
      ]
     },
     "next": {
-     "failed": "out of memory",
+     "failed": "No valid result: no pipelined response completed (heap raised to 8 GB, still none)",
      "lat_avg_ms_median": 0,
      "lat_p99_ms_median": null,
      "non2xx": 0,
@@ -4604,7 +4604,7 @@
      ]
     },
     "next": {
-     "failed": "out of memory",
+     "failed": "No valid result: no pipelined response completed (heap raised to 8 GB, still none)",
      "lat_avg_ms_median": 0,
      "lat_p99_ms_median": null,
      "non2xx": 0,

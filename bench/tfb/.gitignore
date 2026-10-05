@@ -7,3 +7,5 @@ build/
 .svelte-kit/
 raw/.times
 !package-lock.json
+.nuxt/
+.output/

@@ -157,9 +157,9 @@ with the numbers they would be a different scale from the tables above.
   `WISP_MAX_CONNS=10000` answers `503` past that many connections.
 - **Pipelined rows have no p99** (wrk), and latency is queueing under a 16-deep pipeline, not
   request latency.
-- Next.js ran out of memory (2 GB V8 heap) during the pipelined plaintext test and was restarted
+- Next.js has no valid pipelined plaintext result: no 16-deep pipelined response completed within wrk's timeout. It was restarted
   before the JSON test (`WORKLOADS=json ./run.sh bench next`); its plaintext numbers are what was
-  measured before and during that failure. Re-run with `NODE_OPTIONS=--max-old-space-size=8192` (run.sh `NEXT_HEAP_MB`, 7.9 GB host, two
+  measured before and during that failure (the 2 GB V8 heap was first suspected). Re-run with `NODE_OPTIONS=--max-old-space-size=8192` (run.sh `NEXT_HEAP_MB`, 7.9 GB host, two
   runs, raw in `raw/next-heap8192/`): still 0 req/s at almost every level (best single run 1,489 at 4096), no
   out-of-memory message, so the heap was not the cause; Next.js is CPU-saturated and wrk completes no
   16-deep pipelined response within its timeout. Steal peaked at 12 and 16 % (mean 2.5 and 3.5 %) in 5 s samples, so

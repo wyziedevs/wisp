@@ -17,7 +17,7 @@ LABEL = {
     "sveltekit": "SvelteKit (not TFB)", "next": "Next.js (not TFB)", "nuxt": "Nuxt (not TFB)",
 }
 # Why a contender's runs at one level all completed no request, from the run notes in RESULTS.md.
-FAILED = {("next", "plaintext"): "out of memory"}
+FAILED = {("next", "plaintext"): "No valid result: no pipelined response completed (heap raised to 8 GB, still none)"}
 UNIT = {"us": 1e-3, "ms": 1.0, "s": 1000.0, "m": 60000.0}
 
 
@@ -141,7 +141,7 @@ def main():
                 if r["socket_errors"]:
                     err.append(f"{r['socket_errors']} socket")
                 if r["failed"]:
-                    cells = [rank, LABEL[c], f"Failed ({r['failed']})", "-", "-", "-", "-",
+                    cells = [rank, LABEL[c], (r['failed'] if r['failed'].startswith("No valid") else f"Failed ({r['failed']})"), "-", "-", "-", "-",
                              ', '.join(err) or '-', f"{r['steal_pct_max']:.1f}", "-"]
                 else:
                     cells = [rank, LABEL[c], f(r['rps_median']), f(r['rps_min']), f(r['rps_max']),

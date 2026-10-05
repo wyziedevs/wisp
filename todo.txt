@@ -4,3 +4,4 @@ Wisp TODO
 
 - Publish the VS Code extension (editors/vscode): create a Marketplace publisher (and Open VSX), then run: npx @vscode/vsce publish --skip-license -p TOKEN
 - Translate all docs to different langauges and make the framework easy to find and accessable to learn for everyone
+- Make the wisp-web crate (and wisp-web-rt, -build, -macros, -shared) on crates.io so `cargo install wisp-web` works: follow RELEASING.md (cargo login, publish in order, flip WISP_DEP, tag v*), then update wispweb.dev
