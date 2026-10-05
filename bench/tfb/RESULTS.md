@@ -80,6 +80,16 @@ Deviations from TFB source, all of them: database parts removed; Express and Fas
 (TFB's dockerfiles use 20 and 24); Wisp is built without `target-cpu=native`, which gives the Rust
 contenders a small edge Wisp does not get.
 
+Allocators, LTO and wire details, as built:
+
+- Axum: mimalloc, `lto = "fat"`, `codegen-units = 1`, `target-cpu=native`.
+- Actix: snmalloc, `lto = true` (thin-local LTO, not fat), `codegen-units = 1`, `target-cpu=native`; Actix sends `Server: A` (TFB's own value).
+- Wisp: system allocator, `lto = "fat"`, `codegen-units = 1`, no `target-cpu=native`.
+- `Content-Type` is the bare TFB value on every contender: `text/plain` for `/plaintext`, `application/json` for `/json`
+  (Wisp, Axum and the Hono entries set it explicitly; their framework defaults add `; charset=utf-8`).
+- wrk and the server share one VM on separate pinned cores (server `0-1`, client `2-3`).
+- `hono-bun` pins `hono` 3.12.12 exactly in `package.json`; there is no `bun.lock` because bun was not available to generate one.
+
 Wisp on this VM: `io_uring` is refused by the kernel (`registering the buffer ring: Invalid
 argument`), so Wisp runs on its `epoll` driver. That is Wisp's own fallback, not a setting.
 
