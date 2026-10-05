@@ -79,6 +79,29 @@ fn paths() {
     ] {
         assert_eq!(safe_relative_path(bad), None, "{bad}");
     }
+    // Windows reads these as devices, or as another file's name.
+    for name in [
+        "nul",
+        "CON",
+        "a/aux.txt",
+        "com1",
+        "Lpt9.log",
+        "a.txt.",
+        "a.txt ",
+    ] {
+        assert_eq!(stays_inside(name), !cfg!(windows), "{name}");
+    }
+    for name in [
+        "console",
+        "nul_",
+        "com",
+        "lpt10",
+        "a.b",
+        "ab\u{e9}",
+        "\u{e9}\u{e9}",
+    ] {
+        assert!(stays_inside(name), "{name}");
+    }
 }
 
 use crate::fuzz::{Fuzz, Rng, SMALL, mutate};

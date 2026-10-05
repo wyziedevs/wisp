@@ -109,6 +109,7 @@ pub(crate) mod edge_conn;
 #[path = "../h2.rs"]
 mod h2;
 
+mod catch;
 mod clock;
 mod conn;
 mod decide;
@@ -116,9 +117,11 @@ mod files;
 mod listen;
 mod parse;
 mod reply;
+mod routing;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use catch::*;
 pub(crate) use clock::*;
 pub(crate) use conn::*;
 pub use decide::*;
@@ -126,3 +129,4 @@ pub(crate) use files::*;
 pub(crate) use listen::*;
 pub(crate) use parse::*;
 pub use reply::*;
+pub use routing::*;

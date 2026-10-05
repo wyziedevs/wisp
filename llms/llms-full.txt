@@ -2693,7 +2693,7 @@ async fn get(name: String) -> Result<Response> {
 }
 ```
 
-- `Response::file_in(dir, name)` reads without blocking, typed by extension. A name reaching outside the directory (`..`, absolute path, drive) is a 404, like a missing file. The name may come straight from the URL.
+- `Response::file_in(dir, name)` reads without blocking, typed by extension. A name reaching outside the directory (`..`, absolute path, drive, a Windows device such as `nul`) is a 404, like a missing file. The name may come straight from the URL.
 - `Response::download("report.csv", bytes)` sends bytes the browser saves as that file name.
 
 ## Built-In UI

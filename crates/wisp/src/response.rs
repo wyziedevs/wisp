@@ -127,8 +127,9 @@ impl Response {
     /// `Response::file_in("uploads", cx.param("name")).await?`.
     ///
     /// `name` may come from the URL: one that would reach outside `dir`
-    /// (`..`, an absolute path, a drive) is a 404, as is a file that does not
-    /// exist. It is read without blocking the thread.
+    /// (`..`, an absolute path, a drive, a Windows device such as `nul`) is a
+    /// 404, as is a file that does not exist. It is read without blocking
+    /// the thread.
     pub async fn file_in(dir: impl AsRef<std::path::Path>, name: &str) -> Result<Response> {
         if !http::stays_inside(name) {
             return Err(Error::new(404, "Not Found"));
