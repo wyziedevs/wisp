@@ -54,7 +54,7 @@ If, else if, else
 Each and match
 ================================================================================
 
-{#each list as item, i}<li>{item}</li>{:else}<li>none</li>{/each}
+{#each list as item, i if item.ok}<li>{item}</li>{:else}<li>none</li>{/each}
 {#match kind}{:case Kind::A}a{:case _}b{/match}
 
 --------------------------------------------------------------------------------

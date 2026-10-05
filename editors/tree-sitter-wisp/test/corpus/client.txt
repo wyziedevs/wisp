@@ -54,7 +54,7 @@ Client holes, spread and island
 Client blocks
 ================================================================================
 
-{:#each items.filter((i) => matches(i.name, q)) as i (i.id)}
+{:#each items as i if matches(i.name, q)}
   <li>{:i.name}</li>
 {:else}
   <li>none</li>

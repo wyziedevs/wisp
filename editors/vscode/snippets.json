@@ -51,7 +51,7 @@
   },
   "Each": {
     "prefix": "each",
-    "description": "{#each list as item}…{:else}…{/each}",
+    "description": "{#each list as item if cond}…{:else}…{/each}: if is optional",
     "body": ["{#each ${1:items} as ${2:item}}", "  $0", "{:else}", "  ${3:None yet.}", "{/each}"]
   },
   "Match": {
@@ -71,7 +71,7 @@
   },
   "Client each": {
     "prefix": ":each",
-    "description": "{:#each items as it (it.id)}…{:/each}: a keyed list in the browser",
+    "description": "{:#each items as it (it.id) if cond}…{:/each}: a keyed, filtered list in the browser; key and if are optional",
     "body": ["{:#each ${1:items} as ${2:it} (${2:it}.id)}", "  $0", "{:/each}"]
   }
 }

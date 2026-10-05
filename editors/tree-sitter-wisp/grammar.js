@@ -158,7 +158,7 @@ module.exports = grammar({
 
     _code_part: ($) => choice(/[^{}"]+/, /"([^"\\]|\\.)*"/, seq('{', repeat($._code_part), '}')),
 
-    // Blocks: `{#if c}…{:else}…{/if}` (Rust), `{:#each xs as x}…{:/each}` (JS;
+    // Blocks: `{#if c}…{:else}…{/if}` (Rust), `{:#each xs as x if c}…{:/each}` (JS;
     // `{/each}` ends it too).
     block: ($) =>
       seq(
