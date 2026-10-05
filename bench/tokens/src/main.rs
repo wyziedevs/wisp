@@ -84,16 +84,50 @@ struct Count {
     chars: usize,
 }
 
+/// Prints each suite's table and writes the totals to `results.json`
+/// (`{"<dir>": [{"stack", "tokens", "files"}..]}`), which the docs site reads.
 fn main() {
+    let mut json = Vec::new();
     for (i, suite) in SUITES.iter().enumerate() {
         if i > 0 {
             println!();
         }
-        table(suite);
+        let rows: Vec<String> = table(suite)
+            .iter()
+            .map(|(name, tokens, files)| {
+                let name = name.trim_matches('*');
+                format!("{{\"stack\": \"{name}\", \"tokens\": {tokens}, \"files\": {files}}}")
+            })
+            .collect();
+        json.push(format!(
+            "  \"{}\": [
+    {}
+  ]",
+            suite.dir,
+            rows.join(
+                ",
+    "
+            )
+        ));
     }
+    let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("results.json");
+    let _ = fs::write(
+        out,
+        format!(
+            "{{
+{}
+}}
+",
+            json.join(
+                ",
+"
+            )
+        ),
+    );
 }
 
-fn table(suite: &Suite) {
+/// Prints a suite's table; returns each stack's (name, tokens, files counted).
+fn table(suite: &Suite) -> Vec<(&'static str, usize, usize)> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(suite.dir);
     let features = suite.features;
     let scaffold = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -163,6 +197,9 @@ fn table(suite: &Suite) {
         println!("{name} counted: {}", listed.join(", "));
         println!("{name} not counted: {}", skipped.join(", "));
     }
+    rows.iter()
+        .map(|(name, per, files)| (*name, per.iter().map(|c| c.tokens).sum(), *files))
+        .collect()
 }
 
 fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -187,7 +224,16 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
             ) {
                 walk(&path, out);
             }
-        } else {
+        } else if !matches!(
+            // Lockfiles are written by the package manager, never by hand.
+            &*name,
+            "package-lock.json"
+                | "pnpm-lock.yaml"
+                | "yarn.lock"
+                | "bun.lock"
+                | "bun.lockb"
+                | "Cargo.lock"
+        ) {
             out.push(path);
         }
     }

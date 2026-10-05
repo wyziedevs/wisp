@@ -1,0 +1,17 @@
+{
+  "apps": [
+    {"stack": "Wisp", "tokens": 476, "files": 7},
+    {"stack": "SvelteKit", "tokens": 1134, "files": 9},
+    {"stack": "Next.js", "tokens": 1146, "files": 8},
+    {"stack": "Nuxt (Vue)", "tokens": 1043, "files": 8},
+    {"stack": "React (Vite + Express)", "tokens": 1606, "files": 10},
+    {"stack": "Express (Node.js)", "tokens": 1394, "files": 8},
+    {"stack": "Axum + askama", "tokens": 1803, "files": 7},
+    {"stack": "Actix + tera", "tokens": 1878, "files": 7}
+  ],
+  "real": [
+    {"stack": "Wisp", "tokens": 1016, "files": 11},
+    {"stack": "SvelteKit", "tokens": 3497, "files": 21},
+    {"stack": "Next.js", "tokens": 3349, "files": 20}
+  ]
+}
