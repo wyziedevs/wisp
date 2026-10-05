@@ -684,14 +684,8 @@ pub(super) fn answered(
     cx: &mut Cx,
     reply: &mut Reply,
     started: Option<Instant>,
-    mut failure: Option<String>,
+    failure: Option<String>,
 ) {
-    if cx.unsigned() {
-        *reply = Reply::default();
-        reply.set_plain(500, "Internal Server Error");
-        failure = Some(crate::sign::NO_SECRET.into());
-        cx.drop_page_headers();
-    }
     cx.send_headers(&mut reply.headers);
     let method = cx.method.as_str();
     if let Some(started) = started

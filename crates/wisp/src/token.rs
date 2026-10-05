@@ -1,7 +1,7 @@
 //! Signed expiring tokens: a password reset, an email check, a magic link.
 //!
 //! ```ignore
-//! let link = format!("/reset?t={}", wisp::token("reset", &user.id, Duration::from_secs(3600))?);
+//! let link = format!("/reset?t={}", wisp::token("reset", &user.id, Duration::from_secs(3600)));
 //! let id: u64 = wisp::untoken("reset", &t)?;   // 400 unless it is ours, this purpose, and fresh
 //! ```
 //!
@@ -30,9 +30,8 @@ const MAX: usize = 4096;
 
 /// A token holding `value`, good for `ttl`, for one `purpose` (`"reset"`,
 /// `"verify"`, or `""` for none): [`untoken`] with another purpose refuses
-/// it. Panics on `.` or a newline in `purpose`. A 500 without
-/// `WISP_SECRET` to sign with (outside dev).
-pub fn token(purpose: &str, value: &(impl Json + ?Sized), ttl: Duration) -> Result<String> {
+/// it. Panics on `.` or a newline in `purpose`.
+pub fn token(purpose: &str, value: &(impl Json + ?Sized), ttl: Duration) -> String {
     assert!(
         !purpose.contains(['.', '\n']),
         "a token's purpose is a word, not {purpose:?}"
@@ -42,11 +41,10 @@ pub fn token(purpose: &str, value: &(impl Json + ?Sized), ttl: Duration) -> Resu
     let expiry = unix_now().saturating_add(ttl.as_secs());
     out.push('.');
     out.push_str(&expiry.to_string());
-    let mac = cookie_mac(NAME, &format!("{purpose}\n{out}"))
-        .ok_or_else(|| Error::new(500, "Internal Server Error"))?;
+    let mac = cookie_mac(NAME, &format!("{purpose}\n{out}"));
     out.push('.');
     base64(&mut out, &mac, true);
-    Ok(out)
+    out
 }
 
 /// The value in `token`, if Wisp made it for `purpose`, which [`token`] was
@@ -93,15 +91,15 @@ mod tests {
         let mut t = format!("{}.{expiry}", base64_of(body));
         let mac = cookie_mac(name, &format!("{purpose}\n{t}"));
         t.push('.');
-        base64(&mut t, &mac.unwrap(), true);
+        base64(&mut t, &mac, true);
         t
     }
 
     #[test]
     fn round_trip() {
-        let t = token("", &42u64, HOUR).unwrap();
+        let t = token("", &42u64, HOUR);
         assert_eq!(untoken::<u64>("", &t).unwrap(), 42);
-        let s = token("reset", "ada@example.com", HOUR).unwrap();
+        let s = token("reset", "ada@example.com", HOUR);
         assert_eq!(untoken::<String>("reset", &s).unwrap(), "ada@example.com");
         assert!(!s.contains(['+', '/', '=']), "safe in a URL");
     }
@@ -115,7 +113,7 @@ mod tests {
         let e = untoken::<u64>("", &gone).unwrap_err();
         assert_eq!((e.status(), e.code()), (400, "bad_token"));
 
-        let reset = token("reset", &7u64, HOUR).unwrap();
+        let reset = token("reset", &7u64, HOUR);
         let wrong = untoken::<u64>("verify", &reset).unwrap_err();
         assert_eq!(wrong.message(), e.message());
         assert!(
@@ -124,7 +122,7 @@ mod tests {
         );
 
         // Another payload or expiry under the same signature.
-        let other = token("reset", &8u64, HOUR).unwrap();
+        let other = token("reset", &8u64, HOUR);
         let a: Vec<_> = reset.split('.').collect();
         let b: Vec<_> = other.split('.').collect();
         let spliced = format!("{}.{}.{}", b[0], a[1], a[2]);
@@ -147,7 +145,7 @@ mod tests {
     #[test]
     fn mangled_tokens_are_refused_and_never_panic() {
         use crate::fuzz::{Rng, mutate};
-        let good = token("x", &99u64, HOUR).unwrap();
+        let good = token("x", &99u64, HOUR);
         let mut rng = Rng::new(9);
         for _ in 0..20_000 {
             let mut b = good.clone().into_bytes();

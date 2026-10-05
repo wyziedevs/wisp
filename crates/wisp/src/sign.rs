@@ -14,10 +14,9 @@ use std::sync::OnceLock;
 pub(crate) use wisp_shared::base64::{decode as unbase64, encode as base64};
 use wisp_shared::sha256::{Sha256, compress_words, sha256};
 
-/// The signature of cookie `name` holding `value`; `None` without a secret
-/// to sign with (logged once, naming `WISP_SECRET`).
-pub(crate) fn cookie_mac(name: &str, value: &str) -> Option<[u8; 32]> {
-    Some(mac(key()?, name, value))
+/// The signature of cookie `name` holding `value`.
+pub(crate) fn cookie_mac(name: &str, value: &str) -> [u8; 32] {
+    mac(key(), name, value)
 }
 
 fn mac(k: &Hmac, name: &str, value: &str) -> [u8; 32] {
@@ -28,7 +27,7 @@ fn mac(k: &Hmac, name: &str, value: &str) -> [u8; 32] {
 /// that does not depend on where they differ. One `WISP_SECRET_OLD` signed
 /// holds too, so a new secret does not sign everyone out at once.
 pub(crate) fn verify_cookie(name: &str, value: &str, sent: &str) -> bool {
-    [key(), old_key()]
+    [Some(key()), old_key()]
         .into_iter()
         .flatten()
         .any(|k| same_mac(sent, &mac(k, name, value)))
@@ -56,35 +55,22 @@ pub(crate) static ROOT: OnceLock<&'static str> = OnceLock::new();
 
 /// `WISP_SECRET`; in dev without it, a secret kept in the project's
 /// `.wisp/secret`, so signed cookies survive restarts. Otherwise there is
-/// none to sign with: `None`, logged once; a request that signs answers 500
-/// and nothing signed verifies. Decided once, never a panic.
-fn key() -> Option<&'static Hmac> {
-    #[cfg(test)]
-    if NO_KEY.get() {
-        return None;
-    }
-    static KEY: OnceLock<Option<Hmac>> = OnceLock::new();
+/// none to sign with: the panic is the request's 500, with the reason.
+fn key() -> &'static Hmac {
+    static KEY: OnceLock<Hmac> = OnceLock::new();
     KEY.get_or_init(|| {
         if let Some(secret) = &crate::settings().secret {
-            return Some(Hmac::new(secret.as_bytes()));
+            return Hmac::new(secret.as_bytes());
         }
         if crate::settings().dev {
-            return Some(Hmac::new(&dev_key()));
+            return Hmac::new(&dev_key());
         }
-        crate::http::log(format_args!("{NO_SECRET}"));
-        None
+        panic!(
+            "signed cookies need a secret: set WISP_SECRET to at least 32 random characters \
+             (`openssl rand -hex 32` makes one), the same on every server of the app"
+        )
     })
-    .as_ref()
 }
-
-#[cfg(test)]
-thread_local! {
-    /// A test's thread has no secret, as a server without `WISP_SECRET`.
-    pub(crate) static NO_KEY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Why a request that signs answers 500 without `WISP_SECRET`.
-pub(crate) const NO_SECRET: &str = "wisp: signed cookies and tokens need a secret: set WISP_SECRET to at least 32 random characters (`openssl rand -hex 32` makes one), the same on every server of the app";
 
 /// `WISP_SECRET_OLD`: the secret before `WISP_SECRET`, which signatures are
 /// still checked with (nothing is signed with it). Keep it as long as the
@@ -497,7 +483,7 @@ mod tests {
     #[test]
     fn signatures_by_hand_and_by_other_keys() {
         let mut mac = String::new();
-        base64(&mut mac, &cookie_mac("user", "42").unwrap(), true);
+        base64(&mut mac, &cookie_mac("user", "42"), true);
         assert!(verify_cookie("user", "42", &mac));
         assert!(!verify_cookie("user", "43", &mac));
         assert!(!verify_cookie("users", "42", &mac), "the name is signed");
@@ -512,7 +498,7 @@ mod tests {
         use crate::fuzz::{Rng, mutate};
         let mut rng = Rng::new(31);
         let mut good = String::new();
-        base64(&mut good, &cookie_mac("session", "1.2").unwrap(), true);
+        base64(&mut good, &cookie_mac("session", "1.2"), true);
         for _ in 0..20_000 {
             let mut b = good.clone().into_bytes();
             mutate(&mut rng, &mut b);
@@ -521,7 +507,7 @@ mod tests {
             };
             let mut back = [0u8; 32];
             let decoded = unbase64(&sent, &mut back);
-            if decoded == Some(32) && Some(back) == cookie_mac("session", "1.2") {
+            if decoded == Some(32) && back == cookie_mac("session", "1.2") {
                 continue; // `=` padding added, or the other alphabet: the same bytes
             }
             assert!(!verify_cookie("session", "1.2", &sent), "{sent:?}");

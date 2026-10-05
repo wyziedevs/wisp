@@ -1417,22 +1417,3 @@ fn timing_names_the_phases_that_ran() {
         "total;dur=1.00"
     );
 }
-
-/// Without `WISP_SECRET` a request that signs answers 500, never panics:
-/// the cookie is not set, a later status does not hide it, nothing verifies.
-#[test]
-fn no_secret_is_a_500_not_a_panic() {
-    crate::sign::NO_KEY.set(true);
-    let mut cx = Cx::for_test("POST /login HTTP/1.1\r\ncookie: user=42.AAAA\r\n\r\n", &[]);
-    cx.set_signed_cookie("user", 42);
-    cx.sign_in(7);
-    cx.set_status(303);
-    assert!(cx.unsigned() && cx.signed_cookie("user").is_none());
-    assert!(crate::token("reset", &7u64, std::time::Duration::from_secs(60)).is_err());
-    let mut reply = Reply::default();
-    reply.set_plain(303, "");
-    decide::answered(&mut cx, &mut reply, None, None);
-    crate::sign::NO_KEY.set(false);
-    assert_eq!(reply.status, 500);
-    assert!(!reply.headers.iter().any(|(n, _)| n == "set-cookie"));
-}
