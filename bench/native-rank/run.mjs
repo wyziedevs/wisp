@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const SERVER_CPUS = process.env.SERVER_CPUS || '0-1';
 const CLIENT_CPUS = process.env.CLIENT_CPUS || '2-3';
+const STEAL_MAX = +(process.env.STEAL_MAX || 5); // percent of CPU time the hypervisor may take during a run
 const PORT = 18480; // not 8080: other jobs on a shared host use it
 const PATH = ['/root/.cargo/bin', '/root/nr-tools/go/bin', '/root/dotnet', '/usr/local/bin', '/opt/bun/bin', process.env.PATH].join(':');
 
@@ -148,11 +149,23 @@ async function bench(f, pass) {
     for (const [n, s] of Object.entries(sample)) if (s.status !== 200) throw new Error(`${n} answered ${s.status}`);
     for (const n of routeNames) {
       oha(n, warm);
-      const rs = []; const c0 = cpu();
-      for (let i = 0; i < runs; i++) { rs.push(oha(n, secs)); await sleep(500); }
-      const c1 = cpu(); const m = median(rs);
-      res.routes[n] = { rps: Math.round(m.rps), p50ms: +m.p50.toFixed(2), p99ms: +m.p99.toFixed(2), non200: rs.reduce((s, x) => s + x.non200, 0), errors: rs.reduce((s, x) => s + x.errors, 0), runs: rs.map((x) => Math.round(x.rps)), stealPct: +(100 * (c1[0] - c0[0]) / (c1[1] - c0[1])).toFixed(1) };
-      console.log(`[${f}] ${n}: ${res.routes[n].rps} req/s p99 ${res.routes[n].p99ms} ms steal ${res.routes[n].stealPct}%  runs ${res.routes[n].runs.join(' ')}`);
+      // A run whose hypervisor steal went above STEAL_MAX is thrown away and redone (up to 10
+      // tries; then the quietest try is kept and the cell is marked noisy).
+      const rs = []; let discarded = 0;
+      for (let i = 0; i < runs; i++) {
+        let best = null;
+        for (let a = 0; a < 10; a++) {
+          const c0 = cpu(); const r = oha(n, secs); const c1 = cpu();
+          r.steal = 100 * (c1[0] - c0[0]) / (c1[1] - c0[1]);
+          if (!best || r.steal < best.steal) best = r;
+          if (r.steal <= STEAL_MAX) break;
+          discarded++; await sleep(3000);
+        }
+        rs.push(best); await sleep(500);
+      }
+      const m = median(rs);
+      res.routes[n] = { rps: Math.round(m.rps), p50ms: +m.p50.toFixed(2), p99ms: +m.p99.toFixed(2), non200: rs.reduce((s, x) => s + x.non200, 0), errors: rs.reduce((s, x) => s + x.errors, 0), runs: rs.map((x) => Math.round(x.rps)), stealPct: +median(rs.map((x) => ({ rps: x.steal }))).rps.toFixed(1), discarded, noisy: rs.some((x) => x.steal > STEAL_MAX) };
+      console.log(`[${f}] ${n}: ${res.routes[n].rps} req/s p99 ${res.routes[n].p99ms} ms steal ${res.routes[n].stealPct}% discarded ${discarded}${res.routes[n].noisy ? ' NOISY' : ''}  runs ${res.routes[n].runs.join(' ')}`);
     }
     Object.assign(res, memKb(pid));
     console.log(`[${f}] rss ${res.rssMb} MB (peak ${res.peakMb})`);
