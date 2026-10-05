@@ -36,7 +36,7 @@ const POLL: Duration = Duration::from_millis(50);
 /// Editors often write a file in several steps; wait until it stops changing,
 /// but no longer than `SETTLE_MAX`, or a file written without pause (a log)
 /// would hold up every other change.
-const SETTLE: Duration = Duration::from_millis(60);
+const SETTLE: Duration = Duration::from_millis(25);
 /// How long a restarted app has to answer a request before the build is
 /// called failed, and before any browser is told to reload.
 const HEALTH_WAIT: Duration = Duration::from_secs(10);
@@ -106,26 +106,12 @@ pub fn run(root: &Path, port: u16) -> Result<(), String> {
         let names: Vec<_> = changed.iter().map(|(p, _)| p.as_str()).collect();
         let names = names.join(", ");
 
-        let mut rebuild_needed = false;
-        let mut templates = Vec::new();
-        let (mut css, mut full) = (false, false);
-        for (rel, kind) in &changed {
-            if rel.ends_with(".wisp") || rel == "src/app.html" {
-                if *kind == Change::Modified {
-                    templates.push(rel.as_str())
-                } else {
-                    rebuild_needed = true
-                }
-            } else if rel == ".wisp/app.css" || (rel == "src/app.css" && style.plain()) {
-                css = true;
-            } else if style.owns(rel) || css::POSTCSS_CONFIGS.contains(&rel.as_str()) {
-                // A CSS watcher reads it and will write .wisp/app.css.
-            } else if rel.starts_with("static/") {
-                full = true;
-            } else {
-                rebuild_needed = true;
-            }
-        }
+        let Plan {
+            rebuild: mut rebuild_needed,
+            templates,
+            mut css,
+            full,
+        } = plan(&changed, &style);
 
         if !rebuild_needed && !templates.is_empty() {
             // Scoped styles: a stylesheet swap, or a build when the app
@@ -185,6 +171,41 @@ pub fn run(root: &Path, port: u16) -> Result<(), String> {
             term::changed(&names, "styles swapped");
         }
     }
+}
+
+/// What a set of changes asks for: a compile, templates to swap in, a
+/// stylesheet swap, a full reload.
+#[derive(Debug, Default, PartialEq)]
+struct Plan<'a> {
+    rebuild: bool,
+    templates: Vec<&'a str>,
+    css: bool,
+    full: bool,
+}
+
+/// Decides what `changed` needs. A template added, removed or renamed (a
+/// remove and an add) changes the routes: a compile. Only a modified one
+/// can be swapped in.
+fn plan<'a>(changed: &'a [(String, Change)], style: &css::Css) -> Plan<'a> {
+    let mut p = Plan::default();
+    for (rel, kind) in changed {
+        if rel.ends_with(".wisp") || rel == "src/app.html" {
+            if *kind == Change::Modified {
+                p.templates.push(rel.as_str())
+            } else {
+                p.rebuild = true
+            }
+        } else if rel == ".wisp/app.css" || (rel == "src/app.css" && style.plain()) {
+            p.css = true;
+        } else if style.owns(rel) || css::POSTCSS_CONFIGS.contains(&rel.as_str()) {
+            // A CSS watcher reads it and will write .wisp/app.css.
+        } else if rel.starts_with("static/") {
+            p.full = true;
+        } else {
+            p.rebuild = true;
+        }
+    }
+    p
 }
 
 /// Builds and restarts the app; then the app as that build has it, for
@@ -684,11 +705,29 @@ fn scan(root: &Path) -> Snapshot {
         "package.json",
         ".env",
     ];
-    for f in top.iter().chain(&css::POSTCSS_CONFIGS) {
-        if let Ok(meta) = fs::metadata(root.join(f))
-            && let Ok(m) = meta.modified()
-        {
-            out.insert(f.to_string(), stamp(&root.join(f), m, meta.len()));
+    // Listed, not opened one by one: a folder listing carries each entry's
+    // mtime and size, where a metadata call per file opens it (on Windows).
+    for dir in ["", ".wisp"] {
+        let Ok(entries) = fs::read_dir(root.join(dir)) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            let rel = if dir.is_empty() {
+                name.to_string()
+            } else {
+                format!("{dir}/{name}")
+            };
+            if !top.iter().chain(&css::POSTCSS_CONFIGS).any(|f| *f == rel) {
+                continue;
+            }
+            if let Ok(meta) = e.metadata()
+                && meta.is_file()
+                && let Ok(m) = meta.modified()
+            {
+                out.insert(rel, stamp(&e.path(), m, meta.len()));
+            }
         }
     }
     out
@@ -736,6 +775,101 @@ fn diff(old: &Snapshot, new: &Snapshot) -> Vec<(String, Change)> {
 mod tests {
     use super::*;
 
+    fn temp(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("wisp-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src/routes")).unwrap();
+        root
+    }
+
+    fn plain() -> css::Css {
+        css::Css {
+            tool: None,
+            postcss: false,
+        }
+    }
+
+    #[test]
+    fn plans_follow_the_change() {
+        let c = |v: &[(&str, Change)]| -> Vec<(String, Change)> {
+            v.iter().map(|(p, k)| (p.to_string(), *k)).collect()
+        };
+        let style = plain();
+        let edit = c(&[("src/routes/+page.wisp", Change::Modified)]);
+        let p = plan(&edit, &style);
+        assert_eq!(
+            (p.rebuild, p.templates),
+            (false, vec!["src/routes/+page.wisp"])
+        );
+        // Rename: a remove and an add, so a new route table.
+        let rename = c(&[
+            ("src/routes/a/+page.wisp", Change::Removed),
+            ("src/routes/b/+page.wisp", Change::Added),
+        ]);
+        assert!(plan(&rename, &style).rebuild);
+        for rs in ["src/routes/+page.rs", "src/routes/api/+server.rs"] {
+            for k in [Change::Modified, Change::Removed, Change::Added] {
+                assert!(plan(&c(&[(rs, k)]), &style).rebuild, "{rs} {k:?}");
+            }
+        }
+        let css = c(&[("src/app.css", Change::Modified)]);
+        let css = plan(&css, &style);
+        assert!(css.css && !css.rebuild);
+        let st = c(&[("static/a.png", Change::Removed)]);
+        let st = plan(&st, &style);
+        assert!(st.full && !st.rebuild);
+        // A compile wins over a swap in the same batch.
+        let mixed = c(&[
+            ("src/routes/+page.wisp", Change::Modified),
+            ("src/routes/+page.rs", Change::Modified),
+        ]);
+        assert!(plan(&mixed, &style).rebuild);
+    }
+
+    #[test]
+    fn rapid_saves_delete_and_temp_files() {
+        let root = temp("watch");
+        let page = root.join("src/routes/+page.wisp");
+        fs::write(&page, "<p>a</p>").unwrap();
+        let first = scan(&root);
+        // Same size, at once: inside the clock tick, only the hash differs.
+        fs::write(&page, "<p>b</p>").unwrap();
+        let second = scan(&root);
+        assert_eq!(
+            diff(&first, &second),
+            vec![("src/routes/+page.wisp".to_string(), Change::Modified)]
+        );
+        // Editors' scratch files are never changes.
+        for f in [
+            ".#+page.wisp",
+            "+page.wisp~",
+            ".+page.wisp.swp",
+            "4913",
+            "x.tmp",
+        ] {
+            fs::write(root.join("src/routes").join(f), "x").unwrap();
+        }
+        assert!(diff(&second, &scan(&root)).is_empty());
+        // Save then rename: the old path goes, the new comes.
+        fs::rename(&page, root.join("src/routes/+layout.wisp")).unwrap();
+        let mut d = diff(&second, &scan(&root));
+        d.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            d,
+            vec![
+                ("src/routes/+layout.wisp".to_string(), Change::Added),
+                ("src/routes/+page.wisp".to_string(), Change::Removed),
+            ]
+        );
+        let renamed = scan(&root);
+        fs::remove_file(root.join("src/routes/+layout.wisp")).unwrap();
+        assert_eq!(
+            diff(&renamed, &scan(&root)),
+            vec![("src/routes/+layout.wisp".to_string(), Change::Removed)]
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn scan_skips_build_and_package_folders() {
         let root = std::env::temp_dir().join(format!("wisp-scan-{}", std::process::id()));
@@ -755,10 +889,29 @@ mod tests {
         ] {
             fs::write(root.join(f), "x").unwrap();
         }
+        fs::create_dir_all(root.join(".wisp")).unwrap();
+        for f in [
+            "Cargo.toml",
+            ".env",
+            ".wisp/app.css",
+            "README.md",
+            ".wisp/other",
+        ] {
+            fs::write(root.join(f), "x").unwrap();
+        }
         let files = scan(&root);
         let _ = fs::remove_dir_all(&root);
-        assert!(files.contains_key("src/routes/+page.wisp"));
-        assert_eq!(files.len(), 1, "{files:?}");
+        let mut names: Vec<_> = files.keys().map(String::as_str).collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                ".env",
+                ".wisp/app.css",
+                "Cargo.toml",
+                "src/routes/+page.wisp"
+            ]
+        );
     }
 
     #[test]
