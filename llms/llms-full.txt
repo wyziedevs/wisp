@@ -1172,7 +1172,7 @@ Plaintext, pipelined, requests per second (median of 3), by connections:
 
 <Levels work="plaintext" />
 
-Rows whose min-max ranges overlap are ties. 256: Fastify and Express; Hono (Node), SvelteKit and Hono (Bun). 1024: Axum and Actix Web; Express and Hono (Node). 4096: Hono (Node) and Express. 16384: Wisp, Actix Web and Express failed, and Wisp's three stalled runs are under investigation, so no Wisp rank is drawn there.
+Rows whose min-max ranges overlap are ties. 256: Fastify and Express; Hono (Node), SvelteKit and Hono (Bun). 1024: Axum and Actix Web; Express and Hono (Node). 4096: Hono (Node) and Express. 16384: <Stat k="failed.plaintext.16384" /> failed, and Wisp's three stalled runs are under investigation, so no Wisp rank is drawn there.
 
 Next.js completed no pipelined plaintext response at any level, and raising its heap to 8 GB changed nothing, so the cause is not memory; the runs were indicative only.
 
@@ -4947,11 +4947,11 @@ Wisp's `data` is longer than JavaScript's: a Rust type with its fields' types. M
 
 ## A Real App: Auth, CRUD, Upload, Live, a Component
 
-`bench/tokens/real` is sign up and in, a posts table with validation, edit, delete, pages and live refresh, an avatar upload and a toggle component: 11 files, **1,016** tokens in Wisp, 3.6x less than SvelteKit 2 and 3.4x less than Next.js 15. The Wisp app has tests for every feature (`bench/tokens/real/wisp/src/tests.rs`); the SvelteKit and Next.js apps have none, so their behavior is checked by reading, not by tests.
+`bench/tokens/real` is sign up and in, a posts table with validation, edit, delete, pages and live refresh, an avatar upload and a toggle component: <Stat k="files.real.wisp" /> files, **<Stat k="real.wisp" />** tokens in Wisp, <Stat k="x.real.sveltekit" />x less than SvelteKit and <Stat k="x.real.next" />x less than Next.js. The Wisp app has tests for every feature (`bench/tokens/real/wisp/src/tests.rs`); the SvelteKit and Next.js apps have none, so their behavior is checked by reading, not by tests.
 
 ## Method
 
-Counted: every file a developer (or an agent) writes by hand, beyond what the framework's generator gives, plus each file's path (writing a file means naming it, so two files cost more than one). Manifests and configs count as `setup` for every stack, by the lines a developer adds beyond what the stack's generator writes (Wisp 44 for its `Cargo.toml`, Axum's and Actix's `[dependencies]`, Express's and React's `package.json` and server setup); the generated parts are left out. `cargo run -p wisp-tokens` lists each stack's counted and skipped files.
+Counted: every file a developer (or an agent) writes by hand, beyond what the framework's generator gives, plus each file's path (writing a file means naming it, so two files cost more than one). Manifests and configs count as `setup` for every stack, by the lines a developer adds beyond what the stack's generator writes (Wisp <Stat k="setup.wisp" /> for its `Cargo.toml`, Axum's and Actix's `[dependencies]`, Express's and React's `package.json` and server setup); the generated parts are left out. `cargo run -p wisp-tokens` lists each stack's counted and skipped files.
 
 What this favors: Wisp ships the form rules, the validation messages and the form markup (`<form fields />`), so most of the gap in `form` is work the other stacks write by hand or take from a library. That is the point of a batteries-included design, but read the totals as "what an app author writes", not as equal work by each framework. Only the Wisp apps have tests (`src/tests.rs`); the other stacks' apps are written to the same behavior and reviewed by hand, not checked by a test.
 
@@ -5403,8 +5403,8 @@ Zero cost on the request hot path: a route pays only for the features it uses, a
 
 An AI pays for every token it reads and writes, in time and money. Wisp uses conventions over configuration, types the compiler infers, and forms that write their own inputs and errors.
 
-- The same five features take 476 tokens in Wisp, 1,134 in SvelteKit and 1,146 in Next.js.
-- A larger app with sign up, uploads and live refresh takes 1,016, against 3,666 and 3,458.
+- The same five features take <Stat k="apps.wisp" /> tokens in Wisp, <Stat k="apps.sveltekit" /> in SvelteKit and <Stat k="apps.next" /> in Next.js.
+- A larger app with sign up, uploads and live refresh takes <Stat k="real.wisp" />, against <Stat k="real.sveltekit" /> and <Stat k="real.next" />.
 - `cargo run -p wisp-tokens` counts every hand-written file and its path with a byte-pair style estimate. See [Tokens](/docs/tokens/).
 
 For agents: [AGENTS.md](https://github.com/wyziedevs/wisp/blob/main/llms/AGENTS.md) is the whole reference in one file, and `wisp mcp` serves the docs over MCP (`claude mcp add wisp -- wisp mcp`).
