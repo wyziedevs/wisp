@@ -2,5 +2,5 @@
   "name": "hono-bun",
   "private": true,
   "type": "module",
-  "dependencies": { "hono": "^3.10.4" }
+  "dependencies": { "hono": "3.12.12" }
 }
