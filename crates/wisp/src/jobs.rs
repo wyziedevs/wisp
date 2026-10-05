@@ -566,6 +566,7 @@ impl Cron {
 
     /// The next run after the clock reads `now` and the last run was at
     /// `last`: never `last` again, though the wall clock stepped back.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // the edge build runs no cron
     fn due(&self, now: u64, last: u64) -> Option<u64> {
         self.next(now.max(last))
     }
