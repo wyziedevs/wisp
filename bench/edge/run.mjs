@@ -3,7 +3,7 @@
 //   node run.mjs [--dir <bench dir>] [--only wisp-node,hono-cf] [--secs 10] [--conns 64] [--runs 3] [--routes list,json]
 import { spawn, execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { sleep, median, hdr, oha as ohaRun } from './util.mjs';
+import { sleep, hdr, oha as ohaRun, failedCount, cellOf, badReply } from './util.mjs';
 
 const arg = (k, d) => { const i = process.argv.indexOf('--' + k); return i > 0 ? process.argv[i + 1] : d; };
 const dir = arg('dir', process.env.BENCH_DIR || 'C:/wb');
@@ -26,20 +26,25 @@ const servers = {
 };
 const routes = ['/', '/list', '/json', '/list1000', '/json-big', '/about', '/params/42?q=hello%20world&x=1'].filter((r) => !arg('routes', '') || arg('routes', '').split(',').some((m) => r.includes(m)));
 
-const get = (p) => fetch(`http://127.0.0.1:${PORT}${p}`, { headers: { connection: 'close', ...hdr(p) } }).then((r) => r.text());
+const get = (p) => fetch(`http://127.0.0.1:${PORT}${p}`, { headers: { connection: 'close', ...hdr(p) } });
+// Every route must answer 200 with the right body before anything is timed.
+async function verify() {
+  const bad = [];
+  for (const p of routes) { const r = await get(p); const why = badReply(p, r.status, await r.text()); if (why) bad.push(why); }
+  if (bad.length) throw new Error('wrong output, not timed: ' + bad.join(' | '));
+}
 
 async function waitUp(child) {
   for (let i = 0; i < 120; i++) {
     if (child.exitCode !== null) throw new Error('server exited');
-    try { await get('/json'); return; } catch { await sleep(500); }
+    try { await (await get('/json')).text(); return; } catch { await sleep(500); }
   }
   throw new Error('server did not start');
 }
 
 function oha(path, s) {
   const j = ohaRun(`http://127.0.0.1:${PORT}${path}`, path, s, conns);
-  const bad = Object.entries(j.statusCodeDistribution).filter(([c]) => c !== '200').length;
-  return { rps: j.summary.requestsPerSec, p99: j.latencyPercentiles.p99 * 1000, bad };
+  return { rps: j.summary.requestsPerSec, p99: j.latencyPercentiles.p99 * 1000, bad: failedCount(j) };
 }
 
 const results = {};
@@ -48,11 +53,13 @@ for (const [name, [cwd, cmd, args, env]] of Object.entries(servers)) {
   const child = spawn(cmd, args, { cwd: join(dir, cwd), env: { ...process.env, PORT: String(PORT), ...env }, stdio: 'ignore' });
   try {
     await waitUp(child);
+    await verify();
     for (const p of routes) {
-      await get(p);
+      await get(p).then((r) => r.text());
       oha(p, 3); // warmup
       const rs = Array.from({ length: runs }, () => oha(p, secs));
-      results[`${name} ${p}`] = { rps: Math.round(median(rs.map((r) => r.rps))), p99: +median(rs.map((r) => r.p99)).toFixed(2), bad: rs.reduce((a, r) => a + r.bad, 0) };
+      const c = cellOf(rs);
+      results[`${name} ${p}`] = c.failed ? { failed: true, bad: c.bad } : { rps: Math.round(c.rps), p99: c.p99, bad: 0 };
       console.log(name, p, JSON.stringify(results[`${name} ${p}`]));
     }
   } catch (e) {

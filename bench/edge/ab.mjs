@@ -7,7 +7,7 @@
 // each: `import { app } from './app.mjs'; Deno.serve({ port: Number(Deno.env.get('PORT')) }, app.fetch)`).
 import { spawn, execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { sleep, median, hdr, oha as ohaRun } from './util.mjs';
+import { sleep, hdr, oha as ohaRun, failedCount, cellOf, badReply, coldOf } from './util.mjs';
 
 const arg = (k, d) => { const i = process.argv.indexOf('--' + k); return i > 0 ? process.argv[i + 1] : d; };
 const dir = arg('dir', process.env.BENCH_DIR || 'C:/wb');
@@ -39,14 +39,23 @@ const apps = Object.entries(sets).map(([name, [cwd, cmd, args, env]], i) => ({ n
 const kill = (c) => { if (process.platform === 'win32') try { execFileSync('taskkill', ['/PID', String(c.pid), '/T', '/F'], { stdio: 'ignore' }); } catch {} else c.kill('SIGKILL'); };
 const start = (a) => spawn(a.cmd, a.args, { cwd: a.cwd, env: { ...process.env, ...a.env }, stdio: 'ignore' });
 const url = (a, p) => `http://127.0.0.1:${a.port}${p}`;
-const get = (a, p) => fetch(url(a, p), { headers: { connection: 'close', ...hdr(p) } }).then((r) => r.text());
+const get = (a, p) => fetch(url(a, p), { headers: { connection: 'close', ...hdr(p) } });
+// Every route must answer 200 with the right body before anything is timed.
+async function verify(a) {
+  const bad = [];
+  for (const p of routes) { const r = await get(a, p); const why = badReply(p, r.status, await r.text()); if (why) bad.push(why); }
+  return bad;
+}
 
 async function cold(a) {
   const t = performance.now();
   const c = start(a);
   for (;;) {
-    if (c.exitCode !== null) throw new Error(`${a.name} exited`);
-    try { await get(a, '/json'); break; } catch { await sleep(2); }
+    if (c.exitCode !== null || performance.now() - t > 60000) { kill(c); return NaN; }
+    let r;
+    try { r = await get(a, routes[0]); r = badReply(routes[0], r.status, await r.text()); } catch { await sleep(2); continue; }
+    if (r) { kill(c); return NaN; } // a complete reply that is not the right one: failed start
+    break;
   }
   const ms = performance.now() - t;
   kill(c);
@@ -56,25 +65,31 @@ async function cold(a) {
 
 function oha(a, path, s) {
   const j = ohaRun(url(a, path), path, s, conns);
-  const bad = Object.entries(j.statusCodeDistribution).filter(([k]) => k !== '200').length;
-  return { rps: j.summary.requestsPerSec, p99: j.latencyPercentiles.p99 * 1000, bad };
+  return { rps: j.summary.requestsPerSec, p99: j.latencyPercentiles.p99 * 1000, bad: failedCount(j) };
 }
 
 try {
   for (const a of apps) {
     const cs = [];
     for (let i = 0; i < colds; i++) cs.push(await cold(a));
-    console.log(group, a.name, `cold start ms (median of ${colds})`, median(cs).toFixed(0));
+    const c = coldOf(cs);
+    console.log(group, a.name, c ? `cold start ms (median of ${c.n} of ${colds} starts)` : 'cold start FAILED', c ? c.median.toFixed(0) : '');
   }
   for (const a of apps) a.child = start(a);
   await sleep(2500);
+  const live = [];
+  for (const a of apps) {
+    const bad = await verify(a).catch((e) => [String(e)]);
+    if (bad.length) console.log(group, a.name, 'WRONG OUTPUT, not timed', bad.join(' | '));
+    else live.push(a);
+  }
   for (const p of routes) {
-    const rs = apps.map(() => []);
-    for (const a of apps) { await get(a, p); oha(a, p, 3); }
-    for (let i = 0; i < runs; i++) apps.forEach((a, k) => rs[k].push(oha(a, p, secs)));
-    apps.forEach((a, k) => {
-      const m = (f) => +median(rs[k].map((r) => r[f])).toFixed(1);
-      console.log(group, a.name, p, JSON.stringify({ rps: Math.round(m('rps')), p99: m('p99'), bad: rs[k].reduce((n, r) => n + r.bad, 0) }));
+    const rs = live.map(() => []);
+    for (const a of live) { await get(a, p).then((r) => r.text()); oha(a, p, 3); }
+    for (let i = 0; i < runs; i++) live.forEach((a, k) => rs[k].push(oha(a, p, secs)));
+    live.forEach((a, k) => {
+      const c = cellOf(rs[k]);
+      console.log(group, a.name, p, JSON.stringify(c.failed ? { failed: true, bad: c.bad } : { rps: Math.round(c.rps), p99: c.p99, bad: 0 }));
     });
   }
 } finally {
