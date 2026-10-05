@@ -166,6 +166,10 @@ impl Error {
     /// A `location` with CR/LF (header injection) is refused, not sent: the
     /// visitor gets a 500 and the reason is logged. A status outside
     /// 300..=308 is logged with the location and becomes 303 See Other.
+    /// A path stays on the site: `//evil.example` or `/\evil.example`
+    /// (another site to a browser) is sent as `/evil.example`, so
+    /// `redirect(next)` from a `?next=` that starts with `/` is no open
+    /// redirect. Another site is named with its scheme: `https://…`.
     pub fn redirect(status: u16, location: impl Into<String>) -> Error {
         let location = location.into();
         let status = match (300..=308).contains(&status) {
@@ -183,6 +187,19 @@ impl Error {
             ));
             return Error::raw(500, Cow::Borrowed("Internal Server Error"));
         }
+        // A path stays one: browsers read `//host`, `/\host` (and a tab in
+        // between, which they drop) as another site, so an app that checked
+        // `next.starts_with('/')` would send visitors there (open redirect).
+        let location = match location.starts_with(['/', '\\']) {
+            true => {
+                let rest = location.trim_start_matches(['/', '\\', '\t', '\n', '\r', ' ']);
+                match rest.len() + 1 == location.len() && location.starts_with('/') {
+                    true => location,
+                    false => format!("/{rest}"),
+                }
+            }
+            false => location,
+        };
         // A path of the app's own is under its base path, when it has one.
         let location = match crate::protocol::BASE.is_empty() {
             true => location,

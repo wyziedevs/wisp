@@ -1557,6 +1557,28 @@ mod tests {
         assert_eq!((e.status(), e.header.is_some()), (303, true));
     }
 
+    /// `redirect(next)` after an app checked `next.starts_with('/')`: a
+    /// browser reads `//evil.example` and `/\evil.example` as another site,
+    /// so they stay paths of this one.
+    #[test]
+    fn a_path_redirect_never_leaves_the_site() {
+        for (to, want) in [
+            ("//evil.example/x", "/evil.example/x"),
+            ("/\\evil.example", "/evil.example"),
+            ("\\\\evil.example", "/evil.example"),
+            ("/\t/evil.example", "/evil.example"),
+            ("/ok//x", "/ok//x"),
+            ("https://idp.example/auth", "https://idp.example/auth"),
+        ] {
+            let e = super::Error::redirect(303, to);
+            assert_eq!(
+                e.header.as_ref().map(|h| h.1.as_str()),
+                Some(want),
+                "{to:?}"
+            );
+        }
+    }
+
     /// `.env` fills in what the process's environment lacks, never more.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]

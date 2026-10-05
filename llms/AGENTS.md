@@ -516,7 +516,8 @@ no-wait fast path off every route.
   cors(o)`; `writes() need_bearer(env) need_signature(env, header)`.
 - Errors: `error(404, "msg")`, `redirect("/x")`, `invalid("f", "msg")` return
   `Result`; `opt.or_404()?`, `.or_status(403)?`; `Error::new(s, m)`; any
-  `std::error::Error` via `?` → 500.
+  `std::error::Error` via `?` → 500. `redirect` keeps a path on the site
+  (`//evil` → `/evil`), so `redirect(next)` with a `/`-checked `?next=` is safe.
 - `Response::`: `json_of(&v) created(&v) text html empty(s) download(name,
   bytes) file_in(dir, name).await stream ndjson events websocket`
   + `.with_status(s) .with_header(n, v)`. A single-valued header
