@@ -1,6 +1,7 @@
 # An app of the platform features that change every page or the app's
 # headers, kept out of tests/app: a component built as a custom element, a
-# web app manifest and Wisp's offline service worker.
+# web app manifest, Wisp's offline service worker, and a route in one file
+# beside the same route in three (out of the size-gated wasm of tests/app).
 [package]
 name = "wisp-test-platform"
 version = "0.1.0"

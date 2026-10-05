@@ -36,7 +36,7 @@ src/locales/en.json         messages, fr.json etc.: {t("key")}
 src/fonts.txt               fonts, a line each: `Inter inter.woff2 100-900` (file in static/fonts), `Open_Sans google 400 700 [italic] [serif|mono]` (opt-in: wisp build downloads the Latin subset once into static/fonts); swap, size-adjusted fallback, preload; CSS `font-family: var(--font-inter)`
 src/manifest.json           web app manifest: {"name": "Notes", "offline": true}
 src/service-worker.js       registered for you: import { build, files, version } from 'wisp/sw'
-src/routes/…/+page.wisp     page: optional `---` Rust block, then markup
+src/routes/…/+page.wisp     page: optional `---` Rust block (load, actions, `mod server` endpoints), then markup
 src/routes/…/+page@.wisp    a page without the layouts above it (`+page@app.wisp`: only up to the `(app)` layout)
 src/routes/…/+layout.wisp   wraps pages below; must <slot /> (or {@render children()})
 src/routes/…/+loading.wisp  static HTML a client navigation shows in <main> at once while a page below this folder loads
@@ -63,6 +63,10 @@ groups or `noindex` pages; host from env `SITE_URL`, else the request) and
 `/robots.txt` are made; a route or `static/` file of that name wins.
 
 ## A page
+
+A route is one file: the `---` block holds its Rust (load, actions, and
+endpoints in `mod server`), the markup follows. `+page.rs` and `+server.rs`
+beside it build the same, for a page whose Rust outgrows the block.
 
 ```rust
 // src/db.rs

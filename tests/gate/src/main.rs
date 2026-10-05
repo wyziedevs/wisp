@@ -12,7 +12,11 @@ use std::process::{Command, ExitCode};
 /// anyone choosing it. BUDGET is the size after the last cut plus 2%: raise
 /// it on purpose, in the commit that adds the code, never to make a red
 /// build green. Cold start is not gated: workerd's is bimodal on one machine.
-const BUDGET: u64 = 1_810_000;
+/// Raised from 1_810_000: 3065761 (`wisp add crud` tests) put three routes
+/// and a saved `Memo` table in tests/app, +55 KB of the app's own code
+/// (twiggy: `Table<Memo>`, its forms and pages; the runtime unchanged), and
+/// the REST fixes after it +7 KB: 1_852_689 bytes, plus 2%.
+const BUDGET: u64 = 1_890_000;
 const WASM: &str = "wasm32-unknown-unknown";
 
 fn cargo(args: &[&str], env: &[(&str, &str)]) -> bool {

@@ -5,7 +5,7 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use wisp::test::client;
-use wisp_test_app::Site;
+use wisp_test_platform::Site;
 
 #[test]
 fn one_file_answers_as_three_do() {
