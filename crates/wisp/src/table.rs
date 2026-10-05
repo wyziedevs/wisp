@@ -232,7 +232,7 @@ static POLLED: Shared<Vec<&'static dyn Poll>> = Shared::new(Vec::new());
 /// polls every `ready` table that long apart. A table whose store has no
 /// `changes` is asked each time and never answers: nothing happens.
 fn polling() -> bool {
-    let secs: u64 = crate::env_or("WISP_STORE_POLL", 0);
+    let secs = crate::env::store_poll();
     #[cfg(not(target_arch = "wasm32"))]
     if secs > 0 {
         static STARTED: std::sync::Once = std::sync::Once::new();

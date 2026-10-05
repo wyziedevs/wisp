@@ -239,17 +239,18 @@ pub(crate) mod files {
     pub(crate) fn default() -> Option<&'static Files> {
         static FILES: OnceLock<Option<&'static Files>> = OnceLock::new();
         *FILES.get_or_init(|| {
-            let dir = match crate::setting::<String>("WISP_DATA", "a folder") {
-                Some(d) if d.eq_ignore_ascii_case("off") => return None,
-                Some(d) => PathBuf::from(d),
-                // Lambda's only folder it may write: kept per instance.
-                None if crate::lambda_api().is_some() => PathBuf::from("/tmp/wisp-data"),
-                None if cfg!(debug_assertions) => {
-                    let root = crate::sign::ROOT.get().copied().unwrap_or(".");
-                    Path::new(root).join(".wisp").join("data")
-                }
-                None => PathBuf::from("data"),
-            };
+            let dir =
+                match crate::setting::<String>("WISP_DATA", "a folder").filter(|d| !d.is_empty()) {
+                    Some(d) if d.eq_ignore_ascii_case("off") => return None,
+                    Some(d) => PathBuf::from(d),
+                    // Lambda's only folder it may write: kept per instance.
+                    None if crate::lambda_api().is_some() => PathBuf::from("/tmp/wisp-data"),
+                    None if cfg!(debug_assertions) => {
+                        let root = crate::sign::ROOT.get().copied().unwrap_or(".");
+                        Path::new(root).join(".wisp").join("data")
+                    }
+                    None => PathBuf::from("data"),
+                };
             let sync = match crate::setting::<String>("WISP_FSYNC", "always, second or off")
                 .map(|s| s.to_ascii_lowercase())
                 .as_deref()

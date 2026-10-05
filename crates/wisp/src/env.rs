@@ -212,6 +212,8 @@ pub(crate) fn settings() -> &'static Settings {
         // The edge build has no clock to time by.
         let server_timing = cfg!(not(target_arch = "wasm32")) && switch("WISP_SERVER_TIMING", dev);
         let timed = cfg!(not(target_arch = "wasm32")) && (dev || server_timing);
+        // Read at start, so a typo stops the server here and not mid-request.
+        setting::<u64>("WISP_STORE_POLL", "a number of seconds");
         let timeout_ms = setting::<u64>("WISP_HANDLER_TIMEOUT", "a number of seconds").map_or(0, |s| s.saturating_mul(1000));
         Settings {
             dev, body_limit, origin, client_ip_header, secret, old_secret, api_docs, request_id, problem_json, secure_headers, timed, server_timing, timeout_ms,
@@ -220,6 +222,16 @@ pub(crate) fn settings() -> &'static Settings {
             max_conns,
         }
     })
+}
+
+/// `WISP_STORE_POLL` in seconds: 0 (no polling) when unset or not a number
+/// (`settings` has already stopped the server for the latter at start).
+pub(crate) fn store_poll() -> u64 {
+    poll_secs(env("WISP_STORE_POLL"))
+}
+
+fn poll_secs(v: Option<String>) -> u64 {
+    v.and_then(|v| v.trim().parse().ok()).unwrap_or(0)
 }
 
 /// A byte count, written `1048576`, `512KB`, `10MB` or `1GB` (powers of 1024).
@@ -241,5 +253,24 @@ impl FromStr for Size {
             .and_then(|n| n.checked_mul(unit))
             .map(Size)
             .ok_or(())
+    }
+}
+
+#[cfg(test)]
+mod poll_tests {
+    #[test]
+    fn a_bad_poll_is_no_poll_not_a_panic() {
+        let p = |s: &str| super::poll_secs(Some(s.into()));
+        assert_eq!(
+            (
+                p(" 5 "),
+                p("x"),
+                p(""),
+                p("é"),
+                p("99999999999999999999999")
+            ),
+            (5, 0, 0, 0, 0)
+        );
+        assert_eq!(super::poll_secs(None), 0);
     }
 }

@@ -372,7 +372,7 @@ async fn step(q: &'static Queue, run: &mut Runner) -> bool {
     if next == u64::MAX {
         wait = std::time::Duration::MAX;
     }
-    if crate::env_or("WISP_STORE_POLL", 0u64) > 0 {
+    if crate::env::store_poll() > 0 {
         wait = wait.min(std::time::Duration::from_secs(1));
     }
     crate::http::first(
