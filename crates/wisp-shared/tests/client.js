@@ -92,7 +92,7 @@ function page({ online = true, scripts = [], vitals = null, views = null, main =
   };
   const form = (attrs, data) => Object.assign(new EventTarget(), {
     data,
-    getAttribute: (k) => (k == 'method' ? 'post' : k == 'action' ? '/save' : attrs[k] ?? null),
+    getAttribute: (k) => (k == 'method' ? 'post' : k == 'action' ? attrs.action ?? '/save' : attrs[k] ?? null),
     hasAttribute: (k) => k in attrs,
     setAttribute() {},
     removeAttribute() {},
@@ -129,6 +129,13 @@ const tests = {
     assert.deepEqual(JSON.parse(p.store['wisp:q']), []);
     assert.equal(sent, 1);
     assert.equal(p.fetches[1].method, 'GET'); // the page again
+  },
+  async 'a post to another site is left to the browser'() {
+    const p = page();
+    const e = p.submit(p.form({ action: 'https://evil.test/steal' }, [['a', '1']]));
+    await tick();
+    assert.ok(!e.defaultPrevented);
+    assert.equal(p.fetches.length, 0);
   },
   async 'offline: another form is not queued'() {
     const p = page({ online: false });
@@ -365,6 +372,20 @@ const tests = {
     p.submit(f);
     await tick();
     assert.equal(got?.status, 200);
+  },
+  async 'a field named __wispEnhance does not make a form use:enhance'() {
+    const p = page();
+    URL.createObjectURL = () => 'blob:x';
+    let json = 0;
+    p.g.reply = () => ({ ...res('{}', 'application/json'), json: async () => (json++, {}), blob: async () => ({ size: 2 }) });
+    let got;
+    const f = p.form({}, [['a', '1']]);
+    f.__wispEnhance = { name: '__wispEnhance' }; // what the input clobbers it with
+    f.addEventListener('wisp:result', (e) => (got = e.detail));
+    p.submit(f);
+    await tick();
+    assert.equal(json, 0);
+    assert.equal(got?.data, undefined);
   },
   async 'a slot answer that comes after a newer navigation is dropped'() {
     const slot = { innerHTML: '', getAttribute: () => JSON.stringify([['/gal/item/[id]', '/gal/@modal/(.)item/[id]']]) };

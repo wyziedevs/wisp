@@ -105,17 +105,44 @@ pub(crate) fn exit_with_parent() {
         });
 }
 
+/// Whether a request to the dev endpoints was meant for this machine:
+/// it sends `x-wisp-dev`, which a page of another site cannot send without
+/// CORS saying yes (never), to a `Host` that names loopback. A site whose
+/// name was rebound to 127.0.0.1 (DNS rebinding) is its own origin, so it
+/// could send the header; its `Host` is still its own name.
+pub(crate) fn asked(dev_header: bool, host: Option<&str>) -> bool {
+    let Some(host) = host else { return false };
+    let name = match host.strip_prefix('[') {
+        Some(v6) => v6.split_once(']').map_or("", |(ip, _)| ip),
+        None => host.rsplit_once(':').map_or(host, |(n, _)| n),
+    };
+    let name = name.strip_suffix('.').unwrap_or(name).to_ascii_lowercase();
+    dev_header
+        && (name == "localhost"
+            || name.ends_with(".localhost")
+            || name
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback()))
+}
+
 /// `/_wisp/dev/*`. Only loopback peers are answered, and only by a debug
 /// build: a release build's pages never read swapped text, so there it is
-/// nothing to anyone, `WISP_DEV=on` or not.
+/// nothing to anyone, `WISP_DEV=on` or not. A swap must also send
+/// `x-wisp-dev` (`asked`): a page of another site, open in the developer's
+/// browser, can post to a loopback port but not send that header without
+/// CORS saying yes, which it never does, so no site can rewrite templates.
 pub(crate) fn endpoint<A: App>(
     method: Method,
     path: &str,
     body: &[u8],
     peer: SocketAddr,
+    asked: bool,
 ) -> (u16, &'static str) {
     if !cfg!(debug_assertions) || !peer.ip().is_loopback() {
         return (404, "Not Found");
+    }
+    if method == Method::Post && !asked {
+        return (403, "Forbidden");
     }
     match (method, path) {
         (Method::Post, "/_wisp/dev/swap") => match swap::<A>(body) {
@@ -159,7 +186,8 @@ fn routes<A: App>() -> &'static str {
 /// asking first (CORS), and is never told yes, so no site can open files.
 #[cfg(debug_assertions)]
 pub(crate) fn open(root: &str, cx: &crate::Cx) -> (u16, &'static str) {
-    if !cx.peer().ip().is_loopback() || cx.header("x-wisp-dev").is_none() {
+    if !cx.peer().ip().is_loopback() || !asked(cx.header("x-wisp-dev").is_some(), cx.header("host"))
+    {
         return (404, "Not Found");
     }
     let Ok(body) = std::str::from_utf8(cx.body()) else {
@@ -521,6 +549,37 @@ mod tests {
         assert_eq!(other, [None, None, None]);
     }
 
+    /// Only a request for a loopback name with the header is the CLI's or
+    /// the devtools'; a rebound name or a missing header is not.
+    #[test]
+    fn dev_requests_name_loopback() {
+        for host in [
+            "localhost",
+            "LOCALHOST:5173",
+            "app.localhost:1",
+            "localhost.",
+            "127.0.0.1:3000",
+            "127.9.9.9",
+            "[::1]:3000",
+        ] {
+            assert!(asked(true, Some(host)), "{host}");
+            assert!(!asked(false, Some(host)), "{host}");
+        }
+        for host in [
+            "evil.example",
+            "evil.example:3000",
+            "localhost.evil.example",
+            "127.0.0.1.nip.io",
+            "[::2]:1",
+            "10.0.0.1",
+            "",
+            "[::1",
+        ] {
+            assert!(!asked(true, Some(host)), "{host}");
+        }
+        assert!(!asked(true, None));
+    }
+
     /// Swap bodies from a buggy or hostile local client: an answer, never a
     /// panic or an abort (a huge count once reserved that much memory).
     #[test]
@@ -531,13 +590,22 @@ mod tests {
         let peer: SocketAddr = "127.0.0.1:9".parse().unwrap();
         let stranger: SocketAddr = "192.0.2.1:9".parse().unwrap();
         let body = format!("{path}\n{shape:x}\n0\n");
-        let swapped = endpoint::<Fuzz>(Method::Post, "/_wisp/dev/swap", body.as_bytes(), peer);
+        let at = |peer, asked| {
+            endpoint::<Fuzz>(
+                Method::Post,
+                "/_wisp/dev/swap",
+                body.as_bytes(),
+                peer,
+                asked,
+            )
+            .0
+        };
         let expect = if cfg!(debug_assertions) { 200 } else { 404 };
-        assert_eq!(swapped.0, expect, "debug builds only");
-        assert_eq!(
-            endpoint::<Fuzz>(Method::Post, "/_wisp/dev/swap", body.as_bytes(), stranger).0,
-            404
-        );
+        assert_eq!(at(peer, true), expect, "debug builds only");
+        assert_eq!(at(stranger, true), 404);
+        // A site in the developer's browser cannot send `x-wisp-dev`.
+        let unasked = if cfg!(debug_assertions) { 403 } else { 404 };
+        assert_eq!(at(peer, false), unasked);
         // A new shape, given with the one it replaces; then only that one
         // is taken.
         let to = format!("{path}\n{shape:x}>def\n0\n");

@@ -37,7 +37,7 @@ fn a_swap_keeps_state() {
     }
     let post = |path: &str, body: &str| {
         format!(
-            "fetch({path:?}, {{ method: 'POST', body: {body:?} }}).then((r) => r.status)",
+            "fetch({path:?}, {{ method: 'POST', headers: {{ 'x-wisp-dev': '1' }}, body: {body:?} }}).then((r) => r.status)",
             body = body
         )
     };

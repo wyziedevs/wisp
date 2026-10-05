@@ -626,10 +626,13 @@
       form.getAttribute('data-wisp') === 'off' ||
       (target && target !== '_self')
     ) return;
+    // A post to another site is the browser's: ours would send it our
+    // headers and could not read its answer.
+    const url = new URL(attr('action') ?? '', location.href);
+    if (url.origin !== location.origin) return;
     e.preventDefault();
     if (busy.has(form)) return; // Enter pressed again while the post is out
 
-    const url = new URL(attr('action') ?? '', location.href);
     // Sent as the browser would: files only with the multipart enctype.
     const data = new FormData(form, btn);
     if (!send('wisp:submit', { data, submitter: btn, action: url }, form)) return;
@@ -668,7 +671,7 @@
           jump(0, 0);
           if (!res.redirected) res = await fetch(to, { headers });
         }
-      } else if (type.includes('json') && form.__wispEnhance) {
+      } else if (type.includes('json') && form.__wispEnhance === true) {
         result.data = await res.json(); // an action's answer, for use:enhance
         res = null;
       } else if (!isHtml(res)) {
@@ -698,7 +701,7 @@
       form.removeAttribute('aria-busy');
       if (btn) btn.disabled = false;
     }
-    if (res === undefined && !form.__wispEnhance) {
+    if (res === undefined && form.__wispEnhance !== true) {
       // Network trouble: let the browser post it, and show what went wrong.
       native = form;
       form_.requestSubmit.call(form, btn);
