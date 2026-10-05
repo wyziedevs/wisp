@@ -6,11 +6,11 @@ const app = new Hono();
 app
   .get("/plaintext", (c) => {
     c.header("Server", "Hono");
-    return c.text("Hello, World!");
+    return c.body("Hello, World!", 200, { "Content-Type": "text/plain" });
   })
   .get("/json", (c) => {
     c.header("Server", "Hono");
-    return c.json({ message: "Hello, World!" });
+    return c.body(JSON.stringify({ message: "Hello, World!" }), 200, { "Content-Type": "application/json" });
   });
 
 app.all("/*", (c) => {
