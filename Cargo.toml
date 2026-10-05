@@ -43,7 +43,7 @@ wisp-build = { path = "crates/wisp-build", version = "0.1.0", package = "wisp-we
 wisp-macros = { path = "crates/wisp-macros", version = "0.1.0", package = "wisp-web-macros" }
 wisp-shared = { path = "crates/wisp-shared", version = "0.1.0", package = "wisp-web-shared" }
 httparse = { version = "1.10", default-features = false, features = ["std"] }
-tokio = { version = "1.53", default-features = false, features = ["rt", "net", "io-util", "time", "signal", "sync", "fs"] }
+tokio = { version = "1.53", default-features = false, features = ["rt", "net", "io-util", "time", "signal", "sync"] }
 
 # `unsafe` is forbidden in the workspace and in apps' generated code. Two
 # exceptions set their own lint: `crates/wisp` (the Linux I/O drivers and the

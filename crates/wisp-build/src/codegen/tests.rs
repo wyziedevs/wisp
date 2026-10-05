@@ -131,6 +131,51 @@ fn let_conditions_borrow_places() {
     );
 }
 
+/// Build-time guard: the code generated per route (what rustc compiles on
+/// every edit) stays small. One route against fifty of the shape of
+/// `bench/build/gen.sh`, dev and release; budgets are about 1.3x what was
+/// measured (bench/README.md, "Build times"), in lines and bytes, so the
+/// test never depends on the machine.
+#[test]
+fn codegen_per_route_stays_small() {
+    let route = |i: usize| {
+        let rs = format!(
+            "struct Data {{ title: String, items: Vec<u32>, flag: bool }}\n\
+             fn load(cx: &mut Cx) -> Data {{ let _ = cx; Data {{ title: \"R{i}\".into(), items: vec![1], flag: true }} }}\n"
+        );
+        let wisp = format!(
+            "<head><title>{{title}}</title></head>\n<h1>{{title}}</h1>\n\
+             {{#if flag}}<p>even {i}</p>{{:else}}<p>odd</p>{{/if}}\n<ul>\n\
+             {{#each items as item, k}}<li data-k=\"{{k}}\">{{item}} <a href=\"/gen/r{i}\">{{title}}</a></li>{{/each}}\n</ul>\n"
+        );
+        let dir = format!("src/routes/gen/r{i}");
+        (
+            [format!("{dir}/+page.rs"), format!("{dir}/+page.wisp")],
+            [rs, wisp],
+        )
+    };
+    let size = |n: usize, release: bool| {
+        let routes: Vec<_> = (0..n).map(route).collect();
+        let mut files = vec![("src/routes/+page.wisp", "<p>home</p>")];
+        for (paths, texts) in &routes {
+            files.push((&paths[0], &texts[0]));
+            files.push((&paths[1], &texts[1]));
+        }
+        let code = build(&format!("per-route-{n}-{release}"), &files, release).unwrap();
+        (code.lines().count(), code.len())
+    };
+    for (release, max_lines, max_bytes) in [(false, 100, 5_500), (true, 90, 4_600)] {
+        let (l1, b1) = size(1, release);
+        let (l51, b51) = size(51, release);
+        let (lines, bytes) = ((l51 - l1) / 50, (b51 - b1) / 50);
+        eprintln!("release {release}: {lines} lines, {bytes} bytes per route");
+        assert!(
+            lines <= max_lines && bytes <= max_bytes,
+            "release {release}: {lines} lines and {bytes} bytes of generated code per route, over {max_lines} and {max_bytes}"
+        );
+    }
+}
+
 /// Generates the app made of `files` (path, contents), in a scratch
 /// directory: the error if it fails, `Ok` with the code otherwise.
 fn app(name: &str, files: &[(&str, &str)]) -> Result<String, String> {

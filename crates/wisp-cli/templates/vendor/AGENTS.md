@@ -534,7 +534,7 @@ no-wait fast path off every route.
 a tab that missed one reloads on reconnecting, a failed build's error shows in
 tabs opened later; error dialog opens `file:line` in the editor, also for a handler's panic;
 `Server-Timing` on every dev response; `Alt+Shift+W` devtools
-with routes table) · `wisp test [--browser]` · `wisp check [--types]` · `wisp
+with routes table) · `wisp test [--browser]` · `wisp check [--types] [--rust]` · `wisp
 fmt [--check]` · `wisp build` (`--static`, `--spa`, `--docker`, `--target
 cloudflare|pages|deno|vercel|netlify|node|bun|lambda|native` (`--edge` with
 vercel or netlify: their edge runtime; or per route, `const RUNTIME: wisp::Runtime =

@@ -11,5 +11,5 @@ Core, in short:
 - `#[action] fn name(args)` in a page block handles `<form action="?/name">`: params by name, `#[validate(..)]`, `redirect(..)`, `error(..)`, `invalid(..)`.
 - Data: `#[model]` struct, `Table::saved()` (`new()` is in memory); `#[derive(Rest)]` is a whole JSON API.
 - Auth: `cx.signup`, `cx.login`, `cx.user(&USERS)`.
-- Fewest tokens wins: lean on conventions, don't write what the build infers. Run `wisp check`, `wisp test`, `wisp fmt` before finishing; `wisp routes` lists routes.
+- Fewest tokens wins: lean on conventions, don't write what the build infers. Run `wisp check --rust`, `wisp test`, `wisp fmt` before finishing; `wisp routes` lists routes.
 - Gotchas are in AGENTS.md (`Err(error(..))` is wrong, `+page.wisp` needs the `+`, no guards held across `.await`).
