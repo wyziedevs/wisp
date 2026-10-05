@@ -69,6 +69,7 @@ pub fn run(root: &Path, args: &[String]) -> Result<(), String> {
     let dir =
         std::fs::canonicalize(root).map_err(|e| format!("Cannot read the app folder: {e}."))?;
     let dir = clean(&dir);
+    check_path(&dir)?;
     let exe = dir.join("target/release").join(exe_name(&package));
     if action == Action::Install && !o.dry_run && !exe.exists() {
         return Err(format!(
@@ -154,6 +155,18 @@ fn check_name(s: &str) -> Result<(), String> {
         false => Err(format!(
             "{s} is not a service or user name.\nUse letters, digits, - _ and ., starting with a letter or digit."
         )),
+    }
+}
+
+/// The app folder goes into unit files and a `cmd` line: no control
+/// characters, quotes or `%`, which no quoting there carries safely.
+fn check_path(p: &Path) -> Result<(), String> {
+    let s = p.to_string_lossy();
+    match s.chars().any(|c| c.is_control() || matches!(c, '"' | '%')) {
+        true => Err(format!(
+            "{s} has a quote, % or control character in it.\nMove the app to a plainer folder."
+        )),
+        false => Ok(()),
     }
 }
 
@@ -368,6 +381,28 @@ mod tests {
     }
 
     #[test]
+    fn odd_paths() {
+        let d = Path::new("/srv/my app & co");
+        let e = Path::new("/srv/my app & co/target/release/x");
+        let o = Options::default();
+        let u = unit("x", d, e, &o);
+        assert!(
+            u.contains("ExecStart=\"/srv/my app & co/target/release/x\"\n"),
+            "{u}"
+        );
+        let p = plan(Os::Mac, Action::Install, "x", d, e, &o);
+        assert!(
+            p.files[0]
+                .1
+                .contains("<string>/srv/my app &amp; co</string>")
+        );
+        for bad in ["/a\nExecStartPre=/bin/sh", "/a%h", "/a\"b"] {
+            assert!(check_path(Path::new(bad)).is_err(), "{bad}");
+        }
+        assert!(check_path(d).is_ok());
+    }
+
+    #[test]
     fn systemd_unit() {
         let (d, e) = (
             Path::new("/srv/blog"),
@@ -376,7 +411,7 @@ mod tests {
         let u = unit("blog", d, e, &opts(Some(80), Some("www")));
         for want in [
             "WorkingDirectory=/srv/blog\n",
-            "ExecStart=/srv/blog/target/release/blog\n",
+            "ExecStart=\"/srv/blog/target/release/blog\"\n",
             "EnvironmentFile=-/etc/blog.env\n",
             "Environment=PORT=80\n",
             "User=www\n",
