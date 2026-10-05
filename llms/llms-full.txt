@@ -2812,7 +2812,7 @@ A textarea gets `required`, and `minlength` when `#[validate(min = N)]` has N ab
 ## Forms and Files
 
 - `cx.form()` reads urlencoded and multipart bodies (`enctype="multipart/form-data"` for files). Text fields read the same either way.
-- `cx.form().file("photo")` is the file of `<input type="file" name="photo">` (`None` when none): `name` as sent, `content_type`, `bytes`. `files("photo")` is every file of a `multiple` input.
+- `cx.form().file("photo")` is the file of `<input type="file" name="photo">` (`None` when none): `name` as sent without folders or trailing dots and spaces (a Windows device name such as `CON` gets a `_` in front), `content_type`, `bytes`. `files("photo")` is every file of a `multiple` input.
 - File name and type are visitor input: the name is never a path (a drive such as `C:` and an NTFS stream such as `:stream` are dropped too), the type says nothing the bytes do not.
 - Uploads are held in memory; a route taking large ones raises its own `BODY_LIMIT`.
 
@@ -4878,6 +4878,7 @@ Wisp is young and has not been audited, and it can be broken. This page lists wh
 **Files and uploads**
 
 - Upload file names lose a drive (`C:`) and an NTFS stream (`:stream`), as well as paths, and trailing dots and spaces; a Windows device name (`CON`, `nul.txt`, `COM1.png`) gets a `_` in front.
+- `Response::file_in` sends `x-content-type-options: nosniff`, and an HTML, XHTML, SVG or XML file with `content-security-policy: default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox`, so an uploaded page or image runs no script on the site.
 - Static files and `Response::file_in` answer 404 for Windows device names (`nul`, `CON.txt`, `COM1`) and for names Windows trims (`a.txt.`, `a.txt `).
 
 **Browser script and dev mode**
