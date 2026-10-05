@@ -9,6 +9,7 @@ The full reference is `llms/AGENTS.md` (an app has its own copy at its root): re
 Core, in short:
 - Files are routes: `src/routes/x/+page.wisp` (optional `---` Rust block with loads, `#[action]`s and `mod server` endpoints, so one file can be a whole route; then markup), `+layout.wisp`, `+error.wisp`, `+server.rs` (fn get/post/...), `+page.rs` (`struct Data` + `fn load`). Models and tables live in `src/db.rs`. No `use` lines: the prelude, the `pub` items of `src/*.rs`, common std names (`HashMap`, `Arc`, `Duration`...) and `[package.metadata.wisp] auto = [...]` are auto-imported where used.
 - `#[action] fn name(args)` in a page block handles `<form action="?/name">`: params by name, `#[validate(..)]`, `redirect(..)`, `error(..)`, `invalid(..)`.
+- Browser state: cheapest is a literal `let count = 0;` alone on its line in the `---` block (number, bool, None, string, `[..]` of those; no per-request cost; a moved number loses its Rust type/range check). Computed or server-rendered lets stay Rust. A `<script>` is for real browser logic: DOM, `$effect`, lifecycle, imports.
 - Data: `#[model]` struct, `Table::saved()` (`new()` is in memory); `#[derive(Rest)]` is a whole JSON API.
 - Auth: `cx.signup`, `cx.login`, `cx.user(&USERS)`.
 - Fewest tokens wins: lean on conventions, don't write what the build infers. Run `wisp check --rust`, `wisp test`, `wisp fmt` before finishing; `wisp routes` lists routes.

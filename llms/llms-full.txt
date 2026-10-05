@@ -287,7 +287,7 @@ href={p.path}>{p.title}</a>{/each}` (newest `date` first).
 `<button on:click="count++">{:count}</button>` needs no script: a handler that counts
 (`n++`: 0) or toggles (`open = !open`: false) a name nothing declares declares it. Another
 start goes in the `---` block, `let count = 5;`: a literal only `{:…}`/directives read is
-browser state, built in, nothing sent per request. A page's other Rust names are browser values
+browser state, built in, nothing sent per request (a number, `true`/`false`, `None`, a string or `[..]` of those; a moved number is not Rust-checked: `let x: u8 = 300;` builds). The cheapest form. A page's other Rust names are browser values
 by name (`items`, `data.items`), sent with the page. `<script>` (its top-level lets are state)
 is for real browser code: DOM, `onMount`, `$effect`, imports, `$props`, context.
 `bind:value="q"` with no `let q` declares it, so a live search needs no script: `<input bind:value="q">` `{:#each items as i
@@ -1292,14 +1292,22 @@ App commands warn on stderr when the installed `wisp` is older than the app's `w
 Pages work without JavaScript; a script and directives in the same `.wisp` file add behavior. No bundler. `{…}` is Rust (server); a quoted directive value and `{:…}` are JavaScript (browser).
 
 ```html
+---
+let count = 0;
+---
 <button on:click="count++">Clicked {:count} times</button>
-<script>
-  let count = 0
-</script>
 ```
 
+## State in the `---` Block
+The cheapest browser state is a literal `let` in the page's `---` block: a number, `true`/`false`, `None` (null), a string, or `[..]`/`vec![..]` of those, alone on its line (a trailing comment is fine). The build moves it into the page's client code exactly as a `<script>` `let` would be: no per-request server cost, and `{:count}` and directives read it. A computed value, or one the server also renders, stays a Rust `let` and is sent with the page.
+
+- A form action that rewrites the name keeps the browser's value across the morph.
+- A moved number is no longer a Rust value, so its type and range are not checked: `let x: u8 = 300;` builds.
+- A `let` that shares its line with other code stays Rust.
+- Use a `<script>` for real browser logic: the DOM, `$effect`, lifecycle, imports, `$props`.
+
 ## The Script
-A bare `<script>` (no attributes; one per file) works in pages, layouts and components and runs once per place the file is shown. `<script type|src>` stays plain HTML. Errors point at the `.wisp` line.
+A bare `<script>` (no attributes; one per file) is for real browser logic and works in pages, layouts and components and runs once per place the file is shown. `<script type|src>` stays plain HTML. Errors point at the `.wisp` line.
 
 - Top-level `let`s are state: assigning one, or changing an object, array, `Map` or `Set` in it (`todos.push(t)`, `todo.done = true`), redraws. A `let` set to a string, number or boolean and never assigned is a constant.
 - `import` lines move to the module head (`import c from 'https://esm.sh/canvas-confetti'`).
@@ -2489,7 +2497,7 @@ Agents (`wisp mcp`, `wisp update-docs`) and editors (`wisp lsp`): [AI agents and
 
 One std-only process. `wisp dev [--port <n> | --port=<n> | -p <n>]`; anything else is an error with the usage.
 
-- **Watching.** Polls mtimes of `src/`, `static/`, `Cargo.toml`, `build.rs`, `package.json` and `postcss.config.*` every 50 ms (no `notify`). Dot folders (except `static/.well-known`), `target` and `node_modules` are skipped; top-level files are read from one folder listing, symlinks followed. Editors' swap, backup and lock files are ignored; a file settles once it is quiet for 25 ms, and a burst settles for at most a second. Only a modified template swaps in; a template added, removed or renamed, or any `.rs` or `Cargo.toml` change, is a compile.
+- **Watching.** Polls mtimes of `src/`, `static/`, `Cargo.toml`, `build.rs`, `package.json` and `postcss.config.*` every 50 ms (no `notify`). Editors' swap, backup and lock files are ignored; a burst of changes settles for at most a second.
 - **Port.** The app gets `HOST=127.0.0.1` unless `HOST` is set; the printed address is the one shown and used for hot swaps (port 0 works). A port in use moves the first start to the next free one, up to 20 more (the app binds it itself, `WISP_PORT_TRIES`, so nothing can take it between), with a line saying so. `wisp build` servers never move.
 - **Build and restart.** Builds with `cargo build`, copies the exe to `.wisp/run/` (so the next build can overwrite the original while the old server serves), restarts it. Ready when the app prints its `listening on` line: the CLI reads the app's stdout rather than polling (a refused connect takes 2 s on Windows). Output is read as bytes until the pipe closes, so a non-UTF-8 line never cuts the app off.
 - **Children die with the CLI.** The app's stdin is a pipe the CLI holds; when it closes (however `wisp dev` ends, even `kill -9`) the app exits (`exit_with_parent`), freeing the port. A CSS watcher runs under `wisp __child <exe> <args...>`, which kills the tool then.
@@ -4608,7 +4616,7 @@ Wisp is a fast, fun web framework for Rust: ultra fast to run, cheap in AI token
 
 | Area | What you get |
 |---|---|
-| Reactivity | `$state`, `$derived`, `$effect` in a plain `<script>`, no build step. Islands (`client:visible`, `client:idle`, `client:media`) load code when needed. Components ship no JavaScript by default. Hot reload keeps `$state`; markup edits show about 85 ms after the save (measured on the demo, Windows, Ryzen 7 7800X3D). |
+| Reactivity | A literal `let` in the `---` block is browser state at no per-request cost; `$state`, `$derived`, `$effect` in a plain `<script>` for real browser logic, no build step. Islands (`client:visible`, `client:idle`, `client:media`) load code when needed. Components ship no JavaScript by default. Hot reload keeps `$state`; markup edits show about 85 ms after the save (measured on the demo, Windows, Ryzen 7 7800X3D). |
 | AI and tokens | [AGENTS.md](https://github.com/wyziedevs/wisp/blob/main/llms/AGENTS.md) and [llms-full.txt](https://github.com/wyziedevs/wisp/blob/main/llms/llms-full.txt) hold the whole reference. `wisp mcp` serves the docs to coding agents. A whole app takes less than half the tokens of SvelteKit or Next.js ([Tokens](/docs/tokens/)). |
 | Rendering | Server-side rendering with streamed responses and server-streamed `{#await}`. Prerendered pages in a server build, `wisp build --static` and `--spa`. |
 | Data and forms | `#[action]` form handlers with validation, and uploads. `#[remote]` functions called from the browser. `#[derive(Rest)]` gives a JSON CRUD API; a store keeps rows in log files or any database. |
@@ -4721,17 +4729,18 @@ The `<style>` block applies to this component only. Props are checked when the a
 
 ## Adding State
 
-Browser code lives in the same file as the markup. A top-level `let` in a `<script>` is state, `{:count}` shows it, and a directive such as `on:click` changes it:
+Browser state can live in the page's `---` block. A `let` set to a literal (a number, `true`/`false`, a string, a list of those) on its own line is state, `{:count}` shows it, and a directive such as `on:click` changes it. It costs the server nothing per request:
 
 ```html
+---
+let count = 0;
+---
 <button on:click="count++">Clicked {:count} times</button>
-
-<script>
-  let count = $state(0)
-</script>
 ```
 
-A write redraws only the parts of the page that read what changed. Without JavaScript the server's HTML still works, which is why forms and links do not depend on a script. See [Browser code](/docs/client/).
+A `<script>` is for real browser logic (the DOM, effects, lifecycle, imports), where a top-level `let` is state too. A moved header number is no longer checked by Rust: `let x: u8 = 300;` builds. See [Browser code](/docs/client/).
+
+A write redraws only the parts of the page that read what changed. Without JavaScript the server's HTML still works, which is why forms and links do not depend on a script.
 
 <details class="deep-dive">
 <summary>Server Values and Browser Values</summary>

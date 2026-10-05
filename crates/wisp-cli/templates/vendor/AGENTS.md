@@ -287,7 +287,7 @@ href={p.path}>{p.title}</a>{/each}` (newest `date` first).
 `<button on:click="count++">{:count}</button>` needs no script: a handler that counts
 (`n++`: 0) or toggles (`open = !open`: false) a name nothing declares declares it. Another
 start goes in the `---` block, `let count = 5;`: a literal only `{:…}`/directives read is
-browser state, built in, nothing sent per request. A page's other Rust names are browser values
+browser state, built in, nothing sent per request (a number, `true`/`false`, `None`, a string or `[..]` of those; a moved number is not Rust-checked: `let x: u8 = 300;` builds). The cheapest form. A page's other Rust names are browser values
 by name (`items`, `data.items`), sent with the page. `<script>` (its top-level lets are state)
 is for real browser code: DOM, `onMount`, `$effect`, imports, `$props`, context.
 `bind:value="q"` with no `let q` declares it, so a live search needs no script: `<input bind:value="q">` `{:#each items as i

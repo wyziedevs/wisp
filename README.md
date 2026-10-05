@@ -58,7 +58,7 @@ The `---` block is Rust that runs for each request, and `{name}` is rendered on 
 ## What You Get
 
 - **Pages and forms:** `#[action]` handlers with validation, `use:enhance` for in-page updates, `#[derive(Rest)]` for a JSON CRUD API, saved tables in log files or any database.
-- **Browser code:** `on:click="count++"` and `{:count}` with the state in the `---` block or none at all; `$derived` and `$effect` in a plain `<script>`, islands that load when needed, and a router that morphs pages.
+- **Browser code:** `on:click="count++"` and `{:count}` with the state in the `---` block or none at all; a plain `<script>` only for real browser logic (`$derived`, `$effect`, DOM, imports), islands that load when needed, and a router that morphs pages.
 - **Styling:** scoped CSS in a `<style>` block, Tailwind and Sass built in.
 - **Tooling:** `wisp dev` with hot reload, `wisp fmt`, `wisp check`, `wisp test`, a language server with a VS Code extension, and `wisp mcp` to serve the docs to coding agents.
 - **Hosting:** one binary, Docker, static HTML, or a build for Cloudflare, Deno Deploy, Vercel, Netlify, AWS Lambda, Bun and Node. [Pick your host](https://wispweb.dev/docs/hosting/).
