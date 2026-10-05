@@ -41,8 +41,10 @@ wisp-shared = { path = "crates/wisp-shared", version = "0.1.0" }
 httparse = { version = "1.10", default-features = false, features = ["std"] }
 tokio = { version = "1.53", default-features = false, features = ["rt", "net", "io-util", "time", "signal", "sync", "fs"] }
 
-# No `unsafe` anywhere in Wisp or in apps' generated code. (bench/run, a
-# benchmark tool that calls the OS to pin processes to CPUs, sets its own.)
+# `unsafe` is forbidden in the workspace and in apps' generated code. Two
+# exceptions set their own lint: `crates/wisp` (the Linux I/O drivers and the
+# edge exports, see its Cargo.toml) and `bench/run`, a benchmark tool that
+# calls the OS to pin processes to CPUs.
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
