@@ -73,6 +73,7 @@ the request 16 times per write). The Accept headers are TFB's, copied from
 | Hono on Bun | `hono-bun/` | **not TFB source**: TFB has no Bun entry. Same routes as the Node entry, `Bun.serve` with `reusePort`, one process per core |
 | SvelteKit | `sveltekit/` | **not TFB**: two plain `+server.js` route handlers, `adapter-node` production build, one process per core through `node:cluster` |
 | Next.js | `next/` | **not TFB**: two App Router route handlers, `output: 'standalone'`, one process per core through `node:cluster` |
+| Nuxt | `nuxt/` | **not TFB**: two Nitro server routes (`server/routes/*.js`), `nuxt build` with the `node-server` preset, one process per core through `node:cluster` |
 
 Deviations from TFB source, all of them: database parts removed; Express and Fastify use
 `os.availableParallelism()` instead of `os.cpus().length` (the latter ignores `taskset` and would start
@@ -163,9 +164,9 @@ with the numbers they would be a different scale from the tables above.
   runs, raw in `raw/next-heap8192/`): still 0 req/s at almost every level (best single run 1,489 at 4096), no
   out-of-memory message, so the heap was not the cause; Next.js is CPU-saturated and wrk completes no
   16-deep pipelined response within its timeout. Steal peaked at 12 and 16 % (mean 2.5 and 3.5 %) in 5 s samples, so
-  treat those runs as indicative only. SvelteKit and Next.js are plain route handlers, not
+  treat those runs as indicative only. SvelteKit, Next.js and Nuxt are plain route handlers, not
   optimised entries, and not TFB code.
-- Single pass per contender, in the order Wisp, Axum, Actix Web, Express, Fastify, Hono (Node), Hono (Bun), SvelteKit, Next.js, then the supplementary build: contenders measured later
+- Single pass per contender, in the order Wisp, Axum, Actix Web, Express, Fastify, Hono (Node), Hono (Bun), SvelteKit, Next.js, Nuxt, then the supplementary build: contenders measured later
   saw a different moment of the host than Wisp did (the noise experiment shows the size of that).
 - Wisp was not tuned; contenders were not tuned beyond what their TFB entries or docs recommend.
 
@@ -173,7 +174,7 @@ with the numbers they would be a different scale from the tables above.
 
 {{OMITTED}}
 
-Nothing else was left out. Hono on Bun, SvelteKit and Next.js are labelled as non-TFB above.
+Nothing else was left out. Hono on Bun, SvelteKit, Next.js and Nuxt are labelled as non-TFB above.
 
 ## Reproduce
 

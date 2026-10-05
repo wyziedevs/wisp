@@ -15,7 +15,7 @@ CLIENT_CPUS=${CLIENT_CPUS:-2-3}
 DURATION=${DURATION:-15}
 RUNS=${RUNS:-3}
 WORKLOADS=${WORKLOADS:-"plaintext json"}   # a crashed server can be re-measured for one workload: WORKLOADS=json ./run.sh bench next
-CONTENDERS=${CONTENDERS:-"wisp axum actix express fastify hono-node hono-bun sveltekit next wisp-uncapped"}
+CONTENDERS=${CONTENDERS:-"wisp axum actix express fastify hono-node hono-bun sveltekit next nuxt wisp-uncapped"}
 JSON_LEVELS="16 32 64 128 256 512"
 PLAIN_LEVELS="256 1024 4096 16384"
 PIPELINE=16
@@ -40,6 +40,7 @@ build() {
     hono-bun) bun install ;;
     sveltekit) npm install --no-audit --no-fund && npx vite build ;;
     next) npm install --no-audit --no-fund && npx next build ;;
+    nuxt) npm install --no-audit --no-fund && npx nuxt build ;;
   esac
 }
 
@@ -62,6 +63,7 @@ start() {
     hono-bun)  launch "$ROOT/hono-bun" "$log" env PORT=$p $pin bash -c 'for i in $(seq $(nproc)); do bun server.js & done; wait' ;;
     sveltekit) launch "$ROOT/sveltekit" "$log" env NODE_ENV=production PORT=$p $pin node cluster.js ;;
     next)      launch "$ROOT/next" "$log" env NODE_ENV=production NODE_OPTIONS=--max-old-space-size=${NEXT_HEAP_MB:-8192} PORT=$p HOSTNAME=0.0.0.0 $pin node cluster.js ;;
+    nuxt)      launch "$ROOT/nuxt" "$log" env NODE_ENV=production PORT=$p HOST=0.0.0.0 $pin node cluster.js ;;
   esac
   for i in $(seq 150); do curl -s -o /dev/null "http://$HOST:$p/plaintext" && return 0; sleep 0.2; done
   return 1
@@ -190,7 +192,7 @@ record_env() {
     echo "wisp rev: $(cat "$ROOT/WISP_REV" 2>/dev/null)"
     echo "crates (Cargo.lock):"
     grep -A1 -E '^name = "(axum|hyper|tokio|actix-web|actix-http|mimalloc|snmalloc-rs)"' "$ROOT/axum/Cargo.lock" "$ROOT/actix/Cargo.lock" | grep -E 'name|version' | paste - - | sed 's/ \+/ /g'
-    for d in express fastify hono-node sveltekit next; do echo "$d: $(cd "$ROOT/$d" && npm ls --depth=0 2>/dev/null | tail -n +2 | tr '\n' ' ')"; done
+    for d in express fastify hono-node sveltekit next nuxt; do echo "$d: $(cd "$ROOT/$d" && npm ls --depth=0 2>/dev/null | tail -n +2 | tr '\n' ' ')"; done
     echo "hono-bun: $(cd "$ROOT/hono-bun" && bun pm ls 2>/dev/null | tr '\n' ' ')"
   } >"$RAW/env.txt" 2>&1
 }
