@@ -111,6 +111,8 @@ Block rules:
   auto = ["chrono::{Utc, DateTime}"]`. Imported only where used; the file's own
   items and `use` lines win; a name two modules share is a build error (write
   `db::Post`). `wisp check --explain-imports` lists them. `Result` alone = `Result<()>`.
+- `Value` (any JSON): `get(k)`, `as_str() as_bool() as_f64()`; `as_f64` is `None`
+  past `f64` range (`1e999`), never `inf`.
 - `const CACHE: u32 = 60;` (page or `+server.rs`) keeps a GET's answer 60 s
   per worker (ETag, 304), but never for a request with a cookie or
   `authorization` (`CACHE_PUBLIC`: all), nor one that sets a cookie; not in dev.
