@@ -490,7 +490,8 @@ no-wait fast path off every route.
   `set clear by try_add`;
   `wisp::queue(n).push(&j)` + `work(n, f)` + `cron("0 3 * * *", f)` (on
   Cloudflare/Vercel/Netlify the build writes the host's cron trigger from the
-  literal schedule; set `CRON_SECRET`, `WISP_STORE`),
+  literal schedule; set `CRON_SECRET`, `WISP_STORE`; cron follows the wall
+  clock: a minute missed asleep runs once, a clock stepped back never reruns one),
   `wisp::cache(k, secs, f)`/`uncache(path)`;
   rules `url one_of pattern with`.
 - Static export: `fn entries() -> Vec<&'static str>` in a `[param]` page.
@@ -3214,7 +3215,7 @@ fn before(cx: &mut Cx) -> Result<()> {
 | `cx.bearer()` | token of an `Authorization: Bearer` header |
 | `cx.host()` | the `Host` |
 | `cx.delete_cookie(name)` | removes a cookie |
-| `cx.flash("Saved")` | message for the next page (after a `redirect`, say); `{@flash}` in a page or layout shows it once (`cx.flashed()` in a block reads it; `cx.flash_message()` in markup) |
+| `cx.flash("Saved")` | message for the next page (after a `redirect`, say); `{@flash}` in a page or layout shows it once (`cx.flashed()` in a block reads it; `cx.flash_message()` is the `&Cx` form for markup, `None` when there is none or the page has no `{@flash}`) |
 | `cx.after(\|\| ...)` | runs once the handler is through, on the connection's thread when next free (`wisp::spawn`, then a yield): a log line, a `revalidate_tag`. Costs nothing on a request that does not call it. At the edge it is `wisp::spawn`, so the host keeps the instance alive (`waitUntil` on Cloudflare) |
 
 `Table` methods: `add(todo)` returns the id; `get(id)`, `all()`, `find(|t| ...)` return copies as `Row { id, value }` (reads as its value: `{todo}`, `todo.title`, `todo.id`); `update(id, |t| t.done = true)`; `remove(id)`.
@@ -5298,7 +5299,7 @@ let entries = ENTRIES.all();
 {@flash}
 ```
 
-`{@flash}` writes `<p class="flash" role="status">Thanks for signing</p>`, or nothing; in a layout it shows on every page below it. `cx.flashed()` reads it in a block instead.
+`{@flash}` writes `<p class="flash" role="status">Thanks for signing</p>`, or nothing; in a layout it shows on every page below it. `cx.flashed()` reads it in a block instead. In markup, `{#if let Some(m) = cx.flash_message()}` reads the same message through `&Cx` (what `{@flash}` expands to).
 
 Wisp adds `cx` to the action when its body uses it. The message waits in a cookie until the next page reads it.
 
