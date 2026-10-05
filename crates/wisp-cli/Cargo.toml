@@ -1,5 +1,5 @@
 [package]
-name = "wisp-cli"
+name = "wisp-web"
 description = "The wisp command: new, dev, build."
 version.workspace = true
 edition.workspace = true

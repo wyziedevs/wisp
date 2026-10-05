@@ -8,7 +8,7 @@
 
   <p>This is a Wisp app: pages written in <code>.wisp</code> templates, logic in plain Rust, all compiled into one small binary. To make your own, first install the <code>wisp</code> command from <a href="https://github.com/wyziedevs/wisp" title="Wisp on GitHub">GitHub</a>. You need <a href="https://rustup.rs" title="Install Rust">Rust</a>:</p>
 
-  <pre><code>cargo install --git https://wisp.ar0.eu wisp-cli</code></pre>
+  <pre><code>cargo install --git https://wisp.ar0.eu wisp-web</code></pre>
 
   <p>Then create an app anywhere, answer a few questions, and start it:</p>
 

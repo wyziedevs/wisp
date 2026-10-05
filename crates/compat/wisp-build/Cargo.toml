@@ -1,0 +1,18 @@
+# `wisp-build = { git = "https://wisp.ar0.eu" }` in apps made before the
+# rename: `wisp-web-build`, re-exported. Never published.
+[package]
+name = "wisp-build"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+build = { package = "wisp-web-build", path = "../../wisp-build" }
+
+[features]
+avif = ["build/avif"]
+
+[lints]
+workspace = true

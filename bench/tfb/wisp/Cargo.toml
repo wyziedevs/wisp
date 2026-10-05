@@ -5,10 +5,10 @@ edition = "2024"
 publish = false
 
 [dependencies]
-wisp = { path = "../../../crates/wisp" }
+wisp = { package = "wisp-web-rt", path = "../../../crates/wisp" }
 
 [build-dependencies]
-wisp-build = { path = "../../../crates/wisp-build" }
+wisp-build = { package = "wisp-web-build", path = "../../../crates/wisp-build" }
 
 [profile.release]
 codegen-units = 1

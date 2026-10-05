@@ -1,5 +1,5 @@
 [package]
-name = "wisp-macros"
+name = "wisp-web-macros"
 description = "The #[action] marker attribute for Wisp."
 version.workspace = true
 edition.workspace = true
@@ -13,6 +13,7 @@ keywords = ["web", "framework", "macros"]
 categories = ["web-programming", "development-tools::procedural-macro-helpers"]
 
 [lib]
+name = "wisp_macros"
 proc-macro = true
 
 # `#[validate]`'s rules and `.await`, read as the build reads them.

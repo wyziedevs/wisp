@@ -27,7 +27,7 @@ File routes, `.wisp` templates compiled to Rust, form actions that work without 
 You need [Rust](https://rustup.rs) 1.88 or later.
 
 ```sh
-cargo install --git https://wisp.ar0.eu wisp-cli
+cargo install --git https://wisp.ar0.eu wisp-web
 wisp new my-app
 cd my-app
 wisp dev

@@ -6,6 +6,8 @@ members = [
     "crates/wisp-macros",
     "crates/wisp-shared",
     "crates/wisp-cli",
+    "crates/compat/wisp",
+    "crates/compat/wisp-build",
     "examples/demo",
     "examples/api",
     "examples/jobs",
@@ -36,10 +38,10 @@ homepage = "https://wispweb.dev"
 readme = "README.md"
 
 [workspace.dependencies]
-wisp = { path = "crates/wisp", version = "0.1.0" }
-wisp-build = { path = "crates/wisp-build", version = "0.1.0" }
-wisp-macros = { path = "crates/wisp-macros", version = "0.1.0" }
-wisp-shared = { path = "crates/wisp-shared", version = "0.1.0" }
+wisp = { path = "crates/wisp", version = "0.1.0", package = "wisp-web-rt" }
+wisp-build = { path = "crates/wisp-build", version = "0.1.0", package = "wisp-web-build" }
+wisp-macros = { path = "crates/wisp-macros", version = "0.1.0", package = "wisp-web-macros" }
+wisp-shared = { path = "crates/wisp-shared", version = "0.1.0", package = "wisp-web-shared" }
 httparse = { version = "1.10", default-features = false, features = ["std"] }
 tokio = { version = "1.53", default-features = false, features = ["rt", "net", "io-util", "time", "signal", "sync", "fs"] }
 

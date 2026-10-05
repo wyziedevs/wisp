@@ -1,5 +1,5 @@
 [package]
-name = "wisp-build"
+name = "wisp-web-build"
 description = "Wisp compiler: route scanning, .wisp templates, code generation. Called from build.rs."
 version.workspace = true
 edition.workspace = true
@@ -25,6 +25,11 @@ pulldown-cmark = { version = "0.13", default-features = false, features = ["html
 # Off by default.
 ravif = { version = "0.13", default-features = false, optional = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"], optional = true }
+
+# Published as `wisp-web-build`; code still says `wisp_build::`.
+[lib]
+name = "wisp_build"
+path = "src/lib.rs"
 
 [features]
 avif = ["dep:ravif", "dep:image"]

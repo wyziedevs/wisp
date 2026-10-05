@@ -42,8 +42,8 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 name = "api"
 version = "0.1.0"
 dependencies = [
- "wisp",
- "wisp-build",
+ "wisp-web-build",
+ "wisp-web-rt",
 ]
 
 [[package]]
@@ -269,8 +269,8 @@ checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 name = "demo"
 version = "0.1.0"
 dependencies = [
- "wisp",
- "wisp-build",
+ "wisp-web-build",
+ "wisp-web-rt",
 ]
 
 [[package]]
@@ -457,8 +457,8 @@ name = "i18n"
 version = "0.1.0"
 dependencies = [
  "tokio",
- "wisp",
- "wisp-build",
+ "wisp-web-build",
+ "wisp-web-rt",
 ]
 
 [[package]]
@@ -497,8 +497,8 @@ checksum = "65b27460c2c92b037f3f94c538ed9a3342f3fdf923606781629ccb35f82d042a"
 name = "img"
 version = "0.1.0"
 dependencies = [
- "wisp",
- "wisp-build",
+ "wisp-web-build",
+ "wisp-web-rt",
 ]
 
 [[package]]
@@ -537,8 +537,8 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 name = "jobs"
 version = "0.1.0"
 dependencies = [
- "wisp",
- "wisp-build",
+ "wisp-web-build",
+ "wisp-web-rt",
 ]
 
 [[package]]
@@ -1147,8 +1147,8 @@ checksum = "f9395f0f0eee849a9b707b2f06bb92a6a422090e2123bb2ef8e87a0e61892a8e"
 name = "snippets"
 version = "0.1.0"
 dependencies = [
- "wisp",
- "wisp-build",
+ "wisp-web-build",
+ "wisp-web-rt",
 ]
 
 [[package]]
@@ -1270,16 +1270,16 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 name = "tokens-real-wisp"
 version = "0.0.0"
 dependencies = [
- "wisp",
- "wisp-build",
+ "wisp-web-build",
+ "wisp-web-rt",
 ]
 
 [[package]]
 name = "tokens-wisp"
 version = "0.0.0"
 dependencies = [
- "wisp",
- "wisp-build",
+ "wisp-web-build",
+ "wisp-web-rt",
 ]
 
 [[package]]
@@ -1466,8 +1466,8 @@ dependencies = [
 name = "websocket"
 version = "0.1.0"
 dependencies = [
- "wisp",
- "wisp-build",
+ "wisp-web-build",
+ "wisp-web-rt",
 ]
 
 [[package]]
@@ -1562,6 +1562,99 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 name = "wisp"
 version = "0.1.0"
 dependencies = [
+ "wisp-web-rt",
+]
+
+[[package]]
+name = "wisp-agents-snippets"
+version = "0.1.0"
+dependencies = [
+ "wisp-web-build",
+ "wisp-web-rt",
+]
+
+[[package]]
+name = "wisp-bench"
+version = "0.0.0"
+dependencies = [
+ "wisp-web-build",
+ "wisp-web-rt",
+]
+
+[[package]]
+name = "wisp-build"
+version = "0.1.0"
+dependencies = [
+ "wisp-web-build",
+]
+
+[[package]]
+name = "wisp-islands"
+version = "0.1.0"
+dependencies = [
+ "wisp-web-build",
+ "wisp-web-rt",
+]
+
+[[package]]
+name = "wisp-load"
+version = "0.0.0"
+dependencies = [
+ "tokio",
+]
+
+[[package]]
+name = "wisp-test-app"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+ "wisp-web-build",
+ "wisp-web-rt",
+]
+
+[[package]]
+name = "wisp-test-platform"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+ "wisp-web-build",
+ "wisp-web-rt",
+]
+
+[[package]]
+name = "wisp-tokens"
+version = "0.0.0"
+
+[[package]]
+name = "wisp-web"
+version = "0.1.0"
+dependencies = [
+ "resvg",
+ "wisp-web-build",
+ "wisp-web-shared",
+]
+
+[[package]]
+name = "wisp-web-build"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "pulldown-cmark",
+ "ravif",
+ "wisp-web-shared",
+]
+
+[[package]]
+name = "wisp-web-macros"
+version = "0.1.0"
+dependencies = [
+ "wisp-web-shared",
+]
+
+[[package]]
+name = "wisp-web-rt"
+version = "0.1.0"
+dependencies = [
  "allocation-counter",
  "bytes",
  "http",
@@ -1573,92 +1666,13 @@ dependencies = [
  "tokio-rustls",
  "tower-service",
  "webpki-roots",
- "wisp-macros",
- "wisp-shared",
+ "wisp-web-macros",
+ "wisp-web-shared",
 ]
 
 [[package]]
-name = "wisp-agents-snippets"
+name = "wisp-web-shared"
 version = "0.1.0"
-dependencies = [
- "wisp",
- "wisp-build",
-]
-
-[[package]]
-name = "wisp-bench"
-version = "0.0.0"
-dependencies = [
- "wisp",
- "wisp-build",
-]
-
-[[package]]
-name = "wisp-build"
-version = "0.1.0"
-dependencies = [
- "image",
- "pulldown-cmark",
- "ravif",
- "wisp-shared",
-]
-
-[[package]]
-name = "wisp-cli"
-version = "0.1.0"
-dependencies = [
- "resvg",
- "wisp-build",
- "wisp-shared",
-]
-
-[[package]]
-name = "wisp-islands"
-version = "0.1.0"
-dependencies = [
- "wisp",
- "wisp-build",
-]
-
-[[package]]
-name = "wisp-load"
-version = "0.0.0"
-dependencies = [
- "tokio",
-]
-
-[[package]]
-name = "wisp-macros"
-version = "0.1.0"
-dependencies = [
- "wisp-shared",
-]
-
-[[package]]
-name = "wisp-shared"
-version = "0.1.0"
-
-[[package]]
-name = "wisp-test-app"
-version = "0.1.0"
-dependencies = [
- "tokio",
- "wisp",
- "wisp-build",
-]
-
-[[package]]
-name = "wisp-test-platform"
-version = "0.1.0"
-dependencies = [
- "tokio",
- "wisp",
- "wisp-build",
-]
-
-[[package]]
-name = "wisp-tokens"
-version = "0.0.0"
 
 [[package]]
 name = "wit-bindgen"
