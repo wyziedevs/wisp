@@ -533,6 +533,17 @@ impl<'a> Project<'a> {
                     "{rel}:{line}: a component renders without waiting, so its markup cannot `.await`; await in the page and pass the value as a prop"
                 ));
             }
+            // Both read the request's `cx`, which a component has not.
+            if t.flash {
+                return Err(format!(
+                    "{rel}: a component has no request, so no {{@flash}}; put {{@flash}} in the page or a layout"
+                ));
+            }
+            if crate::template::active_links(&markup).is_some() {
+                return Err(format!(
+                    "{rel}: a component has no request, so a link cannot say `active`; put the nav in a layout, or pass aria-current as a prop"
+                ));
+            }
             let rune = match &t.script {
                 Some(s) => js::props_rune(&s.src).map_err(|(off, msg)| {
                     let (line, col) = script_pos(s, off);

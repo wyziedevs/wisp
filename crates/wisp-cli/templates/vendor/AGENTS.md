@@ -91,7 +91,7 @@ Block rules:
 - No `use` lines: prelude = `Cx Response Result Error Email Image Json
   FromJson Rest Config Cookie CookieOptions SameSite Method Value Shared Table Row RateLimit OrStatus Password Reply KB MB
   action remote error invalid model redirect Always Never Ignore`, the `pub` items of
-  `src/*.rs` and of modules `main.rs` declares, `HashMap HashSet BTreeMap BTreeSet
+  `src/*.rs` and of modules `main.rs` declares (a `mod x;` goes in `main.rs`), `HashMap HashSet BTreeMap BTreeSet
   VecDeque Arc Rc Cow Duration Instant SystemTime`, and `[package.metadata.wisp]
   auto = ["chrono::{Utc, DateTime}"]`. Imported only where used; the file's own
   items and `use` lines win; a name two modules share is a build error (write

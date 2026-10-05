@@ -577,6 +577,16 @@ fn component_uses_are_checked() {
             .unwrap_err()
             .contains("such as Ui.wisp")
     );
+    for (name, src) in [
+        ("comp-flash", "{@flash}"),
+        ("comp-active", "<a href=\"/\" active>H</a>"),
+    ] {
+        assert!(
+            app(name, &[("src/components/Nav.wisp", src), page("<Nav />")])
+                .unwrap_err()
+                .contains("a component has no request")
+        );
+    }
     assert!(
         app("props", &[page("{@props a: u8}")])
             .unwrap_err()

@@ -163,11 +163,18 @@ fn crud(root: &Path, path: &str) -> Result<Vec<String>, String> {
     let Some(name) = segs.last().filter(|_| segs.iter().all(plain)) else {
         return Err(format!("{path}: crud takes a plain path, such as /posts."));
     };
-    let one = name
-        .strip_suffix('s')
-        .filter(|n| n.len() > 1)
-        .unwrap_or(name);
-    let ty = camel(one, "");
+    // posts -> Post, entries -> Entry, classes -> Class, news -> News.
+    let one = match name.strip_suffix("ies") {
+        Some(stem) if !stem.is_empty() => format!("{stem}y"),
+        _ => match name.strip_suffix("sses") {
+            Some(stem) => format!("{stem}ss"),
+            None => match name.strip_suffix('s') {
+                Some(stem) if stem.len() > 1 && !stem.ends_with(['s', 'w', 'u']) => stem.into(),
+                _ => name.to_string(),
+            },
+        },
+    };
+    let ty = camel(&one, "");
     let table = name.replace('-', "_").to_ascii_uppercase();
     let url = format!("/{}", segs.join("/"));
     let dir = segs.iter().fold(root.join("src/routes"), |d, s| d.join(s));

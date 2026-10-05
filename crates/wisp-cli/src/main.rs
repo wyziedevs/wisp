@@ -38,7 +38,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 /// `wisp --help`: each command or option, and what it does.
-const COMMANDS: [(&str, &str); 31] = [
+const COMMANDS: [(&str, &str); 32] = [
     (
         "wisp new [name]",
         "Create an app. It asks a few questions; the options below answer them.",
@@ -113,8 +113,12 @@ const COMMANDS: [(&str, &str); 31] = [
     ),
     ("wisp routes", "List each route's methods, URL and file."),
     (
-        "wisp new-route <path> [page|server|rest]",
-        "Write a page, an endpoint or a REST resource at a URL.",
+        "wisp new-route <path> [page|form|layout|server|rest]",
+        "Write a page, a form, a layout, an endpoint or a REST resource at a URL.",
+    ),
+    (
+        "wisp add <kind> </path|Name>",
+        "page|form|layout|server|rest|api /path as new-route; crud /path: list, new and edit pages and the model; component Name.",
     ),
     (
         "wisp deploy init fly|render|railway [--force]",

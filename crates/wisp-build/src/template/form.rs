@@ -35,7 +35,7 @@ pub(super) fn pagers(src: &str) -> Option<String> {
 /// `"page"` while the request's path is `/blog` or below it (`/` only
 /// itself), else left out. `href={x}` and `{href}` work too. Pages and
 /// layouts (it reads `cx`). `None` when no link says `active`.
-pub(super) fn active_links(src: &str) -> Option<String> {
+pub(crate) fn active_links(src: &str) -> Option<String> {
     if !src.contains(" active") {
         return None;
     }

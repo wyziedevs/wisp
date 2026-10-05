@@ -664,6 +664,14 @@ pub fn exports(root: &Path, wisp_mods: &[(String, PathBuf)]) -> Result<Vec<Expor
     for (name, file) in wisp_mods {
         let text = crate::read_source(file).map_err(|e| format!("{}: {e}", rel(file)))?;
         let toks = lex(&text);
+        // Wisp compiles this file into the generated code, where rustc
+        // would look for `mod x;`'s file beside that, not here.
+        if let Some((child, _)) = mods(&toks, true).into_iter().next() {
+            return Err(format!(
+                "{}: `mod {child};` in a module Wisp compiles has no file to find; declare it in src/main.rs (`mod {child};`), or write it inline as `mod {child} {{ … }}`",
+                rel(file)
+            ));
+        }
         let m = Module {
             text: &text,
             rel: rel(file),
@@ -1235,6 +1243,17 @@ mod tests {
             ]
         );
         assert_eq!(e[4].sig, "pub fn slug(s: &str) -> String");
+    }
+
+    #[test]
+    fn a_child_file_of_a_wisp_module_is_an_error() {
+        let root = std::env::temp_dir().join(format!("wisp-auto-child-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/db.rs"), "mod rows;\npub fn f() {}").unwrap();
+        let e = exports(&root, &[("db".into(), root.join("src/db.rs"))]);
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(e.unwrap_err().contains("src/db.rs: `mod rows;`"));
     }
 
     /// Random Rust-ish text never panics a reader, and a name only in a

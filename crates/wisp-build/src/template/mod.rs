@@ -25,6 +25,7 @@ mod ast;
 mod form;
 
 pub use ast::*;
+pub(crate) use form::active_links;
 use form::*;
 
 /// How deep blocks may nest: the build walks them recursively, so a bound
