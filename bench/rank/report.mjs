@@ -2,6 +2,9 @@
 // req/s with its place per route, cold start, memory), then every cell where
 // Wisp is below 3rd or behind Hono. node report.mjs [results dir]
 // A host file with an `invalid` field prints that reason instead of its table.
+// Places, ordering and the losses table are derived only from a file marked
+// `"valid": true`; any other file (no flag, or invalid) prints its raw table and the
+// line 'Run validity not recorded (no steal data).' and derives nothing.
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +16,7 @@ const isWisp = (n) => n.startsWith('wisp');
 const label = { workerd: 'workerd', node: 'Node', bun: 'Bun', deno: 'Deno' };
 const n0 = (x) => x.toLocaleString('en-US');
 const losses = [];
+let anyValid = false;
 const out = [];
 
 for (const host of hosts) {
@@ -20,6 +24,8 @@ for (const host of hosts) {
   if (!existsSync(f)) continue;
   const r = JSON.parse(readFileSync(f, 'utf8'));
   if (r.invalid) { out.push(`### ${label[host]}\n`); out.push(`No valid run (${r.invalid}). The ${r.when.slice(0, 10)} numbers are not published; the rank table is pending a valid run.\n`); continue; }
+  const valid = r.valid === true;
+  anyValid ||= valid;
   const names = [...new Set(Object.keys(r.cells).map((k) => k.split(' /')[0]))];
   const routes = Object.keys(routeNames).filter((p) => names.some((n) => r.cells[`${n} ${p}`]));
   // metrics: value per framework, higher or lower better
@@ -38,9 +44,9 @@ for (const host of hosts) {
   const bestWisp = (m) => best(m, names.filter(isWisp));
 
   const order = (n) => { const ps = metrics.slice(0, routes.length).map((m) => place(m, n)).filter((x) => x != null); return ps.reduce((a, b) => a + b, 0) / (ps.length || 1); };
-  const rows = [...names].sort((a, b) => order(a) - order(b));
+  const rows = valid ? [...names].sort((a, b) => order(a) - order(b)) : [...names];
   out.push(`### ${label[host]}\n`);
-  out.push(`c=${r.conns}, ${r.secs} s runs, median of ${r.runs}, cold start median of ${r.colds}; ${r.when.slice(0, 10)}. Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).\n`);
+  out.push(`c=${r.conns}, ${r.secs} s runs, median of ${r.runs}, cold start median of ${r.colds}; ${r.when.slice(0, 10)}. ${valid ? 'Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).' : 'Each cell: req/s. Run validity not recorded (no steal data).'}\n`);
   out.push(`| framework | ${metrics.map((m) => m.title).join(' | ')} |`);
   out.push(`|---${'|---'.repeat(metrics.length)}|`);
   for (const n of rows) {
@@ -48,7 +54,7 @@ for (const host of hosts) {
       const v = m.val(n);
       if (v == null) return 'n/a';
       const p = place(m, n);
-      const s = `${m.fmt(v)} (#${p})`;
+      const s = valid ? `${m.fmt(v)} (#${p})` : m.fmt(v);
       return isWisp(n) ? `**${s}**` : s;
     });
     out.push(`| ${isWisp(n) ? `**${n}**` : n} | ${cells.join(' | ')} |`);
@@ -56,7 +62,7 @@ for (const host of hosts) {
   for (const [n, why] of Object.entries(r.failed)) out.push(`| ${n} | ${why.startsWith('missing') || why === 'does not start' ? why : 'wrong output, not ranked'} |`);
   out.push('');
 
-  for (const n of names.filter(isWisp)) {
+  for (const n of valid ? names.filter(isWisp) : []) {
     for (const m of metrics) {
       const v = m.val(n), h = m.val('hono');
       if (v == null) continue;
@@ -71,7 +77,7 @@ for (const host of hosts) {
   }
 }
 
-if (!out.some((l) => l.startsWith('| framework'))) { console.log(out.join('\n')); process.exit(0); }
+if (!anyValid) { console.log(out.join('\n')); process.exit(0); }
 out.push('### Where Wisp is below 3rd or behind Hono\n');
 out.push('Gap is how far behind in %: lower req/s, or higher cold start and memory. Gap to 3rd is against the framework in 3rd place (Wisp not counted).\n');
 if (!losses.length) out.push('None.');
