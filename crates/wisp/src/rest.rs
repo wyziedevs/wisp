@@ -153,7 +153,9 @@ impl<'a> Filter<'a> {
         Filter {
             field,
             op,
-            number: (kind == Kind::Number).then(|| want.parse().ok()).flatten(),
+            number: (kind == Kind::Number)
+                .then(|| want.parse().ok().filter(|n: &f64| !n.is_nan()))
+                .flatten(),
             lower: if op == Op::Has {
                 want.to_lowercase()
             } else {
@@ -641,8 +643,15 @@ pub fn create<T: Resource>(cx: &mut Cx, hooks: &Hooks<T>) -> Result<Response> {
     let mut rows = table.write();
     let mut made = Vec::with_capacity(values.len());
     for (v, json) in values {
+        // A repeat of a unique field, in the table or the batch: none made.
+        if let Err(e) = table.free(&rows, &v, 0) {
+            for &(id, _) in &made {
+                table.unplace(&mut rows, id);
+            }
+            return Err(e);
+        }
         let id = table.next_id(&mut rows);
-        rows.map.insert(id, v);
+        table.place(&mut rows, id, v);
         made.push((id, json));
     }
     // All or none: a store that fails takes them out again.
@@ -705,9 +714,10 @@ fn replace<T: Resource>(
     }
     check_match(cx, id, old, was)?;
     v.stamp(Some(old));
+    table.free(&rows, &v, id)?;
     let json = json::to_json(&v);
     table.save(&mut rows, id, Some(&json))?;
-    rows.map.insert(id, v);
+    table.place(&mut rows, id, v);
     drop(rows);
     let mut out = String::with_capacity(json.len() + 24);
     splice(&mut out, id, &json);
@@ -790,6 +800,7 @@ mod tests {
         assert!(f(Kind::Other, Op::Has, "home").passes("[\"home\",\"work\"]"));
         assert!(!f(Kind::Other, Op::Has, "hom").passes("[\"home\"]"));
         assert!(f(Kind::Number, Op::Gt, "9").passes("10"), "as numbers");
+        assert!(!f(Kind::Number, Op::Eq, "NaN").passes("10"), "NaN is no number");
         assert!(f(Kind::Text, Op::Lt, "9").passes("\"10\""), "as text");
         assert!(f(Kind::Number, Op::Eq, "3").passes("3.0"));
         assert!(f(Kind::Bool, Op::Eq, "true").passes("true"));
@@ -900,5 +911,81 @@ mod tests {
         assert_eq!(create::<Item>(&mut cx, &Hooks::NONE).unwrap().status, 201);
         assert_eq!(crate::Store::load(flaky, "").unwrap().len(), 3);
         assert_eq!(ITEMS.len(), 3);
+    }
+
+    #[derive(Clone)]
+    struct Acct(String);
+
+    impl Json for Acct {
+        fn json(&self, out: &mut String) {
+            out.push_str("{\"email\":");
+            self.0.json(out);
+            out.push('}');
+        }
+    }
+
+    impl FromJson for Acct {
+        const UNIQUE: Option<(&'static str, fn(&Self) -> &str)> = Some(("email", |a| &a.0));
+
+        fn from_json(v: &Value, p: &mut json::Problems) -> Option<Acct> {
+            let o = p.object(v)?;
+            p.field::<String>(o, "email").map(Acct)
+        }
+    }
+
+    static ACCTS: Table<Acct> = Table::rest(None, false);
+
+    impl Resource for Acct {
+        const FIELDS: &'static [(&'static str, Kind)] = &[("email", Kind::Text)];
+        fn table() -> &'static Table<Acct> {
+            &ACCTS
+        }
+        fn field(&self, name: &str, out: &mut String) -> bool {
+            name == "email" && {
+                self.0.json(out);
+                true
+            }
+        }
+    }
+
+    fn send(method: &str, body: &str, params: &[(&'static str, &str)]) -> Result<Response> {
+        let raw = format!(
+            "{method} /a/3 HTTP/1.1\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut cx = Cx::for_test(&raw, params);
+        match method {
+            "POST" => create::<Acct>(&mut cx, &Hooks::NONE),
+            "PUT" => put::<Acct>(&mut cx, &Hooks::NONE),
+            _ => patch::<Acct>(&mut cx, &Hooks::NONE),
+        }
+    }
+
+    #[test]
+    fn a_unique_field_holds_through_the_rest_handlers() {
+        let ok = |r: Result<Response>| r.unwrap().status;
+        let bad = |r: Result<Response>| r.err().map(|e| e.status());
+        let two = [("id", "3")];
+        assert_eq!(ok(send("POST", r#"{"email":"a"}"#, &[])), 201);
+        assert!(ACCTS.by("a").is_some(), "the index has the new row");
+        assert_eq!(bad(send("POST", r#"{"email":"a"}"#, &[])), Some(422));
+        let batch = r#"[{"email":"b"},{"email":"b"}]"#;
+        assert_eq!(
+            bad(send("POST", batch, &[])),
+            Some(422),
+            "a repeat in a batch"
+        );
+        assert_eq!(ACCTS.len(), 1, "a batch with a repeat makes none");
+        assert!(ACCTS.by("b").is_none());
+        assert_eq!(ok(send("POST", r#"{"email":"c"}"#, &[])), 201);
+        assert_eq!(bad(send("PUT", r#"{"email":"a"}"#, &two)), Some(422));
+        assert_eq!(bad(send("PATCH", r#"{"email":"a"}"#, &two)), Some(422));
+        assert_eq!(ok(send("PUT", r#"{"email":"d"}"#, &two)), 200);
+        assert!(ACCTS.by("c").is_none() && ACCTS.by("d").is_some());
+        assert_eq!(
+            ok(send("POST", r#"{"email":"c"}"#, &[])),
+            201,
+            "c is free again"
+        );
     }
 }

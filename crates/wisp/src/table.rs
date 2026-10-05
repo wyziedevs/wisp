@@ -424,7 +424,7 @@ impl<T> Table<T> {
 
     /// The 422 for a value whose unique field another row (not `except`)
     /// has: `Ok` when it is free, or the table has none.
-    fn free(&self, rows: &Rows<T>, value: &T, except: u64) -> Result {
+    pub(crate) fn free(&self, rows: &Rows<T>, value: &T, except: u64) -> Result {
         match self.unique {
             Some((field, key)) if rows.index.get(key(value)).is_some_and(|&id| id != except) => {
                 crate::invalid(field, "is taken")
@@ -502,7 +502,8 @@ impl<T> Table<T> {
 
     /// A new row's id.
     pub(crate) fn next_id(&self, rows: &mut Rows<T>) -> u64 {
-        if !self.random {
+        // At the top of u64 (a corrupt store) pick a free id like a random table.
+        if !self.random && rows.last < u64::MAX {
             rows.last += 1;
             return rows.last;
         }
@@ -718,10 +719,7 @@ impl<T> Table<T> {
         let id = self.next_id(rows);
         let json = self.encode(rows, &value);
         self.save(rows, id, Some(&json))?;
-        if let Some((_, key)) = self.unique {
-            rows.index.insert(key(&value).to_owned(), id);
-        }
-        rows.map.insert(id, value);
+        self.place(rows, id, value);
         Ok(id)
     }
 
@@ -784,13 +782,28 @@ impl<T> Table<T> {
         self.free(rows, &value, id)?;
         let json = self.encode(rows, &value);
         self.save(rows, id, Some(&json))?;
+        self.place(rows, id, value);
+        Ok(())
+    }
+
+    /// Puts `value` under `id` (new, or in place of a row), and its unique
+    /// field in the index. Checked with [`Table::free`] before.
+    pub(crate) fn place(&self, rows: &mut Rows<T>, id: u64, value: T) {
         if let Some((_, key)) = self.unique {
-            let old = key(&rows.map[&id]).to_owned();
-            rows.index.remove(&old);
+            if let Some(old) = rows.map.get(&id) {
+                let old = key(old).to_owned();
+                rows.index.remove(&old);
+            }
             rows.index.insert(key(&value).to_owned(), id);
         }
         rows.map.insert(id, value);
-        Ok(())
+    }
+
+    /// Takes row `id` out of memory only (a change that was not saved).
+    pub(crate) fn unplace(&self, rows: &mut Rows<T>, id: u64) {
+        if let (Some((_, key)), Some(v)) = (self.unique, rows.map.remove(&id)) {
+            rows.index.remove(key(&v));
+        }
     }
 
     /// Takes every row out. Ids are not given again, as after `remove`.
@@ -1022,6 +1035,15 @@ mod tests {
     use crate::Value;
     use crate::json;
     use std::sync::Mutex;
+
+    #[test]
+    fn ids_do_not_overflow() {
+        let t: Table<String> = Table::new();
+        let mut rows = t.write();
+        rows.last = u64::MAX;
+        let id = t.next_id(&mut rows);
+        assert!(id > 0 && id < u64::MAX);
+    }
 
     struct Note {
         title: String,
