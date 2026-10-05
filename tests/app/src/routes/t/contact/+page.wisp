@@ -5,7 +5,7 @@ fn default(#[validate(len = 1..=100)] name: String, email: Email) {
 }
 ---
 
-<title>Contact</title>
+<title description="Write to us" image="/og.png">Contact</title>
 
 {@flash}
 <form fields><button>Send</button></form>

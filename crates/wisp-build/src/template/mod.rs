@@ -123,6 +123,8 @@ fn parse_as(
     let src = written.as_deref().unwrap_or(src);
     let paged = pagers(src);
     let src = paged.as_deref().unwrap_or(src);
+    let described = title_meta(src);
+    let src = described.as_deref().unwrap_or(src);
     let linked = active_links(src);
     let src = linked.as_deref().unwrap_or(src);
     let flash = src.contains(FLASH);
@@ -5494,6 +5496,20 @@ mod tests {
         let default = [field("default", "q", "String")];
         let post = form_fields("<form method=\"post\" fields></form>", &default);
         assert!(post.unwrap().unwrap().contains("<input name=\"q\">"));
+    }
+
+    #[test]
+    fn a_title_with_a_description_writes_the_meta() {
+        let got = title_meta("<title description=\"All {n} posts\">Posts</title>\n<p>x</p>");
+        let want = "<head><title>Posts</title><meta property=\"og:title\" content=\"Posts\"><meta name=\"description\" content=\"All {n} posts\"><meta property=\"og:description\" content=\"All {n} posts\"></head>\n<p>x</p>";
+        assert_eq!(got.as_deref(), Some(want));
+        let got = title_meta("<head><title image={i} description={d}>T</title></head>");
+        let want = "<head><title>T</title><meta property=\"og:title\" content=\"T\"><meta name=\"description\" content={d}><meta property=\"og:description\" content={d}><meta property=\"og:image\" content={i}><meta name=\"twitter:card\" content=\"summary_large_image\"></head>";
+        assert_eq!(got.as_deref(), Some(want));
+        assert_eq!(title_meta("<title>T</title>"), None);
+        assert_eq!(title_meta("<title lang=\"en\">T</title>"), None);
+        let t = parse("<title description=\"D\" image=\"/o.png\">T {n}</title>").unwrap();
+        assert!(t.has_title());
     }
 
     #[test]

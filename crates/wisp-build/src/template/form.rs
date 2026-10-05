@@ -107,6 +107,69 @@ pub(super) fn active_links(src: &str) -> Option<String> {
     (from > 0).then(|| out + &src[from..])
 }
 
+/// `<title description="…" image="/og.png">Posts</title>`: the title and,
+/// in the document head, `<meta name="description">` and the Open Graph
+/// tags (`og:title`, `og:description`, `og:image` with a large card).
+/// Values are quoted text (holes too) or `{expr}`, in any order. `None`
+/// when no title has either.
+pub(super) fn title_meta(src: &str) -> Option<String> {
+    let (mut out, mut from, b, mut changed) = (String::new(), 0, src.as_bytes(), false);
+    while let Some(at) = src[from..].find("<title ") {
+        let open = from + at;
+        let (mut j, mut desc, mut image) = (open + 7, None, None);
+        loop {
+            while b.get(j).is_some_and(|&c| is_ws(c)) {
+                j += 1;
+            }
+            let rest = &src[j..];
+            let slot = if rest.starts_with("description=") {
+                j += 12;
+                &mut desc
+            } else if rest.starts_with("image=") {
+                j += 6;
+                &mut image
+            } else {
+                break;
+            };
+            let end = match b.get(j)? {
+                q @ (b'"' | b'\'') => j + 1 + src[j + 1..].find(*q as char)? + 1,
+                b'{' => hole_end(b, j + 1)? + 1,
+                _ => return None,
+            };
+            *slot = Some(&src[j..end]);
+            j = end;
+        }
+        if b.get(j) != Some(&b'>') || desc.is_none() && image.is_none() {
+            out.push_str(&src[from..j]);
+            from = j;
+            continue;
+        }
+        let close = j + src[j..].find("</title>")?;
+        let text = &src[j + 1..close];
+        let mut head = format!("<title>{text}</title>");
+        if !text.contains(['"', '<']) {
+            head.push_str(&format!("<meta property=\"og:title\" content=\"{text}\">"));
+        }
+        if let Some(d) = desc {
+            head.push_str(&format!("<meta name=\"description\" content={d}><meta property=\"og:description\" content={d}>"));
+        }
+        if let Some(i) = image {
+            head.push_str(&format!("<meta property=\"og:image\" content={i}><meta name=\"twitter:card\" content=\"summary_large_image\">"));
+        }
+        // In a `<head>` already: beside the title; else a head of their own.
+        let in_head = src[..open].rfind("<head>") > src[..open].rfind("</head>");
+        out.push_str(&src[from..open]);
+        if in_head {
+            out.push_str(&head);
+        } else {
+            out.push_str(&format!("<head>{head}</head>"));
+        }
+        from = close + "</title>".len();
+        changed = true;
+    }
+    changed.then(|| out + &src[from..])
+}
+
 /// `<form action="?/add" fields>` with a labelled `<input>` for each
 /// parameter of that action written in (`rules::input_type` gives its
 /// `type`; a text field named like `body` is a `<textarea>`), all on the

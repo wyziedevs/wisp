@@ -14,6 +14,8 @@ fn a_generated_form_flashes_once() {
     assert_eq!(sent.status, 303);
     let page = app.get("/t/contact").text().to_string();
     assert!(page.contains("<p class=\"flash\" role=\"status\">Thanks, Ann!</p>"), "{page}");
+    let meta = "<meta name=\"description\" content=\"Write to us\"><meta property=\"og:description\" content=\"Write to us\"><meta property=\"og:image\" content=\"/og.png\">";
+    assert!(page.contains(meta), "{page}");
     assert!(!app.get("/t/contact").text().contains("flash"));
 }
 
