@@ -607,7 +607,11 @@ fn request<A: App>(id: u32, bytes: Vec<u8>, lazy: bool) {
             None => Reply::plain(400),
         };
         match upgrade {
-            Some(upgrade) => socket::<A>(id, upgrade, route, reply).await,
+            Some(upgrade) => {
+                let path = route.split(['?', '#']).next().unwrap_or(route);
+                let limit = crate::http::body_limit::<A>(path);
+                (upgrade.1)(id, upgrade, path, limit, reply).await
+            }
             None => finish(id, reply).await,
         }
     };
@@ -637,26 +641,43 @@ fn warming<A: App>(id: u32, bytes: Vec<u8>, _lazy: bool) {
     spawn(id, Box::pin(task));
 }
 
-/// The WebSocket of request `id`, which the app upgraded: the host is told
-/// (a reply of 101) and, once it has a socket, sends its messages. A host
-/// without `accept` (no `WISP_WS`) gets `refused`, the 501 `answer` made.
-async fn socket<A: App>(id: u32, upgrade: crate::ws::Upgrade, target: &str, mut refused: Reply) {
-    if env("WISP_WS").as_deref() != Some("1") {
-        refused.set_plain(
-            501,
-            "WebSockets need a host with sockets (see docs/deploy.md)",
-        );
-        return finish(id, refused).await;
-    }
-    if !crate::edge_store::Saved.await {
-        return finish(id, Reply::plain(500)).await;
-    }
-    let path = target.split(['?', '#']).next().unwrap_or(target);
-    let sock = Sock::new(id, true, crate::http::body_limit::<A>(path), Vec::new());
-    SOCKS.with_borrow_mut(|s| s.insert(id, sock.clone()));
-    let _kept = Kept(id);
-    send(id, &Reply::plain(101));
-    crate::ws::serve_edge(sock, upgrade, path).await;
+/// [`socket`], as a [`crate::ws::Upgrade`] holds it.
+pub(crate) type Socket = for<'a> fn(
+    u32,
+    crate::ws::Upgrade,
+    &'a str,
+    usize,
+    Reply,
+) -> Pin<Box<dyn Future<Output = ()> + 'a>>;
+
+/// The WebSocket of request `id` at `path` (taking messages up to `limit`
+/// bytes), which the app upgraded: the host is told (a reply of 101) and,
+/// once it has a socket, sends its messages. A host without `accept` (no
+/// `WISP_WS`) gets `refused`, the 501 `answer` made.
+pub(crate) fn socket(
+    id: u32,
+    upgrade: crate::ws::Upgrade,
+    path: &str,
+    limit: usize,
+    mut refused: Reply,
+) -> Pin<Box<dyn Future<Output = ()> + '_>> {
+    Box::pin(async move {
+        if env("WISP_WS").as_deref() != Some("1") {
+            refused.set_plain(
+                501,
+                "WebSockets need a host with sockets (see docs/deploy.md)",
+            );
+            return finish(id, refused).await;
+        }
+        if !crate::edge_store::Saved.await {
+            return finish(id, Reply::plain(500)).await;
+        }
+        let sock = Sock::new(id, true, limit, Vec::new());
+        SOCKS.with_borrow_mut(|s| s.insert(id, sock.clone()));
+        let _kept = Kept(id);
+        send(id, &Reply::plain(101));
+        crate::ws::serve_edge(sock, upgrade, path).await;
+    })
 }
 
 /// Takes request `id`'s socket out of `SOCKS` when its task ends or is dropped.

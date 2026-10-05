@@ -72,7 +72,24 @@ type Handler =
     Box<dyn FnOnce(WebSocket) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> + Send>;
 
 /// What a [`Response::websocket`] runs once the connection is upgraded.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct Upgrade(pub(crate) Handler);
+
+/// What a [`Response::websocket`] runs once the connection is upgraded, and
+/// how the edge serves it: reached only from here, so the wasm of an app
+/// that never upgrades has none of that code.
+#[cfg(target_arch = "wasm32")]
+pub struct Upgrade(pub(crate) Handler, pub(crate) crate::edge::Socket);
+
+impl Upgrade {
+    fn new(handler: Handler) -> Upgrade {
+        #[cfg(not(target_arch = "wasm32"))]
+        let up = Upgrade(handler);
+        #[cfg(target_arch = "wasm32")]
+        let up = Upgrade(handler, crate::edge::socket);
+        up
+    }
+}
 
 impl Response {
     /// Upgrades the request to a WebSocket and runs `handler` with it; the
@@ -105,7 +122,7 @@ impl Response {
             .push((Cow::Borrowed("upgrade"), "websocket".into()));
         res.headers
             .push((Cow::Borrowed("connection"), "upgrade".into()));
-        res.upgrade = Some(Upgrade(Box::new(move |ws| Box::pin(handler(ws)))));
+        res.upgrade = Some(Upgrade::new(Box::new(move |ws| Box::pin(handler(ws)))));
         res
     }
 }
