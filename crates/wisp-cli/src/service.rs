@@ -411,7 +411,7 @@ mod tests {
         let u = unit("blog", d, e, &opts(Some(80), Some("www")));
         for want in [
             "WorkingDirectory=/srv/blog\n",
-            "ExecStart=\"/srv/blog/target/release/blog\"\n",
+            "ExecStart=/srv/blog/target/release/blog\n",
             "EnvironmentFile=-/etc/blog.env\n",
             "Environment=PORT=80\n",
             "User=www\n",
