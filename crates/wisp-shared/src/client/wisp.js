@@ -363,6 +363,8 @@
     for (const f of after) if (typeof f == 'function') f();
   }
 
+  // A page that cannot be shown here (bad HTML, a throwing hook) is loaded whole.
+  const hard = (url, how) => go(url, how).catch(() => location.assign(url));
   const link = (e) => e.target.closest?.('a[href]');
   on('click', (e) => {
     const a = link(e);
@@ -371,9 +373,9 @@
     // Same page, another #place (or a bare `#`): the browser scrolls there.
     if (a.href.includes('#') && key(url) === key(location.href)) return keep();
     e.preventDefault();
-    const has = (n) => !!a.closest(`[data-wisp-${n}]`);
+    const has = (n) => a.closest(`[data-wisp-${n}]`);
     // A page that cannot be shown here (bad HTML, a throwing hook) is loaded whole.
-    go(url, { replace: has('replacestate'), noscroll: has('noscroll'), keepfocus: has('keepfocus'), novt: has('notransition') }).catch(() => location.assign(url));
+    hard(url, { replace: has('replacestate'), noscroll: has('noscroll'), keepfocus: has('keepfocus'), novt: has('notransition') });
   });
 
   // Fetches a page ahead, used if it is followed within 10s.
@@ -412,7 +414,7 @@
   addEventListener('popstate', () => {
     save(entry);
     entry = mark();
-    if ((history.state?.p ?? key(location.href)) !== shown) go(location.href, { pop: true });
+    if ((history.state?.p ?? key(location.href)) !== shown) hard(location.href, { pop: true });
     else restore(entry), history.state?.x != null && jump(history.state.x, history.state.y || 0), send('wisp:pop');
   });
   // pushState(url, state) and replaceState in a script (live.js).
@@ -742,8 +744,8 @@
     sending = 1;
     for (; q.length && navigator.onLine; q = queue()) {
       try {
-        const r = await fetch(q[0][0], { method: 'POST', body: q[0][1], headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded' } });
-        if (r.status >= 500) break;
+        // A URLSearchParams body is sent as urlencoded, its type set by fetch.
+        if ((await fetch(q[0][0], { method: 'POST', body: new URLSearchParams(q[0][1]), headers })).status >= 500) break;
       } catch { break; }
       store(q.slice(1));
     }

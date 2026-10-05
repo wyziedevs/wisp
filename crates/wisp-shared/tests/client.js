@@ -139,7 +139,7 @@ const tests = {
     assert.equal(post.method, 'POST');
     assert.equal(post.url, 'http://x.test/save');
     assert.equal(post.body, 'a=1&b=x+y');
-    assert.equal(post.headers['content-type'], 'application/x-www-form-urlencoded');
+    assert.equal(post.headers['x-wisp'], '1'); // the body is a URLSearchParams: fetch sets its type
     assert.deepEqual(JSON.parse(p.store['wisp:q']), []);
     assert.equal(sent, 1);
     assert.equal(p.fetches[1].method, 'GET'); // the page again
@@ -215,6 +215,15 @@ const tests = {
     p.click();
     await tick();
     assert.equal(p.calls.assign, 'http://x.test/next');
+  },
+  async 'back to a page that cannot be shown loads it whole'() {
+    const p = page();
+    p.g.reply = () => ({ ...res(''), text: async () => { throw new Error('cut off'); } });
+    p.loc.href = 'http://x.test/other';
+    p.g.history.state = { k: 'b' };
+    p.win.dispatchEvent(new Event('popstate'));
+    await tick();
+    assert.equal(p.calls.assign, 'http://x.test/other');
   },
   async 'spread: dropping an on* key that was no function leaves the rest working'() {
     const extra = fs.readFileSync(path.join(__dirname, '../src/client/extra.js'), 'utf8').replace(/\r\n/g, '\n');
