@@ -139,7 +139,7 @@ impl Queue {
         let id = self.table.add(Job {
             payload: crate::to_json(job),
             tries: 0,
-            run_at: crate::unix_now() + secs,
+            run_at: crate::unix_now().saturating_add(secs),
             lease: 0,
             dead: false,
             error: None,
@@ -189,13 +189,13 @@ fn backoff(tries: u32) -> u64 {
 fn settle(j: &mut Job, now: u64, error: String, fatal: bool) {
     // On the edge the try was counted when it was claimed.
     if cfg!(not(target_arch = "wasm32")) {
-        j.tries += 1;
+        j.tries = j.tries.saturating_add(1);
     }
     j.lease = 0;
     if fatal || j.tries >= TRIES {
         j.dead = true;
     }
-    j.run_at = now + backoff(j.tries);
+    j.run_at = now.saturating_add(backoff(j.tries));
     j.error = Some(error);
 }
 
@@ -326,7 +326,7 @@ fn claim(q: &Queue, now: u64) -> Claim {
                 j.error = Some("it stopped the instance every time".into());
                 return false;
             }
-            j.tries += 1;
+            j.tries = j.tries.saturating_add(1);
         }
         j.lease = now + LEASE;
         true
@@ -774,6 +774,18 @@ mod tests {
         settle(&mut j, 1000, "bad".into(), true);
         assert!(j.dead && j.tries == 1);
         assert_eq!(backoff(40), 3600);
+    }
+
+    #[test]
+    fn a_job_far_in_the_future_waits_not_wraps() {
+        crate::store::memory();
+        let q = queue("audit_far");
+        let id = q.later(u64::MAX, &1u32);
+        assert_eq!(q.table.get(id).unwrap().run_at, u64::MAX);
+        let mut j = q.table.get(id).unwrap().value.clone();
+        j.tries = u32::MAX;
+        settle(&mut j, u64::MAX, "no".into(), false);
+        assert!(j.dead && j.run_at == u64::MAX);
     }
 
     #[test]

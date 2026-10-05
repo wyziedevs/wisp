@@ -1328,6 +1328,37 @@ mod tests {
     }
 
     #[test]
+    fn rules_hold_at_the_edges() {
+        let inf = f64::INFINITY;
+        assert!(check::max(&inf, 9).is_some() && check::min(&-inf, 0).is_some());
+        assert!(check::min(&i64::MIN, 0).is_some() && check::max(&u128::MAX, u64::MAX).is_some());
+        // Characters, not bytes: four of 4 bytes each.
+        let emoji = "😀".repeat(4);
+        assert_eq!(check::max_len(&emoji, 4), None);
+        assert!(check::min_len(&String::new(), 1).is_some());
+        let long = "a".repeat(1 << 20);
+        assert!(check::max_len(&long, 200).is_some());
+        for bad in [
+            "", "@", "a@", "@b", "a@b@c", "a@.b", "a@b.", "a@-b", "a b@c",
+        ] {
+            assert!(check::email(&bad.to_string()).is_some(), "{bad:?}");
+        }
+        for bad in [
+            "",
+            "http://",
+            "https://@x",
+            "http://a b",
+            "ftp://a",
+            "http://a\n",
+        ] {
+            assert!(check::url(&bad.to_string()).is_some(), "{bad:?}");
+        }
+        let t = std::time::Instant::now();
+        let _ = check::pattern(&("a".repeat(5000) + "!"), "(a|a)*(a*)*b");
+        assert!(t.elapsed().as_secs() < 1, "backtracking is bounded");
+    }
+
+    #[test]
     fn parses_strictly() {
         let v =
             parse(" {\"a\": [1, -2.5e3, true, null, \"x\\u00e9\\ud83d\\ude00\\n\"], \"a\": 0} ")
