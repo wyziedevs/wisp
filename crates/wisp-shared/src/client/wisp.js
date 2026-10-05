@@ -34,6 +34,7 @@
 // `(.)route` page inside a `@slot` folder shows in the slot instead of it.
 (() => {
   const headers = { 'x-wisp': '1' };
+  const on = (type, f, o) => document.addEventListener(type, f, o);
   const key = (u) => String(u).split('#')[0];
   // A navigation lands at once, as a page load does, even under
   // `scroll-behavior: smooth`.
@@ -153,7 +154,7 @@
     seen = Date.now();
     refresh().catch(() => {});
   };
-  document.addEventListener('visibilitychange', stale);
+  on('visibilitychange', stale);
   addEventListener('online', stale);
 
   async function refresh(extra) {
@@ -360,7 +361,7 @@
   }
 
   const link = (e) => e.target.closest?.('a[href]');
-  document.addEventListener('click', (e) => {
+  on('click', (e) => {
     const a = link(e);
     if (!a || e.defaultPrevented || e.button || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || !ours(a)) return;
     const url = new URL(a.href);
@@ -383,7 +384,7 @@
     if (a && ours(a) && !a.closest('[data-wisp-preload="off"]')) ahead(a.href);
   }
   // preloadData(url), and preloadCode(url): the modules the page names too.
-  document.addEventListener('wisp:preload', async (e) => {
+  on('wisp:preload', async (e) => {
     const { url, code, done } = e.detail;
     const u = new URL(url, location.href);
     const res = u.origin === location.origin && !u.pathname.startsWith(base + '/_app/') && (await ahead(u));
@@ -396,12 +397,12 @@
     done?.();
   });
   let hover;
-  document.addEventListener('mouseover', (e) => {
+  on('mouseover', (e) => {
     clearTimeout(hover);
     const a = link(e);
     if (a) hover = setTimeout(() => preload(a), 60);
   });
-  document.addEventListener('touchstart', (e) => preload(link(e)), { passive: true });
+  on('touchstart', (e) => preload(link(e)), { passive: true });
 
   // Back/forward across entries we pushed: show that URL's page. An entry
   // pushState made on the page shown (`p`) needs no request.
@@ -412,7 +413,7 @@
     else restore(entry), history.state?.x != null && jump(history.state.x, history.state.y || 0), send('wisp:pop');
   });
   // pushState(url, state) and replaceState in a script (live.js).
-  document.addEventListener('wisp:push', (e) => {
+  on('wisp:push', (e) => {
     const { url, state: s, replace } = e.detail;
     if (replace) history.replaceState({ ...history.state, p: shown, s }, '', url);
     else push(url, { p: shown, s });
@@ -469,13 +470,13 @@
       el.dispatchEvent(new Event(el.options || box(el) ? 'change' : 'input', { bubbles: true }));
     }
   }
-  document.addEventListener('wisp:restore', (e) => (e.detail.s = pend));
+  on('wisp:restore', (e) => (e.detail.s = pend));
   entry ? restore(entry) : (entry = mark());
 
-  document.addEventListener('wisp:goto', (e) => go(e.detail.url, e.detail).finally(e.detail.done));
-  document.addEventListener('wisp:refresh', (e) => refresh().finally(e.detail?.done));
+  on('wisp:goto', (e) => go(e.detail.url, e.detail).finally(e.detail.done));
+  on('wisp:refresh', (e) => refresh().finally(e.detail?.done));
   // Browser code failed to start: the route's error page, from the server.
-  document.addEventListener('wisp:error', () => refresh({ 'x-wisp-error': '1' }));
+  on('wisp:error', () => refresh({ 'x-wisp-error': '1' }));
 
   // ---- morph ----------------------------------------------------------------
 
@@ -504,7 +505,7 @@
   }
 
   function children(a, b) {
-    let ids = null; // the old children by id, made once a new one has an id
+    let ids; // the old children by id, made once a new one has an id
     const skip = (c) => {
       while (c && c.__w) c = c.nextSibling;
       return c;
@@ -513,7 +514,7 @@
     for (let next = b.firstChild; next; ) {
       const n = next;
       next = n.nextSibling; // n may move out of b below
-      let m = null;
+      let m;
       if (n.nodeType === 1 && n.id) {
         ids ||= new Map([...a.childNodes].filter((c) => c.id && !c.__w).reverse().map((c) => [c.id, c]));
         m = ids.get(n.id);
@@ -526,10 +527,18 @@
         a.insertBefore(n, cur); // new node, adopted from the parsed document
         continue;
       }
-      if (m === cur) cur = skip(cur.nextSibling);
-      else a.insertBefore(m, cur); // keyed node moved into place
+      // A move drops focus, selection and scroll and restarts iframes,
+      // media and animations, so a keyed node further on is not moved:
+      // what lies before it stays if keyed (it may be used later, else goes
+      // at the end) or goes. One behind is moved, by moveBefore where there
+      // is one, which keeps all that.
+      if (cur && !(m.compareDocumentPosition(cur) & 4))
+        for (let c; cur != m; ids.get(c.id) == c || c.remove()) (c = cur), (cur = skip(cur.nextSibling));
+      else (a.moveBefore || a.insertBefore).call(a, m, cur);
+      cur = skip(m.nextSibling);
       morph(m, n);
     }
+    ids?.forEach((c) => c.remove()); // keyed and not used
     while (cur) {
       const gone = cur;
       cur = skip(cur.nextSibling);
@@ -543,7 +552,7 @@
   // templates write under `wisp dev`), so the rest of the page is left as
   // it is. Marks that differ from the page's, or are not siblings, mean the
   // whole page instead.
-  document.addEventListener('wisp:region', async (e) => {
+  on('wisp:region', async (e) => {
     const { files, done } = e.detail;
     try {
       const res = await fetch(location.href, { headers });
@@ -613,7 +622,7 @@
   const busy = new WeakSet(); // forms with a post out
   let native = null; // a form handed back to the browser
 
-  document.addEventListener('submit', async (e) => {
+  on('submit', async (e) => {
     const form = e.target;
     const btn = e.submitter;
     // The button's formaction, formmethod... win over the form's own.
@@ -774,7 +783,7 @@
     watch('largest-contentful-paint', (e) => (v.lcp = e.startTime));
     watch('layout-shift', (e) => e.hadRecentInput || (v.cls = cls += e.value));
     watch('event', (e) => e.interactionId && e.duration > (v.inp || 0) && (v.inp = e.duration), { durationThreshold: 40 });
-    document.addEventListener('visibilitychange', () => {
+    on('visibilitychange', () => {
       if (document.visibilityState != 'hidden') return;
       for (const k in v) if (typeof v[k] == 'number') v[k] = Math.round(v[k] * 1000) / 1000;
       // Hiding happens again and again (every tab switch): only what is new is sent.
@@ -838,7 +847,7 @@
     // The first pointer, focus or key in one starts it. A click that comes
     // before it is ready is held, and clicked again once it is.
     if (waits.size) for (const type of ['pointerdown', 'focusin', 'keydown', 'click']) {
-      document.addEventListener(type, (e) => {
+      on(type, (e) => {
         const go = waits.size && island(e.target);
         if (!go) return;
         const ready = go();

@@ -593,7 +593,10 @@ impl Cx {
         let all = self.header("cookie")?;
         all.split(';').find_map(|kv| {
             let (k, v) = kv.split_once('=')?;
-            (k.trim() == name).then(|| v.trim().trim_matches('"'))
+            let v = v.trim();
+            // Only a matched pair of quotes wraps a value (RFC 6265 4.1.1).
+            let unquoted = v.strip_prefix('"').and_then(|v| v.strip_suffix('"'));
+            (k.trim() == name).then(|| unquoted.unwrap_or(v))
         })
     }
 
@@ -1631,6 +1634,24 @@ mod tests {
             );
             let _ = cx.action();
         }
+    }
+
+    /// Only a matched pair of quotes wraps a value (RFC 6265 4.1.1); a
+    /// lone or inner quote is the value's own.
+    #[test]
+    fn cookie_header_edges() {
+        let cx = cx_for(
+            "GET / HTTP/1.1\r\ncookie: bare; a=\"x; b=\"\"y\"\"; c=\"q\"; d=1=2; a=dup; e=\r\n\r\n",
+        );
+        assert_eq!(cx.cookie("a"), Some("\"x"), "a lone quote stays");
+        assert_eq!(cx.cookie("b"), Some("\"y\""), "one pair comes off");
+        assert_eq!(cx.cookie("c"), Some("q"));
+        assert_eq!(cx.cookie("d"), Some("1=2"));
+        assert_eq!(cx.cookie("e"), Some(""));
+        assert_eq!(cx.cookie("bare"), None);
+        assert_eq!(cx.cookie("x"), None);
+        let cx = cx_for("GET / HTTP/1.1\r\ncookie: q=\"\r\n\r\n");
+        assert_eq!(cx.cookie("q"), Some("\""));
     }
 
     #[test]

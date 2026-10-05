@@ -1,7 +1,8 @@
 // Runs wisp.js against a small stand-in for the browser: the offline form
 // queue, focus after a client navigation, and the navigation hooks and link
-// attributes. Run by client.rs (`node client.js`); what is not here (real
-// layout, scrolling, view transitions, morphing) needs a browser.
+// attributes, and the morph keeping keyed nodes in place. Run by client.rs
+// (`node client.js`); what is not here (real layout, scrolling, view
+// transitions) needs a browser.
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -585,6 +586,79 @@ Object.assign(tests, {
     // No snippet given: nothing drawn.
     X.draw({ stops }, null, 'anchor', {}, 0, ['draw', () => undefined, () => args]);
     assert.equal(drawn.length, 1);
+  },
+});
+
+// The morph alone (`same`, `morph`, `children` from wisp.js) on a small DOM
+// that counts moves and, like a browser, drops focus from a node that
+// insertBefore moves (moveBefore keeps it).
+function morpher(move) {
+  const at = src.indexOf('  const same =');
+  const children = new Function(src.slice(at, src.indexOf('  // dev{', at)) + 'return children;')();
+  const dom = { moves: 0, focus: null };
+  class N {
+    constructor(name, id = '', kids = []) {
+      Object.assign(this, { nodeType: name == '#text' ? 3 : 1, nodeName: name, id, nodeValue: id, parentNode: null, kids: [], attributes: [] });
+      for (const k of kids) this.insertBefore(k, null);
+    }
+    get childNodes() { return this.kids; }
+    get firstChild() { return this.kids[0] || null; }
+    get nextSibling() { const p = this.parentNode; return p ? p.kids[p.kids.indexOf(this) + 1] || null : null; }
+    hasAttribute() { return false; }
+    compareDocumentPosition(n) { const k = this.parentNode.kids; return n == this ? 0 : k.indexOf(n) < k.indexOf(this) ? 2 : 4; }
+    has(n) { return n == this || this.kids.some((k) => k.has(n)); }
+    remove() { const p = this.parentNode; if (p) p.kids.splice(p.kids.indexOf(this), 1), (this.parentNode = null); }
+    put(n, ref) { n.remove(); this.kids.splice(ref ? this.kids.indexOf(ref) : this.kids.length, 0, n); n.parentNode = this; }
+    insertBefore(n, ref) {
+      if (n.parentNode == this) { dom.moves++; if (dom.focus && n.has(dom.focus)) dom.focus = null; }
+      this.put(n, ref);
+    }
+  }
+  if (move) N.prototype.moveBefore = function (n, ref) { dom.moves++; this.put(n, ref); };
+  const h = (name, id, ...kids) => new N(name, id, kids);
+  const show = (n) => n.kids.map((k) => k.id || k.nodeName).join(' ');
+  return { children, dom, h, show };
+}
+
+Object.assign(tests, {
+  'morph: a keyed node already in place is not moved, so it keeps focus'() {
+    const { children, dom, h, show } = morpher(false);
+    // A flash message goes away above a form whose input has focus.
+    const input = h('INPUT', 'name');
+    const a = h('BODY', '', h('P', ''), h('#text', ' '), h('FORM', 'f', input));
+    dom.focus = input;
+    children(a, h('BODY', '', h('FORM', 'f', h('INPUT', 'name'))));
+    assert.equal(show(a), 'f');
+    assert.equal(a.kids[0].kids[0], input);
+    assert.equal(dom.moves, 0);
+    assert.equal(dom.focus, input);
+    // One comes back above it: an insert, still no move.
+    children(a, h('BODY', '', h('P', ''), h('FORM', 'f', h('INPUT', 'name'))));
+    assert.equal(show(a), 'P f');
+    assert.equal(dom.moves, 0);
+    assert.equal(dom.focus, input);
+  },
+  'morph: reordered keyed nodes, unkeyed ones kept, the unused ones gone'() {
+    const { children, dom, h, show } = morpher(false);
+    const [z, b, field, x] = [h('LI', 'z'), h('LI', 'b'), h('INPUT', ''), h('LI', 'x')];
+    const a = h('UL', '', h('LI', 'a'), z, b, field, x);
+    dom.focus = b;
+    children(a, h('UL', '', h('LI', 'b'), h('LI', 'y'), h('LI', 'a'), h('INPUT', '')));
+    assert.equal(show(a), 'b y a INPUT');
+    assert.equal(a.kids[0], b);
+    assert.equal(a.kids[3], field);
+    assert.equal(dom.focus, b);
+    assert.ok(!x.parentNode && !z.parentNode);
+  },
+  'morph: moveBefore, where there is one, keeps a moved node focused'() {
+    const { children, dom, h, show } = morpher(true);
+    const li = h('LI', 'a');
+    const a = h('UL', '', h('LI', 'b'), li);
+    dom.focus = li;
+    children(a, h('UL', '', h('LI', 'a'), h('LI', 'b')));
+    assert.equal(show(a), 'a b');
+    assert.equal(dom.moves, 1);
+    assert.equal(dom.focus, li);
   },
 });
 

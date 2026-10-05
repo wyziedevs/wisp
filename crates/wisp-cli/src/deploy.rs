@@ -149,20 +149,44 @@ pub fn prerender(root: &Path, exe: &Path, env: &[(&str, &str)]) -> Result<(), St
     Ok(())
 }
 
+/// Copies the folder `from` into `to`, following symlinks, and returns
+/// the files copied. A symlinked folder that leads back into a folder being
+/// copied, or folders nested past 64 deep, is an error rather than a hang.
 pub fn copy_dir(from: &Path, to: &Path) -> Result<usize, String> {
+    copy_tree(from, to, &mut Vec::new())
+}
+
+/// `copy_dir`, with `open` the real paths of the folders being copied.
+fn copy_tree(from: &Path, to: &Path, open: &mut Vec<std::path::PathBuf>) -> Result<usize, String> {
     let io = |p: &Path, e: std::io::Error| format!("{}: {e}", p.display());
+    let real = std::fs::canonicalize(from).map_err(|e| io(from, e))?;
+    if open.contains(&real) {
+        return Err(format!(
+            "{}: a symlink loops back to a folder it is in.
+Remove the link or point it elsewhere.",
+            from.display()
+        ));
+    }
+    if open.len() >= 64 {
+        return Err(format!(
+            "{}: folders nest more than 64 deep.",
+            from.display()
+        ));
+    }
+    open.push(real);
     std::fs::create_dir_all(to).map_err(|e| io(to, e))?;
     let mut n = 0;
     for entry in std::fs::read_dir(from).map_err(|e| io(from, e))? {
         let entry = entry.map_err(|e| io(from, e))?;
         let target = to.join(entry.file_name());
         if entry.path().is_dir() {
-            n += copy_dir(&entry.path(), &target)?;
+            n += copy_tree(&entry.path(), &target, open)?;
         } else {
             std::fs::copy(entry.path(), &target).map_err(|e| io(&target, e))?;
             n += 1;
         }
     }
+    open.pop();
     Ok(n)
 }
 
@@ -308,5 +332,25 @@ mod tests {
         assert_eq!(std::fs::read_to_string(to.join("img/b.txt")).unwrap(), "b");
         std::fs::remove_dir_all(&from).unwrap();
         std::fs::remove_dir_all(&to).unwrap();
+    }
+
+    #[test]
+    fn a_symlink_loop_is_an_error_not_a_hang() {
+        let (from, to) = (temp("loop-from"), temp("loop-to"));
+        std::fs::create_dir_all(from.join("a")).unwrap();
+        std::fs::write(from.join("a/x.txt"), "x").unwrap();
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(&from, from.join("a/up"));
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_dir(&from, from.join("a/up"));
+        if made.is_err() {
+            // Windows without the right to make symlinks: nothing to test.
+            std::fs::remove_dir_all(&from).unwrap();
+            return;
+        }
+        let e = copy_dir(&from, &to).unwrap_err();
+        assert!(e.contains("loops back"), "{e}");
+        std::fs::remove_dir_all(&from).unwrap();
+        let _ = std::fs::remove_dir_all(&to);
     }
 }
