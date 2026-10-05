@@ -158,14 +158,20 @@ pub fn repo(base: &Path) -> PathBuf {
 }
 
 /// The docs site checkout (`wisp-docs`): `WISP_DOCS_DIR`, else the folder
-/// beside the repository. `None` when it has no `src/routes/docs`.
+/// beside the repository or beside a folder holding it (a git worktree under
+/// `.claude/worktrees/` has none beside it, and without this its docs tests
+/// skipped and its llms-full.txt went stale). `None` when there is no
+/// `src/routes/docs`.
 pub fn docs_pages(repo: &Path) -> Option<PathBuf> {
-    let dir = match std::env::var_os("WISP_DOCS_DIR") {
-        Some(d) => PathBuf::from(d),
-        None => repo.join("../wisp-docs"),
-    };
-    let pages = dir.join("src/routes/docs");
-    pages.is_dir().then_some(pages)
+    if let Some(d) = std::env::var_os("WISP_DOCS_DIR") {
+        let pages = PathBuf::from(d).join("src/routes/docs");
+        return pages.is_dir().then_some(pages);
+    }
+    let repo = repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf());
+    repo.ancestors()
+        .filter_map(Path::parent)
+        .map(|up| up.join("wisp-docs/src/routes/docs"))
+        .find(|pages| pages.is_dir())
 }
 
 /// The site's pages (`<slug>/+page.md`), by slug, in order.
