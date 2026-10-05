@@ -118,6 +118,11 @@ function oha(route, secs) {
   const non200 = Object.entries(codes).filter(([k]) => k !== '200').reduce((s, [, v]) => s + v, 0);
   return { rps: j.summary.requestsPerSec, p50: (j.latencyPercentiles?.p50 ?? 0) * 1000, p99: (j.latencyPercentiles?.p99 ?? 0) * 1000, non200, errors: Object.values(j.errorDistribution || {}).reduce((s, v) => s + v, 0) };
 }
+// Hypervisor steal over a window: the VPS is shared, so a run's numbers are only as good as its steal.
+const cpu = () => {
+  const v = readFileSync('/proc/stat', 'utf8').split('\n')[0].trim().split(/\s+/).slice(1).map(Number);
+  return [v[7] || 0, v.slice(0, 8).reduce((s, x) => s + x, 0)];
+};
 const median = (xs) => [...xs].sort((a, b) => a.rps - b.rps)[Math.floor(xs.length / 2)];
 
 async function fetchAll() {
@@ -143,11 +148,11 @@ async function bench(f, pass) {
     for (const [n, s] of Object.entries(sample)) if (s.status !== 200) throw new Error(`${n} answered ${s.status}`);
     for (const n of routeNames) {
       oha(n, warm);
-      const rs = [];
+      const rs = []; const c0 = cpu();
       for (let i = 0; i < runs; i++) { rs.push(oha(n, secs)); await sleep(500); }
-      const m = median(rs);
-      res.routes[n] = { rps: Math.round(m.rps), p50ms: +m.p50.toFixed(2), p99ms: +m.p99.toFixed(2), non200: rs.reduce((s, x) => s + x.non200, 0), errors: rs.reduce((s, x) => s + x.errors, 0), runs: rs.map((x) => Math.round(x.rps)) };
-      console.log(`[${f}] ${n}: ${res.routes[n].rps} req/s p99 ${res.routes[n].p99ms} ms  runs ${res.routes[n].runs.join(' ')}`);
+      const c1 = cpu(); const m = median(rs);
+      res.routes[n] = { rps: Math.round(m.rps), p50ms: +m.p50.toFixed(2), p99ms: +m.p99.toFixed(2), non200: rs.reduce((s, x) => s + x.non200, 0), errors: rs.reduce((s, x) => s + x.errors, 0), runs: rs.map((x) => Math.round(x.rps)), stealPct: +(100 * (c1[0] - c0[0]) / (c1[1] - c0[1])).toFixed(1) };
+      console.log(`[${f}] ${n}: ${res.routes[n].rps} req/s p99 ${res.routes[n].p99ms} ms steal ${res.routes[n].stealPct}%  runs ${res.routes[n].runs.join(' ')}`);
     }
     Object.assign(res, memKb(pid));
     console.log(`[${f}] rss ${res.rssMb} MB (peak ${res.peakMb})`);
