@@ -688,9 +688,12 @@ pub(super) fn answered(
 ) {
     cx.send_headers(&mut reply.headers);
     let method = cx.method.as_str();
-    if let Some(started) = started {
-        #[cfg(debug_assertions)]
-        server_timing(reply, started.elapsed());
+    if let Some(started) = started
+        && crate::settings().server_timing
+    {
+        server_timing(cx, reply, started);
+    }
+    if let Some(started) = started.filter(|_| crate::settings().dev) {
         let blocked = Some(BLOCKED.replace(Duration::ZERO)).filter(|&b| b >= BLOCKING);
         let (path, id) = (cx.path(), cx.id());
         dev::log_request(
@@ -712,14 +715,46 @@ pub(super) fn answered(
     }
 }
 
-/// Dev builds: `Server-Timing: total;dur=1.2` on every answered request,
-/// for the devtools' timings and the browser's own network panel.
+/// Marks phase `i` of the request (0: the `before` hook done, 1: the page
+/// renders) for [`server_timing`]. Dev builds only.
 #[cfg(debug_assertions)]
-pub(super) fn server_timing(reply: &mut Reply, took: Duration) {
-    let ms = took.as_secs_f64() * 1000.0;
-    reply
-        .headers
-        .push(("server-timing".into(), format!("total;dur={ms:.2}").into()));
+pub(crate) fn mark(cx: &mut Cx, i: usize) {
+    if crate::settings().server_timing {
+        cx.marks[i] = Some(Instant::now());
+    }
+}
+
+/// `WISP_SERVER_TIMING`: `Server-Timing: total;dur=1.20` on the answer; a
+/// dev build splits it into `before` (the hook), `handler` (loads, actions,
+/// endpoints) and `render`, each that ran.
+pub(super) fn server_timing(cx: &Cx, reply: &mut Reply, started: Instant) {
+    #[cfg(debug_assertions)]
+    let marks = cx.marks;
+    #[cfg(not(debug_assertions))]
+    let marks = [None; 2];
+    let _ = cx;
+    let value = timing(started, marks, Instant::now());
+    reply.headers.push(("server-timing".into(), value.into()));
+}
+
+/// The `Server-Timing` value of a request that began at `started` and
+/// ended at `end`, with the phase marks it made. A mark from before
+/// `started` (another request's) is not this one's.
+pub(super) fn timing(started: Instant, marks: [Option<Instant>; 2], end: Instant) -> String {
+    let ms = |from: Instant, to: Instant| to.saturating_duration_since(from).as_secs_f64() * 1000.0;
+    let [hooked, render] = marks.map(|m| m.filter(|&m| m >= started && m <= end));
+    let mut s = format!("total;dur={:.2}", ms(started, end));
+    if let Some(h) = hooked {
+        s += &format!(", before;dur={:.2}", ms(started, h));
+    }
+    if hooked.is_some() || render.is_some() {
+        let from = hooked.unwrap_or(started);
+        s += &format!(", handler;dur={:.2}", ms(from, render.unwrap_or(end)));
+    }
+    if let Some(r) = render {
+        s += &format!(", render;dur={:.2}", ms(r, end));
+    }
+    s
 }
 
 /// Whether `res`, a 200 to a GET or HEAD with an `etag` (an [`crate::Image`],

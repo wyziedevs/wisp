@@ -533,7 +533,7 @@ no-wait fast path off every route.
 `$state`; every open tab updates after each rebuild, once the new app answers,
 a tab that missed one reloads on reconnecting, a failed build's error shows in
 tabs opened later; error dialog opens `file:line` in the editor, also for a handler's panic;
-`Server-Timing` on every dev response; `Alt+Shift+W` devtools
+`Server-Timing` on every dev response (`total`, `before`, `handler`, `render`; `WISP_SERVER_TIMING=on|off` sets it in any build, release gives `total`); `Alt+Shift+W` devtools
 with routes table) · `wisp test [--browser]` · `wisp check [--types] [--rust]` · `wisp
 fmt [--check]` · `wisp build` (`--static`, `--spa`, `--docker`, `--target
 cloudflare|pages|deno|vercel|netlify|node|bun|lambda|native` (`--edge` with

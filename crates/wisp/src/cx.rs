@@ -188,6 +188,10 @@ pub struct Cx {
     id: std::sync::OnceLock<String>,
     /// Routed to a `+server.rs` endpoint, whose errors are JSON.
     api: bool,
+    /// Dev builds: when the `before` hook was done and when the page began
+    /// to render, for `Server-Timing`.
+    #[cfg(debug_assertions)]
+    pub(crate) marks: [Option<std::time::Instant>; 2],
     /// The edge host's request, whose headers but `host` it is asked for
     /// as they are read (see `edge::Lazy`).
     #[cfg(target_arch = "wasm32")]
@@ -219,6 +223,8 @@ impl Cx {
             json: std::sync::OnceLock::new(),
             id: std::sync::OnceLock::new(),
             api: false,
+            #[cfg(debug_assertions)]
+            marks: [None; 2],
             #[cfg(target_arch = "wasm32")]
             lazy: None,
         }
@@ -239,6 +245,10 @@ impl Cx {
         self.json.take();
         self.id.take();
         self.api = false;
+        #[cfg(debug_assertions)]
+        {
+            self.marks = [None; 2];
+        }
     }
 
     /// The body parsed as JSON, once per request; `None` if it is not JSON.

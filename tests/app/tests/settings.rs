@@ -482,3 +482,22 @@ fn an_address_the_machine_does_not_have_says_so() {
     assert!(out.contains("cannot listen on 192.0.2.1"), "{out}");
     assert!(out.contains("This machine has no such address"), "{out}");
 }
+
+/// `WISP_SERVER_TIMING=on`: every answer says how long it took, and a dev
+/// build splits a page's into the `before` hook, its handler and its
+/// render. `off` leaves the header out, dev or not.
+#[test]
+fn server_timing_splits_a_pages_time() {
+    let on = start(&[("WISP_SERVER_TIMING", "on")]);
+    let page = on.send(b"GET /a2/load HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\n\r\n");
+    let t = common::header(&page, "server-timing").unwrap_or_else(|| panic!("{page}"));
+    assert!(t.starts_with("total;dur="), "{t}");
+    if cfg!(debug_assertions) {
+        for phase in ["before;dur=", "handler;dur=", "render;dur="] {
+            assert!(t.contains(phase), "{t}");
+        }
+    }
+    let off = start(&[("WISP_SERVER_TIMING", "off")]);
+    let page = off.send(b"GET /a2/load HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\n\r\n");
+    assert!(common::header(&page, "server-timing").is_none(), "{page}");
+}

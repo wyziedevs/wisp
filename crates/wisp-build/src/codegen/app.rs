@@ -208,6 +208,8 @@ impl Gen {
                     ),
                 );
             }
+            // Where a dev build's `Server-Timing` splits handler from render.
+            self.line(1, "::wisp::rt::rendering(cx);");
             if page.stmts.is_some() {
                 // The page runs its statements, then hands its render to this
                 // closure, which puts it inside the layouts.

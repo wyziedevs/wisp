@@ -1307,3 +1307,61 @@ fn requests_from_other_hosts_never_panic() {
         }
     }
 }
+
+/// `Server-Timing` is on in dev and off otherwise, unless
+/// `WISP_SERVER_TIMING` says: checked here and in two child processes
+/// with dev mode off, one of them with the header asked for.
+#[test]
+fn server_timing_follows_its_switch() {
+    let name = "http::tests::server_timing_follows_its_switch";
+    if crate::settings().dev {
+        for timing in [None, Some("on")] {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            child
+                .args([name, "--exact", "--nocapture"])
+                .env("WISP_DEV", "off");
+            match timing {
+                Some(t) => child.env("WISP_SERVER_TIMING", t),
+                None => child.env_remove("WISP_SERVER_TIMING"),
+            };
+            let child = child.output().unwrap();
+            let said = String::from_utf8_lossy(&child.stdout);
+            assert!(
+                child.status.success() && said.contains("1 passed"),
+                "{said}"
+            );
+        }
+    }
+    let mut b = buffers();
+    answer(
+        &mut b,
+        b"GET /plaintext HTTP/1.1\r\nhost: localhost\r\n\r\n",
+    );
+    let text = String::from_utf8_lossy(&b.wbuf);
+    let on = crate::settings().dev || std::env::var("WISP_SERVER_TIMING").is_ok_and(|v| v == "on");
+    assert_eq!(text.contains("\r\nserver-timing: total;dur="), on, "{text}");
+}
+
+/// The `Server-Timing` value: the total, then each phase that was marked.
+#[test]
+fn timing_names_the_phases_that_ran() {
+    use std::time::{Duration, Instant};
+    let t0 = Instant::now();
+    let ms = |n| t0 + Duration::from_millis(n);
+    assert_eq!(timing(t0, [None, None], ms(2)), "total;dur=2.00");
+    assert_eq!(
+        timing(t0, [Some(ms(1)), Some(ms(3))], ms(4)),
+        "total;dur=4.00, before;dur=1.00, handler;dur=2.00, render;dur=1.00"
+    );
+    assert_eq!(
+        timing(t0, [Some(ms(1)), None], ms(4)),
+        "total;dur=4.00, before;dur=1.00, handler;dur=3.00"
+    );
+    // A mark from before the request began is another's.
+    let old = Instant::now();
+    let t1 = old + Duration::from_millis(5);
+    assert_eq!(
+        timing(t1, [Some(old), None], t1 + Duration::from_millis(1)),
+        "total;dur=1.00"
+    );
+}

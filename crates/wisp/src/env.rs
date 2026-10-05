@@ -149,8 +149,12 @@ pub(crate) struct Settings {
     pub request_id: bool,
     /// `WISP_SECURE_HEADERS`: `nosniff` and `referrer-policy` on pages (`on`).
     pub secure_headers: bool,
-    /// Handlers are timed, for the dev log: `dev`, but not in the edge build.
+    /// Handlers are timed, for the dev log or `Server-Timing`: `dev` or
+    /// `server_timing`, but not in the edge build.
     pub timed: bool,
+    /// `WISP_SERVER_TIMING`: a `Server-Timing` header on every answer (`on`
+    /// in dev, `off` otherwise).
+    pub server_timing: bool,
     /// `WISP_HANDLER_TIMEOUT`, in milliseconds (0 for none).
     pub timeout_ms: u64,
     /// `WISP_PROBLEM_JSON`: JSON errors as RFC 9457 `application/problem+json`
@@ -205,10 +209,11 @@ pub(crate) fn settings() -> &'static Settings {
         let secure_headers = switch("WISP_SECURE_HEADERS", true);
         // `WISP_HSTS`: `strict-transport-security` on every answer (`off`).
         headers::HSTS_ON.store(switch("WISP_HSTS", false), std::sync::atomic::Ordering::Relaxed);
-        let timed = cfg!(not(target_arch = "wasm32")) && dev;
+        let server_timing = switch("WISP_SERVER_TIMING", dev);
+        let timed = cfg!(not(target_arch = "wasm32")) && (dev || server_timing);
         let timeout_ms = setting::<u64>("WISP_HANDLER_TIMEOUT", "a number of seconds").map_or(0, |s| s.saturating_mul(1000));
         Settings {
-            dev, body_limit, origin, client_ip_header, secret, old_secret, api_docs, request_id, problem_json, secure_headers, timed, timeout_ms,
+            dev, body_limit, origin, client_ip_header, secret, old_secret, api_docs, request_id, problem_json, secure_headers, timed, server_timing, timeout_ms,
             ws_idle,
             #[cfg(not(target_arch = "wasm32"))]
             max_conns,

@@ -74,7 +74,7 @@ let count = TODOS.len();
 ---
 
 <title>Todos ({count})</title>
-<form action="?/add" fields><button>Add</button></form>
+<form action="?/add" fields />
 {#each TODOS.all() as todo}
   <p>{todo.text}</p>
 {/each}
@@ -91,7 +91,7 @@ Block rules:
 - No `use` lines: prelude = `Cx Response Result Error Email Image Json
   FromJson Rest Config Cookie CookieOptions SameSite Method Value Shared Table Row RateLimit OrStatus Password Reply KB MB
   action remote error invalid model redirect Always Never Ignore`, the `pub` items of
-  `src/*.rs` and of modules `main.rs` declares, `HashMap HashSet BTreeMap BTreeSet
+  `src/*.rs` and of modules `main.rs` declares (a `mod x;` goes in `main.rs`), `HashMap HashSet BTreeMap BTreeSet
   VecDeque Arc Rc Cow Duration Instant SystemTime`, and `[package.metadata.wisp]
   auto = ["chrono::{Utc, DateTime}"]`. Imported only where used; the file's own
   items and `use` lines win; a name two modules share is a build error (write
@@ -130,7 +130,7 @@ Block rules:
 ```rust
 #[action]
 fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<String>) {
-    cx.flash("Liked"); // cx is added when the body uses it
+    cx.flash("Liked"); // `{@flash}` shows it; cx is added when the body uses it
     redirect("/") // 303; or end in `;` to re-render the page
 }
 ```
@@ -147,8 +147,10 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
   a labelled input per param: `Email` → `type=email`, `password`/`*_password`
   → password, `Image` → file, `bool` → checkbox, numbers → number, text named
   `body message bio comment description notes content` → textarea, else text.
-  Add your own button. `fields={post}` starts a struct param's fields from
-  `post` (an edit form). For a select write the inputs yourself.
+  `fields={post}` starts a struct param's fields from
+  `post` (an edit form). `#[validate(one_of = "draft live")]` text is a
+  `<select>`. No button in it: one is added (`Send`; `Save` with `{post}`;
+  else the action's name): `<form fields />`, `<form fields="Log in" />`.
 - Params by name: route param, then form, then query. `T` required (400
   missing; not a `T` → 422 by field), `Option<T>` missing/blank → None,
   `bool` checkbox, `Vec<T>` repeated, `&str`, `Email`, or a `#[model]`
@@ -187,6 +189,9 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
 | `{@const x = expr}` | let |
 | `{#snippet row(a, b)}…{/snippet}` `{@render row(x, 1)}` | local markup fn |
 | `{@pager posts}` | Newer/Older links of a `Table::page` |
+| `<a href="/blog" active>` | `aria-current="page"` on `/blog` and below (`/` only itself); pages, layouts |
+| `{@flash}` | `cx.flash(..)`'s message, once: `<p class="flash" role="status">`; page or layout |
+| `<title description="…" image="/og.png">T</title>` | also description, `og:*` and `twitter:card` meta in the head |
 | `<head>…</head>` | into the document head; a top-level `<title>` goes there alone; one `<title>` per page: the innermost page or layout with one writes it |
 | `<slot />` or `{@render children()}` | layout/component slot |
 | `cx` | the request (`&Cx`) in pages, layouts, error pages |
@@ -528,7 +533,7 @@ no-wait fast path off every route.
 `$state`; every open tab updates after each rebuild, once the new app answers,
 a tab that missed one reloads on reconnecting, a failed build's error shows in
 tabs opened later; error dialog opens `file:line` in the editor, also for a handler's panic;
-`Server-Timing` on every dev response; `Alt+Shift+W` devtools
+`Server-Timing` on every dev response (`total`, `before`, `handler`, `render`; `WISP_SERVER_TIMING=on|off` sets it in any build, release gives `total`); `Alt+Shift+W` devtools
 with routes table) · `wisp test [--browser]` · `wisp check [--types] [--rust]` · `wisp
 fmt [--check]` · `wisp build` (`--static`, `--spa`, `--docker`, `--target
 cloudflare|pages|deno|vercel|netlify|node|bun|lambda|native` (`--edge` with
@@ -538,7 +543,10 @@ gzip, no build) · `wisp
 deploy init <host>` (a GitHub Actions workflow; or `fly|render|railway`: that
 host's config) · `wisp openapi [-o openapi.json]` (`--check`: CI fails when the file is stale) · `wisp service install|uninstall|start|stop|status [--user u]
 [--port n] [--dry-run]` (run the release binary as a systemd unit or launchd
-daemon; Windows: a startup scheduled task) · `wisp routes` · `wisp new-route /path page|server|rest` ·
+daemon; Windows: a startup scheduled task) · `wisp routes` · `wisp add
+page|form|layout|server|rest|api /path` (`new-route` too), `wisp add crud
+/posts` (list, new, edit pages; `Post` and `POSTS` into `src/db.rs`), `wisp
+add component Card` ·
 `wisp add|remove pkg` (`wisp add` alone: the recipes in `add/`) · `wisp ui
 add|list button dialog` (accessible components into `src/components`; `clientonly`:
 `<ClientOnly fallback="…">` draws its children only in the browser) · `wisp
@@ -894,6 +902,7 @@ Each param but `cx` is read by name: route param, then form field or JSON object
 |---|---|
 | a `Json` value (`#[derive(Json)]`, `Vec`, numbers, strings, maps) | 200 + JSON |
 | nothing, `Result<()>` | 204 |
+| a `Response` with status 205 | bodiless, `content-length: 0` |
 | `Response` | it |
 | `Option<Response>` | it, or 404 |
 | `Option<T>` | JSON, 204 for `Some(())`, 404 for `None` |
@@ -1583,7 +1592,7 @@ Components match by creation order, so a reordering list may trade states. Build
 
 - Component tree with live props and state (editable), stores.
 - The route (params, server values, the page's forms), a table of all the app's routes.
-- Timings (dev responses carry `Server-Timing: total;dur=…`).
+- Timings (dev responses carry `Server-Timing: total;dur=…, before;dur=…, handler;dur=…, render;dur=…`; `WISP_SERVER_TIMING` sets it).
 - A server panic or other 5xx opens the same error dialog with its message and `file:line`; "Open" uses `$WISP_EDITOR` or `$EDITOR`, else `code -g`.
 
 
@@ -1640,6 +1649,7 @@ Back, forward and reload restore each changed `<input>`, `<textarea>`, `<select>
 - Pages leave with `pagehide` (back/forward cache; scroll restored).
 - `<body data-wisp-revalidate="30">` refetches data when the tab or network returns (at most every N s, default 30; the morph keeps focus, scroll, typed text).
 - Offline, `<form data-wisp-queue>` (safe to send twice) waits in `sessionStorage`, is sent in order when back, then the page refreshes (`wisp:sent`). Only urlencoded forms queue.
+- `wisp:result` also fires when a download link is clicked, and for a post a later one superseded (the older request's result, whose page is not shown).
 - Other forms show "You are offline" and fire `wisp:result` with `error: "offline"`.
 - A navigation focuses the `<h1>` (else `<main>`) and announces the title; view transitions skip under `prefers-reduced-motion`.
 
@@ -1926,7 +1936,8 @@ wisp::queue("mail").push(&Mail { to, body }); // .later(secs, &job)
 
 - Jobs live in the saved table `queue-mail`. A failure (`Err` or a panic) is tried again after 4, 8, 16... seconds (an hour at most), five tries; then it stays `dead` with its last error (`queue.dead()`, `queue.retry(id)`).
 - At least once: a job running when the process died runs again a minute later. One at a time per queue, in order.
-- `cron` takes five fields (`*`, `n`, `a-b`, `*/n`, lists; Sunday is 0 or 7).
+- `cron` takes five fields (`*`, `n`, `a-b`, `*/n`, lists; Sunday is 0 or 7), in UTC only. As in Vixie cron, a day field starting with `*` (`*/2`) is not a restriction on the day.
+- A minute already run never runs again, so a clock stepped back does not repeat it. A run missed while the machine slept runs once on waking. Near the end of time the next run is `None` and the task stops.
 - On Cloudflare, Vercel and Netlify (`wisp build --target ...`) the same code runs from the host's cron: `wisp build` writes each `cron` schedule (a string literal) into its trigger config, and a trigger also runs the queues' due jobs (each minute if the app has `work`). Set `CRON_SECRET` and `WISP_STORE` there. See [Edge and serverless targets](/docs/deploy-targets/#jobs).
 
 ## Cache
@@ -2031,7 +2042,7 @@ docker run -p 3000:3000 -e WISP_SECRET=... my-app
 
 - Writes a two-stage `Dockerfile` (`rust:slim` then `debian:stable-slim`, `HOST=0.0.0.0`, `WISP_DATA=/data`) and `.dockerignore`.
 - Saved tables live in `/data`: mount a volume (`-v my-app-data:/data`).
-- Docker's default seccomp refuses io_uring, so the server uses an epoll per worker. A profile allowing `io_uring_setup`, `io_uring_enter`, `io_uring_register` brings it back.
+- Docker's default seccomp refuses io_uring, so the server uses an epoll per worker. A profile allowing `io_uring_setup`, `io_uring_enter`, `io_uring_register` brings it back. The io_uring backend is implemented but untested end to end (the test VPS kernel refuses io_uring buffer rings); epoll is the tested default.
 
 
 <!-- docs/deploy-observe.md -->
@@ -2426,7 +2437,7 @@ One std-only process. `wisp dev [--port <n> | --port=<n> | -p <n>]`; anything el
 - **Children die with the CLI.** The app's stdin is a pipe the CLI holds; when it closes (however `wisp dev` ends, even `kill -9`) the app exits (`exit_with_parent`), freeing the port. A CSS watcher runs under `wisp __child <exe> <args...>`, which kills the tool then.
 - **Reload.** Serves a Server-Sent Events stream on its own port. Browsers stay connected across restarts and are told to morph/reload once the new app is ready.
 - **Output.** Cargo progress on the first build, then one line per change (`~ src/routes/+page.wisp  swapped in 0ms`, `✓ Rebuilt in 0.3s`). Compiler errors have paths relative to the app and no generated module names (`Data`, not `page_3::Data`). An error rustc finds in template-generated code is retold against the template's line; an action that returns a value is caught before compiling, against `+page.rs`.
-- **Request log.** The app logs each request in dev (`GET /nope  404  0.1ms`, yellow 4xx, red 5xx) and a handler's panic once, with where. Release builds log only 5xx.
+- **Request log.** The app logs each request in dev (`GET /nope  404  0.1ms`, yellow 4xx, red 5xx) and a handler's panic once, with where; the error dialog shows that panic's message and `file:line`. Release builds log only 5xx and answer a panic with the plain 500.
 
 ### CSS Tools
 
@@ -2715,7 +2726,7 @@ Browser-side checks come from the same rules (`wisp_build::rules::Native`). A fi
 | `pattern="[\s\S]{0,N}"` | max length (`maxlength` would count an emoji twice) |
 | `min` / `max` | `type="number"` input |
 
-A textarea gets only `required` (line breaks are sent as two characters). The server still checks everything.
+A textarea gets `required`, and `minlength` when `#[validate(min = N)]` has N above 1, never `maxlength` (the browser counts UTF-16 units and line breaks as two characters). The server still checks everything.
 
 ## Request Flow
 
@@ -2774,7 +2785,7 @@ Styles live in `crates/wisp/src/client/tokens.css` (the one source of tokens), `
 |---|---|
 | Error page | For apps without `+error.wisp`. Status and one line (status name, or the error's message when it says more), centered, dark tokens, styles inlined. No links or buttons; write a `+error.wisp` for those. Errors for endpoints and API clients are JSON (see [APIs and platforms](/docs/api/)). |
 | Error page in `wisp dev` | Adds the status name, the request, what caused a 5xx and a link home. |
-| Server errors in dev | Every answer has `Server-Timing: total;dur=ms`. A 5xx dev page holds its message (a panic says `file:line`) in `<template id="wisp-server-error">`, which `wisp-dev.js` opens in the dialog below. Debug builds only. |
+| Server errors in dev | Every answer has `Server-Timing: total;dur=ms`, split into `before`, `handler` and `render` (`WISP_SERVER_TIMING=on` asks for the total in release too). A 5xx dev page holds its message (a panic says `file:line`) in `<template id="wisp-server-error">`, which `wisp-dev.js` opens in the dialog below. Debug builds only. |
 | Build error dialog (dev) | Title, one sentence on where to look (`Error in src/routes/+page.rs on line 7.`), then the error in a code block with Copy. Lives in a shadow root off `<html>`, so app CSS and morphs cannot touch it. Closes when the next build succeeds. |
 | Rebuild bar | A two-pixel accent line across the top once a rebuild has taken 200 ms. |
 | Terminal | Every status line has a mark and words: `✓` done (green), `!` needs a look (yellow), `✗` failed (red), `›` under way and `~` changed (dim). Violet is only for what can be typed. A failure is a sentence, then the reason or fix indented under it. |
@@ -2823,7 +2834,7 @@ async fn load(slug: String) -> Result<Data> {
 - `+layout.wisp` takes a block too; its statements run while the layout renders, take `cx` as `&Cx`, and cannot await or use `?` (a `+layout.rs` `load` can). Components and error pages take none.
 - Errors in a block point at the `.wisp` file and line. Editing a block compiles again; editing markup still swaps in without a compile.
 - A route file needs no `use` and no `pub`: it is included in its own module with `wisp::prelude` in scope (`Cx`, `Response`, `Result`, `error`, `redirect`, `#[action]`, the derives...), and its template is compiled inside it, so it reads private types and fields. `pub`, `use` (an explicit `use wisp::prelude::*` replaces Wisp's), `//!` docs and `#![…]` attributes still work.
-- Auto-imports: a route file, `---` block, layout, component or `src/*.rs` module also uses with no `use` the `pub` items of the app's own modules (`src/*.rs`, and the modules `main.rs` declares, nested `pub mod`s and `mod.rs` included), the std names `HashMap HashSet BTreeMap BTreeSet VecDeque Arc Rc Cow Duration Instant SystemTime`, and what `[package.metadata.wisp] auto = ["chrono::{Utc, DateTime}", "uuid::Uuid"]` lists (each checked at build: a dependency's path, named items, no globs). The build reads each file's tokens (not its strings, comments or attributes; not a name after `.` or `::`) and writes a `use` only for the names it says, so an unused name costs nothing, at build or at run time. The file's own items and `use` lines win, then the app's modules, then the `auto` list, then std, then the prelude; a file with a `use …::*` of its own gets no std or `auto` names. A name two modules make `pub` is a build error at the line that uses it, naming both files: write `db::Post` or `use` the one you mean. `wisp check --explain-imports` lists each file's names and where they come from; the editor's hover and go to definition know them too. CRLF and byte order marks are fine.
+- Auto-imports: a route file, `---` block, layout, component or `src/*.rs` module also uses with no `use` the `pub` items of the app's own modules (`src/*.rs`, and the modules `main.rs` declares, nested `pub mod`s and `mod.rs` included), the std names `HashMap HashSet BTreeMap BTreeSet VecDeque Arc Rc Cow Duration Instant SystemTime`, and what `[package.metadata.wisp] auto = ["chrono::{Utc, DateTime}", "uuid::Uuid"]` lists (each checked at build: a dependency's path, named items, no globs). The build reads each file's tokens (not its strings, comments or attributes; not a name after `.` or `::`) and writes a `use` only for the names it says, so an unused name costs nothing, at build or at run time. The file's own items and `use` lines win, then the app's modules, then the `auto` list, then std, then the prelude; a file with a `use …::*` of its own gets no std or `auto` names. A name two modules make `pub` is a build error at the line that uses it, naming both files: write `db::Post` or `use` the one you mean. `wisp check --explain-imports` lists each file's names and where they come from; the editor's hover and go to definition know them too. CRLF and byte order marks are fine. A child `mod x;` inside a `src/*.rs` module is a build error (declare it in `main.rs` or write it inline); `{@flash}` and `active` work in pages and layouts, not in components (they have no `cx`).
 - `load` is found by name, actions by `#[action]`; nothing else is reachable from HTTP, so a helper never becomes an endpoint by accident.
 - `fn entries() -> Vec<…>` in a page under `[params]` lists the pages `wisp build --static` writes ([Deploying](/docs/deploy/)).
 - The build checks that `load` returns `Data` (plain or in a `Result`), that every parameter but `cx` has a plain name, and that `#[action]` (by any path, `wisp::action` too) marks only top-level functions of a page.
@@ -2964,7 +2975,7 @@ Behind a proxy:
 
 ### I/O Drivers
 
-**io_uring** (Linux 6.1+, `crates/wisp/src/uring.rs`):
+**io_uring** (Linux 6.1+, `crates/wisp/src/uring.rs`): implemented but not tested end to end, because the test VPS kernel refuses io_uring buffer rings. The tested default is epoll.
 
 - Each worker has its own ring and its own listener on the same port (`SO_REUSEPORT`: the kernel spreads connections).
 - One `io_uring_enter` per worker turn submits every queued response and runs completions that came in (`DEFER_TASKRUN`), instead of a `recv` and `send` per request.
@@ -3724,9 +3735,10 @@ Read once at start. Switches take `on`/`off` (also `1`/`0`, `true`/`false`). You
 | `WISP_BODY_LIMIT` | largest request body in bytes (1 MB); `const BODY_LIMIT` per route |
 | `WISP_HANDLER_TIMEOUT` | handler timeout in seconds |
 | `WISP_WS_IDLE` | seconds a quiet WebSocket lives (60; 0 never) |
-| `WISP_CLIENT_IP_HEADER` | header with the client address behind a proxy; the last line of it is read, as the proxy appends it |
+| `WISP_CLIENT_IP_HEADER` | header with the client address behind a proxy; the client is the last address of the header's last line, the one the trusted proxy added; a client can forge the first |
 | `WISP_SECURE_HEADERS` | `off` leaves out `nosniff` and `referrer-policy` |
 | `WISP_HSTS` | `on` adds `strict-transport-security` |
+| `WISP_SERVER_TIMING` | `Server-Timing` on every answer (on in dev, off otherwise; off costs nothing): `total;dur=ms`, and in a debug build `before`, `handler`, `render` |
 | `WISP_PROBLEM_JSON` | `on`: errors as RFC 9457 problem JSON |
 | `WISP_REQUEST_ID` | `on`: every request gets an id (`cx.request_id()`), echoed as `x-request-id` |
 | `WISP_API_DOCS` | serve `/_wisp/openapi.json` and `/_wisp/docs` (on in dev) |
@@ -3754,7 +3766,7 @@ Not for you to set. `wisp build` and the host bridges set them for the app they 
 | Name | What it does |
 |---|---|
 | `WISP_REQUEST_ONLY` | `1` while `wisp build` builds for Cloudflare, Pages, Vercel or Netlify: leaves the server loop for raw connections out of the wasm (541 KB instead of 584 KB for the bench app). An older `wisp` ignores it |
-| `WISP_WARM_UP` | the Cloudflare worker's warm-up instance: it answers one request with the runtime alone (no `init`, hook or random) so the real first request runs compiled code |
+| `WISP_WARM_UP` | the Cloudflare worker's warm-up instance: it answers one request with the runtime alone (no `init`, hook or random) so the real first request runs compiled code (`WISP_WARM_UP=1`; first request faster than with no warm-up, not as fast as running the app) |
 
 ## Logs and Traces
 
@@ -4747,7 +4759,7 @@ Wisp is young and has not been audited, and it can be broken. This page lists wh
 
 - HTTP/2: a reset a client makes us send (the MadeYouReset shape) spends the same reset budget as one it sends. Past 1 MiB of incoming bodies only the oldest stream's window reopens. A peer sending past the receive window gets FLOW_CONTROL_ERROR. `content-length` is digits only, and repeats must agree.
 - A streamed answer still hears its client leave after 64 KB were sent behind it, so the connection and its `WISP_MAX_CONNS` slot are freed.
-- `WISP_CLIENT_IP_HEADER` reads the last line of the header, which the proxy appended, not a first line the client forged.
+- `WISP_CLIENT_IP_HEADER` takes the last address of the header's last line, which the trusted proxy added; a client can forge the first.
 - `Error::redirect` with a CR or LF in the location is a logged 500, and a non-3xx status is logged and sent as 303. Neither panics or splits a header.
 - A dev 5xx page never shows in a release build, even with `WISP_DEV=on`. Stop signals are caught before the `listening` line.
 
@@ -4822,7 +4834,7 @@ The Node apps: Nuxt is file routes, server routes in `server/api` and `useFetch`
 
 | Stack | list | form | api | layout | search | data | setup | total | chars / 4 | files |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| **Wisp** | 58 | 89 | 31 | 60 | 111 | 115 | 0 | **464** | 283 | 6 |
+| **Wisp** | 58 | 79 | 31 | 60 | 96 | 108 | 0 | **432** | 264 | 6 |
 | SvelteKit 2 | 128 | 425 | 57 | 83 | 192 | 72 | 0 | 957 | 620 | 9 |
 | Next.js 15 | 107 | 400 | 44 | 108 | 241 | 71 | 0 | 971 | 706 | 8 |
 | Nuxt 4 (Vue) | 96 | 429 | 22 | 96 | 158 | 71 | 0 | 872 | 596 | 8 |
@@ -4835,7 +4847,7 @@ Wisp's `data` is longer than JavaScript's: a Rust type with its fields' types. E
 
 ## A Real App: Auth, CRUD, Upload, Live, a Component
 
-`bench/tokens/real` is sign up and in, a posts table with validation, edit, delete, pages and live refresh, an avatar upload and a toggle component: 10 files, **1,001** tokens in Wisp, 3.5x less than SvelteKit 3 and 3.3x less than Next.js 15. Its tests check every feature.
+`bench/tokens/real` is sign up and in, a posts table with validation, edit, delete, pages and live refresh, an avatar upload and a toggle component: 10 files, **965** tokens in Wisp, 3.6x less than SvelteKit 3 and 3.5x less than Next.js 15. Its tests check every feature.
 
 ## Method
 
@@ -5346,7 +5358,7 @@ Zero cost on the request hot path: a route pays only for the features it uses, a
 
 An AI pays for every token it reads and writes, in time and money. Wisp uses conventions over configuration, types the compiler infers, and forms that write their own inputs and errors.
 
-- The same five features take 464 tokens in Wisp, 957 in SvelteKit and 971 in Next.js.
+- The same five features take 432 tokens in Wisp, 957 in SvelteKit and 971 in Next.js.
 - A larger app with sign up, uploads and live refresh takes 1,001, against 3,473 and 3,331.
 - `cargo run -p wisp-tokens` counts every hand-written file and its path with a byte-pair style estimate. See [Tokens](/docs/tokens/).
 

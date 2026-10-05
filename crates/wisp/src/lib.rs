@@ -1143,6 +1143,18 @@ pub mod rt {
     /// response, error pages included.
     pub fn hooked(cx: &mut Cx) {
         cx.keep_headers();
+        #[cfg(debug_assertions)]
+        crate::http::mark(cx, 0);
+    }
+
+    /// The page's loads are done and it renders: where a dev build's
+    /// `Server-Timing` ends `handler` and starts `render`. Nothing at all
+    /// in a release build.
+    #[inline(always)]
+    pub fn rendering(cx: &mut Cx) {
+        #[cfg(debug_assertions)]
+        crate::http::mark(cx, 1);
+        let _ = cx;
     }
 
     /// Form posts must come from our own origin (CSRF). Browsers always send
