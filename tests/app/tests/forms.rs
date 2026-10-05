@@ -61,6 +61,21 @@ fn an_edit_form() {
         assert!(page.contains(want), "{want} in {page}");
     }
 
+    // Refused, a checkbox shows what was sent, not what was saved:
+    // unticked when it was left out, ticked when it was sent.
+    let unticked = [
+        ("title", ""),
+        ("body", "Longer"),
+        ("kind", "a"),
+        ("stars", "5"),
+    ];
+    let html = app.post_form("/t/forms", &unticked).text().to_string();
+    let draft = "<input aria-label=\"draft\" name=\"draft\" type=\"checkbox\"";
+    assert!(html.contains(&format!("{draft}>")), "{html}");
+    let ticked = [("title", ""), ("draft", "on")];
+    let html = app.post_form("/t/forms", &ticked).text().to_string();
+    assert!(html.contains(&format!("{draft} checked>")), "{html}");
+
     // A JSON body is read whole: its problems by field too.
     let json = app.post_json(
         "/t/forms",

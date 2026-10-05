@@ -720,9 +720,17 @@ impl Gen {
                 sent,
                 own,
                 line,
+                tick,
             } => {
+                let sent_as = match tick {
+                    Some(v) if cx.has_cx => {
+                        format!("::wisp::rt::ticked(cx, __refused, {name:?}, {v})")
+                    }
+                    Some(_) => "None::<bool>".into(),
+                    None => kept(name, cx.has_cx),
+                };
                 let cond = Code {
-                    src: format!("let Some(__k) = {}", kept(name, cx.has_cx)),
+                    src: format!("let Some(__k) = {sent_as}"),
                     line: *line,
                 };
                 self.code_line(

@@ -1089,6 +1089,23 @@ pub mod rt {
         cx.input(name)
     }
 
+    /// Whether a refused form sent `value` for checkbox or radio `name`
+    /// (any of its values, for a group of checkboxes): `None` when no
+    /// action refused it, so the field shows its own `checked`.
+    pub fn ticked<T: std::fmt::Display + ?Sized>(
+        cx: &Cx,
+        refused: Option<&Error>,
+        name: &str,
+        value: &T,
+    ) -> Option<bool> {
+        refused?;
+        Some(
+            cx.form()
+                .all(name)
+                .any(|sent| is(&Chosen::Kept(sent), value)),
+        )
+    }
+
     /// What an action refused, if it did: read once a render, for its
     /// form's fields (`kept`, `problem`).
     pub fn refused(cx: &Cx) -> Option<&Error> {

@@ -470,6 +470,8 @@ struct Tag {
     /// Its `value` attribute as text: the chunk count when it was written,
     /// and where it starts in `text` (see `value_ends`).
     value_at: Option<(usize, usize)>,
+    /// Its `checked` attribute as text, the same way (see `keep_checked`).
+    checked_at: Option<(usize, usize)>,
     /// The length of the current list when it began: the nodes of its
     /// attributes are after it.
     nodes: usize,
@@ -495,6 +497,7 @@ impl Default for Tag {
             classes: Vec::new(),
             seen: Vec::new(),
             value_at: None,
+            checked_at: None,
             nodes: 0,
             scope: false,
             scoped: false,
@@ -617,6 +620,9 @@ impl Parser<'_> {
                             if self.t.attr == "value" {
                                 let at = self.text.len() - raw.len();
                                 self.t.value_at = Some((self.chunks.len(), at));
+                            } else if self.t.attr == "checked" {
+                                let at = self.text.len() - raw.len();
+                                self.t.checked_at = Some((self.chunks.len(), at));
                             }
                         } else if let Some(a) = self.t.seen.last_mut() {
                             a.1 = Some(self.src[start..self.i].to_string());
@@ -1624,11 +1630,17 @@ impl Parser<'_> {
             .directives
             .iter()
             .any(|d| d.name == "value" || d.kind == Dir::Spread);
-        let name = self
-            .seen("name")
-            .flatten()
-            .map(String::from)
-            .filter(|_| problem && self.form.open.iter().any(Option::is_some) && !in_browser);
+        // A checkbox or radio is kept by being ticked or not.
+        let tick = self.t.name == "input"
+            && matches!(typed.as_str(), "checkbox" | "radio")
+            && !self
+                .t
+                .directives
+                .iter()
+                .any(|d| d.name == "checked" || d.kind == Dir::Spread);
+        let name = self.seen("name").flatten().map(String::from).filter(|_| {
+            (problem || tick) && self.form.open.iter().any(Option::is_some) && !in_browser
+        });
         let chosen = self.t.name == "option"
             && !in_browser
             && self.seen("selected").is_none()
@@ -1670,7 +1682,11 @@ impl Parser<'_> {
                 if keeps && !bound {
                     self.keep_value(&name)?;
                 }
-                self.form.problem = Some(name);
+                if tick {
+                    self.keep_checked(&name)?;
+                } else {
+                    self.form.problem = Some(name);
+                }
             } else {
                 if self.t.name == "select" && !bound {
                     self.choose(&name)?;
@@ -1869,6 +1885,7 @@ impl Parser<'_> {
                     sent,
                     own,
                     line,
+                    tick: None,
                 };
                 Ok(())
             }
@@ -1879,8 +1896,72 @@ impl Parser<'_> {
                     sent,
                     own: None,
                     line,
+                    tick: None,
                 },
             ),
+        }
+    }
+
+    /// A checkbox's or radio's `checked`: whether its value (`own_value`,
+    /// else `on`, as the browser sends it) was sent, when the action refused
+    /// the form, else its own `checked={cond}` or plain `checked`.
+    fn keep_checked(&mut self, name: &str) -> Result<(), Error> {
+        let line = self.line_of(self.t.pos);
+        let value = self.own_value().unwrap_or_else(|| "\"on\"".into());
+        let own_at = (self.frames.len() == self.t.frames)
+            .then(|| {
+                let from = self.t.nodes;
+                let list = self.list();
+                (from..list.len())
+                    .find(|&k| matches!(&list[k], Node::Bool { name, .. } if name == "checked"))
+            })
+            .flatten();
+        let checked = |src: &str| Node::Bool {
+            name: "checked".into(),
+            code: Code {
+                src: src.into(),
+                line,
+            },
+            class: false,
+        };
+        // Plain `checked` is taken out of the text: the node writes it.
+        let plain = match (own_at, self.seen("checked"), self.t.checked_at) {
+            (Some(_), ..) | (None, None, _) => false,
+            (None, Some(None), Some((chunks, at)))
+                if chunks == self.chunks.len()
+                    && self.text[at..].starts_with("checked")
+                    && !self.text[at + 7..].starts_with('=') =>
+            {
+                let start = self.text[..at].trim_end().len();
+                self.text.replace_range(start..at + 7, "");
+                true
+            }
+            // `checked` some other way: left as written.
+            (None, Some(_), _) => return Ok(()),
+        };
+        let sent = self.alone(checked("__k"));
+        let own = match own_at {
+            Some(k) => {
+                let own = std::mem::replace(&mut self.list()[k], Node::Render);
+                Some((Some(k), self.alone(own)))
+            }
+            None if plain => Some((None, self.alone(checked("true")))),
+            None => None,
+        };
+        let node = |own| Node::Kept {
+            name: name.to_string(),
+            sent,
+            own,
+            line,
+            tick: Some(value),
+        };
+        match own {
+            Some((Some(k), own)) => {
+                self.list()[k] = node(Some(own));
+                Ok(())
+            }
+            Some((None, own)) => self.push_node(self.t.pos, node(Some(own))),
+            None => self.push_node(self.t.pos, node(None)),
         }
     }
 
@@ -1941,6 +2022,7 @@ impl Parser<'_> {
                 sent,
                 own,
                 line,
+                tick: None,
             });
         }
         self.form.problem = Some(k.name);
@@ -4613,11 +4695,19 @@ fn shape(nodes: &[Node], out: &mut Vec<u8>) {
                 out.push(b'.');
             }
             Node::Kept {
-                name, sent, own, ..
+                name,
+                sent,
+                own,
+                tick,
+                ..
             } => {
                 out.push(b'k');
                 out.extend_from_slice(name.as_bytes());
                 out.push(0);
+                if let Some(t) = tick {
+                    out.extend_from_slice(t.as_bytes());
+                    out.push(0);
+                }
                 shape(sent, out);
                 out.push(b';');
                 if let Some(own) = own {
@@ -5818,11 +5908,31 @@ mod tests {
         for src in [
             "<form action=\"?/a\" method=\"get\"><input name=\"q\" value=\"x\"></form>",
             "<form action=\"/a\"><input name=\"q\"></form>",
-            "<form action=\"?/a\"><input type=\"checkbox\" name=\"c\"><input type=hidden name=h></form>",
+            "<form action=\"?/a\"><input type=hidden name=h></form>",
             "<form action=\"?/a\"><input name=\"q\" bind:value=\"q\"></form>",
+            "<form action=\"?/a\"><input type=checkbox name=c bind:checked=\"c\"></form>",
             "<input name=\"q\">",
+            "<input type=checkbox name=c checked>",
         ] {
             assert!(!forms(src).contains("{kept"), "{src}: {}", forms(src));
+        }
+        // A checkbox or radio keeps whether it was ticked: plain `checked`
+        // or `checked={cond}` is its own, and it shows no problem itself.
+        for (src, want) in [
+            (
+                "<form action=\"?/a\"><input type=\"checkbox\" name=\"c\"></form>",
+                "<form action=\"?/a\" method=\"post\"><input type=\"checkbox\" name=\"c\"{kept c:[+checked?__k]}></form>",
+            ),
+            (
+                "<form action=\"?/a\"><input type=radio name=r value=x checked></form>",
+                "<form action=\"?/a\" method=\"post\"><input type=radio name=r[value=\"x\"]{kept r:[+checked?__k]|[+checked?true]}></form>",
+            ),
+            (
+                "<form action=\"?/a\"><input type=checkbox name=c checked={on} id=c></form>",
+                "<form action=\"?/a\" method=\"post\"><input type=checkbox name=c{kept c:[+checked?__k]|[+checked?on]} id=c></form>",
+            ),
+        ] {
+            assert_eq!(forms(src), want, "{src}");
         }
         assert!(
             sketch("<form action=\"?/a\"></form><input name=\"q\">")
