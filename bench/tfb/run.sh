@@ -27,7 +27,7 @@ HOST=127.0.0.1
 ulimit -n 1048576 2>/dev/null || ulimit -n 65535
 mkdir -p "$RAW"
 
-port_of() { case $1 in axum) echo 8000;; *) echo 8080;; esac; }
+port_of() { case $1 in axum) echo 8000;; *) echo ${TFB_PORT:-8080};; esac; }   # TFB_PORT: when 8080 is taken by a neighbour
 
 build() {
   [ "$1" = wisp-uncapped ] && return 0   # same binary as wisp
@@ -61,7 +61,7 @@ start() {
     hono-node) launch "$ROOT/hono-node" "$log" env NODE_ENV=production $pin npm start ;;
     hono-bun)  launch "$ROOT/hono-bun" "$log" env PORT=$p $pin bash -c 'for i in $(seq $(nproc)); do bun server.js & done; wait' ;;
     sveltekit) launch "$ROOT/sveltekit" "$log" env NODE_ENV=production PORT=$p $pin node cluster.js ;;
-    next)      launch "$ROOT/next" "$log" env NODE_ENV=production PORT=$p HOSTNAME=0.0.0.0 $pin node cluster.js ;;
+    next)      launch "$ROOT/next" "$log" env NODE_ENV=production NODE_OPTIONS=--max-old-space-size=${NEXT_HEAP_MB:-8192} PORT=$p HOSTNAME=0.0.0.0 $pin node cluster.js ;;
   esac
   for i in $(seq 150); do curl -s -o /dev/null "http://$HOST:$p/plaintext" && return 0; sleep 0.2; done
   return 1

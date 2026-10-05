@@ -1,0 +1,24 @@
+=== GET /json
+HTTP/1.1 200 OK
+vary: rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch
+content-type: application/json
+server: Next.js
+Date: Mon, 05 Oct 2026 19:01:16 GMT
+Connection: keep-alive
+Keep-Alive: timeout=5
+Transfer-Encoding: chunked
+
+{"message":"Hello, World!"}
+=== GET /plaintext
+HTTP/1.1 200 OK
+vary: rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch
+content-type: text/plain
+server: Next.js
+Date: Mon, 05 Oct 2026 19:01:17 GMT
+Connection: keep-alive
+Keep-Alive: timeout=5
+Transfer-Encoding: chunked
+
+Hello, World!
+pipelined 16 -> 16 bodies
+processes: 3, threads: 29, affinity: 0,1

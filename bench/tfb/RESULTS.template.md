@@ -159,7 +159,11 @@ with the numbers they would be a different scale from the tables above.
   request latency.
 - Next.js ran out of memory (2 GB V8 heap) during the pipelined plaintext test and was restarted
   before the JSON test (`WORKLOADS=json ./run.sh bench next`); its plaintext numbers are what was
-  measured before and during that failure. SvelteKit and Next.js are plain route handlers, not
+  measured before and during that failure. Re-run with `NODE_OPTIONS=--max-old-space-size=8192` (run.sh `NEXT_HEAP_MB`, 7.9 GB host, two
+  runs, raw in `raw/next-heap8192/`): still 0 req/s at almost every level (best single run 1,489 at 4096), no
+  out-of-memory message, so the heap was not the cause; Next.js is CPU-saturated and wrk completes no
+  16-deep pipelined response within its timeout. Steal peaked at 12 and 16 % (mean 2.5 and 3.5 %) in 5 s samples, so
+  treat those runs as indicative only. SvelteKit and Next.js are plain route handlers, not
   optimised entries, and not TFB code.
 - Single pass per contender, in the order Wisp, Axum, Actix Web, Express, Fastify, Hono (Node), Hono (Bun), SvelteKit, Next.js, then the supplementary build: contenders measured later
   saw a different moment of the host than Wisp did (the noise experiment shows the size of that).
