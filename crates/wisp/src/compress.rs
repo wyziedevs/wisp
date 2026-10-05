@@ -13,8 +13,11 @@
 use crate::cx::Cx;
 use crate::http::{Body, Reply};
 use std::borrow::Cow;
+#[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashMap;
-use std::sync::{OnceLock, RwLock};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::OnceLock;
+use std::sync::RwLock;
 
 /// Smaller than this is not worth a header and a decode.
 const MIN: usize = 256;
@@ -62,16 +65,57 @@ fn takes_gzip(value: &str) -> bool {
         let name = p.next().unwrap_or("").trim();
         (name.eq_ignore_ascii_case("gzip") || name.eq_ignore_ascii_case("x-gzip"))
             && p.all(|q| match q.trim().split_once('=') {
-                Some((k, v)) if k.trim().eq_ignore_ascii_case("q") => {
-                    v.trim().parse::<f32>().is_ok_and(|q| q > 0.0)
-                }
+                Some((k, v)) if k.trim().eq_ignore_ascii_case("q") => positive(v.trim()),
                 _ => true,
             })
     })
 }
 
+/// Whether a `q` value is above 0.
+#[cfg(not(target_arch = "wasm32"))]
+fn positive(q: &str) -> bool {
+    q.parse::<f32>().is_ok_and(|q| q > 0.0)
+}
+
+/// Whether a `q` value is above 0: digits and at most one `.`, one of them
+/// not 0, as every client writes it (`1`, `0.5`, `0.001`). The float parser
+/// is 5 KB of wasm; it also took `1e-3` and `+1`, which no client sends.
+#[cfg(target_arch = "wasm32")]
+fn positive(q: &str) -> bool {
+    let digits = q.bytes().filter(u8::is_ascii_digit).count();
+    let dots = q.bytes().filter(|&b| b == b'.').count();
+    digits > 0
+        && digits + dots == q.len()
+        && dots <= 1
+        && q.bytes().any(|b| matches!(b, b'1'..=b'9'))
+}
+
 /// The gzip of an embedded `body`, made once and kept for good; `None`
 /// when it did not get smaller.
+#[cfg(target_arch = "wasm32")]
+fn copy(body: &'static [u8]) -> Option<&'static [u8]> {
+    // A few files, scanned: no hash table in the wasm.
+    type Made = RwLock<crate::edge::Ids<(usize, usize), Option<&'static [u8]>>>;
+    static MADE: Made = RwLock::new(crate::edge::Ids::new());
+    let key = (body.as_ptr() as usize, body.len());
+    if let Some(&kept) = MADE.read().ok()?.get(&key) {
+        return kept;
+    }
+    let gz = gzip(body);
+    let gz = (gz.len() < body.len()).then(|| &*Box::leak(gz.into_boxed_slice()));
+    let mut made = MADE.write().ok()?;
+    match made.get(&key) {
+        Some(&kept) => kept,
+        None => {
+            made.insert(key, gz);
+            gz
+        }
+    }
+}
+
+/// The gzip of an embedded `body`, made once and kept for good; `None`
+/// when it did not get smaller.
+#[cfg(not(target_arch = "wasm32"))]
 fn copy(body: &'static [u8]) -> Option<&'static [u8]> {
     type Made = RwLock<HashMap<(usize, usize), Option<&'static [u8]>>>;
     static MADE: OnceLock<Made> = OnceLock::new();
