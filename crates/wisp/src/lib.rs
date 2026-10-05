@@ -1117,6 +1117,14 @@ pub mod rt {
         crate::edge::guarded(cx);
     }
 
+    /// A page that says `{@flash}` (or a layout of it does): takes the
+    /// message [`Cx::flash`] left, once, for [`Cx::flash_message`].
+    pub fn take_flash(cx: &mut Cx) {
+        if let Some(m) = cx.flashed() {
+            cx.set(crate::cx::Flashed(m));
+        }
+    }
+
     /// A 500 when the GET of a page is live.js asking for its error page
     /// (`x-wisp-error`): its browser code failed while starting.
     pub fn browser_ok(cx: &Cx) -> crate::Result<()> {

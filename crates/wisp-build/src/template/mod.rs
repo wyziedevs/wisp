@@ -108,6 +108,10 @@ fn parse_class(src: &str, fields: &[Field], class: &str, drawn: bool) -> Result<
     Ok(t)
 }
 
+/// `{@flash}`: the message `cx.flash(..)` left, if any, as a status line.
+const FLASH: &str = "{@flash}";
+const FLASH_MARKUP: &str = "{#if let Some(m) = cx.flash_message()}<p class=\"flash\" role=\"status\">{m}</p>{/if}";
+
 fn parse_as(
     src: &str,
     fields: &[Field],
@@ -120,6 +124,9 @@ fn parse_as(
     let src = paged.as_deref().unwrap_or(src);
     let linked = active_links(src);
     let src = linked.as_deref().unwrap_or(src);
+    let flash = src.contains(FLASH);
+    let flashed = flash.then(|| src.replace(FLASH, FLASH_MARKUP));
+    let src = flashed.as_deref().unwrap_or(src);
     let mut p = Parser {
         src,
         fields,
@@ -250,6 +257,7 @@ fn parse_as(
         lints: p.a11y.lints,
         hashes: p.hashes,
         drawn,
+        flash,
     })
 }
 

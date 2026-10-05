@@ -853,6 +853,14 @@ impl Cx {
         Some(message)
     }
 
+    /// The flash message, for markup (it has `&Cx`): `{@flash}` in a page or
+    /// layout writes `<p class="flash" role="status">msg</p>` with it, and
+    /// takes it from the cookie first. `None` when there is none, or when
+    /// nothing on the page says `{@flash}` (read [`Cx::flashed`] then).
+    pub fn flash_message(&self) -> Option<&str> {
+        self.get::<Flashed>().map(|f| f.0.as_str())
+    }
+
     /// Sets a cookie for the whole site, kept for 400 days (the most browsers
     /// allow) and hidden from page scripts. The value is anything printable,
     /// such as a number or a string; an empty one deletes the cookie.
@@ -1154,6 +1162,9 @@ impl<'a, 'f> CookieWriter<'a, 'f> {
 
 /// The cookie [`Cx::flash`] keeps its message in.
 const FLASH: &str = "wisp-flash";
+
+/// The flash message `rt::take_flash` took, for [`Cx::flash_message`].
+pub(crate) struct Flashed(pub(crate) String);
 /// The signed cookie of draft mode.
 const DRAFT: &str = "wisp-draft";
 

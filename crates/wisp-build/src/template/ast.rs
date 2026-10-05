@@ -321,6 +321,8 @@ pub struct Template {
     /// block its markup (but its `<head>`) is wrapped in, which the server
     /// never paints, so the browser draws the page from its data.
     pub drawn: Option<usize>,
+    /// Says `{@flash}`: the pages it draws take the flash message first.
+    pub flash: bool,
 }
 
 impl Template {

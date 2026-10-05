@@ -144,6 +144,12 @@ impl Gen {
                     self.line(1, "::wisp::rt::locale_redirect(cx)?;");
                 }
             }
+            // `{@flash}` in it or a layout: the message, taken once, for render.
+            if page.t.flash
+                || (route.layouts.iter()).any(|&l| p.templates[m.layouts[l].tpl].t.flash)
+            {
+                self.line(1, "::wisp::rt::take_flash(cx);");
+            }
             for l in route.layouts.iter().filter(layout_load) {
                 self.line(
                     1,
