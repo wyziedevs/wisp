@@ -354,6 +354,7 @@ with the numbers they would be a different scale from the tables above.
 - **Plaintext at 16384 connections** is beyond what this setup serves for most contenders (wrk
   timeouts after 8 s; a `0` median means at least 2 of 3 runs completed no request). Wisp's default
   `WISP_MAX_CONNS=10000` answers `503` past that many connections.
+- **Wisp default at 16384 connections:** one run stalled with 0 requests; under investigation.
 - **Pipelined rows have no p99** (wrk), and latency is queueing under a 16-deep pipeline, not
   request latency.
 - Next.js ran out of memory (2 GB V8 heap) during the pipelined plaintext test and was restarted
