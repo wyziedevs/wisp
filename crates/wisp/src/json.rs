@@ -55,10 +55,11 @@ impl Value {
         }
     }
 
-    /// The number as `f64`, or `None` when this is not a number.
+    /// The number as `f64`, or `None` when this is not a number or is past
+    /// `f64`'s range (`1e999`).
     pub fn as_f64(&self) -> Option<f64> {
         match self {
-            Value::Number(n) => n.parse().ok(),
+            Value::Number(n) => n.parse().ok().filter(|f: &f64| f.is_finite()),
             _ => None,
         }
     }
@@ -1297,6 +1298,16 @@ pub mod check {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A number past `f64`'s range is no `f64`, as `FromJson` reads it.
+    #[test]
+    fn as_f64_is_finite() {
+        let v = parse("[1e999, -1e999, 1.5]").unwrap();
+        let n = v.as_array().unwrap();
+        assert_eq!(n[0].as_f64(), None);
+        assert_eq!(n[1].as_f64(), None);
+        assert_eq!(n[2].as_f64(), Some(1.5));
+    }
 
     #[test]
     fn integers_past_2_pow_53_are_checked_exactly() {
