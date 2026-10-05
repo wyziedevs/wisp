@@ -153,7 +153,7 @@ pub(crate) struct Settings {
     /// `server_timing`, but not in the edge build.
     pub timed: bool,
     /// `WISP_SERVER_TIMING`: a `Server-Timing` header on every answer (`on`
-    /// in dev, `off` otherwise).
+    /// in dev, `off` otherwise; never in the edge build).
     pub server_timing: bool,
     /// `WISP_HANDLER_TIMEOUT`, in milliseconds (0 for none).
     pub timeout_ms: u64,
@@ -209,7 +209,8 @@ pub(crate) fn settings() -> &'static Settings {
         let secure_headers = switch("WISP_SECURE_HEADERS", true);
         // `WISP_HSTS`: `strict-transport-security` on every answer (`off`).
         headers::HSTS_ON.store(switch("WISP_HSTS", false), std::sync::atomic::Ordering::Relaxed);
-        let server_timing = switch("WISP_SERVER_TIMING", dev);
+        // The edge build has no clock to time by.
+        let server_timing = cfg!(not(target_arch = "wasm32")) && switch("WISP_SERVER_TIMING", dev);
         let timed = cfg!(not(target_arch = "wasm32")) && (dev || server_timing);
         let timeout_ms = setting::<u64>("WISP_HANDLER_TIMEOUT", "a number of seconds").map_or(0, |s| s.saturating_mul(1000));
         Settings {
