@@ -17,7 +17,7 @@ const ROOT = dirname(fileURLToPath(import.meta.url));
 const SERVER_CPUS = process.env.SERVER_CPUS || '0-1';
 const CLIENT_CPUS = process.env.CLIENT_CPUS || '2-3';
 const STEAL_MAX = +(process.env.STEAL_MAX || 8); // percent of CPU time the hypervisor may take during a run
-const STEAL_TRIES = +(process.env.STEAL_TRIES || 4); // a run above it is redone, this many tries at most
+const STEAL_TRIES = +(process.env.STEAL_TRIES || 2); // a run above it is redone, this many tries at most
 const PORT = 18480; // not 8080: other jobs on a shared host use it
 const PATH = ['/root/.cargo/bin', '/root/nr-tools/go/bin', '/root/dotnet', '/usr/local/bin', '/opt/bun/bin', process.env.PATH].join(':');
 
