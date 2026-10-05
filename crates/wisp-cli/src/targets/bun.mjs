@@ -115,7 +115,7 @@ if (raw) {
     websocket,
     // A plain Response when the app answers at once: Bun takes one without a Promise.
     fetch: (request, s) => {
-      const res = app.fetch(request, s.requestIP(request)?.address ?? '');
+      const res = app.fetch(request, () => s.requestIP(request)?.address ?? '');
       return res instanceof Response ? skip(res) : res.then(skip);
     },
   });

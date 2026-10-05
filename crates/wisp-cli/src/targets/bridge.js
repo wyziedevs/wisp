@@ -185,7 +185,7 @@ function webSink(c, h, body) {
     return c.resolve ? c.resolve(r) : (c.res = r);
   }
   const empty = bare(h.status, c.empty, body);
-  const text = !empty && h.text ? asText(body) : body;
+  const text = !empty && h.text && typeof body !== 'string' ? asText(body) : body;
   const r = h.plain && !empty && typeof text === 'string' ? new Response(text) : new Response(empty ? null : text, (h.init ??= init(h)));
   if (c.resolve) c.resolve(r);
   else c.res = r;
@@ -196,6 +196,18 @@ function bare(status, head, body) {
   const empty = head || status < 200 || status === 204 || status === 205 || status === 304;
   if (empty && body instanceof ReadableStream) body.cancel();
   return empty;
+}
+// A short ASCII body read here as a string (null when it is not ASCII or is
+// empty): quicker than a view and a TextDecoder on every host (Bun: a view of
+// the app's memory alone is 7% of its shim, a decode 3%).
+function short(m, p, n) {
+  let s = '';
+  for (let i = p; i < p + n; i++) {
+    const c = m[i];
+    if (c > 127) return null;
+    s += String.fromCharCode(c);
+  }
+  return s || null;
 }
 // A text body as a string: workerd makes a Response from a string in about
 // half the time it takes to copy the bytes out of the app's memory (bench/edge).
@@ -285,7 +297,7 @@ export function wisp(module, env = {}, sink, accept) {
   let ready = null; // the instance that last answered: requests skip the awaits
   let next = 0;
   const seen = new Map();
-  const sent = new Map(); // request text -> its bytes, for `serve`
+  const sent = new Map(); // path -> { method, peer, host, bytes }: a request's text, for `serve`
   const fast = new Map(); // path -> what `keep` made of its `const` reply
   sink ??= webSink;
 
@@ -414,7 +426,7 @@ export function wisp(module, env = {}, sink, accept) {
             return done?.(r);
           }
           const h = hid === 0xffffffff ? parsed(dec.decode(m.subarray(hp, hp + hn))) : (x.heads[hid] ??= parsed(dec.decode(m.subarray(hp, hp + hn))));
-          sink(done, h, h.stream ? x.stream(id) : m.subarray(bp, bp + bn));
+          sink(done, h, h.stream ? x.stream(id) : new Uint8Array(m.buffer, bp, bn));
         },
         // 0 when the client is behind: the app waits for `wisp_pull`.
         chunk: (id, p, n) => {
@@ -637,9 +649,11 @@ export function wisp(module, env = {}, sink, accept) {
   // answers at once, comes back as a Response with no Promise made. Its
   // headers are not read here (`host` is the URL's, and Bun and Deno make
   // `request.headers` only once read): the app asks for those it reads.
+  // `peer` is the client's address, or a function giving it, called only
+  // when the app is asked (Bun's `requestIP` costs; a kept answer skips it).
   function serve(request, peer = '', ctx) {
     const x = ready;
-    if (!x || x.retired || request.body) return slow(request, peer, ctx);
+    if (!x || x.retired || request.body) return slow(request, typeof peer === 'function' ? peer() : peer, ctx);
     const method = request.method;
     const url = request.url;
     const s = url.indexOf('//') + 2;
@@ -657,7 +671,7 @@ export function wisp(module, env = {}, sink, accept) {
     }
     const host = url.slice(s, at < 0 ? url.length : at);
     const c = { res: null, resolve: null, empty: method === 'HEAD', fast: get && !path.includes('?') ? fast : null, path, probe, request, host, up, id: 0 };
-    enter(x, method, path, peer, c);
+    enter(x, method, path, typeof peer === 'function' ? peer() : peer, c);
     if (x.work) ctx?.waitUntil?.(x.idle());
     return c.res ?? new Promise((resolve) => (c.resolve = resolve));
   }
@@ -666,16 +680,18 @@ export function wisp(module, env = {}, sink, accept) {
   // `c.request.headers` (made by the host only once read) as the app asks
   // for them, answered through `c`.
   function enter(x, method, path, peer, c) {
-    const h = `${method} ${path} ${peer}\nhost: ${c.host}\n`;
-    let bytes = sent.get(h);
-    if (!bytes) {
+    // Kept by path, the rest compared: no text is made and hashed per
+    // request (a fifth of the shim's own JS on Bun).
+    let e = sent.get(path);
+    if (!(e && e.method === method && e.peer === peer && e.host === c.host)) {
       if (sent.size > 64) sent.clear();
-      sent.set(h, (bytes = enc.encode(h + '\n')));
+      const bytes = enc.encode(`${method} ${path} ${peer}\nhost: ${c.host}\n\n`);
+      sent.set(path, (e = { method, peer, host: c.host, bytes }));
     }
     const id = (next = (next + 1) & 0x7fffffff);
     c.id = id;
     x.pending.set(id, c);
-    x.call(x.exports.wisp_request_lazy, id, x.write(bytes));
+    x.call(x.exports.wisp_request_lazy, id, x.write(e.bytes));
   }
 
   // Asks the app for the 304 of a kept path (the first, only, time).
@@ -694,7 +710,16 @@ export function wisp(module, env = {}, sink, accept) {
   async function bounded(request, path) {
     let x = ready;
     if (!x || x.retired) x = await instance().catch(() => null);
-    const cap = x ? (x.exports.wisp_body_limit(x.write(enc.encode(path))) >>> 0) + 1 : Infinity;
+    // A route's limit is fixed for the instance: asked once a path.
+    let cap = Infinity;
+    if (x) {
+      x.limits ??= new Map();
+      cap = x.limits.get(path);
+      if (cap === undefined) {
+        if (x.limits.size > 256) x.limits.clear();
+        x.limits.set(path, (cap = (x.exports.wisp_body_limit(x.write(enc.encode(path))) >>> 0) + 1));
+      }
+    }
     const length = request.headers.get('content-length');
     if (length !== null && Number(length) < cap) return new Uint8Array(await request.arrayBuffer());
     const parts = [];

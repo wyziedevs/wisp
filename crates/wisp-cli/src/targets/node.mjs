@@ -46,15 +46,17 @@ function send(res, h, body) {
   res.writeHead(h.status, out);
   if (body instanceof Uint8Array) {
     if (m === 'HEAD' || h.status < 200 || h.status === 204 || h.status === 304) return res.end();
-    return body.length < 4096 ? res.end(latin1.call(body, 0, body.length), 'latin1') : res.end(Buffer.from(body));
+    return res.end(latin1.call(body, 0, body.length), 'latin1');
   }
   if (m === 'HEAD') return body.cancel().finally(() => res.end());
   res.flushHeaders();
   pipeline(Readable.fromWeb(body), res).catch(() => {});
 }
 
-// A small body as a latin1 string, byte for byte: Node writes a string with
-// the head in one piece, where a Buffer goes out as a second chunk.
+// A body as a latin1 string, byte for byte: Node writes a string with the
+// head in one piece, where a Buffer goes out as a second chunk. Large ones
+// too: a string's copy is freed when the write ends, a Buffer's (malloc) only
+// at a GC, which under load left Node 150 MB resident against 80 (bench/rank).
 const latin1 = Buffer.prototype.latin1Slice;
 
 // A request with no body to read: neither content-length nor transfer-encoding.
@@ -113,10 +115,9 @@ let raws = 0;
 function accept(socket, first) {
   const c = app.conn(
     {
-      // A view of the app's memory: copied here, small ones as a string, which
-      // Node writes without a Buffer.
+      // A view of the app's memory: copied here as a string (see `latin1`).
       write(v) {
-        const ok = socket.write(v.length < 16384 ? latin1.call(v, 0, v.length) : Buffer.from(v), v.length < 16384 ? 'latin1' : undefined);
+        const ok = socket.write(latin1.call(v, 0, v.length), 'latin1');
         if (!ok) socket.pause();
         return ok;
       },

@@ -117,7 +117,7 @@ if (raw) {
   console.log(`wisp: listening on http://${hostname}:${port}`);
   await serve(listener);
 } else {
-  const handler = (request: Request, info: Deno.ServeHandlerInfo) => app.fetch(request, (info.remoteAddr as Deno.NetAddr).hostname);
+  const handler = (request: Request, info: Deno.ServeHandlerInfo) => app.fetch(request, () => (info.remoteAddr as Deno.NetAddr).hostname);
   // Deploy picks its own address.
   if (deploy) Deno.serve(handler);
   else Deno.serve({ port, hostname, onListen: () => console.log(`wisp: listening on http://${hostname}:${port}`) }, handler);
