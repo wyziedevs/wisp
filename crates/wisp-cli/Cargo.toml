@@ -33,3 +33,13 @@ og-png = ["dep:resvg", "wisp-shared/og-png"]
 
 [lints]
 workspace = true
+
+# `cargo binstall wisp-web`: the archives the release workflow
+# (.github/workflows/release.yml) uploads for tag `v{version}`.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/wisp-{ target }{ archive-suffix }"
+bin-dir = "wisp-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
