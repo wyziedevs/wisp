@@ -143,7 +143,9 @@ wrk_once() {
     echo "# cpu-delta user nice sys idle iowait irq softirq steal: $(for k in 0 1 2 3 4 5 6 7; do printf '%s ' $((b[k]-a[k])); done)"
     echo "# foreign-pct: $(awk -v u=$used -v m=$mine -v n=$ncpu -v w=$((wall>0?wall:1)) 'BEGIN{f=(u-m)*100/(n*w*100); if (f<0) f=0; printf "%.1f", f}')  (user+sys+irq ticks $used, server+wrk $mine)"
     echo "# top-after: $(ps -eo pcpu,comm --sort=-pcpu | sed -n '2,4p' | tr -s ' ' | tr '\n' ';')"
-    # A server that stopped answering during the run is a stall, whatever wrk counted.
+    # A server that stopped answering during the run is a stall, whatever wrk counted. Asked once it
+    # has finished the requests still pipelined on wrk's closed sockets (busy is not dead).
+    drain; echo "# drained-after: ${DRAINED}s"
     curl -s -o /dev/null --max-time 5 "http://$HOST:$PORT/plaintext" && echo "# alive-after: yes" || echo "# alive-after: no"
   } >"$out" 2>&1
 }
@@ -163,16 +165,18 @@ drain() {
   DRAINED="over $DRAIN_MAX (still busy)"
 }
 
-# A run another tenant of this VM disturbed (foreign CPU > 5%) is kept as <out>.tainted<N> and repeated.
+# A run another tenant of this VM disturbed (foreign CPU > 5%, or hypervisor steal > 10% of all CPU
+# ticks) is kept as <out>.tainted<N> and repeated.
 wrk_run() {
-  local out=$4 n f
+  local out=$4 n f s pre
   for n in 1 2 3 4; do
-    drain
+    drain; pre=$DRAINED
     wrk_once "$@"
-    sed -i "1i # drain-before: ${DRAINED}s" "$out"
+    sed -i "1i # drain-before: ${pre}s" "$out"
     f=$(sed -n 's/^# foreign-pct: \([0-9.]*\).*/\1/p' "$out")
-    awk -v f="${f:-0}" 'BEGIN{exit !(f > 5)}' || return 0
-    [ $n = 4 ] && { echo "# NOTE: foreign CPU stayed above 5% on every attempt" >>"$out"; return 0; }
+    s=$(awk '/^# cpu-delta/{t=0; for (i=NF-7; i<=NF; i++) t+=$i; printf "%.1f", t ? 100*$NF/t : 0}' "$out")
+    awk -v f="${f:-0}" -v s="${s:-0}" 'BEGIN{exit !(f > 5 || s > 10)}' || return 0
+    [ $n = 4 ] && { echo "# NOTE: foreign CPU or steal stayed high on every attempt" >>"$out"; return 0; }
     mv "$out" "$out.tainted$n"; wait_quiet
   done
 }

@@ -45,7 +45,7 @@ def parse(path):
     non2 = re.search(r"Non-2xx or 3xx responses: (\d+)", t)
     sock = re.search(r"Socket errors: connect (\d+), read (\d+), write (\d+), timeout (\d+)", t)
     total = re.search(r"(\d+) requests in", t)
-    if not (rps and avg and p99):  # a run without latency lines is unusable
+    if not (rps and avg and p99) or "# NOTE: foreign CPU or steal stayed high" in t:  # unusable, or disturbed on every retry
         return None
     dur = re.search(r"Running (\d+)s test", t)
     wall = re.search(r"requests in ([\d.]+)(us|ms|s|m),", t)

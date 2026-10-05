@@ -39,6 +39,8 @@ class Parse(unittest.TestCase):
     def test_no_hand_written_failures(self):
         # A failed cell comes from the data ("no request completed"), never a per-contender note.
         self.assertFalse(hasattr(aggregate, "FAILED"))
+    def test_disturbed_on_every_retry(self):
+        self.assertIsNone(run(OK + "# NOTE: foreign CPU or steal stayed high on every attempt\n"))
     def test_no_latency(self):
         self.assertIsNone(run("Requests/sec: 5\n"))
 
