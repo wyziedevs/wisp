@@ -77,7 +77,7 @@ TechEmpower's plaintext and JSON tests, run with their own load scripts against 
 | Hono (Node) | 28,966 | 8,988 |
 | Hono (Bun) | 10,599 | 59,619 |
 | SvelteKit | 10,929 | 10,378 |
-| Next.js | No valid result: no pipelined response completed (heap raised to 8 GB, still none) | 1,524 |
+| Next.js | No result | 1,524 |
 
 Rows whose min-max ranges overlap are ties. Plaintext, 256: Fastify and Express; Hono (Node), Hono (Bun) and SvelteKit. JSON, 64: Wisp, Actix Web and Axum; Hono (Node) and SvelteKit.
 
