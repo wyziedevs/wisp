@@ -1164,37 +1164,17 @@ You need Rust. `bench/README.md` lists every option, the frameworks compared, an
 
 ## Native, Linux (2026-10-04)
 
-Source: [`bench/tfb/RESULTS.md`](https://github.com/wyziedevs/wisp/blob/main/bench/tfb/RESULTS.md) (generated from `results.json`). TechEmpower's plaintext and JSON tests with their own wrk scripts, run 2026-10-04 on one shared 4-vCPU VM (AMD EPYC 7B13), the server on 2 pinned cores, medians of 3 runs of 15 s. Not an official TechEmpower result. Contenders are in a fixed order, not ranked; a `0` means no request completed. The full results add min, max, latency and errors per row. The same Wisp binary moved between moments on this VM, so gaps inside the min-max ranges are ties.
+TechEmpower's plaintext and JSON tests with their own wrk scripts, on one shared 4-vCPU VM (AMD EPYC), the server on 2 pinned cores, medians of 3 runs of 15 s. Not an official TechEmpower result.
 
-Plaintext, pipelined, requests per second (median of 3), by connections:
+| Test | Wisp | Actix Web | Axum | Fastify | Express |
+|---|---:|---:|---:|---:|---:|
+| Plaintext, 256 connections, pipelined | 1,129,577 | 603,163 | 276,948 | 51,713 | 40,421 |
+| JSON, 64 connections | 96,089 | 89,648 | 78,427 | 21,965 | 14,746 |
 
-| Contender | 256 | 1024 | 4096 | 16384 |
-|---|---:|---:|---:|---:|
-| **Wisp** | **1,129,577** | **623,348** | **532,959** | **220** |
-| Axum | 276,948 | 381,324 | 446,398 | 171,231 |
-| Actix Web | 603,163 | 366,626 | 351,844 | 0 |
-| Express | 40,421 | 36,184 | 27,554 | 0 |
-| Fastify | 51,713 | 62,345 | 58,956 | 16,573 |
-| Hono (Node) | 28,966 | 29,602 | 34,173 | 0 |
-| Hono (Bun) | 10,599 | 10,375 | 9,652 | 6,910 |
-| SvelteKit | 10,929 | 8,464 | 8,359 | 0 |
-| Next.js | 0 | 0 | 0 | n/a |
-
-JSON, requests per second (median of 3), by connections:
-
-| Contender | 16 | 32 | 64 | 128 | 256 | 512 |
-|---|---:|---:|---:|---:|---:|---:|
-| **Wisp** | **71,879** | **86,813** | **96,089** | **107,834** | **91,876** | **73,714** |
-| Axum | 79,105 | 86,901 | 78,427 | 92,662 | 60,465 | 47,070 |
-| Actix Web | 90,199 | 99,098 | 89,648 | 106,246 | 108,428 | 71,315 |
-| Express | 16,945 | 16,586 | 14,746 | 13,795 | 18,023 | 22,644 |
-| Fastify | 21,996 | 21,210 | 21,965 | 19,977 | 21,249 | 24,163 |
-| Hono (Node) | 17,069 | 15,571 | 8,988 | 9,354 | 13,084 | 15,349 |
-| Hono (Bun) | 52,353 | 54,056 | 59,619 | 51,580 | 47,379 | 28,439 |
-| SvelteKit | 7,990 | 9,774 | 10,378 | 7,714 | 6,062 | 6,698 |
-| Next.js | 1,499 | 1,285 | 1,524 | 1,513 | 1,370 | 1,715 |
-
-Earlier run (2026-09-28, other Linux VPS, 64 connections, plaintext and fortunes, CPU per request): [`bench/README.md`](https://github.com/wyziedevs/wisp/blob/main/bench/README.md). A later rerun on a CPU-capped VPS (about 75% steal) was invalid and is not published, so this site claims no current Linux ranking; rank tables are pending a valid run. Instructions per request (callgrind, valid on any host load): `GET /` 1572, `GET /user/0` 2310, `POST /user` 1773 at d72eee5; 1585, 2323 and 1789 after the chunked fix.
+- Plaintext: first at 256, 1,024 (623,348) and 4,096 (532,959) connections. At 16,384 Wisp's default limit of 10,000 connections refuses the overflow, so it is not first there.
+- JSON: first at 64, 128 and 512 connections, but Actix Web is ahead at 16 and 256 (90,199 against 71,879 at 16), and the ranges overlap at the others. The same Wisp binary moved 11% to 21% between moments on this VM, which is larger than most gaps between the Rust servers. The JSON numbers support no ranking.
+- Fortunes, an earlier run (2026-09-28, other Linux VPS, 64 connections, CPU per request): Wisp 97,502 requests a second, Actix Web 86,169, Axum 76,818. A virtual machine's kernel is most of each request, so fast servers bunch together on plaintext.
+- A later rerun on a CPU-capped VPS was not valid, so this site claims no current Linux ranking.
 
 What these numbers come from:
 
@@ -1205,7 +1185,7 @@ What these numbers come from:
 
 ## Edge and JavaScript Hosts (2026-10-04)
 
-The same app built with `wisp build --target node|bun|deno|cloudflare`, against Hono, on Windows 10, Ryzen 7 7800X3D, Node 26, Deno 2.5, Bun 1.4, workerd 1.20261001. `oha`, 64 connections, 10 s runs, median of 5, Wisp and Hono alternating; Wisp is the first number in each cell. The machine was not idle (an unrelated app used about 0.8 of a core), so compare the two numbers within a row and treat the absolute values with care. Requests a second, Wisp / Hono:
+The same app built with `wisp build --target node|bun|deno|cloudflare`, against Hono, on Windows 10, Ryzen 7 7800X3D, Node 26, Deno 2.5, Bun 1.4, workerd 1.20261001. `oha`, 64 connections, 10 s runs, median of 5, Wisp and Hono alternating. The machine was not idle (an unrelated app used about 0.8 of a core), so compare the two numbers within a row and treat the absolute values with care. Requests a second, Wisp / Hono:
 
 | Host | `/` | `/list1000` | `/json-big` | `/params` + cookie |
 |---|---:|---:|---:|---:|
@@ -1214,9 +1194,9 @@ The same app built with `wisp build --target node|bun|deno|cloudflare`, against 
 | Bun, raw sockets (default) | 133,387 / 127,725 | 9,287 / 3,149 | 20,017 / 19,549 | 53,876 / 36,407 |
 | workerd | 7,694 / 9,447 | 5,093 / 2,007 | 5,962 / 8,480 | 14,581 / 14,624 |
 
-- On Node, Deno and Bun, Wisp's default path reads raw sockets and the app's own HTTP parser answers, about 1 microsecond a request inside the wasm. `WISP_NODE_HTTP=1` serves through the host's own server instead (Node -15%, Deno -21%, Bun -35% on `/`).
+- On Node, Deno and Bun, Wisp's default path reads raw sockets and the app's own HTTP parser answers, about 1 microsecond a request inside the wasm, so it is ahead on all four routes. `WISP_NODE_HTTP=1` serves through the host's own server instead and then loses on `/` (Node -15%, Deno -21%, Bun -35%).
 - On workerd, a quieter run alternating with Hono (median of 5): `/` 19,645 and 20,908 (-6%), `/json-big` 11,441 and 11,894 (-4%), `/params` 19,258 and 20,256 (-5%), `/list1000` 6,033 and 2,359 (2.6 times). The wasm's own work is a few microseconds a request; the gap on `/` is workerd's cost of entering wasm and of a response with a head, and on `/json-big` it is a serializer in wasm against V8's `JSON.stringify`.
-- Cold start on workerd: Wisp 25 ms against 19 ms for Hono in that run (39 and 24 to 27 ms in the busier one), about 7 ms of it the host loading the module and the rest the first request compiling. A warm-up request at load took the first request from about 17 ms to 5 ms in one run, with no app code run.
+- Cold start on workerd is Wisp's loss: 25 ms against 19 ms for Hono in that run (39 and 24 to 27 ms in the busier one), about 7 ms of it the host loading the module and the rest the first request compiling. A warm-up request at load took the first request from about 17 ms to 5 ms in one run, with no app code run.
 - The wasm for the bench app is 541 KB (541,063 bytes) since the Cloudflare, Pages, Vercel and Netlify builds leave out the server loop for raw connections (`WISP_REQUEST_ONLY`, 584,353 before). `tests/wasm-size.sh` fails CI when a build grows past its budget.
 - Where speed and size disagree, speed wins, so `opt-level = 3` stays, and `wasm-opt` and allocator swaps that measured no faster were not kept.
 
@@ -3242,7 +3222,7 @@ let me = cx.user()?; // members' page: signed-in row or redirect
 | Call | What it does |
 |---|---|
 | `cx.signup(row).await?` | for a `#[model]` with a `hash` field and `email` or `name` (an `Account`): hashes the password in `row.hash`, refuses a taken name with a 422, signs in |
-| `cx.login(email, password).await?` | checks it, as slowly for a name no one has |
+| `cx.login(&email, &password).await?` | checks it, as slowly for a name no one has |
 | `wisp::signup`, `wisp::login` | same without a `Cx` |
 | `cx.sign_in(id)` | sets signed cookie `session` to the id and time, 30 days; always a new session, so a planted one never becomes the visitor's |
 | `cx.signed_in()?` | the id; signed out (or 30 days on) it is the error that sends to sign in: 303 to `/login`, or 401 for a JSON client |
@@ -3422,7 +3402,7 @@ Syntax | Compiles to
 `<a href="/blog" active>` | `aria-current={wisp::current(cx.path(), "/blog")}`: `"page"` on `/blog` and below (`/` only itself), else left out; `href={x}` too; pages and layouts
 `{@html expr}` | Unescaped `Display` (you promise it is safe)
 `{@const x = expr}` | `let x = expr;`
-`{#if c}…{:else if c}…{:else}…{/if}` | `if`/`else`; `if let` works; a bare place, `{#if user.avatar}`, tests `Some`, non-empty or `true`
+`{#if c}…{:else if c}…{:else}…{/if}` | `if`/`else`; `if let` works
 `{#each e as pat[, i] [if cond]}…{:else}…{/each}` | `for`; `if cond` keeps matching items; a plain place like `data.posts` is borrowed
 `{#match e}{:case pat}…{/match}` | `match`; a plain place is borrowed
 `{#await f}…{:then v}…{:catch e}…{/await}` | Page streams `v` or `e` later ([Streaming a page](/docs/design-state/))
@@ -4955,7 +4935,7 @@ Wisp's `data` is longer than JavaScript's: a Rust type with its fields' types. E
 
 ## A Real App: Auth, CRUD, Upload, Live, a Component
 
-`bench/tokens/real` is sign up and in, a posts table with validation, edit, delete, pages and live refresh, an avatar upload and a toggle component: 10 files, **960** tokens in Wisp, 3.6x less than SvelteKit 3 and 3.5x less than Next.js 15. Its tests check every feature.
+`bench/tokens/real` is sign up and in, a posts table with validation, edit, delete, pages and live refresh, an avatar upload and a toggle component: 10 files, **965** tokens in Wisp, 3.6x less than SvelteKit 3 and 3.5x less than Next.js 15. Its tests check every feature.
 
 ## Method
 
@@ -5498,7 +5478,7 @@ Zero cost on the request hot path: a route pays only for the features it uses, a
 An AI pays for every token it reads and writes, in time and money. Wisp uses conventions over configuration, types the compiler infers, and forms that write their own inputs and errors.
 
 - The same five features take 432 tokens in Wisp, 957 in SvelteKit and 971 in Next.js.
-- A larger app with sign up, uploads and live refresh takes 960, against 3,473 and 3,331.
+- A larger app with sign up, uploads and live refresh takes 965, against 3,473 and 3,331.
 - `cargo run -p wisp-tokens` counts every hand-written file and its path with a byte-pair style estimate. See [Tokens](/docs/tokens/).
 
 For agents: [AGENTS.md](https://github.com/wyziedevs/wisp/blob/main/llms/AGENTS.md) is the whole reference in one file, and `wisp mcp` serves the docs over MCP (`claude mcp add wisp -- wisp mcp`).
