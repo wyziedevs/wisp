@@ -354,7 +354,10 @@ fn a_streamed_body_is_chunked_and_the_connection_goes_on() {
 const FETCH: &str = r#"
 import { readFileSync } from 'node:fs';
 import { wisp } from './bridge.mjs';
-const app = wisp(new WebAssembly.Module(readFileSync(new URL('./app.wasm', import.meta.url))), process.env);
+// A Windows terminal names it `Path`: the app's `Conf` still finds `PATH`.
+const env = { ...process.env };
+if (process.platform === 'win32' && env.PATH !== undefined) (env.Path = env.PATH), delete env.PATH;
+const app = wisp(new WebAssembly.Module(readFileSync(new URL('./app.wasm', import.meta.url))), env);
 let out = '';
 for (const line of readFileSync(0, 'utf8').split('\n').filter(Boolean)) {
   const [head, body] = line.split('\t\t');

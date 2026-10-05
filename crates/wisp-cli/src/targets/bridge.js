@@ -478,6 +478,11 @@ export function wisp(module, env = {}, sink, accept) {
     };
     x.exports = (await WebAssembly.instantiate(module, imports)).exports;
     const vars = Object.entries(env).filter(([k, v]) => typeof v === 'string' && k !== 'WISP_WS');
+    // Windows names are any case (`Path`): the app reads them upper case, as natively.
+    if (globalThis.process?.platform === 'win32' || globalThis.Deno?.build?.os === 'windows') {
+      const have = new Set(vars.map(([k]) => k));
+      for (const [k, v] of [...vars]) if (!have.has(k.toUpperCase())) have.add(k.toUpperCase()), vars.push([k.toUpperCase(), v]);
+    }
     vars.push(['WISP_WS', accept ? '1' : '0']);
     const len = x.put(enc.encode(vars.map(([k, v]) => `${k}=${v}\0`).join('')));
     x.call(() => x.exports.wisp_env(len));
