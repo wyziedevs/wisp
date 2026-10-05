@@ -8,7 +8,7 @@ let count = TODOS.len();
 ---
 
 <title>Todos ({count})</title>
-<form action="?/add" fields><button>Add</button></form>
+<form action="?/add" fields />
 {#each TODOS.all() as todo}
   <p>{todo.text}</p>
 {/each}

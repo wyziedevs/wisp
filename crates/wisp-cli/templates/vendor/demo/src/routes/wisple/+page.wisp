@@ -1,7 +1,4 @@
-<head>
-  <title>Wisple</title>
-  <meta name="description" content="A word game in the style of Wordle, written with Wisp">
-</head>
+<title description="A word game in the style of Wordle, written with Wisp">Wisple</title>
 
 <h1 class="visually-hidden">Wisple</h1>
 

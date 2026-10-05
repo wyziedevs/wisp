@@ -313,7 +313,9 @@ pub(super) fn form_fields(src: &str, fields: &[Field]) -> Result<Option<String>,
         let end = (j + 1 + usize::from(closed)).min(src.len());
         // No button of its own (`<form fields />`, or none before
         // `</form>`): one named for the action, `Send` for `fn default`.
-        let body = src[end..].find("</form>").map_or("", |e| &src[end..end + e]);
+        let body = src[end..]
+            .find("</form>")
+            .map_or("", |e| &src[end..end + e]);
         if closed || !body.contains("<button") {
             let mut name = match button {
                 Some(text) => text.to_string(),

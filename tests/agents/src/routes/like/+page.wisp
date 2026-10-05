@@ -1,7 +1,7 @@
 ---
 #[action]
 fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<String>) {
-    cx.flash("Liked"); // cx is added when the body uses it
+    cx.flash("Liked"); // `{@flash}` shows it; cx is added when the body uses it
     redirect("/") // 303; or end in `;` to re-render the page
 }
 ---

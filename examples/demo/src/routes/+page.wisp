@@ -14,10 +14,7 @@ fn decrement() {
 }
 ---
 
-<head>
-  <title>Home</title>
-  <meta name="description" content="Your new Wisp app">
-</head>
+<title description="Your new Wisp app">Home</title>
 
 <section class="welcome">
   <div

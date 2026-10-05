@@ -155,11 +155,18 @@ pub fn add(root: &Path, args: &[String]) -> Option<Result<(), String>> {
 /// a body) when it has no `struct Post`.
 fn crud(root: &Path, path: &str) -> Result<Vec<String>, String> {
     let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    let plain = |s: &&str| !s.is_empty() && s.bytes().all(|c| c.is_ascii_lowercase() || c == b'-' || c == b'_');
+    let plain = |s: &&str| {
+        !s.is_empty()
+            && s.bytes()
+                .all(|c| c.is_ascii_lowercase() || c == b'-' || c == b'_')
+    };
     let Some(name) = segs.last().filter(|_| segs.iter().all(plain)) else {
         return Err(format!("{path}: crud takes a plain path, such as /posts."));
     };
-    let one = name.strip_suffix('s').filter(|n| n.len() > 1).unwrap_or(name);
+    let one = name
+        .strip_suffix('s')
+        .filter(|n| n.len() > 1)
+        .unwrap_or(name);
     let ty = camel(one, "");
     let table = name.replace('-', "_").to_ascii_uppercase();
     let url = format!("/{}", segs.join("/"));
@@ -189,7 +196,12 @@ fn crud(root: &Path, path: &str) -> Result<Vec<String>, String> {
         return Err(format!("{} already exists.", taken.display()));
     }
     let mut made = Vec::new();
-    let shown = |p: &Path| p.strip_prefix(root).unwrap_or(p).to_string_lossy().replace('\\', "/");
+    let shown = |p: &Path| {
+        p.strip_prefix(root)
+            .unwrap_or(p)
+            .to_string_lossy()
+            .replace('\\', "/")
+    };
     for (to, text) in &files {
         fs::create_dir_all(to.parent().unwrap_or(root)).map_err(|e| e.to_string())?;
         fs::write(to, text).map_err(|e| format!("{}: {e}", to.display()))?;
@@ -198,7 +210,13 @@ fn crud(root: &Path, path: &str) -> Result<Vec<String>, String> {
     let db = root.join("src/db.rs");
     let old = fs::read_to_string(&db).unwrap_or_default();
     if !old.contains(&format!("struct {ty} ")) {
-        let sep = if old.is_empty() || old.ends_with("\n\n") { "" } else if old.ends_with('\n') { "\n" } else { "\n\n" };
+        let sep = if old.is_empty() || old.ends_with("\n\n") {
+            ""
+        } else if old.ends_with('\n') {
+            "\n"
+        } else {
+            "\n\n"
+        };
         let add = format!(
             "{sep}#[model]\nstruct {ty} {{\n    #[validate(len = 1..=100)]\n    title: String,\n    body: String,\n}}\npub static {table}: Table<{ty}> = Table::saved();\n"
         );
@@ -281,7 +299,7 @@ fn create(root: &Path, path: &str, kind: &str) -> Result<String, String> {
             (
                 "+page.wisp",
                 format!(
-                    "---\nfn default(#[validate(len = 1..=100)] name: String, email: Email) {{\n    cx.flash(&format!(\"Thanks, {{name}}!\"));\n    redirect({back:?})\n}}\n---\n\n<title>{title}</title>\n\n{{@flash}}\n<form fields><button>Send</button></form>\n"
+                    "---\nfn default(#[validate(len = 1..=100)] name: String, email: Email) {{\n    cx.flash(&format!(\"Thanks, {{name}}! We will write to {{email}}.\"));\n    redirect({back:?})\n}}\n---\n\n<title>{title}</title>\n\n{{@flash}}\n<form fields />\n"
                 ),
             )
         }

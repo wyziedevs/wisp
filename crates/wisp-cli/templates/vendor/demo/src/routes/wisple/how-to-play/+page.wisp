@@ -1,7 +1,4 @@
-<head>
-  <title>How to Play Wisple</title>
-  <meta name="description" content="How to Play Wisple">
-</head>
+<title description="How to Play Wisple">How to Play Wisple</title>
 
 <div class="text-column">
   <h1>How to Play Wisple</h1>

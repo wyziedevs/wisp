@@ -526,10 +526,10 @@ pub(crate) const KNOBS: [(&str, &str); 14] = [
 
 /// Wisp attributes (inside a tag) and what each does (hover). A test keeps it
 /// in step with the reference: every `data-wisp-*` it shows is here.
-pub(crate) const ATTRS: [(&str, &str); 17] = [
+pub(crate) const ATTRS: [(&str, &str); 19] = [
     (
         "fields",
-        "`<form fields>`: writes a labelled input per param of the action (`Email` is `type=email`, `Image` a file, `bool` a checkbox, numbers `number`). `fields={post}` starts a struct param's fields from `post`.",
+        "`<form fields>`: writes a labelled input per param of the action (`Email` is `type=email`, `Image` a file, `bool` a checkbox, numbers `number`, `one_of = \"a b\"` a `<select>`). `fields={post}` starts a struct param's fields from `post`. No button of its own: one is added (`Send`, `Save` with `{post}`, else the action's name); `<form fields=\"Log in\" />` names it.",
     ),
     (
         "action",
@@ -594,6 +594,14 @@ pub(crate) const ATTRS: [(&str, &str); 17] = [
     (
         "active",
         "`<a href=\"/blog\" active>`: `aria-current=\"page\"` while the request is `/blog` or below it (`/` only itself); `wisp::current(cx.path(), href)`. Pages and layouts.",
+    ),
+    (
+        "description",
+        "`<title description=\"…\">Posts</title>`: also `<meta name=\"description\">` and `og:title`/`og:description` in the head. Text, holes or `{expr}`.",
+    ),
+    (
+        "image",
+        "`<title image=\"/og.png\">`: `og:image` and a large `twitter:card` in the head; with `description` too.",
     ),
 ];
 
@@ -801,7 +809,7 @@ const NAMES: [(&str, &[&str]); 5] = [
 ];
 
 /// The template blocks: what to write, and what it does.
-pub(crate) const BLOCKS: [(&str, &str, &str); 26] = [
+pub(crate) const BLOCKS: [(&str, &str, &str); 27] = [
     (
         "{#if",
         "{#if ${1:cond}}\n\t$0\n{/if}",
@@ -892,6 +900,11 @@ pub(crate) const BLOCKS: [(&str, &str, &str); 26] = [
         "{@pager",
         "{@pager ${1:posts}}",
         "`{@pager posts}`: Newer and Older links for a `Table::page`.",
+    ),
+    (
+        "{@flash",
+        "{@flash}",
+        "`{@flash}`: the message `cx.flash(..)` left, once, as `<p class=\"flash\" role=\"status\">`; nothing when none. Page or layout.",
     ),
     (
         "{@element",

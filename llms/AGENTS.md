@@ -84,7 +84,7 @@ let count = TODOS.len();
 ---
 
 <title>Todos ({count})</title>
-<form action="?/add" fields><button>Add</button></form>
+<form action="?/add" fields />
 {#each TODOS.all() as todo}
   <p>{todo.text}</p>
 {/each}
@@ -136,7 +136,7 @@ Block rules:
 ```rust
 #[action]
 fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<String>) {
-    cx.flash("Liked"); // cx is added when the body uses it
+    cx.flash("Liked"); // `{@flash}` shows it; cx is added when the body uses it
     redirect("/") // 303; or end in `;` to re-render the page
 }
 ```
@@ -153,8 +153,10 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
   a labelled input per param: `Email` → `type=email`, `password`/`*_password`
   → password, `Image` → file, `bool` → checkbox, numbers → number, text named
   `body message bio comment description notes content` → textarea, else text.
-  Add your own button. `fields={post}` starts a struct param's fields from
-  `post` (an edit form). For a select write the inputs yourself.
+  `fields={post}` starts a struct param's fields from
+  `post` (an edit form). `#[validate(one_of = "draft live")]` text is a
+  `<select>`. No button in it: one is added (`Send`; `Save` with `{post}`;
+  else the action's name): `<form fields />`, `<form fields="Log in" />`.
 - Params by name: route param, then form, then query. `T` required (400
   missing; not a `T` → 422 by field), `Option<T>` missing/blank → None,
   `bool` checkbox, `Vec<T>` repeated, `&str`, `Email`, or a `#[model]`
@@ -194,6 +196,8 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
 | `{#snippet row(a, b)}…{/snippet}` `{@render row(x, 1)}` | local markup fn |
 | `{@pager posts}` | Newer/Older links of a `Table::page` |
 | `<a href="/blog" active>` | `aria-current="page"` on `/blog` and below (`/` only itself); pages, layouts |
+| `{@flash}` | `cx.flash(..)`'s message, once: `<p class="flash" role="status">`; page or layout |
+| `<title description="…" image="/og.png">T</title>` | also description, `og:*` and `twitter:card` meta in the head |
 | `<head>…</head>` | into the document head; a top-level `<title>` goes there alone; one `<title>` per page: the innermost page or layout with one writes it |
 | `<slot />` or `{@render children()}` | layout/component slot |
 | `cx` | the request (`&Cx`) in pages, layouts, error pages |
@@ -545,7 +549,10 @@ gzip, no build) · `wisp
 deploy init <host>` (a GitHub Actions workflow; or `fly|render|railway`: that
 host's config) · `wisp openapi [-o openapi.json]` (`--check`: CI fails when the file is stale) · `wisp service install|uninstall|start|stop|status [--user u]
 [--port n] [--dry-run]` (run the release binary as a systemd unit or launchd
-daemon; Windows: a startup scheduled task) · `wisp routes` · `wisp new-route /path page|server|rest` ·
+daemon; Windows: a startup scheduled task) · `wisp routes` · `wisp add
+page|form|layout|server|rest|api /path` (`new-route` too), `wisp add crud
+/posts` (list, new, edit pages; `Post` and `POSTS` into `src/db.rs`), `wisp
+add component Card` ·
 `wisp add|remove pkg` (`wisp add` alone: the recipes in `add/`) · `wisp ui
 add|list button dialog` (accessible components into `src/components`; `clientonly`:
 `<ClientOnly fallback="…">` draws its children only in the browser) · `wisp

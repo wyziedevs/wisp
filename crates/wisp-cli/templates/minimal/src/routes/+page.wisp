@@ -1,4 +1,4 @@
-<title>Home</title>
+<title description="A new Wisp app">Home</title>
 
 <h1>Welcome to Wisp</h1>
 <p>Edit <code>src/routes/+page.wisp</code> and save to see it change.</p>

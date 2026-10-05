@@ -1,7 +1,4 @@
-<head>
-  <title>About</title>
-  <meta name="description" content="About Wisp">
-</head>
+<title description="About Wisp">About</title>
 
 <div class="text-column">
   <h1>About Wisp</h1>

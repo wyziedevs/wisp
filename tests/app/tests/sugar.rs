@@ -10,17 +10,30 @@ use wisp_test_app::Site;
 #[test]
 fn a_generated_form_flashes_once() {
     let mut app = client::<Site>();
-    let sent = app.post_form("/t/contact", &[("name", "Ann"), ("email", "a@b.co"), ("topic", "help")]);
+    let sent = app.post_form(
+        "/t/contact",
+        &[("name", "Ann"), ("email", "a@b.co"), ("topic", "help")],
+    );
     assert_eq!(sent.status, 303);
     let page = app.get("/t/contact").text().to_string();
-    assert!(page.contains("<p class=\"flash\" role=\"status\">Thanks, Ann!</p>"), "{page}");
+    assert!(
+        page.contains("<p class=\"flash\" role=\"status\">Thanks, Ann! We will write to a@b.co about help.</p>"),
+        "{page}"
+    );
     let meta = "<meta name=\"description\" content=\"Write to us\"><meta property=\"og:description\" content=\"Write to us\"><meta property=\"og:image\" content=\"/og.png\">";
     assert!(page.contains(meta), "{page}");
     let select = "<select name=\"topic\"><option>hello</option><option>help</option></select>";
     assert!(page.contains(select), "{page}");
-    let bad = app.post_form("/t/contact", &[("name", "A"), ("email", "a@b.co"), ("topic", "x")]);
+    let bad = app.post_form(
+        "/t/contact",
+        &[("name", "A"), ("email", "a@b.co"), ("topic", "x")],
+    );
     assert_eq!(bad.status, 422);
-    assert!(bad.text().contains("must be one of hello, help"), "{}", bad.text());
+    assert!(
+        bad.text().contains("must be one of hello, help"),
+        "{}",
+        bad.text()
+    );
     assert!(!app.get("/t/contact").text().contains("flash"));
 }
 
@@ -34,12 +47,23 @@ fn generated_crud_creates_edits_and_deletes() {
     let r = app.post_form("/t/memos/new", &[("title", "One"), ("body", "B")]);
     assert_eq!(r.status, 303);
     let list = app.get("/t/memos").text().to_string();
-    assert!(list.contains("Created") && list.contains(">One</a>"), "{list}");
+    assert!(
+        list.contains("Created") && list.contains(">One</a>"),
+        "{list}"
+    );
     let end = list.find("/edit\"").unwrap();
-    let id: u64 = list[list[..end].rfind('/').unwrap() + 1..end].parse().unwrap();
+    let id: u64 = list[list[..end].rfind('/').unwrap() + 1..end]
+        .parse()
+        .unwrap();
     let edit = app.get(&format!("/t/memos/{id}/edit")).text().to_string();
-    assert!(edit.contains("value=\"One\"") && edit.contains("<button>Save</button>"), "{edit}");
-    let r = app.post_form(&format!("/t/memos/{id}/edit"), &[("title", "Two"), ("body", "B")]);
+    assert!(
+        edit.contains("value=\"One\"") && edit.contains("<button>Save</button>"),
+        "{edit}"
+    );
+    let r = app.post_form(
+        &format!("/t/memos/{id}/edit"),
+        &[("title", "Two"), ("body", "B")],
+    );
     assert_eq!(r.status, 303);
     assert!(app.get("/t/memos").text().contains(">Two</a>"));
     app.post_form(&format!("/t/memos?/remove&id={id}"), &[]);

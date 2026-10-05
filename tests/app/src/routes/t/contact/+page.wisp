@@ -4,7 +4,7 @@ fn default(
     email: Email,
     #[validate(one_of = "hello help")] topic: String,
 ) {
-    cx.flash(&format!("Thanks, {name}!"));
+    cx.flash(&format!("Thanks, {name}! We will write to {email} about {topic}."));
     redirect("/t/contact")
 }
 ---
@@ -12,4 +12,4 @@ fn default(
 <title description="Write to us" image="/og.png">Contact</title>
 
 {@flash}
-<form fields><button>Send</button></form>
+<form fields />
