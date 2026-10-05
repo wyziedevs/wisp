@@ -809,3 +809,13 @@ dev UI CSS. Bench app, Cloudflare build: 395,463 to 355,845 bytes (-39,618);
 tests/app wasm (has browser modules): 1,805,240 to 1,793,149. Native `.text` of
 the bench app: identical (only panic line numbers in `.rdata` moved).
 `wisp.js` stays: every page links it.
+
+Final, with 3bd0169 and the sitemap without `entries()` (App::ENTRIES): bench
+app 558,015 to 354,711 bytes (gzip 208,897 to 126,826; code 433,759 to
+286,152). VPS, 21 alternating rounds, process start to first 200 (ms), base /
+now / Hono / itty: `/` 80.5 / 72.2 / 58.5 / 49.6; `/json-big` 89.6 / 75.4 /
+57.4 / 50.1; `/params` 73.1 / 71.9 / 54.2 / 46.4; `/list1000` 71.2 / 63.6 /
+51.4 / 46.3. Still 13 to 18 ms behind Hono. workerd user instructions a
+request, mean of 5 alternated (k): `/` 214 / 222, `/json-big` 1078 / 1068,
+`/params` 236 / 227, `/list1000` 2587 / 2577; the box was shared, so +-10%
+is noise (the scanned lists alone, on the old base: `/` 216 against 217).
