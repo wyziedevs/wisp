@@ -1209,7 +1209,7 @@ What these numbers come from:
 
 ## Edge and JavaScript Hosts (2026-10-04)
 
-The same app built with `wisp build --target node|bun|deno|cloudflare`, against Hono, on Windows 10, Ryzen 7 7800X3D, Node 26, Deno 2.5, Bun 1.4, workerd 1.20261001. `oha`, 64 connections, 10 s runs, median of 5, Wisp and Hono alternating; Wisp is the first number in each cell. The machine was not idle (an unrelated app used about 0.8 of a core), so treat the absolute values with care. Run validity not recorded (no steal data); raw data, no ranking is drawn from it. Requests a second, Wisp / Hono:
+The same app built with `wisp build --target node|bun|deno|cloudflare`, against Hono, on Windows 10, Ryzen 7 7800X3D, Node 26, Deno 2.5, Bun 1.4, workerd 1.20261001. `oha`, 64 connections, 10 s runs, median of 5, Wisp and Hono alternating; Wisp is the first number in each cell. The machine was not idle (an unrelated app used about 0.8 of a core), so treat the absolute values with care. Run validity not recorded (no steal data); raw data, no ranking is drawn from it. Measured before 2026-10-05, so before cddf6ca (integer rendering) and the wasm size work; Hono's version is not recorded. Requests a second, Wisp / Hono:
 
 | Host | `/` | `/list1000` | `/json-big` | `/params` + cookie |
 |---|---:|---:|---:|---:|
@@ -1220,8 +1220,8 @@ The same app built with `wisp build --target node|bun|deno|cloudflare`, against 
 
 - On Node, Deno and Bun, Wisp's default path reads raw sockets and the app's own HTTP parser answers, about 1 microsecond a request inside the wasm. `WISP_NODE_HTTP=1` serves through the host's own server instead, which on `/` trails Hono by 15% on Node, 21% on Deno and 35% on Bun (`bench/edge/README.md`).
 - On workerd, a quieter run alternating with Hono (median of 5): `/` 19,645 and 20,908 (-6%), `/json-big` 11,441 and 11,894 (-4%), `/params` 19,258 and 20,256 (-5%), `/list1000` 6,033 and 2,359 (2.6 times). The wasm's own work is a few microseconds a request; the gap on `/` is workerd's cost of entering wasm and of a response with a head, and on `/json-big` it is a serializer in wasm against V8's `JSON.stringify`.
-- Cold start on workerd: Wisp 25 ms against 19 ms for Hono in that run (39 and 24 to 27 ms in the busier one), about 7 ms of it the host loading the module and the rest the first request compiling. A warm-up request at load took the first request from about 17 ms to 5 ms in one run, with no app code run.
-- The wasm for the bench app is 541 KB (541,063 bytes) since the Cloudflare, Pages, Vercel and Netlify builds leave out the server loop for raw connections (`WISP_REQUEST_ONLY`, 584,353 before). `tests/wasm-size.sh` fails CI when a build grows past its budget.
+- Cold start on workerd, process start to the first 200, VPS, 21 alternating rounds (2026-10-05, after 3bd0169; the script, `cold.mjs`, is not committed, so this is not reproducible from the repo): Wisp loses. `/` 72.2 ms against 58.5 for Hono and 49.6 for itty, `/json-big` 75.4 / 57.4 / 50.1, `/params` 71.9 / 54.2 / 46.4, `/list1000` 63.6 / 51.4 / 46.3: 13 to 18 ms behind Hono. An earlier, differently defined run (first request inside a running workerd) read 25 ms against 19; it is superseded.
+- The wasm for the bench app, Cloudflare build, is 354,711 bytes (126,826 gzip) as of 2026-10-05 (3bd0169; 558,015 before the size work), measured on one Windows machine; the gate (`cargo run -p wisp-gate`) fails a build past its size budget. Hono's bundle is JavaScript, not wasm, so the two sizes are not compared. `tests/wasm-size.sh` fails CI when a build grows past its budget.
 - Where speed and size disagree, speed wins, so `opt-level = 3` stays, and `wasm-opt` and allocator swaps that measured no faster were not kept.
 
 The full tables, the dropped experiments and the raw numbers for fifteen other frameworks per host are in [`bench/edge/README.md`](https://github.com/wyziedevs/wisp/blob/main/bench/edge/README.md) and `bench/rank`. Run validity is not recorded for those runs (no steal data), so this site quotes no place or rank from them.
@@ -3883,7 +3883,7 @@ Not for you to set. `wisp build` and the host bridges set them for the app they 
 
 | Name | What it does |
 |---|---|
-| `WISP_REQUEST_ONLY` | `1` while `wisp build` builds for Cloudflare, Pages, Vercel or Netlify: leaves the server loop for raw connections out of the wasm (541 KB instead of 584 KB for the bench app). An older `wisp` ignores it |
+| `WISP_REQUEST_ONLY` | `1` while `wisp build` builds for Cloudflare, Pages, Vercel or Netlify: leaves the server loop for raw connections out of the wasm (about 43 KB smaller for the bench app when it was added). An older `wisp` ignores it |
 | `WISP_WARM_UP` | the Cloudflare worker's warm-up instance: it answers one request with the runtime alone (no `init`, hook or random) so the real first request runs compiled code (`WISP_WARM_UP=1`; first request faster than with no warm-up, not as fast as running the app) |
 
 ## Logs and Traces
@@ -4964,18 +4964,20 @@ Wisp's `data` is longer than JavaScript's: a Rust type with its fields' types. M
 
 ## A Real App: Auth, CRUD, Upload, Live, a Component
 
-`bench/tokens/real` is sign up and in, a posts table with validation, edit, delete, pages and live refresh, an avatar upload and a toggle component: 10 files, **958** tokens in Wisp, 3.6x less than SvelteKit 2 and 3.5x less than Next.js 15. Its tests check every feature.
+`bench/tokens/real` is sign up and in, a posts table with validation, edit, delete, pages and live refresh, an avatar upload and a toggle component: 10 files, **960** tokens in Wisp, 3.6x less than SvelteKit 2 and 3.5x less than Next.js 15. The Wisp app has tests for every feature (`bench/tokens/real/wisp/src/tests.rs`); the SvelteKit and Next.js apps have none, so their behavior is checked by reading, not by tests.
 
 ## Method
 
-Counted: every file a developer (or an agent) writes by hand, beyond what the framework's generator gives, plus each file's path (writing a file means naming it, so two files cost more than one). Manifests (`Cargo.toml`, `package.json`) are left out everywhere.
+Counted: every file a developer (or an agent) writes by hand, beyond what the framework's generator gives, plus each file's path (writing a file means naming it, so two files cost more than one). Generated manifests (`package.json`, the `[package]` table of `Cargo.toml`) are left out everywhere; the dependency lines a developer adds by hand are counted as `setup` (Axum's and Actix's `[dependencies]`, Express's server setup), while `wisp new` writes Wisp's one dependency, so Wisp's `setup` is 0.
+
+What this favors: Wisp ships the form rules, the validation messages and the form markup (`<form fields />`), so most of the gap in `form` is work the other stacks write by hand or take from a library. That is the point of a batteries-included design, but read the totals as "what an app author writes", not as equal work by each framework. Only the Wisp apps have tests (`src/tests.rs`); the other stacks' apps are written to the same behavior and reviewed by hand, not checked by a test.
 
 There is no tokenizer offline, so the count estimates a BPE code tokenizer (cl100k-like):
 
 - a newline with its indentation is 1 token; spaces join the word after them
 - identifiers split at `_` and camelCase humps, each part 1 token up to 8 letters and 1 per 6 after that
 - digits 1 per 3
-- common operators (`::` `->` `=>` `==` `</` `/>` `{{` `<%=` ...) 1; any other punctuation character 1
+- common operators (`::` `->` `=>` `==` `</` `/>` `{{` `{%` ...) 1; any other punctuation character 1
 
 Characters / 4, the usual rule of thumb, ranks the frameworks the same way.
 
@@ -5509,7 +5511,7 @@ Zero cost on the request hot path: a route pays only for the features it uses, a
 An AI pays for every token it reads and writes, in time and money. Wisp uses conventions over configuration, types the compiler infers, and forms that write their own inputs and errors.
 
 - The same five features take 432 tokens in Wisp, 1,134 in SvelteKit and 1,146 in Next.js.
-- A larger app with sign up, uploads and live refresh takes 958, against 3,473 and 3,331.
+- A larger app with sign up, uploads and live refresh takes 960, against 3,473 and 3,331.
 - `cargo run -p wisp-tokens` counts every hand-written file and its path with a byte-pair style estimate. See [Tokens](/docs/tokens/).
 
 For agents: [AGENTS.md](https://github.com/wyziedevs/wisp/blob/main/llms/AGENTS.md) is the whole reference in one file, and `wisp mcp` serves the docs over MCP (`claude mcp add wisp -- wisp mcp`).
