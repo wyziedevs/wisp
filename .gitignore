@@ -8,3 +8,6 @@
 .claude/worktrees/
 
 target-base/
+.env
+.env.*
+todo.txt

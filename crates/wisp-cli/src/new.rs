@@ -322,7 +322,7 @@ fn write(root: &Path, crate_name: &str, template: Template, tailwind: bool) -> R
     };
     let common: [(&str, &[u8]); 2] = [
         ("Cargo.toml", cargo_toml.as_bytes()),
-        (".gitignore", b"/target\n/.wisp\n/data\n"),
+        (".gitignore", GITIGNORE),
     ];
     let agents = AGENT_FILES
         .iter()
@@ -494,6 +494,15 @@ codegen-units = 1
 lto = "fat"
 "#;
 
+/// A new app's `.gitignore`: build output, local data and `.env` (secrets the
+/// runtime reads, never committed).
+const GITIGNORE: &[u8] = b"/target
+/.wisp
+/data
+.env
+.env.*
+";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -562,6 +571,12 @@ mod tests {
         ] {
             assert!(crate_name(Path::new(taken)).is_err(), "{taken}");
         }
+    }
+
+    #[test]
+    fn gitignore_keeps_secrets_out() {
+        let text = std::str::from_utf8(GITIGNORE).unwrap();
+        assert!(text.lines().any(|l| l == ".env"), "{text}");
     }
 
     #[test]

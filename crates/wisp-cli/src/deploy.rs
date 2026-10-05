@@ -258,11 +258,18 @@ dist
 data
 Dockerfile
 .dockerignore
+.env
+.env.*
 ";
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dockerignore_keeps_secrets_out_of_the_image() {
+        assert!(DOCKERIGNORE.lines().any(|l| l == ".env"));
+    }
 
     fn temp(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("wisp-deploy-{name}-{}", std::process::id()));

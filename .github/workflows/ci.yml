@@ -3,6 +3,8 @@ on:
   push:
     branches: [main]
   pull_request:
+permissions:
+  contents: read
 # The gates are `cargo run -q -p wisp-gate` (the same on a dev machine, any OS);
 # the steps are spelled out here so a red one is named in the log.
 jobs:
@@ -17,6 +19,8 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
