@@ -654,7 +654,7 @@
       // `data-wisp-queue` says sending it twice is safe (the server takes the
       // same post once): it waits for the network. Any other form says so.
       if (form.hasAttribute('data-wisp-queue') && !multipart) {
-        enqueue([url.href, String(body)]);
+        store([...queue(), [url.href, String(body)]]);
         say('Saved: it is sent when you are back online.');
       } else say('You are offline. Try again when you are back.');
       send('wisp:result', { ok: false, status: 0, error: 'offline' }, form);
@@ -732,23 +732,28 @@
   const queue = () => {
     try { return JSON.parse(sessionStorage['wisp:q'] || '[]'); } catch { return []; }
   };
-  const enqueue = (p) => {
-    try { sessionStorage['wisp:q'] = JSON.stringify([...queue(), p]); } catch {}
+  const store = (q) => {
+    try { sessionStorage['wisp:q'] = JSON.stringify(q); } catch {}
   };
+  let sending; // one drain at a time: online twice must not post twice
   async function drain() {
-    if (!queue().length) return;
-    for (let q; (q = queue()).length && navigator.onLine; ) {
+    let q = queue();
+    if (sending || !q.length) return;
+    sending = 1;
+    for (; q.length && navigator.onLine; q = queue()) {
       try {
         const r = await fetch(q[0][0], { method: 'POST', body: q[0][1], headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded' } });
-        if (r.status >= 500) return;
-      } catch { return; }
-      sessionStorage['wisp:q'] = JSON.stringify(q.slice(1));
+        if (r.status >= 500) break;
+      } catch { break; }
+      store(q.slice(1));
     }
+    sending = 0;
+    if (q.length) return; // stopped: kept for the next time
     send('wisp:sent');
     refresh().catch(() => {});
   }
   addEventListener('online', drain);
-  if (queue().length) drain();
+  drain();
 
   // ---- third-party scripts, web vitals --------------------------------------
 

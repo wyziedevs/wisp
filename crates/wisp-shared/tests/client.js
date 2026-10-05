@@ -174,6 +174,17 @@ const tests = {
     assert.deepEqual(p.fetches.slice(1, 3).map((f) => f.body), ['n=1', 'n=2']);
     assert.deepEqual(JSON.parse(p.store['wisp:q']), []);
   },
+  async 'queue: online twice at once sends each post once'() {
+    const p = page({ online: false });
+    p.submit(p.form({ 'data-wisp-queue': '' }, [['n', '1']]));
+    p.g.reply = () => res('');
+    p.nav.onLine = true;
+    p.win.dispatchEvent(new Event('online'));
+    p.win.dispatchEvent(new Event('online'));
+    await tick();
+    assert.equal(p.fetches.filter((f) => f.method == 'POST').length, 1);
+    assert.deepEqual(JSON.parse(p.store['wisp:q']), []);
+  },
   async 'a post that was answered is never posted again by the browser'() {
     const p = page();
     let again = 0;
