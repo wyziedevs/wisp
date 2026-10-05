@@ -1,0 +1,6 @@
+{
+  "name": "nr-hono-bun",
+  "private": true,
+  "type": "module",
+  "dependencies": { "hono": "^4.6.0" }
+}

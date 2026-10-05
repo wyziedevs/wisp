@@ -1,0 +1,16 @@
+[package]
+name = "nr-actix"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+actix-web = { version = "4", default-features = false, features = ["macros", "cookies"] }
+serde = { version = "1", features = ["derive"] }
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = 3
+panic = "abort"
+
+[workspace]

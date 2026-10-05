@@ -1,0 +1,17 @@
+[package]
+name = "nr-wisp"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+wisp = { package = "wisp-web-rt", path = "../../../../crates/wisp" }
+
+[build-dependencies]
+wisp-build = { package = "wisp-web-build", path = "../../../../crates/wisp-build" }
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+
+[workspace]

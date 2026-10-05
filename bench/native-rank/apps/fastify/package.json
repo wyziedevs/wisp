@@ -1,0 +1,5 @@
+{
+  "name": "nr-fastify",
+  "private": true,
+  "dependencies": { "fastify": "^5.1.0" }
+}
