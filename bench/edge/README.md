@@ -654,13 +654,13 @@ c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-04. Each cell: re
 
 | framework | `/` | `/list1000` | `/json-big` | `/params` | cold start ms | RSS MB after load |
 |---|---|---|---|---|---|---|
-| itty | 3,564 (#3) | 337 (#2) | 1,570 (#1) | 4,163 (#1) | 53 (#1) | 426 (#4) |
-| hono | 4,217 (#1) | 330 (#3) | 1,537 (#2) | 4,076 (#2) | 58 (#2) | 357 (#2) |
-| **wisp** | **4,002 (#2)** | **626 (#1)** | **1,395 (#3)** | **3,581 (#3)** | **98 (#5)** | **309 (#1)** |
-| sveltekit | 1,974 (#4) | 148 (#5) | 1,128 (#4) | 2,098 (#5) | 80 (#3) | 838 (#7) |
-| astro | 1,768 (#5) | 275 (#4) | 918 (#6) | 2,159 (#4) | 112 (#6) | 585 (#5) |
-| react-router | 1,757 (#6) | 76 (#6) | 1,056 (#5) | 1,373 (#6) | 93 (#4) | 387 (#3) |
-| next | 286 (#7) | 19 (#7) | 204 (#7) | 290 (#7) | 450 (#7) | 601 (#6) |
+| hono | 6,186 (#1) | 795 (#3) | 3,359 (#1) | 4,774 (#1) | 75 (#2) | 303 (#1) |
+| **wisp** | **5,579 (#2)** | **1,902 (#1)** | **3,243 (#2)** | **4,771 (#2)** | **100 (#3)** | **374 (#2)** |
+| itty | 4,766 (#3) | 855 (#2) | 3,002 (#3) | 4,130 (#3) | 70 (#1) | 754 (#6) |
+| astro | 2,986 (#4) | 698 (#4) | 2,203 (#5) | 2,477 (#4) | 179 (#6) | 477 (#4) |
+| sveltekit | 2,884 (#5) | 418 (#5) | 2,296 (#4) | 2,223 (#5) | 120 (#4) | 1581 (#7) |
+| react-router | 2,351 (#6) | 226 (#6) | 1,905 (#6) | 1,849 (#6) | 151 (#5) | 425 (#3) |
+| next | 457 (#7) | 45 (#7) | 384 (#7) | 399 (#7) | 631 (#7) | 631 (#5) |
 
 ### Node
 
@@ -668,13 +668,13 @@ c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-04. Each cell: re
 
 | framework | `/` | `/list1000` | `/json-big` | `/params` | cold start ms | RSS MB after load |
 |---|---|---|---|---|---|---|
-| **wisp raw** | **33,575 (#1)** | **2,972 (#1)** | **7,767 (#1)** | **20,022 (#1)** | **203 (#2)** | **120 (#3)** |
-| **wisp node:http** | **11,317 (#3)** | **2,556 (#1)** | **5,424 (#1)** | **8,285 (#2)** | **156 (#1)** | **89 (#1)** |
-| hono | 12,213 (#2) | 847 (#3) | 4,457 (#2) | 7,320 (#3) | 187 (#2) | 95 (#3) |
-| fastify | 11,882 (#3) | 785 (#4) | 4,256 (#3) | 8,994 (#2) | 318 (#5) | 94 (#2) |
-| express | 6,755 (#4) | 860 (#2) | 3,421 (#4) | 5,889 (#4) | 251 (#4) | 157 (#4) |
-| sveltekit | 4,431 (#5) | 447 (#5) | 2,493 (#5) | 3,072 (#5) | 206 (#3) | 279 (#5) |
-| next | 962 (#6) | 50 (#6) | 922 (#6) | 720 (#6) | 835 (#6) | 496 (#6) |
+| **wisp raw** | **33,942 (#1)** | **3,165 (#1)** | **7,959 (#1)** | **30,533 (#1)** | **166 (#1)** | **82 (#1)** |
+| **wisp node:http** | **13,151 (#3)** | **3,001 (#1)** | **5,940 (#1)** | **11,627 (#2)** | **152 (#1)** | **290 (#5)** |
+| hono | 14,196 (#2) | 1,043 (#3) | 4,583 (#2) | 9,131 (#3) | 167 (#2) | 100 (#3) |
+| fastify | 13,661 (#3) | 1,049 (#2) | 4,496 (#3) | 11,862 (#2) | 312 (#5) | 95 (#2) |
+| express | 7,325 (#4) | 927 (#4) | 3,484 (#4) | 6,671 (#4) | 231 (#4) | 226 (#4) |
+| sveltekit | 4,802 (#5) | 516 (#5) | 2,629 (#5) | 4,300 (#5) | 187 (#3) | 269 (#5) |
+| next | 1,211 (#6) | 66 (#6) | 1,040 (#6) | 1,227 (#6) | 725 (#6) | 505 (#6) |
 
 ### Bun
 
@@ -705,13 +705,13 @@ Gap is how far behind in %: lower req/s, or higher cold start and memory. Gap to
 
 | host | Wisp variant | metric | place | Wisp | Hono | behind Hono | behind 3rd |
 |---|---|---|---|---|---|---|---|
-| workerd | wisp | `/` | #2 | 4,002 | 4,217 | 5% | - |
-| workerd | wisp | `/json-big` | #3 | 1,395 | 1,537 | 9% | - |
-| workerd | wisp | `/params` | #3 | 3,581 | 4,076 | 12% | - |
-| workerd | wisp | cold start ms | #5 | 98 | 58 | 69% | 22% (sveltekit) |
-| Node | wisp raw | cold start ms | #2 | 203 | 187 | 8% | - |
-| Node | wisp raw | RSS MB after load | #3 | 120 | 95 | 26% | - |
-| Node | wisp node:http | `/` | #3 | 11,317 | 12,213 | 7% | - |
+| workerd | wisp | `/` | #2 | 5,579 | 6,186 | 10% | - |
+| workerd | wisp | `/json-big` | #2 | 3,243 | 3,359 | 3% | - |
+| workerd | wisp | `/params` | #2 | 4,771 | 4,774 | 0% | - |
+| workerd | wisp | cold start ms | #3 | 100 | 75 | 34% | - |
+| workerd | wisp | RSS MB after load | #2 | 374 | 303 | 23% | - |
+| Node | wisp node:http | `/` | #3 | 13,151 | 14,196 | 7% | - |
+| Node | wisp node:http | RSS MB after load | #5 | 290 | 100 | 190% | 28% (express) |
 | Bun | wisp raw | cold start ms | #2 | 74 | 58 | 28% | - |
 | Bun | wisp raw | RSS MB after load | #2 | 40 | 39 | 3% | - |
 | Bun | wisp Bun.serve | `/` | #3 | 24,934 | 45,735 | 45% | - |
@@ -726,6 +726,36 @@ Gap is how far behind in %: lower req/s, or higher cold start and memory. Gap to
 | Deno | wisp Deno.serve | `/params` | #2 | 16,011 | 28,454 | 44% | - |
 | Deno | wisp Deno.serve | cold start ms | #2 | 75 | 56 | 34% | - |
 | Deno | wisp Deno.serve | RSS MB after load | #2 | 69 | 51 | 35% | - |
+
+### Cold start and memory, second pass (2026-10-04)
+
+workerd and Node above are a rerun after two changes; Bun and Deno are the
+first run. `rank.mjs` now alternates cold starts between the servers, a round
+at a time, as it does the routes: run back to back, a busy minute fell on one
+framework (workerd's Wisp read 98 ms, #5, then 100 ms, #3, with sveltekit at
+120). Node's raw server checked its sockets with `fetch`, which loads undici at
+first use; it asks with node:http now (loaded already): 153 to 131 ms, Hono 128
+(interleaved, median of 21).
+
+workerd cold start, taken apart (process start to first response, interleaved,
+median of 31): an empty worker 49 ms, the same worker importing `app.wasm` 57
+(+7, V8 decoding and validating 550 KB), instantiating it 59 (+3), the first
+request 77 (+18), the warm-up instance 82 (+4). Of the first request, about
+12 ms is Liftoff compiling the 97 functions (148 KB) it calls: Node with
+`--no-wasm-lazy-compilation` answers it in 6 ms against 19 lazily, and
+`--trace-wasm-compilation-times` lists them (`edge::request` 31 KB, `http::decide`
+17 KB, `start` 12 KB, `http::parse` 11 KB, `settle_plain` 9 KB). Hono's whole
+start is 54 ms there, under the 57 that loading the module alone costs, so
+beating it needs a much smaller wasm; `opt-level = "s"` (430 KB) took 4 to 7 ms
+off and stays out for its steady-state cost (above). Boxing the WebSocket and
+cron arms of `edge::request` left it at 31 KB: `http::answer`, inlined, is
+the bulk.
+
+Node's "RSS after load" swings run to run with the same build (node:http: 89,
+181, 245 and 290 MB; raw: 82 to 120). The growth is outside JS and wasm: after
+10 s of `/list1000` the JS heap is 26 MB and the wasm memory 1 MB, and
+`MALLOC_ARENA_MAX=1` takes some off, so it is V8's compiler and code memory
+held by malloc, not anything the shim keeps.
 
 **What it says.** Wisp (raw sockets) is 1st on every Node and Bun route and on
 Deno `/list1000` and `/params`; on Deno `/` it is 2nd (8% behind Hono, inside
