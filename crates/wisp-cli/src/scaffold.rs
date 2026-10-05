@@ -39,6 +39,13 @@ fn init(root: &Path, host: &str, package: &str, force: bool) -> Result<(), Strin
 
 /// The file's name, its text, and what to do next.
 fn config(host: &str, package: &str) -> (&'static str, String, &'static str) {
+    // Fly and Render name apps in DNS labels: lowercase, digits and dashes.
+    let name = package.to_ascii_lowercase().replace('_', "-");
+    let package = if matches!(host, "fly" | "render") {
+        name.as_str()
+    } else {
+        package
+    };
     match host {
         "fly" => (
             "fly.toml",
@@ -122,6 +129,14 @@ mod tests {
             assert!(docker.contains("cp target/release/my-app /server"));
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    #[test]
+    fn hosts_get_a_dns_safe_app_name() {
+        let (_, fly, _) = config("fly", "My_App");
+        assert!(fly.contains("app = \"my-app\""), "{fly}");
+        let (_, render, _) = config("render", "My_App");
+        assert!(render.contains("name: my-app"), "{render}");
     }
 
     #[test]
