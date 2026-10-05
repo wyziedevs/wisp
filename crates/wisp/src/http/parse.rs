@@ -59,7 +59,7 @@ pub(super) fn parse<A: App>(cx: &mut Cx, at: usize, on_wire: bool) -> Parsed {
     }
     let buf = &cx.wire.buf[..];
     let (len, total) = if chunked {
-        match chunks(&buf[body_start..], limit) {
+        match chunks(&buf[body_start..], limit, &mut cx.wire.chunked) {
             Chunks::Complete { wire, body } => (body, head.len + wire),
             Chunks::Partial => {
                 return Parsed::Partial {
@@ -619,6 +619,20 @@ pub(super) fn limit_of<A: App>(route: Option<usize>) -> usize {
         .min(MAX_BODY)
 }
 
+/// Where [`chunks`] stopped in a partial body: the start of a size line,
+/// and the body bytes before it.
+#[derive(Default, Clone, Copy)]
+pub(crate) struct Resume {
+    at: usize,
+    body: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Lines [`chunks`] has looked at, for the test that bounds its work.
+    pub(super) static LINES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub(super) enum Chunks {
     /// The body is `body` bytes, framed in `wire` bytes.
     Complete {
@@ -634,9 +648,22 @@ pub(super) enum Chunks {
 /// changing it. Strict: hex sizes of at most 16 digits, CRLF line ends,
 /// extensions and trailers skipped but bounded, so that framing overhead
 /// cannot make a body far larger on the wire than `limit`.
-pub(super) fn chunks(b: &[u8], limit: usize) -> Chunks {
+///
+/// `resume`: where an earlier call on a prefix of `b` stopped, at the start
+/// of a size line, so that a body trickled in is read once, not again from
+/// its start on every read. Kept only while the call says `Partial`.
+pub(super) fn chunks(b: &[u8], limit: usize, resume: &mut Resume) -> Chunks {
+    let saved = std::mem::take(resume);
+    let usable = saved.at <= b.len() && (saved.at == 0 || b[..saved.at].ends_with(b"\r\n"));
+    let (mut i, mut body) = if usable {
+        (saved.at, saved.body)
+    } else {
+        (0, 0)
+    };
     // A line ending in CRLF from `from`: the index of its CR.
     let line = |from: usize| -> Result<Option<usize>, ()> {
+        #[cfg(test)]
+        LINES.with(|n| n.set(n.get() + 1));
         for (i, &c) in b.iter().enumerate().skip(from).take(MAX_HEAD) {
             match c {
                 b'\r' if b.get(i + 1) == Some(&b'\n') => return Ok(Some(i)),
@@ -651,13 +678,16 @@ pub(super) fn chunks(b: &[u8], limit: usize) -> Chunks {
             Ok(None)
         }
     };
-    let (mut i, mut body) = (0usize, 0usize);
     loop {
         let end = match line(i) {
             Ok(Some(end)) => end,
-            Ok(None) => return Chunks::Partial,
+            Ok(None) => {
+                *resume = Resume { at: i, body };
+                return Chunks::Partial;
+            }
             Err(()) => return Chunks::Invalid,
         };
+        let line_start = i;
         let digits = b[i..end]
             .iter()
             .take_while(|c| c.is_ascii_hexdigit())
@@ -697,6 +727,11 @@ pub(super) fn chunks(b: &[u8], limit: usize) -> Chunks {
             return Chunks::TooLarge;
         }
         if b.len() - i < size + 2 {
+            // Back to this size line, which is checked again: cheap, once.
+            *resume = Resume {
+                at: line_start,
+                body: body - size,
+            };
             return Chunks::Partial;
         }
         if &b[i + size..i + size + 2] != b"\r\n" {

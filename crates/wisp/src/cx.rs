@@ -159,6 +159,8 @@ pub(crate) struct Wire {
     /// HTTP/1.1 rather than 1.0, which cannot take a chunked response.
     pub http11: bool,
     pub peer: SocketAddr,
+    /// Where a chunked body that is not all here yet was read up to.
+    pub chunked: crate::http::Resume,
 }
 
 /// One request, as a page, action, endpoint or hook sees it: `cx.param("id")`, `cx.query("q")`, `cx.cookie("sid")`, `cx.header("accept")`, `cx.set_header(..)`, `cx.set_cookie(..)`, `cx.set(value)` and `cx.get::<T>()` for values handed along, `cx.json()` for the body. In a route file it is the `cx` you name in the signature.
@@ -212,6 +214,7 @@ impl Cx {
                 knows: 0,
                 http11: true,
                 peer,
+                chunked: Default::default(),
             },
             names: &[],
             params: [Span::default(); MAX_PARAMS],

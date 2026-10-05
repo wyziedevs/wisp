@@ -277,6 +277,7 @@ pub(super) fn give_buffers(mut b: Box<Buffers>) {
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn reset_buffers(b: &mut Buffers) {
     b.cx.wire.buf.clear();
+    b.cx.wire.chunked = Default::default();
     b.wbuf.clear();
     trim_buffers(b);
 }

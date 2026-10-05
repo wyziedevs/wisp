@@ -546,12 +546,54 @@ fn heads_and_chunk_framing_are_bounded() {
     for _ in 0..20_000 {
         let n = rng.below(64);
         let b = rng.bytes(n, b"0123456789abcdefgxX;= \r\n");
-        if let Chunks::Complete { wire, body } = chunks(&b, 1 << 20) {
+        // Fed a byte at a time, resuming, it reads as it does whole.
+        let mut resume = Resume::default();
+        for end in 1..=b.len() {
+            let fed = chunks(&b[..end], 1 << 20, &mut resume);
+            let fresh = chunks(&b[..end], 1 << 20, &mut Resume::default());
+            let same = match (&fed, &fresh) {
+                (Chunks::Complete { wire, body }, Chunks::Complete { wire: w, body: y }) => {
+                    wire == w && body == y
+                }
+                (a, z) => std::mem::discriminant(a) == std::mem::discriminant(z),
+            };
+            assert!(same, "{:?}", String::from_utf8_lossy(&b[..end]));
+            if !matches!(fed, Chunks::Partial) {
+                break;
+            }
+        }
+        if let Chunks::Complete { wire, body } = chunks(&b, 1 << 20, &mut Resume::default()) {
             assert!(wire <= b.len() && body <= wire);
             let mut copy = b.clone();
             unchunk(&mut copy[..wire]);
         }
     }
+}
+
+/// A chunked body trickled in a byte a read is not re-read from its start
+/// each time: the work stays linear in its chunks, not quadratic.
+#[test]
+fn trickled_chunks_are_linear() {
+    let n = 2000;
+    let body = "5\r\nhello\r\n".repeat(n) + "0\r\n\r\n";
+    let mut cx = cx_with(b"POST /x HTTP/1.1\r\nhost: a\r\ntransfer-encoding: chunked\r\n\r\n");
+    LINES.with(|l| l.set(0));
+    let mut done = false;
+    for &byte in body.as_bytes() {
+        cx.wire.buf.push(byte);
+        match parse::<Fuzz>(&mut cx, 0, false) {
+            Parsed::Partial { .. } => {}
+            Parsed::Request(_) => done = true,
+            Parsed::Invalid(s) => panic!("refused {s} at {}", cx.wire.buf.len()),
+        }
+    }
+    assert!(done);
+    let lines = LINES.with(|l| l.get());
+    assert!(
+        lines < 4 * body.len(),
+        "{lines} lines for {} bytes",
+        body.len()
+    );
 }
 
 /// Every framing a proxy in front could read otherwise is refused, on
