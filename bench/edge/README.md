@@ -782,3 +782,22 @@ and only for baked routes (the bench's `/` is a handler); one instance warmed
 at load and kept (no throwaway warm-up) was no quicker (77.2 against 73.7).
 A split module pays the same: both halves are config modules, and Workers
 cannot compile wasm from bytes. Beating Hono here needs a smaller `app.wasm`.
+
+**A smaller `app.wasm` (2026-10-05).** twiggy on the bench app's wasm: what an
+app does not use was still linked, mostly through dead states of async tasks
+(an `.await` never reached still keeps its future's code). Cut, each its own
+commit: hash maps in the edge loop as scanned lists (no hashbrown/SipHash),
+jobs only when `src/` has `wisp::cron`/`wisp::work` (`WISP_JOBS=0` from
+`wisp build`), the request's WebSocket served through its `Upgrade` (no socket
+code without `Response::websocket`), sign-outs read at the first session,
+feed/locale code only with Markdown pages/locales, obs and project-file reads
+constant on wasm32, a q-value reader instead of the float parser (its tables
+were 12 KB of data). Bench app, Cloudflare build: 558,015 to 404,600 bytes
+(code 433,759 to 297,004; this machine's paths; 541 KB was the bench's before).
+Node target 602,654 to 461,190. Native `.text` of tests/app: identical
+(normalized disassembly). Cold start (VPS, `cold.mjs`, 21 alternating, at the
+432 KB step): 123.6 to 102.8 ms; Hono 77.9, itty 71.3: still behind. Node
+`/` 24.09k to 23.35k user instructions a request; workerd `/` within noise.
+Left: 107 KB of data (`live.js`, `wisp.js`, the UI CSS, the API docs page,
+all in `http/mod.rs`, linked whatever the app uses) and the sitemap (about
+20 KB of code, could be made by the build).
