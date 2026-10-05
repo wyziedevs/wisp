@@ -227,6 +227,9 @@ pub(crate) mod files {
         /// it put in place: before the next write the log is opened again
         /// and cut back to `size`, so a torn line never joins the next one.
         bad: bool,
+        /// The table was read again, into a new log: a compaction of this
+        /// one must not put its file in the new one's place.
+        retired: bool,
     }
 
     /// The store for `WISP_DATA`, made once; `None` for `off`.
@@ -388,9 +391,12 @@ pub(crate) mod files {
                     compacting: false,
                     retry_at: 0,
                     bad: false,
+                    retired: false,
                 }),
             };
-            self.logs.lock().insert(table.to_string(), Arc::new(log));
+            if let Some(old) = self.logs.lock().insert(table.to_string(), Arc::new(log)) {
+                old.state.lock().retired = true;
+            }
             Ok(out)
         }
 
@@ -543,6 +549,9 @@ pub(crate) mod files {
         /// Adds the lines written since the log was `size` bytes to `tmp`,
         /// and puts it in the log's place.
         fn swap(&self, s: &mut State, size: u64, tmp: &Path) -> std::io::Result<()> {
+            if s.retired {
+                return Err(std::io::Error::other("the table was read again meanwhile"));
+            }
             let mut old = File::open(&self.path)?;
             old.seek(SeekFrom::Start(size))?;
             let mut f = OpenOptions::new().append(true).open(tmp)?;
@@ -685,6 +694,57 @@ pub(crate) mod files {
             let mut rows = Files::new(d.clone(), Sync::Off).load("c").unwrap();
             rows.sort();
             assert_eq!(rows.iter().map(|r| r.0).collect::<Vec<_>>(), [0, 1, 2]);
+            assert!(rows.iter().all(|r| r.1 == big));
+            let _ = fs::remove_dir_all(d);
+        }
+
+        #[test]
+        fn a_compaction_of_a_log_read_again_does_not_swap_over_it() {
+            let d = dir("reread");
+            let files = Files::new(d.clone(), Sync::Off);
+            files.load("r").unwrap();
+            files.save("r", 1, Some("\"a\"")).unwrap();
+            // A compaction under way as the table is read again (a 500).
+            let old = files.logs.lock()["r"].clone();
+            let size = old.state.lock().size;
+            let tmp = old.path.with_extension("log.tmp");
+            files.load("r").unwrap();
+            old.rewrite(size, &tmp).unwrap();
+            files.save("r", 2, Some("\"b\"")).unwrap();
+            let _ = old.swap(&mut old.state.lock(), size, &tmp);
+            files.save("r", 3, Some("\"c\"")).unwrap();
+            let mut rows = Files::new(d.clone(), Sync::Off).load("r").unwrap();
+            rows.sort();
+            assert_eq!(rows.iter().map(|r| r.0).collect::<Vec<_>>(), [1, 2, 3]);
+            let _ = fs::remove_dir_all(d);
+        }
+
+        #[test]
+        fn writers_on_many_threads_lose_no_line() {
+            let d = dir("threads");
+            let files = Arc::new(Files::new(d.clone(), Sync::Off));
+            files.load("w").unwrap();
+            let big = format!("\"{}\"", "y".repeat(4000));
+            let hands: Vec<_> = (0..8u64)
+                .map(|t| {
+                    let (files, big) = (files.clone(), big.clone());
+                    std::thread::spawn(move || {
+                        for i in 0..400 {
+                            files.save("w", t * 1000 + i % 50 + 1, Some(&big)).unwrap();
+                        }
+                    })
+                })
+                .collect();
+            for h in hands {
+                h.join().unwrap();
+            }
+            let log = files.logs.lock()["w"].clone();
+            let t = std::time::Instant::now();
+            while log.state.lock().compacting && t.elapsed().as_secs() < 10 {
+                std::thread::yield_now();
+            }
+            let rows = Files::new(d.clone(), Sync::Off).load("w").unwrap();
+            assert_eq!(rows.len(), 400);
             assert!(rows.iter().all(|r| r.1 == big));
             let _ = fs::remove_dir_all(d);
         }
