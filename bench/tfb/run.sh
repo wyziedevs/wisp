@@ -141,6 +141,8 @@ wrk_once() {
     echo "# cpu-delta user nice sys idle iowait irq softirq steal: $(for k in 0 1 2 3 4 5 6 7; do printf '%s ' $((b[k]-a[k])); done)"
     echo "# foreign-pct: $(awk -v u=$used -v m=$mine -v n=$ncpu -v w=$((wall>0?wall:1)) 'BEGIN{f=(u-m)*100/(n*w*100); if (f<0) f=0; printf "%.1f", f}')  (user+sys+irq ticks $used, server+wrk $mine)"
     echo "# top-after: $(ps -eo pcpu,comm --sort=-pcpu | sed -n '2,4p' | tr -s ' ' | tr '\n' ';')"
+    # A server that stopped answering during the run is a stall, whatever wrk counted.
+    curl -s -o /dev/null --max-time 5 "http://$HOST:$PORT/plaintext" && echo "# alive-after: yes" || echo "# alive-after: no"
   } >"$out" 2>&1
 }
 

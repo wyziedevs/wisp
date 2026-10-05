@@ -33,6 +33,9 @@ class Parse(unittest.TestCase):
         self.assertTrue(r["stalled"])
     def test_stall_wall(self):
         self.assertTrue(run(OK.replace("15.01s", "0.91m"))["stalled"])
+    def test_dead_after(self):
+        self.assertTrue(run(OK + "# alive-after: no\n")["stalled"])
+        self.assertFalse(run(OK + "# alive-after: yes\n")["stalled"])
     def test_no_latency(self):
         self.assertIsNone(run("Requests/sec: 5\n"))
 

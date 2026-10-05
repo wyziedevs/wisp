@@ -54,7 +54,7 @@ def parse(path):
         "non2xx": int(non2.group(1)) if non2 else 0,
         "socket_errors": sum(int(x) for x in sock.groups()) if sock else 0,
         "requests": int(total.group(1)) if total else None, "steal_pct": steal,
-        "stalled": n_total == 0 or bool(dur and wall_s and wall_s > 1.5 * int(dur.group(1))),
+        "stalled": n_total == 0 or "# alive-after: no" in t or bool(dur and wall_s and wall_s > 1.5 * int(dur.group(1))),
     }
 
 
@@ -152,7 +152,7 @@ def main():
     tables = "\n".join(lines)
 
     # Derived summary: counts only, from the data above (supplementary rows excluded).
-    firsts, tot, tied = 0, 0, 0
+    firsts, tot, tied, flagged = 0, 0, 0, 0
     for w in ("plaintext", "json"):
         for lvl in sorted(summary.get(w, {})):
             rows = {c: r for c, r in summary[w][lvl].items() if c != "wisp-uncapped" and not r["failed"] and r["runs"] >= 2}
@@ -161,11 +161,16 @@ def main():
             lead = max(rows, key=lambda c: rows[c]["rps_median"])
             top = {lead} | set(rows[lead]["tied_with"])
             tot += 1
-            firsts += top == {"wisp"}
+            w0 = rows["wisp"]
+            clean = not (w0["stalled"] or w0["non2xx"] or w0["socket_errors"])
+            firsts += top == {"wisp"} and clean
+            flagged += top == {"wisp"} and not clean
             tied += len(top) > 1 and "wisp" in top
     heads = (f"Wisp (defaults) has a min-max range above every other contender's at {firsts} of {tot} "
              f"workload and connection levels; at {tied} more its range overlaps that of the highest "
-             f"median (a tie within noise). Counted from the tables below, supplementary row excluded.")
+             f"median (a tie within noise)"
+             + (f"; at {flagged} more it leads but its row has stalled runs or errors, so that is not counted as a win" if flagged else "")
+             + ". Counted from the tables below, supplementary row excluded.")
 
     noise = ["| Binary | Level | round 1 | round 2 | round 3 | steal % of CPU (r1/r2/r3) |", "|---|---:|---:|---:|---:|---|"]
     for c in ("wisp", "wisp-uncapped"):
