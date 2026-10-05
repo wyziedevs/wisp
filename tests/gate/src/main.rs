@@ -29,6 +29,8 @@ fn cargo(args: &[&str], env: &[(&str, &str)]) -> bool {
 fn wasm_size() -> bool {
     let env = [
         ("WISP_REQUEST_ONLY", "1"),
+        // tests/app has no `wisp::cron` or `wisp::work`: no jobs in its wasm.
+        ("WISP_JOBS", "0"),
         ("CARGO_PROFILE_RELEASE_STRIP", "symbols"),
     ];
     let build = [

@@ -44,6 +44,8 @@
 //! A request for `/_wisp/cron/<schedule>` is a host's cron trigger: it runs
 //! the app's `wisp::cron` tasks of that schedule and the queues' due jobs
 //! (see `jobs`), and answers 204 only with `Authorization: Bearer $CRON_SECRET`.
+//! `wisp build` of an app with no `wisp::cron` and no `wisp::work` in `src/`
+//! gives the host no trigger and leaves that route out (`WISP_JOBS=0`).
 //!
 //! Imports (module `wisp`): `random(ptr, len)`, `now() -> f64` (seconds since 1970), `log(ptr, len)`, `reply(id, head, head_len, head_id, body, body_len)` (the reply to
 //! request `id`: its head, `status` and `name: value` lines, and its number
@@ -584,11 +586,17 @@ fn request<A: App>(id: u32, bytes: Vec<u8>, lazy: bool) {
                             Ok(mut cx) => {
                                 cx.lazy = lazy.then(|| Lazy::new(id));
                                 // The host's cron trigger; out of the way of the routes.
-                                if cx.raw_path().starts_with(b"/_wisp/cron/") {
+                                #[cfg(not(no_jobs))]
+                                let reply = if cx.raw_path().starts_with(b"/_wisp/cron/") {
                                     crate::jobs::trigger(&cx).await
                                 } else {
                                     crate::http::answer::<A>(cx, &mut upgrade).await
-                                }
+                                };
+                                // Built without jobs (`WISP_JOBS=0`): a path as any other,
+                                // and no state of the task holds a trigger.
+                                #[cfg(no_jobs)]
+                                let reply = crate::http::answer::<A>(cx, &mut upgrade).await;
+                                reply
                             }
                             Err(status) => Reply::plain(status),
                         }

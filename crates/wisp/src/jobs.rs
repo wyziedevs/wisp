@@ -30,6 +30,9 @@
 //! $CRON_SECRET`; without that variable set it answers 404. Queued jobs live in
 //! the app's table, so set `WISP_STORE` there.
 
+// Built for an app with no jobs (`WISP_JOBS=0`), nothing runs them.
+#![cfg_attr(no_jobs, allow(dead_code))]
+
 use crate::json::{FromJson, Problems};
 use crate::{Json, Table, Value};
 use std::future::Future;

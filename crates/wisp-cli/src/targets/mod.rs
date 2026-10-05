@@ -139,6 +139,13 @@ pub fn build(root: &Path, host: &str, edge: bool, out: &Path) -> Result<(), Stri
         "lambda" if std::env::var_os(LINKER).is_none() => &[(LINKER, "rust-lld"), strip],
         _ => &[strip],
     };
+    // No `wisp::cron` or `wisp::work` in `src/`: the host gets no trigger, so
+    // the wasm leaves out the trigger's route and the jobs (see `wisp/build.rs`).
+    let no_jobs = [env, &[("WISP_JOBS", "0")]].concat();
+    let env = match target == WASM_TARGET && !jobs.any() {
+        true => &no_jobs[..],
+        false => env,
+    };
     let b = cargo::build_for(root, true, false, &["--target", target], env);
     let app = b
         .exe
@@ -153,7 +160,10 @@ pub fn build(root: &Path, host: &str, edge: bool, out: &Path) -> Result<(), Stri
                 "Building the edge function for {} routes",
                 edges.len()
             ));
-            let env = [("CARGO_PROFILE_RELEASE_OPT_LEVEL", "s"), strip, whole];
+            let mut env = vec![("CARGO_PROFILE_RELEASE_OPT_LEVEL", "s"), strip, whole];
+            if !jobs.any() {
+                env.push(("WISP_JOBS", "0"));
+            }
             let b = cargo::build_for(root, true, false, &["--target", target], &env);
             let exe = b
                 .exe

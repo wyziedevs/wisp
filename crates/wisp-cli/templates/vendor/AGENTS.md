@@ -531,7 +531,7 @@ no-wait fast path off every route.
   `set clear by try_add`;
   `wisp::queue(n).push(&j)` + `work(n, f)` + `cron("0 3 * * *", f)` (on
   Cloudflare/Vercel/Netlify the build writes the host's cron trigger from the
-  literal schedule; set `CRON_SECRET`, `WISP_STORE`; cron follows the wall
+  literal schedule in `src/`, and an app with none has no jobs in its wasm; set `CRON_SECRET`, `WISP_STORE`; cron follows the wall
   clock: a minute missed asleep runs once, a clock stepped back never reruns one),
   `wisp::cache(k, secs, f)`/`uncache(path)`;
   rules `url one_of pattern with`.

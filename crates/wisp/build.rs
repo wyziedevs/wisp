@@ -24,6 +24,14 @@ fn main() {
     if std::env::var_os("WISP_REQUEST_ONLY").is_some_and(|v| v == "1") {
         println!("cargo:rustc-cfg=request_only");
     }
+    // `WISP_JOBS=0` (`wisp build` sets it when the app's `src/` has no
+    // `wisp::cron` and no `wisp::work`, so the host is given no trigger): the
+    // wasm32 build leaves out the trigger's route and the jobs it runs.
+    println!("cargo:rustc-check-cfg=cfg(no_jobs)");
+    println!("cargo:rerun-if-env-changed=WISP_JOBS");
+    if std::env::var_os("WISP_JOBS").is_some_and(|v| v == "0") {
+        println!("cargo:rustc-cfg=no_jobs");
+    }
     // What `http.rs` serves by: `cfg(debug_assertions)`, the files as written.
     if std::env::var_os("CARGO_CFG_DEBUG_ASSERTIONS").is_some() {
         return;
