@@ -399,7 +399,7 @@ reuse = [\"x\"]
             )
             .is_empty()
         );
-        let d = std::env::temp_dir().join(format!("wisp-plugin-dup-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("wisp-plugin-use-dup-{}", std::process::id()));
         fs::create_dir_all(&d).unwrap();
         fs::write(
             d.join("Cargo.toml"),
