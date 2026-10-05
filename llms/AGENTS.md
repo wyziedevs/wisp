@@ -8,7 +8,7 @@ compiled to Rust, form actions, optional browser reactivity, one binary.
 tokens to write app code: AI writes most code), 3. durable (every fast path
 proven at startup with a fallback; nothing after startup can take the process
 down), 4. flexible. Developer happiness last. Wisp code:
-Carmack style, minimal deps, no `unsafe` (but the Linux io_uring and epoll
+Carmack style, minimal deps, no unsafe code (but the Linux io_uring and epoll
 drivers, `uring.rs` and `epoll.rs`, and the edge exports), no dead code,
 zero warnings. Apps get this file without this part (`wisp new`, `wisp
 update-docs`); `llms-full.txt` is made from it and the docs site pages (checkout `../wisp-docs`) by a test.

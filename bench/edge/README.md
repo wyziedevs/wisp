@@ -164,7 +164,7 @@ dlmalloc and dropping the rows 20%, `live::string` 13%. Kept: in wasm,
 profile): `serve` fastest of 40 x 2000 calls, 36.2 to 33.9 us; `/` and
 `/params` unchanged (1.0, 1.3 us). Native is unchanged (`cfg`). Tried, no gain:
 `+simd128`; reusing the reply body across requests on edge (36.4 to 36.7 us).
-Not possible: a bump or arena allocator, since `GlobalAlloc` needs `unsafe`.
+Not possible: a bump or arena allocator, since `GlobalAlloc` needs unsafe code.
 Cold start in Node: compile 0.9 ms, instantiate 0.05 ms, first request 5 ms
 (lazy compile of the big `poll`/`request` functions, about 3 ms); `wasm-opt` is
 not installed here, so not tried. workerd A/B was inside the noise (2x swings).
@@ -445,7 +445,7 @@ Measured and not kept (`/json-big`, cold start median of 21, a noisy machine):
   CPU us). About 1 ms of cold start, not the 6 ms gap.
 
 Left: `/json-big` is wasm compute (the bench app's `format!` and dlmalloc,
-above; a faster allocator needs a dependency with `unsafe`), cold start is the
+above; a faster allocator needs a dependency with unsafe code), cold start is the
 module load and the first request's lazy compile.
 
 ### Linux, quiet box: Hono, wasm-opt, and where cold start goes (2026-10-04)
@@ -516,7 +516,7 @@ the docs keep `format!`. What is left, per request:
 - the escape 7.4 us (12 ns a string).
 
 A per-request arena would remove most of the allocator's share, but a
-`GlobalAlloc` needs `unsafe`.
+`GlobalAlloc` needs unsafe code.
 
 ### Warm-up at load, and what did not pay (2026-10-04)
 

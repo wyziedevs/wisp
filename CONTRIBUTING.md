@@ -4,7 +4,7 @@ Wisp is MIT licensed and made by Wyzie LLC for the community. Issues and pull re
 
 ## Before you change code
 
-Read [CLAUDE.md](CLAUDE.md). The rules, in order: ultra fast (zero cost on the request hot path, proven by an instructions-per-request A/B), cheap in tokens for app authors, durable (proven, self-tested at startup, falls back, never panics at runtime), flexible. No `unsafe` outside the Linux I/O drivers and the edge exports, and few dependencies.
+Read [CLAUDE.md](CLAUDE.md). The rules, in order: ultra fast (zero cost on the request hot path, proven by an instructions-per-request A/B), cheap in tokens for app authors, durable (proven, self-tested at startup, falls back, never panics at runtime), flexible. No unsafe code outside the Linux I/O drivers and the edge exports, and few dependencies.
 
 ## Build and check
 

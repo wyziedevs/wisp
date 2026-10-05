@@ -475,28 +475,43 @@ const JSON: Lang = Lang {
     attrs: false,
 };
 
-const BASH: Lang = Lang {
+const TOML: Lang = Lang {
     line: &["#"],
     block: None,
     quotes: b"\"'",
-    keywords: &[
-        "if", "then", "else", "elif", "fi", "for", "in", "do", "done", "while", "case", "esac",
-        "function", "return", "export", "local", "echo", "cd", "sudo",
-    ],
+    keywords: &["true", "false"],
     types: false,
     attrs: false,
 };
 
+/// Header values: quoted strings only.
+const HTTP: Lang = Lang {
+    line: &[],
+    block: None,
+    quotes: b"\"'",
+    keywords: &[],
+    types: false,
+    attrs: false,
+};
+
+/// Shell words after which the next word is a command again.
+const PREFIXES: [&str; 8] = ["sudo", "if", "then", "else", "do", "while", "until", "time"];
+
 /// `code` with its keywords, strings, comments, numbers and types (or an
-/// HTML's tags and attributes) in `<span class="hl-k|s|c|n|t|a">`; `None`
-/// for a language it does not know.
+/// HTML's tags and attributes, a shell's commands and flags, a file tree's
+/// paths and notes) in `<span class="hl-k|s|c|n|t|a">`; `None` for a
+/// language it does not know.
 pub fn highlight(lang: &str, code: &str) -> Option<String> {
     let lang = match lang.to_ascii_lowercase().as_str() {
         "rust" | "rs" => &RUST,
         "js" | "javascript" | "ts" | "typescript" | "jsx" | "tsx" | "mjs" => &JS,
         "css" | "scss" => &CSS,
         "json" => &JSON,
-        "bash" | "sh" | "shell" | "zsh" | "console" => &BASH,
+        "bash" | "sh" | "shell" | "zsh" | "console" => return Some(shell(code)),
+        "toml" => return Some(lines(code, toml_line)),
+        "md" | "markdown" => return Some(lines(code, md_line)),
+        "http" => return Some(lines(code, header_line)),
+        "tree" => return Some(lines(code, tree_line)),
         "wisp" => return Some(wisp(code)),
         "html"
             if code.starts_with(
@@ -591,6 +606,149 @@ fn lex(lang: &Lang, code: &str) -> String {
         i += ch.len_utf8();
     }
     out
+}
+
+fn paint(out: &mut String, class: &str, s: &str) {
+    out.push_str(&format!("<span class=\"hl-{class}\">{}</span>", text(s)));
+}
+
+/// Shell: comments, strings, the name of each command (`hl-k`) and its
+/// `-flags` (`hl-a`). A lone `$` is a prompt; `A=1` before a command is a setting.
+fn shell(code: &str) -> String {
+    let b = code.as_bytes();
+    let mut out = String::with_capacity(code.len() * 2);
+    let (mut i, mut command) = (0, true);
+    while i < b.len() {
+        let rest = &code[i..];
+        let c = b[i];
+        if c == b'#' && (i == 0 || b[i - 1].is_ascii_whitespace()) {
+            let end = rest.find('\n').unwrap_or(rest.len());
+            paint(&mut out, "c", &rest[..end]);
+            i += end;
+            continue;
+        }
+        if c == b'"' || c == b'\'' {
+            let mut j = i + 1;
+            while j < b.len() && b[j] != c {
+                j += if b[j] == b'\\' && c == b'"' { 2 } else { 1 };
+            }
+            let end = (j + 1).min(b.len());
+            paint(&mut out, "s", &code[i..end]);
+            i = end;
+            command = false;
+            continue;
+        }
+        // A line that ends in `\` goes on with the same command.
+        if c == b'\\' && rest[1..].starts_with('\n') {
+            out.push_str("\\\n");
+            i += 2;
+            continue;
+        }
+        if c.is_ascii_whitespace() || b"|;&()".contains(&c) {
+            if !matches!(c, b' ' | b'\t' | b'\r') {
+                command = true;
+            }
+            out.push_str(&text(&rest[..1]));
+            i += 1;
+            continue;
+        }
+        let end = rest
+            .find(|ch: char| ch.is_whitespace() || "|;&()\"'".contains(ch))
+            .unwrap_or(rest.len())
+            .max(rest.chars().next().map_or(1, char::len_utf8));
+        let word = &rest[..end];
+        if command && word == "$" {
+            out.push('$');
+        } else if command && word.contains('=') {
+            paint(&mut out, "a", word);
+        } else if command {
+            paint(&mut out, "k", word);
+            command = PREFIXES.contains(&word);
+        } else if word.starts_with('-') {
+            paint(&mut out, "a", word);
+        } else if word.bytes().all(|b| b.is_ascii_digit()) {
+            paint(&mut out, "n", word);
+        } else {
+            out.push_str(&text(word));
+        }
+        i += end;
+    }
+    out
+}
+
+/// `code` a line at a time, each through `line`.
+fn lines(code: &str, line: fn(&mut String, &str)) -> String {
+    let mut out = String::with_capacity(code.len() * 2);
+    for (i, l) in code.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        line(&mut out, l);
+    }
+    out
+}
+
+/// The length of the name `l` opens with when `sep` follows it: a TOML key,
+/// a header or a front matter field.
+fn key(l: &str, sep: char) -> Option<usize> {
+    let k = l
+        .find(|c: char| !(c.is_ascii_alphanumeric() || "-_.".contains(c)))
+        .unwrap_or(l.len());
+    (k > 0 && l[k..].trim_start().starts_with(sep)).then_some(k)
+}
+
+/// TOML: `[table]` headers, keys, then values as strings, numbers and booleans.
+fn toml_line(out: &mut String, l: &str) {
+    let t = l.trim_start();
+    out.push_str(&l[..l.len() - t.len()]);
+    if t.starts_with('[') {
+        let end = t.find(" #").unwrap_or(t.len());
+        paint(out, "t", &t[..end]);
+        out.push_str(&lex(&TOML, &t[end..]));
+    } else if let Some(k) = key(t, '=') {
+        paint(out, "a", &t[..k]);
+        out.push_str(&lex(&TOML, &t[k..]));
+    } else {
+        out.push_str(&lex(&TOML, t));
+    }
+}
+
+/// Markdown: `---` fences, headings and front matter fields.
+fn md_line(out: &mut String, l: &str) {
+    if l == "---" {
+        paint(out, "c", l);
+    } else if l.starts_with('#') {
+        paint(out, "k", l);
+    } else if let Some(k) = key(l, ':') {
+        paint(out, "a", &l[..k]);
+        out.push_str(&text(&l[k..]));
+    } else {
+        out.push_str(&text(l));
+    }
+}
+
+/// HTTP headers: each name, then its value's quoted strings.
+fn header_line(out: &mut String, l: &str) {
+    let k = key(l, ':').unwrap_or(0);
+    if k > 0 {
+        paint(out, "a", &l[..k]);
+    }
+    out.push_str(&lex(&HTTP, &l[k..]));
+}
+
+/// A file tree: each path, then (after two spaces or more) what it is.
+fn tree_line(out: &mut String, l: &str) {
+    let t = l.trim_start();
+    out.push_str(&l[..l.len() - t.len()]);
+    let end = t.find("  ").unwrap_or(t.len());
+    if end > 0 {
+        paint(out, "a", &t[..end]);
+    }
+    let note = t[end..].trim_start();
+    out.push_str(&t[end..t.len() - note.len()]);
+    if !note.is_empty() {
+        paint(out, "c", note);
+    }
 }
 
 /// A `.wisp` file: the Rust between the `---` lines as Rust, the rest as
@@ -1009,6 +1167,37 @@ fn a() {}
             h,
             "<span class=\"hl-k\">echo</span> a#b <span class=\"hl-c\"># c</span>"
         );
+        let h = highlight(
+            "sh",
+            "$ A=1 cargo add x --features h2 # c\nwisp dev | grep 'ok'",
+        )
+        .unwrap();
+        assert_eq!(
+            h,
+            "$ <span class=\"hl-a\">A=1</span> <span class=\"hl-k\">cargo</span> add x \
+             <span class=\"hl-a\">--features</span> h2 <span class=\"hl-c\"># c</span>\n\
+             <span class=\"hl-k\">wisp</span> dev | <span class=\"hl-k\">grep</span> <span class=\"hl-s\">'ok'</span>"
+        );
+        let h = highlight("toml", "[deps]\nwisp = { version = \"1\" } # c").unwrap();
+        assert_eq!(
+            h,
+            "<span class=\"hl-t\">[deps]</span>\n<span class=\"hl-a\">wisp</span> = &#123; version = \
+             <span class=\"hl-s\">&quot;1&quot;</span> &#125; <span class=\"hl-c\"># c</span>"
+        );
+        let h = highlight("tree", "src/main.rs   the app\n  x/").unwrap();
+        assert_eq!(
+            h,
+            "<span class=\"hl-a\">src/main.rs</span>   <span class=\"hl-c\">the app</span>\n  <span class=\"hl-a\">x/</span>"
+        );
+        let h = highlight("markdown", "---\ntitle: Hi\n---\n# Hi").unwrap();
+        assert!(
+            h.starts_with("<span class=\"hl-c\">---</span>\n<span class=\"hl-a\">title</span>: Hi")
+        );
+        assert!(h.ends_with("<span class=\"hl-k\"># Hi</span>"));
+        let h = highlight("http", "a-b: x 'y'\n  z").unwrap();
+        assert!(h.starts_with("<span class=\"hl-a\">a-b</span>: x <span class=\"hl-s\">"));
+        // A character no rule takes still moves the lexer on.
+        assert!(highlight("sh", "a \u{a0}b").is_some());
         assert!(highlight("cobol", "x").is_none());
         for lang in ["js", "ts", "css", "json"] {
             assert!(highlight(lang, "/* x */ \"y\" 1 true").is_some());

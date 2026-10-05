@@ -493,9 +493,9 @@ request, three runs each):
 
 For a while Wisp had Windows workers of its own on the fifth row, the way
 Go, .NET and libuv drive Windows sockets, which took its plaintext to 4.6 µs
-and fortunes to 5.2. They needed `unsafe`, and Windows is where Wisp apps are
+and fortunes to 5.2. They needed unsafe code, and Windows is where Wisp apps are
 developed, not where they are served, so they were taken out: Wisp is on
-tokio everywhere, and has no `unsafe` code.
+tokio everywhere, and has no unsafe code.
 
 **Why thread per core.** With one multi-threaded tokio runtime, plaintext
 topped out at 418k req/s with 3.4 of 8 cores busy: every socket event goes
