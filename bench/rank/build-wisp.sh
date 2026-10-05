@@ -1,6 +1,6 @@
 #!/bin/sh
 # Builds the Wisp bench app for every host into out/wisp-{node,bun,deno,cf}.
-# Needs a `wisp` binary (cargo build --release -p wisp-cli) and its Rust
+# Needs a `wisp` binary (cargo build --release -p wisp-web) and its Rust
 # toolchain with the wasm target. WISP=<path to wisp> sh build-wisp.sh
 set -e
 here=$(cd "$(dirname "$0")" && pwd)

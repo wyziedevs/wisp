@@ -1,0 +1,25 @@
+# Apps made before the crates were renamed for crates.io say
+# `wisp = { git = "https://wisp.ar0.eu" }`: Cargo finds this package by that
+# name in the repository. It is `wisp-web-rt`, re-exported. Never published.
+[package]
+name = "wisp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+rt = { package = "wisp-web-rt", path = "../../wisp" }
+
+[features]
+tls = ["rt/tls"]
+img = ["rt/img"]
+og-png = ["rt/og-png"]
+tower = ["rt/tower"]
+h2 = ["rt/h2"]
+browser = ["rt/browser"]
+types = ["rt/types"]
+
+[lints]
+workspace = true

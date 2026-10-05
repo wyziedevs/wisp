@@ -1030,7 +1030,7 @@ fn warm_requests_allocate_nothing() {
 
 /// What a request costs Wisp itself, sockets aside: parse, decide and
 /// serialize on a warm connection, as zrk sends it.
-/// `cargo test -p wisp --release --lib http::tests::cost -- --ignored --nocapture`
+/// `cargo test -p wisp-web-rt --release --lib http::tests::cost -- --ignored --nocapture`
 #[test]
 #[ignore]
 fn cost() {

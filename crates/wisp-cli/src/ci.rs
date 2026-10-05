@@ -144,6 +144,7 @@ fn workflow(host: &str, target: &str, build: &str, secrets: &str, deploy: &str) 
     } else {
         format!("        with:\n          targets: {target}\n")
     };
+    let install = crate::dep::install().replacen("install", "install --locked", 1);
     format!(
         "# Written by wisp deploy init {host}. Secrets: {secrets}.
 name: Deploy
@@ -159,7 +160,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
 {targets}      - uses: Swatinem/rust-cache@v2
-      - run: cargo install --locked --git https://wisp.ar0.eu wisp-cli
+      - run: {install}
       - run: wisp build {build}
 {deploy}"
     )

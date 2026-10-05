@@ -1,0 +1,24 @@
+{
+    "version": "VERSION",
+    "description": "A fast, fun web framework for Rust: the wisp command. DRAFT, unpublished.",
+    "homepage": "https://wispweb.dev",
+    "license": "MIT",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/wyziedevs/wisp/releases/download/vVERSION/wisp-x86_64-pc-windows-msvc.zip",
+            "hash": "SHA256_X86_64_WINDOWS",
+            "extract_dir": "wisp-x86_64-pc-windows-msvc"
+        }
+    },
+    "bin": "wisp.exe",
+    "checkver": "github",
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/wyziedevs/wisp/releases/download/v$version/wisp-x86_64-pc-windows-msvc.zip",
+                "hash": { "url": "$url.sha256" },
+                "extract_dir": "wisp-x86_64-pc-windows-msvc"
+            }
+        }
+    }
+}

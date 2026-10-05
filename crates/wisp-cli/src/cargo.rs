@@ -25,7 +25,7 @@ pub struct Build {
 /// The version of the `wisp` crate the app is locked to, from its Cargo.lock.
 fn locked_wisp(lock: &str) -> Option<&str> {
     let mut lines = lock.lines();
-    lines.find(|l| l.trim_end() == "name = \"wisp\"")?;
+    lines.find(|l| matches!(l.trim_end(), "name = \"wisp-web-rt\"" | "name = \"wisp\""))?;
     lines
         .next()?
         .trim_end()
@@ -146,7 +146,7 @@ fn outdated(cli: (&str, &str), app: &App) -> Option<String> {
             let dir = dir.strip_prefix(r"\\?\").unwrap_or(&dir);
             format!("cargo install --path {dir}/crates/wisp-cli --force")
         }
-        None => "cargo install --git https://wisp.ar0.eu wisp-cli --force".to_string(),
+        None => format!("{} --force", crate::dep::install()),
     };
     Some(format!(
         "The wisp CLI is older than this app's wisp crate.\nCLI {}, app {}.\nUpdate it: {fix}\nWISP_NO_UPDATE_CHECK=1 silences this.",
@@ -673,7 +673,7 @@ mod tests {
         assert!(told.contains("CLI 0.1.0, build 10-aaaaaaa"), "{told}");
         assert!(told.contains("app 0.2.0"), "{told}");
         assert!(
-            told.contains("cargo install --git https://wisp.ar0.eu wisp-cli --force"),
+            told.contains(&format!("{} --force", crate::dep::install())),
             "{told}"
         );
         assert!(told.contains("WISP_NO_UPDATE_CHECK=1"), "{told}");

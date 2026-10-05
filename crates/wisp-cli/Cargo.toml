@@ -1,5 +1,5 @@
 [package]
-name = "wisp-cli"
+name = "wisp-web"
 description = "The wisp command: new, dev, build."
 version.workspace = true
 edition.workspace = true
@@ -7,6 +7,12 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords = ["web", "framework", "cli", "dev-server", "templates"]
+categories = ["web-programming", "command-line-utilities", "development-tools"]
+# Tests stay in the repository: the published crate is what builds.
+exclude = ["tests/**"]
 
 [[bin]]
 name = "wisp"
@@ -27,3 +33,13 @@ og-png = ["dep:resvg", "wisp-shared/og-png"]
 
 [lints]
 workspace = true
+
+# `cargo binstall wisp-web`: the archives the release workflow
+# (.github/workflows/release.yml) uploads for tag `v{version}`.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/wisp-{ target }{ archive-suffix }"
+bin-dir = "wisp-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"

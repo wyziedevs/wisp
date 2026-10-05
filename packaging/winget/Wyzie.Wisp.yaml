@@ -1,0 +1,22 @@
+# DRAFT, unpublished: a singleton winget manifest. Fill VERSION and the
+# hash, then submit to microsoft/winget-pkgs (or generate with wingetcreate).
+PackageIdentifier: Wyzie.Wisp
+PackageVersion: VERSION
+PackageLocale: en-US
+Publisher: Wyzie LLC
+PackageName: Wisp
+License: MIT
+ShortDescription: A fast, fun web framework for Rust (the wisp command).
+PackageUrl: https://wispweb.dev
+Moniker: wisp
+Installers:
+  - Architecture: x64
+    InstallerType: zip
+    NestedInstallerType: portable
+    NestedInstallerFiles:
+      - RelativeFilePath: wisp-x86_64-pc-windows-msvc\wisp.exe
+        PortableCommandAlias: wisp
+    InstallerUrl: https://github.com/wyziedevs/wisp/releases/download/vVERSION/wisp-x86_64-pc-windows-msvc.zip
+    InstallerSha256: SHA256_X86_64_WINDOWS
+ManifestType: singleton
+ManifestVersion: 1.6.0

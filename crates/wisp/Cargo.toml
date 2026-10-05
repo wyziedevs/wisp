@@ -1,5 +1,5 @@
 [package]
-name = "wisp"
+name = "wisp-web-rt"
 description = "A fast, fun web framework for Rust: file-based routes, .wisp templates, form actions, one binary."
 version.workspace = true
 edition.workspace = true
@@ -7,6 +7,17 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords = ["web", "framework", "http", "server", "templates"]
+categories = ["web-programming::http-server", "web-programming"]
+# Tests stay in the repository: the published crate is what builds.
+exclude = ["tests/**"]
+
+# Published as `wisp-web-rt`; code still says `wisp::`.
+[lib]
+name = "wisp"
+path = "src/lib.rs"
 
 [dependencies]
 httparse.workspace = true

@@ -315,21 +315,23 @@ fn auth_from_headers() {
         let headers: Vec<(&str, &str)> = auth.map(|a| ("authorization", a)).into_iter().collect();
         get("/bearer", &headers)
     };
-    let ok = bearer(Some("Bearer wisp"));
-    assert_eq!((ok.status, ok.text()), (200, "wisp"));
-    assert_eq!(bearer(Some("bearer wisp")).status, 200);
+    // The key is `CARGO_PKG_NAME`, which cargo sets for every test.
+    let k = env!("CARGO_PKG_NAME");
+    let ok = bearer(Some(&format!("Bearer {k}")));
+    assert_eq!((ok.status, ok.text()), (200, k));
+    assert_eq!(bearer(Some(&format!("bearer {k}"))).status, 200);
     let denied = bearer(None);
     assert_eq!(denied.status, 401);
     assert_eq!(header(&denied, "www-authenticate"), "Bearer");
     for wrong in [
-        "Bearer wisp2",
-        "Bearer wis",
-        "Bearer ",
-        "Bearer",
-        "Basic wisp",
-        "wisp",
+        format!("Bearer {k}2"),
+        format!("Bearer {}", &k[..k.len() - 1]),
+        "Bearer ".into(),
+        "Bearer".into(),
+        format!("Basic {k}"),
+        k.into(),
     ] {
-        assert_eq!(bearer(Some(wrong)).status, 401, "{wrong}");
+        assert_eq!(bearer(Some(&wrong)).status, 401, "{wrong}");
     }
     // A key that is not set matches nothing, not even an empty token.
     let unset = get("/unset-key", &[("authorization", "Bearer ")]);
@@ -340,7 +342,7 @@ fn auth_from_headers() {
     );
 
     let mut app = client();
-    app.bearer("wisp");
+    app.bearer(k);
     assert_eq!(app.get("/bearer").status, 200);
     // A request's own header wins over the client's.
     let own = app.send(request(
@@ -1204,10 +1206,16 @@ fn a_form_post_must_come_from_this_site() {
 #[test]
 fn settings_and_values_of_the_process() {
     // Cargo sets these for every test.
-    assert_eq!(wisp::env("CARGO_PKG_NAME").as_deref(), Some("wisp"));
+    assert_eq!(
+        wisp::env("CARGO_PKG_NAME").as_deref(),
+        Some(env!("CARGO_PKG_NAME"))
+    );
     assert_eq!(wisp::env("WISP_SURELY_NOT_SET"), None);
     assert_eq!(wisp::env_or("WISP_SURELY_NOT_SET", 7u32), 7);
-    assert_eq!(wisp::env_or("CARGO_PKG_NAME", String::new()), "wisp");
+    assert_eq!(
+        wisp::env_or("CARGO_PKG_NAME", String::new()),
+        env!("CARGO_PKG_NAME")
+    );
     assert_eq!(wisp::env_or("CARGO_PKG_VERSION_MAJOR", 9u32), 0);
     // Set but not a number: a typo is never quietly replaced by the default.
     let typo = std::panic::catch_unwind(|| wisp::env_or("CARGO_PKG_NAME", 1u32));

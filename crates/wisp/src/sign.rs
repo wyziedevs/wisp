@@ -371,7 +371,7 @@ mod tests {
             "757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17"
         );
         // The secret: `CARGO_PKG_NAME`, which cargo sets for tests.
-        let (var, secret, body) = ("CARGO_PKG_NAME", "wisp", "Hello, World!");
+        let (var, secret, body) = ("CARGO_PKG_NAME", env!("CARGO_PKG_NAME"), "Hello, World!");
         let cx = |h: &str, v: &str| {
             crate::Cx::for_test(&format!("POST /h HTTP/1.1\r\n{h}: {v}\r\n\r\n{body}"), &[])
         };

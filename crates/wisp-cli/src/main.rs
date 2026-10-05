@@ -7,6 +7,7 @@ mod ci;
 #[cfg(test)]
 mod coverage;
 mod css;
+mod dep;
 mod deploy;
 mod dev;
 mod events;

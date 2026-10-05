@@ -1,5 +1,5 @@
 [package]
-name = "wisp-shared"
+name = "wisp-web-shared"
 description = "What Wisp's runtime, compiler and browser code agree on: HTML context rules, the live-page wire protocol, the browser runtime."
 version.workspace = true
 edition.workspace = true
@@ -7,6 +7,17 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords = ["web", "framework", "html", "escaping"]
+categories = ["web-programming"]
+# Tests stay in the repository: the published crate is what builds.
+exclude = ["tests/**"]
+
+# Published as `wisp-web-shared`; code still says `wisp_shared::`.
+[lib]
+name = "wisp_shared"
+path = "src/lib.rs"
 
 [lints]
 workspace = true

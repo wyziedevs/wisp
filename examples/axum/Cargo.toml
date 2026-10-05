@@ -9,9 +9,9 @@ publish = false
 [workspace]
 
 [dependencies]
-wisp = { path = "../../crates/wisp", features = ["tower"] }
+wisp = { package = "wisp-web-rt", path = "../../crates/wisp", features = ["tower"] }
 axum = "0.8"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
 
 [build-dependencies]
-wisp-build = { path = "../../crates/wisp-build" }
+wisp-build = { package = "wisp-web-build", path = "../../crates/wisp-build" }

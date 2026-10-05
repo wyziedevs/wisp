@@ -3,6 +3,7 @@
 //! Every question has a flag, so scripts and CI can answer up front; `--yes`
 //! (or no terminal to ask on) takes the defaults for the rest.
 
+use crate::dep;
 use crate::{ask, css, term};
 use std::fs;
 use std::io::{self, Write};
@@ -37,8 +38,6 @@ struct Answers {
     install: Option<bool>,
     yes: bool,
 }
-
-const REPO: &str = "https://wisp.ar0.eu";
 
 pub fn run(args: &[String]) -> Result<(), String> {
     let mut a = parse(args)?;
@@ -256,7 +255,8 @@ fn crate_name(root: &Path) -> Result<String, String> {
             "Windows does not allow a file with that name."
         }
         n if KEYWORDS.contains(&n) => "It is a Rust keyword.",
-        "wisp" | "wisp-build" | "wisp-macros" | "wisp-shared" | "wisp-cli" => {
+        "wisp" | "wisp-build" | "wisp-macros" | "wisp-shared" | "wisp-cli" | "wisp-web"
+        | "wisp-web-rt" | "wisp-web-build" | "wisp-web-macros" | "wisp-web-shared" => {
             "Wisp's own crates are called that."
         }
         _ => return Ok(name),
@@ -434,13 +434,13 @@ fn wisp_source() -> (String, String) {
         Some(share) => format!("//{share}"),
         None => repo.strip_prefix("//?/").unwrap_or(&repo).to_string(),
     };
-    let from_git = repo.contains("/git/checkouts/");
-    let dep = |name: &str| {
-        if from_git {
-            format!("{name} = {{ git = \"{REPO}\" }}")
-        } else {
-            format!("{name} = {{ path = \"{repo}/crates/{name}\" }}")
-        }
+    // From a clone only: a git checkout is Cargo's to delete, and a crates.io
+    // download has no `crates/` beside it.
+    let clone = !repo.contains("/git/checkouts/")
+        && Path::new(&repo).join("crates/wisp/Cargo.toml").is_file();
+    let dep = |name: &str| match clone {
+        true => dep::path_line(name, &repo),
+        false => dep::line(name),
     };
     (dep("wisp"), dep("wisp-build"))
 }
@@ -495,6 +495,21 @@ lto = "fat"
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cargo_toml_follows_the_switch() {
+        let toml = CARGO_TOML
+            .replace("{wisp}", &dep::line("wisp"))
+            .replace("{wisp-build}", &dep::line("wisp-build"));
+        let lines: Vec<&str> = toml.lines().collect();
+        assert!(lines.contains(&dep::line("wisp").as_str()));
+        assert!(lines.contains(&dep::line("wisp-build").as_str()));
+        // The key stays `wisp`, so the features line and `use wisp::` hold.
+        assert!(toml.contains("browser = [\"wisp/browser\"]"));
+        if let dep::Dep::Git(url) = dep::WISP_DEP {
+            assert!(toml.contains(&format!("git = \"{url}\"")));
+        }
+    }
 
     fn args(s: &str) -> Vec<String> {
         s.split_whitespace().map(String::from).collect()

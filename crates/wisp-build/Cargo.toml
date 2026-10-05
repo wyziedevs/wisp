@@ -1,5 +1,5 @@
 [package]
-name = "wisp-build"
+name = "wisp-web-build"
 description = "Wisp compiler: route scanning, .wisp templates, code generation. Called from build.rs."
 version.workspace = true
 edition.workspace = true
@@ -7,6 +7,12 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords = ["web", "framework", "templates", "codegen", "build"]
+categories = ["web-programming", "template-engine", "development-tools::build-utils"]
+# Tests stay in the repository: the published crate is what builds.
+exclude = ["tests/**"]
 
 # The runtime's context rules, wire protocol and browser runtime: what a
 # build folds and writes is what the runtime does.
@@ -19,6 +25,11 @@ pulldown-cmark = { version = "0.13", default-features = false, features = ["html
 # Off by default.
 ravif = { version = "0.13", default-features = false, optional = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"], optional = true }
+
+# Published as `wisp-web-build`; code still says `wisp_build::`.
+[lib]
+name = "wisp_build"
+path = "src/lib.rs"
 
 [features]
 avif = ["dep:ravif", "dep:image"]
