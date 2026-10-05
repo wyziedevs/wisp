@@ -534,17 +534,17 @@ that each feature works.
 
 | Stack | list | form | api | layout | search | data | setup | total | chars / 4 | files |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| **Wisp** | 58 | 89 | 31 | 60 | 111 | 115 | 0 | **464** | 283 | 6 |
-| SvelteKit | 128 | 470 | 57 | 83 | 192 | 72 | 0 | 1002 | 644 | 9 |
-| Next.js | 107 | 439 | 44 | 108 | 241 | 71 | 0 | 1010 | 725 | 8 |
-| Nuxt (Vue) | 96 | 472 | 22 | 96 | 158 | 71 | 0 | 915 | 623 | 8 |
-| React (Vite + Express) | 108 | 560 | 32 | 268 | 191 | 161 | 102 | 1422 | 1023 | 8 |
-| Express (Node.js) | 128 | 465 | 34 | 116 | 291 | 69 | 95 | 1198 | 724 | 7 |
-| Axum + askama | 145 | 553 | 29 | 104 | 217 | 123 | 285 | 1456 | 1020 | 7 |
+| **Wisp** | 58 | 79 | 31 | 60 | 96 | 108 | 0 | **432** | 264 | 6 |
+| SvelteKit | 128 | 425 | 57 | 83 | 192 | 72 | 0 | 957 | 620 | 9 |
+| Next.js | 107 | 400 | 44 | 108 | 241 | 71 | 0 | 971 | 706 | 8 |
+| Nuxt (Vue) | 96 | 429 | 22 | 96 | 158 | 71 | 0 | 872 | 596 | 8 |
+| React (Vite + Express) | 108 | 520 | 32 | 268 | 191 | 161 | 102 | 1382 | 999 | 8 |
+| Express (Node.js) | 128 | 423 | 34 | 116 | 291 | 69 | 95 | 1156 | 699 | 7 |
+| Axum + askama | 145 | 553 | 29 | 104 | 217 | 123 | 285 | 1456 | 1021 | 7 |
 | Actix + tera | 164 | 565 | 46 | 104 | 237 | 123 | 292 | 1531 | 1061 | 7 |
 
 Nuxt takes 2.0x Wisp's tokens, SvelteKit and Next.js 2.2x, Express (EJS)
-2.6x, React (Vite + an Express API) and Axum 3.1x, Actix 3.3x. The estimate and what changed to get here:
+2.7x, React (Vite + an Express API) 3.2x, Axum 3.4x, Actix 3.5x. The estimate and what changed to get here:
 [the tokens page](https://wispweb.dev/docs/tokens).
 
 ## Caveats
