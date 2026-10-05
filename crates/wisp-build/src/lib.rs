@@ -578,7 +578,18 @@ fn write_if_changed(path: &Path, contents: &str) {
     if fs::read(path).is_ok_and(|old| old == contents.as_bytes()) {
         return;
     }
-    fs::write(path, contents).unwrap_or_else(|e| panic!("writing {}: {e}", path.display()));
+    // A temp file renamed over the target: a killed build never leaves a
+    // half-written file for rustc to choke on.
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, contents)
+        .and_then(|()| fs::rename(&tmp, path))
+        .unwrap_or_else(|e| {
+            let _ = fs::remove_file(&tmp);
+            panic!(
+                "wisp: cannot write {}: {e}; check that the target directory is writable                  (or run `cargo clean`) and build again",
+                path.display()
+            )
+        });
 }
 
 #[cfg(test)]
