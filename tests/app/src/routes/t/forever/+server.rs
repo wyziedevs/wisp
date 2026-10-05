@@ -1,4 +1,3 @@
-use std::time::Duration;
 
 /// Events with no end of their own, for the tests of stopping the server and of
 /// clients that leave: only the server stopping, or the client going, ends it.

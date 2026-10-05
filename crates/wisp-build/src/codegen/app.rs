@@ -41,6 +41,10 @@ impl Gen {
             self.users = rust_scan::account_table(&src);
         }
         self.db = p.mods.iter().any(|m| m.name == "db");
+        let named: Vec<(String, PathBuf)> = (p.mods.iter())
+            .map(|m| (m.name.clone(), m.file.clone()))
+            .collect();
+        self.auto = crate::auto::Auto::load(p.root, &named)?;
         // Modules of the app's own (`src/notes.rs`), reachable by name from
         // every route file and as `crate::notes` (see `wisp::app!`).
         self.line(0, "#[doc(hidden)]");
@@ -48,10 +52,13 @@ impl Gen {
         self.line(1, "#[allow(unused_imports)]");
         self.line(1, "pub use super::routes;");
         for m in &p.mods {
+            let start = self.out.len();
             self.user_mod(m, &p.rel(&m.file), "super::*")?;
             if !m.calls().is_empty() {
                 self.call_mod(m, &[]);
             }
+            let srcs = self.auto_srcs(p, m, &[])?;
+            self.auto_uses(start, &srcs, Some(&m.name), "super::")?;
             self.line(0, "}");
         }
         self.line(0, "}");
@@ -72,13 +79,18 @@ impl Gen {
             .map(|(s, h)| format!("{}::{}", s.module, h.shim))
             .collect();
         for m in p.hooks.iter().chain(&p.user_mods) {
+            let start = self.out.len();
             self.user_mod(m, &p.rel(&m.file), "super::__mods::*")?;
             self.call_mod(m, &twins);
+            let mut tpls = Vec::new();
             for (t, c) in p.templates.iter().zip(&web.clients) {
                 if t.user.as_ref().is_some_and(|(u, _)| *u == m.name) {
                     self.template(t, &p.comps, c.as_ref())?;
+                    tpls.push(t);
                 }
             }
+            let srcs = self.auto_srcs(p, m, &tpls)?;
+            self.auto_uses(start, &srcs, None, "super::__mods::")?;
             self.line(0, "}");
             self.line(0, "");
         }
@@ -116,7 +128,14 @@ impl Gen {
         }
         for (t, c) in p.templates.iter().zip(&web.clients) {
             if t.user.is_none() {
+                let start = self.out.len();
                 self.template(t, &p.comps, c.as_ref())?;
+                // Its `use`s go before its module's `}`.
+                let close = start + self.out[start..].rfind('}').unwrap_or(0);
+                let tail = self.out.split_off(close);
+                let src = tpl_src(p, t)?;
+                self.auto_uses(start, &[src], None, "super::__mods::")?;
+                self.out.push_str(&tail);
             }
         }
         Ok(())

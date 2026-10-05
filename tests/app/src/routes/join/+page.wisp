@@ -1,5 +1,4 @@
 ---
-use people::{PEOPLE, Person};
 
 #[action]
 fn join(#[validate(len = 1..=40)] name: String, #[validate(min_len = 8)] password: String) {

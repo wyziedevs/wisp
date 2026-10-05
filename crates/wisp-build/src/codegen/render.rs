@@ -2,6 +2,12 @@
 
 use super::*;
 
+/// The code of a template's file that names Rust (see `auto::wisp_code`).
+pub(super) fn tpl_src(p: &Project, t: &Tpl) -> Result<(String, String), String> {
+    let src = crate::read_source(&p.root.join(&t.rel)).map_err(|e| format!("{}: {e}", t.rel))?;
+    Ok((crate::auto::wisp_code(&src), t.rel.clone()))
+}
+
 pub(super) struct Gen {
     pub(super) out: String,
     pub(super) release: bool,
@@ -13,6 +19,10 @@ pub(super) struct Gen {
     pub(super) users: Option<String>,
     /// There is a `src/db.rs`, whose `pub` items every route file sees.
     pub(super) db: bool,
+    /// The names files may use with no `use` (see `crate::auto`).
+    pub(super) auto: crate::auto::Auto,
+    /// What each file got auto-imported, for `wisp check --explain-imports`.
+    pub(super) imports: Vec<(String, Vec<(String, String)>)>,
 }
 
 impl Gen {
@@ -133,6 +143,49 @@ impl Gen {
             self.line(1, "#[allow(unused_imports)]");
             self.line(1, "use super::__mods::db::*;");
         }
+    }
+
+    /// The auto-imports of the module written since `start` (from its
+    /// `pub mod` line, its `}` not yet), for the code of `srcs` (text,
+    /// file): pushed at its end. `module`: the app module it is; `base`:
+    /// how it reaches `__mods`.
+    pub(super) fn auto_uses(
+        &mut self,
+        start: usize,
+        srcs: &[(String, String)],
+        module: Option<&str>,
+        base: &str,
+    ) -> Result<(), String> {
+        let used: Vec<crate::auto::Src> = (srcs.iter())
+            .map(|(text, rel)| crate::auto::Src { text, rel })
+            .collect();
+        let found = self.auto.uses(&used, &self.out[start..], module, base)?;
+        if found.is_empty() {
+            return Ok(());
+        }
+        self.out.push_str(&crate::auto::lines(&found));
+        let rel = srcs.first().map_or_else(String::new, |s| s.1.clone());
+        self.imports.push((rel, found));
+        Ok(())
+    }
+
+    /// The code of the app file `m` names Rust in, and of its templates.
+    pub(super) fn auto_srcs(
+        &self,
+        p: &Project,
+        m: &UserMod,
+        tpls: &[&Tpl],
+    ) -> Result<Vec<(String, String)>, String> {
+        let rel = p.rel(&m.file);
+        let text = match &m.inline {
+            Some(s) => s.clone(),
+            None => crate::read_source(&m.file).map_err(|e| format!("{rel}: {e}"))?,
+        };
+        let mut out = vec![(text, rel)];
+        for t in tpls {
+            out.push(tpl_src(p, t)?);
+        }
+        Ok(out)
     }
 
     /// `code` with its `cx.user()`s given the users table, if it has any.

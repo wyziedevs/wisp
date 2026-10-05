@@ -1,4 +1,3 @@
-use std::time::Duration;
 
 /// Three events, a moment apart, then the stream ends.
 fn get() -> Response {

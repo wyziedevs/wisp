@@ -3,6 +3,7 @@
 //! `$OUT_DIR/wisp.rs` for `wisp::app!()` to include.
 
 mod a11y;
+pub mod auto;
 mod codegen;
 mod config;
 pub mod csp;

@@ -1422,6 +1422,8 @@ fn generate_parts<'a>(
         types: (!input.release).then(Vec::new),
         users: None,
         db: false,
+        auto: Default::default(),
+        imports: Vec::new(),
     };
     g.modules(&p, &web)?;
     g.servers(&p);

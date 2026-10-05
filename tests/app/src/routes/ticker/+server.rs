@@ -1,4 +1,3 @@
-use std::time::Duration;
 
 /// An event every 20 ms for ten seconds: a stream that stays open.
 fn get() -> Response {
