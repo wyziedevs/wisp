@@ -43,7 +43,7 @@ since browsers do not pipeline, and applies to every path that runs (use
 
 `tfb/` is the honest TechEmpower-standard run: Wisp's `/plaintext` and `/json` against the
 TFB reference sources, with TFB's own wrk scripts and settings, on a pinned shared VM. See
-`tfb/RESULTS.md` (including where Wisp is not first) and `tfb/run.sh`.
+`tfb/RESULTS.md` and `tfb/run.sh`.
 
 Every server answers the same four paths. `/fortunes` is TechEmpower's
 fortunes test without the database: copy 12 rows, add one, sort by message,
@@ -224,6 +224,14 @@ fasthttp 38th, Fiber 44th, ASP.NET Core (minimal API) 66th, Bun 68th, Gin
 141st, net/http 143rd, Fastify 189th, Express 238th, Next.js 362nd.
 xitca-web, ntex, SvelteKit and Wisp have no entry.
 
+**Wisp's place on this board is pending a valid run.** The last runs of this
+suite at 64, 256 and 512 connections were invalid: the VPS provider's CPU cap
+left about 75% steal, so they are not published and no rank is claimed. What is
+valid on any host load is the instruction count per request (callgrind, the
+server's own code, no kernel): `GET /` 1572, `GET /user/0` 2310, `POST /user`
+1773 at d72eee5; 1585, 2323 and 1789 after the chunked-encoding fix. Rank tables
+come back with a valid run, and will be generated from its data.
+
 The suite sends the same requests on the same routes at the same levels,
 for the same time after the same warmup, and ranks by the same figure (the
 mean of the routes at 64; 256 and 512 get rank lines too), with zrk and
@@ -374,8 +382,8 @@ runtime was not on its path); the script that runs this has been fixed since.
 
 | Server      | Path       |  req/s | p50      | p99       | CPU µs/req | Kernel µs | Peak MB |
 |-------------|------------|-------:|----------|-----------|-----------:|----------:|--------:|
-| Wisp        | /plaintext | 93,476 | 0.62 ms  | 1.50 ms   |       19.8 |      17.8 |       3 |
-| Wisp        | /fortunes  | 97,502 | 0.60 ms  | 1.42 ms   |       19.8 |      16.8 |       3 |
+| **Wisp** | **/plaintext** | **93,476** | **0.62 ms** | **1.50 ms** | **19.8** | **17.8** | **3** |
+| **Wisp** | **/fortunes** | **97,502** | **0.60 ms** | **1.42 ms** | **19.8** | **16.8** | **3** |
 | Actix Web   | /plaintext | 94,441 | 0.62 ms  | 1.38 ms   |       20.6 |      17.0 |       5 |
 | Actix Web   | /fortunes  | 86,169 | 0.70 ms  | 1.39 ms   |       23.0 |      17.6 |       5 |
 | Axum        | /plaintext | 85,776 | 0.71 ms  | 1.60 ms   |       22.9 |      17.5 |       6 |
@@ -391,10 +399,10 @@ runtime was not on its path); the script that runs this has been fixed since.
 | Next.js     | /plaintext |  2,102 | 24.32 ms | 114.69 ms |      971.1 |      94.0 |     665 |
 | Next.js     | /fortunes  |    393 | 175.10 ms | 425.98 ms |    5847.7 |     279.1 |     732 |
 
-On a virtual machine the kernel's TCP stack is most of every request (17 of
-Wisp's 20 µs), so the fast servers bunch together on plaintext. Fortunes
-separates them: Wisp renders the page at the cost of plaintext, 13% more
-requests than Actix, 27% more than Axum and 4.4× Fiber, with 3 MB of memory.
+Kernel µs is the part of the CPU time per request spent in the kernel (the
+TCP stack). Wisp rows are bold; rows are grouped by server in a fixed order,
+not ranked. Single configuration, two rounds averaged; hypervisor steal was
+not recorded for this run.
 
 **Why Linux has no I/O code of its own.** Three plaintext servers were
 measured the same way, to see what tokio leaves on the table (µs of CPU per
@@ -422,8 +430,8 @@ the CPU per request spent in the OS, mostly its TCP stack.
 
 | Server       | Path             |   req/s | p50     | p99      | p99.9     | CPU µs/req | Kernel µs |
 |--------------|------------------|--------:|---------|----------|-----------|-----------:|----------:|
-| Wisp         | /plaintext       | 727,123 | 0.06 ms | 0.42 ms  | 4.22 ms   |        7.8 |       5.7 |
-| Wisp         | /fortunes        | 691,036 | 0.07 ms | 0.40 ms  | 5.38 ms   |        8.3 |       5.7 |
+| **Wisp** | **/plaintext** | **727,123** | **0.06 ms** | **0.42 ms** | **4.22 ms** | **7.8** | **5.7** |
+| **Wisp** | **/fortunes** | **691,036** | **0.07 ms** | **0.40 ms** | **5.38 ms** | **8.3** | **5.7** |
 | ASP.NET Core | /plaintext       | 659,405 | 0.09 ms | 0.33 ms  | 0.62 ms   |       10.3 |       3.4 |
 | ASP.NET Core | /fortunes        | 315,385 | 0.19 ms | 0.46 ms  | 0.88 ms   |       24.1 |       5.8 |
 | ASP.NET Core | /fortunes-blazor | 168,849 | 0.35 ms | 0.67 ms  | 2.69 ms   |       45.6 |       7.3 |
@@ -446,13 +454,9 @@ Wisp's rows come from a second run the same day, after its Windows I/O code
 was taken out (below); Actix and Fiber, measured again in that run, came
 within 5% of their rows here.
 
-On fortunes, the test that renders a page, Wisp has the lowest CPU per
-request: it serves 1.06× Actix, 2.2× Razor Pages and 4.2× Fiber, whose
-`html/template` walks the data by reflection. Its templates compile to Rust,
-so rendering the page adds about half a microsecond to plaintext's cost. On
-plaintext Fiber uses the least CPU, 6.7 to 7.1 µs to Wisp's 7.8, because
-tokio waits for sockets on Windows the slow way (below). Wisp's peak memory
-was 6 MB.
+Wisp's templates compile to Rust, so rendering the page adds about half a
+microsecond to plaintext's CPU per request (7.8 to 8.3 µs in the table). Wisp's
+peak memory was 6 MB. Rows are grouped by server, not ranked; Wisp rows are bold.
 
 Run-to-run noise is up to 10%: repeat a run (`--rounds 3`) before trusting
 a small gap.

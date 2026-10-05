@@ -5,6 +5,7 @@
   "version": "0.1.0",
   "publisher": "wisp",
   "license": "MIT",
+  "author": { "name": "Wyzie LLC", "url": "https://wyzie.io" },
   "repository": "https://github.com/wyziedevs/wisp",
   "engines": { "vscode": "^1.82.0" },
   "icon": "icons/icon.png",

@@ -56,3 +56,7 @@ To add Wisp to Linguist (see its CONTRIBUTING.md; nothing is submitted yet):
    `language_id` from `script/update-ids`.
 4. Add samples under `samples/Wisp Template/` (a page, a layout, a
    component) and run `script/bootstrap` and `bundle exec rake test`.
+
+## License
+
+MIT, Wyzie LLC. See [LICENSE](../../LICENSE).

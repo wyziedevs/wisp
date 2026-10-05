@@ -19,3 +19,7 @@ npm install
 npx @vscode/vsce package --skip-license
 code --install-extension wisp-0.1.0.vsix
 ```
+
+## License
+
+MIT, Wyzie LLC. See [LICENSE](../../LICENSE).

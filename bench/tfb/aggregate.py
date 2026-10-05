@@ -85,14 +85,21 @@ def main():
             return "n/a"
         return f"{x:.2f}" if x < 100 else f"{x:.0f}"
 
+    def name(c):
+        return f"**{LABEL[c]}**" if c.startswith("wisp") else LABEL[c]
+
+    def bold(c, text):
+        return f"**{text}**" if c.startswith("wisp") else text
+
+    # Every contender, every workload, every level, every metric. Sort key: median req/s, descending.
     lines = []
     for w, title in (("plaintext", "Plaintext (pipeline depth 16)"), ("json", "JSON serialization")):
         for lvl in sorted(summary.get(w, {})):
             rows = summary[w][lvl]
             order = sorted(rows, key=lambda c: -rows[c]["rps_median"])
             lines.append(f"\n#### {title}, {lvl} connections\n")
-            lines.append("| Rank | Contender | req/s median | min | max | latency avg (ms) | latency p99 (ms) | errors |")
-            lines.append("|---:|---|---:|---:|---:|---:|---:|---|")
+            lines.append("| # | Contender | req/s median | min | max | latency avg (ms) | latency p99 (ms) | errors | steal % max |")
+            lines.append("|---:|---|---:|---:|---:|---:|---:|---|---:|")
             for i, c in enumerate(order, 1):
                 r = rows[c]
                 err = []
@@ -100,31 +107,26 @@ def main():
                     err.append(f"{r['non2xx']} non-2xx")
                 if r["socket_errors"]:
                     err.append(f"{r['socket_errors']} socket")
-                lines.append(
-                    f"| {i} | {LABEL[c]} | {f(r['rps_median'])} | {f(r['rps_min'])} | {f(r['rps_max'])} | "
-                    f"{l(r['lat_avg_ms_median'])} | {l(r['lat_p99_ms_median'])} | {', '.join(err) or '-'} |")
+                cells = [str(i), LABEL[c], f(r['rps_median']), f(r['rps_min']), f(r['rps_max']),
+                         l(r['lat_avg_ms_median']), l(r['lat_p99_ms_median']), ', '.join(err) or '-',
+                         f"{r['steal_pct_max']:.1f}"]
+                lines.append("| " + " | ".join(bold(c, x) for x in cells) + " |")
     tables = "\n".join(lines)
 
-    # Headline: Wisp's place at every level, plainly.
-    head = ["| Workload | Connections | Wisp req/s | Leader | Leader req/s | Wisp rank | Wisp vs leader | Wisp max vs leader min |",
-            "|---|---:|---:|---|---:|---:|---:|---|"]
-    firsts = losses = 0
+    # Derived summary: counts only, from the data above (supplementary rows excluded).
+    firsts, tot, tied = 0, 0, 0
     for w in ("plaintext", "json"):
         for lvl in sorted(summary.get(w, {})):
             rows = {c: r for c, r in summary[w][lvl].items() if c != "wisp-uncapped"}
             if "wisp" not in rows:
                 continue
-            order = sorted(rows, key=lambda c: -rows[c]["rps_median"])
-            lead = order[0]
-            rank = order.index("wisp") + 1
-            firsts += rank == 1
-            losses += rank != 1
-            ratio = rows["wisp"]["rps_median"] / rows[lead]["rps_median"]
-            head.append(f"| {w} | {lvl} | {f(rows['wisp']['rps_median'])} | {LABEL[lead]} | "
-                        f"{f(rows[lead]['rps_median'])} | {rank} of {len(order)} | {ratio:.2f}x | "
-                        + ("-" if rank == 1 else ("ranges overlap" if rows["wisp"]["rps_max"] >= rows[lead]["rps_min"] else "no overlap")) + " |")
-    head.append(f"\nWisp is first at {firsts} of {firsts + losses} levels and not first at {losses}.")
-    heads = "\n".join(head)
+            lead = max(rows, key=lambda c: rows[c]["rps_median"])
+            tot += 1
+            firsts += lead == "wisp"
+            tied += lead != "wisp" and rows["wisp"]["rps_max"] >= rows[lead]["rps_min"]
+    heads = (f"By median req/s Wisp (defaults) has the highest median at {firsts} of {tot} workload and "
+             f"connection levels; at {tied} more its min-max range overlaps the leader's (a tie within "
+             f"noise). Counted from the tables below, supplementary row excluded.")
 
     noise = ["| Binary | Level | round 1 | round 2 | round 3 | steal % of CPU (r1/r2/r3) |", "|---|---:|---:|---:|---:|---|"]
     for c in ("wisp", "wisp-uncapped"):

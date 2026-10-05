@@ -3,6 +3,9 @@ name = "zed-wisp"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+authors = ["Wyzie LLC <https://wyzie.io>"]
+repository = "https://github.com/wyziedevs/wisp"
+homepage = "https://wispweb.dev"
 publish = false
 
 [lib]

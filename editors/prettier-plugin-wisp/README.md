@@ -25,3 +25,7 @@ npx prettier --write "src/**/*.wisp"
 `wispPath` names another `wisp` (`{ "wispPath": "/opt/wisp/bin/wisp" }`).
 Prettier's own options (`printWidth`, `tabWidth`…) do not apply: the layout
 is Wisp's.
+
+## License
+
+MIT, Wyzie LLC. See [LICENSE](../../LICENSE).

@@ -51,7 +51,7 @@ The `---` block is Rust that runs for each request, and `{name}` is rendered on 
 ## Why Wisp
 
 - **Fast.** A route pays only for the features it uses, and a change that touches the request path is checked by an instructions-per-request A/B before it lands.
-- **Cheap to write.** A whole app takes about half the tokens of SvelteKit or Next.js. See [Tokens](https://wispweb.dev/docs/tokens/) for the method and the apps measured.
+- **Cheap to write.** The small test app takes 432 tokens in Wisp against 872 in Nuxt, 2.0x to 3.5x across the stacks measured. See [Tokens](https://wispweb.dev/docs/tokens/) for the method and the apps measured.
 - **Durable.** Fast paths are proven at startup and fall back, and nothing after startup panics. There is no `unsafe` outside the Linux I/O drivers and the edge exports.
 - **Flexible.** Forms, JSON APIs, uploads, signed cookies, hooks and components. Wisp gives you tools, not an auth or database layer.
 
@@ -65,16 +65,21 @@ The `---` block is Rust that runs for each request, and `{name}` is rendered on 
 
 ## Speed
 
-TechEmpower's plaintext and JSON tests, run with their own load scripts against their reference sources, on one 4-vCPU VM with the server pinned to 2 cores. Medians of 3 runs of 15 seconds.
+TechEmpower's plaintext and JSON tests, run with their own load scripts against their reference sources (SvelteKit and Next.js are plain route handlers), on one shared 4-vCPU AMD EPYC 7B13 VM with the server pinned to 2 cores. Medians of 3 runs of 15 seconds, 2026-10-04, from [`bench/tfb/results.json`](bench/tfb/results.json). Contenders are in a fixed order, not ranked; `0` means no request completed.
 
 | Framework | Plaintext, 256 connections (req/s) | JSON, 64 connections (req/s) |
 |---|---:|---:|
-| **Wisp** | 1,129,577 | 96,089 |
-| Fastify | 51,713 | 21,965 |
+| **Wisp** | **1,129,577** | **96,089** |
+| Axum | 276,948 | 78,427 |
+| Actix Web | 603,163 | 89,648 |
 | Express | 40,421 | 14,746 |
+| Fastify | 51,713 | 21,965 |
+| Hono (Node) | 28,966 | 8,988 |
+| Hono (Bun) | 10,599 | 59,619 |
 | SvelteKit | 10,929 | 10,378 |
+| Next.js | 0 | 1,524 |
 
-This is not an official TechEmpower result, and the VM is shared. The [benchmarks page](https://wispweb.dev/docs/benchmarks/) has the method, every connection level, Next.js, Actix Web and Axum, and the places Wisp is not first.
+This is not an official TechEmpower result, and the VM is shared. [`bench/tfb/RESULTS.md`](bench/tfb/RESULTS.md) has every contender, connection level and metric. Rank tables from a newer run are pending: the latest runs on a CPU-capped VPS were invalid and are not published. Valid on any machine: callgrind counts of 1585, 2323 and 1789 instructions per request for `GET /`, `GET /user/0` and `POST /user`.
 
 ## Docs
 
@@ -88,8 +93,8 @@ This is not an official TechEmpower result, and the VM is shared. The [benchmark
 
 ## Contributing
 
-Issues and pull requests are welcome. Read the design rules in [CLAUDE.md](CLAUDE.md) first: speed, then tokens, then durability, then flexibility. The docs live in the [wisp-docs](https://github.com/wyziedevs/wisp-docs) repo and move with the code.
+Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) and the design rules in [CLAUDE.md](CLAUDE.md) first: speed, then tokens, then durability, then flexibility. Security reports go through [SECURITY.md](SECURITY.md). The docs live in the [wisp-docs](https://github.com/wyziedevs/wisp-docs) repo and move with the code.
 
 ## License
 
-[MIT](LICENSE). Made by [Wyzie LLC](https://wyzie.io).
+[MIT](LICENSE). Open source, made by [Wyzie LLC](https://wyzie.io) for the community.

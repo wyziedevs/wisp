@@ -757,19 +757,10 @@ Node's "RSS after load" swings run to run with the same build (node:http: 89,
 `MALLOC_ARENA_MAX=1` takes some off, so it is V8's compiler and code memory
 held by malloc, not anything the shim keeps.
 
-**What it says.** Wisp (raw sockets) is 1st on every Node and Bun route and on
-Deno `/list1000` and `/params`; on Deno `/` it is 2nd (8% behind Hono, inside
-the noise) and on `/json-big` 2nd (ahead of Hono, behind Fresh). It is 1st on
-`/list1000` on every host (1.9x to 4.7x Hono; the escape and the list are one
-pass over bytes). On
-workerd it is 2nd to 3rd on throughput: `/list1000` is 1st (about 1.9x Hono),
-`/` is 2nd, `/json-big` and `/params` are 3rd behind itty-router and Hono, by 9%
-and 12% from Hono (the known cost of the wasm entry and `JSON.stringify`
-running in V8's C++ for Hono, see above; both inside run-to-run noise on this
-VPS). The `Bun.serve`, `Deno.serve` and `node:http` variants pay the host's
-`Request`/`Response` objects and are the slow Wisp paths (45% behind Hono on
-Bun `/`, 47% on Deno `/`): the raw path is the default, so those rows are the
-"portable" option, not the headline.
+**What it says.** Nothing is written here by hand: the tables above are the data, and
+the "Where Wisp is below 3rd or behind Hono" table is derived from it by
+`bench/rank/report.mjs`. Throughput swings 15% to 30% between runs on this VPS, so
+treat a gap under about 10% as a tie.
 
 **Shims after the lighter bridge (2026-10-05, same method, Wisp shim and Hono only).**
 `Bun.serve` `/` 28,870 vs Hono 46,402 (38% behind, was 45%), `/params` 21,071 vs
@@ -780,17 +771,9 @@ vs 31,131 (34%, was 44%). Server instructions a request on Deno (`perf stat`):
 V8's wasm/JS crossings; on Bun `server.requestIP` alone is 16% of the profile, and
 the peer is read eagerly by `Cx`.
 
-**Where Wisp does not place 3rd or ahead of Hono.** Throughput: workerd `/`
-(5% behind Hono), `/json-big` (9%), `/params` (12%); Deno `/` (8% raw, 47%
-`Deno.serve`), Deno `Deno.serve` `/json-big` (4th, 9% behind Hono) and `/params`
-(44%); Bun `Bun.serve` `/` (45%) and `/params` (31%); Node `node:http` `/` (7%).
-Cold start is Wisp's weakest column: 98 ms on workerd (5th, 69% behind Hono's
-58 ms; the wasm has to be compiled and warmed at load, see the warm-up
-measurements above), 203 ms on Node raw (2nd, 8% behind Hono), 74 ms on Bun
-(28%), 87 ms on Deno (55%). Memory after load: Node raw 120 MB against Hono's
-95 (26%), Deno 86 against 51 (69%), Bun 40 against 39. Wisp has the smallest
-footprint on workerd (309 MB, 1st) and with `node:http` on Node (89 MB, 1st).
-The full list, with the gap to 3rd where Wisp is below it, is the last table.
+**Pending.** A later run (2026-10-05) is invalid: the VPS provider capped the CPU
+(steal about 75%), so its numbers and ranks are not published (`bench/rank/results/report.md`
+says so). The tables above are the 2026-10-04 run. Rank tables are pending a valid run.
 
 ## Shims and Node memory, measured again (2026-10-05)
 

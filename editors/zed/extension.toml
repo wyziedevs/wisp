@@ -2,7 +2,7 @@ id = "wisp"
 name = "Wisp"
 version = "0.1.0"
 schema_version = 1
-authors = ["Wisp"]
+authors = ["Wyzie LLC"]
 description = "Wisp .wisp templates: highlighting, and wisp lsp for problems, hovers, completion and formatting."
 repository = "https://github.com/wyziedevs/wisp"
 

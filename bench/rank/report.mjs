@@ -1,6 +1,7 @@
 // Renders results/<host>.json as Markdown: a table per host (every framework,
 // req/s with its place per route, cold start, memory), then every cell where
 // Wisp is below 3rd or behind Hono. node report.mjs [results dir]
+// A host file with an `invalid` field prints that reason instead of its table.
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,6 +19,7 @@ for (const host of hosts) {
   const f = join(dir, `${host}.json`);
   if (!existsSync(f)) continue;
   const r = JSON.parse(readFileSync(f, 'utf8'));
+  if (r.invalid) { out.push(`### ${label[host]}\n`); out.push(`No valid run (${r.invalid}). The ${r.when.slice(0, 10)} numbers are not published; the rank table is pending a valid run.\n`); continue; }
   const names = [...new Set(Object.keys(r.cells).map((k) => k.split(' /')[0]))];
   const routes = Object.keys(routeNames).filter((p) => names.some((n) => r.cells[`${n} ${p}`]));
   // metrics: value per framework, higher or lower better
@@ -69,6 +71,7 @@ for (const host of hosts) {
   }
 }
 
+if (!out.some((l) => l.startsWith('| framework'))) { console.log(out.join('\n')); process.exit(0); }
 out.push('### Where Wisp is below 3rd or behind Hono\n');
 out.push('Gap is how far behind in %: lower req/s, or higher cold start and memory. Gap to 3rd is against the framework in 3rd place (Wisp not counted).\n');
 if (!losses.length) out.push('None.');

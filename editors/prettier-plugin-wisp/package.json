@@ -3,6 +3,8 @@
   "version": "0.1.0",
   "description": "Prettier formats Wisp .wisp files through `wisp fmt`.",
   "license": "MIT",
+  "author": "Wyzie LLC <https://wyzie.io>",
+  "homepage": "https://wispweb.dev",
   "repository": {
     "type": "git",
     "url": "https://github.com/wyziedevs/wisp",

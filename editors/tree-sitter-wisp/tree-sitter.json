@@ -14,6 +14,7 @@
   "metadata": {
     "version": "0.1.0",
     "license": "MIT",
+    "authors": [{ "name": "Wyzie LLC", "url": "https://wyzie.io" }],
     "description": "Wisp .wisp templates: HTML with Rust and JavaScript",
     "links": { "repository": "https://github.com/wyziedevs/wisp" }
   }

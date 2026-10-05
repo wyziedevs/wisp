@@ -2,35 +2,18 @@
 
 Wisp's `/plaintext` and `/json` against the TechEmpower Framework Benchmarks (TFB) reference
 sources of Axum, Actix Web, Express, Fastify and Hono, measured with TFB's own wrk scripts on one
-shared 4-vCPU VM. Every number is published, the ones Wisp loses included. This is **not** a
+shared 4-vCPU VM. Every measured number is published. This is **not** a
 TechEmpower result and is not comparable with their published rounds (see Caveats).
 
 This file is generated: `python3 aggregate.py` fills the tables from `raw/`. Raw wrk output is in
 `raw/<contender>/`, summary data in `results.json`, everything reproduced by `run.sh`.
 
-## Where Wisp is not first
+## Summary
 
-Read this before the tables. Medians of 3 runs, 15 s each, server on 2 pinned cores.
+Derived by `aggregate.py` from `results.json`; nothing here is hand-written. Medians of 3 runs,
+15 s each, server on 2 pinned cores.
 
 {{HEADLINE}}
-
-In plain words:
-
-- **Plaintext (pipelined, depth 16), 256, 1024 and 4096 connections: Wisp is first**, ahead of
-  Axum and Actix Web by 1.2x to 1.9x on medians. wrk's p99 is not available for these rows (see
-  Method), so latency is compared by the average only.
-- **Plaintext at 16384 connections: Wisp (defaults) is not first, and mostly fails.** Wisp's
-  default `WISP_MAX_CONNS` is 10000: past it a new connection is answered `503` and closed,. On this box most contenders also collapse at 16384
-  connections (2 wrk threads, 2 server cores, loopback), so the rows are an honest result of this
-  setup but a weak basis for any ranking. The supplementary row (`WISP_MAX_CONNS=0`, a documented
-  knob, **not** the default) is shown separately and does not count towards the headline.
-- **JSON: Wisp is not clearly first.** Actix Web is ahead at 16 and 256 connections (ranges do not
-  overlap); at 32 the ranges overlap; at 64, 128 and 512 Wisp's median is higher than Actix Web's
-  but the min-max ranges overlap, so those are ties. The noise experiment below measured the
-  *same Wisp binary* 11% to 21% apart between moments on this VM, which is larger than most of the
-  gaps between Wisp, Actix Web and Axum here. Do not read a JSON ranking out of this data.
-- Everything on Node and Bun (Express, Fastify, Hono, SvelteKit, Next.js) is far behind the three
-  Rust servers on 2 cores, as expected.
 
 ## What TFB specifies (read from the source, not from memory)
 
@@ -111,8 +94,10 @@ next. Details in Caveats.
 
 ## Results
 
-Rows are sorted by median requests per second. Rows marked "(supplementary)" are not part of the
-headline. "errors" counts non-2xx responses and wrk socket errors summed over the 3 runs.
+All contenders, both workloads and every connection level, with every metric. Sort key within each
+table: median requests per second, descending; the Wisp rows are bold. Source: `raw/` wrk output
+(`results.json`), run date and hardware in Environment above. Rows marked "(supplementary)" are not
+part of the summary. "steal % max" is the highest hypervisor steal share of CPU over the runs. "errors" counts non-2xx responses and wrk socket errors summed over the 3 runs.
 Contenders that stop answering show `0`; that is a measured result of this setup.
 
 {{TABLES}}
@@ -125,8 +110,6 @@ Contenders that stop answering show `0`; that is a measured result of this setup
 {{NOISE}}
 
 The spread of one binary against itself is the floor for what any of these tables can tell apart.
-In the main run the same two builds were between 1% and 54% apart at a given level (JSON, medians), only because they ran an
-hour or more apart.
 
 ## Reference from TechEmpower
 
@@ -155,14 +138,13 @@ with the numbers they would be a different scale from the tables above.
 - **Shared VM, not TFB hardware.** A 4-vCPU AMD EPYC 7B13 VM; the server gets 2 cores and wrk gets
   2. TFB runs the server and the load generator on separate physical machines over a fast
   network, so absolute numbers here are not comparable to any TechEmpower round.
-- **Noise.** Steal time and neighbours; one binary ranged 11% to 21% below its best in the noise experiment.
-  Differences inside the min-max ranges are ties.
+- **Noise.** Steal time and neighbours (see the noise table). Differences inside the min-max ranges are ties.
 - **Loopback with the client on the same VM**: wrk competes with the kernel's TCP work for the
   same host; wrk can be the limit for the slowest servers' latency numbers and for 16384
   connections (2 threads).
 - **Plaintext at 16384 connections** is beyond what this setup serves for most contenders (wrk
   timeouts after 8 s; a `0` median means at least 2 of 3 runs completed no request). Wisp's default
-  `WISP_MAX_CONNS=10000` adds `503`s there.
+  `WISP_MAX_CONNS=10000` answers `503` past that many connections.
 - **Pipelined rows have no p99** (wrk), and latency is queueing under a 16-deep pipeline, not
   request latency.
 - Next.js ran out of memory (2 GB V8 heap) during the pipelined plaintext test and was restarted

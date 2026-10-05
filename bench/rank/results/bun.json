@@ -239,5 +239,6 @@
    "load": 51
   }
  },
- "failed": {}
+ "failed": {},
+ "invalid": "VPS provider CPU cap, steal about 75% of CPU during the run; not publishable"
 }
