@@ -465,7 +465,7 @@ pub fn auto_names(root: &Path) -> auto::Auto {
 /// For `wisp check --explain-imports`: per file (from the root), the names
 /// it uses with no `use` line, each with the path it is imported from.
 /// Errors as [`check`]'s.
-pub fn imports(root: &Path) -> Result<Vec<(String, Vec<(String, String)>)>, String> {
+pub fn imports(root: &Path) -> Result<crate::auto::FileImports, String> {
     codegen::imports(&codegen::Input {
         root,
         release: false,

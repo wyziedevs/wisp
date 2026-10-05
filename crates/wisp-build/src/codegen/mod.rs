@@ -897,7 +897,7 @@ pub fn check(input: &Input) -> Result<(Vec<String>, Vec<String>), String> {
 }
 
 /// `wisp check --explain-imports`: what each file is auto-imported.
-pub fn imports(input: &Input) -> Result<Vec<(String, Vec<(String, String)>)>, String> {
+pub fn imports(input: &Input) -> Result<crate::auto::FileImports, String> {
     let p = Project::load(input)?;
     let web = p.browser()?;
     let mut g = Gen {

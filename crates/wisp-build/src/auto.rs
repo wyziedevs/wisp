@@ -130,7 +130,7 @@ impl Auto {
         defined.extend(defines(&made, 1).0);
         let mut out = Vec::new();
         for (name, (code, k, line)) in names {
-            if defined.iter().any(|d| *d == name) {
+            if defined.contains(&name) {
                 continue;
             }
             let mut hits: Vec<&Export> = (self.exports.iter())
@@ -175,6 +175,9 @@ impl Auto {
         Ok(out)
     }
 }
+
+/// Per file (from the root), its auto-imports: name and path.
+pub type FileImports = Vec<(String, Vec<(String, String)>)>;
 
 /// The `use` lines for `imports`.
 pub fn lines(imports: &[(String, String)]) -> String {
@@ -666,7 +669,7 @@ pub fn exports(root: &Path, wisp_mods: &[(String, PathBuf)]) -> Result<Vec<Expor
             rel: rel(file),
             wisp: true,
         };
-        m.items(&toks, &[name.clone()], 0, &mut out);
+        m.items(&toks, std::slice::from_ref(name), 0, &mut out);
     }
     // The crate root the app is in: the file with `wisp::app!()`.
     let lib = crate::read_source(&src.join("lib.rs")).unwrap_or_default();

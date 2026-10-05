@@ -22,7 +22,7 @@ pub(super) struct Gen {
     /// The names files may use with no `use` (see `crate::auto`).
     pub(super) auto: crate::auto::Auto,
     /// What each file got auto-imported, for `wisp check --explain-imports`.
-    pub(super) imports: Vec<(String, Vec<(String, String)>)>,
+    pub(super) imports: crate::auto::FileImports,
 }
 
 impl Gen {

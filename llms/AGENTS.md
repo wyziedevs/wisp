@@ -26,8 +26,8 @@ add/<name>/recipe           `wisp add <name>`: lines `dep <Cargo line>`, `env K=
 .env                        X=…: `wisp::env("X")`, `env.PUBLIC_X` in browser code
 src/hooks.rs                fn init() once; fn before(cx) every request
 src/middleware.rs           named middleware: `pub fn auth(cx: &mut Cx) -> Result`, used by `const MIDDLEWARE`
-src/db.rs                   models and tables; its `pub` items are in every route file
-src/NAME.rs                 any module, no `mod` line: `NAME::f()` everywhere
+src/db.rs                   models and tables
+src/NAME.rs                 any module, no `mod` line; its `pub` items need no `use` anywhere
 src/remote.rs               #[remote] fns browser code calls (or in a page's block)
 src/components/Card.wisp    <Card title={x}>…</Card>
 src/lib/*.js (or .ts)       browser modules, `import … from '$lib/x.js'`
@@ -100,8 +100,12 @@ Block rules:
   `[[lang]]` → `Option<String>`. Even with no block.
 - No `use` lines: prelude = `Cx Response Result Error Email Image Json
   FromJson Rest Config Cookie CookieOptions SameSite Method Value Shared Table Row RateLimit OrStatus Password Reply KB MB
-  action remote error invalid model redirect Always Never Ignore` and `src/db.rs`'s `pub` items (local
-  names win). `Result` alone = `Result<()>`.
+  action remote error invalid model redirect Always Never Ignore`, the `pub` items of
+  `src/*.rs` and of modules `main.rs` declares, `HashMap HashSet BTreeMap BTreeSet
+  VecDeque Arc Rc Cow Duration Instant SystemTime`, and `[package.metadata.wisp]
+  auto = ["chrono::{Utc, DateTime}"]`. Imported only where used; the file's own
+  items and `use` lines win; a name two modules share is a build error (write
+  `db::Post`). `wisp check --explain-imports` lists them. `Result` alone = `Result<()>`.
 - `const CACHE: u32 = 60;` (page or `+server.rs`) keeps a GET's answer 60 s
   per worker (ETag, 304), but never for a request with a cookie or
   `authorization` (`CACHE_PUBLIC`: all), nor one that sets a cookie; not in dev.

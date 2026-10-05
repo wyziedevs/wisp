@@ -96,7 +96,7 @@ fn check_takes_only_types() {
     fail(
         &cwd,
         &["check", "--fix"],
-        "Unexpected --fix.\n    wisp check takes --types, to check TypeScript with tsc.",
+        "Unexpected --fix.\n    wisp check takes --types, to check TypeScript with tsc, and --explain-imports",
     );
 }
 

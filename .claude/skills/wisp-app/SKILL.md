@@ -7,7 +7,7 @@ description: Write or edit an app built with the Wisp Rust web framework (src/ro
 The full reference is `llms/AGENTS.md` (an app has its own copy at its root): read the section you need, not all of it. Deeper: <https://wispweb.dev/docs/client> (browser code), <https://wispweb.dev/docs/api> (Rest, OpenAPI), <https://wispweb.dev/docs/data> (tables, queues, cache), <https://wispweb.dev/docs/auth>, <https://wispweb.dev/docs/serve>, <https://wispweb.dev/docs/deploy>.
 
 Core, in short:
-- Files are routes: `src/routes/x/+page.wisp` (optional `---` Rust block, then markup), `+layout.wisp`, `+error.wisp`, `+server.rs` (fn get/post/...), `+page.rs` (`struct Data` + `fn load`). Models and tables live in `src/db.rs`; its `pub` items are in every route file. No `use` lines (there is a prelude).
+- Files are routes: `src/routes/x/+page.wisp` (optional `---` Rust block, then markup), `+layout.wisp`, `+error.wisp`, `+server.rs` (fn get/post/...), `+page.rs` (`struct Data` + `fn load`). Models and tables live in `src/db.rs`. No `use` lines: the prelude, the `pub` items of `src/*.rs`, common std names (`HashMap`, `Arc`, `Duration`...) and `[package.metadata.wisp] auto = [...]` are auto-imported where used.
 - `#[action] fn name(args)` in a page block handles `<form action="?/name">`: params by name, `#[validate(..)]`, `redirect(..)`, `error(..)`, `invalid(..)`.
 - Data: `#[model]` struct, `Table::saved()` (`new()` is in memory); `#[derive(Rest)]` is a whole JSON API.
 - Auth: `cx.signup`, `cx.login`, `cx.user(&USERS)`.
