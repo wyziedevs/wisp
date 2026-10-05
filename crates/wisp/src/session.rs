@@ -65,6 +65,7 @@ pub fn sign_out_everywhere(id: u64) -> Result {
             "sign_out_everywhere takes a row id, from 1",
         ));
     }
+    first();
     let mut rows = SIGN_OUTS.write();
     let count = rows.map.get(&id).map_or(1, |n| n + 1);
     SIGN_OUTS.save(&mut rows, id, Some(&count.to_string()))?;
@@ -77,7 +78,10 @@ pub fn sign_out_everywhere(id: u64) -> Result {
 /// Reads the sign-outs when the server starts, once `init` has set the
 /// store, and again every 30 s from a store of the app's own, off the
 /// requests' threads.
+/// On the edge they are read at the first session instead (see [`first`]):
+/// an app that has none has no table code in its wasm.
 pub(crate) fn ready() {
+    #[cfg(not(target_arch = "wasm32"))]
     reread();
     #[cfg(not(target_arch = "wasm32"))]
     if store::custom().is_some() {
@@ -113,6 +117,16 @@ fn reread() {
     }
 }
 
+/// The edge's [`ready`]: reads the sign-outs once, before the first session
+/// is made or checked. Elsewhere `ready` has read them already.
+fn first() {
+    #[cfg(target_arch = "wasm32")]
+    {
+        static READ: std::sync::Once = std::sync::Once::new();
+        READ.call_once(reread);
+    }
+}
+
 fn log(why: &str) {
     crate::http::log(format_args!(
         "wisp: could not read who signed out everywhere ({why}); sessions hold as before until it can"
@@ -122,6 +136,7 @@ fn log(why: &str) {
 /// How many times `id` has signed out everywhere: what its sessions must
 /// carry. No lookup while no one ever has.
 fn sign_outs(id: u64) -> u64 {
+    first();
     if !ANY.load(Ordering::Acquire) {
         return 0;
     }
