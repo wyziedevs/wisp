@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 /// Every environment variable Wisp reads, and whether an author sets it.
 /// A read the scan finds that is not here fails the test: classify it.
-const ENV: [(&str, bool); 101] = [
+const ENV: [(&str, bool); 102] = [
     ("AWS_LAMBDA_RUNTIME_API", true),
     ("CRON_SECRET", true),
     ("EDITOR", true),
@@ -78,6 +78,7 @@ const ENV: [(&str, bool); 101] = [
     ("WISP_DOCS_DIR", false),
     ("WISP_FUZZ", false),
     ("WISP_FUZZ_SEED", false),
+    ("WISP_SKIP_LOG", false),
     ("WISP_SURELY_NOT_SET", false),
     ("WISP_TEST_NOWHERE", false),
     ("WISP_TEST_ONLY_IN_FILE", false),
@@ -308,7 +309,16 @@ fn docs_cover_the_surface() {
     let root = repo(base);
     let pages = docs_files(&root);
     if pages.is_empty() {
-        eprintln!("docs_cover_the_surface: no docs checkout (WISP_DOCS_DIR); skipped");
+        let why = "docs_cover_the_surface: no docs checkout (WISP_DOCS_DIR)";
+        eprintln!("skipped: {why}");
+        if let Some(log) = std::env::var_os("WISP_SKIP_LOG") {
+            use std::io::Write;
+            let f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log);
+            let _ = f.and_then(|mut f| writeln!(f, "  wisp-web: {why}"));
+        }
         return;
     }
     let docs: String = pages

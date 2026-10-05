@@ -28,6 +28,23 @@ fn cargo(args: &[&str], env: &[(&str, &str)]) -> bool {
     c.status().is_ok_and(|s| s.success())
 }
 
+/// Cargo's own target folder (`CARGO_TARGET_DIR`, `build.target-dir`, or the
+/// workspace's), not one guessed from the folder the gate was started in.
+fn target_dir() -> PathBuf {
+    let out = Command::new("cargo")
+        .args(["metadata", "-q", "--no-deps", "--format-version", "1"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    let key = "\"target_directory\":\"";
+    out.find(key)
+        .and_then(|i| out[i + key.len()..].split('"').next())
+        .map_or_else(
+            || PathBuf::from("target"),
+            |d| d.replace("\\\\", "\\").into(),
+        )
+}
+
 fn wasm_size() -> bool {
     let env = [
         ("WISP_REQUEST_ONLY", "1"),
@@ -47,9 +64,10 @@ fn wasm_size() -> bool {
     if !cargo(&build, &env) {
         return false;
     }
-    let dir =
-        std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| PathBuf::from("target"), PathBuf::from);
-    let file = dir.join(WASM).join("release").join("wisp-test-app.wasm");
+    let file = target_dir()
+        .join(WASM)
+        .join("release")
+        .join("wisp-test-app.wasm");
     let Ok(meta) = std::fs::metadata(&file) else {
         eprintln!("gate: {} is missing", file.display());
         return false;
@@ -59,6 +77,25 @@ fn wasm_size() -> bool {
         eprintln!("gate: the wasm is over budget");
         false
     }
+}
+
+/// The workspace tests. A test that cannot run here (no browser, node or
+/// docs checkout) passes, so each one writes a line to `WISP_SKIP_LOG`, and
+/// the gate counts them out loud: green with skips is not all green.
+fn tests() -> bool {
+    let log = std::env::temp_dir().join(format!("wisp-gate-skips-{}.txt", std::process::id()));
+    let _ = std::fs::remove_file(&log);
+    let ok = cargo(
+        &["test", "--workspace", "-q"],
+        &[("WISP_SKIP_LOG", &log.to_string_lossy())],
+    );
+    let skipped = std::fs::read_to_string(&log).unwrap_or_default();
+    let _ = std::fs::remove_file(&log);
+    if !skipped.is_empty() {
+        eprintln!("\ngate: {} tests skipped:", skipped.lines().count());
+        eprint!("{skipped}");
+    }
+    ok
 }
 
 fn main() -> ExitCode {
@@ -86,10 +123,7 @@ fn main() -> ExitCode {
         "-D",
         "warnings",
     ];
-    let mut ok = wasm_only
-        || cargo(&["fmt", "--check"], &[])
-            && cargo(&clippy, &[])
-            && cargo(&["test", "--workspace", "-q"], &[]);
+    let mut ok = wasm_only || cargo(&["fmt", "--check"], &[]) && cargo(&clippy, &[]) && tests();
     if ok && !fast {
         ok = (wasm_only || cargo(&wasm_clippy, &[])) && wasm_size();
     }

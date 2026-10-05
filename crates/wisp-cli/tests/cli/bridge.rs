@@ -8,6 +8,7 @@ use std::process::Command;
 #[test]
 fn bridge_answers_every_status_a_response_can_carry() {
     if Command::new("node").arg("--version").output().is_err() {
+        crate::skip("bridge_answers_every_status_a_response_can_carry: no node");
         return;
     }
     let dir = Dir::new("bridge");

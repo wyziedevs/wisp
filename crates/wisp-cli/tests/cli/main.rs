@@ -197,6 +197,18 @@ pub fn fake_tailwind(dir: &Path, code: i32) -> PathBuf {
     path
 }
 
+/// A test that cannot run here: said on stderr and, under the gate, written
+/// to `WISP_SKIP_LOG` so the gate counts it instead of calling it green.
+pub fn skip(why: &str) {
+    eprintln!("skipped: {why}");
+    if let Some(log) = std::env::var_os("WISP_SKIP_LOG") {
+        use std::io::Write;
+        if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(log) {
+            let _ = writeln!(f, "  wisp-web cli: {why}");
+        }
+    }
+}
+
 pub fn has(haystack: &str, needles: &[&str]) {
     for n in needles {
         assert!(haystack.contains(n), "wanted {n:?} in {haystack}");

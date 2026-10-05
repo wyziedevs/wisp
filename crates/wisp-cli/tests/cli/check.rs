@@ -82,7 +82,7 @@ fn a_broken_file_is_named_with_its_line() {
 #[test]
 fn types_come_from_the_compiler() {
     if std::env::var_os("WISP_TSC").is_none_or(|t| !std::path::Path::new(&t).exists()) {
-        eprintln!("skipped: set WISP_TSC to a tsc to run it");
+        crate::skip("types_come_from_the_compiler: set WISP_TSC to a tsc to run it");
         return;
     }
     let cwd = Dir::new("check-types");
