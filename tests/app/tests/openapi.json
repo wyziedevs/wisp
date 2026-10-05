@@ -4307,7 +4307,8 @@
                 "type": "object",
                 "required": [
                   "name",
-                  "email"
+                  "email",
+                  "topic"
                 ],
                 "properties": {
                   "name": {
@@ -4318,6 +4319,9 @@
                   "email": {
                     "type": "string",
                     "format": "email"
+                  },
+                  "topic": {
+                    "type": "string"
                   }
                 }
               }

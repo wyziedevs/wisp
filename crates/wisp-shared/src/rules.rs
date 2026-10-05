@@ -151,7 +151,13 @@ const DEFS: [Def; 10] = [
         name: "one_of",
         takes: Takes::Value,
         check: |v, x| format!("::wisp::json::check::one_of({v}, {x})"),
-        native: |_, _, _| {},
+        // A literal list is the options of the `<select>` `fields` writes.
+        native: |n, x, k| {
+            let list = x.trim().strip_prefix('"').and_then(|x| x.strip_suffix('"'));
+            if let Some(list) = list.filter(|l| k.text && !l.contains(['\\', '{', '<', '&'])) {
+                n.choices = list.split_whitespace().map(str::to_string).collect();
+            }
+        },
     },
     Def {
         key: Key::Pattern,
@@ -386,6 +392,9 @@ pub struct Native {
     pub max: Option<f64>,
     /// An `Image`: its form is `multipart/form-data`, its input takes images.
     pub upload: bool,
+    /// `one_of = "draft live"`: the choices, so `<form fields>` writes a
+    /// `<select>`.
+    pub choices: Vec<String>,
 }
 
 impl Native {

@@ -10,12 +10,17 @@ use wisp_test_app::Site;
 #[test]
 fn a_generated_form_flashes_once() {
     let mut app = client::<Site>();
-    let sent = app.post_form("/t/contact", &[("name", "Ann"), ("email", "a@b.co")]);
+    let sent = app.post_form("/t/contact", &[("name", "Ann"), ("email", "a@b.co"), ("topic", "help")]);
     assert_eq!(sent.status, 303);
     let page = app.get("/t/contact").text().to_string();
     assert!(page.contains("<p class=\"flash\" role=\"status\">Thanks, Ann!</p>"), "{page}");
     let meta = "<meta name=\"description\" content=\"Write to us\"><meta property=\"og:description\" content=\"Write to us\"><meta property=\"og:image\" content=\"/og.png\">";
     assert!(page.contains(meta), "{page}");
+    let select = "<select name=\"topic\"><option>hello</option><option>help</option></select>";
+    assert!(page.contains(select), "{page}");
+    let bad = app.post_form("/t/contact", &[("name", "A"), ("email", "a@b.co"), ("topic", "x")]);
+    assert_eq!(bad.status, 422);
+    assert!(bad.text().contains("must be one of hello, help"), "{}", bad.text());
     assert!(!app.get("/t/contact").text().contains("flash"));
 }
 

@@ -264,7 +264,20 @@ pub(super) fn form_fields(src: &str, fields: &[Field]) -> Result<Option<String>,
                 first.make_ascii_uppercase();
             }
             let from = (start_from.filter(|_| f.whole)).map(|e| format!("{e}.{}", f.name));
-            let _ = if kind.is_empty() && crate::rules::is_long(&f.name, &f.ty) {
+            let _ = if !f.native.choices.is_empty() {
+                // `one_of = "draft live"`: a `<select>` of those.
+                let value = from.map(|e| format!(" value={{{e}}}")).unwrap_or_default();
+                let optional = crate::ty::option_inner(&f.ty).is_some();
+                let blank = if optional { "<option></option>" } else { "" };
+                let options: String = (f.native.choices.iter())
+                    .map(|c| format!("<option>{c}</option>"))
+                    .collect();
+                write!(
+                    inputs,
+                    "<label>{label} <select name=\"{}\"{value}>{blank}{options}</select></label>",
+                    f.name
+                )
+            } else if kind.is_empty() && crate::rules::is_long(&f.name, &f.ty) {
                 let text = from.map(|e| format!("{{{e}}}")).unwrap_or_default();
                 write!(
                     inputs,
