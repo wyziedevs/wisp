@@ -188,7 +188,9 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
   was sent, else its own value (`value={post.title}`, `<textarea
   name="body">{post.body}</textarea>`, `<select name="kind"
   value={post.kind}>`), then `<small class="problem">msg</small>` (passwords,
-  files: the problem only); `{cx.problem("field")}` puts it elsewhere. Other
+  files: the problem only); checkboxes, radios and `<select multiple>` keep
+  what was ticked or chosen (only in the form that was refused);
+  `{cx.problem("field")}` puts it elsewhere. Other
   errors → error page. Same-origin checked. Works without JS.
 
 ## Templates (Rust on the server)

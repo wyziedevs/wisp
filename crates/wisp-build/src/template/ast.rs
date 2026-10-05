@@ -93,8 +93,8 @@ pub enum Node {
     /// A named field of an action's form (see `Parser::form_defaults`):
     /// `sent`, which reads what was sent as `__k`, when the action refused
     /// it, else `own`. A component, having no `cx`, writes `own` alone, as
-    /// does a GET, which is all that is baked. With `tick`, the code of a
-    /// checkbox's or radio's value, `__k` is whether that value was sent
+    /// does a GET, which is all that is baked. With `tick`, the code of
+    /// its form's action and of a checkbox's or radio's value, `__k` is whether that value was sent
     /// (none sent is unticked), so a refused form keeps what was ticked.
     Kept {
         name: String,
@@ -110,6 +110,8 @@ pub enum Node {
         name: String,
         own: Option<String>,
         line: u32,
+        /// The action its form posts to: another's refusal leaves it be.
+        action: String,
     },
     /// ` selected` on an `<option>` whose value (the code of a `&str`) is
     /// its `<select>`'s choice, `__wisp_sel` (see `Chosen`).

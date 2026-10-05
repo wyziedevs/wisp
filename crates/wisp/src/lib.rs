@@ -1090,20 +1090,32 @@ pub mod rt {
     }
 
     /// Whether a refused form sent `value` for checkbox or radio `name`
-    /// (any of its values, for a group of checkboxes): `None` when no
-    /// action refused it, so the field shows its own `checked`.
+    /// (any of its values, for a group of checkboxes): `None` when
+    /// `action` did not refuse it, so the field shows its own `checked`.
     pub fn ticked<T: std::fmt::Display + ?Sized>(
         cx: &Cx,
         refused: Option<&Error>,
+        action: &str,
         name: &str,
         value: &T,
     ) -> Option<bool> {
+        Some(is(&Chosen::Sent(sent(cx, refused, action, name)?), value))
+    }
+
+    /// The form `action` refused, if it was that one, with the name of one
+    /// of its fields: what a `<select>` (`multiple` too) or checkbox shows
+    /// again. Another form on the page shows its own values.
+    pub fn sent<'a>(
+        cx: &'a Cx,
+        refused: Option<&Error>,
+        action: &str,
+        name: &'a str,
+    ) -> Option<(crate::Form<'a>, &'a str)> {
         refused?;
-        Some(
-            cx.form()
-                .all(name)
-                .any(|sent| is(&Chosen::Kept(sent), value)),
-        )
+        if cx.action() != action {
+            return None;
+        }
+        Some((cx.form(), name))
     }
 
     /// What an action refused, if it did: read once a render, for its
@@ -1112,24 +1124,26 @@ pub mod rt {
         cx.get::<Error>()
     }
 
-    /// What a `<select>` chooses its option by (see `chosen`): text from
-    /// the form, or its own value written into a small buffer (a `String`
-    /// only for one too long for it).
+    /// What a `<select>` chooses its options by (see `chosen`): every value
+    /// the form sent for it (a `<select multiple>` sends several), or its
+    /// own value written into a small buffer (a `String` only for one too
+    /// long for it).
     pub enum Chosen<'a> {
         None,
+        Sent((crate::Form<'a>, &'a str)),
         Kept(std::borrow::Cow<'a, str>),
         Small(u8, [u8; 48]),
     }
 
     /// The value a `<select>` of an action's form chooses its option by:
-    /// what was sent (`kept`), else its own `value={expr}`, as text.
+    /// what was sent (`sent`), else its own `value={expr}`, as text.
     pub fn chosen<'a, T: std::fmt::Display + ?Sized>(
         own: Option<&T>,
-        kept: Option<std::borrow::Cow<'a, str>>,
+        sent: Option<(crate::Form<'a>, &'a str)>,
     ) -> Chosen<'a> {
         use std::fmt::Write;
-        if let Some(k) = kept {
-            return Chosen::Kept(k);
+        if let Some(s) = sent {
+            return Chosen::Sent(s);
         }
         let Some(v) = own else { return Chosen::None };
         struct Buf(usize, [u8; 48]);
@@ -1163,10 +1177,34 @@ pub mod rt {
         }
         let mut rest = Rest(match chosen {
             Chosen::None => return false,
+            Chosen::Sent((form, name)) => {
+                return form.all(name).any(|v| is(&Chosen::Kept(v), value));
+            }
             Chosen::Kept(c) => c.as_bytes(),
             Chosen::Small(n, b) => &b[..*n as usize],
         });
         std::fmt::write(&mut rest, format_args!("{value}")).is_ok() && rest.0.is_empty()
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn a_refused_form_keeps_every_choice() {
+        let cx = Cx::for_test(
+            "POST /p?/save HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\n\r\ntag=a&tag=c&on=on",
+            &[],
+        );
+        let no = Error::redirect(303, "/");
+        let refused = Some(&no);
+        let sel = chosen(Some("b"), sent(&cx, refused, "save", "tag"));
+        assert!(is(&sel, "a") && !is(&sel, "b") && is(&sel, "c"));
+        // Another action's refusal leaves this form's own value.
+        let sel = chosen(Some("b"), sent(&cx, refused, "other", "tag"));
+        assert!(is(&sel, "b") && !is(&sel, "a"));
+        assert_eq!(ticked(&cx, refused, "save", "on", "on"), Some(true));
+        assert_eq!(ticked(&cx, refused, "save", "off", "on"), Some(false));
+        assert_eq!(ticked(&cx, refused, "save", "tag", &'c'), Some(true));
+        assert_eq!(ticked(&cx, None, "save", "on", "on"), None);
+        assert_eq!(ticked(&cx, refused, "other", "on", "on"), None);
     }
 
     /// What was wrong with `name`, after its `<input>` in an action's form:
@@ -1522,9 +1560,6 @@ mod tests {
     #[test]
     fn a_select_chooses_by_text() {
         use super::rt::{chosen, is};
-        use std::borrow::Cow;
-        let kept = chosen(Some(&3u8), Some(Cow::Borrowed("7")));
-        assert!(is(&kept, &7) && !is(&kept, &3), "what was sent first");
         let own = chosen(Some(&7u64), None);
         assert!(is(&own, &7) && is(&own, "7"));
         assert!(!is(&own, &70) && !is(&own, "") && !is(&own, &"77"));

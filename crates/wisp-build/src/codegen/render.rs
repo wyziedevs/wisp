@@ -724,7 +724,7 @@ impl Gen {
             } => {
                 let sent_as = match tick {
                     Some(v) if cx.has_cx => {
-                        format!("::wisp::rt::ticked(cx, __refused, {name:?}, {v})")
+                        format!("::wisp::rt::ticked(cx, __refused, {v})")
                     }
                     Some(_) => "None::<bool>".into(),
                     None => kept(name, cx.has_cx),
@@ -746,7 +746,12 @@ impl Gen {
                 }
                 self.line(ind, "}");
             }
-            Node::Chosen { name, own, line } => {
+            Node::Chosen {
+                name,
+                own,
+                line,
+                action,
+            } => {
                 let own = match own {
                     Some(own) => format!("(&::wisp::rt::Attr(&({own}))).get()"),
                     None => "None::<&str>".into(),
@@ -754,7 +759,11 @@ impl Gen {
                 let code = Code {
                     src: format!(
                         "__wisp_sel = ::wisp::rt::chosen({own}, {})",
-                        kept(name, cx.has_cx)
+                        match cx.has_cx {
+                            true =>
+                                format!("::wisp::rt::sent(cx, __refused, {action:?}, {name:?})"),
+                            false => "None".into(),
+                        }
                     ),
                     line: *line,
                 };

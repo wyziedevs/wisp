@@ -1902,6 +1902,12 @@ impl Parser<'_> {
         }
     }
 
+    /// The action the innermost posting form goes to.
+    fn form_action(&self) -> String {
+        let mut open = self.form.open.iter().rev();
+        open.find_map(Option::clone).unwrap_or_default()
+    }
+
     /// A checkbox's or radio's `checked`: whether its value (`own_value`,
     /// else `on`, as the browser sends it) was sent, when the action refused
     /// the form, else its own `checked={cond}` or plain `checked`.
@@ -1948,12 +1954,13 @@ impl Parser<'_> {
             None if plain => Some((None, self.alone(checked("true")))),
             None => None,
         };
+        let tick = format!("{:?}, {name:?}, {value}", self.form_action());
         let node = |own| Node::Kept {
             name: name.to_string(),
             sent,
             own,
             line,
-            tick: Some(value),
+            tick: Some(tick),
         };
         match own {
             Some((Some(k), own)) => {
@@ -1979,6 +1986,7 @@ impl Parser<'_> {
             name: name.to_string(),
             own,
             line,
+            action: self.form_action(),
         };
         match at {
             Some(k) => {
