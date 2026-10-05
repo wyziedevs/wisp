@@ -530,14 +530,12 @@ fn defines<'a>(toks: &[Tok<'a>], depth: u32) -> (Vec<&'a str>, bool) {
             Tok::Id(n, _, true) if d == depth => match n {
                 "fn" | "struct" | "enum" | "static" | "type" | "trait" | "mod" | "union"
                 | "const" => {
-                    let mut j = k + 1;
-                    while matches!(
-                        toks.get(j),
-                        Some(Tok::Id("mut" | "fn" | "unsafe" | "async" | "extern", ..))
-                    ) {
-                        j += 1;
-                    }
-                    if let Some(Tok::Id(name, ..)) = toks.get(j) {
+                    let j =
+                        k + usize::from(matches!(toks.get(k + 1), Some(Tok::Id("mut", ..)))) + 1;
+                    // `const fn f`: the `fn` names it.
+                    if let Some(Tok::Id(name, ..)) = toks.get(j)
+                        && !matches!(*name, "fn" | "unsafe" | "async" | "extern")
+                    {
                         out.push(*name);
                     }
                 }
@@ -1000,4 +998,325 @@ fn dependencies(toml: &str) -> Vec<String> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn used(src: &str) -> Vec<&str> {
+        uses(&lex(src)).into_iter().map(|u| u.0).collect()
+    }
+
+    fn auto(exports: &[(&str, &str, &str, &str)]) -> Auto {
+        Auto {
+            exports: (exports.iter())
+                .map(|(name, kind, m, rel)| Export {
+                    name: name.to_string(),
+                    kind: match *kind {
+                        "fn" => "fn",
+                        "const" => "const",
+                        _ => "struct",
+                    },
+                    segs: vec![m.to_string()],
+                    wisp: true,
+                    rel: rel.to_string(),
+                    line: 1,
+                    sig: String::new(),
+                })
+                .collect(),
+            listed: vec![("Utc".into(), "::chrono::Utc".into())],
+        }
+    }
+
+    fn names(a: &Auto, src: &str) -> Result<Vec<String>, String> {
+        let s = [Src {
+            text: src,
+            rel: "src/routes/+page.rs",
+        }];
+        Ok((a.uses(&s, "", None, "super::__mods::")?.into_iter())
+            .map(|u| u.0)
+            .collect())
+    }
+
+    #[test]
+    fn names_are_tokens_not_text() {
+        let src = r##"
+            // Post in a comment
+            /* Post /* nested */ Post */
+            #[doc = "Post"] #[derive(Post)]
+            fn f<'a>(x: &'a str) -> Duration {
+                let s = "Post"; let r = r#"Post "#; let c = 'P'; let b = b'x';
+                x.Post; x.post(); db::Slug; vec![Thing]; format!("{Tag} {{Nope}} {0}");
+                Duration::from_secs(1)
+            }
+        "##;
+        let u = used(src);
+        assert!(
+            !u.contains(&"Post") && !u.contains(&"post") && !u.contains(&"Slug"),
+            "{u:?}"
+        );
+        assert!(
+            !u.contains(&"Nope") && !u.contains(&"vec") && !u.contains(&"a"),
+            "{u:?}"
+        );
+        assert!(
+            u.contains(&"Duration") && u.contains(&"Thing") && u.contains(&"Tag"),
+            "{u:?}"
+        );
+        assert!(u.contains(&"db"), "{u:?}");
+    }
+
+    #[test]
+    fn use_trees_name_their_leaves() {
+        let (d, globs) = defines(
+            &lex("use a::{b::{C, D as E}, self as F, G}; use h::*; use std::fmt::{self};"),
+            0,
+        );
+        assert_eq!(d, ["C", "E", "F", "G", "fmt"]);
+        assert!(globs);
+        let src =
+            "pub const fn k() {} const X: u8 = 1; static mut Y: u8 = 0; fn z() { struct In; }";
+        assert_eq!(defines(&lex(src), 0).0, ["k", "X", "Y", "z"]);
+    }
+
+    #[test]
+    fn local_and_explicit_names_win() {
+        let a = auto(&[
+            ("Post", "struct", "db", "src/db.rs"),
+            ("slug", "fn", "text", "src/text.rs"),
+        ]);
+        let none = Vec::<String>::new();
+        assert_eq!(
+            names(&a, "fn f() -> Post { slug(1) }").unwrap(),
+            ["Post", "slug"]
+        );
+        assert_eq!(
+            names(&a, "struct Post; fn f() -> Post { slug(1) }").unwrap(),
+            ["slug"]
+        );
+        assert_eq!(
+            names(&a, "use other::slug; fn f() { slug(1) }").unwrap(),
+            none
+        );
+        // std and the Cargo.toml list, unless the file has a glob of its own.
+        let both = names(&a, "fn f(m: HashMap<u8, u8>, t: Utc) {}").unwrap();
+        assert_eq!(both, ["HashMap", "Utc"]);
+        let glob = names(&a, "use x::*; fn f(m: HashMap<u8, u8>) -> Post {}").unwrap();
+        assert_eq!(glob, ["Post"]);
+    }
+
+    #[test]
+    fn two_modules_with_a_name_is_an_error_where_it_is_used() {
+        let a = auto(&[
+            ("Post", "struct", "db", "src/db.rs"),
+            ("Post", "struct", "blog", "src/blog.rs"),
+        ]);
+        let e = names(&a, "fn f() {\n    Post::new()\n}").unwrap_err();
+        assert!(e.starts_with("src/routes/+page.rs:2: `Post`"), "{e}");
+        assert!(e.contains("src/db.rs") && e.contains("src/blog.rs"), "{e}");
+        assert!(e.contains("`db::Post`"), "{e}");
+        assert!(
+            names(&a, "fn f() { db::Post::new(); \"{Post}\"; }")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_binding_keeps_a_const_out() {
+        let a = auto(&[
+            ("MAX", "const", "db", "src/db.rs"),
+            ("count", "fn", "db", "src/db.rs"),
+        ]);
+        let n = names(&a, "fn f() { let MAX = 1; let count = count(); }").unwrap();
+        assert_eq!(n, ["count"]);
+        assert!(names(&a, "fn f(MAX: u8) {}").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_module_does_not_import_itself() {
+        let a = auto(&[("Post", "struct", "db", "src/db.rs")]);
+        let s = [Src {
+            text: "fn f() -> Post {}",
+            rel: "src/db.rs",
+        }];
+        assert!(a.uses(&s, "", Some("db"), "super::").unwrap().is_empty());
+        let ok = a.uses(&s, "", Some("blog"), "super::").unwrap();
+        assert_eq!(ok, [("Post".to_string(), "super::db::Post".to_string())]);
+        assert_eq!(
+            lines(&ok),
+            "#[allow(unused_imports)] use super::db::Post;\n"
+        );
+    }
+
+    #[test]
+    fn the_cargo_list_is_checked() {
+        let toml = |auto: &str| {
+            format!(
+                "[package]\nname = \"a\"\n[dependencies]\nchrono = \"0.4\"\nuuid-x = {{ version = \"1\" }}\n[package.metadata.wisp]\nauto = [{auto}]\n"
+            )
+        };
+        let ok = listed(&toml(
+            r#""chrono::{Utc, DateTime as Dt}", "uuid_x::Uuid", "std::fmt::Write""#,
+        ))
+        .unwrap();
+        let n: Vec<&str> = ok.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(n, ["Utc", "Dt", "Uuid", "Write"]);
+        assert_eq!(ok[1].1, "::chrono::DateTime");
+        for (bad, says) in [
+            (r#""serde::Serialize""#, "not in [dependencies]"),
+            (r#""chrono::*""#, "glob"),
+            (r#""chrono::{*}""#, "glob"),
+            (r#""chrono""#, "a path to an item"),
+            (r#""chrono::{Utc""#, "no `}`"),
+            (r#""chrono::{Utc, Utc}""#, "twice"),
+            (r#""chrono::fn""#, "not an item name"),
+            (r#""chrono::{A B}""#, "`Name as Other`"),
+        ] {
+            let e = listed(&toml(bad)).unwrap_err();
+            assert!(e.contains(says), "{bad}: {e}");
+        }
+    }
+
+    #[test]
+    fn markup_code_is_its_holes() {
+        let src = "---\nlet a = one();\n---\n<p title=\"{two()}\">Post {three()}</p>\n<script>let x = {four}</script>\n<!-- {five} -->";
+        let code = wisp_code(src);
+        assert_eq!(code.lines().count(), src.lines().count());
+        assert_eq!(used(&code), ["one", "two", "three"], "{code}");
+    }
+
+    #[test]
+    fn modules_the_crate_root_declares_are_read() {
+        let root = std::env::temp_dir().join(format!("wisp-auto-mods-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let files = [
+            (
+                "src/main.rs",
+                "mod util;\n#[cfg(test)]\nmod tests;\nmod gone;\nwisp::app!();",
+            ),
+            ("src/tests.rs", "pub fn t() {}"),
+            (
+                "src/util/mod.rs",
+                "pub mod text;\nmod hidden;\npub(crate) fn top() {}\npub(super) fn no() {}\npub mod inner { pub struct In; }",
+            ),
+            (
+                "src/util/text.rs",
+                "/// Slugs.\npub fn slug(s: &str) -> String { s.into() }\n#[cfg(test)]\npub fn only_test() {}",
+            ),
+            ("src/util/hidden.rs", "pub fn secret() {}"),
+            (
+                "src/db.rs",
+                "#[model]\nstruct Post { t: String }\npub static POSTS: Table<Post> = Table::saved();\nfn private() {}",
+            ),
+        ];
+        for (p, c) in files {
+            let f = root.join(p);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, c).unwrap();
+        }
+        let e = exports(&root, &[("db".into(), root.join("src/db.rs"))]).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        let got: Vec<String> = (e.iter())
+            .map(|e| format!("{} {} {}", e.path("M::"), e.rel, e.line))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                "M::db::Post src/db.rs 2",
+                "M::db::POSTS src/db.rs 3",
+                "crate::util::top src/util/mod.rs 3",
+                "crate::util::inner::In src/util/mod.rs 5",
+                "crate::util::text::slug src/util/text.rs 2",
+            ]
+        );
+        assert_eq!(e[4].sig, "pub fn slug(s: &str) -> String");
+    }
+
+    /// Random Rust-ish text never panics a reader, and a name only in a
+    /// comment or string is never a use.
+    #[test]
+    fn fuzz_never_panics() {
+        const BITS: &[&str] = &[
+            "fn ",
+            "pub ",
+            "use ",
+            "::",
+            ":",
+            "{",
+            "}",
+            "(",
+            ")",
+            "[",
+            "]",
+            "#",
+            "#![",
+            "!",
+            "'",
+            "'a",
+            "\"",
+            "r#\"",
+            "\"#",
+            "b'",
+            "//",
+            "/*",
+            "*/",
+            "\n",
+            " ",
+            "Post",
+            "x",
+            "é",
+            "€",
+            "let ",
+            "mut ",
+            "|",
+            ",",
+            ";",
+            ".",
+            "*",
+            "as ",
+            "mod ",
+            "1.5",
+            "{x}",
+            "{{",
+            "<script>",
+            "---\n",
+            "r#",
+            "br\"",
+            "\\",
+            "@",
+            "<!--",
+            "-->",
+            "pub(crate) ",
+            "#[model]",
+            "#[cfg(x)]",
+        ];
+        let mut rng = wisp_shared::rng::Rng::new(7);
+        let a = auto(&[
+            ("Post", "struct", "db", "src/db.rs"),
+            ("Post", "struct", "b", "src/b.rs"),
+        ]);
+        for _ in 0..5000 {
+            let n = rng.below(40);
+            let s: String = (0..n).map(|_| BITS[rng.below(BITS.len())]).collect();
+            let toks = lex(&s);
+            let _ = (
+                uses(&toks),
+                defines(&toks, 0),
+                defines(&toks, 1),
+                bindings(&toks),
+            );
+            let _ = (wisp_code(&s), names(&a, &s), mods(&toks, true));
+            let m = Module {
+                text: &s,
+                rel: String::new(),
+                wisp: true,
+            };
+            m.items(&toks, &["m".into()], 0, &mut Vec::new());
+            let plain = s.replace(['"', '/', '*', '\'', '#', '\\', '\n'], " ");
+            let quiet = format!("{plain}\n// Zed\n\"Zed\" /* Zed */");
+            assert!(!used(&quiet).contains(&"Zed"), "{quiet}");
+        }
+    }
 }

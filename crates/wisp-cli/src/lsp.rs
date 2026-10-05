@@ -120,6 +120,8 @@ struct App {
     problem: Option<(Option<String>, Diag)>,
     /// The file (URI) its problem was shown on, to clear.
     shown: Option<String>,
+    /// The names its files use with no `use` line.
+    auto: wisp_build::auto::Auto,
 }
 
 impl App {
@@ -140,6 +142,7 @@ impl App {
             routes,
             problem: ide::check_project(root),
             shown: None,
+            auto: wisp_build::auto_names(root),
         }
     }
 
@@ -1064,6 +1067,8 @@ impl<'a> At<'a> {
             doc.to_string()
         } else if let Some(doc) = find(&KNOBS) {
             doc.to_string()
+        } else if let Some(doc) = self.auto_doc(ident) {
+            doc
         } else {
             let params = ide::route_params(&self.doc.rel);
             let (name, ty) = params.iter().find(|(n, _)| n == word)?;
@@ -1075,8 +1080,53 @@ impl<'a> At<'a> {
         ))
     }
 
+    /// The hover of an auto-imported name: an app module's item, a std
+    /// name or one of Cargo.toml's `auto` list.
+    fn auto_doc(&self, ident: &str) -> Option<String> {
+        let auto = &self.app?.auto;
+        let local = (auto.exports.iter())
+            .filter(|e| e.name == ident)
+            .map(|e| {
+                format!(
+                    "```rust\n{}\n```\nAuto-imported from `{}` (`{}`).",
+                    e.sig,
+                    e.rel,
+                    e.qualified()
+                )
+            })
+            .collect::<Vec<_>>();
+        if !local.is_empty() {
+            return Some(local.join("\n\n"));
+        }
+        let path = (auto.listed.iter().map(|(n, p)| (n.as_str(), p.as_str())))
+            .chain(wisp_build::auto::STD)
+            .find(|(n, _)| *n == ident)?
+            .1;
+        Some(format!(
+            "```rust\nuse {};\n```\nAuto-imported: no `use` line needed.",
+            path.trim_start_matches("::")
+        ))
+    }
+
     fn definition(&self) -> Option<String> {
         let root = self.doc.root.as_ref()?;
+        // An app module's item the file uses with no `use`: its line.
+        let word = &self.text()[self.word.0..self.word.1];
+        let ident = word.trim_matches(|c: char| !is_word(c));
+        let tagged = self.tag.is_some_and(|t| t.0 == self.word.0);
+        if let Some(e) = (self.app.iter().flat_map(|a| &a.auto.exports))
+            .find(|e| !tagged && e.name == ident && !ident.is_empty())
+        {
+            let file = root.join(&e.rel);
+            let l = e.line.saturating_sub(1);
+            let at = format!(r#"{{"line":{l},"character":0}}"#);
+            return file.exists().then(|| {
+                format!(
+                    r#"{{"uri":{},"range":{{"start":{at},"end":{at}}}}}"#,
+                    q(&path_uri(&file))
+                )
+            });
+        }
         let file = if let (true, Some(c)) = (self.on_tag_name(), self.comp()) {
             root.join(&c.rel)
         } else {
@@ -1295,13 +1345,18 @@ mod tests {
             ("src/routes/about/+page.wisp", "<p>About</p>"),
             ("src/routes/blog/[slug]/+page.wisp", "<h1>{slug}</h1>"),
             ("src/lib/x.js", "export const x = 1"),
+            (
+                "src/text.rs",
+                "\n/// Loud.\npub fn shout(s: &str) -> String { s.into() }",
+            ),
         ];
         for (f, text) in files {
             std::fs::create_dir_all(root.join(f).parent().unwrap()).unwrap();
             std::fs::write(root.join(f), text).unwrap();
         }
         let uri = path_uri(&root.join("src/routes/blog/[slug]/+page.wisp"));
-        let page = "<Card />\n<a href=\"/about\" on:click.prevent=\"go\">{slug}</a>\n<";
+        let page =
+            "<Card />{shout(slug)}\n<a href=\"/about\" on:click.prevent=\"go\">{slug}</a>\n<";
         let pos = |id: u32, method: &str, line: u32, ch: u32| {
             format!(
                 r#"{{"jsonrpc":"2.0","id":{id},"method":"textDocument/{method}","params":{{"textDocument":{{"uri":{}}},"position":{{"line":{line},"character":{ch}}}}}}}"#,
@@ -1323,6 +1378,8 @@ mod tests {
             pos(6, "definition", 0, 2),
             pos(7, "completion", 2, 1),
             pos(8, "completion", 1, 31),
+            pos(10, "hover", 0, 10),
+            pos(11, "definition", 0, 10),
             r#"{"jsonrpc":"2.0","id":9,"method":"nope"}"#.into(),
             r#"{"jsonrpc":"2.0","method":"exit"}"#.into(),
         ]
@@ -1358,6 +1415,10 @@ mod tests {
         has("7", "title={$1}");
         has("8", "prevent");
         has("9", "-32601");
+        has("10", "pub fn shout(s: &str) -> String");
+        has("10", "Auto-imported from `src/text.rs`");
+        has("11", "text.rs");
+        has("11", r#"("line", Num("2"))"#);
         let _ = std::fs::remove_dir_all(&root);
     }
 

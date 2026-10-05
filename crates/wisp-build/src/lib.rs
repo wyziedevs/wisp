@@ -456,6 +456,24 @@ pub fn check(root: &Path) -> Result<(Vec<String>, Vec<String>), String> {
 
 pub use codegen::{Hot, HotTemplate, Weight};
 
+/// For the editor: the names files may use with no `use` line (see
+/// [`auto`]), as far as they can be read; none when they cannot.
+pub fn auto_names(root: &Path) -> auto::Auto {
+    auto::Auto::load(root, &codegen::mod_files(root)).unwrap_or_default()
+}
+
+/// For `wisp check --explain-imports`: per file (from the root), the names
+/// it uses with no `use` line, each with the path it is imported from.
+/// Errors as [`check`]'s.
+pub fn imports(root: &Path) -> Result<Vec<(String, Vec<(String, String)>)>, String> {
+    codegen::imports(&codegen::Input {
+        root,
+        release: false,
+        maps: false,
+        prerendered: None,
+    })
+}
+
 /// For `wisp build --analyze`: each route's browser files as a release
 /// build serves them.
 pub fn analyze(root: &Path) -> Result<Vec<(String, Vec<Weight>)>, String> {

@@ -92,8 +92,8 @@ const COMMANDS: [(&str, &str); 31] = [
         "Write a GitHub Actions workflow that deploys to the host on each push.",
     ),
     (
-        "wisp check [--types]",
-        "Check routes and templates without compiling; --types runs tsc on TypeScript too.",
+        "wisp check [--types] [--explain-imports]",
+        "Check routes and templates without compiling; --types runs tsc on TypeScript too; --explain-imports lists what each file uses with no `use` line.",
     ),
     (
         "wisp test [--browser] [args]",
@@ -221,6 +221,22 @@ fn main() -> ExitCode {
         Some("check") => check_types(&args[1..]).and_then(|types| {
             let root = project()?;
             check(root)?;
+            if args[1..].iter().any(|a| a == "--explain-imports") {
+                for (file, names) in wisp_build::imports(root)? {
+                    println!("{file}");
+                    for (name, path) in names {
+                        let path = path.trim_start_matches("::");
+                        let local = path
+                            .strip_prefix("super::__mods::")
+                            .or(path.strip_prefix("super::"));
+                        match local {
+                            Some(p) => println!("  {name:<20} crate::{p}"),
+                            None => println!("  {name:<20} {path}"),
+                        }
+                    }
+                }
+                return Ok(());
+            }
             term::done("Routes and templates are valid.");
             fmt::warn_unformatted(root);
             if types { types::check(root) } else { Ok(()) }
@@ -438,15 +454,22 @@ fn no_options(command: &str, args: &[String]) -> Result<(), String> {
     }
 }
 
-/// `wisp check`'s one option, `--types`.
+/// `wisp check`'s options: `--types`, and `--explain-imports` (whether
+/// the former is given).
 fn check_types(args: &[String]) -> Result<bool, String> {
-    match args {
-        [] => Ok(false),
-        [t] if t == "--types" => Ok(true),
-        [arg, ..] => Err(format!(
-            "Unexpected {arg}.\nwisp check takes --types, to check TypeScript with tsc."
-        )),
+    let mut types = false;
+    for arg in args {
+        match arg.as_str() {
+            "--types" => types = true,
+            "--explain-imports" => {}
+            _ => {
+                return Err(format!(
+                    "Unexpected {arg}.\nwisp check takes --types, to check TypeScript with tsc, and --explain-imports, to list the names each file uses with no `use` line."
+                ));
+            }
+        }
     }
+    Ok(types)
 }
 
 /// `wisp_build::check`, its warnings said: the npm modules imported.

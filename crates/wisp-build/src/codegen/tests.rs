@@ -3319,3 +3319,54 @@ fn first_paint_expressions() {
         assert_eq!(paint(no), "-", "{no}");
     }
 }
+
+#[test]
+fn route_files_auto_import_what_they_name() {
+    let files = [
+        ("src/main.rs", "mod util;\nwisp::app!();\nfn main() {}"),
+        ("src/util/mod.rs", "pub mod text;"),
+        (
+            "src/util/text.rs",
+            "pub fn slug(s: &str) -> String { s.into() }",
+        ),
+        ("src/db.rs", "pub struct Post;\npub const MAX: u8 = 3;"),
+        ("src/blog.rs", "pub fn latest() -> Post { Post }"),
+        (
+            "src/routes/+page.wisp",
+            "---\nlet s = slug(\"A\");\nlet n = MAX;\nlet m: HashMap<u8, u8> = HashMap::new();\n---\n{s} {latest_label()}",
+        ),
+        ("src/routes/b/+page.wisp", "<p>Post {MAX}</p>"),
+        (
+            "src/labels.rs",
+            "pub fn latest_label() -> &'static str { \"x\" }",
+        ),
+    ];
+    let code = app("auto-imports", &files).unwrap();
+    for u in [
+        "use crate::util::text::slug;",
+        "use super::__mods::db::MAX;",
+        "use ::std::collections::HashMap;",
+        "use super::__mods::labels::latest_label;",
+        // `src/blog.rs` names `Post` of `src/db.rs`.
+        "use super::db::Post;",
+    ] {
+        assert!(code.contains(u), "{u}\n{code}");
+    }
+    // Prose is not code.
+    assert!(!code.contains("use super::__mods::db::Post;"), "{code}");
+}
+
+#[test]
+fn a_name_two_modules_share_fails_where_it_is_used() {
+    let files = [
+        ("src/db.rs", "pub struct Post;"),
+        ("src/blog.rs", "pub struct Post;"),
+        ("src/routes/+page.wisp", "---\n\nlet p = Post;\n---\nhi"),
+    ];
+    let e = app("auto-ambiguous", &files).unwrap_err();
+    assert!(e.starts_with("src/routes/+page.wisp:3: `Post`"), "{e}");
+    assert!(
+        e.contains("`blog::Post`") && e.contains("`db::Post`"),
+        "{e}"
+    );
+}

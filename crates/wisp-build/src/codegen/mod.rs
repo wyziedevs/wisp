@@ -896,6 +896,23 @@ pub fn check(input: &Input) -> Result<(Vec<String>, Vec<String>), String> {
     Ok((o.web.imports(npm::ESM), o.warnings))
 }
 
+/// `wisp check --explain-imports`: what each file is auto-imported.
+pub fn imports(input: &Input) -> Result<Vec<(String, Vec<(String, String)>)>, String> {
+    let p = Project::load(input)?;
+    let web = p.browser()?;
+    let mut g = Gen {
+        out: String::new(),
+        release: input.release,
+        types: None,
+        users: None,
+        db: false,
+        auto: Default::default(),
+        imports: Vec::new(),
+    };
+    g.modules(&p, &web)?;
+    Ok(g.imports)
+}
+
 /// One file a page of a route loads, for `wisp build --analyze`.
 pub struct Weight {
     /// `js`, `css` or `wasm`.
@@ -1484,6 +1501,13 @@ fn app_mods(root: &Path) -> Result<(Vec<UserMod>, Vec<RemoteFn>), String> {
         out.push(UserMod::new(name.into(), file, None, shims, &items));
     }
     Ok((out, remotes))
+}
+
+/// The app's own modules Wisp compiles (`src/notes.rs`), by name, as far
+/// as they can be read.
+pub(crate) fn mod_files(root: &Path) -> Vec<(String, PathBuf)> {
+    let mods = app_mods(root).map(|m| m.0).unwrap_or_default();
+    mods.into_iter().map(|m| (m.name, m.file)).collect()
 }
 
 /// Whether `src` has `mod NAME;` (`pub mod`, with attributes, anywhere).
