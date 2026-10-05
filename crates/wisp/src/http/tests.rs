@@ -20,6 +20,16 @@ fn static_paths_refuse_windows_devices_and_trimmed_names() {
         "a.txt.",
         "a.txt ",
         "x/PRN",
+        // Out of the folder, or a name a drive or a root could read.
+        "..",
+        "a/../../b",
+        ".",
+        "",
+        "a//b",
+        "/etc/passwd",
+        "a\\..\\b",
+        "c:x",
+        "a\0b",
     ] {
         assert!(!stays_inside(bad), "{bad}");
     }
