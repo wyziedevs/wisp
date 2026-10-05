@@ -1,0 +1,99 @@
+{
+ "framework": "ASP.NET Core",
+ "pass": 1,
+ "at": "2026-10-05T11:20:45.834Z",
+ "coldMs": 733,
+ "routes": {
+  "plaintext": {
+   "rps": 40234,
+   "p50ms": 1.19,
+   "p99ms": 7.18,
+   "non200": 0,
+   "errors": 309,
+   "runs": [
+    40234,
+    49796,
+    39940,
+    38804,
+    43674
+   ],
+   "stealPct": 7.1,
+   "discarded": 3,
+   "noisy": true
+  },
+  "json": {
+   "rps": 31570,
+   "p50ms": 1.45,
+   "p99ms": 9.98,
+   "non200": 0,
+   "errors": 312,
+   "runs": [
+    31570,
+    34556,
+    28244,
+    27502,
+    35637
+   ],
+   "stealPct": 12.6,
+   "discarded": 10,
+   "noisy": true
+  },
+  "params": {
+   "rps": 26068,
+   "p50ms": 1.64,
+   "p99ms": 13.23,
+   "non200": 0,
+   "errors": 309,
+   "runs": [
+    26068,
+    24046,
+    28889,
+    27140,
+    23284
+   ],
+   "stealPct": 17.6,
+   "discarded": 10,
+   "noisy": true
+  },
+  "list": {
+   "rps": 1761,
+   "p50ms": 34.64,
+   "p99ms": 84.3,
+   "non200": 0,
+   "errors": 318,
+   "runs": [
+    1442,
+    1458,
+    1761,
+    1793,
+    2161
+   ],
+   "stealPct": 7.5,
+   "discarded": 5,
+   "noisy": true
+  },
+  "json-big": {
+   "rps": 5616,
+   "p50ms": 10.47,
+   "p99ms": 28.39,
+   "non200": 0,
+   "errors": 320,
+   "runs": [
+    6122,
+    4704,
+    5576,
+    5616,
+    6169
+   ],
+   "stealPct": 7.4,
+   "discarded": 5,
+   "noisy": true
+  }
+ },
+ "host": {
+  "cpus": "0-1",
+  "client": "2-3"
+ },
+ "rssMb": 96,
+ "peakMb": 108
+}

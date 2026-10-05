@@ -1,0 +1,99 @@
+{
+ "framework": "Fastify",
+ "pass": 1,
+ "at": "2026-10-05T09:54:59.039Z",
+ "coldMs": 395,
+ "routes": {
+  "plaintext": {
+   "rps": 28082,
+   "p50ms": 2,
+   "p99ms": 6.83,
+   "non200": 0,
+   "errors": 306,
+   "runs": [
+    24650,
+    27388,
+    31525,
+    28082,
+    33817
+   ],
+   "stealPct": 3.1,
+   "discarded": 5,
+   "noisy": false
+  },
+  "json": {
+   "rps": 27936,
+   "p50ms": 2.01,
+   "p99ms": 6.22,
+   "non200": 0,
+   "errors": 302,
+   "runs": [
+    29244,
+    29303,
+    27936,
+    22698,
+    24679
+   ],
+   "stealPct": 3.1,
+   "discarded": 8,
+   "noisy": false
+  },
+  "params": {
+   "rps": 20144,
+   "p50ms": 2.81,
+   "p99ms": 9,
+   "non200": 0,
+   "errors": 318,
+   "runs": [
+    25555,
+    25183,
+    20144,
+    17211,
+    18062
+   ],
+   "stealPct": 4.8,
+   "discarded": 21,
+   "noisy": true
+  },
+  "list": {
+   "rps": 899,
+   "p50ms": 68.28,
+   "p99ms": 157.06,
+   "non200": 0,
+   "errors": 319,
+   "runs": [
+    1079,
+    1023,
+    899,
+    770,
+    757
+   ],
+   "stealPct": 10.6,
+   "discarded": 41,
+   "noisy": true
+  },
+  "json-big": {
+   "rps": 4239,
+   "p50ms": 13.35,
+   "p99ms": 43.3,
+   "non200": 0,
+   "errors": 301,
+   "runs": [
+    4239,
+    3754,
+    4707,
+    4143,
+    4465
+   ],
+   "stealPct": 18.6,
+   "discarded": 50,
+   "noisy": true
+  }
+ },
+ "host": {
+  "cpus": "0-1",
+  "client": "2-3"
+ },
+ "rssMb": 494,
+ "peakMb": 494
+}

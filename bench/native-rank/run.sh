@@ -1,7 +1,7 @@
 #!/bin/bash
 # One-command reproduce, ON a Linux host with >= 4 cores (server on 0-1, oha on 2-3):
 #   ./run.sh all           setup tools, build, verify, pass 1, pass 2 (reverse order), report
-#   ./run.sh build|verify|pass 1|pass 2|report
+#   ./run.sh build|verify|pass 1|pass 2|pass 3|report   (pass 3 is the tie-break; STEAL_MAX/STEAL_TRIES tune the steal gate)
 # Every measurement runs under flock /tmp/wisp-bench.lock (the host is shared). Pass 2 walks the
 # frameworks in the opposite order, and should be started at a different time than pass 1.
 set -u
@@ -14,6 +14,8 @@ ulimit -n 1048576 2>/dev/null || ulimit -n 65535
 pass() {
   local n=$1 list=$ALL
   [ "$n" = 2 ] && list=$(echo $ALL | tr ' ' '\n' | tac | tr '\n' ' ')
+  # pass 3 (the tie-break when 1 and 2 disagree): neither order, Rust servers split up
+  [ "$n" = 3 ] && list="axum fastify wisp spring actix sveltekit aspnet fastapi gin next hono-bun express"
   for f in $list; do
     flock $LOCK node run.mjs bench --pass "$n" --fw "$f"
   done

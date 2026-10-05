@@ -58,6 +58,13 @@ differs only in spelling (`;charset=` spacing and case).
   cores 2-3, 64 connections, keep-alive, 10 s runs.
 - Per framework and route: 5 s warm-up, then 5 timed runs; the median (by req/s) is the cell.
   A server is started fresh for each framework, killed afterwards; port 18480.
+- Hypervisor steal: the VPS is a shared VM and its steal time swung between 0.4% and 55% during
+  these runs, which moves every number by up to 10x. `run.mjs` reads `/proc/stat` around every
+  timed run, redoes a run once if steal was above 8% (`STEAL_MAX`, `STEAL_TRIES`), and otherwise
+  keeps the quietest try and marks the cell `~` (noisy). Steal and discards are in the JSON.
+  The first two complete passes ran without this gate (`results/ungated/`, steal 45-60% for most
+  of pass 1) and are kept only as evidence of how much the noise matters; `results/strict-partial/`
+  is a pass abandoned at a 5% gate because retries then dominated the run time.
 - Cold start: spawn to the first `200` on `/`, polled every 5 ms. RSS: the sum over every
   process of the server (workers, JVM, Bun processes) after all five routes were loaded.
 - Production mode and no logging everywhere. Multi-core: Node frameworks run `cluster` with one

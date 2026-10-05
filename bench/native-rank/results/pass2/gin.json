@@ -1,0 +1,99 @@
+{
+ "framework": "Go Gin",
+ "pass": 2,
+ "at": "2026-10-05T13:24:39.225Z",
+ "coldMs": 48,
+ "routes": {
+  "plaintext": {
+   "rps": 29779,
+   "p50ms": 1.52,
+   "p99ms": 10.81,
+   "non200": 0,
+   "errors": 299,
+   "runs": [
+    29050,
+    34859,
+    30798,
+    28157,
+    29779
+   ],
+   "stealPct": 6.9,
+   "discarded": 1,
+   "noisy": false
+  },
+  "json": {
+   "rps": 23934,
+   "p50ms": 1.84,
+   "p99ms": 13.54,
+   "non200": 0,
+   "errors": 316,
+   "runs": [
+    23779,
+    23934,
+    28353,
+    25792,
+    22364
+   ],
+   "stealPct": 10.2,
+   "discarded": 9,
+   "noisy": true
+  },
+  "params": {
+   "rps": 21495,
+   "p50ms": 1.99,
+   "p99ms": 16.19,
+   "non200": 0,
+   "errors": 303,
+   "runs": [
+    24843,
+    23387,
+    21495,
+    17469,
+    14559
+   ],
+   "stealPct": 13.4,
+   "discarded": 8,
+   "noisy": true
+  },
+  "list": {
+   "rps": 410,
+   "p50ms": 139.84,
+   "p99ms": 567.59,
+   "non200": 0,
+   "errors": 319,
+   "runs": [
+    400,
+    410,
+    410,
+    447,
+    523
+   ],
+   "stealPct": 15.4,
+   "discarded": 10,
+   "noisy": true
+  },
+  "json-big": {
+   "rps": 4840,
+   "p50ms": 12.22,
+   "p99ms": 40.72,
+   "non200": 0,
+   "errors": 319,
+   "runs": [
+    3840,
+    4711,
+    4840,
+    5231,
+    6262
+   ],
+   "stealPct": 5.7,
+   "discarded": 3,
+   "noisy": true
+  }
+ },
+ "host": {
+  "cpus": "0-1",
+  "client": "2-3"
+ },
+ "rssMb": 24,
+ "peakMb": 31
+}
