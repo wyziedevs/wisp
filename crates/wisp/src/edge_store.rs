@@ -14,7 +14,6 @@
 
 use crate::{Error, Request, Result, Store};
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
@@ -23,10 +22,10 @@ use std::task::{Context, Poll, Waker};
 const URL: &str = "wisp:store";
 
 /// Each table's rows, until it reads them: `None` once it has.
-type Tables = HashMap<String, Option<Vec<(u64, String)>>>;
+type Tables = crate::edge::Ids<String, Option<Vec<(u64, String)>>>;
 
 thread_local! {
-    static ROWS: RefCell<Tables> = RefCell::new(HashMap::new());
+    static ROWS: RefCell<Tables> = const { RefCell::new(Tables::new()) };
     /// Changes not yet sent.
     static QUEUE: RefCell<String> = const { RefCell::new(String::new()) };
     static SENDING: Cell<bool> = const { Cell::new(false) };
@@ -52,11 +51,11 @@ pub(crate) async fn open() -> Result {
                 format!("the store sent a row Wisp cannot read: {line}"),
             )
         })?;
-        tables
-            .entry(table.into())
-            .or_insert_with(|| Some(Vec::new()))
-            .get_or_insert_default()
-            .push((id, json.into()));
+        let row = (id, json.into());
+        match tables.get_mut(table) {
+            Some(rows) => rows.get_or_insert_default().push(row),
+            None => drop(tables.insert(table.into(), Some(vec![row]))),
+        }
     }
     ROWS.set(tables);
     crate::store(Edge);

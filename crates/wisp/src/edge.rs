@@ -78,7 +78,6 @@ use crate::ws::Sock;
 use crate::{App, Reply, Request};
 use std::borrow::Cow;
 use std::cell::{Cell, OnceCell, RefCell};
-use std::collections::HashMap;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -258,19 +257,19 @@ struct Conn {
 thread_local! {
     static IN: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     #[cfg(not(request_only))]
-    static CONNS: RefCell<HashMap<u32, Conn>> = RefCell::new(HashMap::new());
+    static CONNS: RefCell<Ids<u32, Conn>> = const { RefCell::new(Ids::new()) };
     /// WebSockets a host accepted, by request.
-    static SOCKS: RefCell<HashMap<u32, Arc<Sock>>> = RefCell::new(HashMap::new());
-    static ENV: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
-    static TASKS: RefCell<HashMap<u32, Task>> = RefCell::new(HashMap::new());
+    static SOCKS: RefCell<Ids<u32, Arc<Sock>>> = const { RefCell::new(Ids::new()) };
+    static ENV: RefCell<Ids<String, String>> = const { RefCell::new(Ids::new()) };
+    static TASKS: RefCell<Ids<u32, Task>> = const { RefCell::new(Ids::new()) };
     static WOKEN: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
-    static FETCHES: RefCell<HashMap<u32, Fetching>> = RefCell::new(HashMap::new());
+    static FETCHES: RefCell<Ids<u32, Fetching>> = const { RefCell::new(Ids::new()) };
     static NEXT_FETCH: Cell<u32> = const { Cell::new(0) };
     /// Timers not yet due, with what to wake; a due one is removed.
-    static TIMERS: RefCell<HashMap<u32, Option<Waker>>> = RefCell::new(HashMap::new());
+    static TIMERS: RefCell<Ids<u32, Option<Waker>>> = const { RefCell::new(Ids::new()) };
     static NEXT_TIMER: Cell<u32> = const { Cell::new(0) };
     /// Streams waiting for `wisp_pull`, by request.
-    static PULLS: RefCell<HashMap<u32, Option<Waker>>> = RefCell::new(HashMap::new());
+    static PULLS: RefCell<Ids<u32, Option<Waker>>> = const { RefCell::new(Ids::new()) };
     static NEXT_TASK: Cell<u32> = const { Cell::new(0) };
     static CURRENT: Cell<u32> = const { Cell::new(INIT) };
     /// `init` has finished: 0 not yet, 1 well, 2 failed.
@@ -303,6 +302,64 @@ pub extern "C" fn wisp_buf(len: usize) -> *mut u8 {
     })
 }
 
+/// A map by key that is a list, scanned. The edge holds a few entries at a
+/// time (the requests, fetches and timers in flight, the variables): a scan
+/// of them costs less than hashing a key, and a hash table's code is not in
+/// the wasm, which a host compiles on every cold start.
+pub(crate) struct Ids<K, T>(Vec<(K, T)>);
+
+impl<K, T> Ids<K, T> {
+    pub(crate) const fn new() -> Self {
+        Ids(Vec::new())
+    }
+
+    fn at<Q: PartialEq + ?Sized>(&self, k: &Q) -> Option<usize>
+    where
+        K: std::borrow::Borrow<Q>,
+    {
+        self.0.iter().position(|(i, _)| i.borrow() == k)
+    }
+
+    pub(crate) fn get<Q: PartialEq + ?Sized>(&self, k: &Q) -> Option<&T>
+    where
+        K: std::borrow::Borrow<Q>,
+    {
+        self.0.iter().find(|(i, _)| i.borrow() == k).map(|(_, v)| v)
+    }
+
+    pub(crate) fn get_mut<Q: PartialEq + ?Sized>(&mut self, k: &Q) -> Option<&mut T>
+    where
+        K: std::borrow::Borrow<Q>,
+    {
+        self.0
+            .iter_mut()
+            .find(|(i, _)| (*i).borrow() == k)
+            .map(|(_, v)| v)
+    }
+
+    /// Sets `k` to `v`; what it was before, if it was there.
+    pub(crate) fn insert(&mut self, k: K, v: T) -> Option<T>
+    where
+        K: PartialEq,
+    {
+        match self.get_mut(&k) {
+            Some(old) => Some(std::mem::replace(old, v)),
+            None => {
+                self.0.push((k, v));
+                None
+            }
+        }
+    }
+
+    pub(crate) fn remove<Q: PartialEq + ?Sized>(&mut self, k: &Q) -> Option<T>
+    where
+        K: std::borrow::Borrow<Q>,
+    {
+        let i = self.at(k)?;
+        Some(self.0.swap_remove(i).1)
+    }
+}
+
 /// The first `len` bytes the host wrote. The buffer stays where it is, so a
 /// host that was given its address may write the next request there.
 fn take_in(len: usize) -> Vec<u8> {
@@ -314,11 +371,9 @@ fn take_in(len: usize) -> Vec<u8> {
 pub extern "C" fn wisp_env(len: usize) {
     let text = String::from_utf8_lossy(&take_in(len)).into_owned();
     ENV.with_borrow_mut(|env| {
-        env.extend(
-            text.split('\0')
-                .filter_map(|l| l.split_once('='))
-                .map(|(k, v)| (k.to_string(), v.to_string())),
-        );
+        for (k, v) in text.split('\0').filter_map(|l| l.split_once('=')) {
+            env.insert(k.to_string(), v.to_string());
+        }
     });
 }
 
@@ -927,7 +982,7 @@ pub(crate) fn spawn_task(task: Task) {
     WOKEN.with_borrow_mut(|w| w.push(id));
 }
 
-type Waiting = std::thread::LocalKey<RefCell<HashMap<u32, Option<Waker>>>>;
+type Waiting = std::thread::LocalKey<RefCell<Ids<u32, Option<Waker>>>>;
 
 /// Waits until its id is taken out of the map, by [`done`]; dropped, it
 /// takes it out itself.
