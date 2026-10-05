@@ -31,15 +31,20 @@ pub(crate) fn answer<A: App>(cx: &Cx) -> Option<(Vec<u8>, &'static str)> {
     let routes = A::export_routes();
     let base = base(cx).filter(|_| routes.iter().any(|r| r.page && r.indexed))?;
     let (body, mime) = match sitemap {
-        // An app with no locales, or no `entries()`, has none of their code.
+        // On wasm32 an app with no locales, or no `entries()`, has none of
+        // their code; the server keeps the one general sitemap.
         true => (
             {
                 let slashed = crate::http::slash() == crate::TrailingSlash::Always;
-                match (A::LOCALES.is_empty(), A::ENTRIES) {
-                    (true, false) => xml::<false, false>(&base, &routes, slashed),
-                    (true, true) => xml::<false, true>(&base, &routes, slashed),
-                    (false, _) => xml::<true, true>(&base, &routes, slashed),
-                }
+                #[cfg(target_arch = "wasm32")]
+                let body = match (A::LOCALES.is_empty(), A::ENTRIES) {
+                    (true, false) => xml_edge::<false, false>(&base, &routes, slashed),
+                    (true, true) => xml_edge::<false, true>(&base, &routes, slashed),
+                    (false, _) => xml_edge::<true, true>(&base, &routes, slashed),
+                };
+                #[cfg(not(target_arch = "wasm32"))]
+                let body = xml(&base, &routes, slashed);
+                body
             },
             "application/xml; charset=utf-8",
         ),
@@ -185,8 +190,43 @@ pub(crate) fn base(cx: &Cx) -> Option<String> {
 
 /// The sitemap of `routes`' indexed pages, each address once, in order;
 /// `slashed`: each ends in `/`, as `trailing_slash(Always)` serves them.
-/// `I18N`: the app has locales; `ENTRIES`: some page has `entries()`.
-fn xml<const I18N: bool, const ENTRIES: bool>(
+/// [`xml`] on the edge. `I18N`: the app has locales; `ENTRIES`: some page
+/// has `entries()`; without either, none of its code is in the wasm.
+#[cfg(not(target_arch = "wasm32"))]
+fn xml(base: &str, routes: &[ExportRoute], slashed: bool) -> String {
+    // Each address, and the `xhtml:link`s that go with it.
+    let mut urls: BTreeMap<String, String> = BTreeMap::new();
+    let locales = crate::locales();
+    let end = |u: &str| if slashed && u != "/" { "/" } else { "" };
+    for r in routes.iter().filter(|r| r.page && r.indexed) {
+        // A route whose `entries()` panics or does not fit is left out.
+        if has_locale(r) && !locales.is_empty() {
+            urls.extend(locale_urls(base, r, &end));
+        } else if let Ok(Ok(all)) = catch_unwind(AssertUnwindSafe(|| paths(r))) {
+            let all = all.iter().map(|segs| url(segs));
+            urls.extend(all.map(|u| (format!("{base}{u}{}", end(&u)), String::new())));
+        }
+    }
+    let mut out = String::from(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\"",
+    );
+    if urls.values().any(|alts| !alts.is_empty()) {
+        out.push_str(" xmlns:xhtml=\"http://www.w3.org/1999/xhtml\"");
+    }
+    out.push_str(">\n");
+    for (loc, alts) in urls.into_iter().take(MAX_URLS) {
+        out.push_str("<url><loc>");
+        esc(&mut out, &loc);
+        out.push_str("</loc>");
+        out.push_str(&alts);
+        out.push_str("</url>\n");
+    }
+    out.push_str("</urlset>\n");
+    out
+}
+
+#[cfg(target_arch = "wasm32")]
+fn xml_edge<const I18N: bool, const ENTRIES: bool>(
     base: &str,
     routes: &[ExportRoute],
     slashed: bool,
@@ -350,7 +390,7 @@ mod tests {
             post,
         ];
         assert_eq!(
-            xml::<true, true>("https://x.org", &routes, false),
+            xml("https://x.org", &routes, false),
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
              <urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n\
              <url><loc>https://x.org/</loc></url>\n\
@@ -360,7 +400,7 @@ mod tests {
              <url><loc>https://x.org/post/c</loc></url>\n\
              </urlset>\n"
         );
-        let slashed = xml::<true, true>("https://x.org", &routes, true);
+        let slashed = xml("https://x.org", &routes, true);
         assert!(slashed.contains("<loc>https://x.org/about/</loc>"));
         assert!(slashed.contains("<loc>https://x.org/post/c/</loc>"));
         assert!(slashed.contains("<loc>https://x.org/</loc>"));

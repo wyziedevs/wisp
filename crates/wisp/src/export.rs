@@ -335,6 +335,7 @@ pub(crate) fn paths(r: &ExportRoute) -> Result<Vec<Vec<String>>, String> {
 
 /// [`paths`] of a route of an app with no `entries()` and no locales: its
 /// one page when every parameter is optional (`[[n]]`), else none.
+#[cfg(any(target_arch = "wasm32", test))]
 pub(crate) fn plain(r: &ExportRoute) -> Option<Vec<String>> {
     let params = || r.pattern.split('/').filter(|s| s.starts_with('['));
     if !params().all(|s| s.starts_with("[[")) {
