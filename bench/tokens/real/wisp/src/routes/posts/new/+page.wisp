@@ -7,4 +7,4 @@ fn default(post: Post) {
 ---
 
 <title>New post</title>
-<form fields><button>Create</button></form>
+<form fields="Create" />

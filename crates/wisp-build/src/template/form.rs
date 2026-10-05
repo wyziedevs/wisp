@@ -225,11 +225,14 @@ pub(super) fn form_fields(src: &str, fields: &[Field]) -> Result<Option<String>,
         let Some(&(_, given, tok, tok_end)) = attrs.iter().find(|a| {
             a.0 == "fields"
                 && (a.1.is_empty() && !src[a.2..a.3].contains('=')
-                    || a.1.starts_with('{') && a.1.ends_with('}'))
+                    || a.1.starts_with('{') && a.1.ends_with('}')
+                    || !a.1.contains(['{', '<', '"']))
         }) else {
             continue;
         };
         let start_from = given.strip_prefix('{').and_then(|v| v.strip_suffix('}'));
+        // `fields="Log in"`: the button's text.
+        let button = (start_from.is_none() && !given.is_empty()).then_some(given);
         let value = |n: &str| attrs.iter().find(|a| a.0 == n).map(|a| a.1);
         let mut implied = false;
         let action = match (value("action"), value("method")) {
@@ -293,13 +296,33 @@ pub(super) fn form_fields(src: &str, fields: &[Field]) -> Result<Option<String>,
                 "`fields`: this action takes nothing a form could ask for (a `#[action]` of this page, with parameters)"
             }));
         }
-        let end = (j + 1 + usize::from(src[j..].starts_with("/>"))).min(src.len());
+        let closed = src[j..].starts_with("/>");
+        let end = (j + 1 + usize::from(closed)).min(src.len());
+        // No button of its own (`<form fields />`, or none before
+        // `</form>`): one named for the action, `Send` for `fn default`.
+        let body = src[end..].find("</form>").map_or("", |e| &src[end..end + e]);
+        if closed || !body.contains("<button") {
+            let mut name = match button {
+                Some(text) => text.to_string(),
+                None if action == "default" => "send".into(),
+                None => action.replace('_', " "),
+            };
+            if let Some(first) = name.get_mut(..1) {
+                first.make_ascii_uppercase();
+            }
+            inputs.push_str(&format!("<button>{name}</button>"));
+        }
         out.push_str(&src[from..src[..tok].trim_end().len()]);
         if implied {
             out.push_str(" method=\"post\"");
         }
-        out.push_str(&src[tok_end..end]);
+        let tail = &src[tok_end..j];
+        out.push_str(tail.trim_end());
+        out.push('>');
         out.push_str(&inputs);
+        if closed {
+            out.push_str("</form>");
+        }
         (from, i) = (end, end);
     }
     out.push_str(&src[from..]);

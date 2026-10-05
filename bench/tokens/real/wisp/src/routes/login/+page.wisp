@@ -7,4 +7,4 @@ fn default(email: Email, password: String) {
 ---
 
 <title>Log in</title>
-<form fields><button>Log in</button></form>
+<form fields="Log in" />

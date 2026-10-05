@@ -9,4 +9,4 @@ cx.signed_in()?;
 ---
 
 <title>Avatar</title>
-<form fields><button>Upload</button></form>
+<form fields="Upload" />

@@ -12,4 +12,4 @@ fn default(email: Email, #[validate(min_len = 8)] password: Password) {
 ---
 
 <title>Sign up</title>
-<form fields><button>Sign up</button></form>
+<form fields="Sign up" />
