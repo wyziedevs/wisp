@@ -3501,7 +3501,11 @@ impl Parser<'_> {
                         "expected {#each <expr> as <pattern>[, <index>] [if <cond>]}".into(),
                     )
                 })?;
-                if [Some(pat), index].iter().flatten().any(|n| has_word(n, "cx")) {
+                if [Some(pat), index]
+                    .iter()
+                    .flatten()
+                    .any(|n| has_word(n, "cx"))
+                {
                     return Err(self.err(
                         open,
                         "`cx` is the request context in a template; name the item or index something else".into(),

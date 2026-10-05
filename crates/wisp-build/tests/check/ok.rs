@@ -39,7 +39,10 @@ fn routes_of_every_shape() {
             "src/routes/shop/[[page=int]]/+page.wisp",
             "{#if let Some(p) = page}page {p}{/if}",
         ),
-        ("src/routes/docs/[[lang]]/+page.wisp", "{format!(\"{lang:?}\")}"),
+        (
+            "src/routes/docs/[[lang]]/+page.wisp",
+            "{format!(\"{lang:?}\")}",
+        ),
         ("src/routes/files/[...rest]/+page.wisp", "{rest}"),
         ("src/routes/w/[w=word]/+page.wisp", "{w}"),
         (
