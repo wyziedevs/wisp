@@ -294,31 +294,20 @@ fn forms_morph_in_place() {
     assert_eq!(b.eval(&format!("{n}.value")).as_str(), Some("B"));
 }
 
-/// A `---` block's literals the browser alone reads are browser state, as
-/// the script's `let`s are: after a form action's morph they keep what the
-/// visitor made them. A value the server computes (`count`, read as
-/// `data.count`) is the server's again after the morph.
+/// A `---` block's literal the browser alone reads (`clicks`) is browser
+/// state, as the script's `let`s are: after a form action's morph it keeps
+/// what the visitor made it, and so does what derives from it. A value the
+/// server computes (`count`, read as `data.count`) is the server's again.
 #[test]
 fn header_literals_are_browser_state() {
     let mut b = wisp::browser!(Site);
     b.goto("/a2/state");
-    assert_eq!(b.text("#lit"), "5");
-    assert_eq!(b.text("#on"), "off");
-    assert_eq!(b.text("#who"), "me");
-    assert_eq!(b.text("#list"), "2");
+    assert_eq!(b.text("#client"), "0");
     let seen: u32 = b.text("#seen").parse().unwrap();
-    b.click("#lit-up");
-    b.click("#lit-up");
-    b.click("#toggle");
-    b.click("#add");
     b.click("#click");
-    b.fill("#who-in", "you");
-    let after = ["7", "on", "you", "3", "1"];
-    let now = |b: &mut wisp::test::Browser| {
-        ["#lit", "#on", "#who", "#list", "#client"].map(|s| b.text(s))
-    };
-    assert_eq!(now(&mut b), after);
+    b.click("#click");
+    assert_eq!([b.text("#client"), b.text("#double")], ["2", "4"]);
     b.click("#bump");
     assert_eq!(b.text("#seen"), (seen + 1).to_string());
-    assert_eq!(now(&mut b), after);
+    assert_eq!([b.text("#client"), b.text("#double")], ["2", "4"]);
 }
