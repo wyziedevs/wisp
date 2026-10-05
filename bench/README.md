@@ -488,6 +488,36 @@ linearly (190k, 422k, 715k req/s at 1, 2, 4 threads) until the load
 generator became the limit. Axum is that first shape (`axum::serve` on one
 runtime), which is why it has cores to spare at half the throughput.
 
+## Build times
+
+`bench/build/run.sh <dir> [routes]` makes an app with `wisp new`, adds
+`[routes]` generated routes (`gen.sh`: a `+page.rs` load and a template
+with an `if`, an `each` and holes each), and times cold and incremental
+builds (`REL=1` adds release). Windows 10, 2026-10-04; wall-clock on this
+machine swings up to 2x between runs, so read the shape, not the digits:
+
+| app | cold debug | no-op | template edit | `+page.rs` edit | new route | cold release | wisp.rs | release exe |
+|---|---|---|---|---|---|---|---|---|
+| `wisp new` | 15-25s | 0.1s | 0.7-1.3s | 0.5s | 1.6-2.2s | 30-44s | 680 lines | 1.48 MB |
+| +50 routes | 14-37s | 0.1s | 1.3-3.7s | 0.9-3.3s | 3.3-8.1s | 36-62s | 4.5k lines | 1.64 MB |
+| +200 routes | 18-25s | 0.1s | 2.7-4.5s | 1.2-2.0s | 7-9s | 49-55s | 15.9k lines | 2.12 MB |
+
+- Where the time goes (`cargo build --timings`, fresh app): `wisp` 6.9s,
+  `wisp-build` 5.7s (the build script's compile, on the critical path),
+  tokio 4.0s, the app 2.6s. On an edit the build script runs in 0.17s
+  (200 routes); the rest is rustc on the app crate.
+- `wisp dev` swaps template text and browser code into the running app with
+  no compile; only Rust, new routes and template shape changes rebuild.
+- Generated code per route: 76 lines / 4.1 KB dev, 68 lines / 3.4 KB
+  release. The test `codegen_per_route_stays_small` (wisp-build) fails past
+  100 lines / 5.5 KB and 90 / 4.6 KB.
+- Dev profile: `opt-level = 1` on the app beats `0` on edits (1.4-1.6s
+  against 1.8-4.2s for a template edit at 200 routes: less code to link),
+  and `opt-level = 2` for deps made cold builds slower; kept as is.
+- `wisp check --rust` type-checks without codegen or link (`cargo check`).
+- Deps of a fresh app: 13 crates (tokio, mio, socket2, httparse, bytes,
+  pulldown-cmark and the Wisp crates); tokio's `fs` feature is dropped.
+
 ## Tokens
 
 What an app costs to write, since AI writes most of it: `bench/tokens/apps`

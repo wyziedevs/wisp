@@ -92,8 +92,8 @@ const COMMANDS: [(&str, &str); 31] = [
         "Write a GitHub Actions workflow that deploys to the host on each push.",
     ),
     (
-        "wisp check [--types]",
-        "Check routes and templates without compiling; --types runs tsc on TypeScript too.",
+        "wisp check [--types] [--rust]",
+        "Check routes and templates without compiling; --types runs tsc on TypeScript, --rust cargo check on the Rust.",
     ),
     (
         "wisp test [--browser] [args]",
@@ -218,11 +218,14 @@ fn main() -> ExitCode {
         Some("service") => project().and_then(|root| service::run(root, &args[1..])),
         Some("routes") => project().and_then(|root| routes_cmd::list(root, &args[1..])),
         Some("new-route") => project().and_then(|root| routes_cmd::new_route(root, &args[1..])),
-        Some("check") => check_types(&args[1..]).and_then(|types| {
+        Some("check") => check_flags(&args[1..]).and_then(|(types, rust)| {
             let root = project()?;
             check(root)?;
             term::done("Routes and templates are valid.");
             fmt::warn_unformatted(root);
+            if rust && !cargo::check(root).ok {
+                return Err("The Rust does not type-check: the errors are above.".into());
+            }
             if types { types::check(root) } else { Ok(()) }
         }),
         Some("test") => project().and_then(|root| test(root, &args[1..])),
@@ -438,15 +441,21 @@ fn no_options(command: &str, args: &[String]) -> Result<(), String> {
     }
 }
 
-/// `wisp check`'s one option, `--types`.
-fn check_types(args: &[String]) -> Result<bool, String> {
-    match args {
-        [] => Ok(false),
-        [t] if t == "--types" => Ok(true),
-        [arg, ..] => Err(format!(
-            "Unexpected {arg}.\nwisp check takes --types, to check TypeScript with tsc."
-        )),
+/// `wisp check`'s flags: (`--types`, `--rust`).
+fn check_flags(args: &[String]) -> Result<(bool, bool), String> {
+    let (mut types, mut rust) = (false, false);
+    for arg in args {
+        match arg.as_str() {
+            "--types" => types = true,
+            "--rust" => rust = true,
+            _ => {
+                return Err(format!(
+                    "Unexpected {arg}.\nwisp check takes --types, to check TypeScript with tsc, and --rust, to type-check the Rust with cargo check."
+                ));
+            }
+        }
     }
+    Ok((types, rust))
 }
 
 /// `wisp_build::check`, its warnings said: the npm modules imported.

@@ -220,6 +220,24 @@ pub fn build_for(
     args: &[&str],
     env: &[(&str, &str)],
 ) -> Build {
+    run("build", root, release, quiet, args, env)
+}
+
+/// `cargo check` of the app (`wisp check --rust`): its Rust and the code
+/// its templates compile to are type-checked, with no code generated and
+/// no link, errors told as a build tells them.
+pub fn check(root: &Path) -> Build {
+    run("check", root, false, false, &[], &[])
+}
+
+fn run(
+    sub: &str,
+    root: &Path,
+    release: bool,
+    quiet: bool,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> Build {
     let mut cmd = Command::new("cargo");
     match base_env(release, std::env::var_os("WISP_BASE").is_some(), || {
         wisp_build::app_base(root)
@@ -233,7 +251,7 @@ pub fn build_for(
         }
     }
     cmd.envs(env.iter().copied());
-    cmd.args(["build", "--message-format=json-diagnostic-rendered-ansi"]);
+    cmd.args([sub, "--message-format=json-diagnostic-rendered-ansi"]);
     cmd.args(args);
     if release {
         cmd.arg("--release");
@@ -341,8 +359,9 @@ pub fn build_for(
         let _ = t.join();
     }
     if !b.ok && b.errors.is_empty() {
-        b.errors
-            .push_str("cargo build failed. The terminal has the details.");
+        b.errors.push_str(&format!(
+            "cargo {sub} failed. The terminal has the details."
+        ));
     }
     b
 }

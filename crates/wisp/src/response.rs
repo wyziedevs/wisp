@@ -137,7 +137,12 @@ impl Response {
         // Edge hosts have no files: there it is the 500 of an unsupported
         // operation.
         #[cfg(not(target_arch = "wasm32"))]
-        let read = tokio::fs::read(&path).await;
+        let read = {
+            // What `tokio::fs::read` does, without tokio's `fs` feature.
+            let p = path.clone();
+            (tokio::task::spawn_blocking(move || std::fs::read(p)).await)
+                .unwrap_or_else(|e| Err(std::io::Error::other(e)))
+        };
         #[cfg(target_arch = "wasm32")]
         let read = std::fs::read(&path);
         match read {

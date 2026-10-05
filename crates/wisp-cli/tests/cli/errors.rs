@@ -91,12 +91,12 @@ fn dev_arguments() {
 }
 
 #[test]
-fn check_takes_only_types() {
+fn check_takes_types_and_rust() {
     let cwd = Dir::new("check-args");
     fail(
         &cwd,
         &["check", "--fix"],
-        "Unexpected --fix.\n    wisp check takes --types, to check TypeScript with tsc.",
+        "Unexpected --fix.\n    wisp check takes --types, to check TypeScript with tsc, and --rust, to type-check the Rust with cargo check.",
     );
 }
 
