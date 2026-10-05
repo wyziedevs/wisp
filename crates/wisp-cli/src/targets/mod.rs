@@ -259,7 +259,7 @@ fn layout(
             deploy: "npx vercel deploy --prebuilt",
         },
         "netlify" if edge => {
-            let list: Vec<_> = skips.iter().map(|s| format!("'{s}'")).collect();
+            let list: Vec<_> = skips.iter().map(|s| js(s)).collect();
             Layout {
                 files: vec![
                     ("netlify.toml", text("[build]\npublish = \"public\"\n")),
@@ -388,7 +388,7 @@ fn add_edge(
         ]);
     } else {
         let paths = quoted(runtime::netlify, '\'').join(", ");
-        let skip: Vec<_> = skips.iter().map(|s| format!("'{s}'")).collect();
+        let skip: Vec<_> = skips.iter().map(|s| js(s)).collect();
         let entry = NETLIFY_EDGE
             .replace("path: '/*'", &format!("path: [{paths}]"))
             .replace("/*SKIP*/", &skip.join(", "));
@@ -432,10 +432,20 @@ fn skips(statics: &Path) -> Vec<String> {
     skip
 }
 
+/// `s` as a JSON string: a file's name may hold a quote.
+fn json(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// `s` as a JavaScript string in single quotes.
+fn js(s: &str) -> String {
+    format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
+}
+
 /// Pages' `_routes.json`: everything reaches the worker but the app's static
 /// files.
 fn routes(skips: &[String]) -> String {
-    let skip: Vec<_> = skips.iter().map(|s| format!("\"{s}\"")).collect();
+    let skip: Vec<_> = skips.iter().map(|s| json(s)).collect();
     format!(
         "{{\"version\":1,\"include\":[\"/*\"],\"exclude\":[{}]}}\n",
         skip.join(",")
@@ -804,6 +814,13 @@ mod tests {
         )
         .unwrap();
         assert!(!l.files.iter().any(|(p, _)| p.contains("cron")));
+    }
+
+    #[test]
+    fn a_static_files_name_cannot_break_the_config_around_it() {
+        assert_eq!(json("/it's \"a\".png"), "\"/it's \\\"a\\\".png\"");
+        assert_eq!(js("/it's \"a\".png"), "'/it\\'s \"a\".png'");
+        assert_eq!(js("/a\\b"), "'/a\\\\b'");
     }
 
     #[test]

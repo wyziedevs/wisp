@@ -146,12 +146,13 @@ fn parse(args: &[String]) -> Result<(Action, Options), String> {
 /// Names go into file paths and command lines: plain characters only.
 fn check_name(s: &str) -> Result<(), String> {
     let ok = !s.is_empty()
+        && s.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
         && s.chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
     match ok {
         true => Ok(()),
         false => Err(format!(
-            "{s} is not a service or user name.\nUse letters, digits, - _ and ."
+            "{s} is not a service or user name.\nUse letters, digits, - _ and ., starting with a letter or digit."
         )),
     }
 }
@@ -210,8 +211,8 @@ fn plan(os: Os, action: Action, name: &str, dir: &Path, exe: &Path, o: &Options)
 fn unit(name: &str, dir: &Path, exe: &Path, o: &Options) -> String {
     let mut s = format!(
         "[Unit]\nDescription={name} (Wisp app)\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nWorkingDirectory={}\nExecStart={}\nEnvironmentFile=-/etc/{name}.env\n",
-        dir.display(),
-        exe.display()
+        unit_text(dir, false),
+        unit_text(exe, true)
     );
     if let Some(port) = o.port {
         s += &format!("Environment=PORT={port}\n");
@@ -224,6 +225,28 @@ fn unit(name: &str, dir: &Path, exe: &Path, o: &Options) -> String {
     }
     s += "Restart=on-failure\nRestartSec=2\nLimitNOFILE=1048576\nTimeoutStopSec=15\nKillSignal=SIGTERM\n\n[Install]\nWantedBy=multi-user.target\n";
     s
+}
+
+/// A path as a unit file reads it: `%` doubled (specifiers), and in a
+/// command line `$` too (variables) and quoted when a space or quote would
+/// split it.
+fn unit_text(p: &Path, command: bool) -> String {
+    let s = p.to_string_lossy().replace('%', "%%");
+    if !command {
+        return s;
+    }
+    let s = s.replace('$', "$$");
+    match s.contains([' ', '\t', '"', '\'', '\\', ';']) {
+        true => format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")),
+        false => s,
+    }
+}
+
+/// `s` as XML text.
+fn xml(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn linux(action: Action, name: &str, dir: &Path, exe: &Path, o: &Options) -> Plan {
@@ -273,8 +296,8 @@ fn mac(action: Action, name: &str, dir: &Path, exe: &Path, o: &Options) -> Plan 
             });
             let text = format!(
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\">\n<dict>\n  <key>Label</key>\n  <string>{label}</string>\n  <key>ProgramArguments</key>\n  <array><string>{}</string></array>\n  <key>WorkingDirectory</key>\n  <string>{}</string>\n{env}{user}  <key>RunAtLoad</key>\n  <true/>\n  <key>KeepAlive</key>\n  <dict><key>SuccessfulExit</key><false/></dict>\n  <key>SoftResourceLimits</key>\n  <dict><key>NumberOfFiles</key><integer>65536</integer></dict>\n</dict>\n</plist>\n",
-                exe.display(),
-                dir.display()
+                xml(&exe.to_string_lossy()),
+                xml(&dir.to_string_lossy())
             );
             p.files.push((path.clone(), text, false));
             p.cmds = vec![cmd(&["launchctl", "bootstrap", "system", &path])];
@@ -369,6 +392,24 @@ mod tests {
     }
 
     #[test]
+    fn paths_with_spaces_and_symbols_are_quoted_for_the_unit_and_plist() {
+        let (d, e) = (
+            Path::new("/srv/my app"),
+            Path::new("/srv/my app/target/release/my-app"),
+        );
+        let u = unit("x", d, e, &Options::default());
+        assert!(u.contains("WorkingDirectory=/srv/my app\n"), "{u}");
+        let quoted = "ExecStart=\"/srv/my app/target/release/my-app\"\n";
+        assert!(u.contains(quoted), "{u}");
+        let (d, e) = (Path::new("/a%b"), Path::new("/a%b/$x"));
+        let u = unit("x", d, e, &Options::default());
+        assert!(u.contains("WorkingDirectory=/a%%b\n") && u.contains("ExecStart=/a%%b/$$x\n"));
+        let (d, e) = (Path::new("/a&b"), Path::new("/a&b/x"));
+        let p = plan(Os::Mac, Action::Install, "x", d, e, &Options::default());
+        assert!(p.files[0].1.contains("<string>/a&amp;b/x</string>"));
+    }
+
+    #[test]
     fn linux_commands() {
         let (d, e) = (Path::new("/a"), Path::new("/a/x"));
         let p = plan(Os::Linux, Action::Install, "x", d, e, &Options::default());
@@ -441,5 +482,6 @@ mod tests {
         assert!(parse(&args(&["install", "--bogus"])).is_err());
         assert!(parse(&args(&[])).is_err());
         assert!(check_name("a b").is_err() && check_name("my-app").is_ok());
+        assert!(check_name("--now").is_err() && check_name("..").is_err());
     }
 }

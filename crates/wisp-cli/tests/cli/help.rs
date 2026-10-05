@@ -42,9 +42,27 @@ fn help_lists_every_command_and_new_option() {
 #[test]
 fn an_unknown_command_points_at_help() {
     let cwd = Dir::new("unknown");
-    for bad in ["bogus", "--version", "New"] {
+    for bad in ["bogus", "--verbose", "New"] {
         let o = fail(&cwd, &[bad], &format!("There is no command {bad}."));
         assert!(o.err.contains("Run wisp --help"));
         assert!(o.out.is_empty());
+    }
+}
+
+#[test]
+fn version_prints_the_version() {
+    let cwd = Dir::new("version");
+    for flag in ["--version", "-V"] {
+        let o = wisp(&cwd, &[flag]);
+        assert!(
+            o.ok && o.out
+                == format!(
+                    "wisp {}
+",
+                    env!("CARGO_PKG_VERSION")
+                ),
+            "{}",
+            o.out
+        );
     }
 }

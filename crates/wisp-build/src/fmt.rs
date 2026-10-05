@@ -412,7 +412,7 @@ impl<'a> Scanner<'a> {
                 if j == a {
                     return None;
                 }
-                if b[j] == b'=' {
+                if b.get(j) == Some(&b'=') {
                     j = self.value(j + 1, m[a..j].contains(':'))?;
                 }
             }
@@ -818,6 +818,22 @@ fn key(mut t: template::Template) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A file cut off inside a tag, as an editor sees it while typing, comes
+    /// back as it was: no panic.
+    #[test]
+    fn a_tag_cut_off_is_left_alone() {
+        for src in [
+            "<a href",
+            "<a href=",
+            "<div
+  class",
+            "<p>x</p>
+<a b",
+        ] {
+            assert_eq!(format(src, "2024"), src);
+        }
+    }
 
     /// Formats `src`, checking that once more changes nothing and that the
     /// markup parses as before.

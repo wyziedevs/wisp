@@ -106,12 +106,9 @@ mod tests {
 
     #[test]
     fn expired_forged_and_wrong_purpose_are_all_the_same_400() {
-        let fresh = made(NAME, "", "1", unix_now());
-        assert_eq!(
-            untoken::<u64>("", &fresh).unwrap(),
-            1,
-            "this second still counts"
-        );
+        // Two seconds out: a clock tick between making and reading is no expiry.
+        let fresh = made(NAME, "", "1", unix_now() + 2);
+        assert_eq!(untoken::<u64>("", &fresh).unwrap(), 1, "not yet expired");
         let gone = made(NAME, "", "1", unix_now() - 1);
         let e = untoken::<u64>("", &gone).unwrap_err();
         assert_eq!((e.status(), e.code()), (400, "bad_token"));
