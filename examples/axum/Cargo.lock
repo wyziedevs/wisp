@@ -544,6 +544,7 @@ dependencies = [
  "libc",
  "tokio",
  "tower-service",
+ "wisp-build",
  "wisp-macros",
  "wisp-shared",
 ]
