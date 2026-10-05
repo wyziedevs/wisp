@@ -16,7 +16,7 @@ async function send() {
 
 <template>
   <form @submit.prevent="send">
-    <label>Name <input v-model="form.name" required minlength="1" maxlength="50" />
+    <label>Name <input v-model="form.name" required minlength="1" pattern="[\s\S]{0,50}" />
       <small v-if="errors.name" class="problem">{{ errors.name }}</small></label>
     <label>Email <input v-model="form.email" type="email" required />
       <small v-if="errors.email" class="problem">{{ errors.email }}</small></label>

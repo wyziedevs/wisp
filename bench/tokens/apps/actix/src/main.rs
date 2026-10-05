@@ -2,7 +2,7 @@
 use actix_web::{App, HttpResponse, HttpServer, get, post, web};
 use serde::Deserialize;
 use tera::{Context, Tera};
-use validator::Validate;
+use validator::{Validate, ValidationError};
 
 mod db;
 
@@ -38,10 +38,36 @@ async fn list(tera: web::Data<Tera>) -> HttpResponse {
 // @feature form
 #[derive(Deserialize, Validate)]
 struct ContactForm {
-    #[validate(length(min = 1, max = 50, message = "must have 1 to 50 characters"))]
+    #[validate(custom(function = "name"))]
     name: String,
-    #[validate(email(message = "must be an email address"))]
+    #[validate(custom(function = "email"))]
     email: String,
+}
+
+fn problem(message: &'static str) -> ValidationError {
+    ValidationError::new("invalid").with_message(message.into())
+}
+
+fn name(s: &str) -> Result<(), ValidationError> {
+    match s.chars().count() {
+        0 => Err(problem("must have at least 1 character")),
+        51.. => Err(problem("must have at most 50 characters")),
+        _ => Ok(()),
+    }
+}
+
+fn email(s: &str) -> Result<(), ValidationError> {
+    let user = |c: char| c.is_ascii_alphanumeric() || ".!#$%&'*+/=?^_`{|}~-".contains(c);
+    let label = |l: &str| {
+        (1..=63).contains(&l.len())
+            && !l.starts_with('-')
+            && !l.ends_with('-')
+            && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    };
+    match s.split_once('@') {
+        Some((u, d)) if !u.is_empty() && u.chars().all(user) && d.split('.').all(label) => Ok(()),
+        _ => Err(problem("must be an email address")),
+    }
 }
 
 #[get("/contact")]

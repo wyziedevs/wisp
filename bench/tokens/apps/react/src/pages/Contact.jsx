@@ -22,7 +22,7 @@ export default function Contact() {
   return (
     <form onSubmit={handleSubmit}>
       <title>Contact</title>
-      <label>Name <input value={name} onChange={(e) => setName(e.target.value)} required minLength={1} maxLength={50} />
+      <label>Name <input value={name} onChange={(e) => setName(e.target.value)} required minLength={1} pattern="[\s\S]{0,50}" />
         {errors.name && <small className="problem">{errors.name}</small>}</label>
       <label>Email <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
         {errors.email && <small className="problem">{errors.email}</small>}</label>

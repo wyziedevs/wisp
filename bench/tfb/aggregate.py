@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """Reads raw/<contender>/<workload>-c<level>-run<N>.txt (wrk output) and writes results.json
 and the tables of RESULTS.md (stdout). Median/min/max of requests/sec; latency avg and p99 are
-the medians of the runs. Runs with non-2xx responses or socket errors are flagged, not dropped."""
+the medians of the runs. req/s counts only 2xx/3xx responses; runs with non-2xx responses or
+socket errors are flagged, not dropped."""
 import json, re, statistics, sys
 from pathlib import Path
 
 ROOT = Path(__file__).parent
 RAW = ROOT / "raw"
-ORDER = ["wisp", "wisp-uncapped", "axum", "actix", "express", "fastify", "hono-node", "hono-bun", "sveltekit", "next"]
+ORDER = ["wisp", "wisp-uncapped", "axum", "actix", "express", "fastify", "hono-node", "hono-bun", "sveltekit", "next", "nuxt"]
 LABEL = {
     "wisp": "Wisp (defaults)", "wisp-uncapped": "Wisp, WISP_MAX_CONNS=0 (supplementary)", "axum": "Axum (TFB source)", "actix": "Actix Web (TFB source)",
     "express": "Express (TFB source)", "fastify": "Fastify (TFB source)",
     "hono-node": "Hono on Node (TFB source)", "hono-bun": "Hono on Bun (not TFB source)",
-    "sveltekit": "SvelteKit (not TFB)", "next": "Next.js (not TFB)",
+    "sveltekit": "SvelteKit (not TFB)", "next": "Next.js (not TFB)", "nuxt": "Nuxt (not TFB)",
 }
 UNIT = {"us": 1e-3, "ms": 1.0, "s": 1000.0, "m": 60000.0}
 
@@ -38,8 +39,12 @@ def parse(path):
     if cpu:
         v = [int(x) for x in cpu.group(1).split()]
         steal = round(100 * v[7] / max(1, sum(v)), 2)
+    n_total = int(total.group(1)) if total else None
+    n_bad = int(non2.group(1)) if non2 else 0
+    # Only successful responses count: wrk's Requests/sec includes non-2xx replies.
+    ok_rps = float(rps.group(1)) * (n_total - n_bad) / n_total if n_total else float(rps.group(1))
     return {
-        "rps": float(rps.group(1)), "lat_avg_ms": ms(avg.group(1)), "lat_p99_ms": ms(p99.group(1)),
+        "rps": ok_rps, "lat_avg_ms": ms(avg.group(1)), "lat_p99_ms": ms(p99.group(1)),
         "non2xx": int(non2.group(1)) if non2 else 0,
         "socket_errors": sum(int(x) for x in sock.groups()) if sock else 0,
         "requests": int(total.group(1)) if total else None, "steal_pct": steal,

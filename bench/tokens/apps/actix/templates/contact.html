@@ -3,7 +3,7 @@
 {% block title %}Contact{% endblock %}
 {% block content %}
 <form method="post">
-  <label>Name <input name="name" required minlength="1" maxlength="50" value="{{ name | default(value='') }}">
+  <label>Name <input name="name" required minlength="1" pattern="[\s\S]{0,50}" value="{{ name | default(value='') }}">
     {% if name_error %}<small class="problem">{{ name_error }}</small>{% endif %}</label>
   <label>Email <input name="email" type="email" required value="{{ email | default(value='') }}">
     {% if email_error %}<small class="problem">{{ email_error }}</small>{% endif %}</label>
