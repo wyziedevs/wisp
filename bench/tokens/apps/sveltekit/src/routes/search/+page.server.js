@@ -1,5 +1,5 @@
 // @feature search
-import { items } from '$lib/db';
+import { items } from '#lib/db';
 
 export async function load() {
 	return { items: await items() };

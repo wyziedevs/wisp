@@ -1,5 +1,5 @@
 // @feature crud
-import { posts } from '$lib/server/db';
+import { posts } from '#lib/server/db';
 
 export function load({ url }) {
 	const page = Math.max(1, Number(url.searchParams.get('page')) || 1);

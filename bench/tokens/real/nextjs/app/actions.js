@@ -9,7 +9,7 @@ import { startSession } from '@/lib/auth';
 export async function signup(prev, form) {
   const { email, password } = Object.fromEntries(form);
   const errors = {};
-  if (!/^\S+@\S+\.\S+$/.test(email)) errors.email = 'Enter a valid email';
+  if (!/^[a-zA-Z0-9.!#$%&'*+\/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/.test(email)) errors.email = 'Enter a valid email';
   else if (users.some((u) => u.email === email)) errors.email = 'Already signed up';
   if (password.length < 8) errors.password = 'At least 8 characters';
   if (errors.email || errors.password) return { email, errors };

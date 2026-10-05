@@ -1,6 +1,6 @@
 // @feature auth
 import { redirect } from '@sveltejs/kit';
-import { sessions } from '$lib/server/db';
+import { sessions } from '#lib/server/db';
 
 export function load({ locals }) {
 	if (!locals.user) redirect(303, '/login');

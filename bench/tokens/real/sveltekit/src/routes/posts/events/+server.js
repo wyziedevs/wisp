@@ -1,5 +1,5 @@
 // @feature live
-import { listeners } from '$lib/server/db';
+import { listeners } from '#lib/server/db';
 
 export function GET() {
 	let send;

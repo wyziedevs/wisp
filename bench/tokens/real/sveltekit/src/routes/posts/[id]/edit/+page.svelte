@@ -1,6 +1,6 @@
 <!-- @feature crud -->
 <script>
-	import PostForm from '$lib/PostForm.svelte';
+	import PostForm from '#lib/PostForm.svelte';
 	let { data, form } = $props();
 </script>
 

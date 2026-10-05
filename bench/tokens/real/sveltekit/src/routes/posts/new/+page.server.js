@@ -1,6 +1,6 @@
 // @feature crud
 import { fail, redirect } from '@sveltejs/kit';
-import { posts, nextId, checkPost, listeners } from '$lib/server/db';
+import { posts, nextId, checkPost, listeners } from '#lib/server/db';
 
 export const actions = {
 	default: async ({ request }) => {

@@ -1,6 +1,6 @@
 // @feature crud
 import { error, fail, redirect } from '@sveltejs/kit';
-import { posts, checkPost } from '$lib/server/db';
+import { posts, checkPost } from '#lib/server/db';
 
 function find(params) {
 	const post = posts.get(Number(params.id));

@@ -1,7 +1,7 @@
 <!-- @feature crud -->
 <script>
 	import { enhance } from '$app/forms';
-	import Details from '$lib/Details.svelte';
+	import Details from '#lib/Details.svelte';
 	// @feature live
 	import { invalidateAll } from '$app/navigation';
 	import { onMount } from 'svelte';

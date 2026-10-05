@@ -1,7 +1,7 @@
 // @feature auth
 import { fail, redirect } from '@sveltejs/kit';
 import { verify } from '@node-rs/argon2';
-import { users, startSession } from '$lib/server/db';
+import { users, startSession } from '#lib/server/db';
 
 export const actions = {
 	default: async ({ request, cookies }) => {

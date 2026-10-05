@@ -1,7 +1,7 @@
 <!-- @feature auth -->
 <script>
 	import { enhance } from '$app/forms';
-	import Details from '$lib/Details.svelte';
+	import Details from '#lib/Details.svelte';
 	let { data } = $props();
 </script>
 
