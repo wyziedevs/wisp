@@ -9,7 +9,7 @@ import { spawn } from 'node:child_process';
 import { writeFileSync, readFileSync, readdirSync, existsSync, mkdirSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { sleep, median, hdr, oha as ohaRun, workerdConfig } from '../edge/util.mjs';
+import { sleep, hdr, oha as ohaRun, workerdConfig, failedCount, cellOf, badReply, coldOf } from '../edge/util.mjs';
 
 const arg = (k, d) => { const i = process.argv.indexOf('--' + k); return i > 0 ? process.argv[i + 1] : d; };
 const here = dirname(fileURLToPath(import.meta.url));
@@ -96,19 +96,10 @@ function rss(pid) {
   return Math.round(sum / 1024);
 }
 
-// Same answers whatever the framework: exact text, parsed JSON, HTML with a thousand escaped items.
-const ref = Array.from({ length: 200 }, (_, k) => ({ id: k + 1, name: `user-${k + 1}`, active: (k + 1) % 3 !== 0, score: ((k + 1) * 37) % 101, tags: ['a', `t${(k + 1) % 7}`] }));
+// Same answers whatever the framework (badReply in ../edge/util.mjs).
 async function check(a) {
   const bad = [];
-  for (const p of routes) {
-    const r = await get(a, p), t = await r.text();
-    let ok = r.status === 200;
-    if (p === '/') ok &&= t === 'hello';
-    else if (p === '/list1000') ok &&= (t.match(/<li[ >]/g) || []).length === 1000 && /Item &lt;1000(&gt;|>) &amp; co/.test(t);
-    else if (p === '/json-big') ok &&= JSON.stringify(JSON.parse(t)) === JSON.stringify(ref);
-    else ok &&= t === 'id=42 q=hello world sid=abc123';
-    if (!ok) bad.push(`${p} ${r.status} ${t.slice(0, 80)}`);
-  }
+  for (const p of routes) { const r = await get(a, p); const why = badReply(p, r.status, await r.text()); if (why) bad.push(why); }
   return bad;
 }
 
@@ -118,7 +109,11 @@ async function cold(a) {
   for (;;) {
     if (c.exitCode !== null) return NaN;
     if (performance.now() - t > 60000) { kill(c); return NaN; }
-    try { const r = await get(a, '/'); await r.text(); if (r.status === 200) break; } catch { await sleep(2); }
+    // Cold start is a measured route answering 200 with the right body.
+    let why;
+    try { const r = await get(a, routes[0]); why = badReply(routes[0], r.status, await r.text()); } catch { await sleep(2); continue; }
+    if (why) { kill(c); return NaN; }
+    break;
   }
   const ms = performance.now() - t;
   kill(c);
@@ -128,8 +123,7 @@ async function cold(a) {
 
 function oha(a, path, s) {
   const j = ohaRun(url(a, path), path, s, conns, ['taskset', '-c', LOAD_CPUS]);
-  const bad = Object.entries(j.statusCodeDistribution).filter(([k]) => k !== '200').reduce((n, [, v]) => n + v, 0);
-  return { rps: j.summary.requestsPerSec, p99: j.latencyPercentiles.p99 * 1000, bad };
+  return { rps: j.summary.requestsPerSec, p99: j.latencyPercentiles.p99 * 1000, bad: failedCount(j) };
 }
 
 const res = { host, when: new Date().toISOString(), secs, runs, conns, colds, cells: {}, cold: {}, rss: {}, failed: {} };
@@ -146,9 +140,9 @@ try {
   const cs = new Map(there.map((a) => [a, []]));
   for (let i = 0; i < colds; i++) for (const a of there) cs.get(a).push(await cold(a));
   for (const a of there) {
-    const ok = cs.get(a).filter((x) => x === x);
-    if (!ok.length) { res.failed[a.name] = 'does not start'; console.log(host, a.name, 'DOES NOT START'); continue; }
-    res.cold[a.name] = { median: +median(ok).toFixed(1), min: +Math.min(...ok).toFixed(1), n: ok.length };
+    const c = coldOf(cs.get(a));
+    if (!c) { res.failed[a.name] = 'does not start'; console.log(host, a.name, 'DOES NOT START'); continue; }
+    res.cold[a.name] = c;
     console.log(host, a.name, 'cold ms', res.cold[a.name].median);
     a.child = start(a);
     await sleep(3000);
@@ -163,8 +157,9 @@ try {
     for (const a of live) { await get(a, p).then((r) => r.text()); oha(a, p, 3); }
     for (let i = 0; i < runs; i++) live.forEach((a, k) => rs[k].push(oha(a, p, secs)));
     live.forEach((a, k) => {
-      const m = (f) => +median(rs[k].map((r) => r[f])).toFixed(1);
-      res.cells[`${a.name} ${p}`] = { rps: Math.round(m('rps')), p99: m('p99'), runs: rs[k].map((r) => Math.round(r.rps)), bad: rs[k].reduce((n, r) => n + r.bad, 0) };
+      // Any failed request: no req/s (null), `failed: true`; report.mjs prints Failed and does not rank it.
+      const c = cellOf(rs[k]);
+      res.cells[`${a.name} ${p}`] = { rps: c.rps == null ? null : Math.round(c.rps), p99: c.p99, runs: rs[k].map((r) => Math.round(r.rps)), bad: c.bad, ...(c.failed && { failed: true }) };
       console.log(host, a.name, p, JSON.stringify(res.cells[`${a.name} ${p}`]));
     });
     save();

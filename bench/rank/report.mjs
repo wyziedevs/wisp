@@ -7,6 +7,7 @@
 // line 'Run validity not recorded (no steal data).' and derives nothing.
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { cellValid, coldNote } from '../edge/util.mjs';
 import { fileURLToPath } from 'node:url';
 
 const dir = process.argv[2] || join(dirname(fileURLToPath(import.meta.url)), 'results');
@@ -29,7 +30,7 @@ for (const host of hosts) {
   const names = [...new Set(Object.keys(r.cells).map((k) => k.split(' /')[0]))];
   const routes = Object.keys(routeNames).filter((p) => names.some((n) => r.cells[`${n} ${p}`]));
   // metrics: value per framework, higher or lower better
-  const metrics = routes.map((p) => ({ id: p, title: routeNames[p], better: 'high', val: (n) => r.cells[`${n} ${p}`]?.rps, fmt: (v) => n0(v) }));
+  const metrics = routes.map((p) => ({ id: p, title: routeNames[p], better: 'high', val: (n) => (cellValid(r.cells[`${n} ${p}`]) ? r.cells[`${n} ${p}`].rps : null), fmt: (v) => n0(v) }));
   metrics.push({ id: 'cold', title: 'cold start ms', better: 'low', val: (n) => r.cold[n]?.median, fmt: (v) => v.toFixed(0) });
   metrics.push({ id: 'rss', title: 'RSS MB after load', better: 'low', val: (n) => r.rss[n]?.load, fmt: (v) => String(v) });
 
@@ -46,13 +47,13 @@ for (const host of hosts) {
   const order = (n) => { const ps = metrics.slice(0, routes.length).map((m) => place(m, n)).filter((x) => x != null); return ps.reduce((a, b) => a + b, 0) / (ps.length || 1); };
   const rows = valid ? [...names].sort((a, b) => order(a) - order(b)) : [...names];
   out.push(`### ${label[host]}\n`);
-  out.push(`c=${r.conns}, ${r.secs} s runs, median of ${r.runs}, cold start median of ${r.colds}; ${r.when.slice(0, 10)}. ${valid ? 'Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).' : 'Each cell: req/s. Run validity not recorded (no steal data).'}\n`);
+  out.push(`c=${r.conns}, ${r.secs} s runs, median of ${r.runs}, ${coldNote(r.colds, r.cold)}; ${r.when.slice(0, 10)}. ${valid ? 'Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).' : 'Each cell: req/s. Run validity not recorded (no steal data).'}\n`);
   out.push(`| framework | ${metrics.map((m) => m.title).join(' | ')} |`);
   out.push(`|---${'|---'.repeat(metrics.length)}|`);
   for (const n of rows) {
     const cells = metrics.map((m) => {
       const v = m.val(n);
-      if (v == null) return 'n/a';
+      if (v == null) return m.id in routeNames && r.cells[`${n} ${m.id}`]?.bad ? 'Failed' : 'n/a'; // a cell with failed requests is shown, never ranked
       const p = place(m, n);
       const s = valid ? `${m.fmt(v)} (#${p})` : m.fmt(v);
       return isWisp(n) ? `**${s}**` : s;
