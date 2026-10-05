@@ -228,7 +228,9 @@ fn main() -> ExitCode {
         Some("test") => project().and_then(|root| test(root, &args[1..])),
         Some("fmt") => fmt::run(&args[1..]),
         Some("add") => project().and_then(|root| {
-            if recipe::is_recipe(root, &args[1..]) {
+            if let Some(made) = routes_cmd::add(root, &args[1..]) {
+                made
+            } else if recipe::is_recipe(root, &args[1..]) {
                 recipe::run(root, &args[1..])
             } else {
                 npm::add(root, &args[1..])

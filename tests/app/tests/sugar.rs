@@ -6,6 +6,17 @@
 use wisp::test::client;
 use wisp_test_app::Site;
 
+/// `wisp add form /t/contact` wrote that page: it posts, flashes, shows it once.
+#[test]
+fn a_generated_form_flashes_once() {
+    let mut app = client::<Site>();
+    let sent = app.post_form("/t/contact", &[("name", "Ann"), ("email", "a@b.co")]);
+    assert_eq!(sent.status, 303);
+    let page = app.get("/t/contact").text().to_string();
+    assert!(page.contains("<p class=\"flash\" role=\"status\">Thanks, Ann!</p>"), "{page}");
+    assert!(!app.get("/t/contact").text().contains("flash"));
+}
+
 #[test]
 fn an_active_link_is_the_current_page() {
     let mut app = client::<Site>();

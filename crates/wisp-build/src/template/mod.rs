@@ -110,7 +110,8 @@ fn parse_class(src: &str, fields: &[Field], class: &str, drawn: bool) -> Result<
 
 /// `{@flash}`: the message `cx.flash(..)` left, if any, as a status line.
 const FLASH: &str = "{@flash}";
-const FLASH_MARKUP: &str = "{#if let Some(m) = cx.flash_message()}<p class=\"flash\" role=\"status\">{m}</p>{/if}";
+const FLASH_MARKUP: &str =
+    "{#if let Some(m) = cx.flash_message()}<p class=\"flash\" role=\"status\">{m}</p>{/if}";
 
 fn parse_as(
     src: &str,

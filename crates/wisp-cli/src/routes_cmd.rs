@@ -100,18 +100,65 @@ fn methods(items: &rust_scan::Items, segs: &[Seg]) -> (String, String) {
 
 /// `wisp new-route <path> [page|server|rest]`.
 pub fn new_route(root: &Path, args: &[String]) -> Result<(), String> {
-    let usage = "Usage: wisp new-route <path> [page|server|rest], such as wisp new-route /blog/[slug] page.";
+    let usage = "Usage: wisp new-route <path> [page|form|layout|server|rest], such as wisp new-route /blog/[slug] page.";
     let (path, kind) = match args {
         [path] => (path, "page"),
         [path, kind] => (path, kind.as_str()),
         _ => return Err(usage.into()),
     };
-    if !matches!(kind, "page" | "server" | "rest") {
+    let kind = if kind == "api" { "rest" } else { kind };
+    if !KINDS.contains(&kind) || kind == "component" {
         return Err(format!("There is no kind {kind}.\n{usage}"));
     }
     let made = create(root, path, kind)?;
     term::done(&format!("Wrote {made}"));
     Ok(())
+}
+
+/// What `wisp add <kind> <path>` writes (`api` is `rest`).
+const KINDS: [&str; 7] = [
+    "page",
+    "form",
+    "layout",
+    "server",
+    "rest",
+    "api",
+    "component",
+];
+
+/// `wisp add page|form|layout|server|rest|api /path` and `wisp add
+/// component Name`: `Some` when `args` ask for a file, not a package.
+pub fn add(root: &Path, args: &[String]) -> Option<Result<(), String>> {
+    let [kind, what] = args else { return None };
+    // npm package names are lowercase and never start with `/`.
+    let file = what.contains('/') && !what.starts_with('@')
+        || kind == "component" && what.starts_with(|c: char| c.is_ascii_uppercase());
+    if !KINDS.contains(&kind.as_str()) || !file {
+        return None;
+    }
+    if kind == "component" {
+        return Some(component(root, what).map(|made| term::done(&format!("Wrote {made}"))));
+    }
+    Some(new_route(root, &[what.clone(), kind.clone()]))
+}
+
+/// `src/components/Name.wisp`: a prop, a slot.
+fn component(root: &Path, name: &str) -> Result<String, String> {
+    let ok = name.starts_with(|c: char| c.is_ascii_uppercase())
+        && name.chars().all(|c| c.is_ascii_alphanumeric());
+    if !ok {
+        return Err(format!(
+            "{name}: a component's name is CamelCase letters and digits, such as Card."
+        ));
+    }
+    let to = root.join("src/components").join(format!("{name}.wisp"));
+    if to.exists() {
+        return Err(format!("src/components/{name}.wisp already exists."));
+    }
+    let text = "{@props title}\n<section>\n  <h2>{title}</h2>\n  <slot />\n</section>\n";
+    fs::create_dir_all(to.parent().unwrap_or(root)).map_err(|e| e.to_string())?;
+    fs::write(&to, text).map_err(|e| format!("{}: {e}", to.display()))?;
+    Ok(format!("src/components/{name}.wisp"))
 }
 
 /// Writes the route's file and returns where; a file that exists is never
@@ -154,6 +201,28 @@ fn create(root: &Path, path: &str, kind: &str) -> Result<String, String> {
                 format!("<title>{title}</title>\n\n<h1>{title}</h1>\n"),
             )
         }
+        "form" => {
+            let title = if name.is_empty() {
+                "Home".into()
+            } else {
+                camel(name, " ")
+            };
+            let back = if path.contains('[') {
+                "/".to_string()
+            } else {
+                format!("/{}", segs.join("/"))
+            };
+            (
+                "+page.wisp",
+                format!(
+                    "---\nfn default(#[validate(len = 1..=100)] name: String, email: Email) {{\n    cx.flash(&format!(\"Thanks, {{name}}!\"));\n    redirect({back:?})\n}}\n---\n\n<title>{title}</title>\n\n{{@flash}}\n<form fields><button>Send</button></form>\n"
+                ),
+            )
+        }
+        "layout" => (
+            "+layout.wisp",
+            "<nav>\n  <a href=\"/\" active>Home</a>\n</nav>\n\n<slot />\n".into(),
+        ),
         "server" => (
             "+server.rs",
             "fn get() -> &'static str {\n    \"ok\"\n}\n".into(),
@@ -174,10 +243,10 @@ fn create(root: &Path, path: &str, kind: &str) -> Result<String, String> {
     };
     let dir = segs.iter().fold(root.join("src/routes"), |d, s| d.join(s));
     // A page and a server for one URL would both answer GET.
-    let other = if kind == "page" {
-        "+server.rs"
-    } else {
-        "+page.wisp"
+    let other = match file {
+        "+page.wisp" => "+server.rs",
+        "+server.rs" => "+page.wisp",
+        _ => file,
     };
     if let Some(taken) = [file, other].iter().find(|f| dir.join(f).exists()) {
         let shown = dir.join(taken);
@@ -234,6 +303,29 @@ mod tests {
         }
         assert!(!root.join("src").exists());
         create(&root, "(g)/[...rest]", "page").unwrap();
+    }
+
+    #[test]
+    fn wisp_add_writes_files_not_packages() {
+        let root = temp("add");
+        let s = |a: &[&str]| a.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert!(add(&root, &s(&["page", "lodash"])).is_none());
+        assert!(add(&root, &s(&["canvas-confetti"])).is_none());
+        add(&root, &s(&["form", "/contact"])).unwrap().unwrap();
+        add(&root, &s(&["layout", "/"])).unwrap().unwrap();
+        add(&root, &s(&["page", "/"])).unwrap().unwrap();
+        add(&root, &s(&["api", "/api/notes"])).unwrap().unwrap();
+        add(&root, &s(&["component", "Card"])).unwrap().unwrap();
+        let read = |p: &str| fs::read_to_string(root.join(p)).unwrap();
+        let form = read("src/routes/contact/+page.wisp");
+        assert!(
+            form.contains("redirect(\"/contact\")") && form.contains("{@flash}"),
+            "{form}"
+        );
+        assert!(read("src/routes/+layout.wisp").contains("active"));
+        assert!(read("src/routes/api/notes/+server.rs").contains("struct Note"));
+        assert!(read("src/components/Card.wisp").contains("{@props title}"));
+        assert!(add(&root, &s(&["component", "Card"])).unwrap().is_err());
     }
 
     #[test]

@@ -71,7 +71,9 @@ fn sign_in_keeps_cookies() {
     assert!(admin.text().contains("Welcome, ada"));
     // The flash from signing in shows once.
     assert!(
-        admin.text().contains("<p class=\"flash\" role=\"status\">Hello, ada!</p>"),
+        admin
+            .text()
+            .contains("<p class=\"flash\" role=\"status\">Hello, ada!</p>"),
         "{}",
         admin.text()
     );
