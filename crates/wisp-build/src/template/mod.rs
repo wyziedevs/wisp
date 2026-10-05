@@ -3389,6 +3389,14 @@ impl Parser<'_> {
         if t.is_empty() {
             return Err(self.err(open, "empty {}".into()));
         }
+        if let Some((name, spec)) = t.split_once(':').filter(|(n, s)| {
+            is_ident(n) && !s.is_empty() && !s.starts_with(':') && !s.contains(['{', ':', ' '])
+        }) {
+            return Err(self.err(
+                open,
+                format!("{{{name}:{spec}}}: a hole has no format spec; write {{format!(\"{{{{:{spec}}}}}\", {name})}}"),
+            ));
+        }
         // A whole attribute value: `None` leaves the attribute out.
         // (`name = {x}` with spaces cannot be taken back, and is written as text.)
         if unquoted
@@ -3493,6 +3501,12 @@ impl Parser<'_> {
                         "expected {#each <expr> as <pattern>[, <index>] [if <cond>]}".into(),
                     )
                 })?;
+                if [Some(pat), index].iter().flatten().any(|n| has_word(n, "cx")) {
+                    return Err(self.err(
+                        open,
+                        "`cx` is the request context in a template; name the item or index something else".into(),
+                    ));
+                }
                 // `{#each xs as x if cond}` keeps the items where cond holds.
                 let iter = match cond {
                     Some(_) if !is_ident(pat) => {
@@ -4190,6 +4204,14 @@ fn split_each(arg: &str) -> Option<(&str, &str, Option<&str>)> {
     Some((iter, pat, index))
 }
 
+/// Whether `name` appears in `src` as a whole word.
+fn has_word(src: &str, name: &str) -> bool {
+    let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    src.match_indices(name).any(|(i, _)| {
+        !word(src[..i].chars().next_back()) && !word(src[i + name.len()..].chars().next())
+    })
+}
+
 /// `iter as x if cond`: splits off the filter at the first top-level `if`
 /// that follows an `as`.
 fn split_filter(arg: &str) -> (&str, Option<&str>) {
@@ -4343,7 +4365,7 @@ fn parse_props(arg: &str) -> Result<Vec<PropDecl>, String> {
         if !is_ident(name) {
             return Err(format!("`{name}` is not a name for a prop"));
         }
-        if name == "children" || name.starts_with("__") {
+        if name == "children" || name.starts_with("__") || crate::ty::is_unrawable(name) {
             return Err(format!(
                 "`{name}` is a name Wisp uses; call the prop something else"
             ));
@@ -5301,6 +5323,37 @@ mod tests {
             n => panic!("{n:?}"),
         }
         assert!(parse("{#each xs as (a, b) if a > 1}{a}{/each}").is_err());
+    }
+
+    #[test]
+    fn format_spec_in_a_hole_is_refused() {
+        for src in ["{page:?}", "{page:#?}", "{n:>5}"] {
+            let e = parse(src).unwrap_err().to_string();
+            assert!(e.contains("format"), "{src}: {e}");
+        }
+        assert!(parse("{a::b}").is_ok());
+        assert!(parse("{x.0}").is_ok());
+    }
+
+    #[test]
+    fn prop_named_self_is_refused_at_the_declaration() {
+        for n in ["self", "Self", "crate", "super", "_"] {
+            let e = parse_props(&format!("{n}: u8")).unwrap_err();
+            assert!(e.contains(n) && e.contains("something else"), "{n}: {e}");
+        }
+        assert!(parse_props("r#type: u8").is_err() || parse_props("type: u8").is_ok());
+    }
+
+    #[test]
+    fn each_cannot_shadow_cx() {
+        for src in [
+            "{#each xs as cx}{cx}{/each}",
+            "{#each xs as x, cx}{x}{/each}",
+            "{#each xs as (a, cx)}{a}{/each}",
+        ] {
+            let e = parse(src).unwrap_err().to_string();
+            assert!(e.contains("cx"), "{src}: {e}");
+        }
     }
 
     #[test]
