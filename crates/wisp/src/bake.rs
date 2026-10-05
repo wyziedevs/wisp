@@ -197,6 +197,10 @@ struct Store {
     bytes: usize,
     budget: usize,
     key: Vec<u8>,
+    /// The second the dead were last swept out of a full store.
+    swept: u64,
+    #[cfg(test)]
+    sweeps: usize,
     /// How many `uncache` calls this worker has seen.
     purged: u64,
     /// The keys kept under each tag: written when a tagged response is
@@ -253,6 +257,9 @@ impl Store {
             bytes: 0,
             budget,
             key: Vec::new(),
+            swept: u64::MAX,
+            #[cfg(test)]
+            sweeps: 0,
             purged: PURGED.load(Ordering::Acquire),
             tags: HashMap::new(),
         }
@@ -312,7 +319,14 @@ impl Store {
     /// budget once the dead ones are gone; whether it did.
     fn insert(&mut self, key: Box<[u8]>, k: Arc<Kept>, now: u64) -> bool {
         let need = size(&key, &k);
-        if self.bytes + need > self.budget {
+        // Full: the dead go, but at most once a second, so a flood of new
+        // keys (unique query strings) does not scan all kept on each miss.
+        if self.bytes + need > self.budget && self.swept != now {
+            self.swept = now;
+            #[cfg(test)]
+            {
+                self.sweeps += 1;
+            }
             self.kept.retain(|_, k| k.dies > now);
             self.prune();
         }
@@ -818,6 +832,23 @@ mod tests {
         line(&mut head, "etag", "\"e\"");
         assert_eq!(head, b"etag: \"e\"\r\n");
         assert_eq!(header_in(&head, "ETag"), Some("\"e\""));
+    }
+
+    /// A full store under a flood of new keys (unique query strings) does
+    /// not scan all it keeps on every miss: at most once a second.
+    #[test]
+    fn a_full_store_sweeps_once_a_second() {
+        let mut s = Store::new(1000);
+        for i in 0..40u32 {
+            s.insert(i.to_le_bytes().into(), kept(40, 100), 0);
+        }
+        let before = s.sweeps;
+        for i in 100..1100u32 {
+            assert!(!s.insert(i.to_le_bytes().into(), kept(40, 100), 5));
+        }
+        assert!(s.sweeps - before <= 1, "{} sweeps", s.sweeps - before);
+        // The next second sweeps again, and what died makes room.
+        assert!(s.insert(b"late"[..].into(), kept(40, 200), 100));
     }
 
     #[test]
