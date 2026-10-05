@@ -273,7 +273,7 @@ fn parse(b: &mut [u8], limit: usize) -> std::result::Result<Option<Frame>, u16> 
     if len >> 63 != 0 || (op >= CLOSE && (!fin || len > 125)) {
         return Err(PROTOCOL_ERROR);
     }
-    if len > limit as u64 {
+    if op < CLOSE && len > limit as u64 {
         return Err(TOO_BIG);
     }
     let start: usize = at + 4;
@@ -1006,6 +1006,9 @@ mod tests {
         assert_eq!(fail(client(true, 3, b""), 100), PROTOCOL_ERROR); // reserved opcode
         assert_eq!(fail(client(false, PING, b""), 100), PROTOCOL_ERROR); // fragmented control
         assert_eq!(fail(client(true, PING, &[0; 126]), 1000), PROTOCOL_ERROR);
+        // control frames (<=125 by spec) are never held to a small message limit
+        assert_eq!(fail(client(true, PING, &[0; 125]), 4), 0);
+        assert_eq!(fail(client(true, TEXT, b"hello"), 4), TOO_BIG);
         assert_eq!(fail(client(true, CONTINUATION, b"x"), 100), PROTOCOL_ERROR);
         let mut twice = client(false, TEXT, b"a");
         twice.extend(client(true, TEXT, b"b"));
