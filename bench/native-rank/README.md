@@ -1,8 +1,7 @@
 # Native ranking bench
 
 Wisp's native server against eleven popular web frameworks, same routes, same machine, same
-load, run twice. Results and ranks: `results/report.md`; raw numbers: `results/pass1/*.json`,
-`results/pass2/*.json`.
+load, five passes (two required independent passes plus re-runs). Results and ranks: `results/report.md`; raw numbers: `results/pass{1..5}/*.json`.
 
 Reproduce, on a Linux host with 4+ cores and `oha`, Rust, Node 24 and Bun installed:
 
@@ -20,7 +19,7 @@ or step by step: `./run.sh build | verify | pass 1 | pass 2 | report`.
 | 2 | ASP.NET Core minimal API | .NET 10, Kestrel | the .NET default; Release, Server GC on, concurrent GC off, TieredPGO (TechEmpower's published settings) |
 | 3 | Axum | Rust, tokio + hyper | the most used Rust framework |
 | 4 | Actix Web | Rust, actix-rt | TechEmpower's Rust leader |
-| 5 | Gin | Go 1.27 | the most used Go framework (over net/http and Fiber) |
+| 5 | Gin | Go 1.23 | the most used Go framework (over net/http and Fiber) |
 | 6 | Fastify | Node 24, cluster | the fast Node framework |
 | 7 | Express | Node 24, cluster | the most used Node framework |
 | 8 | Hono | Bun | the Bun entry (over Elysia: Hono is the more used) |
@@ -50,7 +49,7 @@ Hono). Axum and Actix write the escaped text as a literal around the number (`It
 &amp; co`, no escaper call and no string per item); the Wisp template does the same
 (`{#each 1..=1000 as i}<li>Item &lt;{i}&gt; &amp; co</li>{/each}`), so the three do the same work.
 Until 2026-10-05 Wisp's page built 1000 `format!` strings and escaped each, which was most of its
-257 us against 109 and 116. `verify` compares the 1000 `<li>` texts, not the wrapper: Wisp adds its head
+257 us against Actix 109 and Axum 116. `verify` compares the 1000 `<li>` texts, not the wrapper: Wisp adds its head
 (build id and client script), Next.js its RSC payload (153 KB), SvelteKit with `csr = false` sends
 neither. Everything else (status, body bytes, length) is compared exactly; the content-type
 differs only in spelling (`;charset=` spacing and case).
@@ -79,7 +78,7 @@ differs only in spelling (`;charset=` spacing and case).
 - Two independent passes at different times; pass 2 walks the frameworks in reverse order. Cells
   where no two clean passes are within 5% are flagged in the report; re-runs (passes 3 to 5) were
   added until time ran out, and the cells that still disagree are listed with the reason (steal).
-  Ranks use the median of the clean passes.
+  Ranks use the median of the clean passes and need at least two; otherwise the cell is unranked.
 - Wisp is built `--release` with its own `Cargo.toml` profile (fat LTO, one codegen unit); Axum
   and Actix get the same profile, plus `panic = "abort"`.
 
@@ -96,29 +95,31 @@ not move with steal. Req/s is the median of the clean passes; ranks:
 
 | Framework | `/` | `/json` | `/params` | `/list` | `/json-big` | CPU per request, rank sum |
 |---|---|---|---|---|---|---|
-| Wisp | 1 | 1 | 3 | 3 | 1 | 8 (best) |
-| Actix Web | 2 | 3 | 1 | 1 | 2 | 9 |
-| Axum | 3 | 2 | 2 | 2 | 3 | 13 |
-| ASP.NET Core | 4 | 4 | 4 | 5 | 4 | 20 |
-| Hono (Bun) | 5 | 5 | 6 | 9 | 6 | 31 |
-| Go Gin | 6 | 6 | 5 | 10 | 7 | 31 |
-| Fastify | 7 | 7 | 8 | 6 | 5 | 33 |
-| Express | 8 | 9 | 7 | 7 | 9 | 40 |
-| Spring Boot | 10 | 8 | 9 | 4 | 8 | 42 |
-| FastAPI | 9 | 11 | 10 | 8 | 12 | 51 |
-| SvelteKit | 11 | 10 | 11 | 11 | 10 | 53 |
-| Next.js | 12 | 12 | 12 | 12 | 11 | 59 |
+| Wisp | 1 | 1 | - | - | - | 8 (best) |
+| Actix Web | 2 | 3 | 1 | 1 | 1 | 9 |
+| Axum | 3 | 2 | 2 | - | 2 | 13 |
+| ASP.NET Core | 4 | 4 | 3 | - | 3 | 20 |
+| Hono (Bun) | - | - | - | - | - | 31 |
+| Go Gin | 5 | - | 4 | 5 | 5 | 31 |
+| Fastify | - | - | - | 2 | 4 | 33 |
+| Express | - | - | 5 | 3 | - | 40 |
+| Spring Boot | 7 | 5 | - | - | - | 42 |
+| FastAPI | 6 | - | - | 4 | 8 | 51 |
+| SvelteKit | 8 | 6 | - | 6 | 6 | 53 |
+| Next.js | 9 | 7 | 6 | 7 | 7 | 59 |
+
+`-` = unranked: fewer than two clean passes for that cell, so no number is claimed (a cell needs at least two). Ranks are among the ranked frameworks of that route only, so they are not comparable across routes.
 
 Plainly:
 
-- Wisp is top 3 in every route, but the top three (Wisp, Actix Web, Axum) are within the noise of
+- Wisp is ranked top 3 on `/` and `/json` (clean-pass medians); `/params`, `/list` and `/json-big` have fewer than two clean Wisp passes and are unranked. The top three (Wisp, Actix Web, Axum) are within the noise of
   each other on `/`, `/json`, `/params` and `/json-big`: their order flips between passes (Wisp
   was 4th in pass 1 `/`, 1st in pass 2). Do not read a win from those ranks; read "top tier".
-- `/list` was Wisp's weak cell in these passes: 3rd in all five, 257 us against Axum's 109 and
-  Actix's 116, because its page built and escaped 1000 strings the others did not (see above).
+- `/list` was Wisp's weak cell in these passes: 3rd in all five, 257 us against Actix's 109 and
+  Axum's 116, because its page built and escaped 1000 strings the others did not (see above).
   With the same work (2026-10-05, callgrind, one request): Wisp 153k instructions, Axum 370k,
   Actix 425k; CPU per request in three alternating c=64 rounds: Wisp 108/92/172 us, Axum
-  139/168/180, Actix 179/199/229. The passes above predate it. Gin's `html/template` is the slowest of the compiled
+  139/168/180, Actix 179/199/229 (unmeasured in this tree: no raw data committed); the only record is commit cddf6ca. The passes above predate it. Gin's `html/template` is the slowest of the compiled
   stacks here (a stock-library choice, not a tuned one); Next.js renders 1000 React elements plus
   its RSC payload.
 - CPU per request (steal-proof): Wisp is first on `/`, `/json` and `/params` (19 to 23 us), second
@@ -129,5 +130,4 @@ Plainly:
   Core 641, FastAPI 1.2 s, Next.js 1.5 s, Spring Boot 10.7 s (two cores, JIT and classpath scan).
 - Agreement: most throughput cells never got two clean passes within 5% (list in the report),
   because the host's steal time was above the gate in most runs of most passes. Those cells are
-  provisional by the report's own flag; the ranks above are stable where the gaps are large (the
-  tail of the table moves by at most one place) and not where they are small (the top three).
+  provisional by the report's own flag; unranked cells (fewer than two clean passes) are shown as `-`, and the ranks above are not stable where the gaps are small (the top three).

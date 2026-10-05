@@ -39,7 +39,7 @@ borrowed from the host's bytes, the reply head was sent by number and a task
 that ends in its first poll was never stored). Optimization level: `3` for every
 host but Vercel and Netlify `--edge`, which get `s`; `z` was 40% slower and no
 smaller than `s`, and `+simd128,+bulk-memory` measured no faster. `app.wasm` for
-this bench: 508 KB (178 KB gzipped) at `3`, 427 KB (159 KB) at `s`; Cloudflare's
+this bench: 508 KB (178 KB gzipped) at `3`, 427 KB (159 KB) at `s` (unmeasured in this tree: no raw data committed); Cloudflare's
 limit is 3 MB gzipped.
 
 | Runtime | Framework | `/` | `/list` | `/json` |
@@ -107,7 +107,7 @@ Node), so it is workerd's per-request cost of entering wasm, not the app's.
 Cold start: in Node, compile 1 ms (lazy), instantiate 0.1 ms, `main` 1 ms,
 the first request's code compiled on first use most of the rest. Instantiating
 synchronously on the first request measured no better in workerd (31 vs 37 ms,
-noise about 6 ms), so it was dropped. `app.wasm` here: 511 KB (499 KB before).
+noise about 6 ms), so it was dropped. `app.wasm` here: 511 KB (499 KB before) (unmeasured in this tree: no raw data committed).
 
 ## Realistic routes
 
@@ -174,7 +174,7 @@ not installed here, so not tried. workerd A/B was inside the noise (2x swings).
 Cold start is process start to the first complete response, median of 9, three
 rounds alternating the builds (the noise of one is about 6 ms; of a median of
 9, 1 ms). Wisp 26 to 27 ms, Hono 21 to 23 ms, before and after every change
-below. `app.wasm` of this bench's app (all routes above), `strip`ped, opt-level 3:
+below. `app.wasm` of this bench's app (all routes above), `strip`ped, opt-level 3 (sizes (unmeasured in this tree: no raw data committed); the commit-labelled sizes below are the history):
 
 | | wasm | cold start |
 |---|---|---|
@@ -327,7 +327,7 @@ rows are in the table above. Raw sockets against Hono: +4% on `/`, 3.0x `/list10
 more per request than Bun's own `Response` path, as on Deno); raw is the default. Run validity not recorded (no steal data).
 
 Wasm size, the bench app, stripped, opt-level 3, built at successive commits (the file went
-540,040 at bc5ce22 to 582,857 at c3d610b; the 627 KB quoted above did not reproduce: this
+540,040 at bc5ce22 to 582,857 at c3d610b (commit-labelled, no build output committed); the 627 KB quoted above did not reproduce: this
 app builds to 582,857 at c3d610b). By symbol sizes of the unstripped builds: removing the admin/blob/idem code
 (a56d2f9) took it to 488,775; jobs on the edge (09b87c5) put 100 KB back at that moment
 (`wisp::edge` +14 KB, BTreeMap code +27 KB, admin +12 KB), later trims took some away; edge
@@ -354,7 +354,7 @@ the bridge module alone 24, Wisp end to end 39 (before and after the cut), Hono 
 load 7 to 9 ms, first request (instantiate, `main`/init, the request path compiled on first
 call) 6 to 7 ms. In Node (lazy compile, same V8): compile 0.8 ms, instantiate 0.15,
 env + `main` 1.7, first request 3.8 beyond that, second 0.5. Module load does not follow
-size: the opt-level `s` wasm (433 KB) loaded in 25 to 31 ms against 31 to 32 for opt 3 (559 KB),
+size: the opt-level `s` wasm (433 KB) loaded in 25 to 31 ms against 31 to 32 for opt 3 (559 KB) (unmeasured in this tree: no raw data committed),
 within the noise. Gate: size only (`tests/gate` (`cargo run -p wisp-gate`)); a time bound would flake on this.
 
 ## workerd profiled (V8 CPU profile, 2026-10-04)

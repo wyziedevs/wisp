@@ -375,6 +375,8 @@ cargo run -r -p bench-run -- --suite real [-d 10] [--think 1.0]
 
 ## Results on Linux
 
+(unmeasured in this tree: no raw data committed): the tables below were added in commit 9b7bafd with no raw output committed; treat them as history, not reproducible numbers.
+
 2026-09-28. Ubuntu 24.04 (Linux 6.8) on a 4-vCPU AMD EPYC 7B13 VPS: servers
 on CPUs 0-1, load on 2-3. Rust 1.98, Go 1.26.3, Node 26.10. 64 connections,
 5 s warmup, 10 s measured, mean of 2 rounds. ASP.NET Core did not start (the
@@ -422,6 +424,8 @@ request; Wisp's Linux workers now use a driver without those costs
 the same design on epoll (`crates/wisp/src/epoll.rs`).
 
 ## Results on Windows
+
+(unmeasured in this tree: no raw data committed): the tables below were added in commit 9b7bafd with no raw output committed; treat them as history, not reproducible numbers.
 
 2026-09-28. Windows 10, AMD Ryzen 7 7800X3D (8 cores, 16 threads). Servers
 on logical CPUs 0-7, load on 8-15. Rust 1.97, .NET 10.0.302, Go 1.26.3, Node
