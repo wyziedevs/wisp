@@ -1176,7 +1176,9 @@ fn connection_cap() {
     assert_eq!(status(&got), 503, "{got}");
     // A slot comes back when a connection closes.
     drop(a);
-    for _ in 0..50 {
+    // Up to 10 s: the server sees the close on its own time, later on a
+    // busy machine; only a slot that never comes back reaches the bound.
+    for _ in 0..500 {
         if status(&s.request("GET", "/", "", b"")) == 200 {
             return;
         }

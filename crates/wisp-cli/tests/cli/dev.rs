@@ -77,8 +77,14 @@ impl Dev {
     /// finds nobody reading, and it exits. Returns once it has.
     fn hang_up(&mut self, app: &Path) {
         self.hang_up.store(true, Ordering::Relaxed);
-        for round in 0..40 {
+        // A busy machine (the gate runs every test at once) can take far
+        // longer than the usual few hundred ms to see a change, so this
+        // waits on the exit itself, up to a bound only a real hang reaches.
+        let deadline = Instant::now() + Duration::from_secs(120);
+        let mut round = 0u32;
+        while Instant::now() < deadline {
             write(app, "static/hang-up.txt", &round.to_string());
+            round += 1;
             for _ in 0..30 {
                 if self.child.try_wait().unwrap().is_some() {
                     return;
@@ -159,7 +165,8 @@ fn address(line: &str) -> String {
 /// Waits for nothing to be listening at `addr` any more.
 fn assert_stopped(addr: &str) {
     let sock: SocketAddr = addr.parse().unwrap();
-    let gone = (0..50).any(|_| {
+    // Bounded by a real hang, not by how busy the machine is.
+    let gone = (0..300).any(|_| {
         let closed = TcpStream::connect_timeout(&sock, Duration::from_millis(100)).is_err();
         if !closed {
             std::thread::sleep(Duration::from_millis(100));
