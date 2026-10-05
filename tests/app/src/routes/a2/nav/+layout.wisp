@@ -1,6 +1,6 @@
 <nav>
-  <a id="one" href="/a2/nav/one">One</a>
-  <a id="two" href="/a2/nav/two">Two</a>
+  <a id="one" href="/a2/nav/one" active>One</a>
+  <a id="two" href="/a2/nav/two" active>Two</a>
   <a id="reload" data-wisp-reload href="/a2/nav/two">Reload</a>
   <a id="stores" href="/a2/stores">Stores</a>
   <button id="lay" on:click="n++">{:n}</button>

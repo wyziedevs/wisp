@@ -136,6 +136,41 @@ pub use token::{token, untoken};
 pub use wisp_macros::{Config, Cookie, FromJson, Json, Rest, action, model, remote};
 /// `wisp::based("/x")`: a path of the app's own under its base path (`WISP_BASE`).
 pub use wisp_shared::protocol::based;
+
+/// `Some("page")` when `path` (the request's, `cx.path()`) is `href` or
+/// below it, else `None`; `/` matches only itself, a trailing `/` and a
+/// query on either side are ignored. `<a href="/blog" active>` writes
+/// `aria-current={wisp::current(cx.path(), "/blog")}` for you:
+/// `assert_eq!(wisp::current("/blog/x", "/blog"), Some("page"))`.
+pub fn current(path: &str, href: &str) -> Option<&'static str> {
+    fn trim(p: &str) -> &str {
+        let t = p
+            .split(['?', '#'])
+            .next()
+            .unwrap_or("")
+            .trim_end_matches('/');
+        if t.is_empty() { "/" } else { t }
+    }
+    let (path, href) = (trim(path), trim(href));
+    let hit = path == href
+        || href != "/" && path.starts_with(href) && path.as_bytes().get(href.len()) == Some(&b'/');
+    hit.then_some("page")
+}
+
+#[cfg(test)]
+mod current_tests {
+    #[test]
+    fn current_is_the_page_or_below() {
+        use super::current;
+        assert_eq!(current("/blog", "/blog"), Some("page"));
+        assert_eq!(current("/blog/x/", "/blog"), Some("page"));
+        assert_eq!(current("/blog?p=2", "/blog/"), Some("page"));
+        assert_eq!(current("/blogs", "/blog"), None);
+        assert_eq!(current("/about", "/"), None);
+        assert_eq!(current("/", "/"), Some("page"));
+        assert_eq!(current("/", "/#top"), Some("page"));
+    }
+}
 pub use ws::{Message, WebSocket};
 
 use std::any::{Any, TypeId};

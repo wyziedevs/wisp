@@ -183,6 +183,7 @@ fn like(id: u64, email: Email, note: Option<String>, agree: bool, tags: Vec<Stri
 | `{@const x = expr}` | let |
 | `{#snippet row(a, b)}…{/snippet}` `{@render row(x, 1)}` | local markup fn |
 | `{@pager posts}` | Newer/Older links of a `Table::page` |
+| `<a href="/blog" active>` | `aria-current="page"` on `/blog` and below (`/` only itself); pages, layouts |
 | `<head>…</head>` | into the document head; a top-level `<title>` goes there alone; one `<title>` per page: the innermost page or layout with one writes it |
 | `<slot />` or `{@render children()}` | layout/component slot |
 | `cx` | the request (`&Cx`) in pages, layouts, error pages |

@@ -526,7 +526,7 @@ pub(crate) const KNOBS: [(&str, &str); 14] = [
 
 /// Wisp attributes (inside a tag) and what each does (hover). A test keeps it
 /// in step with the reference: every `data-wisp-*` it shows is here.
-pub(crate) const ATTRS: [(&str, &str); 16] = [
+pub(crate) const ATTRS: [(&str, &str); 17] = [
     (
         "fields",
         "`<form fields>`: writes a labelled input per param of the action (`Email` is `type=email`, `Image` a file, `bool` a checkbox, numbers `number`). `fields={post}` starts a struct param's fields from `post`.",
@@ -590,6 +590,10 @@ pub(crate) const ATTRS: [(&str, &str); 16] = [
     (
         "priority",
         "`<img priority>`: above the fold; `fetchpriority=\"high\"` and not lazy.",
+    ),
+    (
+        "active",
+        "`<a href=\"/blog\" active>`: `aria-current=\"page\"` while the request is `/blog` or below it (`/` only itself); `wisp::current(cx.path(), href)`. Pages and layouts.",
     ),
 ];
 

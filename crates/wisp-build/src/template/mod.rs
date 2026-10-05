@@ -118,6 +118,8 @@ fn parse_as(
     let src = written.as_deref().unwrap_or(src);
     let paged = pagers(src);
     let src = paged.as_deref().unwrap_or(src);
+    let linked = active_links(src);
+    let src = linked.as_deref().unwrap_or(src);
     let mut p = Parser {
         src,
         fields,
@@ -5483,6 +5485,23 @@ mod tests {
         let default = [field("default", "q", "String")];
         let post = form_fields("<form method=\"post\" fields></form>", &default);
         assert!(post.unwrap().unwrap().contains("<input name=\"q\">"));
+    }
+
+    #[test]
+    fn an_active_link_marks_the_current_page() {
+        let cur = |h: &str| format!("aria-current={{wisp::current(cx.path(), {h})}}");
+        let got = active_links(
+            r#"<nav><a href="/blog" active>B</a> <a active href={u}>U</a> <a {href} active/></nav>"#,
+        );
+        let want = format!(
+            r#"<nav><a href="/blog" {}>B</a> <a {} href={{u}}>U</a> <a {{href}} {}/></nav>"#,
+            cur("\"/blog\""),
+            cur("&(u)"),
+            cur("&(href)"),
+        );
+        assert_eq!(got.as_deref(), Some(want.as_str()));
+        assert_eq!(active_links("<p class=\"x active\">no</p>"), None);
+        assert_eq!(active_links("<abbr active>x</abbr>"), None);
     }
 
     #[test]

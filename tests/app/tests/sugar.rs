@@ -7,6 +7,18 @@ use wisp::test::client;
 use wisp_test_app::Site;
 
 #[test]
+fn an_active_link_is_the_current_page() {
+    let mut app = client::<Site>();
+    let page = app.get("/a2/nav/two").text().to_string();
+    assert!(
+        page.contains("<a id=\"one\" href=\"/a2/nav/one\">"),
+        "{page}"
+    );
+    let two = "<a id=\"two\" href=\"/a2/nav/two\" aria-current=\"page\">";
+    assert!(page.contains(two), "{page}");
+}
+
+#[test]
 fn a_form_asks_for_what_its_action_takes() {
     let mut app = client::<Site>();
     let page = app.get("/t/fields").text().to_string();

@@ -31,6 +31,82 @@ pub(super) fn pagers(src: &str) -> Option<String> {
     (from > 0).then(|| out + &src[from..])
 }
 
+/// `<a href="/blog" active>` as `<a href="/blog" aria-current={..}>`:
+/// `"page"` while the request's path is `/blog` or below it (`/` only
+/// itself), else left out. `href={x}` and `{href}` work too. Pages and
+/// layouts (it reads `cx`). `None` when no link says `active`.
+pub(super) fn active_links(src: &str) -> Option<String> {
+    if !src.contains(" active") {
+        return None;
+    }
+    let b = src.as_bytes();
+    let (mut out, mut from, mut i) = (String::new(), 0, 0);
+    while let Some(at) = src[i..].find("<a") {
+        let start = i + at;
+        i = start + 2;
+        if !b.get(i).is_some_and(|&c| is_ws(c)) {
+            continue;
+        }
+        let (mut href, mut flag, mut j) = (None, None, i);
+        loop {
+            while j < b.len() && is_ws(b[j]) {
+                j += 1;
+            }
+            if j >= b.len() || b[j] == b'>' || b[j..].starts_with(b"/>") {
+                break;
+            }
+            let at = j;
+            while j < b.len()
+                && !is_ws(b[j])
+                && !matches!(b[j], b'=' | b'>')
+                && !b[j..].starts_with(b"/>")
+            {
+                j += 1;
+            }
+            let Some(name) = src.get(at..j) else { break };
+            if b.get(j) != Some(&b'=') {
+                match name {
+                    "active" => flag = Some((at, j)),
+                    "{href}" => href = Some("&(href)".to_string()),
+                    _ => {}
+                }
+                continue;
+            }
+            j += 1;
+            let quote = b.get(j).copied().filter(|&q| q == b'"' || q == b'\'');
+            let first = j + usize::from(quote.is_some());
+            j = first;
+            while j < b.len() && quote.map_or(!is_ws(b[j]) && b[j] != b'>', |q| b[j] != q) {
+                j = if b[j] == b'{' {
+                    hole_end(b, j + 1).map_or(b.len(), |e| e + 1)
+                } else {
+                    j + 1
+                };
+            }
+            let value = src.get(first..j.min(b.len())).unwrap_or("{");
+            j += usize::from(quote.is_some());
+            if name == "href" {
+                let hole = value.strip_prefix('{').and_then(|v| v.strip_suffix('}'));
+                href = match hole {
+                    Some(e) if quote.is_none() => Some(format!("&({})", e.trim())),
+                    _ if !value.contains('{') => Some(format!("{value:?}")),
+                    _ => None,
+                };
+            }
+        }
+        let (Some((a, z)), Some(href)) = (flag, href) else {
+            continue;
+        };
+        out.push_str(&src[from..a]);
+        out.push_str(&format!(
+            "aria-current={{wisp::current(cx.path(), {href})}}"
+        ));
+        from = z;
+        i = z;
+    }
+    (from > 0).then(|| out + &src[from..])
+}
+
 /// `<form action="?/add" fields>` with a labelled `<input>` for each
 /// parameter of that action written in (`rules::input_type` gives its
 /// `type`; a text field named like `body` is a `<textarea>`), all on the
