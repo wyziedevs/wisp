@@ -142,7 +142,7 @@ pub async fn prerender<A: App>(dir: &Path) -> io::Result<()> {
 pub async fn export<A: App>(dir: &Path, spa: bool) -> io::Result<()> {
     crate::prepare::<A>().await?;
     let mut assets = BTreeSet::new();
-    let site_url = std::env::var_os("SITE_URL").is_some_and(|s| !s.is_empty());
+    let site_url = crate::seo::site_url().is_some();
     // Pattern and file of each page the fallback draws.
     let mut drawn: Vec<(&str, String)> = Vec::new();
     for r in A::export_routes() {

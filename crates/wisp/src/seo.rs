@@ -76,8 +76,9 @@ fn atom(base: &str, all: &[crate::MdPage], slashed: bool) -> Option<String> {
         10 => format!("{d}T00:00:00Z"),
         _ => d.to_string(),
     };
-    let site = std::env::var("SITE_TITLE")
-        .unwrap_or_else(|_| base.split_once("://").map_or(base, |h| h.1).to_string());
+    let site = crate::env("SITE_TITLE")
+        .filter(|t| !t.trim().is_empty())
+        .unwrap_or_else(|| base.split_once("://").map_or(base, |h| h.1).to_string());
     let mut out = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<feed xmlns=\"http://www.w3.org/2005/Atom\">\n",
     );
@@ -143,13 +144,23 @@ fn robots(base: &str) -> String {
     format!("User-agent: *\nAllow: /\n\nSitemap: {base}/sitemap.xml\n")
 }
 
+/// `SITE_URL` (from the environment or `.env`) trimmed of blanks and of its
+/// last `/`; `None` when it is unset or blank.
+pub(crate) fn site_url() -> Option<String> {
+    clean_site(crate::env("SITE_URL"))
+}
+
+fn clean_site(v: Option<String>) -> Option<String> {
+    let v = v?;
+    let v = v.trim().trim_end_matches('/');
+    (!v.is_empty()).then(|| v.to_string())
+}
+
 /// `https://example.com`: `SITE_URL` without its last `/`, else the
 /// request's scheme and host (and base path); `None` with neither.
 pub(crate) fn base(cx: &Cx) -> Option<String> {
-    if let Ok(site) = std::env::var("SITE_URL")
-        && !site.is_empty()
-    {
-        return Some(site.trim_end_matches('/').to_string());
+    if let Some(site) = site_url() {
+        return Some(site);
     }
     let host = cx.header("host").filter(|h| {
         !h.is_empty()
@@ -251,6 +262,15 @@ fn locale_urls(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn site_url_ignores_blanks() {
+        let c = |s: &str| super::clean_site(Some(s.into()));
+        assert_eq!(c("  "), None);
+        assert_eq!(c("/"), None);
+        assert_eq!(c(" https://a.b// "), Some("https://a.b".into()));
+        assert_eq!(super::clean_site(None), None);
+    }
+
     use super::*;
 
     fn route(pattern: &'static str, indexed: bool) -> ExportRoute {
