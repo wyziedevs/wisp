@@ -143,6 +143,10 @@ pub(crate) enum Known {
 /// How many [`Known`] there are.
 pub(crate) const KNOWN: usize = 6;
 
+/// `Cx::status` once something signed found no `WISP_SECRET`: no real
+/// status, so the request that met it answers 500 whatever it returned.
+const NO_SECRET: u16 = 1;
+
 /// The request as it came over the wire: the connection's read buffer and
 /// spans into it. The parser in `http.rs` writes it; `Cx`'s methods read it.
 pub(crate) struct Wire {
@@ -677,7 +681,9 @@ impl Cx {
     /// Status for a rendered page. Endpoints set it on their `Response`.
     pub fn set_status(&mut self, status: u16) {
         assert!((100..=999).contains(&status), "invalid status {status}");
-        self.status = status;
+        if self.status != NO_SECRET {
+            self.status = status;
+        }
     }
 
     /// Adds a response header. A single-valued one (`content-type`,
@@ -710,6 +716,12 @@ impl Cx {
     // The response so far, as the server reads it: the status, the headers
     // and whether errors go back as JSON. App code sets them with the
     // methods above.
+
+    /// Whether something signed found no `WISP_SECRET`: the answer is a 500.
+    #[inline]
+    pub(crate) fn unsigned(&self) -> bool {
+        self.status == NO_SECRET
+    }
 
     /// The status for a rendered page (see [`Cx::set_status`]).
     #[inline]
@@ -897,6 +909,8 @@ impl Cx {
     /// Sets a cookie a visitor cannot forge or change, read back with
     /// [`Cx::signed_cookie`]: a user id that says who is signed in, say. It
     /// is signed with `WISP_SECRET` (dev builds keep one in `.wisp/secret`).
+    /// Without one (outside dev) the cookie is not set and the request answers
+    /// 500, with one log line naming `WISP_SECRET`.
     /// The value is still readable by the visitor; keep secrets out of it.
     pub fn set_signed_cookie(&mut self, name: &str, value: impl std::fmt::Display) {
         self.set_cookie_with(
@@ -947,7 +961,11 @@ impl Cx {
         assert!(token(value, b"\",;\\"), "invalid cookie value {value:?}");
         let deleted = value.is_empty();
         if options.signed && !deleted {
-            let mac = sign::cookie_mac(name, value);
+            let Some(mac) = sign::cookie_mac(name, value) else {
+                // No `WISP_SECRET`: the cookie is not set, the answer is a 500.
+                self.status = NO_SECRET;
+                return;
+            };
             header.push('.');
             sign::base64(&mut header, &mac, true);
         }

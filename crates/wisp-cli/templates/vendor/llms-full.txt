@@ -1178,7 +1178,7 @@ Plaintext, pipelined, requests per second (median of 3), by connections:
 | Hono (Node) | 28,966 | 29,602 | 34,173 | 0 |
 | Hono (Bun) | 10,599 | 10,375 | 9,652 | 6,910 |
 | SvelteKit | 10,929 | 8,464 | 8,359 | 0 |
-| Next.js | Failed (out of memory) | Failed (out of memory) | Failed (out of memory) | not run |
+| Next.js | No valid result: no pipelined response completed (heap raised to 8 GB, still none) | No valid result: no pipelined response completed (heap raised to 8 GB, still none) | No valid result: no pipelined response completed (heap raised to 8 GB, still none) | not run |
 
 Rows whose min-max ranges overlap are ties. 256: Fastify and Express; Hono (Node), SvelteKit and Hono (Bun). 1024: Axum and Actix Web; Express and Hono (Node). 4096: Hono (Node) and Express. 16384: Wisp's range (0 to 29,252) overlaps every row that answered, so no rank is drawn there.
 
@@ -2350,6 +2350,8 @@ File | Meaning
 `+server.rs` | `get`/`post`/`put`/`patch`/`delete` endpoints; one taking an `id` the path lacks serves `/[id]` below, and `list` is then the folder's GET. A `#[derive(Rest)]` type in it is served whole ([APIs and platforms](/docs/api/))
 
 Segments: `blog` (static), `[slug]` (param), `[[lang]]` (optional), `[...rest]` (rest, may be empty), `(group)` (not in the URL).
+
+A literal `cx.param("name")` in a route's own `+page.rs` or `+server.rs` that names a parameter the route does not have is a build error that lists the route's parameters.
 
 A param may name a matcher, `[id=int]`, `[[lang=locale]]`: `src/params/<name>.rs` with `fn matches(s: &str) -> bool`, given the decoded segment. `int` (ASCII digits fitting a `u64`) is built in. A refused segment goes on to the next route, so `/[id=int]` and `/[slug]` coexist. An unknown matcher is a build error.
 
