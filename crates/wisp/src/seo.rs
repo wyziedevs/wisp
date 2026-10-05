@@ -31,12 +31,20 @@ pub(crate) fn answer<A: App>(cx: &Cx) -> Option<(Vec<u8>, &'static str)> {
     let routes = A::export_routes();
     let base = base(cx).filter(|_| routes.iter().any(|r| r.page && r.indexed))?;
     let (body, mime) = match sitemap {
+        // An app with no locales has none of their addresses' code.
         true => (
-            xml(
-                &base,
-                &routes,
-                crate::http::slash() == crate::TrailingSlash::Always,
-            ),
+            match A::LOCALES.is_empty() {
+                true => xml::<false>(
+                    &base,
+                    &routes,
+                    crate::http::slash() == crate::TrailingSlash::Always,
+                ),
+                false => xml::<true>(
+                    &base,
+                    &routes,
+                    crate::http::slash() == crate::TrailingSlash::Always,
+                ),
+            },
             "application/xml; charset=utf-8",
         ),
         false => (robots(&base), "text/plain; charset=utf-8"),
@@ -181,14 +189,15 @@ pub(crate) fn base(cx: &Cx) -> Option<String> {
 
 /// The sitemap of `routes`' indexed pages, each address once, in order;
 /// `slashed`: each ends in `/`, as `trailing_slash(Always)` serves them.
-fn xml(base: &str, routes: &[ExportRoute], slashed: bool) -> String {
+/// `I18N`: the app has locales.
+fn xml<const I18N: bool>(base: &str, routes: &[ExportRoute], slashed: bool) -> String {
     // Each address, and the `xhtml:link`s that go with it.
     let mut urls: BTreeMap<String, String> = BTreeMap::new();
     let locales = crate::locales();
     let end = |u: &str| if slashed && u != "/" { "/" } else { "" };
     for r in routes.iter().filter(|r| r.page && r.indexed) {
         // A route whose `entries()` panics or does not fit is left out.
-        if has_locale(r) && !locales.is_empty() {
+        if I18N && has_locale(r) && !locales.is_empty() {
             urls.extend(locale_urls(base, r, &end));
         } else if let Ok(Ok(all)) = catch_unwind(AssertUnwindSafe(|| paths(r))) {
             let all = all.iter().map(|segs| url(segs));
@@ -336,7 +345,7 @@ mod tests {
             post,
         ];
         assert_eq!(
-            xml("https://x.org", &routes, false),
+            xml::<true>("https://x.org", &routes, false),
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
              <urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n\
              <url><loc>https://x.org/</loc></url>\n\
@@ -346,7 +355,7 @@ mod tests {
              <url><loc>https://x.org/post/c</loc></url>\n\
              </urlset>\n"
         );
-        let slashed = xml("https://x.org", &routes, true);
+        let slashed = xml::<true>("https://x.org", &routes, true);
         assert!(slashed.contains("<loc>https://x.org/about/</loc>"));
         assert!(slashed.contains("<loc>https://x.org/post/c/</loc>"));
         assert!(slashed.contains("<loc>https://x.org/</loc>"));
