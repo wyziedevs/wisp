@@ -7,6 +7,12 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords = ["web", "framework", "http", "server", "templates"]
+categories = ["web-programming::http-server", "web-programming"]
+# Tests stay in the repository: the published crate is what builds.
+exclude = ["tests/**"]
 
 [dependencies]
 httparse.workspace = true

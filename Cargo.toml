@@ -32,6 +32,8 @@ rust-version = "1.88"
 license = "MIT"
 authors = ["Wyzie LLC <https://wyzie.io>"]
 repository = "https://github.com/wyziedevs/wisp"
+homepage = "https://wispweb.dev"
+readme = "README.md"
 
 [workspace.dependencies]
 wisp = { path = "crates/wisp", version = "0.1.0" }

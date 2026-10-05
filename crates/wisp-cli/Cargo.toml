@@ -7,6 +7,12 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords = ["web", "framework", "cli", "dev-server", "templates"]
+categories = ["web-programming", "command-line-utilities", "development-tools"]
+# Tests stay in the repository: the published crate is what builds.
+exclude = ["tests/**"]
 
 [[bin]]
 name = "wisp"

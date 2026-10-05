@@ -7,6 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords = ["web", "framework", "macros"]
+categories = ["web-programming", "development-tools::procedural-macro-helpers"]
 
 [lib]
 proc-macro = true

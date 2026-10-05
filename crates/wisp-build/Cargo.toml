@@ -7,6 +7,12 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords = ["web", "framework", "templates", "codegen", "build"]
+categories = ["web-programming", "template-engine", "development-tools::build-utils"]
+# Tests stay in the repository: the published crate is what builds.
+exclude = ["tests/**"]
 
 # The runtime's context rules, wire protocol and browser runtime: what a
 # build folds and writes is what the runtime does.
