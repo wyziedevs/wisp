@@ -291,13 +291,18 @@ export function wisp(module, env = {}, sink, accept) {
 
   async function start() {
     // `work`: timers and fetches under way, which `idle` waits out.
-    const x = { pending: new Map(), heads: [], streams: new Map(), conns: new Map(), socks: new Map(), retired: false, work: 0, idlers: [] };
+    // `cur`: the request whose call into the app is under way (`curId`, -1
+    // for none), kept out of `pending` until it is left unanswered.
+    const x = { pending: new Map(), cur: null, curId: -1, heads: [], streams: new Map(), conns: new Map(), socks: new Map(), retired: false, work: 0, idlers: [] };
     // The memory's bytes, made again only when it has grown: growing detaches
     // the old buffer, which empties its view (reading `memory.buffer` each
     // time is a call into the engine).
     let view = none;
     const mem = () => (view.length ? view : (view = new Uint8Array(x.exports.memory.buffer)));
     const copy = (p, n) => mem().slice(p, p + n);
+    // What waits for request `id`'s answer, and its end.
+    x.of = (id) => (id === x.curId ? x.cur : x.pending.get(id));
+    x.done = (id) => (id === x.curId ? (x.curId = -1) : x.pending.delete(id));
     // Room for `n` bytes the app will read: its buffer stays put until more is asked.
     let ptr = 0;
     let cap = 0;
@@ -374,10 +379,10 @@ export function wisp(module, env = {}, sink, accept) {
         x.retired = true;
         const id = x.exports.wisp_current();
         const fail = (id) => {
-          const done = x.pending.get(id);
+          const done = x.of(id);
           if (typeof done === 'function') done(null);
           else if (done !== undefined) sink(done, failedHead, failed.body);
-          x.pending.delete(id);
+          x.done(id);
           x.streams.get(id)?.error(e);
           x.streams.delete(id);
           // A connection's task (`1 << 30` and its id): the socket goes.
@@ -389,6 +394,7 @@ export function wisp(module, env = {}, sink, accept) {
           fail(id);
           x.call(x.exports.wisp_poll);
         } else {
+          if (x.curId >= 0) fail(x.curId);
           [...x.pending.keys(), ...x.streams.keys()].forEach(fail);
         }
       }
@@ -401,8 +407,8 @@ export function wisp(module, env = {}, sink, accept) {
         // The head's text, its number among the app's (`2**32 - 1`: not kept),
         // and the body, all in the app's memory.
         reply: (id, hp, hn, hid, bp, bn) => {
-          const done = x.pending.get(id);
-          x.pending.delete(id);
+          const done = x.of(id);
+          x.done(id);
           const m = mem();
           if (typeof done === 'function' || done === undefined) {
             const all = new Uint8Array(hn + 1 + bn); // the head ends in a line, then a blank one
@@ -449,12 +455,12 @@ export function wisp(module, env = {}, sink, accept) {
         header: (id, np, nn, out, cap) => {
           let v = null;
           try {
-            v = x.pending.get(id)?.request?.headers.get(named(np, nn)) ?? null;
+            v = x.of(id)?.request?.headers.get(named(np, nn)) ?? null;
           } catch {} // not a header's name
           return v === null ? 0xffffffff : give(v, out, cap);
         },
         headers: (id, out, cap) => {
-          const r = x.pending.get(id);
+          const r = x.of(id);
           if (!r?.request) return 0xffffffff;
           let t = '';
           let host = false;
@@ -678,8 +684,13 @@ export function wisp(module, env = {}, sink, accept) {
     }
     const id = (next = (next + 1) & 0x7fffffff);
     c.id = id;
-    x.pending.set(id, c);
+    x.cur = c;
+    x.curId = id;
     x.call(x.exports.wisp_request_lazy, id, x.write(e.bytes));
+    // Not answered in the call (no Map work for one that was): it waits.
+    if (x.curId === id) x.pending.set(id, c);
+    x.cur = null;
+    x.curId = -1;
   }
 
   // Asks the app for the 304 of a kept path (the first, only, time).

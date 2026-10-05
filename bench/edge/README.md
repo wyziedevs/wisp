@@ -803,3 +803,21 @@ the 4 cores: cold starts are 4 to 10x the quiet runs for every framework
 and the throughput places moved by up to 20%; the clean run before it
 had Node raw 1st on every route, Bun raw 1st, workerd 1st on `/`,
 `/list1000`, `/params`.
+
+**Fewer Map operations a request (2026-10-05).** The request whose call into
+the wasm is under way is held in two fields, not `pending`: an answer inside
+the call (most) costs no `Map` set and delete. In-process Bun, `perf stat`
+user instructions a request (median of 5, 200k requests): `/` 17.2k to 16.5k
+(-4%), `/json` 19.9k to 19.5k (-2%). Measured again and not kept: the short
+ASCII body as a string (`/` -3% at 256 bytes, but `/json` +12%; at 16 or 32
+bytes within noise).
+
+**workerd cold start, the floor (same day, interleaved, median of 15 to 21).**
+A worker that never instantiates the wasm but has `app.wasm` in its config,
+imported or not, starts as late as Hono (57.4 against 56.9; 51.8 against
+51.2): workerd compiles every wasm module of the config at load. A JS table
+answering baked routes before the wasm is instantiated can at best tie Hono,
+and only for baked routes (the bench's `/` is a handler); one instance warmed
+at load and kept (no throwaway warm-up) was no quicker (77.2 against 73.7).
+A split module pays the same: both halves are config modules, and Workers
+cannot compile wasm from bytes. Beating Hono here needs a smaller `app.wasm`.
