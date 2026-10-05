@@ -1,5 +1,4 @@
 ---
-use std::time::Duration;
 
 static ITEMS: Shared<Vec<String>> = Shared::new(Vec::new());
 

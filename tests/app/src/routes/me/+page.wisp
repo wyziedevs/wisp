@@ -1,5 +1,4 @@
 ---
-use people::PEOPLE;
 
 #[action]
 fn avatar(#[validate(max_size = 64 * KB)] avatar: Image) {
