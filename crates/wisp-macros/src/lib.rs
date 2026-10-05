@@ -119,9 +119,11 @@ fn implicit_cx(item: TokenStream) -> TokenStream {
     group.set_span(span);
     tokens[p] = group.into();
     // No `->`: it returns `Result`, whatever its body ends in (`wisp::rt_traits::Done`).
-    let arrow = tokens[p..b].windows(2).any(|w| {
-        matches!((&w[0], &w[1]), (TokenTree::Punct(a), TokenTree::Punct(c)) if a.as_char() == '-' && c.as_char() == '>')
-    });
+    // Right after the parameters: an arrow in a `where` clause's `Fn(u8) -> u8` is not one.
+    let arrow = matches!(
+        (tokens.get(p + 1), tokens.get(p + 2)),
+        (Some(TokenTree::Punct(a)), Some(TokenTree::Punct(c))) if a.as_char() == '-' && c.as_char() == '>'
+    );
     if !arrow {
         let mut inner = Group::new(Delimiter::Brace, returns_done(body_stream));
         inner.set_span(body_span);
@@ -151,12 +153,19 @@ fn done(value: TokenStream) -> TokenStream {
 fn returns_done(body: TokenStream) -> TokenStream {
     let tokens: Vec<TokenTree> = body.into_iter().collect();
     let mut out: Vec<TokenTree> = Vec::with_capacity(tokens.len());
-    // The next `{…}` is a function's of its own (after `fn`).
+    // The next `{…}` is a function's or a closure's of its own (after `fn` or `->`).
     let mut inner_fn = false;
     let mut i = 0;
     while i < tokens.len() {
         match &tokens[i] {
             TokenTree::Ident(id) if id.to_string() == "fn" => inner_fn = true,
+            // `|x| -> u8 { … }`: the block after a return type is a closure's own.
+            TokenTree::Punct(p)
+                if p.as_char() == '>'
+                    && matches!(out.last(), Some(TokenTree::Punct(d)) if d.as_char() == '-' && d.spacing() == Spacing::Joint) =>
+            {
+                inner_fn = true
+            }
             // `let f: fn(u8) -> u8 = g;` was a type, not a function.
             TokenTree::Punct(p) if p.as_char() == ';' => inner_fn = false,
             TokenTree::Ident(id) if id.to_string() == "return" => {

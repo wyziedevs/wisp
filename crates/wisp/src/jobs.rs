@@ -547,8 +547,8 @@ impl Cron {
     /// The first minute after `after` (unix seconds) that matches, as unix
     /// seconds; `None` if none comes in the next 8 years (February 30).
     pub(crate) fn next(&self, after: u64) -> Option<u64> {
-        let mut t = (after / 60 + 1) * 60;
-        let end = t + 8 * 366 * 86_400;
+        let mut t = (after / 60 + 1).checked_mul(60)?;
+        let end = t.checked_add(8 * 366 * 86_400)?;
         while t < end {
             let (days, secs) = ((t / 86_400) as i64, t % 86_400);
             if !self.day_ok(days) {
@@ -563,6 +563,12 @@ impl Cron {
         }
         None
     }
+
+    /// The next run after the clock reads `now` and the last run was at
+    /// `last`: never `last` again, though the wall clock stepped back.
+    fn due(&self, now: u64, last: u64) -> Option<u64> {
+        self.next(now.max(last))
+    }
 }
 
 /// Runs `task` whenever `expr` (a cron expression, in UTC: see [`Cron`] for
@@ -570,6 +576,8 @@ impl Cron {
 /// Panics at once, in `init`, for an expression that is wrong. A run that
 /// takes longer than the gap to the next skips the minutes it overran; one
 /// that panics runs again at the next match, as with [`every`](crate::every).
+/// It follows the wall clock: a minute missed while the machine slept runs
+/// once on waking, and a clock stepped back never runs a minute twice.
 /// Several servers each run it: have one do it (a job on a [`queue`] once).
 /// On the edge and serverless hosts the host's trigger runs it (see the
 /// module), so `expr` must be a string literal in the source.
@@ -587,10 +595,16 @@ where
     ));
     #[cfg(not(target_arch = "wasm32"))]
     crate::spawn(async move {
+        let mut last = 0;
         loop {
             let now = crate::unix_now();
-            let Some(at) = cron.next(now) else { return };
-            let wait = std::time::Duration::from_secs(at - now);
+            let Some(at) = cron.due(now, last) else {
+                return;
+            };
+            // Sleep at most a minute, then read the wall clock again: the
+            // monotonic timer stops while the machine sleeps and ignores
+            // clock steps, so a long sleep would fire late or early.
+            let wait = std::time::Duration::from_secs((at - now).min(60));
             let stopped = crate::http::first(
                 async {
                     tokio::time::sleep(wait).await;
@@ -605,6 +619,10 @@ where
             if stopped {
                 return;
             }
+            if crate::unix_now() < at {
+                continue;
+            }
+            last = at;
             // A panic would end this loop, and with it every later run.
             let _ = tokio::spawn(task()).await;
         }
@@ -684,6 +702,36 @@ mod tests {
             None,
             "February 30"
         );
+    }
+
+    #[test]
+    fn cron_never_fires_a_minute_twice_when_the_clock_steps_back() {
+        let c = Cron::parse("* * * * *").unwrap();
+        let fired = JAN1_2024 + 120;
+        // The wall clock stepped back 90 seconds (NTP, a VM restore).
+        let at = c.due(fired - 90, fired).unwrap();
+        assert!(at > fired, "{at} refires {fired}");
+        assert_eq!(c.due(fired + 5, fired), Some(fired + 60));
+    }
+
+    #[test]
+    fn cron_near_the_end_of_time_is_none_not_a_panic() {
+        let c = Cron::parse("* * * * *").unwrap();
+        assert_eq!(c.next(u64::MAX), None);
+        assert_eq!(c.next(u64::MAX - 61), None);
+        assert_eq!(c.due(0, u64::MAX), None);
+    }
+
+    #[test]
+    fn cron_step_edges() {
+        assert_eq!(next("*/60 * * * *", JAN1_2024), 3600, "only minute 0");
+        assert_eq!(next("59/5 * * * *", JAN1_2024), 59 * 60, "a start alone");
+        assert_eq!(next("0 0 * * 1-7/2", JAN1_2024 + 1), 2 * 86_400, "Wed");
+        assert!(Cron::parse("1-5/0 * * * *").is_err());
+        assert!(Cron::parse("-5 * * * *").is_err());
+        assert!(Cron::parse("1,,2 * * * *").is_err());
+        assert!(Cron::parse("*/99999999999 * * * *").is_err());
+        assert_eq!(Cron::parse("0 0 31 4 *").unwrap().next(0), None, "April 31");
     }
 
     #[test]

@@ -511,7 +511,16 @@ impl Server {
                 }
             });
         });
-        match listening.recv_timeout(Duration::from_secs(10)) {
+        // Startup is the app's own work (`init`, its self-tests) plus, on
+        // Windows, a scan of the new executable: a busy machine can take
+        // more than a few seconds. Its death ends the wait at once (the
+        // pipe closes), so only a hung app waits out the whole minute.
+        let mut got = listening.recv_timeout(Duration::from_secs(10));
+        if matches!(got, Err(RecvTimeoutError::Timeout)) {
+            term::warn("the app is not listening after 10s, still waiting");
+            got = listening.recv_timeout(Duration::from_secs(50));
+        }
+        match got {
             Ok(addr) => {
                 let at = reachable(addr.unwrap_or(SocketAddr::from(([127, 0, 0, 1], self.port))));
                 if self.tries > 0 && self.port != 0 && at.port() != self.port {
@@ -530,7 +539,7 @@ impl Server {
                 Ok(())
             }
             Err(RecvTimeoutError::Timeout) => Err(
-                "The app did not start listening within 10s.\nIts output is in the terminal."
+                "The app did not start listening within 60s.\nIts output is in the terminal."
                     .into(),
             ),
             Err(RecvTimeoutError::Disconnected) => {

@@ -389,3 +389,21 @@ fn a_taken_port_moves_dev_to_the_next_one() {
     dev.hang_up(&app);
     assert_stopped(&at);
 }
+
+#[test]
+fn a_slow_start_is_waited_for() {
+    let cwd = Dir::new("dev-slow");
+    let app = pinned_app(&cwd, "dev-slow", &["-t", "minimal"]);
+    // Startup on a busy machine: past the first 10s, short of the minute.
+    write(
+        &app,
+        "src/hooks.rs",
+        "fn init() { std::thread::sleep(std::time::Duration::from_secs(11)) }\n",
+    );
+    let mut dev = Dev::start(&app, &["--port", "0"], &[]);
+    dev.wait_for("not listening after 10s, still waiting");
+    let addr = address(&dev.wait_for(" at http://"));
+    assert_eq!(get(&addr, "/").0, 200);
+    dev.hang_up(&app);
+    assert_stopped(&addr);
+}
