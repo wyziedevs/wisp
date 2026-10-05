@@ -354,7 +354,10 @@ fn a_streamed_body_is_chunked_and_the_connection_goes_on() {
 const FETCH: &str = r#"
 import { readFileSync } from 'node:fs';
 import { wisp } from './bridge.mjs';
-const app = wisp(new WebAssembly.Module(readFileSync(new URL('./app.wasm', import.meta.url))), process.env);
+// A Windows terminal names it `Path`: the app's `Conf` still finds `PATH`.
+const env = { ...process.env };
+if (process.platform === 'win32' && env.PATH !== undefined) (env.Path = env.PATH), delete env.PATH;
+const app = wisp(new WebAssembly.Module(readFileSync(new URL('./app.wasm', import.meta.url))), env);
 let out = '';
 for (const line of readFileSync(0, 'utf8').split('\n').filter(Boolean)) {
   const [head, body] = line.split('\t\t');
@@ -384,6 +387,7 @@ fn fetch_answers_as_native_with_headers_read_lazily() {
     let asset = native.request("GET", "/_app/wisp.js", "", b"");
     let etag = header(&asset, "etag").expect("an etag").to_string();
     let html = "accept: text/html\r\n";
+    let big = "x".repeat(64 * 1024 + 1);
     let cases: Vec<(&str, &str, String, &str)> = vec![
         ("GET", "/", String::new(), ""),
         ("GET", "/", String::new(), ""),
@@ -401,6 +405,8 @@ fn fetch_answers_as_native_with_headers_read_lazily() {
         ),
         ("POST", "/echo", String::new(), "hello"),
         ("POST", "/echo", FORM.into(), "a=1&b=two"),
+        // Past the route's BODY_LIMIT: 413 on every host, as native has it.
+        ("POST", "/echo", String::new(), &big),
     ];
     let mut stdin = String::new();
     for (method, target, headers, body) in &cases {
@@ -448,6 +454,9 @@ fn fetch_answers_as_native_with_headers_read_lazily() {
             h("location"),
             h("etag")
         );
+        if body.len() > 64 * 1024 {
+            assert_eq!(status(&raw), 413, "{raw:.60}");
+        }
         let (fast, got) = got.split_once(' ').unwrap();
         assert_eq!(got, want, "{method} {target} {headers:?}");
         // The first request starts the instance, so it waits.
@@ -457,6 +466,35 @@ fn fetch_answers_as_native_with_headers_read_lazily() {
             "{method} {target}"
         );
     }
+}
+
+/// A body with no length that never ends, through `bridge.js`'s `fetch`.
+const ENDLESS: &str = r#"
+import { readFileSync } from 'node:fs';
+import { wisp } from './bridge.mjs';
+const app = wisp(new WebAssembly.Module(readFileSync(new URL('./app.wasm', import.meta.url))), process.env);
+let sent = 0;
+const body = new ReadableStream({ pull: (c) => { sent += 4096; c.enqueue(new Uint8Array(4096)); } });
+const r = await app.fetch(new Request('http://127.0.0.1/echo', { method: 'POST', body, duplex: 'half' }), '127.0.0.1');
+process.stdout.write(`${r.status} ${sent < 1 << 20}`);
+"#;
+
+/// A body past the route's limit is not read whole before the 413: a stream
+/// that never ends is answered once it passes the limit.
+#[test]
+fn fetch_stops_reading_a_body_past_the_limit() {
+    let Some((dir, _server)) = edge_app("node") else {
+        return;
+    };
+    std::fs::write(dir.join("endless.mjs"), ENDLESS).unwrap();
+    let done = Command::new("node")
+        .arg(dir.join("endless.mjs"))
+        .env("WISP_SECRET", SECRET)
+        .output()
+        .expect("start node");
+    let said = String::from_utf8_lossy(&done.stdout);
+    let err = String::from_utf8_lossy(&done.stderr);
+    assert_eq!(said, "413 true", "{err}");
 }
 
 const UPGRADE: &str = "upgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-version: 13\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\n";

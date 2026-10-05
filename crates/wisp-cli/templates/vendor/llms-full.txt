@@ -538,7 +538,7 @@ daemon; Windows: a startup scheduled task) · `wisp routes` · `wisp new-route /
 `wisp add|remove pkg` (`wisp add` alone: the recipes in `add/`) · `wisp ui
 add|list button dialog` (accessible components into `src/components`; `clientonly`:
 `<ClientOnly fallback="…">` draws its children only in the browser) · `wisp
-lsp` · `wisp update-docs` · `wisp mcp` (`claude mcp add wisp -- wisp mcp`).
+lsp` · `wisp update-docs` · `wisp mcp` (`claude mcp add wisp -- wisp mcp`) · `wisp --version`.
 Commands that work on an app warn on stderr first when the CLI is older than the
 app's `wisp` crate (Cargo.lock version, or for a `path` dependency its git commit
 count) and ask `Continue anyway? [y/N]` at a terminal; CI and pipes go on. Fix:
@@ -1162,6 +1162,7 @@ Writing cost is measured by a program in the repository: `cargo run -p wisp-toke
 | `wisp update-docs` | bring `AGENTS.md` up to this Wisp |
 | `wisp mcp` | docs, routes, components and checks for AI agents (MCP, stdio) |
 | `wisp --help` | this list (`-h`, `help`) |
+| `wisp --version` | the version (`-V`) |
 
 ## Options for Wisp New
 
@@ -2693,7 +2694,7 @@ async fn get(name: String) -> Result<Response> {
 }
 ```
 
-- `Response::file_in(dir, name)` reads without blocking, typed by extension. A name reaching outside the directory (`..`, absolute path, drive, a Windows device such as `nul`) is a 404, like a missing file. The name may come straight from the URL.
+- `Response::file_in(dir, name)` reads without blocking, typed by extension. A name reaching outside the directory (`..`, absolute path, drive) is a 404, like a missing file. The name may come straight from the URL.
 - `Response::download("report.csv", bytes)` sends bytes the browser saves as that file name.
 
 ## Built-In UI

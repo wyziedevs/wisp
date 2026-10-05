@@ -586,7 +586,8 @@ mod native {
 /// connection's bytes, which [`Inbox`] parses and [`frame`] answers; the
 /// others (Workers, `Deno.serve`, `Bun.serve`) hand over whole messages and
 /// take whole messages, their own socket doing the framing, pings and
-/// closing (and where a host will not send 1009, closing with 1000).
+/// closing (and where a host will not send a code under 3000, 1009 say,
+/// closing with it plus 3000: 4009).
 #[cfg(target_arch = "wasm32")]
 mod edge {
     use super::*;

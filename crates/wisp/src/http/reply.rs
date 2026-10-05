@@ -508,7 +508,7 @@ pub(crate) fn push_decimal(w: &mut Vec<u8>, n: u64) {
 }
 
 /// Digits only, no sign or whitespace, no overflow.
-pub(super) fn parse_decimal(s: &[u8]) -> Option<usize> {
+pub(crate) fn parse_decimal(s: &[u8]) -> Option<usize> {
     if s.is_empty() || s.len() > 19 {
         return None;
     }

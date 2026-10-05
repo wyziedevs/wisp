@@ -37,7 +37,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 /// `wisp --help`: each command or option, and what it does.
-const COMMANDS: [(&str, &str); 30] = [
+const COMMANDS: [(&str, &str); 31] = [
     (
         "wisp new [name]",
         "Create an app. It asks a few questions; the options below answer them.",
@@ -152,6 +152,7 @@ const COMMANDS: [(&str, &str); 30] = [
         "wisp mcp",
         "Serve docs, routes, components and checks to AI agents (MCP, stdio).",
     ),
+    ("wisp --version", "Print this Wisp's version (also -V)."),
 ];
 
 const NEW_OPTIONS: [(&str, &str); 5] = [
@@ -241,6 +242,10 @@ fn main() -> ExitCode {
         Some("mcp") => no_options("mcp", &args[1..]).and_then(|()| mcp::run()),
         // Not in --help: how `wisp dev` runs a tool that must end with it.
         Some("__child") => css::child(&args[1..]),
+        Some("-V" | "--version") => {
+            println!("wisp {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
         Some("-h" | "--help" | "help") | None => {
             print!("{}", usage());
             Ok(())

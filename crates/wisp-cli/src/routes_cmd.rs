@@ -128,6 +128,14 @@ fn create(root: &Path, path: &str, kind: &str) -> Result<String, String> {
             ));
         }
     }
+    for (i, s) in segs.iter().enumerate() {
+        let seg = wisp_build::routes::parse_segment(s).map_err(|e| format!("{s}: {e}."))?;
+        if matches!(seg, Some(wisp_build::routes::Seg::Rest(_))) && i + 1 < segs.len() {
+            return Err(format!(
+                "{s} takes the rest of the path, so nothing can follow it."
+            ));
+        }
+    }
     let name = segs
         .iter()
         .rev()
@@ -216,6 +224,16 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn a_route_path_wisp_would_refuse_is_not_written() {
+        let root = temp("bad");
+        for bad in ["[x", "x]", "[...r]/x", "[a b]", "[self]", "()", "[[a=]]"] {
+            assert!(create(&root, bad, "page").is_err(), "{bad}");
+        }
+        assert!(!root.join("src").exists());
+        create(&root, "(g)/[...rest]", "page").unwrap();
     }
 
     #[test]

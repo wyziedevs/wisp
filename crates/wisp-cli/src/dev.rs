@@ -607,7 +607,7 @@ fn request(addr: SocketAddr, method: &str, path: &str, body: &[u8]) -> Option<u1
     let mut s = TcpStream::connect_timeout(&addr, Duration::from_millis(250)).ok()?;
     s.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
     let head = format!(
-        "{method} {path} HTTP/1.1\r\nhost: {addr}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+        "{method} {path} HTTP/1.1\r\nhost: {addr}\r\nx-wisp-dev: 1\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
         body.len()
     );
     s.write_all(head.as_bytes()).ok()?;

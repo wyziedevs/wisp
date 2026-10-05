@@ -248,18 +248,20 @@ function init({ status, headers: flat }) {
 }
 
 // A message for a WebSocket the host made: `op` 1 text, 2 binary, 8 a close
-// (a code and a reason). A host that will not send a code (Deno's takes only
-// 1000 and 3000 to 4999) gets 1000.
-function put(ws, op, bytes) {
+// (a code and a reason). A host that will not send a protocol code (Deno's
+// takes only 1000 and 3000 to 4999) gets it as 4000 and up, 1009 as 4009,
+// with the reason: a failure never reads as a normal close.
+export function put(ws, op, bytes) {
   try {
     if (op === 1) ws.send(dec.decode(bytes));
     else if (op === 2) ws.send(bytes);
     else if (op === 8) {
       const code = bytes.length > 1 ? (bytes[0] << 8) | bytes[1] : 1000;
+      const reason = dec.decode(bytes.subarray(2));
       try {
-        ws.close(code, dec.decode(bytes.subarray(2)));
+        ws.close(code, reason);
       } catch {
-        ws.close(1000);
+        ws.close(code > 1000 && code < 1016 ? code + 3000 : 1000, reason);
       }
     }
   } catch {} // closed already
@@ -476,6 +478,11 @@ export function wisp(module, env = {}, sink, accept) {
     };
     x.exports = (await WebAssembly.instantiate(module, imports)).exports;
     const vars = Object.entries(env).filter(([k, v]) => typeof v === 'string' && k !== 'WISP_WS');
+    // Windows names are any case (`Path`): the app reads them upper case, as natively.
+    if (globalThis.process?.platform === 'win32' || globalThis.Deno?.build?.os === 'windows') {
+      const have = new Set(vars.map(([k]) => k));
+      for (const [k, v] of [...vars]) if (!have.has(k.toUpperCase())) have.add(k.toUpperCase()), vars.push([k.toUpperCase(), v]);
+    }
     vars.push(['WISP_WS', accept ? '1' : '0']);
     const len = x.put(enc.encode(vars.map(([k, v]) => `${k}=${v}\0`).join('')));
     x.call(() => x.exports.wisp_env(len));
@@ -681,11 +688,36 @@ export function wisp(module, env = {}, sink, accept) {
     enter(x, 'GET', path, '', { quiet: true, fast, entry, path, request: { headers }, host: 'wisp.invalid' });
   }
 
+  // A request's body, read to one byte past its route's limit at most: the
+  // app answers 413 for that, as its own server does, and the rest of a
+  // large body is never held.
+  async function bounded(request, path) {
+    let x = ready;
+    if (!x || x.retired) x = await instance().catch(() => null);
+    const cap = x ? (x.exports.wisp_body_limit(x.write(enc.encode(path))) >>> 0) + 1 : Infinity;
+    const length = request.headers.get('content-length');
+    if (length !== null && Number(length) < cap) return new Uint8Array(await request.arrayBuffer());
+    const parts = [];
+    let n = 0;
+    const reader = request.body.getReader();
+    while (n < cap) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parts.push(value.subarray(0, cap - n));
+      n += parts.at(-1).length;
+    }
+    if (n >= cap) reader.cancel().catch(() => {});
+    const out = new Uint8Array(n);
+    n = 0;
+    for (const p of parts) out.set(p, (n += p.length) - p.length);
+    return out;
+  }
+
   async function slow(request, peer, ctx) {
     const url = new URL(request.url);
     const headers = [...request.headers];
     if (!request.headers.has('host')) headers.push(['host', url.host]);
-    const body = request.body ? new Uint8Array(await request.arrayBuffer()) : none;
+    const body = request.body ? await bounded(request, url.pathname) : none;
     const r = await handle({ method: request.method, target: url.pathname + url.search, peer, headers, body });
     if (r.status === 101) return accept ? takeover(r.x, r.id, request) : new Response('WebSockets are not available on this host', { status: 501 });
     if (r.idle !== settled) ctx?.waitUntil?.(r.idle); // only when work is under way

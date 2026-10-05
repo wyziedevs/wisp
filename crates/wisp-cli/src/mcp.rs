@@ -3,7 +3,7 @@
 //! problems, and add a route. JSON-RPC 2.0, one message a line; the app is
 //! the current directory, read again on every call.
 
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::path::Path;
 use wisp_shared::json::{self, Json};
 
@@ -23,20 +23,55 @@ const TOOLS: &str = concat!(
 );
 
 pub fn run() -> Result<(), String> {
-    let stdin = io::stdin();
-    let mut out = io::stdout().lock();
-    for line in stdin.lock().lines() {
-        let line = line.map_err(|e| format!("Could not read stdin: {e}"))?;
-        if line.trim().is_empty() {
-            continue;
+    serve(&mut io::stdin().lock(), &mut io::stdout().lock())
+}
+
+/// Longest message read; a longer line is answered with an error and skipped.
+const MAX_LINE: u64 = 1 << 24;
+
+/// Answers each line of `input` on `out` until the end.
+fn serve(input: &mut impl BufRead, out: &mut impl Write) -> Result<(), String> {
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        let n = input
+            .by_ref()
+            .take(MAX_LINE)
+            .read_until(b'\n', &mut buf)
+            .map_err(|e| format!("Could not read stdin: {e}"))?;
+        if n == 0 {
+            return Ok(());
         }
-        if let Some(reply) = answer(&line) {
+        let reply = if buf.last() != Some(&b'\n') && n as u64 == MAX_LINE {
+            // Skip the rest of the oversized line without keeping it.
+            loop {
+                let chunk = input.fill_buf().map_err(|e| e.to_string())?;
+                if chunk.is_empty() {
+                    break;
+                }
+                let (used, end) = match chunk.iter().position(|&b| b == b'\n') {
+                    Some(i) => (i + 1, true),
+                    None => (chunk.len(), false),
+                };
+                input.consume(used);
+                if end {
+                    break;
+                }
+            }
+            Some(error(&Json::Null, -32600, "Message too long."))
+        } else {
+            let line = String::from_utf8_lossy(&buf);
+            if line.trim().is_empty() {
+                continue;
+            }
+            answer(&line)
+        };
+        if let Some(reply) = reply {
             writeln!(out, "{reply}")
                 .and_then(|()| out.flush())
                 .map_err(|e| format!("Could not write stdout: {e}"))?;
         }
     }
-    Ok(())
 }
 
 /// The reply to one message; none to a notification.
@@ -311,6 +346,25 @@ fn new_route(root: &Path, path: &str, kind: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A line past the cap is refused without being kept; the next line
+    /// is still answered. Invalid UTF-8 and deep nesting do not panic.
+    #[test]
+    fn hostile_input() {
+        let mut input = vec![b'x'; MAX_LINE as usize + 10];
+        input
+            .extend_from_slice(b"\n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n\xff\xfe\n");
+        input.extend_from_slice(&[b'['; 100_000]);
+        input.extend_from_slice(b"\n{\"id\":2,\"method\":\"nope\"}\n");
+        let mut out = Vec::new();
+        serve(&mut &input[..], &mut out).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 5, "{out}");
+        assert!(lines[0].contains("too long"));
+        assert!(lines[1].contains("\"id\":1") && lines[1].contains("result"));
+        assert!(lines[4].contains("\"id\":2") && lines[4].contains("error"));
+    }
 
     fn reply(line: &str) -> Json {
         json::parse(&answer(line).unwrap()).unwrap()

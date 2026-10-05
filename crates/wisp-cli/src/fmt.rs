@@ -150,3 +150,90 @@ fn shown(p: &Path) -> String {
     let s = p.to_string_lossy().replace('\\', "/");
     s.strip_prefix("./").unwrap_or(&s).to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use wisp_build::fmt::format;
+
+    /// Pieces of templates, glued in random order into odd sources.
+    const BITS: [&str; 40] = [
+        "<div>",
+        "</div>",
+        "<p class=\"a\">",
+        "</p>",
+        "<br>",
+        "<input value={x}>",
+        "{#if a}",
+        "{:else}",
+        "{/if}",
+        "{#each xs as x}",
+        "{/each}",
+        "{x}",
+        "{@html h}",
+        "<script>",
+        "let a = 1;",
+        "</script>",
+        "<style>",
+        "p { color: red }",
+        "</style>",
+        "<pre>  keep  </pre>",
+        "<!-- note -->",
+        "text",
+        " ",
+        "\n",
+        "\n\n\n",
+        "\t",
+        "é",
+        "🙂",
+        "<",
+        ">",
+        "{",
+        "}",
+        "\"",
+        "'",
+        "<textarea> a\n b </textarea>",
+        "{#await p}",
+        "{:then v}",
+        "{/await}",
+        "<span>a</span>b",
+        "&amp;",
+    ];
+
+    fn squash(s: &str) -> String {
+        s.chars().filter(|c| !c.is_whitespace()).collect()
+    }
+
+    /// fmt is a fixed point after one pass and never drops visible content.
+    #[test]
+    fn fuzz_round_trip() {
+        let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut bad = Vec::new();
+        for _ in 0..3000 {
+            let n = next() % 24;
+            let src: String = (0..n)
+                .map(|_| BITS[(next() % BITS.len() as u64) as usize])
+                .collect();
+            let once = format(&src, "2024");
+            let twice = format(&once, "2024");
+            if once != twice {
+                bad.push(format!(
+                    "not idempotent: {src:?}\n -> {once:?}\n -> {twice:?}"
+                ));
+            } else if squash(&src) != squash(&once) {
+                bad.push(format!("content changed: {src:?}\n -> {once:?}"));
+            }
+        }
+        assert!(
+            bad.is_empty(),
+            "{} failures, first:\n{}",
+            bad.len(),
+            bad[..bad.len().min(4)].join("\n")
+        );
+    }
+}

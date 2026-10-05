@@ -46,7 +46,8 @@ pub(super) fn internal<A: App>(cx: &Cx, path: &str, reply: &mut Reply) -> bool {
             return true;
         }
         _ if s.dev && path.starts_with("/_wisp/") => {
-            let (status, msg) = dev::endpoint::<A>(cx.method, path, cx.body(), cx.peer());
+            let asked = dev::asked(cx.header("x-wisp-dev").is_some(), cx.header("host"));
+            let (status, msg) = dev::endpoint::<A>(cx.method, path, cx.body(), cx.peer(), asked);
             reply.set_plain(status, msg);
             return true;
         }
@@ -240,34 +241,32 @@ pub(crate) fn safe_relative_path(path: &str) -> Option<String> {
 }
 
 /// Whether `rel`, joined to a folder, names something inside it: no `..`,
-/// no empty segment, nothing a drive or an absolute path could use. On
-/// Windows, no device (`nul`, `con.txt`) and no name it reads as another
-/// (`a.txt.`).
+/// no empty segment, nothing a drive or an absolute path could use, and no
+/// segment Windows reads as a device (`CON`, `nul.txt`) or trims to another
+/// name (`a.txt.`, `a.txt `).
 pub(crate) fn stays_inside(rel: &str) -> bool {
     rel.split('/').all(|s| {
         !s.is_empty()
             && s != "."
             && s != ".."
             && !s.contains(['\\', ':', '\0'])
-            && !(cfg!(windows) && windows_alias(s))
+            && !s.ends_with(['.', ' '])
+            && !windows_device(s)
     })
 }
 
-/// Whether Windows opens the segment `s` as other than the file it names:
-/// a device, whatever its extension, or a name ending in `.` or a space,
-/// which it trims.
-fn windows_alias(s: &str) -> bool {
-    let stem = s.split('.').next().unwrap_or(s).trim_end_matches(' ');
-    let device = match stem.as_bytes() {
-        [a, b, c] => [b"con", b"prn", b"aux", b"nul"]
+/// Whether Windows opens `seg` as a device whatever the folder: `CON`, `PRN`,
+/// `AUX`, `NUL`, `COM0`-`COM9`, `LPT0`-`LPT9`, with any extension, any case.
+fn windows_device(seg: &str) -> bool {
+    let stem = seg.split('.').next().unwrap_or(seg).trim_end().as_bytes();
+    match stem.len() {
+        3 => ["con", "prn", "aux", "nul"]
             .iter()
-            .any(|d| [*a, *b, *c].eq_ignore_ascii_case(*d)),
-        [a, b, c, n] => {
-            let name = [*a, *b, *c];
-            (name.eq_ignore_ascii_case(b"com") || name.eq_ignore_ascii_case(b"lpt"))
-                && n.is_ascii_digit()
+            .any(|d| stem.eq_ignore_ascii_case(d.as_bytes())),
+        4 => {
+            (stem[..3].eq_ignore_ascii_case(b"com") || stem[..3].eq_ignore_ascii_case(b"lpt"))
+                && stem[3].is_ascii_digit()
         }
         _ => false,
-    };
-    device || s.ends_with(['.', ' '])
+    }
 }

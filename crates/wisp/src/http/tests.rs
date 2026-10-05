@@ -10,6 +10,32 @@ fn the_unix_second_comes_from_the_tick() {
 }
 
 #[test]
+fn static_paths_refuse_windows_devices_and_trimmed_names() {
+    for bad in [
+        "CON",
+        "a/nul.txt",
+        "Com1",
+        "lpt9.js",
+        "aux ",
+        "a.txt.",
+        "a.txt ",
+        "x/PRN",
+    ] {
+        assert!(!stays_inside(bad), "{bad}");
+    }
+    for ok in [
+        "console.js",
+        "a/null.txt",
+        "com.css",
+        "comx",
+        "lpt",
+        "a.b.txt",
+        "nu",
+    ] {
+        assert!(stays_inside(ok), "{ok}");
+    }
+}
+#[test]
 fn dev_binds_the_next_port_when_one_is_taken() {
     let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = taken.local_addr().unwrap();
@@ -78,29 +104,6 @@ fn paths() {
         "/a/",
     ] {
         assert_eq!(safe_relative_path(bad), None, "{bad}");
-    }
-    // Windows reads these as devices, or as another file's name.
-    for name in [
-        "nul",
-        "CON",
-        "a/aux.txt",
-        "com1",
-        "Lpt9.log",
-        "a.txt.",
-        "a.txt ",
-    ] {
-        assert_eq!(stays_inside(name), !cfg!(windows), "{name}");
-    }
-    for name in [
-        "console",
-        "nul_",
-        "com",
-        "lpt10",
-        "a.b",
-        "ab\u{e9}",
-        "\u{e9}\u{e9}",
-    ] {
-        assert!(stays_inside(name), "{name}");
     }
 }
 
@@ -548,6 +551,109 @@ fn heads_and_chunk_framing_are_bounded() {
             let mut copy = b.clone();
             unchunk(&mut copy[..wire]);
         }
+    }
+}
+
+/// Every framing a proxy in front could read otherwise is refused, on
+/// the fast head and httparse's alike; the usual ones are taken.
+#[test]
+fn smuggling_shapes_are_refused() {
+    let outcome = |wire: &str| match parse::<Fuzz>(&mut cx_with(wire.as_bytes()), 0, true) {
+        Parsed::Request(r) => Ok(r.len),
+        Parsed::Invalid(status) => Err(status),
+        Parsed::Partial { .. } => Err(0),
+    };
+    let post = |headers: &str, body: &str| {
+        outcome(&format!(
+            "POST /x HTTP/1.1\r\nhost: a\r\n{headers}\r\n{body}"
+        ))
+    };
+    let refused = |r: Result<usize, u16>| matches!(r, Err(400 | 501));
+    for (headers, body) in [
+        // CL.TE and TE.CL, either order, any case.
+        (
+            "content-length: 3\r\ntransfer-encoding: chunked\r\n",
+            "0\r\n\r\n",
+        ),
+        (
+            "Transfer-Encoding: chunked\r\nContent-Length: 3\r\n",
+            "0\r\n\r\n",
+        ),
+        // Two lengths that differ, or a list, or not digits.
+        ("content-length: 3\r\ncontent-length: 4\r\n", "abcd"),
+        ("content-length: 3, 3\r\n", "abc"),
+        ("content-length: +3\r\n", "abc"),
+        ("content-length: 0x3\r\n", "abc"),
+        ("content-length: 3 3\r\n", "abc"),
+        ("content-length: -1\r\n", ""),
+        ("content-length: 99999999999999999999\r\n", ""),
+        // Codings other than chunked alone, and chunked twice.
+        ("transfer-encoding: chunked, chunked\r\n", "0\r\n\r\n"),
+        (
+            "transfer-encoding: chunked\r\ntransfer-encoding: chunked\r\n",
+            "0\r\n\r\n",
+        ),
+        ("transfer-encoding: xchunked\r\n", "0\r\n\r\n"),
+        ("transfer-encoding: chunked;q=1\r\n", "0\r\n\r\n"),
+        ("transfer-encoding: identity\r\n", ""),
+        ("transfer-encoding:\r\n", ""),
+        // A name with space before its colon, a folded line, bare CRs,
+        // NUL and DEL in a value, a line with no name.
+        ("transfer-encoding : chunked\r\n", "0\r\n\r\n"),
+        ("content-length : 3\r\n", "abc"),
+        ("x: a\r\n chunked\r\n", ""),
+        ("x: a\r\n\ttransfer-encoding: chunked\r\n", ""),
+        (
+            "content-length: 3\r\n transfer-encoding: chunked\r\n",
+            "abc",
+        ),
+        ("x: a\rtransfer-encoding: chunked\r\n", "0\r\n\r\n"),
+        ("x: a\0b\r\n", ""),
+        ("x: a\x7fb\r\n", ""),
+        ("\rx: a\r\n", ""),
+        (": a\r\n", ""),
+    ] {
+        let got = post(headers, body);
+        assert!(refused(got), "{headers:?} {body:?}: {got:?}");
+    }
+    // Chunk sizes a proxy reads otherwise: signs, spaces, prefixes, and
+    // lines with bare LF or CR.
+    let chunked = |body: &str| post("transfer-encoding: chunked\r\n", body);
+    for body in [
+        "+3\r\nabc\r\n0\r\n\r\n",
+        "0x3\r\nabc\r\n0\r\n\r\n",
+        " 3\r\nabc\r\n0\r\n\r\n",
+        "3 \r\nabc\r\n0\r\n\r\n",
+        "3\rabc\r\n0\r\n\r\n",
+        "3\r\nabc\n0\r\n\r\n",
+        "3\r\nabc\r\n0\r\nx: 1\n\r\n",
+        "3;a\rb\r\nabc\r\n0\r\n\r\n",
+        "3\r\nabcd\r\n0\r\n\r\n",
+        "g\r\n",
+    ] {
+        let got = chunked(body);
+        assert!(refused(got), "{body:?}: {got:?}");
+    }
+    // HTTP/1.0 has no chunks; two hosts are two answers to "which site".
+    assert!(refused(outcome(
+        "POST /x HTTP/1.0\r\ntransfer-encoding: chunked\r\n\r\n0\r\n\r\n"
+    )));
+    assert!(refused(outcome(
+        "GET / HTTP/1.1\r\nhost: a\r\nhost: b\r\n\r\n"
+    )));
+    // What is fine reads to its end, and no further.
+    for (headers, body) in [
+        ("content-length: 3\r\ncontent-length: 3\r\n", "abc"),
+        ("Content-Length:3  \r\n", "abc"),
+        (
+            "transfer-encoding:  Chunked \r\n",
+            "3;a=b\r\nabc\r\n0\r\nt: 1\r\n\r\n",
+        ),
+    ] {
+        let wire = format!("POST /x HTTP/1.1\r\nhost: a\r\n{headers}\r\n{body}");
+        assert_eq!(post(headers, body), Ok(wire.len()), "{headers:?}");
+        let next = format!("{wire}GET / HTTP/1.1\r\n");
+        assert_eq!(outcome(&next), Ok(wire.len()), "{headers:?}");
     }
 }
 

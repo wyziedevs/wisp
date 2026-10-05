@@ -1024,7 +1024,7 @@ impl<'a> At<'a> {
         let t = self.text();
         let word_at = t[..self.off]
             .rfind(|c: char| !is_word(c))
-            .map_or(0, |i| i + 1);
+            .map_or(0, |i| i + t[i..].chars().next().map_or(1, char::len_utf8));
         let word_end = self.off + t[self.off..].find(|c: char| !is_word(c)).unwrap_or(0);
         let word = &t[word_at..word_end];
         let key = if word_at == name_at {
@@ -1119,7 +1119,9 @@ impl<'a> At<'a> {
             return None;
         }
         let name = t[..open].strip_suffix('=').unwrap_or("");
-        let attr = &name[name.rfind(|c: char| !is_attr(c)).map_or(0, |i| i + 1)..];
+        let attr = &name[name.rfind(|c: char| !is_attr(c)).map_or(0, |i| {
+            i + name[i..].chars().next().map_or(1, char::len_utf8)
+        })..];
         Some((open + 1, &t[open + 1..close], attr))
     }
 
@@ -1402,6 +1404,54 @@ mod tests {
             &[Seg::Static("a".into()), Seg::Rest("r".into())],
             &["a", "b", "c"]
         ));
+    }
+
+    /// Every `.wisp` file of the repo, cut anywhere and with an emoji in it,
+    /// answers hover, definition, completion, diagnostics and formatting
+    /// without a panic: a document is partial all the while it is typed.
+    #[test]
+    fn partial_documents_never_panic() {
+        fn walk(d: &Path, out: &mut Vec<PathBuf>) {
+            for e in std::fs::read_dir(d).into_iter().flatten().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "wisp") {
+                    out.push(p);
+                }
+            }
+        }
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut files = Vec::new();
+        walk(&repo.join("tests/app/src"), &mut files);
+        walk(&repo.join("examples"), &mut files);
+        for f in files.iter().step_by(7) {
+            let Ok(full) = std::fs::read_to_string(f) else {
+                continue;
+            };
+            let full = full.replace("\r\n", "\n");
+            let mut cuts: Vec<usize> = (0..full.len()).step_by(37).collect();
+            cuts.push(full.len());
+            for cut in cuts {
+                let floor = |n: usize| (0..=n).rev().find(|&i| full.is_char_boundary(i));
+                let cut = floor(cut).unwrap_or(0);
+                let mid = floor(cut / 2).unwrap_or(0);
+                let text = format!("{}\u{1F600}{}", &full[..mid], &full[mid..cut]);
+                let doc = Doc {
+                    text: text.clone(),
+                    root: None,
+                    rel: "src/routes/+page.wisp".into(),
+                };
+                for off in (0..=text.len()).step_by(17) {
+                    let at = At::new(&doc, None, off);
+                    let _ = (at.hover(), at.definition(), at.completion());
+                }
+                if let Some(d) = ide::check_file(&doc.rel, &text, None) {
+                    let _ = diagnostics("file:///x", &text, &[d]);
+                }
+                let _ = edit_all(&text, &fmt::format(&text, "2024"));
+            }
+        }
     }
 
     /// The hover at `mark` (the character after `|`) of `text`.

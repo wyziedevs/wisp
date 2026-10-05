@@ -318,15 +318,17 @@ fn unquote(value: &[u8]) -> Cow<'_, str> {
 }
 
 /// A file name without the folders some clients send with it:
-/// `C:\photos\a.png` and `photos/a.png` are `a.png`. Control characters
-/// are taken out, and a name that is then empty, `.` or `..` is `file`, so
-/// one joined to a folder stays in it. Only `""` as sent stays empty: the
-/// browser's "no file chosen".
+/// `C:\photos\a.png` and `photos/a.png` are `a.png`. A `:` ends a folder
+/// too: on Windows `C:a.png` joined to a folder is the drive's own path,
+/// and `a.png:x` a stream of `a.png`. Control characters are taken out,
+/// and a name that is then empty, `.` or `..` is `file`, so one joined to
+/// a folder stays in it. Only `""` as sent stays empty: the browser's
+/// "no file chosen".
 fn base_name(name: Cow<'_, str>) -> Cow<'_, str> {
     if name.is_empty() {
         return name;
     }
-    let at = name.rfind(['/', '\\']).map_or(0, |at| at + 1);
+    let at = name.rfind(['/', '\\', ':']).map_or(0, |at| at + 1);
     let clean = !name[at..].contains(char::is_control);
     let name = match name {
         Cow::Borrowed(s) if clean => Cow::Borrowed(&s[at..]),
@@ -442,6 +444,10 @@ b\r\n--XyZ--\r\nepilogue";
             (r#"filename="\\server\share\a.png""#, "a.png"),
             (r#"filename="photos/2026/a.png""#, "a.png"),
             (r#"filename="../../etc/passwd""#, "passwd"),
+            (r#"filename="C:evil.exe""#, "evil.exe"),
+            (r#"filename="a.png:stream""#, "stream"),
+            (r#"filename="C:""#, "file"),
+            (r#"filename="..%00/x""#, "x"),
         ] {
             let body = part(&format!("name=\"f\"; {sent}"));
             let file = Form::new(ct, body.as_bytes()).file("f");
