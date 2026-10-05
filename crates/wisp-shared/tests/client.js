@@ -361,6 +361,15 @@ const tests = {
     assert.equal(main.attrs['aria-busy'], undefined);
     assert.equal(stayed, 1);
   },
+  async 'a download with no loading views still ends the navigation'() {
+    const p = page();
+    let stayed = 0;
+    p.doc.addEventListener('wisp:stay', () => stayed++);
+    p.g.reply = () => res('hi', 'text/plain', 200, 'attachment; filename="a.txt"');
+    p.click({}, '/file');
+    await tick();
+    assert.equal(stayed, 1);
+  },
   async 'intercept: a navigation shows the slot page in place and changes the address'() {
     const slot = { innerHTML: '', getAttribute: () => JSON.stringify([['/gal/item/[id]', '/gal/@modal/(.)item/[id]']]) };
     const p = page({ cuts: [slot] });

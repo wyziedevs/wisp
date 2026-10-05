@@ -321,7 +321,7 @@
     if (my !== nav) return;
     // A file: the browser shows or saves it. A download leaves the page
     // where it is: `wisp:stay` says the navigation is over.
-    if (!isHtml(res)) return location.assign(url), attachment(res) && (undo?.(), send('wisp:stay'));
+    if (!isHtml(res)) return location.assign(url), attachment(res) && (undo && undo(), send('wisp:stay'));
     let html = await res.text();
     html = (await drawn(html, url)) || html;
     if (my !== nav) return;
