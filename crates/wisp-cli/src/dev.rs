@@ -659,7 +659,9 @@ fn scan(root: &Path) -> Snapshot {
             let path = e.path();
             let Ok(meta) = e.metadata() else { continue };
             if meta.is_dir() {
-                walk(root, &path, out);
+                if !skip_dir(&e.file_name().to_string_lossy()) {
+                    walk(root, &path, out);
+                }
             } else if scratch(&e.file_name().to_string_lossy()) {
                 continue;
             } else if let Ok(m) = meta.modified() {
@@ -704,6 +706,12 @@ fn scratch(name: &str) -> bool {
         || name == "4913" // Vim's test that it may write the folder
 }
 
+/// A folder never part of the app's source (dot folders, build output,
+/// npm packages): skipped so a 50 ms poll does not walk thousands of files.
+fn skip_dir(name: &str) -> bool {
+    name.starts_with('.') || name == "target" || name == "node_modules"
+}
+
 fn diff(old: &Snapshot, new: &Snapshot) -> Vec<(String, Change)> {
     let mut out: Vec<(String, Change)> = new
         .iter()
@@ -727,6 +735,31 @@ fn diff(old: &Snapshot, new: &Snapshot) -> Vec<(String, Change)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scan_skips_build_and_package_folders() {
+        let root = std::env::temp_dir().join(format!("wisp-scan-{}", std::process::id()));
+        for d in [
+            "src/routes",
+            "src/node_modules/x",
+            "src/target",
+            "static/.cache",
+        ] {
+            fs::create_dir_all(root.join(d)).unwrap();
+        }
+        for f in [
+            "src/routes/+page.wisp",
+            "src/node_modules/x/a.js",
+            "src/target/b",
+            "static/.cache/c",
+        ] {
+            fs::write(root.join(f), "x").unwrap();
+        }
+        let files = scan(&root);
+        let _ = fs::remove_dir_all(&root);
+        assert!(files.contains_key("src/routes/+page.wisp"));
+        assert_eq!(files.len(), 1, "{files:?}");
+    }
 
     #[test]
     fn ignores_editor_files() {
