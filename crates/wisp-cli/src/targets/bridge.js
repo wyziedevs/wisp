@@ -688,11 +688,36 @@ export function wisp(module, env = {}, sink, accept) {
     enter(x, 'GET', path, '', { quiet: true, fast, entry, path, request: { headers }, host: 'wisp.invalid' });
   }
 
+  // A request's body, read to one byte past its route's limit at most: the
+  // app answers 413 for that, as its own server does, and the rest of a
+  // large body is never held.
+  async function bounded(request, path) {
+    let x = ready;
+    if (!x || x.retired) x = await instance().catch(() => null);
+    const cap = x ? (x.exports.wisp_body_limit(x.write(enc.encode(path))) >>> 0) + 1 : Infinity;
+    const length = request.headers.get('content-length');
+    if (length !== null && Number(length) < cap) return new Uint8Array(await request.arrayBuffer());
+    const parts = [];
+    let n = 0;
+    const reader = request.body.getReader();
+    while (n < cap) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parts.push(value.subarray(0, cap - n));
+      n += parts.at(-1).length;
+    }
+    if (n >= cap) reader.cancel().catch(() => {});
+    const out = new Uint8Array(n);
+    n = 0;
+    for (const p of parts) out.set(p, (n += p.length) - p.length);
+    return out;
+  }
+
   async function slow(request, peer, ctx) {
     const url = new URL(request.url);
     const headers = [...request.headers];
     if (!request.headers.has('host')) headers.push(['host', url.host]);
-    const body = request.body ? new Uint8Array(await request.arrayBuffer()) : none;
+    const body = request.body ? await bounded(request, url.pathname) : none;
     const r = await handle({ method: request.method, target: url.pathname + url.search, peer, headers, body });
     if (r.status === 101) return accept ? takeover(r.x, r.id, request) : new Response('WebSockets are not available on this host', { status: 501 });
     if (r.idle !== settled) ctx?.waitUntil?.(r.idle); // only when work is under way

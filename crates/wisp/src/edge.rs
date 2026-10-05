@@ -232,6 +232,8 @@ type Handler = fn(u32, Vec<u8>, bool);
 const INIT: u32 = u32::MAX;
 
 static HANDLER: OnceLock<Handler> = OnceLock::new();
+/// The body limit of a path's route (`http::body_limit` for the app).
+static LIMIT: OnceLock<fn(&str) -> usize> = OnceLock::new();
 /// Starts the task of a connection that has bytes.
 #[cfg(not(request_only))]
 static DRIVE: OnceLock<fn(u32, Raw) -> Task> = OnceLock::new();
@@ -318,6 +320,19 @@ pub extern "C" fn wisp_env(len: usize) {
                 .map(|(k, v)| (k.to_string(), v.to_string())),
         );
     });
+}
+
+/// Host export: the most body bytes the route at the path in the input
+/// buffer (`len` bytes) takes, its `BODY_LIMIT` or WISP_BODY_LIMIT. A host
+/// reads one byte past it at most: the app answers 413 for any more, so the
+/// rest is never held. `u32::MAX` before the app is ready.
+#[unsafe(no_mangle)]
+pub extern "C" fn wisp_body_limit(len: usize) -> u32 {
+    let path = take_in(len);
+    match (READY.get(), LIMIT.get(), std::str::from_utf8(&path)) {
+        (1, Some(limit), Ok(path)) => u32::try_from(limit(path)).unwrap_or(u32::MAX),
+        _ => u32::MAX,
+    }
 }
 
 /// Host export: the `len` bytes in the input buffer are request `id`; the app runs it to its reply.
@@ -703,6 +718,7 @@ pub(crate) fn start<A: App>() {
     if HANDLER.set(handler).is_err() {
         return;
     }
+    let _ = LIMIT.set(crate::http::body_limit::<A>);
     if warm {
         crate::prepare_warm::<A>();
         log_panics();
