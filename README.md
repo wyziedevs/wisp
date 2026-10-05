@@ -46,7 +46,7 @@ let name = cx.query_or("name", "world".to_string());
 <h1>Hello, {name}!</h1>
 ```
 
-The `---` block is Rust that runs for each request, and `{name}` is rendered on the server. Turn JavaScript off and the page still works.
+The `---` block is Rust that runs for each request, and `{name}` is rendered on the server. Turn JavaScript off and the page still works. The block also takes `#[action]` form handlers and a `mod server { … }` of JSON endpoints, so a whole route can be one file.
 
 ## Why Wisp
 

@@ -41,7 +41,8 @@ fn all(_: &str) -> bool {
 }
 
 fn not_pages(path: &str) -> bool {
-    !path.starts_with("src/routes/") && path != "src/app.css" && path != "src/tests.rs"
+    !path.starts_with("src/routes/")
+        && !["src/app.css", "src/tests.rs", "src/state.rs"].contains(&path)
 }
 
 fn only_css(path: &str) -> bool {
