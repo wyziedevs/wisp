@@ -54,7 +54,7 @@ start() {
   local log=$RAW/$c/server.log
   case $c in
     wisp)      launch "$ROOT/wisp" "$log" env PORT=$p $pin ./target/release/tfb-wisp ;;
-    wisp-uncapped) launch "$ROOT/wisp" "$log" env PORT=$p WISP_MAX_CONNS=0 $pin ./target/release/tfb-wisp ;;   # supplementary: lifts the default 10000-connection cap
+    wisp-uncapped) launch "$ROOT/wisp" "$log" env PORT=$p WISP_MAX_CONNS=0 $pin ./target/release/tfb-wisp ;;   # supplementary: lifts the default connection cap (WISP_MAX_CONNS)
     axum)      launch "$ROOT/axum" "$log" $pin ./target/release/axum ;;
     actix)     launch "$ROOT/actix" "$log" $pin ./target/release/tfb-web ;;
     express)   launch "$ROOT/express" "$log" env NODE_ENV=production $pin node app.js ;;

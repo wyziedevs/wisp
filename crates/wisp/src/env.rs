@@ -137,8 +137,10 @@ pub(crate) struct Settings {
     /// never closes). It is pinged halfway.
     pub ws_idle: std::time::Duration,
     /// `WISP_MAX_CONNS`: open connections, WebSockets too, past which the
-    /// built-in server answers new ones 503 and closes them (10000; 0 is
-    /// no cap).
+    /// built-in server answers new ones 503 and closes them (0 is no cap).
+    /// Unset, on Linux it is the open-file limit (`ulimit -n`; its soft
+    /// limit is raised to the hard one at start) less 1024, and no more than
+    /// a quarter of the memory at 16 KiB a connection; 10000 elsewhere.
     #[cfg(not(target_arch = "wasm32"))] // no sockets there
     pub max_conns: usize,
     /// `WISP_API_DOCS`: serve `/_wisp/openapi.json` and `/_wisp/docs`
@@ -200,7 +202,8 @@ pub(crate) fn settings() -> &'static Settings {
         #[cfg(not(target_arch = "wasm32"))]
         let max_conns = match setting::<usize>("WISP_MAX_CONNS", "a number of connections") {
             Some(0) => usize::MAX,
-            n => n.unwrap_or(10_000),
+            Some(n) => n,
+            None => default_max_conns(),
         };
         let dev = switch("WISP_DEV", cfg!(debug_assertions));
         // Said at start: without it a request that signs a cookie or a
@@ -229,6 +232,15 @@ pub(crate) fn settings() -> &'static Settings {
             max_conns,
         }
     })
+}
+
+/// The cap when `WISP_MAX_CONNS` is unset: see `Settings::max_conns`.
+#[cfg(not(target_arch = "wasm32"))]
+fn default_max_conns() -> usize {
+    #[cfg(target_os = "linux")]
+    return crate::epoll::default_max_conns();
+    #[cfg(not(target_os = "linux"))]
+    10_000
 }
 
 /// `WISP_STORE_POLL` in seconds: 0 (no polling) when unset or not a number

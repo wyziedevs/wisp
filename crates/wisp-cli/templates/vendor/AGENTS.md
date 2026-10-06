@@ -592,7 +592,7 @@ gzip, no build) · `wisp
 deploy init <host>` (a GitHub Actions workflow; or `fly|render|railway`: that
 host's config) · `wisp openapi [-o openapi.json]` (`--check`: CI fails when the file is stale) · `wisp service install|uninstall|start|stop|status [--user u]
 [--port n] [--dry-run]` (run the release binary as a systemd unit or launchd
-daemon; Windows: a startup scheduled task) · `wisp routes` · `wisp add
+daemon; Windows: a startup scheduled task; on Linux the server holds as many connections as the open-file limit allows, less 1024, raising its soft limit to the hard one at start, then answers 503: give it `ulimit -n`/`LimitNOFILE=` above your peak, or `WISP_MAX_CONNS=n`) · `wisp routes` · `wisp add
 page|form|layout|server|rest|api /path` (`new-route` too), `wisp add crud
 /posts` (list, new, edit pages; `Post` and `POSTS` into `src/db.rs`), `wisp
 add component Card` ·

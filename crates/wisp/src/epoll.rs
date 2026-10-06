@@ -90,6 +90,65 @@ fn ctl(epoll: RawFd, op: libc::c_int, fd: RawFd, events: u32, data: u64) -> io::
     Ok(())
 }
 
+/// File descriptors kept back from connections when the cap comes from
+/// the limit: listeners, epolls and rings, files, database sockets.
+const FD_RESERVE: u64 = 1024;
+/// Memory a held connection takes at most, measured with 16384 idle
+/// keep-alive connections; the cap leaves them a quarter of the memory.
+const CONN_BYTES: u64 = 16 * 1024;
+
+/// The connection cap when `WISP_MAX_CONNS` is not set, read once at start:
+/// the process's open-file limit (its soft one raised to the hard one, as
+/// far as the system allows), less `FD_RESERVE`, and no more than a quarter
+/// of the memory holds. Past it a new connection is answered 503, where one
+/// more socket would fail its accept or files would fail to open.
+pub(crate) fn default_max_conns() -> usize {
+    let mut lim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: an rlimit alive for the call, which the kernel writes.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut lim) } != 0 {
+        return 10_000;
+    }
+    if lim.rlim_cur < lim.rlim_max {
+        let up = libc::rlimit {
+            rlim_cur: lim.rlim_max,
+            rlim_max: lim.rlim_max,
+        };
+        // SAFETY: an rlimit alive for the call, which the kernel only reads.
+        if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const up) } == 0 {
+            lim = up;
+        }
+    }
+    let mem = std::fs::read_to_string("/proc/meminfo").ok().and_then(|m| {
+        let kb = m.lines().find_map(|l| l.strip_prefix("MemTotal:"))?;
+        kb.trim().trim_end_matches("kB").trim().parse::<u64>().ok()
+    });
+    let cap = conns_for(lim.rlim_cur, mem.map(|kb| kb * 1024));
+    if cap < 16384 {
+        http::log(format_args!(
+            "wisp: {cap} connections at most (open-file limit {}); past them new ones answer 503
+  Raise `ulimit -n` (LimitNOFILE= under systemd) or set WISP_MAX_CONNS.",
+            lim.rlim_cur
+        ));
+    }
+    cap
+}
+
+/// The cap `fds` open files and `mem` bytes of memory allow: half the files
+/// when there are few, else all but `FD_RESERVE`, and a quarter of `mem` at
+/// `CONN_BYTES` each; never under 64 or over 2^20.
+fn conns_for(fds: u64, mem: Option<u64>) -> usize {
+    let by_fds = if fds <= 2 * FD_RESERVE {
+        fds / 2
+    } else {
+        fds - FD_RESERVE
+    };
+    let by_mem = mem.map_or(u64::MAX, |m| m / 4 / CONN_BYTES);
+    by_fds.min(by_mem).clamp(64, 1 << 20) as usize
+}
+
 /// Receives onto the end of `buf`, into the room it has: the bytes, 0 at
 /// the end of the stream, or the errno. The system calls here are made
 /// straight, as `recv(2)` and `send(2)` make them but without libc's
@@ -946,6 +1005,40 @@ mod tests {
     use crate::uring::{listen, socket_tests};
     use std::io::{Read, Write};
     use std::net::Shutdown;
+
+    #[test]
+    fn the_default_cap_follows_the_fd_limit_and_memory() {
+        // 16384 clients on a host with the usual 1048576 hard limit and
+        // 4 GiB are all held, where the old fixed 10000 refused them.
+        assert!(conns_for(1 << 20, Some(4 << 30)) >= 16384);
+        assert_eq!(conns_for(1 << 20, None), (1 << 20) - 1024);
+        assert_eq!(conns_for(65536, None), 65536 - 1024);
+        assert_eq!(conns_for(1024, None), 512); // a low limit leaves half
+        assert_eq!(
+            conns_for(1 << 20, Some(1 << 30)),
+            (1 << 30) / 4 / CONN_BYTES as usize
+        );
+        assert_eq!(conns_for(10, None), 64);
+        assert_eq!(conns_for(u64::MAX, None), 1 << 20);
+        // At start the soft limit is raised to the hard one, and the cap
+        // stays under it, so a held connection never fails for a descriptor.
+        let cap = default_max_conns();
+        let mut lim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: an rlimit alive for the call, which the kernel writes.
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut lim) },
+            0
+        );
+        assert_eq!(lim.rlim_cur, lim.rlim_max);
+        assert!(
+            cap as u64 <= lim.rlim_cur.max(128),
+            "{cap} over {}",
+            lim.rlim_cur
+        );
+    }
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Futures the driver polled itself, in every test's workers.
