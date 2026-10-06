@@ -1,0 +1,64 @@
+{
+  "wisp": {
+    "dir": "bench/tfb/wisp", "overlay": "pages/wisp", "install": "cargo fetch --locked",
+    "clean": ["target"], "build": "cargo build --release --offline",
+    "artifact": { "path": "target/release/tfb-wisp", "what": "release binary" },
+    "logic": "src/routes/plaintext/+server.rs", "markup": "src/routes/hello/+page.wisp",
+    "dev": { "cmd": "WISP_NO_UPDATE_CHECK=1 /root/bb/wisp dev --port {port}", "ready": 600 }
+  },
+  "sveltekit": {
+    "dir": "bench/tfb/sveltekit", "overlay": "pages/sveltekit", "install": "npm install --no-audit --no-fund",
+    "clean": [".svelte-kit", "build", "node_modules/.cache", "node_modules/.vite"], "build": "npx vite build",
+    "artifact": { "path": "build", "what": "adapter-node build/ dir (node_modules not counted)" },
+    "logic": "src/routes/plaintext/+server.js", "markup": "src/routes/hello/+page.svelte",
+    "dev": { "cmd": "npx vite dev --port {port} --host 127.0.0.1", "ready": 120 }
+  },
+  "next": {
+    "dir": "bench/tfb/next", "overlay": "pages/next", "install": "npm install --no-audit --no-fund",
+    "clean": [".next", "node_modules/.cache"], "build": "npx next build",
+    "artifact": { "path": ".next", "what": ".next dir (standalone output, node_modules not counted)" },
+    "logic": "app/plaintext/route.js", "markup": "app/hello/page.js",
+    "dev": { "cmd": "npx next dev -p {port} -H 127.0.0.1", "ready": 120 }
+  },
+  "nuxt": {
+    "dir": "bench/tfb/nuxt", "overlay": "pages/nuxt", "install": "npm install --no-audit --no-fund",
+    "clean": [".nuxt", ".output", ".data", "node_modules/.cache"], "build": "npx nuxt build",
+    "artifact": { "path": ".output", "what": "Nitro node-server .output dir" },
+    "logic": "server/routes/plaintext.js", "markup": "app/pages/hello.vue",
+    "dev": { "cmd": "npx nuxt dev --port {port} --host 127.0.0.1", "ready": 180 }
+  },
+  "hono-node": {
+    "dir": "bench/tfb/hono-node", "install": "npm install --no-audit --no-fund && npm install --no-save --no-audit --no-fund tsx",
+    "noBuild": "no build step: runs its source", "artifact": { "path": "src", "what": "source dir, no build" },
+    "logic": "src/server.js", "base": "c.body(\"Hello, World!",
+    "dev": { "cmd": "PORT={port} npx tsx watch src/server.js", "ready": 60, "note": "tsx watch, as the Hono Node.js template's dev script" }
+  },
+  "hono-bun": {
+    "dir": "bench/tfb/hono-bun", "install": "bun install",
+    "noBuild": "no build step: runs its source", "artifact": { "path": "server.js", "what": "source file, no build" },
+    "logic": "server.js", "base": "c.body(\"Hello, World!",
+    "dev": { "cmd": "PORT={port} bun --hot server.js", "ready": 60, "note": "bun --hot, as the Hono Bun template's dev script" }
+  },
+  "express": {
+    "dir": "bench/tfb/express", "install": "npm install --no-audit --no-fund",
+    "noBuild": "no build step: runs its source", "artifact": { "path": "app.js", "what": "source file, no build" },
+    "noDev": "no dev server in its docs"
+  },
+  "fastify": {
+    "dir": "bench/tfb/fastify", "install": "npm install --no-audit --no-fund",
+    "noBuild": "no build step: runs its source", "artifact": { "path": "app.js", "what": "source file, no build" },
+    "noDev": "no dev server in its docs"
+  },
+  "axum": {
+    "dir": "bench/tfb/axum", "install": "cargo fetch --locked",
+    "clean": ["target"], "build": "cargo build --release --offline",
+    "artifact": { "path": "target/release/axum", "what": "release binary" },
+    "logic": "src/main.rs", "noDev": "no dev server in its docs (cargo-watch is not documented by axum)"
+  },
+  "actix": {
+    "dir": "bench/tfb/actix", "install": "cargo fetch --locked",
+    "clean": ["target"], "build": "cargo build --release --offline",
+    "artifact": { "path": "target/release/tfb-web", "what": "release binary" },
+    "logic": "src/main.rs", "base": "Bytes::from_static(b\"Hello, World!", "noDev": "no dev server in its docs (cargo-watch is not documented by actix-web)"
+  }
+}
