@@ -921,7 +921,7 @@ Each param but `cx` is read by name: route param, then form field or JSON object
 | Sent | Answer |
 |---|---|
 | JSON that is a `T` and passes | handler runs |
-| not JSON | 400 with where: `Invalid JSON: expected `:` at line 1, column 9` |
+| not JSON | 400 with where: ``Invalid JSON: expected `:` at line 1, column 9`` |
 | JSON not a `T`, or failing a check | 422, every problem by field |
 | non-JSON `Content-Type` | 415 |
 | no body, `body: Option<T>` | `None` |
@@ -1175,21 +1175,21 @@ You need Rust. `bench/README.md` lists every option, the frameworks compared, an
 
 ## Native, Linux (2026-10-04)
 
-Source: [`bench/tfb/RESULTS.md`](https://github.com/wyziedevs/wisp/blob/main/bench/tfb/RESULTS.md) (generated from `results.json`). The TechEmpower plaintext and JSON tests with their own wrk scripts, run 2026-10-04 on one shared 4-CPU VM (AMD EPYC 7B13), with the server pinned to 2 cores. Each number is the median of 3 runs of 15 seconds. This is not an official TechEmpower result. Frameworks are listed in a fixed order, not ranked. "Failed" means every run stalled or finished no request. The full results add min, max, latency and errors per row. The same Wisp binary varied between runs on this VM, so gaps inside the min-max ranges count as ties.
+Source: [`bench/tfb/RESULTS.md`](https://github.com/wyziedevs/wisp/blob/main/bench/tfb/RESULTS.md) (generated from `results.json`). The TechEmpower plaintext and JSON tests with their own wrk scripts, run 2026-10-04 on one shared 4-CPU VM (AMD EPYC 7B13), with the server pinned to 2 cores. Each number is the median of 3 runs of 15 seconds, unless its cell says otherwise. This is not an official TechEmpower result, the VM is shared and its hypervisor steal was not zero, and 90 of the 100 cells come from the harness before the warmup-drain and steal controls (a full re-run is pending), so ranks are not like for like with drained rows. Wisp's lead over a rival whose cell is not published is not counted as a win. Frameworks are listed in a fixed order, not ranked. "Failed" means every run stalled or finished no request. "Not published" means a run had hypervisor steal over 10% of CPU, so the cell is neither shown nor ranked. A number followed by a run count, such as "(2 runs)", is the median of only the runs that did not stall: it is not ranked and is indicative only. The full results add min, max, latency and errors per row. The same Wisp binary varied between runs on this VM, so gaps inside the min-max ranges count as ties.
 
 Plaintext, pipelined, requests per second (median of 3), by connections:
 
 <Levels work="plaintext" />
 
-Rows whose min-max ranges overlap are ties. 256: Fastify and Express; Hono on Node.js, SvelteKit and Hono on Bun. 1024: Axum and Actix Web; Express and Hono on Node.js. 4096: Hono on Node.js and Express. 16384: <Stat k="failed.plaintext.16384" /> failed, and Wisp's three stalled runs are under investigation, so no Wisp rank is drawn there.
+Rows whose min-max ranges overlap are ties. <Stat k="ties.plaintext" />. 16384: <Stat k="failed.plaintext.16384" /> failed (every run stalled; the load generator's local port range limited this level, a measurement caveat of this setup that `bench/tfb/RESULTS.md` does not count as a server failure), so no rank is drawn there for them.
 
-Next.js completed no pipelined plaintext response at any level, and raising its heap to 8 GB changed nothing, so the cause is not memory; the runs were indicative only.
+An earlier round measured Next.js at 0 requests a second on pipelined plaintext at every level. Node kept running the requests already pipelined on sockets wrk had closed, which starved the timed runs, and raising the heap to 8 GB changed nothing. `run.sh` now waits for each server to go idle before every run. Next.js's cells above were measured that way and most other contenders' cells were not (`pre_drain` in `results.json`), so a comparison with Next.js is not like for like until a full re-run.
 
 JSON, requests per second (median of 3), by connections:
 
 <Levels work="json" />
 
-Rows whose min-max ranges overlap are ties. 16: Actix Web and Axum, Axum and Wisp; Fastify, Hono on Node.js and Express. 32: Wisp with Actix Web and with Axum; Express, Hono on Node.js and SvelteKit. 64: Wisp, Actix Web and Axum; SvelteKit and Hono on Node.js. 128: Wisp and Actix Web. 256: Fastify and Express. 512: Wisp and Actix Web; Axum and Hono on Bun.
+Rows whose min-max ranges overlap are ties: <Stat k="ties.json" />.
 
 Earlier run (2026-09-28, other Linux VPS, 64 connections, plaintext and fortunes, CPU per request): [`bench/README.md`](https://github.com/wyziedevs/wisp/blob/main/bench/README.md). A later rerun on a CPU-capped VPS (about 75% steal) was invalid and is not published, so this site claims no current Linux ranking; rank tables are pending a valid run. Instructions per request (callgrind, valid on any host load): `GET /` 1572, `GET /user/0` 2310, `POST /user` 1773 at d72eee5; 1585, 2323 and 1789 after the chunked fix.
 
@@ -1269,7 +1269,7 @@ Writing cost is measured by a program in the repository: `cargo run -p wisp-toke
 | `wisp remove <pkg>` | take an npm package out |
 | `wisp ui add <name…> [--force]` | copy components (button, dialog, tabs…) into `src/components` |
 | `wisp ui list` | the components `wisp ui add` has |
-| `wisp service install\|uninstall\|start\|stop\|status` | run the release binary as a systemd, launchd or Windows service; `--name`, `--user`, `--port`, `--dry-run`; an app folder with a quote, `%` or a control character in its path is refused |
+| `wisp service install\|uninstall\|start\|stop\|status` | run the release binary as a systemd unit, a launchd daemon or (Windows) a startup scheduled task; `--name`, `--user`, `--port`, `--dry-run`; an app folder with a quote, `%` or a control character in its path is refused |
 | `wisp lsp` | the language server, over stdio |
 | `wisp update-docs` | bring `AGENTS.md` up to this Wisp |
 | `wisp mcp` | docs, routes, components and checks for AI agents (MCP, stdio); a message line is capped at 16 MiB |
@@ -1286,7 +1286,7 @@ Writing cost is measured by a program in the repository: `cargo run -p wisp-toke
 | `--install`, `--no-install` | download and compile dependencies now, or later |
 | `-y, --yes` | take the defaults for anything not given |
 
-## CLI Older than the App
+## CLI Older Than the App
 
 App commands warn on stderr when the installed `wisp` is older than the app's `wisp` crate, and in a terminal ask before going on. `WISP_NO_UPDATE_CHECK=1` silences it. More: [CLI, dev loop and security](/docs/design-cli/).
 
@@ -1534,14 +1534,14 @@ A page ships JS only for files with client code; a component can wait:
 `wisp add react react-dom react-switch` (framework first), then:
 
 ```html
----
-let on = false;
----
 <Island
   of="react:react-switch"
   client:visible
   props={:{ checked: on, onChange: (v) => (on = v) }} />
 <p>{:on ? 'On' : 'Off'}</p>
+<script>
+  let on = false
+</script>
 ```
 
 - `of="framework:module"` (`react preact vue svelte`); the default export is the component, `#Name` a named one (`react:recharts#LineChart`); `$lib` works (`react:$lib/Chart.js#Chart`).
@@ -1983,13 +1983,19 @@ Everything here is opt-in: an app that uses none of it pays nothing.
 // src/db.rs
 pub static USERS: Table<User> = Table::saved("users")
     .unique("email", |u: &User| &u.email) // no two rows share it
-    .migrate(|row| rename(row, "mail", "email")) // old rows, as they are read
+    .migrate(|row| {
+        // old rows, as they are read
+        if let Value::Object(m) = row {
+            for (k, _) in m.iter_mut().filter(|(k, _)| k == "mail") {
+                *k = "email".into();
+            }
+        }
+    })
     .live(); // each change is sent on channel "users"
 ```
 
 - `set(id, v) -> Option<()>` replaces a row; `clear()` takes every row out (ids are not given again).
 - `unique`: `by(&email)` finds the row without a scan. `try_add`, `try_set` and `try_update` return a 422 on the field (`email: is taken`), for an action to return with `?`. `add`, `set` and `update` panic (a 500) instead. Use `try_update` to change a unique field. `#[derive(Rest)]` routes do the same: a taken value is a 422.
-- `#[model(saved)]` also declares the table: `pub static TODOS: Table<Todo> = Table::saved("todos")`, the struct's name in upper snake case and plural (`Category` → `CATEGORIES`, `Box` → `BOXES`, `BlogPost` → `BLOG_POSTS`), stored under its lower-case name. Write the `static` yourself for any other name, for `Table::new()` (memory) or to chain `.unique(..)`, `.migrate(..)` or `.live()`. In a page's `---` block, `#[model(saved, crud)]` also writes that page's actions, `add(todo: Todo)`, `remove(id: u64)` and `update(id: u64, todo: Todo)` (a 404 for an id no row has), except any the block defines itself, so one line says what the page does and a handwritten `fn remove` still wins; outside a page's block it is a build error, since the actions would have no page. `{#each TODOS as todo}` in a page walks its rows (`for row in &TODOS` is `TODOS.all()`).
 - `#[model]` makes the struct and its fields `pub` and derives `Json`, `FromJson` and `Clone`. A model with a borrowed field (`name: &'static str`, for static data a page lists) derives no `FromJson`, since a body cannot fill it.
 - On a `#[model]` field: `#[unique]` is the same as `.unique(..)`; `#[json(default)]` or `#[json(default = expr)]` fills a field old rows lack; `#[json(was = "old")]` reads it under its old name.
 - `migrate(|v: &mut Value| ..)` runs on each stored row's JSON when it is read (at load, and by `WISP_STORE_POLL`), before it becomes the type.
@@ -2553,7 +2559,7 @@ In debug builds every static HTML chunk of every template is read through a tabl
 - Text, holes, `<pre>` and `<textarea>` are never touched.
 - Markup that does not balance, or would not parse to the same template, is left as written. Formatting twice equals formatting once.
 
-## CLI Older than the App
+## CLI Older Than the App
 
 When the installed `wisp` is older than the app's `wisp` crate (the CLI's stamp against the app's), app commands print a warning on stderr first. In a terminal it asks `Continue anyway? [y/N]`; the default N exits with 1. In CI or a pipe it warns and continues. `WISP_NO_UPDATE_CHECK=1` silences it. Without git, the stamp check stays silent.
 
@@ -2616,7 +2622,7 @@ Every app is written with `AGENTS.md`, the whole reference in one short page, an
 - The app's AGENTS.md is the repository's (embedded at build time via the vendor copy, so it never drifts) less its part for work on Wisp, and ends with a line after which the app's own notes go.
 - `wisp update-docs` brings it up to the installed Wisp, keeping those notes, and writes any pointer file that is missing (an existing one is the app's).
 - Every Rust and HTML snippet in AGENTS.md is in `tests/agents`, an app in the workspace, so building the workspace compiles them; its test fails when one is missing there.
-- `llms.txt` (llmstxt.org) links the docs. `llms-full.txt` is AGENTS.md and the client, api, deploy and embed docs in one file, written by a wisp-cli test that fails when it was stale.
+- `llms.txt` (llmstxt.org) links the docs. `llms-full.txt` is AGENTS.md and the docs site's pages in one file, written by a wisp-cli test that fails when it was stale.
 
 ### `wisp mcp`
 
@@ -2782,7 +2788,7 @@ fn remove(id: u64) {
 - A form that posts to `?/name` needs `#[action] fn name` in the same page: the build says so when it is missing (a layout or component may post to the page that uses it, so only a page's own markup is checked).
 - A form with no `action` (and `method="post"`) posts to `default`.
 - `<button action="?/remove&id={todo.id}">` outside a form becomes its own `<form method="post"><button formaction="...">`. Works without JS.
-- `#[model(saved, crud)]` on a model in the page's block writes the page's `add`, `remove` and `update` actions ([Data](/docs/data/)); the page then only names them: `<form action="?/add" fields />`, `<button action="?/remove&id={todo.id}">`.
+- A page writes the actions its markup names: `#[action] fn add(todo: Todo) { TODOS.add(todo); }` and `#[action] fn remove(id: u64) { TODOS.remove(id); }` serve `<form action="?/add" fields />` and `<button action="?/remove&id={todo.id}">`.
 - `<form fields>` writes a labelled input per parameter of the action (`fields={post}` starts them from `post`); text with `#[validate(one_of = "draft live")]` is a `<select>` of those. A `fields` form with no button gets one: `Send` for `fn default`, `Save` with `{post}`, else the action's name; `<form fields />` is the whole form and `<form fields="Log in" />` names its button.
 - Query parameters in an action URL are read like form fields (`id` above is `id: u64`).
 - A body with `.await` makes the action `async` (`#[action]` adds it); never write `async` there.
@@ -2790,7 +2796,7 @@ fn remove(id: u64) {
 
 ## Validation
 
-- Parameter rules: `#[validate(...)]` with `len`, `min`, `max`, `min_len`, `max_len`, `email`. Same as a `FromJson` field. A `Password` (a parameter, a remote argument or a field) with no `min_len` or `len` of its own is held to 8 characters, on the server and as the input's `minlength`; `#[validate(min_len = 12)]` changes it.
+- Parameter rules: `#[validate(...)]` with `len`, `min`, `max`, `min_len`, `max_len`, `email`. Same as a `FromJson` field. A `Password` has no length rule of its own: add `#[validate(min_len = 8)]` (the input gets `required minlength="8"`).
 - Every parameter is read and checked first, so one 422 lists each failure by field (`wisp::rt::input::read`), from a form or a JSON body.
 - A parameter may be a struct with `#[derive(FromJson)]` or `Rest` (`fn default(post: Post)`). Fields are read by name (text by the field's type, blank field = missing) or from JSON, and checked by their own `#[validate]` (`wisp::rt::input::whole`).
 - A failure, or `return invalid("text", "...")`, shows the page again as a 422.
@@ -2931,7 +2937,7 @@ async fn load(slug: String) -> Result<Data> {
 
 ## One File or Several
 
-One `+page.wisp` is the preferred way to build a page. Its `---` block can hold the models (`#[model]` structs), their `Table`s, the `#[action]`s, helper functions and the load, the markup follows, and scoped `<style>` and `<script>` tags close it. A `mod server { � }` in the same block adds the route's JSON endpoints.
+One `+page.wisp` is the preferred way to build a page. Its `---` block can hold the models (`#[model]` structs), their `Table`s, the `#[action]`s, helper functions and the load, the markup follows, and scoped `<style>` and `<script>` tags close it. A `mod server { … }` in the same block adds the route's JSON endpoints.
 
 ```html
 <!-- src/routes/todos/+page.wisp -->
@@ -3186,7 +3192,6 @@ pub trait App: 'static {
         cx: &mut Cx,
         out: &mut Out,
     ) -> impl Future<Output = Result<()>> + Send;
-    fn body_limit(route: usize) -> Option<usize>;
     // + static tables: shell, assets, templates (dev)
 }
 ```
@@ -3275,7 +3280,7 @@ let me = cx.user()?; // members' page: signed-in row or redirect
 
 - `user`, `login` and `signup` take the users table for you: the lone `Table` of a model with a `Password` field in `src/db.rs`, else the one `wisp::users(&db::USERS)` names in `init` (the build adds it; `&USERS` first still works, and is how a second table is used).
 - The page at `/login` is the convention; `wisp::sign_in_page("/enter")` in `init` names another.
-- A typed `Password` is at least 8 characters unless its `#[validate(min_len = …)]` or `len` says otherwise (a 422 on the field before any hashing); log in with a `String`, so an old shorter password is still checked, not refused.
+- A typed `Password` has no length rule of its own: write `#[validate(min_len = 8)]` on it (a 422 on the field before any hashing); log in with a `String`, so an old shorter password is still checked, not refused.
 
 ### Sign Out Everywhere
 
@@ -3447,7 +3452,7 @@ Syntax | Compiles to
 `{@html expr}` | Unescaped `Display` (you promise it is safe)
 `{@const x = expr}` | `let x = expr;`
 `{#if c}…{:else if c}…{:else}…{/if}` | `if`/`else`; `if let` works; a bare place, `{#if user.avatar}`, tests `Some`, non-empty or `true`
-`{#each e as pat[, i] [if cond]}…{:else}…{/each}` | `for`; `if cond` keeps matching items; a plain place like `data.posts`, a local or a `STATIC` is borrowed, so `{#each TODOS as todo}` walks a table's rows (`TODOS.all()`)
+`{#each e as pat[, i] [if cond]}…{:else}…{/each}` | `for`; `if cond` keeps matching items; a plain place like `data.posts` or a local is borrowed, any other expression is used as written, so a table's rows are `{#each TODOS.all() as todo}`
 `{#match e}{:case pat}…{/match}` | `match`; a plain place is borrowed
 `{#await f}…{:then v}…{:catch e}…{/await}` | Page streams `v` or `e` later ([Streaming a page](/docs/design-state/))
 `{@render children()}` or `<slot />` | Layout or component slot
@@ -3485,7 +3490,7 @@ A `.wisp` file in `src/components` (any depth) is a component named by its file:
 
 ```html
 <!-- src/components/Card.wisp -->
-{@props title: &str, count: u32 = 0, featured: bool = false}
+{@props title: &str, count: usize = 0, featured: bool = false}
 <section class="card">
   <h2>{title}{#if featured} ★{/if}</h2>
   <p>{count} items</p>
@@ -3781,7 +3786,7 @@ fn get() -> Response {
 - A page on another site is 403 as for a cross-site form (`Origin` must name the host, or `ORIGIN` when set). A non-upgrade request gets 426.
 - Only the built-in server upgrades; `tower`, edge targets and the test client answer 501.
 
-Browser side: `new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`)` with `onmessage`, `onopen`, `onclose`.
+Browser side: ``new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`)`` with `onmessage`, `onopen`, `onclose`.
 
 ## The `tower` Feature
 
@@ -4692,6 +4697,8 @@ cd guestbook
 wisp dev
 ```
 
+`wisp-web` is not on crates.io yet; the first line works once Wisp is released.
+
 Open `http://127.0.0.1:3000`. `wisp dev` rebuilds as you edit, and hot reload keeps your browser state. A folder under `src/routes` is a URL, and the `+page.wisp` inside it is the page.
 
 ## Creating a Page
@@ -4804,7 +4811,7 @@ A page file is named `+page.wisp`, with the `+`. In an action, `error()` already
 
 ## Saving Data in a Table
 
-A `Table` holds rows of a model. `Table::saved()` keeps them in a log file in the data folder, so they survive a restart, and `Table::new()` keeps them in memory. `#[model(saved)]` on the struct writes that `static` for you, named for it (`Entry` → `ENTRIES`), and `{#each ENTRIES as e}` walks it. The page above reads it in the same block:
+A `Table` holds rows of a model. `Table::saved()` keeps them in a log file in the data folder, so they survive a restart, and `Table::new()` keeps them in memory. The page above reads it in the same block:
 
 ```html
 ---
@@ -4886,7 +4893,7 @@ Wisp is young and has not been audited, and it can be broken. This page lists wh
 **Auth**
 
 - `redirect` keeps a path on the site: `//evil.example` and `/\evil.example` (another site to a browser, tabs dropped) go out as `/evil.example`, so `redirect(next)` with a `?next=` checked to start with `/` is no open redirect. Another site needs its scheme (`https://…`).
-- `cx.set_cookie`, `cx.set_header` and `Response::with_header` with a value they cannot hold (CR/LF, `;`, a space or non-ASCII in a cookie) drop it and log one line, and `Error::with_header` becomes a logged 500: never a panic, never an injected header or cookie attribute.
+- `cx.set_cookie`, `cx.set_header` and `Response::with_header` with a value they cannot hold (CR/LF, `;`, a space or non-ASCII in a cookie) drop it and log one line (the name, cut to 64 bytes, and the value's length, never the value, which may be a session token), and `Error::with_header` becomes a logged 500: never a panic, never an injected header or cookie attribute.
 - Form posts and WebSocket upgrades without `ORIGIN` set check the scheme too: an `http://` page cannot post to a site whose proxy sends `X-Forwarded-Proto: https`, and an `Origin` that is not `http(s)://` is refused. A proxy that sends no scheme leaves `https://` pages allowed, as Rails and Django do; set `ORIGIN` for an exact match.
 
 **Servers**
@@ -4974,7 +4981,7 @@ The Node apps: Nuxt is file routes, server routes in `server/api` and `useFetch`
 
 <TokenGrid />
 
-Wisp's `data` is longer than JavaScript's: a Rust type with its fields' types. Most of the rest is shorter, the form most of all; the exception is `api`, where Nuxt (22) and Axum (29) are shorter than Wisp (31). Against Wisp's total, Nuxt is 2.2 times, SvelteKit 2.4, Next.js 2.4, Express 2.9, React 3.4, Axum 3.8 and Actix 3.9. Of what is left, 108 tokens are the Rust type and data, and the rest is markup every stack writes.
+Wisp's `data` (108) is longer than SvelteKit's, Next.js's, Nuxt's and Express's (69 to 72): a Rust type with its fields' types. Most of the rest is shorter, the form most of all; the exceptions are `api`, where Nuxt (22) and Axum (29) are shorter than Wisp (31), and `setup`, where Wisp counts 44 and SvelteKit, Next.js and Nuxt count 0. Against Wisp's total, Nuxt is 2.2 times, SvelteKit 2.4, Next.js 2.4, Express 2.9, React 3.4, Axum 3.8 and Actix 3.9. Of what is left, 108 tokens are the Rust type and data, and the rest is markup every stack writes.
 
 ## A Real App: Auth, CRUD, Upload, Live, a Component
 
@@ -5021,6 +5028,8 @@ wisp new guestbook --template minimal
 cd guestbook
 wisp dev
 ```
+
+`wisp-web` is not on crates.io yet; the first line works once Wisp is released.
 
 `wisp new` asks a few questions (press Enter for the defaults, or add `-y`). Open `http://127.0.0.1:3000`. Leave `wisp dev` running: it rebuilds when you save a file and reloads the page. The app has these files, and you will add a few more:
 
