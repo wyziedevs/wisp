@@ -155,11 +155,20 @@ try {
   for (const p of routes) {
     const rs = live.map(() => []);
     for (const a of live) { await get(a, p).then((r) => r.text()); oha(a, p, 3); }
-    for (let i = 0; i < runs; i++) live.forEach((a, k) => rs[k].push(oha(a, p, secs)));
+    // workerd (kj) resets a burst of keep-alive connections now and then under a saturated loop, for every app alike
+    // (reproduced with Hono alone, no log line). A run whose only failures are such resets ('connection error', every
+    // reply a 200) is redone, up to 3 tries, and counted in `resets`; any wrong status or other error still fails the cell.
+    const resets = live.map(() => 0);
+    const resetOnly = (r) => r.bad > 0 && Object.keys(r.errs).every((e) => e === 'connection error' || e === 'aborted due to deadline');
+    for (let i = 0; i < runs; i++) live.forEach((a, k) => {
+      let r = oha(a, p, secs);
+      for (let t = 1; t < 3 && resetOnly(r); t++) { resets[k] += r.bad; r = oha(a, p, secs); }
+      rs[k].push(r);
+    });
     live.forEach((a, k) => {
       // Any failed request: no req/s (null), `failed: true`; report.mjs prints Failed and does not rank it.
       const c = cellOf(rs[k]);
-      res.cells[`${a.name} ${p}`] = { rps: c.rps == null ? null : Math.round(c.rps), p99: c.p99, runs: rs[k].map((r) => Math.round(r.rps)), bad: c.bad, ...(c.failed && { errors: rs[k].map((r) => r.errs) }), ...(c.failed && { failed: true }) };
+      res.cells[`${a.name} ${p}`] = { rps: c.rps == null ? null : Math.round(c.rps), p99: c.p99, runs: rs[k].map((r) => Math.round(r.rps)), bad: c.bad, ...(resets[k] && { resets: resets[k] }), ...(c.failed && { errors: rs[k].map((r) => r.errs) }), ...(c.failed && { failed: true }) };
       console.log(host, a.name, p, JSON.stringify(res.cells[`${a.name} ${p}`]));
     });
     save();
