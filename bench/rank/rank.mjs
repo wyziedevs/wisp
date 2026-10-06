@@ -123,7 +123,7 @@ async function cold(a) {
 
 function oha(a, path, s) {
   const j = ohaRun(url(a, path), path, s, conns, ['taskset', '-c', LOAD_CPUS]);
-  return { rps: j.summary.requestsPerSec, p99: j.latencyPercentiles.p99 * 1000, bad: failedCount(j) };
+  return { rps: j.summary.requestsPerSec, p99: j.latencyPercentiles.p99 * 1000, bad: failedCount(j), errs: { ...j.errorDistribution, ...Object.fromEntries(Object.entries(j.statusCodeDistribution || {}).filter(([k]) => k !== '200')) } };
 }
 
 const res = { host, when: new Date().toISOString(), secs, runs, conns, colds, cells: {}, cold: {}, rss: {}, failed: {} };
@@ -159,7 +159,7 @@ try {
     live.forEach((a, k) => {
       // Any failed request: no req/s (null), `failed: true`; report.mjs prints Failed and does not rank it.
       const c = cellOf(rs[k]);
-      res.cells[`${a.name} ${p}`] = { rps: c.rps == null ? null : Math.round(c.rps), p99: c.p99, runs: rs[k].map((r) => Math.round(r.rps)), bad: c.bad, ...(c.failed && { failed: true }) };
+      res.cells[`${a.name} ${p}`] = { rps: c.rps == null ? null : Math.round(c.rps), p99: c.p99, runs: rs[k].map((r) => Math.round(r.rps)), bad: c.bad, ...(c.failed && { errors: rs[k].map((r) => r.errs) }), ...(c.failed && { failed: true }) };
       console.log(host, a.name, p, JSON.stringify(res.cells[`${a.name} ${p}`]));
     });
     save();

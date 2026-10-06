@@ -7,6 +7,7 @@ test('failedCount sums requests, not distinct codes', () => {
   assert.equal(failedCount({ statusCodeDistribution: { 200: 900, 500: 40, 404: 2 } }), 42);
   assert.equal(failedCount({ statusCodeDistribution: { 200: 9 }, errorDistribution: { 'connection closed': 3 } }), 3);
   assert.equal(failedCount({ statusCodeDistribution: { 200: 9 } }), 0);
+  assert.equal(failedCount({ statusCodeDistribution: { 200: 9 }, errorDistribution: { 'aborted due to deadline': 64 } }), 0);
 });
 
 test('a cell with any failed request has no req/s', () => {

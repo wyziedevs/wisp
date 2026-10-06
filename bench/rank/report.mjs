@@ -47,7 +47,7 @@ for (const host of hosts) {
   const order = (n) => { const ps = metrics.slice(0, routes.length).map((m) => place(m, n)).filter((x) => x != null); return ps.reduce((a, b) => a + b, 0) / (ps.length || 1); };
   const rows = valid ? [...names].sort((a, b) => order(a) - order(b)) : [...names];
   out.push(`### ${label[host]}\n`);
-  out.push(`c=${r.conns}, ${r.secs} s runs, median of ${r.runs}, ${coldNote(r.colds, r.cold)}; ${r.when.slice(0, 10)}. ${valid ? 'Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).' : 'Each cell: req/s. Run validity not recorded (no steal data).'}\n`);
+  out.push(`c=${r.conns}, ${r.secs} s runs, median of ${r.runs}, ${coldNote(r.colds, r.cold)}; ${r.when.slice(0, 10)}${r.steal ? `, CPU steal mean ${r.steal.mean}% (max ${r.steal.max}%)` : ''}${r.ip_local_port_range ? `, ip_local_port_range ${r.ip_local_port_range}` : ''}. ${valid ? 'Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).' : 'Each cell: req/s. Run validity not recorded (no steal data).'}\n`);
   out.push(`| framework | ${metrics.map((m) => m.title).join(' | ')} |`);
   out.push(`|---${'|---'.repeat(metrics.length)}|`);
   for (const n of rows) {

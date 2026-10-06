@@ -51,7 +51,8 @@ const config :Workerd.Config = (
 export function failedCount(j) {
   let n = 0;
   for (const [k, v] of Object.entries(j.statusCodeDistribution || {})) if (k !== '200') n += v;
-  for (const v of Object.values(j.errorDistribution || {})) n += v;
+  // oha 1.16 reports requests still in flight when the -z deadline hits as 'aborted due to deadline': the end of a timed run, not a failure.
+  for (const [k, v] of Object.entries(j.errorDistribution || {})) if (k !== 'aborted due to deadline') n += v;
   return n;
 }
 
