@@ -166,16 +166,17 @@ try {
     // requests reset in the discarded tries). Any wrong status or other error still fails the cell.
     // Before every try the server must be idle (under 5% of a core over 2 s, the rule of ../tfb/run.sh); the seconds waited
     // go in `drain_s`, and -1 means it was still busy after 60 s and the run went ahead.
-    const resets = live.map(() => 0), redos = live.map(() => []), drains = live.map(() => []);
+    const resets = live.map(() => 0), redos = live.map(() => []), drains = live.map(() => []), wins = live.map(() => []);
     for (let i = 0; i < runs; i++) for (const [k, a] of live.entries()) {
       const o = await runOnce({ run: () => oha(a, p, secs), idle: () => waitIdle(() => groupTicks(a.child.pid)), run_no: i + 1 });
       drains[k].push(...o.drains);
+      wins[k].push(o.win);
       resets[k] += o.resets;
       if (o.redo) redos[k].push(o.redo);
       rs[k].push(o.r);
     }
     live.forEach((a, k) => {
-      res.cells[`${a.name} ${p}`] = cellRecord(rs[k], { resets: resets[k], redos: redos[k], drains: drains[k] });
+      res.cells[`${a.name} ${p}`] = cellRecord(rs[k], { resets: resets[k], redos: redos[k], drains: drains[k], wins: wins[k] });
       console.log(host, a.name, p, JSON.stringify(res.cells[`${a.name} ${p}`]));
     });
     save();

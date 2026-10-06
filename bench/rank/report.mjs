@@ -19,6 +19,8 @@ const resetNote = (r) => {
 };
 // A host file records its wait-for-idle rule; an older file did not, and says so.
 const drainNote = (r) => `; ${r.drain ? `before every run: ${r.drain}` : 'no wait-for-idle before runs (not recorded in this file)'}`;
+// Per-run steal (mark.mjs): the worst run's steal, or the label for a file that has none.
+const stealNote = (r) => { const s = Object.values(r.cells).map((c) => c.steal_runs); return s.every((x) => Array.isArray(x)) ? `; per-run steal max ${Math.max(0, ...s.flat().filter((x) => x != null))}%` : '; no per-run steal (not recorded in this file)'; };
 const dir = process.argv[2] || join(dirname(fileURLToPath(import.meta.url)), 'results');
 const hosts = ['workerd', 'node', 'bun', 'deno'];
 const routeNames = { '/': '`/`', '/list1000': '`/list1000`', '/json-big': '`/json-big`', '/params/42?q=hello%20world&x=1': '`/params`' };
@@ -56,7 +58,7 @@ for (const host of hosts) {
   const order = (n) => { const ps = metrics.slice(0, routes.length).map((m) => place(m, n)).filter((x) => x != null); return ps.reduce((a, b) => a + b, 0) / (ps.length || 1); };
   const rows = valid ? [...names].sort((a, b) => order(a) - order(b)) : [...names];
   out.push(`### ${label[host]}\n`);
-  out.push(`c=${r.conns}, ${r.secs} s runs, median of ${r.runs}, ${coldNote(r.colds, r.cold)}; ${r.when.slice(0, 10)}${r.steal ? `, CPU steal mean ${r.steal.mean}% (max ${r.steal.max}%)` : ''}${r.ip_local_port_range ? `, ip_local_port_range ${r.ip_local_port_range}` : ''}${resetNote(r)}${drainNote(r)}. ${valid ? 'Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first; a cell that is not idle, has no drain, fewer than 3 runs or failed requests is shown unranked with the reason).' : `Each cell: req/s. Not ranked: ${whyHost}.`}\n`);
+  out.push(`c=${r.conns}, ${r.secs} s runs, median of ${r.runs}, ${coldNote(r.colds, r.cold)}; ${r.when.slice(0, 10)}${r.steal ? `, CPU steal mean ${r.steal.mean}% (max ${r.steal.max}%)` : ''}${r.ip_local_port_range ? `, ip_local_port_range ${r.ip_local_port_range}` : ''}${resetNote(r)}${drainNote(r)}${stealNote(r)}. ${valid ? 'Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first; a cell that is not idle, has no drain, fewer than 3 runs, steal over 10% in a run or failed requests is shown unranked with the reason).' : `Each cell: req/s. Not ranked: ${whyHost}.`}\n`);
   out.push(`| framework | ${metrics.map((m) => m.title).join(' | ')} |`);
   out.push(`|---${'|---'.repeat(metrics.length)}|`);
   for (const n of rows) {

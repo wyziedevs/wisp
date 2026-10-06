@@ -11,7 +11,7 @@ test('a cell with failed requests prints Failed and is not ranked; cold n is sta
   const d = mkdtempSync(join(tmpdir(), 'rank-'));
   const cell = (rps, bad = 0) => ({ rps, p99: 1, runs: [rps, rps, rps], drain_s: [0, 0, 0], bad, ...(bad && { failed: true }) });
   writeFileSync(join(d, 'node.json'), JSON.stringify({
-    host: 'node', when: '2026-01-01T00:00:00Z', secs: '1', runs: 1, conns: '64', colds: 15, steal: { mean: 0, max: 0, samples: 3 },
+    host: 'node', when: '2026-01-01T00:00:00Z', secs: '1', runs: 1, conns: '64', colds: 15, steal: { mean: 0, max: 0, samples: 3, col: 'st' },
     cells: { 'wisp raw /': cell(900), 'hono /': cell(null, 5), 'fastify /': cell(500) },
     cold: { 'wisp raw': { median: 10, min: 9, n: 15 }, hono: { median: 20, min: 18, n: 11 }, fastify: { median: 30, min: 29, n: 15 } },
     rss: {}, failed: {},
@@ -44,7 +44,7 @@ const render = (file) => {
   return execFileSync(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), 'report.mjs'), d]).toString();
 };
 const good = (rps, drain = [0, 0, 0]) => ({ rps, p99: 1, runs: [rps, rps, rps], bad: 0, drain_s: drain });
-const steal = (mean) => ({ mean, max: mean, samples: 9 });
+const steal = (mean) => ({ mean, max: mean, samples: 9, col: 'st' });
 
 test('a stored valid flag is not trusted: no steal data means no places', () => {
   const out = render({ valid: true, cells: { 'wisp raw /': good(900), 'hono /': good(500) } });
@@ -84,4 +84,39 @@ test('an unranked host still marks not idle / no drain per cell', () => {
   const out = render({ cells: { 'wisp raw /': good(900, [-1, 0, 0]), 'hono /': { rps: 500, p99: 1, runs: [500, 500, 500], bad: 0 } } });
   assert.match(out, /900 \(not idle\)/);
   assert.match(out, /500 \(no drain\)/);
+});
+
+// Per-run steal: a cell is ranked only if no run saw steal over 10%; old files say 'no per-run steal'.
+test('a run with steal over 10% unranks its cell even when the host mean is fine', () => {
+  const sr = (v) => ({ ...good(950), steal_runs: v });
+  const out = render({ steal: steal(0.5), cells: { 'wisp raw /': { ...good(900), steal_runs: [0, 0, 1] }, 'hono /': sr([0, 25, 0]), 'fastify /': good(500) } });
+  assert.match(out, /hono \| 950 \(unranked: steal 25% in a run\)/);
+  assert.match(out, /\*\*900 \(#1\)\*\*/);
+});
+
+test('a cell without per-run steal is labelled, a run with no sample is unranked', () => {
+  const out = render({ steal: steal(0), cells: { 'wisp raw /': { ...good(900), steal_runs: [0, 0, 0] }, 'hono /': { ...good(500), steal_runs: [0, null, 0] } } });
+  assert.match(out, /hono \| 500 \(unranked: steal not sampled in a run\)/);
+  const old = render({ steal: steal(0), cells: { 'wisp raw /': good(900) } });
+  assert.match(old, /no per-run steal/);
+  assert.match(old, /\*\*900 \(#1\)\*\*/);
+});
+
+test('fewer than 3 runs recorded is unranked even when runs is absent', () => {
+  const out = render({ steal: steal(0), cells: { 'wisp raw /': good(900), 'hono /': { rps: 5, p99: 1, bad: 0, drain_s: [0, 0, 0] } } });
+  assert.match(out, /hono \| 5 \(unranked: 0 valid runs\)/);
+});
+
+test('steal recorded by the old mark.mjs (iowait column) is not trusted: no places', () => {
+  const out = render({ steal: { mean: 0, max: 2, samples: 9 }, cells: { 'wisp raw /': good(900), 'hono /': good(500) } });
+  assert.doesNotMatch(out, /#1/);
+  assert.match(out, /Not ranked: steal not read from the st column/);
+  const ok = render({ steal: { mean: 0, max: 2, samples: 9, col: 'st' }, cells: { 'wisp raw /': good(900) } });
+  assert.match(ok, /\*\*900 \(#1\)\*\*/);
+});
+
+test('a cell with failed requests is never ranked even if the file kept a req/s', () => {
+  const out = render({ steal: steal(0), cells: { 'wisp raw /': good(900), 'hono /': { ...good(950), bad: 3 } } });
+  assert.match(out, /hono \| Failed \|/);
+  assert.match(out, /\*\*900 \(#1\)\*\*/);
 });

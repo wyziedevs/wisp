@@ -46,3 +46,43 @@ test('cellRecord keeps drain_s per try, redos, resets and fails on any bad reque
   assert.equal(f.redos.length, 1);
   assert.deepEqual(f.drain_s, [-1, 0]);
 });
+
+import { parseVmstat, stealRuns } from './lib.mjs';
+
+test('runOnce records the window of the kept (last) try', async () => {
+  const seq = [r(1, 2, { 'connection error': 2 }), r(2)];
+  let n = 0, t = 100;
+  const o = await runOnce({ run: async () => seq[n++], idle: async () => 0, run_no: 1, now: () => (t += 10) });
+  assert.deepEqual(o.win, [130, 140]);
+});
+
+test('cellRecord stores the run windows as win', () => {
+  const c = cellRecord([r(1), r(2), r(3)], { resets: 0, redos: [], drains: [0, 0, 0], wins: [[1, 2], [3, 4], [5, 6]] });
+  assert.deepEqual(c.win, [[1, 2], [3, 4], [5, 6]]);
+});
+
+const T = (s) => `2026-01-01 00:00:${String(s).padStart(2, '0')}`;
+const vm = (rows) => ['procs ---memory--- -cpu-------- -----timestamp-----', ' r  b swpd free buff cache si so bi bo in cs us sy id wa st gu UTC',
+  ...rows.map(([s, st]) => ` 1  0 0 1 1 1 0 0 0 0 1 1 5 3 ${92 - st} 0 ${st} 0 ${T(s)}`)].join('\n');
+
+test('parseVmstat reads steal and the timestamp; -t absent gives t null', () => {
+  const a = parseVmstat(vm([[1, 4], [2, 0]]));
+  assert.deepEqual(a.map((x) => x.st), [4, 0]);
+  assert.equal(a[1].t - a[0].t, 1);
+  const b = parseVmstat(" 1  0 0 1 1 1 0 0 0 0 1 1 5 3 92 0 7 0");
+  assert.deepEqual(b, [{ t: null, st: 7 }]);
+});
+
+test('stealRuns is the mean steal per run window; a window with no sample is null', () => {
+  const s = parseVmstat(vm([[1, 0], [2, 0], [3, 30], [4, 30], [5, 2], [6, 2]]));
+  const t = (k) => s[k - 1].t;
+  assert.deepEqual(stealRuns(s, [[t(1), t(2)], [t(3), t(4)], [t(5), t(6)], [t(6) + 100, t(6) + 110]]), [0, 30, 2, null]);
+  assert.deepEqual(stealRuns(parseVmstat(' 1 0 0 1 1 1 0 0 0 0 1 1 5 3 92 0 7 0'), [[1, 2]]), [null]);
+});
+
+test('parseVmstat takes steal from the st column, not wa (header-driven; 16 without a header)', () => {
+  const a = parseVmstat(vm([[1, 4]]).replace(/ 92 0 /, ' 88 6 '));
+  assert.equal(a[0].st, 4); // wa is 6, st is 4
+  const b = parseVmstat(' 1 0 0 1 1 1 0 0 0 0 1 1 5 3 88 6 4 0');
+  assert.equal(b[0].st, 4);
+});

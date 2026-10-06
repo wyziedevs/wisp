@@ -442,9 +442,10 @@
  },
  "failed": {},
  "steal": {
-  "mean": 0.01,
-  "max": 4,
-  "samples": 1750
+  "mean": 0.53,
+  "max": 10,
+  "samples": 1749,
+  "col": "st"
  },
  "ip_local_port_range": "1024 65535",
  "valid": true
