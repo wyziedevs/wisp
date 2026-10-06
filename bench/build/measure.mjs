@@ -1,7 +1,7 @@
 // Build-time and dev-reload bench, run ON the Linux box (bench/build/README.md).
 //   node measure.mjs install <contender>            deps and the /hello overlay, not measured (takes the lock itself)
-//   BB_LOCKED=1 flock /tmp/wisp-bench.lock node measure.mjs run <contender> [--runs 3]   every cell of one contender -> results/<contender>.json
-//   (without BB_LOCKED each run, build and dev session takes the lock on its own)
+//   node measure.mjs run <contender> [--runs 3]     every cell of one contender -> results/<contender>.json; each single run takes the lock on its own
+//   (BB_LOCKED=1: the caller already holds the lock)
 //   node measure.mjs step <contender> <cell> <ver>  (internal) one timed build, run under flock by `run`
 //   node measure.mjs dev <contender> <runs>         (internal) the dev-reload cells, run under flock by `run`
 //   node measure.mjs clean <contender>              removes the installed deps and build output
@@ -182,8 +182,19 @@ async function main() {
   try { r.artifact = { bytes: dirBytes(join(appDir(c), k.artifact.path)), what: k.artifact.what }; } catch { /* build failed */ }
   if (k.noDev) { r.cells.dev_logic = { na: k.noDev }; if (k.markup) r.cells.dev_markup = { na: k.noDev }; }
   else {
-    const d = locked('dev', c, String(runs));
-    if (d.error) r.cells.dev_logic = { na: d.error }; else Object.assign(r.cells, d);
+    // one dev session per run, each under its own lock hold: short jobs of other sessions interleave
+    const d = {};
+    for (let i = 0; i < runs; i++) {
+      const x = locked('dev', c, '1');
+      if (x.error) { d.error = x.error; break; }
+      for (const [cell, v] of Object.entries(x)) {
+        const m = (d[cell] ||= { ms: [], steal: [], drain_s: [], invalid: [], tries: 0 });
+        if (v.na) { m.na = v.na; m.invalid.push(...(v.invalid || [])); continue; }
+        m.ms.push(...v.ms); m.steal.push(...v.steal); m.drain_s.push(...v.drain_s); m.invalid.push(...v.invalid); m.tries += v.tries;
+      }
+    }
+    if (d.error) r.cells.dev_logic = { na: d.error };
+    else for (const [cell, m] of Object.entries(d)) r.cells[cell] = m.na || m.ms.length < runs ? { na: m.na || 'invalid: valid runs not reached', invalid: m.invalid } : m;
     if (k.dev.note) r.dev_note = k.dev.note;
   }
   save();
