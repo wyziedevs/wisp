@@ -1,20 +1,20 @@
 ### workerd
 
-c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-06, CPU steal mean 0% (max 0%), ip_local_port_range 1024 65535. Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).
+c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-06, CPU steal mean 0.01% (max 4%), ip_local_port_range 1024 65535; runs redone after connection resets (requests reset): wisp / 14, itty / 14, wisp /list1000 2, hono /list1000 24, astro /list1000 5, react-router /list1000 3, hono /json-big 28, hono /params/42?q=hello%20world&x=1 18, itty /params/42?q=hello%20world&x=1 41, react-router /params/42?q=hello%20world&x=1 9. Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).
 
 | framework | `/` | `/list1000` | `/json-big` | `/params` | cold start ms | RSS MB after load |
 |---|---|---|---|---|---|---|
-| hono | Failed | Failed | Failed | Failed | 63 (#2) | 309 (#2) |
-| **wisp** | Failed | Failed | **1,996 (#1)** | Failed | **93 (#3)** | **407 (#3)** |
-| itty | 3,966 (#1) | Failed | Failed | Failed | 60 (#1) | 517 (#5) |
-| sveltekit | Failed | 366 (#1) | Failed | 2,298 (#1) | 97 (#4) | 799 (#7) |
-| astro | Failed | Failed | 1,152 (#2) | Failed | 147 (#6) | 469 (#4) |
-| react-router | 1,959 (#2) | 193 (#2) | Failed | Failed | 120 (#5) | 301 (#1) |
-| next | Failed | 44 (#3) | Failed | 338 (#2) | 489 (#7) | 561 (#6) |
+| hono | 6,096 (#1) | 972 (#2) | 3,631 (#1) | 6,586 (#1) | 51 (#2) | 392 (#1) |
+| **wisp** | **5,544 (#2)** | **2,092 (#1)** | **3,568 (#2)** | **5,411 (#3)** | **71 (#3)** | **497 (#3)** |
+| itty | Failed | 968 (#3) | 3,307 (#3) | 5,453 (#2) | 48 (#1) | 738 (#5) |
+| astro | 3,369 (#3) | 854 (#4) | 2,667 (#4) | 3,199 (#4) | 106 (#6) | 463 (#2) |
+| sveltekit | 3,008 (#4) | 504 (#5) | 2,529 (#5) | 2,442 (#5) | 76 (#4) | 1885 (#7) |
+| react-router | 2,428 (#5) | 293 (#6) | 2,122 (#6) | 2,235 (#6) | 87 (#5) | 739 (#6) |
+| next | 428 (#6) | 54 (#7) | 429 (#7) | 467 (#7) | 375 (#7) | 680 (#4) |
 
 ### Node
 
-c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-05, CPU steal mean 0.01% (max 3%), ip_local_port_range 1024 65535. Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).
+c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-05, CPU steal mean 0.01% (max 3%). Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).
 
 | framework | `/` | `/list1000` | `/json-big` | `/params` | cold start ms | RSS MB after load |
 |---|---|---|---|---|---|---|
@@ -28,7 +28,7 @@ c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-05, CPU steal mea
 
 ### Bun
 
-c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-05, CPU steal mean 0% (max 2%), ip_local_port_range 1024 65535. Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).
+c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-05, CPU steal mean 0% (max 2%). Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).
 
 | framework | `/` | `/list1000` | `/json-big` | `/params` | cold start ms | RSS MB after load |
 |---|---|---|---|---|---|---|
@@ -39,7 +39,7 @@ c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-05, CPU steal mea
 
 ### Deno
 
-c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-05, CPU steal mean 0% (max 2%), ip_local_port_range 1024 65535. Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).
+c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-05, CPU steal mean 0% (max 2%). Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).
 
 | framework | `/` | `/list1000` | `/json-big` | `/params` | cold start ms | RSS MB after load |
 |---|---|---|---|---|---|---|
@@ -55,8 +55,11 @@ Gap is how far behind in %: lower req/s, or higher cold start and memory. Gap to
 
 | host | Wisp variant | metric | place | Wisp | Hono | behind Hono | behind 3rd |
 |---|---|---|---|---|---|---|---|
-| workerd | wisp | cold start ms | #3 | 93 | 63 | 48% | - |
-| workerd | wisp | RSS MB after load | #3 | 407 | 309 | 32% | - |
+| workerd | wisp | `/` | #2 | 5,544 | 6,096 | 9% | - |
+| workerd | wisp | `/json-big` | #2 | 3,568 | 3,631 | 2% | - |
+| workerd | wisp | `/params` | #3 | 5,411 | 6,586 | 18% | - |
+| workerd | wisp | cold start ms | #3 | 71 | 51 | 38% | - |
+| workerd | wisp | RSS MB after load | #3 | 497 | 392 | 27% | - |
 | Node | wisp raw | cold start ms | #2 | 158 | 154 | 3% | - |
 | Node | wisp node:http | `/` | #3 | 12,475 | 14,149 | 12% | - |
 | Node | wisp node:http | RSS MB after load | #4 | 103 | 97 | 6% | 6% (hono) |

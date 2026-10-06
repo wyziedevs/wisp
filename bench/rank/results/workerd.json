@@ -1,787 +1,451 @@
 {
  "host": "workerd",
- "when": "2026-10-06T02:00:42.782Z",
+ "when": "2026-10-06T03:21:47.427Z",
  "secs": "10",
  "runs": 5,
  "conns": "64",
  "colds": 15,
  "cells": {
   "wisp /": {
-   "rps": null,
-   "p99": null,
+   "rps": 5544,
+   "p99": 28.1,
    "runs": [
-    5251,
-    6382,
-    3752,
-    3173,
-    4958
+    5544,
+    5898,
+    4989,
+    5718,
+    4850
    ],
-   "bad": 6,
-   "errors": [
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64,
-     "connection error": 6
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64
-    }
-   ],
-   "failed": true
+   "bad": 0,
+   "resets": 14
   },
   "hono /": {
-   "rps": null,
-   "p99": null,
+   "rps": 6096,
+   "p99": 60,
    "runs": [
-    5758,
-    7340,
-    3430,
-    2734,
-    4924
-   ],
-   "bad": 2,
-   "errors": [
-    {
-     "aborted due to deadline": 64,
-     "connection error": 2
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 62
-    }
-   ],
-   "failed": true
-  },
-  "itty /": {
-   "rps": 3966,
-   "p99": 51.9,
-   "runs": [
-    5315,
-    5594,
-    3701,
-    2547,
-    3966
+    6322,
+    6730,
+    6064,
+    6096,
+    5150
    ],
    "bad": 0
   },
-  "sveltekit /": {
+  "itty /": {
    "rps": null,
    "p99": null,
    "runs": [
-    1973,
-    2375,
-    2238,
-    2353,
-    1496
+    4701,
+    6201,
+    5115,
+    4639,
+    5014
    ],
-   "bad": 8,
+   "bad": 39,
+   "resets": 14,
    "errors": [
     {
+     "aborted due to deadline": 64
+    },
+    {
+     "aborted due to deadline": 64
+    },
+    {
+     "aborted due to deadline": 64
+    },
+    {
+     "aborted due to deadline": 64
+    },
+    {
      "aborted due to deadline": 64,
-     "connection error": 8
-    },
-    {
-     "aborted due to deadline": 62
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64
+     "connection closed before message completed": 16,
+     "connection error": 23
     }
    ],
    "failed": true
+  },
+  "sveltekit /": {
+   "rps": 3008,
+   "p99": 116.7,
+   "runs": [
+    2378,
+    3324,
+    3103,
+    3008,
+    2899
+   ],
+   "bad": 0
   },
   "astro /": {
-   "rps": null,
-   "p99": null,
+   "rps": 3369,
+   "p99": 78.2,
    "runs": [
-    2538,
-    3844,
-    2822,
-    2852,
-    1670
+    3332,
+    3410,
+    3369,
+    2764,
+    3422
    ],
-   "bad": 1,
-   "errors": [
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64,
-     "connection error": 1
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 54
-    }
-   ],
-   "failed": true
+   "bad": 0
   },
   "react-router /": {
-   "rps": 1959,
-   "p99": 72.8,
+   "rps": 2428,
+   "p99": 51.4,
    "runs": [
-    2672,
-    2497,
-    1959,
-    1906,
-    1453
+    2428,
+    2433,
+    1587,
+    2332,
+    2575
    ],
    "bad": 0
   },
   "next /": {
-   "rps": null,
-   "p99": null,
+   "rps": 428,
+   "p99": 535.1,
    "runs": [
-    500,
-    414,
-    384,
-    404,
-    291
+    513,
+    368,
+    316,
+    428,
+    471
    ],
-   "bad": 5,
-   "errors": [
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 63,
-     "connection error": 5
-    }
-   ],
-   "failed": true
+   "bad": 0
   },
   "wisp /list1000": {
-   "rps": null,
-   "p99": null,
+   "rps": 2092,
+   "p99": 56.8,
    "runs": [
-    1502,
-    1992,
-    2065,
-    1526,
-    1594
+    1945,
+    2465,
+    2092,
+    2057,
+    2449
    ],
-   "bad": 30,
-   "errors": [
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64,
-     "connection error": 30
-    },
-    {
-     "aborted due to deadline": 64
-    }
-   ],
-   "failed": true
+   "bad": 0,
+   "resets": 2
   },
   "hono /list1000": {
-   "rps": null,
-   "p99": null,
+   "rps": 972,
+   "p99": 120.9,
    "runs": [
-    644,
-    775,
-    828,
-    564,
-    903
+    843,
+    819,
+    988,
+    972,
+    1003
    ],
-   "bad": 9,
-   "errors": [
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64,
-     "connection error": 9
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64
-    }
-   ],
-   "failed": true
+   "bad": 0,
+   "resets": 24
   },
   "itty /list1000": {
-   "rps": null,
-   "p99": null,
+   "rps": 968,
+   "p99": 100.6,
    "runs": [
-    803,
-    604,
-    894,
-    497,
-    820
+    886,
+    657,
+    968,
+    1057,
+    1042
    ],
-   "bad": 12,
-   "errors": [
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64,
-     "connection error": 11
-    },
-    {
-     "aborted due to deadline": 63
-    },
-    {
-     "aborted due to deadline": 64,
-     "connection error": 1
-    },
-    {
-     "aborted due to deadline": 64
-    }
-   ],
-   "failed": true
+   "bad": 0
   },
   "sveltekit /list1000": {
-   "rps": 366,
-   "p99": 186.4,
+   "rps": 504,
+   "p99": 1062.3,
    "runs": [
-    486,
-    314,
-    366,
-    220,
-    377
+    465,
+    322,
+    504,
+    525,
+    576
    ],
    "bad": 0
   },
   "astro /list1000": {
-   "rps": null,
-   "p99": null,
+   "rps": 854,
+   "p99": 131.2,
    "runs": [
-    788,
-    440,
-    758,
-    394,
-    707
+    724,
+    722,
+    854,
+    886,
+    959
    ],
-   "bad": 10,
-   "errors": [
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64,
-     "connection error": 10
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64
-    }
-   ],
-   "failed": true
+   "bad": 0,
+   "resets": 5
   },
   "react-router /list1000": {
-   "rps": 193,
-   "p99": 378,
+   "rps": 293,
+   "p99": 357.9,
    "runs": [
-    252,
-    182,
-    193,
-    153,
-    198
+    259,
+    260,
+    293,
+    294,
+    309
    ],
-   "bad": 0
+   "bad": 0,
+   "resets": 3
   },
   "next /list1000": {
-   "rps": 44,
-   "p99": 2577,
+   "rps": 54,
+   "p99": 1804.9,
    "runs": [
     51,
-    44,
-    38,
-    29,
-    44
+    54,
+    51,
+    64,
+    58
    ],
    "bad": 0
   },
   "wisp /json-big": {
-   "rps": 1996,
-   "p99": 101.9,
+   "rps": 3568,
+   "p99": 35.4,
    "runs": [
-    1996,
-    1611,
-    2654,
-    2027,
-    1450
+    3361,
+    3241,
+    3628,
+    3568,
+    3662
    ],
    "bad": 0
   },
   "hono /json-big": {
-   "rps": null,
-   "p99": null,
+   "rps": 3631,
+   "p99": 26.8,
    "runs": [
-    2190,
-    1722,
-    2616,
-    2323,
-    2427
+    3631,
+    3185,
+    3944,
+    4183,
+    3396
    ],
-   "bad": 13,
-   "errors": [
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64,
-     "connection error": 13
-    },
-    {
-     "aborted due to deadline": 63
-    },
-    {
-     "aborted due to deadline": 64
-    }
-   ],
-   "failed": true
+   "bad": 0,
+   "resets": 28
   },
   "itty /json-big": {
-   "rps": null,
-   "p99": null,
+   "rps": 3307,
+   "p99": 36.5,
    "runs": [
-    1484,
-    1611,
-    2458,
-    1306,
-    2644
+    3378,
+    3307,
+    3178,
+    3726,
+    2805
    ],
-   "bad": 8,
-   "errors": [
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64,
-     "connection error": 8
-    }
-   ],
-   "failed": true
+   "bad": 0
   },
   "sveltekit /json-big": {
-   "rps": null,
-   "p99": null,
+   "rps": 2529,
+   "p99": 52.4,
    "runs": [
-    1096,
-    1554,
-    1211,
-    1126,
-    1918
+    2529,
+    2756,
+    2568,
+    2365,
+    1879
    ],
-   "bad": 32,
-   "errors": [
-    {
-     "aborted due to deadline": 64,
-     "connection error": 16
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64,
-     "connection error": 16
-    },
-    {
-     "aborted due to deadline": 64
-    }
-   ],
-   "failed": true
+   "bad": 0
   },
   "astro /json-big": {
-   "rps": 1152,
-   "p99": 368.8,
+   "rps": 2667,
+   "p99": 64.9,
    "runs": [
-    1787,
-    1465,
-    1152,
-    1022,
-    1134
+    2278,
+    2667,
+    2703,
+    2709,
+    1696
    ],
    "bad": 0
   },
   "react-router /json-big": {
-   "rps": null,
-   "p99": null,
+   "rps": 2122,
+   "p99": 52.4,
    "runs": [
-    1292,
-    1426,
-    825,
-    736,
-    1198
+    2163,
+    2165,
+    2012,
+    2122,
+    1857
    ],
-   "bad": 5,
-   "errors": [
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64,
-     "connection error": 5
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64
-    }
-   ],
-   "failed": true
+   "bad": 0
   },
   "next /json-big": {
-   "rps": null,
-   "p99": null,
+   "rps": 429,
+   "p99": 293.1,
    "runs": [
-    193,
-    356,
-    176,
-    155,
-    208
+    428,
+    429,
+    439,
+    438,
+    381
    ],
-   "bad": 4,
-   "errors": [
-    {
-     "aborted due to deadline": 64,
-     "connection error": 3
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64,
-     "connection error": 1
-    }
-   ],
-   "failed": true
+   "bad": 0
   },
   "wisp /params/42?q=hello%20world&x=1": {
-   "rps": null,
-   "p99": null,
+   "rps": 5411,
+   "p99": 67.7,
    "runs": [
-    3201,
-    3166,
-    3208,
-    3267,
-    5395
+    4926,
+    5411,
+    6156,
+    5047,
+    6146
    ],
-   "bad": 2,
-   "errors": [
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64,
-     "connection error": 2
-    }
-   ],
-   "failed": true
+   "bad": 0
   },
   "hono /params/42?q=hello%20world&x=1": {
-   "rps": null,
-   "p99": null,
+   "rps": 6586,
+   "p99": 47.6,
    "runs": [
-    4321,
-    3413,
-    2874,
-    3033,
-    5205
+    5750,
+    6450,
+    6859,
+    6586,
+    6626
    ],
-   "bad": 10,
-   "errors": [
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64,
-     "connection error": 1
-    },
-    {
-     "aborted due to deadline": 64,
-     "connection error": 9
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 62
-    }
-   ],
-   "failed": true
+   "bad": 0,
+   "resets": 18
   },
   "itty /params/42?q=hello%20world&x=1": {
-   "rps": null,
-   "p99": null,
+   "rps": 5453,
+   "p99": 60.4,
    "runs": [
-    3611,
-    3113,
-    1974,
-    3090,
-    4538
+    4186,
+    4826,
+    6112,
+    5586,
+    5453
    ],
-   "bad": 3,
-   "errors": [
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64,
-     "connection error": 3
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 62
-    },
-    {
-     "aborted due to deadline": 64
-    }
-   ],
-   "failed": true
+   "bad": 0,
+   "resets": 41
   },
   "sveltekit /params/42?q=hello%20world&x=1": {
-   "rps": 2298,
-   "p99": 110.5,
+   "rps": 2442,
+   "p99": 81.5,
    "runs": [
-    2862,
-    1579,
-    1281,
-    2622,
-    2298
+    2340,
+    2430,
+    4211,
+    3247,
+    2442
    ],
    "bad": 0
   },
   "astro /params/42?q=hello%20world&x=1": {
-   "rps": null,
-   "p99": null,
+   "rps": 3199,
+   "p99": 75.6,
    "runs": [
-    2735,
-    1142,
-    1167,
-    2277,
-    2435
+    2776,
+    2725,
+    3738,
+    3198,
+    3255
    ],
-   "bad": 7,
-   "errors": [
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64,
-     "connection error": 7
-    },
-    {
-     "aborted due to deadline": 64
-    }
-   ],
-   "failed": true
+   "bad": 0
   },
   "react-router /params/42?q=hello%20world&x=1": {
-   "rps": null,
-   "p99": null,
+   "rps": 2235,
+   "p99": 50.6,
    "runs": [
-    1627,
-    936,
-    942,
-    1746,
-    1931
+    2235,
+    2471,
+    2486,
+    2179,
+    2194
    ],
-   "bad": 15,
-   "errors": [
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64,
-     "connection error": 8
-    },
-    {
-     "aborted due to deadline": 64
-    },
-    {
-     "aborted due to deadline": 64,
-     "connection error": 7
-    },
-    {
-     "aborted due to deadline": 64
-    }
-   ],
-   "failed": true
+   "bad": 0,
+   "resets": 9
   },
   "next /params/42?q=hello%20world&x=1": {
-   "rps": 338,
-   "p99": 1479.1,
+   "rps": 467,
+   "p99": 171.1,
    "runs": [
-    338,
-    253,
-    243,
-    410,
-    376
+    435,
+    491,
+    479,
+    467,
+    456
    ],
    "bad": 0
   }
  },
  "cold": {
   "wisp": {
-   "median": 93.2,
-   "min": 64.8,
+   "median": 70.7,
+   "min": 56.3,
    "n": 15
   },
   "hono": {
-   "median": 62.8,
-   "min": 46.7,
+   "median": 51.2,
+   "min": 42.4,
    "n": 15
   },
   "itty": {
-   "median": 60.4,
-   "min": 48.4,
+   "median": 47.9,
+   "min": 36.4,
    "n": 15
   },
   "sveltekit": {
-   "median": 96.8,
-   "min": 74.9,
+   "median": 76.3,
+   "min": 65.2,
    "n": 15
   },
   "astro": {
-   "median": 146.5,
-   "min": 106.4,
+   "median": 105.9,
+   "min": 96.6,
    "n": 15
   },
   "react-router": {
-   "median": 119.9,
-   "min": 82,
+   "median": 87.2,
+   "min": 75.7,
    "n": 15
   },
   "next": {
-   "median": 489.2,
-   "min": 354.3,
+   "median": 375.2,
+   "min": 346.5,
    "n": 15
   }
  },
  "rss": {
   "wisp": {
-   "idle": 54,
-   "load": 407
+   "idle": 55,
+   "load": 497
   },
   "hono": {
    "idle": 48,
-   "load": 309
+   "load": 392
   },
   "itty": {
    "idle": 47,
-   "load": 517
+   "load": 738
   },
   "sveltekit": {
    "idle": 60,
-   "load": 799
+   "load": 1885
   },
   "astro": {
    "idle": 63,
-   "load": 469
+   "load": 463
   },
   "react-router": {
-   "idle": 60,
-   "load": 301
+   "idle": 61,
+   "load": 739
   },
   "next": {
    "idle": 97,
-   "load": 561
+   "load": 680
   }
  },
  "failed": {},
  "steal": {
-  "mean": 0,
-  "max": 0,
-  "samples": 1577
+  "mean": 0.01,
+  "max": 4,
+  "samples": 1750
  },
- "valid": true,
- "ip_local_port_range": "1024 65535"
+ "ip_local_port_range": "1024 65535",
+ "valid": true
 }
