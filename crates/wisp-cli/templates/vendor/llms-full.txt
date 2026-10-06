@@ -1294,11 +1294,10 @@ App commands warn on stderr when the installed `wisp` is older than the app's `w
 Pages work without JavaScript; a script and directives in the same `.wisp` file add behavior. No bundler. `{…}` is Rust (server); a quoted directive value and `{:…}` are JavaScript (browser).
 
 ```html
----
-let count = 0;
----
 <button on:click="count++">Clicked {:count} times</button>
 ```
+
+A handler that counts (`n++`) or toggles (`open = !open`) a name nothing declares starts it at 0 or `false`; another start is `let count = 5;` in the `---` block. A `<script>` is only for real browser logic.
 
 ## State in the `---` Block
 The cheapest browser state is a literal `let` in the page's `---` block: a number, `true`/`false`, `None` (null), a string, or `[..]`/`vec![..]` of those, alone on its line (a trailing comment is fine). The build moves it into the page's client code exactly as a `<script>` `let` would be: no per-request server cost, and `{:count}` and directives read it. A computed value, or one the server also renders, stays a Rust `let` and is sent with the page.
@@ -1519,14 +1518,14 @@ A page ships JS only for files with client code; a component can wait:
 `wisp add react react-dom react-switch` (framework first), then:
 
 ```html
+---
+let on = false;
+---
 <Island
   of="react:react-switch"
   client:visible
   props={:{ checked: on, onChange: (v) => (on = v) }} />
 <p>{:on ? 'On' : 'Off'}</p>
-<script>
-  let on = false
-</script>
 ```
 
 - `of="framework:module"` (`react preact vue svelte`); the default export is the component, `#Name` a named one (`react:recharts#LineChart`); `$lib` works (`react:$lib/Chart.js#Chart`).
@@ -1757,6 +1756,7 @@ With a server `load` the whole `Data` is sent (`#[derive(Json)]`). `params.slug`
 
 ```html
 ---
+let name = "";
 #[remote]
 fn user(id: u64) -> Result<User> {
     USERS.get(id).map(|r| r.value).or_404()
@@ -1765,9 +1765,6 @@ fn user(id: u64) -> Result<User> {
 
 <button on:click="user(5).then((u) => (name = u.name))">Load</button>
 <p>{:name}</p>
-<script>
-  let name = ''
-</script>
 ```
 
 - POST `/_app/r/<hash>`, arguments a JSON object by name (`{"id":5}`), read with `FromJson`; a wrong type or failed `#[validate]` is a 422 by field.
@@ -2106,7 +2103,7 @@ docker build -t my-app .
 docker run -p 3000:3000 -e WISP_SECRET=... my-app
 ```
 
-- Writes a two-stage `Dockerfile` (`rust:slim` then `debian:stable-slim`, `HOST=0.0.0.0`, `WISP_DATA=/data`) and `.dockerignore`.
+- Writes a two-stage `Dockerfile` (`rust:slim` then `debian:stable-slim`, `HOST=0.0.0.0`, `WISP_DATA=/data`) and `.dockerignore` (which keeps `.env` and `.env.*` out of the image; `wisp new` also lists them in `.gitignore`).
 - Saved tables live in `/data`: mount a volume (`-v my-app-data:/data`).
 - Docker's default seccomp refuses io_uring, so the server uses an epoll per worker. A profile allowing `io_uring_setup`, `io_uring_enter`, `io_uring_register` brings it back. The io_uring backend is implemented but untested end to end (the test VPS kernel refuses io_uring buffer rings); epoll is the tested default.
 
@@ -4892,7 +4889,7 @@ Wisp is young and has not been audited, and it can be broken. This page lists wh
 
 - Upload file names lose a drive (`C:`) and an NTFS stream (`:stream`), as well as paths, and trailing dots and spaces; a Windows device name (`CON`, `nul.txt`, `COM1.png`) gets a `_` in front.
 - `Response::file_in` sends `x-content-type-options: nosniff`, and an HTML, XHTML, SVG or XML file with `content-security-policy: default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox`, so an uploaded page or image runs no script on the site.
-- Static files and `Response::file_in` answer 404 for Windows device names (`nul`, `CON.txt`, `COM1`) and for names Windows trims (`a.txt.`, `a.txt `).
+- Static files and `Response::file_in` answer 404 for Windows device names (`nul`, `CON.txt`, `COM1`, `COM¹`-`³`, `LPT¹`-`³`, `CONIN$`, `CONOUT$`) and for names Windows trims (`a.txt.`, `a.txt `).
 
 **Browser script and dev mode**
 
@@ -5178,7 +5175,7 @@ Props are checked when the app builds. Misspell `message` and `wisp check` fails
 
 ## Add State in the Browser
 
-Let a visitor mark a note as liked. This is browser code, so it goes in a `<script>` in the same file. Update `src/components/Note.wisp`:
+Let a visitor mark a note as liked. This is browser state, and a handler that toggles a name nothing declares starts it at `false`, so it needs no declaration. Update `src/components/Note.wisp`:
 
 ```html
 {@props name, message}
@@ -5195,10 +5192,6 @@ Let a visitor mark a note as liked. This is browser code, so it goes in a `<scri
     margin: 1rem 0;
   }
 </style>
-
-<script>
-  let liked = $state(false)
-</script>
 ```
 
 `{name}` is Rust, drawn once on the server. `{:liked ? "Liked" : "Like"}` and the quoted value of `on:click` are JavaScript, and a click redraws only that button. Each note gets its own `liked`.
