@@ -48,11 +48,12 @@ const config :Workerd.Config = (
 
 // Failed requests in one oha run: every reply that is not a 200, counted per
 // request (not per distinct status). Also oha's own error distribution.
-export function failedCount(j) {
+export function failedCount(j, conns = Infinity) {
   let n = 0;
   for (const [k, v] of Object.entries(j.statusCodeDistribution || {})) if (k !== '200') n += v;
-  // oha 1.16 reports requests still in flight when the -z deadline hits as 'aborted due to deadline': the end of a timed run, not a failure.
-  for (const [k, v] of Object.entries(j.errorDistribution || {})) if (k !== 'aborted due to deadline') n += v;
+  // oha 1.16 reports requests still in flight when the -z deadline hits as 'aborted due to deadline': the end of a timed run, not a
+  // failure, but at most one per connection. More than `conns` of them is not an end-of-run artifact: the run fails.
+  for (const [k, v] of Object.entries(j.errorDistribution || {})) if (!benignAbort(k, v, conns)) n += v;
   return n;
 }
 
@@ -101,4 +102,38 @@ export function coldNote(colds, cold) {
   const ns = Object.values(cold || {}).map((c) => c.n ?? colds);
   const lo = Math.min(...ns, colds);
   return lo < colds ? `cold start median of the successful starts (${lo} to ${colds} of ${colds} per framework; failed starts dropped)` : `cold start median of ${colds}`;
+}
+
+// Deadline aborts are requests in flight when oha's -z timer hits: at most one per connection.
+export const benignAbort = (k, v, conns) => k === 'aborted due to deadline' && v <= Number(conns);
+
+// Same-rule redo of a run whose only failures are connection resets (rank.mjs): `run()` is one try,
+// `isReset(r)` says its failures are resets only. At most `max` tries; the LAST try is kept (never the
+// best one, so a redo cannot cherry-pick), and every try is returned so the results file shows them all.
+export async function redoResets(run, isReset, max = 3) {
+  let r = await run();
+  const tries = [r];
+  while (tries.length < max && isReset(r)) tries.push((r = await run()));
+  return { r, tries };
+}
+
+// pgrp and CPU ticks (user + system, 100 Hz) of one /proc/<pid>/stat text.
+export function statTicks(text) {
+  const f = text.slice(text.lastIndexOf(')') + 2).split(' ');
+  return { pgrp: +f[2], ticks: +f[11] + +f[12] };
+}
+
+// The drain every contender gets before every timed run (the rule of bench/tfb/run.sh): wait until the
+// server uses under 5% of a core over `every` ms (ticks() returns CPU ticks used so far). Returns the
+// seconds waited, or -1 when it was still busy after `max` ms (the run then goes ahead and says so).
+export async function waitIdle(ticks, { every = 2000, max = 60000, nap = sleep } = {}) {
+  const limit = 0.05 * 100 * (every / 1000);
+  let waited = 0;
+  for (;;) {
+    const a = ticks();
+    await nap(every);
+    waited += every;
+    if (ticks() - a < limit) return waited / 1000 - every / 1000;
+    if (waited >= max) return -1;
+  }
 }

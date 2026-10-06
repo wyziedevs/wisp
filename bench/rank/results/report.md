@@ -1,6 +1,6 @@
 ### workerd
 
-c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-06, CPU steal mean 0.01% (max 4%), ip_local_port_range 1024 65535; runs redone after connection resets (requests reset): wisp / 14, itty / 14, wisp /list1000 2, hono /list1000 24, astro /list1000 5, react-router /list1000 3, hono /json-big 28, hono /params/42?q=hello%20world&x=1 18, itty /params/42?q=hello%20world&x=1 41, react-router /params/42?q=hello%20world&x=1 9. Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).
+c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-06, CPU steal mean 0.01% (max 4%), ip_local_port_range 1024 65535; connection resets tolerated: redo up to 3 (3 tries per run, the last try kept, the same rule for every app); runs redone after connection resets (requests reset): wisp / 14, itty / 14, wisp /list1000 2, hono /list1000 24, astro /list1000 5, react-router /list1000 3, hono /json-big 28, hono /params/42?q=hello%20world&x=1 18, itty /params/42?q=hello%20world&x=1 41, react-router /params/42?q=hello%20world&x=1 9; no wait-for-idle before runs (not recorded in this file). Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).
 
 | framework | `/` | `/list1000` | `/json-big` | `/params` | cold start ms | RSS MB after load |
 |---|---|---|---|---|---|---|
@@ -14,7 +14,7 @@ c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-06, CPU steal mea
 
 ### Node
 
-c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-05, CPU steal mean 0.01% (max 3%). Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).
+c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-05, CPU steal mean 0.01% (max 3%), ip_local_port_range 1024 65535; connection resets tolerated: redo up to 3 (3 tries per run, the last try kept, the same rule for every app); no wait-for-idle before runs (not recorded in this file). Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).
 
 | framework | `/` | `/list1000` | `/json-big` | `/params` | cold start ms | RSS MB after load |
 |---|---|---|---|---|---|---|
@@ -28,7 +28,7 @@ c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-05, CPU steal mea
 
 ### Bun
 
-c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-05, CPU steal mean 0% (max 2%). Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).
+c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-05, CPU steal mean 0% (max 2%), ip_local_port_range 1024 65535; connection resets tolerated: redo up to 3 (3 tries per run, the last try kept, the same rule for every app); no wait-for-idle before runs (not recorded in this file). Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).
 
 | framework | `/` | `/list1000` | `/json-big` | `/params` | cold start ms | RSS MB after load |
 |---|---|---|---|---|---|---|
@@ -39,7 +39,7 @@ c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-05, CPU steal mea
 
 ### Deno
 
-c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-05, CPU steal mean 0% (max 2%). Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).
+c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-05, CPU steal mean 0% (max 2%), ip_local_port_range 1024 65535; connection resets tolerated: redo up to 3 (3 tries per run, the last try kept, the same rule for every app); no wait-for-idle before runs (not recorded in this file). Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).
 
 | framework | `/` | `/list1000` | `/json-big` | `/params` | cold start ms | RSS MB after load |
 |---|---|---|---|---|---|---|

@@ -9,7 +9,7 @@ import { spawn } from 'node:child_process';
 import { writeFileSync, readFileSync, readdirSync, existsSync, mkdirSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { sleep, hdr, oha as ohaRun, workerdConfig, failedCount, cellOf, badReply, coldOf } from '../edge/util.mjs';
+import { sleep, hdr, oha as ohaRun, workerdConfig, failedCount, cellOf, badReply, coldOf, benignAbort, redoResets, statTicks, waitIdle } from '../edge/util.mjs';
 
 const arg = (k, d) => { const i = process.argv.indexOf('--' + k); return i > 0 ? process.argv[i + 1] : d; };
 const here = dirname(fileURLToPath(import.meta.url));
@@ -96,6 +96,15 @@ function rss(pid) {
   return Math.round(sum / 1024);
 }
 
+// CPU ticks (user + system) used so far by the server's process group (it runs under setsid, so pgrp = pid).
+function groupTicks(pid) {
+  let sum = 0;
+  for (const d of readdirSync('/proc').filter((x) => /^\d+$/.test(x))) {
+    try { const t = statTicks(readFileSync(`/proc/${d}/stat`, 'utf8')); if (t.pgrp === pid) sum += t.ticks; } catch {}
+  }
+  return sum;
+}
+
 // Same answers whatever the framework (badReply in ../edge/util.mjs).
 async function check(a) {
   const bad = [];
@@ -123,10 +132,10 @@ async function cold(a) {
 
 function oha(a, path, s) {
   const j = ohaRun(url(a, path), path, s, conns, ['taskset', '-c', LOAD_CPUS]);
-  return { rps: j.summary.requestsPerSec, p99: j.latencyPercentiles.p99 * 1000, bad: failedCount(j), errs: { ...j.errorDistribution, ...Object.fromEntries(Object.entries(j.statusCodeDistribution || {}).filter(([k]) => k !== '200')) } };
+  return { rps: j.summary.requestsPerSec, p99: j.latencyPercentiles.p99 * 1000, bad: failedCount(j, conns), errs: { ...Object.fromEntries(Object.entries(j.errorDistribution || {}).filter(([k, v]) => !benignAbort(k, v, conns))), ...Object.fromEntries(Object.entries(j.statusCodeDistribution || {}).filter(([k]) => k !== '200')) } };
 }
 
-const res = { host, when: new Date().toISOString(), secs, runs, conns, colds, cells: {}, cold: {}, rss: {}, failed: {} };
+const res = { host, when: new Date().toISOString(), drain: 'server under 5% of a core over 2 s before every try, 60 s at most', secs, runs, conns, colds, cells: {}, cold: {}, rss: {}, failed: {} };
 mkdirSync(join(here, 'results'), { recursive: true });
 const save = () => writeFileSync(join(here, 'results', `${host}.json`), JSON.stringify(res, null, 1));
 const live = [];
@@ -156,19 +165,26 @@ try {
     const rs = live.map(() => []);
     for (const a of live) { await get(a, p).then((r) => r.text()); oha(a, p, 3); }
     // workerd (kj) resets a burst of keep-alive connections now and then under a saturated loop, for every app alike
-    // (reproduced with Hono alone, no log line). A run whose only failures are such resets ('connection error', every
-    // reply a 200) is redone, up to 3 tries, and counted in `resets`; any wrong status or other error still fails the cell.
-    const resets = live.map(() => 0);
-    const resetOnly = (r) => r.bad > 0 && Object.keys(r.errs).every((e) => e === 'connection error' || e === 'aborted due to deadline');
-    for (let i = 0; i < runs; i++) live.forEach((a, k) => {
-      let r = oha(a, p, secs);
-      for (let t = 1; t < 3 && resetOnly(r); t++) { resets[k] += r.bad; r = oha(a, p, secs); }
+    // (reproduced with Hono alone, no log line). The same rule for every app on every host: a run whose only failures are
+    // such resets ('connection error', every reply a 200) is redone, 3 tries at most; the LAST try is kept (not the best),
+    // and every redone run is recorded in the cell (`redos`: run number and each try's req/s and reset count; `resets`:
+    // requests reset in the discarded tries). Any wrong status or other error still fails the cell.
+    // Before every try the server must be idle (under 5% of a core over 2 s, the rule of ../tfb/run.sh); the seconds waited
+    // go in `drain_s`, and -1 means it was still busy after 60 s and the run went ahead.
+    const resets = live.map(() => 0), redos = live.map(() => []), drains = live.map(() => []);
+    const resetOnly = (r) => r.bad > 0 && Object.keys(r.errs).every((e) => e === 'connection error');
+    for (let i = 0; i < runs; i++) for (const [k, a] of live.entries()) {
+      const { r, tries } = await redoResets(async () => {
+        drains[k].push(await waitIdle(() => groupTicks(a.child.pid)));
+        return oha(a, p, secs);
+      }, resetOnly);
+      if (tries.length > 1) { resets[k] += tries.slice(0, -1).reduce((n, x) => n + x.bad, 0); redos[k].push({ run: i + 1, tries: tries.map((x) => ({ rps: Math.round(x.rps), bad: x.bad })) }); }
       rs[k].push(r);
-    });
+    }
     live.forEach((a, k) => {
       // Any failed request: no req/s (null), `failed: true`; report.mjs prints Failed and does not rank it.
       const c = cellOf(rs[k]);
-      res.cells[`${a.name} ${p}`] = { rps: c.rps == null ? null : Math.round(c.rps), p99: c.p99, runs: rs[k].map((r) => Math.round(r.rps)), bad: c.bad, ...(resets[k] && { resets: resets[k] }), ...(c.failed && { errors: rs[k].map((r) => r.errs) }), ...(c.failed && { failed: true }) };
+      res.cells[`${a.name} ${p}`] = { rps: c.rps == null ? null : Math.round(c.rps), p99: c.p99, runs: rs[k].map((r) => Math.round(r.rps)), bad: c.bad, ...(resets[k] && { resets: resets[k] }), ...(redos[k].length && { redos: redos[k] }), drain_s: drains[k], ...(c.failed && { errors: rs[k].map((r) => r.errs) }), ...(c.failed && { failed: true }) };
       console.log(host, a.name, p, JSON.stringify(res.cells[`${a.name} ${p}`]));
     });
     save();

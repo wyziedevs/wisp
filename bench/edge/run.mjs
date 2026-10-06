@@ -44,7 +44,7 @@ async function waitUp(child) {
 
 function oha(path, s) {
   const j = ohaRun(`http://127.0.0.1:${PORT}${path}`, path, s, conns);
-  return { rps: j.summary.requestsPerSec, p99: j.latencyPercentiles.p99 * 1000, bad: failedCount(j) };
+  return { rps: j.summary.requestsPerSec, p99: j.latencyPercentiles.p99 * 1000, bad: failedCount(j, conns) };
 }
 
 const results = {};

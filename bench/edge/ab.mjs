@@ -65,7 +65,7 @@ async function cold(a) {
 
 function oha(a, path, s) {
   const j = ohaRun(url(a, path), path, s, conns);
-  return { rps: j.summary.requestsPerSec, p99: j.latencyPercentiles.p99 * 1000, bad: failedCount(j) };
+  return { rps: j.summary.requestsPerSec, p99: j.latencyPercentiles.p99 * 1000, bad: failedCount(j, conns) };
 }
 
 try {

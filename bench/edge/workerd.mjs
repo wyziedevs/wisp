@@ -58,7 +58,7 @@ function oha(a, path, s) {
   const j = ohaRun(`http://127.0.0.1:${a.port}${path}`, path, s, conns);
   const used = cpu(a.child.pid) - c0;
   const n = j.statusCodeDistribution['200'] ?? 0;
-  return { rps: j.summary.requestsPerSec, p99: j.latencyPercentiles.p99 * 1000, us: (used * 1e6) / n, bad: failedCount(j) };
+  return { rps: j.summary.requestsPerSec, p99: j.latencyPercentiles.p99 * 1000, us: (used * 1e6) / n, bad: failedCount(j, conns) };
 }
 
 for (const a of apps) {

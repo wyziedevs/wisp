@@ -56,5 +56,37 @@ class Limited(unittest.TestCase):
     def test_clean_cell(self):
         self.assertFalse(aggregate.limited(16384, self.row()))
 
+def cell(rps, steal=0.5, drained=True):
+    return {"rps": rps, "lat_avg_ms": 1.0, "lat_p99_ms": 2.0, "non2xx": 0, "socket_errors": 0, "requests": 1000,
+            "steal_pct": steal, "drained": drained, "stalled": False}
+
+def table(**rows):
+    return aggregate.summarize({c: {"json": {64: runs}} for c, runs in rows.items()})["json"][64]
+
+class Fairness(unittest.TestCase):
+    def test_drain_marker_parsed(self):
+        self.assertTrue(run("# drain-before: 2s\n" + OK)["drained"])
+        self.assertFalse(run(OK)["drained"])
+    def test_a_run_over_the_steal_bar_is_not_ranked_or_tied(self):
+        rows = table(a=[cell(100), cell(101), cell(102)], b=[cell(100), cell(101, steal=17.6), cell(102)], c=[cell(100), cell(101), cell(102)])
+        self.assertTrue(rows["b"]["disturbed"]); self.assertFalse(aggregate.rankable(rows["b"]))
+        self.assertEqual(rows["a"]["tied_with"], ["c"])   # b takes no part
+    def test_steal_is_per_run_not_the_mean(self):
+        rows = table(a=[cell(100, 0.0), cell(100, 0.0), cell(100, 10.5)])
+        self.assertTrue(rows["a"]["disturbed"])
+    def test_steal_exactly_at_the_bar_is_valid(self):
+        self.assertFalse(table(a=[cell(1, 10.0)] * 3)["a"]["disturbed"])
+    def test_three_valid_runs_to_rank(self):
+        rows = table(a=[cell(100), cell(101)], b=[cell(100), cell(101), cell(102)])
+        self.assertFalse(aggregate.rankable(rows["a"])); self.assertTrue(aggregate.rankable(rows["b"]))
+        self.assertEqual(rows["b"]["tied_with"], [])
+    def test_stalled_runs_do_not_count_as_valid(self):
+        bad = dict(cell(5), stalled=True)
+        rows = table(a=[cell(100), cell(101), bad])
+        self.assertEqual(rows["a"]["runs"], 2); self.assertFalse(aggregate.rankable(rows["a"]))
+    def test_stale_harness_from_data(self):
+        rows = table(a=[cell(1, drained=False)] * 3, b=[cell(1)] * 3)
+        self.assertTrue(rows["a"]["pre_drain"]); self.assertFalse(rows["b"]["pre_drain"])
+
 if __name__ == "__main__":
     unittest.main()
