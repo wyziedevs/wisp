@@ -535,13 +535,24 @@ pub fn highlight(lang: &str, code: &str) -> Option<String> {
     Some(lex(lang, code))
 }
 
-/// Whether a `/` after `before` opens a regex: at the start, or after an operator, `(` or `return`.
+/// Whether a `/` after `before` opens a regex: at the start, or after an operator, `(` or
+/// `return`; not after `++`/`--` (an operand ends there) nor right after `<` (a JSX `</a>`).
 fn regex_may_start(before: &str) -> bool {
+    if before.ends_with('<') {
+        return false;
+    }
     let t = before.trim_end();
+    if t.ends_with("++") || t.ends_with("--") {
+        return false;
+    }
     t.chars()
         .last()
         .is_none_or(|c| "(,=:[!&|?{};+-*%<>~^".contains(c))
-        || ["return", "typeof"].iter().any(|w| t.ends_with(w))
+        || ["return", "typeof"].iter().any(|w| {
+            t.strip_suffix(w).is_some_and(|p| {
+                !p.ends_with(|c: char| c.is_alphanumeric() || c == '_' || c == '$')
+            })
+        })
 }
 
 /// `code` in `lang`: comments, strings, numbers, keywords and types.
@@ -1245,6 +1256,20 @@ fn a() {}
         assert!(h.contains(r#"<span class="hl-s">/^[a-z'\/]+$/i</span>"#));
         assert!(h.contains("<span class=\"hl-s\">'z'</span>"));
         assert!(!highlight("js", "a = b / c / d;").unwrap().contains("hl-s"));
+        // `++`/`--` end an operand, `return` must be a whole word, `</` closes a JSX tag.
+        for code in [
+            "i++ / 2 / 3;",
+            "x-- / 2 / 3;",
+            "noreturn / 2 / 3;",
+            "<a>x</a> <b>y</b>;",
+        ] {
+            assert!(!highlight("js", code).unwrap().contains("hl-s"), "{code}");
+        }
+        assert!(
+            highlight("js", "return /a/.test(x);")
+                .unwrap()
+                .contains("hl-s")
+        );
         assert!(
             page("```rust\nlet x = 1;\n```", &[], false)
                 .unwrap()
