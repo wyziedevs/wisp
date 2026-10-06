@@ -1,18 +1,22 @@
-# loadavg-before: 3.00 2.86 2.97
-# cmd: taskset -c 2-3 wrk -H 'Host: 127.0.0.1' -H 'Accept: text/plain,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,*/*;q=0.7' -H 'Connection: keep-alive' --latency -d 15 -c 256 --timeout 8 -t 2 http://127.0.0.1:8080/plaintext -s pipeline.lua -- 16
-Running 15s test @ http://127.0.0.1:8080/plaintext
+# drain-before: 2s
+# loadavg-before: 3.11 2.28 1.73
+# cmd: taskset -c 2-3 wrk -H 'Host: 127.0.0.1' -H 'Accept: text/plain,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,*/*;q=0.7' -H 'Connection: keep-alive' --latency -d 15 -c 256 --timeout 8 -t 2 http://127.0.0.1:8090/plaintext -s pipeline.lua -- 16
+Running 15s test @ http://127.0.0.1:8090/plaintext
   2 threads and 256 connections
   Thread Stats   Avg      Stdev     Max   +/- Stdev
-    Latency     0.00us    0.00us   0.00us    -nan%
-    Req/Sec     0.00      0.00     0.00      -nan%
+    Latency   673.49ms    1.11s    7.92s    90.94%
+    Req/Sec     1.26k   653.29     3.23k    65.41%
   Latency Distribution
-     50%    0.00us
-     75%    0.00us
-     90%    0.00us
-     99%    0.00us
-  0 requests in 15.08s, 0.00B read
-Requests/sec:      0.00
-Transfer/sec:       0.00B
-# cpu-delta user nice sys idle iowait irq softirq steal: 2797 0 220 2970 1 0 30 105 
-# foreign-pct: 0.0  (user+sys+irq ticks 3047, server+wrk 3062)
-# top-after:  200 ps;75.7 next-server (v1;74.7 next-server (v1;
+     50%  337.52ms
+     75%  484.74ms
+     90%    1.49s 
+     99%    5.93s 
+  36960 requests in 15.03s, 10.01MB read
+  Socket errors: connect 0, read 0, write 0, timeout 26
+Requests/sec:   2459.55
+Transfer/sec:    682.14KB
+# cpu-delta user nice sys idle iowait irq softirq steal: 2880 0 184 2850 0 0 85 40 
+# foreign-pct: 0.0  (user+sys+irq ticks 3149, server+wrk 3152)
+# top-after:  100 ps;87.2 next-server (v1;86.4 next-server (v1;
+# drained-after: 5s
+# alive-after: yes

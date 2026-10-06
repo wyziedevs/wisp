@@ -1,6 +1,22 @@
-# loadavg-before: 3.82 4.05 3.45
-# cmd: taskset -c 2-3 wrk -H 'Host: 127.0.0.1' -H 'Accept: text/plain,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,*/*;q=0.7' -H 'Connection: keep-alive' --latency -d 15 -c 16384 --timeout 8 -t 2 http://127.0.0.1:8080/plaintext -s pipeline.lua -- 16
-unable to connect to 127.0.0.1:8080 Connection refused
-# cpu-delta user nice sys idle iowait irq softirq steal: 1 0 4 13 0 0 0 0 
-# foreign-pct: 0.0  (user+sys+irq ticks 5, server+wrk 5)
-# top-after:  0.8 rcu_preempt; 0.2 kcompactd0; 0.1 run.sh;
+# drain-before: 2s
+# loadavg-before: 4.80 4.26 3.14
+# cmd: taskset -c 2-3 wrk -H 'Host: 127.0.0.1' -H 'Accept: text/plain,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,*/*;q=0.7' -H 'Connection: keep-alive' --latency -d 15 -c 16384 --timeout 8 -t 2 http://127.0.0.1:8090/plaintext -s pipeline.lua -- 16
+Running 15s test @ http://127.0.0.1:8090/plaintext
+  2 threads and 16384 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency     4.51s     2.07s    8.00s    60.82%
+    Req/Sec     1.14k   559.35     2.87k    68.95%
+  Latency Distribution
+     50%    4.65s 
+     75%    6.16s 
+     90%    7.26s 
+     99%    7.93s 
+  28336 requests in 15.10s, 7.67MB read
+  Socket errors: connect 0, read 0, write 0, timeout 773
+Requests/sec:   1876.35
+Transfer/sec:    520.39KB
+# cpu-delta user nice sys idle iowait irq softirq steal: 2917 0 353 2703 1 0 161 152 
+# foreign-pct: 0.0  (user+sys+irq ticks 3431, server+wrk 3453)
+# top-after: 88.1 next-server (v1;87.6 next-server (v1; 2.5 MainThread;
+# drained-after: 162s
+# alive-after: yes

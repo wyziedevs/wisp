@@ -162,14 +162,15 @@ with the numbers they would be a different scale from the tables above.
   measurement caveat of this setup, not a Wisp failure. Widening the range (see `bench/README.md`) lifts it.
 - **Pipelined rows have no p99** (wrk), and latency is queueing under a 16-deep pipeline, not
   request latency.
-- Next.js has no valid pipelined plaintext result: no 16-deep pipelined response completed within wrk's timeout. It was restarted
-  before the JSON test (`WORKLOADS=json ./run.sh bench next`); its plaintext numbers are what was
-  measured before and during that failure (the 2 GB V8 heap was first suspected). Re-run with `NODE_OPTIONS=--max-old-space-size=8192` (run.sh `NEXT_HEAP_MB`, 7.9 GB host, two
-  runs, raw in `raw/next-heap8192/`): still 0 req/s at almost every level (best single run 1,489 at 4096), no
-  out-of-memory message, so the heap was not the cause; Next.js is CPU-saturated and wrk completes no
-  16-deep pipelined response within its timeout. Steal peaked at 12 and 16 % (mean 2.5 and 3.5 %) in 5 s samples, so
-  treat those runs as indicative only. SvelteKit, Next.js and Nuxt are plain route handlers, not
-  optimised entries, and not TFB code.
+- **Drain before every run.** Earlier rounds showed Next.js at 0 req/s at every pipelined plaintext
+  level. Cause, reproduced on the VPS: wrk closes its sockets after the 16384 x 16 warmup, but Node's
+  http server still runs every request already pipelined on them (about 262k), so Next.js stayed at
+  100% of both server cores for about 180 s with no client attached and every timed run in that window
+  completed nothing; fresh, the same build answered 16 of 16 pipelined requests and about 1,500 req/s at
+  256 connections, and again after the backlog drained. `run.sh` now waits, for every contender, until
+  the server uses under 5% of a core before each run (`# drain-before` in each raw file). The heap was not
+  the cause (8 GB changed nothing), so Next.js runs on Node's default heap like every Node stack.
+  SvelteKit, Next.js and Nuxt are plain route handlers, not optimised entries, and not TFB code.
 - Single pass per contender, in the order Wisp, Axum, Actix Web, Express, Fastify, Hono (Node), Hono (Bun), SvelteKit, Next.js, Nuxt, then the supplementary build: contenders measured later
   saw a different moment of the host than Wisp did (the noise experiment shows the size of that).
 - Wisp was not tuned; contenders were not tuned beyond what their TFB entries or docs recommend.

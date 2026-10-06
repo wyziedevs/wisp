@@ -1,18 +1,21 @@
-# loadavg-before: 2.71 2.70 2.96
-# cmd: taskset -c 2-3 wrk -H 'Host: 127.0.0.1' -H 'Accept: application/json,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,*/*;q=0.7' -H 'Connection: keep-alive' --latency -d 15 -c 128 --timeout 8 -t 2 http://127.0.0.1:8080/json 
-Running 15s test @ http://127.0.0.1:8080/json
+# drain-before: 2s
+# loadavg-before: 2.16 3.16 3.33
+# cmd: taskset -c 2-3 wrk -H 'Host: 127.0.0.1' -H 'Accept: application/json,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,*/*;q=0.7' -H 'Connection: keep-alive' --latency -d 15 -c 128 --timeout 8 -t 2 http://127.0.0.1:8090/json 
+Running 15s test @ http://127.0.0.1:8090/json
   2 threads and 128 connections
   Thread Stats   Avg      Stdev     Max   +/- Stdev
-    Latency   196.88ms  396.65ms   4.06s    94.58%
-    Req/Sec   569.10    206.11     1.05k    64.00%
+    Latency    98.97ms  202.33ms   2.38s    96.26%
+    Req/Sec     0.97k   204.28     1.32k    69.67%
   Latency Distribution
-     50%   90.12ms
-     75%  142.86ms
-     90%  254.57ms
-     99%    2.41s 
-  17031 requests in 15.04s, 4.95MB read
-Requests/sec:   1132.21
-Transfer/sec:    337.23KB
-# cpu-delta user nice sys idle iowait irq softirq steal: 2770 0 288 2640 0 0 200 328 
-# foreign-pct: 0.0  (user+sys+irq ticks 3258, server+wrk 3353)
-# top-after:  100 ps;84.8 next-server (v1;84.8 next-server (v1;
+     50%   56.96ms
+     75%   75.92ms
+     90%  100.26ms
+     99%    1.30s 
+  29050 requests in 15.02s, 8.45MB read
+Requests/sec:   1933.78
+Transfer/sec:    576.00KB
+# cpu-delta user nice sys idle iowait irq softirq steal: 2798 0 286 2667 0 0 148 64 
+# foreign-pct: 0.0  (user+sys+irq ticks 3232, server+wrk 3261)
+# top-after: 86.7 next-server (v1;86.4 next-server (v1; 2.2 MainThread;
+# drained-after: 2s
+# alive-after: yes

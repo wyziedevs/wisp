@@ -1,12 +1,12 @@
    ▲ Next.js 15.5.27
-   - Local:        http://localhost:8080
-   - Network:      http://0.0.0.0:8080
+   - Local:        http://localhost:8090
+   - Network:      http://0.0.0.0:8090
 
  ✓ Starting...
    ▲ Next.js 15.5.27
-   - Local:        http://localhost:8080
-   - Network:      http://0.0.0.0:8080
+   - Local:        http://localhost:8090
+   - Network:      http://0.0.0.0:8090
 
  ✓ Starting...
- ✓ Ready in 398ms
- ✓ Ready in 383ms
+ ✓ Ready in 334ms
+ ✓ Ready in 349ms

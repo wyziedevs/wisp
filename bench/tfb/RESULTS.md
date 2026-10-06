@@ -73,6 +73,7 @@ the request 16 times per write). The Accept headers are TFB's, copied from
 | Hono on Bun | `hono-bun/` | **not TFB source**: TFB has no Bun entry. Same routes as the Node entry, `Bun.serve` with `reusePort`, one process per core |
 | SvelteKit | `sveltekit/` | **not TFB**: two plain `+server.js` route handlers, `adapter-node` production build, one process per core through `node:cluster` |
 | Next.js | `next/` | **not TFB**: two App Router route handlers, `output: 'standalone'`, one process per core through `node:cluster` |
+| Nuxt | `nuxt/` | **not TFB**: two Nitro server routes (`server/routes/*.js`), `nuxt build` with the `node-server` preset, one process per core through `node:cluster` |
 
 Deviations from TFB source, all of them: database parts removed; Express and Fastify use
 `os.availableParallelism()` instead of `os.cpus().length` (the latter ignores `taskset` and would start
@@ -158,9 +159,9 @@ Contenders that stop answering show `0`; that is a measured result of this setup
 | tie | Fastify (TFB source) | 51,713 | 40,422 | 60,754 | 218 | 3510 | 34 socket | 2.6 | Express |
 | tie | Express (TFB source) | 40,421 | 37,511 | 42,852 | 359 | 4850 | - | 3.8 | Fastify |
 | tie | Hono on Node (TFB source) | 28,966 | 3,039 | 29,143 | 449 | 5630 | 138 socket | 2.2 | Hono on Bun, SvelteKit |
-| tie | SvelteKit (not TFB) | 10,929 | 502 | 11,055 | 472 | 5590 | 144 socket | 1.5 | Hono on Bun, Hono on Node |
+| tie | SvelteKit (not TFB) | 10,929 | 502 | 11,055 | 472 | 5590 | 144 socket | 1.5 | Hono on Bun, Hono on Node, Next.js |
 | tie | Hono on Bun (not TFB source) | 10,599 | 10,565 | 10,628 | 211 | 410 | - | 1.2 | Hono on Node, SvelteKit |
-| - | Next.js (not TFB) | No valid result: no pipelined response completed (heap raised to 8 GB, still none) | - | - | - | - | 3 stalled run(s) left out | 2.3 | - |
+| tie | Next.js (not TFB) | 2,460 | 2,328 | 2,662 | 615 | 5150 | 67 socket | 1.2 | SvelteKit |
 
 Rows whose min-max ranges overlap are ties and get no rank.
 
@@ -177,7 +178,7 @@ Rows whose min-max ranges overlap are ties and get no rank.
 | tie | Hono on Node (TFB source) | 29,602 | 25,357 | 34,082 | 259 | 4420 | 192 socket | 2.9 | Express |
 | 7 | Hono on Bun (not TFB source) | 10,375 | 10,195 | 10,421 | 854 | 1670 | - | 1.9 | - |
 | 8 | SvelteKit (not TFB) | 8,464 | 7,749 | 9,116 | 514 | 3240 | 83 socket | 6.5 | - |
-| - | Next.js (not TFB) | No valid result: no pipelined response completed (heap raised to 8 GB, still none) | - | - | - | - | 3 stalled run(s) left out | 0.2 | - |
+| 9 | Next.js (not TFB) | 2,750 | 1,669 | 2,926 | 1030 | 2390 | 23 socket | 3.2 | - |
 
 Rows whose min-max ranges overlap are ties and get no rank.
 
@@ -194,7 +195,7 @@ Rows whose min-max ranges overlap are ties and get no rank.
 | tie | Express (TFB source) | 27,554 | 26,800 | 27,714 | 478 | 5710 | 208 socket | 9.9 | Hono on Node |
 | 7 | Hono on Bun (not TFB source) | 9,652 | 9,619 | 10,152 | 3400 | 6900 | 1 socket | 4.0 | - |
 | 8 | SvelteKit (not TFB) | 8,359 | 8,285 | 9,053 | 547 | 5710 | 149 socket | 1.6 | - |
-| - | Next.js (not TFB) | No valid result: no pipelined response completed (heap raised to 8 GB, still none) | - | - | - | - | 1 stalled run(s) left out | 0.6 | - |
+| 9 | Next.js (not TFB) | 1,771 | 1,286 | 2,701 | 3650 | 7740 | 1475 socket | 5.5 | - |
 
 Rows whose min-max ranges overlap are ties and get no rank.
 
@@ -208,9 +209,10 @@ Rows whose min-max ranges overlap are ties and get no rank.
 | - | Hono on Node (TFB source) | 16,692 | 16,692 | 16,692 | 3370 | 7720 | one valid run, not ranked, 2 stalled run(s) left out, 830 socket | 0.9 | - |
 | 3 | Hono on Bun (not TFB source) | 6,910 | 6,440 | 7,323 | 3720 | 7890 | 2410 socket | 0.7 | - |
 | - | SvelteKit (not TFB) | 6,777 | 6,777 | 6,777 | 3840 | 7890 | one valid run, not ranked, 2 stalled run(s) left out, 287 socket | 0.5 | - |
-| **-** | **Wisp (defaults)** | **Failed (every run stalled)** | **-** | **-** | **-** | **-** | **73227 non-2xx, 3 stalled run(s) left out** | **8.8** | **-** |
-| - | Actix Web (TFB source) | Failed (every run stalled) | - | - | - | - | 3 stalled run(s) left out | 7.6 | - |
-| - | Express (TFB source) | Failed (every run stalled) | - | - | - | - | 3 stalled run(s) left out | 3.7 | - |
+| 4 | Next.js (not TFB) | 1,876 | 1,367 | 2,379 | 4060 | 7930 | 2081 socket | 6.0 | - |
+| **-** | **Wisp (defaults)** | **Failed (every run stalled)** | **-** | **-** | **-** | **-** | **73227 non-2xx, 3 stalled run(s) left out, load-generator limited (local port range), a measurement caveat, not a server failure** | **8.8** | **-** |
+| - | Actix Web (TFB source) | Failed (every run stalled) | - | - | - | - | 3 stalled run(s) left out, load-generator limited (local port range), a measurement caveat, not a server failure | 7.6 | - |
+| - | Express (TFB source) | Failed (every run stalled) | - | - | - | - | 3 stalled run(s) left out, load-generator limited (local port range), a measurement caveat, not a server failure | 3.7 | - |
 
 Rows whose min-max ranges overlap are ties and get no rank.
 
@@ -227,7 +229,7 @@ Rows whose min-max ranges overlap are ties and get no rank.
 | tie | Hono on Node (TFB source) | 17,069 | 16,890 | 17,461 | 2.29 | 35.93 | - | 3.2 | Express, Fastify |
 | tie | Express (TFB source) | 16,945 | 15,576 | 17,105 | 1.26 | 8.57 | - | 13.8 | Hono on Node |
 | 8 | SvelteKit (not TFB) | 7,990 | 7,662 | 8,274 | 4.15 | 53.90 | - | 5.8 | - |
-| 9 | Next.js (not TFB) | 1,499 | 1,174 | 1,665 | 14.27 | 114 | - | 4.7 | - |
+| 9 | Next.js (not TFB) | 1,888 | 1,485 | 1,895 | 13.67 | 181 | - | 1.1 | - |
 
 Rows whose min-max ranges overlap are ties and get no rank.
 
@@ -244,7 +246,7 @@ Rows whose min-max ranges overlap are ties and get no rank.
 | tie | Express (TFB source) | 16,586 | 15,719 | 16,709 | 2.14 | 10.35 | - | 13.6 | Hono on Node |
 | tie | Hono on Node (TFB source) | 15,571 | 9,505 | 15,792 | 3.72 | 46.52 | - | 11.7 | Express, SvelteKit |
 | tie | SvelteKit (not TFB) | 9,774 | 8,552 | 11,060 | 8.77 | 201 | - | 2.7 | Hono on Node |
-| 9 | Next.js (not TFB) | 1,285 | 1,211 | 1,293 | 30.42 | 192 | - | 5.0 | - |
+| 9 | Next.js (not TFB) | 1,664 | 1,562 | 1,835 | 30.41 | 385 | - | 1.6 | - |
 
 Rows whose min-max ranges overlap are ties and get no rank.
 
@@ -261,7 +263,7 @@ Rows whose min-max ranges overlap are ties and get no rank.
 | 6 | Express (TFB source) | 14,746 | 14,509 | 15,351 | 4.65 | 18.06 | - | 15.7 | - |
 | tie | SvelteKit (not TFB) | 10,378 | 8,989 | 10,757 | 6.37 | 17.41 | - | 1.5 | Hono on Node |
 | tie | Hono on Node (TFB source) | 8,988 | 8,708 | 10,864 | 9.48 | 73.17 | - | 21.0 | SvelteKit |
-| 9 | Next.js (not TFB) | 1,524 | 1,498 | 1,698 | 49.06 | 298 | - | 2.3 | - |
+| 9 | Next.js (not TFB) | 1,611 | 1,148 | 1,716 | 46.68 | 230 | - | 7.1 | - |
 
 Rows whose min-max ranges overlap are ties and get no rank.
 
@@ -278,7 +280,7 @@ Rows whose min-max ranges overlap are ties and get no rank.
 | 6 | Express (TFB source) | 13,795 | 11,936 | 14,442 | 10.06 | 32.47 | - | 16.5 | - |
 | 7 | Hono on Node (TFB source) | 9,354 | 8,902 | 11,671 | 17.39 | 115 | - | 16.7 | - |
 | 8 | SvelteKit (not TFB) | 7,714 | 6,960 | 8,883 | 18.28 | 151 | - | 3.8 | - |
-| 9 | Next.js (not TFB) | 1,513 | 1,132 | 1,669 | 117 | 1460 | - | 5.3 | - |
+| 9 | Next.js (not TFB) | 1,714 | 1,292 | 1,934 | 107 | 1320 | - | 1.9 | - |
 
 Rows whose min-max ranges overlap are ties and get no rank.
 
@@ -295,7 +297,7 @@ Rows whose min-max ranges overlap are ties and get no rank.
 | tie | Express (TFB source) | 18,023 | 15,567 | 18,298 | 18.06 | 161 | - | 7.7 | Fastify |
 | 7 | Hono on Node (TFB source) | 13,084 | 12,376 | 13,572 | 31.18 | 543 | - | 6.1 | - |
 | 8 | SvelteKit (not TFB) | 6,062 | 5,580 | 8,512 | 81.65 | 1410 | - | 5.2 | - |
-| 9 | Next.js (not TFB) | 1,370 | 1,092 | 1,533 | 428 | 5490 | 139 socket | 7.2 | - |
+| 9 | Next.js (not TFB) | 1,592 | 1,190 | 1,694 | 452 | 5680 | 109 socket | 2.9 | - |
 
 Rows whose min-max ranges overlap are ties and get no rank.
 
@@ -312,7 +314,7 @@ Rows whose min-max ranges overlap are ties and get no rank.
 | 6 | Express (TFB source) | 22,644 | 19,491 | 22,858 | 59.97 | 1370 | - | 2.7 | - |
 | 7 | Hono on Node (TFB source) | 15,349 | 14,608 | 17,748 | 127 | 2520 | - | 3.2 | - |
 | 8 | SvelteKit (not TFB) | 6,698 | 5,707 | 7,340 | 387 | 5670 | 124 socket | 4.9 | - |
-| 9 | Next.js (not TFB) | 1,715 | 1,699 | 1,854 | 308 | 4830 | 240 socket | 1.0 | - |
+| 9 | Next.js (not TFB) | 1,458 | 1,258 | 1,645 | 291 | 4280 | 213 socket | 3.5 | - |
 
 Rows whose min-max ranges overlap are ties and get no rank.
 
@@ -364,17 +366,22 @@ with the numbers they would be a different scale from the tables above.
 - **Plaintext at 16384 connections** is beyond what this setup serves for most contenders (wrk
   timeouts after 8 s; a `0` median means at least 2 of 3 runs completed no request). Wisp's default
   `WISP_MAX_CONNS=10000` answers `503` past that many connections.
+  A cell at 16384 that records `0`, no valid run or mostly non-2xx replies is labelled "load-generator
+  limited (local port range)": the VM has about 28k local ports (32768-60999), Linux searches half of
+  them for every `connect()`, and wrk's event loop blocks while refused clients reconnect. That is a
+  measurement caveat of this setup, not a Wisp failure. Widening the range (see `bench/README.md`) lifts it.
 - **Pipelined rows have no p99** (wrk), and latency is queueing under a 16-deep pipeline, not
   request latency.
-- Next.js has no valid pipelined plaintext result: no 16-deep pipelined response completed within wrk's timeout. It was restarted
-  before the JSON test (`WORKLOADS=json ./run.sh bench next`); its plaintext numbers are what was
-  measured before and during that failure (the 2 GB V8 heap was first suspected). Re-run with `NODE_OPTIONS=--max-old-space-size=8192` (run.sh `NEXT_HEAP_MB`, 7.9 GB host, two
-  runs, raw in `raw/next-heap8192/`): still 0 req/s at almost every level (best single run 1,489 at 4096), no
-  out-of-memory message, so the heap was not the cause; Next.js is CPU-saturated and wrk completes no
-  16-deep pipelined response within its timeout. Steal peaked at 12 and 16 % (mean 2.5 and 3.5 %) in 5 s samples, so
-  treat those runs as indicative only. SvelteKit and Next.js are plain route handlers, not
-  optimised entries, and not TFB code.
-- Single pass per contender, in the order Wisp, Axum, Actix Web, Express, Fastify, Hono (Node), Hono (Bun), SvelteKit, Next.js, then the supplementary build: contenders measured later
+- **Drain before every run.** Earlier rounds showed Next.js at 0 req/s at every pipelined plaintext
+  level. Cause, reproduced on the VPS: wrk closes its sockets after the 16384 x 16 warmup, but Node's
+  http server still runs every request already pipelined on them (about 262k), so Next.js stayed at
+  100% of both server cores for about 180 s with no client attached and every timed run in that window
+  completed nothing; fresh, the same build answered 16 of 16 pipelined requests and about 1,500 req/s at
+  256 connections, and again after the backlog drained. `run.sh` now waits, for every contender, until
+  the server uses under 5% of a core before each run (`# drain-before` in each raw file). The heap was not
+  the cause (8 GB changed nothing), so Next.js runs on Node's default heap like every Node stack.
+  SvelteKit, Next.js and Nuxt are plain route handlers, not optimised entries, and not TFB code.
+- Single pass per contender, in the order Wisp, Axum, Actix Web, Express, Fastify, Hono (Node), Hono (Bun), SvelteKit, Next.js, Nuxt, then the supplementary build: contenders measured later
   saw a different moment of the host than Wisp did (the noise experiment shows the size of that).
 - Wisp was not tuned; contenders were not tuned beyond what their TFB entries or docs recommend.
 
@@ -382,7 +389,7 @@ with the numbers they would be a different scale from the tables above.
 
 - none
 
-Nothing else was left out. Hono on Bun, SvelteKit and Next.js are labelled as non-TFB above.
+Nothing else was left out. Hono on Bun, SvelteKit, Next.js and Nuxt are labelled as non-TFB above.
 
 ## Reproduce
 
