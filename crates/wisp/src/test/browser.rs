@@ -52,7 +52,8 @@ const HELPER: &str = r#"(() => {
   new MutationObserver(() => w.changes++)
     .observe(document, { subtree: true, childList: true, attributes: true, characterData: true })
   const leave = (e) => setTimeout(() => { if (!e.defaultPrevented) w.leaving = true })
-  addEventListener('submit', leave)
+  // A method=dialog form only closes its dialog: no navigation.
+  addEventListener('submit', (e) => (e.submitter?.formMethod || e.target.method) === 'dialog' || leave(e))
   addEventListener('click', (e) => {
     const a = e.target.closest && e.target.closest('a[href]')
     if (a && !a.target && !a.hasAttribute('download') && a.href.split('#')[0] !== location.href.split('#')[0]) leave(e)

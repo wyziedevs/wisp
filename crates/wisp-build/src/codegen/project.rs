@@ -1605,6 +1605,19 @@ pub const MORE: ::wisp::rt::CacheMore = ::wisp::rt::CacheMore::NONE;"
             }
         };
         let extra_url = format!("{}?v={}", extra.path, extra.hash);
+        // The small helpers, which modules that name one import.
+        let more = {
+            let src = rewrite_specifiers(MORE_JS, &specs, None)?;
+            let source = if self.release { js::runtime(&src) } else { src };
+            let hash = image::hash(source.as_bytes());
+            JsFile {
+                path: MORE_JS_PATH.into(),
+                hash,
+                source,
+                file: None,
+            }
+        };
+        let more_url = format!("{}?v={}", more.path, more.hash);
         // A lib file that makes a `persisted` store imports it too (last, so
         // its lines stay). With maps, it ends naming its map, served at
         // `path.map`.
@@ -1713,6 +1726,7 @@ pub const MORE: ::wisp::rt::CacheMore = ::wisp::rt::CacheMore::NONE;"
                 env: &self.env,
                 i18n: self.i18n.as_ref(),
                 extra: &extra_url,
+                more: &more_url,
                 remotes: &remote_names,
             };
             let c = client(t, &cx)?;
@@ -1734,6 +1748,13 @@ pub const MORE: ::wisp::rt::CacheMore = ::wisp::rt::CacheMore::NONE;"
             .any(|c| c.source.contains(&extra_url))
         {
             js_files.push(extra);
+        }
+        if clients
+            .iter()
+            .flatten()
+            .any(|c| c.source.contains(&more_url))
+        {
+            js_files.push(more);
         }
         // A module imports the modules of the components it renders by URLs
         // whose hash covers every module it can reach, so a change in any of

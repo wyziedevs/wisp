@@ -231,6 +231,7 @@ fn the_minified_runtime_parses() {
         ("live.mjs", wisp_shared::LIVE_JS),
         ("wisp.js", wisp_shared::WISP_JS),
         ("extra.mjs", wisp_shared::EXTRA_JS),
+        ("more.mjs", wisp_shared::MORE_JS),
     ] {
         let path = dir.join(format!("wisp-check-{}-{file}", std::process::id()));
         fs::write(&path, minify_js(js)).unwrap();

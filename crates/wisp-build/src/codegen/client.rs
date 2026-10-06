@@ -88,6 +88,19 @@ pub(super) const HELPERS: &str = "tick, flushSync, onError, tweened, spring, cro
                        derived, store, persisted, emit, setContext, getContext, goto, invalidate, matches, page, navigating, enhance, \
                        pushState, replaceState, context, portal,__wisp_s, __wisp_r, __wisp_d, __wisp_e, __wisp_ep, __wisp_er, __wisp_et, __wisp_snap, __wisp_props, __wisp_eq, __wisp_t";
 
+/// extra.js's helpers, handed over only to a module whose code names them
+/// (each name costs every module that takes it).
+const MORE: [&str; 8] = [
+    "announce",
+    "optimistic",
+    "outside",
+    "inview",
+    "shortcut",
+    "modal",
+    "preload",
+    "keepscroll",
+];
+
 /// What `client` needs to know beyond the template.
 pub(super) struct ClientCx<'a> {
     pub(super) comps: &'a [Comp],
@@ -107,13 +120,16 @@ pub(super) struct ClientCx<'a> {
     pub(super) i18n: Option<&'a i18n::Locales>,
     /// The URL of the runtime's less used half (`extra.js`).
     pub(super) extra: &'a str,
+    /// The URL of `more.js`, the `MORE` helpers.
+    pub(super) more: &'a str,
     /// The `#[remote]` functions, which a script calls without an import.
     pub(super) remotes: &'a [String],
 }
 
 /// Whether a directive needs `extra.js` (so does a module whose code makes
 /// a Map or a Set, or uses `enhance`, `$state.snapshot`, `persisted`,
-/// `tweened`, `spring` or `crossfade`).
+/// `tweened`, `spring`, `crossfade`, `announce`, `optimistic` or the actions
+/// `outside`, `inview`, `shortcut`, `modal`, `preload` and `keepscroll`).
 pub(super) fn is_extra(d: &Directive) -> bool {
     matches!(
         d.kind,
@@ -526,7 +542,36 @@ pub(super) fn client(t: &Tpl, cx: &ClientCx) -> Result<Option<Client>, String> {
         client_html(&tt.nodes, tt, &mut s);
         s
     });
+    // The MORE names its code uses (a `use:` directive's name is code too)
+    // and does not declare itself (`let optimistic = []` is the page's own).
+    let codes: Vec<&str> = std::iter::once(runs.as_str())
+        .chain(groups.iter().flatten().map(String::as_str))
+        .collect();
+    let more: String = MORE
+        .iter()
+        .filter(|n| {
+            let (mut used, mut own) = (false, false);
+            for c in &codes {
+                let t = js::tokens(c);
+                for (i, tok) in t.iter().enumerate() {
+                    if tok.member || tok.text(c) != **n {
+                        continue;
+                    }
+                    used = true;
+                    own |= i > 0
+                        && matches!(
+                            t[i - 1].text(c),
+                            "let" | "const" | "var" | "function" | "class"
+                        );
+                }
+            }
+            used && !own
+        })
+        .map(|n| format!(", {n}"))
+        .collect();
     let m = Module {
+        more: &more,
+        more_url: (!more.is_empty()).then_some(cx.more),
         id: &id,
         params: &params,
         rest: rest.as_deref(),
@@ -811,6 +856,10 @@ pub(super) struct Module<'a> {
     /// The `#[remote]` functions' module and the ones it calls.
     pub(super) remote: Option<(&'a str, &'a [&'a str])>,
     pub(super) load: Option<&'a str>,
+    /// The `MORE` helpers it uses, each as `, name`.
+    pub(super) more: &'a str,
+    /// `more.js`'s URL, when it uses one.
+    pub(super) more_url: Option<&'a str>,
     /// `extra.js`'s URL, when the module uses it.
     pub(super) extra: Option<&'a str>,
     pub(super) html: Option<&'a str>,
@@ -865,7 +914,7 @@ pub(super) fn module_source(m: &Module) -> Result<(String, Vec<sourcemap::Line>)
     if let Some(url) = m.load {
         let _ = writeln!(s, "import * as __wisp_u from {};", js_str(url));
     }
-    if let Some(url) = m.extra {
+    for url in m.extra.iter().chain(&m.more_url) {
         let _ = writeln!(s, "import {};", js_str(url));
     }
     upto(&s, &mut map, &|_| None);
@@ -884,8 +933,9 @@ pub(super) fn module_source(m: &Module) -> Result<(String, Vec<sourcemap::Line>)
     }
     let _ = write!(
         s,
-        "define({}, function (__wisp_p, __wisp_h) {{ const {{ {HELPERS} }} = __wisp_h; {{ ",
-        js_str(m.id)
+        "define({}, function (__wisp_p, __wisp_h) {{ const {{ {HELPERS}{} }} = __wisp_h; {{ ",
+        js_str(m.id),
+        m.more
     );
     if !m.params.is_empty() || m.rest.is_some() {
         let list: Vec<String> = m.params.iter().map(|p| js_str(&p.0)).collect();
@@ -1346,6 +1396,27 @@ pub(super) fn binding(d: &Directive, names: &mut Names) -> Result<String, String
         ),
         Dir::Use => {
             let f = format!("{} => {}", one(&names(&d.name, d.line)?), d.name);
+            // use:modal="open" with `open` a variable (or a field of one):
+            // `[open, set]`, so every close of the dialog sets it false.
+            let path = |s: &str| {
+                !s.is_empty()
+                    && s.split('.').all(|p| {
+                        p.chars()
+                            .next()
+                            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_' || c == '$')
+                            && p.chars()
+                                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+                    })
+            };
+            if d.name == "modal" && d.value.as_ref().is_some_and(|v| path(v.src.trim())) {
+                let c = value();
+                let n = names(&c.src, c.line)?;
+                let v = c.src.trim();
+                return Ok(format!(
+                    "[\"use\", {f}, {} => [{v}, __wisp_v => {{ {v} = __wisp_v }}]]",
+                    one(&n)
+                ));
+            }
             format!("[\"use\", {f}, {}]", optional(d.value.as_ref(), names)?)
         }
         Dir::Each => {

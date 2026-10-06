@@ -2284,6 +2284,7 @@ fn page_client(src: &str, loads: bool) -> Result<Client, String> {
         env: &[],
         i18n: None,
         extra: "/_app/c/extra.js",
+        more: "/_app/c/more.js",
         remotes: &["user".into(), "save".into(), "gone".into()],
     };
     client(&t, &cx).map(|c| c.expect("the page has browser code"))
@@ -3576,4 +3577,53 @@ fn header_literals_the_browser_reads_are_client_state() {
         "hl-computed",
     );
     assert!(computed.0.contains("rt::json"), "{}", computed.0);
+}
+
+/// extra.js's helpers are handed over only to a module that names them,
+/// in its script or a `use:`, and that module imports extra.js.
+#[test]
+fn extra_helpers_only_where_named() {
+    let c = page_client("<script>let open = true</script><div use:outside=\"() => open = false\" use:keepscroll>x</div>", true).unwrap();
+    assert!(
+        c.source.contains("__wisp_t, outside, keepscroll }"),
+        "{}",
+        c.source
+    );
+    assert!(
+        c.source.contains("import \"/_app/c/more.js\";") && !c.source.contains("extra.js"),
+        "{}",
+        c.source
+    );
+    let c = page_client(
+        "<script>let n = 0; announce('hi')</script><p>{:n}</p>",
+        true,
+    )
+    .unwrap();
+    assert!(c.source.contains("__wisp_t, announce }"), "{}", c.source);
+    let c = page_client("<script>let n = 0</script><p>{:n}</p>", true).unwrap();
+    assert!(
+        !c.source.contains("announce") && !c.source.contains("more.js"),
+        "{}",
+        c.source
+    );
+    // use:modal on a variable gets its setter too: a close sets it false.
+    let c = page_client(
+        "<script>let open = $state(false)</script><dialog use:modal=\"open\">x</dialog>",
+        true,
+    )
+    .unwrap();
+    assert!(c.source.contains("__wisp_v => { open"), "{}", c.source);
+    let c = page_client(
+        "<script>let a = true, b = true</script><dialog use:modal=\"a && b\">x</dialog>",
+        true,
+    )
+    .unwrap();
+    assert!(!c.source.contains("__wisp_v =>"), "{}", c.source);
+    // A name the page declares is its own.
+    let c = page_client(
+        "<script>let optimistic = []</script><p>{:optimistic.length}</p>",
+        true,
+    )
+    .unwrap();
+    assert!(!c.source.contains("more.js"), "{}", c.source);
 }

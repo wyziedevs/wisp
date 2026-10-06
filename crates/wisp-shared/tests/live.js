@@ -29,6 +29,7 @@ class N extends EventTarget {
     return n;
   }
   append(...ns) { for (const n of ns) this.insertBefore(n, null); }
+  contains(n) { for (; n; n = n.parentNode) if (n === this) return true; return false; }
   after(n) { this.parentNode.insertBefore(n, this.nextSibling); }
   remove() {
     const p = this.parentNode;
@@ -139,7 +140,166 @@ const li = (...a) => el('li', { 'data-w': '2' }, ...a);
 const names = (ul) => ul.children.filter((c) => c.localName == 'li').map((c) => c.textContent).join();
 const list = (get, key) => [[], [['each', get, ['item'], key]], [['text', (l) => l.item.name]]];
 
+// extra.js's helpers, given to a module as live.js's are.
+const helper = async (name) => {
+  let h;
+  await run([], (x) => ((h = x), { g: [] }));
+  return h[name];
+};
+const key = (key, o = {}) => Object.assign(new Event('keydown', { cancelable: true }), { key, ctrlKey: false, shiftKey: false, altKey: false, metaKey: false, ...o });
+
 const tests = {
+  async 'announce: a polite live region says the text'() {
+    (await helper('announce'))('Saved');
+    await new Promise((r) => setTimeout(r, 60));
+    const r = document.body.kids.find((k) => k.getAttribute?.('aria-live') == 'polite');
+    assert.equal(r.textContent, 'Saved');
+  },
+  async 'preload: a link is fetched ahead once in view'() {
+    let see;
+    globalThis.IntersectionObserver = class {
+      constructor(f) { see = (t) => f([{ isIntersecting: true, target: t }]); }
+      observe(t) { this.t = t; }
+      unobserve() {}
+      disconnect() {}
+    };
+    const a = el('a', { href: '/next' });
+    a.href = '/next';
+    a.matches = (q) => q == 'a[href]';
+    a.closest = () => null;
+    const urls = [];
+    document.addEventListener('wisp:preload', (e) => urls.push(e.detail.url));
+    const act = (await helper('preload'))(a);
+    see(a);
+    assert.deepEqual(urls, ['/next']);
+    act.destroy();
+    delete globalThis.IntersectionObserver;
+  },
+  async 'keepscroll: back puts the element scroll back, a form morph does not'() {
+    const box = Object.assign(el('div', { id: 'side' }), { id: 'side', scrollLeft: 0, scrollTop: 40, scrollTo(x, y) { this.at = [x, y]; } });
+    history.replaceState = (st) => (history.state = st);
+    history.state = { k: 'a' };
+    const act = (await helper('keepscroll'))(box);
+    const fire = (t, detail) => document.dispatchEvent(new CustomEvent(t, { detail }));
+    fire('wisp:navigate', { pop: false, from: 'http://x.test/', to: '/b' });
+    assert.deepEqual(history.state.s, { side: [0, 40] });
+    fire('wisp:update', {});
+    assert.equal(box.at, undefined, 'not after a forward navigation or a morph');
+    fire('wisp:navigate', { pop: true, from: 'http://x.test/b', to: '/' });
+    fire('wisp:update', {});
+    assert.deepEqual(box.at, [0, 40]);
+    act.destroy();
+    history.state = null;
+  },
+  async 'optimistic: the item shows at once and goes when the action fails'() {
+    const ul = el('ul', {}, tpl({ 'data-w': '0.1' }, li()));
+    let h;
+    const s = await run([ul], (x) => {
+      h = x;
+      const items = x.__wisp_s([{ id: 1, name: 'a' }]);
+      return { items, g: list(() => items.v, (l) => l.item.id) };
+    });
+    const undo = h.optimistic(s.items.v, { id: 2, name: 'b' });
+    await tick();
+    assert.equal(names(ul), 'a,b');
+    h.optimistic(s.items.v, { id: 3, name: 'c' })({ ok: true });
+    undo({ ok: false, status: 422 });
+    await tick();
+    assert.equal(names(ul), 'a,c');
+  },
+  async 'outside: a press outside calls it, one inside does not'() {
+    const box = el('div', {}, el('button'));
+    document.body.append(box);
+    let n = 0;
+    const a = (await helper('outside'))(box, () => n++);
+    const press = (t) => t.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    press(box.kids[0]);
+    assert.equal(n, 0);
+    press(document);
+    assert.equal(n, 1);
+    a.destroy();
+    press(document);
+    assert.equal(n, 1);
+  },
+  async 'shortcut: the keys click the element, other keys do not'() {
+    const b = el('button');
+    let n = 0;
+    b.click = () => n++;
+    b.matches = () => false;
+    const a = (await helper('shortcut'))(b, 'ctrl+k');
+    document.dispatchEvent(key('k'));
+    assert.equal(n, 0);
+    const e = key('K', { ctrlKey: true });
+    document.dispatchEvent(e);
+    assert.equal(n, 1);
+    assert.ok(e.defaultPrevented);
+    a.update('/');
+    document.dispatchEvent(key('/'));
+    assert.equal(n, 2);
+    a.destroy();
+    document.dispatchEvent(key('/'));
+    assert.equal(n, 2);
+  },
+  async 'shortcut: a bare key typed in a field is typed, ctrl+key still works'() {
+    const b = el('button');
+    let n = 0;
+    b.click = () => n++;
+    b.matches = () => false;
+    const f = el('input');
+    f.matches = () => true;
+    const a = (await helper('shortcut'))(b, '/');
+    // Typed in the field: the event's target is it.
+    const at = (e) => Object.defineProperty(e, 'target', { value: f });
+    const e = at(key('/'));
+    document.dispatchEvent(e);
+    assert.equal(n, 0);
+    assert.ok(!e.defaultPrevented);
+    a.update('ctrl+k');
+    document.dispatchEvent(at(key('k', { ctrlKey: true })));
+    assert.equal(n, 1);
+    a.destroy();
+  },
+  async 'preload: nothing ahead with data saver on or under data-wisp-preload="off"'() {
+    const seen = [];
+    globalThis.IntersectionObserver = class {
+      constructor(f) { this.f = f; }
+      observe(t) { seen.push(() => this.f([{ isIntersecting: true, target: t }])); }
+      unobserve() {}
+      disconnect() {}
+    };
+    const urls = [];
+    const on = (e) => urls.push(e.detail.url);
+    document.addEventListener('wisp:preload', on);
+    const a = el('a', { href: '/off' });
+    a.href = '/off';
+    a.matches = (q) => q == 'a[href]';
+    a.closest = (q) => (q.includes('off') ? a : null);
+    const x = (await helper('preload'))(a);
+    seen.splice(0).forEach((f) => f());
+    Object.defineProperty(navigator, 'connection', { value: { saveData: true }, configurable: true });
+    const b = el('a', { href: '/save' });
+    b.href = '/save';
+    b.matches = (q) => q == 'a[href]';
+    b.closest = () => null;
+    const y = (await helper('preload'))(b);
+    seen.splice(0).forEach((f) => f());
+    delete navigator.connection;
+    assert.deepEqual(urls, []);
+    x.destroy();
+    y.destroy();
+    document.removeEventListener('wisp:preload', on);
+    delete globalThis.IntersectionObserver;
+  },
+  async 'modal: a dialog opens and closes with its value'() {
+    const d = { open: false, showModal() { this.open = true; }, close() { this.open = false; }, addEventListener() {}, removeEventListener() {} };
+    const a = (await helper('modal'))(d, true);
+    assert.ok(d.open);
+    a.update(false);
+    assert.ok(!d.open);
+    a.update(true);
+    a.destroy();
+    assert.ok(!d.open);
+  },
   async 'each: copies with one key do not outlive their items'() {
     const ul = el('ul', {}, tpl({ 'data-w': '0.1' }, li()));
     const s = await run([ul], (h) => {
@@ -274,6 +434,19 @@ const tests = {
 
 (async () => {
   L = await import(pathToFileURL(path.join(__dirname, '../src/client/live.js')).href);
+  // extra.js, its `wisp` import pointed at that live.js.
+  globalThis.matchMedia = () => ({ matches: false, addEventListener() {} });
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const src = fs.readFileSync(path.join(__dirname, '../src/client/extra.js'), 'utf8').replace(/from 'wisp'/, `from '${pathToFileURL(path.join(__dirname, '../src/client/live.js')).href}'`);
+  const tmp = path.join(os.tmpdir(), `wisp-extra-${process.pid}.mjs`);
+  fs.writeFileSync(tmp, src);
+  await import(pathToFileURL(tmp).href);
+  fs.unlinkSync(tmp);
+  // more.js the same way.
+  fs.writeFileSync(tmp, fs.readFileSync(path.join(__dirname, '../src/client/more.js'), 'utf8').replace(/from 'wisp'/, `from '${pathToFileURL(path.join(__dirname, '../src/client/live.js')).href}'`));
+  await import(pathToFileURL(tmp).href + '?more');
+  fs.unlinkSync(tmp);
   let failed = 0;
   for (const [name, f] of Object.entries(tests)) {
     try {

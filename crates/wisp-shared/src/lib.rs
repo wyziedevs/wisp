@@ -51,6 +51,9 @@ pub fn runtime_version() -> String {
 /// The less used half of live.js (`/_app/c/extra.js`), which a generated
 /// module imports when it uses it: `wisp-build` writes it out.
 pub const EXTRA_JS: &str = include_str!("client/extra.js");
+/// Small helpers (`announce`, `optimistic`, the `use:outside`… actions),
+/// at `/_app/c/more.js`: written out only for an app whose code names one.
+pub const MORE_JS: &str = include_str!("client/more.js");
 /// What a component built as a custom element (`{@element "x-card"}`)
 /// runs (`/_app/c/el.js`), which its module (`/_app/c/el/x-card.js`)
 /// imports: `wisp-build` writes it out.

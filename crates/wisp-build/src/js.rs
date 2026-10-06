@@ -1219,8 +1219,9 @@ fn refs(
 /// - `$derived(expr)` and `$derived.by(fn)`: a value worked out from others.
 /// - `$effect(fn)` and `$effect.pre(fn)`: code that runs again when what
 ///   it read changes. `$effect.root(fn)` makes effects that end with the
-///   function it returns; `$effect.tracking()` is whether a read is tracked. `$inspect(a, b)` logs them as they change, in
-///   development; in release it is gone.
+///   function it returns; `$effect.tracking()` is whether a read is tracked. `$inspect(a, b)` logs them as they change
+///   (`.with(f)`: `f('update', a, b)` instead), in development; in release it is gone.
+/// - `$props.id()`: an id of the instance's own.
 /// - `$name`, for a store `name`, is `name.value`.
 ///
 /// Line breaks stay where they were. A rune somewhere else is an error,
@@ -1424,18 +1425,44 @@ pub fn script(
                 if c >= t.len() {
                     return Err((tok.start, "`$inspect(…)` is not closed".into()));
                 }
-                if is(c + 1, ".") {
+                // `.with(f)`: f('update', ...values) in place of the log.
+                let with_f = is(c + 1, ".")
+                    && t.get(c + 2).is_some_and(|n| n.text(src) == "with")
+                    && is(c + 3, "(");
+                if is(c + 1, ".") && !with_f {
                     return Err((
                         tok.start,
-                        "`$inspect(…)` logs what it is given; `.with` is not supported".into(),
+                        "`$inspect(…)` logs what it is given, or hands it to `.with(f)`".into(),
                     ));
+                }
+                let end = if with_f { close(&t, c + 3) } else { c };
+                if end >= t.len() {
+                    return Err((tok.start, "`$inspect(…).with(…)` is not closed".into()));
                 }
                 if release {
                     // Gone, but its line breaks stay.
-                    let lines = src[tok.start..t[c].end].matches('\n').count();
-                    edits.push((tok.start, t[c].end, format!("void 0{}", "\n".repeat(lines))));
-                    skip.extend(k..=c);
-                    k = c + 1;
+                    let lines = src[tok.start..t[end].end].matches('\n').count();
+                    edits.push((
+                        tok.start,
+                        t[end].end,
+                        format!("void 0{}", "\n".repeat(lines)),
+                    ));
+                    skip.extend(k..=end);
+                    k = end + 1;
+                    continue;
+                }
+                if with_f {
+                    // Values, then f, each where it was (both may read state).
+                    edits.push((
+                        tok.start,
+                        t[callee_end].end,
+                        "__wisp_e(() => ((__v, __f) => __f('update', ...__v.map(__wisp_snap)))(["
+                            .into(),
+                    ));
+                    edits.push((t[c].start, t[c + 3].end, "], ".into()));
+                    edits.push((t[end].start, t[end].end, "))".into()));
+                    skip.extend([c + 2]);
+                    k = callee_end + 1;
                     continue;
                 }
                 edits.push((
@@ -1453,6 +1480,17 @@ pub fn script(
                     tok.start,
                     "`$derived(…)` declares a value at the top of the script: `let name = $derived(expression)`".into(),
                 ));
+            }
+            // `$props.id()`: an id of the instance's own, for `for`/`aria-*`.
+            ("$props", Some("id")) if called && is(callee_end + 1, ")") => {
+                edits.push((
+                    tok.start,
+                    t[callee_end + 1].end,
+                    "('w' + Math.random().toString(36).slice(2, 9))".into(),
+                ));
+                skip.extend(k..=callee_end + 1);
+                k = callee_end + 2;
+                continue;
             }
             ("$props" | "$bindable", _) => {
                 return Err((
@@ -3365,6 +3403,23 @@ mod tests {
         // Release drops `$inspect`, keeping the lines.
         let (out, _) = script("let n = 1\n$inspect(\n  n\n)\nn++", &[], true, &[]).unwrap();
         assert_eq!(out, "let n = __wisp_s(1)\nvoid 0\n\n\nn.v++");
+        // `.with(f)`: f gets the values; release drops it whole.
+        let (out, _) = script(
+            "let n = 1\n$inspect(n).with(console.trace)",
+            &[],
+            false,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            "let n = 1\n__wisp_e(() => ((__v, __f) => __f('update', ...__v.map(__wisp_snap)))([n], console.trace))"
+        );
+        let (out, _) = script("let n = 1\n$inspect(n).with(f)", &[], true, &[]).unwrap();
+        assert!(out.ends_with("\nvoid 0") && !out.contains("with"), "{out}");
+        // `$props.id()`: an id of its own.
+        let (out, _) = script("const id = $props.id()", &[], false, &[]).unwrap();
+        assert!(out.contains("Math.random().toString(36)"), "{out}");
         // Set to a literal and never again, here or in `extra`: a constant.
         let (out, r2) = script(
             "let a = 1, b = 'x', c = 2\nf(a, b, c)",
@@ -3440,7 +3495,7 @@ mod tests {
             ("let d = $derived(1)\nd = 2", "d"),
             ("let d = $derived(1)\nfunction f() { d++ }", "d"),
             ("$effect.x(() => {})", "$effect"),
-            ("$inspect(x).with(f)", "$inspect"),
+            ("$inspect(x).other(f)", "$inspect"),
             ("$host()", "$host"),
             ("let { a } = $props()", "$props"),
         ] {
@@ -3788,10 +3843,11 @@ mod tests {
             "a+ +b- -c;1 .x;`a ${b} c`"
         );
         // The runtime's extra half, as release builds serve it.
-        let src = wisp_shared::EXTRA_JS;
         let texts =
             |s: &str| -> Vec<String> { tokens(s).iter().map(|t| t.text(s).to_string()).collect() };
-        assert_eq!(texts(src), texts(&minify(src)));
+        for src in [wisp_shared::EXTRA_JS, wisp_shared::MORE_JS] {
+            assert_eq!(texts(src), texts(&minify(src)));
+        }
     }
 
     #[test]

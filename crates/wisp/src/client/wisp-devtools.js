@@ -173,7 +173,27 @@
       props.length ? props.map(([k, s]) => row(k === '__rest' ? '...rest' : k, s)) : none('None it reads in the browser.'),
       h('h3', { textContent: 'State' }),
       state.length ? state.map(([k, s]) => row(k, s, opener(i.file, i.lines?.[k] || 1, 'line ' + (i.lines?.[k] || 1)))) : none('No state.'),
+      h('h3', { textContent: 'Graph' }),
+      state.length ? h('ul', { className: 'graph' }, graph(state)) : none('No state.'),
     );
+  }
+
+  // What reads each signal now: the state and $derived values it feeds, by
+  // name, and how many effects and DOM updates. A signal keeps its readers
+  // as [node, slot, ...] in `subs`; a $derived is a node with `memo`, an
+  // $effect one with `u`.
+  function graph(state) {
+    const names = new Map(state.map(([k, s]) => [s, k]));
+    return state.map(([k, s]) => {
+      const by = {};
+      for (let j = 0; s.subs && j < s.subs.length; j += 2) {
+        const n = s.subs[j];
+        const what = names.get(n) || (n.memo ? 'derived' : n.u ? 'effect' : 'DOM');
+        by[what] = (by[what] || 0) + 1;
+      }
+      const reads = Object.entries(by).map(([w, c]) => (['derived', 'effect', 'DOM'].includes(w) ? `${c} ${w}` : w));
+      return h('li', {}, h('code', { textContent: k }), ' → ', reads.length ? reads.join(', ') : 'nothing reads it');
+    });
   }
 
   // ---- values -------------------------------------------------------------------
@@ -351,6 +371,7 @@
     .node:hover { background: var(--wisp-inset); }
     .node[aria-current=true] { background: var(--wisp-inset); box-shadow: inset 2px 0 var(--wisp-accent); }
     .details { margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--wisp-line); }
+    .graph { margin: 0; padding-left: 1rem; font-size: 0.8125rem; }
     .title { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
     h2 { margin: 0; font: 600 0.875rem/1.25rem var(--wisp-mono); }
     h3 { margin: 1rem 0 0.375rem; color: var(--wisp-slate); font-size: 0.6875rem; line-height: 1rem; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; }

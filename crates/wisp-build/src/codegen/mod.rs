@@ -14,8 +14,9 @@ use crate::npm::{self, Npm};
 use crate::openapi::{self, Op};
 use crate::protocol::{
     APP_CSS_PATH, AWAIT_CLOSE, AWAIT_JS, COPY_END, COPY_START, ELEMENT_JS_PATH, ELEMENTS,
-    EXTRA_JS_PATH, GROUP_ATTR, IMAGES, ISLAND_MEDIA, LIVE_JS_PATH, LOOP_ATTR, MODULES, NPM_MODULES,
-    ON_FLAGS, ON_PLACED, ON_ROOT, REMOTE, REMOTE_JS_PATH, SLOT_ATTR, WISP_JS_PATH,
+    EXTRA_JS_PATH, GROUP_ATTR, IMAGES, ISLAND_MEDIA, LIVE_JS_PATH, LOOP_ATTR, MODULES,
+    MORE_JS_PATH, NPM_MODULES, ON_FLAGS, ON_PLACED, ON_ROOT, REMOTE, REMOTE_JS_PATH, SLOT_ATTR,
+    WISP_JS_PATH,
 };
 use crate::routes::Seg;
 use crate::rust_scan::{self, FnItem, Returns};
@@ -25,7 +26,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 /// The runtime's less used half: served when a module uses it.
-use wisp_shared::EXTRA_JS;
+use wisp_shared::{EXTRA_JS, MORE_JS};
 
 mod app;
 mod client;
@@ -1339,8 +1340,9 @@ declare namespace $effect {
   function pre(f: () => void | (() => void)): void;
 }
 declare function $props(): any;
+declare namespace $props { function id(): string; }
 declare function $bindable<T>(value?: T): T;
-declare function $inspect(...values: unknown[]): void;
+declare function $inspect(...values: unknown[]): { with(f: (type: 'init' | 'update', ...values: unknown[]) => void): void };
 declare function onMount(f: () => void | (() => void) | Promise<void>): void;
 declare function onDestroy(f: () => void): void;
 declare function effect(f: () => void | (() => void), deps?: () => unknown[]): void;
@@ -1356,6 +1358,14 @@ declare function onError(f: (error: unknown) => void): () => void;
 declare function tweened<T extends number | number[] | Record<string, number>>(value: T, o?: { duration?: number; delay?: number; easing?: (t: number) => number }): { value: T; set(v: T, o?: { duration?: number; delay?: number; easing?: (t: number) => number }): Promise<void>; update(f: (v: T) => T): Promise<void>; subscribe(f: (v: T) => void): () => void };
 declare function spring<T extends number | number[] | Record<string, number>>(value: T, o?: { stiffness?: number; damping?: number; precision?: number }): { value: T; set(v: T, o?: { hard?: boolean }): Promise<void>; update(f: (v: T) => T): Promise<void>; subscribe(f: (v: T) => void): () => void };
 declare function crossfade(o?: { duration?: number; easing?: (t: number) => number }): [(el: Element, o: { key: unknown }) => any, (el: Element, o: { key: unknown }) => any];
+declare function announce(text: string): void;
+declare function optimistic<T>(list: T[], item: T): (result?: { ok: boolean }) => void;
+declare function outside(el: Element, f: (e: PointerEvent) => void): { update(f: any): void; destroy(): void };
+declare function inview(el: Element, f: (seen: boolean) => void): { update(f: any): void; destroy(): void };
+declare function shortcut(el: Element, keys: string): { update(keys: string): void; destroy(): void };
+declare function modal(el: HTMLDialogElement, open: boolean): { update(open: boolean): void; destroy(): void };
+declare function preload(el: Element): { update(v: any): void; destroy(): void };
+declare function keepscroll(el: Element): { update(v: any): void; destroy(): void };
 declare function goto(url: string | URL, opts?: { replace?: boolean; noscroll?: boolean; keepfocus?: boolean }): Promise<void>;
 declare function invalidate(dep?: string): Promise<void>;
 declare function matches(text: unknown, q: unknown): boolean;

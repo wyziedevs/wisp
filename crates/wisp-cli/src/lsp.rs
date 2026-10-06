@@ -549,7 +549,7 @@ pub(crate) const KNOBS: [(&str, &str); 14] = [
 
 /// Wisp attributes (inside a tag) and what each does (hover). A test keeps it
 /// in step with the reference: every `data-wisp-*` it shows is here.
-pub(crate) const ATTRS: [(&str, &str); 19] = [
+pub(crate) const ATTRS: [(&str, &str); 25] = [
     (
         "fields",
         "`<form fields>`: writes a labelled input per param of the action (`Email` is `type=email`, `Image` a file, `bool` a checkbox, numbers `number`, `one_of = \"a b\"` a `<select>`). `fields={post}` starts a struct param's fields from `post`. No button of its own: one is added (`Send`, `Save` with `{post}`, else the action's name); `<form fields=\"Log in\" />` names it.",
@@ -565,6 +565,30 @@ pub(crate) const ATTRS: [(&str, &str); 19] = [
     (
         "use:enhance",
         "`use:enhance=\"submit\"`: the form posts without a page load. `submit({ formData, cancel })` runs first; what it returns runs with the result, after the page updated.",
+    ),
+    (
+        "use:outside",
+        "`use:outside=\"() => open = false\"`: calls it at a press outside the element (menus, popovers).",
+    ),
+    (
+        "use:inview",
+        "`use:inview=\"(v) => seen = v\"`: `true` as the element comes into view, `false` as it leaves.",
+    ),
+    (
+        "use:shortcut",
+        "`use:shortcut=\"'mod+k'\"`: the keys click the element (a field: focus it). `ctrl shift alt meta`; `mod` is Cmd on a Mac, else Ctrl. A bare key typed in a field stays typed.",
+    ),
+    (
+        "use:modal",
+        "`use:modal=\"open\"` on a `<dialog>`: shown as a modal while `open` is true; any close (Escape, a `method=dialog` form, `close()`) sets `open` false.",
+    ),
+    (
+        "use:preload",
+        "`use:preload` on a link or around links: each is fetched ahead once in view (hover and touch already prefetch); not with data saver on or under `data-wisp-preload=\"off\"`.",
+    ),
+    (
+        "use:keepscroll",
+        "`use:keepscroll` on a scrolling element: back and forward put its scroll back, as the page's. Give it an `id` when there are several.",
     ),
     (
         "data-wisp-reset",

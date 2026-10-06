@@ -296,8 +296,10 @@ if matches(i.name, q)}…{/each}` (`if` keeps matching items, in `{#each}` too).
 `transition:fade`, `use:action`; client blocks `{:#if}` `{:#each}`, in them `{:@const x = e}`
 and `{:@html h}`; `{:@render row(x)}` draws a `{#snippet}` or, in a component, a snippet prop
 (`<List items={:xs} {row} />` or `{#snippet row(x)}` among its children); runes
-`$state $derived $effect(.pre .root .tracking) $props`; helpers `onMount listen goto
-invalidate matches tick flushSync onError tweened spring crossfade`. Values sent to JS must be `#[model]` or `#[derive(Json)]`.
+`$state $derived $effect(.pre .root .tracking) $props $props.id() $inspect(x).with(f)`; helpers `onMount listen goto
+invalidate matches tick flushSync onError tweened spring crossfade announce optimistic`
+(`use:enhance="() => optimistic(todos, text)"`: shown now, gone if the action fails); actions
+`use:outside="f" use:inview="f" use:shortcut="'mod+k'" use:modal="open" use:preload use:keepscroll`. Values sent to JS must be `#[model]` or `#[derive(Json)]`.
 `pushState('?tab=2', {tab: 2})`: shallow routing, `page.value.state`; changed
 fields are restored with history. `import('$lib/x.js')` loads on demand.
 `<script lang="ts">`, `src/lib/*.ts`, `+page.ts` (types stripped; `wisp check
