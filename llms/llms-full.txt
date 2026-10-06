@@ -506,6 +506,8 @@ no-wait fast path off every route.
   sign_out signed_in user login signup`; `flash(msg) flashed() problem(n)`;
   `set(v) get::<T>() take::<T>()`; `fail(status, v) set_status set_header
   cors(o)`; `writes() need_bearer(env) need_signature(env, header)`.
+  Signing (sessions, signed cookies) needs `WISP_SECRET` outside dev: a
+  server without it logs one line at startup, and a request that signs is a 500.
 - Errors: `error(404, "msg")`, `redirect("/x")`, `invalid("f", "msg")` return
   `Result`; `opt.or_404()?`, `.or_status(403)?`; `Error::new(s, m)`; any
   `std::error::Error` via `?` → 500. `redirect` keeps a path on the site
@@ -2497,7 +2499,7 @@ Agents (`wisp mcp`, `wisp update-docs`) and editors (`wisp lsp`): [AI agents and
 
 One std-only process. `wisp dev [--port <n> | --port=<n> | -p <n>]`; anything else is an error with the usage.
 
-- **Watching.** Polls mtimes of `src/`, `static/`, `Cargo.toml`, `build.rs`, `package.json` and `postcss.config.*` every 50 ms (no `notify`). Editors' swap, backup and lock files are ignored; a burst of changes settles for at most a second.
+- **Watching.** Polls mtimes of `src/`, `static/`, `Cargo.toml`, `build.rs`, `package.json` and `postcss.config.*` every 50 ms (no `notify`). Dot folders (except `static/.well-known`), `target` and `node_modules` are skipped; top-level files are read from one folder listing, symlinks followed. Editors' swap, backup and lock files are ignored; a file settles once it is quiet for 25 ms, and a burst settles for at most a second. Only a modified template swaps in; a template added, removed or renamed, or any `.rs` or `Cargo.toml` change, is a compile.
 - **Port.** The app gets `HOST=127.0.0.1` unless `HOST` is set; the printed address is the one shown and used for hot swaps (port 0 works). A port in use moves the first start to the next free one, up to 20 more (the app binds it itself, `WISP_PORT_TRIES`, so nothing can take it between), with a line saying so. `wisp build` servers never move.
 - **Build and restart.** Builds with `cargo build`, copies the exe to `.wisp/run/` (so the next build can overwrite the original while the old server serves), restarts it. Ready when the app prints its `listening on` line: the CLI reads the app's stdout rather than polling (a refused connect takes 2 s on Windows). Output is read as bytes until the pipe closes, so a non-UTF-8 line never cuts the app off.
 - **Children die with the CLI.** The app's stdin is a pipe the CLI holds; when it closes (however `wisp dev` ends, even `kill -9`) the app exits (`exit_with_parent`), freeing the port. A CSS watcher runs under `wisp __child <exe> <args...>`, which kills the tool then.

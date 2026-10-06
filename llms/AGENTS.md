@@ -516,6 +516,8 @@ no-wait fast path off every route.
   sign_out signed_in user login signup`; `flash(msg) flashed() problem(n)`;
   `set(v) get::<T>() take::<T>()`; `fail(status, v) set_status set_header
   cors(o)`; `writes() need_bearer(env) need_signature(env, header)`.
+  Signing (sessions, signed cookies) needs `WISP_SECRET` outside dev: a
+  server without it logs one line at startup, and a request that signs is a 500.
 - Errors: `error(404, "msg")`, `redirect("/x")`, `invalid("f", "msg")` return
   `Result`; `opt.or_404()?`, `.or_status(403)?`; `Error::new(s, m)`; any
   `std::error::Error` via `?` → 500. `redirect` keeps a path on the site
