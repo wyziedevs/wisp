@@ -1,53 +1,39 @@
 ### workerd
 
-c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-06, CPU steal mean 0.42% (max 8%), ip_local_port_range 1024 65535; connection resets tolerated: redo up to 3 (3 tries per run, the last try kept, the same rule for every app); runs redone after connection resets (requests reset): wisp / 1 (run 4: 6,445 then 6,801 req/s), hono / 2 (run 2: 6,328 then 6,172 req/s), itty / 20 (run 1: 7,345 then 6,773 req/s; run 3: 6,062 then 5,648 then 5,887 req/s), astro / 3 (run 2: 3,244 then 2,709 req/s), react-router / 11 (run 1: 2,899 then 2,767 req/s; run 5: 2,672 then 2,616 req/s), wisp /list1000 5 (run 2: 2,083 then 1,800 req/s), hono /list1000 13 (run 1: 865 then 925 req/s; run 3: 1,009 then 943 req/s; run 4: 869 then 1,002 req/s), astro /list1000 5 (run 1: 808 then 791 req/s), wisp /json-big 1 (run 5: 3,266 then 3,173 req/s), sveltekit /json-big 1 (run 5: 2,335 then 2,437 req/s), react-router /json-big 1 (run 1: 1,852 then 1,953 req/s), next /json-big 1 (run 4: 293 then 298 req/s), itty /params/42?q=hello%20world&x=1 5 (run 1: 4,307 then 5,160 req/s; run 2: 5,780 then 5,262 req/s), astro /params/42?q=hello%20world&x=1 6 (run 5: 2,841 then 2,578 req/s), react-router /params/42?q=hello%20world&x=1 2 (run 1: 2,226 then 1,941 req/s); before every run: server under 5% of a core over 2 s before every try, 60 s at most; per-run steal max 1.8%. Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first; a cell that is not idle, has no drain, fewer than 3 runs, steal over 10% in a run or failed requests is shown unranked with the reason).
-
-| framework | `/` | `/list1000` | `/json-big` | `/params` | cold start ms | RSS MB after load |
-|---|---|---|---|---|---|---|
-| **wisp** | **6,801 (#2)** | **2,045 (#1)** | **3,360 (#2)** | **5,824 (#2)** | **66 (#3)** | **472 (#3)** |
-| hono | 6,880 (#1) | 943 (#3) | 3,353 (#3) | 6,074 (#1) | 45 (#2) | 389 (#2) |
-| itty | 5,887 (#3) | 994 (#2) | 3,474 (#1) | 5,209 (#3) | 43 (#1) | 810 (#6) |
-| sveltekit | 3,372 (#5) | 511 (#5) | 2,303 (#4) | 3,043 (#4) | 76 (#4) | 1971 (#7) |
-| astro | 3,532 (#4) | 873 (#4) | 2,265 (#5) | 3,031 (#5) | 106 (#6) | 486 (#4) |
-| react-router | 2,653 (#6) | 257 (#6) | 1,791 (#6) | 2,330 (#6) | 85 (#5) | 369 (#1) |
-| next | 519 (#7) | 51 (#7) | 353 (#7) | 441 (#7) | 350 (#7) | 645 (#5) |
+No valid run (steal mean 20.11% during the run (over 10%)). The 2026-10-06 numbers are not published; the rank table is pending a valid run.
 
 ### Node
 
-c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-06, CPU steal mean 0.92% (max 15%), ip_local_port_range 1024 65535; connection resets tolerated: redo up to 3 (3 tries per run, the last try kept, the same rule for every app); before every run: server under 5% of a core over 2 s before every try, 60 s at most; per-run steal max 4.4%. Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first; a cell that is not idle, has no drain, fewer than 3 runs, steal over 10% in a run or failed requests is shown unranked with the reason).
+c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-06, CPU steal mean 9.18% (max 65%), ip_local_port_range 1024 65535; connection resets tolerated: redo up to 3 (3 tries per run, the last try kept, the same rule for every app); before every run: server under 5% of a core over 2 s before every try, 60 s at most; per-run steal max 37.4%. Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first; a cell that is not idle, has no drain, fewer than 3 runs, steal over 10% in a run or failed requests is shown unranked with the reason).
+
+Provenance: Wisp 5d015b8c0ed7 built 2026-10-06; kernel 6.8.0-142-generic; node v26.10.0, bun 1.4.2, deno 2.9.7, workerd 2026-10-01; contenders @fastify/cookie 11.1.2, @hono/node-server 2.1.3, cookie-parser 1.4.7, elysia 1.4.30, express 5.2.1, fastify 5.12.5, hono 4.13.13, itty-router 5.0.24, wrangler 4.147.0, @sveltejs/adapter-cloudflare 8.0.0, @sveltejs/adapter-node 6.0.0, @sveltejs/kit 3.0.1, @sveltejs/vite-plugin-svelte 7.3.1, svelte 5.57.1, vite 8.3.3, @opennextjs/cloudflare 1.20.8, next 16.3.8, react-dom 19.3.0, react 19.3.0, @astrojs/cloudflare 14.3.3, astro 7.3.5, @cloudflare/vite-plugin 1.62.5, @react-router/dev 8.4.0, @types/react-dom 19.3.0, @types/react 19.3.0, isbot 5.2.2, react-router 8.4.0, typescript 7.0.2.
 
 | framework | `/` | `/list1000` | `/json-big` | `/params` | cold start ms | RSS MB after load |
 |---|---|---|---|---|---|---|
-| **wisp raw** | **38,790 (#1)** | **3,458 (#1)** | **8,507 (#1)** | **35,401 (#1)** | **176 (#2)** | **83 (#1)** |
-| fastify | 19,451 (#2) | 1,030 (#2) | 6,376 (#2) | 15,854 (#2) | 300 (#5) | 94 (#2) |
-| **wisp node:http** | **16,683 (#3)** | **3,027 (#1)** | **5,979 (#3)** | **14,011 (#2)** | **153 (#1)** | **100 (#4)** |
-| hono | 19,388 (#3) | 1,027 (#3) | 6,328 (#3) | 11,324 (#3) | 176 (#2) | 97 (#4) |
-| express | 8,673 (#4) | 908 (#4) | 4,383 (#4) | 7,494 (#4) | 228 (#4) | 94 (#2) |
-| sveltekit | 5,130 (#5) | 452 (#5) | 3,457 (#5) | 4,410 (#5) | 201 (#3) | 190 (#5) |
-| next | 1,215 (#6) | 46 (#6) | 1,272 (#6) | 1,233 (#6) | 660 (#6) | 438 (#6) |
+| **wisp raw** | **16,762 (unranked: steal 29.27% in a run)** | **2,184 (unranked: steal 15% in a run)** | **6,821 (#1)** | **25,805 (unranked: steal 17.82% in a run)** | **377 (#1)** | **83 (#1)** |
+| fastify | 7,887 (unranked: steal 27.9% in a run) | 527 (unranked: steal 16.4% in a run) | 6,031 (#2) | 7,455 (unranked: steal 14.7% in a run) | 601 (#5) | 89 (#2) |
+| **wisp node:http** | **7,045 (unranked: steal 30.7% in a run)** | **1,558 (unranked: steal 16.9% in a run)** | **5,087 (#3)** | **9,328 (unranked: steal 20.2% in a run)** | **342 (#1)** | **97 (#4)** |
+| hono | 8,636 (unranked: steal 26.55% in a run) | 496 (unranked: steal 11.6% in a run) | 5,235 (#3) | 6,031 (unranked: steal 18.1% in a run) | 384 (#2) | 95 (#3) |
+| sveltekit | 1,964 (unranked: steal 37.4% in a run) | 167 (#1) | 2,619 (#5) | 2,150 (unranked: steal 16.5% in a run) | 423 (#3) | 180 (#5) |
+| express | 3,245 (unranked: steal 28.2% in a run) | 552 (unranked: steal 11.55% in a run) | 3,490 (#4) | 3,678 (unranked: steal 16.1% in a run) | 495 (#4) | 95 (#3) |
+| next | 241 (unranked: steal 24.11% in a run) | 20 (#2) | 879 (#6) | 533 (unranked: steal 13% in a run) | 1453 (#6) | 251 (#6) |
 
 ### Bun
 
-c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-06, CPU steal mean 0.86% (max 7%), ip_local_port_range 1024 65535; connection resets tolerated: redo up to 3 (3 tries per run, the last try kept, the same rule for every app); before every run: server under 5% of a core over 2 s before every try, 60 s at most; per-run steal max 3.09%. Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first; a cell that is not idle, has no drain, fewer than 3 runs, steal over 10% in a run or failed requests is shown unranked with the reason).
+c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-06, CPU steal mean 7.32% (max 29%), ip_local_port_range 1024 65535; connection resets tolerated: redo up to 3 (3 tries per run, the last try kept, the same rule for every app); before every run: server under 5% of a core over 2 s before every try, 60 s at most; per-run steal max 20.6%. Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first; a cell that is not idle, has no drain, fewer than 3 runs, steal over 10% in a run or failed requests is shown unranked with the reason).
+
+Provenance: Wisp 5d015b8c0ed7 built 2026-10-06; kernel 6.8.0-142-generic; node v26.10.0, bun 1.4.2, deno 2.9.7, workerd 2026-10-01; contenders @fastify/cookie 11.1.2, @hono/node-server 2.1.3, cookie-parser 1.4.7, elysia 1.4.30, express 5.2.1, fastify 5.12.5, hono 4.13.13, itty-router 5.0.24, wrangler 4.147.0, @sveltejs/adapter-cloudflare 8.0.0, @sveltejs/adapter-node 6.0.0, @sveltejs/kit 3.0.1, @sveltejs/vite-plugin-svelte 7.3.1, svelte 5.57.1, vite 8.3.3, @opennextjs/cloudflare 1.20.8, next 16.3.8, react-dom 19.3.0, react 19.3.0, @astrojs/cloudflare 14.3.3, astro 7.3.5, @cloudflare/vite-plugin 1.62.5, @react-router/dev 8.4.0, @types/react-dom 19.3.0, @types/react 19.3.0, isbot 5.2.2, react-router 8.4.0, typescript 7.0.2.
 
 | framework | `/` | `/list1000` | `/json-big` | `/params` | cold start ms | RSS MB after load |
 |---|---|---|---|---|---|---|
-| **wisp raw** | **52,112 (#1)** | **4,319 (#1)** | **9,518 (#1)** | **48,544 (#1)** | **39 (#2)** | **39 (#2)** |
-| **wisp Bun.serve** | **29,184 (#3)** | **3,564 (#1)** | **7,841 (#1)** | **21,265 (#3)** | **38 (#2)** | **41 (#2)** |
-| elysia | 49,965 (#2) | 1,151 (#2) | 7,471 (#2) | 23,110 (#3) | 82 (#3) | 47 (#3) |
-| hono | 45,815 (#3) | 1,032 (#3) | 6,097 (#3) | 28,018 (#2) | 30 (#1) | 38 (#1) |
+| **wisp raw** | **31,010 (unranked: steal 17.27% in a run)** | **3,479 (#1)** | **6,116 (#1)** | **36,699 (#1)** | **73 (#2)** | **40 (#2)** |
+| **wisp Bun.serve** | **17,688 (unranked: steal 20.6% in a run)** | **2,910 (#1)** | **5,770 (unranked: steal 17.1% in a run)** | **16,694 (unranked: steal 14.1% in a run)** | **55 (#2)** | **41 (#2)** |
+| hono | 24,516 (unranked: steal 17.6% in a run) | 702 (#2) | 3,921 (unranked: steal 16.2% in a run) | 16,514 (unranked: steal 18.73% in a run) | 49 (#1) | 38 (#1) |
+| elysia | 26,044 (unranked: steal 16.2% in a run) | 628 (#3) | 5,011 (unranked: steal 12.1% in a run) | 12,157 (unranked: steal 17.4% in a run) | 121 (#3) | 51 (#3) |
 
 ### Deno
 
-c=64, 10 s runs, median of 5, cold start median of 15; 2026-10-06, CPU steal mean 0.91% (max 11%), ip_local_port_range 1024 65535; connection resets tolerated: redo up to 3 (3 tries per run, the last try kept, the same rule for every app); before every run: server under 5% of a core over 2 s before every try, 60 s at most; per-run steal max 3.9%. Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first; a cell that is not idle, has no drain, fewer than 3 runs, steal over 10% in a run or failed requests is shown unranked with the reason).
-
-| framework | `/` | `/list1000` | `/json-big` | `/params` | cold start ms | RSS MB after load |
-|---|---|---|---|---|---|---|
-| **wisp raw** | **42,533 (#2)** | **3,120 (#1)** | **7,563 (#2)** | **38,847 (#1)** | **98 (#3)** | **96 (#3)** |
-| hono | 48,956 (#1) | 1,145 (#2) | 8,196 (#1) | 33,691 (#2) | 55 (#1) | 80 (#2) |
-| **wisp Deno.serve** | **34,910 (#2)** | **2,773 (#1)** | **5,990 (#4)** | **21,485 (#2)** | **89 (#2)** | **63 (#1)** |
-| oak | 17,344 (#4) | 1,017 (#3) | 6,079 (#4) | 12,503 (#3) | 160 (#4) | 89 (#3) |
-| fresh | 22,259 (#3) | 881 (#4) | 6,495 (#3) | 8,415 (#4) | 90 (#3) | 127 (#4) |
+No valid run (steal mean 22.84% during the run (over 10%)). The 2026-10-06 numbers are not published; the rank table is pending a valid run.
 
 ### Where Wisp is below 3rd or behind Hono
 
@@ -55,25 +41,9 @@ Gap is how far behind in %: lower req/s, or higher cold start and memory. Gap to
 
 | host | Wisp variant | metric | place | Wisp | Hono | behind Hono | behind 3rd |
 |---|---|---|---|---|---|---|---|
-| workerd | wisp | `/` | #2 | 6,801 | 6,880 | 1% | - |
-| workerd | wisp | `/params` | #2 | 5,824 | 6,074 | 4% | - |
-| workerd | wisp | cold start ms | #3 | 66 | 45 | 45% | - |
-| workerd | wisp | RSS MB after load | #3 | 472 | 389 | 21% | - |
-| Node | wisp raw | cold start ms | #2 | 176 | 176 | 0% | - |
-| Node | wisp node:http | `/` | #3 | 16,683 | 19,388 | 14% | - |
-| Node | wisp node:http | `/json-big` | #3 | 5,979 | 6,328 | 6% | - |
-| Node | wisp node:http | RSS MB after load | #4 | 100 | 97 | 3% | 3% (hono) |
-| Bun | wisp raw | cold start ms | #2 | 39 | 30 | 32% | - |
-| Bun | wisp raw | RSS MB after load | #2 | 39 | 38 | 3% | - |
-| Bun | wisp Bun.serve | `/` | #3 | 29,184 | 45,815 | 36% | - |
-| Bun | wisp Bun.serve | `/params` | #3 | 21,265 | 28,018 | 24% | - |
-| Bun | wisp Bun.serve | cold start ms | #2 | 38 | 30 | 27% | - |
+| Node | wisp node:http | `/json-big` | #3 | 5,087 | 5,235 | 3% | - |
+| Node | wisp node:http | RSS MB after load | #4 | 97 | 95 | 2% | 2% (express) |
+| Bun | wisp raw | cold start ms | #2 | 73 | 49 | 47% | - |
+| Bun | wisp raw | RSS MB after load | #2 | 40 | 38 | 5% | - |
+| Bun | wisp Bun.serve | cold start ms | #2 | 55 | 49 | 11% | - |
 | Bun | wisp Bun.serve | RSS MB after load | #2 | 41 | 38 | 8% | - |
-| Deno | wisp raw | `/` | #2 | 42,533 | 48,956 | 13% | - |
-| Deno | wisp raw | `/json-big` | #2 | 7,563 | 8,196 | 8% | - |
-| Deno | wisp raw | cold start ms | #3 | 98 | 55 | 78% | - |
-| Deno | wisp raw | RSS MB after load | #3 | 96 | 80 | 20% | - |
-| Deno | wisp Deno.serve | `/` | #2 | 34,910 | 48,956 | 29% | - |
-| Deno | wisp Deno.serve | `/json-big` | #4 | 5,990 | 8,196 | 27% | 1% (oak) |
-| Deno | wisp Deno.serve | `/params` | #2 | 21,485 | 33,691 | 36% | - |
-| Deno | wisp Deno.serve | cold start ms | #2 | 89 | 55 | 61% | - |
