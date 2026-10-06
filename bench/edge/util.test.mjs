@@ -76,5 +76,7 @@ test('waitIdle waits until the server is under 5% of a core', async () => {
   const ticks = () => t;
   const nap = async () => { t += busy[calls++] ?? 3; };
   assert.equal(await waitIdle(ticks, { every: 2000, nap }), 6);
-  assert.equal(await waitIdle(() => (t += 50), { every: 2000, max: 6000, nap: async () => {} }), -1);
+  let naps = 0;
+  assert.equal(await waitIdle(() => (t += 50), { every: 2000, max: 6000, nap: async () => { naps++; } }), -1);
+  assert.equal(naps, 3);   // gives up at max, not later
 });

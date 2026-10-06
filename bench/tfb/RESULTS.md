@@ -13,7 +13,7 @@ This file is generated: `python3 aggregate.py` fills the tables from `raw/`. Raw
 Derived by `aggregate.py` from `results.json`; nothing here is hand-written. Medians of 3 runs,
 15 s each, server on 2 pinned cores.
 
-Wisp (defaults) has a min-max range above every other contender's at 3 of 7 workload and connection levels; at 3 more its range overlaps that of the highest median (a tie within noise). Counted from the tables below, supplementary row excluded. 16 of 100 cells have a run with steal over 10% and are not published or ranked. 90 of 100 cells come from the pre-drain harness (no drain-before in their raw files): steal was not controlled by waiting for the server to go idle, so rank comparisons with drained rows are not like for like until a full re-run.
+Wisp (defaults) has a min-max range above every other contender's at 2 of 7 workload and connection levels; at 3 more its range overlaps that of the highest median (a tie within noise); at 1 more it leads every published contender but at least one rival's cell is unpublished, so that is not counted as a win. Counted from the tables below, supplementary row excluded. 16 of 100 cells have a run with steal over 10% and are not published or ranked. 90 of 100 cells come from the pre-drain harness (no drain-before in their raw files): steal was not controlled by waiting for the server to go idle, so rank comparisons with drained rows are not like for like until a full re-run.
 
 ## What TFB specifies (read from the source, not from memory)
 

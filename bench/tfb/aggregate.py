@@ -112,6 +112,28 @@ def summarize(contenders):
     return summary
 
 
+def lead_counts(summary):
+    """Wisp lead counts per level: (wins, levels, ties, leads with errors, leads with an unpublished rival)."""
+    firsts, tot, tied, flagged, partial = 0, 0, 0, 0, 0
+    for w in ("plaintext", "json"):
+        for lvl in sorted(summary.get(w, {})):
+            rows = {c: r for c, r in summary[w][lvl].items() if c != "wisp-uncapped" and rankable(r)}
+            if "wisp" not in rows:
+                continue
+            lead = max(rows, key=lambda c: rows[c]["rps_median"])
+            top = {lead} | set(rows[lead]["tied_with"])
+            tot += 1
+            w0 = rows["wisp"]
+            clean = not (w0["stalled"] or w0["non2xx"] or w0["socket_errors"])
+            # A rival whose cell is unpublished (steal, too few runs) cannot be beaten on this data: not a win.
+            hidden = any(c not in ("wisp", "wisp-uncapped") and not r["failed"] and not rankable(r) for c, r in summary[w][lvl].items())
+            partial += top == {"wisp"} and clean and hidden
+            firsts += top == {"wisp"} and clean and not hidden
+            flagged += top == {"wisp"} and not clean
+            tied += len(top) > 1 and "wisp" in top
+    return firsts, tot, tied, flagged, partial
+
+
 def main():
     out = {"contenders": {}, "omitted": {}}
     for c in ORDER:
@@ -188,26 +210,14 @@ def main():
     tables = "\n".join(lines)
 
     # Derived summary: counts only, from the data above (supplementary rows excluded).
-    firsts, tot, tied, flagged = 0, 0, 0, 0
-    for w in ("plaintext", "json"):
-        for lvl in sorted(summary.get(w, {})):
-            rows = {c: r for c, r in summary[w][lvl].items() if c != "wisp-uncapped" and rankable(r)}
-            if "wisp" not in rows:
-                continue
-            lead = max(rows, key=lambda c: rows[c]["rps_median"])
-            top = {lead} | set(rows[lead]["tied_with"])
-            tot += 1
-            w0 = rows["wisp"]
-            clean = not (w0["stalled"] or w0["non2xx"] or w0["socket_errors"])
-            firsts += top == {"wisp"} and clean
-            flagged += top == {"wisp"} and not clean
-            tied += len(top) > 1 and "wisp" in top
+    firsts, tot, tied, flagged, partial = lead_counts(summary)
     cells_all = [r for w in summary.values() for lv in w.values() for r in lv.values()]
     stale = sum(r["pre_drain"] for r in cells_all)
     dist = sum(r["disturbed"] for r in cells_all)
     heads = (f"Wisp (defaults) has a min-max range above every other contender's at {firsts} of {tot} "
              f"workload and connection levels; at {tied} more its range overlaps that of the highest "
              f"median (a tie within noise)"
+             + (f"; at {partial} more it leads every published contender but at least one rival's cell is unpublished, so that is not counted as a win" if partial else "")
              + (f"; at {flagged} more it leads but its row has stalled runs or errors, so that is not counted as a win" if flagged else "")
              + ". Counted from the tables below, supplementary row excluded."
              + (f" {dist} of {len(cells_all)} cells have a run with steal over {STEAL_MAX:g}% and are not published or ranked." if dist else "")

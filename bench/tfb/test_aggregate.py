@@ -88,5 +88,13 @@ class Fairness(unittest.TestCase):
         rows = table(a=[cell(1, drained=False)] * 3, b=[cell(1)] * 3)
         self.assertTrue(rows["a"]["pre_drain"]); self.assertFalse(rows["b"]["pre_drain"])
 
+class Lead(unittest.TestCase):
+    def test_unpublished_rival_is_not_a_win(self):
+        wisp = [cell(500), cell(501), cell(502)]
+        full = aggregate.summarize({"wisp": {"json": {64: wisp}}, "axum": {"json": {64: [cell(100)] * 3}}})
+        self.assertEqual(aggregate.lead_counts(full), (1, 1, 0, 0, 0))
+        hid = aggregate.summarize({"wisp": {"json": {64: wisp}}, "axum": {"json": {64: [cell(100), cell(100, steal=30), cell(100)]}}})
+        self.assertEqual(aggregate.lead_counts(hid), (0, 1, 0, 0, 1))
+
 if __name__ == "__main__":
     unittest.main()
