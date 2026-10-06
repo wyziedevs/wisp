@@ -77,9 +77,9 @@ TechEmpower's plaintext and JSON tests, run with their own load scripts against 
 | Hono (Node) | 28,966 | 8,988 |
 | Hono (Bun) | 10,599 | 59,619 |
 | SvelteKit | 10,929 | 10,378 |
-| Next.js | No result | 1,524 |
+| Next.js | 2,460 | 1,611 |
 
-Rows whose min-max ranges overlap are ties. Plaintext, 256: Fastify and Express; Hono (Node), Hono (Bun) and SvelteKit. JSON, 64: Wisp, Actix Web and Axum; Hono (Node) and SvelteKit.
+Rows whose min-max ranges overlap are ties. Plaintext, 256: Fastify and Express; Hono (Node), Hono (Bun), SvelteKit and Next.js (one SvelteKit run, measured before the harness drained the warmup backlog, reaches down to Next.js; re-measure pending). Next.js measured 2026-10-06 with that drain. JSON, 64: Wisp, Actix Web and Axum; Hono (Node) and SvelteKit.
 
 This is not an official TechEmpower result, and the VM is shared. [`bench/tfb/RESULTS.md`](bench/tfb/RESULTS.md) has every contender, connection level and metric. Rank tables from a newer run are pending: the latest runs on a CPU-capped VPS were invalid and are not published. Valid on any machine: callgrind counts of 1585, 2323 and 1789 instructions per request for `GET /`, `GET /user/0` and `POST /user`, measured after the chunked-encoding fix and not rerun since later runtime commits (cddf6ca and on), so they may have moved.
 
