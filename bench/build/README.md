@@ -27,7 +27,7 @@ Build commands: `cargo build --release --offline` (Wisp, Axum, Actix; the app's 
 
 ## Validity
 
-Every timed run, install and dev session holds `flock /tmp/wisp-bench.lock`. Inside the lock: drain (machine under 5% of one core busy,
+Every timed run, install and dev session holds `flock /tmp/wisp-bench.lock` (the harness holds it for a whole contender's measurement, installs separately). Inside the lock: drain (machine under 5% of one core busy,
 2 s windows, up to 180 s), read `/proc/stat` (fields 2..9, steal is the last), run, read it again. Steal over 10% of all CPU time during
 the run makes it invalid; it is retried up to 3 times, then the cell publishes nothing (`na`). Ranks need 3 or more valid runs, are by
 median, and ties share a rank. A stored flag is never read: `cellWhy` in `lib.mjs` derives validity from the data.

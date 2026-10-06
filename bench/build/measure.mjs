@@ -1,5 +1,7 @@
 // Build-time and dev-reload bench, run ON the Linux box (bench/build/README.md).
-//   node measure.mjs run <contender> [--runs 3]     every cell of one contender -> results/<contender>.json
+//   node measure.mjs install <contender>            deps and the /hello overlay, not measured (takes the lock itself)
+//   BB_LOCKED=1 flock /tmp/wisp-bench.lock node measure.mjs run <contender> [--runs 3]   every cell of one contender -> results/<contender>.json
+//   (without BB_LOCKED each run, build and dev session takes the lock on its own)
 //   node measure.mjs step <contender> <cell> <ver>  (internal) one timed build, run under flock by `run`
 //   node measure.mjs dev <contender> <runs>         (internal) the dev-reload cells, run under flock by `run`
 //   node measure.mjs clean <contender>              removes the installed deps and build output
@@ -123,7 +125,8 @@ async function dev(c, runs) {
 
 // ---- orchestration (not itself timed) ----
 const locked = (...args) => {
-  const r = spawnSync('flock', [LOCK, process.execPath, join(here, 'measure.mjs'), ...args], { env, encoding: 'utf8', maxBuffer: 1 << 26, stdio: ['ignore', 'pipe', 'inherit'] });
+  const cmd = process.env.BB_LOCKED ? [process.execPath] : ['flock', LOCK, process.execPath]; // BB_LOCKED: the caller already holds the lock for the whole contender
+  const r = spawnSync(cmd[0], [...cmd.slice(1), join(here, 'measure.mjs'), ...args], { env, encoding: 'utf8', maxBuffer: 1 << 26, stdio: ['ignore', 'pipe', 'inherit'] });
   const line = (r.stdout || '').split('\n').filter((l) => l.startsWith('RESULT ')).pop();
   if (!line) throw new Error(`no result from ${args.join(' ')}: ${r.stdout}`);
   return JSON.parse(line.slice(7));
@@ -154,6 +157,11 @@ async function main() {
   if (mode === 'step') return step(c, rest[0], Number(rest[1]));
   if (mode === 'dev') return dev(c, Number(rest[0]));
   if (mode === 'clean') { for (const p of ['target', 'node_modules', '.svelte-kit', 'build', '.next', '.nuxt', '.output']) rmSync(join(appDir(c), p), { recursive: true, force: true }); return; }
+  if (mode === 'install') { // downloads and the /hello overlay: not measured, its own lock hold
+    if (C[c].overlay) cpSync(join(here, C[c].overlay), appDir(c), { recursive: true });
+    spawnSync('flock', [LOCK, 'sh', '-c', C[c].install], { cwd: appDir(c), env, stdio: ['ignore', openSync(logFile(c, 'install'), 'a'), 'inherit'] });
+    return;
+  }
   if (mode !== 'run') throw new Error('usage: measure.mjs run <contender> [--runs 3]');
   const runs = Number(rest[rest.indexOf('--runs') + 1]) || 3;
   const k = C[c];
@@ -162,11 +170,7 @@ async function main() {
   const r = { contender: c, when: new Date().toISOString(), runs, host: toolVersions(), cells: {} };
   const save = () => writeFileSync(out, JSON.stringify(r, null, 1) + '\n');
   restore(c);
-  if (k.overlay) cpSync(join(here, k.overlay), appDir(c), { recursive: true });
-  const t = Date.now();
-  spawnSync('flock', [LOCK, 'sh', '-c', k.install], { cwd: appDir(c), env, stdio: ['ignore', openSync(logFile(c, 'install'), 'a'), 'inherit'] }); // downloads: not measured
   r.deps = k.build?.startsWith('cargo') ? readFileSync(join(appDir(c), 'Cargo.lock'), 'utf8').split('[[package]]').length - 1 + ' locked crates' : npmVersions(c);
-  console.error(`${c}: installed in ${Math.round((Date.now() - t) / 1000)} s`);
   if (k.noBuild) for (const cell of ['cold', 'warm_noop', 'warm_edit', 'warm_edit_markup']) r.cells[cell] = { na: k.noBuild };
   else {
     r.cells.cold = runCell(c, 'cold', runs); save();
