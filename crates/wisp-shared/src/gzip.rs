@@ -18,6 +18,90 @@ pub fn gzip(data: &[u8]) -> Vec<u8> {
     out
 }
 
+/// What a gzip file of [`gzip`] holds: fixed-Huffman and stored blocks
+/// only, the CRC and length checked. `None` for anything else or damaged,
+/// never a panic. Build-time-compressed text the edge wasm carries smaller
+/// (the OpenAPI document) is unpacked with it once, on first use.
+pub fn gunzip(gz: &[u8]) -> Option<Vec<u8>> {
+    let body = gz.get(10..gz.len().checked_sub(8)?)?;
+    if gz[..3] != HEADER[..3] {
+        return None;
+    }
+    let mut pos = 0usize;
+    let mut bits = |n: u32, to_byte: bool| -> Option<u32> {
+        if to_byte {
+            pos = pos.div_ceil(8) * 8;
+        }
+        let mut v = 0;
+        for k in 0..n {
+            v |= u32::from(body.get(pos / 8)? >> (pos % 8) & 1) << k;
+            pos += 1;
+        }
+        Some(v)
+    };
+    let mut out: Vec<u8> = Vec::with_capacity(body.len() * 4);
+    loop {
+        let last = bits(1, false)? == 1;
+        match bits(2, false)? {
+            0 => {
+                let len = bits(16, true)?;
+                let nlen = bits(16, false)?;
+                if len ^ 0xffff != nlen {
+                    return None;
+                }
+                for _ in 0..len {
+                    out.push(bits(8, false)? as u8);
+                }
+            }
+            1 => loop {
+                // Codes come high bit first: 7 bits, then more as the range says.
+                let mut code = 0;
+                for _ in 0..7 {
+                    code = code << 1 | bits(1, false)?;
+                }
+                let sym = if code <= 0b0010111 {
+                    code + 256
+                } else {
+                    code = code << 1 | bits(1, false)?;
+                    match code {
+                        0x30..=0xbf => code - 0x30,
+                        0xc0..=0xc7 => code - 0xc0 + 280,
+                        _ => (code << 1 | bits(1, false)?).checked_sub(0x190)? + 144,
+                    }
+                };
+                match sym {
+                    256 => break,
+                    0..=255 => out.push(sym as u8),
+                    s => {
+                        let l = (s - 257) as usize;
+                        let len =
+                            *LEN_BASE.get(l)? as usize + bits(LEN_EXTRA[l].into(), false)? as usize;
+                        let mut c = 0;
+                        for _ in 0..5 {
+                            c = c << 1 | bits(1, false)?;
+                        }
+                        let c = c as usize;
+                        let dist = *DIST_BASE.get(c)? as usize
+                            + bits(DIST_EXTRA[c].into(), false)? as usize;
+                        let from = out.len().checked_sub(dist)?;
+                        for k in from..from + len {
+                            out.push(out[k]);
+                        }
+                    }
+                }
+            },
+            _ => return None,
+        }
+        if last {
+            break;
+        }
+    }
+    let tail = &gz[gz.len() - 8..];
+    let ok =
+        tail[..4] == crc32(&out).to_le_bytes() && tail[4..] == (out.len() as u32).to_le_bytes();
+    ok.then_some(out)
+}
+
 /// A gzip file made a piece at a time: each piece is a block of its own
 /// and a sync flush (an empty stored block), so what came so far decodes
 /// whole; `end` closes the file. Matches reach back within a piece only.

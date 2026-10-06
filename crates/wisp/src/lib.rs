@@ -826,6 +826,17 @@ pub mod rt {
     };
     pub use crate::timeout::within;
 
+    /// Text the build gzipped into the edge wasm (`gz`), unpacked into
+    /// `cell` on first use: the OpenAPI document and TypeScript client are
+    /// a tenth the bytes there. Empty if it does not unpack (never a panic).
+    pub fn unpacked(cell: &'static std::sync::OnceLock<String>, gz: &[u8]) -> &'static str {
+        cell.get_or_init(|| {
+            (wisp_shared::gzip::gunzip(gz))
+                .and_then(|t| String::from_utf8(t).ok())
+                .unwrap_or_default()
+        })
+    }
+
     /// What `{#if x}` tests when `x` is a bare place: a `bool` itself, an
     /// `Option` when it is `Some`, a string or list when it is not empty.
     #[diagnostic::on_unimplemented(

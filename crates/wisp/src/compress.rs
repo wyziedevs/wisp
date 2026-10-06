@@ -132,6 +132,8 @@ fn copy(body: &'static [u8]) -> Option<&'static [u8]> {
 }
 
 #[cfg(test)]
+use wisp_shared::gzip::gunzip;
+#[cfg(test)]
 use wisp_shared::gzip::{DIST_BASE, DIST_EXTRA, LEN_BASE, LEN_EXTRA, crc32};
 pub(crate) use wisp_shared::gzip::{Stream, gzip};
 
@@ -225,6 +227,11 @@ pub(crate) mod tests {
     fn round(data: &[u8]) -> usize {
         let gz = gzip(data);
         assert_eq!(inflate(&gz), data);
+        assert_eq!(
+            gunzip(&gz).as_deref(),
+            Some(data),
+            "the runtime decoder agrees"
+        );
         let n = gz.len();
         assert_eq!(&gz[n - 8..n - 4], &crc32(data).to_le_bytes());
         assert_eq!(&gz[n - 4..], &(data.len() as u32).to_le_bytes());
@@ -243,9 +250,34 @@ pub(crate) mod tests {
         all.extend(z.end());
         let whole = [a.as_slice(), &b].concat();
         assert_eq!(inflate(&all), whole);
+        assert_eq!(gunzip(&all), Some(whole.clone()), "stored blocks too");
         let n = all.len();
         assert_eq!(&all[n - 8..n - 4], &crc32(&whole).to_le_bytes());
         assert_eq!(&all[n - 4..], &(whole.len() as u32).to_le_bytes());
+    }
+
+    #[test]
+    fn gunzip_refuses_damage_without_panicking() {
+        let text = "<li>a row of the list</li>
+"
+        .repeat(200);
+        let gz = gzip(text.as_bytes());
+        for n in 0..gz.len() {
+            assert_eq!(gunzip(&gz[..n]), None, "cut at {n}");
+        }
+        let mut x = 99u32;
+        for i in 10..gz.len() - 9 {
+            // (The last byte before the trailer ends in padding bits.)
+            let mut bad = gz.clone();
+            x = x.wrapping_mul(1_103_515_245).wrapping_add(12345);
+            bad[i] ^= 1 << ((x >> 16) % 8);
+            assert_ne!(
+                gunzip(&bad).as_deref(),
+                Some(text.as_bytes()),
+                "bit flip at {i}"
+            );
+        }
+        assert_eq!(gunzip(&[0xff; 40]), None);
     }
 
     #[test]

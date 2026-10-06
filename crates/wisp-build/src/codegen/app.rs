@@ -1070,9 +1070,7 @@ impl Gen {
             .collect();
         let client = crate::openapi::typescript(&endpoints);
         if !endpoints.is_empty() {
-            self.line(1, "fn client_ts() -> &'static str {");
-            self.line(2, &lit(&client));
-            self.line(1, "}");
+            self.text_fn("client_ts", &client);
         }
         // Cargo.toml, so `wisp openapi` and the build agree; Cargo's own
         // for what it inherits from the workspace (`version.workspace`).
@@ -1084,11 +1082,35 @@ impl Gen {
         };
         let (name, version) = (package("name", "app"), package("version", "0.1.0"));
         let spec = crate::openapi::spec(&name, &version, &endpoints, &pages);
-        self.line(1, "fn openapi() -> &'static str {");
-        self.line(2, &lit(&spec));
-        self.line(1, "}");
+        self.text_fn("openapi", &spec);
         self.line(0, "");
         Ok((client, spec))
+    }
+
+    /// `fn name() -> &'static str` returning `text`: as written natively,
+    /// gzipped in the wasm (a host loads it on every cold start; the
+    /// OpenAPI document of tests/app is 61 KB, 4 KB gzipped) and unpacked
+    /// on first use, off the hot path.
+    fn text_fn(&mut self, name: &str, text: &str) {
+        let gz = wisp_shared::gzip::gzip(text.as_bytes());
+        let mut bytes = String::with_capacity(gz.len() * 4 + 3);
+        bytes.push_str("b\"");
+        for b in gz {
+            bytes.push_str(&format!("\\x{b:02x}"));
+        }
+        bytes.push('"');
+        self.line(1, &format!("fn {name}() -> &'static str {{"));
+        self.line(2, "#[cfg(not(target_arch = \"wasm32\"))]");
+        self.line(2, &format!("return {};", lit(text)));
+        self.line(2, "#[cfg(target_arch = \"wasm32\")]");
+        self.line(2, "{");
+        self.line(
+            3,
+            "static S: ::std::sync::OnceLock<String> = ::std::sync::OnceLock::new();",
+        );
+        self.line(3, &format!("::wisp::rt::unpacked(&S, {bytes})"));
+        self.line(2, "}");
+        self.line(1, "}");
     }
 
     pub(super) fn init(&mut self, p: &Project) {
