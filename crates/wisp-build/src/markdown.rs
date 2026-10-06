@@ -388,6 +388,8 @@ struct Lang {
     types: bool,
     /// `#[derive(Debug)]` is an attribute (Rust).
     attrs: bool,
+    /// `/.../` after an operator or `(` is a regex literal, a string to the lexer (JS).
+    regex: bool,
 }
 
 const RUST: Lang = Lang {
@@ -402,6 +404,7 @@ const RUST: Lang = Lang {
     ],
     types: true,
     attrs: true,
+    regex: false,
 };
 
 const JS: Lang = Lang {
@@ -455,6 +458,7 @@ const JS: Lang = Lang {
     ],
     types: true,
     attrs: false,
+    regex: true,
 };
 
 const CSS: Lang = Lang {
@@ -464,6 +468,7 @@ const CSS: Lang = Lang {
     keywords: &["important", "inherit", "initial", "none", "auto"],
     types: false,
     attrs: false,
+    regex: false,
 };
 
 const JSON: Lang = Lang {
@@ -473,6 +478,7 @@ const JSON: Lang = Lang {
     keywords: &["true", "false", "null"],
     types: false,
     attrs: false,
+    regex: false,
 };
 
 const TOML: Lang = Lang {
@@ -482,6 +488,7 @@ const TOML: Lang = Lang {
     keywords: &["true", "false"],
     types: false,
     attrs: false,
+    regex: false,
 };
 
 /// Header values: quoted strings only.
@@ -492,6 +499,7 @@ const HTTP: Lang = Lang {
     keywords: &[],
     types: false,
     attrs: false,
+    regex: false,
 };
 
 /// Shell words after which the next word is a command again.
@@ -525,6 +533,15 @@ pub fn highlight(lang: &str, code: &str) -> Option<String> {
         _ => return None,
     };
     Some(lex(lang, code))
+}
+
+/// Whether a `/` after `before` opens a regex: at the start, or after an operator, `(` or `return`.
+fn regex_may_start(before: &str) -> bool {
+    let t = before.trim_end();
+    t.chars()
+        .last()
+        .is_none_or(|c| "(,=:[!&|?{};+-*%<>~^".contains(c))
+        || ["return", "typeof"].iter().any(|w| t.ends_with(w))
 }
 
 /// `code` in `lang`: comments, strings, numbers, keywords and types.
@@ -567,6 +584,27 @@ fn lex(lang: &Lang, code: &str) -> String {
             span(&mut out, "a", &rest[..open + end + 1]);
             i += open + end + 1;
             continue;
+        }
+        if lang.regex && c == b'/' && regex_may_start(&code[..i]) {
+            let mut j = i + 1;
+            let mut class = false;
+            while j < b.len() && b[j] != b'\n' && (class || b[j] != b'/') {
+                match b[j] {
+                    b'\\' => j += 1,
+                    b'[' => class = true,
+                    b']' => class = false,
+                    _ => {}
+                }
+                j += 1;
+            }
+            if j < b.len() && b[j] == b'/' {
+                let flags = code[j + 1..]
+                    .find(|ch: char| !ch.is_ascii_alphabetic())
+                    .unwrap_or(code.len() - j - 1);
+                span(&mut out, "s", &code[i..j + 1 + flags]);
+                i = j + 1 + flags;
+                continue;
+            }
         }
         if lang.quotes.contains(&c) {
             let mut j = i + 1;
@@ -1202,6 +1240,11 @@ fn a() {}
         for lang in ["js", "ts", "css", "json"] {
             assert!(highlight(lang, "/* x */ \"y\" 1 true").is_some());
         }
+        // A quote inside a regex literal does not open a string; a division is not a regex.
+        let h = highlight("js", r"if (!/^[a-z'\/]+$/i.test(x)) y = 'z';").unwrap();
+        assert!(h.contains(r#"<span class="hl-s">/^[a-z'\/]+$/i</span>"#));
+        assert!(h.contains("<span class=\"hl-s\">'z'</span>"));
+        assert!(!highlight("js", "a = b / c / d;").unwrap().contains("hl-s"));
         assert!(
             page("```rust\nlet x = 1;\n```", &[], false)
                 .unwrap()
