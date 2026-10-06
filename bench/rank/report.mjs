@@ -2,12 +2,14 @@
 // req/s with its place per route, cold start, memory), then every cell where
 // Wisp is below 3rd or behind Hono. node report.mjs [results dir]
 // A host file with an `invalid` field prints that reason instead of its table.
-// Places, ordering and the losses table are derived only from a file marked
-// `"valid": true`; any other file (no flag, or invalid) prints its raw table and the
-// line 'Run validity not recorded (no steal data).' and derives nothing.
+// Validity is derived from the data, never from a stored `valid` flag (lib.mjs): a host is ranked only
+// with steal data at 10% mean or less; a cell only with no failed request, 3 runs and every drain
+// before a try having reached idle. A cell that fails prints its req/s with the reason, unranked; a
+// drain_s of -1 prints 'not idle', a missing one 'no drain', in every table.
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { cellValid, coldNote } from '../edge/util.mjs';
+import { coldNote } from '../edge/util.mjs';
+import { hostWhy, cellWhy, drainWhy } from './lib.mjs';
 import { fileURLToPath } from 'node:url';
 
 // Runs redone after a reset-only run (rank.mjs): every app's count, so the reader sees how often it happened.
@@ -32,12 +34,12 @@ for (const host of hosts) {
   if (!existsSync(f)) continue;
   const r = JSON.parse(readFileSync(f, 'utf8'));
   if (r.invalid) { out.push(`### ${label[host]}\n`); out.push(`No valid run (${r.invalid}). The ${r.when.slice(0, 10)} numbers are not published; the rank table is pending a valid run.\n`); continue; }
-  const valid = r.valid === true;
+  const whyHost = hostWhy(r), valid = !whyHost;
   anyValid ||= valid;
   const names = [...new Set(Object.keys(r.cells).map((k) => k.split(' /')[0]))];
   const routes = Object.keys(routeNames).filter((p) => names.some((n) => r.cells[`${n} ${p}`]));
   // metrics: value per framework, higher or lower better
-  const metrics = routes.map((p) => ({ id: p, title: routeNames[p], better: 'high', val: (n) => (cellValid(r.cells[`${n} ${p}`]) ? r.cells[`${n} ${p}`].rps : null), fmt: (v) => n0(v) }));
+  const metrics = routes.map((p) => ({ id: p, title: routeNames[p], better: 'high', val: (n) => { const c = r.cells[`${n} ${p}`]; return c && !cellWhy(c) ? c.rps : null; }, fmt: (v) => n0(v) }));
   metrics.push({ id: 'cold', title: 'cold start ms', better: 'low', val: (n) => r.cold[n]?.median, fmt: (v) => v.toFixed(0) });
   metrics.push({ id: 'rss', title: 'RSS MB after load', better: 'low', val: (n) => r.rss[n]?.load, fmt: (v) => String(v) });
 
@@ -54,15 +56,20 @@ for (const host of hosts) {
   const order = (n) => { const ps = metrics.slice(0, routes.length).map((m) => place(m, n)).filter((x) => x != null); return ps.reduce((a, b) => a + b, 0) / (ps.length || 1); };
   const rows = valid ? [...names].sort((a, b) => order(a) - order(b)) : [...names];
   out.push(`### ${label[host]}\n`);
-  out.push(`c=${r.conns}, ${r.secs} s runs, median of ${r.runs}, ${coldNote(r.colds, r.cold)}; ${r.when.slice(0, 10)}${r.steal ? `, CPU steal mean ${r.steal.mean}% (max ${r.steal.max}%)` : ''}${r.ip_local_port_range ? `, ip_local_port_range ${r.ip_local_port_range}` : ''}${resetNote(r)}${drainNote(r)}. ${valid ? 'Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first).' : 'Each cell: req/s. Run validity not recorded (no steal data).'}\n`);
+  out.push(`c=${r.conns}, ${r.secs} s runs, median of ${r.runs}, ${coldNote(r.colds, r.cold)}; ${r.when.slice(0, 10)}${r.steal ? `, CPU steal mean ${r.steal.mean}% (max ${r.steal.max}%)` : ''}${r.ip_local_port_range ? `, ip_local_port_range ${r.ip_local_port_range}` : ''}${resetNote(r)}${drainNote(r)}. ${valid ? 'Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first; a cell that is not idle, has no drain, fewer than 3 runs or failed requests is shown unranked with the reason).' : `Each cell: req/s. Not ranked: ${whyHost}.`}\n`);
   out.push(`| framework | ${metrics.map((m) => m.title).join(' | ')} |`);
   out.push(`|---${'|---'.repeat(metrics.length)}|`);
   for (const n of rows) {
     const cells = metrics.map((m) => {
-      const v = m.val(n);
-      if (v == null) return m.id in routeNames && r.cells[`${n} ${m.id}`]?.bad ? 'Failed' : 'n/a'; // a cell with failed requests is shown, never ranked
+      const v = m.val(n), c = m.id in routeNames ? r.cells[`${n} ${m.id}`] : null;
+      if (v == null) {
+        if (!c) return 'n/a';
+        if (c.bad || c.failed || c.rps == null) return 'Failed'; // a cell with failed requests is shown, never ranked
+        const why = valid ? cellWhy(c) : drainWhy(c);
+        return isWisp(n) ? `**${m.fmt(c.rps)} (${valid ? 'unranked: ' : ''}${why})**` : `${m.fmt(c.rps)} (${valid ? 'unranked: ' : ''}${why})`;
+      }
       const p = place(m, n);
-      const s = valid ? `${m.fmt(v)} (#${p})` : m.fmt(v);
+      const s = valid ? `${m.fmt(v)} (#${p})` : c && drainWhy(c) ? `${m.fmt(v)} (${drainWhy(c)})` : m.fmt(v);
       return isWisp(n) ? `**${s}**` : s;
     });
     out.push(`| ${isWisp(n) ? `**${n}**` : n} | ${cells.join(' | ')} |`);

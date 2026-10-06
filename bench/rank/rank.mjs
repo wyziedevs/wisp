@@ -9,7 +9,8 @@ import { spawn } from 'node:child_process';
 import { writeFileSync, readFileSync, readdirSync, existsSync, mkdirSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { sleep, hdr, oha as ohaRun, workerdConfig, failedCount, cellOf, badReply, coldOf, benignAbort, redoResets, statTicks, waitIdle } from '../edge/util.mjs';
+import { sleep, hdr, oha as ohaRun, workerdConfig, failedCount, badReply, coldOf, benignAbort, waitIdle } from '../edge/util.mjs';
+import { sumGroupTicks, runOnce, cellRecord } from './lib.mjs';
 
 const arg = (k, d) => { const i = process.argv.indexOf('--' + k); return i > 0 ? process.argv[i + 1] : d; };
 const here = dirname(fileURLToPath(import.meta.url));
@@ -96,14 +97,8 @@ function rss(pid) {
   return Math.round(sum / 1024);
 }
 
-// CPU ticks (user + system) used so far by the server's process group (it runs under setsid, so pgrp = pid).
-function groupTicks(pid) {
-  let sum = 0;
-  for (const d of readdirSync('/proc').filter((x) => /^\d+$/.test(x))) {
-    try { const t = statTicks(readFileSync(`/proc/${d}/stat`, 'utf8')); if (t.pgrp === pid) sum += t.ticks; } catch {}
-  }
-  return sum;
-}
+// CPU ticks (user + system) used so far by the server's process group.
+const groupTicks = (pid) => sumGroupTicks(pid, readdirSync('/proc').filter((x) => /^\d+$/.test(x)).map((d) => () => readFileSync(`/proc/${d}/stat`, 'utf8')));
 
 // Same answers whatever the framework (badReply in ../edge/util.mjs).
 async function check(a) {
@@ -172,19 +167,15 @@ try {
     // Before every try the server must be idle (under 5% of a core over 2 s, the rule of ../tfb/run.sh); the seconds waited
     // go in `drain_s`, and -1 means it was still busy after 60 s and the run went ahead.
     const resets = live.map(() => 0), redos = live.map(() => []), drains = live.map(() => []);
-    const resetOnly = (r) => r.bad > 0 && Object.keys(r.errs).every((e) => e === 'connection error');
     for (let i = 0; i < runs; i++) for (const [k, a] of live.entries()) {
-      const { r, tries } = await redoResets(async () => {
-        drains[k].push(await waitIdle(() => groupTicks(a.child.pid)));
-        return oha(a, p, secs);
-      }, resetOnly);
-      if (tries.length > 1) { resets[k] += tries.slice(0, -1).reduce((n, x) => n + x.bad, 0); redos[k].push({ run: i + 1, tries: tries.map((x) => ({ rps: Math.round(x.rps), bad: x.bad })) }); }
-      rs[k].push(r);
+      const o = await runOnce({ run: () => oha(a, p, secs), idle: () => waitIdle(() => groupTicks(a.child.pid)), run_no: i + 1 });
+      drains[k].push(...o.drains);
+      resets[k] += o.resets;
+      if (o.redo) redos[k].push(o.redo);
+      rs[k].push(o.r);
     }
     live.forEach((a, k) => {
-      // Any failed request: no req/s (null), `failed: true`; report.mjs prints Failed and does not rank it.
-      const c = cellOf(rs[k]);
-      res.cells[`${a.name} ${p}`] = { rps: c.rps == null ? null : Math.round(c.rps), p99: c.p99, runs: rs[k].map((r) => Math.round(r.rps)), bad: c.bad, ...(resets[k] && { resets: resets[k] }), ...(redos[k].length && { redos: redos[k] }), drain_s: drains[k], ...(c.failed && { errors: rs[k].map((r) => r.errs) }), ...(c.failed && { failed: true }) };
+      res.cells[`${a.name} ${p}`] = cellRecord(rs[k], { resets: resets[k], redos: redos[k], drains: drains[k] });
       console.log(host, a.name, p, JSON.stringify(res.cells[`${a.name} ${p}`]));
     });
     save();

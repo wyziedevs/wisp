@@ -9,9 +9,9 @@ import { execFileSync } from 'node:child_process';
 
 test('a cell with failed requests prints Failed and is not ranked; cold n is stated', () => {
   const d = mkdtempSync(join(tmpdir(), 'rank-'));
-  const cell = (rps, bad = 0) => ({ rps, p99: 1, runs: [rps], bad, ...(bad && { failed: true }) });
+  const cell = (rps, bad = 0) => ({ rps, p99: 1, runs: [rps, rps, rps], drain_s: [0, 0, 0], bad, ...(bad && { failed: true }) });
   writeFileSync(join(d, 'node.json'), JSON.stringify({
-    host: 'node', when: '2026-01-01T00:00:00Z', secs: '1', runs: 1, conns: '64', colds: 15, valid: true,
+    host: 'node', when: '2026-01-01T00:00:00Z', secs: '1', runs: 1, conns: '64', colds: 15, steal: { mean: 0, max: 0, samples: 3 },
     cells: { 'wisp raw /': cell(900), 'hono /': cell(null, 5), 'fastify /': cell(500) },
     cold: { 'wisp raw': { median: 10, min: 9, n: 15 }, hono: { median: 20, min: 18, n: 11 }, fastify: { median: 30, min: 29, n: 15 } },
     rss: {}, failed: {},
@@ -28,11 +28,60 @@ test('a cell with failed requests prints Failed and is not ranked; cold n is sta
 test('a file with a recorded drain and redos states both', () => {
   const d = mkdtempSync(join(tmpdir(), 'rank-'));
   writeFileSync(join(d, 'node.json'), JSON.stringify({
-    host: 'node', when: '2026-01-01T00:00:00Z', secs: '1', runs: 1, conns: '64', colds: 15, valid: true, drain: 'server under 5% of a core',
+    host: 'node', when: '2026-01-01T00:00:00Z', secs: '1', runs: 1, conns: '64', colds: 15, drain: 'server under 5% of a core',
     cells: { 'wisp raw /': { rps: 900, p99: 1, runs: [900], bad: 0, resets: 4, redos: [{ run: 1, tries: [{ rps: 100, bad: 4 }, { rps: 900, bad: 0 }] }] } },
     cold: { 'wisp raw': { median: 10, min: 9, n: 15 } }, rss: {}, failed: {},
   }));
   const out = execFileSync(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), 'report.mjs'), d]).toString();
   assert.match(out, /before every run: server under 5% of a core/);
   assert.match(out, /run 1: 100 then 900 req\/s/);
+});
+
+// Validity is derived from the data (steal, 3 runs, no failures, drain reached), never from a stored `valid` flag.
+const render = (file) => {
+  const d = mkdtempSync(join(tmpdir(), 'rank-'));
+  writeFileSync(join(d, 'node.json'), JSON.stringify({ host: 'node', when: '2026-01-01T00:00:00Z', secs: '1', runs: 3, conns: '64', colds: 15, drain: 'x', cold: {}, rss: {}, failed: {}, ...file }));
+  return execFileSync(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), 'report.mjs'), d]).toString();
+};
+const good = (rps, drain = [0, 0, 0]) => ({ rps, p99: 1, runs: [rps, rps, rps], bad: 0, drain_s: drain });
+const steal = (mean) => ({ mean, max: mean, samples: 9 });
+
+test('a stored valid flag is not trusted: no steal data means no places', () => {
+  const out = render({ valid: true, cells: { 'wisp raw /': good(900), 'hono /': good(500) } });
+  assert.doesNotMatch(out, /#1/);
+  assert.match(out, /Not ranked: no steal data/);
+});
+
+test('steal over 10% means no places even when the file says valid', () => {
+  const out = render({ valid: true, steal: steal(12), cells: { 'wisp raw /': good(900), 'hono /': good(500) } });
+  assert.doesNotMatch(out, /#1/);
+  assert.match(out, /Not ranked: .*steal mean 12%/);
+});
+
+test('valid is derived from the data when the flag is absent', () => {
+  const out = render({ steal: steal(0.5), cells: { 'wisp raw /': good(900), 'hono /': good(500) } });
+  assert.match(out, /\*\*900 \(#1\)\*\*/);
+  assert.match(out, /hono \| 500 \(#2\)/);
+});
+
+test('drain_s -1 shows not idle and the cell is unranked with the reason', () => {
+  const out = render({ steal: steal(0), cells: { 'wisp raw /': good(900), 'hono /': good(950, [0, -1, 0]), 'fastify /': good(500) } });
+  assert.match(out, /hono \| 950 \(unranked: not idle\)/);
+  assert.match(out, /\*\*900 \(#1\)\*\*/);
+  assert.match(out, /fastify \| 500 \(#2\)/);
+});
+
+test('missing drain_s shows no drain and is unranked; fewer than 3 runs is unranked', () => {
+  const nod = { rps: 700, p99: 1, runs: [700, 700, 700], bad: 0 };
+  const two = { rps: 800, p99: 1, runs: [800, 800], bad: 0, drain_s: [0, 0] };
+  const out = render({ steal: steal(0), cells: { 'wisp raw /': good(900), 'hono /': nod, 'fastify /': two } });
+  assert.match(out, /hono \| 700 \(unranked: no drain\)/);
+  assert.match(out, /fastify \| 800 \(unranked: 2 valid runs\)/);
+  assert.match(out, /\*\*900 \(#1\)\*\*/);
+});
+
+test('an unranked host still marks not idle / no drain per cell', () => {
+  const out = render({ cells: { 'wisp raw /': good(900, [-1, 0, 0]), 'hono /': { rps: 500, p99: 1, runs: [500, 500, 500], bad: 0 } } });
+  assert.match(out, /900 \(not idle\)/);
+  assert.match(out, /500 \(no drain\)/);
 });
