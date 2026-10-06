@@ -1,4 +1,4 @@
-// node --test bench/build
+// node --test bench/build/lib.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';

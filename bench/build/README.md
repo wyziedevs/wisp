@@ -1,7 +1,7 @@
 # Build time and dev reload
 
 Pure data and a generator. `measure.mjs` runs on the Linux box and writes `results/<contender>.json`; `report.mjs` derives
-every rank and the markdown table from those files (`node report.mjs > results/report.md`). `node --test bench/build` tests the generator.
+every rank and the markdown table from those files (`node report.mjs > results/report.md`). `node --test bench/build/lib.test.mjs` tests the generator.
 
 `gen.sh` and `run.sh` (older) time one Wisp app with N generated routes; they are not part of this comparison.
 
@@ -35,7 +35,7 @@ median, and ties share a rank. A stored flag is never read: `cellWhy` in `lib.mj
 ## Run
 
 ```
-node --test bench/build
+node --test bench/build/lib.test.mjs
 scp the repo, then on the box:   node bench/build/measure.mjs run wisp --runs 3
 node bench/build/report.mjs > bench/build/results/report.md
 ```
