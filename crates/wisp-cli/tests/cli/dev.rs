@@ -319,6 +319,20 @@ data: 2 errors. The first is in src/hooks.rs on line 2.",
     );
     assert_eq!(get(&addr, "/about").0, 200);
 
+    // A save that changes no code builds nothing; one
+    // that does rebuilds, without cargo once it has seen how cargo ran rustc.
+    // Not moved (a comment after the code): nothing. Moved: `line!()` and
+    // panic locations change, so it rebuilds.
+    write(&app, "src/hooks.rs", "fn init() {} // Nothing to do.\n");
+    dev.wait_for("no code changed");
+    write(&app, "src/hooks.rs", "// Nothing to do.\nfn init() {}\n");
+    addr = address(&dev.wait_for("Rebuilt at http://"));
+    assert_eq!(get(&addr, "/about").0, 200);
+    write(&app, "src/hooks.rs", "fn init() { let _unused = 1; }\n");
+    addr = address(&dev.wait_for("Rebuilt at http://"));
+    assert_eq!(get(&addr, "/about").0, 200);
+    assert!(app.join(".wisp/run/rustc").is_file());
+
     // The server's `wisp::env` reads `.env`, again when it changes; a line
     // that is not `KEY=value` is a warning.
     write(

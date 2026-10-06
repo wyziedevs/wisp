@@ -22,6 +22,7 @@ mod new;
 mod npm;
 mod og;
 mod openapi_cmd;
+mod quick;
 mod recipe;
 mod routes_cmd;
 mod scaffold;
@@ -197,6 +198,10 @@ fn usage() -> String {
 }
 
 fn main() -> ExitCode {
+    // cargo's rustc wrapper, for `wisp dev` (see quick.rs)
+    if let Some(code) = quick::wrap() {
+        return code;
+    }
     // `std::env::args` panics on an argument that is not UTF-8.
     let args: Result<Vec<String>, _> = std::env::args_os()
         .skip(1)

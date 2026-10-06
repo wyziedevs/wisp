@@ -318,25 +318,8 @@ fn run(
                 let Some(diag) = msg.get("message") else {
                     return;
                 };
-                let Some(text) = diag.str("rendered") else {
-                    return;
-                };
-                let text = tidy(text);
-                let plain = strip_ansi(&text);
-                let retold = from_template(diag, &plain, root);
-                match &retold {
-                    Some(t) if term::color() => eprint!("{}", colorize(t)),
-                    Some(t) => eprint!("{t}"),
-                    None if term::color() => eprint!("{text}"),
-                    None => eprint!("{plain}"),
-                }
-                if diag.str("level") == Some("error") {
-                    let plain = retold.unwrap_or(plain);
-                    b.count += 1;
-                    if b.first.is_none() {
-                        b.first = location(&plain);
-                    }
-                    b.errors.push_str(&plain);
+                if let Some(shown) = diagnostic(&mut b, diag, root) {
+                    eprint!("{shown}");
                 }
             }
             Some("compiler-artifact") => {
@@ -364,6 +347,30 @@ fn run(
         ));
     }
     b
+}
+
+/// A diagnostic of rustc (`message` of cargo's `compiler-message`, or a line
+/// of rustc's own JSON): counted into `b` when it is an error, and the text
+/// to show for it, retold against the template when it came from one.
+pub fn diagnostic(b: &mut Build, diag: &Json, root: &Path) -> Option<String> {
+    let text = tidy(diag.str("rendered")?);
+    let plain = strip_ansi(&text);
+    let retold = from_template(diag, &plain, root);
+    let shown = match &retold {
+        Some(t) if term::color() => colorize(t),
+        Some(t) => t.clone(),
+        None if term::color() => text,
+        None => plain.clone(),
+    };
+    if diag.str("level") == Some("error") {
+        let plain = retold.unwrap_or(plain);
+        b.count += 1;
+        if b.first.is_none() {
+            b.first = location(&plain);
+        }
+        b.errors.push_str(&plain);
+    }
+    Some(shown)
 }
 
 /// The `name` under `[package]` in the app's Cargo.toml.

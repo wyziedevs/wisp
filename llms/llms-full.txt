@@ -580,7 +580,9 @@ no-wait fast path off every route.
 
 ## Commands
 
-`wisp new app [--template demo|minimal|api]` · `wisp dev` (hot reload keeps
+`wisp new app [--template demo|minimal|api]` · `wisp dev` (a Rust save compiles
+without cargo, one that changes no code builds nothing, `WISP_DEV_CARGO=1` keeps
+cargo; hot reload keeps
 `$state`; every open tab updates after each rebuild, once the new app answers,
 a tab that missed one reloads on reconnecting, a failed build's error shows in
 tabs opened later; error dialog opens `file:line` in the editor, also for a handler's panic;
@@ -2448,7 +2450,7 @@ In order: ultra fast, cheap, durable, flexible; developer happiness last.
 5. **Boring code**: plain functions and data; abstractions only where they remove more code than they add; invariants asserted.
 6. **Safe**: no unsafe code in the compiler, the CLI or an app's generated code (workspace lint `forbid`). The runtime has it only in the Linux I/O drivers and the edge exports, each block with its reason; the benchmark runner, which pins processes to CPUs through the OS, sets its own.
 7. **Mistakes fail early, in the user's file**: the build checks what it can and says where and what to do (a private `load`, an `#[action]` in the wrong place, `page.wisp` without its `+`, a block leaving a tag open in one branch). rustc only points at code the user wrote.
-8. **Fast dev loop**: editing markup never waits for `cargo`; editing Rust rebuilds only the app crate.
+8. **Fast dev loop**: editing markup never waits for `cargo`; editing Rust compiles only the app crate, with `rustc` run directly (`wisp dev`: [design](/docs/design-cli/)); a save that changes no code builds nothing.
 9. **Works without JavaScript**: forms and links are real; `wisp.js` enhances, never required.
 
 ## Dependency Budget
@@ -2521,7 +2523,9 @@ One std-only process. `wisp dev [--port <n> | --port=<n> | -p <n>]`; anything el
 
 - **Watching.** Polls mtimes of `src/`, `static/`, `Cargo.toml`, `build.rs`, `package.json` and `postcss.config.*` every 50 ms (no `notify`). Dot folders (except `static/.well-known`), `target` and `node_modules` are skipped; top-level files are read from one folder listing, symlinks followed. Editors' swap, backup and lock files are ignored; a file settles once it is quiet for 25 ms, and a burst settles for at most a second. Only a modified template swaps in; a template added, removed or renamed, or any `.rs` or `Cargo.toml` change, is a compile.
 - **Port.** The app gets `HOST=127.0.0.1` unless `HOST` is set; the printed address is the one shown and used for hot swaps (port 0 works). A port in use moves the first start to the next free one, up to 20 more (the app binds it itself, `WISP_PORT_TRIES`, so nothing can take it between), with a line saying so. `wisp build` servers never move.
-- **Build and restart.** Builds with `cargo build`, copies the exe to `.wisp/run/` (so the next build can overwrite the original while the old server serves), restarts it. Ready when the app prints its `listening on` line: the CLI reads the app's stdout rather than polling (a refused connect takes 2 s on Windows). Output is read as bytes until the pipe closes, so a non-UTF-8 line never cuts the app off.
+- **Build and restart.** Builds with `cargo build` (the first build, and any change that is not a `.rs` or `.wisp` file under `src`: `Cargo.toml`, `.env`, `package.json`, `static/`, `src/app.html`), copies the exe to `.wisp/run/` (so the next build can overwrite the original while the old server serves), restarts it. Ready when the app prints its `listening on` line: the CLI reads the app's stdout rather than polling (a refused connect takes 2 s on Windows). Output is read as bytes until the pipe closes, so a non-UTF-8 line never cuts the app off.
+- **Rust edits skip cargo.** Cargo's own start and the build script's run cost about 0.15 s on a small app and 0.3 s on a large one, and the build script only repeats what `wisp dev` has just generated. So the CLI runs `cargo build` as cargo's `RUSTC_WRAPPER` the first time (itself, `wisp <rustc> <args>`), which records how cargo ran rustc for the app's binary (arguments, the `CARGO_PKG_*` and `OUT_DIR` variables, no other environment) to `.wisp/run/rustc`. Later saves of the app's own `.rs` and `.wisp` files write the generated code to `OUT_DIR/wisp.rs` and run that rustc command again: same incremental cache, same arguments, output read as rustc's JSON like cargo's. It falls back to cargo, which also records again, when the app has plugins or `extends`, a `src/lib.rs`, a `build.rs` other than `wisp_build::run()`, a rustc wrapper (`RUSTC_WRAPPER`, or `rustc-wrapper` in a cargo config), when a change is anything else, and when a failure names none of the app's files. `WISP_DEV_CARGO=1` always uses cargo. On Windows the replay links with the `rust-lld` that ships with rustc (`-C linker=rust-lld`), about 0.1 s faster than `link.exe`; a link that fails is tried again with the default linker, and not tried with `rust-lld` again. cargo's fingerprints are not updated, so the first cargo build after a session of such saves compiles the app once more. Measured on Windows 10 (medians of two runs of 12 saves of one `.rs` string or `.wisp` header, 16 jobs, from the CLI's own "Rebuilt in" and a trace of the same line): the demo app 0.75 s with cargo, 0.58 s without; a four-route app with auth and uploads 0.72 s, 0.54 s; the demo with 20 more copies of its largest route (21 routes, 7,000 lines of generated Rust) 1.24 s, 0.92 s. The rest is rustc itself: it reads the whole crate again on every edit (about 0.5 s of the large app's, with nothing changed), then links.
+- **Saves that change no code build nothing.** A `.rs` file saved with the same tokens (a formatter, a comment; doc comments and every character of a literal count) prints `no code changed`, and the running app stays, state and all. Only after a build that succeeded: a failed one is built again.
 - **Children die with the CLI.** The app's stdin is a pipe the CLI holds; when it closes (however `wisp dev` ends, even `kill -9`) the app exits (`exit_with_parent`), freeing the port. A CSS watcher runs under `wisp __child <exe> <args...>`, which kills the tool then.
 - **Reload.** Serves a Server-Sent Events stream on its own port. Browsers stay connected across restarts and are told to morph/reload once the new app is ready.
 - **Output.** Cargo progress on the first build, then one line per change (`~ src/routes/+page.wisp  swapped in 0ms`, `✓ Rebuilt in 0.3s`). Compiler errors have paths relative to the app and no generated module names (`Data`, not `page_3::Data`). An error rustc finds in template-generated code is retold against the template's line; an action that returns a value is caught before compiling, against `+page.rs`.
@@ -3924,6 +3928,7 @@ Not for you to set. `wisp build` and the host bridges set them for the app they 
 |---|---|
 | `WISP_NO_UPDATE_CHECK` | `1` silences the CLI-older-than-app warning |
 | `WISP_PORT_TRIES` | how many next ports `wisp dev` tries when one is taken (20) |
+| `WISP_DEV_CARGO` | any value: `wisp dev` builds every change with `cargo`, none with `rustc` directly |
 | `WISP_CWEBP` | the `cwebp` `wisp build` uses for images |
 | `WISP_SASS` | the Dart Sass for `src/app.scss` |
 | `WISP_TSC` | the `tsc` for `wisp check --types` |

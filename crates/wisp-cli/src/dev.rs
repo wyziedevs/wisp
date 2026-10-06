@@ -13,12 +13,16 @@
 //! - package.json and .env: rebuild and restart, for the npm packages'
 //!   versions, browser code's `env.PUBLIC_*` and the server's `wisp::env`.
 //! - `static/`: tell browsers to reload.
+//! - a `.rs` file saved with the same code (a formatter, a comment): nothing.
 //! - anything else (Rust, Cargo.toml, new/removed routes): rebuild, restart,
-//!   and let browsers morph to the new page.
+//!   and let browsers morph to the new page. Edits to the app's own `.rs`
+//!   and `.wisp` files compile without cargo, `rustc` run as cargo ran it
+//!   (`quick`).
 
 use crate::cargo;
 use crate::css;
 use crate::events::Events;
+use crate::quick::{self, Quick};
 use crate::term;
 use std::collections::HashMap;
 use std::fs;
@@ -50,6 +54,7 @@ pub fn run(root: &Path, port: u16) -> Result<(), String> {
     let mut watchers = css::watch(root, &style)?;
     let mut app = Server {
         root: root.to_path_buf(),
+        abs: std::path::absolute(root).unwrap_or_else(|_| root.to_path_buf()),
         port,
         events_port: events.port,
         child: None,
@@ -69,8 +74,19 @@ pub fn run(root: &Path, port: u16) -> Result<(), String> {
     );
     let mut files = scan(root);
     term::step("Building");
+    let mut fast = Fast {
+        recipe: None,
+        lld: true,
+    };
     // The app as the running build has it, for what can be swapped in.
-    let mut base = rebuild(&mut app, &events, root, true, "");
+    let mut base = rebuild(&mut app, &events, root, true, "", &mut fast, false);
+    // Whether the running app is the last save, and what each Rust file's
+    // code is, to tell a save that changes none.
+    let mut clean = base.is_some();
+    let mut codes: HashMap<String, u64> = (files.keys())
+        .filter(|rel| rel.ends_with(".rs"))
+        .filter_map(|rel| Some((rel.clone(), code_hash(root, rel)?)))
+        .collect();
     let mut had_styles = wisp_build::write_styles(root).is_ok_and(|(_, any)| any);
 
     loop {
@@ -103,8 +119,27 @@ pub fn run(root: &Path, port: u16) -> Result<(), String> {
             }
         }
         let started = Instant::now();
+        // A formatter or a comment: the same program, nothing to build.
+        let mut same = clean && !changed.is_empty();
+        for (rel, kind) in &changed {
+            if !rel.ends_with(".rs") {
+                same = false;
+                continue;
+            }
+            let now = code_hash(root, rel);
+            let was = match now {
+                Some(h) => codes.insert(rel.clone(), h),
+                None => codes.remove(rel),
+            };
+            same &= *kind == Change::Modified && now.is_some() && now == was;
+        }
         let names: Vec<_> = changed.iter().map(|(p, _)| p.as_str()).collect();
         let names = names.join(", ");
+        if same {
+            term::changed(&names, "no code changed");
+            continue;
+        }
+        let direct = own_sources(&changed);
 
         let Plan {
             rebuild: mut rebuild_needed,
@@ -160,7 +195,9 @@ pub fn run(root: &Path, port: u16) -> Result<(), String> {
         }
         if rebuild_needed {
             term::changed(&names, "");
-            if let Some(next) = rebuild(&mut app, &events, root, false, &why) {
+            let built = rebuild(&mut app, &events, root, false, &why, &mut fast, direct);
+            clean = built.is_some();
+            if let Some(next) = built {
                 base = Some(next);
             }
         } else if full {
@@ -218,12 +255,16 @@ fn rebuild(
     root: &Path,
     first: bool,
     why: &str,
+    fast: &mut Fast,
+    direct: bool,
 ) -> Option<wisp_build::Hot> {
     let started = Instant::now();
     events.send("building", "");
     // Route and template errors are found in milliseconds without cargo.
     // Taken before cargo reads the files: a save meanwhile is a change to it.
-    let hot = match wisp_build::hot(root) {
+    // Absolute: the code names the app's files, and is compiled from
+    // another folder when cargo does not.
+    let mut hot = match wisp_build::hot(&app.abs) {
         Ok(hot) => hot,
         Err(e) => {
             term::failed(&e);
@@ -240,7 +281,19 @@ fn rebuild(
     for w in &hot.warnings {
         term::warn(w);
     }
-    let build = cargo::build(root, false, !first);
+    // The generated code is only for the compile; what is kept is without.
+    let code = std::mem::take(&mut hot.code);
+    let direct = fast
+        .recipe
+        .as_ref()
+        .filter(|_| direct && quick::possible(root));
+    let build = match direct {
+        Some(recipe) => match quick::build(root, recipe, &code, &mut fast.lld) {
+            Quick::Done(b) => b,
+            Quick::Cargo => cargo_build(root, !first, fast),
+        },
+        None => cargo_build(root, !first, fast),
+    };
     let Some(exe) = build.exe.filter(|_| build.ok) else {
         let errors = if build.count == 1 {
             "1 error".to_string()
@@ -300,6 +353,50 @@ fn rebuild(
             None
         }
     }
+}
+
+/// Whether only the app's own Rust and templates changed: a build of them
+/// needs nothing of cargo's (see quick.rs).
+fn own_sources(changed: &[(String, Change)]) -> bool {
+    (changed.iter()).all(|(rel, _)| {
+        rel.strip_prefix("src/")
+            .is_some_and(|r| r.ends_with(".rs") || r.ends_with(".wisp"))
+    })
+}
+
+/// What rebuilds without cargo keep (see quick.rs).
+struct Fast {
+    /// How cargo last ran rustc for the app.
+    recipe: Option<quick::Recipe>,
+    /// Whether to link with `rust-lld`.
+    lld: bool,
+}
+
+/// A cargo build, which also records how it ran rustc (for the app that
+/// can be built without it).
+fn cargo_build(root: &Path, quiet: bool, fast: &mut Fast) -> cargo::Build {
+    fast.recipe = None;
+    if !quick::possible(root) || !direct_on() {
+        return cargo::build(root, false, quiet);
+    }
+    let b = quick::record(root, quiet);
+    fast.recipe = quick::Recipe::load(root);
+    b
+}
+
+/// Whether saves may build with rustc directly: the default on Windows,
+/// where it is measured and tested; elsewhere only with `WISP_DEV_DIRECT=1`
+/// (experimental). `WISP_DEV_CARGO` turns it off everywhere.
+fn direct_on() -> bool {
+    let set = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
+    !set("WISP_DEV_CARGO")
+        && (cfg!(windows) || std::env::var_os("WISP_DEV_DIRECT").is_some_and(|v| v == "1"))
+}
+
+/// A Rust file's code, as `quick::code_hash` has it.
+fn code_hash(root: &Path, rel: &str) -> Option<u64> {
+    let src = wisp_build::read_source(&root.join(rel)).ok()?;
+    Some(quick::code_hash(&src))
 }
 
 /// Opens the error dialog in every tab: its title, one sentence, the code
@@ -379,10 +476,11 @@ fn hot_swap(app: &Server, base: &mut Option<wisp_build::Hot>, templates: &[&str]
         return Swap::Done(news, all);
     }
     // Browser code changed too.
-    let next = match wisp_build::hot(&app.root) {
+    let mut next = match wisp_build::hot(&app.abs) {
         Ok(next) => next,
         Err(e) => return Swap::Invalid(e),
     };
+    next.code = String::new();
     let Some(old) = base.as_ref() else {
         return Swap::NeedsRebuild(String::new());
     };
@@ -473,6 +571,8 @@ fn why(old: &wisp_build::Hot, next: &wisp_build::Hot, templates: &[&str]) -> Str
 /// replace the original while the old server keeps answering.
 struct Server {
     root: PathBuf,
+    /// `root` from the top of the file system.
+    abs: PathBuf,
     port: u16,
     events_port: u16,
     /// Ports the app may move on by when its own is taken; 0 once it is up.
@@ -792,6 +892,34 @@ mod tests {
         css::Css {
             tool: None,
             postcss: false,
+        }
+    }
+
+    #[test]
+    fn only_own_sources_skip_cargo() {
+        let c = |v: &[&str]| -> Vec<(String, Change)> {
+            v.iter()
+                .map(|p| (p.to_string(), Change::Modified))
+                .collect()
+        };
+        assert!(own_sources(&c(&[
+            "src/routes/+page.rs",
+            "src/routes/a/+page.wisp"
+        ])));
+        assert!(own_sources(&c(&["src/state.rs"])));
+        // What cargo or the build script reads besides: it is cargo's.
+        for f in [
+            "Cargo.toml",
+            "Cargo.lock",
+            "build.rs",
+            ".env",
+            "package.json",
+            "src/app.html",
+            "src/routes/words.txt",
+            "src/routes/post.md",
+            "tests/a.rs",
+        ] {
+            assert!(!own_sources(&c(&["src/routes/+page.rs", f])), "{f}");
         }
     }
 

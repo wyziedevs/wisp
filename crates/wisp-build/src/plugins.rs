@@ -132,7 +132,7 @@ fn base_of(toml: &str) -> Option<String> {
 }
 
 /// The strings of `key = [...]` in `[package.metadata.wisp]`.
-fn list(toml: &str, key: &str) -> Vec<String> {
+pub(crate) fn list(toml: &str, key: &str) -> Vec<String> {
     let mut on = false;
     let mut text = String::new();
     let mut taking = false;
@@ -167,7 +167,7 @@ fn list(toml: &str, key: &str) -> Vec<String> {
 }
 
 /// The crate names of `use = [...]`.
-fn used(toml: &str) -> Vec<String> {
+pub(crate) fn used(toml: &str) -> Vec<String> {
     list(toml, "use")
 }
 

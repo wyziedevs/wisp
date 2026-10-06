@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 /// Every environment variable Wisp reads, and whether an author sets it.
 /// A read the scan finds that is not here fails the test: classify it.
-const ENV: [(&str, bool); 102] = [
+const ENV: [(&str, bool); 109] = [
     ("AWS_LAMBDA_RUNTIME_API", true),
     ("CRON_SECRET", true),
     ("EDITOR", true),
@@ -33,6 +33,8 @@ const ENV: [(&str, bool); 102] = [
     ("WISP_CWEBP", true),
     ("WISP_DATA", true),
     ("WISP_DEV", true),
+    ("WISP_DEV_CARGO", true),
+    ("WISP_DEV_DIRECT", true),
     ("WISP_EDITOR", true),
     ("WISP_FSYNC", true),
     ("WISP_HANDLER_TIMEOUT", true),
@@ -67,6 +69,8 @@ const ENV: [(&str, bool); 102] = [
     ("WISP_PRERENDERED", false),
     ("WISP_REQUEST_ONLY", false),
     ("WISP_RUNTIME_V", false),
+    ("WISP_RUSTC_BIN", false),
+    ("WISP_RUSTC_RECORD", false),
     ("WISP_SOURCEMAP", false),
     ("WISP_SPA", false),
     ("WISP_TAILWIND", false),
@@ -91,13 +95,16 @@ const ENV: [(&str, bool); 102] = [
     ("SECRET", false),
     // The platform, cargo and the terminal.
     ("CARGO", false),
+    ("CARGO_BIN_NAME", false),
     ("CARGO_CFG_DEBUG_ASSERTIONS", false),
+    ("CARGO_CRATE_NAME", false),
     ("CARGO_HOME", false),
     ("CARGO_MANIFEST_DIR", false),
     ("CARGO_NET_OFFLINE", false),
     ("CARGO_PKG_NAME", false),
     ("CARGO_PKG_VERSION", false),
     ("CARGO_PKG_VERSION_MAJOR", false),
+    ("CARGO_PRIMARY_PACKAGE", false),
     ("CARGO_PROFILE_DEV_OPT_LEVEL", false),
     ("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", false),
     ("CARGO_PROFILE_RELEASE_LTO", false),

@@ -127,6 +127,30 @@ pub fn run() {
     }
 }
 
+/// For `wisp dev`, which compiles the app without cargo: writes `code` (a
+/// [`hot`]'s `code`) where the build script would, `out_dir/wisp.rs`.
+/// Unchanged text is left alone; an error says why it could not be written.
+pub fn write_generated(out_dir: &Path, code: &str) -> Result<(), String> {
+    let path = out_dir.join("wisp.rs");
+    if fs::read(&path).is_ok_and(|old| old == code.as_bytes()) {
+        return Ok(());
+    }
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, code)
+        .and_then(|()| fs::rename(&tmp, &path))
+        .map_err(|e| {
+            let _ = fs::remove_file(&tmp);
+            format!("{}: {e}", path.display())
+        })
+}
+
+/// Whether the app has plugins or layers: their routes are copied into
+/// `src` by the build script, which a build without it would miss.
+pub fn has_plugins(root: &Path) -> bool {
+    let toml = fs::read_to_string(root.join("Cargo.toml")).unwrap_or_default();
+    !plugins::used(&toml).is_empty() || !plugins::list(&toml, "extends").is_empty()
+}
+
 /// A source file's text with `\r\n` (Windows checkouts) as `\n` and no byte
 /// order mark, so that a template compiles to the same code either way.
 pub fn read_source(path: &Path) -> std::io::Result<String> {

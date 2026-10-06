@@ -580,7 +580,9 @@ no-wait fast path off every route.
 
 ## Commands
 
-`wisp new app [--template demo|minimal|api]` · `wisp dev` (hot reload keeps
+`wisp new app [--template demo|minimal|api]` · `wisp dev` (on Windows a Rust save compiles
+without cargo, `WISP_DEV_DIRECT=1` elsewhere, experimental; one that changes no
+code and moves none builds nothing, `WISP_DEV_CARGO=1` keeps cargo; hot reload keeps
 `$state`; every open tab updates after each rebuild, once the new app answers,
 a tab that missed one reloads on reconnecting, a failed build's error shows in
 tabs opened later; error dialog opens `file:line` in the editor, also for a handler's panic;

@@ -1030,6 +1030,10 @@ pub struct Hot {
     pub files: Vec<(String, String, String)>,
     /// As [`generate`] gives them.
     pub warnings: Vec<String>,
+    /// The whole generated Rust, what the build script writes to
+    /// `OUT_DIR/wisp.rs`: `wisp dev` writes it itself when it compiles the
+    /// app without cargo.
+    pub code: String,
 }
 
 pub struct HotTemplate {
@@ -1111,6 +1115,7 @@ pub fn hot(input: &Input) -> Result<Hot, String> {
         templates,
         files,
         warnings: p.warnings(),
+        code,
     })
 }
 
