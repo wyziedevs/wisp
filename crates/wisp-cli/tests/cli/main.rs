@@ -1,9 +1,10 @@
 //! End-to-end tests of the `wisp` command: the built binary, run in
 //! throwaway folders with no terminal and no network.
 //!
-//! Builds share one target folder under the system's temp folder, at the
+//! Builds share a target folder under the system's temp folder, at the
 //! lowest optimization, so the dependencies compile once and every later
-//! test (and run) only compiles its own small app.
+//! test (and run) only compiles its own small app. Each run of this file
+//! holds its folder alone (see [`target`]).
 
 mod bridge;
 mod build;
@@ -75,10 +76,7 @@ pub fn command(cwd: &Path) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_wisp"));
     cmd.current_dir(cwd)
         .stdin(Stdio::null())
-        .env(
-            "CARGO_TARGET_DIR",
-            std::env::temp_dir().join("wisp-cli-tests-target"),
-        )
+        .env("CARGO_TARGET_DIR", target())
         .env("CARGO_NET_OFFLINE", "true")
         .env("CARGO_PROFILE_DEV_OPT_LEVEL", "0")
         .env("CARGO_PROFILE_RELEASE_OPT_LEVEL", "0")
@@ -92,6 +90,35 @@ pub fn command(cwd: &Path) -> Command {
         .env_remove("HOST")
         .env_remove("PORT");
     cmd
+}
+
+/// The target folder this run builds in: the first of `wisp-cli-tests-target`,
+/// `-1`, `-2`... whose lock no other run holds. Two runs at once (the gate
+/// beside an agent, two checkouts) must not share one: their apps have the
+/// same names, so cargo reuses one run's build-script output, which names
+/// that run's files, in the other. The lock is held until this run exits,
+/// and the system drops it however the run ends.
+// `File::try_lock` is 1.89, past the MSRV; tests build on the current toolchain.
+#[allow(clippy::incompatible_msrv)]
+fn target() -> &'static Path {
+    static TARGET: std::sync::OnceLock<(fs::File, PathBuf)> = std::sync::OnceLock::new();
+    &TARGET
+        .get_or_init(|| {
+            for n in 0..64 {
+                let name = match n {
+                    0 => "wisp-cli-tests-target".to_string(),
+                    n => format!("wisp-cli-tests-target-{n}"),
+                };
+                let dir = std::env::temp_dir().join(name);
+                fs::create_dir_all(&dir).unwrap();
+                let lock = fs::File::create(dir.join("wisp-cli-tests.lock")).unwrap();
+                if lock.try_lock().is_ok() {
+                    return (lock, dir);
+                }
+            }
+            panic!("64 runs of the cli tests at once hold every target folder");
+        })
+        .1
 }
 
 pub fn wisp(cwd: &Path, args: &[&str]) -> Out {
