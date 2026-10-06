@@ -3,14 +3,16 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@fastify/cookie": "latest",
-    "@hono/node-server": "latest",
-    "cookie-parser": "latest",
-    "elysia": "latest",
-    "express": "latest",
-    "fastify": "latest",
-    "hono": "latest",
-    "itty-router": "latest"
+    "@fastify/cookie": "11.1.2",
+    "@hono/node-server": "2.1.3",
+    "cookie-parser": "1.4.7",
+    "elysia": "1.4.30",
+    "express": "5.2.1",
+    "fastify": "5.12.5",
+    "hono": "4.13.13",
+    "itty-router": "5.0.24"
   },
-  "devDependencies": { "wrangler": "latest" }
+  "devDependencies": {
+    "wrangler": "4.147.0"
+  }
 }
