@@ -1568,5 +1568,15 @@
  },
  "ip_local_port_range": "1024 65535",
  "valid": false,
- "invalid": "steal mean 20.11% during the run (over 10%)"
+ "invalid": "no complete attempt had every run at 10% steal or less (1 attempts; last: host steal mean 20.11%, per-run steal max 48.91%, 28 cells unranked)",
+ "attempts": [
+  {
+   "when": "2026-10-06T08:20:09.751Z",
+   "steal_mean": 20.11,
+   "steal_max": 97,
+   "run_steal_max": 48.91,
+   "unranked_cells": 28,
+   "host_why": "steal mean 20.11% over 10%"
+  }
+ ]
 }

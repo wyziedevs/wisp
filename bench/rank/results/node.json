@@ -1486,5 +1486,16 @@
   "col": "st"
  },
  "ip_local_port_range": "1024 65535",
- "valid": true
+ "valid": false,
+ "attempts": [
+  {
+   "when": "2026-10-06T07:07:23.019Z",
+   "steal_mean": 9.18,
+   "steal_max": 65,
+   "run_steal_max": 37.4,
+   "unranked_cells": 19,
+   "host_why": null
+  }
+ ],
+ "invalid": "no complete attempt had every run at 10% steal or less (1 attempts; last: host steal mean 9.18%, per-run steal max 37.4%, 19 cells unranked)"
 }
