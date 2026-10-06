@@ -89,7 +89,11 @@
   // `{#await}` answers, streamed after a page: each in its place, its
   // instances added to the page's, as protocol.rs's AWAIT_JS does in a page
   // loaded whole. Its script goes, so it does not run again.
+  // DOMParser parses with scripting off, so a <noscript>'s content comes out
+  // live (a `<style>` hiding JS-only controls would apply): back to text,
+  // as the page loaded whole has it.
   function answers(doc) {
+    for (const n of doc.querySelectorAll('noscript')) n.textContent = n.innerHTML;
     for (const d of doc.querySelectorAll('[data-wisp-await]')) {
       const j = d.querySelector('[data-wisp-live]');
       const L = doc.getElementById('wisp-live');
