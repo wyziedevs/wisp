@@ -120,3 +120,19 @@ test('a cell with failed requests is never ranked even if the file kept a req/s'
   assert.match(out, /hono \| Failed \|/);
   assert.match(out, /\*\*900 \(#1\)\*\*/);
 });
+
+test('report prints the provenance of a host file and exact rps rounds only for display', () => {
+  const out = render({ steal: steal(1), prov: { wisp_commit: 'abc1234', build_date: '2026-10-06', kernel: '6.1.0-x', ip_local_port_range: '32768 60999', versions: { node: 'v22.1.0', bun: null }, contenders: { micro: { hono: '4.6.1', fastify: '5.0.0' } } },
+    cells: { 'wisp raw /': good(1234.5678), 'hono /': good(500.4) } });
+  assert.match(out, /Wisp abc1234/);
+  assert.match(out, /built 2026-10-06/);
+  assert.match(out, /kernel 6\.1\.0-x/);
+  assert.match(out, /node v22\.1\.0/);
+  assert.match(out, /hono 4\.6\.1/);
+  assert.match(out, /\*\*1,235 \(#1\)\*\*/);
+  assert.match(out, /hono \| 500 \(#2\)/);
+});
+
+test('a file without provenance says so', () => {
+  assert.match(render({ steal: steal(1), cells: { 'wisp raw /': good(900) } }), /provenance not recorded/);
+});

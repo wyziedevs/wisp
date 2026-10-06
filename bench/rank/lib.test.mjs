@@ -86,3 +86,40 @@ test('parseVmstat takes steal from the st column, not wa (header-driven; 16 with
   const b = parseVmstat(' 1 0 0 1 1 1 0 0 0 0 1 1 5 3 88 6 4 0');
   assert.equal(b[0].st, 4);
 });
+
+import { npmVersions, provenance } from './lib.mjs';
+
+test('cellRecord stores the exact median req/s, not a rounded one', () => {
+  const c = cellRecord([r(100.25), r(300.75), r(200.5)], { resets: 0, redos: [], drains: [0, 0, 0] });
+  assert.equal(c.rps, 200.5);
+  assert.deepEqual(c.runs, [100.25, 300.75, 200.5]);
+  const e = cellRecord([r(1.123456789), r(2.987654321), r(2.000000001)], { resets: 0, redos: [], drains: [0, 0, 0] });
+  assert.equal(e.rps, 2.000000001);
+});
+
+test('npmVersions flattens `npm ls --depth=0 --json`', () => {
+  const j = { name: 'x', dependencies: { hono: { version: '4.6.1' }, fastify: { version: '5.0.0' }, bad: {} } };
+  assert.deepEqual(npmVersions(j), { hono: '4.6.1', fastify: '5.0.0' });
+  assert.deepEqual(npmVersions({}), {});
+  assert.deepEqual(npmVersions(null), {});
+});
+
+test('provenance gathers runtimes, kernel, port range and the build record; a failing probe is null', () => {
+  const sh = { 'uname -r': '6.1.0-x\n', 'node --version': 'v22.1.0\n', 'bun --version': '1.2.3\n', 'deno --version': 'deno 2.1.0 (stable)\nv8 13\n' };
+  const files = {
+    '/out/provenance.json': JSON.stringify({ wisp_commit: 'abc1234', build_date: '2026-10-06', contenders: { micro: { hono: '4.6.1' } } }),
+    '/proc/sys/net/ipv4/ip_local_port_range': '32768\t60999\n',
+  };
+  const p = provenance({
+    out: '/out',
+    exec: (c) => { if (c in sh) return sh[c]; throw new Error('no ' + c); },
+    read: (f) => { if (f in files) return files[f]; throw new Error('no ' + f); },
+    workerd: '/w/workerd',
+  });
+  assert.equal(p.wisp_commit, 'abc1234');
+  assert.equal(p.build_date, '2026-10-06');
+  assert.deepEqual(p.contenders, { micro: { hono: '4.6.1' } });
+  assert.equal(p.kernel, '6.1.0-x');
+  assert.equal(p.ip_local_port_range, '32768 60999');
+  assert.deepEqual(p.versions, { node: 'v22.1.0', bun: '1.2.3', deno: '2.1.0', workerd: null });
+});

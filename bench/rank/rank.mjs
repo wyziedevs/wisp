@@ -10,7 +10,8 @@ import { writeFileSync, readFileSync, readdirSync, existsSync, mkdirSync } from 
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { sleep, hdr, oha as ohaRun, workerdConfig, failedCount, badReply, coldOf, benignAbort, waitIdle } from '../edge/util.mjs';
-import { sumGroupTicks, runOnce, cellRecord } from './lib.mjs';
+import { execSync } from 'node:child_process';
+import { sumGroupTicks, runOnce, cellRecord, provenance } from './lib.mjs';
 
 const arg = (k, d) => { const i = process.argv.indexOf('--' + k); return i > 0 ? process.argv[i + 1] : d; };
 const here = dirname(fileURLToPath(import.meta.url));
@@ -130,7 +131,7 @@ function oha(a, path, s) {
   return { rps: j.summary.requestsPerSec, p99: j.latencyPercentiles.p99 * 1000, bad: failedCount(j, conns), errs: { ...Object.fromEntries(Object.entries(j.errorDistribution || {}).filter(([k, v]) => !benignAbort(k, v, conns))), ...Object.fromEntries(Object.entries(j.statusCodeDistribution || {}).filter(([k]) => k !== '200')) } };
 }
 
-const res = { host, when: new Date().toISOString(), drain: 'server under 5% of a core over 2 s before every try, 60 s at most', secs, runs, conns, colds, cells: {}, cold: {}, rss: {}, failed: {} };
+const res = { host, when: new Date().toISOString(), drain: 'server under 5% of a core over 2 s before every try, 60 s at most', secs, runs, conns, colds, prov: provenance({ out, exec: (c) => execSync(c.replace(/^(bun|deno|workerd)/, (m) => bin(m)), { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }), read: (f) => readFileSync(f, 'utf8'), workerd: bin('workerd') }), cells: {}, cold: {}, rss: {}, failed: {} };
 mkdirSync(join(here, 'results'), { recursive: true });
 const save = () => writeFileSync(join(here, 'results', `${host}.json`), JSON.stringify(res, null, 1));
 const live = [];

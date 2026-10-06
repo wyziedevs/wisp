@@ -9,6 +9,7 @@
 /go/go.sum
 node_modules/
 package-lock.json
+!rank/apps/*/package-lock.json
 /node/sveltekit/build/
 /node/sveltekit/.svelte-kit/
 /node/nextjs/.next/

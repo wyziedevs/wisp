@@ -1,8 +1,8 @@
 #!/bin/sh
-# Installs and builds every framework app of the ranking bench into out/.
+# Installs (npm ci from the committed lockfiles) and builds every framework app of the ranking bench into out/.
 # Run on the Linux box (node >= 20, npm, bun and deno on PATH or in BUN_BIN /
 # DENO_BIN). Wisp's builds (build-wisp.sh) are expected in out/wisp-* already.
-#   sh build.sh            everything
+#   WISP_COMMIT=<sha of the Wisp build in out/> sh build.sh   everything (the sha goes in out/provenance.json)
 #   sh build.sh micro rr   only those (micro sveltekit next astro rr fresh)
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
@@ -21,7 +21,7 @@ bundle() { # <app dir> <wrangler config> <out dir> <compat flags, json list>
 if has micro; then
   cp ../edge/apps/hono/app.mjs apps/micro/hono-app.mjs
   common apps/micro
-  (cd apps/micro && npm i --no-audit --no-fund --silent)
+  (cd apps/micro && npm ci --no-audit --no-fund --silent)
   rm -rf out/micro && mkdir out/micro
   cp apps/micro/*.mjs apps/micro/*.ts apps/micro/package.json out/micro/
   ln -sfn "$here/apps/micro/node_modules" out/micro/node_modules
@@ -34,7 +34,7 @@ fi
 
 if has sveltekit; then
   mkdir -p apps/sveltekit/src/lib && common apps/sveltekit/src/lib
-  (cd apps/sveltekit && npm i --no-audit --no-fund --silent)
+  (cd apps/sveltekit && npm ci --no-audit --no-fund --silent)
   (cd apps/sveltekit && rm -rf build .svelte-kit && npx vite build >/dev/null)
   rm -rf out/sveltekit-node && cp -r apps/sveltekit/build out/sveltekit-node
   cp apps/sveltekit/package.json out/sveltekit-node/package.json
@@ -45,7 +45,7 @@ fi
 
 if has next; then
   mkdir -p apps/next/lib && common apps/next/lib
-  (cd apps/next && npm i --no-audit --no-fund --silent && rm -rf .next .open-next && npx next build >/dev/null)
+  (cd apps/next && npm ci --no-audit --no-fund --silent && rm -rf .next .open-next && npx next build >/dev/null)
   rm -rf out/next-node && cp -r apps/next/.next/standalone out/next-node
   mkdir -p out/next-node/.next && cp -r apps/next/.next/static out/next-node/.next/static
   # opennext reuses the build; skipped with a note when it fails
@@ -58,7 +58,7 @@ fi
 
 if has astro; then
   common apps/astro/src
-  (cd apps/astro && npm i --no-audit --no-fund --silent && rm -rf dist && npx astro build >/dev/null)
+  (cd apps/astro && npm ci --no-audit --no-fund --silent && rm -rf dist && npx astro build >/dev/null)
   # the adapter writes a ready worker (no_bundle: entry.mjs plus chunks)
   rm -rf out/astro-cf && cp -r apps/astro/dist/server out/astro-cf
   echo '{"entry":"entry.mjs","date":"2025-09-01","flags":[]}' > out/astro-cf/meta.json
@@ -66,7 +66,7 @@ fi
 
 if has rr; then
   common apps/rr/app
-  (cd apps/rr && npm i --no-audit --no-fund --silent && rm -rf build && npx react-router build >/dev/null)
+  (cd apps/rr && npm ci --no-audit --no-fund --silent && rm -rf build && npx react-router build >/dev/null)
   bundle "$here/apps/rr" build/server/wrangler.json "$here/out/rr-cf" index.js '["nodejs_compat"]'
 fi
 if has fresh; then
@@ -74,4 +74,5 @@ if has fresh; then
   (cd apps/fresh && "${DENO_BIN:-deno}" install >/dev/null 2>&1 && rm -rf _fresh && "${DENO_BIN:-deno}" task build >/dev/null 2>&1)
   rm -rf out/fresh && ln -sfn "$here/apps/fresh" out/fresh
 fi
+WISP_COMMIT="${WISP_COMMIT:-}" node provenance.mjs "$WISP_COMMIT"
 echo "built: $apps"

@@ -21,12 +21,20 @@ const resetNote = (r) => {
 const drainNote = (r) => `; ${r.drain ? `before every run: ${r.drain}` : 'no wait-for-idle before runs (not recorded in this file)'}`;
 // Per-run steal (mark.mjs): the worst run's steal, or the label for a file that has none.
 const stealNote = (r) => { const s = Object.values(r.cells).map((c) => c.steal_runs); return s.every((x) => Array.isArray(x)) ? `; per-run steal max ${Math.max(0, ...s.flat().filter((x) => x != null))}%` : '; no per-run steal (not recorded in this file)'; };
+// Provenance (rank.mjs `prov`): the Wisp commit and build date, runtime and contender versions, kernel.
+const provNote = (r) => {
+  const p = r.prov;
+  if (!p) return 'provenance not recorded in this file';
+  const v = Object.entries(p.versions || {}).filter(([, x]) => x).map(([k, x]) => `${k} ${x}`);
+  const c = Object.values(p.contenders || {}).flatMap((o) => Object.entries(o).map(([k, x]) => `${k} ${x}`));
+  return `Wisp ${p.wisp_commit || 'unknown'} built ${p.build_date || 'unknown'}; kernel ${p.kernel || 'unknown'}; ${v.join(', ') || 'no runtime versions'}; contenders ${[...new Set(c)].join(', ') || 'unrecorded'}`;
+};
 const dir = process.argv[2] || join(dirname(fileURLToPath(import.meta.url)), 'results');
 const hosts = ['workerd', 'node', 'bun', 'deno'];
 const routeNames = { '/': '`/`', '/list1000': '`/list1000`', '/json-big': '`/json-big`', '/params/42?q=hello%20world&x=1': '`/params`' };
 const isWisp = (n) => n.startsWith('wisp');
 const label = { workerd: 'workerd', node: 'Node', bun: 'Bun', deno: 'Deno' };
-const n0 = (x) => x.toLocaleString('en-US');
+const n0 = (x) => Math.round(x).toLocaleString('en-US'); // req/s are stored exact; shown rounded
 const losses = [];
 let anyValid = false;
 const out = [];
@@ -59,6 +67,8 @@ for (const host of hosts) {
   const rows = valid ? [...names].sort((a, b) => order(a) - order(b)) : [...names];
   out.push(`### ${label[host]}\n`);
   out.push(`c=${r.conns}, ${r.secs} s runs, median of ${r.runs}, ${coldNote(r.colds, r.cold)}; ${r.when.slice(0, 10)}${r.steal ? `, CPU steal mean ${r.steal.mean}% (max ${r.steal.max}%)` : ''}${r.ip_local_port_range ? `, ip_local_port_range ${r.ip_local_port_range}` : ''}${resetNote(r)}${drainNote(r)}${stealNote(r)}. ${valid ? 'Each cell: req/s (place among the frameworks; a second Wisp variant is not counted against the first; a cell that is not idle, has no drain, fewer than 3 runs, steal over 10% in a run or failed requests is shown unranked with the reason).' : `Each cell: req/s. Not ranked: ${whyHost}.`}\n`);
+  out.push(`Provenance: ${provNote(r)}.
+`);
   out.push(`| framework | ${metrics.map((m) => m.title).join(' | ')} |`);
   out.push(`|---${'|---'.repeat(metrics.length)}|`);
   for (const n of rows) {

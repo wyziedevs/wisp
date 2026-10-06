@@ -10,7 +10,6 @@ apps/*/.open-next/
 apps/*/.wrangler/
 apps/*/.react-router/
 apps/*/_fresh/
-apps/*/package-lock.json
 apps/micro/hono-app.mjs
 apps/micro/data.mjs
 apps/sveltekit/src/lib/

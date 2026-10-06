@@ -1,5 +1,5 @@
 // Pure parts of rank.mjs, testable without a VPS (lib.test.mjs).
-import { statTicks, redoResets, cellOf } from '../edge/util.mjs';
+import { statTicks, redoResets, cellOf, median } from '../edge/util.mjs';
 
 // CPU ticks (user + system) of the processes of group `pgid`; `stats` are /proc/<pid>/stat texts
 // (or functions that throw for a process that vanished). The server runs under setsid, so pgrp = pid.
@@ -32,7 +32,8 @@ export async function runOnce({ run, idle, run_no, now = () => Date.now() / 1000
 // The results-file cell of one app and route. Any failed request: no req/s (null), `failed: true`.
 export function cellRecord(rs, { resets, redos, drains, wins }) {
   const c = cellOf(rs);
-  return { rps: c.rps == null ? null : Math.round(c.rps), p99: c.p99, runs: rs.map((r) => Math.round(r.rps)), bad: c.bad, ...(resets && { resets }), ...(redos.length && { redos }), drain_s: drains, ...(wins && { win: wins }), ...(c.failed && { errors: rs.map((r) => r.errs), failed: true }) };
+  // rps is the exact median of the runs (cellOf rounds to 0.1): rounding happens only when a report prints it.
+  return { rps: c.rps == null ? null : median(rs.map((r) => r.rps)), p99: c.p99, runs: rs.map((r) => r.rps), bad: c.bad, ...(resets && { resets }), ...(redos.length && { redos }), drain_s: drains, ...(wins && { win: wins }), ...(c.failed && { errors: rs.map((r) => r.errs), failed: true }) };
 }
 
 // Validity, derived from a results file's data (a stored `valid` flag is never read).
@@ -66,4 +67,28 @@ export function stealRuns(samples, wins) {
     const s = samples.filter((x) => x.t != null && x.t >= a && x.t <= b);
     return s.length ? Math.round((s.reduce((n, x) => n + x.st, 0) / s.length) * 100) / 100 : null;
   });
+}
+
+// `npm ls --depth=0 --json` -> { package: resolved version }.
+export function npmVersions(j) {
+  const out = {};
+  for (const [k, v] of Object.entries(j?.dependencies || {})) if (v?.version) out[k] = v.version;
+  return out;
+}
+
+// What a results file records about the run: the Wisp build (commit, date) and the contenders' resolved versions
+// (out/provenance.json, written by provenance.mjs at build time), the host runtimes, the kernel and the port range.
+// `exec(cmd)` and `read(file)` return text or throw; a probe that fails is null.
+export function provenance({ out, exec, read, workerd = 'workerd' }) {
+  const t = (f) => { try { return f().trim(); } catch { return null; } };
+  const rec = (() => { try { return JSON.parse(read(`${out}/provenance.json`)); } catch { return {}; } })();
+  const ver = (cmd) => t(() => exec(cmd))?.split('\n')[0].replace(/^(deno|workerd)\s+/i, '').replace(/\s.*$/, '') || null;
+  return {
+    wisp_commit: rec.wisp_commit ?? null,
+    build_date: rec.build_date ?? null,
+    contenders: rec.contenders ?? {},
+    versions: { node: ver('node --version'), bun: ver('bun --version'), deno: ver('deno --version'), workerd: ver(`${workerd} --version`) },
+    kernel: t(() => exec('uname -r')),
+    ip_local_port_range: t(() => read('/proc/sys/net/ipv4/ip_local_port_range'))?.replace(/\s+/g, ' ') ?? null,
+  };
 }
